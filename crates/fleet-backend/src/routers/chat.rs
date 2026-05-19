@@ -19,7 +19,8 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use crate::bridges::claude::ClaudeBridge;
-use crate::bridges::BridgeEvent;
+use crate::bridges::openai::OpenAIBridge;
+use crate::bridges::{AnyBridge, BridgeEvent};
 use crate::models::session::Session;
 use crate::routers::AppState;
 
@@ -85,7 +86,7 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
     };
 
     let mut subscribed: HashSet<String> = HashSet::new();
-    let bridges: Arc<Mutex<HashMap<String, Arc<ClaudeBridge>>>> =
+    let bridges: Arc<Mutex<HashMap<String, AnyBridge>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let streaming: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
 
@@ -223,7 +224,7 @@ fn sid_list(v: &Value) -> Vec<String> {
 async fn run_send_flow(
     st: AppState,
     sink: Sink,
-    bridges: Arc<Mutex<HashMap<String, Arc<ClaudeBridge>>>>,
+    bridges: Arc<Mutex<HashMap<String, AnyBridge>>>,
     session: Session,
     user_text: String,
 ) {
@@ -263,16 +264,39 @@ async fn run_send_flow(
 
     let _ = st.sm.update_status(&st.auth.pool, &sid, "running").await;
 
-    let mut bridge = ClaudeBridge::new(sid.clone(), session.project_path.clone());
-    bridge.claude_session_id = session.claude_session_id.clone();
-    bridge.permission_mode = session.permission_mode.clone();
-    bridge.model_name = session.model_name.clone();
-    bridge.session_title = Some(session.title.clone());
-    bridge.session_mode = session.session_mode.clone();
-    let bridge = Arc::new(bridge);
-    bridges.lock().await.insert(sid.clone(), bridge.clone());
+    // Tool-based bridge selection (parity with chat.py). Gemini/Codex/
+    // SdkBridge land later in Phase 2; unknown tool → faithful error.
+    let any_bridge: AnyBridge = match session.tool.as_str() {
+        "claude" => {
+            let mut b = ClaudeBridge::new(sid.clone(), session.project_path.clone());
+            b.claude_session_id = session.claude_session_id.clone();
+            b.permission_mode = session.permission_mode.clone();
+            b.model_name = session.model_name.clone();
+            b.session_title = Some(session.title.clone());
+            b.session_mode = session.session_mode.clone();
+            AnyBridge::Claude(Arc::new(b))
+        }
+        "openai" => {
+            let mut b = OpenAIBridge::new(sid.clone());
+            if let Some(m) = &session.model_name {
+                b.model = m.clone();
+            }
+            AnyBridge::OpenAI(Arc::new(b))
+        }
+        other => {
+            send_json(
+                &sink,
+                json!({"type":"error","session_id":sid,
+                       "error":format!("tool {other:?} not yet supported (Phase 2)")}),
+            )
+            .await;
+            let _ = st.sm.update_status(&st.auth.pool, &sid, "idle").await;
+            return;
+        }
+    };
+    bridges.lock().await.insert(sid.clone(), any_bridge.clone());
 
-    let mut rx = match bridge.send_message(&text).await {
+    let mut rx = match any_bridge.send_message(&text).await {
         Ok(rx) => rx,
         Err(e) => {
             send_json(

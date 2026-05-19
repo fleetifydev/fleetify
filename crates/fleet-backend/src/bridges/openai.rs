@@ -40,7 +40,7 @@ impl OpenAIBridge {
             session_id: session_id.into(),
             model: DEFAULT_MODEL.into(),
             system_prompt: None,
-            base_url: DEFAULT_BASE.into(),
+            base_url: std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE.into()),
             api_key: std::env::var("OPENAI_API_KEY").ok(),
             state: Arc::new(Mutex::new(OpenAIState::default())),
             aborted: Arc::new(std::sync::atomic::AtomicBool::new(false)),

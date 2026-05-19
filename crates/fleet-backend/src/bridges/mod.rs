@@ -6,6 +6,43 @@
 pub mod claude;
 pub mod openai;
 
+use std::sync::Arc;
+
+/// Tool-dispatch wrapper used by the `/ws/sessions` send flow (parity
+/// with chat.py picking ClaudeBridge / SdkBridge / OpenAIBridge by
+/// `session.tool`). Gemini + Codex variants land later in Phase 2.
+#[derive(Clone)]
+pub enum AnyBridge {
+    Claude(Arc<claude::ClaudeBridge>),
+    OpenAI(Arc<openai::OpenAIBridge>),
+}
+
+impl AnyBridge {
+    pub async fn send_message(
+        &self,
+        msg: &str,
+    ) -> anyhow::Result<tokio::sync::mpsc::Receiver<BridgeEvent>> {
+        match self {
+            AnyBridge::Claude(b) => b.send_message(msg).await,
+            AnyBridge::OpenAI(b) => b.send_message(msg).await,
+        }
+    }
+    pub async fn abort(&self) {
+        match self {
+            AnyBridge::Claude(b) => b.abort().await,
+            AnyBridge::OpenAI(b) => b.abort().await,
+        }
+    }
+    /// claude_session_id (if the agent emitted one in `init`). For
+    /// OpenAI this is `None` — no resumable session.
+    pub fn claude_session_id(&self) -> Option<String> {
+        match self {
+            AnyBridge::Claude(b) => b.claude_session_id.clone(),
+            AnyBridge::OpenAI(_) => None,
+        }
+    }
+}
+
 use serde_json::{json, Value};
 
 /// Normalized event (parity with `ClaudeBridgeEvent`). `to_json()` is the
