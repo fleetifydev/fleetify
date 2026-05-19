@@ -6,7 +6,9 @@ use std::path::PathBuf;
 
 use tauri::Manager;
 
-use crate::shell::{auth, config, git};
+use std::collections::HashMap;
+
+use crate::shell::{auth, config, git, pty};
 
 #[tauri::command]
 pub async fn auth_sign_in() -> serde_json::Value {
@@ -238,6 +240,42 @@ pub async fn git_commit(folder: String, message: String) -> serde_json::Value {
 #[tauri::command]
 pub async fn git_push(folder: String) -> serde_json::Value {
     git::push(&PathBuf::from(folder)).await
+}
+
+// ── PTY ──────────────────────────────────────────────────────────
+#[tauri::command]
+pub async fn pty_spawn(
+    app: tauri::AppHandle,
+    shell: Option<String>,
+    cwd: Option<String>,
+    env: Option<HashMap<String, String>>,
+) -> serde_json::Value {
+    match pty::spawn(app, shell, cwd, env) {
+        Ok(id) => serde_json::json!({ "id": id }),
+        Err(e) => serde_json::json!({ "error": e }),
+    }
+}
+
+#[tauri::command]
+pub async fn pty_write(id: String, data: String) -> serde_json::Value {
+    match pty::write(&id, &data) {
+        Ok(_) => serde_json::json!({ "ok": true }),
+        Err(e) => serde_json::json!({ "ok": false, "error": e }),
+    }
+}
+
+#[tauri::command]
+pub async fn pty_resize(id: String, cols: u16, rows: u16) -> serde_json::Value {
+    match pty::resize(&id, cols, rows) {
+        Ok(_) => serde_json::json!({ "ok": true }),
+        Err(e) => serde_json::json!({ "ok": false, "error": e }),
+    }
+}
+
+#[tauri::command]
+pub async fn pty_kill(id: String) -> serde_json::Value {
+    let _ = pty::kill(&id);
+    serde_json::json!({ "ok": true })
 }
 
 // ── dialog ───────────────────────────────────────────────────────

@@ -61,6 +61,33 @@
       gitCheckout: function (folder, branch, force) { return invoke("git_checkout", { folder: String(folder || ""), branch: String(branch || ""), force: !!force }); },
       gitCommit: function (folder, message) { return invoke("git_commit", { folder: String(folder || ""), message: String(message || "") }); },
       gitPush: function (folder) { return invoke("git_push", { folder: String(folder || "") }); },
+      ptySpawn: function (opts) {
+        var o = opts || {};
+        return invoke("pty_spawn", {
+          shell: o.shell || null, cwd: o.cwd || null, env: o.env || null,
+        });
+      },
+      ptyWrite: function (id, data) { return invoke("pty_write", { id: String(id), data: String(data) }); },
+      ptyResize: function (id, cols, rows) { return invoke("pty_resize", { id: String(id), cols: Number(cols) | 0, rows: Number(rows) | 0 }); },
+      ptyKill: function (id) { return invoke("pty_kill", { id: String(id) }); },
+      onPtyData: function (id, cb) {
+        var un = null;
+        var e = ev();
+        if (e) {
+          e.listen("pty:data:" + id, function (m) { cb((m.payload && m.payload.data) || ""); })
+            .then(function (u) { un = u; });
+        }
+        return function () { if (un) un(); };
+      },
+      onPtyExit: function (id, cb) {
+        var un = null;
+        var e = ev();
+        if (e) {
+          e.listen("pty:exit:" + id, function (m) { cb(m.payload || {}); })
+            .then(function (u) { un = u; });
+        }
+        return function () { if (un) un(); };
+      },
     },
     {
       get: function (t, k) {

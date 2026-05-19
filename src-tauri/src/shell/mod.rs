@@ -7,3 +7,4 @@ pub mod bearer;
 pub mod config;
 pub mod git;
 pub mod ipc;
+pub mod pty;
