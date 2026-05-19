@@ -83,6 +83,8 @@ pub fn run() {
             shell::ipc::shell_check_github_auth,
             shell::ipc::shell_install_provider,
             shell::ipc::shell_install_ollama,
+            shell::ipc::git_watch_head,
+            shell::ipc::git_unwatch_head,
         ])
         .setup(|app| {
             // Auth module emits `fleet:auth-event` via this handle.
@@ -117,6 +119,14 @@ pub fn run() {
             .build()?;
 
             Ok(())
+        })
+        .on_window_event(|_window, event| {
+            // Tear down any HEAD watchers on window destroy so app-quit
+            // doesn't leak fs watcher handles (matches main.cjs's
+            // before-quit cleanup).
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                shell::head_watcher::shutdown();
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

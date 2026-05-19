@@ -8,7 +8,7 @@ use tauri::Manager;
 
 use std::collections::HashMap;
 
-use crate::shell::{auth, config, git, pty};
+use crate::shell::{auth, config, git, head_watcher, pty};
 
 #[tauri::command]
 pub async fn auth_sign_in() -> serde_json::Value {
@@ -394,6 +394,21 @@ pub async fn git_carve_next_round(
 #[tauri::command]
 pub async fn git_preflight_check(folder: String) -> serde_json::Value {
     git::preflight_check(&PathBuf::from(folder)).await
+}
+
+// ── .git/HEAD watcher (renderer branch strip) ────────────────────
+#[tauri::command]
+pub async fn git_watch_head(
+    app: tauri::AppHandle,
+    folder: String,
+    key: String,
+) -> serde_json::Value {
+    head_watcher::watch(app, &folder, &key).await
+}
+
+#[tauri::command]
+pub async fn git_unwatch_head(key: String) -> serde_json::Value {
+    head_watcher::unwatch(&key)
 }
 
 // ── shell:* installers + GitHub auth check ──────────────────────
