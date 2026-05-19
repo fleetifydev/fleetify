@@ -62,6 +62,9 @@ pub async fn serve(
     addr: SocketAddr,
     static_dir: Option<PathBuf>,
 ) -> anyhow::Result<ServerHandle> {
+    // Lifespan parity: one-shot ~/.fleet → ~/.fleetify migration.
+    services::migration::migrate_fleet_to_fleetify();
+
     let cfg = config::AppConfig::load(None)?;
     // App: file-backed `fleet.db`; tests set FLEET_DB_URL=sqlite::memory:.
     let db_url = std::env::var("FLEET_DB_URL")
