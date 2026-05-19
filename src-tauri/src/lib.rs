@@ -58,6 +58,7 @@ pub fn run() {
             shell::ipc::fs_read_file,
             shell::ipc::fs_get_extension,
             shell::ipc::fs_get_project_root,
+            shell::ipc::fs_scaffold_plugin,
             shell::ipc::dialog_open_folder,
             shell::ipc::git_get_context,
             shell::ipc::git_has_gh_cli,

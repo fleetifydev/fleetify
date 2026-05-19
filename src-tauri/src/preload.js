@@ -54,6 +54,14 @@
       readFile: function (p) { return invoke("fs_read_file", { filePath: String(p || "") }); },
       getExtension: function (p) { return invoke("fs_get_extension", { filePath: String(p || "") }); },
       getProjectRoot: function () { return invoke("fs_get_project_root"); },
+      scaffoldPlugin: function (opts) {
+        var o = opts || {};
+        return invoke("fs_scaffold_plugin", {
+          parentFolder: String(o.parentFolder || ""),
+          pluginSlug: String(o.pluginSlug || ""),
+          files: o.files || {},
+        });
+      },
       openFolderDialog: function () { return invoke("dialog_open_folder"); },
       getGitContext: function (folder) { return invoke("git_get_context", { folder: String(folder || "") }); },
       hasGhCli: function () { return invoke("git_has_gh_cli"); },

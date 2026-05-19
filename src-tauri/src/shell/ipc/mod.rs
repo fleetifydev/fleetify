@@ -204,6 +204,87 @@ pub async fn fs_get_extension(file_path: String) -> String {
     extension_no_dot(std::path::Path::new(&file_path))
 }
 
+// ── fs::scaffoldPlugin (faithful main.cjs `fs:scaffoldPlugin`) ──────
+fn is_kebab_slug(s: &str) -> bool {
+    let mut it = s.chars();
+    let Some(first) = it.next() else { return false };
+    if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
+        return false;
+    }
+    s.chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+pub fn scaffold_plugin_impl(
+    parent_folder: &str,
+    plugin_slug: &str,
+    files: &HashMap<String, String>,
+) -> serde_json::Value {
+    use serde_json::json;
+    if parent_folder.is_empty() {
+        return json!({ "error": "parentFolder is required" });
+    }
+    if !is_kebab_slug(plugin_slug) {
+        return json!({
+            "error": "pluginSlug must be kebab-case (lowercase + digits + hyphens)"
+        });
+    }
+    let parent = std::path::Path::new(parent_folder);
+    if !parent.exists() || !parent.is_dir() {
+        return json!({ "error": "parentFolder does not exist or is not a directory" });
+    }
+    let plugin_path = parent.join(plugin_slug);
+    if plugin_path.exists() {
+        return json!({
+            "error": format!("'{plugin_slug}' already exists in that folder. Pick a different name or location.")
+        });
+    }
+    if let Err(e) = std::fs::create_dir_all(&plugin_path) {
+        return json!({ "error": e.to_string() });
+    }
+
+    let mut written: Vec<String> = Vec::new();
+    for (rel, content) in files {
+        // Refuse traversal: `..` segment or absolute path.
+        let rel_path = std::path::Path::new(rel);
+        if rel.contains("..") || rel_path.is_absolute() {
+            return json!({ "error": format!("unsafe path in scaffold: {rel}") });
+        }
+        let target = plugin_path.join(rel_path);
+        // Belt-and-braces: ensure the resolved path stays inside plugin_path
+        // even after lexical traversal in the relative path.
+        let normalized = target.components().fold(
+            std::path::PathBuf::new(),
+            |mut acc, c| {
+                acc.push(c);
+                acc
+            },
+        );
+        if !normalized.starts_with(&plugin_path) {
+            return json!({ "error": format!("unsafe path in scaffold: {rel}") });
+        }
+        if let Some(p) = target.parent() {
+            if let Err(e) = std::fs::create_dir_all(p) {
+                return json!({ "error": e.to_string() });
+            }
+        }
+        if let Err(e) = std::fs::write(&target, content) {
+            return json!({ "error": e.to_string() });
+        }
+        written.push(rel.clone());
+    }
+    serde_json::json!({ "path": plugin_path.to_string_lossy(), "written": written })
+}
+
+#[tauri::command]
+pub async fn fs_scaffold_plugin(
+    parent_folder: String,
+    plugin_slug: String,
+    files: HashMap<String, String>,
+) -> serde_json::Value {
+    scaffold_plugin_impl(&parent_folder, &plugin_slug, &files)
+}
+
 #[tauri::command]
 pub async fn fs_get_project_root() -> String {
     std::env::current_dir()
@@ -414,5 +495,44 @@ mod tests {
         assert_eq!(extension_no_dot(std::path::Path::new("a.tsx")), "tsx");
         assert_eq!(extension_no_dot(std::path::Path::new("Cargo.toml")), "toml");
         assert_eq!(extension_no_dot(std::path::Path::new("noext")), "");
+    }
+
+    #[test]
+    fn scaffold_plugin_writes_files_and_refuses_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = tmp.path().to_string_lossy().to_string();
+        let mut files = HashMap::new();
+        files.insert(
+            ".fleetify-plugin/plugin.json".to_string(),
+            "{\"name\":\"my-plugin\"}".to_string(),
+        );
+        files.insert("README.md".to_string(), "# my-plugin".to_string());
+
+        let v = scaffold_plugin_impl(&parent, "my-plugin", &files);
+        assert!(v.get("path").is_some(), "got {v}");
+        let written: Vec<String> = v["written"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(written.len(), 2);
+        let plugin_dir = tmp.path().join("my-plugin");
+        assert!(plugin_dir.join(".fleetify-plugin/plugin.json").is_file());
+        assert!(plugin_dir.join("README.md").is_file());
+
+        // Bad slug.
+        let v2 = scaffold_plugin_impl(&parent, "Bad_Slug", &files);
+        assert!(v2.get("error").is_some());
+
+        // Already-exists.
+        let v3 = scaffold_plugin_impl(&parent, "my-plugin", &files);
+        assert!(v3["error"].as_str().unwrap().contains("already exists"));
+
+        // Traversal refused.
+        let mut bad = HashMap::new();
+        bad.insert("../escape.txt".to_string(), "x".to_string());
+        let v4 = scaffold_plugin_impl(&parent, "other-plugin", &bad);
+        assert!(v4["error"].as_str().unwrap().contains("unsafe path"));
     }
 }
