@@ -261,6 +261,43 @@ pub async fn git_diff_summary(folder: String, base_branch: String) -> serde_json
 pub async fn git_open_pr(folder: String) -> serde_json::Value {
     git::open_pr(&PathBuf::from(folder)).await
 }
+#[tauri::command]
+pub async fn git_create_pr(
+    folder: String,
+    title: String,
+    body: Option<String>,
+    base: Option<String>,
+    draft: Option<bool>,
+) -> serde_json::Value {
+    git::create_pr(
+        &PathBuf::from(folder),
+        &title,
+        body.as_deref(),
+        base.as_deref(),
+        draft.unwrap_or(false),
+    )
+    .await
+}
+#[tauri::command]
+pub async fn git_get_pr_status(
+    folder: String,
+    pr_number: Option<u64>,
+) -> serde_json::Value {
+    git::get_pr_status(&PathBuf::from(folder), pr_number).await
+}
+#[tauri::command]
+pub async fn git_merge_pr(
+    folder: String,
+    pr_number: u64,
+    method: Option<String>,
+) -> serde_json::Value {
+    git::merge_pr(
+        &PathBuf::from(folder),
+        pr_number,
+        method.as_deref().unwrap_or("merge"),
+    )
+    .await
+}
 
 // ── PTY ──────────────────────────────────────────────────────────
 #[tauri::command]

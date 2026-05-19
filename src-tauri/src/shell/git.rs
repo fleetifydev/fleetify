@@ -252,6 +252,91 @@ pub async fn open_pr(folder: &Path) -> Value {
     }
 }
 
+pub async fn create_pr(
+    folder: &Path,
+    title: &str,
+    body: Option<&str>,
+    base: Option<&str>,
+    draft: bool,
+) -> Value {
+    let mut args: Vec<String> = vec!["pr".into(), "create".into()];
+    args.push("--title".into());
+    args.push(title.into());
+    args.push("--body".into());
+    args.push(body.unwrap_or("").into());
+    if let Some(b) = base {
+        args.push("--base".into());
+        args.push(b.into());
+    }
+    if draft {
+        args.push("--draft".into());
+    }
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (rc, out, err) = gh(&argv, folder).await;
+    if rc != 0 {
+        return json!({ "ok": false, "error": err.trim() });
+    }
+    let url = out
+        .lines()
+        .last()
+        .map(str::trim)
+        .filter(|s| s.starts_with("http"))
+        .unwrap_or("")
+        .to_string();
+    let pr_number = parse_pr_number(&url);
+    json!({ "ok": true, "prNumber": pr_number, "prUrl": url })
+}
+
+pub async fn get_pr_status(folder: &Path, pr_number: Option<u64>) -> Value {
+    // `gh pr view [<n>] --json ...` returns the structured fields the
+    // renderer's PR dialog displays.
+    let mut argv: Vec<String> = vec!["pr".into(), "view".into()];
+    if let Some(n) = pr_number {
+        argv.push(n.to_string());
+    }
+    argv.push("--json".into());
+    argv.push(
+        "number,url,state,mergeable,isDraft,baseRefName,headRefName,\
+         statusCheckRollup,commentsCount"
+            .into(),
+    );
+    let argv_ref: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (rc, out, err) = gh(&argv_ref, folder).await;
+    if rc != 0 {
+        return json!({ "ok": false, "error": err.trim() });
+    }
+    match serde_json::from_str::<Value>(out.trim()) {
+        Ok(pr) => json!({ "ok": true, "pr": pr }),
+        Err(e) => json!({ "ok": false, "error": format!("parse: {e}") }),
+    }
+}
+
+pub async fn merge_pr(folder: &Path, pr_number: u64, method: &str) -> Value {
+    let flag = match method {
+        "rebase" => "--rebase",
+        "squash" => "--squash",
+        _ => "--merge",
+    };
+    let n = pr_number.to_string();
+    let (rc, _o, err) = gh(
+        &["pr", "merge", &n, flag, "--delete-branch"],
+        folder,
+    )
+    .await;
+    if rc == 0 {
+        json!({ "ok": true })
+    } else {
+        json!({ "ok": false, "error": err.trim() })
+    }
+}
+
+/// `https://github.com/foo/bar/pull/42` → Some(42); anything else → None.
+fn parse_pr_number(url: &str) -> Option<u64> {
+    url.rsplit_once("/pull/")
+        .and_then(|(_, rest)| rest.split('/').next())
+        .and_then(|n| n.parse::<u64>().ok())
+}
+
 async fn detect_default_branch(folder: &Path) -> Option<String> {
     let (rc, out, _) = git(
         &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
@@ -304,6 +389,20 @@ mod tests {
         let _ = git(&["config", "user.email", "t@x"], p).await;
         let _ = git(&["config", "user.name", "T"], p).await;
         let _ = git(&["commit", "-m", "init", "--allow-empty"], p).await;
+    }
+
+    #[test]
+    fn parse_pr_number_from_url() {
+        assert_eq!(
+            parse_pr_number("https://github.com/foo/bar/pull/42"),
+            Some(42)
+        );
+        assert_eq!(
+            parse_pr_number("https://github.com/foo/bar/pull/42/files"),
+            Some(42)
+        );
+        assert_eq!(parse_pr_number("https://github.com/foo/bar"), None);
+        assert_eq!(parse_pr_number(""), None);
     }
 
     #[test]

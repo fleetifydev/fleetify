@@ -72,6 +72,29 @@
         return invoke("git_diff_summary", { folder: String(folder || ""), baseBranch: String(baseBranch || "main") });
       },
       openPR: function (folder) { return invoke("git_open_pr", { folder: String(folder || "") }); },
+      createPR: function (folder, opts) {
+        var o = opts || {};
+        return invoke("git_create_pr", {
+          folder: String(folder || ""),
+          title: String(o.title || ""),
+          body: o.body || null,
+          base: o.base || null,
+          draft: !!o.draft,
+        });
+      },
+      getPRStatus: function (folder, prNumber) {
+        return invoke("git_get_pr_status", {
+          folder: String(folder || ""),
+          prNumber: prNumber == null ? null : Number(prNumber),
+        });
+      },
+      mergePR: function (folder, prNumber, method) {
+        return invoke("git_merge_pr", {
+          folder: String(folder || ""),
+          prNumber: Number(prNumber),
+          method: method || "merge",
+        });
+      },
       ptySpawn: function (opts) {
         var o = opts || {};
         return invoke("pty_spawn", {

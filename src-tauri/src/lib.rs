@@ -73,6 +73,9 @@ pub fn run() {
             shell::ipc::git_pull_latest,
             shell::ipc::git_diff_summary,
             shell::ipc::git_open_pr,
+            shell::ipc::git_create_pr,
+            shell::ipc::git_get_pr_status,
+            shell::ipc::git_merge_pr,
         ])
         .setup(|app| {
             // Auth module emits `fleet:auth-event` via this handle.
