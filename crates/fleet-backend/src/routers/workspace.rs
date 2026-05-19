@@ -25,7 +25,7 @@ pub fn router() -> Router<AppState> {
         .route("/fs/rename", post(rename_entry))
         .route("/fs/git", get(git_status))
         .route("/fs/git/diff", get(git_diff))
-        .route("/fs/search", get(search_stub))
+        .route("/fs/search", get(search_files))
 }
 
 fn should_skip(name: &str) -> bool {
@@ -450,7 +450,219 @@ async fn git_diff(Query(q): Query<DiffQ>) -> Json<Value> {
     }
 }
 
-// Phase 3: replace with real fs::search (ignore-files + project-scoped).
-async fn search_stub(Query(_q): Query<PathQ>) -> Json<Value> {
-    Json(json!([]))
+// ── /api/fs/search — `@` mention picker file/folder search ───────
+// Faithful with workspace.py:_search_project: empty q = first-level
+// entries (folders first), non-empty q = case-insensitive substring
+// match on path with rank-then-position scoring.
+#[derive(Deserialize)]
+struct SearchQ {
+    root: String,
+    #[serde(default)]
+    q: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+const SEARCH_SKIP_DIRS: &[&str] = &[
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    ".next",
+    ".turbo",
+    ".cache",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".idea",
+    ".vscode",
+];
+
+fn search_should_skip_top_level(name: &str) -> bool {
+    should_skip(name) || SEARCH_SKIP_DIRS.contains(&name)
+}
+
+async fn search_files(Query(q): Query<SearchQ>) -> Json<Value> {
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    let root = std::path::PathBuf::from(&q.root);
+    if !root.is_dir() {
+        return Json(json!([]));
+    }
+    let query = q.q.as_deref().unwrap_or("").trim().to_lowercase();
+    // Off-thread walk (tokio doesn't have a real fs walker; the Python
+    // version used `asyncio.to_thread` for the same reason).
+    let result = tokio::task::spawn_blocking(move || search_project(&root, &query, limit))
+        .await
+        .unwrap_or_default();
+    Json(Value::Array(result))
+}
+
+fn search_project(root: &std::path::Path, q: &str, limit: usize) -> Vec<Value> {
+    // Empty query → first-level entries, folders first.
+    if q.is_empty() {
+        let mut entries: Vec<(bool, String, Value)> = Vec::new();
+        let rd = match std::fs::read_dir(root) {
+            Ok(rd) => rd,
+            Err(_) => return Vec::new(),
+        };
+        for ent in rd.flatten() {
+            let name = ent.file_name().to_string_lossy().to_string();
+            if search_should_skip_top_level(&name) {
+                continue;
+            }
+            let is_file = ent.file_type().map(|t| t.is_file()).unwrap_or(false);
+            entries.push((
+                is_file,
+                name.to_lowercase(),
+                json!({
+                    "name": name,
+                    "path": ent.path().to_string_lossy(),
+                    "relative": name,
+                    "type": if is_file { "file" } else { "folder" },
+                }),
+            ));
+            if entries.len() >= limit {
+                break;
+            }
+        }
+        entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        return entries.into_iter().map(|(_, _, v)| v).collect();
+    }
+
+    // Non-empty query: bounded BFS with skip rules + substring matching.
+    const WALK_BUDGET: usize = 20_000;
+    let result_cap = std::cmp::max(limit * 4, 200);
+    let mut stack: std::collections::VecDeque<std::path::PathBuf> =
+        std::collections::VecDeque::new();
+    stack.push_back(root.to_path_buf());
+
+    struct Scored {
+        rank: u8,
+        pos: usize,
+        len: usize,
+        rel_lower: String,
+        value: Value,
+    }
+    let mut hits: Vec<Scored> = Vec::new();
+    let mut seen = 0usize;
+
+    while let Some(current) = stack.pop_front() {
+        if seen >= WALK_BUDGET {
+            break;
+        }
+        let rd = match std::fs::read_dir(&current) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        let mut children: Vec<std::fs::DirEntry> = rd.flatten().collect();
+        children.sort_by_key(|e| {
+            let is_file = e.file_type().map(|t| t.is_file()).unwrap_or(false);
+            (is_file, e.file_name().to_string_lossy().to_lowercase())
+        });
+        for ent in children {
+            seen += 1;
+            let name = ent.file_name().to_string_lossy().to_string();
+            if SEARCH_SKIP_DIRS.contains(&name.as_str()) {
+                continue;
+            }
+            if name.starts_with('.') && name != ".env" && name != ".env.local" {
+                continue;
+            }
+            let rel_path = ent
+                .path()
+                .strip_prefix(root)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| name.clone());
+            let rel_lower = rel_path.to_lowercase();
+            let name_lower = name.to_lowercase();
+            let is_dir = ent.file_type().map(|t| t.is_dir()).unwrap_or(false);
+
+            if let Some(pos) = name_lower.find(q) {
+                let rank: u8 = if is_dir { 0 } else { 1 };
+                hits.push(Scored {
+                    rank,
+                    pos,
+                    len: name_lower.len(),
+                    rel_lower: rel_lower.clone(),
+                    value: json!({
+                        "name": name,
+                        "path": ent.path().to_string_lossy(),
+                        "relative": rel_path,
+                        "type": if is_dir { "folder" } else { "file" },
+                    }),
+                });
+            } else if let Some(pos) = rel_lower.find(q) {
+                let rank: u8 = if is_dir { 2 } else { 3 };
+                hits.push(Scored {
+                    rank,
+                    pos,
+                    len: rel_lower.len(),
+                    rel_lower: rel_lower.clone(),
+                    value: json!({
+                        "name": name,
+                        "path": ent.path().to_string_lossy(),
+                        "relative": rel_path,
+                        "type": if is_dir { "folder" } else { "file" },
+                    }),
+                });
+            }
+
+            if is_dir {
+                stack.push_back(ent.path());
+            }
+            if hits.len() >= result_cap {
+                break;
+            }
+        }
+        if hits.len() >= result_cap {
+            break;
+        }
+    }
+
+    hits.sort_by(|a, b| {
+        a.rank
+            .cmp(&b.rank)
+            .then_with(|| a.pos.cmp(&b.pos))
+            .then_with(|| a.len.cmp(&b.len))
+            .then_with(|| a.rel_lower.cmp(&b.rel_lower))
+    });
+    hits.into_iter().take(limit).map(|s| s.value).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_empty_query_lists_first_level_folders_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("src")).unwrap();
+        std::fs::create_dir(tmp.path().join("docs")).unwrap();
+        std::fs::create_dir(tmp.path().join("node_modules")).unwrap(); // must be skipped
+        std::fs::write(tmp.path().join("README.md"), b"").unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), b"").unwrap();
+
+        let v = search_project(tmp.path(), "", 50);
+        let names: Vec<&str> = v.iter().map(|e| e["name"].as_str().unwrap()).collect();
+        // node_modules excluded; folders before files; alpha-insensitive
+        // within each group.
+        assert_eq!(names, vec!["docs", "src", "Cargo.toml", "README.md"]);
+    }
+
+    #[test]
+    fn search_matches_name_then_path_with_skip_rules() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("src")).unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join("src/foo.rs"), b"").unwrap();
+        std::fs::write(tmp.path().join("src/bar.rs"), b"").unwrap();
+        std::fs::write(tmp.path().join(".git/foo.txt"), b"").unwrap();
+
+        // .git is in SEARCH_SKIP_DIRS so its foo.txt is invisible.
+        let v = search_project(tmp.path(), "foo", 50);
+        let names: Vec<&str> = v.iter().map(|e| e["name"].as_str().unwrap()).collect();
+        assert_eq!(names, vec!["foo.rs"]);
+    }
 }
