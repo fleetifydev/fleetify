@@ -298,6 +298,22 @@ pub async fn git_merge_pr(
     )
     .await
 }
+#[tauri::command]
+pub async fn git_sync_main(folder: String, base_branch: String) -> serde_json::Value {
+    git::sync_main(&PathBuf::from(folder), &base_branch).await
+}
+#[tauri::command]
+pub async fn git_carve_next_round(
+    folder: String,
+    branch: String,
+    base_branch: String,
+) -> serde_json::Value {
+    git::carve_next_round(&PathBuf::from(folder), &branch, &base_branch).await
+}
+#[tauri::command]
+pub async fn git_preflight_check(folder: String) -> serde_json::Value {
+    git::preflight_check(&PathBuf::from(folder)).await
+}
 
 // ── PTY ──────────────────────────────────────────────────────────
 #[tauri::command]

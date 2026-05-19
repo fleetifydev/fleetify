@@ -360,6 +360,97 @@ async fn detect_default_branch(folder: &Path) -> Option<String> {
     None
 }
 
+/// `git fetch origin` + checkout base + ff-pull + return to original branch
+/// (parity with main.cjs's syncMain — refreshes the local base branch
+/// without leaving the user stranded on it).
+pub async fn sync_main(folder: &Path, base: &str) -> Value {
+    let prev = current_branch_str(folder).await.unwrap_or_else(|| "HEAD".to_string());
+    let (rcf, _o, errf) = git(&["fetch", "origin"], folder).await;
+    if rcf != 0 {
+        return json!({ "ok": false, "error": format!("fetch: {}", errf.trim()) });
+    }
+    let (rcc, _o, errc) = git(&["checkout", base], folder).await;
+    if rcc != 0 {
+        return json!({ "ok": false, "error": format!("checkout {base}: {}", errc.trim()) });
+    }
+    let (rcp, _o, errp) = git(&["pull", "--ff-only", "origin", base], folder).await;
+    if rcp != 0 {
+        let _ = git(&["checkout", &prev], folder).await; // restore
+        return json!({ "ok": false, "error": format!("pull --ff-only: {}", errp.trim()) });
+    }
+    let _ = git(&["checkout", &prev], folder).await;
+    json!({ "ok": true, "base": base, "prevBranch": prev })
+}
+
+/// Carve a new feature branch from `base` (parity with carveNextRound).
+pub async fn carve_next_round(folder: &Path, branch: &str, base: &str) -> Value {
+    let (rc, _o, err) = git(&["checkout", "-b", branch, base], folder).await;
+    if rc == 0 {
+        json!({ "ok": true, "branch": branch, "base": base })
+    } else {
+        json!({ "ok": false, "error": err.trim() })
+    }
+}
+
+/// Detect common pre-PR issues (parity with preflightCheck). Reports but
+/// does not fix; the renderer surfaces fixes through `applyPreflightFix`
+/// (Phase 2 follow-up).
+pub async fn preflight_check(folder: &Path) -> Value {
+    let mut issues: Vec<Value> = Vec::new();
+    let path = folder.to_string_lossy().to_string();
+    if !fleet_backend::services::worktree::is_git_repo(&path).await {
+        issues.push(json!({
+            "type": "not-a-repo",
+            "message": "Not a git repository.",
+            "suggestion": "Run gitEnsureRepo to initialize."
+        }));
+        return json!({ "ok": false, "issues": issues });
+    }
+    let (rc_top, root, _) = git(&["rev-parse", "--show-toplevel"], folder).await;
+    if rc_top == 0 {
+        let g = std::path::Path::new(root.trim()).join(".git");
+        if g.join("REBASE_HEAD").exists()
+            || g.join("rebase-merge").is_dir()
+            || g.join("rebase-apply").is_dir()
+        {
+            issues.push(json!({
+                "type": "mid-rebase",
+                "message": "Repository is in the middle of a rebase.",
+                "suggestion": "Run `git rebase --continue` or `git rebase --abort`."
+            }));
+        }
+        if g.join("MERGE_HEAD").exists() {
+            issues.push(json!({
+                "type": "mid-merge",
+                "message": "Repository is in the middle of a merge.",
+                "suggestion": "Run `git merge --continue` or `git merge --abort`."
+            }));
+        }
+    }
+    if current_branch_str(folder).await.is_none() {
+        issues.push(json!({
+            "type": "detached-head",
+            "message": "HEAD is detached.",
+            "suggestion": "Check out a branch before creating a PR."
+        }));
+    }
+    let (rc_h, _o, _e) = git(&["rev-parse", "HEAD"], folder).await;
+    if rc_h != 0 {
+        issues.push(json!({
+            "type": "nested-no-commits",
+            "message": "No commits in this repository yet.",
+            "suggestion": "Commit at least one file before creating a PR."
+        }));
+    }
+    json!({ "ok": issues.is_empty(), "issues": issues })
+}
+
+async fn current_branch_str(folder: &Path) -> Option<String> {
+    let (rc, out, _) = git(&["rev-parse", "--abbrev-ref", "HEAD"], folder).await;
+    let v = out.trim().to_string();
+    if rc != 0 || v.is_empty() || v == "HEAD" { None } else { Some(v) }
+}
+
 /// `git@github.com:foo/bar.git` → `https://github.com/foo/bar.git` (parity
 /// with the Electron `gitContextHandlers` shape; HTTPS already passes through).
 fn ssh_to_https(url: &str) -> String {
@@ -446,6 +537,45 @@ mod tests {
             .map(|x| x.as_str().unwrap().to_string())
             .collect();
         assert!(local.iter().any(|b| b == "main"));
+    }
+
+    #[tokio::test]
+    async fn preflight_flags_no_commits_on_fresh_init() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        // Skip if ancestor repo would mask our state.
+        if fleet_backend::services::worktree::is_git_repo(
+            &tmp.path().to_string_lossy(),
+        )
+        .await
+        {
+            return;
+        }
+        let _ = git(&["init", "-b", "main"], tmp.path()).await;
+        let v = preflight_check(tmp.path()).await;
+        assert_eq!(v["ok"], false);
+        let kinds: Vec<&str> = v["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["type"].as_str().unwrap())
+            .collect();
+        assert!(kinds.iter().any(|k| *k == "nested-no-commits"));
+    }
+
+    #[tokio::test]
+    async fn carve_next_round_creates_branch_from_base() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        fresh_repo(tmp.path()).await;
+        let v = carve_next_round(tmp.path(), "fleet/x-y", "main").await;
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["branch"], "fleet/x-y");
+        assert_eq!(current_branch_str(tmp.path()).await.as_deref(), Some("fleet/x-y"));
     }
 
     #[tokio::test]

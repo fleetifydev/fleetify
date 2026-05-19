@@ -95,6 +95,15 @@
           method: method || "merge",
         });
       },
+      syncMain: function (folder, baseBranch) {
+        return invoke("git_sync_main", { folder: String(folder || ""), baseBranch: String(baseBranch || "main") });
+      },
+      carveNextRound: function (folder, branch, baseBranch) {
+        return invoke("git_carve_next_round", {
+          folder: String(folder || ""), branch: String(branch || ""), baseBranch: String(baseBranch || "main"),
+        });
+      },
+      preflightCheck: function (folder) { return invoke("git_preflight_check", { folder: String(folder || "") }); },
       ptySpawn: function (opts) {
         var o = opts || {};
         return invoke("pty_spawn", {
