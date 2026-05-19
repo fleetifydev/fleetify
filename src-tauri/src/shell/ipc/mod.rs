@@ -8,7 +8,7 @@ use tauri::Manager;
 
 use std::collections::HashMap;
 
-use crate::shell::{auth, config, git, head_watcher, pty};
+use crate::shell::{auth, config, git, github_link, head_watcher, pty};
 
 #[tauri::command]
 pub async fn auth_sign_in() -> serde_json::Value {
@@ -394,6 +394,36 @@ pub async fn git_carve_next_round(
 #[tauri::command]
 pub async fn git_preflight_check(folder: String) -> serde_json::Value {
     git::preflight_check(&PathBuf::from(folder)).await
+}
+
+// ── GitHub link (Fleetify cloud OAuth fallback) ──────────────────
+#[tauri::command]
+pub async fn github_get_link() -> serde_json::Value {
+    match github_link::get_link().await {
+        Some(l) => serde_json::json!({ "ok": true, "link": l }),
+        None => serde_json::json!({ "ok": true, "link": null }),
+    }
+}
+
+#[tauri::command]
+pub async fn github_begin_oauth(app: tauri::AppHandle) -> serde_json::Value {
+    github_link::begin_oauth(app).await
+}
+
+#[tauri::command]
+pub async fn github_refresh_link(app: tauri::AppHandle) -> serde_json::Value {
+    github_link::refresh_link(app).await
+}
+
+#[tauri::command]
+pub async fn github_disconnect(app: tauri::AppHandle) -> serde_json::Value {
+    github_link::disconnect(app).await;
+    serde_json::json!({ "ok": true })
+}
+
+#[tauri::command]
+pub async fn github_open_installation() -> serde_json::Value {
+    github_link::open_installation().await
 }
 
 // ── .git/HEAD watcher (renderer branch strip) ────────────────────

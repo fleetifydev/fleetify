@@ -346,6 +346,19 @@ pub async fn refresh_if_needed(force: bool) -> Result<Tokens, AuthError> {
     Ok(tokens)
 }
 
+/// `sub` from the cached/fetched OIDC userinfo. Cached after first
+/// success in `cached_uid()`; cleared on sign_out (parity with the
+/// Electron `auth.getUserId()` used as the GitHub-link keychain key).
+pub async fn get_user_id() -> Option<String> {
+    if let Some(u) = cached_uid().lock().unwrap().clone() {
+        return Some(u);
+    }
+    let u = userinfo().await.ok()?;
+    let sub = u.get("sub")?.as_str()?.to_string();
+    *cached_uid().lock().unwrap() = Some(sub.clone());
+    Some(sub)
+}
+
 pub async fn userinfo() -> Result<serde_json::Value, AuthError> {
     let t = refresh_if_needed(false).await?;
     let r = reqwest::Client::new()

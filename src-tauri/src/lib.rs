@@ -85,6 +85,11 @@ pub fn run() {
             shell::ipc::shell_install_ollama,
             shell::ipc::git_watch_head,
             shell::ipc::git_unwatch_head,
+            shell::ipc::github_get_link,
+            shell::ipc::github_begin_oauth,
+            shell::ipc::github_refresh_link,
+            shell::ipc::github_disconnect,
+            shell::ipc::github_open_installation,
         ])
         .setup(|app| {
             // Auth module emits `fleet:auth-event` via this handle.

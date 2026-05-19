@@ -75,6 +75,30 @@
         })).then(function (u) { unsub = u; });
         return function () { try { unsub && unsub(); } catch (_) {} };
       },
+      // ── github (mirrors window.electronAPI.github in the Electron build) ──
+      // Token never crosses IPC; only `link` envelopes do. Faithful with
+      // the original `electron/github-link.cjs` surface.
+      github: {
+        getLink:          function () { return invoke("github_get_link"); },
+        beginOAuth:       function () { return invoke("github_begin_oauth"); },
+        disconnect:       function () { return invoke("github_disconnect"); },
+        refreshLink:      function () { return invoke("github_refresh_link"); },
+        openInstallation: function () { return invoke("github_open_installation"); },
+        onLinkChanged: function (cb) {
+          var unsub = null;
+          Promise.resolve(window.__TAURI__.event.listen("github-link-changed", function (e) {
+            try { cb(e && e.payload); } catch (_) {}
+          })).then(function (u) { unsub = u; });
+          return function () { try { unsub && unsub(); } catch (_) {} };
+        },
+        onBrowserFallback: function (cb) {
+          var unsub = null;
+          Promise.resolve(window.__TAURI__.event.listen("github-link-browser-fallback", function (e) {
+            try { cb(e && e.payload); } catch (_) {}
+          })).then(function (u) { unsub = u; });
+          return function () { try { unsub && unsub(); } catch (_) {} };
+        },
+      },
       getGitContext: function (folder) { return invoke("git_get_context", { folder: String(folder || "") }); },
       hasGhCli: function () { return invoke("git_has_gh_cli"); },
       listGitBranches: function (folder) { return invoke("git_list_branches", { folder: String(folder || "") }); },

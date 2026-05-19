@@ -6,6 +6,7 @@ pub mod auth;
 pub mod bearer;
 pub mod config;
 pub mod git;
+pub mod github_link;
 pub mod head_watcher;
 pub mod ipc;
 pub mod pty;

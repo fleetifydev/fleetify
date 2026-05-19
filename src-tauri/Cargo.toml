@@ -40,6 +40,9 @@ uuid = { version = "1", features = ["v4"] }
 # produces into a single UI event.
 notify = "6"
 notify-debouncer-mini = "0.4"
+# GitHub link manager needs chrono for the connected_at / expires_at
+# timestamps the cloud expects (Z-suffix RFC 3339, matches Electron).
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 
 [dev-dependencies]
 tempfile = "3"
