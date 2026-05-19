@@ -1,9 +1,11 @@
 //! axum routers = the FastAPI router surface. Phase 1c: sessions /
 //! messages / events. AppState carries auth + the SessionManager.
 
+pub mod auth;
 pub mod chat;
 pub mod docker;
 pub mod events;
+pub mod fleet;
 pub mod fs;
 pub mod groups;
 pub mod marketplace;

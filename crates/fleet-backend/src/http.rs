@@ -7,8 +7,8 @@ use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
 use crate::routers::{
-    chat, docker, events, fs, groups, marketplace, mcp, messages, plugins, providers, runtime,
-    sessions, ssh, workflows, AppState,
+    auth as auth_router, chat, docker, events, fleet, fs, groups, marketplace, mcp, messages,
+    plugins, providers, runtime, sessions, ssh, workflows, AppState,
 };
 
 /// Build the axum app. Single origin: `/healthz`, `/api/*` (auth'd),
@@ -45,7 +45,9 @@ pub fn app(state: AppState, static_dir: Option<PathBuf>) -> Router {
         .merge(marketplace::router())
         .merge(runtime::router())
         .merge(workflows::router())
-        .merge(mcp::router());
+        .merge(mcp::router())
+        .merge(auth_router::router())
+        .merge(fleet::router());
 
     let routed = Router::new()
         .route("/healthz", get(healthz))
