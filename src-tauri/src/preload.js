@@ -1,28 +1,51 @@
-// Phase 0 boot shim. Real IPC (~56 channels + 7 events backed by Tauri
-// commands/events) lands in Phase 1. A Proxy returns async no-ops for any
-// not-yet-implemented channel so the unchanged React renderer boots without
-// `window.fleetify` / `window.electronAPI` TypeErrors.
+// Reconstructs the Electron preload surface on Tauri. Phase 1b: real
+// `window.fleetify` (auth) → Tauri commands/events. `window.electronAPI`
+// stays a boot-safe no-op Proxy until Phase 1c wires its ~51 channels.
+// __TAURI__ is referenced lazily (withGlobalTauri injects it).
 (function () {
+  function core() { return window.__TAURI__ && window.__TAURI__.core; }
+  function ev() { return window.__TAURI__ && window.__TAURI__.event; }
+  function invoke(cmd, args) {
+    var c = core();
+    return c ? c.invoke(cmd, args || {}) : Promise.reject(new Error("tauri-ipc-unavailable"));
+  }
+
+  window.fleetify = {
+    signIn: function () { return invoke("auth_sign_in"); },
+    signOut: function () { return invoke("auth_sign_out"); },
+    userinfo: function () { return invoke("auth_userinfo"); },
+    getAccessToken: function (opts) {
+      return invoke("auth_get_access_token", { force: !!(opts && opts.force) });
+    },
+    getState: function () { return invoke("auth_get_state"); },
+    onAuthEvent: function (cb) {
+      var unlisten = null;
+      var e = ev();
+      if (e) {
+        e.listen("fleet:auth-event", function (m) { cb(m.payload); }).then(function (u) {
+          unlisten = u;
+        });
+      }
+      return function () { if (unlisten) unlisten(); };
+    },
+    // Feedback bridge lands with the github/feedback IPC in a later phase.
+    sendFeedback: function () {
+      return Promise.resolve({ ok: false, error: "not-implemented", status: -1 });
+    },
+  };
+
+  // window.electronAPI: boot-safe until Phase 1c. Async no-op for unknown
+  // methods, evNoop for on* listeners.
   var asyncNoop = function () { return Promise.resolve(undefined); };
   var evNoop = function () { return function () {}; };
-  var make = function (overrides) {
-    return new Proxy(overrides, {
+  window.electronAPI = new Proxy(
+    { getConfig: function () { return Promise.resolve({}); }, setConfig: asyncNoop },
+    {
       get: function (t, k) {
         if (k in t) return t[k];
         if (typeof k === "string" && k.indexOf("on") === 0) return evNoop;
         return asyncNoop;
       },
-    });
-  };
-
-  window.fleetify = make({
-    getState: function () { return Promise.resolve({ signedIn: false }); },
-    getAccessToken: function () { return Promise.resolve(null); },
-    onAuthEvent: evNoop,
-  });
-
-  window.electronAPI = make({
-    getConfig: function () { return Promise.resolve({}); },
-    setConfig: asyncNoop,
-  });
+    }
+  );
 })();

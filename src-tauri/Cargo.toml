@@ -20,3 +20,14 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+anyhow.workspace = true
+# Windows is the current build/dev target; per-OS backends (apple-native /
+# sync-secret-service) get added behind cfg in Phase 5 packaging.
+keyring = { version = "3", features = ["windows-native"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+open = "5"
+tiny_http = "0.12"
+url = "2"

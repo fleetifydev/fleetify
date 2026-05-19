@@ -104,8 +104,6 @@ struct Jwk {
     x: Option<String>,
     #[serde(default)]
     y: Option<String>,
-    #[serde(default)]
-    crv: Option<String>,
 }
 
 #[derive(Deserialize)]
