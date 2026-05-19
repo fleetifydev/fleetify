@@ -45,7 +45,7 @@ pub fn router() -> Router<AppState> {
             "/sessions/{id}/memory/{item}",
             patch(update_memory).delete(delete_memory),
         )
-        .route("/sessions/{id}/skills", get(empty_items))
+        .route("/sessions/{id}/skills", get(list_skills))
         .route("/sessions/{id}/hooks", get(empty_items))
         .route("/sessions/{id}/commands", get(empty_items))
         .route("/claude-sessions", get(list_claude_sessions))
@@ -754,8 +754,42 @@ async fn claude_history(
 }
 
 async fn empty_items() -> Json<Value> {
-    // /skills /hooks /commands — Phase 3 ProviderInspector.
+    // /hooks /commands — Phase 2/3 ProviderInspector follow-up.
     Json(json!({"items": []}))
+}
+
+/// `/sessions/{id}/skills` — real Claude skills scan via the
+/// services::provider_inspector port (user-tier `~/.claude/skills` +
+/// project-tier `<project>/.claude/skills`). Non-Claude tools return
+/// `{items: []}` for now (Phase 2 follow-up: Gemini/Codex skill roots).
+async fn list_skills(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let s = owned(&st, &id, &user.id).await?;
+    if s.tool != "claude" {
+        return Ok(Json(json!({ "items": [] })));
+    }
+    let home = std::path::PathBuf::from(
+        std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_else(|_| ".".into()),
+    );
+    let project = if s.project_path.is_empty() {
+        None
+    } else {
+        Some(std::path::PathBuf::from(&s.project_path))
+    };
+    let items = crate::services::provider_inspector::list_claude_skills(
+        &home,
+        project.as_deref(),
+    );
+    let v: Vec<Value> = items
+        .into_iter()
+        .map(|x| serde_json::to_value(x).unwrap_or(Value::Null))
+        .collect();
+    Ok(Json(json!({ "items": v })))
 }
 
 #[derive(Deserialize)]
