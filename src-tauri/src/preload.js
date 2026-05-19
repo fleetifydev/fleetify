@@ -66,6 +66,30 @@
       checkGithubAuth: function () { return invoke("shell_check_github_auth"); },
       installProvider: function (toolKey) { return invoke("shell_install_provider", { toolKey: String(toolKey || "") }); },
       installOllama: function () { return invoke("shell_install_ollama"); },
+      generateCommitMessage: function (folder, opts) {
+        var o = opts || {};
+        return invoke("git_generate_commit_message", {
+          folder: String(folder || ""),
+          tool: o.tool || null,
+          isInitial: !!o.isInitial,
+        });
+      },
+      generatePRSummary: function (folder, opts) {
+        var o = opts || {};
+        return invoke("git_generate_pr_summary", {
+          folder: String(folder || ""),
+          baseBranch: o.baseBranch || null,
+          tool: o.tool || null,
+        });
+      },
+      reviewDiff: function (folder, opts) {
+        var o = opts || {};
+        return invoke("git_review_diff", {
+          folder: String(folder || ""),
+          baseBranch: o.baseBranch || null,
+          tool: o.tool || null,
+        });
+      },
       watchHead: function (folder, key) { return invoke("git_watch_head", { folder: String(folder || ""), key: String(key || "") }); },
       unwatchHead: function (key) { return invoke("git_unwatch_head", { key: String(key || "") }); },
       onHeadChanged: function (cb) {

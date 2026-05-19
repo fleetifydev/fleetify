@@ -8,7 +8,7 @@ use tauri::Manager;
 
 use std::collections::HashMap;
 
-use crate::shell::{auth, config, git, github_link, head_watcher, pty};
+use crate::shell::{ai_git, auth, config, git, github_link, head_watcher, pty};
 
 #[tauri::command]
 pub async fn auth_sign_in() -> serde_json::Value {
@@ -394,6 +394,34 @@ pub async fn git_carve_next_round(
 #[tauri::command]
 pub async fn git_preflight_check(folder: String) -> serde_json::Value {
     git::preflight_check(&PathBuf::from(folder)).await
+}
+
+// ── AI git helpers (Quick Commit / PR Summary / Review) ─────────
+#[tauri::command]
+pub async fn git_generate_commit_message(
+    folder: String,
+    tool: Option<String>,
+    is_initial: Option<bool>,
+) -> serde_json::Value {
+    ai_git::generate_commit_message(folder, tool, is_initial.unwrap_or(false)).await
+}
+
+#[tauri::command]
+pub async fn git_generate_pr_summary(
+    folder: String,
+    base_branch: Option<String>,
+    tool: Option<String>,
+) -> serde_json::Value {
+    ai_git::generate_pr_summary(folder, base_branch, tool).await
+}
+
+#[tauri::command]
+pub async fn git_review_diff(
+    folder: String,
+    base_branch: Option<String>,
+    tool: Option<String>,
+) -> serde_json::Value {
+    ai_git::review_diff(folder, base_branch, tool).await
 }
 
 // ── GitHub link (Fleetify cloud OAuth fallback) ──────────────────

@@ -90,6 +90,9 @@ pub fn run() {
             shell::ipc::github_refresh_link,
             shell::ipc::github_disconnect,
             shell::ipc::github_open_installation,
+            shell::ipc::git_generate_commit_message,
+            shell::ipc::git_generate_pr_summary,
+            shell::ipc::git_review_diff,
         ])
         .setup(|app| {
             // Auth module emits `fleet:auth-event` via this handle.

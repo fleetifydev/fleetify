@@ -2,6 +2,7 @@
 //! + auth IPC; the remaining ~51 IPC commands (fs/git/pty/github/…) follow
 //! in Phase 1c+.
 
+pub mod ai_git;
 pub mod auth;
 pub mod bearer;
 pub mod config;
