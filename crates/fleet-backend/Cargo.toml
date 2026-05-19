@@ -22,9 +22,11 @@ sha2 = "0.10"
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
 async-stream = "0.3"
+futures-util = "0.3"
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tempfile = "3"
 rsa = { version = "0.9", features = ["pem"] }
 rand = "0.8"
+tokio-tungstenite = "0.24"
