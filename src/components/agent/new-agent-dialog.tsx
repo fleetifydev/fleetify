@@ -1,0 +1,943 @@
+import { useState, useEffect, useRef } from "react";
+import { X, FolderOpen, Clock, ChevronDown, Check, Sparkles } from "lucide-react";
+import { ClaudeLogo, OpenAILogo, GeminiLogo } from "@/components/ui/provider-logo";
+import { createSession, fetchClaudeSessions, fetchGeminiSessions, fetchCodexSessions, apiFetch, type ClaudeSession } from "@/lib/api";
+import { useAppStore } from "@/stores/app-store";
+
+interface PluginTemplate {
+  name: string; title: string; description: string;
+  preferred_tier: "fastest" | "balanced" | "most_capable";
+  permission_mode: string; system_prompt: string;
+  providers: string[]; mcp_servers: string[]; plugin: string; tags: string[];
+}
+
+const TIER_TO_MODEL: Record<string, Record<string, string>> = {
+  claude: {
+    fastest: "claude-haiku-4-5-20251001",
+    balanced: "claude-sonnet-4-6",
+    most_capable: "claude-opus-4-7",
+  },
+  codex: {
+    fastest: "gpt-5.2",
+    balanced: "gpt-5.4",
+    most_capable: "gpt-5.5",
+  },
+  gemini: {
+    fastest: "gemini-3.1-flash-lite-preview",
+    balanced: "gemini-3.1-pro-preview",
+    most_capable: "gemini-3.1-pro-preview",
+  },
+};
+
+interface Props { onClose: () => void; }
+export { NewAgentView as NewAgentDialog };
+
+// Built-in agent templates. These render as a quick-pick grid above the
+// Project section. When a plugin contributes templates via /api/runtime/templates,
+// they appear in the "Start from template" combobox alongside (separate UI).
+//
+// `agentTemplate` (when set) is sent to the backend as `agent_template`
+// on session create. The backend resolves it to a domain-specific system
+// prompt + MCP toolset (see backend/app/services/builtin_templates.py).
+// Templates without `agentTemplate` are pure UX presets — they only
+// configure provider/model/name on the frontend, no backend wiring.
+const AGENT_TEMPLATES = [
+  {
+    id: "reverse-engineer",
+    icon: "🔬",
+    name: "Reverse Engineer",
+    description: "Login endpoint discovery, JS bundle analysis, proxy support",
+    provider: "claude",
+    model: "claude-opus-4-7",
+    systemPromptHint: "You are a web reverse-engineering specialist with proxied fetch + JS analysis tools.",
+    // Maps to backend BuiltinTemplate id — unlocks the fleet_reveng MCP
+    // server (fetch_url / discover_assets / find_endpoints / save_asset).
+    agentTemplate: "reverse_engineering",
+    permissionMode: "acceptEdits",
+  },
+  {
+    id: "scraper",
+    icon: "🕷️",
+    name: "Web Scraper",
+    description: "Scrapes websites, extracts structured data",
+    provider: "claude",
+    model: "claude-sonnet-4-6",
+    systemPromptHint: "You are a web scraping specialist. Extract structured data from websites efficiently.",
+  },
+  {
+    id: "code-review",
+    icon: "🔍",
+    name: "Code Reviewer",
+    description: "Reviews code for bugs, style, security",
+    provider: "claude",
+    model: "claude-opus-4-7",
+    systemPromptHint: "You are an expert code reviewer. Analyze code for bugs, security vulnerabilities, and improvement opportunities.",
+  },
+  {
+    id: "research",
+    icon: "📚",
+    name: "Researcher",
+    description: "Deep research, report generation",
+    provider: "claude",
+    model: "claude-opus-4-7",
+    systemPromptHint: "You are a research specialist. Conduct thorough research and produce structured, cited reports.",
+  },
+  {
+    id: "qa",
+    icon: "✅",
+    name: "QA Engineer",
+    description: "Writes and runs tests, finds bugs",
+    provider: "claude",
+    model: "claude-sonnet-4-6",
+    systemPromptHint: "You are a QA engineer. Write comprehensive tests, identify edge cases, and ensure software quality.",
+  },
+  {
+    id: "devops",
+    icon: "⚙️",
+    name: "DevOps Agent",
+    description: "CI/CD, deployments, infrastructure",
+    provider: "claude",
+    model: "claude-sonnet-4-6",
+    systemPromptHint: "You are a DevOps specialist. Manage deployments, CI/CD pipelines, and infrastructure.",
+  },
+  {
+    id: "data-analyst",
+    icon: "📊",
+    name: "Data Analyst",
+    description: "Analyzes data, generates insights",
+    provider: "claude",
+    model: "claude-sonnet-4-6",
+    systemPromptHint: "You are a data analyst. Process datasets, identify patterns, and generate actionable insights.",
+  },
+  {
+    id: "writer",
+    icon: "✍️",
+    name: "Technical Writer",
+    description: "Docs, READMEs, API references",
+    provider: "claude",
+    model: "claude-haiku-4-5-20251001",
+    systemPromptHint: "You are a technical writer. Create clear, accurate documentation and developer guides.",
+  },
+  {
+    id: "custom",
+    icon: "🎨",
+    name: "Custom",
+    description: "Start from scratch",
+    provider: null,
+    model: null,
+    systemPromptHint: "",
+  },
+] as const;
+
+type TemplateId = typeof AGENT_TEMPLATES[number]["id"];
+
+const PROVIDERS = [
+  { id: "claude", name: "Claude", icon: ClaudeLogo, models: [
+    { id: "claude-opus-4-7",          label: "Opus 4.7",   desc: "Most capable" },
+    { id: "claude-sonnet-4-6",         label: "Sonnet 4.6", desc: "Balanced", default: true },
+    { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5",  desc: "Fastest" },
+  ]},
+  { id: "codex",  name: "Codex",  icon: OpenAILogo, models: [
+    { id: "gpt-5.2", label: "GPT-5.2", desc: "Fastest" },
+    { id: "gpt-5.4", label: "GPT-5.4", desc: "Balanced", default: true },
+    { id: "gpt-5.5", label: "GPT-5.5", desc: "Capable"  },
+  ]},
+  { id: "gemini", name: "Gemini", icon: GeminiLogo, models: [
+    { id: "gemini-3.1-pro-preview",        label: "3.1 Pro",  desc: "Best",    default: true },
+    { id: "gemini-3-flash-preview",        label: "3 Flash",  desc: "Fast"    },
+    { id: "gemini-3.1-flash-lite-preview", label: "3.1 Lite", desc: "Fastest" },
+  ]},
+];
+
+const PERMS = [
+  { id: "default",           label: "Ask",          desc: "Ask before edits & shell commands",         rec: true  },
+  { id: "acceptEdits",       label: "Accept edits", desc: "Auto-approve file edits, ask for commands", rec: false },
+  { id: "bypassPermissions", label: "Full auto",    desc: "All tools run without asking",              rec: false },
+  { id: "plan",              label: "Plan only",    desc: "No execution — outputs a plan only",        rec: false },
+];
+
+function timeAgo(iso: string) {
+  const d = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(d / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  return h < 24 ? `${h}h ago` : `${Math.floor(h / 24)}d ago`;
+}
+
+export function NewAgentView({ onClose }: Props) {
+  const { addSession, setActiveSession, sessions, staffSessionId } = useAppStore();
+  const [provider,  setProvider]  = useState("claude");
+  const [modelId,   setModelId]   = useState("claude-sonnet-4-6");
+  const [name,      setName]      = useState("");
+  // Per-session git isolation. Default mirrors the app-store default
+  // (`use_worktree=true`) so parallel sessions don't stomp on each other.
+  // Task 14 wires this into the createSession payload and adds a
+  // `folderInGit` pre-check; for now the value is local state only.
+  const [useWorktree, setUseWorktree] = useState(true);
+  // Built-in template grid selection. "custom" = no template applied.
+  const [selectedTemplate, setSelectedTemplate] = useState<TemplateId>("custom");
+  const agentSessions = sessions.filter(s => s.id !== staffSessionId);
+  const [path,      setPath]      = useState(agentSessions[0]?.project_path ?? "");
+  const [perm,      setPerm]      = useState("default");
+  const [mode,      setMode]      = useState("new");
+  const [resumeId,  setResumeId]  = useState<string | null>(null);
+  const [loading,   setLoading]   = useState(false);
+  const [showSug,   setShowSug]   = useState(false);
+  const [claudeSessions, setClaudeSessions] = useState<ClaudeSession[]>([]);
+  const [sessLoading,    setSessLoading]    = useState(false);
+  const [sessionCount,   setSessionCount]   = useState(0);
+  const [showModel,      setShowModel]      = useState(false);
+  const pathRef    = useRef<HTMLInputElement>(null);
+  const fetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const modelRef   = useRef<HTMLDivElement>(null);
+  const [templates, setTemplates] = useState<PluginTemplate[]>([]);
+  const [showTpl, setShowTpl] = useState(false);
+  const [selectedTpl, setSelectedTpl] = useState<PluginTemplate | null>(null);
+  const tplRef = useRef<HTMLDivElement>(null);
+  // Probe whether the selected folder is already a git repo. Null = unknown
+  // (no folder yet, probe in flight, or probe failed); true/false drives the
+  // "will initialize" hint inside <WorktreeToggle>.
+  const [pathIsGit, setPathIsGit] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (path) return;
+    const w = window as Window & { electronAPI?: { getProjectRoot?: () => Promise<string> } };
+    w.electronAPI?.getProjectRoot?.().then(p => { if (p) setPath(p); }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!path) { setPathIsGit(null); return; }
+    let cancelled = false;
+    const w = window as unknown as {
+      electronAPI?: { getGitContext?: (f: string) => Promise<{ branch: string | null }> };
+    };
+    w.electronAPI?.getGitContext?.(path).then(c => {
+      if (!cancelled) setPathIsGit(!!c?.branch);
+    }).catch(() => { if (!cancelled) setPathIsGit(false); });
+    return () => { cancelled = true; };
+  }, [path]);
+  // Load active plugin templates for the picker
+  useEffect(() => {
+    const u = path ? `?project_path=${encodeURIComponent(path)}` : "";
+    apiFetch(`/api/runtime/templates${u}`)
+      .then(r => r.ok ? r.json() : [])
+      .then((data: PluginTemplate[]) => setTemplates(data || []))
+      .catch(() => setTemplates([]));
+  }, [path]);
+  // Close template popover on outside click
+  useEffect(() => {
+    if (!showTpl) return;
+    const h = (e: MouseEvent) => {
+      if (!tplRef.current?.contains(e.target as Node)) setShowTpl(false);
+    };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [showTpl]);
+  useEffect(() => { setTimeout(() => pathRef.current?.focus(), 80); }, []);
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", h); return () => document.removeEventListener("keydown", h);
+  }, [onClose]);
+  useEffect(() => {
+    if (!showModel) return;
+    const h = (e: MouseEvent) => { if (!modelRef.current?.contains(e.target as Node)) setShowModel(false); };
+    document.addEventListener("mousedown", h); return () => document.removeEventListener("mousedown", h);
+  }, [showModel]);
+  useEffect(() => {
+    if (!path.trim() || !["claude","gemini","codex"].includes(provider)) {
+      setClaudeSessions([]); setSessionCount(0); return;
+    }
+    if (fetchTimer.current) clearTimeout(fetchTimer.current);
+    fetchTimer.current = setTimeout(async () => {
+      setSessLoading(true);
+      try {
+        const fn = provider === "gemini" ? fetchGeminiSessions : provider === "codex" ? fetchCodexSessions : fetchClaudeSessions;
+        const r = await fn(path.trim());
+        setClaudeSessions(r); setSessionCount(r.length); setResumeId(null);
+      } catch { setClaudeSessions([]); setSessionCount(0); }
+      finally { setSessLoading(false); }
+    }, 400);
+    return () => { if (fetchTimer.current) clearTimeout(fetchTimer.current); };
+  }, [path, provider]);
+
+  const recent = Array.from(new Set(agentSessions.map(s => s.project_path).filter(Boolean))).slice(0, 6) as string[];
+  const sug = recent.filter(p => !path || p.toLowerCase().includes(path.toLowerCase()));
+
+  // Filter out system stdout leaks and empty summaries
+  const validSessions = claudeSessions.filter(s =>
+    s.summary &&
+    !s.summary.includes("<local-command-stdout>") &&
+    !s.summary.toLowerCase().startsWith("no conversations found") &&
+    s.summary.trim().length > 0
+  );
+
+  const changeProvider = (pid: string) => {
+    setProvider(pid);
+    const p = PROVIDERS.find(p => p.id === pid)!;
+    const def = p.models.find(m => m.default) ?? p.models[0];
+    if (def) setModelId(def.id);
+    if (pid === "gemini" && perm === "default") setPerm("acceptEdits");
+    // If a template is selected, re-resolve the tier→model for the new provider
+    if (selectedTpl) {
+      const m = TIER_TO_MODEL[pid]?.[selectedTpl.preferred_tier];
+      if (m) setModelId(m);
+    }
+  };
+
+  const applyTemplate = (tpl: PluginTemplate) => {
+    setSelectedTpl(tpl);
+    setShowTpl(false);
+    // Pick the first compatible provider; default to claude if available.
+    const preferred = tpl.providers.includes(provider) ? provider :
+      tpl.providers.includes("claude") ? "claude" :
+      tpl.providers[0] ?? "claude";
+    setProvider(preferred);
+    const tierModel = TIER_TO_MODEL[preferred]?.[tpl.preferred_tier];
+    if (tierModel) setModelId(tierModel);
+    if (tpl.permission_mode) setPerm(tpl.permission_mode);
+    if (!name.trim()) setName(tpl.title || tpl.name);
+  };
+
+  const clearTemplate = () => {
+    setSelectedTpl(null);
+    const p = PROVIDERS.find(p => p.id === provider)!;
+    const def = p.models.find(m => m.default) ?? p.models[0];
+    if (def) setModelId(def.id);
+  };
+
+  // Apply a built-in template (separate from the plugin combobox).
+  // Plugin templates use `applyTemplate(tpl: PluginTemplate)`; built-ins use this.
+  const applyBuiltinTemplate = (templateId: TemplateId) => {
+    setSelectedTemplate(templateId);
+    if (templateId === "custom") return;
+    const tpl = AGENT_TEMPLATES.find(t => t.id === templateId)!;
+    setName(tpl.name);
+    if (tpl.provider && tpl.model) {
+      const prov = PROVIDERS.find(p => p.id === tpl.provider);
+      if (prov) {
+        setProvider(tpl.provider);
+        const modelExists = prov.models.some(m => m.id === tpl.model);
+        if (modelExists) {
+          setModelId(tpl.model);
+        } else {
+          const def = prov.models.find(m => m.default) ?? prov.models[0];
+          if (def) setModelId(def.id);
+        }
+      }
+    }
+    // Templates that ship a backend system prompt (Reverse Engineer etc)
+    // also know which permission mode they need to actually function —
+    // RE makes lots of HTTP calls and would be unusable with per-call
+    // prompts, so it ships acceptEdits. The user can still override.
+    if ("permissionMode" in tpl && tpl.permissionMode) {
+      setPerm(tpl.permissionMode);
+    }
+  };
+
+  const browse = async () => {
+    const w = window as Window & { electronAPI?: { openFolderDialog?: () => Promise<string | null> } };
+    if (w.electronAPI?.openFolderDialog) {
+      try { const p = await w.electronAPI.openFolderDialog(); if (p) { setPath(p); setShowSug(false); } return; } catch {}
+    }
+    alert("Folder picker unavailable — type the full path manually.");
+  };
+
+  const launch = async () => {
+    if (!path.trim()) return;
+    setLoading(true);
+    try {
+      // Resolve agent_template from either built-in (selectedTemplate) or
+      // plugin (selectedTpl) source. Built-ins win when both are set —
+      // the user actively clicked the builtin grid more recently. Plugin
+      // templates carry their own system_prompt server-side so we don't
+      // pass agent_template for them; that path uses the existing
+      // plugin/template runtime.
+      const builtinTpl = AGENT_TEMPLATES.find(t => t.id === selectedTemplate);
+      const builtinAgentTemplate =
+        builtinTpl && "agentTemplate" in builtinTpl
+          ? (builtinTpl.agentTemplate as string | undefined)
+          : undefined;
+
+      const s = await createSession({
+        title: name.trim() || "New agent", project_path: path.trim(),
+        tool: provider, model_name: modelId, permission_mode: perm,
+        session_mode: mode, claude_session_id: mode === "resume" && resumeId ? resumeId : undefined,
+        agent_template: builtinAgentTemplate,
+        use_worktree: useWorktree,
+      });
+      addSession(s); setActiveSession(s.id); onClose();
+    } catch (e) { console.error(e); } finally { setLoading(false); }
+  };
+
+  const canLaunch = !!path.trim() && (mode !== "resume" || !!resumeId);
+  const curProv   = PROVIDERS.find(p => p.id === provider)!;
+  const curModel  = curProv.models.find(m => m.id === modelId) ?? curProv.models[0]!;
+  const permList  = provider === "gemini" ? PERMS.filter(p => p.id !== "default") : PERMS;
+
+  return (
+    <>
+      <style>{`
+        @keyframes naFade  { from{opacity:0} to{opacity:1} }
+        @keyframes naSlide { from{opacity:0;transform:translateY(10px) scale(.97)} to{opacity:1;transform:none} }
+        .na-bd { animation:naFade  .2s ease both; }
+        .na-md { animation:naSlide .22s cubic-bezier(.22,1,.36,1) both; }
+
+        .na-inp {
+          width:100%; height:32px; padding:0 10px; border-radius:6px; box-sizing:border-box;
+          border:1px solid var(--c-brd2); background:var(--c-srf);
+          color:var(--foreground); font-size:12.5px; font-family:inherit; outline:none;
+          transition:border-color .15s, box-shadow .15s;
+        }
+        .na-inp:focus { border-color:var(--foreground); box-shadow:0 0 0 2px rgba(255,255,255,0.05); }
+        .na-inp::placeholder { color:var(--c-ghost); opacity:1; }
+        .na-inp-mono { font-family:var(--font-mono); font-size:11.5px; }
+
+        .na-prov {
+          flex:1; display:flex; align-items:center; justify-content:center; gap:6px;
+          height:28px; border-radius:5px; border:none; background:none;
+          cursor:pointer; font-size:12px; font-family:inherit; color:var(--c-dim);
+          transition:background .1s, color .1s;
+        }
+        .na-prov.on { background:var(--c-srf2); color:var(--foreground); font-weight:500; box-shadow:0 1px 3px rgba(0,0,0,0.3); }
+        .na-prov:not(.on):hover { color:var(--c-med); }
+
+        .na-seg-wrap {
+          display:flex; gap:1px; padding:3px;
+          background:var(--c-srf); border-radius:8px; border:1px solid var(--c-brd);
+        }
+        .na-seg {
+          flex:1; height:26px; border-radius:5px; border:none; background:none;
+          color:var(--c-dim); font-size:11.5px; cursor:pointer; font-family:inherit;
+          transition:background .1s, color .1s;
+        }
+        .na-seg.on { background:var(--c-srf2); color:var(--foreground); font-weight:500; box-shadow:0 1px 3px rgba(0,0,0,0.3); }
+        .na-seg:not(.on):hover { color:var(--c-med); }
+
+        .na-sess-item {
+          display:flex; align-items:center; gap:10px; width:100%; padding:9px 12px;
+          background:none; border:none; border-top:1px solid var(--c-brd);
+          cursor:pointer; text-align:left; transition:background .1s;
+        }
+        .na-sess-item:first-child { border-top:none; }
+        .na-sess-item:hover { background:var(--c-srf); }
+        .na-sess-item.sel { background:var(--c-srf); }
+
+        .na-perm-row {
+          display:flex; align-items:flex-start; gap:10px; padding:8px 10px;
+          background:none; border:none; border-radius:7px;
+          cursor:pointer; text-align:left; width:100%; transition:background .1s;
+        }
+        .na-perm-row:hover { background:var(--c-srf); }
+        .na-perm-row.sel { background:var(--c-srf); }
+
+        .na-sug-item {
+          display:flex; align-items:center; gap:7px; width:100%; padding:7px 10px;
+          background:none; border:none; border-top:1px solid var(--c-brd);
+          cursor:pointer; font-size:11.5px; font-family:var(--font-mono);
+          color:var(--c-low); text-align:left; transition:background .1s;
+        }
+        .na-sug-item:first-child { border-top:none; }
+        .na-sug-item:hover { background:var(--c-srf); color:var(--c-med); }
+
+        .na-model-opt {
+          display:flex; align-items:center; justify-content:space-between; width:100%;
+          padding:9px 12px; background:none; border:none; border-top:1px solid var(--c-brd);
+          cursor:pointer; text-align:left; transition:background .1s;
+        }
+        .na-model-opt:first-child { border-top:none; }
+        .na-model-opt:hover { background:var(--c-srf); }
+
+        .na-browse {
+          height:32px; padding:0 11px; border-radius:6px; flex-shrink:0;
+          border:1px solid var(--c-brd2); background:var(--c-srf);
+          color:var(--c-med); cursor:pointer; display:flex; align-items:center;
+          gap:5px; font-size:12px; font-family:inherit; transition:all .1s; white-space:nowrap;
+        }
+        .na-browse:hover { background:var(--c-srf2); color:var(--foreground); }
+
+        .na-launch {
+          height:32px; padding:0 20px; border-radius:6px; border:none;
+          background:var(--foreground);
+          color:var(--background);
+          font-size:12.5px; font-weight:600; font-family:inherit;
+          cursor:pointer; letter-spacing:0.01em;
+          transition:opacity .15s, transform .15s;
+        }
+        .na-launch:hover:not(:disabled) { opacity:.85; transform:translateY(-1px); }
+        .na-launch:active:not(:disabled) { transform:translateY(0); opacity:.9; }
+        .na-launch:disabled { background:var(--c-srf2); color:var(--c-ghost); cursor:not-allowed; transform:none; }
+
+        .na-rec {
+          font-size:9px; font-weight:600; letter-spacing:0.06em;
+          color:var(--c-dim); background:var(--c-srf2);
+          border:1px solid var(--c-brd); padding:1px 5px; border-radius:3px;
+        }
+
+        .na-tpl-grid {
+          display:grid; grid-template-columns:repeat(4, 1fr); gap:6px;
+          margin-top:10px; margin-bottom:20px;
+        }
+        .na-tpl-card {
+          display:flex; flex-direction:column; align-items:flex-start; gap:3px;
+          padding:8px 9px; border-radius:8px;
+          border:1px solid var(--c-brd); background:transparent;
+          cursor:pointer; text-align:left; font-family:inherit;
+          transition:background .12s, border-color .12s;
+        }
+        .na-tpl-card:hover:not(.na-tpl-card--sel) {
+          background:var(--c-srf); border-color:var(--c-brd2);
+        }
+        .na-tpl-card--sel {
+          background:var(--c-srf); border-color:var(--c-brd2);
+          box-shadow:0 0 0 1px var(--c-brd2);
+        }
+        .na-tpl-icon { font-size:18px; line-height:1; margin-bottom:2px; }
+        .na-tpl-name { font-size:11.5px; font-weight:600; color:var(--foreground); line-height:1.2; }
+        .na-tpl-desc { font-size:10.5px; color:var(--c-ghost); line-height:1.35; }
+      `}</style>
+
+      {/* Backdrop */}
+      <div className="na-bd" onClick={onClose} style={{
+        position:"fixed", inset:0, zIndex:900,
+        background:"rgba(0,0,0,0.65)",
+        backdropFilter:"blur(8px)", WebkitBackdropFilter:"blur(8px)",
+      }} />
+
+      {/* Center wrapper */}
+      <div style={{ position:"fixed", inset:0, zIndex:901, display:"flex", alignItems:"center", justifyContent:"center", pointerEvents:"none" }}>
+        <div className="na-md" style={{
+          pointerEvents:"auto", width:480, maxHeight:"88vh",
+          display:"flex", flexDirection:"column",
+          background:"var(--card)",
+          border:"1px solid var(--c-brd2)",
+          borderRadius:14, overflow:"hidden",
+          boxShadow:"0 32px 80px rgba(0,0,0,0.85), 0 0 0 1px rgba(255,255,255,0.03)",
+        }}>
+
+          {/* Header */}
+          <div style={{ padding:"18px 20px 15px", borderBottom:"1px solid var(--c-brd)", flexShrink:0 }}>
+            <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between" }}>
+              <div>
+                <div style={{
+                  fontFamily:"'Playfair Display Variable', Georgia, serif",
+                  fontSize:21, fontWeight:500,
+                  color:"var(--foreground)", letterSpacing:"0.01em", lineHeight:1.2,
+                }}>
+                  New Agent
+                </div>
+                <div style={{ fontSize:11.5, color:"var(--c-dim)", marginTop:3, lineHeight:1.4 }}>
+                  Configure provider, model, and session
+                </div>
+              </div>
+              <button onClick={onClose}
+                style={{ width:28, height:28, borderRadius:6, border:"1px solid var(--c-brd)", background:"var(--c-srf)", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"var(--c-dim)", padding:0, marginTop:2, flexShrink:0, transition:"all .1s" }}
+                onMouseEnter={e => { e.currentTarget.style.background="var(--c-srf2)"; e.currentTarget.style.color="var(--foreground)"; e.currentTarget.style.borderColor="var(--c-brd2)"; }}
+                onMouseLeave={e => { e.currentTarget.style.background="var(--c-srf)";  e.currentTarget.style.color="var(--c-dim)";        e.currentTarget.style.borderColor="var(--c-brd)"; }}>
+                <X size={13}/>
+              </button>
+            </div>
+          </div>
+
+          {/* Body */}
+          <div className="scroll-subtle" style={{ flex:1, overflowY:"auto", padding:"20px", display:"flex", flexDirection:"column" }}>
+
+            {/* ── Templates (from plugins) ── */}
+            {templates.length > 0 && (
+              <>
+                <SecHead>Start from template</SecHead>
+                <div ref={tplRef} style={{ position: "relative", marginTop: 10, marginBottom: 20 }}>
+                  <button
+                    onClick={() => setShowTpl(s => !s)}
+                    style={{
+                      width: "100%", height: 36, padding: "0 12px",
+                      display: "flex", alignItems: "center", gap: 8,
+                      background: "var(--c-srf)", border: "1px solid var(--c-brd2)",
+                      borderRadius: 6, color: "var(--foreground)",
+                      fontSize: 12.5, fontFamily: "inherit", cursor: "pointer",
+                      textAlign: "left",
+                    }}
+                  >
+                    <Sparkles size={13} style={{ color: "var(--c-low)" }} />
+                    <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {selectedTpl ? selectedTpl.title : `Choose a template (${templates.length} available)`}
+                    </span>
+                    {selectedTpl && (
+                      <span
+                        onClick={(e) => { e.stopPropagation(); clearTemplate(); }}
+                        style={{
+                          fontSize: 10, color: "var(--c-dim)", cursor: "pointer",
+                          padding: "2px 6px", borderRadius: 4, background: "var(--c-bg)",
+                        }}
+                      >Clear</span>
+                    )}
+                    <ChevronDown size={12} style={{ color: "var(--c-dim)" }} />
+                  </button>
+                  {showTpl && (
+                    <div style={{
+                      position: "absolute", left: 0, right: 0, top: "calc(100% + 4px)",
+                      zIndex: 30, maxHeight: 320, overflowY: "auto",
+                      background: "var(--card)", border: "1px solid var(--c-brd2)",
+                      borderRadius: 8, padding: 4,
+                      boxShadow: "0 12px 32px rgba(0,0,0,0.65)",
+                    }}>
+                      {templates.map(tpl => (
+                        <button
+                          key={tpl.plugin + ":" + tpl.name}
+                          onClick={() => applyTemplate(tpl)}
+                          style={{
+                            width: "100%", padding: "8px 10px",
+                            display: "flex", flexDirection: "column", gap: 2,
+                            background: "none", border: "none", borderRadius: 6,
+                            cursor: "pointer", textAlign: "left", fontFamily: "inherit",
+                          }}
+                          onMouseEnter={e => { e.currentTarget.style.background = "var(--c-srf)"; }}
+                          onMouseLeave={e => { e.currentTarget.style.background = "none"; }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ fontSize: 12.5, color: "var(--c-high)", fontWeight: 500 }}>
+                              {tpl.title}
+                            </span>
+                            <span style={{ fontSize: 10, color: "var(--c-dim)" }}>· from {tpl.plugin}</span>
+                          </div>
+                          {tpl.description && (
+                            <div style={{ fontSize: 11, color: "var(--c-dim)", lineHeight: 1.4 }}>
+                              {tpl.description}
+                            </div>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+            
+            <Sep/>
+
+            {/* ── Built-in templates (quick-pick grid) ── */}
+            <SecHead style={{ marginTop:20 }}>Quick templates</SecHead>
+            <div style={{
+              display:"grid",
+              gridTemplateColumns:"repeat(auto-fill, minmax(160px, 1fr))",
+              gap:6, marginTop:10, marginBottom:20,
+            }}>
+              {AGENT_TEMPLATES.map(t => {
+                const active = selectedTemplate === t.id;
+                return (
+                  <button
+                    key={t.id}
+                    onClick={() => applyBuiltinTemplate(t.id)}
+                    title={t.description}
+                    style={{
+                      display:"flex", alignItems:"center", gap:8,
+                      padding:"9px 11px",
+                      background: active ? "var(--c-srf2)" : "var(--c-srf)",
+                      border: active ? "1px solid var(--foreground)" : "1px solid var(--c-brd)",
+                      borderRadius:7, cursor:"pointer", textAlign:"left",
+                      fontFamily:"inherit",
+                      transition:"background 0.1s, border-color 0.1s",
+                    }}
+                    onMouseEnter={e => { if (!active) e.currentTarget.style.background = "var(--c-srf2)"; }}
+                    onMouseLeave={e => { if (!active) e.currentTarget.style.background = "var(--c-srf)"; }}
+                  >
+                    <span style={{ fontSize:18, lineHeight:1, flexShrink:0 }}>{t.icon}</span>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:12, fontWeight:500, color:"var(--foreground)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                        {t.name}
+                      </div>
+                      <div style={{ fontSize:10.5, color:"var(--c-dim)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                        {t.description}
+                      </div>
+                    </div>
+                    {active && <Check size={11} style={{ color:"var(--foreground)", flexShrink:0 }} />}
+                  </button>
+                );
+              })}
+            </div>
+
+            <Sep/>
+
+            {/* ── Project ── */}
+            <SecHead style={{ marginTop:20 }}>Project</SecHead>
+            <div style={{ display:"flex", flexDirection:"column", gap:10, marginTop:10, marginBottom:20 }}>
+
+              <Fld label="Folder">
+                <div style={{ display:"flex", gap:6, position:"relative" }}>
+                  <div style={{ flex:1, position:"relative" }}>
+                    <input ref={pathRef} value={path} title={path}
+                      onChange={e => { setPath(e.target.value); setShowSug(true); setResumeId(null); }}
+                      onFocus={() => setShowSug(true)}
+                      onBlur={() => setTimeout(() => setShowSug(false), 150)}
+                      placeholder="/Users/you/projects/myapp"
+                      className="na-inp na-inp-mono"
+                    />
+                    {showSug && sug.length > 0 && (
+                      <div style={{ position:"absolute", left:0, right:0, top:"calc(100% + 4px)", zIndex:20, borderRadius:8, border:"1px solid var(--c-brd2)", background:"var(--card)", boxShadow:"0 12px 32px rgba(0,0,0,0.65)", overflow:"hidden" }}>
+                        {sug.map((p, i) => (
+                          <button key={i} className="na-sug-item" onMouseDown={() => { setPath(p); setShowSug(false); }}>
+                            <Clock size={10} style={{ opacity:.3, flexShrink:0 }}/>
+                            <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <button onClick={browse} className="na-browse">
+                    <FolderOpen size={11}/> Browse
+                  </button>
+                </div>
+              </Fld>
+
+              <Fld label="Name" hint="optional">
+                <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. auth refactor, bug fix…" className="na-inp"/>
+              </Fld>
+
+              <WorktreeToggle
+                value={useWorktree}
+                onChange={setUseWorktree}
+                folderInGit={pathIsGit}
+              />
+
+            </div>
+
+            <Sep/>
+
+            {/* ── Model ── */}
+            <SecHead style={{ marginTop:20 }}>Model</SecHead>
+            <div style={{ display:"flex", flexDirection:"column", gap:10, marginTop:10, marginBottom:20 }}>
+
+              <Fld label="Provider">
+                <div className="na-seg-wrap">
+                  {PROVIDERS.map(p => (
+                    <button key={p.id} className={`na-prov${provider === p.id ? " on" : ""}`} onClick={() => changeProvider(p.id)}>
+                      <p.icon size={13}/>{p.name}
+                    </button>
+                  ))}
+                </div>
+              </Fld>
+
+              <Fld label="Model">
+                <div ref={modelRef} style={{ position:"relative" }}>
+                  <button onClick={() => setShowModel(v => !v)} className="na-inp" style={{ display:"flex", alignItems:"center", justifyContent:"space-between", cursor:"pointer", height:32, padding:"0 10px", textAlign:"left", boxSizing:"border-box" }}>
+                    <span style={{ fontSize:12.5, fontWeight:500, color:"var(--foreground)" }}>{curModel.label}</span>
+                    <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                      <span style={{ fontSize:11, color:"var(--c-ghost)" }}>{curModel.desc}</span>
+                      <ChevronDown size={11} style={{ color:"var(--c-dim)", flexShrink:0, transform:showModel ? "rotate(180deg)" : "none", transition:"transform .15s" }}/>
+                    </div>
+                  </button>
+                  {showModel && (
+                    <div style={{ position:"absolute", left:0, right:0, top:"calc(100% + 4px)", zIndex:20, borderRadius:8, border:"1px solid var(--c-brd2)", background:"var(--card)", boxShadow:"0 12px 32px rgba(0,0,0,0.65)", overflow:"hidden" }}>
+                      {curProv.models.map(m => (
+                        <button key={m.id} className="na-model-opt" onClick={() => { setModelId(m.id); setShowModel(false); }}>
+                          <div style={{ display:"flex", alignItems:"center", gap:7 }}>
+                            {modelId === m.id
+                              ? <Check size={10} style={{ color:"var(--foreground)", flexShrink:0 }}/>
+                              : <div style={{ width:10, flexShrink:0 }}/>
+                            }
+                            <span style={{ fontSize:12.5, fontWeight:modelId === m.id ? 600 : 400, color:modelId === m.id ? "var(--foreground)" : "var(--c-low)" }}>{m.label}</span>
+                          </div>
+                          <span style={{ fontSize:11, color:"var(--c-ghost)" }}>{m.desc}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </Fld>
+
+            </div>
+
+            <Sep/>
+
+            {/* ── Session ── */}
+            {["claude","gemini","codex"].includes(provider) && (
+              <>
+                <SecHead style={{ marginTop:20 }}>Session</SecHead>
+                <div style={{ display:"flex", flexDirection:"column", gap:8, marginTop:10, marginBottom:20 }}>
+                  <div className="na-seg-wrap">
+                    {[
+                      { id:"new",      label:"New" },
+                      { id:"continue", label:"Continue" },
+                      { id:"resume",   label: sessionCount > 0 ? `Resume (${sessionCount})` : "Resume" },
+                    ].map(m => (
+                      <button key={m.id} className={`na-seg${mode === m.id ? " on" : ""}`} onClick={() => { setMode(m.id); setResumeId(null); }}>
+                        {m.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {mode === "resume" && (
+                    validSessions.length > 0 ? (
+                      <div style={{ border:"1px solid var(--c-brd)", borderRadius:8, overflow:"hidden", maxHeight:148, overflowY:"auto" }}>
+                        {sessLoading
+                          ? <div style={{ padding:14, fontSize:12, color:"var(--c-dim)", textAlign:"center" }}>Loading sessions…</div>
+                          : validSessions.map(s => {
+                              const sel = resumeId === s.session_id;
+                              return (
+                                <button key={s.session_id} className={`na-sess-item${sel ? " sel" : ""}`} onClick={() => setResumeId(sel ? null : s.session_id)}>
+                                  <Radio on={sel}/>
+                                  <div style={{ flex:1, minWidth:0 }}>
+                                    <div style={{ fontSize:12.5, fontWeight:sel ? 500 : 400, color:sel ? "var(--foreground)" : "var(--c-med)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                                      {s.summary}
+                                    </div>
+                                    <div style={{ fontSize:10.5, color:"var(--c-dim)", marginTop:1 }}>{timeAgo(s.updated_at)}</div>
+                                  </div>
+                                </button>
+                              );
+                            })
+                        }
+                      </div>
+                    ) : !sessLoading && path.trim() && (
+                      <div style={{ padding:"10px 12px", borderRadius:7, border:"1px solid var(--c-brd)", background:"var(--c-srf)", fontSize:12, color:"var(--c-dim)", textAlign:"center" }}>
+                        No previous sessions in this folder
+                      </div>
+                    )
+                  )}
+                </div>
+                <Sep/>
+              </>
+            )}
+
+            {/* ── Permissions ── */}
+            <SecHead style={{ marginTop:20 }}>Permissions</SecHead>
+            <div style={{ display:"flex", flexDirection:"column", gap:2, marginTop:10, marginBottom:4 }}>
+              {provider === "gemini" && (
+                <div style={{ marginBottom:8, padding:"7px 10px", borderRadius:6, background:"rgba(142,117,178,.08)", border:"1px solid rgba(142,117,178,.2)", fontSize:11.5, color:"var(--c-low)", lineHeight:1.5 }}>
+                  Gemini headless doesn't support interactive dialogs.{" "}<strong style={{ color:"var(--foreground)" }}>Accept edits</strong> is recommended.
+                </div>
+              )}
+              {permList.map(p => {
+                const sel = perm === p.id;
+                return (
+                  <button key={p.id} className={`na-perm-row${sel ? " sel" : ""}`} onClick={() => setPerm(p.id)}>
+                    <Radio on={sel} style={{ marginTop:2, flexShrink:0 }}/>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:2 }}>
+                        <span style={{ fontSize:13, fontWeight:sel ? 600 : 400, color:sel ? "var(--foreground)" : "var(--c-med)" }}>{p.label}</span>
+                        {((provider === "gemini" && p.id === "acceptEdits") || (provider !== "gemini" && p.rec)) && (
+                          <span className="na-rec">✓ Rec</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize:11.5, color:"var(--c-ghost)", lineHeight:1.4 }}>{p.desc}</div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+          </div>
+
+          {/* Footer */}
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"13px 20px", borderTop:"1px solid var(--c-brd)", flexShrink:0 }}>
+            <button onClick={onClose}
+              style={{ height:30, padding:"0 14px", borderRadius:6, border:"1px solid var(--c-brd)", background:"transparent", color:"var(--c-dim)", fontSize:12.5, cursor:"pointer", fontFamily:"inherit", transition:"all .1s" }}
+              onMouseEnter={e => { e.currentTarget.style.color="var(--foreground)"; e.currentTarget.style.borderColor="var(--c-brd2)"; }}
+              onMouseLeave={e => { e.currentTarget.style.color="var(--c-dim)"; e.currentTarget.style.borderColor="var(--c-brd)"; }}>
+              Cancel
+            </button>
+            <button className="na-launch" onClick={launch} disabled={loading || !canLaunch}>
+              {loading ? "Launching…" : "Launch Agent →"}
+            </button>
+          </div>
+
+        </div>
+      </div>
+    </>
+  );
+}
+
+function SecHead({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
+  return (
+    <div style={{ fontSize:10, fontWeight:700, color:"var(--c-ghost)", letterSpacing:"0.12em", textTransform:"uppercase", ...style }}>
+      {children}
+    </div>
+  );
+}
+
+function Fld({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div style={{ fontSize:11.5, fontWeight:500, color:"var(--c-dim)", marginBottom:5, display:"flex", alignItems:"center", gap:5 }}>
+        {label}
+        {hint && <span style={{ fontWeight:400, color:"var(--c-ghost)", fontSize:11 }}>— {hint}</span>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function Sep() {
+  return <div style={{ height:1, background:"var(--c-brd)", margin:"0 -20px" }}/>;
+}
+
+function Radio({ on, style }: { on: boolean; style?: React.CSSProperties }) {
+  return (
+    <div style={{
+      width:15, height:15, borderRadius:"50%", flexShrink:0,
+      border:`1.5px solid ${on ? "var(--foreground)" : "var(--c-brd2)"}`,
+      display:"flex", alignItems:"center", justifyContent:"center",
+      transition:"border-color .1s", ...style,
+    }}>
+      {on && <div style={{ width:6, height:6, borderRadius:"50%", background:"var(--foreground)" }}/>}
+    </div>
+  );
+}
+
+function WorktreeToggle({ value, onChange, folderInGit }: {
+  value: boolean;
+  onChange: (v: boolean) => void;
+  folderInGit?: boolean | null;
+}) {
+  return (
+    <div style={{
+      display: "flex", flexDirection: "column", gap: 6,
+      padding: "10px 12px",
+      borderRadius: 7,
+      border: "1px solid var(--c-brd)",
+      background: "rgba(var(--fg-rgb), 0.02)",
+    }}>
+      <label style={{
+        display: "flex", alignItems: "center", gap: 9,
+        cursor: "pointer",
+        fontSize: 12.5, fontWeight: 500, color: "var(--c-high)",
+      }}>
+        <input
+          type="checkbox"
+          checked={value}
+          onChange={(e) => onChange(e.target.checked)}
+          style={{ width: 14, height: 14, cursor: "pointer", accentColor: "var(--c-fg)" }}
+        />
+        Isolated workspace (git worktree)
+      </label>
+
+      <div style={{
+        fontSize: 11, color: "var(--c-low)",
+        lineHeight: 1.5, paddingLeft: 23,
+      }}>
+        {value ? (
+          <>
+            Agent works in a fresh checkout under{" "}
+            <code style={{ fontFamily: "var(--font-mono)", fontSize: 10.5 }}>.fleetify-worktrees/</code>{" "}
+            on its own <code style={{ fontFamily: "var(--font-mono)", fontSize: 10.5 }}>fleet/…</code> branch.{" "}
+            <span style={{ color: "var(--c-dim)" }}>Recommended for parallel sessions.</span>
+          </>
+        ) : (
+          <>
+            Agent shares your working directory but still commits to a separate{" "}
+            <code style={{ fontFamily: "var(--font-mono)", fontSize: 10.5 }}>fleet/…</code> branch.{" "}
+            <span style={{ color: "var(--c-dim)" }}>Only one off-worktree session per folder at a time.</span>
+          </>
+        )}
+      </div>
+
+      {folderInGit === false && (
+        <div style={{
+          fontSize: 10.5, color: "var(--c-dim)",
+          paddingLeft: 23, fontStyle: "italic",
+        }}>
+          Folder isn't a git repo yet — Fleetify will initialize it on session start.
+        </div>
+      )}
+    </div>
+  );
+}

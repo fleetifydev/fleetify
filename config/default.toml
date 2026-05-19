@@ -1,0 +1,36 @@
+[server]
+host = "127.0.0.1"
+port = 8765
+reload = true
+
+[database]
+path = "fleet.db"
+
+[logging]
+level = "INFO"
+format = "json"
+
+[agents.claude]
+command = "claude"
+args = ["-p", "--output-format", "stream-json", "--verbose"]
+chat_ui = true
+
+[agents.gemini]
+command = "gemini"
+args = ["--acp"]
+chat_ui = true
+
+[agents.codex]
+command = "codex"
+args = ["app-server", "--listen", "stdio://"]
+chat_ui = true
+
+[agents.aider]
+command = "aider"
+args = []
+chat_ui = false
+
+[agents.opencode]
+command = "opencode"
+args = []
+chat_ui = false

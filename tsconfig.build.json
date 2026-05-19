@@ -1,0 +1,10 @@
+{
+  "// note": "Production typecheck only. Extends the verbatim original tsconfig.json but excludes test files so the prod bundle isn't blocked by test-only lint (the original `tsc -b && vite build` has this latent issue under TS 5.9.3 + noUnusedLocals). The React renderer source is unchanged; vitest + IDE still use tsconfig.json which includes tests.",
+  "extends": "./tsconfig.json",
+  "exclude": [
+    "src/**/__tests__/**",
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/__tests__/**"
+  ]
+}

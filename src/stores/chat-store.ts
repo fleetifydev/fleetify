@@ -1,0 +1,1049 @@
+import { create } from "zustand";
+import type { ChatMessage, ContentBlock } from "@/types/chat";
+
+export interface PermissionRequest {
+  id: string;
+  tool_name: string;
+  tool_description?: string;
+  command: string;
+  /** Wall-clock millis at which the request was registered. Captured
+   *  ONCE in setPermissionRequest so any consumer rendering relative
+   *  time ("3s ago", "1m ago") gets a stable origin. Without this,
+   *  LivePulse synthesised `ts: Date.now()` on every recompute and
+   *  the row's "now" label kept resetting, jumping it to the top of
+   *  any time-sorted list. */
+  requestedAt?: number;
+}
+
+export interface ProcessEvent {
+  id: string;
+  tool_id: string;
+  name: string;
+  input: Record<string, unknown>;
+  startedAt: number;
+  endedAt: number | null;
+  status: "running" | "completed" | "errored";
+  output?: string;
+}
+
+/** A dispatched sub-agent's live state — one entry per sub-agent the
+ *  parent has spawned (via Claude SDK's Task tool / equivalent on other
+ *  providers). Populated from the SDK's first-class lifecycle messages
+ *  (TaskStartedMessage → TaskProgressMessage → TaskNotificationMessage)
+ *  so we get real per-sub-agent token/tool/duration counts straight
+ *  from the source — no tool-name string matching, no aggregation of
+ *  parent stats.
+ *
+ *  Sub-agents run in parallel and their events interleave on the
+ *  same query() stream, distinguished by `task_id`. The map is keyed
+ *  by task_id so concurrent runs each get their own row.
+ */
+export interface SubagentTask {
+  /** Stable task identifier from TaskStartedMessage.task_id. */
+  id: string;
+  /** The tool_use.id in the parent's content that triggered this
+   *  sub-agent. Lets us link the "Ran agent X" inline chat row to its
+   *  side-panel detail view. Nullable because some legacy payloads
+   *  may omit it. */
+  toolUseId: string | null;
+  /** Human-readable task title from TaskStartedMessage.description. */
+  description: string;
+  /** Agent type (general-purpose / code-reviewer / custom name).
+   *  Used for the "Agent" badge on the card. */
+  taskType: string | null;
+  /** Lifecycle status. "running" until TaskNotificationMessage lands. */
+  status: "running" | "completed" | "failed" | "stopped";
+  /** Wall-clock millis of TaskStartedMessage receipt — anchors the
+   *  live "elapsed" counter on the Running card before the first
+   *  TaskProgressMessage arrives. */
+  startedAt: number;
+  /** Wall-clock millis of TaskNotificationMessage receipt. */
+  endedAt: number | null;
+  /** Live metrics from TaskProgressMessage.usage — overwritten on every
+   *  progress event so the card stays in sync. Finalized by the usage
+   *  field on TaskNotificationMessage when the task ends. */
+  totalTokens: number;
+  toolUses: number;
+  durationMs: number;
+  /** Name of the most recent tool the sub-agent invoked — drives the
+   *  "Running <ToolName>" subtitle on the live card. From
+   *  TaskProgressMessage.last_tool_name. */
+  lastToolName: string | null;
+  /** Final summary text the sub-agent returned. Populated from
+   *  TaskNotificationMessage.summary. */
+  summary: string | null;
+  /** Inner activity log for this sub-agent — every tool_use /
+   *  tool_result / text / thinking block from events carrying this
+   *  task's parent_tool_use_id ends up here. Renders as the body of
+   *  the Agent pane when this task is selected. */
+  content: ContentBlock[];
+  /** Live token-by-token text for the sub-agent's in-flight assistant
+   *  turn. Flushed into `content` as a text block when the turn
+   *  completes. Mirrors the session-level streamingText pattern. */
+  streamingText: string;
+  /** Live thinking deltas for the in-flight sub-agent turn. */
+  streamingThinking: string;
+  /** Tool calls currently mid-flight inside this sub-agent. */
+  activeToolCalls: Record<string, { name: string; input: Record<string, unknown> }>;
+}
+
+/** Inline status pill for a running /compact (Claude+Codex) or /compress
+ *  (Gemini) flow. The chat-view renders this between the messages list
+ *  and the streaming preview while a compaction is in flight, and keeps
+ *  the finalized "✓ Compacted: X → Y tokens" state visible until the next
+ *  user message clears it (or until clearCompactionPill is called).
+ *
+ *  Token numbers stay null for Codex+Gemini by design — only Claude's
+ *  compact_boundary event yields a structured pre_tokens value, and we'd
+ *  rather show "✓ Compacted" than guess. */
+export interface CompactionPill {
+  state: "running" | "done" | "failed";
+  /** Which provider is doing the compaction — kept for debug/telemetry
+   *  even though the inline status text no longer branches on it. */
+  provider: string;
+  /** Provider command we actually sent (always "/compact" since the
+   *  compactor became app-owned). */
+  command: string;
+  /** Character counts before/after summarisation. Replaces the legacy
+   *  pre/postTokens fields — the app-owned compactor measures input
+   *  size by char length, not by provider token usage. */
+  preChars?: number | null;
+  postChars?: number | null;
+  preMessageCount?: number | null;
+  /** Backend timestamp (ISO) when the compaction was committed. Used
+   *  by ws-manager to drop pre-compact messages from the local store
+   *  in sync with the server's hard-delete. */
+  compactAt?: string | null;
+  /** Model that produced the summary (e.g. "claude-haiku-4-5"). */
+  model?: string | null;
+  trigger?: string;
+  /** Wall-clock millis when the pill was inserted — anchors the
+   *  relative "Compacting Ns" suffix on the inline status text. */
+  startedAt: number;
+  /** Wall-clock millis when compaction_done landed. Undefined while
+   *  state="running". */
+  endedAt?: number;
+  /** Failure reason — only populated when state="failed". */
+  error?: string;
+}
+
+export interface SessionChatState {
+  messages: ChatMessage[];
+  streamingText: string;
+  streamingThinking: string;
+  isStreaming: boolean;
+  /** True once the SDK's init event arrives — false during cold-start subprocess spawn. */
+  sdkReady: boolean;
+  streamStartTime: number | null;
+  activeToolCalls: Record<string, { name: string; input: Record<string, unknown> }>;
+  contentSoFar: ContentBlock[];
+  permissionRequest: PermissionRequest | null;
+  processLog: ProcessEvent[];
+  /** Map of dispatched sub-agents keyed by task_id. Backed by the
+   *  Claude Agent SDK's TaskStartedMessage / TaskProgressMessage /
+   *  TaskNotificationMessage lifecycle so every entry has real
+   *  per-sub-agent metrics. */
+  subagentTasks: Record<string, SubagentTask>;
+  /** Which sub-agent the Agent pane is currently focused on. Null
+   *  means "auto-pick the most recent" — set by user click on a
+   *  Tasks card or on a "Ran agent X" chat row. */
+  selectedSubagentTaskId: string | null;
+  /** Inline compaction status pill — see CompactionPill. Non-null while
+   *  a /compact or /compress flow is running or its result is still
+   *  on-screen waiting to be cleared. */
+  compactionPill: CompactionPill | null;
+}
+
+const emptySession = (): SessionChatState => ({
+  messages: [],
+  streamingText: "",
+  streamingThinking: "",
+  isStreaming: false,
+  sdkReady: false,
+  streamStartTime: null,
+  activeToolCalls: {},
+  contentSoFar: [],
+  permissionRequest: null,
+  processLog: [],
+  subagentTasks: {},
+  selectedSubagentTaskId: null,
+  compactionPill: null,
+});
+
+// Shared stable reference used by selectSession when the requested session
+// hasn't been initialised yet. Returning a fresh object on every selector call
+// causes React's useSyncExternalStore to loop ("Maximum update depth exceeded")
+// because Zustand compares snapshots with Object.is. Keep this frozen so
+// consumers can't accidentally mutate the shared instance.
+const EMPTY_SESSION: SessionChatState = Object.freeze(emptySession()) as SessionChatState;
+
+/** Live preview buffer for an in-flight dispatch — appended to as the
+ *  target agent streams text/thinking deltas. Keyed by target session id
+ *  globally (not per-session) since dispatch previews are always shown
+ *  in the staff/control-center chat. Cleared when dispatch_result arrives. */
+export interface DispatchPreview {
+  text: string;
+  thinking: string;
+  lastTool: string | null;
+  startedAt: number;
+  updatedAt: number;
+  errored: boolean;
+  /** Lifecycle phase emitted by `dispatch_progress` events from the
+   *  backend. Drives the status badge on the pending card so the user
+   *  sees which stage the dispatch is in:
+   *    "received" — task accepted, agent already idle/running
+   *    "starting" — agent was stopped/error/idle, auto-waking up
+   *    "running"  — bridge has yielded its first stream event
+   *  Undefined until the backend emits the first dispatch_progress. */
+  phase?: "received" | "starting" | "running";
+  /** True when the backend had to auto-wake a stopped/error/idle agent
+   *  to deliver this dispatch. Surfaced in the card so the user knows
+   *  why the first 1-2s look quieter than usual. */
+  autoWoken?: boolean;
+}
+
+interface ChatState {
+  sessions: Record<string, SessionChatState>;
+  /** Per-target dispatch live previews — see DispatchPreview. */
+  dispatchPreviews: Record<string, DispatchPreview>;
+
+  ensureSession: (sessionId: string) => void;
+  getSession: (sessionId: string) => SessionChatState;
+  /** Drop ALL state for a session — messages, streaming flags, tool calls,
+   *  process log, permission request. Called by app-store.removeSession
+   *  when a session is archived/deleted, so a future re-creation of the
+   *  same id starts clean instead of inheriting orphan state. */
+  clearSession: (sessionId: string) => void;
+  /** Patch cost/usage/model onto the most-recent assistant message —
+   *  used when a `cost` event arrives after `status:done` already
+   *  finalized the content. Without this, cost is lost on that
+   *  ordering. */
+  attachCostToLastAssistant: (
+    sessionId: string,
+    costUsd?: number,
+    usage?: Record<string, number>,
+    model?: string,
+  ) => void;
+  appendDispatchPreview: (
+    targetId: string,
+    patch: Partial<Omit<DispatchPreview, "startedAt" | "updatedAt">>,
+  ) => void;
+  clearDispatchPreview: (targetId: string) => void;
+
+  setMessages: (sessionId: string, messages: ChatMessage[]) => void;
+  addMessage: (sessionId: string, message: ChatMessage) => void;
+  removeMessage: (sessionId: string, messageId: string) => void;
+  appendStreamingText: (sessionId: string, text: string) => void;
+  /** Combined action — appends text to BOTH streamingText AND contentSoFar
+   *  in a single immutable update. Used by ws-manager's flushDelta which
+   *  was previously calling appendStreamingText + appendContentText
+   *  back-to-back: each delta produced TWO patches of the giant
+   *  `sessions` record, so every store subscriber rendered twice per
+   *  16ms tick. This action collapses the two into one set(). */
+  appendStreamAndContent: (sessionId: string, text: string) => void;
+  setStreamingThinking: (sessionId: string, text: string) => void;
+  /** Wipe the streaming-thinking buffer to empty. Used when a reasoning
+   *  blob has been pushed to contentSoFar as a thinking block — the
+   *  next tokens belong to a fresh reasoning item, not a continuation. */
+  clearStreamingThinking: (sessionId: string) => void;
+  setIsStreaming: (sessionId: string, streaming: boolean) => void;
+  setSdkReady: (sessionId: string, ready: boolean) => void;
+  addToolCall: (sessionId: string, toolId: string, name: string, input: Record<string, unknown>) => void;
+  resolveToolCall: (sessionId: string, toolId: string) => void;
+  appendContentText: (sessionId: string, text: string) => void;
+  pushContentBlock: (sessionId: string, block: ContentBlock) => void;
+  resetContent: (sessionId: string) => void;
+  finalizeAssistantMessage: (
+    sessionId: string,
+    id: string,
+    content: ContentBlock[],
+    model?: string,
+    costUsd?: number,
+    usage?: ChatMessage["usage"],
+  ) => void;
+  clearStreaming: (sessionId: string) => void;
+  clearAll: (sessionId: string) => void;
+  setPermissionRequest: (sessionId: string, req: PermissionRequest | null) => void;
+
+  /** Start the inline compaction pill — fired by ws-manager on the
+   *  backend's `compaction_status` (state="starting") event. Sets the
+   *  pill to running with a fresh startedAt anchor. */
+  startCompactionPill: (
+    sessionId: string,
+    args: { provider: string; command: string },
+  ) => void;
+  /** Patch the pill to its terminal state when `compaction_done` lands.
+   *  The backend now drives the character counts + summary timestamp
+   *  uniformly across providers, so all fields are present on every
+   *  successful run. */
+  finalizeCompactionPill: (
+    sessionId: string,
+    args: {
+      preChars?: number | null;
+      postChars?: number | null;
+      preMessageCount?: number | null;
+      compactAt?: string | null;
+      model?: string | null;
+      trigger?: string;
+    },
+  ) => void;
+  /** Mark the pill as failed with a reason. */
+  failCompactionPill: (sessionId: string, error: string) => void;
+  /** Wipe the pill — called when the user sends a new message after a
+   *  finished compaction, or on session reload. */
+  clearCompactionPill: (sessionId: string) => void;
+  /** Drop every message in this session whose timestamp is strictly
+   *  before `cutoffMs`. Used by the compaction flow to mirror the
+   *  backend's hard-delete of pre-compact messages — without this the
+   *  scrollback would keep showing rows that no longer exist server-side. */
+  dropMessagesBefore: (sessionId: string, cutoffMs: number) => void;
+
+  pushProcessEvent: (sessionId: string, event: ProcessEvent) => void;
+  updateProcessEvent: (sessionId: string, toolId: string, inputPatch: Record<string, unknown>) => void;
+  completeProcessEvent: (sessionId: string, toolId: string, output: string, isError: boolean) => void;
+  clearProcessLog: (sessionId: string) => void;
+
+  resolveDispatchPermission: (sessionId: string, requestId: string, approved: boolean) => void;
+
+  // ── Sub-agent lifecycle ───────────────────────────────────────────
+  // Each action mutates ONE entry in session.subagentTasks. Keyed by
+  // task_id so parallel sub-agents stay isolated. Designed so the
+  // WS handler can call them 1:1 with backend events:
+  //   subagent_start  → startSubagent
+  //   subagent_progress → updateSubagentProgress
+  //   subagent_end    → endSubagent
+  //   tool_start (parent_task_id set) → addSubagentToolCall + pushSubagentContent
+  //   tool_end   (parent_task_id set) → resolveSubagentToolCall + pushSubagentContent
+  //   message_delta (parent_task_id set) → appendSubagentStreamingText
+  //   thinking   (parent_task_id set) → appendSubagentStreamingThinking
+
+  /** Register a freshly-dispatched sub-agent. Idempotent — re-calling
+   *  with the same task_id is a no-op so a duplicate TaskStartedMessage
+   *  (rare but possible on reconnect) won't clobber an in-flight task. */
+  startSubagent: (
+    sessionId: string,
+    task: {
+      id: string;
+      toolUseId: string | null;
+      description: string;
+      taskType: string | null;
+    },
+  ) => void;
+  /** Update live metrics from a TaskProgressMessage. */
+  updateSubagentProgress: (
+    sessionId: string,
+    taskId: string,
+    usage: { totalTokens: number; toolUses: number; durationMs: number },
+    lastToolName: string | null,
+  ) => void;
+  /** Terminal event for a sub-agent — flips status + records the
+   *  summary. usage may be null on stopped/failed tasks. */
+  endSubagent: (
+    sessionId: string,
+    taskId: string,
+    status: "completed" | "failed" | "stopped",
+    summary: string | null,
+    usage: { totalTokens: number; toolUses: number; durationMs: number } | null,
+  ) => void;
+  /** Append a parsed content block (tool_use / tool_result / text /
+   *  thinking) to the sub-agent's activity log. */
+  pushSubagentContent: (
+    sessionId: string,
+    taskId: string,
+    block: ContentBlock,
+  ) => void;
+  /** Stream a text delta into the sub-agent's live buffer. */
+  appendSubagentStreamingText: (
+    sessionId: string,
+    taskId: string,
+    text: string,
+  ) => void;
+  /** Stream a thinking delta into the sub-agent's live buffer. */
+  appendSubagentStreamingThinking: (
+    sessionId: string,
+    taskId: string,
+    text: string,
+  ) => void;
+  /** Register an in-flight tool call inside a sub-agent. */
+  addSubagentToolCall: (
+    sessionId: string,
+    taskId: string,
+    toolId: string,
+    name: string,
+    input: Record<string, unknown>,
+  ) => void;
+  /** Resolve an in-flight tool call inside a sub-agent. */
+  resolveSubagentToolCall: (
+    sessionId: string,
+    taskId: string,
+    toolId: string,
+  ) => void;
+  /** User picked a Tasks card or a "Ran agent X" chat row — focus the
+   *  Agent pane on this task. Pass null to clear (auto-pick mode). */
+  setSelectedSubagentTask: (sessionId: string, taskId: string | null) => void;
+}
+
+// Deep-patch a single session entry immutably so React re-renders pick up the change.
+const patch = (
+  state: ChatState,
+  sessionId: string,
+  updater: (s: SessionChatState) => Partial<SessionChatState>,
+): Partial<ChatState> => {
+  const current = state.sessions[sessionId] ?? emptySession();
+  return {
+    sessions: {
+      ...state.sessions,
+      [sessionId]: { ...current, ...updater(current) },
+    },
+  };
+};
+
+export const useChatStore = create<ChatState>((set, get) => ({
+  sessions: {},
+  dispatchPreviews: {},
+
+  ensureSession: (sessionId) =>
+    set((state) =>
+      state.sessions[sessionId]
+        ? state
+        : { sessions: { ...state.sessions, [sessionId]: emptySession() } },
+    ),
+
+  getSession: (sessionId) => get().sessions[sessionId] ?? EMPTY_SESSION,
+
+  clearSession: (sessionId) =>
+    set((state) => {
+      // Drop the session row entirely. Anyone selecting via getSession()
+      // will fall through to EMPTY_SESSION — same shape, no leaked state.
+      // Also evict any dispatchPreview keyed by this id (typically only
+      // present when this session was a dispatch target).
+      if (!state.sessions[sessionId] && !state.dispatchPreviews[sessionId]) {
+        return state;
+      }
+      const { [sessionId]: _gone, ...rest } = state.sessions;
+      const { [sessionId]: _alsoGone, ...restPreviews } = state.dispatchPreviews;
+      void _gone; void _alsoGone;
+      return { sessions: rest, dispatchPreviews: restPreviews };
+    }),
+
+  appendDispatchPreview: (targetId, p) =>
+    set((state) => {
+      const now = Date.now();
+      const cur = state.dispatchPreviews[targetId] ?? {
+        text: "",
+        thinking: "",
+        lastTool: null,
+        startedAt: now,
+        updatedAt: now,
+        errored: false,
+      };
+      return {
+        dispatchPreviews: {
+          ...state.dispatchPreviews,
+          [targetId]: {
+            ...cur,
+            // Append-style merging for text/thinking; replace for lastTool.
+            text: p.text !== undefined ? cur.text + p.text : cur.text,
+            thinking: p.thinking !== undefined ? cur.thinking + p.thinking : cur.thinking,
+            lastTool: p.lastTool !== undefined ? p.lastTool : cur.lastTool,
+            errored: p.errored !== undefined ? p.errored : cur.errored,
+            updatedAt: now,
+          },
+        },
+      };
+    }),
+
+  clearDispatchPreview: (targetId) =>
+    set((state) => {
+      if (!state.dispatchPreviews[targetId]) return state;
+      const next = { ...state.dispatchPreviews };
+      delete next[targetId];
+      return { dispatchPreviews: next };
+    }),
+
+  setMessages: (sessionId, messages) =>
+    set((state) => {
+      // Preserve client-only `dispatch_pending` blocks across a server
+      // refresh. The "Dispatching to X" pill is added optimistically by
+      // ws-manager's dispatch_ack handler under id `pending-<target_id>`
+      // — the backend never persists it (the row is replaced by a
+      // `dispatch_result` block once the agent finishes). chat-view's
+      // mount effect re-fetches messages from DB on every session-open
+      // (intentional, see chat-view.tsx — covers a separate bug where
+      // background-dispatch user messages weren't visible). Without
+      // this carry-over, the naive `messages: incoming` overwrite
+      // wipes the pending pill the moment the user pops away from
+      // Fleet and back; the dispatch keeps running on the backend but
+      // the UI shows nothing until the result lands. We keep only the
+      // pending blocks whose corresponding dispatch is still active
+      // (their target_id has a live `dispatchPreviews` entry); once
+      // `dispatch_result` clears the preview, a stale pending block
+      // gets dropped here on the next refresh as expected.
+      const cur = state.sessions[sessionId];
+      if (!cur) {
+        return patch(state, sessionId, () => ({ messages }));
+      }
+      const incomingIds = new Set(messages.map((m) => m.id));
+      const carryOver = cur.messages.filter((m) => {
+        if (typeof m.id !== "string" || !m.id.startsWith("pending-")) return false;
+        if (incomingIds.has(m.id)) return false; // already in fetched set (defensive)
+        const targetId = m.id.slice("pending-".length);
+        return state.dispatchPreviews[targetId] !== undefined;
+      });
+      // Pending blocks are stamped at dispatch_ack time (now) so they're
+      // always newer than fetched DB rows — appending keeps chronology.
+      const merged = carryOver.length === 0 ? messages : [...messages, ...carryOver];
+      return patch(state, sessionId, () => ({ messages: merged }));
+    }),
+
+  addMessage: (sessionId, message) =>
+    set((state) =>
+      patch(state, sessionId, (s) => ({ messages: [...s.messages, message] })),
+    ),
+
+  removeMessage: (sessionId, messageId) =>
+    set((state) =>
+      patch(state, sessionId, (s) => ({
+        messages: s.messages.filter((m) => m.id !== messageId),
+      })),
+    ),
+
+  appendStreamingText: (sessionId, text) =>
+    set((state) =>
+      patch(state, sessionId, (s) => ({ streamingText: s.streamingText + text })),
+    ),
+
+  appendStreamAndContent: (sessionId, text) =>
+    set((state) =>
+      patch(state, sessionId, (s) => {
+        // Update streamingText (live preview source) AND contentSoFar
+        // (finalisation source) in one pass. The contentSoFar path
+        // mirrors appendContentText: append to the last text block if
+        // any, else open a new one.
+        const last = s.contentSoFar[s.contentSoFar.length - 1];
+        let nextContent: ContentBlock[];
+        if (last && last.type === "text") {
+          nextContent = [...s.contentSoFar.slice(0, -1), { type: "text", text: last.text + text }];
+        } else {
+          nextContent = [...s.contentSoFar, { type: "text", text }];
+        }
+        return {
+          streamingText: s.streamingText + text,
+          contentSoFar: nextContent,
+        };
+      }),
+    ),
+
+  setStreamingThinking: (sessionId, text) =>
+    set((state) =>
+      patch(state, sessionId, (s) => ({ streamingThinking: s.streamingThinking + text })),
+    ),
+
+  clearStreamingThinking: (sessionId) =>
+    set((state) =>
+      patch(state, sessionId, () => ({ streamingThinking: "" })),
+    ),
+
+  setIsStreaming: (sessionId, streaming) =>
+    set((state) =>
+      patch(state, sessionId, (s) => ({
+        isStreaming: streaming,
+        sdkReady: streaming ? false : s.sdkReady,
+        streamStartTime: streaming ? Date.now() : s.streamStartTime,
+      })),
+    ),
+
+  setSdkReady: (sessionId, ready) =>
+    set((state) => patch(state, sessionId, () => ({ sdkReady: ready }))),
+
+  addToolCall: (sessionId, toolId, name, input) =>
+    set((state) =>
+      patch(state, sessionId, (s) => ({
+        activeToolCalls: { ...s.activeToolCalls, [toolId]: { name, input } },
+      })),
+    ),
+
+  resolveToolCall: (sessionId, toolId) =>
+    set((state) =>
+      patch(state, sessionId, (s) => {
+        const next = { ...s.activeToolCalls };
+        delete next[toolId];
+        return { activeToolCalls: next };
+      }),
+    ),
+
+  appendContentText: (sessionId, text) =>
+    set((state) =>
+      patch(state, sessionId, (s) => {
+        const last = s.contentSoFar[s.contentSoFar.length - 1];
+        if (last && last.type === "text") {
+          const updated: ContentBlock = { type: "text", text: last.text + text };
+          return { contentSoFar: [...s.contentSoFar.slice(0, -1), updated] };
+        }
+        return { contentSoFar: [...s.contentSoFar, { type: "text", text }] };
+      }),
+    ),
+
+  pushContentBlock: (sessionId, block) =>
+    set((state) =>
+      patch(state, sessionId, (s) => ({ contentSoFar: [...s.contentSoFar, block] })),
+    ),
+
+  resetContent: (sessionId) =>
+    set((state) => patch(state, sessionId, () => ({ contentSoFar: [] }))),
+
+  finalizeAssistantMessage: (sessionId, id, content, model, costUsd, usage) =>
+    set((state) =>
+      patch(state, sessionId, (s) => {
+        const duration_ms = s.streamStartTime ? Date.now() - s.streamStartTime : undefined;
+        return {
+          messages: [
+            ...s.messages,
+            {
+              id,
+              role: "assistant" as const,
+              content,
+              model,
+              cost_usd: costUsd,
+              usage,
+              duration_ms,
+              timestamp: new Date().toISOString(),
+            },
+          ],
+          contentSoFar: [],
+        };
+      }),
+    ),
+
+  // Patch cost / usage / model onto the most-recent assistant message in
+  // a session — used by ws-manager when the `cost` WS event arrives AFTER
+  // a `status:done` already finalized the content. Without this, cost
+  // data was lost on that ordering. Idempotent + safe if no assistant
+  // message exists (no-op).
+  attachCostToLastAssistant: (sessionId, costUsd, usage, model) =>
+    set((state) =>
+      patch(state, sessionId, (s) => {
+        // Walk from the end to find the latest assistant message.
+        for (let i = s.messages.length - 1; i >= 0; i--) {
+          const m = s.messages[i];
+          if (!m || m.role !== "assistant") continue;
+          // Don't overwrite an already-recorded cost (defensive).
+          if (typeof m.cost_usd === "number" && m.cost_usd > 0 && !costUsd) return s;
+          const updated = { ...m,
+            cost_usd: costUsd ?? m.cost_usd,
+            usage: usage ?? m.usage,
+            model: model ?? m.model,
+          };
+          const next = s.messages.slice();
+          next[i] = updated;
+          return { messages: next };
+        }
+        return s; // no assistant message to patch
+      }),
+    ),
+
+  clearStreaming: (sessionId) =>
+    set((state) =>
+      patch(state, sessionId, () => ({
+        streamingText: "",
+        streamingThinking: "",
+        activeToolCalls: {},
+        isStreaming: false,
+        sdkReady: false,
+        streamStartTime: null,
+        contentSoFar: [],
+      })),
+    ),
+
+  clearAll: (sessionId) =>
+    set((state) => ({
+      sessions: { ...state.sessions, [sessionId]: emptySession() },
+    })),
+
+  setPermissionRequest: (sessionId, req) =>
+    set((state) =>
+      patch(state, sessionId, () => ({
+        // Stamp requestedAt at registration time so consumers like
+        // LivePulse have a stable origin for "X ago" labels. If the
+        // caller already provided one (e.g. a backend timestamp), keep it.
+        permissionRequest: req
+          ? { ...req, requestedAt: req.requestedAt ?? Date.now() }
+          : null,
+      })),
+    ),
+
+  startCompactionPill: (sessionId, { provider, command }) =>
+    set((state) =>
+      patch(state, sessionId, () => ({
+        compactionPill: {
+          state: "running",
+          provider,
+          command,
+          preChars: null,
+          postChars: null,
+          preMessageCount: null,
+          compactAt: null,
+          model: null,
+          startedAt: Date.now(),
+        },
+      })),
+    ),
+
+  finalizeCompactionPill: (
+    sessionId,
+    { preChars, postChars, preMessageCount, compactAt, model, trigger },
+  ) =>
+    set((state) =>
+      patch(state, sessionId, (s) =>
+        s.compactionPill
+          ? {
+              compactionPill: {
+                ...s.compactionPill,
+                state: "done",
+                preChars: preChars ?? null,
+                postChars: postChars ?? null,
+                preMessageCount: preMessageCount ?? null,
+                compactAt: compactAt ?? null,
+                model: model ?? null,
+                trigger,
+                endedAt: Date.now(),
+              },
+            }
+          : {},
+      ),
+    ),
+
+  failCompactionPill: (sessionId, error) =>
+    set((state) =>
+      patch(state, sessionId, (s) =>
+        s.compactionPill
+          ? {
+              compactionPill: {
+                ...s.compactionPill,
+                state: "failed",
+                error,
+                endedAt: Date.now(),
+              },
+            }
+          : {},
+      ),
+    ),
+
+  clearCompactionPill: (sessionId) =>
+    set((state) =>
+      patch(state, sessionId, () => ({ compactionPill: null })),
+    ),
+
+  dropMessagesBefore: (sessionId, cutoffMs) =>
+    set((state) =>
+      patch(state, sessionId, (s) => ({
+        messages: s.messages.filter(m => {
+          const t = Date.parse(m.timestamp);
+          if (Number.isNaN(t)) return true; // keep messages with malformed ts
+          return t >= cutoffMs;
+        }),
+      })),
+    ),
+
+  pushProcessEvent: (sessionId, event) =>
+    set((state) =>
+      patch(state, sessionId, (s) => ({
+        // Cap the log so long-running sessions don't balloon memory or force the
+        // UI to render thousands of rows at once.
+        processLog: [...s.processLog, event].slice(-200),
+      })),
+    ),
+
+  updateProcessEvent: (sessionId, toolId, inputPatch) =>
+    set((state) =>
+      patch(state, sessionId, (s) => ({
+        processLog: s.processLog.map((e) =>
+          e.tool_id === toolId
+            ? { ...e, input: { ...e.input, ...inputPatch } }
+            : e,
+        ),
+        activeToolCalls: s.activeToolCalls[toolId]
+          ? {
+              ...s.activeToolCalls,
+              [toolId]: {
+                ...s.activeToolCalls[toolId]!,
+                input: { ...s.activeToolCalls[toolId]!.input, ...inputPatch },
+              },
+            }
+          : s.activeToolCalls,
+        contentSoFar: s.contentSoFar.map((b) =>
+          b.type === "tool_use" && b.tool_id === toolId
+            ? { ...b, input: { ...(b.input as Record<string, unknown>), ...inputPatch } }
+            : b,
+        ),
+      })),
+    ),
+
+  completeProcessEvent: (sessionId, toolId, output, isError) =>
+    set((state) =>
+      patch(state, sessionId, (s) => ({
+        processLog: s.processLog.map((e) =>
+          e.tool_id === toolId && e.status === "running"
+            ? { ...e, status: isError ? "errored" : "completed", endedAt: Date.now(), output }
+            : e,
+        ),
+      })),
+    ),
+
+  clearProcessLog: (sessionId) =>
+    set((state) => patch(state, sessionId, () => ({ processLog: [] }))),
+
+  resolveDispatchPermission: (sessionId, requestId, approved) =>
+    set((state) =>
+      patch(state, sessionId, (s) => ({
+        messages: s.messages.map((m) => {
+          let changed = false;
+          const nextContent = m.content.map((b) => {
+            if (b.type === "dispatch_permission" && b.request_id === requestId) {
+              changed = true;
+              return { ...b, status: approved ? ("approved" as const) : ("denied" as const) };
+            }
+            return b;
+          });
+          return changed ? { ...m, content: nextContent } : m;
+        }),
+      })),
+    ),
+
+  // ── Sub-agent actions ────────────────────────────────────────────
+  // Each action reads from session.subagentTasks[taskId], applies a
+  // patch, and writes back. The map-of-maps shape keeps parallel
+  // sub-agents isolated and lets the reducer stay flat.
+
+  startSubagent: (sessionId, task) =>
+    set((state) =>
+      patch(state, sessionId, (s) => {
+        // Idempotent: if the task already exists (duplicate
+        // TaskStartedMessage), preserve its accumulated state.
+        if (s.subagentTasks[task.id]) return {};
+        const now = Date.now();
+        const fresh: SubagentTask = {
+          id: task.id,
+          toolUseId: task.toolUseId,
+          description: task.description,
+          taskType: task.taskType,
+          status: "running",
+          startedAt: now,
+          endedAt: null,
+          totalTokens: 0,
+          toolUses: 0,
+          durationMs: 0,
+          lastToolName: null,
+          summary: null,
+          content: [],
+          streamingText: "",
+          streamingThinking: "",
+          activeToolCalls: {},
+        };
+        return {
+          subagentTasks: { ...s.subagentTasks, [task.id]: fresh },
+          // Auto-focus this task if no other is selected yet. Lets
+          // the Agent pane snap to the newest dispatch without the
+          // user clicking.
+          selectedSubagentTaskId: s.selectedSubagentTaskId ?? task.id,
+        };
+      }),
+    ),
+
+  updateSubagentProgress: (sessionId, taskId, usage, lastToolName) =>
+    set((state) =>
+      patch(state, sessionId, (s) => {
+        const cur = s.subagentTasks[taskId];
+        if (!cur) return {};
+        return {
+          subagentTasks: {
+            ...s.subagentTasks,
+            [taskId]: {
+              ...cur,
+              totalTokens: usage.totalTokens,
+              toolUses: usage.toolUses,
+              durationMs: usage.durationMs,
+              lastToolName,
+            },
+          },
+        };
+      }),
+    ),
+
+  endSubagent: (sessionId, taskId, status, summary, usage) =>
+    set((state) =>
+      patch(state, sessionId, (s) => {
+        const cur = s.subagentTasks[taskId];
+        if (!cur) return {};
+        return {
+          subagentTasks: {
+            ...s.subagentTasks,
+            [taskId]: {
+              ...cur,
+              status,
+              summary,
+              endedAt: Date.now(),
+              // Prefer the terminal usage; fall back to the last
+              // progress snapshot if the notification omits it.
+              totalTokens: usage?.totalTokens ?? cur.totalTokens,
+              toolUses: usage?.toolUses ?? cur.toolUses,
+              durationMs: usage?.durationMs ?? cur.durationMs,
+              // Drop any in-flight tool calls — they're done.
+              activeToolCalls: {},
+              streamingText: "",
+              streamingThinking: "",
+            },
+          },
+        };
+      }),
+    ),
+
+  pushSubagentContent: (sessionId, taskId, block) =>
+    set((state) =>
+      patch(state, sessionId, (s) => {
+        const cur = s.subagentTasks[taskId];
+        if (!cur) return {};
+        // Coalesce consecutive text blocks the same way the main
+        // session does — avoids the Agent pane fragmenting prose
+        // into many tiny <p> chunks.
+        const last = cur.content[cur.content.length - 1];
+        let nextContent: ContentBlock[];
+        if (
+          last && last.type === "text" &&
+          block.type === "text"
+        ) {
+          nextContent = [
+            ...cur.content.slice(0, -1),
+            { type: "text", text: last.text + block.text },
+          ];
+        } else {
+          nextContent = [...cur.content, block];
+        }
+        return {
+          subagentTasks: {
+            ...s.subagentTasks,
+            [taskId]: { ...cur, content: nextContent },
+          },
+        };
+      }),
+    ),
+
+  appendSubagentStreamingText: (sessionId, taskId, text) =>
+    set((state) =>
+      patch(state, sessionId, (s) => {
+        const cur = s.subagentTasks[taskId];
+        if (!cur) return {};
+        return {
+          subagentTasks: {
+            ...s.subagentTasks,
+            [taskId]: { ...cur, streamingText: cur.streamingText + text },
+          },
+        };
+      }),
+    ),
+
+  appendSubagentStreamingThinking: (sessionId, taskId, text) =>
+    set((state) =>
+      patch(state, sessionId, (s) => {
+        const cur = s.subagentTasks[taskId];
+        if (!cur) return {};
+        return {
+          subagentTasks: {
+            ...s.subagentTasks,
+            [taskId]: { ...cur, streamingThinking: cur.streamingThinking + text },
+          },
+        };
+      }),
+    ),
+
+  addSubagentToolCall: (sessionId, taskId, toolId, name, input) =>
+    set((state) =>
+      patch(state, sessionId, (s) => {
+        const cur = s.subagentTasks[taskId];
+        if (!cur) return {};
+        return {
+          subagentTasks: {
+            ...s.subagentTasks,
+            [taskId]: {
+              ...cur,
+              activeToolCalls: {
+                ...cur.activeToolCalls,
+                [toolId]: { name, input },
+              },
+            },
+          },
+        };
+      }),
+    ),
+
+  resolveSubagentToolCall: (sessionId, taskId, toolId) =>
+    set((state) =>
+      patch(state, sessionId, (s) => {
+        const cur = s.subagentTasks[taskId];
+        if (!cur) return {};
+        const next = { ...cur.activeToolCalls };
+        delete next[toolId];
+        return {
+          subagentTasks: {
+            ...s.subagentTasks,
+            [taskId]: { ...cur, activeToolCalls: next },
+          },
+        };
+      }),
+    ),
+
+  setSelectedSubagentTask: (sessionId, taskId) =>
+    set((state) =>
+      patch(state, sessionId, () => ({ selectedSubagentTaskId: taskId })),
+    ),
+}));
+
+// Convenience selector for components that read only one session's state.
+// Returns a stable EMPTY_SESSION reference when the session isn't in the
+// store yet — returning a fresh object each call would thrash zustand's
+// equality check and trigger an infinite re-render.
+export const selectSession = (sessionId: string | null | undefined) =>
+  (state: ChatState): SessionChatState =>
+    (sessionId && state.sessions[sessionId]) || EMPTY_SESSION;
+
+/**
+ * Type out an existing assistant message char-by-char so it reads
+ * like the agent is composing it live. Drops the full text into
+ * `content[0].text` one character at a time, on a setInterval,
+ * stopping early if the message gets removed (e.g. a real reply
+ * lands and clears it). Caller must have already added the empty
+ * placeholder message via addMessage.
+ *
+ * @param sessionId  chat session that owns the message
+ * @param messageId  id of the placeholder assistant message
+ * @param fullText   final text to land character by character
+ * @param speedMs    delay between characters (default 18ms)
+ */
+export function typeOutAssistantMessage(
+  sessionId: string,
+  messageId: string,
+  fullText: string,
+  speedMs = 18,
+) {
+  let i = 0;
+  const interval = setInterval(() => {
+    const state = useChatStore.getState();
+    const messages = state.sessions[sessionId]?.messages ?? [];
+    const idx = messages.findIndex(m => m.id === messageId);
+    // If the placeholder is gone (removed by the auto-intro path
+    // or by clearAllForSession), the interval has nothing to update
+    // and should self-cancel rather than keep ticking.
+    if (idx === -1) { clearInterval(interval); return; }
+
+    i += 1;
+    const partial = fullText.slice(0, i);
+    const next = messages.slice();
+    next[idx] = {
+      ...messages[idx]!,
+      content: [{ type: "text", text: partial }],
+    };
+    state.setMessages(sessionId, next);
+
+    if (i >= fullText.length) clearInterval(interval);
+  }, speedMs);
+}

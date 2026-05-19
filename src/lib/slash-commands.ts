@@ -1,0 +1,169 @@
+/**
+ * Slash-command registry.
+ *
+ * Two domains:
+ *   - fleet    : Fleetify command-center commands, provider-agnostic. Always
+ *                handled by Fleetify itself (DB/UI side-effects), never sent
+ *                to the underlying CLI.
+ *   - session  : Commands meaningful inside a running agent session. The set
+ *                surfaced to the user depends on the provider (`Session.tool`),
+ *                because Claude, Codex, and Gemini each have their own slash
+ *                vocabularies. The compaction command in particular is
+ *                `/compact` for Claude+Codex but `/compress` for Gemini.
+ *
+ * The session-chat input surfaces BOTH domains (fleet commands stay useful
+ * while inside a session — e.g. /new, /status). The dedicated fleet command
+ * center surfaces ONLY fleet commands. When a fleet command's literal cmd
+ * collides with a session command's cmd (today: `/mcp`, `/compact`), the
+ * session-domain entry wins inside session-chat so the user gets the more
+ * specific behaviour.
+ *
+ * Plugin-contributed commands (fetched at runtime from
+ * `/api/runtime/commands`) are appended as scope="session" entries with a
+ * `body` template; they take precedence over builtins on `cmd` collisions
+ * (see chat-input's slashAll merge).
+ */
+
+export type SessionTool = "claude" | "codex" | "gemini";
+
+export type SlashIntent =
+  | "fleet.new"
+  | "fleet.stop"
+  | "fleet.restart"
+  | "fleet.status"
+  | "fleet.help"
+  | "fleet.compaction"
+  | "fleet.mcp"
+  | "session.compaction"
+  | "session.clear"
+  | "session.context"
+  | "session.plan"
+  | "session.model"
+  | "session.review"
+  | "session.init"
+  | "session.hooks"
+  | "session.skills"
+  | "session.effort"
+  | "session.usage"
+  | "session.permissions"
+  | "session.commands"
+  | "session.mcp";
+
+export type SlashScope = "fleet" | "session";
+
+export type SlashCmdDef = {
+  /** Stable semantic id, independent of which provider serves it. */
+  intent: SlashIntent;
+  /** Command text shown in autocomplete and inserted into the input. */
+  cmd: string;
+  /** One-line description in the autocomplete popup. */
+  desc: string;
+  /** What actually gets sent to the CLI when the user submits this command.
+   * Defaults to `cmd` when omitted. Diverges from `cmd` only when the visible
+   * name and the underlying provider command differ (today: none — `/compress`
+   * is what Gemini accepts and what we show). Kept as an explicit field so a
+   * future "translate intent → provider cmd" rewrite has a single source. */
+  providerCmd?: string;
+  scope: SlashScope;
+  /** Restricts the command to a subset of providers. When omitted, the
+   * command is available for all known tools. Used for session-domain
+   * entries that don't make sense in every CLI — e.g. `/effort` is hidden
+   * for Gemini because Gemini has no reasoning-effort knob, and the
+   * `/commands` vs `/prompts` split between Claude/Gemini and Codex. */
+  supportedTools?: SessionTool[];
+};
+
+export const FLEET_CMDS: SlashCmdDef[] = [
+  { intent: "fleet.new",        cmd: "/new",     desc: "Launch a new agent",                              scope: "fleet" },
+  { intent: "fleet.stop",       cmd: "/stop",    desc: "Stop an agent — /stop @name or /stop all",        scope: "fleet" },
+  { intent: "fleet.restart",    cmd: "/restart", desc: "Restart an agent — /restart @name",               scope: "fleet" },
+  { intent: "fleet.status",     cmd: "/status",  desc: "Show fleet status in chat",                       scope: "fleet" },
+  { intent: "fleet.compaction", cmd: "/compact", desc: "Summarize the fleet conversation with the fleet model", scope: "fleet" },
+  { intent: "fleet.mcp",        cmd: "/mcp",     desc: "Show MCP server status across the fleet",         scope: "fleet" },
+  { intent: "fleet.help",       cmd: "/help",    desc: "Show tips and keyboard shortcuts",                scope: "fleet" },
+];
+
+export const SESSION_CMDS_BY_TOOL: Record<SessionTool, SlashCmdDef[]> = {
+  claude: [
+    { intent: "session.compaction", cmd: "/compact", desc: "Summarize conversation to free context", scope: "session" },
+    { intent: "session.context",    cmd: "/context", desc: "Show context window usage",              scope: "session" },
+    { intent: "session.plan",       cmd: "/plan",    desc: "Switch to plan mode",                    scope: "session" },
+    { intent: "session.review",     cmd: "/review",  desc: "Review last changes",                    scope: "session" },
+    { intent: "session.model",      cmd: "/model",   desc: "Switch model",                           scope: "session" },
+  ],
+  codex: [
+    { intent: "session.compaction", cmd: "/compact",   desc: "Summarize visible conversation (auto-confirmed)", scope: "session" },
+    { intent: "session.clear",      cmd: "/clear",     desc: "Clear the terminal and start a fresh chat",       scope: "session" },
+    { intent: "session.context",    cmd: "/status",    desc: "Show session status",                             scope: "session" },
+    { intent: "session.plan",       cmd: "/approvals", desc: "Change approval policy",                          scope: "session" },
+    { intent: "session.model",      cmd: "/model",     desc: "Switch model",                                    scope: "session" },
+    { intent: "session.review",     cmd: "/review",    desc: "Review last changes",                             scope: "session" },
+  ],
+  gemini: [
+    { intent: "session.compaction", cmd: "/compress", desc: "Replace chat context with a summary", scope: "session", providerCmd: "/compress" },
+    { intent: "session.clear",      cmd: "/clear",    desc: "Clear conversation history",          scope: "session" },
+    { intent: "session.context",    cmd: "/stats",    desc: "Show session statistics",             scope: "session" },
+    { intent: "session.model",      cmd: "/model",    desc: "Switch model",                        scope: "session" },
+  ],
+};
+
+/**
+ * Provider-aware commands that share a single intent across the three CLIs.
+ * Filtered by `supportedTools` in commandsForContext so Gemini doesn't see
+ * `/effort` and only Codex sees `/prompts` (its CLI doesn't have `/commands`).
+ *
+ * Each entry routes to a Fleetify-side handler — none of these are forwarded
+ * to the underlying CLI as raw text (skills/hooks/usage/etc. would just open
+ * a TUI panel inside the subprocess, which isn't useful in an embedded
+ * session). The handlers live in chat-view's slash submit pipeline.
+ */
+export const SESSION_CMDS_COMMON: SlashCmdDef[] = [
+  { intent: "session.init",        cmd: "/init",        desc: "Generate the project's agent context file (CLAUDE.md / GEMINI.md / AGENTS.md)", scope: "session" },
+  { intent: "session.hooks",       cmd: "/hooks",       desc: "Show configured lifecycle hooks for this session",                              scope: "session" },
+  { intent: "session.skills",      cmd: "/skills",      desc: "Show installed skills available to this session",                               scope: "session" },
+  { intent: "session.usage",       cmd: "/usage",       desc: "Show token usage and cost for this session",                                    scope: "session" },
+  { intent: "session.permissions", cmd: "/permissions", desc: "Change the session's permission mode",                                          scope: "session" },
+  { intent: "session.mcp",         cmd: "/mcp",         desc: "Show MCP server status for this session",                                       scope: "session" },
+  // /effort is meaningless for Gemini (no reasoning-effort knob — Gemini
+  // controls depth via model SKU only). Hide it there.
+  { intent: "session.effort",      cmd: "/effort",      desc: "Change reasoning effort (low/medium/high/extra_high/max)", scope: "session", supportedTools: ["claude", "codex"] },
+  // /commands lists user-defined slash commands. Codex calls them "prompts"
+  // and namespaces them under /prompts:<name>; surface that naming instead.
+  { intent: "session.commands",    cmd: "/commands",    desc: "Browse custom slash commands",                             scope: "session", supportedTools: ["claude", "gemini"] },
+  { intent: "session.commands",    cmd: "/prompts",     desc: "Browse custom prompts",                                    scope: "session", supportedTools: ["codex"] },
+];
+
+function isKnownTool(t: unknown): t is SessionTool {
+  return t === "claude" || t === "codex" || t === "gemini";
+}
+
+/**
+ * Returns the builtin slash commands appropriate for a given UI surface.
+ *
+ *   - "fleet"        : fleet command center — only fleet-domain commands.
+ *   - "session-chat" : chat input inside a session — fleet commands PLUS the
+ *                       provider's session-domain commands. Unknown providers
+ *                       (e.g. "custom"/"aider") fall back to fleet-only.
+ *
+ * When a session-domain command shares its literal `cmd` with a fleet-domain
+ * command (today: `/mcp`, `/compact`), the session entry wins — the user
+ * gets the session-scoped handler. The fleet entry is dropped to avoid a
+ * duplicate row in the autocomplete popup.
+ *
+ * Plugin commands are NOT included here; the caller merges them separately
+ * via the `/api/runtime/commands` endpoint.
+ */
+export function commandsForContext(
+  ctx: "fleet" | "session-chat",
+  tool?: string | null,
+): SlashCmdDef[] {
+  if (ctx === "fleet") return FLEET_CMDS;
+  if (!isKnownTool(tool)) return FLEET_CMDS;
+  const perTool = SESSION_CMDS_BY_TOOL[tool];
+  const common = SESSION_CMDS_COMMON.filter(
+    (c) => !c.supportedTools || c.supportedTools.includes(tool),
+  );
+  const sessionCmds = new Set([...perTool, ...common].map((c) => c.cmd));
+  const fleetSurfaced = FLEET_CMDS.filter((c) => !sessionCmds.has(c.cmd));
+  return [...fleetSurfaced, ...perTool, ...common];
+}

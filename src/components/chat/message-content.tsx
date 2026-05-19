@@ -1,0 +1,3199 @@
+import React from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import type { Components } from "react-markdown";
+import type { ChatMessage, ContentBlock, ArtifactBlock, ResourceCardBlock } from "@/types/chat";
+import {
+  SkillsCard, HooksCard, CommandsCard, UsageCard, MCPStatusCard,
+  InitDoneCard, InfoCard,
+} from "./staff-message-cards";
+import { ChevronRight, Copy, Check, ArrowRightLeft, CheckCircle2, AlertCircle, Terminal, FileText, Globe, Search, Cpu, CheckSquare, FolderSearch, Pencil, Wrench, Brain, MoveHorizontal, Trash2, FolderOpen, Download, Code2, BarChart2, BookOpen, Image, CornerDownLeft, Send, Bookmark, BookmarkCheck, RotateCcw, X } from "lucide-react";
+import { createSessionMemory } from "@/lib/api";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useChatStore, selectSession } from "@/stores/chat-store";
+import { useAppStore } from "@/stores/app-store";
+import { useTypewriter } from "@/hooks/use-typewriter";
+import { highlightToHtml, highlightLines, langFromPath } from "@/lib/shiki";
+import { folderName } from "@/lib/utils";
+
+/* ── Shiki-backed highlighter hook ──
+   Streams plain text through Shiki on mount → returns HTML string the
+   caller paints with dangerouslySetInnerHTML. While the highlighter is
+   loading (first call only, ~150ms) we return `null` so the caller can
+   fall back to its plain-text rendering — no flicker. After load, the
+   shared highlighter is cached for the rest of the session. */
+function useShikiHTML(code: string, lang: string): string | null {
+  const [html, setHtml] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    highlightToHtml(code, lang).then(out => {
+      if (!cancelled) setHtml(out);
+    });
+    return () => { cancelled = true; };
+  }, [code, lang]);
+  return html;
+}
+
+/** Strip Shiki's outer <pre><code>…</code></pre> wrapper so we can drop
+ *  the highlighted spans into our own layout without inheriting Shiki's
+ *  default background / padding. */
+function stripShikiWrapper(html: string): string {
+  return html
+    .replace(/^<pre[^>]*>/, "")
+    .replace(/<\/pre>\s*$/, "")
+    .replace(/^<code[^>]*>/, "")
+    .replace(/<\/code>\s*$/, "");
+}
+
+/** Multi-line highlighter — returns one HTML string per line, fired
+ *  once per (code, lang) pair. Used by the diff renderer so we can
+ *  drop pre-coloured spans into our own row layout (gutter + marker +
+ *  text) instead of fighting Shiki's default wrapping. While loading,
+ *  yields `null` so the caller falls back to the plain `row.text`. */
+function useShikiLines(code: string, lang: string): string[] | null {
+  const [lines, setLines] = useState<string[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    highlightLines(code, lang).then(out => {
+      if (!cancelled) setLines(out);
+    });
+    return () => { cancelled = true; };
+  }, [code, lang]);
+  return lines;
+}
+
+/* ── Strip internal dispatch syntax ──
+   Used on assistant text — Claude sometimes echoes its own [[DISPATCH:...]]
+   tokens back; we don't want them showing up in the rendered chat. */
+const DISPATCH_RE = /\[\[DISPATCH:[a-f0-9-]+\|[^\]]+\]\]/gi;
+function stripDispatch(text: string): string {
+  return text.replace(DISPATCH_RE, "").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+/* ── Strip backend metadata from user-facing text ──
+   The frontend appends three kinds of metadata to staff/agent messages
+   so Claude has the context it needs: a fleet status snapshot, per-agent
+   context blocks pulled by @mention, and routing prefixes for Auto mode.
+   Claude needs them; the user does NOT — and the persisted message body
+   includes them, so without this pass the chat history reads like a
+   debug dump every time you scroll back.
+
+   What we strip (in order):
+     1. The trailing ``\n\n---\n[FLEET STATUS - ...]...[END STATUS]`` block
+     2. Each ``[AGENT CONTEXT: name]...[END CONTEXT]`` block (@mention pull-ins)
+     3. Leading ``[AUTO MODE]`` routing prefix
+     4. Leading ``[Auto-planner routed N task(s): ...]`` planner summary
+     5. Leftover ``[[DIRECT_DISPATCH:...]]`` tokens (defensive — backend
+        rewrites them to ``(✓ dispatched)`` markers, but if a stale row
+        slips through we shouldn't render the raw syntax) */
+const FLEET_STATUS_RE      = /(?:\n+---\n+)?\[FLEET STATUS[\s\S]*?\[END STATUS\]\s*$/m;
+const AGENT_CONTEXT_RE     = /\[AGENT CONTEXT:[\s\S]*?\[END CONTEXT\]\n*/g;
+const RECALL_CONTEXT_RE    = /\[RECALL CONTEXT[\s\S]*?\[END RECALL CONTEXT\]\n*/g;
+const AUTO_MODE_PREFIX_RE  = /^\[AUTO MODE\]\s*/i;
+const AUTO_PLAN_PREFIX_RE  = /^\[Auto-planner routed[^\]]*\]\s*\n*/;
+const DIRECT_DISPATCH_RE   = /\[\[DIRECT_DISPATCH:[a-f0-9-]+\|[^\]]+\]\]/gi;
+// Internal staff-side tokens the backend rewrites on its way back out
+// — guard the renderer in case a row sneaks through with the raw form.
+const READ_AGENT_RE        = /\[\[READ_AGENT:[a-f0-9-]+\|\d+\]\]/gi;
+const DISPATCH_RAW_RE      = /\[\[DISPATCH:[^\]]+\]\]/gi;
+// Internal routing markers — the backend reads these to branch into the
+// compactor / prompt-rewrite flows but they shouldn't reach the chat UI.
+// Strip them at render time so "/compact" shows in the bubble without the
+// "[fleet:compaction]" tag glued onto the front.
+const FLEET_TAG_RE         = /^\[fleet:(?:compaction|enhance-prompt|auto-intro)\]\s*/i;
+function cleanUserText(text: string): string {
+  let out = text;
+  out = out.replace(FLEET_STATUS_RE, "");
+  out = out.replace(AGENT_CONTEXT_RE, "");
+  out = out.replace(RECALL_CONTEXT_RE, "");
+  out = out.replace(AUTO_PLAN_PREFIX_RE, "");
+  out = out.replace(AUTO_MODE_PREFIX_RE, "");
+  out = out.replace(DIRECT_DISPATCH_RE, "");
+  out = out.replace(FLEET_TAG_RE, "");
+  // Collapse the blank-line gulf that the deletions can leave behind.
+  out = out.replace(/\n{3,}/g, "\n\n").trim();
+  return out;
+}
+
+/* ── Formatters ── */
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+function fmtDuration(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60), rs = s % 60;
+  return rs > 0 ? `${m}m ${rs}s` : `${m}m`;
+}
+/* fmtCost intentionally removed — per-message cost was pulled out of
+   the footer per the user's "summary should be calmer, no dollars"
+   note. Session-level spend still renders elsewhere (budget pill /
+   workspace footer). Re-add this if a future surface needs to render
+   one message's dollar cost. */
+
+/* ── Tool helpers ── */
+/* Strip the boilerplate shell wrapper agents almost always wrap their
+   real command in. e.g. `/bin/zsh -lc 'cd makeup-check-api && pip install'`
+   collapses to just `cd makeup-check-api && pip install`. Without this
+   every Bash row in the chat reads `Run /bin/zsh -lc '...'` and the
+   actually-interesting bit is hidden 20 chars to the right + truncated. */
+function stripShellWrapper(cmd: string): string {
+  if (!cmd) return cmd;
+  // /bin/zsh -lc '...' / bash -lc "..." / sh -c '...' / etc.
+  const m = cmd.match(
+    /^(?:\/(?:bin|usr\/bin)\/)?(?:bash|zsh|sh|dash)\s+-[lic]+\s+(['"])([\s\S]+)\1\s*$/,
+  );
+  if (m && m[2]) return m[2].trim();
+  return cmd;
+}
+
+/* Heuristic-based natural-language summary for shell commands. Maps
+   common invocations to a short verb-phrase so the tool card header
+   reads like a log entry ("Installed Python packages") instead of a
+   raw command fragment ("pip install -U fastapi uvicorn …"). Returns
+   null when no pattern matches — caller falls back to the literal
+   command. The patterns are ordered by specificity. */
+function describeShellCommand(cmd: string): string | null {
+  const c = cmd.trim().replace(/\s+/g, " ");
+
+  // Package managers
+  const pip = c.match(/(?:^|&&\s*|;\s*)(?:python\s+-m\s+)?pip\s+install\s+(-U\s+|--upgrade\s+|-e\s+)?([^\s|;]+)/);
+  if (pip) {
+    const pkg = pip[2];
+    if (pkg === ".") return "Installed package (editable)";
+    return `Installed ${pkg}`;
+  }
+  if (/(?:^|&&\s*|;\s*)(?:npm|pnpm|bun|yarn)\s+install\b/.test(c)) return "Installed dependencies";
+  if (/(?:^|&&\s*|;\s*)cargo\s+(?:build|install)\b/.test(c)) return "Built Rust project";
+  if (/(?:^|&&\s*|;\s*)go\s+(?:build|install|mod\s+tidy)\b/.test(c)) return "Built Go project";
+
+  // Network / ports
+  const lsof = c.match(/lsof\s+-iTCP:(\d+)/);
+  if (lsof) return `Checked port ${lsof[1]}`;
+  const curl = c.match(/curl\s+[^|]*?https?:\/\/([^\s\/'"]+)(\/[^\s|'"]*)?/);
+  if (curl) {
+    const host = curl[1];
+    const path = curl[2] || "";
+    return `Probed ${host}${path}`.slice(0, 80);
+  }
+
+  // Git
+  if (/git\s+diff\b.*\|\s*wc\s+-l/.test(c)) return "Counted diff lines";
+  const gitDiff = c.match(/git\s+diff\s+([^\s|;]+)/);
+  if (gitDiff) return `Diffed ${gitDiff[1]}`;
+  if (/^git\s+status\b/.test(c)) return "Checked git status";
+  if (/^git\s+log\b/.test(c)) return "Read git log";
+  if (/^git\s+commit\b/.test(c)) return "Committed changes";
+  if (/^git\s+push\b/.test(c)) return "Pushed to remote";
+
+  // Filesystem reads
+  const cat = c.match(/^cat\s+([^\s|;]+)/);
+  if (cat) return `Viewed ${cat[1]}`;
+  const head = c.match(/^head\s+-(\d+)\s+([^\s|;]+)/);
+  if (head) return `Read first ${head[1]} lines of ${head[2]}`;
+  const tail = c.match(/^tail\s+-(\d+)\s+([^\s|;]+)/);
+  if (tail) return `Read last ${tail[1]} lines of ${tail[2]}`;
+  const sed = c.match(/sed\s+-n\s+['"]([\d,]+)p['"]\s+([^\s|;]+)/);
+  if (sed) return `Read lines ${sed[1]} of ${sed[2]}`;
+  const ls = c.match(/^ls\s+(?:-[A-Za-z]+\s+)*([^\s|;]*)/);
+  if (ls) return ls[1] ? `Listed ${ls[1]}` : "Listed directory";
+
+  // Search
+  const rg = c.match(/(?:^|&&\s*)(?:rg|grep)\s+(?:-[A-Za-z]+\s+)*['"]([^'"]+)['"]/);
+  if (rg) return `Searched for "${rg[1]}"`;
+
+  // Docker / process
+  if (/docker\s+ps\b/.test(c)) return "Listed containers";
+  if (/docker\s+inspect\b/.test(c)) return "Inspected container";
+  if (/docker\s+(?:build|compose\s+up|run)\b/.test(c)) return "Ran docker";
+
+  // Python ad-hoc
+  if (/python\s+-c\s+/.test(c) || /python\s+<<\s*['"]?PY/.test(c)) return "Ran Python snippet";
+
+  // Activated venv chain → use whatever comes AFTER the activate
+  const afterVenv = c.match(/\.\s+\.?\s*venv\/bin\/activate\s*&&\s*(.+)/);
+  if (afterVenv && afterVenv[1]) return describeShellCommand(afterVenv[1].trim()) || afterVenv[1].split(" ").slice(0, 4).join(" ");
+
+  // cd → describe what's after the cd
+  const afterCd = c.match(/^cd\s+[^\s&;]+\s*&&\s*(.+)/);
+  if (afterCd && afterCd[1]) return describeShellCommand(afterCd[1].trim());
+
+  return null;
+}
+
+/** Strip directory portion of a path so the row stays scannable.
+ *  "/Users/foo/bar/baz/qux.tsx" → "qux.tsx". Keeps short relative
+ *  paths intact since those are already readable. */
+function basename(p: string): string {
+  const parts = p.split("/");
+  return parts[parts.length - 1] || p;
+}
+
+/** Single-tool summary line: a Claude-Desktop-style phrase that
+ *  describes the action in one short sentence. The row body is what
+ *  the user scans; details live behind the chevron. Examples:
+ *    Bash       → "Ran Installed fastapi"
+ *    Edit       → "Edited config.py"
+ *    Read       → "Read main.tsx"
+ *    Grep       → "Searched for \"useState\""
+ *    WebSearch  → "Searched the web for \"sqlite WAL\""
+ *    TodoWrite  → "Updated todos"
+ *    Agent      → "Dispatched: refactor auth flow"
+ */
+export function rowSummary(toolName: string, input: Record<string, unknown>): string {
+  // Bash family — describeShellCommand already returns a past-tense
+  // verb phrase, so just prefix the right action word.
+  if ("command" in input) {
+    const cleaned = stripShellWrapper(String(input.command));
+    const described = describeShellCommand(cleaned);
+    if (described) return `Ran ${described.charAt(0).toLowerCase() + described.slice(1)}`;
+    const firstLine = (cleaned.split("\n")[0] ?? "").slice(0, 90);
+    return firstLine ? `Ran ${firstLine}` : "Ran a command";
+  }
+  if ("file_path" in input) {
+    const file = basename(String(input.file_path));
+    if (toolName === "Edit" || toolName === "MultiEdit") {
+      // Append +N -N diff counts so the inner row mirrors Claude
+      // Code Desktop's "Edited foo.tsx +12 -3" inline summary —
+      // the user can scan diff weight without expanding.
+      const oldText = String(input.old_string ?? "");
+      const newText = String(input.new_string ?? "");
+      const minus = oldText ? oldText.split("\n").length : 0;
+      const plus  = newText ? newText.split("\n").length : 0;
+      const stats = (plus || minus)
+        ? `  +${plus} -${minus}`
+        : "";
+      return `Edited ${file}${stats}`;
+    }
+    if (toolName === "Write") {
+      const lines = String(input.content ?? "").split("\n").length;
+      return `Wrote ${file}  +${lines}`;
+    }
+    if (toolName === "Read") return `Read ${file}`;
+    return `Touched ${file}`;
+  }
+  if ("pattern" in input) {
+    const pat = String(input.pattern).slice(0, 60);
+    if (toolName === "Glob") return `Globbed ${pat}`;
+    return `Searched for "${pat}"`;
+  }
+  if ("query" in input) {
+    const q = String(input.query ?? "").trim();
+    if (!q) return "Browsed the web";  // Codex webSearch with action:other has no query
+    return `Searched the web for "${q.slice(0, 60)}"`;
+  }
+  if ("url" in input) return `Fetched ${basename(String(input.url))}`;
+  if (toolName === "TodoWrite" || toolName === "TodoRead") return "Updated todos";
+  if (toolName === "Agent" && "description" in input) {
+    return `Dispatched: ${String(input.description).slice(0, 70)}`;
+  }
+  if ("prompt" in input) return String(input.prompt).slice(0, 90);
+  return `Used ${toolName || "tool"}`;
+}
+
+function getToolMeta(toolName: string, toolKind?: string): { icon: React.ReactNode; color: string; verb: string } {
+  // Claude tools — keyed by tool_name
+  const claudeTools: Record<string, { icon: React.ReactNode; color: string; verb: string }> = {
+    Bash:      { icon: <Terminal size={11} />,     color: "var(--c-med)",          verb: "Run"    },
+    Read:      { icon: <FileText size={11} />,     color: "var(--c-ghost)",        verb: "Read"   },
+    Edit:      { icon: <Pencil size={11} />,       color: "rgba(96,165,250,0.65)", verb: "Edit"   },
+    Write:     { icon: <FileText size={11} />,     color: "rgba(96,165,250,0.65)", verb: "Write"  },
+    Glob:      { icon: <FolderSearch size={11} />, color: "var(--c-ghost)",        verb: "Glob"   },
+    Grep:      { icon: <Search size={11} />,       color: "var(--c-ghost)",        verb: "Search" },
+    Agent:     { icon: <Cpu size={11} />,          color: "rgba(251,146,60,0.65)", verb: "Agent"  },
+    WebFetch:  { icon: <Globe size={11} />,        color: "var(--c-ghost)",        verb: "Fetch"  },
+    WebSearch: { icon: <Globe size={11} />,        color: "var(--c-ghost)",        verb: "Web"    },
+    TodoWrite: { icon: <CheckSquare size={11} />,  color: "var(--c-ghost)",        verb: "Tasks"  },
+    TodoRead:  { icon: <CheckSquare size={11} />,  color: "var(--c-ghost)",        verb: "Tasks"  },
+  };
+  if (claudeTools[toolName]) return claudeTools[toolName];
+
+  // Gemini tools — keyed by ACP `kind`
+  const kindMap: Record<string, { icon: React.ReactNode; color: string; verb: string }> = {
+    read:    { icon: <FileText size={11} />,        color: "var(--c-ghost)",        verb: "Read"   },
+    edit:    { icon: <Pencil size={11} />,          color: "rgba(96,165,250,0.65)", verb: "Edit"   },
+    execute: { icon: <Terminal size={11} />,        color: "var(--c-med)",          verb: "Run"    },
+    search:  { icon: <Search size={11} />,          color: "var(--c-ghost)",        verb: "Search" },
+    fetch:   { icon: <Globe size={11} />,           color: "var(--c-ghost)",        verb: "Fetch"  },
+    move:    { icon: <MoveHorizontal size={11} />,  color: "var(--c-ghost)",        verb: "Move"   },
+    delete:  { icon: <Trash2 size={11} />,          color: "rgba(239,68,68,0.65)",  verb: "Delete" },
+    think:   { icon: <Brain size={11} />,           color: "rgba(142,117,178,0.65)",verb: "Think"  },
+    other:   { icon: <Wrench size={11} />,          color: "var(--c-ghost)",        verb: "Tool"   },
+  };
+  if (toolKind && kindMap[toolKind]) return kindMap[toolKind];
+
+  // Fallback
+  return { icon: <ChevronRight size={11} />, color: "var(--c-ghost)", verb: toolName || "Tool" };
+}
+
+/* ── Bash tool detail with Shiki-coloured command + neutral stdout ──
+   The command line gets shell-syntax highlighting (keywords, flags,
+   strings) the way an IDE terminal would render it. Stdout / stderr
+   stays in plain --c-low so test traces stay legible without painting
+   the entire body red on failure. */
+function BashView({ command, output }: { command: string; output: string }) {
+  const copyPayload = output ? `$ ${command}\n\n${output}` : `$ ${command}`;
+  const cmdHtml = useShikiHTML(command, "shell");
+  return (
+    <div style={{ fontFamily: "var(--font-mono)" }}>
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        // Hairline separator dropped — the "Bash" label + copy icon
+        // now sit inline at the top of the card, with the command
+        // body flowing right below on the same surface. Matches the
+        // Claude Code Desktop "Bash" pattern the user pointed at.
+        padding: "8px 12px 2px",
+        fontSize: 10.5, color: "var(--c-dim)",
+      }}>
+        <span>Bash</span>
+        <CopyIconOnly text={copyPayload} />
+      </div>
+      <pre style={{
+        fontSize: 12.5, lineHeight: 1.6,
+        color: "var(--c-high)",
+        margin: 0, padding: "0 12px",
+        whiteSpace: "pre-wrap", wordBreak: "break-word",
+      }}>
+        <span style={{ color: "var(--c-dim)" }}>$ </span>
+        {cmdHtml ? (
+          <span dangerouslySetInnerHTML={{ __html: stripShikiWrapper(cmdHtml) }} />
+        ) : (
+          command
+        )}
+      </pre>
+      {output && (
+        <pre style={{
+          fontSize: 12, lineHeight: 1.6,
+          color: "var(--c-low)",
+          margin: "10px 0 0", padding: "0 12px 8px",
+          whiteSpace: "pre-wrap", wordBreak: "break-word",
+          maxHeight: 320, overflowY: "auto",
+        }}>{output}</pre>
+      )}
+    </div>
+  );
+}
+
+/* ── Edit / Write diff with Shiki-coloured code lines ──
+   Top: slim file-path band matching the right-sidebar file viewer.
+   Body: line-numbered diff where each row's text is Shiki-tokenised
+   (keywords, strings, numbers, comments all get their IDE colours)
+   on top of the red / green band that marks old vs new. While Shiki
+   is loading we paint plain --c-high so there's no blank flash. */
+function DiffView({ fpath, oldText, newText }: {
+  fpath: string;
+  oldText: string;
+  newText: string;
+}) {
+  const filename = fpath.split("/").pop() || fpath;
+  const oldLines = oldText ? oldText.split("\n") : [];
+  const newLines = newText ? newText.split("\n") : [];
+  const cap = 60;
+  type DiffRow = { kind: "old" | "new"; text: string };
+  const rows: DiffRow[] = [
+    ...oldLines.map((t): DiffRow => ({ kind: "old", text: t })),
+    ...newLines.map((t): DiffRow => ({ kind: "new", text: t })),
+  ];
+  const shown = rows.slice(0, cap);
+  const overflow = Math.max(0, rows.length - cap);
+  const copyPayload =
+    (oldLines.length ? oldLines.map(l => `- ${l}`).join("\n") + "\n" : "") +
+    newLines.map(l => `+ ${l}`).join("\n");
+
+  // Highlight old and new sides separately so each side remains valid
+  // code in the eyes of the tokeniser (a removed `}` without its
+  // matching `{` would otherwise confuse the lexer when concatenated).
+  const lang = langFromPath(fpath);
+  const oldHighlighted = useShikiLines(oldText, lang);
+  const newHighlighted = useShikiLines(newText, lang);
+
+  return (
+    <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, lineHeight: 1.6 }}>
+      <div style={{
+        padding: "8px 12px 4px",
+        fontSize: 11, color: "var(--c-dim)",
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        gap: 8,
+      }}>
+        <span style={{
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          flex: 1, minWidth: 0,
+        }}>
+          <span style={{ color: "var(--c-med)", fontWeight: 500 }}>{filename}</span>
+          <span style={{ marginLeft: 10 }}>{fpath}</span>
+        </span>
+        <span style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 10 }}>
+          {newLines.length > 0 && (
+            <span style={{ color: "rgb(74,222,128)" }}>+{newLines.length}</span>
+          )}
+          {oldLines.length > 0 && (
+            <span style={{ color: "rgb(248,113,113)" }}>−{oldLines.length}</span>
+          )}
+          <CopyIconOnly text={copyPayload} />
+        </span>
+      </div>
+      <div style={{ overflow: "auto", maxHeight: 360 }}>
+        {/* Empty-diff fallback — surfaces when a tool emits an Edit
+            with both old_string and new_string empty (or stripped to
+            whitespace) so the user doesn't stare at a blank panel and
+            wonder if the click did anything. */}
+        {shown.length === 0 && (
+          <div style={{
+            padding: "14px 16px",
+            color: "var(--c-dim)", fontSize: 11.5,
+          }}>
+            No textual diff captured for this edit.
+          </div>
+        )}
+        {shown.map((row, i) => {
+          // Each row maps back to its index inside its own side, so we
+          // can pull the matching Shiki-highlighted line if available.
+          const sideIdx = row.kind === "old"
+            ? i
+            : i - oldLines.length;
+          const sideArr = row.kind === "old" ? oldHighlighted : newHighlighted;
+          const highlightedHtml = sideArr ? sideArr[sideIdx] : null;
+          const marker = row.kind === "old" ? "-" : "+";
+          const markerFg = row.kind === "old" ? "rgb(248,113,113)" : "rgb(74,222,128)";
+          const rowBg = row.kind === "old" ? "rgba(248,113,113,0.14)" : "rgba(74,222,128,0.13)";
+          return (
+            <div key={i} style={{ display: "flex", background: rowBg }}>
+              <span style={{
+                width: 36, flexShrink: 0,
+                textAlign: "right", paddingRight: 8,
+                color: "var(--c-ghost)", opacity: 0.55,
+                fontSize: 11, userSelect: "none",
+                lineHeight: 1.6,
+              }}>{i + 1}</span>
+              <span style={{
+                width: 14, flexShrink: 0,
+                color: markerFg, opacity: 0.9,
+                userSelect: "none",
+              }}>{marker}</span>
+              {highlightedHtml ? (
+                <span
+                  style={{
+                    flex: 1, color: "var(--c-high)",
+                    whiteSpace: "pre-wrap", wordBreak: "break-all",
+                    paddingRight: 8,
+                  }}
+                  dangerouslySetInnerHTML={{ __html: highlightedHtml || "&nbsp;" }}
+                />
+              ) : (
+                <span style={{
+                  flex: 1, color: "var(--c-high)",
+                  whiteSpace: "pre-wrap", wordBreak: "break-all",
+                  paddingRight: 8,
+                }}>{row.text || " "}</span>
+              )}
+            </div>
+          );
+        })}
+        {overflow > 0 && (
+          <div style={{
+            padding: "4px 8px 4px 50px",
+            fontSize: 10.5, color: "var(--c-dim)",
+          }}>
+            … {overflow} more line{overflow === 1 ? "" : "s"} hidden
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function renderToolDetail(
+  toolName: string,
+  input: Record<string, unknown>,
+  output?: string,
+  _isError?: boolean,
+) {
+  void _isError; // surfaced via the row's "failed" badge — body stays neutral
+
+  // Bash: Claude-Desktop-style card — "Bash" header, `$ <command>`
+  // and optional `<stdout>` below a hairline. Shell wrapper is
+  // stripped so the user sees the real command, not the
+  // /bin/zsh -lc 'CMD' boilerplate.
+  if (toolName === "Bash" && "command" in input) {
+    // While a command is mid-stream, the tool_result block hasn't been
+    // pushed yet — but Codex's `command/exec/outputDelta` feeds live
+    // stdout/stderr into the active tool's input as `_output`. Fall
+    // through to that buffer when `output` is still empty so the user
+    // watches the shell output tick in line-by-line instead of staring
+    // at a bare `$ command` until the tool ends.
+    const liveOut = (output ?? "").trim() ||
+      (typeof input._output === "string" ? input._output.trim() : "");
+    return <BashView command={stripShellWrapper(String(input.command))} output={liveOut} />;
+  }
+  // Edit / Write: file header + unified-style diff. Old lines render
+  // with a red gutter + red-tinted background; new lines green +
+  // green-tinted. File path sits at the top with +N / −N counts so
+  // the user can scan diff weight without expanding every card.
+  if ((toolName === "Edit" || toolName === "Write" || toolName === "MultiEdit") && "file_path" in input) {
+    return (
+      <DiffView
+        fpath={String(input.file_path)}
+        oldText={String(input.old_string ?? "")}
+        newText={String(input.new_string ?? input.content ?? "")}
+      />
+    );
+  }
+  // Lightweight fallbacks for non-code tools (Read, Grep, Agent, etc).
+  // These detail bodies need their own padding because the outer
+  // container is now edge-to-edge for the Bash / Edit headers above.
+  const padBox = (children: React.ReactNode) => (
+    <div style={{ padding: "10px 12px" }}>{children}</div>
+  );
+  // Shared output panel — appended below the input summary so Read /
+  // Grep / Glob / MCP tools surface stdout the same way Bash does.
+  // Without this the user expanded a tool row and saw only the query;
+  // the actual result was invisible even though the bridge captured it.
+  const outputBlock = (output ?? "").trim();
+  const outputPanel = outputBlock ? (
+    <pre style={{
+      margin: "0",
+      padding: "8px 12px",
+      borderTop: "1px solid var(--sidebar-border)",
+      fontFamily: "var(--font-mono)", fontSize: 11.5,
+      color: "var(--c-med)",
+      whiteSpace: "pre-wrap", wordBreak: "break-word",
+      maxHeight: 280, overflowY: "auto",
+    }}>{outputBlock.slice(0, 4000)}</pre>
+  ) : null;
+  const withOutput = (head: React.ReactNode) => (
+    <>{head}{outputPanel}</>
+  );
+  if ("file_path" in input) {
+    return withOutput(padBox(
+      <span style={{ fontSize: 11.5, fontFamily: "var(--font-mono)", color: "var(--c-med)" }}>
+        {String(input.file_path)}
+      </span>
+    ));
+  }
+  if ("pattern" in input) {
+    return withOutput(padBox(
+      <div style={{ fontSize: 11.5, fontFamily: "var(--font-mono)" }}>
+        <span style={{ color: "rgba(251,146,60,0.8)" }}>{String(input.pattern)}</span>
+        {input.path != null && <span style={{ color: "var(--c-dim)" }}> in {String(input.path)}</span>}
+      </div>
+    ));
+  }
+  if ("description" in input || "prompt" in input) {
+    return withOutput(padBox(
+      <div style={{ fontSize: 12, color: "var(--c-med)", lineHeight: 1.5 }}>
+        {String(input.description ?? input.prompt ?? "").slice(0, 240)}
+      </div>
+    ));
+  }
+  // Strip Fleet-internal bookkeeping keys (_kind / _title) and empty
+  // discriminator-only shapes like `action: {type: "other"}` before
+  // falling back to the JSON dump. Without this, a webSearch with no
+  // query renders as a verbose JSON brick exposing internal fields —
+  // exactly the noisy thing the user flagged.
+  const INTERNAL_KEYS = new Set(["_kind", "_title"]);
+  const cleaned: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(input)) {
+    if (INTERNAL_KEYS.has(k)) continue;
+    if (v == null) continue;
+    if (typeof v === "string" && v.trim() === "") continue;
+    // Discriminator-only sub-object (e.g. {type: "other"}) — drop it.
+    if (
+      typeof v === "object" && !Array.isArray(v)
+      && Object.keys(v as object).length === 1
+      && "type" in (v as object)
+    ) continue;
+    cleaned[k] = v;
+  }
+  if (Object.keys(cleaned).length === 0) {
+    // Nothing useful to show — render a minimal dim hint instead of
+    // an empty bracket pair or the discarded JSON.
+    return withOutput(padBox(
+      <span style={{ fontSize: 11.5, color: "var(--c-dim)", fontStyle: "italic" }}>
+        no further details
+      </span>
+    ));
+  }
+  return withOutput(padBox(
+    <pre style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--c-dim)", margin: 0, maxHeight: 140, overflowY: "auto" }}>
+      {JSON.stringify(cleaned, null, 2)}
+    </pre>
+  ));
+}
+
+/* ── Copy button ── */
+/* ── Icon-only copy button — used in the right-sidebar-style headers
+   above Bash and Edit details. Smaller than CopyButton and shows the
+   icon alone so the header line stays compact. */
+function CopyIconOnly({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    });
+  }, [text]);
+  return (
+    <button
+      onClick={copy}
+      title={copied ? "Copied" : "Copy"}
+      style={{
+        display: "flex", alignItems: "center", justifyContent: "center",
+        width: 22, height: 22,
+        background: "transparent", border: "none",
+        cursor: "pointer", borderRadius: 4,
+        color: copied ? "var(--c-high)" : "var(--c-ghost)",
+        transition: "color 0.1s, background 0.1s",
+      }}
+      onMouseEnter={e => { e.currentTarget.style.background = "var(--c-srf)"; e.currentTarget.style.color = "var(--c-med)"; }}
+      onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = copied ? "var(--c-high)" : "var(--c-ghost)"; }}
+    >
+      {copied ? <Check size={12} /> : <Copy size={12} />}
+    </button>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = useCallback(() => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    });
+  }, [text]);
+  return (
+    <button onClick={copy} style={{
+      display: "flex", alignItems: "center", gap: 3,
+      padding: "2px 7px", borderRadius: 4,
+      background: "var(--c-srf)", border: "1px solid var(--c-brd)",
+      color: "var(--c-dim)", fontSize: 11, cursor: "pointer",
+    }}
+      onMouseEnter={e => { e.currentTarget.style.color = "var(--c-med)"; }}
+      onMouseLeave={e => { e.currentTarget.style.color = "var(--c-dim)"; }}
+    >
+      {copied ? <Check size={10} /> : <Copy size={10} />}
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
+/* ── Code block ── */
+function CodeBlock({ language, children }: { language: string; children: string }) {
+  return (
+    <div style={{ margin: "12px 0", borderRadius: 9, overflow: "hidden", border: "1px solid var(--c-brd)" }}>
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: "5px 12px", background: "var(--c-srf)",
+        borderBottom: "1px solid var(--c-brd)",
+      }}>
+        <span style={{ fontSize: 11, color: "var(--c-dim)", fontFamily: "var(--font-mono)", textTransform: "lowercase" }}>
+          {language || "code"}
+        </span>
+        <CopyButton text={children} />
+      </div>
+      <pre style={{
+        margin: 0, padding: "14px 16px",
+        background: "var(--code-bg)",
+        fontSize: 12.5, lineHeight: 1.7,
+        fontFamily: "var(--font-mono)", color: "var(--c-high)",
+        overflowX: "auto", whiteSpace: "pre",
+      }}>
+        <code>{children}</code>
+      </pre>
+    </div>
+  );
+}
+
+/* ── Markdown components ── */
+const mdComponents: Components = {
+  code({ className, children }) {
+    const lang = className?.replace("language-", "") ?? "";
+    if (!className) {
+      return (
+        <code style={{
+          fontFamily: "var(--font-mono)", fontSize: "0.86em",
+          background: "var(--c-srf)", padding: "2px 6px",
+          borderRadius: 5, color: "var(--c-high)",
+          border: "1px solid var(--c-brd)",
+          letterSpacing: "-0.005em",
+        }}>{children}</code>
+      );
+    }
+    return <CodeBlock language={lang}>{String(children).replace(/\n$/, "")}</CodeBlock>;
+  },
+  p({ children }) {
+    return <p style={{ margin: "0 0 14px", lineHeight: 1.65, fontSize: 14, color: "var(--c-high)" }}>{children}</p>;
+  },
+  ul({ children }) { return <ul style={{ paddingLeft: 20, margin: "0 0 14px", listStyleType: "disc" }}>{children}</ul>; },
+  ol({ children }) { return <ol style={{ paddingLeft: 20, margin: "0 0 14px" }}>{children}</ol>; },
+  li({ children }) { return <li style={{ marginBottom: 5, lineHeight: 1.65, fontSize: 14, color: "var(--c-high)" }}>{children}</li>; },
+  h1({ children }) {
+    return <h1 style={{ fontSize: 18, fontWeight: 700, margin: "8px 0 12px", letterSpacing: "-0.025em", color: "var(--c-high)" }}>{children}</h1>;
+  },
+  h2({ children }) {
+    return (
+      <h2 style={{ fontSize: 15.5, fontWeight: 650, margin: "24px 0 10px", letterSpacing: "-0.018em", color: "var(--c-high)" }}>
+        {children}
+      </h2>
+    );
+  },
+  h3({ children }) {
+    return <h3 style={{ fontSize: 14, fontWeight: 600, margin: "18px 0 8px", letterSpacing: "-0.01em", color: "var(--c-high)" }}>{children}</h3>;
+  },
+  blockquote({ children }) {
+    return (
+      <blockquote style={{
+        margin: "14px 0", paddingLeft: 16,
+        borderLeft: "2px solid var(--c-brd2)",
+        color: "var(--c-low)",
+        fontStyle: "normal",
+      }}>{children}</blockquote>
+    );
+  },
+  strong({ children }) { return <strong style={{ fontWeight: 600, color: "var(--c-high)" }}>{children}</strong>; },
+  // `a` is intentionally NOT defined here — MarkdownBody injects a
+  // store-aware version so file-shaped hrefs can route to openFile()
+  // instead of opening externally.
+  table({ children }) {
+    return (
+      <div style={{
+        margin: "14px 0",
+        borderRadius: 9,
+        overflow: "hidden",
+        border: "1px solid var(--c-brd)",
+        background: "var(--background)",
+      }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>{children}</table>
+      </div>
+    );
+  },
+  th({ children }) {
+    return <th style={{
+      padding: "9px 14px",
+      borderBottom: "1px solid var(--c-brd)",
+      textAlign: "left",
+      fontWeight: 600,
+      color: "var(--c-dim)",
+      fontSize: 10.5,
+      letterSpacing: "0.06em",
+      textTransform: "uppercase",
+      background: "var(--c-srf)",
+      verticalAlign: "middle",
+    }}>{children}</th>;
+  },
+  td({ children }) {
+    return <td style={{
+      padding: "10px 14px",
+      borderBottom: "1px solid var(--c-brd)",
+      color: "var(--c-high)",
+      fontSize: 13,
+      lineHeight: 1.45,
+      verticalAlign: "middle",
+    }}>{children}</td>;
+  },
+  hr() {
+    return <hr style={{ border: "none", borderTop: "1px solid var(--c-brd)", margin: "16px 0" }} />;
+  },
+};
+
+/* ── File-extension allow-list for the link-as-file heuristic ─────────
+ * Hrefs whose final segment ends in one of these are treated as
+ * project-relative file paths and route through openFile() instead of
+ * opening externally. Errs on the side of "common code / text / config"
+ * extensions — markdown links to documentation URLs (which usually
+ * carry no extension or end in .html on a host with a scheme) are
+ * unaffected. */
+const FILE_EXT_RE = new RegExp(
+  "\\.(go|java|kt|kts|ts|tsx|js|jsx|mjs|cjs|py|pyi|rb|php|swift|" +
+  "rs|c|cc|cpp|h|hpp|cs|scala|clj|cljs|ex|exs|elm|fs|fsx|dart|lua|r|m|mm|" +
+  "html|htm|css|scss|sass|less|vue|svelte|astro|" +
+  "json|jsonc|yaml|yml|toml|ini|env|conf|xml|md|mdx|markdown|txt|rst|" +
+  "sh|bash|zsh|fish|ps1|bat|cmd|" +
+  "sql|graphql|gql|proto|prisma|" +
+  "dockerfile|makefile|gemfile|rakefile" +
+  ")$",
+  "i"
+);
+
+/** Quick "looks like a real URL" gate — anything with a known network
+ *  scheme or starting with // is treated as external. Everything else
+ *  is a candidate for the file-path heuristic. */
+function isExternalHref(href: string): boolean {
+  if (!href) return false;
+  if (href.startsWith("//")) return true;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return true; // http: https: mailto: file: ftp: etc
+  if (href.startsWith("#")) return true;
+  return false;
+}
+
+/** Parse a markdown href into a file-open target. Returns null if the
+ *  href doesn't look like an in-project file path. Supports common
+ *  line-suffix conventions emitted by language servers, jadx, ripgrep
+ *  and the models themselves:
+ *
+ *    foo/bar.java
+ *    foo/bar.java:41
+ *    foo/bar.java:41:5
+ *    foo/bar.java#L41
+ *
+ *  The trailing :LINE / :LINE:COL / #LNN gets stripped before the
+ *  extension check (otherwise FILE_EXT_RE wouldn't match) and parsed
+ *  out as `line` / `col` for the caller. */
+function parseFileHref(href: string): { path: string; line?: number; col?: number } | null {
+  if (!href || isExternalHref(href)) return null;
+
+  // 1) Drop ?query first.
+  let s = href.split("?")[0] ?? "";
+
+  // 2) #L<NN> (github-style) → line. Anything else after # we drop.
+  let line: number | undefined;
+  const hashIdx = s.indexOf("#");
+  if (hashIdx >= 0) {
+    const frag = s.slice(hashIdx + 1);
+    const m = /^L(\d+)$/.exec(frag);
+    if (m && m[1]) line = parseInt(m[1], 10);
+    s = s.slice(0, hashIdx);
+  }
+
+  // 3) Trailing :LINE or :LINE:COL — only valid AFTER a known
+  //    extension, so a path like `/Users:foo` (no extension) doesn't
+  //    get mis-parsed.
+  let col: number | undefined;
+  const colonMatch = /^(.*?\.[A-Za-z0-9]+)(?::(\d+))(?::(\d+))?$/.exec(s);
+  if (colonMatch && colonMatch[1]) {
+    s = colonMatch[1];
+    if (line === undefined && colonMatch[2]) line = parseInt(colonMatch[2], 10);
+    if (colonMatch[3]) col = parseInt(colonMatch[3], 10);
+  }
+
+  if (!s) return null;
+  const last = s.split("/").pop() ?? "";
+  if (!FILE_EXT_RE.test(last)) return null;
+  return { path: s, line, col };
+}
+
+/** Internal routing tokens never belong in the rendered markdown.
+ *  Backend handlers process them and SHOULD strip — but if a stale
+ *  row or a still-streaming buffer slips through, the renderer is
+ *  the last line of defence. Pure regex pass — no side effects. */
+function stripInternalTokens(text: string): string {
+  return text
+    .replace(READ_AGENT_RE, "")
+    .replace(DIRECT_DISPATCH_RE, "")
+    .replace(DISPATCH_RAW_RE, "")
+    .replace(/\n{3,}/g, "\n\n");
+}
+
+function MarkdownBodyInner({ text }: { text: string }) {
+  const openFile = useAppStore(s => s.openFile);
+  const activeSession = useAppStore(s => {
+    const sid = s.activeSessionId;
+    return sid ? s.sessions.find(x => x.id === sid) ?? null : null;
+  });
+  const projectRoot = activeSession?.project_path ?? "";
+
+  const components: Components = useMemo(() => ({
+    ...mdComponents,
+    a({ children, href }) {
+      const parsed = href ? parseFileHref(href) : null;
+      if (parsed) {
+        const resolved = parsed.path.startsWith("/")
+          ? parsed.path
+          : projectRoot ? `${projectRoot.replace(/\/$/, "")}/${parsed.path}` : parsed.path;
+        const tip = parsed.line
+          ? `Open ${parsed.path}:${parsed.line}${parsed.col ? `:${parsed.col}` : ""}`
+          : `Open ${parsed.path}`;
+        return (
+          <a
+            href={href}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              openFile(resolved);
+            }}
+            title={tip}
+            style={{
+              color: "#58a6ff",
+              textDecoration: "none",
+              cursor: "pointer",
+            }}
+            onMouseEnter={e => e.currentTarget.style.textDecoration = "underline"}
+            onMouseLeave={e => e.currentTarget.style.textDecoration = "none"}
+          >
+            {children}
+          </a>
+        );
+      }
+      return (
+        <a
+          href={href}
+          target="_blank"
+          rel="noreferrer"
+          style={{ color: "#58a6ff", textDecoration: "none" }}
+          onMouseEnter={e => e.currentTarget.style.textDecoration = "underline"}
+          onMouseLeave={e => e.currentTarget.style.textDecoration = "none"}
+        >
+          {children}
+        </a>
+      );
+    },
+  }), [openFile, projectRoot]);
+
+  return (
+    <div style={{ color: "var(--foreground)" }}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>{stripInternalTokens(text)}</ReactMarkdown>
+    </div>
+  );
+}
+
+/**
+ * Memoised wrapper. StreamingMessage maps over `contentSoFar`,
+ * rendering a MarkdownBody per text/thinking block. Every streaming
+ * token mutates the LAST block's text, which causes contentSoFar
+ * to be a new array → StreamingMessage re-renders → every previous
+ * MarkdownBody (with unchanged text) gets re-walked too, re-running
+ * remark/rehype parsing on text that didn't change. With a long
+ * assistant turn that interleaves text + tools, this re-parses N-1
+ * stable markdown blocks per token. React.memo on text means only
+ * the actively-growing block parses on each delta; the older blocks
+ * bail out immediately. Store hooks inside the inner component
+ * still subscribe externally, so a real change to activeSession /
+ * openFile re-renders correctly regardless of memo.
+ */
+export const MarkdownBody = React.memo(MarkdownBodyInner, (prev, next) => prev.text === next.text);
+
+/* ── Tool call row ──
+   Claude-Desktop-style summary chip: "Ran <thing>" or "Read <file>"
+   with a small chevron. Click to expand into the detail card
+   (`renderToolDetail` paints the actual Bash/Edit/etc. card body)
+   plus the tool's output (stdout / stderr / file contents). */
+function ToolCallRow({ toolName, toolKind, input, output, isError, forceOpen }: {
+  toolName: string;
+  toolKind?: string;
+  input: Record<string, unknown>;
+  /** Result payload from the matching tool_result block. Undefined
+   *  while the tool is still running, populated once it returns. */
+  output?: string;
+  isError?: boolean;
+  /** When true, the row's expandable detail section is locked
+   *  open. Driven by Verbose transcript view — the user wants
+   *  to see every tool's raw payload without clicking each row. */
+  forceOpen?: boolean;
+}) {
+  const [openLocal, setOpen] = useState(false);
+  const open = forceOpen || openLocal;
+  void toolKind; // legacy plumbing — kept on the prop for ToolGroup callers
+  const summary = rowSummary(toolName, input);
+
+  // Claude Code Desktop pattern: each tool action is a single line of
+  // body-color text with the chevron at the END (not the start) and no
+  // leading icon. The expand surface is the entire row; hover darkens
+  // the background subtly. The heavy diff/output card only appears
+  // BELOW the row when the user opens it.
+  return (
+    <div style={{ margin: "2px 0" }}>
+      <button
+        onClick={() => { if (!forceOpen) setOpen(!openLocal); }}
+        style={{
+          display: "inline-flex", alignItems: "center", gap: 6,
+          padding: 0,
+          background: "transparent", border: "none",
+          cursor: forceOpen ? "default" : "pointer",
+          textAlign: "left",
+          color: "inherit",
+        }}
+      >
+        <span style={{
+          fontSize: 13, fontWeight: 400,
+          color: "var(--c-low)",
+          letterSpacing: "-0.005em",
+        }}
+          onMouseEnter={e => { if (!forceOpen) (e.currentTarget as HTMLElement).style.color = "var(--c-med)"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "var(--c-low)"; }}
+        >
+          {summary}
+        </span>
+        {isError && (
+          <span style={{
+            fontSize: 11, fontWeight: 500,
+            color: "rgb(248,113,113)",
+            fontFamily: "var(--font-mono)",
+          }}>
+            failed
+          </span>
+        )}
+        <ChevronRight size={12} style={{
+          color: "var(--c-ghost)",
+          transform: open ? "rotate(90deg)" : "none",
+          transition: "transform 220ms cubic-bezier(0.32, 0.72, 0, 1)",
+        }} />
+      </button>
+
+      {/* Grid-row trick gives us a smooth 0fr → 1fr → 0fr height
+          animation without measuring the content. The chevron rotation
+          + opacity fade run in step, so opening/closing feels like
+          one motion instead of pop-in / pop-out. */}
+      <div style={{
+        display: "grid",
+        gridTemplateRows: open ? "1fr" : "0fr",
+        opacity: open ? 1 : 0,
+        transition: "grid-template-rows 220ms cubic-bezier(0.32, 0.72, 0, 1), opacity 200ms ease",
+      }}>
+        <div style={{ overflow: "hidden", minHeight: 0 }}>
+          <div style={{
+            margin: "6px 0 10px 0",
+            borderRadius: 8,
+            border: "1px solid var(--sidebar-border)",
+            background: "var(--sidebar)",
+            overflow: "hidden",
+          }}>
+            {renderToolDetail(toolName, input, output, isError)}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Tool group ──
+   Claude Code Desktop collapses consecutive tool actions into a single
+   "Edited a file, used N tools v" summary line; expanding it reveals
+   the individual rows. Keeps the chat scannable when the model fires
+   off five reads / two edits in a row — instead of five floating cards
+   the user sees one summary, expands it on demand. */
+
+/* ─── Sub-agent dispatch chat row ───
+ *
+ * Renders the "Ran agent Opus 4.7 MW3 security audit" line we see in
+ * Claude Code Desktop's parent chat — one slim row per Task tool
+ * dispatch. Clicking the row focuses the Agent pane on that sub-agent
+ * and pops the right panel open (if it isn't already). The row
+ * mirrors live state from the matching SubagentTask entry: pulsing
+ * blue dot while running, a checkmark when complete.
+ *
+ * Matched to its task via tool_use_id — the parent tool_use that
+ * triggered the dispatch is the tool_use_id field on TaskStartedMessage.
+ */
+function SubagentChatRow({
+  toolUseId,
+  fallbackTitle,
+}: {
+  toolUseId: string;
+  fallbackTitle: string;
+}) {
+  // Per-field selectors — `useAppStore()` with no selector
+  // subscribed every SubagentChatRow to the entire app store, so a
+  // single notification push or pane-focus change re-rendered every
+  // dispatch row in the chat.
+  const activeSessionId = useAppStore(s => s.activeSessionId);
+  const staffSessionId = useAppStore(s => s.staffSessionId);
+  const sid = activeSessionId || staffSessionId;
+  const subagentTasks = useChatStore(s => selectSession(sid)(s).subagentTasks);
+  const setSelected = useChatStore(s => s.setSelectedSubagentTask);
+  const addView = useAppStore(s => s.addWorkspaceView);
+
+  // Match the SubagentTask by the parent's tool_use.id. The SDK's
+  // TaskStartedMessage carries this in tool_use_id, which the bridge
+  // copies onto our SubagentTask.toolUseId.
+  const task = useMemo(() => {
+    return Object.values(subagentTasks).find(t => t.toolUseId === toolUseId)
+      ?? null;
+  }, [subagentTasks, toolUseId]);
+
+  const onClick = () => {
+    if (!task || !sid) return;
+    setSelected(sid, task.id);
+    try { addView("process"); } catch { /* noop */ }
+  };
+
+  const running = task?.status === "running";
+  const failed = task && (task.status === "failed" || task.status === "stopped");
+  const title = task?.description ?? fallbackTitle;
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={!task}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 7,
+        padding: "3px 0",
+        margin: "2px 0",
+        background: "transparent", border: "none",
+        cursor: task ? "pointer" : "default",
+        fontSize: 13, color: "var(--c-low)",
+        letterSpacing: "-0.005em",
+        textAlign: "left",
+        fontFamily: "inherit",
+      }}
+      onMouseEnter={e => {
+        if (task) (e.currentTarget as HTMLElement).style.color = "var(--c-med)";
+      }}
+      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "var(--c-low)"; }}
+    >
+      <span style={{
+        flexShrink: 0,
+        width: 10, height: 10,
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+      }}>
+        {running ? (
+          <span style={{
+            width: 7, height: 7, borderRadius: "50%",
+            background: "#3b82f6",
+            boxShadow: "0 0 0 2.5px rgba(59,130,246,0.18)",
+            animation: "fleetPulse 1.4s ease-in-out infinite",
+          }}/>
+        ) : failed ? (
+          <X size={10} strokeWidth={2.4} color="#f87171" />
+        ) : (
+          <Check size={10} strokeWidth={2.4} color="var(--c-ghost)" />
+        )}
+      </span>
+      <span>
+        Ran agent{" "}
+        <span style={{ color: "var(--c-med)", fontWeight: 500 }}>{title}</span>
+      </span>
+      {task && <ChevronRight size={11} style={{ color: "var(--c-ghost)" }} />}
+    </button>
+  );
+}
+
+function ToolGroup({ tools, results, forceOpen, dropTools }: {
+  tools: Array<{
+    tool_id?: string;
+    tool_name?: string;
+    name?: string;
+    tool_kind?: string;
+    input?: Record<string, unknown>;
+  }>;
+  results: Record<string, { output: string; is_error: boolean }>;
+  forceOpen?: boolean;
+  dropTools?: boolean;
+}) {
+  const [openLocal, setOpen] = useState(false);
+  const open = forceOpen || openLocal;
+
+  if (dropTools || tools.length === 0) return null;
+
+  // Single tool runs render flat — the group wrapper would only add
+  // noise (an extra "1 tool" header on top of the row that already
+  // shows the verb and target).
+  if (tools.length === 1) {
+    const t = tools[0]!;
+    const result = t.tool_id ? results[t.tool_id] : undefined;
+    return (
+      <ToolCallRow
+        toolName={t.tool_name || t.name || ""}
+        toolKind={t.tool_kind}
+        input={t.input || {}}
+        output={result?.output}
+        isError={result?.is_error}
+        forceOpen={forceOpen}
+      />
+    );
+  }
+
+  // Claude Code Desktop summary pattern: describe each verb bucket as
+  // its own phrase ("edited a file" / "ran 2 commands") and join them
+  // with commas — e.g. "Edited a file, ran 2 commands". A single-verb
+  // run collapses to "Edited 4 files" / "Ran 2 commands". The user only
+  // needs the headline at this level; the rows below carry the detail.
+  const verbBuckets = new Map<string, number>();
+  let errorCount = 0;
+  for (const t of tools) {
+    const meta = getToolMeta(t.tool_name || t.name || "", t.tool_kind);
+    verbBuckets.set(meta.verb, (verbBuckets.get(meta.verb) ?? 0) + 1);
+    if (t.tool_id && results[t.tool_id]?.is_error) errorCount++;
+  }
+  const pastVerb: Record<string, string> = {
+    Run: "ran", Read: "read", Edit: "edited", Write: "wrote",
+    Glob: "globbed", Search: "searched", Fetch: "fetched",
+    Web: "searched the web", Tasks: "updated", Agent: "dispatched",
+    Move: "moved", Delete: "deleted", Think: "thought",
+  };
+  const target: Record<string, [string, string]> = {
+    // [singular, plural]
+    Edit:  ["a file",  "files"],
+    Write: ["a file",  "files"],
+    Read:  ["a file",  "files"],
+    Run:   ["a command", "commands"],
+    Glob:  ["a pattern", "patterns"],
+    Search:["a search", "searches"],
+    Fetch: ["a request","requests"],
+    Web:   ["the web", "the web"],
+    Tasks: ["todos",   "todos"],
+    Agent: ["an agent","agents"],
+    Move:  ["a file",  "files"],
+    Delete:["a file",  "files"],
+  };
+  const phrases: string[] = [];
+  for (const [verb, count] of verbBuckets) {
+    const word = pastVerb[verb] || verb.toLowerCase();
+    const [sg, pl] = target[verb] || ["one thing", "things"];
+    phrases.push(count === 1 ? `${word} ${sg}` : `${word} ${count} ${pl}`);
+  }
+  // Capitalize the leading phrase: "Edited a file, ran 2 commands".
+  const summary = phrases.length
+    ? phrases[0]!.charAt(0).toUpperCase() + phrases[0]!.slice(1) +
+      (phrases.length > 1 ? ", " + phrases.slice(1).join(", ") : "")
+    : `Used ${tools.length} tools`;
+
+  return (
+    <div style={{ margin: "2px 0" }}>
+      <button
+        onClick={() => { if (!forceOpen) setOpen(!openLocal); }}
+        style={{
+          display: "inline-flex", alignItems: "center", gap: 6,
+          padding: 0,
+          background: "transparent", border: "none",
+          cursor: forceOpen ? "default" : "pointer",
+          textAlign: "left",
+          color: "inherit",
+        }}
+      >
+        <span style={{
+          fontSize: 13, fontWeight: 400,
+          color: "var(--c-low)",
+          letterSpacing: "-0.005em",
+        }}
+          onMouseEnter={e => { if (!forceOpen) (e.currentTarget as HTMLElement).style.color = "var(--c-med)"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "var(--c-low)"; }}
+        >
+          {summary}
+        </span>
+        {errorCount > 0 && (
+          <span style={{
+            fontSize: 11.5, fontWeight: 500,
+            color: "rgb(248,113,113)",
+            fontFamily: "var(--font-mono)",
+          }}>
+            {errorCount} failed
+          </span>
+        )}
+        <ChevronRight size={12} style={{
+          color: "var(--c-ghost)",
+          transform: open ? "rotate(90deg)" : "none",
+          transition: "transform 220ms cubic-bezier(0.32, 0.72, 0, 1)",
+        }} />
+      </button>
+
+      {/* Same grid-row animation as ToolCallRow so the group + its
+          inner rows feel like one continuous expand instead of two
+          independent toggles. */}
+      <div style={{
+        display: "grid",
+        gridTemplateRows: open ? "1fr" : "0fr",
+        opacity: open ? 1 : 0,
+        transition: "grid-template-rows 220ms cubic-bezier(0.32, 0.72, 0, 1), opacity 200ms ease",
+      }}>
+        <div style={{ overflow: "hidden", minHeight: 0 }}>
+          <div style={{
+            margin: "4px 0 8px 0",
+            padding: "6px 12px",
+            borderRadius: 8,
+            border: "1px solid var(--sidebar-border)",
+            background: "var(--sidebar)",
+          }}>
+            {tools.map((t, i) => {
+              const result = t.tool_id ? results[t.tool_id] : undefined;
+              return (
+                <ToolCallRow
+                  key={t.tool_id || i}
+                  toolName={t.tool_name || t.name || ""}
+                  toolKind={t.tool_kind}
+                  input={t.input || {}}
+                  output={result?.output}
+                  isError={result?.is_error}
+                  forceOpen={forceOpen}
+                />
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Thoughts chip ──
+ * Consolidates ALL reasoning bursts from one assistant message into a
+ * single footer-level chip. Codex emits a fresh reasoning burst before
+ * every tool batch, so the old per-burst inline rendering stacked 5+
+ * `▸ Thought` chips between tools and dominated the chat. We now keep
+ * the chat flow as text + tools only; thinking lives next to the stats
+ * row as one compact affordance.
+ *
+ *   live  → `● thinking 8s`        (pulsing dot, live timer)
+ *   done  → `▸ Thought 47s`        (one burst)
+ *   done  → `▸ Thought 47s · 3`    (multiple bursts; trailing count)
+ *
+ * Expanding renders each burst in chronological order as italic prose
+ * inside a subtle left-rule, separated by a thin divider so the
+ * reasoning-tool interleaving is still recoverable on demand.
+ */
+function ThoughtsChip({ bursts, liveText, isLive = false, forceOpen }: {
+  bursts: Array<{ text: string; durationMs?: number }>;
+  liveText?: string;
+  isLive?: boolean;
+  forceOpen?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const startRef = useRef<number | null>(null);
+  const [liveElapsed, setLiveElapsed] = useState(0);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const liveOn = !!(isLive && liveText && liveText.trim());
+
+  useEffect(() => {
+    if (!liveOn) {
+      startRef.current = null;
+      setLiveElapsed(0);
+      return;
+    }
+    if (startRef.current === null) startRef.current = Date.now();
+    const iv = setInterval(() => {
+      if (startRef.current !== null) setLiveElapsed(Date.now() - startRef.current);
+    }, 300);
+    return () => clearInterval(iv);
+  }, [liveOn]);
+
+  useEffect(() => {
+    if (liveOn && expanded && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [liveText, liveOn, expanded]);
+
+  if (bursts.length === 0 && !liveOn) return null;
+
+  const open = expanded || forceOpen === true;
+  const totalBurstMs = bursts.reduce((a, b) => a + (b.durationMs ?? 0), 0);
+  const totalMs = totalBurstMs + (liveOn ? liveElapsed : 0);
+  const burstCount = bursts.length + (liveOn ? 1 : 0);
+  const timeLabel = totalMs > 0 ? fmtDuration(totalMs) : null;
+
+  return (
+    <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-start" }}>
+      <button
+        type="button"
+        onClick={() => setExpanded(v => !v)}
+        style={{
+          display: "inline-flex", alignItems: "center", gap: 6,
+          padding: "1px 4px",
+          margin: 0,
+          background: "transparent",
+          border: "none",
+          cursor: "pointer",
+          fontSize: 11,
+          fontFamily: "var(--font-mono)",
+          color: "var(--c-ghost)",
+          lineHeight: 1.4,
+          userSelect: "none",
+        }}
+      >
+        {liveOn ? (
+          <span style={{
+            display: "inline-block", width: 6, height: 6, borderRadius: "50%",
+            background: "var(--c-dim)",
+            animation: "thinking-cursor 1.2s ease-in-out infinite",
+          }}/>
+        ) : (
+          <span style={{
+            display: "inline-block",
+            transform: open ? "rotate(90deg)" : "rotate(0deg)",
+            transition: "transform 120ms ease",
+            fontSize: 9,
+            color: "var(--c-ghost)",
+          }}>▸</span>
+        )}
+        <span>
+          {liveOn ? "thinking" : "Thought"}
+          {timeLabel ? ` ${timeLabel}` : null}
+          {burstCount > 1 ? ` · ${burstCount}` : null}
+        </span>
+      </button>
+      {open && (
+        <div
+          ref={scrollRef}
+          style={{
+            margin: "4px 0 0 4px",
+            paddingLeft: 10,
+            borderLeft: "2px solid var(--c-brd)",
+            maxWidth: 720,
+            maxHeight: liveOn ? 220 : "none",
+            overflowY: liveOn ? "auto" : "visible",
+          }}
+        >
+          {bursts.map((b, i) => (
+            <p key={i} style={{
+              fontSize: 12.5,
+              color: "var(--c-dim)",
+              lineHeight: 1.6,
+              margin: i === 0 ? 0 : "10px 0 0 0",
+              whiteSpace: "pre-wrap",
+              fontStyle: "italic",
+            }}>
+              {b.text}
+            </p>
+          ))}
+          {liveOn && (
+            <p style={{
+              fontSize: 12.5,
+              color: "var(--c-dim)",
+              lineHeight: 1.6,
+              margin: bursts.length === 0 ? 0 : "10px 0 0 0",
+              whiteSpace: "pre-wrap",
+              fontStyle: "italic",
+            }}>
+              {liveText}
+              <span style={{
+                display: "inline-block", width: 1.5, height: 11,
+                background: "var(--c-dim)", marginLeft: 2,
+                verticalAlign: "text-bottom",
+                animation: "thinking-cursor 0.9s ease-in-out infinite",
+              }}/>
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+/* ── Message stats + copy row ── */
+function MessageStatsRow({ message, hovered, toolOnly = false }: { message: ChatMessage; hovered: boolean; toolOnly?: boolean }) {
+  const { usage, cost_usd, duration_ms } = message;
+  const [copied, setCopied] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  // Per-field selectors so the stats row doesn't re-render on every
+  // notification / draft / pane-focus change. With one stats row per
+  // assistant message and dozens of messages on screen, this was
+  // multiplying every app-store mutation by N.
+  const activeSessionId = useAppStore(s => s.activeSessionId);
+  const staffSessionId = useAppStore(s => s.staffSessionId);
+
+  const fullText = message.content
+    .filter((b): b is { type: "text"; text: string } => b.type === "text")
+    .map(b => stripDispatch(b.text)).join("\n\n");
+
+  const copy = useCallback(() => {
+    navigator.clipboard.writeText(fullText).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }, [fullText]);
+
+  // One-click "save this message to long-term memory". Auto-extracts a
+  // title from the first non-empty line (truncated to ~80 chars), saves
+  // the full body as content with kind="note". User can refine title /
+  // change kind from the right-sidebar Memory section.
+  const saveToMemory = useCallback(async () => {
+    const sid = activeSessionId || staffSessionId;
+    if (!sid || !fullText.trim() || saving) return;
+    // Heuristic title — first non-empty line, strip markdown chrome.
+    const firstLine = fullText
+      .split("\n")
+      .map(l => l.trim())
+      .find(l => l.length > 0) ?? "Saved message";
+    const cleanTitle = firstLine
+      .replace(/^#+\s*/, "")          // markdown headers
+      .replace(/^[-*•]\s*/, "")       // list bullets
+      .replace(/^\*\*(.+?)\*\*$/, "$1") // bold-only
+      .slice(0, 120) || "Saved message";
+    setSaving(true);
+    try {
+      await createSessionMemory(sid, {
+        title: cleanTitle,
+        content: fullText,
+        kind: "note",
+      });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2400);
+    } catch (err) {
+      console.error("Save to memory failed:", err);
+    } finally {
+      setSaving(false);
+    }
+  }, [activeSessionId, staffSessionId, fullText, saving]);
+
+  const outputTok = usage?.output_tokens ?? 0;
+  const cacheTok  = usage?.cache_read_tokens ?? 0;
+
+  // Cost is intentionally NOT surfaced in the per-message footer.
+  // The user asked for a calmer summary that doesn't put dollar signs
+  // under every reply — accumulated spend still rolls up in the
+  // session-level budget pill. We keep cost_usd on the model (the
+  // budget meter / billing surface needs it) but suppress it here.
+  void cost_usd;
+
+  const timePart = duration_ms != null && duration_ms > 0 ? fmtDuration(duration_ms) : null;
+  const tokenPart = outputTok > 0 ? `${fmtTokens(outputTok)} tokens` : null;
+  const cachePart = cacheTok > 0 ? `${fmtTokens(cacheTok)} cached` : null;
+
+  const hasMeta = timePart || tokenPart || cachePart;
+  // Always reserve space — the row used to return null when nothing
+  // visible and hovered=false, which caused the entire message below
+  // to jump up by ~22px the moment the cursor entered. We keep the
+  // box around always; fade buttons in via opacity only.
+  const showRow = hasMeta || !toolOnly; // hovered surfacing only adds icons
+  if (!showRow) return null;
+
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 8,
+      marginTop: 6, minHeight: 22,
+      opacity: (hasMeta || hovered) ? (hovered ? 1 : 0.45) : 0,
+      transition: "opacity 0.2s",
+    }}>
+      <span style={{ fontSize: 11.5, color: "var(--c-dim)", fontFamily: "var(--font-mono)", letterSpacing: "-0.01em" }}>
+        {[timePart, tokenPart, cachePart].filter(Boolean).join("  ·  ")}
+      </span>
+
+      {/* Action cluster — Save to memory + Copy. Both fade in on hover so
+          they don't compete with the cost/token meta line at rest. */}
+      <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 2 }}>
+        {/* Save to memory — only when there's text body to save */}
+        {fullText.trim() && (
+          <button
+            onClick={saveToMemory}
+            disabled={saving}
+            title={saved ? "Saved to memory" : "Save to memory"}
+            style={{
+              width: 22, height: 22,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              borderRadius: 5, background: "none", border: "none", cursor: "pointer",
+              color: saved ? "var(--c-high)" : "var(--c-dim)",
+              opacity: hovered || saved ? 1 : 0,
+              transition: "opacity 0.15s, color 0.1s, background 0.1s",
+              pointerEvents: hovered ? "auto" : "none",
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = "var(--c-srf2)"; e.currentTarget.style.color = "var(--c-high)"; }}
+            onMouseLeave={e => { e.currentTarget.style.background = "none"; e.currentTarget.style.color = saved ? "var(--c-high)" : "var(--c-dim)"; }}
+          >
+            {saved
+              ? <BookmarkCheck size={12} strokeWidth={2} />
+              : <Bookmark size={12} strokeWidth={1.75} />}
+          </button>
+        )}
+
+        {/* Copy */}
+        <button
+          onClick={copy}
+          title="Copy"
+          style={{
+            width: 22, height: 22,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            borderRadius: 5, background: "none", border: "none", cursor: "pointer",
+            color: copied ? "var(--c-high)" : "var(--c-dim)",
+            opacity: hovered ? 1 : 0,
+            transition: "opacity 0.15s, color 0.1s",
+            pointerEvents: hovered ? "auto" : "none",
+          }}
+          onMouseEnter={e => { e.currentTarget.style.background = "var(--c-srf2)"; e.currentTarget.style.color = "var(--c-high)"; }}
+          onMouseLeave={e => { e.currentTarget.style.background = "none"; e.currentTarget.style.color = copied ? "var(--c-high)" : "var(--c-dim)"; }}
+        >
+          {copied ? <Check size={12} strokeWidth={2} /> : <Copy size={12} strokeWidth={1.75} />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
+/* ── Live streaming stats (shown below content while generating) ── */
+export function StreamingStats() {
+  // Per-field selectors — full-state useAppStore() re-rendered the
+  // stats row on every unrelated app-store mutation.
+  const activeSessionId = useAppStore(s => s.activeSessionId);
+  const staffSessionId = useAppStore(s => s.staffSessionId);
+  const sid = activeSessionId || staffSessionId;
+  const { streamStartTime, streamingText, isStreaming } = useChatStore(selectSession(sid));
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!isStreaming || !streamStartTime) { setElapsed(0); return; }
+    const iv = setInterval(() => setElapsed(Date.now() - streamStartTime), 300);
+    return () => clearInterval(iv);
+  }, [isStreaming, streamStartTime]);
+
+  if (!isStreaming || elapsed < 800) return null;
+
+  const approxTokens = Math.round(streamingText.length / 4);
+
+  return (
+    <div style={{
+      marginTop: 10, fontSize: 10.5, fontFamily: "var(--font-mono)",
+      color: "var(--c-ghost)",
+      display: "flex", alignItems: "center", gap: 6,
+    }}>
+      <span>{fmtDuration(elapsed)}</span>
+      {approxTokens > 20 && (
+        <>
+          <span style={{ opacity: 0.4 }}>·</span>
+          <span>~{fmtTokens(approxTokens)} tok</span>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ── Render text with @mention tokens highlighted ── */
+function renderWithMentions(text: string): React.ReactNode {
+  // Exclude trailing sentence punctuation from the mention token
+  const parts = text.split(/(@[^\s.,!?;:'")\]>]+)/g);
+  return parts.map((part, i) =>
+    part.startsWith("@") && part.length > 1
+      ? (
+        <span key={i} style={{
+          background: "rgba(96,165,250,0.12)",
+          color: "rgba(96,165,250,0.9)",
+          borderRadius: 4,
+          padding: "0 3px",
+          fontWeight: 500,
+        }}>{part}</span>
+      )
+      : part
+  );
+}
+
+/* ── User message ── */
+function UserMessage({ content, msgRef }: { content: ContentBlock[]; msgRef?: React.RefObject<HTMLDivElement | null> }) {
+  const images = content.filter((b): b is import("@/types/chat").ImageBlock => b.type === "image");
+  const rawText = content
+    .filter((b): b is { type: "text"; text: string } => b.type === "text")
+    .map(b => b.text).join("\n");
+  // Strip ALL internal metadata — fleet status snapshot, agent-context
+  // pull-ins, Auto-mode prefixes, leftover dispatch tokens. The user
+  // sent only the prompt; that's all they should see when reading back.
+  const text = cleanUserText(rawText);
+
+  // Tool result messages have no text or images — don't render empty pills
+  if (!text && images.length === 0) return null;
+
+  // Slash-command rendering: when the bubble carries only a /command,
+  // tint it blue and switch to a mono-ish stack so it reads as an
+  // instruction issued to the system rather than a sentence said to
+  // the agent. Single-line guard avoids hijacking long prompts that
+  // happen to start with "/" (e.g. a path quoted by the user).
+  const isSlashCommand = !!text && /^\/[a-zA-Z][\w-]*\b/.test(text) && !text.includes("\n");
+
+  return (
+    // Right-aligned bubble. Was: full-width outlined box that read as
+    // a draft input field — confusing because user mentally maps
+    // "outlined rectangle near the bottom of a chat" to "where I type".
+    // Standard chat UX: user message on the right, solid subtle
+    // accent background, NO outline border, capped max-width so the
+    // line length stays comfortable.
+    <div
+      ref={msgRef}
+      className="msg-in"
+      style={{
+        marginBottom: 20,
+        display: "flex",
+        justifyContent: "flex-end",
+      }}
+    >
+      <div style={{
+        // Bubble itself
+        maxWidth: "75%",
+        padding: "9px 13px",
+        borderRadius: 14,
+        // Smaller corner on the bottom-right so the bubble visually
+        // "points" back to the input below — tiny detail, big polish.
+        borderBottomRightRadius: 6,
+        // Slash commands get a blue-tinted surface so they read as
+        // "directive to the system" instead of "thing said to the
+        // agent". Regular prose keeps the neutral hover surface.
+        background: isSlashCommand
+          ? "rgba(96,165,250,0.12)"
+          : "var(--secondary)",
+        overflow: "hidden",
+      }}>
+        {images.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: text ? 8 : 0 }}>
+            {images.map((img, i) => (
+              <img
+                key={i}
+                src={img.preview ?? `data:${img.media_type};base64,${img.data}`}
+                alt={img.name ?? `Image ${i + 1}`}
+                style={{
+                  maxWidth: "100%", maxHeight: 240,
+                  borderRadius: 7, objectFit: "contain",
+                  display: "block",
+                }}
+              />
+            ))}
+          </div>
+        )}
+        {text && (
+          <p style={{
+            fontSize: 13,
+            color: isSlashCommand ? "#60a5fa" : "var(--c-high)",
+            lineHeight: 1.55, whiteSpace: "pre-wrap", margin: 0,
+            letterSpacing: "-0.004em",
+            overflowWrap: "break-word", wordBreak: "break-word",
+            fontFamily: isSlashCommand
+              ? "var(--font-mono, ui-monospace, SFMono-Regular, monospace)"
+              : undefined,
+            fontWeight: isSlashCommand ? 500 : undefined,
+          }}>
+            {renderWithMentions(text)}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── Compact summary card ──
+ *
+ *  Rendered for the assistant message the compactor persists after a
+ *  /compact run. The body is the model's structured summary (Goal /
+ *  Decisions / Files / Open questions / Next steps) and the next agent
+ *  turn injects the same summary into its system prompt, so what the
+ *  user sees in this card IS the continuity context. It collapses by
+ *  default after the first paint, on the theory that the user wants
+ *  the chat surface back — they can click to expand whenever they
+ *  want to re-read the summary. */
+function CompactSummaryCard({
+  summary,
+  timestamp,
+}: {
+  summary: string;
+  timestamp: string;
+}) {
+  const [open, setOpen] = useState(true);
+  const stamp = useMemo(() => {
+    const d = new Date(timestamp);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toLocaleString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }, [timestamp]);
+
+  // Soft blue that matches the inline "Compacted" pill — gives the
+  // card a visual lineage with the status text the user just saw flip
+  // from running to done.
+  const accent = "rgba(96,165,250,0.85)";
+  const border = "rgba(96,165,250,0.25)";
+  const bg = "rgba(96,165,250,0.045)";
+
+  return (
+    <div
+      className="fade-in"
+      style={{
+        margin: "6px 0 18px",
+        border: `1px solid ${border}`,
+        borderRadius: 10,
+        background: bg,
+        overflow: "hidden",
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        style={{
+          width: "100%",
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "8px 12px",
+          background: "transparent",
+          border: "none",
+          cursor: "pointer",
+          color: accent,
+          fontSize: 12.5,
+          fontWeight: 500,
+          letterSpacing: "-0.01em",
+          textAlign: "left",
+        }}
+      >
+        <ChevronRight
+          size={12}
+          style={{
+            transform: open ? "rotate(90deg)" : "rotate(0deg)",
+            transition: "transform 0.15s ease",
+            flexShrink: 0,
+            opacity: 0.85,
+          }}
+        />
+        <BookOpen size={13} style={{ flexShrink: 0, opacity: 0.9 }} />
+        <span style={{ flex: 1 }}>Conversation summary</span>
+        {stamp && (
+          <span
+            style={{
+              color: "var(--c-ghost)",
+              fontWeight: 400,
+              fontSize: 11.5,
+              opacity: 0.75,
+            }}
+          >
+            {stamp}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div
+          style={{
+            padding: "0 14px 12px 14px",
+            borderTop: `1px dashed ${border}`,
+            paddingTop: 10,
+          }}
+        >
+          <MarkdownBody text={summary} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Assistant message ── */
+function AssistantMessage({ message }: { message: ChatMessage }) {
+  const { content } = message;
+  const [hovered, setHovered] = useState(false);
+  // Transcript view drives which content blocks render and
+  // whether thinking / tool rows come up auto-expanded:
+  //
+  //   normal    → render all blocks, collapsed by default
+  //   thinking  → same as normal, but thinking blocks are
+  //               force-expanded so the user sees the model's
+  //               rationale without clicking
+  //   verbose   → all blocks, both thinking AND tool rows
+  //               force-expanded — full raw transcript
+  //   summary   → text + artifacts only; thinking and tool
+  //               rows are dropped entirely so the user gets
+  //               just the conclusions
+  const transcriptView = useAppStore(s => s.transcriptView);
+  const forceThinkingOpen = transcriptView === "thinking" || transcriptView === "verbose";
+  const forceToolOpen     = transcriptView === "verbose";
+  const dropThinking      = transcriptView === "summary";
+  const dropTools         = transcriptView === "summary";
+
+  // Use tighter margin for tool-call-only messages (no text blocks).
+  // Bumped 20 → 28 so the breathing room between an agent's prose
+  // and the next user message feels deliberate, not a default.
+  const hasText = content.some(b => b.type === "text" && (b as { type: "text"; text: string }).text.trim());
+  const mb = hasText ? 28 : 6;
+
+  // Build a tool_id → tool_result lookup so each tool_use row can
+  // render its own output without a second pass through `content`.
+  // The result block always arrives AFTER its tool_use in the same
+  // message body, so this single iteration is enough.
+  const toolResultById: Record<string, { output: string; is_error: boolean }> = {};
+  for (const b of content) {
+    if (b.type === "tool_result") {
+      const tr = b as { tool_id: string; output: string; is_error: boolean };
+      if (tr.tool_id) toolResultById[tr.tool_id] = { output: tr.output, is_error: tr.is_error };
+    }
+  }
+
+  return (
+    <div
+      className="msg-in"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{ marginBottom: mb }}
+    >
+      <div>
+        {(() => {
+          // Batch consecutive tool_use / tool_result blocks so we can
+          // render them through ToolGroup (which collapses runs of ≥2
+          // into a single "Edited N files" summary). tool_result blocks
+          // never render on their own — they feed into the matching
+          // tool_use row via toolResultById — so collecting them in the
+          // same pass keeps the iteration simple.
+          const out: React.ReactNode[] = [];
+          let toolRun: Array<{
+            tool_id?: string;
+            tool_name?: string;
+            name?: string;
+            tool_kind?: string;
+            input?: Record<string, unknown>;
+          }> = [];
+          const flushTools = (keyHint: string) => {
+            if (toolRun.length === 0) return;
+            // Short consecutive batches can stay as one mixed-verb group
+            // ("Edited a file, ran 2 commands"). Long batches read as a
+            // single mega-summary ("Ran 17 commands, edited 10 files")
+            // which the user explicitly said feels like a status line and
+            // not a transcript — Claude Code Desktop splits these by
+            // tool-type into stacked groups instead. We follow the same
+            // rule: ≤4 items stays mixed, otherwise group into runs of
+            // consecutive same-verb tools.
+            const SMALL_MIXED_LIMIT = 4;
+            const runs: typeof toolRun[] = [];
+            if (toolRun.length <= SMALL_MIXED_LIMIT) {
+              runs.push(toolRun);
+            } else {
+              let current: typeof toolRun = [];
+              let currentVerb: string | null = null;
+              for (const t of toolRun) {
+                const v = getToolMeta(t.tool_name || t.name || "", t.tool_kind).verb;
+                if (currentVerb === null || v === currentVerb) {
+                  current.push(t);
+                  currentVerb = v;
+                } else {
+                  runs.push(current);
+                  current = [t];
+                  currentVerb = v;
+                }
+              }
+              if (current.length) runs.push(current);
+            }
+            runs.forEach((run, ri) => {
+              out.push(
+                <ToolGroup
+                  key={`tg-${keyHint}-${ri}`}
+                  tools={run}
+                  results={toolResultById}
+                  forceOpen={forceToolOpen}
+                  dropTools={dropTools}
+                />
+              );
+            });
+            toolRun = [];
+          };
+          content.forEach((block, i) => {
+            if (block.type === "tool_use") {
+              const tb = block as {
+                tool_id?: string;
+                tool_name?: string;
+                name?: string;
+                tool_kind?: string;
+                input?: Record<string, unknown>;
+              };
+              const tn = tb.tool_name || tb.name || "";
+              // Task tool dispatches are NOT regular tools — they're
+              // sub-agent runs that own their own pane on the right.
+              // Render an inline "Ran agent X" row instead of folding
+              // into the ToolGroup summary; clicking that row focuses
+              // the Agent pane on this sub-agent. Matches Claude Code
+              // Desktop's chat where the sub-agent dispatch is a slim
+              // standalone line linking out to its detail view.
+              if (tn === "Task" || tn === "task") {
+                flushTools(`pre-subagent-${i}`);
+                const desc = String(
+                  (tb.input?.description ?? tb.input?.prompt ?? "Agent")
+                ).trim().split("\n")[0] || "Agent";
+                out.push(
+                  <SubagentChatRow
+                    key={i}
+                    toolUseId={tb.tool_id ?? ""}
+                    fallbackTitle={desc.length > 80 ? desc.slice(0, 80) + "…" : desc}
+                  />
+                );
+                return;
+              }
+              toolRun.push(tb);
+              return;
+            }
+            if (block.type === "tool_result") {
+              // Consumed via toolResultById; doesn't break the run.
+              return;
+            }
+            // Non-tool block — flush whatever we accumulated, then
+            // render this block.
+            flushTools(String(i));
+            if (block.type === "text") {
+              const cleaned = stripDispatch(block.text);
+              if (cleaned) out.push(<MarkdownBody key={i} text={cleaned} />);
+            } else if (block.type === "thinking") {
+              // Thinking is rendered as one consolidated chip in the
+              // stats row, not inline — see ThoughtsChip in
+              // MessageStatsRow. Codex emits a fresh reasoning burst
+              // per tool batch; inline rendering stacked 5+ chips
+              // between tools and dominated the chat.
+            } else if (block.type === "artifact") {
+              out.push(<ArtifactCard key={i} block={block as ArtifactBlock} />);
+            } else if (block.type === "resource_card") {
+              const card = renderResourceCard(block as ResourceCardBlock);
+              if (card) out.push(<div key={i}>{card}</div>);
+            }
+          });
+          flushTools("tail");
+          return out;
+        })()}
+        {!dropThinking && (() => {
+          const bursts = content
+            .filter((b): b is { type: "thinking"; text: string; duration_ms?: number } => b.type === "thinking")
+            .map(b => ({ text: b.text, durationMs: b.duration_ms }));
+          if (bursts.length === 0) return null;
+          return (
+            <div style={{ marginTop: 8 }}>
+              <ThoughtsChip bursts={bursts} forceOpen={forceThinkingOpen} />
+            </div>
+          );
+        })()}
+        <MessageStatsRow message={message} hovered={hovered} toolOnly={!hasText} />
+      </div>
+    </div>
+  );
+}
+
+/* ── Dispatch permission card ─────────────────────────────────────
+   Permission state lives entirely in the right sidebar:
+   - Pending  → PendingPermissionsQueue at the top of the Pulse panel
+   - Resolved → Live Pulse event stream (audit trail)
+
+   Chat NEVER renders these cards. Earlier we tried a "fallback when right
+   panel is closed" mode but the user's feedback was that long sessions
+   pile up dozens of `Allowed · WebSearch · agent` rows in chat history,
+   which is pure noise. The right sidebar is the single source of truth.
+   We keep the component as a typed no-op so DispatchPermissionBlock
+   message lookups don't crash. */
+function DispatchPermissionCard(_props: { block: import("@/types/chat").DispatchPermissionBlock }): React.JSX.Element | null {
+  void _props;
+  return null;
+}
+
+/* ── Dispatch pending — frameless inline indicator + live preview ── */
+function DispatchPendingCard({ block }: { block: import("@/types/chat").DispatchPendingBlock }) {
+  // Subscribe to the live preview buffer for this dispatch. The backend
+  // mirrors the target agent's text/thinking deltas + last tool name to
+  // the staff WS while the dispatch is in flight; we render a tail
+  // (last ~280 chars of text, or current tool/thinking) under the
+  // header so the user can watch the agent work without leaving Fleet.
+  const preview = useChatStore(s => s.dispatchPreviews[block.agent_id]);
+  // Selectors for the click-through on the agent name. Mirrors the
+  // pattern in DispatchResultCard — wrap the name in a button that
+  // sets the active session so the user can jump into the dispatched
+  // agent's own chat (and watch the same stream live there) without
+  // leaving the pill.
+  const sessions = useAppStore(s => s.sessions);
+  const setActiveSession = useAppStore(s => s.setActiveSession);
+  const targetSession = sessions.find(s => s.id === block.agent_id);
+  const [nameHover, setNameHover] = useState(false);
+  const openTarget = useCallback(() => {
+    if (!targetSession) return;
+    setActiveSession(block.agent_id);
+  }, [targetSession, setActiveSession, block.agent_id]);
+
+  const tail = preview?.text?.trim().slice(-280) ?? "";
+  const thinkingTail = preview?.thinking?.trim().slice(-160) ?? "";
+  const showText = tail.length > 0;
+  const showTool = !showText && !!preview?.lastTool;
+  const showThinking = !showText && !showTool && thinkingTail.length > 0;
+
+  // Phase badge — visible feedback during the 2-5s window between
+  // "task accepted" and "first stream event arrived". Without this,
+  // the user stares at three dots and can't tell whether the agent
+  // is booting, stuck, or whether the dispatch even reached the
+  // backend at all. Mapped from the dispatch_progress WS event:
+  //   "starting" → "Waking up" (auto-wake of stopped/error agent)
+  //   "received" → "Received"  (target was already idle/running)
+  //   "running"  → no badge   (the live preview rail itself is the
+  //                            signal — duplicating it as a badge
+  //                            would be visual noise)
+  const phase = preview?.phase;
+  const autoWoken = !!preview?.autoWoken;
+  const phaseLabel: string | null =
+    phase === "starting" ? (autoWoken ? "Waking" : "Starting")
+  : phase === "received" ? "Received"
+  : null; // intentionally null on "running" — the preview rail is the signal
+
+  return (
+    <div className="fade-in" style={{ margin: "2px 0 16px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+        <span style={{ display: "flex", gap: 2.5, flexShrink: 0 }}>
+          {[0,1,2].map(j => (
+            <span key={j} style={{ width: 3, height: 3, borderRadius: "50%", background: "var(--c-ghost)", display: "block", animation: `dot-seq 1.4s ease-in-out ${j*0.22}s infinite` }} />
+          ))}
+        </span>
+        <span style={{ fontSize: 12, color: "var(--c-dim)" }}>
+          {"Dispatching to "}
+          {/* Agent name is a click-through into the target session's own
+              chat. Same affordance the result card carries — gives the
+              user a way to jump out of Fleet and watch the dispatched
+              agent live without waiting for it to finish. Disabled if
+              the session record is missing (archived / deleted) so the
+              click can't strand the user on an unresolvable id. */}
+          <button
+            type="button"
+            onClick={openTarget}
+            disabled={!targetSession}
+            onMouseEnter={() => targetSession && setNameHover(true)}
+            onMouseLeave={() => setNameHover(false)}
+            title={targetSession ? `Open ${block.agent_name}'s session` : "Session no longer available"}
+            style={{
+              display: "inline",
+              padding: 0, background: "transparent", border: "none",
+              cursor: targetSession ? "pointer" : "default",
+              fontFamily: "inherit", fontSize: "inherit",
+              fontWeight: 500,
+              color: nameHover ? "var(--c-high)" : "var(--c-med)",
+              textDecoration: nameHover ? "underline" : "none",
+              textDecorationThickness: 1,
+              textUnderlineOffset: 2,
+              transition: "color 0.12s",
+              outline: "none",
+            }}
+          >
+            {block.agent_name}
+          </button>
+          {block.task && <span style={{ color: "var(--c-ghost)" }}> — {block.task.length > 70 ? block.task.slice(0, 70) + "…" : block.task}</span>}
+        </span>
+        {phaseLabel && (
+          <span
+            title={autoWoken ? "Agent was stopped — auto-waking it for this dispatch" : undefined}
+            style={{
+              flexShrink: 0,
+              fontSize: 9.5, fontWeight: 600,
+              letterSpacing: "0.06em", textTransform: "uppercase",
+              padding: "2px 6px", borderRadius: 999,
+              background: "var(--c-srf)", color: "var(--c-low)",
+              border: "1px solid var(--c-brd)",
+            }}
+          >
+            {phaseLabel}
+          </span>
+        )}
+      </div>
+
+      {/* Live preview rail. Indented to align with the dot column above. */}
+      {(showText || showTool || showThinking) && (
+        <div style={{
+          marginTop: 6, marginLeft: 18,
+          paddingLeft: 8, borderLeft: "1.5px solid var(--c-brd)",
+          fontSize: 11.5, lineHeight: 1.45,
+          color: "var(--c-dim)",
+          maxHeight: 110, overflow: "hidden",
+          maskImage: "linear-gradient(to bottom, black 60%, transparent 100%)",
+          WebkitMaskImage: "linear-gradient(to bottom, black 60%, transparent 100%)",
+        }}>
+          {showText && (
+            <span style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+              {tail}
+            </span>
+          )}
+          {showTool && (
+            <span style={{
+              fontFamily: "var(--font-mono, 'SF Mono', monospace)",
+              color: "var(--c-low)",
+            }}>
+              ⚙ {preview!.lastTool}
+            </span>
+          )}
+          {showThinking && (
+            <span style={{ fontStyle: "italic", color: "var(--c-ghost)" }}>
+              thinking · {thinkingTail}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Dispatch result — frameless, looks like a regular message with a source tag ── */
+function DispatchResultCard({ block }: { block: import("@/types/chat").DispatchResultBlock }) {
+  // Per-field selectors — full-state useAppStore() re-rendered every
+  // dispatch card on every notification / draft / pane-focus change.
+  const sessions = useAppStore(s => s.sessions);
+  const staffSessionId = useAppStore(s => s.staffSessionId);
+  const setActiveSession = useAppStore(s => s.setActiveSession);
+  const session = sessions.find(s => s.id === block.agent_id);
+  const folder = folderName(session?.project_path) || null;
+  const failColor = "rgba(248,113,113,0.85)";
+
+  // Hover state for the attribution-row button — drives a subtle color
+  // shift on `agent_name` to telegraph that the cluster is clickable.
+  // Local state instead of CSS :hover so we can scope it to the row
+  // only (the row sits inside a larger card whose own hover styles
+  // would otherwise muddy the signal).
+  const [headerHover, setHeaderHover] = useState(false);
+
+  // Inline reply state — textarea is hidden until the user clicks Reply.
+  // We deliberately don't auto-open it because every dispatch_result would
+  // pile up open inputs in long staff conversations.
+  const [replyOpen, setReplyOpen] = useState(false);
+  const [replyText, setReplyText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [retried, setRetried] = useState(false);
+  const replyRef = useRef<HTMLTextAreaElement>(null);
+
+  // Navigate into the dispatched agent's own chat. Disabled if the
+  // session record is missing (archived or already deleted) — clicking
+  // would otherwise switch to an id that the chat-view can't resolve.
+  const openSession = useCallback(() => {
+    if (!session) return;
+    setActiveSession(block.agent_id);
+  }, [session, setActiveSession, block.agent_id]);
+
+  useEffect(() => {
+    if (replyOpen) replyRef.current?.focus();
+  }, [replyOpen]);
+
+  const sendReply = useCallback(async () => {
+    const t = replyText.trim();
+    if (!t || sending) return;
+    setSending(true);
+    try {
+      const { dispatchFollowUp } = await import("@/lib/api");
+      await dispatchFollowUp(block.agent_id, t, staffSessionId ?? undefined);
+      setReplyText("");
+      setReplyOpen(false);
+    } catch (err) {
+      console.error("Reply failed:", err);
+    } finally {
+      setSending(false);
+    }
+  }, [replyText, sending, block.agent_id, staffSessionId]);
+
+  // Re-dispatch the same task when a dispatch failed. Reuses the
+  // existing follow-up endpoint — same backend code path as Reply,
+  // just with the original task as payload. Shows a brief "Retried"
+  // state so the user knows their click registered.
+  const retryDispatch = useCallback(async () => {
+    if (retrying || retried) return;
+    const task = block.task?.trim();
+    if (!task) return;
+    setRetrying(true);
+    try {
+      const { dispatchFollowUp } = await import("@/lib/api");
+      await dispatchFollowUp(block.agent_id, task, staffSessionId ?? undefined);
+      setRetried(true);
+      setTimeout(() => setRetried(false), 4000);
+    } catch (err) {
+      console.error("Retry failed:", err);
+    } finally {
+      setRetrying(false);
+    }
+  }, [retrying, retried, block.agent_id, block.task, staffSessionId]);
+
+  return (
+    <div
+      className="fade-in"
+      // Used by the notification stack to scroll-and-highlight the
+      // matching result card when the user clicks "agent finished" —
+      // they stay on the Fleet chat instead of being yanked to the
+      // dispatched agent's session.
+      data-dispatch-result-agent={block.agent_id}
+      style={{
+        margin: "4px 0 20px",
+        // Highlight target — the notification onClick handler toggles
+        // this class for ~2s when the user clicks to focus the result.
+        transition: "background 0.4s ease, box-shadow 0.4s ease",
+        borderRadius: 8,
+      }}
+    >
+      {/* Attribution tag — the left cluster (icon + agent name + folder +
+          status) is a single button that jumps into the dispatched
+          agent's own chat. Retry/Reply stay outside this button so the
+          HTML doesn't nest buttons (which browsers ignore the inner
+          click on). When the session record is missing — archived or
+          already removed — the button is disabled and visually quiet,
+          since switching to a non-existent session would land the user
+          on an empty chat-view. */}
+      <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 8 }}>
+        <button
+          type="button"
+          onClick={openSession}
+          disabled={!session}
+          onMouseEnter={() => session && setHeaderHover(true)}
+          onMouseLeave={() => setHeaderHover(false)}
+          title={session ? `Open ${block.agent_name}'s session` : "Session no longer available"}
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 5,
+            padding: 0, background: "transparent", border: "none",
+            cursor: session ? "pointer" : "default",
+            fontFamily: "inherit", textAlign: "left",
+            color: "inherit", outline: "none",
+          }}
+        >
+          <span style={{ color: block.success ? "var(--c-dim)" : failColor, display: "flex" }}>
+            {block.success ? <CheckCircle2 size={11} /> : <AlertCircle size={11} />}
+          </span>
+          <span style={{
+            fontSize: 11.5, fontWeight: 500,
+            color: headerHover ? "var(--c-high)" : "var(--c-med)",
+            textDecoration: headerHover ? "underline" : "none",
+            textDecorationThickness: 1,
+            textUnderlineOffset: 2,
+            transition: "color 0.12s",
+          }}>{block.agent_name}</span>
+          {folder && (
+            <>
+              <span style={{ color: "var(--c-ghost)", fontSize: 10 }}>·</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 2, fontSize: 11, color: "var(--c-dim)", fontFamily: "var(--font-mono)" }}>
+                <FolderOpen size={9} style={{ opacity: 0.6 }} />{folder}
+              </span>
+            </>
+          )}
+          <span style={{ color: "var(--c-ghost)", fontSize: 10 }}>·</span>
+          <span style={{ fontSize: 11, color: block.success ? "var(--c-ghost)" : failColor }}>
+            {block.success ? "done" : "failed"}
+          </span>
+        </button>
+        {/* Action cluster — Retry (failed dispatches) + Reply. Only on the
+            staff/Fleet view; agent-individual views don't dispatch back. */}
+        {staffSessionId && (
+          <div style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 2 }}>
+            {/* Retry — only when this dispatch actually failed AND we have
+                a task body to re-send. Disabled in the brief "Retried"
+                window so users don't fire duplicates. */}
+            {!block.success && block.task?.trim() && (
+              <button
+                onClick={retryDispatch}
+                disabled={retrying || retried}
+                title={retried ? "Retried" : "Re-run the same task on this agent"}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 4,
+                  fontSize: 10.5, fontWeight: 500,
+                  color: retried ? "var(--c-high)" : "var(--c-ghost)",
+                  background: "transparent", border: "none",
+                  cursor: retrying || retried ? "default" : "pointer",
+                  padding: "3px 7px", borderRadius: 5,
+                  transition: "color 0.12s, background 0.12s",
+                }}
+                onMouseEnter={e => {
+                  if (retrying || retried) return;
+                  e.currentTarget.style.background = "var(--c-srf)";
+                  e.currentTarget.style.color = "var(--c-low)";
+                }}
+                onMouseLeave={e => {
+                  if (retrying || retried) return;
+                  e.currentTarget.style.background = "transparent";
+                  e.currentTarget.style.color = "var(--c-ghost)";
+                }}
+              >
+                <RotateCcw size={9} />
+                <span>{retrying ? "Retrying…" : retried ? "Retried" : "Retry"}</span>
+              </button>
+            )}
+            <button
+              onClick={() => setReplyOpen(v => !v)}
+              title={replyOpen ? "Cancel reply" : "Reply to this agent without leaving Fleetify"}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 4,
+                fontSize: 10.5, fontWeight: 500,
+                color: replyOpen ? "var(--c-high)" : "var(--c-ghost)",
+                background: "transparent", border: "none", cursor: "pointer",
+                padding: "3px 7px", borderRadius: 5,
+                transition: "color 0.12s, background 0.12s",
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = "var(--c-srf)"; e.currentTarget.style.color = "var(--c-low)"; }}
+              onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = replyOpen ? "var(--c-high)" : "var(--c-ghost)"; }}
+            >
+              <CornerDownLeft size={9} />
+              <span>{replyOpen ? "Cancel" : "Reply"}</span>
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Full message — rendered as markdown, no container */}
+      {block.summary && <MarkdownBody text={block.summary} />}
+
+      {/* Inline reply composer */}
+      {replyOpen && (
+        <div style={{
+          marginTop: 10,
+          border: "1px solid var(--c-brd)", borderRadius: 8,
+          background: "var(--c-srf)", overflow: "hidden",
+        }}>
+          <textarea
+            ref={replyRef}
+            value={replyText}
+            onChange={e => setReplyText(e.target.value)}
+            onKeyDown={e => {
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                e.preventDefault();
+                sendReply();
+              }
+              if (e.key === "Escape") {
+                setReplyOpen(false);
+                setReplyText("");
+              }
+            }}
+            placeholder={`Follow-up to ${block.agent_name}…`}
+            rows={2}
+            disabled={sending}
+            style={{
+              width: "100%", boxSizing: "border-box",
+              padding: "9px 12px",
+              background: "transparent", border: "none",
+              color: "var(--c-high)", fontSize: 12.5,
+              fontFamily: "inherit", resize: "vertical",
+              outline: "none", minHeight: 50,
+            }}
+          />
+          <div style={{
+            display: "flex", alignItems: "center",
+            padding: "5px 8px 6px",
+            borderTop: "1px solid var(--c-brd)",
+            gap: 6,
+          }}>
+            <span style={{ fontSize: 10, color: "var(--c-ghost)", flex: 1 }}>
+              ⌘↵ to send · Esc to cancel
+            </span>
+            <button
+              onClick={sendReply}
+              disabled={!replyText.trim() || sending}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 4,
+                padding: "5px 10px", borderRadius: 5, border: "none",
+                background: replyText.trim() && !sending ? "var(--c-high)" : "var(--c-srf2)",
+                color: replyText.trim() && !sending ? "var(--c-srf)" : "var(--c-ghost)",
+                fontSize: 11, fontWeight: 600,
+                cursor: replyText.trim() && !sending ? "pointer" : "default",
+                transition: "background 0.12s, color 0.12s",
+              }}
+            >
+              <Send size={9} />
+              {sending ? "Sending…" : "Send"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Agent report card ── */
+function AgentReportCard({ block }: { block: import("@/types/chat").AgentReportBlock }) {
+  // Per-field selector — full-state useAppStore() re-rendered the
+  // report card on every unrelated app-store mutation.
+  const sessions = useAppStore(s => s.sessions);
+  const session = sessions.find(s => s.id === block.agent_id);
+  const folder = folderName(session?.project_path) || null;
+
+  const palette = {
+    error: { dot: "rgba(248,113,113,0.9)", bg: "rgba(248,113,113,0.06)", brd: "rgba(248,113,113,0.18)", badge: "rgba(248,113,113,0.12)" },
+    warn:  { dot: "rgba(251,146,60,0.9)",  bg: "rgba(251,146,60,0.06)",  brd: "rgba(251,146,60,0.18)",  badge: "rgba(251,146,60,0.12)"  },
+    info:  { dot: "rgba(96,165,250,0.85)", bg: "rgba(96,165,250,0.05)",  brd: "rgba(96,165,250,0.15)",  badge: "rgba(96,165,250,0.10)"  },
+  };
+  const p = palette[block.level] ?? palette.info;
+
+  return (
+    <div className="fade-in" style={{
+      margin: "4px 0 14px",
+      borderRadius: 10,
+      border: `1px solid ${p.brd}`,
+      background: p.bg,
+      overflow: "hidden",
+    }}>
+      {/* Header */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 7,
+        padding: "8px 12px 7px",
+        borderBottom: `1px solid ${p.brd}`,
+      }}>
+        {/* Animated level dot */}
+        <span style={{
+          width: 6, height: 6, borderRadius: "50%",
+          background: p.dot, flexShrink: 0,
+          boxShadow: `0 0 0 3px ${p.badge}`,
+        }} />
+
+        {/* Agent name */}
+        <span style={{
+          fontSize: 12, fontWeight: 600, color: p.dot,
+          background: p.badge, padding: "1px 7px", borderRadius: 5,
+        }}>
+          {block.agent_name}
+        </span>
+
+        {/* Project folder */}
+        {folder && (
+          <>
+            <span style={{ color: "var(--c-ghost)", fontSize: 10, opacity: 0.6 }}>in</span>
+            <span style={{
+              display: "flex", alignItems: "center", gap: 3,
+              fontSize: 11, color: "var(--c-dim)", fontFamily: "var(--font-mono)",
+            }}>
+              <FolderOpen size={10} style={{ opacity: 0.7 }} />
+              {folder}
+            </span>
+          </>
+        )}
+
+        <span style={{ flex: 1 }} />
+
+        {/* Level badge */}
+        <span style={{
+          fontSize: 9.5, letterSpacing: "0.1em", textTransform: "uppercase",
+          color: p.dot, fontWeight: 600, opacity: 0.8,
+        }}>
+          {block.level}
+        </span>
+      </div>
+
+      {/* Message body */}
+      <div style={{ padding: "9px 12px 10px 25px", fontSize: 13, color: "var(--c-high)", lineHeight: 1.6 }}>
+        {block.message}
+      </div>
+    </div>
+  );
+}
+
+/* ── Artifact helpers ── */
+/** Dispatch a ResourceCardBlock to its specific card component.
+ *  The data shape for each card_kind is determined by the chat-input
+ *  slash-command dispatcher that produced the block (see chat-input.tsx
+ *  handleIntent). Returning null when the kind isn't recognised keeps
+ *  forward-compat soft — an older client sees an unknown card kind as
+ *  a no-op instead of a crash. */
+function renderResourceCard(block: ResourceCardBlock): React.ReactNode {
+  const data = (block.data ?? {}) as Record<string, unknown>;
+  switch (block.card_kind) {
+    case "skills":
+      return <SkillsCard items={(data.items as never) || []} provider={String(data.provider ?? "")} />;
+    case "hooks":
+      return <HooksCard items={(data.items as never) || []} provider={String(data.provider ?? "")} />;
+    case "commands":
+      return <CommandsCard items={(data.items as never) || []} provider={String(data.provider ?? "")} kind="commands" />;
+    case "prompts":
+      return <CommandsCard items={(data.items as never) || []} provider={String(data.provider ?? "")} kind="prompts" />;
+    case "usage":
+      return <UsageCard data={data as never} />;
+    case "mcp":
+      return <MCPStatusCard servers={(data.servers as never) || []} />;
+    case "init_done":
+      return <InitDoneCard path={String(data.path ?? "")} existed={Boolean(data.existed)} />;
+    case "info":
+      return <InfoCard
+        title={String(data.title ?? "")}
+        message={String(data.message ?? "")}
+        tone={(data.tone as "info" | "warn" | "error" | undefined) ?? "info"}
+      />;
+    case "init_pending":
+      // Sprint 2 uses window.confirm() for the overwrite branch instead
+      // of a card-rendered dialog. The block kind stays in the schema
+      // so a future renderer can flip back without a migration.
+      return null;
+    default:
+      return null;
+  }
+}
+
+
+function artifactIcon(artifactType: ArtifactBlock["artifact_type"]): React.ReactNode {
+  switch (artifactType) {
+    case "code":   return <Code2 size={13} />;
+    case "data":   return <BarChart2 size={13} />;
+    case "report": return <BookOpen size={13} />;
+    case "image":  return <Image size={13} />;
+    default:       return <FileText size={13} />;
+  }
+}
+
+function fmtBytes(n: number): string {
+  if (n >= 1_048_576) return `${(n / 1_048_576).toFixed(1)} MB`;
+  if (n >= 1_024)     return `${(n / 1_024).toFixed(1)} KB`;
+  return `${n} B`;
+}
+
+/* ── Artifact card ── */
+function ArtifactCard({ block }: { block: ArtifactBlock }) {
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied]     = useState(false);
+
+  const isCode   = block.artifact_type === "code";
+  const isReport = block.artifact_type === "report";
+  const isFile   = block.artifact_type === "file";
+  const isData   = block.artifact_type === "data";
+
+  const sizeLabel = block.size_bytes != null ? fmtBytes(block.size_bytes) : null;
+
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(block.content).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    });
+  }, [block.content]);
+
+  const handleDownload = useCallback(() => {
+    const blob = new Blob([block.content], { type: "text/plain" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
+    a.download = block.name;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [block.content, block.name]);
+
+  /* Badge colour — blue-toned, no green */
+  const badgeBg    = "rgba(96,165,250,0.10)";
+  const badgeColor = "rgba(96,165,250,0.80)";
+  const accentBrd  = "rgba(96,165,250,0.18)";
+
+  return (
+    <div
+      className="fade-in"
+      style={{
+        margin: "8px 0 14px",
+        borderRadius: 10,
+        border: "1px solid var(--c-brd)",
+        background: "var(--c-srf)",
+        overflow: "hidden",
+      }}
+    >
+      {/* ── Header row ── */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "9px 12px",
+          borderBottom: "1px solid var(--c-brd)",
+          background: "var(--c-srf2)",
+        }}
+      >
+        {/* Icon */}
+        <span style={{ color: badgeColor, display: "flex", flexShrink: 0 }}>
+          {artifactIcon(block.artifact_type)}
+        </span>
+
+        {/* Name */}
+        <span
+          style={{
+            fontSize: 12.5,
+            fontWeight: 600,
+            color: "var(--c-high)",
+            fontFamily: isCode || isData ? "var(--font-mono)" : "inherit",
+            flex: 1,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {block.name}
+        </span>
+
+        {/* Type badge */}
+        <span
+          style={{
+            fontSize: 10,
+            fontWeight: 600,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            color: badgeColor,
+            background: badgeBg,
+            border: `1px solid ${accentBrd}`,
+            padding: "1px 6px",
+            borderRadius: 4,
+            flexShrink: 0,
+          }}
+        >
+          {block.artifact_type}
+        </span>
+
+        {/* Language sub-badge (code only) */}
+        {isCode && block.language && (
+          <span
+            style={{
+              fontSize: 10,
+              color: "var(--c-dim)",
+              background: "var(--c-srf)",
+              border: "1px solid var(--c-brd)",
+              padding: "1px 5px",
+              borderRadius: 4,
+              fontFamily: "var(--font-mono)",
+              flexShrink: 0,
+            }}
+          >
+            {block.language}
+          </span>
+        )}
+
+        {/* Size */}
+        {sizeLabel && (
+          <span style={{ fontSize: 10.5, color: "var(--c-ghost)", flexShrink: 0 }}>
+            {sizeLabel}
+          </span>
+        )}
+
+        {/* Copy button (not for file-type) */}
+        {!isFile && (
+          <button
+            onClick={handleCopy}
+            title="Copy content"
+            style={{
+              display: "flex", alignItems: "center", gap: 3,
+              padding: "2px 7px", borderRadius: 5,
+              background: "var(--c-srf)", border: "1px solid var(--c-brd)",
+              color: "var(--c-dim)", fontSize: 11, cursor: "pointer",
+              flexShrink: 0,
+            }}
+            onMouseEnter={e => { e.currentTarget.style.color = "var(--c-med)"; }}
+            onMouseLeave={e => { e.currentTarget.style.color = "var(--c-dim)"; }}
+          >
+            {copied ? <Check size={10} /> : <Copy size={10} />}
+            <span>{copied ? "Copied" : "Copy"}</span>
+          </button>
+        )}
+
+        {/* Download button */}
+        <button
+          onClick={handleDownload}
+          title="Download"
+          style={{
+            display: "flex", alignItems: "center", gap: 3,
+            padding: "2px 7px", borderRadius: 5,
+            background: "var(--c-srf)", border: "1px solid var(--c-brd)",
+            color: "var(--c-dim)", fontSize: 11, cursor: "pointer",
+            flexShrink: 0,
+          }}
+          onMouseEnter={e => { e.currentTarget.style.color = "var(--c-med)"; }}
+          onMouseLeave={e => { e.currentTarget.style.color = "var(--c-dim)"; }}
+        >
+          <Download size={10} />
+          <span>Save</span>
+        </button>
+      </div>
+
+      {/* ── Body ── */}
+      {/* File type: header only — no inline body */}
+      {!isFile && (
+        <div>
+          {/* Code type: collapsible syntax block */}
+          {isCode && (
+            <div style={{ position: "relative" }}>
+              <div
+                style={{
+                  maxHeight: expanded ? "none" : 200,
+                  overflow: "hidden",
+                  transition: "max-height 0.2s ease",
+                }}
+              >
+                <pre
+                  style={{
+                    margin: 0,
+                    padding: "14px 16px",
+                    background: "var(--code-bg)",
+                    fontSize: 12,
+                    lineHeight: 1.7,
+                    fontFamily: "var(--font-mono)",
+                    color: "rgba(96,165,250,0.85)",
+                    overflowX: "auto",
+                    whiteSpace: "pre",
+                  }}
+                >
+                  <code style={{ color: "var(--c-high)" }}>{block.content}</code>
+                </pre>
+              </div>
+
+              {/* Expand / collapse toggle */}
+              {block.content.split("\n").length > 8 && (
+                <button
+                  onClick={() => setExpanded(e => !e)}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 5,
+                    width: "100%",
+                    padding: "5px 16px",
+                    background: "var(--c-srf)",
+                    borderTop: "1px solid var(--c-brd)",
+                    border: "none",
+                    color: "var(--c-dim)",
+                    fontSize: 11,
+                    cursor: "pointer",
+                    justifyContent: "center",
+                    letterSpacing: "-0.005em",
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.color = "var(--c-med)"; e.currentTarget.style.background = "var(--c-srf2)"; }}
+                  onMouseLeave={e => { e.currentTarget.style.color = "var(--c-dim)"; e.currentTarget.style.background = "var(--c-srf)"; }}
+                >
+                  <ChevronRight
+                    size={10}
+                    style={{ transform: expanded ? "rotate(270deg)" : "rotate(90deg)", transition: "transform 220ms cubic-bezier(0.32, 0.72, 0, 1)" }}
+                  />
+                  {expanded ? "Collapse" : `Expand  ·  ${block.content.split("\n").length} lines`}
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Report type: markdown body */}
+          {isReport && (
+            <div style={{ padding: "12px 16px" }}>
+              <MarkdownBody text={block.content} />
+            </div>
+          )}
+
+          {/* Data type: first 10 lines monospace */}
+          {isData && (
+            <pre
+              style={{
+                margin: 0,
+                padding: "12px 16px",
+                fontSize: 11.5,
+                lineHeight: 1.65,
+                fontFamily: "var(--font-mono)",
+                color: "var(--c-med)",
+                background: "var(--code-bg)",
+                overflowX: "auto",
+                whiteSpace: "pre",
+              }}
+            >
+              {block.content.split("\n").slice(0, 10).join("\n")}
+              {block.content.split("\n").length > 10 && (
+                <span style={{ color: "var(--c-ghost)", display: "block", marginTop: 4 }}>
+                  … {block.content.split("\n").length - 10} more rows
+                </span>
+              )}
+            </pre>
+          )}
+
+          {/* Image type: inline preview */}
+          {block.artifact_type === "image" && (
+            <div style={{ padding: "12px 16px" }}>
+              <img
+                src={block.content}
+                alt={block.name}
+                style={{ maxWidth: "100%", borderRadius: 6, display: "block" }}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Agent attribution footer */}
+      {block.agent_name && (
+        <div
+          style={{
+            padding: "5px 12px",
+            borderTop: "1px solid var(--c-brd)",
+            fontSize: 10.5,
+            color: "var(--c-ghost)",
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+          }}
+        >
+          <span>from</span>
+          <span style={{ color: "var(--c-dim)", fontWeight: 500 }}>{block.agent_name}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── System message ── */
+/** Inline marker the backend stamps onto the persisted compact-summary
+ *  message body. We detect it here (vs. inventing a new role) so the
+ *  summary survives a fresh fetch with no schema migration — the marker
+ *  IS the type tag. */
+const COMPACT_SUMMARY_MARKER = "[fleet:compact-summary]";
+
+function MessageContentInner({ message, msgRef }: { message: ChatMessage; msgRef?: React.RefObject<HTMLDivElement | null> }) {
+  // Compact-summary card short-circuit. The backend persists the
+  // summary as a normal assistant row, but the body opens with the
+  // marker — pull the body text out, strip the marker, hand it to
+  // CompactSummaryCard so the user gets the dedicated card UI instead
+  // of a wall-of-prose assistant turn.
+  if (message.role === "assistant") {
+    const firstText = message.content.find(b => b.type === "text") as
+      | { type: "text"; text: string }
+      | undefined;
+    const raw = firstText?.text ?? "";
+    if (raw.trimStart().startsWith(COMPACT_SUMMARY_MARKER)) {
+      const body = raw
+        .trimStart()
+        .slice(COMPACT_SUMMARY_MARKER.length)
+        .replace(/^\s*\n?/, "");
+      return <CompactSummaryCard summary={body} timestamp={message.timestamp} />;
+    }
+  }
+
+  if (message.role === "system") {
+    // Inline dispatch-permission card (non-blocking, lives in chat feed).
+    const permBlock = message.content.find(b => b.type === "dispatch_permission") as import("@/types/chat").DispatchPermissionBlock | undefined;
+    if (permBlock) {
+      return <DispatchPermissionCard block={permBlock} />;
+    }
+
+    // Dispatch inline cards — show in Fleet chat AND right panel
+    const pendingBlock = message.content.find(b => b.type === "dispatch_pending") as import("@/types/chat").DispatchPendingBlock | undefined;
+    if (pendingBlock) return <DispatchPendingCard block={pendingBlock} />;
+
+    const resultBlock = message.content.find(b => b.type === "dispatch_result") as import("@/types/chat").DispatchResultBlock | undefined;
+    if (resultBlock) return <DispatchResultCard block={resultBlock} />;
+
+    // Proactive agent report — show as attributed card in Fleet chat
+    const reportBlock = message.content.find(b => b.type === "agent_report") as import("@/types/chat").AgentReportBlock | undefined;
+    if (reportBlock) return <AgentReportCard block={reportBlock} />;
+
+    // Artifact produced by a dispatched agent
+    const artifactBlock = message.content.find(b => b.type === "artifact") as ArtifactBlock | undefined;
+    if (artifactBlock) return <ArtifactCard block={artifactBlock} />;
+
+    // Legacy text-based system messages
+    const text = message.content.find(b => b.type === "text")?.text ?? "";
+    const isResult = text.startsWith("Task complete:");
+    const isError = text.startsWith("Task failed:");
+    const icon = isResult ? <CheckCircle2 size={12} /> : isError ? <AlertCircle size={12} /> : <ArrowRightLeft size={12} />;
+    const color = isError ? "rgba(248,113,113,0.8)" : "var(--c-dim)";
+    const bg = isError ? "rgba(248,113,113,0.06)" : "var(--c-srf)";
+    const border = isError ? "rgba(248,113,113,0.15)" : "var(--c-brd)";
+    return (
+      <div className="fade-in" style={{
+        margin: "4px 0 14px", padding: "7px 12px",
+        borderRadius: 8, background: bg, border: `1px solid ${border}`,
+        display: "flex", alignItems: "flex-start", gap: 8,
+        overflow: "hidden",
+      }}>
+        <span style={{ color, flexShrink: 0, marginTop: 1 }}>{icon}</span>
+        <span style={{ fontSize: 12.5, color, lineHeight: 1.5, flex: 1, minWidth: 0, wordBreak: "break-word", overflowWrap: "anywhere" }}>{text}</span>
+      </div>
+    );
+  }
+  return message.role === "user"
+    ? <UserMessage content={message.content} msgRef={msgRef} />
+    : <AssistantMessage message={message} />;
+}
+
+/**
+ * Memoised wrapper. ChatView re-renders on every store update (every
+ * WS event ~30/sec during a stream). Without React.memo, ALL messages
+ * in the conversation re-rendered on every tick — markdown re-parsing,
+ * tool-call rendering, dispatch-card sub-components. With 50+ messages
+ * and a 200-message conversation this was the single biggest perf
+ * killer in the chat surface.
+ *
+ * Custom equality: a message is treated as unchanged if id + content
+ * reference + cost_usd + duration_ms match. Streaming deltas mutate
+ * `contentSoFar` (never an existing message), so finalised messages
+ * never need to re-render. The msgRef callback is purposely excluded
+ * from the comparison — it changes only for the "latest user message"
+ * (used for scroll anchoring) and a stale ref one frame is invisible.
+ */
+export const MessageContent = React.memo(MessageContentInner, (prev, next) => {
+  if (prev.message.id !== next.message.id) return false;
+  if (prev.message.content !== next.message.content) return false;
+  if (prev.message.cost_usd !== next.message.cost_usd) return false;
+  if (prev.message.duration_ms !== next.message.duration_ms) return false;
+  if (prev.message.usage !== next.message.usage) return false;
+  return true;
+});
+
+/* ── Streaming message ── */
+export function StreamingMessage({ text, thinking }: { text: string; thinking: string }) {
+  // Per-field selectors — full-state useAppStore() subscribed the
+  // streaming bubble to every notification push, draft keystroke and
+  // pane-focus change on top of the per-token deltas it already needs
+  // to render. With markdown re-parse + content-block map per render
+  // this is the hottest component during a stream.
+  const activeSessionId = useAppStore(s => s.activeSessionId);
+  const staffSessionId = useAppStore(s => s.staffSessionId);
+  const sid = activeSessionId || staffSessionId;
+  const { activeToolCalls, streamStartTime, isStreaming, contentSoFar } = useChatStore(selectSession(sid));
+  const toolCallList = Object.entries(activeToolCalls);
+  // The typewriter hook still runs even though we no longer render its
+  // output directly — chronological contentSoFar handles the live text.
+  // We keep the hook call to preserve React hook order and the
+  // approxTokens-based stats below.
+  void useTypewriter(text);
+
+  // Apply the same transcript-view rules the finalised messages use,
+  // otherwise the toggle silently no-ops on the row that's actually
+  // moving (the live stream). Summary → drop thinking & tools;
+  // thinking/verbose → force-expand the relevant rows.
+  const transcriptView = useAppStore(s => s.transcriptView);
+  const forceThinkingOpen = transcriptView === "thinking" || transcriptView === "verbose";
+  const forceToolOpen     = transcriptView === "verbose";
+  const dropThinking      = transcriptView === "summary";
+  const dropTools         = transcriptView === "summary";
+
+  // Build a tool_id → result lookup so each in-history tool_use row can
+  // render with its output if the tool_result has already landed.
+  const completedResults: Record<string, { output: string; is_error: boolean }> = {};
+  for (const b of contentSoFar) {
+    if (b.type === "tool_result") {
+      const tr = b as { tool_id: string; output: string; is_error: boolean };
+      if (tr.tool_id) completedResults[tr.tool_id] = { output: tr.output, is_error: tr.is_error };
+    }
+  }
+  // Filter active tools that have already landed in contentSoFar so
+  // we don't render the same tool twice (once from history, once from
+  // the still-running map). Match by tool_id.
+  const completedToolIds = new Set(
+    contentSoFar.filter(b => b.type === "tool_use").map(b => (b as { tool_id: string }).tool_id)
+  );
+  const visibleTools = dropTools
+    ? []
+    : toolCallList.filter(([id]) => !completedToolIds.has(id));
+  const hasContent = contentSoFar.length > 0;
+  const isIdle = !text && !thinking && !hasContent && visibleTools.length === 0;
+  const showLiveThinking = !dropThinking && !!thinking;
+
+  // Unified elapsed timer — used by both ThinkingIndicator and StreamingStats
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!isStreaming || !streamStartTime) { setElapsed(0); return; }
+    const iv = setInterval(() => setElapsed(Date.now() - streamStartTime), 300);
+    return () => clearInterval(iv);
+  }, [isStreaming, streamStartTime]);
+
+  const approxTokens = Math.round(text.length / 4);
+
+  return (
+    <div style={{ marginBottom: 28 }} className="fade-in">
+      <div>
+        {/* Render contentSoFar in chronological order so thinking,
+            text and tool blocks interleave the way the model emitted
+            them — Claude Code Desktop's pattern of "short comment →
+            tool batch → short comment → tool batch" instead of
+            "everything thinking then everything tools". Each block
+            stays flat (no grouping). MessageContent's batching kicks
+            in once the message lands in messages[]. */}
+        {contentSoFar.map((block, i) => {
+          if (block.type === "text") {
+            const t = stripDispatch((block as { text: string }).text);
+            if (!t) return null;
+            return <MarkdownBody key={`cs-${i}`} text={t} />;
+          }
+          if (block.type === "thinking") {
+            // Consolidated into the ThoughtsChip rendered below the
+            // live tools — inline rendering stacks 5+ chips when
+            // Codex emits one reasoning burst per tool batch.
+            return null;
+          }
+          if (block.type === "tool_use") {
+            if (dropTools) return null;
+            const tb = block as {
+              tool_id: string;
+              tool_name: string;
+              tool_kind?: string;
+              input: Record<string, unknown>;
+            };
+            return (
+              <ToolCallRow
+                key={`cs-${tb.tool_id || i}`}
+                toolName={tb.tool_name}
+                toolKind={tb.tool_kind}
+                input={tb.input}
+                output={completedResults[tb.tool_id]?.output}
+                isError={completedResults[tb.tool_id]?.is_error}
+                forceOpen={forceToolOpen}
+              />
+            );
+          }
+          return null;
+        })}
+        {/* Still-running tools (no output yet) */}
+        {visibleTools.map(([id, tc]) => (
+          <ToolCallRow key={id} toolName={tc.name} input={tc.input} forceOpen={forceToolOpen} />
+        ))}
+        {/* Consolidated thinking chip — picks up every committed
+            reasoning burst from contentSoFar plus the still-streaming
+            buffer. Renders below the active tools so the chat flow
+            stays text+tools and the thinking lives as one footer-level
+            affordance. */}
+        {!dropThinking && (() => {
+          const bursts = contentSoFar
+            .filter((b): b is { type: "thinking"; text: string; duration_ms?: number } => b.type === "thinking")
+            .map(b => ({ text: b.text, durationMs: b.duration_ms }));
+          if (bursts.length === 0 && !showLiveThinking) return null;
+          return (
+            <div style={{ marginTop: 8 }}>
+              <ThoughtsChip
+                bursts={bursts}
+                liveText={showLiveThinking ? thinking : undefined}
+                isLive={isStreaming}
+                forceOpen={forceThinkingOpen}
+              />
+            </div>
+          );
+        })()}
+        {/* Text is intentionally NOT re-rendered here from
+            streamingText — appendStreamAndContent keeps contentSoFar's
+            text blocks in sync with every delta, so the chronological
+            map above already shows the live prose in its correct slot.
+            Rendering `cleaned` here would double-print the full text
+            concatenation under the per-segment blocks. */}
+
+        {/* Idle "Thinking..." indicator — shown when nothing else has arrived
+            yet (e.g. Gemini doesn't emit thought chunks; the gap before the
+            first message_chunk would otherwise look like a frozen UI).
+            Now includes shimmer skeleton lines underneath so the empty
+            space below reads as "response loading" instead of "frozen". */}
+        {isIdle && isStreaming && (
+          <div style={{ padding: "4px 0" }}>
+            <div style={{
+              display: "inline-flex", alignItems: "center", gap: 10,
+            }}>
+              {/* Bounce-dot row removed — the shimmer skeleton below
+                  already carries the "loading" signal, and stacking two
+                  animations made the area feel busy. */}
+              <span style={{
+                fontSize: 12.5, color: "var(--c-dim)",
+                letterSpacing: "-0.015em", fontWeight: 450,
+              }}>
+                Thinking
+              </span>
+            {elapsed >= 800 && (
+              <span style={{
+                fontFamily: "var(--font-mono)", fontSize: 10.5,
+                color: "var(--c-ghost)", letterSpacing: 0,
+              }}>
+                {fmtDuration(elapsed)}
+              </span>
+            )}
+            </div>
+            {/* Shimmer skeleton — three placeholder lines that subtly
+                slide a bright band across each row. Communicates
+                "response is loading" instead of leaving the chat area
+                blank. Auto-fades in after 600ms so a fast first-token
+                response doesn't blink it. */}
+            {elapsed >= 600 && (
+              <div style={{
+                marginTop: 14,
+                display: "flex", flexDirection: "column", gap: 8,
+                animation: "fade-in 0.3s ease-out both",
+              }}>
+                <style>{`
+                  @keyframes thinking-shimmer {
+                    0%   { background-position: -200px 0; }
+                    100% { background-position: calc(200px + 100%) 0; }
+                  }
+                `}</style>
+                {[88, 72, 60].map((widthPct, i) => (
+                  <div key={i} style={{
+                    height: 10,
+                    width: `${widthPct}%`,
+                    borderRadius: 4,
+                    backgroundImage:
+                      "linear-gradient(90deg, var(--c-srf) 0%, var(--c-brd) 50%, var(--c-srf) 100%)",
+                    backgroundRepeat: "no-repeat",
+                    backgroundSize: "200px 100%",
+                    backgroundColor: "var(--c-srf)",
+                    animation: `thinking-shimmer 1.6s ease-in-out ${i * 0.18}s infinite`,
+                    opacity: 0.7 - i * 0.15,
+                  }} />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Subtle stats row once content is streaming */}
+        {!isIdle && elapsed >= 800 && (
+          <div style={{
+            marginTop: 10, fontSize: 10.5, fontFamily: "var(--font-mono)",
+            color: "var(--c-ghost)",
+            display: "flex", alignItems: "center", gap: 6,
+          }}>
+            <span>{fmtDuration(elapsed)}</span>
+            {approxTokens > 20 && (
+              <>
+                <span style={{ opacity: 0.4 }}>·</span>
+                <span>~{fmtTokens(approxTokens)} tok</span>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

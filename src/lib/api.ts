@@ -1,0 +1,900 @@
+const API_BASE = "/api";
+
+// ── window.fleetify (provided by Electron preload) ────────────
+declare global {
+  interface Window {
+    fleetify?: {
+      signIn:         () => Promise<{ ok: boolean; user?: any; expiresAt?: number; error?: string; kind?: string }>;
+      signOut:        () => Promise<{ ok: boolean }>;
+      userinfo:       () => Promise<any>;
+      getAccessToken: (opts?: { force?: boolean }) => Promise<{ token: string; expiresAt: number } | null>;
+      getState:       () => Promise<{ signedIn: boolean; user?: any }>;
+      // Renderer → main bridge for the sidebar's "Give Feedback" modal.
+      // The token is attached in main so the renderer never has to
+      // touch it; the response is the {ok, data?, error?} envelope the
+      // ipcMain handler wraps around the dashboard's reply.
+      sendFeedback:   (body: {
+        comment: string;
+        email?: string | null;
+        attachments?: Array<{ name: string; mime: string; data_url: string }>;
+      }) => Promise<
+        | { ok: true; data?: unknown }
+        // Failure shape mirrors the dashboard Worker's envelope, flattened
+        // by main:
+        //   error     — user-facing message (rendered in the red banner)
+        //   code      — stable server-side code (VALIDATION, UNAUTHORIZED, …)
+        //   status    — HTTP status; -1 for pre-flight failures (no token, no bridge)
+        //   requestId — for support / log correlation
+        | { ok: false; error: string; code?: string; status?: number; requestId?: string }
+      >;
+      onAuthEvent:    (cb: (event: { kind: string; [k: string]: any }) => void) => () => void;
+    };
+  }
+}
+
+// ── Auth helpers ──────────────────────────────────────────────
+/** Keys that survive clearToken — they belong to the *machine*, not the
+ *  current sign-in. Wiping them on sign-out forces the next user to redo
+ *  onboarding even though they already completed it once on this device. */
+const PERSISTENT_KEYS = new Set<string>([
+  "fleet:setup-done", // chat-style onboarding completion (one-time per device)
+]);
+
+export function clearToken(): void {
+  // Wipes fleet:* localStorage EXCEPT keys in PERSISTENT_KEYS. Does NOT
+  // call signOut — callers that want a full sign-out should `await
+  // window.fleetify.signOut()` first.
+  try {
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith("fleet:") && !PERSISTENT_KEYS.has(k)) keys.push(k);
+    }
+    keys.forEach(k => localStorage.removeItem(k));
+  } catch { /* fall through */ }
+  localStorage.removeItem("fleet:onboarded");
+  localStorage.removeItem("fleet:user");
+}
+
+async function authHeaders(): Promise<Record<string, string>> {
+  const t = await window.fleetify?.getAccessToken();
+  return t?.token ? { Authorization: `Bearer ${t.token}` } : {};
+}
+
+/** Bearer-attached fetch wrapper. Pulls a fresh access_token via
+ *  window.fleetify.getAccessToken(); on a 401 it forces a refresh and
+ *  retries once. A second 401 ends the session: we sign out via the
+ *  main process and dispatch fleet:logout so App.tsx can route back to
+ *  the sign-in screen. Exported so other modules (plugin-api, mcp-api,
+ *  WorkflowsPage, etc.) share the same retry + sign-out semantics. */
+export async function apiFetch(input: RequestInfo, init?: RequestInit): Promise<Response> {
+  const baseHeaders = (init?.headers ?? {}) as Record<string, string>;
+  let res = await fetch(input, { ...init, headers: { ...baseHeaders, ...(await authHeaders()) } });
+  if (res.status === 401) {
+    await window.fleetify?.getAccessToken({ force: true });
+    res = await fetch(input, { ...init, headers: { ...baseHeaders, ...(await authHeaders()) } });
+    if (res.status === 401) {
+      await window.fleetify?.signOut();
+      window.dispatchEvent(new Event("fleet:logout"));
+      throw new Error("Session expired");
+    }
+  }
+  return res;
+}
+
+// ── SSH (Remote tab) ────────────────────────────────────────────
+export interface SshTarget {
+  host: string;
+  user: string;
+  port?: number;
+  identity_file?: string | null;
+}
+
+export async function sshTest(t: SshTarget): Promise<{ ok: boolean; error?: string }> {
+  const res = await apiFetch(`${API_BASE}/ssh/test`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(t),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({} as { detail?: string }));
+    throw new Error(data.detail ?? `ssh test failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export interface SshDirEntry { name: string; type: "file" | "folder"; size: number | null }
+export async function sshListDir(t: SshTarget & { path?: string }): Promise<{ path: string; entries: SshDirEntry[] }> {
+  const res = await apiFetch(`${API_BASE}/ssh/list-dir`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(t),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({} as { detail?: string }));
+    throw new Error(data.detail ?? `ssh list-dir failed (${res.status})`);
+  }
+  return res.json();
+}
+
+// ── Model catalog ──────────────────────────────────────────────
+export interface CatalogModel { id: string; label: string; ctx?: string; note?: string }
+export interface CatalogProvider { id: string; label: string; models: CatalogModel[] }
+export async function listModels(): Promise<{ providers: CatalogProvider[] }> {
+  const res = await apiFetch(`${API_BASE}/models`);
+  if (!res.ok) {
+    // Non-fatal — caller falls back to its hardcoded list so the
+    // picker still works while the API is unreachable.
+    return { providers: [] };
+  }
+  return res.json();
+}
+
+/** Hosts auto-discovered from the user's ~/.ssh/config. The label is
+ *  the Host alias (so the UI can show "my-prod" instead of an IP). */
+export interface SshKnownHost {
+  label: string;
+  host: string;
+  user: string;
+  port: number;
+  identity_file: string | null;
+}
+export async function sshKnownHosts(): Promise<{ hosts: SshKnownHost[] }> {
+  const res = await apiFetch(`${API_BASE}/ssh/known-hosts`);
+  if (!res.ok) {
+    // Non-fatal — return empty so the panel still lets the user add manually.
+    return { hosts: [] };
+  }
+  return res.json();
+}
+
+// ── Docker (Container tab) ──────────────────────────────────────
+export interface DockerStatus { installed: boolean; running: boolean; error: string | null }
+export async function dockerStatus(): Promise<DockerStatus> {
+  const res = await apiFetch(`${API_BASE}/docker/status`);
+  if (!res.ok) return { installed: false, running: false, error: `status ${res.status}` };
+  return res.json();
+}
+
+export interface DockerContainer {
+  id: string;
+  name: string;
+  image: string;
+  status: string;
+  state: string;
+}
+export async function dockerContainers(): Promise<{ containers: DockerContainer[] }> {
+  const res = await apiFetch(`${API_BASE}/docker/containers`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({} as { detail?: string }));
+    throw new Error(data.detail ?? `docker ps failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function dockerListDir(containerId: string, path: string): Promise<{ path: string; entries: SshDirEntry[] }> {
+  const res = await apiFetch(`${API_BASE}/docker/list-dir`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ container_id: containerId, path }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({} as { detail?: string }));
+    throw new Error(data.detail ?? `docker list-dir failed (${res.status})`);
+  }
+  return res.json();
+}
+
+// ── Auth API ─────────────────────────────────────────────────
+export interface AuthUser { id: string; name: string; email: string }
+
+export async function apiMe(): Promise<AuthUser | null> {
+  if (!window.fleetify) return null;
+  try {
+    const u = await window.fleetify.userinfo();
+    return { id: u.sub ?? u.id ?? "", name: u.name ?? "", email: u.email ?? "" };
+  } catch {
+    return null;
+  }
+}
+
+// ── Providers ────────────────────────────────────────────────
+export interface ProviderScan {
+  claude_cli: { installed: boolean; authenticated: boolean; path: string | null };
+  gemini_cli: { installed: boolean; authenticated: boolean; path: string | null };
+  codex_cli:  { installed: boolean; authenticated: boolean; path: string | null };
+  ollama: { running: boolean; models: string[] };
+  env_keys: { anthropic: boolean; openai: boolean; gemini: boolean; groq: boolean };
+}
+
+export async function apiScanProviders(): Promise<ProviderScan> {
+  const res = await apiFetch(`${API_BASE}/providers/scan`);
+  if (!res.ok) throw new Error("Scan failed");
+  return res.json();
+}
+
+export async function fetchSessions() {
+  const res = await apiFetch(`${API_BASE}/sessions`);
+  if (!res.ok) throw new Error("Failed to fetch sessions");
+  return res.json();
+}
+
+export async function createSession(data: {
+  title: string;
+  project_path?: string;
+  tool?: string;
+  notes?: string;
+  model_name?: string;
+  permission_mode?: string;
+  session_mode?: string;
+  claude_session_id?: string;
+  /** Built-in template id (e.g. "reverse_engineering"). When set, the
+   *  backend resolves the template's specialised system prompt and MCP
+   *  tools for this session. Unknown ids are ignored server-side. */
+  agent_template?: string;
+  /** Whether the backend should carve a fleet/<slug>-<id> worktree
+   *  for this session. Default true (Conductor parity). The toolbar's
+   *  Worktree chip toggles this; setting false makes the agent run
+   *  directly inside project_path. */
+  use_worktree?: boolean;
+}) {
+  const res = await apiFetch(`${API_BASE}/sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error("Failed to create session");
+  return res.json();
+}
+
+export async function deleteSession(id: string) {
+  const res = await apiFetch(`${API_BASE}/sessions/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error("Failed to delete session");
+  return res.json();
+}
+
+/** Purge zombie draft session rows ("New chat" or blank title, no
+ *  project_path, zero messages) for the current user. Idempotent. */
+export async function deleteEmptyDrafts(): Promise<{ deleted: number; ids: string[] }> {
+  const res = await apiFetch(`${API_BASE}/sessions/empty-drafts`, { method: "DELETE" });
+  if (!res.ok) return { deleted: 0, ids: [] };
+  return res.json();
+}
+
+export async function archiveSession(id: string) {
+  const res = await apiFetch(`${API_BASE}/sessions/${id}/archive`, { method: "POST" });
+  if (!res.ok) throw new Error("Failed to archive session");
+  return res.json();
+}
+
+export async function clearSessionMessages(id: string) {
+  const res = await apiFetch(`${API_BASE}/sessions/${id}/messages`, { method: "DELETE" });
+  if (!res.ok) throw new Error("Failed to clear messages");
+  return res.json();
+}
+
+export async function updateSession(
+  id: string,
+  // Open-ended PATCH body — the backend already accepts every
+  // session field that's safe to mutate (project_path,
+  // permission_mode, tool, etc.); the type was over-narrow and
+  // forced casts at every call site. We keep the well-known
+  // fields enumerated for autocomplete and accept additional
+  // string/number/null entries for the rest.
+  data: {
+    title?: string;
+    group_path?: string;
+    notes?: string;
+    model_name?: string;
+    project_path?: string;
+    permission_mode?: string;
+    tool?: string;
+    effort?: string;
+  },
+) {
+  const res = await apiFetch(`${API_BASE}/sessions/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error("Failed to update session");
+  return res.json();
+}
+
+export async function forkSession(sessionId: string) {
+  const res = await apiFetch(`${API_BASE}/sessions/${sessionId}/fork`, { method: "POST" });
+  if (!res.ok) throw new Error("Failed to fork session");
+  return res.json();
+}
+
+/** Cursor-paginated message fetch.
+ *
+ *   • Default: latest 50 messages (no `before`).
+ *   • Older pages: pass `before=<oldest-timestamp-currently-in-store>`
+ *     to get the previous 50. Returned in chronological order so the
+ *     caller can prepend directly.
+ *
+ *  The previous unpaginated endpoint loaded *every* historical message
+ *  on session open — for long-running agents that's hundreds of
+ *  messages going through markdown parsing on every store update.
+ *  Lazy loading slashes the initial render cost. */
+export async function fetchMessages(
+  sessionId: string,
+  opts?: { limit?: number; before?: string },
+) {
+  const params = new URLSearchParams();
+  if (opts?.limit) params.set("limit", String(opts.limit));
+  if (opts?.before) params.set("before", opts.before);
+  const qs = params.toString();
+  const url = `${API_BASE}/sessions/${sessionId}/messages${qs ? `?${qs}` : ""}`;
+  const res = await apiFetch(url);
+  if (!res.ok) throw new Error("Failed to fetch messages");
+  return res.json();
+}
+
+export async function startSession(id: string) {
+  const res = await apiFetch(`${API_BASE}/sessions/${id}/start`, { method: "POST" });
+  if (!res.ok) throw new Error("Failed to start session");
+  return res.json();
+}
+
+export async function stopSession(id: string) {
+  const res = await apiFetch(`${API_BASE}/sessions/${id}/stop`, { method: "POST" });
+  if (!res.ok) throw new Error("Failed to stop session");
+  return res.json();
+}
+
+export async function restartSession(id: string) {
+  const res = await apiFetch(`${API_BASE}/sessions/${id}/restart`, { method: "POST" });
+  if (!res.ok) throw new Error("Failed to restart session");
+  return res.json();
+}
+
+/** Harder unstick than restart — clears the Claude resume id so the
+ *  next send starts a brand-new Claude conversation. Use when the
+ *  bridge is logging "No conversation found with session ID …".
+ *  Local DB history is untouched; only the Claude-side cursor is
+ *  dropped. */
+export async function resetSession(id: string): Promise<{ ok: boolean; status: string; claude_session_id: string | null }> {
+  const res = await apiFetch(`${API_BASE}/sessions/${id}/reset`, { method: "POST" });
+  if (!res.ok) throw new Error("Failed to reset session");
+  return res.json();
+}
+
+/** Auto-mode planner — given a user prompt and the current fleet snapshot,
+ *  returns a structured dispatch plan { dispatches: [{target_id, task}],
+ *  summary }. The frontend converts each dispatch into a [[DIRECT_DISPATCH:]]
+ *  token and sends them all through the staff WS so they hit the same
+ *  deterministic dispatch path as @mention. Backed by Haiku — fast/cheap. */
+export interface AutoPlanFleetAgent {
+  id: string;
+  name: string;
+  project?: string | null;
+  status?: string | null;
+  description?: string | null;
+}
+export interface AutoPlanDispatch {
+  target_id: string;
+  task: string;
+}
+export interface AutoPlanResult {
+  dispatches: AutoPlanDispatch[];
+  summary: string;
+}
+export async function autoPlan(
+  prompt: string,
+  fleet: AutoPlanFleetAgent[],
+  alreadyRouted?: AutoPlanDispatch[],
+  parentSessionId?: string,
+): Promise<AutoPlanResult> {
+  const res = await apiFetch(`${API_BASE}/auto/plan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      prompt, fleet,
+      already_routed: alreadyRouted ?? [],
+      parent_session_id: parentSessionId ?? null,
+    }),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`Auto plan failed: ${detail || res.statusText}`);
+  }
+  return res.json();
+}
+
+/** Send a follow-up task to a target agent from the staff/Fleet chat
+ *  (powers the inline "Reply" button on a dispatch_result card). Mirrors
+ *  back to the staff WS as dispatch_ack so the pending card appears
+ *  immediately. */
+export async function dispatchFollowUp(
+  targetId: string,
+  task: string,
+  staffId?: string,
+): Promise<{ success: boolean; target_id: string }> {
+  const res = await apiFetch(`${API_BASE}/dispatch/followup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target_id: targetId, task, staff_id: staffId ?? null }),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`Dispatch follow-up failed: ${detail || res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function fetchGroups() {
+  const res = await fetch(`${API_BASE}/groups`);
+  if (!res.ok) throw new Error("Failed to fetch groups");
+  return res.json();
+}
+
+export async function fetchSessionCosts(sessionId: string): Promise<number> {
+  const messages = await fetchMessages(sessionId);
+  return (messages as Array<{ cost_usd?: number }>).reduce(
+    (sum: number, msg) => sum + (msg.cost_usd ?? 0),
+    0,
+  );
+}
+
+/** Curated knowledge item — persisted in `session_memory`. The
+ *  `from_other_session` flag means this item was saved during a prior
+ *  session on the same project (cross-session per-project recall). */
+export interface SessionMemoryItem {
+  id: string;
+  title: string;
+  content: string;
+  kind: string;
+  created_at: string;
+  created_by: string;
+  from_other_session?: boolean;
+}
+
+/** One row from the auto-captured activity ledger. Backend writes one
+ *  per tool_end event; UI groups + filters by `kind`. */
+export interface SessionActivityItem {
+  id: string;
+  kind: string;  // 'file_edit' | 'file_read' | 'command' | 'web_fetch' | 'todo' | 'plan' | 'error' | 'tool' | 'note'
+  summary: string;
+  ts: string;
+  payload?: { tool?: string; duration_ms?: number; output?: string; error?: boolean; status?: string; activeForm?: string };
+}
+
+/** Aggregated file usage — derived from session_activity rows of kind
+ *  file_edit / file_read, deduped by path. */
+export interface SessionFileEntry {
+  path: string;
+  edits: number;
+  reads: number;
+  last_ts: string | null;
+}
+
+export interface SessionDetail {
+  session_id: string;
+  message_count: number;
+  total_cost_usd: number;
+  model: string | null;
+  created_at: string | null;
+  permission_mode: string | null;
+  project_path: string | null;
+  /** Count of assistant replies — what the chat-input popover
+   *  shows as "Turns". Distinct from message_count, which counts
+   *  every row including user prompts. */
+  assistant_turns?: number;
+  tokens: { input: number; output: number; cache_read: number; cache_write: number; last_input: number; last_cache_read: number };
+  tools: Record<string, number>;
+  todos: Array<{ content: string; status: string; activeForm?: string }>;
+  /** SessionMemoryItem objects now (was string[] before — both shapes
+   *  accepted client-side during migration). */
+  memory_items: SessionMemoryItem[] | string[];
+  plans: Array<{ name: string; file: string; from_other_session?: boolean }>;
+}
+
+export async function fetchSessionDetail(sessionId: string): Promise<SessionDetail> {
+  const res = await apiFetch(`${API_BASE}/sessions/${sessionId}/detail`);
+  if (!res.ok) throw new Error("Failed to fetch session detail");
+  return res.json();
+}
+
+/** Recent activity ledger entries (newest first). Optional kind filter
+ *  matches one of: file_edit / file_read / command / web_fetch / todo /
+ *  plan / error / tool / note. */
+export async function fetchSessionActivity(
+  sessionId: string,
+  opts?: { kind?: string; limit?: number },
+): Promise<SessionActivityItem[]> {
+  const params = new URLSearchParams();
+  if (opts?.kind) params.set("kind", opts.kind);
+  if (opts?.limit) params.set("limit", String(opts.limit));
+  const q = params.toString();
+  const res = await apiFetch(
+    `${API_BASE}/sessions/${sessionId}/activity${q ? "?" + q : ""}`,
+  );
+  if (!res.ok) throw new Error("Failed to fetch session activity");
+  return res.json();
+}
+
+/** Unique files this session has read or written, with counts and
+ *  last-touched timestamp. */
+export async function fetchSessionFiles(sessionId: string): Promise<SessionFileEntry[]> {
+  const res = await apiFetch(`${API_BASE}/sessions/${sessionId}/files`);
+  if (!res.ok) throw new Error("Failed to fetch session files");
+  return res.json();
+}
+
+/** A single GitHub repository entry from `gh repo list`. */
+export interface GhRepo {
+  nameWithOwner: string;
+  description: string | null;
+  url: string;
+  sshUrl: string;
+  isPrivate: boolean;
+  updatedAt: string;
+}
+
+/** List the authenticated user's GitHub repos via the gh CLI on
+ *  the backend. Used by the toolbar's Git source tab so the user
+ *  can pick from their own repos with one click instead of pasting
+ *  a URL. */
+export async function listUserRepos(limit = 100): Promise<GhRepo[]> {
+  const res = await apiFetch(`${API_BASE}/git/repos?limit=${limit}`);
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(detail || `Failed to list repos: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+/** Clone (or fetch) a git URL under ~/.fleetify/clones/<repo>/.
+ *  Used by the toolbar's source picker — once the clone lands, the
+ *  caller PATCHes session.project_path to the returned absolute path
+ *  and the existing ensure_worktree flow takes over. */
+export async function cloneRepository(
+  url: string,
+  branch?: string,
+): Promise<{ path: string; branch: string }> {
+  const res = await apiFetch(`${API_BASE}/git/clone`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, branch }),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(detail || `Clone failed: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+/** Account-wide rollup powering the new-session welcome canvas.
+ *  See backend/app/routers/sessions.py::overview_stats for shape. */
+export interface AccountStats {
+  sessions: number;
+  messages: number;
+  total_tokens: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_tokens: number;
+  active_days: number;
+  current_streak: number;
+  longest_streak: number;
+  peak_hour: number | null;
+  favorite_model: string | null;
+  /** YYYY-MM-DD → message count, last 365 days. */
+  heatmap: Record<string, number>;
+}
+
+export async function fetchAccountStats(): Promise<AccountStats> {
+  const res = await apiFetch(`${API_BASE}/sessions/stats/overview`);
+  if (!res.ok) throw new Error("Failed to fetch account stats");
+  return res.json();
+}
+
+/** Memory items for this session AND its project (cross-session recall). */
+export async function fetchSessionMemory(sessionId: string): Promise<SessionMemoryItem[]> {
+  const res = await apiFetch(`${API_BASE}/sessions/${sessionId}/memory`);
+  if (!res.ok) throw new Error("Failed to fetch session memory");
+  return res.json();
+}
+
+/** Save a curated memory item for this session (and project). */
+export async function createSessionMemory(
+  sessionId: string,
+  body: { title: string; content: string; kind?: string },
+): Promise<SessionMemoryItem> {
+  const res = await apiFetch(`${API_BASE}/sessions/${sessionId}/memory`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`Save memory failed: ${detail || res.statusText}`);
+  }
+  return res.json();
+}
+
+/** Update a memory item — patches only provided fields. */
+export async function updateSessionMemory(
+  sessionId: string,
+  itemId: string,
+  patch: { title?: string; content?: string; kind?: string },
+): Promise<SessionMemoryItem> {
+  const res = await apiFetch(`${API_BASE}/sessions/${sessionId}/memory/${itemId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`Update memory failed: ${detail || res.statusText}`);
+  }
+  return res.json();
+}
+
+/** Remove a memory item by id. */
+export async function deleteSessionMemory(sessionId: string, itemId: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/sessions/${sessionId}/memory/${itemId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error("Failed to delete memory item");
+}
+
+export async function fetchBulkStats(): Promise<Record<string, { message_count: number; total_cost_usd: number; input_tokens: number; output_tokens: number; cache_tokens: number }>> {
+  const res = await apiFetch(`${API_BASE}/sessions/stats/bulk`);
+  if (!res.ok) return {};
+  return res.json();
+}
+
+export interface PathValidation {
+  exists: boolean;
+  is_dir: boolean;
+  absolute: string;
+}
+
+export async function validatePath(path: string): Promise<PathValidation> {
+  const res = await fetch(`${API_BASE}/fs/validate?path=${encodeURIComponent(path)}`);
+  if (!res.ok) throw new Error("Failed to validate path");
+  return res.json();
+}
+
+export async function fetchDefaultPath(): Promise<string> {
+  const res = await fetch(`${API_BASE}/fs/default`);
+  if (!res.ok) throw new Error("Failed to fetch default path");
+  const data = (await res.json()) as { path: string };
+  return data.path;
+}
+
+export async function pickFolder(initial?: string): Promise<string> {
+  const qs = initial ? `?initial=${encodeURIComponent(initial)}` : "";
+  const res = await fetch(`${API_BASE}/fs/pick${qs}`);
+  if (!res.ok) throw new Error("Failed to open folder picker");
+  const data = (await res.json()) as { path: string };
+  return data.path;
+}
+
+export async function fetchTotalCosts(): Promise<number> {
+  const sessions = await fetchSessions();
+  const costs = await Promise.all(
+    (sessions as Array<{ id: string }>).map((s) => fetchSessionCosts(s.id)),
+  );
+  return costs.reduce((sum, c) => sum + c, 0);
+}
+
+export async function fetchClaudeHistory(sessionId: string): Promise<unknown[]> {
+  const res = await apiFetch(`${API_BASE}/sessions/${sessionId}/claude-history`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export interface ClaudeSession {
+  session_id: string;
+  summary: string;
+  updated_at: string;
+}
+
+export async function fetchClaudeSessions(projectPath: string): Promise<ClaudeSession[]> {
+  // apiFetch attaches the Bearer token — the backend route is
+  // protected by Depends(get_current_user), so a plain fetch silently
+  // 401s and the History chip looks empty.
+  const res = await apiFetch(`${API_BASE}/claude-sessions?path=${encodeURIComponent(projectPath)}`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function fetchGeminiSessions(projectPath: string): Promise<ClaudeSession[]> {
+  const res = await apiFetch(`${API_BASE}/gemini-sessions?path=${encodeURIComponent(projectPath)}`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function fetchCodexSessions(projectPath: string): Promise<ClaudeSession[]> {
+  const res = await apiFetch(`${API_BASE}/codex-sessions?path=${encodeURIComponent(projectPath)}`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export interface FileSearchEntry {
+  name: string;
+  path: string;
+  relative: string;
+  type: "file" | "folder";
+}
+
+export async function searchProjectFiles(
+  root: string,
+  q: string,
+  limit = 50,
+): Promise<FileSearchEntry[]> {
+  const qs = new URLSearchParams({ root, q, limit: String(limit) });
+  const res = await apiFetch(`${API_BASE}/fs/search?${qs.toString()}`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function setBudgetLimit(sessionId: string, limit: number | null): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/sessions/${sessionId}/budget`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ budget_limit: limit }),
+  });
+  if (!res.ok) throw new Error("Failed to set budget limit");
+}
+
+/** Result of /api/prompt/enhance.
+ *
+ *  - `enhanced` is what the chat input should hold after the click.
+ *    On no_op = true it equals the original prompt, so the caller can
+ *    safely replace the textarea value either way.
+ *  - `no_op` signals "we didn't change anything" — frontend shows a
+ *    quiet "looks good as is" toast instead of pretending it edited.
+ *  - `rationale` (optional) is a one-line "why" for the change OR
+ *    the no-op reason ("timeout", "already specific", etc.). Useful
+ *    for diagnostics; not surfaced to the user by default. */
+export interface PromptEnhanceResult {
+  enhanced: string;
+  no_op?: boolean;
+  rationale?: string | null;
+}
+
+export async function enhancePrompt(
+  prompt: string,
+  opts?: {
+    projectPath?: string;
+    /** Active tool/provider — server uses it to pick the matching
+     *  small-tier model (claude→haiku, openai/codex→gpt-5-mini,
+     *  gemini→gemini-flash). Unspecified means Claude default. */
+    tool?: string | null;
+    /** Optional explicit small-tier model override; rarely needed. */
+    model?: string | null;
+  },
+): Promise<PromptEnhanceResult> {
+  const res = await apiFetch(`${API_BASE}/prompt/enhance`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      prompt,
+      project_path: opts?.projectPath ?? null,
+      tool: opts?.tool ?? null,
+      model: opts?.model ?? null,
+    }),
+  });
+  if (!res.ok) {
+    // Fail-soft on the client too — the caller will fall back to
+    // the original prompt rather than block the user's send flow.
+    throw new Error(`Enhance failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+/** Result of /api/fleet/analyze.
+ *
+ *  Fleet brain classifies the agent's last response and tells the
+ *  caller what should happen next. Three branches:
+ *   - continue → next_prompt is set (Fleet's proposed follow-up)
+ *   - ask      → question is set (Fleet wants the user to decide)
+ *   - done     → summary is set (Fleet thinks the task is complete)
+ *  reasoning is always present — one-sentence "why this call". */
+export interface FleetAnalyzeResult {
+  decision: "continue" | "ask" | "done";
+  reasoning: string;
+  next_prompt?: string | null;
+  question?: string | null;
+  summary?: string | null;
+  /** Structured report sections — only populated on `done` when the
+   *  brain extracted them. Frontend renders as compact bullet groups. */
+  sections?: {
+    what_done?: string[] | null;
+    decisions?: string[] | null;
+    uncertain?: string[] | null;
+    options?: string[] | null;
+  } | null;
+  /** Degraded path — backend couldn't actually analyze (Haiku
+   *  timeout, breaker open, parse error). Frontend should NOT push
+   *  a decision card; leave the user in plain chat. The other
+   *  fields hold placeholder values for log forensics. */
+  degraded?: boolean;
+}
+
+export interface FleetChatResult {
+  text: string;
+  cost_estimate_usd?: number;
+}
+
+/** Fleet meta-chat — ask Fleet brain a question with a prose snapshot
+ *  of the fleet as context. Stateless; the caller composes the snapshot
+ *  client-side (session titles + statuses + recent activity). */
+export async function askFleet(
+  opts: { question: string; fleetSnapshot: string },
+): Promise<FleetChatResult> {
+  const res = await apiFetch(`${API_BASE}/fleet/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      question: opts.question,
+      fleet_snapshot: opts.fleetSnapshot,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Fleet chat failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function analyzeFleetResponse(
+  opts: {
+    priorPrompt: string;
+    agentText: string;
+    projectPath?: string | null;
+  },
+): Promise<FleetAnalyzeResult> {
+  const res = await apiFetch(`${API_BASE}/fleet/analyze`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      prior_prompt: opts.priorPrompt,
+      agent_text: opts.agentText,
+      project_path: opts.projectPath ?? null,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Fleet analyze failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function createChatWebSocket(sessionId: string): Promise<WebSocket> {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const host = window.location.host;
+  // WebSocket browsers don't expose a way to send Authorization headers,
+  // so the JWT rides as a query param. Backend validates + ownership-checks
+  // before accepting any messages on the socket.
+  const t = await window.fleetify?.getAccessToken();
+  const qs = t?.token ? `?token=${encodeURIComponent(t.token)}` : "";
+  return new WebSocket(`${protocol}//${host}/ws/chat/${sessionId}${qs}`);
+}
+
+/** Open the multiplexed sessions socket — ONE physical connection
+ *  carries traffic for every active session. The renderer uses
+ *  type="subscribe" / "unsubscribe" wire messages to manage which
+ *  session ids ride this socket; outgoing payloads include
+ *  `session_id` so the backend can route. */
+export async function createSessionsWebSocket(): Promise<WebSocket> {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const host = window.location.host;
+  // Try cached/expiry-aware token first. If we got nothing back (the
+  // refresh threw silently — network blip, revoked refresh token,
+  // etc.) try once more with force:true so we don't open a WS with
+  // an empty `?token=` query string just to have the backend reject
+  // it with "Unauthorized — missing or invalid token". A clean throw
+  // is much better UX than that delayed system message.
+  let t = await window.fleetify?.getAccessToken();
+  if (!t?.token) {
+    t = await window.fleetify?.getAccessToken({ force: true });
+  }
+  if (!t?.token) {
+    throw new Error("No access token — sign in required");
+  }
+  const qs = `?token=${encodeURIComponent(t.token)}`;
+  return new WebSocket(`${protocol}//${host}/ws/sessions${qs}`);
+}
