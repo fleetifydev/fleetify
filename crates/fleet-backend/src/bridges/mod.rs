@@ -4,6 +4,7 @@
 //! shape the `/ws/sessions` handler forwards (unchanged React client).
 
 pub mod claude;
+pub mod openai;
 
 use serde_json::{json, Value};
 
