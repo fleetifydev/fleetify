@@ -2,11 +2,13 @@
 //! messages / events. AppState carries auth + the SessionManager.
 
 pub mod chat;
+pub mod docker;
 pub mod events;
 pub mod fs;
 pub mod groups;
 pub mod messages;
 pub mod sessions;
+pub mod ssh;
 
 use axum::extract::FromRef;
 use axum::http::StatusCode;
