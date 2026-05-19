@@ -63,6 +63,9 @@
         });
       },
       openFolderDialog: function () { return invoke("dialog_open_folder"); },
+      checkGithubAuth: function () { return invoke("shell_check_github_auth"); },
+      installProvider: function (toolKey) { return invoke("shell_install_provider", { toolKey: String(toolKey || "") }); },
+      installOllama: function () { return invoke("shell_install_ollama"); },
       getGitContext: function (folder) { return invoke("git_get_context", { folder: String(folder || "") }); },
       hasGhCli: function () { return invoke("git_has_gh_cli"); },
       listGitBranches: function (folder) { return invoke("git_list_branches", { folder: String(folder || "") }); },

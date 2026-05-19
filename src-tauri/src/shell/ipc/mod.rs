@@ -396,6 +396,115 @@ pub async fn git_preflight_check(folder: String) -> serde_json::Value {
     git::preflight_check(&PathBuf::from(folder)).await
 }
 
+// ── shell:* installers + GitHub auth check ──────────────────────
+// `window.electronAPI.checkGithubAuth()` → `{ ok, login? , error? }`.
+// `installProvider(toolKey)` shells out to `npm install -g <pkg>`.
+// `installOllama()` runs the platform's official installer; on any
+// failure we open https://ollama.com/download in the browser so the
+// user has a path forward (matches main.cjs's graceful fallback).
+#[tauri::command]
+pub async fn shell_check_github_auth() -> serde_json::Value {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let (rc, _out, _) = git::run(
+        "gh",
+        &["auth", "status"],
+        &cwd,
+        std::time::Duration::from_secs(5),
+    )
+    .await;
+    if rc != 0 {
+        return serde_json::json!({
+            "ok": false,
+            "error": "gh CLI not signed in (or not installed)"
+        });
+    }
+    let (rc2, name, _) = git::run(
+        "gh",
+        &["api", "user", "--jq", ".login"],
+        &cwd,
+        std::time::Duration::from_secs(5),
+    )
+    .await;
+    if rc2 == 0 {
+        serde_json::json!({ "ok": true, "login": name.trim() })
+    } else {
+        serde_json::json!({ "ok": true, "login": serde_json::Value::Null })
+    }
+}
+
+const NPM_PROVIDER_PKG: &[(&str, &str)] = &[
+    ("claude", "@anthropic-ai/claude-code"),
+    ("codex", "@openai/codex"),
+    ("gemini", "@google/gemini-cli"),
+];
+
+#[tauri::command]
+pub async fn shell_install_provider(tool_key: String) -> serde_json::Value {
+    let pkg = NPM_PROVIDER_PKG
+        .iter()
+        .find(|(k, _)| *k == tool_key)
+        .map(|(_, p)| *p);
+    let Some(pkg) = pkg else {
+        return serde_json::json!({
+            "success": false,
+            "error": format!("unknown provider: {tool_key}")
+        });
+    };
+    // Windows resolves `npm.cmd`; Unix resolves `npm` (no shell needed —
+    // tokio::process honors PATHEXT on Windows for explicit `.cmd`).
+    let bin = if cfg!(windows) { "npm.cmd" } else { "npm" };
+    let res = tokio::process::Command::new(bin)
+        .args(["install", "--global", pkg])
+        .output()
+        .await;
+    match res {
+        Ok(o) if o.status.success() => serde_json::json!({
+            "success": true,
+            "out": String::from_utf8_lossy(&o.stdout).trim().to_string()
+        }),
+        Ok(o) => serde_json::json!({
+            "success": false,
+            "error": String::from_utf8_lossy(&o.stderr).trim().to_string()
+        }),
+        Err(e) => serde_json::json!({
+            "success": false,
+            "error": format!("npm spawn failed: {e}. Install Node.js / npm first.")
+        }),
+    }
+}
+
+#[tauri::command]
+pub async fn shell_install_ollama() -> serde_json::Value {
+    let download_url = "https://ollama.com/download";
+    let res = if cfg!(windows) {
+        tokio::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "iex (irm https://ollama.com/install.ps1)",
+            ])
+            .output()
+            .await
+    } else {
+        tokio::process::Command::new("sh")
+            .args(["-c", "curl -fsSL https://ollama.com/install.sh | sh"])
+            .output()
+            .await
+    };
+    match res {
+        Ok(o) if o.status.success() => serde_json::json!({ "ok": true }),
+        _ => {
+            let _ = ::open::that(download_url);
+            serde_json::json!({
+                "ok": false,
+                "error": "installer did not complete; opened ollama.com/download"
+            })
+        }
+    }
+}
+
 // ── PTY ──────────────────────────────────────────────────────────
 #[tauri::command]
 pub async fn pty_spawn(

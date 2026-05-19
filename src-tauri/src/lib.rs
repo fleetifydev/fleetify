@@ -80,6 +80,9 @@ pub fn run() {
             shell::ipc::git_sync_main,
             shell::ipc::git_carve_next_round,
             shell::ipc::git_preflight_check,
+            shell::ipc::shell_check_github_auth,
+            shell::ipc::shell_install_provider,
+            shell::ipc::shell_install_ollama,
         ])
         .setup(|app| {
             // Auth module emits `fleet:auth-event` via this handle.
