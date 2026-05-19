@@ -57,17 +57,70 @@ impl SessionManager {
         }
     }
 
-    /// Phase 2: ensure_worktree / ensure_session_branch. No-op stub now so
-    /// the row shape is faithful; staff/no-project sessions skip anyway.
-    async fn attach_git_setup(&self, session: &Session) {
+    /// Faithful with `attach_git_setup` (worktree.py): worktree-on →
+    /// `fleet/<slug>-<id>` worktree under `<repo>/.fleetify-worktrees/`,
+    /// worktree-off → carved (or reused) `fleet/<slug>-<id>` branch in the
+    /// main repo. Failures are non-fatal (parity).
+    async fn attach_git_setup(&self, pool: &SqlitePool, session: &Session) {
         let is_staff = session.title.trim().eq_ignore_ascii_case("staff agent");
         if session.project_path.is_empty() || is_staff {
             return;
         }
-        tracing::debug!(
-            session_id = %session.id,
-            "attach_git_setup deferred to Phase 2 (worktree/branch)"
-        );
+        use crate::services::worktree;
+        let label = if session.title.trim().is_empty() {
+            "session".to_string()
+        } else {
+            session.title.clone()
+        };
+        if session.use_worktree {
+            match worktree::ensure_worktree(
+                &session.project_path,
+                &session.id,
+                Some(&label),
+                None,
+            )
+            .await
+            {
+                Ok((path, branch)) => {
+                    let _ = sqlx::query(
+                        "UPDATE sessions SET worktree_path = ?, worktree_branch = ? \
+                         WHERE id = ?",
+                    )
+                    .bind(&path)
+                    .bind(&branch)
+                    .bind(&session.id)
+                    .execute(pool)
+                    .await;
+                    tracing::info!(session_id=%session.id, %path, %branch,
+                        "session.worktree.attached");
+                }
+                Err(e) => tracing::info!(session_id=%session.id, reason=%e.0,
+                    "session.git_setup.skipped"),
+            }
+        } else {
+            match worktree::ensure_session_branch(
+                &session.project_path,
+                &session.id,
+                Some(&label),
+                None,
+            )
+            .await
+            {
+                Ok(branch) => {
+                    let _ = sqlx::query(
+                        "UPDATE sessions SET worktree_branch = ? WHERE id = ?",
+                    )
+                    .bind(&branch)
+                    .bind(&session.id)
+                    .execute(pool)
+                    .await;
+                    tracing::info!(session_id=%session.id, %branch,
+                        "session.branch.attached");
+                }
+                Err(e) => tracing::info!(session_id=%session.id, reason=%e.0,
+                    "session.git_setup.skipped"),
+            }
+        }
     }
 
     /// Phase 4: telemetry emitters. No-op stub now.
@@ -129,7 +182,7 @@ impl SessionManager {
                 .fetch_one(pool)
                 .await?;
 
-        self.attach_git_setup(&session).await;
+        self.attach_git_setup(pool, &session).await;
         // Persist any worktree fields attach_git_setup set (none in Phase 1c).
         session = sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = ?")
             .bind(&id)
