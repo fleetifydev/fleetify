@@ -168,6 +168,90 @@ pub async fn push(folder: &Path) -> Value {
     }
 }
 
+pub async fn ensure_repo(
+    folder: &Path,
+    name: Option<&str>,
+    email: Option<&str>,
+) -> Value {
+    let path = folder.to_string_lossy().to_string();
+    // Delegate to fleet-backend's faithful auto-init (init -b main +
+    // identity seed + .gitignore + initial commit).
+    let _ = fleet_backend::services::worktree::ensure_git_repo(&path).await;
+    // Apply any explicit identity overrides on top.
+    if let Some(n) = name {
+        if !n.is_empty() {
+            let _ = git(&["config", "user.name", n], folder).await;
+        }
+    }
+    if let Some(e) = email {
+        if !e.is_empty() {
+            let _ = git(&["config", "user.email", e], folder).await;
+        }
+    }
+    if fleet_backend::services::worktree::is_git_repo(&path).await {
+        json!({ "ok": true })
+    } else {
+        json!({ "ok": false, "error": "failed to init repo" })
+    }
+}
+
+pub async fn pull_latest(folder: &Path, base: &str) -> Value {
+    let (rc1, _o, err1) = git(&["fetch", "origin"], folder).await;
+    if rc1 != 0 {
+        return json!({ "ok": false, "error": format!("fetch: {}", err1.trim()) });
+    }
+    let (rc2, _o, err2) = git(&["pull", "--ff-only", "origin", base], folder).await;
+    if rc2 == 0 {
+        json!({ "ok": true })
+    } else {
+        json!({ "ok": false, "error": err2.trim() })
+    }
+}
+
+pub async fn diff_summary(folder: &Path, base: &str) -> Value {
+    let base_ref = format!("origin/{base}");
+    let range = format!("{base_ref}...HEAD");
+    let (rc, out, err) = git(&["diff", "--numstat", &range], folder).await;
+    if rc != 0 {
+        return json!({ "ok": false, "error": err.trim() });
+    }
+    let lines: Vec<Value> = out
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.split_whitespace();
+            let p = it.next()?;
+            let m = it.next()?;
+            let f = it.next()?;
+            Some(json!({
+                "file": f,
+                "plus": p.parse::<i64>().unwrap_or(0),
+                "minus": m.parse::<i64>().unwrap_or(0),
+            }))
+        })
+        .collect();
+    json!({
+        "baseRef": base_ref,
+        "headRef": "HEAD",
+        "diffLines": lines,
+    })
+}
+
+pub async fn open_pr(folder: &Path) -> Value {
+    let (rc, remote, _) = git(&["remote", "get-url", "origin"], folder).await;
+    if rc != 0 {
+        return json!({ "ok": false, "error": "no origin remote" });
+    }
+    let mut url = ssh_to_https(remote.trim());
+    if let Some(stripped) = url.strip_suffix(".git") {
+        url = stripped.to_string();
+    }
+    let target = format!("{url}/pulls");
+    match ::open::that(&target) {
+        Ok(_) => json!({ "ok": true, "url": target }),
+        Err(e) => json!({ "ok": false, "error": e.to_string() }),
+    }
+}
+
 async fn detect_default_branch(folder: &Path) -> Option<String> {
     let (rc, out, _) = git(
         &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
@@ -263,6 +347,39 @@ mod tests {
             .map(|x| x.as_str().unwrap().to_string())
             .collect();
         assert!(local.iter().any(|b| b == "main"));
+    }
+
+    #[tokio::test]
+    async fn ensure_repo_on_empty_dir_creates_repo() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        // Some Windows/CI envs have a `.git` at $HOME or above %TEMP%,
+        // making the tempdir already "inside" a repo — ensure_repo then
+        // (correctly) skips init. Skip the assertion in that case.
+        let path = tmp.path().to_string_lossy().to_string();
+        if fleet_backend::services::worktree::is_git_repo(&path).await {
+            return;
+        }
+        let v = ensure_repo(tmp.path(), Some("T"), Some("t@x")).await;
+        assert_eq!(v["ok"], true);
+        let (rc, head, _) = git(&["rev-parse", "--abbrev-ref", "HEAD"], tmp.path()).await;
+        assert_eq!(rc, 0);
+        assert_eq!(head.trim(), "main");
+    }
+
+    #[tokio::test]
+    async fn diff_summary_without_remote_returns_error_envelope() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        fresh_repo(tmp.path()).await;
+        let v = diff_summary(tmp.path(), "main").await;
+        // No `origin/main` ref → faithful error envelope.
+        assert_eq!(v["ok"], false);
+        assert!(v.get("error").is_some());
     }
 
     #[tokio::test]

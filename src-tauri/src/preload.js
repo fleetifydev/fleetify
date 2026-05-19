@@ -61,6 +61,17 @@
       gitCheckout: function (folder, branch, force) { return invoke("git_checkout", { folder: String(folder || ""), branch: String(branch || ""), force: !!force }); },
       gitCommit: function (folder, message) { return invoke("git_commit", { folder: String(folder || ""), message: String(message || "") }); },
       gitPush: function (folder) { return invoke("git_push", { folder: String(folder || "") }); },
+      gitEnsureRepo: function (folder, opts) {
+        var o = opts || {};
+        return invoke("git_ensure_repo", { folder: String(folder || ""), name: o.name || null, email: o.email || null });
+      },
+      gitPullLatest: function (folder, baseBranch) {
+        return invoke("git_pull_latest", { folder: String(folder || ""), baseBranch: String(baseBranch || "main") });
+      },
+      gitDiffSummary: function (folder, baseBranch) {
+        return invoke("git_diff_summary", { folder: String(folder || ""), baseBranch: String(baseBranch || "main") });
+      },
+      openPR: function (folder) { return invoke("git_open_pr", { folder: String(folder || "") }); },
       ptySpawn: function (opts) {
         var o = opts || {};
         return invoke("pty_spawn", {

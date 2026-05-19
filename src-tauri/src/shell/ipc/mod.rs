@@ -241,6 +241,26 @@ pub async fn git_commit(folder: String, message: String) -> serde_json::Value {
 pub async fn git_push(folder: String) -> serde_json::Value {
     git::push(&PathBuf::from(folder)).await
 }
+#[tauri::command]
+pub async fn git_ensure_repo(
+    folder: String,
+    name: Option<String>,
+    email: Option<String>,
+) -> serde_json::Value {
+    git::ensure_repo(&PathBuf::from(folder), name.as_deref(), email.as_deref()).await
+}
+#[tauri::command]
+pub async fn git_pull_latest(folder: String, base_branch: String) -> serde_json::Value {
+    git::pull_latest(&PathBuf::from(folder), &base_branch).await
+}
+#[tauri::command]
+pub async fn git_diff_summary(folder: String, base_branch: String) -> serde_json::Value {
+    git::diff_summary(&PathBuf::from(folder), &base_branch).await
+}
+#[tauri::command]
+pub async fn git_open_pr(folder: String) -> serde_json::Value {
+    git::open_pr(&PathBuf::from(folder)).await
+}
 
 // ── PTY ──────────────────────────────────────────────────────────
 #[tauri::command]
