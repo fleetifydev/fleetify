@@ -6,7 +6,9 @@ use serde_json::{json, Value};
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
-use crate::routers::{chat, docker, events, fs, groups, messages, sessions, ssh, AppState};
+use crate::routers::{
+    chat, docker, events, fs, groups, messages, providers, sessions, ssh, AppState,
+};
 
 /// Build the axum app. Single origin: `/healthz`, `/api/*` (auth'd),
 /// `/events/status` SSE, and the built React assets (when `static_dir`).
@@ -36,7 +38,8 @@ pub fn app(state: AppState, static_dir: Option<PathBuf>) -> Router {
         .merge(groups::router())
         .merge(fs::router())
         .merge(ssh::router())
-        .merge(docker::router());
+        .merge(docker::router())
+        .merge(providers::router());
 
     let routed = Router::new()
         .route("/healthz", get(healthz))
