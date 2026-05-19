@@ -2,9 +2,11 @@
 //! ships the 5 `window.fleetify` auth commands; the ~51 `window.electronAPI`
 //! commands (fs/git/pty/github/window/dialog/…) land in Phase 1c+.
 
+use std::path::PathBuf;
+
 use tauri::Manager;
 
-use crate::shell::{auth, config};
+use crate::shell::{auth, config, git};
 
 #[tauri::command]
 pub async fn auth_sign_in() -> serde_json::Value {
@@ -206,6 +208,36 @@ pub async fn fs_get_project_root() -> String {
         .ok()
         .and_then(|p| p.to_str().map(String::from))
         .unwrap_or_default()
+}
+
+// ── git ──────────────────────────────────────────────────────────
+#[tauri::command]
+pub async fn git_get_context(folder: String) -> serde_json::Value {
+    git::get_context(&PathBuf::from(folder)).await
+}
+#[tauri::command]
+pub async fn git_has_gh_cli() -> serde_json::Value {
+    git::has_gh_cli().await
+}
+#[tauri::command]
+pub async fn git_list_branches(folder: String) -> serde_json::Value {
+    git::list_branches(&PathBuf::from(folder)).await
+}
+#[tauri::command]
+pub async fn git_checkout(
+    folder: String,
+    branch: String,
+    force: Option<bool>,
+) -> serde_json::Value {
+    git::checkout(&PathBuf::from(folder), &branch, force.unwrap_or(false)).await
+}
+#[tauri::command]
+pub async fn git_commit(folder: String, message: String) -> serde_json::Value {
+    git::commit(&PathBuf::from(folder), &message).await
+}
+#[tauri::command]
+pub async fn git_push(folder: String) -> serde_json::Value {
+    git::push(&PathBuf::from(folder)).await
 }
 
 // ── dialog ───────────────────────────────────────────────────────

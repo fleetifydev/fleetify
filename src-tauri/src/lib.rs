@@ -59,6 +59,12 @@ pub fn run() {
             shell::ipc::fs_get_extension,
             shell::ipc::fs_get_project_root,
             shell::ipc::dialog_open_folder,
+            shell::ipc::git_get_context,
+            shell::ipc::git_has_gh_cli,
+            shell::ipc::git_list_branches,
+            shell::ipc::git_checkout,
+            shell::ipc::git_commit,
+            shell::ipc::git_push,
         ])
         .setup(|app| {
             // Auth module emits `fleet:auth-event` via this handle.

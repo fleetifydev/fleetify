@@ -55,6 +55,12 @@
       getExtension: function (p) { return invoke("fs_get_extension", { filePath: String(p || "") }); },
       getProjectRoot: function () { return invoke("fs_get_project_root"); },
       openFolderDialog: function () { return invoke("dialog_open_folder"); },
+      getGitContext: function (folder) { return invoke("git_get_context", { folder: String(folder || "") }); },
+      hasGhCli: function () { return invoke("git_has_gh_cli"); },
+      listGitBranches: function (folder) { return invoke("git_list_branches", { folder: String(folder || "") }); },
+      gitCheckout: function (folder, branch, force) { return invoke("git_checkout", { folder: String(folder || ""), branch: String(branch || ""), force: !!force }); },
+      gitCommit: function (folder, message) { return invoke("git_commit", { folder: String(folder || ""), message: String(message || "") }); },
+      gitPush: function (folder) { return invoke("git_push", { folder: String(folder || "") }); },
     },
     {
       get: function (t, k) {
