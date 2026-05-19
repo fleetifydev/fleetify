@@ -3,6 +3,10 @@
 
 mod http;
 
+pub mod config;
+pub mod db;
+pub mod models;
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
