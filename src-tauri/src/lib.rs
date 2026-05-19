@@ -44,6 +44,8 @@ pub fn run() {
             shell::ipc::auth_userinfo,
             shell::ipc::auth_get_access_token,
             shell::ipc::auth_get_state,
+            shell::ipc::config_get,
+            shell::ipc::config_set,
         ])
         .setup(|app| {
             // Auth module emits `fleet:auth-event` via this handle.

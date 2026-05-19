@@ -4,4 +4,5 @@
 
 pub mod auth;
 pub mod bearer;
+pub mod config;
 pub mod ipc;

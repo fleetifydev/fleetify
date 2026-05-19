@@ -39,7 +39,11 @@
   var asyncNoop = function () { return Promise.resolve(undefined); };
   var evNoop = function () { return function () {}; };
   window.electronAPI = new Proxy(
-    { getConfig: function () { return Promise.resolve({}); }, setConfig: asyncNoop },
+    {
+      // Real-backed by Tauri commands (Phase 2 increment).
+      getConfig: function () { return invoke("config_get"); },
+      setConfig: function (c) { return invoke("config_set", { config: c || {} }); },
+    },
     {
       get: function (t, k) {
         if (k in t) return t[k];

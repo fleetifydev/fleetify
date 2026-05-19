@@ -1038,6 +1038,7 @@ dependencies = [
  "sha2",
  "tauri",
  "tauri-build",
+ "tempfile",
  "tiny_http",
  "tokio",
  "tracing",

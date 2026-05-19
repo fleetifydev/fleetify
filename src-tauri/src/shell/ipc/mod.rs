@@ -2,7 +2,9 @@
 //! ships the 5 `window.fleetify` auth commands; the ~51 `window.electronAPI`
 //! commands (fs/git/pty/github/window/dialog/…) land in Phase 1c+.
 
-use crate::shell::auth;
+use tauri::Manager;
+
+use crate::shell::{auth, config};
 
 #[tauri::command]
 pub async fn auth_sign_in() -> serde_json::Value {
@@ -37,4 +39,27 @@ pub async fn auth_get_access_token(force: Option<bool>) -> serde_json::Value {
 #[tauri::command]
 pub async fn auth_get_state() -> serde_json::Value {
     auth::get_state().await
+}
+
+// ── window.electronAPI.{getConfig,setConfig} ──────────────────────
+// Persisted under Tauri's per-app data dir (parity with the Electron
+// `electron-store`-style JSON-on-disk the original used).
+
+#[tauri::command]
+pub async fn config_get(app: tauri::AppHandle) -> serde_json::Value {
+    match app.path().app_data_dir() {
+        Ok(dir) => config::load_config_from(&dir),
+        Err(_) => serde_json::json!({}),
+    }
+}
+
+#[tauri::command]
+pub async fn config_set(
+    app: tauri::AppHandle,
+    config: serde_json::Value,
+) -> serde_json::Value {
+    if let Ok(dir) = app.path().app_data_dir() {
+        let _ = config::save_config_to(&dir, &config);
+    }
+    serde_json::json!({ "ok": true })
 }
