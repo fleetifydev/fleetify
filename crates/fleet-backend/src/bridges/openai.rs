@@ -181,14 +181,19 @@ impl OpenAIBridge {
                     .push(json!({"role":"assistant","content":assistant_text}));
             }
 
-            // Phase 3: app pricing fallback. Reported cost = 0 (renderer
-            // skips record_cost on 0); usage is still emitted faithfully.
+            // App pricing fallback (parity with calculate_cost in the
+            // Python OpenAIBridge: it always computes via pricing because
+            // the OpenAI SDK doesn't report cost_usd). Pricing table:
+            // services::pricing.
+            let i = usage.get("input_tokens").and_then(|x| x.as_i64()).unwrap_or(0);
+            let o = usage.get("output_tokens").and_then(|x| x.as_i64()).unwrap_or(0);
+            let cr = usage
+                .get("cache_read_tokens")
+                .and_then(|x| x.as_i64())
+                .unwrap_or(0);
+            let cost_usd = crate::services::pricing::calculate_cost(&model, i, o, cr, 0);
             let _ = tx
-                .send(BridgeEvent::Cost {
-                    usage,
-                    cost_usd: 0.0,
-                    model,
-                })
+                .send(BridgeEvent::Cost { usage, cost_usd, model })
                 .await;
             let _ = tx.send(BridgeEvent::Status { status: "done".into() }).await;
         });

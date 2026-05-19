@@ -233,11 +233,26 @@ pub fn parse_event(event: &Value, st: &mut ParseState) -> Vec<BridgeEvent> {
             let output_tokens = g("output_tokens");
             let cache_read = g("cache_read_input_tokens");
             let cache_write = g("cache_creation_input_tokens");
-            // Phase 3: calculate_cost fallback when total_cost_usd is 0.
-            let cost_usd = event
+            // calculate_cost fallback when total_cost_usd is 0 (parity with
+            // the Python bridge: "use Claude's reported cost, fall back to
+            // calculation"). Pricing table lives in services::pricing.
+            let reported = event
                 .get("total_cost_usd")
                 .and_then(|x| x.as_f64())
                 .unwrap_or(0.0);
+            let cost_usd = if reported > 0.0 {
+                reported
+            } else if let Some(m) = &st.model {
+                crate::services::pricing::calculate_cost(
+                    m,
+                    input_tokens,
+                    output_tokens,
+                    cache_read,
+                    cache_write,
+                )
+            } else {
+                0.0
+            };
             out.push(BridgeEvent::Cost {
                 usage: json!({
                     "input_tokens": input_tokens,
