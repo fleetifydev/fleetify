@@ -7,6 +7,7 @@ pub mod events;
 pub mod fs;
 pub mod groups;
 pub mod marketplace;
+pub mod mcp;
 pub mod messages;
 pub mod plugins;
 pub mod providers;

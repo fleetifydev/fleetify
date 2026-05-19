@@ -25,6 +25,7 @@ uuid = { version = "1", features = ["v4"] }
 async-stream = "0.3"
 futures-util = "0.3"
 regex = "1"
+open = "5"
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
