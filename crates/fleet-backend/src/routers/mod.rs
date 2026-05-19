@@ -6,10 +6,14 @@ pub mod docker;
 pub mod events;
 pub mod fs;
 pub mod groups;
+pub mod marketplace;
 pub mod messages;
+pub mod plugins;
 pub mod providers;
+pub mod runtime;
 pub mod sessions;
 pub mod ssh;
+pub mod workflows;
 
 use axum::extract::FromRef;
 use axum::http::StatusCode;
