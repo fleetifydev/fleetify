@@ -50,6 +50,10 @@
       maximizeWindow: function () { return invoke("window_maximize"); },
       closeWindow: function () { return invoke("window_close"); },
       setWindowSize: function (w, h) { return invoke("window_set_size", { width: Number(w), height: Number(h) }); },
+      readDirectory: function (p) { return invoke("fs_read_directory", { dirPath: String(p || "") }); },
+      readFile: function (p) { return invoke("fs_read_file", { filePath: String(p || "") }); },
+      getExtension: function (p) { return invoke("fs_get_extension", { filePath: String(p || "") }); },
+      getProjectRoot: function () { return invoke("fs_get_project_root"); },
     },
     {
       get: function (t, k) {

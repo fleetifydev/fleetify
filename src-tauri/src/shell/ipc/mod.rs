@@ -137,3 +137,119 @@ pub async fn window_set_size(
     }
     serde_json::json!({ "ok": true })
 }
+
+// ── fs ───────────────────────────────────────────────────────────
+// Renderer wire shape (parity with Electron preload):
+//   readDirectory → { dirs: [{name, isDir}], error? }
+//   readFile      → { content: <string>, error? }
+//   getExtension  → <ext-no-dot>
+//   getProjectRoot→ <abs path>
+
+pub fn read_directory_impl(dir: &std::path::Path) -> serde_json::Value {
+    match std::fs::read_dir(dir) {
+        Ok(rd) => {
+            let mut items: Vec<serde_json::Value> = rd
+                .filter_map(|e| e.ok())
+                .map(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                    serde_json::json!({ "name": name, "isDir": is_dir })
+                })
+                .collect();
+            items.sort_by(|a, b| {
+                let ad = a["isDir"].as_bool().unwrap_or(false);
+                let bd = b["isDir"].as_bool().unwrap_or(false);
+                bd.cmp(&ad).then_with(|| {
+                    let an = a["name"].as_str().unwrap_or("");
+                    let bn = b["name"].as_str().unwrap_or("");
+                    an.to_lowercase().cmp(&bn.to_lowercase())
+                })
+            });
+            serde_json::json!({ "dirs": items })
+        }
+        Err(e) => serde_json::json!({ "error": e.to_string() }),
+    }
+}
+
+pub fn read_file_impl(path: &std::path::Path) -> serde_json::Value {
+    match std::fs::read_to_string(path) {
+        Ok(s) => serde_json::json!({ "content": s }),
+        Err(e) => serde_json::json!({ "error": e.to_string() }),
+    }
+}
+
+pub fn extension_no_dot(path: &std::path::Path) -> String {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub async fn fs_read_directory(dir_path: String) -> serde_json::Value {
+    read_directory_impl(std::path::Path::new(&dir_path))
+}
+
+#[tauri::command]
+pub async fn fs_read_file(file_path: String) -> serde_json::Value {
+    read_file_impl(std::path::Path::new(&file_path))
+}
+
+#[tauri::command]
+pub async fn fs_get_extension(file_path: String) -> String {
+    extension_no_dot(std::path::Path::new(&file_path))
+}
+
+#[tauri::command]
+pub async fn fs_get_project_root() -> String {
+    std::env::current_dir()
+        .ok()
+        .and_then(|p| p.to_str().map(String::from))
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_directory_lists_dirs_first_then_alpha() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("z.txt"), "").unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "").unwrap();
+        std::fs::create_dir(tmp.path().join("bdir")).unwrap();
+        std::fs::create_dir(tmp.path().join("Adir")).unwrap();
+
+        let v = read_directory_impl(tmp.path());
+        let arr = v["dirs"].as_array().unwrap();
+        let names: Vec<&str> = arr.iter().map(|x| x["name"].as_str().unwrap()).collect();
+        // Dirs first, then files; case-insensitive alpha within each group.
+        assert_eq!(names, vec!["Adir", "bdir", "a.txt", "z.txt"]);
+        assert_eq!(arr[0]["isDir"], true);
+        assert_eq!(arr[2]["isDir"], false);
+    }
+
+    #[test]
+    fn read_directory_error_envelope_on_missing() {
+        let v = read_directory_impl(std::path::Path::new("Z:/does/not/exist/anywhere"));
+        assert!(v.get("error").is_some());
+        assert!(v.get("dirs").is_none());
+    }
+
+    #[test]
+    fn read_file_roundtrip_and_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("f.txt");
+        std::fs::write(&p, "hello").unwrap();
+        assert_eq!(read_file_impl(&p)["content"], "hello");
+        let miss = read_file_impl(&tmp.path().join("nope.txt"));
+        assert!(miss.get("error").is_some());
+    }
+
+    #[test]
+    fn extension_no_dot_cases() {
+        assert_eq!(extension_no_dot(std::path::Path::new("a.tsx")), "tsx");
+        assert_eq!(extension_no_dot(std::path::Path::new("Cargo.toml")), "toml");
+        assert_eq!(extension_no_dot(std::path::Path::new("noext")), "");
+    }
+}
