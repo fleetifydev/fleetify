@@ -19,6 +19,8 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use crate::bridges::claude::ClaudeBridge;
+use crate::bridges::codex::CodexBridge;
+use crate::bridges::gemini::GeminiBridge;
 use crate::bridges::openai::OpenAIBridge;
 use crate::bridges::{AnyBridge, BridgeEvent};
 use crate::models::session::Session;
@@ -283,6 +285,8 @@ async fn run_send_flow(
             }
             AnyBridge::OpenAI(Arc::new(b))
         }
+        "gemini" => AnyBridge::Gemini(Arc::new(GeminiBridge::new(sid.clone()))),
+        "codex" => AnyBridge::Codex(Arc::new(CodexBridge::new(sid.clone()))),
         other => {
             send_json(
                 &sink,

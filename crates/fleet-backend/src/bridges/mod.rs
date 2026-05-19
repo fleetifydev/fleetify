@@ -4,17 +4,22 @@
 //! shape the `/ws/sessions` handler forwards (unchanged React client).
 
 pub mod claude;
+pub mod codex;
+pub mod gemini;
 pub mod openai;
 
 use std::sync::Arc;
 
 /// Tool-dispatch wrapper used by the `/ws/sessions` send flow (parity
-/// with chat.py picking ClaudeBridge / SdkBridge / OpenAIBridge by
-/// `session.tool`). Gemini + Codex variants land later in Phase 2.
+/// with chat.py picking ClaudeBridge / SdkBridge / OpenAIBridge / Gemini
+/// / Codex by `session.tool`). Gemini + Codex are honest deferred stubs
+/// (Phase 2 follow-up) that emit a clear "not implemented" + done.
 #[derive(Clone)]
 pub enum AnyBridge {
     Claude(Arc<claude::ClaudeBridge>),
     OpenAI(Arc<openai::OpenAIBridge>),
+    Gemini(Arc<gemini::GeminiBridge>),
+    Codex(Arc<codex::CodexBridge>),
 }
 
 impl AnyBridge {
@@ -25,20 +30,24 @@ impl AnyBridge {
         match self {
             AnyBridge::Claude(b) => b.send_message(msg).await,
             AnyBridge::OpenAI(b) => b.send_message(msg).await,
+            AnyBridge::Gemini(b) => b.send_message(msg).await,
+            AnyBridge::Codex(b) => b.send_message(msg).await,
         }
     }
     pub async fn abort(&self) {
         match self {
             AnyBridge::Claude(b) => b.abort().await,
             AnyBridge::OpenAI(b) => b.abort().await,
+            AnyBridge::Gemini(b) => b.abort().await,
+            AnyBridge::Codex(b) => b.abort().await,
         }
     }
     /// claude_session_id (if the agent emitted one in `init`). For
-    /// OpenAI this is `None` — no resumable session.
+    /// non-Claude bridges this is `None` — no resumable session.
     pub fn claude_session_id(&self) -> Option<String> {
         match self {
             AnyBridge::Claude(b) => b.claude_session_id.clone(),
-            AnyBridge::OpenAI(_) => None,
+            _ => None,
         }
     }
 }
