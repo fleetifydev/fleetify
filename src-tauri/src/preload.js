@@ -40,9 +40,16 @@
   var evNoop = function () { return function () {}; };
   window.electronAPI = new Proxy(
     {
-      // Real-backed by Tauri commands (Phase 2 increment).
+      // Real-backed by Tauri commands (Phase 2 increments).
       getConfig: function () { return invoke("config_get"); },
       setConfig: function (c) { return invoke("config_set", { config: c || {} }); },
+      openExternal: function (url) { return invoke("shell_open_external", { url: String(url || "") }); },
+      showItemInFolder: function (p) { return invoke("shell_show_item_in_folder", { path: String(p || "") }); },
+      writeText: function (t) { return invoke("clipboard_write", { text: String(t || "") }); },
+      minimizeWindow: function () { return invoke("window_minimize"); },
+      maximizeWindow: function () { return invoke("window_maximize"); },
+      closeWindow: function () { return invoke("window_close"); },
+      setWindowSize: function (w, h) { return invoke("window_set_size", { width: Number(w), height: Number(h) }); },
     },
     {
       get: function (t, k) {

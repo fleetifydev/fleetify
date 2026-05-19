@@ -63,3 +63,77 @@ pub async fn config_set(
     }
     serde_json::json!({ "ok": true })
 }
+
+// ── shell ─────────────────────────────────────────────────────────
+#[tauri::command]
+pub async fn shell_open_external(url: String) -> serde_json::Value {
+    match ::open::that(&url) {
+        Ok(_) => serde_json::json!({ "ok": true }),
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+    }
+}
+
+#[tauri::command]
+pub async fn shell_show_item_in_folder(path: String) -> serde_json::Value {
+    // Open the parent dir in the system file browser (Finder/Explorer).
+    let p = std::path::Path::new(&path);
+    let target = p.parent().map(|x| x.to_path_buf()).unwrap_or_else(|| p.to_path_buf());
+    match ::open::that(&target) {
+        Ok(_) => serde_json::json!({ "ok": true }),
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+    }
+}
+
+// ── clipboard ─────────────────────────────────────────────────────
+#[tauri::command]
+pub async fn clipboard_write(text: String) -> serde_json::Value {
+    match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
+        Ok(_) => serde_json::json!({ "ok": true }),
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+    }
+}
+
+// ── window controls ──────────────────────────────────────────────
+fn main_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
+    app.get_webview_window("main")
+}
+
+#[tauri::command]
+pub async fn window_minimize(app: tauri::AppHandle) -> serde_json::Value {
+    if let Some(w) = main_window(&app) {
+        let _ = w.minimize();
+    }
+    serde_json::json!({ "ok": true })
+}
+
+#[tauri::command]
+pub async fn window_maximize(app: tauri::AppHandle) -> serde_json::Value {
+    if let Some(w) = main_window(&app) {
+        let _ = if w.is_maximized().unwrap_or(false) {
+            w.unmaximize()
+        } else {
+            w.maximize()
+        };
+    }
+    serde_json::json!({ "ok": true })
+}
+
+#[tauri::command]
+pub async fn window_close(app: tauri::AppHandle) -> serde_json::Value {
+    if let Some(w) = main_window(&app) {
+        let _ = w.close();
+    }
+    serde_json::json!({ "ok": true })
+}
+
+#[tauri::command]
+pub async fn window_set_size(
+    app: tauri::AppHandle,
+    width: f64,
+    height: f64,
+) -> serde_json::Value {
+    if let Some(w) = main_window(&app) {
+        let _ = w.set_size(tauri::LogicalSize::new(width, height));
+    }
+    serde_json::json!({ "ok": true })
+}
