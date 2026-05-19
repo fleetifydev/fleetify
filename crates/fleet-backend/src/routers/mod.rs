@@ -3,6 +3,7 @@
 
 pub mod chat;
 pub mod events;
+pub mod groups;
 pub mod messages;
 pub mod sessions;
 
