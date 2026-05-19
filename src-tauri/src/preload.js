@@ -54,6 +54,7 @@
       readFile: function (p) { return invoke("fs_read_file", { filePath: String(p || "") }); },
       getExtension: function (p) { return invoke("fs_get_extension", { filePath: String(p || "") }); },
       getProjectRoot: function () { return invoke("fs_get_project_root"); },
+      openFolderDialog: function () { return invoke("dialog_open_folder"); },
     },
     {
       get: function (t, k) {

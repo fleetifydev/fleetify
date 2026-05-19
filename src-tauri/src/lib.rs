@@ -38,6 +38,7 @@ pub fn run() {
     tracing_subscriber::fmt().with_target(false).compact().init();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             shell::ipc::auth_sign_in,
             shell::ipc::auth_sign_out,
@@ -57,6 +58,7 @@ pub fn run() {
             shell::ipc::fs_read_file,
             shell::ipc::fs_get_extension,
             shell::ipc::fs_get_project_root,
+            shell::ipc::dialog_open_folder,
         ])
         .setup(|app| {
             // Auth module emits `fleet:auth-event` via this handle.
