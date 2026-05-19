@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 
 #[tokio::test]
 async fn serves_index_from_static_dir() {
+    std::env::set_var("FLEET_DB_URL", "sqlite::memory:");
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("index.html"), "<!doctype html>FLEET").unwrap();
 

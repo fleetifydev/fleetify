@@ -9,6 +9,7 @@ use std::path::PathBuf;
 #[tokio::test]
 #[ignore = "requires dist/ from `npm run build`; run with --ignored"]
 async fn serves_real_react_bundle_and_healthz_same_origin() {
+    std::env::set_var("FLEET_DB_URL", "sqlite::memory:");
     let dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../dist");
     assert!(
         dist.join("index.html").exists(),
