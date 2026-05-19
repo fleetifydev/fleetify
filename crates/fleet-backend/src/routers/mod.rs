@@ -17,6 +17,7 @@ pub mod runtime;
 pub mod sessions;
 pub mod ssh;
 pub mod workflows;
+pub mod workspace;
 
 use axum::extract::FromRef;
 use axum::http::StatusCode;
