@@ -3,6 +3,7 @@
 //! Phase 2 (spec II.6). The normalized `BridgeEvent` is the exact wire
 //! shape the `/ws/sessions` handler forwards (unchanged React client).
 
+pub mod acp;
 pub mod claude;
 pub mod codex;
 pub mod gemini;
