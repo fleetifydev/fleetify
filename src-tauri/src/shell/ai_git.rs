@@ -342,6 +342,260 @@ Do NOT wrap the output in code fences. Output Markdown directly.\n\n\
     json!({ "ok": true, "review": out, "cli": cli })
 }
 
+// ── diagnoseFailure ──────────────────────────────────────────────
+// Recovery verbs the agent is allowed to suggest. Anything outside
+// this set is coerced to "manual" downstream. Whitelist applies to
+// applyRecovery too (kept in shell::ipc::git_apply_recovery).
+pub const RECOVERY_ACTIONS: &[&str] = &[
+    "pull-rebase",
+    "force-with-lease",
+    "set-upstream",
+    "custom-command",
+    "manual",
+];
+pub const RECOVERY_BINARIES: &[&str] = &["git", "gh"];
+
+/// Tokens that disqualify a `custom-command` string from auto-apply.
+/// We never spawn through a shell, so these can't be interpreted as
+/// shell ops at the spawn site — the regex check is here so the user
+/// sees a clean rejection upstream of execFile.
+pub fn has_shell_meta(s: &str) -> bool {
+    // |, ;, &, <, >, `, $, (, ), \, and multi-char compounds.
+    if s.contains('|')
+        || s.contains(';')
+        || s.contains('&')
+        || s.contains('<')
+        || s.contains('>')
+        || s.contains('`')
+        || s.contains('$')
+        || s.contains('(')
+        || s.contains(')')
+        || s.contains('\\')
+    {
+        return true;
+    }
+    s.contains("&&") || s.contains("||") || s.contains(">>") || s.contains("<<")
+}
+
+pub async fn diagnose_failure(
+    folder: String,
+    error_message: String,
+    tool: Option<String>,
+    context: Option<String>,
+    base_branch: Option<String>,
+) -> Value {
+    if error_message.trim().is_empty() {
+        return json!({ "ok": false, "error": "no error message to diagnose" });
+    }
+    let base = base_branch.unwrap_or_else(|| "main".to_string());
+    let path = PathBuf::from(&folder);
+    let (br_ok, br_out) =
+        git_out(&path, &["rev-parse", "--abbrev-ref", "HEAD"], Duration::from_secs(5)).await;
+    let (st_ok, st_out) =
+        git_out(&path, &["status", "--porcelain", "-b"], Duration::from_secs(5)).await;
+    let (lg_ok, lg_out) = git_out(
+        &path,
+        &["log", "--oneline", "--no-decorate", "-n", "5"],
+        Duration::from_secs(5),
+    )
+    .await;
+    let (rm_ok, rm_out) = git_out(&path, &["remote", "-v"], Duration::from_secs(5)).await;
+
+    let prompt = format!(
+        "You are diagnosing a Git / GitHub failure inside a Fleetify session. Read the error message and the repository state below, then emit STRICT JSON with these keys:\n\n\
+- \"summary\":    1-2 sentence diagnosis of what went wrong.\n\
+- \"action\":     ONE of: \"pull-rebase\" | \"force-with-lease\" | \"set-upstream\" | \"custom-command\" | \"manual\"\n\
+- \"rationale\":  1-2 sentences explaining why the chosen action is the right one.\n\
+- \"command\":    The single command the action runs (REQUIRED for \"custom-command\", null for \"manual\"). MUST start with \"git \" or \"gh \" — no other binaries. NO shell pipes, redirects, &&, ||, ;, backticks, $(…). One process invocation only.\n\
+- \"risk\":       ONE of: \"low\" | \"medium\" | \"high\"  — your honest estimate of blast radius. Force-pushing is at least \"medium\". History rewrites are \"high\". Pull-rebase on a clean tree is \"low\".\n\n\
+Rules:\n\
+- Prefer the named verbs when they fit:\n\
+  - \"pull-rebase\" → assumes base \"{base}\".\n\
+  - \"force-with-lease\" → only when the user clearly intended to overwrite (rebased locally, remote has the pre-rebase commits).\n\
+  - \"set-upstream\" → \"no upstream branch\" / \"no remote tracking\" errors.\n\
+- \"custom-command\" is the escape hatch when none of the named verbs fit but a single `git` or `gh` invocation would resolve it. Examples: `gh auth refresh`, `git rebase --abort`, `git fetch origin`, `git lfs install`. Always pair it with rationale + an honest risk rating.\n\
+- \"manual\" is for cases that need user judgement, multiple steps, or non-git tooling (install a binary, edit a config, contact admin). Set command to null.\n\
+- Be honest about risk. Conservative is better. The user sees the EXACT command before approving — no surprises.\n\n\
+Output ONLY the JSON object, no prose around it, no code fence.\n\n\
+# Context\n{}\n\n\
+# Raw error\n{error_message}\n\n\
+# Repo state\n\
+current branch: {}\n\n\
+## git status -sb\n{}\n\n\
+## last 5 commits\n{}\n\n\
+## remotes\n{}\n",
+        context.as_deref().filter(|s| !s.is_empty()).unwrap_or("Create PR failed"),
+        if br_ok && !br_out.is_empty() { br_out.clone() } else { "(unknown)".to_string() },
+        if st_ok { st_out } else { "(unavailable)".to_string() },
+        if lg_ok { lg_out } else { "(unavailable)".to_string() },
+        if rm_ok { rm_out } else { "(unavailable)".to_string() },
+    );
+
+    let (ok, cli, raw, err) =
+        run_session_cli(&folder, tool.as_deref(), &prompt, Duration::from_secs(25)).await;
+    if !ok {
+        return json!({ "ok": false, "error": err });
+    }
+
+    // Same JSON extraction as generate_pr_summary.
+    let mut s = raw;
+    if let Some(start) = s.find("```") {
+        if let Some(rel_end) = s[start + 3..].find("```") {
+            let mut inner = &s[start + 3..start + 3 + rel_end];
+            for tag in ["json", "JSON"] {
+                if let Some(stripped) = inner.strip_prefix(tag) {
+                    inner = stripped.trim_start_matches(|c: char| c == '\n' || c == '\r' || c == ' ');
+                    break;
+                }
+            }
+            s = inner.trim().to_string();
+        }
+    }
+    if let (Some(obj_start), Some(obj_end)) = (s.find('{'), s.rfind('}')) {
+        if obj_end > obj_start {
+            s = s[obj_start..=obj_end].to_string();
+        }
+    }
+    let parsed: Value = match serde_json::from_str(&s) {
+        Ok(v) => v,
+        Err(_) => {
+            return json!({ "ok": false, "error": format!("{cli} output wasn't valid JSON") })
+        }
+    };
+    let summary = match parsed.get("summary").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.chars().take(500).collect::<String>(),
+        _ => return json!({ "ok": false, "error": format!("{cli} response missing 'summary'") }),
+    };
+    let requested = parsed
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("manual");
+    let mut action = if RECOVERY_ACTIONS.iter().any(|a| *a == requested) {
+        requested.to_string()
+    } else {
+        "manual".to_string()
+    };
+    let mut command: Option<String> = if action == "manual" {
+        None
+    } else {
+        parsed
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    if action == "custom-command" {
+        let first_tok = command
+            .as_deref()
+            .map(|c| c.split_whitespace().next().unwrap_or(""))
+            .unwrap_or("");
+        let bin_ok = !first_tok.is_empty()
+            && RECOVERY_BINARIES.iter().any(|b| *b == first_tok);
+        let valid = bin_ok
+            && !has_shell_meta(command.as_deref().unwrap_or(""));
+        if !valid {
+            action = "manual".to_string();
+            command = None;
+        }
+    }
+    let risk = match parsed.get("risk").and_then(|v| v.as_str()) {
+        Some(r @ ("low" | "medium" | "high")) => r.to_string(),
+        _ => "medium".to_string(),
+    };
+    let rationale = parsed
+        .get("rationale")
+        .and_then(|v| v.as_str())
+        .map(|s| s.chars().take(500).collect::<String>())
+        .unwrap_or_default();
+    json!({
+        "ok": true,
+        "summary": summary,
+        "action": action,
+        "rationale": rationale,
+        "command": command,
+        "risk": risk,
+        "cli": cli,
+    })
+}
+
+/// Tokenise a `custom-command` string the same way the Electron build's
+/// tokenizeCommand() does: whitespace splits, double quotes with
+/// backslash escapes, single quotes as literals. Used by applyRecovery
+/// only — its caller has already ruled out shell-meta.
+pub fn tokenize_command(input: &str) -> Vec<String> {
+    enum Mode {
+        Ws,
+        Tok,
+        Dq,
+        Sq,
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut buf = String::new();
+    let mut mode = Mode::Ws;
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        match mode {
+            Mode::Ws => {
+                if c.is_whitespace() {
+                    continue;
+                }
+                if c == '"' {
+                    mode = Mode::Dq;
+                    buf.clear();
+                    continue;
+                }
+                if c == '\'' {
+                    mode = Mode::Sq;
+                    buf.clear();
+                    continue;
+                }
+                mode = Mode::Tok;
+                buf.push(c);
+            }
+            Mode::Tok => {
+                if c.is_whitespace() {
+                    out.push(std::mem::take(&mut buf));
+                    mode = Mode::Ws;
+                    continue;
+                }
+                if c == '"' {
+                    mode = Mode::Dq;
+                    continue;
+                }
+                if c == '\'' {
+                    mode = Mode::Sq;
+                    continue;
+                }
+                buf.push(c);
+            }
+            Mode::Dq => {
+                if c == '"' {
+                    mode = Mode::Tok;
+                    continue;
+                }
+                if c == '\\' {
+                    if let Some(next) = chars.next() {
+                        buf.push(next);
+                    }
+                    continue;
+                }
+                buf.push(c);
+            }
+            Mode::Sq => {
+                if c == '\'' {
+                    mode = Mode::Tok;
+                    continue;
+                }
+                buf.push(c);
+            }
+        }
+    }
+    if !buf.is_empty() {
+        out.push(buf);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,5 +608,44 @@ mod tests {
         // Unknown → claude (parity with Electron fallback).
         assert_eq!(cli_for(Some("does-not-exist")).0, "claude");
         assert_eq!(cli_for(None).0, "claude");
+    }
+
+    #[test]
+    fn shell_meta_detector_catches_compounds() {
+        assert!(has_shell_meta("git status | grep foo"));
+        assert!(has_shell_meta("git log; rm -rf /"));
+        assert!(has_shell_meta("git rev-parse `whoami`"));
+        assert!(has_shell_meta("git log $(echo HEAD)"));
+        assert!(has_shell_meta("git log && rm"));
+        assert!(has_shell_meta("git push --force-with-lease > out"));
+        // Clean commands should pass.
+        assert!(!has_shell_meta("git pull --rebase origin main"));
+        assert!(!has_shell_meta("gh auth refresh"));
+        assert!(!has_shell_meta("git rebase --abort"));
+    }
+
+    #[test]
+    fn tokenize_command_quoted_strings() {
+        assert_eq!(
+            tokenize_command("git commit -m \"fix: x\""),
+            vec!["git", "commit", "-m", "fix: x"]
+        );
+        assert_eq!(
+            tokenize_command("git commit -m 'literal $var stays'"),
+            vec!["git", "commit", "-m", "literal $var stays"]
+        );
+        assert_eq!(
+            tokenize_command("  gh   auth   refresh  "),
+            vec!["gh", "auth", "refresh"]
+        );
+        assert_eq!(
+            tokenize_command(r#"git config user.name "Doe, J.""#),
+            vec!["git", "config", "user.name", "Doe, J."]
+        );
+        // Backslash escape inside double quotes.
+        assert_eq!(
+            tokenize_command(r#"echo "say \"hi\"""#),
+            vec!["echo", "say \"hi\""]
+        );
     }
 }

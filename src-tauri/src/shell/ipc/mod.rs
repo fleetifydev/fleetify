@@ -424,6 +424,210 @@ pub async fn git_review_diff(
     ai_git::review_diff(folder, base_branch, tool).await
 }
 
+// ── Recovery + preflight (sad-path) ─────────────────────────────
+#[tauri::command]
+pub async fn git_diagnose_failure(
+    folder: String,
+    error_message: String,
+    tool: Option<String>,
+    context: Option<String>,
+    base_branch: Option<String>,
+) -> serde_json::Value {
+    ai_git::diagnose_failure(folder, error_message, tool, context, base_branch).await
+}
+
+#[tauri::command]
+pub async fn git_apply_recovery(
+    folder: String,
+    action: String,
+    base_branch: Option<String>,
+    command: Option<String>,
+) -> serde_json::Value {
+    use serde_json::json;
+    let folder_pb = PathBuf::from(&folder);
+    let base = base_branch.unwrap_or_else(|| "main".to_string());
+
+    if !ai_git::RECOVERY_ACTIONS.iter().any(|a| *a == action) || action == "manual" {
+        return json!({ "ok": false, "error": format!("unsupported recovery action: {action}") });
+    }
+
+    let (bin, argv): (String, Vec<String>) = match action.as_str() {
+        "pull-rebase" => (
+            "git".into(),
+            vec!["pull".into(), "--rebase".into(), "origin".into(), base.clone()],
+        ),
+        "force-with-lease" => (
+            "git".into(),
+            vec!["push".into(), "--force-with-lease".into(), "origin".into(), "HEAD".into()],
+        ),
+        "set-upstream" => (
+            "git".into(),
+            vec!["push".into(), "-u".into(), "origin".into(), "HEAD".into()],
+        ),
+        "custom-command" => {
+            let Some(cmd) = command.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+                return json!({ "ok": false, "error": "custom-command requires a command string" });
+            };
+            if ai_git::has_shell_meta(cmd) {
+                return json!({
+                    "ok": false,
+                    "error": "command contains shell metacharacters (refused)"
+                });
+            }
+            let tokens = ai_git::tokenize_command(cmd);
+            if tokens.is_empty() {
+                return json!({ "ok": false, "error": "command parsed to zero tokens" });
+            }
+            let head = tokens[0].clone();
+            if !ai_git::RECOVERY_BINARIES.iter().any(|b| *b == head.as_str()) {
+                return json!({
+                    "ok": false,
+                    "error": format!("binary not allowed: {head}. Only {} are supported.", ai_git::RECOVERY_BINARIES.join(", "))
+                });
+            }
+            (head, tokens[1..].to_vec())
+        }
+        _ => {
+            return json!({ "ok": false, "error": format!("unsupported recovery action: {action}") })
+        }
+    };
+
+    let args_ref: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (rc, out, err) = git::run(
+        &bin,
+        &args_ref,
+        &folder_pb,
+        std::time::Duration::from_secs(30),
+    )
+    .await;
+    if rc != 0 {
+        let msg = if err.is_empty() {
+            format!("{bin} {} failed", argv.join(" "))
+        } else {
+            err.trim().to_string()
+        };
+        return json!({ "ok": false, "error": msg });
+    }
+    json!({ "ok": true, "output": out })
+}
+
+#[tauri::command]
+pub async fn git_apply_preflight_fix(
+    folder: String,
+    action: String,
+    data: Option<serde_json::Value>,
+) -> serde_json::Value {
+    use serde_json::json;
+    let folder_pb = PathBuf::from(&folder);
+
+    if action == "nest-ignore" {
+        let rel = data
+            .as_ref()
+            .and_then(|d| d.get("path"))
+            .and_then(|p| p.as_str())
+            .unwrap_or("");
+        if rel.is_empty() {
+            return json!({ "ok": false, "error": "nest-ignore requires data.path" });
+        }
+        let rule = format!("{}/", rel.trim_end_matches('/'));
+        // Append-if-missing to .gitignore. Idempotent.
+        let gi_path = folder_pb.join(".gitignore");
+        let existing = std::fs::read_to_string(&gi_path).unwrap_or_default();
+        let lines: Vec<String> = existing
+            .split('\n')
+            .map(|l| l.trim_end_matches('\r').trim().to_string())
+            .collect();
+        let already = lines.iter().any(|l| l == &rule);
+        let wrote = if !already {
+            let body = if existing.is_empty() || existing.ends_with('\n') {
+                format!("{existing}{rule}\n")
+            } else {
+                format!("{existing}\n{rule}\n")
+            };
+            if let Err(e) = std::fs::write(&gi_path, body) {
+                return json!({ "ok": false, "error": e.to_string() });
+            }
+            true
+        } else {
+            false
+        };
+        // Drop any existing index entry for the nested dir so a stale
+        // gitlink doesn't keep the failure alive across retries.
+        let _ = git::run(
+            "git",
+            &["rm", "--cached", "-rf", "--ignore-unmatch", rel],
+            &folder_pb,
+            std::time::Duration::from_secs(15),
+        )
+        .await;
+        let out = if wrote {
+            format!("Added \"{rule}\" to .gitignore")
+        } else {
+            format!("\"{rule}\" already in .gitignore")
+        };
+        return json!({ "ok": true, "output": out });
+    }
+
+    if action == "abort-rebase" {
+        let (rc, out, err) = git::run(
+            "git",
+            &["rebase", "--abort"],
+            &folder_pb,
+            std::time::Duration::from_secs(15),
+        )
+        .await;
+        if rc != 0 {
+            return json!({
+                "ok": false,
+                "error": if err.is_empty() { "git rebase --abort failed".to_string() } else { err.trim().to_string() }
+            });
+        }
+        let _ = out;
+        return json!({ "ok": true, "output": "Rebase aborted." });
+    }
+
+    json!({ "ok": false, "error": format!("unsupported preflight action: {action}") })
+}
+
+#[tauri::command]
+pub async fn git_diff_summary_simple(
+    folder: String,
+    base_branch: Option<String>,
+) -> serde_json::Value {
+    use serde_json::json;
+    let base = base_branch.unwrap_or_else(|| "main".to_string());
+    let folder_pb = PathBuf::from(&folder);
+    let range_dot3 = format!("{base}...HEAD");
+    let range_dot2 = format!("{base}..HEAD");
+    let (rc_f, files, _) = git::run(
+        "git",
+        &["diff", "--name-status", &range_dot3],
+        &folder_pb,
+        std::time::Duration::from_secs(5),
+    )
+    .await;
+    let (rc_l, log, _) = git::run(
+        "git",
+        &["log", "--oneline", "--no-decorate", &range_dot2],
+        &folder_pb,
+        std::time::Duration::from_secs(5),
+    )
+    .await;
+    let (rc_s, stat, _) = git::run(
+        "git",
+        &["diff", "--shortstat", &range_dot3],
+        &folder_pb,
+        std::time::Duration::from_secs(5),
+    )
+    .await;
+    json!({
+        "ok": true,
+        "files": if rc_f == 0 { files } else { String::new() },
+        "log":   if rc_l == 0 { log } else { String::new() },
+        "stat":  if rc_s == 0 { stat } else { String::new() },
+    })
+}
+
 // ── GitHub link (Fleetify cloud OAuth fallback) ──────────────────
 #[tauri::command]
 pub async fn github_get_link() -> serde_json::Value {

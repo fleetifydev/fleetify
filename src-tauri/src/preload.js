@@ -90,6 +90,40 @@
           tool: o.tool || null,
         });
       },
+      diagnoseFailure: function (folder, opts) {
+        var o = opts || {};
+        return invoke("git_diagnose_failure", {
+          folder: String(folder || ""),
+          errorMessage: String(o.errorMessage || ""),
+          tool: o.tool || null,
+          context: o.context || null,
+          baseBranch: o.baseBranch || null,
+        });
+      },
+      applyRecovery: function (folder, opts) {
+        var o = opts || {};
+        return invoke("git_apply_recovery", {
+          folder: String(folder || ""),
+          action: String(o.action || "manual"),
+          baseBranch: o.baseBranch || null,
+          command: o.command || null,
+        });
+      },
+      applyPreflightFix: function (folder, opts) {
+        var o = opts || {};
+        return invoke("git_apply_preflight_fix", {
+          folder: String(folder || ""),
+          action: String(o.action || ""),
+          data: o.data || null,
+        });
+      },
+      diffSummary: function (folder, opts) {
+        var o = opts || {};
+        return invoke("git_diff_summary_simple", {
+          folder: String(folder || ""),
+          baseBranch: o.baseBranch || null,
+        });
+      },
       watchHead: function (folder, key) { return invoke("git_watch_head", { folder: String(folder || ""), key: String(key || "") }); },
       unwatchHead: function (key) { return invoke("git_unwatch_head", { key: String(key || "") }); },
       onHeadChanged: function (cb) {
