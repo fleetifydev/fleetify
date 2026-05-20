@@ -193,6 +193,35 @@ impl CodexBridge {
         let client = Arc::new(CodexClient::new());
         client.attach(stdout, stdin).await?;
 
+        // Approval handler: auto-allow when permission_mode is one of
+        // the bypass variants (where the user already opted into "no
+        // prompts"), otherwise deny — the renderer's permission UI for
+        // Codex sessions isn't wired yet so deny is the safe default.
+        // The Python ships a richer renderer-prompt-and-wait flow; that
+        // lands once a renderer permission_handler IPC exists.
+        let perm_mode = self.permission_mode.clone();
+        client
+            .on_approval_request(Arc::new(move |method: String, _params| {
+                let bypass = matches!(
+                    perm_mode.as_str(),
+                    "bypassPermissions" | "dontAsk"
+                );
+                Box::pin(async move {
+                    if bypass {
+                        // Approval shape varies per method; the safest
+                        // shared shape is `{ decision: "approved" }`.
+                        Ok(serde_json::json!({ "decision": "approved" }))
+                    } else {
+                        tracing::warn!(
+                            target: "codex.approval",
+                            "auto-denied approval for {method} — renderer permission UI not wired"
+                        );
+                        Ok(serde_json::json!({ "decision": "denied" }))
+                    }
+                })
+            }))
+            .await;
+
         // V2 handshake: initialize → initialized notification → thread/start.
         tokio::time::timeout(
             std::time::Duration::from_secs(INIT_TIMEOUT_SECS),
