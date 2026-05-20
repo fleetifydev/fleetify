@@ -460,10 +460,17 @@ impl GeminiBridge {
             // Emit a Cost event if we accumulated any usage tokens.
             let final_usage = usage_acc.lock().await.clone();
             if final_usage.has_any() {
+                let cost_usd = crate::services::pricing::calculate_cost(
+                    &model_label,
+                    final_usage.input_tokens as i64,
+                    final_usage.output_tokens as i64,
+                    final_usage.cache_read_tokens as i64,
+                    final_usage.cache_write_tokens as i64,
+                );
                 let _ = bridge_tx
                     .send(BridgeEvent::Cost {
                         usage: final_usage.to_json(),
-                        cost_usd: 0.0, // pricing for Gemini wired by the cost service later
+                        cost_usd,
                         model: model_label.clone(),
                     })
                     .await;
