@@ -121,7 +121,37 @@ pub async fn install_from_git(repo_url: &str) -> Result<InstallResult, InstallEr
         }
     }
 
-    let manifest_value = serde_json::to_value(&m).unwrap_or(Value::Null);
+    // Materialize per-provider components into ~/.claude/, ~/.gemini/,
+    // ~/.codex/ for every provider the manifest declares. Best-effort —
+    // a single provider's materialization failure (missing home dir,
+    // permission error) logs + continues so the install still completes.
+    let mut materialization: serde_json::Map<String, Value> = serde_json::Map::new();
+    for provider in &m.providers {
+        match super::materializers::materialize(&m.name, &install_path, provider) {
+            Ok(r) => {
+                materialization.insert(
+                    provider.clone(),
+                    serde_json::to_value(r).unwrap_or(Value::Null),
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "plugins.installer",
+                    "materialize.{} failed for {}: {e}",
+                    provider,
+                    m.name
+                );
+            }
+        }
+    }
+
+    let mut manifest_value = serde_json::to_value(&m).unwrap_or(Value::Null);
+    if let Some(obj) = manifest_value.as_object_mut() {
+        obj.insert(
+            "materialization".into(),
+            Value::Object(materialization),
+        );
+    }
     Ok(InstallResult {
         install_id: m.name.clone(),
         install_path: install_path.to_string_lossy().into_owned(),

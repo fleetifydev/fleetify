@@ -22,4 +22,5 @@
 
 pub mod installer;
 pub mod manifest;
+pub mod materializers;
 pub mod types;
