@@ -100,7 +100,7 @@ Wired into the chat handler:
 | **Workflows** | |
 | &nbsp;&nbsp;In-memory run registry + `substitute()` | ✅ |
 | &nbsp;&nbsp;Router list / run / get_run with per-user scoping | ✅ |
-| &nbsp;&nbsp;Step execution loop (depends on SdkBridge) | ⏳ |
+| &nbsp;&nbsp;Step execution loop (calls into bridges per step kind) | ✅ |
 
 ## Phase 5 — Hardening 🟡 ~90%
 

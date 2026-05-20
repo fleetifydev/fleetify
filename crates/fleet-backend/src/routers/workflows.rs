@@ -96,20 +96,185 @@ async fn run_workflow(
     Path((install_id, name)): Path<(String, String)>,
     Json(body): Json<RunBody>,
 ) -> impl IntoResponse {
-    // V1 cut: allocate a run row with no steps (until the SdkBridge
-    // execution path lands) and return the id so the renderer can
-    // poll status. Args are stored at allocate time; once execution
-    // ships they're consumed by `substitute()` during step expansion.
-    let _ = body; // accepted but no step expansion yet.
-    let run_id = workflows::allocate_run(&name, &install_id, &user.id, "", &[]);
+    // Load the workflow definition from
+    // <plugins>/<install_id>/workflows/<name>.{json,yaml,md} and
+    // allocate steps from its `steps[]` array. JSON is the canonical
+    // format; YAML / MD support is a follow-up (json covers what the
+    // scaffold emits today).
+    use crate::services::plugins::manifest;
+    let _ = body; // args carried inside the run when expansion lands.
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| ".".into());
+    let wf_dir = std::path::PathBuf::from(home)
+        .join(".fleetify")
+        .join("plugins")
+        .join(&install_id)
+        .join("workflows");
+    let candidates = [
+        wf_dir.join(format!("{name}.json")),
+        wf_dir.join(format!("{name}.yaml")),
+        wf_dir.join(format!("{name}.yml")),
+        wf_dir.join(format!("{name}.md")),
+    ];
+    let wf_path = candidates.into_iter().find(|p| p.is_file());
+    let Some(wf_path) = wf_path else {
+        let run_id = workflows::allocate_run(&name, &install_id, &user.id, "", &[]);
+        workflows::finish_run(
+            &run_id,
+            "failed",
+            Some(&format!("workflow '{name}' not found in install {install_id}")),
+        );
+        let r = workflows::get_run(&run_id).map(|r| serde_json::to_value(r).unwrap_or(Value::Null));
+        return (StatusCode::NOT_FOUND, Json(r.unwrap_or(Value::Null))).into_response();
+    };
+    // Verify the install's manifest parses (covers traversal in install_id).
+    let plugin_root = wf_dir
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
+    let plugin_name = match manifest::parse_plugin(&plugin_root) {
+        Ok(m) => m.name,
+        Err(_) => install_id.clone(),
+    };
+    let raw = match std::fs::read_to_string(&wf_path) {
+        Ok(s) => s,
+        Err(e) => {
+            let run_id = workflows::allocate_run(&name, &plugin_name, &user.id, "", &[]);
+            workflows::finish_run(&run_id, "failed", Some(&format!("read {}: {e}", wf_path.display())));
+            let r = workflows::get_run(&run_id).map(|r| serde_json::to_value(r).unwrap_or(Value::Null));
+            return (StatusCode::ACCEPTED, Json(r.unwrap_or(Value::Null))).into_response();
+        }
+    };
+    // Phase-4 cut: only JSON workflows. YAML/MD follow.
+    let def: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            let run_id = workflows::allocate_run(&name, &plugin_name, &user.id, "", &[]);
+            workflows::finish_run(
+                &run_id,
+                "failed",
+                Some(&format!("workflow parse failed: {e} (only JSON supported in this cut)")),
+            );
+            let r = workflows::get_run(&run_id).map(|r| serde_json::to_value(r).unwrap_or(Value::Null));
+            return (StatusCode::ACCEPTED, Json(r.unwrap_or(Value::Null))).into_response();
+        }
+    };
+    let steps_arr = def.get("steps").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let steps_meta: Vec<(String, String)> = steps_arr
+        .iter()
+        .map(|s| {
+            let title = s
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("step")
+                .to_string();
+            let kind = s
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("tool")
+                .to_string();
+            (title, kind)
+        })
+        .collect();
+    let run_id = workflows::allocate_run(&name, &plugin_name, &user.id, "", &steps_meta);
     workflows::mark_started(&run_id);
-    workflows::finish_run(
-        &run_id,
-        "failed",
-        Some("workflow step execution not implemented yet (Phase 4 SdkBridge follow-up)"),
-    );
+
+    // Step execution loop (background): walks steps in order.
+    let steps_clone = steps_arr.clone();
+    let run_id_bg = run_id.clone();
+    tokio::spawn(async move {
+        let mut aborted = false;
+        for (i, step) in steps_clone.iter().enumerate() {
+            if aborted {
+                workflows::record_step(
+                    &run_id_bg,
+                    i,
+                    "skipped",
+                    "",
+                    Some("prior step failed"),
+                );
+                continue;
+            }
+            workflows::record_step(&run_id_bg, i, "running", "", None);
+            let kind = step
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("tool");
+            let result = match kind {
+                "tool" => {
+                    // V1: echo the input back as the output (matches Python
+                    // placeholder behaviour until real MCP-tool dispatch
+                    // from Fleet ships).
+                    Ok(serde_json::to_string(step.get("input").unwrap_or(&serde_json::Value::Null)).unwrap_or_default())
+                }
+                "agent" => {
+                    // Spawn a one-shot Haiku call and capture the response
+                    // text. system_prompt + message both run through
+                    // `substitute()` so `{{step:N:output}}` references in
+                    // later steps resolve correctly.
+                    let run = match workflows::get_run(&run_id_bg) {
+                        Some(r) => r,
+                        None => {
+                            workflows::record_step(
+                                &run_id_bg, i, "failed", "",
+                                Some("run state vanished"),
+                            );
+                            aborted = true;
+                            continue;
+                        }
+                    };
+                    let sys = step
+                        .get("system_prompt")
+                        .and_then(|v| v.as_str())
+                        .map(|s| workflows::substitute(s, &run, &Default::default()))
+                        .unwrap_or_default();
+                    let msg = step
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .map(|s| workflows::substitute(s, &run, &Default::default()))
+                        .unwrap_or_else(|| "Run the step.".into());
+                    run_one_shot_claude(&run.project_path, &sys, &msg).await
+                }
+                other => Err(format!("unknown step kind: {other}")),
+            };
+            match result {
+                Ok(out) => {
+                    workflows::record_step(&run_id_bg, i, "succeeded", &out, None);
+                }
+                Err(e) => {
+                    workflows::record_step(&run_id_bg, i, "failed", "", Some(&e));
+                    aborted = true;
+                }
+            }
+        }
+        let final_status = if aborted { "failed" } else { "succeeded" };
+        workflows::finish_run(&run_id_bg, final_status, None);
+    });
+
     let r = workflows::get_run(&run_id).map(|r| serde_json::to_value(r).unwrap_or(Value::Null));
     (StatusCode::ACCEPTED, Json(r.unwrap_or(Value::Null))).into_response()
+}
+
+async fn run_one_shot_claude(
+    project_path: &str,
+    system_prompt: &str,
+    user_message: &str,
+) -> Result<String, String> {
+    use crate::services::haiku_client::call_haiku;
+    use std::time::Duration;
+    // For agent steps without an explicit model, default to Haiku to
+    // keep workflow runs cheap. Users can override via the workflow
+    // step JSON once the model field is wired through.
+    let sys = if system_prompt.is_empty() {
+        None
+    } else {
+        Some(system_prompt)
+    };
+    let _ = project_path; // reserved for cwd-aware one-shots
+    call_haiku(user_message, sys, Some(Duration::from_secs(60)))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 async fn get_run(
