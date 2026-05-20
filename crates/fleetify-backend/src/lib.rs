@@ -75,7 +75,7 @@ async fn normalize_legacy_verbatim_project_paths(pool: &sqlx::SqlitePool) {
         .unwrap_or_default();
         for (id, raw) in rows {
             let stripped =
-                fleet_core::strip_verbatim_prefix(std::path::Path::new(&raw))
+                fleetify_core::strip_verbatim_prefix(std::path::Path::new(&raw))
                     .to_string_lossy()
                     .into_owned();
             if stripped != raw {

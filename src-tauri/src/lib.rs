@@ -117,7 +117,7 @@ pub fn run() {
             let addr: SocketAddr = "127.0.0.1:8765".parse().unwrap();
             let sd = static_dir();
             tauri::async_runtime::spawn(async move {
-                match fleet_backend::serve(addr, sd).await {
+                match fleetify_backend::serve(addr, sd).await {
                     Ok(handle) => {
                         std::mem::forget(handle);
                         tracing::info!("embedded backend up on {addr}");
@@ -135,7 +135,7 @@ pub fn run() {
             // shell::auth.get_access_token() lazily per attempt so a
             // mid-flow refresh is picked up at the next reconnect.
             tauri::async_runtime::spawn(async {
-                let source: fleet_backend::services::telemetry::BearerSource =
+                let source: fleetify_backend::services::telemetry::BearerSource =
                     std::sync::Arc::new(|| {
                         Box::pin(async {
                             shell::auth::get_access_token(false)
@@ -147,7 +147,7 @@ pub fn run() {
                                 })
                         })
                     });
-                fleet_backend::services::telemetry::run_ws_client_loop(source).await;
+                fleetify_backend::services::telemetry::run_ws_client_loop(source).await;
             });
 
             WebviewWindowBuilder::new(
@@ -155,7 +155,7 @@ pub fn run() {
                 "main",
                 WebviewUrl::External(webview_url().parse().expect("valid webview url")),
             )
-            .title("Fleet")
+            .title("Fleetify")
             .inner_size(1500.0, 960.0)
             // Hide the OS titlebar — the renderer ships its own custom
             // title strip (min/max/close handled via the window_*

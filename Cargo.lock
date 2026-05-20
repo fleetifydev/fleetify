@@ -1082,7 +1082,39 @@ dependencies = [
 ]
 
 [[package]]
-name = "fleet-backend"
+name = "fleetify-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "base64 0.22.1",
+ "chrono",
+ "fleetify-backend",
+ "fleetify-core",
+ "keyring",
+ "notify",
+ "notify-debouncer-mini",
+ "open",
+ "portable-pty",
+ "rand 0.8.6",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tempfile",
+ "tiny_http",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "fleetify-backend"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1090,7 +1122,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "chrono",
- "fleet-core",
+ "fleetify-core",
  "futures-util",
  "jsonwebtoken",
  "open",
@@ -1115,43 +1147,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "fleet-core"
+name = "fleetify-core"
 version = "0.1.0"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "fleetify-app"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arboard",
- "base64 0.22.1",
- "chrono",
- "fleet-backend",
- "fleet-core",
- "keyring",
- "notify",
- "notify-debouncer-mini",
- "open",
- "portable-pty",
- "rand 0.8.6",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tempfile",
- "tiny_http",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
 ]
 
 [[package]]

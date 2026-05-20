@@ -2,8 +2,8 @@
 resolver = "2"
 members = [
   "crates/dispatch-mcp",
-  "crates/fleet-core",
-  "crates/fleet-backend",
+  "crates/fleetify-core",
+  "crates/fleetify-backend",
   "crates/memory-mcp",
   "crates/reveng-mcp",
   "src-tauri",
@@ -15,8 +15,8 @@ edition = "2021"
 license = "MIT"
 
 [workspace.dependencies]
-fleet-core = { path = "crates/fleet-core" }
-fleet-backend = { path = "crates/fleet-backend" }
+fleetify-core = { path = "crates/fleetify-core" }
+fleetify-backend = { path = "crates/fleetify-backend" }
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["fs", "cors", "trace"] }

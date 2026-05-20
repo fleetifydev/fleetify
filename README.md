@@ -43,17 +43,17 @@ cargo tauri build
 
 | Crate | Kind | Purpose |
 |---|---|---|
-| `crates/fleet-core` | library | shared types (Session, Message, BridgeEvent, …) |
-| `crates/fleet-backend` | library | embedded `axum` server (`fleet_backend::serve(addr, dist_dir)`) |
+| `crates/fleetify-core` | library | shared types (Session, Message, BridgeEvent, …) |
+| `crates/fleetify-backend` | library | embedded `axum` server (`fleetify_backend::serve(addr, dist_dir)`) |
 | `crates/memory-mcp` | binary `fleet-memory-mcp` | stdio MCP: `remember` + `recall` |
 | `crates/dispatch-mcp` | binary `fleet-dispatch-mcp` | stdio MCP: `dispatch_to_agent` |
 | `crates/reveng-mcp` | binary `fleet-reveng-mcp` | stdio MCP: `fetch_url` + `save_asset` |
-| `src-tauri` | binary `fleetify-app` | Tauri v2 shell (embeds `fleet-backend`) |
+| `src-tauri` | binary `fleetify-app` | Tauri v2 shell (embeds `fleetify-backend`) |
 
 ## Architecture in 60 seconds
 
-`fleet-backend` is library-only — no `main.rs`. The Tauri shell calls
-`fleet_backend::serve(addr, static_dir).await` from its `setup` hook;
+`fleetify-backend` is library-only — no `main.rs`. The Tauri shell calls
+`fleetify_backend::serve(addr, static_dir).await` from its `setup` hook;
 the server runs as a tokio task in the same process. Sign-in lives in
 the Tauri shell (`shell::auth`); the bearer is exposed to the backend
 via `127.0.0.1:8770` (loopback bearer-bridge) so the React UI can use

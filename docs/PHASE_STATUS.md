@@ -5,7 +5,7 @@ Faithful Rust + Tauri rebuild of Fleetify. Phase boundaries follow
 
 ## Phase 0 — Scaffold ✅
 
-Cargo workspace (`crates/fleet-core`, `crates/fleet-backend`, `src-tauri`),
+Cargo workspace (`crates/fleetify-core`, `crates/fleetify-backend`, `src-tauri`),
 Tauri v2 config (`tauri.conf.json`, capabilities ACL, `withGlobalTauri`),
 release profile (`lto = "thin"` + `strip = "symbols"`), bundle metadata
 (publisher / copyright / category / per-OS hints), icons in place.
@@ -119,13 +119,13 @@ Wired into the chat handler:
 
 ## Test inventory
 
-Backend (`cargo test -p fleet-backend --lib`): **124 tests**
+Backend (`cargo test -p fleetify-backend --lib`): **124 tests**
 covering bridges (ACP, Codex client, OpenAI mock SSE), services
 (every helper has at least one test), routers (workspace search,
 plugin manifest parser, mcp prober error envelopes, mcp auth
 PKCE URL composition).
 
-Backend integration (`cargo test -p fleet-backend --tests`):
+Backend integration (`cargo test -p fleetify-backend --tests`):
 **8 active tests + 1 ignored**: auth_jwt (3), healthz, schema_parity,
 sessions_api, static_dir, ws_protocol, phase4_apis (marketplace +
 plugins + MCP auth).
@@ -141,8 +141,8 @@ stable across multiple runs.
 
 ## Workspace crates
 
-- `crates/fleet-core` — shared types (library).
-- `crates/fleet-backend` — embedded `axum` server (library).
+- `crates/fleetify-core` — shared types (library).
+- `crates/fleetify-backend` — embedded `axum` server (library).
 - `crates/memory-mcp` — `fleet-memory-mcp` stdio MCP binary
   (remember + recall).
 - `crates/dispatch-mcp` — `fleet-dispatch-mcp` stdio MCP binary
@@ -150,4 +150,4 @@ stable across multiple runs.
 - `crates/reveng-mcp` — `fleet-reveng-mcp` stdio MCP binary
   (fetch_url + save_asset).
 - `src-tauri` — `fleetify-app` Tauri v2 binary (embeds
-  `fleet-backend` library at runtime).
+  `fleetify-backend` library at runtime).

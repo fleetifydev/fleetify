@@ -65,12 +65,12 @@ async fn phase4_apis_smoke() {
 
     // 4. Start backend on an ephemeral port.
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let handle = fleet_backend::serve(addr, None).await.unwrap();
+    let handle = fleetify_backend::serve(addr, None).await.unwrap();
     let base = format!("http://{}", handle.local_addr());
 
     let client = reqwest::Client::new();
 
-    // ── /api/marketplace/sources empty list ──
+    // ── /api/marketplace/sources auto-seeds Fleetify Official on first hit ──
     let r = client
         .get(format!("{base}/api/marketplace/sources"))
         .header("Authorization", &auth)
@@ -79,7 +79,11 @@ async fn phase4_apis_smoke() {
         .unwrap();
     assert_eq!(r.status(), 200);
     let v: serde_json::Value = r.json().await.unwrap();
-    assert!(v.as_array().unwrap().is_empty());
+    let arr = v.as_array().unwrap();
+    // ensure_official_source seeds exactly one is_official=true row
+    // for every fresh user so the Marketplace tab is never empty.
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["is_official"], true);
 
     // ── POST /api/marketplace/sources rejects empty name ──
     let r = client
@@ -120,7 +124,7 @@ async fn phase4_apis_smoke() {
         .unwrap();
     assert_eq!(r.status(), 409);
 
-    // List → 1 entry.
+    // List → official seed + the just-added user source = 2 entries.
     let r = client
         .get(format!("{base}/api/marketplace/sources"))
         .header("Authorization", &auth)
@@ -128,8 +132,12 @@ async fn phase4_apis_smoke() {
         .await
         .unwrap();
     let v: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(v.as_array().unwrap().len(), 1);
-    assert_eq!(v[0]["repo_url"], "https://example.com/repo");
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    // User source is added_at-newer so it sorts first; official is the
+    // seed with is_official = true.
+    assert!(arr.iter().any(|r| r["repo_url"] == "https://example.com/repo"));
+    assert!(arr.iter().any(|r| r["is_official"] == true));
 
     // PATCH (disable).
     let r = client

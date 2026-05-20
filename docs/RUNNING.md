@@ -1,14 +1,14 @@
-# Running Fleet (Rust + Tauri rebuild)
+# Running Fleetify (Rust + Tauri rebuild)
 
 Faithful port of the original Electron / FastAPI / Vite Fleetify build,
 running as a single Tauri v2 process with an embedded `axum` server.
 
 ## Architecture in one paragraph
 
-`crates/fleet-backend` is a **library** crate (no `main.rs`). Its
+`crates/fleetify-backend` is a **library** crate (no `main.rs`). Its
 `serve(addr, static_dir)` entry point binds an `axum` router on
 `127.0.0.1:8765` and returns a `ServerHandle`. The Tauri binary
-(`src-tauri/fleetify-app`) calls `fleet_backend::serve(...)` from its
+(`src-tauri/fleetify-app`) calls `fleetify_backend::serve(...)` from its
 `setup` hook on a tokio task — same process, same address space. The
 embedded UI (built React app from `../dist`) is served from the same
 origin, so there's no CORS in prod and no port forwarding anywhere.
@@ -61,7 +61,7 @@ your refresh token lands in the OS keychain (`Fleetify` service).
 
 ```bash
 # Backend unit tests (sqlx + bridges + services).
-cargo test -p fleet-backend --lib
+cargo test -p fleetify-backend --lib
 
 # Tauri shell unit tests (auth, config, git, ai_git, etc.).
 cargo test -p fleetify-app --lib
@@ -79,9 +79,9 @@ up.
 ```bash
 # Per-OS installers via the Tauri bundler. `--release` is implicit.
 cargo tauri build
-# Windows: target/release/bundle/msi/Fleet_<version>_x64_en-US.msi
-# macOS:   target/release/bundle/dmg/Fleet_<version>_aarch64.dmg
-# Linux:   target/release/bundle/deb/fleet_<version>_amd64.deb
+# Windows: target/release/bundle/msi/Fleetify_<version>_x64_en-US.msi
+# macOS:   target/release/bundle/dmg/Fleetify_<version>_aarch64.dmg
+# Linux:   target/release/bundle/deb/fleetify_<version>_amd64.deb
 ```
 
 The `[profile.release]` table in the workspace `Cargo.toml` enables
@@ -145,9 +145,9 @@ This is OpenSSL 3.x's AES-NI bug in certain VMs. Prefix:
 $env:OPENSSL_ia32cap = '~0x200000200000000'; npm install --maxsockets 1 --fetch-retries 5
 ```
 
-**`tauri build` fails with `LNK1104 fleet_backend-…exe`**. A previous
+**`tauri build` fails with `LNK1104 fleetify_backend-…exe`**. A previous
 test run left a process holding the binary. Close it with
-`Stop-Process -Name "fleet_backend-*" -Force` and rebuild.
+`Stop-Process -Name "fleetify_backend-*" -Force` and rebuild.
 
 **WS client refuses to connect ("not signed in")**. Expected when no
 Fleetify account is signed in. The loop pauses 30s between attempts

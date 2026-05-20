@@ -277,7 +277,7 @@ impl GeminiBridge {
         } else {
             self.project_path.clone()
         };
-        let cwd = fleet_core::strip_verbatim_prefix(std::path::Path::new(&cwd_raw))
+        let cwd = fleetify_core::strip_verbatim_prefix(std::path::Path::new(&cwd_raw))
             .to_string_lossy()
             .into_owned();
         cmd.current_dir(&cwd)

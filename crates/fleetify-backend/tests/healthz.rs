@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 async fn healthz_returns_ok_json() {
     std::env::set_var("FLEET_DB_URL", "sqlite::memory:");
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let handle = fleet_backend::serve(addr, None).await.expect("serve");
+    let handle = fleetify_backend::serve(addr, None).await.expect("serve");
     let bound = handle.local_addr();
 
     let body = reqwest::get(format!("http://{bound}/healthz"))

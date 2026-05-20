@@ -17,7 +17,7 @@ async fn serves_real_react_bundle_and_healthz_same_origin() {
     );
 
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let h = fleet_backend::serve(addr, Some(dist)).await.unwrap();
+    let h = fleetify_backend::serve(addr, Some(dist)).await.unwrap();
     let base = format!("http://{}", h.local_addr());
 
     // /healthz coexists with static serving.

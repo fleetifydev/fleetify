@@ -33,10 +33,10 @@ fn deferred(name: &str) -> Value {
 }
 
 const OFFICIAL_SOURCE_REPO: &str = "https://github.com/fleetifydev/marketplace";
-const OFFICIAL_SOURCE_NAME: &str = "Fleet Official";
+const OFFICIAL_SOURCE_NAME: &str = "Fleetify Official";
 const OFFICIAL_SOURCE_DESC: &str = "Curated plugins by the Fleetify team.";
 
-/// Seed the Fleet Official marketplace for `user_id` if it isn't
+/// Seed the Fleetify Official marketplace for `user_id` if it isn't
 /// present. Adopts a stale row pre-marked is_official=false. Faithful
 /// with the Python `ensure_official_source`.
 async fn ensure_official_source(
@@ -89,7 +89,7 @@ async fn sources(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
 ) -> Result<Json<Value>, ApiError> {
-    // Seed the Fleet Official source on first hit so a brand-new user
+    // Seed the Fleetify Official source on first hit so a brand-new user
     // doesn't see an empty Marketplace tab.
     let _ = ensure_official_source(&st.auth.pool, &user.id).await;
     // Most-recently-added first so a freshly-added source surfaces at

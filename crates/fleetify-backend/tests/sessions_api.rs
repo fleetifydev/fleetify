@@ -51,7 +51,7 @@ async fn sessions_api_round_trip_with_auth() {
 
     // 4. Boot the real backend.
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let handle = fleet_backend::serve(addr, None).await.expect("serve");
+    let handle = fleetify_backend::serve(addr, None).await.expect("serve");
     let base = format!("http://{}", handle.local_addr());
 
     // 5. Mint a valid JWT (iss = auth_base, aud = expected).

@@ -34,7 +34,7 @@ async fn validate_path(Query(q): Query<ValidateQ>) -> Json<Value> {
         return Json(json!({ "exists": false, "is_dir": false, "absolute": "" }));
     }
     let p = PathBuf::from(raw);
-    let resolved = fleet_core::canonicalize_or_keep(&p);
+    let resolved = fleetify_core::canonicalize_or_keep(&p);
     let exists = resolved.exists();
     let is_dir = if exists { resolved.is_dir() } else { false };
     Json(json!({

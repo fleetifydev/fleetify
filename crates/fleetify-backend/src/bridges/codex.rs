@@ -164,7 +164,7 @@ impl CodexBridge {
         // bridges/gemini.rs cold_start. Same defensive normalization
         // for pre-existing session rows whose project_path was stored
         // before this fix landed.
-        let cwd = fleet_core::strip_verbatim_prefix(std::path::Path::new(&cwd_raw))
+        let cwd = fleetify_core::strip_verbatim_prefix(std::path::Path::new(&cwd_raw))
             .to_string_lossy()
             .into_owned();
         cmd.current_dir(&cwd)

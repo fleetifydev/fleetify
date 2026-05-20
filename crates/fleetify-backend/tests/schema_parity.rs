@@ -6,7 +6,7 @@ use sqlx::Row;
 
 #[tokio::test]
 async fn schema_has_all_tables_and_key_columns() {
-    let pool = fleet_backend::db::init_pool("sqlite::memory:")
+    let pool = fleetify_backend::db::init_pool("sqlite::memory:")
         .await
         .expect("init pool");
 

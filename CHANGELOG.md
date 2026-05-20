@@ -9,7 +9,7 @@ Spec: `docs/superpowers/specs/2026-05-19-fleetify-rust-tauri-rebuild-design.md`
 
 ### Phase 0 — Scaffold
 
-- Cargo workspace (`crates/fleet-core`, `crates/fleet-backend`,
+- Cargo workspace (`crates/fleetify-core`, `crates/fleetify-backend`,
   `src-tauri`).
 - Tauri v2 config (`tauri.conf.json`, capabilities ACL,
   `withGlobalTauri: true`).
@@ -23,7 +23,7 @@ Spec: `docs/superpowers/specs/2026-05-19-fleetify-rust-tauri-rebuild-design.md`
 - 5-command `window.fleetify` IPC surface (sign in / sign out /
   userinfo / get-access-token / get-state).
 - Embedded axum on `127.0.0.1:8765` from the Tauri `setup` hook (no
-  child process — `fleet_backend::serve(addr, dist).await` runs on a
+  child process — `fleetify_backend::serve(addr, dist).await` runs on a
   tokio task).
 - sqlx 10-table schema with FK cascades.
 - `/api/sessions`, `/api/messages`, `/api/groups` CRUD; `/events/status`
@@ -132,9 +132,9 @@ Chat handler wiring:
 
 | Surface | Tests |
 |---|---|
-| `fleet-backend` lib | 125 |
-| `fleet-backend` integration | 8 (+1 ignored) |
-| `fleet-core` lib | 2 |
+| `fleetify-backend` lib | 125 |
+| `fleetify-backend` integration | 8 (+1 ignored) |
+| `fleetify-core` lib | 2 |
 | `fleetify-app` lib | 22 |
 | Doctests | 2 |
 | **Total** | **159 active + 1 ignored** |

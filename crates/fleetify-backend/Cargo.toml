@@ -1,11 +1,11 @@
 [package]
-name = "fleet-backend"
+name = "fleetify-backend"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-fleet-core.workspace = true
+fleetify-core.workspace = true
 tokio.workspace = true
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }
 axum.workspace = true

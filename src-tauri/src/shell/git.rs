@@ -176,7 +176,7 @@ pub async fn ensure_repo(
     let path = folder.to_string_lossy().to_string();
     // Delegate to fleet-backend's faithful auto-init (init -b main +
     // identity seed + .gitignore + initial commit).
-    let _ = fleet_backend::services::worktree::ensure_git_repo(&path).await;
+    let _ = fleetify_backend::services::worktree::ensure_git_repo(&path).await;
     // Apply any explicit identity overrides on top.
     if let Some(n) = name {
         if !n.is_empty() {
@@ -188,7 +188,7 @@ pub async fn ensure_repo(
             let _ = git(&["config", "user.email", e], folder).await;
         }
     }
-    if fleet_backend::services::worktree::is_git_repo(&path).await {
+    if fleetify_backend::services::worktree::is_git_repo(&path).await {
         json!({ "ok": true })
     } else {
         json!({ "ok": false, "error": "failed to init repo" })
@@ -1190,7 +1190,7 @@ pub async fn carve_next_round(folder: &Path, branch: &str, base: &str) -> Value 
 pub async fn preflight_check(folder: &Path) -> Value {
     let mut issues: Vec<Value> = Vec::new();
     let path = folder.to_string_lossy().to_string();
-    if !fleet_backend::services::worktree::is_git_repo(&path).await {
+    if !fleetify_backend::services::worktree::is_git_repo(&path).await {
         issues.push(json!({
             "type": "not-a-repo",
             "message": "Not a git repository.",
@@ -1338,7 +1338,7 @@ mod tests {
         }
         let tmp = tempfile::tempdir().unwrap();
         // Skip if ancestor repo would mask our state.
-        if fleet_backend::services::worktree::is_git_repo(
+        if fleetify_backend::services::worktree::is_git_repo(
             &tmp.path().to_string_lossy(),
         )
         .await
@@ -1380,7 +1380,7 @@ mod tests {
         // making the tempdir already "inside" a repo — ensure_repo then
         // (correctly) skips init. Skip the assertion in that case.
         let path = tmp.path().to_string_lossy().to_string();
-        if fleet_backend::services::worktree::is_git_repo(&path).await {
+        if fleetify_backend::services::worktree::is_git_repo(&path).await {
             return;
         }
         let v = ensure_repo(tmp.path(), Some("T"), Some("t@x")).await;

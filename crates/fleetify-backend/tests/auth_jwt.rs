@@ -5,7 +5,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
-use fleet_backend::auth::{validate_token, AuthConfig, AuthError, JwksCache};
+use fleetify_backend::auth::{validate_token, AuthConfig, AuthError, JwksCache};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use rsa::pkcs8::EncodePrivateKey;
 use rsa::traits::PublicKeyParts;

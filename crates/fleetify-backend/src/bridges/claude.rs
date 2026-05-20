@@ -695,7 +695,7 @@ impl ClaudeBridge {
         // rationale as bridges/gemini.rs (claude-code on Windows is
         // more tolerant than gemini-cli but PATH-resolution and
         // CLAUDE.md auto-discovery can still misbehave with `\\?\`).
-        let cwd = fleet_core::strip_verbatim_prefix(std::path::Path::new(&cwd_raw));
+        let cwd = fleetify_core::strip_verbatim_prefix(std::path::Path::new(&cwd_raw));
 
         let mut command = tokio::process::Command::new(&cmd[0]);
         command

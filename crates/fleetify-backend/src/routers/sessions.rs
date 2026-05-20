@@ -124,7 +124,7 @@ async fn create_session(
         // `EISDIR: illegal operation on a directory, lstat 'C:'` (verified
         // against gemini-cli 0.42.0). Storing the normalized form keeps
         // every downstream bridge (claude/gemini/codex) happy.
-        let resolved = fleet_core::canonicalize_or_keep(p);
+        let resolved = fleetify_core::canonicalize_or_keep(p);
         if !resolved.is_dir() {
             return Err(ApiError::BadRequest(format!(
                 "Project path does not exist or is not a directory: {raw}"

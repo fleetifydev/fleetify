@@ -50,7 +50,7 @@ async fn ws_sessions_subscribe_and_ping() {
     std::env::set_var("FLEETIFY_AUDIENCE", "http://127.0.0.1:8765");
 
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let h = fleet_backend::serve(addr, None).await.expect("serve");
+    let h = fleetify_backend::serve(addr, None).await.expect("serve");
     let base = format!("http://{}", h.local_addr());
     let ws_base = format!("ws://{}", h.local_addr());
 
