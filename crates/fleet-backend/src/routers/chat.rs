@@ -836,6 +836,13 @@ async fn process_direct_dispatches(
         .execute(&st.auth.pool)
         .await;
 
+        // Ancestry chain — same shape as the staff [[DISPATCH:]] path:
+        // start from the staff session's chain (usually empty since
+        // staff is the root) and append staff itself.
+        let mut target_chain = st.sm.get_dispatch_chain(staff_sid);
+        target_chain.push(staff_sid.to_string());
+        st.sm.set_dispatch_chain(&target.id, target_chain);
+
         // Background bridge run. dispatch_result + live target stream
         // flow back via SessionManager fanout (subscribed on the WS
         // handler's subscribe path).
@@ -990,13 +997,15 @@ async fn handle_staff_dispatch_tokens(
         )
         .await;
 
-        // Spawn the target's bridge run in the background. Result is
-        // persisted as a `system` message on the staff session so the
-        // pending card resolves on next reload — the renderer's
-        // dispatch-card widget already reads system messages of type
-        // `dispatch_result` from the staff transcript. Live push from
-        // the spawned task to the staff WS sink is a Phase-3 follow-up
-        // (needs a per-session JSON fanout in SessionManager).
+        // Set the target's ancestry chain (staff is the root, so
+        // chain becomes [staff_sid] — sub-dispatches the target issues
+        // will extend it). The chain is cleared in run_dispatched_task
+        // on completion so a re-dispatched session doesn't carry
+        // stale ancestry from a prior run.
+        let mut target_chain = st.sm.get_dispatch_chain(staff_sid);
+        target_chain.push(staff_sid.to_string());
+        st.sm.set_dispatch_chain(&target.id, target_chain);
+
         let pool = st.auth.pool.clone();
         let sm = st.sm;
         let staff_sid_owned = staff_sid.to_string();
@@ -1122,6 +1131,15 @@ pub(crate) async fn run_dispatched_task_internal(
     run_dispatched_task(pool, sm, caller_sid, target, task, task_for_card).await
 }
 
+/// Hard wall-clock cap on a single dispatched run. Matches the Python
+/// `_DISPATCH_TIMEOUT_SECS = 12 * 60`. Beyond this we abort the bridge
+/// and surface a dispatch_result(success=false, "Task timed out…") so
+/// the caller's pending card never orphan-spinners — long-running
+/// research tasks usually finish well under this; tasks that exceed it
+/// are almost always stuck (resume-id mismatch, infinite tool loop,
+/// hung subprocess) and the user is better served by a clean failure.
+const DISPATCH_TIMEOUT_SECS: u64 = 12 * 60;
+
 async fn run_dispatched_task(
     pool: sqlx::SqlitePool,
     sm: &'static crate::session_manager::SessionManager,
@@ -1185,6 +1203,7 @@ async fn run_dispatched_task(
                 &summary,
             )
             .await;
+            sm.clear_dispatch_chain(&target_id);
             sm.send_to_session_ws(
                 &staff_sid,
                 json!({
@@ -1214,6 +1233,7 @@ async fn run_dispatched_task(
                 &summary,
             )
             .await;
+            sm.clear_dispatch_chain(&target_id);
             sm.send_to_session_ws(
                 &staff_sid,
                 json!({
@@ -1241,58 +1261,83 @@ async fn run_dispatched_task(
     let mut summary_text = String::new();
     let mut new_claude_sid: Option<String> = None;
 
-    while let Some(ev) = rx.recv().await {
-        // Mirror the target's stream live to any viewer of that
-        // session's chat (so dispatching to a visible agent updates its
-        // own bubble in real time, just like a user-initiated send).
-        let mut payload = ev.to_json();
-        if let Value::Object(ref mut m) = payload {
-            m.insert("session_id".into(), json!(target_id));
-        }
-        sm.send_to_session_ws(&target_id, payload);
+    // Wall-clock cap on the entire stream loop. On timeout we abort
+    // the bridge (releasing the subprocess), persist a failure card,
+    // live-push to the caller WS, and bail out with whatever partial
+    // content already accumulated.
+    let bridge_for_abort = any_bridge.clone();
+    let stream_result = tokio::time::timeout(
+        std::time::Duration::from_secs(DISPATCH_TIMEOUT_SECS),
+        async {
+            while let Some(ev) = rx.recv().await {
+                // Mirror the target's stream live to any viewer of that
+                // session's chat (so dispatching to a visible agent
+                // updates its own bubble in real time, just like a
+                // user-initiated send).
+                let mut payload = ev.to_json();
+                if let Value::Object(ref mut m) = payload {
+                    m.insert("session_id".into(), json!(target_id));
+                }
+                sm.send_to_session_ws(&target_id, payload);
 
-        match &ev {
-            BridgeEvent::Init { claude_session_id, model, .. } => {
-                if claude_session_id.is_some() {
-                    new_claude_sid = claude_session_id.clone();
-                }
-                if model != "unknown" {
-                    model_name = Some(model.clone());
-                }
-            }
-            BridgeEvent::MessageDelta { text } => {
-                summary_text.push_str(text);
-                push_text(&mut content, "text", text);
-            }
-            BridgeEvent::Thinking { text } => push_text(&mut content, "thinking", text),
-            BridgeEvent::ToolStart { tool_id, name, input } => {
-                content.push(json!({"type":"tool_use","tool_id":tool_id,
-                    "tool_name":name,"input":input}));
-            }
-            BridgeEvent::ToolUpdate { tool_id, input } => {
-                for b in content.iter_mut().rev() {
-                    if b.get("type").and_then(|x| x.as_str()) == Some("tool_use")
-                        && b.get("tool_id").and_then(|x| x.as_str())
-                            == Some(tool_id.as_str())
-                    {
-                        b["input"] = input.clone();
-                        break;
+                match &ev {
+                    BridgeEvent::Init { claude_session_id, model, .. } => {
+                        if claude_session_id.is_some() {
+                            new_claude_sid = claude_session_id.clone();
+                        }
+                        if model != "unknown" {
+                            model_name = Some(model.clone());
+                        }
                     }
+                    BridgeEvent::MessageDelta { text } => {
+                        summary_text.push_str(text);
+                        push_text(&mut content, "text", text);
+                    }
+                    BridgeEvent::Thinking { text } => {
+                        push_text(&mut content, "thinking", text)
+                    }
+                    BridgeEvent::ToolStart { tool_id, name, input } => {
+                        content.push(json!({"type":"tool_use","tool_id":tool_id,
+                            "tool_name":name,"input":input}));
+                    }
+                    BridgeEvent::ToolUpdate { tool_id, input } => {
+                        for b in content.iter_mut().rev() {
+                            if b.get("type").and_then(|x| x.as_str()) == Some("tool_use")
+                                && b.get("tool_id").and_then(|x| x.as_str())
+                                    == Some(tool_id.as_str())
+                            {
+                                b["input"] = input.clone();
+                                break;
+                            }
+                        }
+                    }
+                    BridgeEvent::ToolEnd { tool_id, output, is_error } => {
+                        content.push(json!({"type":"tool_result","tool_id":tool_id,
+                            "output":output,"is_error":is_error}));
+                    }
+                    BridgeEvent::Cost { usage: u, cost_usd: c, model } => {
+                        usage = u.clone();
+                        cost_usd = *c;
+                        if model != "unknown" {
+                            model_name = Some(model.clone());
+                        }
+                    }
+                    _ => {}
                 }
             }
-            BridgeEvent::ToolEnd { tool_id, output, is_error } => {
-                content.push(json!({"type":"tool_result","tool_id":tool_id,
-                    "output":output,"is_error":is_error}));
-            }
-            BridgeEvent::Cost { usage: u, cost_usd: c, model } => {
-                usage = u.clone();
-                cost_usd = *c;
-                if model != "unknown" {
-                    model_name = Some(model.clone());
-                }
-            }
-            _ => {}
-        }
+        },
+    )
+    .await;
+    let timed_out = stream_result.is_err();
+    if timed_out {
+        bridge_for_abort.abort().await;
+        tracing::warn!(
+            target: "dispatch",
+            session_id = %target_id,
+            staff = %staff_sid,
+            secs = DISPATCH_TIMEOUT_SECS,
+            "dispatched task timed out — aborting bridge"
+        );
     }
 
     // Persist target assistant content + cost (parity with run_send_flow).
@@ -1330,19 +1375,35 @@ async fn run_dispatched_task(
         .execute(&pool)
         .await;
     }
-    let _ = sm.update_status(&pool, &target_id, "idle").await;
+    let final_status = if timed_out { "error" } else { "idle" };
+    let _ = sm.update_status(&pool, &target_id, final_status).await;
 
     // Result card on staff side: trim the summary so it fits the
-    // inline card. Long agent runs get a "…" cutoff.
-    let preview: String = summary_text.chars().take(600).collect();
-    let preview = if summary_text.chars().count() > 600 {
-        format!("{preview}…")
+    // inline card. Long agent runs get a "…" cutoff. Timeout path
+    // emits a fixed failure summary so the staff card resolves
+    // even when the bridge had no usable partial output.
+    let success = !timed_out;
+    let preview = if timed_out {
+        format!(
+            "Task timed out after {} minutes — bridge aborted.",
+            DISPATCH_TIMEOUT_SECS / 60
+        )
     } else {
-        preview
+        let p: String = summary_text.chars().take(600).collect();
+        if summary_text.chars().count() > 600 {
+            format!("{p}…")
+        } else {
+            p
+        }
     };
-    persist_dispatch_result(&pool, &staff_sid, &target_id, &task_for_card, true, &preview)
+    persist_dispatch_result(&pool, &staff_sid, &target_id, &task_for_card, success, &preview)
         .await;
-    // Live push to the staff WS so the pending card resolves
+    // Always clear the target's ancestry chain when its run ends
+    // (success, timeout, or error). Without this, a re-dispatched
+    // session would inherit stale ancestry from a prior run and
+    // could trip the cycle-detection check spuriously.
+    sm.clear_dispatch_chain(&target_id);
+    // Live push to the caller WS so the pending card resolves
     // immediately. Persistence above is the on-reload backstop;
     // this is the live UX.
     sm.send_to_session_ws(
@@ -1352,7 +1413,7 @@ async fn run_dispatched_task(
             "session_id": staff_sid,
             "target_id": target_id,
             "task": task_for_card,
-            "success": true,
+            "success": success,
             "summary": preview,
         }),
     );

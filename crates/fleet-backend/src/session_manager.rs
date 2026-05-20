@@ -31,6 +31,13 @@ pub struct SessionManager {
     /// to its sink. Lazily created on first publish/subscribe so
     /// sessions that never need live fanout don't pay for the channel.
     session_tx: Mutex<HashMap<String, broadcast::Sender<serde_json::Value>>>,
+    /// Dispatch chain ancestry per session id. When agent A dispatches
+    /// to B, B's chain becomes A's chain + [A]. The internal dispatch
+    /// endpoint reads this to refuse cycles (target appears in chain)
+    /// and cap depth (chain.len() >= MAX_DISPATCH_CHAIN_DEPTH).
+    /// Cleared by run_dispatched_task on completion so reused sessions
+    /// don't carry stale ancestry forward.
+    dispatch_chains: Mutex<HashMap<String, Vec<String>>>,
 }
 
 impl SessionManager {
@@ -40,7 +47,19 @@ impl SessionManager {
             ws: Mutex::new(HashMap::new()),
             status_tx,
             session_tx: Mutex::new(HashMap::new()),
+            dispatch_chains: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Test-only constructor that creates a fresh SessionManager
+    /// (separate from the process-wide singleton). Lets each
+    /// integration test get its own dispatch_chain map so state
+    /// from a sibling test doesn't bleed in. Gated to cfg(test)
+    /// only so production code can't accidentally bypass the
+    /// singleton.
+    #[cfg(test)]
+    pub fn for_tests() -> Self {
+        Self::new()
     }
 
     pub fn subscribe_status(&self) -> broadcast::Receiver<StatusEvent> {
@@ -84,6 +103,38 @@ impl SessionManager {
             broadcast::channel(256).0
         });
         tx.subscribe()
+    }
+
+    /// Max depth a single dispatch chain can reach. Counts every hop
+    /// from the originating session — agent A → B → C is depth 2 (chain
+    /// is `[A, B]` when C is evaluated). Tuned to match the Python
+    /// `_MAX_DISPATCH_CHAIN_DEPTH`.
+    pub const MAX_DISPATCH_CHAIN_DEPTH: usize = 5;
+
+    /// Set the ancestry chain on `session_id`. Read by the internal
+    /// dispatch endpoint to refuse cycles / depth overflow before the
+    /// target's bridge spawns.
+    pub fn set_dispatch_chain(&self, session_id: &str, chain: Vec<String>) {
+        self.dispatch_chains
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string(), chain);
+    }
+
+    pub fn get_dispatch_chain(&self, session_id: &str) -> Vec<String> {
+        self.dispatch_chains
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn clear_dispatch_chain(&self, session_id: &str) {
+        self.dispatch_chains
+            .lock()
+            .unwrap()
+            .remove(session_id);
     }
 
     /// Publish a JSON payload to every subscriber of `session_id`. Used by
@@ -345,5 +396,25 @@ mod tests {
         assert_eq!(m["to"], "one");
         // "two" must not see "one"'s payload — use try_recv to avoid hanging.
         assert!(rx_two.try_recv().is_err());
+    }
+
+    #[test]
+    fn dispatch_chain_set_get_clear_round_trip() {
+        let sm = SessionManager::new();
+        assert!(sm.get_dispatch_chain("x").is_empty());
+        sm.set_dispatch_chain("x", vec!["a".into(), "b".into()]);
+        assert_eq!(
+            sm.get_dispatch_chain("x"),
+            vec!["a".to_string(), "b".to_string()],
+        );
+        sm.clear_dispatch_chain("x");
+        assert!(sm.get_dispatch_chain("x").is_empty());
+        // Clearing a chain that was never set is a no-op.
+        sm.clear_dispatch_chain("never-set");
+    }
+
+    #[test]
+    fn dispatch_chain_max_depth_constant_matches_python_default() {
+        assert_eq!(SessionManager::MAX_DISPATCH_CHAIN_DEPTH, 5);
     }
 }

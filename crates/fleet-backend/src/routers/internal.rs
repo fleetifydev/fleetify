@@ -107,6 +107,28 @@ async fn dispatch(
         return Err(ApiError::BadRequest("cannot dispatch to self".into()));
     }
 
+    // ── Cycle + depth guard ──
+    // Read the caller's ancestry chain and refuse if the target
+    // already appears in it (cycle) or if going one level deeper
+    // would exceed the cap. Matches the Python chat.py rule that
+    // `mcp__fleet_dispatch__dispatch_to_agent` reads via
+    // session_manager.get_dispatch_chain().
+    let caller_chain = st.sm.get_dispatch_chain(caller);
+    if caller_chain.iter().any(|s| s == &target.id) {
+        return Err(ApiError::BadRequest(format!(
+            "dispatch cycle detected: target {} already in chain ({})",
+            target.id,
+            caller_chain.join(" → "),
+        )));
+    }
+    if caller_chain.len() >= crate::session_manager::SessionManager::MAX_DISPATCH_CHAIN_DEPTH {
+        return Err(ApiError::BadRequest(format!(
+            "dispatch chain too deep ({} hops, max {})",
+            caller_chain.len(),
+            crate::session_manager::SessionManager::MAX_DISPATCH_CHAIN_DEPTH,
+        )));
+    }
+
     // Persist the task on the target so the agent's own chat reads
     // like the user typed the task directly.
     let _ = sqlx::query(
@@ -121,6 +143,12 @@ async fn dispatch(
     .execute(&st.auth.pool)
     .await;
 
+    // Compute the chain we'll set on the target for the duration of
+    // its run: caller's chain extended by the caller's own id, so a
+    // sub-dispatch issued by the target carries the full ancestry.
+    let mut target_chain = caller_chain;
+    target_chain.push(caller.to_string());
+
     // Spawn the target's bridge in the background. Same shape as the
     // staff [[DISPATCH:]] path so the result flows through the
     // SessionManager fanout + the dispatch_result system-message
@@ -133,6 +161,7 @@ async fn dispatch(
     let target_owned = target.clone();
     let task_owned = task.to_string();
     let task_for_card = task.to_string();
+    sm.set_dispatch_chain(&target.id, target_chain);
     tokio::spawn(async move {
         crate::routers::chat::run_dispatched_task_internal(
             pool,
@@ -178,7 +207,13 @@ mod tests {
     use std::sync::Arc;
     use tower::ServiceExt;
 
-    async fn build_app(secret: &str) -> (axum::Router, sqlx::SqlitePool) {
+    async fn build_app(
+        secret: &str,
+    ) -> (
+        axum::Router,
+        sqlx::SqlitePool,
+        &'static crate::session_manager::SessionManager,
+    ) {
         let pool = init_pool("sqlite::memory:").await.unwrap();
         // Insert two sessions owned by the same user so the ownership
         // scoping inside dispatch() resolves the target.
@@ -207,6 +242,12 @@ mod tests {
         );
         let auth_cfg = Arc::new(AuthConfig::from_env());
         let jwks = crate::auth::default_jwks_cache(&auth_cfg.jwks_url);
+        // Per-test SessionManager so dispatch_chain state from one
+        // test doesn't bleed into another. Box::leak gives us the
+        // `&'static` lifetime AppState demands without sharing the
+        // process-wide singleton across the test suite.
+        let sm: &'static crate::session_manager::SessionManager =
+            Box::leak(Box::new(crate::session_manager::SessionManager::for_tests()));
         let state = AppState {
             auth: AuthState {
                 pool: pool.clone(),
@@ -214,18 +255,18 @@ mod tests {
                 jwks,
             },
             app_cfg: cfg,
-            sm: crate::session_manager::session_manager(),
+            sm,
             internal_secret: Arc::new(secret.to_string()),
         };
         let app = axum::Router::new()
             .nest("/api/internal", router())
             .with_state(state);
-        (app, pool)
+        (app, pool, sm)
     }
 
     #[tokio::test]
     async fn dispatch_rejects_missing_or_wrong_secret() {
-        let (app, _pool) = build_app("correct-secret").await;
+        let (app, _pool, _sm) = build_app("correct-secret").await;
         let req = Request::builder()
             .method("POST")
             .uri("/api/internal/dispatch")
@@ -254,7 +295,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_refuses_self_dispatch() {
-        let (app, _pool) = build_app("s").await;
+        let (app, _pool, _sm) = build_app("s").await;
         let req = Request::builder()
             .method("POST")
             .uri("/api/internal/dispatch")
@@ -271,7 +312,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_persists_user_message_on_target_and_returns_session_id() {
-        let (app, pool) = build_app("s").await;
+        let (app, pool, _sm) = build_app("s").await;
         let req = Request::builder()
             .method("POST")
             .uri("/api/internal/dispatch")
@@ -303,7 +344,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_returns_404_for_unknown_agent_ref() {
-        let (app, _pool) = build_app("s").await;
+        let (app, _pool, _sm) = build_app("s").await;
         let req = Request::builder()
             .method("POST")
             .uri("/api/internal/dispatch")
@@ -316,6 +357,55 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn dispatch_refuses_when_target_already_in_caller_chain() {
+        // Set up the caller's chain so it already references the
+        // target — the endpoint must refuse with a cycle error.
+        let (app, _pool, sm) = build_app("s").await;
+        sm.set_dispatch_chain(
+            "aaaaaaaa-0000-0000-0000-000000000001",
+            vec![
+                "ffffffff-0000-0000-0000-000000000099".into(),
+                "bbbbbbbb-0000-0000-0000-000000000002".into(), // target — must refuse
+            ],
+        );
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/internal/dispatch")
+            .header("content-type", "application/json")
+            .header("X-Fleet-Internal", "s")
+            .body(Body::from(
+                r#"{"caller_session_id":"aaaaaaaa-0000-0000-0000-000000000001",
+                   "agent":"Backend Agent","task":"cycle"}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn dispatch_refuses_when_chain_at_max_depth() {
+        let (app, _pool, sm) = build_app("s").await;
+        // Pad the chain to MAX so depth check fires before cycle check.
+        let max = crate::session_manager::SessionManager::MAX_DISPATCH_CHAIN_DEPTH;
+        let chain: Vec<String> = (0..max)
+            .map(|i| format!("cccccccc-0000-0000-0000-{i:012}"))
+            .collect();
+        sm.set_dispatch_chain("aaaaaaaa-0000-0000-0000-000000000001", chain);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/internal/dispatch")
+            .header("content-type", "application/json")
+            .header("X-Fleet-Internal", "s")
+            .body(Body::from(
+                r#"{"caller_session_id":"aaaaaaaa-0000-0000-0000-000000000001",
+                   "agent":"Backend Agent","task":"deep"}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 400);
     }
 
     #[test]
