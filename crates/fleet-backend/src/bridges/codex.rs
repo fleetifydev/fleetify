@@ -416,6 +416,18 @@ impl CodexBridge {
                     Arc::new(move |params: Value| {
                         let tx = tx_completed.clone();
                         Box::pin(async move {
+                            // Surface diff details (file_path / old_string /
+                            // new_string) as a ToolUpdate BEFORE the ToolEnd
+                            // so the renderer's Edit card carries the diff
+                            // body inline.
+                            if let Some((id, patch)) = item_to_tool_update(&params) {
+                                let _ = tx
+                                    .send(BridgeEvent::ToolUpdate {
+                                        tool_id: id,
+                                        input: patch,
+                                    })
+                                    .await;
+                            }
                             if let Some((id, output, is_error)) = item_to_tool_end(&params) {
                                 let _ = tx
                                     .send(BridgeEvent::ToolEnd {
@@ -623,6 +635,123 @@ fn item_to_tool_start(params: &Value) -> Option<(String, String, Value)> {
     Some((id, name, input))
 }
 
+/// Split a unified-diff hunk body into `(removed, added)` line groups.
+/// Faithful with `_parse_unified_diff` — strips `@@`/`---`/`+++` headers
+/// and "\ No newline" lines, buckets `-`/`+` lines into the two groups,
+/// drops context lines (would double-count and inflate both columns).
+pub fn parse_unified_diff(patch: &str) -> (String, String) {
+    if patch.is_empty() {
+        return (String::new(), String::new());
+    }
+    let mut old_lines: Vec<&str> = Vec::new();
+    let mut new_lines: Vec<&str> = Vec::new();
+    for raw in patch.lines() {
+        if raw.is_empty() {
+            continue;
+        }
+        let first = raw.as_bytes()[0] as char;
+        if first == '@' || first == '\\' {
+            continue;
+        }
+        if raw.starts_with("---") || raw.starts_with("+++") {
+            continue;
+        }
+        let body = match first {
+            '-' | '+' | ' ' => &raw[1..],
+            _ => raw,
+        };
+        match first {
+            '-' => old_lines.push(body),
+            '+' => new_lines.push(body),
+            _ => {} // drop context
+        }
+    }
+    (old_lines.join("\n"), new_lines.join("\n"))
+}
+
+/// Walk a V2 `changes[]` array and produce `(file_path, old, new)`.
+/// Concatenates parsed diffs from each change so multi-hunk fileChanges
+/// still render as one block; tolerates `oldText/newText` (and
+/// snake_case) alongside `diff` for pre-release builds.
+pub fn extract_diff_from_changes(changes: &Value) -> (String, String, String) {
+    let Some(arr) = changes.as_array() else {
+        return (String::new(), String::new(), String::new());
+    };
+    let mut file_path = String::new();
+    let mut old_parts: Vec<String> = Vec::new();
+    let mut new_parts: Vec<String> = Vec::new();
+    for change in arr {
+        let Some(obj) = change.as_object() else {
+            continue;
+        };
+        if file_path.is_empty() {
+            if let Some(p) = obj.get("path").and_then(|v| v.as_str()) {
+                file_path = p.to_string();
+            }
+        }
+        if let Some(diff) = obj.get("diff").and_then(|v| v.as_str()) {
+            if !diff.is_empty() {
+                let (o, n) = parse_unified_diff(diff);
+                if !o.is_empty() {
+                    old_parts.push(o);
+                }
+                if !n.is_empty() {
+                    new_parts.push(n);
+                }
+            }
+        }
+        // V2 also sometimes surfaces oldText/newText alongside diff.
+        for (old_k, new_k) in [("oldText", "newText"), ("old_text", "new_text")] {
+            let has_either = obj.contains_key(old_k) || obj.contains_key(new_k);
+            if has_either {
+                if let Some(s) = obj.get(old_k).and_then(|v| v.as_str()) {
+                    if !s.is_empty() {
+                        old_parts.push(s.to_string());
+                    }
+                }
+                if let Some(s) = obj.get(new_k).and_then(|v| v.as_str()) {
+                    if !s.is_empty() {
+                        new_parts.push(s.to_string());
+                    }
+                }
+                break;
+            }
+        }
+    }
+    (file_path, old_parts.join("\n"), new_parts.join("\n"))
+}
+
+/// Build a ToolUpdate `input` patch from an item/started or
+/// item/completed payload when it carries fileChange `changes[]`.
+/// Returns None when there's nothing diff-shaped to surface.
+fn item_to_tool_update(params: &Value) -> Option<(String, Value)> {
+    let item = params.get("item")?;
+    let id = item
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if id.is_empty() {
+        return None;
+    }
+    let changes = item.get("changes")?;
+    let (path, old, new) = extract_diff_from_changes(changes);
+    if path.is_empty() && old.is_empty() && new.is_empty() {
+        return None;
+    }
+    let mut patch = serde_json::Map::new();
+    if !path.is_empty() {
+        patch.insert("file_path".into(), Value::String(path));
+    }
+    if !old.is_empty() {
+        patch.insert("old_string".into(), Value::String(old));
+    }
+    if !new.is_empty() {
+        patch.insert("new_string".into(), Value::String(new));
+    }
+    Some((id, Value::Object(patch)))
+}
+
 fn item_to_tool_end(params: &Value) -> Option<(String, String, bool)> {
     let item = params.get("item")?;
     let id = item
@@ -759,6 +888,75 @@ mod tests {
         // delta channel.
         let p_text = json!({ "item": { "id": "x", "kind": "agentMessage" } });
         assert!(item_to_tool_start(&p_text).is_none());
+    }
+
+    #[test]
+    fn unified_diff_strips_headers_and_buckets_lines() {
+        let patch = "\
+@@ -1,3 +1,3 @@
+ context line one
+-removed line a
+-removed line b
++added line a
++added line b
+ context line two
+";
+        let (old, new) = parse_unified_diff(patch);
+        assert_eq!(old, "removed line a\nremoved line b");
+        assert_eq!(new, "added line a\nadded line b");
+    }
+
+    #[test]
+    fn unified_diff_tolerates_no_headers() {
+        let patch = "-foo\n+bar\n";
+        let (old, new) = parse_unified_diff(patch);
+        assert_eq!(old, "foo");
+        assert_eq!(new, "bar");
+    }
+
+    #[test]
+    fn extract_diff_handles_oldtext_newtext_fallback() {
+        let changes = json!([
+            { "path": "src/x.rs", "oldText": "a", "newText": "b" }
+        ]);
+        let (path, old, new) = extract_diff_from_changes(&changes);
+        assert_eq!(path, "src/x.rs");
+        assert_eq!(old, "a");
+        assert_eq!(new, "b");
+    }
+
+    #[test]
+    fn extract_diff_concatenates_multiple_hunks() {
+        let changes = json!([
+            { "path": "x", "diff": "-a\n+b\n" },
+            { "diff": "-c\n+d\n" },
+        ]);
+        let (path, old, new) = extract_diff_from_changes(&changes);
+        assert_eq!(path, "x");
+        assert_eq!(old, "a\nc");
+        assert_eq!(new, "b\nd");
+    }
+
+    #[test]
+    fn item_to_tool_update_extracts_patch_when_changes_present() {
+        let params = json!({
+            "item": {
+                "id": "i-7",
+                "kind": "fileChange",
+                "changes": [
+                    { "path": "src/x.rs", "diff": "-old\n+new\n" }
+                ]
+            }
+        });
+        let (id, patch) = item_to_tool_update(&params).unwrap();
+        assert_eq!(id, "i-7");
+        assert_eq!(patch["file_path"], "src/x.rs");
+        assert_eq!(patch["old_string"], "old");
+        assert_eq!(patch["new_string"], "new");
+
+        // No changes → None.
+        let p2 = json!({ "item": { "id": "x", "kind": "fileChange" } });
+        assert!(item_to_tool_update(&p2).is_none());
     }
 
     #[test]
