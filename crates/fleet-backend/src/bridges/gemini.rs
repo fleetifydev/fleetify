@@ -309,6 +309,95 @@ impl GeminiBridge {
         let client = Arc::new(AcpClient::new());
         client.attach(stdout, stdin).await?;
 
+        // Permission + fs handlers. Same bypass-or-deny shape as the
+        // CodexBridge — once a renderer permission_handler IPC lands,
+        // this routes through Tauri to surface a real dialog instead
+        // of auto-resolving.
+        let perm_mode = self.permission_mode.clone();
+        client
+            .on_permission_request(Arc::new(move |_params| {
+                let bypass = matches!(
+                    perm_mode.as_str(),
+                    "bypassPermissions" | "dontAsk"
+                );
+                Box::pin(async move {
+                    if bypass {
+                        Ok(json!({
+                            "outcome": {
+                                "outcome": "selected",
+                                "optionId": "allow_once"
+                            }
+                        }))
+                    } else {
+                        tracing::warn!(
+                            target: "gemini.permission",
+                            "auto-denied ACP permission request — renderer permission UI not wired"
+                        );
+                        Ok(json!({
+                            "outcome": {
+                                "outcome": "selected",
+                                "optionId": "deny"
+                            }
+                        }))
+                    }
+                })
+            }))
+            .await;
+
+        // fs read / write: scope to project_path. Outside-project paths
+        // are refused with -32000.
+        let project = self.project_path.clone();
+        let project_for_read = project.clone();
+        client
+            .on_fs_read(Arc::new(move |params: Value| {
+                let project = project_for_read.clone();
+                Box::pin(async move {
+                    let path = params
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if path.is_empty() {
+                        return Err(anyhow!("path is required"));
+                    }
+                    if !project.is_empty() && !path.starts_with(&project) {
+                        return Err(anyhow!("path outside project: {path}"));
+                    }
+                    let body = std::fs::read_to_string(path)
+                        .map_err(|e| anyhow!("read {path}: {e}"))?;
+                    Ok(json!({ "content": body }))
+                })
+            }))
+            .await;
+
+        let project_for_write = project.clone();
+        client
+            .on_fs_write(Arc::new(move |params: Value| {
+                let project = project_for_write.clone();
+                Box::pin(async move {
+                    let path = params
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let content = params
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if path.is_empty() {
+                        return Err(anyhow!("path is required"));
+                    }
+                    if !project.is_empty() && !path.starts_with(&project) {
+                        return Err(anyhow!("path outside project: {path}"));
+                    }
+                    if let Some(parent) = std::path::Path::new(path).parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    std::fs::write(path, content)
+                        .map_err(|e| anyhow!("write {path}: {e}"))?;
+                    Ok(json!({}))
+                })
+            }))
+            .await;
+
         // ACP handshake.
         let client_caps = json!({ "fs": { "readTextFile": true, "writeTextFile": true } });
         let init = tokio::time::timeout(
