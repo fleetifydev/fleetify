@@ -4,4 +4,5 @@ pub mod mcp_registry;
 pub mod migration;
 pub mod pricing;
 pub mod provider_inspector;
+pub mod telemetry;
 pub mod worktree;
