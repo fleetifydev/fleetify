@@ -98,6 +98,60 @@ pub fn list_claude_skills(home: &Path, project: Option<&Path>) -> Vec<Skill> {
     all
 }
 
+/// Per-provider skill directory matrix. Faithful with `_skill_roots`.
+/// `provider` is "claude" | "gemini" | "codex"; unknown values yield
+/// an empty matrix.
+fn skill_roots(
+    provider: &str,
+    home: &Path,
+    project: Option<&Path>,
+) -> Vec<(PathBuf, &'static str)> {
+    let mut roots: Vec<(PathBuf, &'static str)> = Vec::new();
+    match provider {
+        "claude" => {
+            roots.push((home.join(".claude").join("skills"), "user"));
+            if let Some(p) = project {
+                roots.push((p.join(".claude").join("skills"), "project"));
+            }
+        }
+        "gemini" => {
+            roots.push((home.join(".gemini").join("skills"), "user"));
+            roots.push((home.join(".agents").join("skills"), "user"));
+            if let Some(p) = project {
+                roots.push((p.join(".gemini").join("skills"), "project"));
+                roots.push((p.join(".agents").join("skills"), "project"));
+            }
+        }
+        "codex" => {
+            roots.push((home.join(".agents").join("skills"), "user"));
+            roots.push((home.join(".codex").join("skills"), "user"));
+            roots.push((PathBuf::from("/etc/codex/skills"), "system"));
+            if let Some(p) = project {
+                roots.push((p.join(".agents").join("skills"), "project"));
+                roots.push((p.join(".codex").join("skills"), "project"));
+            }
+        }
+        _ => {}
+    }
+    roots
+}
+
+/// Provider-aware skill scanner — drops in for the renderer's
+/// /skills tab regardless of `session.tool`. Returns an empty list
+/// for unknown providers (parity with Python returning [] in that
+/// branch).
+pub fn list_skills_for_provider(
+    provider: &str,
+    home: &Path,
+    project: Option<&Path>,
+) -> Vec<Skill> {
+    let mut all: Vec<Skill> = Vec::new();
+    for (root, tier) in skill_roots(provider, home, project) {
+        all.extend(scan_root(&root, provider, tier));
+    }
+    all
+}
+
 /// One row from `_scan_settings_hooks` — a hook is a `{event, matcher,
 /// command}` triplet pulled out of `~/.claude/settings.json`'s `hooks`
 /// block. Event names are PreToolUse / PostToolUse / Notification etc.
@@ -300,6 +354,49 @@ mod tests {
     fn no_frontmatter_returns_none() {
         let (n, d) = parse_frontmatter("body only");
         assert!(n.is_none() && d.is_none());
+    }
+
+    #[test]
+    fn list_skills_for_provider_covers_gemini_and_codex_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+
+        // Gemini: ~/.gemini/skills/g-skill and ~/.agents/skills/agent-skill.
+        let g = home.join(".gemini/skills/g-skill");
+        let a = home.join(".agents/skills/agent-skill");
+        std::fs::create_dir_all(&g).unwrap();
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::write(
+            g.join("SKILL.md"),
+            "---\nname: gemini-named\ndescription: g\n---\n",
+        )
+        .unwrap();
+        std::fs::write(a.join("SKILL.md"), "body").unwrap();
+
+        let items = list_skills_for_provider("gemini", &home, None);
+        // Two roots → 2 skills.
+        assert_eq!(items.len(), 2);
+        // Provider field on both rows is "gemini" (matches Python).
+        assert!(items.iter().all(|s| s.provider == "gemini"));
+        assert!(items.iter().any(|s| s.name == "gemini-named"));
+        assert!(items.iter().any(|s| s.name == "agent-skill"));
+
+        // Codex: ~/.codex/skills/codex-x. (/etc/codex/skills not
+        // writable in test — but list_skills_for_provider still tries
+        // to scan it; that's fine, scan_root returns [] on missing.)
+        let c = home.join(".codex/skills/codex-x");
+        std::fs::create_dir_all(&c).unwrap();
+        std::fs::write(c.join("SKILL.md"), "body").unwrap();
+        let cx = list_skills_for_provider("codex", &home, None);
+        assert!(cx.iter().any(|s| s.name == "codex-x"));
+        assert!(cx.iter().any(|s| s.name == "agent-skill"));
+    }
+
+    #[test]
+    fn list_skills_for_provider_unknown_returns_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let items = list_skills_for_provider("openai", tmp.path(), None);
+        assert!(items.is_empty());
     }
 
     #[test]

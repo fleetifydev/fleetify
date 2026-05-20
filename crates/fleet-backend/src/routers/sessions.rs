@@ -896,17 +896,18 @@ async fn list_commands(
     Ok(Json(json!({ "items": v })))
 }
 
-/// `/sessions/{id}/skills` — real Claude skills scan via the
-/// services::provider_inspector port (user-tier `~/.claude/skills` +
-/// project-tier `<project>/.claude/skills`). Non-Claude tools return
-/// `{items: []}` for now (Phase 2 follow-up: Gemini/Codex skill roots).
+/// `/sessions/{id}/skills` — provider-aware skill scan via
+/// services::provider_inspector. Claude / Gemini / Codex each have
+/// their own directory matrix (user, project, system tiers); unknown
+/// tools return `{items: []}`.
 async fn list_skills(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let s = owned(&st, &id, &user.id).await?;
-    if s.tool != "claude" {
+    let provider = s.tool.as_str();
+    if !matches!(provider, "claude" | "gemini" | "codex") {
         return Ok(Json(json!({ "items": [] })));
     }
     let home = std::path::PathBuf::from(
@@ -919,7 +920,8 @@ async fn list_skills(
     } else {
         Some(std::path::PathBuf::from(&s.project_path))
     };
-    let items = crate::services::provider_inspector::list_claude_skills(
+    let items = crate::services::provider_inspector::list_skills_for_provider(
+        provider,
         &home,
         project.as_deref(),
     );
