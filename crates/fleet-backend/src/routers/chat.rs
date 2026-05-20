@@ -246,8 +246,37 @@ async fn run_send_flow(
         }
     }
     if text.starts_with("[fleet:compaction]") {
-        // Phase 3: app-owned compactor. For now we send "/compact" through.
-        text = "/compact".to_string();
+        // App-owned compactor: snapshot transcript → Haiku summary →
+        // persist + delete + emit a "Conversation summary" card. The
+        // renderer's compact button hits send with this marker prefix;
+        // we short-circuit BEFORE forwarding to the bridge.
+        match crate::services::compactor::compact_session(&st.auth.pool, &sid).await {
+            Ok(r) => {
+                send_json(
+                    &sink,
+                    json!({
+                        "type": "compact_done",
+                        "session_id": sid,
+                        "summary": r.summary,
+                        "compacted_message_count": r.compacted_message_count,
+                    }),
+                )
+                .await;
+            }
+            Err(e) => {
+                send_json(
+                    &sink,
+                    json!({
+                        "type": "error",
+                        "session_id": sid,
+                        "error": e.to_string(),
+                    }),
+                )
+                .await;
+            }
+        }
+        let _ = st.sm.update_status(&st.auth.pool, &sid, "idle").await;
+        return;
     }
 
     if persist_user {
