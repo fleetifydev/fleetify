@@ -2,6 +2,7 @@
 
 pub mod activity_logger;
 pub mod haiku_breaker;
+pub mod haiku_client;
 pub mod mcp_registry;
 pub mod mcp_secrets;
 pub mod meta_cost;
