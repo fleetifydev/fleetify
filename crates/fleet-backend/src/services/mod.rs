@@ -14,6 +14,7 @@ pub mod pricing;
 pub mod prompt_enhancer;
 pub mod provider_inspector;
 pub mod recall_hook;
+pub mod session_summarizer;
 pub mod task_enricher;
 pub mod telemetry;
 pub mod workflows;
