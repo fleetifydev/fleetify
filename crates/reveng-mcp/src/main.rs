@@ -79,6 +79,7 @@ async fn handle(msg: Value) -> Option<Value> {
                 "fetch_url" => fetch_url(args).await,
                 "save_asset" => save_asset(args).await,
                 "find_endpoints" => find_endpoints(args),
+                "discover_assets" => discover_assets(args).await,
                 other => Err(format!("unknown tool: {other}")),
             };
             Some(match result {
@@ -117,6 +118,17 @@ fn tools_list() -> Value {
                     "method":  { "type": "string", "enum": ["GET", "POST"], "default": "GET" },
                     "headers": { "type": "object", "description": "Optional request headers (string → string map)." },
                     "body":    { "type": "string", "description": "Optional request body (string)." }
+                },
+                "required": ["url"]
+            }
+        },
+        {
+            "name": "discover_assets",
+            "description": "Fetch a URL and extract every asset reference (src=, href=, data-src=, link rel=stylesheet). Returns deduplicated absolute URLs grouped by asset kind (script, stylesheet, image, link, other).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "Page URL to fetch + scan." }
                 },
                 "required": ["url"]
             }
@@ -206,6 +218,163 @@ async fn fetch_url(args: Value) -> Result<Value, String> {
         "truncated": truncated,
         "bytes": bytes.len(),
     }))
+}
+
+async fn discover_assets(args: Value) -> Result<Value, String> {
+    let url = args
+        .get("url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "url is required".to_string())?
+        .to_string();
+    // Reuse fetch_url for the body fetch — same User-Agent + timeout +
+    // 2 MB cap. We pass a synthesized args object to avoid duplicating
+    // the request-building.
+    let fetched = fetch_url(json!({ "url": url, "method": "GET" })).await?;
+    let body = fetched
+        .get("body")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    // Best-effort base URL = origin + dirname(path). Used when the
+    // discovered asset starts with `/` (absolute path) or is relative.
+    let (origin, dir) = split_origin_and_dir(&url);
+
+    let mut scripts: Vec<String> = Vec::new();
+    let mut stylesheets: Vec<String> = Vec::new();
+    let mut images: Vec<String> = Vec::new();
+    let mut links: Vec<String> = Vec::new();
+    let mut other: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Match every `<tag … attr="value" …>` where attr ∈
+    // {src, href, data-src, srcset (head only)}. We don't need a full
+    // HTML parser for this — `attr="…"` and `attr='…'` are both
+    // unambiguous in a sane page.
+    for (attr, kind) in [
+        ("src", "script_or_image"),
+        ("data-src", "script_or_image"),
+        ("href", "link_or_stylesheet"),
+    ] {
+        let mut i = 0usize;
+        while i < body.len() {
+            let needle = format!("{attr}=");
+            let Some(rel) = body[i..].find(&needle) else {
+                break;
+            };
+            let start = i + rel + needle.len();
+            if start >= body.len() {
+                break;
+            }
+            let quote = body.as_bytes()[start];
+            if quote != b'"' && quote != b'\'' {
+                i = start + 1;
+                continue;
+            }
+            let body_start = start + 1;
+            let Some(rel_end) = body[body_start..].find(quote as char) else {
+                break;
+            };
+            let raw = &body[body_start..body_start + rel_end];
+            let abs = resolve_url(raw, &origin, &dir);
+            if !abs.is_empty() && !seen.contains(&abs) {
+                seen.insert(abs.clone());
+                // Bucket by extension or context.
+                let lo = abs.to_lowercase();
+                let bucket = if lo.ends_with(".js") || lo.ends_with(".mjs") {
+                    &mut scripts
+                } else if lo.ends_with(".css") {
+                    &mut stylesheets
+                } else if lo.ends_with(".png")
+                    || lo.ends_with(".jpg")
+                    || lo.ends_with(".jpeg")
+                    || lo.ends_with(".gif")
+                    || lo.ends_with(".svg")
+                    || lo.ends_with(".webp")
+                {
+                    &mut images
+                } else if attr == "href" {
+                    // bare-link guess
+                    if abs.starts_with("http") {
+                        &mut links
+                    } else {
+                        &mut other
+                    }
+                } else {
+                    let _ = kind;
+                    &mut other
+                };
+                bucket.push(abs);
+            }
+            i = body_start + rel_end + 1;
+        }
+    }
+
+    Ok(json!({
+        "url": url,
+        "scripts": scripts,
+        "stylesheets": stylesheets,
+        "images": images,
+        "links": links,
+        "other": other,
+    }))
+}
+
+fn split_origin_and_dir(url: &str) -> (String, String) {
+    // Returns (origin, dirname-of-path). Best-effort lex split.
+    let after_scheme = if let Some(rest) = url.strip_prefix("https://") {
+        format!("https://{rest}")
+    } else if let Some(rest) = url.strip_prefix("http://") {
+        format!("http://{rest}")
+    } else {
+        return (String::new(), String::new());
+    };
+    let scheme_end = after_scheme.find("://").map(|i| i + 3).unwrap_or(0);
+    let after_scheme_body = &after_scheme[scheme_end..];
+    let path_pos = after_scheme_body.find('/').unwrap_or(after_scheme_body.len());
+    let origin: String = after_scheme[..scheme_end + path_pos].to_string();
+    let mut path = after_scheme[scheme_end + path_pos..].to_string();
+    // Strip query / fragment.
+    if let Some(q) = path.find('?') {
+        path.truncate(q);
+    }
+    if let Some(h) = path.find('#') {
+        path.truncate(h);
+    }
+    // dirname.
+    let dir = match path.rfind('/') {
+        Some(0) => "/".to_string(),
+        Some(i) => path[..=i].to_string(),
+        None => "/".to_string(),
+    };
+    (origin, dir)
+}
+
+fn resolve_url(raw: &str, origin: &str, dir: &str) -> String {
+    let r = raw.trim();
+    if r.is_empty() {
+        return String::new();
+    }
+    if r.starts_with("http://") || r.starts_with("https://") {
+        return r.to_string();
+    }
+    if let Some(rest) = r.strip_prefix("//") {
+        // Protocol-relative — assume https.
+        return format!("https://{rest}");
+    }
+    if let Some(rest) = r.strip_prefix('/') {
+        if origin.is_empty() {
+            return r.to_string();
+        }
+        return format!("{origin}/{rest}");
+    }
+    // Mailto / javascript: → drop.
+    if r.starts_with("mailto:") || r.starts_with("javascript:") || r.starts_with("#") {
+        return String::new();
+    }
+    if origin.is_empty() {
+        return r.to_string();
+    }
+    format!("{origin}{dir}{r}")
 }
 
 /// Walk `content` looking for endpoint patterns (absolute URLs +
