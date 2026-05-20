@@ -78,6 +78,7 @@ async fn handle(msg: Value) -> Option<Value> {
             let result = match name {
                 "fetch_url" => fetch_url(args).await,
                 "save_asset" => save_asset(args).await,
+                "find_endpoints" => find_endpoints(args),
                 other => Err(format!("unknown tool: {other}")),
             };
             Some(match result {
@@ -118,6 +119,19 @@ fn tools_list() -> Value {
                     "body":    { "type": "string", "description": "Optional request body (string)." }
                 },
                 "required": ["url"]
+            }
+        },
+        {
+            "name": "find_endpoints",
+            "description": "Scan a chunk of HTML / JS source for API endpoint URLs. Matches absolute http(s):// URLs, fetch('/path') / fetch(\"/path\") string literals, and `url:` / `endpoint:` config-style keys. Returns deduplicated entries with the call site's surrounding context (60 chars before + after).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "content":  { "type": "string", "description": "Source text to scan (HTML, JS, JSON, …)." },
+                    "base_url": { "type": "string", "description": "Optional base URL used to resolve relative paths." },
+                    "limit":    { "type": "integer", "minimum": 1, "maximum": 500, "default": 200 }
+                },
+                "required": ["content"]
             }
         },
         {
@@ -192,6 +206,169 @@ async fn fetch_url(args: Value) -> Result<Value, String> {
         "truncated": truncated,
         "bytes": bytes.len(),
     }))
+}
+
+/// Walk `content` looking for endpoint patterns (absolute URLs +
+/// fetch('/relative') + `url:`/`endpoint:` config keys). Pure function:
+/// no env, no I/O, no async dependency.
+fn find_endpoints(args: Value) -> Result<Value, String> {
+    let content = args
+        .get("content")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "content is required".to_string())?;
+    let base = args
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim_end_matches('/');
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(200)
+        .clamp(1, 500) as usize;
+
+    let mut hits: Vec<(String, String)> = Vec::new(); // (url, context)
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // 1. Absolute http(s):// URLs.
+    let mut i = 0usize;
+    let bytes = content.as_bytes();
+    while i < bytes.len() {
+        let slice = &content[i..];
+        let pos_http = slice.find("http://");
+        let pos_https = slice.find("https://");
+        let next = match (pos_http, pos_https) {
+            (Some(a), Some(b)) => Some(i + a.min(b)),
+            (Some(a), None) => Some(i + a),
+            (None, Some(b)) => Some(i + b),
+            (None, None) => None,
+        };
+        let Some(start) = next else { break };
+        // Walk forward as long as we're in URL-safe chars.
+        let url_safe = |c: char| {
+            c.is_ascii_alphanumeric()
+                || matches!(
+                    c,
+                    '/' | ':'
+                        | '?'
+                        | '&'
+                        | '='
+                        | '#'
+                        | '.'
+                        | '-'
+                        | '_'
+                        | '~'
+                        | '%'
+                        | '+'
+                        | ','
+                        | '@'
+                )
+        };
+        let mut end = start;
+        for c in content[start..].chars() {
+            if url_safe(c) {
+                end += c.len_utf8();
+            } else {
+                break;
+            }
+        }
+        let raw = content[start..end].trim_end_matches(|c: char| {
+            matches!(c, '.' | ',' | ';' | ':' | ')' | ']' | '}' | '"' | '\'')
+        });
+        if raw.len() > 8 {
+            push_hit(content, start, end, raw, &mut hits, &mut seen, limit);
+        }
+        i = end.max(start + 1);
+        if hits.len() >= limit {
+            break;
+        }
+    }
+
+    // 2. fetch('…') / fetch("…") string literals.
+    if hits.len() < limit {
+        let mut j = 0usize;
+        while j < bytes.len() {
+            let slice = &content[j..];
+            let Some(rel) = slice.find("fetch(") else { break };
+            let after = j + rel + "fetch(".len();
+            // Skip whitespace.
+            let mut k = after;
+            for c in content[after..].chars() {
+                if c.is_whitespace() {
+                    k += c.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            let quote = content.as_bytes().get(k).copied();
+            if matches!(quote, Some(b'\'') | Some(b'"') | Some(b'`')) {
+                let q = quote.unwrap() as char;
+                let body_start = k + 1;
+                if let Some(rel_end) = content[body_start..].find(q) {
+                    let path = &content[body_start..body_start + rel_end];
+                    if !path.is_empty()
+                        && (path.starts_with('/')
+                            || path.starts_with("http"))
+                    {
+                        let resolved = if !base.is_empty() && path.starts_with('/')
+                        {
+                            format!("{base}{path}")
+                        } else {
+                            path.to_string()
+                        };
+                        push_hit(
+                            content,
+                            after,
+                            body_start + rel_end,
+                            &resolved,
+                            &mut hits,
+                            &mut seen,
+                            limit,
+                        );
+                    }
+                    j = body_start + rel_end + 1;
+                    continue;
+                }
+            }
+            j = after;
+            if hits.len() >= limit {
+                break;
+            }
+        }
+    }
+
+    let entries: Vec<Value> = hits
+        .into_iter()
+        .map(|(url, context)| {
+            json!({
+                "url": url,
+                "context": context,
+            })
+        })
+        .collect();
+    Ok(json!({ "endpoints": entries, "count": entries.len() }))
+}
+
+fn push_hit(
+    content: &str,
+    start: usize,
+    end: usize,
+    url: &str,
+    hits: &mut Vec<(String, String)>,
+    seen: &mut std::collections::HashSet<String>,
+    limit: usize,
+) {
+    if hits.len() >= limit || seen.contains(url) {
+        return;
+    }
+    seen.insert(url.to_string());
+    let ctx_start = start.saturating_sub(60);
+    let ctx_end = std::cmp::min(content.len(), end + 60);
+    let context: String = content[ctx_start..ctx_end]
+        .chars()
+        .map(|c| if c == '\n' { ' ' } else { c })
+        .collect();
+    hits.push((url.to_string(), context));
 }
 
 async fn save_asset(args: Value) -> Result<Value, String> {
