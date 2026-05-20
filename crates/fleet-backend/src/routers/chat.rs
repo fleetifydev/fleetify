@@ -311,7 +311,29 @@ async fn run_send_flow(
     };
     bridges.lock().await.insert(sid.clone(), any_bridge.clone());
 
-    let mut rx = match any_bridge.send_message(&text).await {
+    // Proactive recall — splice prior-work context onto the user
+    // message when the text contains a remember-trigger or path token.
+    // Bounded by RECALL_QUERY_TIMEOUT inside maybe_build_recall_context
+    // so a slow DB never delays the actual turn.
+    let project_for_recall = if session.project_path.is_empty() {
+        None
+    } else {
+        Some(session.project_path.as_str())
+    };
+    let effective_text = if let Some(ctx) = crate::services::recall_hook::maybe_build_recall_context(
+        &st.auth.pool,
+        &text,
+        &sid,
+        project_for_recall,
+    )
+    .await
+    {
+        format!("{ctx}\n\n{text}")
+    } else {
+        text.clone()
+    };
+
+    let mut rx = match any_bridge.send_message(&effective_text).await {
         Ok(rx) => rx,
         Err(e) => {
             send_json(
