@@ -94,6 +94,16 @@ pub async fn serve(
         }
     });
 
+    // Telemetry pipeline — outbox init + heartbeat loop. Best-effort:
+    // a failed outbox init logs and continues so a busted home dir
+    // doesn't kill the backend; emit_* sites will see "telemetry outbox
+    // not initialised" and skip enqueue gracefully.
+    if let Err(e) = services::telemetry::outbox::init().await {
+        tracing::warn!("telemetry: outbox init failed: {e} (telemetry disabled)");
+    } else {
+        tokio::spawn(services::telemetry::run_heartbeat_loop());
+    }
+
     tracing::info!("fleet-backend listening on http://{local_addr}");
     Ok(ServerHandle {
         local_addr,

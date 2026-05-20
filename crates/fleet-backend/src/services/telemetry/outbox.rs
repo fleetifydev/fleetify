@@ -67,8 +67,9 @@ pub async fn init_at(path: PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn pool() -> &'static SqlitePool {
-    POOL.get().expect("telemetry outbox not initialised")
+fn pool_or_err() -> Result<&'static SqlitePool> {
+    POOL.get()
+        .ok_or_else(|| anyhow::anyhow!("telemetry outbox not initialised"))
 }
 
 fn now_ms() -> i64 {
@@ -88,7 +89,7 @@ pub async fn enqueue(event_id: &str, payload: &Value) -> Result<()> {
     .bind(event_id)
     .bind(blob)
     .bind(now_ms())
-    .execute(pool())
+    .execute(pool_or_err()?)
     .await?;
     Ok(())
 }
@@ -101,7 +102,7 @@ pub async fn peek_pending(limit: i64) -> Result<Vec<(String, Value)>> {
          ORDER BY enqueued_at ASC, id ASC LIMIT ?",
     )
     .bind(limit)
-    .fetch_all(pool())
+    .fetch_all(pool_or_err()?)
     .await?;
     rows.into_iter()
         .map(|(id, blob)| Ok((id, serde_json::from_str(&blob)?)))
@@ -111,7 +112,7 @@ pub async fn peek_pending(limit: i64) -> Result<Vec<(String, Value)>> {
 pub async fn mark_acked(event_id: &str) -> Result<()> {
     sqlx::query("DELETE FROM telemetry_outbox WHERE id = ?")
         .bind(event_id)
-        .execute(pool())
+        .execute(pool_or_err()?)
         .await?;
     Ok(())
 }
@@ -122,14 +123,14 @@ pub async fn bump_attempt(event_id: &str) -> Result<i64> {
          WHERE id = ? RETURNING attempt_count",
     )
     .bind(event_id)
-    .fetch_optional(pool())
+    .fetch_optional(pool_or_err()?)
     .await?;
     Ok(row.map(|(c,)| c).unwrap_or(0))
 }
 
 pub async fn count() -> Result<i64> {
     let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM telemetry_outbox")
-        .fetch_one(pool())
+        .fetch_one(pool_or_err()?)
         .await?;
     Ok(n)
 }
@@ -138,7 +139,7 @@ pub async fn count() -> Result<i64> {
 /// unacked events.
 pub async fn reset() -> Result<()> {
     sqlx::query("DELETE FROM telemetry_outbox")
-        .execute(pool())
+        .execute(pool_or_err()?)
         .await?;
     Ok(())
 }

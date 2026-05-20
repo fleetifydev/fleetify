@@ -22,6 +22,7 @@
 
 pub mod device_id;
 pub mod emitters;
+pub mod heartbeat;
 pub mod outbox;
 
 pub use device_id::{get_or_create, DeviceInfo};
@@ -29,3 +30,4 @@ pub use emitters::{
     emit_activity, emit_cost, emit_heartbeat, emit_session_start, emit_session_stop,
     emit_status_change,
 };
+pub use heartbeat::run_heartbeat_loop;
