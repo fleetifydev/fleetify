@@ -93,18 +93,54 @@ async fn one_connection_attempt(bearer_source: &BearerSource) -> Result<()> {
             return Err(anyhow!("not signed in"));
         }
     };
+    let bearer_preview = redact_token(&bearer);
+    tracing::info!(
+        target: "fleetify.telemetry.ws",
+        "→ bearer acquired (len={}, prefix={})", bearer.len(), bearer_preview
+    );
 
     // 1. Fetch a ticket.
     let device = device_id::get_or_create();
+    tracing::info!(
+        target: "fleetify.telemetry.ws",
+        "→ device_id={} name={} platform={}",
+        device.device_id, device.name, device.platform
+    );
     let ticket = fetch_ticket(&bearer, &device.device_id).await?;
+    tracing::info!(
+        target: "fleetify.telemetry.ws",
+        "← ticket acquired (len={}, prefix={})",
+        ticket.len(), redact_token(&ticket)
+    );
 
     // 2. Open the WS.
     let url = format!("{}?ticket={}", ws_url(), urlencoding_minimal(&ticket));
-    let (ws_stream, _) = tokio_tungstenite::connect_async(&url)
-        .await
-        .map_err(|e| anyhow!("WS upgrade failed: {e}"))?;
+    tracing::info!(
+        target: "fleetify.telemetry.ws",
+        "→ ws connect_async url={}",
+        url.replace(&ticket, &redact_token(&ticket))
+    );
+    let (ws_stream, handshake_resp) = match tokio_tungstenite::connect_async(&url).await {
+        Ok(pair) => pair,
+        Err(e) => {
+            // tungstenite errors that carry an HTTP response include the
+            // response body verbatim — pull it out so the user sees
+            // exactly what fleetify.dev rejected.
+            log_ws_error(&e);
+            return Err(anyhow!("WS upgrade failed: {e}"));
+        }
+    };
+    tracing::info!(
+        target: "fleetify.telemetry.ws",
+        "← ws handshake response status={} headers={:?}",
+        handshake_resp.status(),
+        handshake_resp
+            .headers()
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect::<Vec<_>>()
+    );
     let (mut write, mut read) = ws_stream.split();
-    tracing::info!(target: "fleetify.telemetry.ws", "connected to {url}");
 
     // 3. Drain outbox immediately on (re)connect — replays anything
     //    unacked from a prior session.
@@ -123,7 +159,7 @@ async fn one_connection_attempt(bearer_source: &BearerSource) -> Result<()> {
                 if pending.is_empty() {
                     continue;
                 }
-                tracing::info!(target: "fleetify.telemetry.ws", "sending {} events", pending.len());
+                tracing::info!(target: "fleetify.telemetry.ws", "→ sending {} events", pending.len());
                 for (event_id, payload) in pending {
                     let envelope = json!({
                         "v": WIRE_VERSION,
@@ -132,6 +168,12 @@ async fn one_connection_attempt(bearer_source: &BearerSource) -> Result<()> {
                         "payload": payload,
                     });
                     let frame = serde_json::to_string(&envelope)?;
+                    tracing::info!(
+                        target: "fleetify.telemetry.ws",
+                        "→ send event id={} frame={}",
+                        event_id,
+                        truncate(&frame, 2000)
+                    );
                     write.send(Message::Text(frame)).await
                         .map_err(|e| anyhow!("ws send failed: {e}"))?;
                 }
@@ -143,14 +185,34 @@ async fn one_connection_attempt(bearer_source: &BearerSource) -> Result<()> {
                 };
                 let msg = msg.map_err(|e| anyhow!("ws read failed: {e}"))?;
                 match msg {
-                    Message::Text(t) => handle_inbound(&t).await,
-                    Message::Binary(_) => {}
+                    Message::Text(t) => {
+                        tracing::info!(
+                            target: "fleetify.telemetry.ws",
+                            "← recv text frame={}", truncate(&t, 2000)
+                        );
+                        handle_inbound(&t).await
+                    }
+                    Message::Binary(b) => {
+                        tracing::info!(
+                            target: "fleetify.telemetry.ws",
+                            "← recv binary ({} bytes)", b.len()
+                        );
+                    }
                     Message::Ping(b) => {
+                        tracing::debug!(target: "fleetify.telemetry.ws", "← ping ({} bytes) → pong", b.len());
                         let _ = write.send(Message::Pong(b)).await;
                     }
-                    Message::Pong(_) => {}
+                    Message::Pong(_) => {
+                        tracing::debug!(target: "fleetify.telemetry.ws", "← pong");
+                    }
                     Message::Frame(_) => {}
-                    Message::Close(_) => return Err(anyhow!("ws closed by peer")),
+                    Message::Close(cf) => {
+                        tracing::warn!(
+                            target: "fleetify.telemetry.ws",
+                            "← close frame: {:?}", cf
+                        );
+                        return Err(anyhow!("ws closed by peer"));
+                    }
                 }
             }
             // Keepalive ping
@@ -187,29 +249,101 @@ async fn handle_inbound(text: &str) {
 }
 
 async fn fetch_ticket(bearer: &str, device_id: &str) -> Result<String> {
+    let url = ticket_url();
+    let payload = json!({ "deviceId": device_id });
+    tracing::info!(
+        target: "fleetify.telemetry.ws",
+        "→ ticket POST url={} body={}", url, payload
+    );
     let r = reqwest::Client::new()
-        .post(ticket_url())
+        .post(&url)
         .header("Authorization", format!("Bearer {bearer}"))
-        .json(&json!({ "deviceId": device_id }))
+        .json(&payload)
         .timeout(Duration::from_secs(10))
         .send()
         .await
         .map_err(|e| anyhow!("ticket POST failed: {e}"))?;
-    if !r.status().is_success() {
+    let status = r.status();
+    let headers: Vec<(String, String)> = r
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+    let body_text = r.text().await.unwrap_or_default();
+    tracing::info!(
+        target: "fleetify.telemetry.ws",
+        "← ticket response status={} headers={:?} body={}",
+        status, headers, truncate(&body_text, 2000)
+    );
+    if !status.is_success() {
         return Err(anyhow!(
-            "ticket POST returned {} ({})",
-            r.status().as_u16(),
-            r.status().canonical_reason().unwrap_or("")
+            "ticket POST returned {} ({}); body={}",
+            status.as_u16(),
+            status.canonical_reason().unwrap_or(""),
+            truncate(&body_text, 500)
         ));
     }
-    let body: Value = r
-        .json()
-        .await
-        .map_err(|e| anyhow!("ticket response decode failed: {e}"))?;
+    let body: Value = serde_json::from_str(&body_text)
+        .map_err(|e| anyhow!("ticket response decode failed: {e}; raw={}", truncate(&body_text, 500)))?;
     body.get("ticket")
         .and_then(|v| v.as_str())
         .map(String::from)
-        .ok_or_else(|| anyhow!("ticket response missing `ticket` field"))
+        .ok_or_else(|| anyhow!("ticket response missing `ticket` field; got {body}"))
+}
+
+/// Redact a token/ticket to a `<first8>…<last4>` preview so logs never
+/// leak the full secret but still let an operator correlate against
+/// the cloud's request log.
+fn redact_token(s: &str) -> String {
+    if s.len() <= 12 {
+        return "<short>".into();
+    }
+    let head: String = s.chars().take(8).collect();
+    let tail: String = s.chars().rev().take(4).collect::<String>().chars().rev().collect();
+    format!("{head}…{tail}")
+}
+
+/// Cap log lines at `max` chars so a 2 MB body doesn't fill the
+/// terminal scrollback.
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let head: String = s.chars().take(max).collect();
+        format!("{head}…[truncated {} bytes]", s.len() - head.len())
+    }
+}
+
+/// Surface every detail of a tungstenite::Error so the user sees the
+/// 400's response body, headers, and underlying cause.
+fn log_ws_error(e: &tokio_tungstenite::tungstenite::Error) {
+    use tokio_tungstenite::tungstenite::Error as WsErr;
+    match e {
+        WsErr::Http(resp) => {
+            let status = resp.status();
+            let headers: Vec<(String, String)> = resp
+                .headers()
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+                .collect();
+            let body = resp
+                .body()
+                .as_ref()
+                .map(|b| String::from_utf8_lossy(b).into_owned())
+                .unwrap_or_default();
+            tracing::warn!(
+                target: "fleetify.telemetry.ws",
+                "← ws upgrade HTTP {} headers={:?} body={}",
+                status, headers, truncate(&body, 2000)
+            );
+        }
+        other => {
+            tracing::warn!(
+                target: "fleetify.telemetry.ws",
+                "ws upgrade non-HTTP error: {other}"
+            );
+        }
+    }
 }
 
 /// Minimal percent-encoder for ticket strings on the WS URL — UUID +

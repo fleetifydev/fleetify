@@ -35,7 +35,18 @@ fn static_dir() -> Option<PathBuf> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tracing_subscriber::fmt().with_target(false).compact().init();
+    // Tracing setup — RUST_LOG honoured ("info,fleetify.telemetry.ws=debug"
+    // is a useful preset for inspecting outbox → cloud traffic). Defaults
+    // to "info,fleetify=info" so the user sees the WS handshake + every
+    // event sent / received in the terminal without needing to set
+    // RUST_LOG manually.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,fleetify=info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(true) // surface fleetify.telemetry.ws / acp / codex / etc.
+        .compact()
+        .init();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
