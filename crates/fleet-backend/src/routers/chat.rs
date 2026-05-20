@@ -366,6 +366,43 @@ async fn run_send_flow(
             BridgeEvent::ToolEnd { tool_id, output, is_error } => {
                 content.push(json!({"type":"tool_result","tool_id":tool_id,
                     "output":output,"is_error":is_error}));
+                // Record one row in the activity ledger so the Activity /
+                // Files / Commands tabs reflect the tool use. Best-effort —
+                // any write failure is swallowed inside record_tool_event.
+                // Walk back to find the matching tool_use block for name + input.
+                let (tool_name, tool_input) = content
+                    .iter()
+                    .rev()
+                    .find_map(|b| {
+                        if b.get("type").and_then(|x| x.as_str()) == Some("tool_use")
+                            && b.get("tool_id").and_then(|x| x.as_str())
+                                == Some(tool_id.as_str())
+                        {
+                            Some((
+                                b.get("tool_name")
+                                    .and_then(|x| x.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                b.get("input").cloned(),
+                            ))
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default();
+                if !tool_name.is_empty() {
+                    let _ = crate::services::activity_logger::record_tool_event(
+                        &st.auth.pool,
+                        &sid,
+                        Some(session.project_path.as_str()),
+                        &tool_name,
+                        tool_input.as_ref(),
+                        Some(output.as_str()),
+                        *is_error,
+                        None,
+                    )
+                    .await;
+                }
             }
             BridgeEvent::Cost { usage: u, cost_usd: c, model } => {
                 usage = u.clone();
