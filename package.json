@@ -9,7 +9,10 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "test": "vitest run --config vitest.renderer.config.ts",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "dev:tauri": "cross-env FLEETIFY_ISSUER=http://localhost:3001 FLEETIFY_DASHBOARD_URL=http://localhost:3000 FLEETIFY_RESOURCE=http://127.0.0.1:8765 FLEETIFY_AUDIENCE=http://127.0.0.1:8765 tauri dev",
+    "prod": "cross-env FLEETIFY_ISSUER=https://fleetify.dev FLEETIFY_DASHBOARD_URL=https://app.fleetify.dev FLEETIFY_RESOURCE=https://fleetify.dev/api FLEETIFY_AUDIENCE=https://fleetify.dev/api tauri dev",
+    "prod:build": "cross-env FLEETIFY_ISSUER=https://fleetify.dev FLEETIFY_DASHBOARD_URL=https://app.fleetify.dev FLEETIFY_RESOURCE=https://fleetify.dev/api FLEETIFY_AUDIENCE=https://fleetify.dev/api tauri build"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",
@@ -61,6 +64,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.0",
+    "cross-env": "^7.0.3",
     "eslint": "^9.0.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^15.0.0",
