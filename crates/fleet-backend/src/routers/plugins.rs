@@ -32,6 +32,12 @@ fn deferred(name: &str) -> Value {
     })
 }
 
+#[derive(serde::Deserialize, Default)]
+struct InstallBody {
+    #[serde(default)]
+    repo_url: String,
+}
+
 async fn list_installed() -> Json<Value> {
     // Scan ~/.fleetify/plugins/ for installed plugins and parse each
     // .fleetify-plugin/plugin.json. Best-effort: anything that fails
@@ -87,11 +93,17 @@ async fn list_installed() -> Json<Value> {
 async fn install_unsupported() -> Json<Value> {
     Json(deferred("install"))
 }
-async fn install() -> Json<Value> {
-    Json(deferred("install"))
+async fn install(Json(b): Json<InstallBody>) -> Json<Value> {
+    if b.repo_url.trim().is_empty() {
+        return Json(json!({ "ok": false, "error": "repo_url is required" }));
+    }
+    Json(crate::services::plugins::installer::install_and_envelope(b.repo_url.trim()).await)
 }
-async fn uninstall(Path(_id): Path<String>) -> Json<Value> {
-    Json(deferred("uninstall"))
+async fn uninstall(Path(id): Path<String>) -> Json<Value> {
+    match crate::services::plugins::installer::uninstall(&id) {
+        Ok(_) => Json(json!({ "ok": true })),
+        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
+    }
 }
 async fn update_preview(Path(_id): Path<String>) -> Json<Value> {
     Json(json!({

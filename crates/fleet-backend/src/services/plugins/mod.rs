@@ -20,5 +20,6 @@
 //! - marketplace catalog.
 //! - runtime (component_registry + per-tool dispatch hooks).
 
+pub mod installer;
 pub mod manifest;
 pub mod types;
