@@ -5,6 +5,7 @@ members = [
   "crates/fleet-core",
   "crates/fleet-backend",
   "crates/memory-mcp",
+  "crates/reveng-mcp",
   "src-tauri",
 ]
 
