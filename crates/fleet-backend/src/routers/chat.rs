@@ -522,6 +522,21 @@ async fn run_send_flow(
     }
 
     let _ = st.sm.update_status(&st.auth.pool, &sid, "idle").await;
+
+    // Schedule end-of-turn distillation. The summariser's cooldown +
+    // qualification gate inside maybe_distill_session keeps it from
+    // firing on trivial sessions or back-to-back idle/resume bursts,
+    // so we can call it on every idle without worrying about cost.
+    let project_for_distill = if session.project_path.is_empty() {
+        None
+    } else {
+        Some(session.project_path.clone())
+    };
+    crate::services::session_summarizer::schedule_distill(
+        st.auth.pool.clone(),
+        sid.clone(),
+        project_for_distill,
+    );
 }
 
 /// Accumulate consecutive text/thinking deltas into one block (parity with
