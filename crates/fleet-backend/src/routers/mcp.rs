@@ -94,15 +94,42 @@ async fn delete_server(Path(name): Path<String>) -> impl IntoResponse {
 }
 
 async fn probe_server(Path(name): Path<String>) -> Json<Value> {
-    // Phase 4: actually start the MCP server and list tools.
-    Json(json!({
-        "name": name, "status": "unknown", "tool_count": 0, "tools": [],
-        "error": null, "auth_hint": null, "probed_at": null
-    }))
+    let Some(config) = mcp_registry::get(&name) else {
+        return Json(json!({
+            "name": name,
+            "status": "error",
+            "tool_count": 0,
+            "tools": [],
+            "error": format!("no MCP server named {name:?} in registry"),
+            "probed_at": chrono::Utc::now().to_rfc3339(),
+        }));
+    };
+    let r = crate::services::mcp_prober::probe(&name, &config).await;
+    Json(serde_json::to_value(r).unwrap_or(Value::Null))
 }
 
 async fn probe_all() -> Json<Value> {
-    Json(json!({}))
+    // Probe every registered MCP server in parallel; return a
+    // `{ <name>: ProbeResult }` map for the renderer's Settings page.
+    let names: Vec<String> = mcp_registry::list_all()
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    let futs: Vec<_> = names
+        .into_iter()
+        .filter_map(|n| {
+            mcp_registry::get(&n).map(|cfg| async move {
+                let r = crate::services::mcp_prober::probe(&n, &cfg).await;
+                (n, r)
+            })
+        })
+        .collect();
+    let results = futures_util::future::join_all(futs).await;
+    let mut out = serde_json::Map::new();
+    for (n, r) in results {
+        out.insert(n, serde_json::to_value(r).unwrap_or(Value::Null));
+    }
+    Json(Value::Object(out))
 }
 
 async fn config_path() -> Json<Value> {

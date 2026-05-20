@@ -79,6 +79,11 @@ pub fn list_all() -> BTreeMap<String, Value> {
     load().mcp_servers
 }
 
+/// Lookup one server by name. None if absent.
+pub fn get(name: &str) -> Option<Value> {
+    load().mcp_servers.remove(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

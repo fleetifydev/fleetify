@@ -6,6 +6,7 @@ pub mod compactor;
 pub mod fleet_brain;
 pub mod haiku_breaker;
 pub mod haiku_client;
+pub mod mcp_prober;
 pub mod mcp_registry;
 pub mod mcp_secrets;
 pub mod meta_cost;
