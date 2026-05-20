@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use tauri::webview::WebviewWindowBuilder;
-use tauri::{Manager, WebviewUrl};
+use tauri::WebviewUrl;
 
 /// Boot shim reconstructing `window.electronAPI` / `window.fleetify`.
 const PRELOAD: &str = include_str!("preload.js");
@@ -113,41 +113,65 @@ pub fn run() {
             // Auth module emits `fleet:auth-event` via this handle.
             shell::auth::set_app_handle(app.handle().clone());
 
-            // Embedded backend (no child process, no health-poll).
-            // The window is built `.visible(false)` below; once
-            // `serve()` returns Ok we flip it to visible so the user
-            // never sees the ERR_CONNECTION_REFUSED retry loop the
-            // webview produces against an unbound 127.0.0.1:8765.
+            // Build the window FIRST so we have a direct handle to
+            // clone into the backend-watch task — get_webview_window
+            // lookups from an AppHandle can race the build on some
+            // Tauri versions / platforms (especially Windows), which
+            // is why the previous "lookup-then-show" version left the
+            // window stranded. Holding the handle eliminates the race.
             //
-            // Failure path: still call show() so the user can read
-            // any in-renderer error toast rather than staring at a
-            // perpetually-hidden window with no feedback.
+            // The window is hidden at creation; once axum binds
+            // 127.0.0.1:8765 the spawned task below calls
+            // `window.show()`. ERR_CONNECTION_REFUSED retry loop the
+            // webview would otherwise produce against an unbound port
+            // is never visible.
+            let main_window = WebviewWindowBuilder::new(
+                app,
+                "main",
+                WebviewUrl::External(webview_url().parse().expect("valid webview url")),
+            )
+            .title("Fleetify")
+            .inner_size(1500.0, 960.0)
+            // Hide the OS titlebar — the renderer ships its own custom
+            // title strip (min/max/close handled via the window_*
+            // IPC commands). Without this, Tauri's native frame stacks
+            // on top of the renderer's strip and we get two bars.
+            .decorations(false)
+            .visible(false)
+            .initialization_script(PRELOAD)
+            .build()?;
+
+            // Embedded backend (no child process, no health-poll).
+            // On Ok → show + focus. On Err → still show so the user
+            // can read any in-renderer toast rather than staring at a
+            // perpetually-hidden window with no feedback. Wall-clock
+            // safety net: if serve() somehow never resolves (shouldn't
+            // happen but defensive), a 10s timer also shows the
+            // window so a stuck startup doesn't leave the app
+            // invisible.
             let addr: SocketAddr = "127.0.0.1:8765".parse().unwrap();
             let sd = static_dir();
-            let app_handle_for_serve = app.handle().clone();
+            let win_for_serve = main_window.clone();
+            let win_for_fallback = main_window.clone();
             tauri::async_runtime::spawn(async move {
-                let result = fleetify_backend::serve(addr, sd).await;
-                let outcome = match &result {
-                    Ok(_) => Ok(()),
-                    Err(e) => Err(e.to_string()),
-                };
-                if let Some(win) = app_handle_for_serve.get_webview_window("main") {
-                    if let Err(e) = win.show() {
-                        tracing::warn!("show main window failed: {e}");
-                    }
-                }
-                match result {
+                match fleetify_backend::serve(addr, sd).await {
                     Ok(handle) => {
                         std::mem::forget(handle);
                         tracing::info!("embedded backend up on {addr}");
                     }
-                    Err(_) => {
-                        tracing::error!(
-                            "backend failed to start: {}",
-                            outcome.err().unwrap_or_default()
-                        );
+                    Err(e) => {
+                        tracing::error!("backend failed to start: {e}");
                     }
                 }
+                if let Err(e) = win_for_serve.show() {
+                    tracing::warn!("show main window failed: {e}");
+                }
+                let _ = win_for_serve.set_focus();
+            });
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                // Best-effort: idempotent if the window is already visible.
+                let _ = win_for_fallback.show();
             });
 
             // Loopback bearer bridge :8770 (telemetry token source / parity).
@@ -173,30 +197,6 @@ pub fn run() {
                     });
                 fleetify_backend::services::telemetry::run_ws_client_loop(source).await;
             });
-
-            WebviewWindowBuilder::new(
-                app,
-                "main",
-                WebviewUrl::External(webview_url().parse().expect("valid webview url")),
-            )
-            .title("Fleetify")
-            .inner_size(1500.0, 960.0)
-            // Hide the OS titlebar — the renderer ships its own custom
-            // title strip (min/max/close handled via the window_*
-            // IPC commands). Without this, Tauri's native frame stacks
-            // on top of the renderer's strip and we get two bars.
-            .decorations(false)
-            // Keep the window hidden until the embedded axum server
-            // binds 127.0.0.1:8765 — otherwise the webview opens
-            // first, hits ERR_CONNECTION_REFUSED, and shows a black
-            // background for 0.5-2s while the backend goes through
-            // pool init + JWKS fetch + MCP registry seed. The
-            // spawned `serve()` task above calls `win.show()` once
-            // it has a bound listener (or on bind failure, so the
-            // user isn't stranded with an invisible window).
-            .visible(false)
-            .initialization_script(PRELOAD)
-            .build()?;
 
             Ok(())
         })
