@@ -25,6 +25,22 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "publisher": "Fleetify",
+    "copyright": "© 2026 Fleetify. All rights reserved.",
+    "category": "DeveloperTool",
+    "shortDescription": "Local agent fleet for Claude, Codex, Gemini.",
+    "longDescription": "Fleet is a desktop control plane for Claude, Codex, and Gemini agent sessions. Spawn many agents on real projects in parallel, watch progress live, and ship PRs through the same workflow you already use on the command line.",
+    "windows": {
+      "wix": { "language": "en-US" }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    },
+    "linux": {
+      "deb": {
+        "section": "devel"
+      }
+    }
   }
 }

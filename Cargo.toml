@@ -19,3 +19,21 @@ thiserror = "2"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+# Release profile = small + fast for shipped installers. LTO + opt-level
+# 3 trade compile time for ~20% smaller binaries and stripped symbols
+# keep the bundle a few MB smaller still (debuginfo lives in PDB/dSYM
+# for support tickets).
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+# Faster CI / `cargo test` cycles. Most tests are I/O-bound (sqlite +
+# fs), so opt-level=1 already covers the hot paths and we skip the
+# 30-second LTO link on every change.
+[profile.dev]
+opt-level = 0
+incremental = true
