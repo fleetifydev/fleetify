@@ -25,12 +25,22 @@ pub struct SessionManager {
     /// Subscribed WebSockets per session id (Phase 1d populates/broadcasts).
     ws: Mutex<HashMap<String, usize>>,
     status_tx: broadcast::Sender<StatusEvent>,
+    /// Per-session JSON fanout — background tasks (dispatch result,
+    /// dispatched-agent stream mirroring) publish here so any WS
+    /// handler subscribed to the same session id forwards the payload
+    /// to its sink. Lazily created on first publish/subscribe so
+    /// sessions that never need live fanout don't pay for the channel.
+    session_tx: Mutex<HashMap<String, broadcast::Sender<serde_json::Value>>>,
 }
 
 impl SessionManager {
     fn new() -> Self {
         let (status_tx, _) = broadcast::channel(256);
-        Self { ws: Mutex::new(HashMap::new()), status_tx }
+        Self {
+            ws: Mutex::new(HashMap::new()),
+            status_tx,
+            session_tx: Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn subscribe_status(&self) -> broadcast::Receiver<StatusEvent> {
@@ -54,6 +64,43 @@ impl SessionManager {
             if *n == 0 {
                 m.remove(session_id);
             }
+        }
+    }
+
+    /// Subscribe a WS handler to a session's live JSON fanout. The
+    /// returned receiver yields every `Value` published via
+    /// `send_to_session_ws` for the same id. Idempotent + safe to
+    /// call many times — each subscriber gets its own receiver.
+    pub fn subscribe_session(
+        &self,
+        session_id: &str,
+    ) -> broadcast::Receiver<serde_json::Value> {
+        let mut map = self.session_tx.lock().unwrap();
+        let tx = map.entry(session_id.to_string()).or_insert_with(|| {
+            // 256 buffered messages — comfortably above the burst a
+            // dispatch_ack + target stream + dispatch_result triplet
+            // can produce, and small enough that a runaway publisher
+            // can't OOM the process.
+            broadcast::channel(256).0
+        });
+        tx.subscribe()
+    }
+
+    /// Publish a JSON payload to every subscriber of `session_id`. Used by
+    /// dispatch background tasks to push live `dispatch_result` events
+    /// to the staff session's WS sink, and to mirror dispatched-agent
+    /// bridge events to the target's own viewer.
+    ///
+    /// No-op (best-effort) when no subscribers exist — falls through to
+    /// the persisted-message backstop that the renderer reads on next
+    /// reload, so dropped fanouts never lose state.
+    pub fn send_to_session_ws(&self, session_id: &str, payload: serde_json::Value) {
+        let tx_opt = {
+            let map = self.session_tx.lock().unwrap();
+            map.get(session_id).cloned()
+        };
+        if let Some(tx) = tx_opt {
+            let _ = tx.send(payload);
         }
     }
 
@@ -246,4 +293,57 @@ impl SessionManager {
 pub fn session_manager() -> &'static SessionManager {
     static SM: OnceLock<SessionManager> = OnceLock::new();
     SM.get_or_init(SessionManager::new)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn subscribe_session_delivers_published_payloads_in_order() {
+        let sm = SessionManager::new();
+        let mut rx = sm.subscribe_session("s1");
+        sm.send_to_session_ws("s1", json!({"type": "dispatch_ack", "task": "a"}));
+        sm.send_to_session_ws("s1", json!({"type": "dispatch_result", "success": true}));
+        let first = rx.recv().await.unwrap();
+        let second = rx.recv().await.unwrap();
+        assert_eq!(first["type"], "dispatch_ack");
+        assert_eq!(first["task"], "a");
+        assert_eq!(second["type"], "dispatch_result");
+        assert_eq!(second["success"], true);
+    }
+
+    #[tokio::test]
+    async fn send_to_session_without_subscriber_is_a_silent_noop() {
+        let sm = SessionManager::new();
+        // No subscriber → send drops the payload without panicking.
+        // This is the on-reload-backstop path: persisted messages
+        // are still the source of truth when no live WS is mounted.
+        sm.send_to_session_ws("nobody", json!({"type": "ignored"}));
+    }
+
+    #[tokio::test]
+    async fn multiple_subscribers_each_receive_their_own_copy() {
+        let sm = SessionManager::new();
+        let mut a = sm.subscribe_session("s2");
+        let mut b = sm.subscribe_session("s2");
+        sm.send_to_session_ws("s2", json!({"event": "x"}));
+        let from_a = a.recv().await.unwrap();
+        let from_b = b.recv().await.unwrap();
+        assert_eq!(from_a, from_b);
+        assert_eq!(from_a["event"], "x");
+    }
+
+    #[tokio::test]
+    async fn sessions_are_isolated_from_each_other() {
+        let sm = SessionManager::new();
+        let mut rx_one = sm.subscribe_session("one");
+        let mut rx_two = sm.subscribe_session("two");
+        sm.send_to_session_ws("one", json!({"to": "one"}));
+        let m = rx_one.recv().await.unwrap();
+        assert_eq!(m["to"], "one");
+        // "two" must not see "one"'s payload — use try_recv to avoid hanging.
+        assert!(rx_two.try_recv().is_err());
+    }
 }

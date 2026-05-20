@@ -91,6 +91,12 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
     let bridges: Arc<Mutex<HashMap<String, AnyBridge>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let streaming: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+    // Per-session live fanout tasks. Each subscribed session id gets a
+    // forwarder spawned that pulls broadcast::Value events from
+    // SessionManager and writes them to this WS's sink. Cancelled on
+    // unsubscribe / WS close.
+    let fanout_tasks: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 
     while let Some(Ok(msg)) = stream.next().await {
         let text = match msg {
@@ -113,6 +119,39 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
                         Some(_) => {
                             subscribed.insert(sid.clone());
                             st.sm.register_ws(&sid);
+                            // Mount a forwarder so background tasks
+                            // publishing via send_to_session_ws reach
+                            // this sink live. Without this the
+                            // dispatch_result + dispatched-agent
+                            // events only land in the DB and the
+                            // pending card spins until reload.
+                            let sink_for = sink.clone();
+                            let sid_for = sid.clone();
+                            let mut rx = st.sm.subscribe_session(&sid);
+                            let handle = tokio::spawn(async move {
+                                loop {
+                                    match rx.recv().await {
+                                        Ok(mut payload) => {
+                                            // Inject session_id so the
+                                            // renderer's demux still works
+                                            // when the publisher omits it.
+                                            if let Value::Object(ref mut m) = payload {
+                                                m.entry("session_id".to_string())
+                                                    .or_insert_with(|| json!(sid_for));
+                                            }
+                                            send_json(&sink_for, payload).await;
+                                        }
+                                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                            // Drop lagged messages and keep going —
+                                            // dispatched runs can burst faster than the
+                                            // socket. Live UI degradation > full stall.
+                                            continue;
+                                        }
+                                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                                    }
+                                }
+                            });
+                            fanout_tasks.lock().await.insert(sid.clone(), handle);
                             send_json(
                                 &sink,
                                 json!({"type":"init","session_id":sid,"model":"pending"}),
@@ -135,6 +174,9 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
                 for sid in sid_list(&v) {
                     subscribed.remove(&sid);
                     st.sm.unregister_ws(&sid);
+                    if let Some(h) = fanout_tasks.lock().await.remove(&sid) {
+                        h.abort();
+                    }
                 }
             }
 
@@ -162,6 +204,29 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
                         Some(_) => {
                             subscribed.insert(sid.clone());
                             st.sm.register_ws(&sid);
+                            // Same fanout subscribe as the explicit
+                            // "subscribe" branch — keeps the WS live for
+                            // dispatched-task events when the renderer
+                            // sent a "send" without a prior subscribe.
+                            let sink_for = sink.clone();
+                            let sid_for = sid.clone();
+                            let mut rx = st.sm.subscribe_session(&sid);
+                            let handle = tokio::spawn(async move {
+                                loop {
+                                    match rx.recv().await {
+                                        Ok(mut payload) => {
+                                            if let Value::Object(ref mut m) = payload {
+                                                m.entry("session_id".to_string())
+                                                    .or_insert_with(|| json!(sid_for));
+                                            }
+                                            send_json(&sink_for, payload).await;
+                                        }
+                                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                                    }
+                                }
+                            });
+                            fanout_tasks.lock().await.insert(sid.clone(), handle);
                         }
                         None => {
                             send_json(
@@ -205,6 +270,12 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
     // Disconnect cleanup.
     for sid in &subscribed {
         st.sm.unregister_ws(sid);
+    }
+    {
+        let mut tasks = fanout_tasks.lock().await;
+        for (_, h) in tasks.drain() {
+            h.abort();
+        }
     }
     for (_, b) in bridges.lock().await.iter() {
         b.abort().await;
@@ -278,6 +349,26 @@ async fn run_send_flow(
         let _ = st.sm.update_status(&st.auth.pool, &sid, "idle").await;
         return;
     }
+
+    // ── DIRECT_DISPATCH pre-processing (parity with chat.py:_handle_direct_dispatches) ──
+    // When the user types "@AgentName task" in the staff composer, the
+    // renderer resolves the name to a session id and appends a
+    // [[DIRECT_DISPATCH:<id>|<task>]] token to the outgoing text. We
+    // strip the token + dispatch immediately so the staff bridge never
+    // sees it (otherwise the model might re-emit a stale DISPATCH
+    // token for the same task). The cleaned text retains a `(✓
+    // dispatched)` marker so the saved transcript still shows what
+    // happened. Staff-only — non-staff sessions never see these tokens
+    // because the renderer routes @mentions only from the staff chat.
+    text = process_direct_dispatches(
+        &st,
+        &sink,
+        &sid,
+        session.user_id.as_deref(),
+        &session.title,
+        &text,
+    )
+    .await;
 
     if persist_user {
         let _ = sqlx::query(
@@ -631,6 +722,147 @@ async fn run_send_flow(
     );
 }
 
+/// Resolve + dispatch every `[[DIRECT_DISPATCH:id|task]]` token the
+/// renderer injected into the user's outgoing text (the `@AgentName`
+/// flow). Returns the cleaned text the staff bridge will actually see,
+/// with each token replaced by a small inline marker so the persisted
+/// transcript still reads sensibly. Faithful with chat.py:717-905's
+/// `_handle_direct_dispatches`.
+///
+/// Optimistic-dispatch shape: synchronous parts (resolve, ownership
+/// check, push `dispatch_ack` so the pending card renders immediately,
+/// persist target user msg, swap in the marker) run inline; the actual
+/// bridge spawn runs in a background task — same pattern as the
+/// staff-emitted `[[DISPATCH:]]` path. `dispatch_result` events flow
+/// back via SessionManager's per-session fanout.
+async fn process_direct_dispatches(
+    st: &AppState,
+    sink: &Sink,
+    staff_sid: &str,
+    staff_user_id: Option<&str>,
+    staff_title: &str,
+    text: &str,
+) -> String {
+    let direct = crate::services::dispatch::parse_direct_dispatches(text);
+    if direct.is_empty() {
+        return text.to_string();
+    }
+    // Only the staff session routes @mentions — guard against a
+    // renderer regression that leaks the token onto a non-staff send.
+    if staff_title != "Staff Agent" {
+        // Strip silently; don't dispatch.
+        return crate::services::dispatch::strip_all_tokens(text);
+    }
+
+    let mut cleaned = text.to_string();
+    for d in direct {
+        let target: Option<Session> = sqlx::query_as::<_, Session>(
+            "SELECT * FROM sessions WHERE id = ?",
+        )
+        .bind(&d.target_id)
+        .fetch_optional(&st.auth.pool)
+        .await
+        .ok()
+        .flatten();
+        let allowed = match (&target, staff_user_id) {
+            (Some(t), Some(uid)) => t.user_id.as_deref().is_none_or(|tu| tu == uid),
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+
+        // Replace the raw token with a status marker. Faithful with
+        // the "(✓ dispatched)" / "(✗ dispatch failed)" markers the
+        // Python pipeline writes.
+        let raw_token = format!(
+            "[[DIRECT_DISPATCH:{}|{}{}]]",
+            d.target_id,
+            d.task,
+            d.extra.as_deref().map(|e| format!("||{e}")).unwrap_or_default()
+        );
+        let marker = if target.is_none() {
+            " (✗ dispatch failed)"
+        } else if !allowed {
+            " (✗ not your agent)"
+        } else {
+            " (✓ dispatched)"
+        };
+        // Replace the FIRST occurrence (multiple identical tokens
+        // would each get their own marker on subsequent iterations).
+        if let Some(pos) = cleaned.find(&raw_token) {
+            cleaned.replace_range(pos..pos + raw_token.len(), marker);
+        }
+
+        // ── Optimistic ack: card flips to pending immediately ──
+        let display = d.target_id.chars().take(8).collect::<String>();
+        let (ack_success, ack_message) = match (&target, allowed) {
+            (None, _) => (false, format!("Agent `{display}…` not found")),
+            (Some(_), false) => (false, "Dispatch refused — that agent isn't yours.".to_string()),
+            (Some(_), true) => (true, "Dispatched directly via @mention".to_string()),
+        };
+        send_json(
+            sink,
+            json!({
+                "type": "dispatch_ack",
+                "target_id": d.target_id,
+                "task": d.task,
+                "success": ack_success,
+                "message": ack_message,
+            }),
+        )
+        .await;
+
+        if !ack_success {
+            continue;
+        }
+        let Some(target) = target else { continue };
+
+        let full_task = match &d.extra {
+            Some(extra) if !extra.is_empty() => {
+                format!("{}\n\nAdditional context:\n{extra}", d.task)
+            }
+            _ => d.task.clone(),
+        };
+
+        // Persist the dispatched task as a user message on the target.
+        let _ = sqlx::query(
+            "INSERT INTO messages (id,session_id,role,content,cost_usd,timestamp) \
+             VALUES (?,?,?,?,0.0,?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&target.id)
+        .bind("user")
+        .bind(json!([{"type":"text","text":full_task}]).to_string())
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&st.auth.pool)
+        .await;
+
+        // Background bridge run. dispatch_result + live target stream
+        // flow back via SessionManager fanout (subscribed on the WS
+        // handler's subscribe path).
+        let pool = st.auth.pool.clone();
+        let sm = st.sm;
+        let staff_sid_owned = staff_sid.to_string();
+        let target_owned = target.clone();
+        let task_for_card = d.task.clone();
+        tokio::spawn(async move {
+            run_dispatched_task(
+                pool,
+                sm,
+                staff_sid_owned,
+                target_owned,
+                full_task,
+                task_for_card,
+            )
+            .await;
+        });
+    }
+
+    // Belt-and-suspenders: strip any lingering token shapes (e.g.
+    // malformed/no-match cases the replace_range missed) so the bridge
+    // never sees raw [[DIRECT_DISPATCH:]] syntax.
+    crate::services::dispatch::strip_all_tokens(&cleaned)
+}
+
 /// Process every dispatch-style token the staff agent emitted in its
 /// assistant text. Faithful with `chat.py:2682-2793`:
 ///   • `[[READ_AGENT:id|N]]` — fetch N recent target messages, persist
@@ -926,15 +1158,28 @@ async fn run_dispatched_task(
         ))),
         other => {
             let _ = sm.update_status(&pool, &target_id, "idle").await;
+            let summary =
+                format!("Cannot dispatch: agent uses unsupported tool `{other}`.");
             persist_dispatch_result(
                 &pool,
                 &staff_sid,
                 &target_id,
                 &task_for_card,
                 false,
-                &format!("Cannot dispatch: agent uses unsupported tool `{other}`."),
+                &summary,
             )
             .await;
+            sm.send_to_session_ws(
+                &staff_sid,
+                json!({
+                    "type": "dispatch_result",
+                    "session_id": staff_sid,
+                    "target_id": target_id,
+                    "task": task_for_card,
+                    "success": false,
+                    "summary": summary,
+                }),
+            );
             return;
         }
     };
@@ -943,15 +1188,27 @@ async fn run_dispatched_task(
         Ok(rx) => rx,
         Err(e) => {
             let _ = sm.update_status(&pool, &target_id, "error").await;
+            let summary = format!("Bridge failed to start: {e}");
             persist_dispatch_result(
                 &pool,
                 &staff_sid,
                 &target_id,
                 &task_for_card,
                 false,
-                &format!("Bridge failed to start: {e}"),
+                &summary,
             )
             .await;
+            sm.send_to_session_ws(
+                &staff_sid,
+                json!({
+                    "type": "dispatch_result",
+                    "session_id": staff_sid,
+                    "target_id": target_id,
+                    "task": task_for_card,
+                    "success": false,
+                    "summary": summary,
+                }),
+            );
             return;
         }
     };
@@ -969,10 +1226,15 @@ async fn run_dispatched_task(
     let mut new_claude_sid: Option<String> = None;
 
     while let Some(ev) = rx.recv().await {
-        // Phase-3 follow-up: per-session WS fanout so a viewer watching
-        // the dispatched agent's chat sees the stream live. For now the
-        // events are only persisted (the agent's own /messages endpoint
-        // picks them up on reload).
+        // Mirror the target's stream live to any viewer of that
+        // session's chat (so dispatching to a visible agent updates its
+        // own bubble in real time, just like a user-initiated send).
+        let mut payload = ev.to_json();
+        if let Value::Object(ref mut m) = payload {
+            m.insert("session_id".into(), json!(target_id));
+        }
+        sm.send_to_session_ws(&target_id, payload);
+
         match &ev {
             BridgeEvent::Init { claude_session_id, model, .. } => {
                 if claude_session_id.is_some() {
@@ -1064,6 +1326,20 @@ async fn run_dispatched_task(
     };
     persist_dispatch_result(&pool, &staff_sid, &target_id, &task_for_card, true, &preview)
         .await;
+    // Live push to the staff WS so the pending card resolves
+    // immediately. Persistence above is the on-reload backstop;
+    // this is the live UX.
+    sm.send_to_session_ws(
+        &staff_sid,
+        json!({
+            "type": "dispatch_result",
+            "session_id": staff_sid,
+            "target_id": target_id,
+            "task": task_for_card,
+            "success": true,
+            "summary": preview,
+        }),
+    );
 }
 
 /// Persist a `system`-role `dispatch_result` message on the staff
