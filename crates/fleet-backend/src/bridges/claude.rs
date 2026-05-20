@@ -299,8 +299,10 @@ impl ClaudeBridge {
         }
     }
 
-    /// Faithful `_build_command` (minus `--mcp-config`, Phase 4).
-    pub fn build_command(&self, message: &str) -> Vec<String> {
+    /// Faithful `_build_command`. `mcp_config_path`, when set, becomes
+    /// `--mcp-config <path>` so the agent spawns the configured MCP
+    /// servers alongside its built-in tools.
+    pub fn build_command(&self, message: &str, mcp_config_path: Option<&str>) -> Vec<String> {
         let mut c = vec![
             "claude".into(),
             "-p".into(),
@@ -329,6 +331,10 @@ impl ClaudeBridge {
             c.push("--tools".into());
             c.push(String::new());
         }
+        if let Some(path) = mcp_config_path {
+            c.push("--mcp-config".into());
+            c.push(path.to_string());
+        }
         match self.permission_mode.as_str() {
             "bypassPermissions" | "dangerouslySkipPermissions" => {
                 c.push("--dangerously-skip-permissions".into())
@@ -343,13 +349,89 @@ impl ClaudeBridge {
         c
     }
 
+    /// Build a `--mcp-config` JSON blob from the user's MCP registry.
+    /// Caller writes the result to a temp file and passes its path to
+    /// `build_command`. Returns None when the registry is empty so we
+    /// skip the flag entirely (claude defaults to no MCPs).
+    pub fn build_mcp_config(&self) -> Option<serde_json::Value> {
+        use crate::services::{mcp_registry, mcp_secrets};
+        let entries = mcp_registry::list_all();
+        if entries.is_empty() {
+            return None;
+        }
+        let mut servers = serde_json::Map::new();
+        for (name, cfg) in entries {
+            // Splice the OAuth bearer (when present) into the headers
+            // for http/sse servers — same shape Gemini's registry-to-
+            // ACP mapper uses.
+            let mut spliced = cfg.clone();
+            if let Some(t) = spliced.get("type").and_then(|v| v.as_str()) {
+                if matches!(t, "http" | "sse") {
+                    if let Some(secret) = mcp_secrets::get(&name) {
+                        if let Some(tok) = secret.access_token {
+                            let token_type = secret
+                                .extra
+                                .get("token_type")
+                                .and_then(|v| v.as_str())
+                                .map(|s| {
+                                    if s.to_lowercase() == "bearer" {
+                                        "Bearer".to_string()
+                                    } else {
+                                        s.to_string()
+                                    }
+                                })
+                                .unwrap_or_else(|| "Bearer".to_string());
+                            let headers = spliced
+                                .get_mut("headers")
+                                .and_then(|h| h.as_object_mut())
+                                .cloned();
+                            let mut headers = headers.unwrap_or_default();
+                            headers.insert(
+                                "Authorization".into(),
+                                serde_json::Value::String(format!("{token_type} {tok}")),
+                            );
+                            if let Some(obj) = spliced.as_object_mut() {
+                                obj.insert(
+                                    "headers".into(),
+                                    serde_json::Value::Object(headers),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            servers.insert(name, spliced);
+        }
+        Some(serde_json::json!({ "mcpServers": servers }))
+    }
+
     /// Spawn + stream parsed events over an mpsc receiver (faithful
     /// `send_message`: status running → events → stderr-on-error → status done).
     pub async fn send_message(
         &self,
         message: &str,
     ) -> anyhow::Result<tokio::sync::mpsc::Receiver<BridgeEvent>> {
-        let cmd = self.build_command(message);
+        // Materialize the user's MCP registry to a temp file (when
+        // non-empty) so claude spawns those servers alongside its
+        // built-in tools. Leaks the temp file until the process exits
+        // — claude CLI needs to read it after we return from spawn.
+        // OS cleans up temp files at process exit; the leak is bounded
+        // by per-turn invocations.
+        let mcp_cfg_path: Option<String> = match self.build_mcp_config() {
+            Some(value) => {
+                let mut tmp = std::env::temp_dir();
+                tmp.push(format!("fleetify-mcp-{}.json", uuid::Uuid::new_v4()));
+                match std::fs::write(&tmp, value.to_string()) {
+                    Ok(_) => Some(tmp.to_string_lossy().into_owned()),
+                    Err(e) => {
+                        tracing::warn!(target: "claude", "mcp_config write failed: {e}; running without MCPs");
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+        let cmd = self.build_command(message, mcp_cfg_path.as_deref());
         self.aborted.store(false, std::sync::atomic::Ordering::SeqCst);
         let cwd = if self.project_path.is_empty() {
             std::env::var("USERPROFILE")
@@ -543,13 +625,22 @@ mod tests {
         let mut b = ClaudeBridge::new("s", "/tmp/x");
         b.model_name = Some("claude-opus-4-7".into());
         b.permission_mode = "acceptEdits".into();
-        let c = b.build_command("hi");
+        let c = b.build_command("hi", None);
         assert_eq!(&c[..6], &[
             "claude","-p","--output-format","stream-json","--verbose",
             "--include-partial-messages"
         ]);
         assert!(c.windows(2).any(|w| w == ["--model","claude-opus-4-7"]));
         assert!(c.windows(2).any(|w| w == ["--permission-mode","acceptEdits"]));
+        assert_eq!(c.last().unwrap(), "hi");
+    }
+
+    #[test]
+    fn build_command_passes_mcp_config_path_through() {
+        let b = ClaudeBridge::new("s", "/tmp/x");
+        let c = b.build_command("hi", Some("/tmp/mcp.json"));
+        assert!(c.windows(2).any(|w| w == ["--mcp-config", "/tmp/mcp.json"]));
+        // Message is still the last arg even when --mcp-config is set.
         assert_eq!(c.last().unwrap(), "hi");
     }
 }
