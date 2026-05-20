@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/fleet-core", "crates/fleet-backend", "src-tauri"]
+members = [
+  "crates/fleet-core",
+  "crates/fleet-backend",
+  "crates/memory-mcp",
+  "src-tauri",
+]
 
 [workspace.package]
 version = "0.1.0"
