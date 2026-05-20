@@ -4,7 +4,6 @@
 //! `calculate_cost` fallback are Phase 4/3 (explicit, not silent).
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -648,18 +647,23 @@ impl ClaudeBridge {
         };
         let cmd = self.build_command(message, mcp_cfg_path.as_deref());
         self.aborted.store(false, std::sync::atomic::Ordering::SeqCst);
-        let cwd = if self.project_path.is_empty() {
+        let cwd_raw = if self.project_path.is_empty() {
             std::env::var("USERPROFILE")
                 .or_else(|_| std::env::var("HOME"))
                 .unwrap_or_else(|_| ".".into())
         } else {
             self.project_path.clone()
         };
+        // Strip Windows verbatim (`\\?\`) prefix defensively — same
+        // rationale as bridges/gemini.rs (claude-code on Windows is
+        // more tolerant than gemini-cli but PATH-resolution and
+        // CLAUDE.md auto-discovery can still misbehave with `\\?\`).
+        let cwd = fleet_core::strip_verbatim_prefix(std::path::Path::new(&cwd_raw));
 
         let mut command = tokio::process::Command::new(&cmd[0]);
         command
             .args(&cmd[1..])
-            .current_dir(PathBuf::from(cwd))
+            .current_dir(&cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = command.spawn()?;

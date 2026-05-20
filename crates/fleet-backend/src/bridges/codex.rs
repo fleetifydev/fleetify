@@ -153,13 +153,20 @@ impl CodexBridge {
             cmd.arg("-c")
                 .arg(format!("model_reasoning_effort={codex_effort}"));
         }
-        let cwd = if self.project_path.is_empty() {
+        let cwd_raw = if self.project_path.is_empty() {
             std::env::var("USERPROFILE")
                 .or_else(|_| std::env::var("HOME"))
                 .unwrap_or_else(|_| ".".to_string())
         } else {
             self.project_path.clone()
         };
+        // Strip Windows verbatim (`\\?\`) prefix — see notes in
+        // bridges/gemini.rs cold_start. Same defensive normalization
+        // for pre-existing session rows whose project_path was stored
+        // before this fix landed.
+        let cwd = fleet_core::strip_verbatim_prefix(std::path::Path::new(&cwd_raw))
+            .to_string_lossy()
+            .into_owned();
         cmd.current_dir(&cwd)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())

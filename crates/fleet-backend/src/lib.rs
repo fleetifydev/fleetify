@@ -58,6 +58,48 @@ async fn reset_stale_session_state(pool: &sqlx::SqlitePool) {
     .await;
 }
 
+/// One-shot back-fix for Windows `\\?\`-prefixed `project_path` rows
+/// stored before fleet-core's `strip_verbatim_prefix` landed at the
+/// `canonicalize` sites. Without this, gemini-cli's ACP rejects the
+/// session/new with `-32603 EISDIR` because lstat treats `\\?\C:\…`
+/// as a path with `C:` as its leaf component. No-op on non-Windows
+/// targets and on pools that don't have any verbatim-prefixed rows.
+async fn normalize_legacy_verbatim_project_paths(pool: &sqlx::SqlitePool) {
+    #[cfg(windows)]
+    {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT id, project_path FROM sessions WHERE project_path LIKE '\\\\?\\%'",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+        for (id, raw) in rows {
+            let stripped =
+                fleet_core::strip_verbatim_prefix(std::path::Path::new(&raw))
+                    .to_string_lossy()
+                    .into_owned();
+            if stripped != raw {
+                tracing::info!(
+                    target: "fleet-backend",
+                    session_id = %id,
+                    from = %raw,
+                    to = %stripped,
+                    "normalizing legacy verbatim project_path"
+                );
+                let _ = sqlx::query("UPDATE sessions SET project_path = ? WHERE id = ?")
+                    .bind(&stripped)
+                    .bind(&id)
+                    .execute(pool)
+                    .await;
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pool;
+    }
+}
+
 /// Bind `addr` and start serving on a background task. `static_dir` is the
 /// built React asset directory for single-origin serving (`None` = API only).
 pub async fn serve(
@@ -73,6 +115,7 @@ pub async fn serve(
         .unwrap_or_else(|_| format!("sqlite://{}?mode=rwc", cfg.database.path));
     let pool = db::init_pool(&db_url).await?;
     reset_stale_session_state(&pool).await;
+    normalize_legacy_verbatim_project_paths(&pool).await;
 
     let auth_cfg = Arc::new(auth::AuthConfig::from_env());
     let jwks = auth::default_jwks_cache(&auth_cfg.jwks_url);

@@ -64,7 +64,7 @@ async fn list_directory(Query(q): Query<PathQ>) -> Json<Value> {
         return Json(json!([]));
     }
     let p = PathBuf::from(raw);
-    let resolved = std::fs::canonicalize(&p).unwrap_or(p);
+    let resolved = fleet_core::canonicalize_or_keep(&p);
     if !resolved.is_dir() {
         return Json(json!([]));
     }

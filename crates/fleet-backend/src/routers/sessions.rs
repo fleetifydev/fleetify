@@ -119,7 +119,12 @@ async fn create_session(
     let is_staff = data.title.trim() == "Staff Agent";
     if !raw.is_empty() {
         let p = std::path::Path::new(&raw);
-        let resolved = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        // Strip Windows verbatim (`\\?\`) prefix — `std::fs::canonicalize`
+        // returns it on Windows, and gemini-cli's ACP rejects it with
+        // `EISDIR: illegal operation on a directory, lstat 'C:'` (verified
+        // against gemini-cli 0.42.0). Storing the normalized form keeps
+        // every downstream bridge (claude/gemini/codex) happy.
+        let resolved = fleet_core::canonicalize_or_keep(p);
         if !resolved.is_dir() {
             return Err(ApiError::BadRequest(format!(
                 "Project path does not exist or is not a directory: {raw}"
