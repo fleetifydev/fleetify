@@ -12,6 +12,7 @@ pub mod marketplace;
 pub mod mcp;
 pub mod messages;
 pub mod plugins;
+pub mod prompt;
 pub mod providers;
 pub mod runtime;
 pub mod sessions;

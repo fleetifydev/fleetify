@@ -10,6 +10,7 @@ pub mod meta_cost;
 pub mod migration;
 pub mod plugins;
 pub mod pricing;
+pub mod prompt_enhancer;
 pub mod provider_inspector;
 pub mod recall_hook;
 pub mod telemetry;
