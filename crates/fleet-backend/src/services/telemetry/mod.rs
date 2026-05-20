@@ -24,6 +24,7 @@ pub mod device_id;
 pub mod emitters;
 pub mod heartbeat;
 pub mod outbox;
+pub mod ws_client;
 
 pub use device_id::{get_or_create, DeviceInfo};
 pub use emitters::{
@@ -31,3 +32,4 @@ pub use emitters::{
     emit_status_change,
 };
 pub use heartbeat::run_heartbeat_loop;
+pub use ws_client::{run_ws_client_loop, BearerSource};
