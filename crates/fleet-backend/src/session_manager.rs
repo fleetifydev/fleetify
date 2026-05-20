@@ -123,9 +123,22 @@ impl SessionManager {
         }
     }
 
-    /// Phase 4: telemetry emitters. No-op stub now.
-    fn fire_telemetry(&self, kind: &str, session_id: &str) {
-        tracing::debug!(%kind, %session_id, "telemetry deferred to Phase 4");
+    /// Fire a telemetry event for a session lifecycle transition.
+    /// Currently dispatches `status_change` events (session_start +
+    /// session_stop live on the routers since they need extra context).
+    /// Fire-and-forget — the outbox absorbs the write and the WS client
+    /// drains it on its own schedule.
+    fn fire_status_change_telemetry(&self, session_id: &str, status: &str) {
+        let sid = session_id.to_string();
+        let st = status.to_string();
+        tokio::spawn(async move {
+            let _ = crate::services::telemetry::emit_status_change(
+                &sid,
+                &st,
+                chrono::Utc::now(),
+            )
+            .await;
+        });
     }
 
     /// Parity with `create_session`: command = `${cmd} ${args…}` from
@@ -190,7 +203,8 @@ impl SessionManager {
             .await?;
 
         tracing::info!(session_id = %id, tool = %session.tool, "session.created");
-        self.fire_telemetry("session_start", &id);
+        // session_start telemetry fires from routers::sessions::create_session
+        // where the full row is in scope (title + project_path + …).
         Ok(session)
     }
 
@@ -203,7 +217,7 @@ impl SessionManager {
             .execute(pool)
             .await?;
         self.emit_status(session_id, "stopped");
-        self.fire_telemetry("session_stop", session_id);
+        self.fire_status_change_telemetry(session_id, "stopped");
         Ok(())
     }
 
@@ -223,7 +237,7 @@ impl SessionManager {
             .execute(pool)
             .await?;
         self.emit_status(session_id, status);
-        self.fire_telemetry("status_change", session_id);
+        self.fire_status_change_telemetry(session_id, status);
         Ok(())
     }
 }
