@@ -285,7 +285,12 @@ async fn run_send_flow(
             }
             AnyBridge::OpenAI(Arc::new(b))
         }
-        "gemini" => AnyBridge::Gemini(Arc::new(GeminiBridge::new(sid.clone()))),
+        "gemini" => AnyBridge::Gemini(Arc::new(GeminiBridge::new(
+            sid.clone(),
+            session.project_path.clone(),
+            session.permission_mode.clone(),
+            session.model_name.clone(),
+        ))),
         "codex" => AnyBridge::Codex(Arc::new(CodexBridge::new(sid.clone()))),
         other => {
             send_json(

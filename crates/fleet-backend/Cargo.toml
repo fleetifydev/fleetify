@@ -26,6 +26,9 @@ async-stream = "0.3"
 futures-util = "0.3"
 regex = "1"
 open = "5"
+# Used by the Gemini bridge to resolve the `gemini` binary explicitly on
+# Windows (where PATH resolution for .cmd wrappers via Command differs).
+which = "6"
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
