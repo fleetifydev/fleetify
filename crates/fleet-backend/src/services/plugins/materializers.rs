@@ -180,8 +180,12 @@ mod tests {
     use tempfile::tempdir;
 
     fn with_home<R>(home: &Path, f: impl FnOnce() -> R) -> R {
-        // Tests run serially within the module — single shared env
-        // override OK for in-module tests.
+        // HOME / USERPROFILE are process-wide env vars; multiple
+        // modules' tests mutate them. Take the shared lock so a
+        // concurrent mcp_registry / device_id test doesn't race us.
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
         let prev = std::env::var(key).ok();
         std::env::set_var(key, home);

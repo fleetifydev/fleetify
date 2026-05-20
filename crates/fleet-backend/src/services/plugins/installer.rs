@@ -171,10 +171,53 @@ pub fn uninstall(install_id: &str) -> Result<(), InstallError> {
         return Err(InstallError::PathEscape(install_id.into()));
     }
     let dir = plugins_dir().join(install_id);
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir)?;
+    if !dir.exists() {
+        return Ok(()); // idempotent
     }
+    // Walk every materialized file BEFORE we remove the install dir
+    // so we can clean up ~/.claude/skills/<install_id>__*, …
+    // entries the user installed alongside this plugin.
+    if let Ok(m) = super::manifest::parse_plugin(&dir) {
+        for provider in &m.providers {
+            // Rebuild the materializer's `paths` list from on-disk shape
+            // by walking each provider home for `<install_id>__` prefix.
+            unmaterialize_by_prefix(provider, install_id);
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
     Ok(())
+}
+
+/// Remove every materialized artifact whose filename starts with
+/// `<install_id>__` under `<home>/.<provider>/{skills,commands,prompts}/`.
+/// Used by `uninstall` to reverse a prior `materialize`.
+fn unmaterialize_by_prefix(provider: &str, install_id: &str) {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .ok()
+        .map(|h| PathBuf::from(h).join(format!(".{provider}")));
+    let Some(home) = home else {
+        return;
+    };
+    let needle = format!("{install_id}__");
+    for subdir in ["skills", "commands", "prompts"] {
+        let d = home.join(subdir);
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for ent in rd.flatten() {
+            let name = ent.file_name().to_string_lossy().to_string();
+            if !name.starts_with(&needle) {
+                continue;
+            }
+            let p = ent.path();
+            if p.is_dir() {
+                let _ = std::fs::remove_dir_all(&p);
+            } else if p.is_file() {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+    }
 }
 
 struct RunOutput {

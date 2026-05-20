@@ -13,6 +13,8 @@ pub mod models;
 pub mod routers;
 pub mod services;
 pub mod session_manager;
+#[cfg(test)]
+pub mod test_support;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

@@ -90,9 +90,13 @@ mod tests {
     use serde_json::json;
 
     fn with_home<F: FnOnce()>(tmp: &std::path::Path, f: F) {
-        // Tests run serially within the module — this is a single shared
-        // process env override OK for in-module tests but not parallel-safe
-        // across files (we keep all mcp_registry tests in this single mod).
+        // HOME / USERPROFILE are process-wide env vars; multiple
+        // modules' tests mutate them. Serialise on a shared static
+        // mutex so a sibling module's HOME swap doesn't poison our
+        // load/save during the registry round-trip.
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         std::env::set_var("HOME", tmp);
         std::env::set_var("USERPROFILE", tmp);
         f();
