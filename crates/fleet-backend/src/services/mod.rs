@@ -4,6 +4,7 @@ pub mod activity_logger;
 pub mod auto_planner;
 pub mod builtin_templates;
 pub mod claude_history;
+pub mod clone;
 pub mod compactor;
 pub mod dispatch;
 pub mod fleet_brain;

@@ -917,25 +917,80 @@ async fn list_codex_sessions(AuthUser(_u): AuthUser, Query(q): Query<PathQ>) -> 
     Json(Value::Array(v))
 }
 
-async fn list_user_repos(AuthUser(_u): AuthUser) -> Json<Value> {
-    // Phase 2: `gh repo list --json …`. Empty list until the gh bridge lands.
-    Json(json!([]))
+async fn list_user_repos(AuthUser(_u): AuthUser) -> Result<Json<Value>, ApiError> {
+    // Pulls the user's GitHub repos via the gh CLI — inherits whatever
+    // auth state the user already configured (web login, token, SSH).
+    // Faithful with sessions.py::list_user_repos.
+    let gh = match which::which("gh") {
+        Ok(p) => p.to_string_lossy().into_owned(),
+        Err(_) => {
+            return Err(ApiError::Internal(
+                "gh CLI is not installed — install it from cli.github.com to list repos"
+                    .into(),
+            ));
+        }
+    };
+    let proc = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        tokio::process::Command::new(&gh)
+            .args([
+                "repo",
+                "list",
+                "--limit",
+                "100",
+                "--json",
+                "nameWithOwner,description,url,sshUrl,isPrivate,updatedAt",
+            ])
+            .output(),
+    )
+    .await
+    .map_err(|_| ApiError::Internal("gh repo list timed out".into()))?
+    .map_err(|e| ApiError::Internal(format!("spawn gh failed: {e}")))?;
+    if !proc.status.success() {
+        let stderr = String::from_utf8_lossy(&proc.stderr).trim().to_string();
+        let msg = if stderr.is_empty() {
+            "gh repo list failed".to_string()
+        } else {
+            stderr
+        };
+        if msg.to_lowercase().contains("authentication")
+            || msg.to_lowercase().contains("logged in")
+        {
+            return Err(ApiError::Forbidden(
+                "Not signed in to gh — run `gh auth login` in your terminal".into(),
+            ));
+        }
+        return Err(ApiError::BadRequest(msg));
+    }
+    let mut repos: Vec<Value> = serde_json::from_slice(&proc.stdout).unwrap_or_default();
+    repos.sort_by(|a, b| {
+        let av = a.get("updatedAt").and_then(|x| x.as_str()).unwrap_or("");
+        let bv = b.get("updatedAt").and_then(|x| x.as_str()).unwrap_or("");
+        bv.cmp(av)
+    });
+    Ok(Json(Value::Array(repos)))
 }
 
 #[derive(Deserialize)]
 struct CloneBody {
-    #[allow(dead_code)]
     url: String,
-    #[allow(dead_code)]
+    #[serde(default)]
     branch: Option<String>,
 }
 async fn clone_repository(
     AuthUser(_u): AuthUser,
-    Json(_b): Json<CloneBody>,
+    Json(b): Json<CloneBody>,
 ) -> Result<Json<Value>, ApiError> {
-    Err(ApiError::BadRequest(
-        "git clone is implemented in Phase 2 (worktree/clone subsystem)".into(),
-    ))
+    let result = crate::services::clone::clone_or_pull(&b.url, b.branch.as_deref()).await;
+    match result {
+        Ok((path, branch)) => Ok(Json(json!({
+            "path": path,
+            "branch": branch,
+        }))),
+        Err(crate::services::clone::CloneError::Failed(msg)) => {
+            Err(ApiError::BadRequest(msg))
+        }
+    }
 }
 
 fn dirs_home() -> String {
