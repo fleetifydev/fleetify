@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Fleetify</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #0f1115;
+        color: #e7e9ee;
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          Roboto,
+          "Helvetica Neue",
+          Arial,
+          sans-serif;
+        -webkit-font-smoothing: antialiased;
+        user-select: none;
+        cursor: default;
+        overflow: hidden;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 22px;
+        /* The splash window is frameless — draggable region lets
+           the user reposition it via standard window drag.        */
+        -webkit-app-region: drag;
+        background:
+          radial-gradient(circle at 50% 30%, rgba(124, 92, 255, 0.12), transparent 60%),
+          #0f1115;
+      }
+      .wordmark {
+        font-size: 28px;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        color: #f3f5fa;
+      }
+      .spinner {
+        width: 28px;
+        height: 28px;
+        border: 2.5px solid rgba(255, 255, 255, 0.08);
+        border-top-color: #7c5cff;
+        border-radius: 50%;
+        animation: spin 0.9s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .status {
+        font-size: 12.5px;
+        color: #8e93a3;
+        letter-spacing: 0.01em;
+        min-height: 1em;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wordmark">Fleetify</div>
+    <div class="spinner" aria-hidden="true"></div>
+    <div class="status" id="status">Starting…</div>
+    <script>
+      // Subscribe to Tauri-emitted status updates so the splash can
+      // narrate startup progress ("Connecting to fleetify.dev…",
+      // "Loading dashboard…"). withGlobalTauri = true means the
+      // global is injected synchronously; defensive null check in
+      // case the script ever loads before the runtime binding.
+      (function () {
+        var el = document.getElementById("status");
+        function setText(t) {
+          if (el && typeof t === "string" && t.length) el.textContent = t;
+        }
+        try {
+          if (window.__TAURI__ && window.__TAURI__.event) {
+            window.__TAURI__.event.listen("fleet:splash-status", function (e) {
+              setText((e && e.payload) || "");
+            });
+          }
+        } catch (_) {}
+      })();
+    </script>
+  </body>
+</html>

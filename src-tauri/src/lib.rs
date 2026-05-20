@@ -7,11 +7,23 @@ mod shell;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use base64::Engine;
 use tauri::webview::WebviewWindowBuilder;
-use tauri::WebviewUrl;
+use tauri::{Emitter, WebviewUrl};
 
 /// Boot shim reconstructing `window.electronAPI` / `window.fleetify`.
 const PRELOAD: &str = include_str!("preload.js");
+
+/// Branded splash HTML — frameless centered window shown at t=0
+/// while the backend + Vite cold-start happens behind it. Loaded
+/// via `data:text/html;base64,…` so we don't have to bundle a
+/// separate file with the renderer's dist directory.
+const SPLASH_HTML: &str = include_str!("splash.html");
+
+fn splash_url() -> String {
+    let b64 = base64::engine::general_purpose::STANDARD.encode(SPLASH_HTML);
+    format!("data:text/html;base64,{b64}")
+}
 
 fn webview_url() -> &'static str {
     if cfg!(debug_assertions) {
@@ -113,18 +125,36 @@ pub fn run() {
             // Auth module emits `fleet:auth-event` via this handle.
             shell::auth::set_app_handle(app.handle().clone());
 
-            // Build the window FIRST so we have a direct handle to
-            // clone into the backend-watch task — get_webview_window
-            // lookups from an AppHandle can race the build on some
-            // Tauri versions / platforms (especially Windows), which
-            // is why the previous "lookup-then-show" version left the
-            // window stranded. Holding the handle eliminates the race.
+            // ── Dual-window startup pattern (VS Code / Slack / Tauri docs) ──
+            // 1. Open a branded splash window IMMEDIATELY so the user
+            //    has instant visual feedback (~50ms from double-click
+            //    instead of 3–7s of nothing).
+            // 2. Build the main window hidden, pointing at the real
+            //    webview URL (Vite in debug, embedded backend in
+            //    release).
+            // 3. A background task polls the webview URL until it
+            //    answers HTTP, then hands off: main.show() →
+            //    splash.close() → main.set_focus(). The user sees
+            //    splash → main, no white/black flicker.
             //
-            // The window is hidden at creation; once axum binds
-            // 127.0.0.1:8765 the spawned task below calls
-            // `window.show()`. ERR_CONNECTION_REFUSED retry loop the
-            // webview would otherwise produce against an unbound port
-            // is never visible.
+            // The splash is a frameless 420×260 centered window loading
+            // an inlined `data:text/html;base64,…` document so we don't
+            // need to bundle a separate file with the renderer's dist
+            // directory.
+            let splash = WebviewWindowBuilder::new(
+                app,
+                "splash",
+                WebviewUrl::External(splash_url().parse().expect("valid splash url")),
+            )
+            .title("Fleetify")
+            .inner_size(420.0, 260.0)
+            .decorations(false)
+            .resizable(false)
+            .always_on_top(true)
+            .center()
+            .skip_taskbar(true)
+            .build()?;
+
             let main_window = WebviewWindowBuilder::new(
                 app,
                 "main",
@@ -141,37 +171,46 @@ pub fn run() {
             .initialization_script(PRELOAD)
             .build()?;
 
-            // Embedded backend (no child process, no health-poll).
+            // Embedded backend (no child process, no health-poll). The
+            // splash subscribes to `fleet:splash-status` events so the
+            // user sees "Starting backend…" → "Loading dashboard…"
+            // progress text as each milestone completes.
             let addr: SocketAddr = "127.0.0.1:8765".parse().unwrap();
             let sd = static_dir();
+            let splash_for_backend = splash.clone();
             tauri::async_runtime::spawn(async move {
+                let _ = splash_for_backend
+                    .emit("fleet:splash-status", "Starting backend…");
                 match fleetify_backend::serve(addr, sd).await {
                     Ok(handle) => {
                         std::mem::forget(handle);
                         tracing::info!("embedded backend up on {addr}");
+                        let _ = splash_for_backend
+                            .emit("fleet:splash-status", "Backend ready.");
                     }
                     Err(e) => {
                         tracing::error!("backend failed to start: {e}");
+                        let _ = splash_for_backend
+                            .emit("fleet:splash-status", "Backend failed to start.");
                     }
                 }
             });
 
-            // Window-reveal gate: poll the webview's target URL
-            // (Vite in debug, the embedded backend in release) until
-            // it answers HTTP — only then show + focus. Otherwise
-            // the user sees a black (no connection) → white (Vite
-            // up but bundle still compiling) flicker for several
-            // seconds while the dev server cold-starts.
-            //
-            // Any response that's NOT a connection error counts as
-            // "up" — even a 404 from a misconfigured static dir is
-            // better than blank, because the renderer can show the
-            // problem to the user. 10s wall-clock cap means a truly
-            // stuck dev server still results in a visible (broken)
-            // window instead of a perpetually-hidden process.
+            // URL-poll + handoff: wait for the webview's target URL
+            // to answer HTTP, then show main + close splash. Any
+            // response (200, 404, anything that isn't a connection
+            // error) counts as "up" — even a 404 from a misconfigured
+            // static dir is better than blank because the renderer
+            // can surface the problem. 15s wall-clock cap means a
+            // truly stuck dev server still results in a visible
+            // (broken) window instead of a perpetually-hidden
+            // process.
             let webview_url_owned: String = webview_url().to_string();
-            let win_for_reveal = main_window.clone();
+            let main_for_reveal = main_window.clone();
+            let splash_for_reveal = splash.clone();
             tauri::async_runtime::spawn(async move {
+                let _ = splash_for_reveal
+                    .emit("fleet:splash-status", "Loading dashboard…");
                 let client = reqwest::Client::builder()
                     .timeout(std::time::Duration::from_millis(500))
                     .build()
@@ -189,13 +228,23 @@ pub fn run() {
                 if !reached {
                     tracing::warn!(
                         target: "tauri-shell",
-                        "webview url {webview_url_owned} never answered within 15s — showing window anyway",
+                        "webview url {webview_url_owned} never answered within 15s — handing off anyway",
                     );
+                    let _ = splash_for_reveal
+                        .emit("fleet:splash-status", "Renderer slow to start — showing anyway.");
                 }
-                if let Err(e) = win_for_reveal.show() {
+                // Small grace period so the first frame of the React
+                // bundle paints before we swap windows — eliminates
+                // the brief white flash some users see when handoff
+                // races the React mount.
+                tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                if let Err(e) = main_for_reveal.show() {
                     tracing::warn!("show main window failed: {e}");
                 }
-                let _ = win_for_reveal.set_focus();
+                let _ = main_for_reveal.set_focus();
+                if let Err(e) = splash_for_reveal.close() {
+                    tracing::warn!("close splash window failed: {e}");
+                }
             });
 
             // Loopback bearer bridge :8770 (telemetry token source / parity).
@@ -224,11 +273,15 @@ pub fn run() {
 
             Ok(())
         })
-        .on_window_event(|_window, event| {
-            // Tear down any HEAD watchers on window destroy so app-quit
-            // doesn't leak fs watcher handles (matches main.cjs's
-            // before-quit cleanup).
-            if matches!(event, tauri::WindowEvent::Destroyed) {
+        .on_window_event(|window, event| {
+            // Tear down any HEAD watchers on MAIN-window destroy so
+            // app-quit doesn't leak fs watcher handles (matches
+            // main.cjs's before-quit cleanup). Splash window
+            // close-during-handoff must NOT trigger the teardown
+            // since the main window is still alive.
+            if matches!(event, tauri::WindowEvent::Destroyed)
+                && window.label() == "main"
+            {
                 shell::head_watcher::shutdown();
             }
         })
