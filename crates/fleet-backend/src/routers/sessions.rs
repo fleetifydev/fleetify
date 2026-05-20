@@ -135,6 +135,28 @@ async fn create_session(
         .sm
         .create_session(&st.auth.pool, st.app_cfg.as_ref(), &data, Some(&user.id))
         .await?;
+    // Cloud telemetry — record the session start.
+    let sid_owned = s.id.clone();
+    let tool_owned = s.tool.clone();
+    let model_owned = s.model_name.clone();
+    let status_owned = s.status.clone();
+    let title_owned = s.title.clone();
+    let project_owned = s.project_path.clone();
+    let started_at = chrono::DateTime::parse_from_rfc3339(&s.created_at)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|_| chrono::Utc::now());
+    tokio::spawn(async move {
+        let _ = crate::services::telemetry::emit_session_start(
+            &sid_owned,
+            &tool_owned,
+            model_owned.as_deref(),
+            &status_owned,
+            Some(&title_owned),
+            Some(&project_owned),
+            started_at,
+        )
+        .await;
+    });
     Ok(Json(s))
 }
 
@@ -190,11 +212,23 @@ async fn delete_session(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     st.sm.stop_session(&st.auth.pool, &id).await?;
-    owned(&st, &id, &user.id).await?;
+    let s = owned(&st, &id, &user.id).await?;
     sqlx::query("DELETE FROM sessions WHERE id = ?")
         .bind(&id)
         .execute(&st.auth.pool)
         .await?;
+    // Cloud telemetry — record the session stop.
+    let sid_owned = s.id.clone();
+    let tool_owned = s.tool.clone();
+    let when = chrono::Utc::now();
+    tokio::spawn(async move {
+        let _ = crate::services::telemetry::emit_session_stop(
+            &sid_owned,
+            &tool_owned,
+            when,
+        )
+        .await;
+    });
     Ok(Json(json!({"ok": true})))
 }
 
