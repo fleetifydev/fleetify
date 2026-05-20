@@ -19,6 +19,7 @@ pub mod plugins;
 pub mod pricing;
 pub mod prompt_enhancer;
 pub mod provider_inspector;
+pub mod provider_sessions;
 pub mod recall_hook;
 pub mod session_summarizer;
 pub mod staff_prompt;

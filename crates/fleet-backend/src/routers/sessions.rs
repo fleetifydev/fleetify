@@ -884,11 +884,37 @@ async fn list_claude_sessions(
         .collect();
     Json(Value::Array(v))
 }
-async fn list_gemini_sessions(AuthUser(_u): AuthUser, Query(_q): Query<PathQ>) -> Json<Value> {
-    Json(json!([]))
+async fn list_gemini_sessions(AuthUser(_u): AuthUser, Query(q): Query<PathQ>) -> Json<Value> {
+    if q.path.trim().is_empty() {
+        return Json(json!([]));
+    }
+    let path = q.path.clone();
+    let rows = tokio::task::spawn_blocking(move || {
+        crate::services::provider_sessions::list_gemini_sessions(&path)
+    })
+    .await
+    .unwrap_or_default();
+    let v: Vec<Value> = rows
+        .into_iter()
+        .map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
+        .collect();
+    Json(Value::Array(v))
 }
-async fn list_codex_sessions(AuthUser(_u): AuthUser, Query(_q): Query<PathQ>) -> Json<Value> {
-    Json(json!([]))
+async fn list_codex_sessions(AuthUser(_u): AuthUser, Query(q): Query<PathQ>) -> Json<Value> {
+    if q.path.trim().is_empty() {
+        return Json(json!([]));
+    }
+    let path = q.path.clone();
+    let rows = tokio::task::spawn_blocking(move || {
+        crate::services::provider_sessions::list_codex_sessions(&path)
+    })
+    .await
+    .unwrap_or_default();
+    let v: Vec<Value> = rows
+        .into_iter()
+        .map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
+        .collect();
+    Json(Value::Array(v))
 }
 
 async fn list_user_repos(AuthUser(_u): AuthUser) -> Json<Value> {
