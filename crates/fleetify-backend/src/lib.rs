@@ -170,22 +170,26 @@ pub async fn serve(
         tokio::spawn(services::telemetry::run_heartbeat_loop());
     }
 
-    // Ensure the 3 Fleet stdio MCP servers (fleet-memory-mcp /
-    // fleet-dispatch-mcp / fleet-reveng-mcp) are registered in
-    // ~/.fleetify/mcp_servers.json. Idempotent — user-customised
-    // entries are preserved. Skipped quietly when running with
-    // FLEET_DB_URL=sqlite::memory: (test env) to keep tests
-    // hermetic.
+    // Fleet built-in MCP servers (fleet_memory / fleet_dispatch /
+    // fleet_reveng) are NOT seeded into ~/.fleetify/mcp_servers.json.
+    // ClaudeBridge::builtin_mcp_config splices them into the per-spawn
+    // --mcp-config JSON instead, so the user-facing /api/mcp/servers
+    // list shows ONLY the MCPs the user explicitly added — matching
+    // the Python sdk_bridge.py behaviour where builtins live in-process
+    // and never appear in the persisted registry. One-shot migration
+    // strips stale `builtin: true` rows from registries written by
+    // older builds so upgrades don't leave the user with phantom MCPs
+    // they can't delete from the UI.
     if std::env::var("FLEET_DB_URL")
         .ok()
         .as_deref()
         .unwrap_or("")
         .ne("sqlite::memory:")
     {
-        services::mcp_registry::ensure_fleet_builtins();
+        services::mcp_registry::purge_legacy_builtin_seeds();
     }
 
-    tracing::info!("fleet-backend listening on http://{local_addr}");
+    tracing::info!("fleetify-backend listening on http://{local_addr}");
     Ok(ServerHandle {
         local_addr,
         shutdown_tx: Some(shutdown_tx),

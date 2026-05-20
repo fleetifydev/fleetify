@@ -513,8 +513,12 @@ impl ClaudeBridge {
             c.push(staff_subagents_json().to_string());
         }
         if let Some(path) = mcp_config_path {
-            c.push("--mcp-config".into());
-            c.push(path.to_string());
+            // `=` form prevents the claude CLI from variadic-slurping
+            // subsequent positional args. `--mcp-config <configs...>`
+            // would otherwise consume the trailing prompt as a second
+            // MCP path (`C:\<cwd>\<message>` → "MCP config file not
+            // found" error). Using `=` pins exactly one value.
+            c.push(format!("--mcp-config={path}"));
         }
         match self.permission_mode.as_str() {
             "bypassPermissions" | "dangerouslySkipPermissions" => {
@@ -530,33 +534,28 @@ impl ClaudeBridge {
         c
     }
 
-    /// Build a `--mcp-config` JSON blob from the user's MCP registry,
-    /// filtered + spliced for THIS session's role. Returns None when
-    /// no servers qualify (skip the `--mcp-config` flag entirely).
+    /// Build a `--mcp-config` JSON blob for this spawn.
     ///
-    /// Filtering — faithful to `sdk_bridge.py:240-360`:
-    ///   • `fleet_memory`  — both staff and non-staff (project memory).
-    ///   • `fleet_dispatch` — non-staff only (staff has the `[[DISPATCH:]]`
-    ///     text protocol; mounting fleet_dispatch on staff confuses the
-    ///     model into trying to call the MCP tool instead of emitting
-    ///     the text token).
-    ///   • `fleet_reveng`   — only when `agent_template == "reverse_engineering"`
-    ///     (Python equivalent checks `tpl.extra_mcp_servers`).
-    ///   • Everything else (user-registered http/sse/stdio servers) —
-    ///     always included; the user opted them in explicitly.
+    /// Faithful with sdk_bridge.py: the user-facing
+    /// `~/.fleetify/mcp_servers.json` registry stores ONLY the MCPs
+    /// the user explicitly added (http/sse/stdio). The Fleet built-in
+    /// stdio servers (`fleet_memory`, `fleet_dispatch`,
+    /// `fleet_reveng`) are NEVER persisted there — they're spliced
+    /// in-process here, per spawn, just like sdk_bridge.py wires them
+    /// at session-create time. That keeps the renderer's MCP list
+    /// clean (no auto-injected defaults the user can't remove) and
+    /// matches the Python original byte-for-byte.
     ///
-    /// Per-server isolation — each splice attempt is wrapped in a
-    /// `std::panic::catch_unwind`-equivalent (here just a defensive
-    /// match that swallows malformed entries) so one bad MCP entry
-    /// (missing token, malformed cfg) can't drop the entire
-    /// `mcpServers` map and turn every tool name in the system prompt
-    /// into a hallucination.
+    /// Role / template gating, same as `sdk_bridge.py:294-357`:
+    ///   • `fleet_memory`   — always mounted (staff + non-staff).
+    ///   • `fleet_dispatch` — non-staff only.
+    ///   • `fleet_reveng`   — only when `agent_template == "reverse_engineering"`.
+    ///
+    /// Per-server isolation around the splice: one malformed user
+    /// entry can't drop the whole `mcpServers` map and turn every
+    /// advertised tool name into a hallucination.
     pub fn build_mcp_config(&self) -> Option<serde_json::Value> {
         use crate::services::{mcp_registry, mcp_secrets};
-        let entries = mcp_registry::list_all();
-        if entries.is_empty() {
-            return None;
-        }
 
         let template_reveng = matches!(
             self.agent_template.as_deref(),
@@ -565,29 +564,10 @@ impl ClaudeBridge {
 
         let mut servers = serde_json::Map::new();
         let mut mounted: Vec<String> = Vec::new();
-        let mut skipped: Vec<String> = Vec::new();
         let mut failed: Vec<String> = Vec::new();
 
-        for (name, cfg) in entries {
-            // ── Role/template filtering ──
-            match name.as_str() {
-                "fleet_memory" => { /* always mount */ }
-                "fleet_dispatch" => {
-                    if self.is_staff {
-                        skipped.push(name.clone());
-                        continue;
-                    }
-                }
-                "fleet_reveng" => {
-                    if !template_reveng {
-                        skipped.push(name.clone());
-                        continue;
-                    }
-                }
-                _ => { /* user MCP — opted in explicitly */ }
-            }
-
-            // ── Per-server splice, isolated so one failure can't poison the rest ──
+        // ── 1. User-added entries from the registry ──
+        for (name, cfg) in mcp_registry::list_all() {
             match splice_server_config(
                 &name,
                 &cfg,
@@ -605,22 +585,38 @@ impl ClaudeBridge {
                         mcp = %name,
                         session_id = %self.session_id,
                         is_staff = self.is_staff,
-                        "skipping malformed MCP entry: {reason}"
+                        "skipping malformed user MCP entry: {reason}"
                     );
                 }
             }
         }
 
-        // Single line that answers "did fleet_dispatch / fleet_memory
-        // actually load for this turn?" without spelunking. Mirrors
-        // the `sdk.send mcp_mounted=…` log in sdk_bridge.py.
+        // ── 2. Fleet built-in MCPs (spawn-time only, never in registry) ──
+        let want_dispatch = !self.is_staff;
+        let want_reveng = template_reveng;
+        if let Some(cfg) = self.builtin_mcp_config("fleet_memory") {
+            servers.insert("fleet_memory".into(), cfg);
+            mounted.push("fleet_memory".into());
+        }
+        if want_dispatch {
+            if let Some(cfg) = self.builtin_mcp_config("fleet_dispatch") {
+                servers.insert("fleet_dispatch".into(), cfg);
+                mounted.push("fleet_dispatch".into());
+            }
+        }
+        if want_reveng {
+            if let Some(cfg) = self.builtin_mcp_config("fleet_reveng") {
+                servers.insert("fleet_reveng".into(), cfg);
+                mounted.push("fleet_reveng".into());
+            }
+        }
+
         tracing::info!(
             target: "claude",
             session_id = %self.session_id,
             is_staff = self.is_staff,
             agent_template = self.agent_template.as_deref().unwrap_or(""),
             mcp_mounted = ?mounted,
-            mcp_skipped = ?skipped,
             mcp_failed = ?failed,
             "mcp_config built",
         );
@@ -629,6 +625,48 @@ impl ClaudeBridge {
             return None;
         }
         Some(serde_json::json!({ "mcpServers": servers }))
+    }
+
+    /// Build the stdio config blob for one Fleet builtin MCP. The
+    /// command path is resolved via `current_exe().parent()` →
+    /// `which::which()` → bare-basename fallback so dev (target/debug)
+    /// and Tauri-bundled installs both work without PATH manipulation.
+    /// Env carries the loopback secret + session id so the MCP can
+    /// POST back to `/api/internal/dispatch` and address its caller.
+    fn builtin_mcp_config(&self, name: &str) -> Option<serde_json::Value> {
+        use crate::services::mcp_registry;
+        let basename = match name {
+            "fleet_memory" => "fleet-memory-mcp",
+            "fleet_dispatch" => "fleet-dispatch-mcp",
+            "fleet_reveng" => "fleet-reveng-mcp",
+            _ => return None,
+        };
+        let command = mcp_registry::resolve_builtin_path(basename);
+        let mut env = serde_json::Map::new();
+        env.insert(
+            "FLEETIFY_SESSION_ID".into(),
+            serde_json::Value::String(self.session_id.clone()),
+        );
+        if let Ok(secret) = std::env::var("FLEETIFY_INTERNAL_SECRET") {
+            env.insert(
+                "FLEETIFY_INTERNAL_SECRET".into(),
+                serde_json::Value::String(secret),
+            );
+        }
+        env.insert(
+            "FLEETIFY_BACKEND_URL".into(),
+            serde_json::Value::String(
+                std::env::var("FLEETIFY_BACKEND_URL")
+                    .unwrap_or_else(|_| "http://127.0.0.1:8765".into()),
+            ),
+        );
+        Some(serde_json::json!({
+            "type": "stdio",
+            "command": command,
+            "args": [],
+            "env": serde_json::Value::Object(env),
+            "builtin": true,
+        }))
     }
 
     /// Which `mcp__<server>__<tool>` names should this session's system
@@ -895,7 +933,12 @@ mod tests {
     fn build_command_passes_mcp_config_path_through() {
         let b = ClaudeBridge::new("s", "/tmp/x");
         let c = b.build_command("hi", Some("/tmp/mcp.json"));
-        assert!(c.windows(2).any(|w| w == ["--mcp-config", "/tmp/mcp.json"]));
+        // `=` form prevents the claude CLI's variadic --mcp-config
+        // <configs...> from slurping the trailing prompt as a second
+        // MCP path. See the comment in build_command itself.
+        assert!(c.iter().any(|a| a == "--mcp-config=/tmp/mcp.json"));
+        assert!(!c.iter().any(|a| a == "--mcp-config"),
+            "must NOT use space-separated form which slurps positional message");
         // Message is still the last arg even when --mcp-config is set.
         assert_eq!(c.last().unwrap(), "hi");
     }

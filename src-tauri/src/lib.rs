@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use tauri::webview::WebviewWindowBuilder;
-use tauri::WebviewUrl;
+use tauri::{Manager, WebviewUrl};
 
 /// Boot shim reconstructing `window.electronAPI` / `window.fleetify`.
 const PRELOAD: &str = include_str!("preload.js");
@@ -114,15 +114,39 @@ pub fn run() {
             shell::auth::set_app_handle(app.handle().clone());
 
             // Embedded backend (no child process, no health-poll).
+            // The window is built `.visible(false)` below; once
+            // `serve()` returns Ok we flip it to visible so the user
+            // never sees the ERR_CONNECTION_REFUSED retry loop the
+            // webview produces against an unbound 127.0.0.1:8765.
+            //
+            // Failure path: still call show() so the user can read
+            // any in-renderer error toast rather than staring at a
+            // perpetually-hidden window with no feedback.
             let addr: SocketAddr = "127.0.0.1:8765".parse().unwrap();
             let sd = static_dir();
+            let app_handle_for_serve = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                match fleetify_backend::serve(addr, sd).await {
+                let result = fleetify_backend::serve(addr, sd).await;
+                let outcome = match &result {
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(e.to_string()),
+                };
+                if let Some(win) = app_handle_for_serve.get_webview_window("main") {
+                    if let Err(e) = win.show() {
+                        tracing::warn!("show main window failed: {e}");
+                    }
+                }
+                match result {
                     Ok(handle) => {
                         std::mem::forget(handle);
                         tracing::info!("embedded backend up on {addr}");
                     }
-                    Err(e) => tracing::error!("backend failed to start: {e}"),
+                    Err(_) => {
+                        tracing::error!(
+                            "backend failed to start: {}",
+                            outcome.err().unwrap_or_default()
+                        );
+                    }
                 }
             });
 
@@ -162,6 +186,15 @@ pub fn run() {
             // IPC commands). Without this, Tauri's native frame stacks
             // on top of the renderer's strip and we get two bars.
             .decorations(false)
+            // Keep the window hidden until the embedded axum server
+            // binds 127.0.0.1:8765 — otherwise the webview opens
+            // first, hits ERR_CONNECTION_REFUSED, and shows a black
+            // background for 0.5-2s while the backend goes through
+            // pool init + JWKS fetch + MCP registry seed. The
+            // spawned `serve()` task above calls `win.show()` once
+            // it has a bound listener (or on bind failure, so the
+            // user isn't stranded with an invisible window).
+            .visible(false)
             .initialization_script(PRELOAD)
             .build()?;
 

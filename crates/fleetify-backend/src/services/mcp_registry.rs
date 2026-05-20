@@ -91,14 +91,12 @@ pub fn get(name: &str) -> Option<Value> {
 pub const FLEET_BUILTIN_NAMES: &[&str] =
     &["fleet_memory", "fleet_dispatch", "fleet_reveng"];
 
-fn builtin_basename(name: &str) -> Option<&'static str> {
-    match name {
-        "fleet_memory" => Some("fleet-memory-mcp"),
-        "fleet_dispatch" => Some("fleet-dispatch-mcp"),
-        "fleet_reveng" => Some("fleet-reveng-mcp"),
-        _ => None,
-    }
-}
+// ClaudeBridge::builtin_mcp_config now owns the basename→binary
+// mapping inline. Older versions exposed `builtin_basename` here for
+// `ensure_fleet_builtins` to seed the registry; both have been
+// retired (builtins are spawn-time-only) but the constant + the
+// resolve_builtin_path helper below stay because integration tests +
+// the bridge still rely on them.
 
 /// Resolve a builtin MCP binary to an absolute path so claude/gemini/
 /// codex CLIs can spawn it without depending on PATH. Resolution order:
@@ -136,36 +134,36 @@ pub fn resolve_builtin_path(basename: &str) -> String {
     basename.to_string()
 }
 
-/// Ensure Fleet's 3 stdio MCP servers are present in the registry.
-/// Idempotent: any name already registered (even by the user
-/// pointing at a custom binary) is left alone. New entries resolve
-/// the `fleet-<name>-mcp` binary to an absolute path via
-/// `resolve_builtin_path` so the claude CLI can spawn it regardless
-/// of PATH state.
-pub fn ensure_fleet_builtins() {
+/// One-shot migration: strip any `"builtin": true` rows from a
+/// pre-existing `~/.fleetify/mcp_servers.json`. Older builds
+/// auto-seeded the 3 Fleet MCPs into the user registry, which
+/// polluted the renderer's MCP list with entries the user can't
+/// remove. The current bridge splices builtins in-process per spawn
+/// (matching sdk_bridge.py), so any persisted builtin row is stale.
+/// Idempotent + no-op on a clean registry.
+pub fn purge_legacy_builtin_seeds() {
     let mut doc = load();
-    let mut changed = false;
-    for name in FLEET_BUILTIN_NAMES {
-        if doc.mcp_servers.contains_key(*name) {
-            continue;
+    let before = doc.mcp_servers.len();
+    doc.mcp_servers.retain(|name, cfg| {
+        // Drop rows that look like our old auto-seed AND match a known
+        // builtin name. A user manually adding a stdio entry with the
+        // same name (custom binary path) shouldn't get nuked — we
+        // require both the `builtin: true` marker AND the name match.
+        let is_builtin_seed = cfg
+            .get("builtin")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if is_builtin_seed && FLEET_BUILTIN_NAMES.contains(&name.as_str()) {
+            return false;
         }
-        let Some(base) = builtin_basename(name) else {
-            continue;
-        };
-        let command = resolve_builtin_path(base);
-        doc.mcp_servers.insert(
-            (*name).to_string(),
-            serde_json::json!({
-                "type": "stdio",
-                "command": command,
-                "args": [],
-                "env": {},
-                "builtin": true,
-            }),
+        true
+    });
+    if doc.mcp_servers.len() != before {
+        tracing::info!(
+            target: "fleetify-backend",
+            removed = before - doc.mcp_servers.len(),
+            "purging legacy builtin MCP seed rows from user registry",
         );
-        changed = true;
-    }
-    if changed {
         let _ = save(&doc);
     }
 }
@@ -212,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn ensure_fleet_builtins_is_idempotent_and_preserves_user_entries() {
+    fn purge_legacy_builtin_seeds_removes_only_builtin_marked_rows() {
         let _g = crate::test_support::home_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
@@ -220,48 +218,54 @@ mod tests {
         std::env::set_var("HOME", tmp.path());
         std::env::set_var("USERPROFILE", tmp.path());
 
-        // Empty registry → first call should add all 3.
-        ensure_fleet_builtins();
-        let all = list_all();
-        for n in FLEET_BUILTIN_NAMES {
-            assert!(all.contains_key(*n), "missing {n}");
-            assert_eq!(all[*n]["type"], "stdio");
-            assert_eq!(all[*n]["builtin"], true);
-        }
-
-        // User customises fleet_memory's command.
-        let custom = json!({
-            "type": "stdio",
-            "command": "/custom/path/memory",
-            "args": ["--debug"],
-            "env": {}
-        });
+        // Seed a registry that mimics what an older build wrote: the
+        // 3 fleet builtins with `builtin: true`, plus a user-added
+        // server with the same `fleet_memory` name but no marker
+        // (custom binary path), plus a totally unrelated user entry.
+        // The migration should ONLY drop the marker-bearing builtin
+        // rows — user customisations must survive.
         let mut doc = load();
-        doc.mcp_servers.insert("fleet_memory".into(), custom.clone());
+        for n in FLEET_BUILTIN_NAMES {
+            doc.mcp_servers.insert(
+                (*n).to_string(),
+                json!({
+                    "type": "stdio",
+                    "command": format!("fleet-{n}-mcp"),
+                    "args": [],
+                    "env": {},
+                    "builtin": true,
+                }),
+            );
+        }
+        // Same name as a builtin, but NO `builtin: true` marker → user
+        // pointed at a custom binary; must be preserved.
+        doc.mcp_servers.insert(
+            "fleet_custom".to_string(),
+            json!({
+                "type": "stdio",
+                "command": "/custom/path/mcp",
+                "args": ["--debug"],
+                "env": {},
+            }),
+        );
+        // Totally unrelated http MCP — must be preserved.
+        doc.mcp_servers.insert(
+            "github".to_string(),
+            json!({"type":"http","url":"https://example/mcp"}),
+        );
         save(&doc).unwrap();
 
-        // Second call should leave the user-customised entry alone.
-        ensure_fleet_builtins();
+        purge_legacy_builtin_seeds();
         let all = list_all();
-        assert_eq!(all["fleet_memory"]["command"], "/custom/path/memory");
-        // Other two are resolved via `resolve_builtin_path` — in the test
-        // env the binary may or may not exist next to the test runner;
-        // check we still end with a non-empty command string that
-        // either ends in the expected basename (resolved) or equals
-        // the basename verbatim (fallback). The shape contract — a
-        // string command for a stdio server — is what matters.
-        for (name, base) in
-            [("fleet_dispatch", "fleet-dispatch-mcp"), ("fleet_reveng", "fleet-reveng-mcp")]
-        {
-            let cmd = all[name]["command"]
-                .as_str()
-                .unwrap_or_else(|| panic!("{name} command must be a string"));
-            assert!(!cmd.is_empty(), "{name} command must not be empty");
-            let stem = std::path::Path::new(cmd)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(cmd);
-            assert_eq!(stem, base, "{name} should resolve to {base}");
+        for n in FLEET_BUILTIN_NAMES {
+            assert!(!all.contains_key(*n), "{n} should have been purged");
         }
+        assert!(all.contains_key("fleet_custom"), "user MCP must survive");
+        assert!(all.contains_key("github"), "unrelated MCP must survive");
+
+        // Idempotent: second call is a no-op (and doesn't error).
+        purge_legacy_builtin_seeds();
+        let all2 = list_all();
+        assert_eq!(all2.len(), all.len());
     }
 }
