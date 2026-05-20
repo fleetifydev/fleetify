@@ -5,11 +5,14 @@
 //! Wire format: line-delimited JSON-RPC 2.0 on stdin/stdout. Same
 //! shape as fleet-memory-mcp.
 //!
-//! Env (set by the bridge at spawn):
-//!   FLEETIFY_SESSION_ID    — caller session id (used for rate-limit
-//!                            keying + self-dispatch prevention)
-//!   FLEETIFY_BEARER        — Fleetify access token
-//!   FLEETIFY_BACKEND_URL   — defaults to http://127.0.0.1:8765
+//! Env (set by ClaudeBridge::build_mcp_config at spawn):
+//!   FLEETIFY_SESSION_ID       — caller session id (used for rate-
+//!                                limit keying + self-dispatch refuse)
+//!   FLEETIFY_INTERNAL_SECRET  — loopback secret shared with the
+//!                                in-process backend; authenticates
+//!                                the dispatch POST without exposing
+//!                                the user's JWT to a subprocess.
+//!   FLEETIFY_BACKEND_URL      — defaults to http://127.0.0.1:8765
 //!
 //! Tool exposed:
 //!   dispatch_to_agent(agent: <uuid|name>, task: <string>)
@@ -162,8 +165,8 @@ fn check_rate(session_id: &str) -> Result<(), String> {
 async fn dispatch_to_agent(args: Value) -> Result<Value, String> {
     let caller = std::env::var("FLEETIFY_SESSION_ID")
         .map_err(|_| "FLEETIFY_SESSION_ID env var missing".to_string())?;
-    let bearer = std::env::var("FLEETIFY_BEARER")
-        .map_err(|_| "FLEETIFY_BEARER env var missing".to_string())?;
+    let secret = std::env::var("FLEETIFY_INTERNAL_SECRET")
+        .map_err(|_| "FLEETIFY_INTERNAL_SECRET env var missing".to_string())?;
     let backend = env_or("FLEETIFY_BACKEND_URL", "http://127.0.0.1:8765");
 
     let agent_ref = args
@@ -183,62 +186,36 @@ async fn dispatch_to_agent(args: Value) -> Result<Value, String> {
     }
     check_rate(&caller)?;
 
-    // Resolve agent_ref → session_id via the local /api/sessions list.
-    // Match by exact UUID first, then by case-insensitive title.
-    let url = format!("{backend}/api/sessions");
+    // Single round-trip to the loopback dispatch endpoint. The
+    // backend resolves agent_ref (UUID or title), ownership-checks,
+    // refuses self-dispatch, persists the target user message, and
+    // spawns the bridge run. Result events flow back to the caller's
+    // chat via the SessionManager fanout (the caller is treated as
+    // the "staff" here for routing purposes).
+    let url = format!("{backend}/api/internal/dispatch");
     let r = reqwest::Client::new()
-        .get(&url)
-        .bearer_auth(&bearer)
-        .send()
-        .await
-        .map_err(|e| format!("GET /sessions failed: {e}"))?;
-    if !r.status().is_success() {
-        return Err(format!("GET /sessions returned {}", r.status().as_u16()));
-    }
-    let sessions: Value = r
-        .json()
-        .await
-        .map_err(|e| format!("decode /sessions failed: {e}"))?;
-    let arr = sessions.as_array().ok_or("non-array sessions response")?;
-    let lower_ref = agent_ref.to_lowercase();
-    let target_id = arr
-        .iter()
-        .find_map(|s| {
-            let id = s.get("id").and_then(|v| v.as_str())?;
-            let title = s.get("title").and_then(|v| v.as_str()).unwrap_or("");
-            if id == agent_ref || title.to_lowercase() == lower_ref {
-                Some(id.to_string())
-            } else {
-                None
-            }
-        })
-        .ok_or_else(|| format!("no session matches {agent_ref:?}"))?;
-    if target_id == caller {
-        return Err("cannot dispatch to self".into());
-    }
-
-    // Inject the task as a user message into the target session via the
-    // local messages POST endpoint.
-    let msg_url = format!("{backend}/api/sessions/{target_id}/messages");
-    let r = reqwest::Client::new()
-        .post(&msg_url)
-        .bearer_auth(&bearer)
+        .post(&url)
+        .header("X-Fleet-Internal", &secret)
         .json(&json!({
-            "role": "user",
-            "content": [{ "type": "text", "text": task }]
+            "caller_session_id": caller,
+            "agent": agent_ref,
+            "task": task,
         }))
         .send()
         .await
-        .map_err(|e| format!("POST messages failed: {e}"))?;
-    if !r.status().is_success() {
+        .map_err(|e| format!("POST /api/internal/dispatch failed: {e}"))?;
+    let status = r.status();
+    if !status.is_success() {
+        let body = r.text().await.unwrap_or_default();
         return Err(format!(
-            "POST messages returned {}",
-            r.status().as_u16()
+            "/api/internal/dispatch returned {}: {}",
+            status.as_u16(),
+            body.trim()
         ));
     }
-    Ok(json!({
-        "ok": true,
-        "target_session_id": target_id,
-        "task_dispatched": task,
-    }))
+    let v: Value = r
+        .json()
+        .await
+        .map_err(|e| format!("decode dispatch response failed: {e}"))?;
+    Ok(v)
 }

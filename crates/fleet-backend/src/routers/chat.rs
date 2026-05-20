@@ -1106,6 +1106,22 @@ async fn inject_agent_context(
 /// `dispatch_result` on the staff session's broadcast channel when
 /// done (success or failure). Faithful with `_run_agent_task` minus
 /// the budget gate (Phase 3) and the dispatch-chain depth check.
+/// Internal alias used by `routers::internal::dispatch` so the loopback
+/// MCP endpoint reuses the exact same bridge-run + result-fanout logic
+/// as the staff `[[DISPATCH:]]` path. Same behaviour — the "staff"
+/// session here is whichever agent invoked the MCP tool, and its
+/// transcript receives the `dispatch_result` card.
+pub(crate) async fn run_dispatched_task_internal(
+    pool: sqlx::SqlitePool,
+    sm: &'static crate::session_manager::SessionManager,
+    caller_sid: String,
+    target: Session,
+    task: String,
+    task_for_card: String,
+) {
+    run_dispatched_task(pool, sm, caller_sid, target, task, task_for_card).await
+}
+
 async fn run_dispatched_task(
     pool: sqlx::SqlitePool,
     sm: &'static crate::session_manager::SessionManager,

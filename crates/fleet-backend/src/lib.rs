@@ -119,11 +119,32 @@ pub async fn serve(
 
     let auth_cfg = Arc::new(auth::AuthConfig::from_env());
     let jwks = auth::default_jwks_cache(&auth_cfg.jwks_url);
+    // One-shot loopback secret for the internal dispatch endpoint.
+    // 32 random bytes, hex-encoded — small enough to fit in an env
+    // var and large enough to make brute-force probing pointless.
+    // Stored in process memory only; child MCPs receive it through
+    // the env passthrough in ClaudeBridge::build_mcp_config.
+    let internal_secret = {
+        use rand::RngCore;
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        let mut s = String::with_capacity(64);
+        for b in bytes {
+            use std::fmt::Write;
+            let _ = write!(&mut s, "{b:02x}");
+        }
+        Arc::new(s)
+    };
     let state = routers::AppState {
         auth: auth::AuthState { pool, cfg: auth_cfg, jwks },
         app_cfg: Arc::new(cfg),
         sm: session_manager::session_manager(),
+        internal_secret: internal_secret.clone(),
     };
+    // Surface the secret + backend URL through env so MCP processes
+    // spawned later (by ClaudeBridge::build_mcp_config) can read them
+    // without us having to plumb AppState all the way down.
+    std::env::set_var("FLEETIFY_INTERNAL_SECRET", internal_secret.as_str());
 
     let listener = TcpListener::bind(addr).await?;
     let local_addr = listener.local_addr()?;

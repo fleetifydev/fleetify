@@ -8,6 +8,7 @@ pub mod events;
 pub mod fleet;
 pub mod fs;
 pub mod groups;
+pub mod internal;
 pub mod marketplace;
 pub mod mcp;
 pub mod messages;
@@ -32,6 +33,14 @@ pub struct AppState {
     pub auth: AuthState,
     pub app_cfg: std::sync::Arc<crate::config::AppConfig>,
     pub sm: &'static SessionManager,
+    /// One-shot loopback secret shared between the in-process backend
+    /// and its child stdio MCP servers (fleet-memory-mcp /
+    /// fleet-dispatch-mcp / fleet-reveng-mcp). Generated at startup
+    /// and injected into the MCPs' env via ClaudeBridge's
+    /// build_mcp_config. Lets `POST /api/internal/dispatch` skip JWT
+    /// auth without exposing the user's bearer to a subprocess. Not
+    /// routed past localhost — anything off-loopback ignores it.
+    pub internal_secret: std::sync::Arc<String>,
 }
 
 impl FromRef<AppState> for AuthState {

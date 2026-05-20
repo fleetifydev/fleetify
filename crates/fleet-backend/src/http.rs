@@ -7,8 +7,8 @@ use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
 use crate::routers::{
-    auth as auth_router, chat, docker, events, fleet, fs, groups, marketplace, mcp, messages,
-    plugins, prompt, providers, runtime, sessions, ssh, workflows, workspace, AppState,
+    auth as auth_router, chat, docker, events, fleet, fs, groups, internal, marketplace, mcp,
+    messages, plugins, prompt, providers, runtime, sessions, ssh, workflows, workspace, AppState,
 };
 
 /// Build the axum app. Single origin: `/healthz`, `/api/*` (auth'd),
@@ -51,9 +51,16 @@ pub fn app(state: AppState, static_dir: Option<PathBuf>) -> Router {
         .merge(workspace::router())
         .merge(prompt::router());
 
+    // Loopback-gated internal endpoints (no JWT auth — the
+    // X-Fleet-Internal header is the only authenticator). Kept off
+    // `/api` so a renderer hitting it without the header just gets
+    // 404 instead of a misleading 401.
+    let internal_api = internal::router();
+
     let routed = Router::new()
         .route("/healthz", get(healthz))
         .nest("/api", api)
+        .nest("/api/internal", internal_api)
         .merge(events::router())
         .merge(chat::router())
         .with_state(state)

@@ -337,18 +337,50 @@ fn staff_subagents_json() -> &'static serde_json::Value {
 /// entries round-trip unchanged. Returns Err with a short reason when
 /// the entry shape is broken so the caller can log a per-server skip
 /// without dropping the rest of the map.
+///
+/// Stdio servers whose name starts with `fleet_` also get the trio of
+/// env vars they need to talk back to the in-process backend:
+///   • FLEETIFY_SESSION_ID    — provided by the caller via `session_id`
+///   • FLEETIFY_INTERNAL_SECRET — pulled from the parent's env
+///   • FLEETIFY_BACKEND_URL   — defaults to http://127.0.0.1:8765
 fn splice_server_config(
-    _name: &str,
+    name: &str,
     cfg: &serde_json::Value,
     secret: &Option<crate::services::mcp_secrets::McpSecret>,
+    session_id: &str,
 ) -> Result<serde_json::Value, String> {
     let obj = cfg
         .as_object()
         .ok_or_else(|| "config is not a JSON object".to_string())?;
     let mut spliced = obj.clone();
-    let kind = spliced.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let kind: String = spliced
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
-    if matches!(kind, "http" | "sse") {
+    if kind == "stdio" && name.starts_with("fleet_") {
+        let mut env = spliced
+            .get("env")
+            .and_then(|e| e.as_object())
+            .cloned()
+            .unwrap_or_default();
+        env.entry("FLEETIFY_SESSION_ID".to_string())
+            .or_insert_with(|| serde_json::Value::String(session_id.to_string()));
+        if let Ok(secret) = std::env::var("FLEETIFY_INTERNAL_SECRET") {
+            env.entry("FLEETIFY_INTERNAL_SECRET".to_string())
+                .or_insert_with(|| serde_json::Value::String(secret));
+        }
+        env.entry("FLEETIFY_BACKEND_URL".to_string()).or_insert_with(|| {
+            serde_json::Value::String(
+                std::env::var("FLEETIFY_BACKEND_URL")
+                    .unwrap_or_else(|_| "http://127.0.0.1:8765".into()),
+            )
+        });
+        spliced.insert("env".to_string(), serde_json::Value::Object(env));
+    }
+
+    if matches!(kind.as_str(), "http" | "sse") {
         if let Some(secret) = secret {
             if let Some(tok) = &secret.access_token {
                 let token_type = secret
@@ -556,7 +588,12 @@ impl ClaudeBridge {
             }
 
             // ── Per-server splice, isolated so one failure can't poison the rest ──
-            match splice_server_config(&name, &cfg, &mcp_secrets::get(&name)) {
+            match splice_server_config(
+                &name,
+                &cfg,
+                &mcp_secrets::get(&name),
+                &self.session_id,
+            ) {
                 Ok(spliced) => {
                     servers.insert(name.clone(), spliced);
                     mounted.push(name);
