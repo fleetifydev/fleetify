@@ -152,9 +152,9 @@ pub fn list_skills_for_provider(
     all
 }
 
-/// One row from `_scan_settings_hooks` — a hook is a `{event, matcher,
-/// command}` triplet pulled out of `~/.claude/settings.json`'s `hooks`
-/// block. Event names are PreToolUse / PostToolUse / Notification etc.
+/// One row from `_flatten_hooks_block` — a hook is one handler within
+/// a `{event:[{matcher,hooks:[…]}]}` block. Faithful with the Python
+/// `ProviderItem` for hook items.
 #[derive(Debug, Clone, Serialize)]
 pub struct Hook {
     pub kind: &'static str, // "hook"
@@ -164,62 +164,92 @@ pub struct Hook {
     pub path: String,
     pub event: String,
     pub matcher: Option<String>,
+    /// Free-form handler payload — `command` for shell handlers,
+    /// `url` for webhook handlers, `prompt` for LLM-prompt handlers.
     pub command: String,
+    /// Hint to the renderer for icon / format selection ("json" |
+    /// "toml"). Matches `ProviderItem.config_format`.
+    pub config_format: &'static str,
+    pub description: Option<String>,
 }
 
-/// Walk a Claude `settings.json` `hooks` object and flatten every
-/// matcher's commands into one row each. Shape:
-///   {"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"command":"..."}]}]}}
-fn flatten_claude_hooks_block(
-    settings_path: &Path,
+/// Generic hooks-block flattener — handles both the nested
+/// `[{matcher, hooks:[{command}]}]` and the flat `[{matcher, command}]`
+/// shapes used in the wild. Faithful with Python `_flatten_hooks_block`.
+fn flatten_hooks_block(
+    block: &serde_json::Value,
+    provider: &'static str,
     tier: &'static str,
+    source_path: &Path,
+    fmt: &'static str,
 ) -> Vec<Hook> {
-    let Ok(text) = std::fs::read_to_string(settings_path) else {
-        return Vec::new();
-    };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return Vec::new();
-    };
-    let Some(hooks) = v.get("hooks").and_then(|x| x.as_object()) else {
+    let Some(hooks) = block.as_object() else {
         return Vec::new();
     };
     let mut out = Vec::new();
-    for (event, group) in hooks {
-        let Some(arr) = group.as_array() else { continue };
-        for entry in arr {
-            let Some(obj) = entry.as_object() else { continue };
+    for (event, groups) in hooks {
+        let Some(arr) = groups.as_array() else { continue };
+        for group in arr {
+            let Some(obj) = group.as_object() else { continue };
             let matcher = obj
                 .get("matcher")
                 .and_then(|x| x.as_str())
                 .map(String::from);
-            let Some(commands) = obj.get("hooks").and_then(|x| x.as_array()) else {
-                continue;
+            // Shape 1: { matcher, hooks: [...] } — Claude/Gemini convention.
+            // Shape 2: { matcher, command } directly — older Codex configs.
+            let handlers: Vec<&serde_json::Value> = if let Some(arr) =
+                obj.get("hooks").and_then(|x| x.as_array())
+            {
+                arr.iter().collect()
+            } else if obj.contains_key("command")
+                || obj.contains_key("url")
+                || obj.contains_key("prompt")
+            {
+                vec![group]
+            } else {
+                Vec::new()
             };
-            for cmd in commands {
-                let Some(c) = cmd.as_object() else { continue };
-                let command = c
+            for handler in handlers {
+                let Some(h) = handler.as_object() else { continue };
+                let command = h
                     .get("command")
+                    .or_else(|| h.get("url"))
+                    .or_else(|| h.get("prompt"))
                     .and_then(|x| x.as_str())
                     .unwrap_or("")
                     .to_string();
                 if command.is_empty() {
                     continue;
                 }
-                // Stable display name — matcher + event keeps two hooks
-                // for the same event apart in the renderer's hooks tab.
-                let name = match &matcher {
-                    Some(m) => format!("{event}: {m}"),
-                    None => event.clone(),
+                let name = match h.get("name").and_then(|x| x.as_str()) {
+                    Some(n) => n.to_string(),
+                    None => format!(
+                        "{event}:{}",
+                        matcher.as_deref().filter(|s| !s.is_empty()).unwrap_or("*")
+                    ),
+                };
+                let desc_src = command.replace('\n', " ");
+                let desc = if desc_src.chars().count() > 120 {
+                    Some(format!(
+                        "{}…",
+                        desc_src.chars().take(120).collect::<String>()
+                    ))
+                } else if desc_src.is_empty() {
+                    None
+                } else {
+                    Some(desc_src)
                 };
                 out.push(Hook {
                     kind: "hook",
-                    provider: "claude",
+                    provider,
                     name,
                     source_tier: tier,
-                    path: settings_path.to_string_lossy().into_owned(),
+                    path: source_path.to_string_lossy().into_owned(),
                     event: event.clone(),
                     matcher: matcher.clone(),
                     command,
+                    config_format: fmt,
+                    description: desc,
                 });
             }
         }
@@ -227,24 +257,135 @@ fn flatten_claude_hooks_block(
     out
 }
 
+/// Read a JSON settings file and flatten its top-level `hooks` block.
+/// Empty result on missing-file / malformed-JSON / missing-`hooks` key.
+fn scan_settings_hooks(
+    path: &Path,
+    provider: &'static str,
+    tier: &'static str,
+) -> Vec<Hook> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    let Some(block) = v.get("hooks") else {
+        return Vec::new();
+    };
+    flatten_hooks_block(block, provider, tier, path, "json")
+}
+
+/// Codex accepts hooks in either `hooks.json` or `[hooks]` of
+/// `config.toml`; when both exist `hooks.json` wins. Faithful with
+/// `_scan_codex_hooks`.
+fn scan_codex_hooks(
+    json_path: &Path,
+    toml_path: &Path,
+    tier: &'static str,
+) -> Vec<Hook> {
+    if json_path.is_file() {
+        if let Ok(text) = std::fs::read_to_string(json_path) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                // Codex accepts either {"hooks": {...}} or the bare
+                // {...} at top level.
+                let block = v.get("hooks").cloned().unwrap_or_else(|| v.clone());
+                return flatten_hooks_block(&block, "codex", tier, json_path, "json");
+            }
+        }
+    }
+    if toml_path.is_file() {
+        if let Ok(text) = std::fs::read_to_string(toml_path) {
+            if let Ok(v) = toml::from_str::<toml::Value>(&text) {
+                let Some(hooks) = v.get("hooks") else { return Vec::new() };
+                // Round-trip TOML→JSON via serde_json so the JSON-based
+                // flattener can reuse its logic.
+                if let Ok(json_v) = serde_json::to_value(hooks) {
+                    return flatten_hooks_block(
+                        &json_v,
+                        "codex",
+                        tier,
+                        toml_path,
+                        "toml",
+                    );
+                }
+            }
+        }
+    }
+    Vec::new()
+}
+
 /// Claude hooks: `~/.claude/settings.json` + `<project>/.claude/settings.json`
 /// + `<project>/.claude/settings.local.json` (project-local overrides).
 pub fn list_claude_hooks(home: &Path, project: Option<&Path>) -> Vec<Hook> {
-    let mut all = flatten_claude_hooks_block(
+    let mut all = scan_settings_hooks(
         &home.join(".claude").join("settings.json"),
+        "claude",
         "user",
     );
     if let Some(p) = project {
-        all.extend(flatten_claude_hooks_block(
+        all.extend(scan_settings_hooks(
             &p.join(".claude").join("settings.json"),
+            "claude",
             "project",
         ));
-        all.extend(flatten_claude_hooks_block(
+        all.extend(scan_settings_hooks(
             &p.join(".claude").join("settings.local.json"),
+            "claude",
             "project",
         ));
     }
     all
+}
+
+/// Gemini hooks: `~/.gemini/settings.json` + `<project>/.gemini/settings.json`.
+pub fn list_gemini_hooks(home: &Path, project: Option<&Path>) -> Vec<Hook> {
+    let mut all = scan_settings_hooks(
+        &home.join(".gemini").join("settings.json"),
+        "gemini",
+        "user",
+    );
+    if let Some(p) = project {
+        all.extend(scan_settings_hooks(
+            &p.join(".gemini").join("settings.json"),
+            "gemini",
+            "project",
+        ));
+    }
+    all
+}
+
+/// Codex hooks: `~/.codex/hooks.json` (preferred) or `~/.codex/config.toml`
+/// `[hooks]` (fallback). Same precedence in the project tier.
+pub fn list_codex_hooks(home: &Path, project: Option<&Path>) -> Vec<Hook> {
+    let mut all = scan_codex_hooks(
+        &home.join(".codex").join("hooks.json"),
+        &home.join(".codex").join("config.toml"),
+        "user",
+    );
+    if let Some(p) = project {
+        all.extend(scan_codex_hooks(
+            &p.join(".codex").join("hooks.json"),
+            &p.join(".codex").join("config.toml"),
+            "project",
+        ));
+    }
+    all
+}
+
+/// Provider-aware hook scanner — same dispatch shape as
+/// `list_skills_for_provider`. Unknown tools return [].
+pub fn list_hooks_for_provider(
+    provider: &str,
+    home: &Path,
+    project: Option<&Path>,
+) -> Vec<Hook> {
+    match provider {
+        "claude" => list_claude_hooks(home, project),
+        "gemini" => list_gemini_hooks(home, project),
+        "codex" => list_codex_hooks(home, project),
+        _ => Vec::new(),
+    }
 }
 
 /// One row from `_scan_md_commands` — a slash command pulled out of
@@ -261,11 +402,14 @@ pub struct Command {
     pub description: Option<String>,
 }
 
-/// Walk a Claude commands directory recursively (one level deep,
+/// Walk a markdown commands directory recursively (one level deep,
 /// matching the renderer's `/git:commit` style). Subdirectories become
-/// namespaces. Faithful with `_scan_md_commands`.
+/// namespaces. `force_namespace` pins every emitted Command to the
+/// same namespace string (Codex prompts use this — every entry is
+/// `/prompts:<name>`). Faithful with `_scan_md_commands`.
 fn scan_md_commands(
     root: &Path,
+    provider: &'static str,
     tier: &'static str,
     force_namespace: Option<&'static str>,
 ) -> Vec<Command> {
@@ -276,19 +420,24 @@ fn scan_md_commands(
     for entry in rd.flatten() {
         let p = entry.path();
         if p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("md") {
-            push_md_command(&p, tier, force_namespace.map(String::from), &mut out);
+            push_md_command(
+                &p,
+                provider,
+                tier,
+                force_namespace.map(String::from),
+                &mut out,
+            );
         } else if p.is_dir() {
-            let ns = p
-                .file_name()
-                .and_then(|s| s.to_str())
-                .map(String::from);
+            let ns = force_namespace.map(String::from).or_else(|| {
+                p.file_name().and_then(|s| s.to_str()).map(String::from)
+            });
             if let Ok(sub) = std::fs::read_dir(&p) {
                 for sub_entry in sub.flatten() {
                     let sp = sub_entry.path();
                     if sp.is_file()
                         && sp.extension().and_then(|s| s.to_str()) == Some("md")
                     {
-                        push_md_command(&sp, tier, ns.clone(), &mut out);
+                        push_md_command(&sp, provider, tier, ns.clone(), &mut out);
                     }
                 }
             }
@@ -299,6 +448,7 @@ fn scan_md_commands(
 
 fn push_md_command(
     md_path: &Path,
+    provider: &'static str,
     tier: &'static str,
     namespace: Option<String>,
     out: &mut Vec<Command>,
@@ -315,7 +465,7 @@ fn push_md_command(
     }
     out.push(Command {
         kind: "command",
-        provider: "claude",
+        provider,
         name,
         source_tier: tier,
         path: md_path.to_string_lossy().into_owned(),
@@ -326,15 +476,134 @@ fn push_md_command(
 
 /// Claude commands: `~/.claude/commands/**/*.md` + project equivalent.
 pub fn list_claude_commands(home: &Path, project: Option<&Path>) -> Vec<Command> {
-    let mut all = scan_md_commands(&home.join(".claude").join("commands"), "user", None);
+    let mut all = scan_md_commands(
+        &home.join(".claude").join("commands"),
+        "claude",
+        "user",
+        None,
+    );
     if let Some(p) = project {
         all.extend(scan_md_commands(
             &p.join(".claude").join("commands"),
+            "claude",
             "project",
             None,
         ));
     }
     all
+}
+
+/// Walk a Gemini commands directory (TOML files instead of MD).
+/// Subdirectories become namespaces like `/git:commit`. Description
+/// comes from a top-level `description = "…"` TOML key.
+fn scan_toml_commands(
+    root: &Path,
+    provider: &'static str,
+    tier: &'static str,
+) -> Vec<Command> {
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(root) else {
+        return out;
+    };
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("toml") {
+            push_toml_command(&p, provider, tier, None, &mut out);
+        } else if p.is_dir() {
+            let ns = p
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(String::from);
+            if let Ok(sub) = std::fs::read_dir(&p) {
+                for sub_entry in sub.flatten() {
+                    let sp = sub_entry.path();
+                    if sp.is_file()
+                        && sp.extension().and_then(|s| s.to_str()) == Some("toml")
+                    {
+                        push_toml_command(&sp, provider, tier, ns.clone(), &mut out);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn push_toml_command(
+    toml_path: &Path,
+    provider: &'static str,
+    tier: &'static str,
+    namespace: Option<String>,
+    out: &mut Vec<Command>,
+) {
+    let text = std::fs::read_to_string(toml_path).unwrap_or_default();
+    let parsed = toml::from_str::<toml::Value>(&text).ok();
+    let desc = parsed
+        .as_ref()
+        .and_then(|v| v.get("description"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let name = toml_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    if name.is_empty() {
+        return;
+    }
+    out.push(Command {
+        kind: "command",
+        provider,
+        name,
+        source_tier: tier,
+        path: toml_path.to_string_lossy().into_owned(),
+        namespace,
+        description: desc,
+    });
+}
+
+/// Gemini commands: `~/.gemini/commands/**/*.toml` + project equivalent.
+pub fn list_gemini_commands(home: &Path, project: Option<&Path>) -> Vec<Command> {
+    let mut all = scan_toml_commands(
+        &home.join(".gemini").join("commands"),
+        "gemini",
+        "user",
+    );
+    if let Some(p) = project {
+        all.extend(scan_toml_commands(
+            &p.join(".gemini").join("commands"),
+            "gemini",
+            "project",
+        ));
+    }
+    all
+}
+
+/// Codex prompts: `~/.codex/prompts/*.md` (flat — no project tier).
+/// Always namespaced as `/prompts:<name>` so the renderer can group
+/// them under the same "Commands / Prompts" tab as the other tools.
+pub fn list_codex_commands(home: &Path) -> Vec<Command> {
+    scan_md_commands(
+        &home.join(".codex").join("prompts"),
+        "codex",
+        "user",
+        Some("prompts"),
+    )
+}
+
+/// Provider-aware command/prompt scanner — claude → md commands,
+/// gemini → toml commands, codex → md prompts (always namespaced).
+pub fn list_commands_for_provider(
+    provider: &str,
+    home: &Path,
+    project: Option<&Path>,
+) -> Vec<Command> {
+    match provider {
+        "claude" => list_claude_commands(home, project),
+        "gemini" => list_gemini_commands(home, project),
+        "codex" => list_codex_commands(home),
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -444,6 +713,111 @@ mod tests {
         // Valid JSON without a `hooks` key.
         std::fs::write(home.join(".claude/settings.json"), r#"{"other":1}"#).unwrap();
         assert!(list_claude_hooks(&home, None).is_empty());
+    }
+
+    #[test]
+    fn list_gemini_hooks_reads_settings_json_same_shape_as_claude() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(home.join(".gemini")).unwrap();
+        std::fs::write(
+            home.join(".gemini/settings.json"),
+            r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"command":"./check.sh","timeout":5}]}]}}"#,
+        )
+        .unwrap();
+        let items = list_gemini_hooks(&home, None);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].provider, "gemini");
+        assert_eq!(items[0].event, "PreToolUse");
+        assert_eq!(items[0].matcher.as_deref(), Some("Bash"));
+        assert_eq!(items[0].command, "./check.sh");
+        assert_eq!(items[0].config_format, "json");
+    }
+
+    #[test]
+    fn list_codex_hooks_prefers_json_over_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        std::fs::write(
+            home.join(".codex/hooks.json"),
+            r#"{"hooks":{"PostToolUse":[{"hooks":[{"command":"from-json"}]}]}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            home.join(".codex/config.toml"),
+            r#"[hooks.PostToolUse]
+                  command = "from-toml"
+                "#,
+        )
+        .unwrap();
+        let items = list_codex_hooks(&home, None);
+        // hooks.json wins.
+        assert!(items.iter().any(|h| h.command == "from-json"));
+        assert!(!items.iter().any(|h| h.command == "from-toml"));
+        assert_eq!(items[0].config_format, "json");
+    }
+
+    #[test]
+    fn list_codex_hooks_falls_back_to_config_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        // Only TOML present.
+        std::fs::write(
+            home.join(".codex/config.toml"),
+            "[[hooks.PostToolUse]]\nmatcher = \"Bash\"\ncommand = \"echo done\"\n",
+        )
+        .unwrap();
+        let items = list_codex_hooks(&home, None);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].command, "echo done");
+        assert_eq!(items[0].config_format, "toml");
+    }
+
+    #[test]
+    fn list_gemini_commands_reads_toml_with_namespaces() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let cmd_root = home.join(".gemini/commands");
+        std::fs::create_dir_all(cmd_root.join("git")).unwrap();
+        std::fs::write(
+            cmd_root.join("ping.toml"),
+            r#"description = "pong""#,
+        )
+        .unwrap();
+        std::fs::write(
+            cmd_root.join("git/commit.toml"),
+            r#"description = "nice commit""#,
+        )
+        .unwrap();
+        let cmds = list_gemini_commands(&home, None);
+        assert_eq!(cmds.len(), 2);
+        let flat = cmds.iter().find(|c| c.name == "ping").unwrap();
+        assert!(flat.namespace.is_none());
+        assert_eq!(flat.description.as_deref(), Some("pong"));
+        let ns = cmds.iter().find(|c| c.name == "commit").unwrap();
+        assert_eq!(ns.namespace.as_deref(), Some("git"));
+        assert_eq!(ns.description.as_deref(), Some("nice commit"));
+        assert!(cmds.iter().all(|c| c.provider == "gemini"));
+    }
+
+    #[test]
+    fn list_codex_commands_namespaces_everything_as_prompts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let cmd_root = home.join(".codex/prompts");
+        std::fs::create_dir_all(&cmd_root).unwrap();
+        std::fs::write(
+            cmd_root.join("review.md"),
+            "---\ndescription: review the diff\n---\nbody",
+        )
+        .unwrap();
+        let cmds = list_codex_commands(&home);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].namespace.as_deref(), Some("prompts"));
+        assert_eq!(cmds[0].name, "review");
+        assert_eq!(cmds[0].provider, "codex");
     }
 
     #[test]

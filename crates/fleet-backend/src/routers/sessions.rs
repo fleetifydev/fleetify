@@ -842,7 +842,8 @@ async fn list_hooks(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let s = owned(&st, &id, &user.id).await?;
-    if s.tool != "claude" {
+    let provider = s.tool.as_str();
+    if !matches!(provider, "claude" | "gemini" | "codex") {
         return Ok(Json(json!({ "items": [] })));
     }
     let home = std::path::PathBuf::from(
@@ -855,7 +856,8 @@ async fn list_hooks(
     } else {
         Some(std::path::PathBuf::from(&s.project_path))
     };
-    let items = crate::services::provider_inspector::list_claude_hooks(
+    let items = crate::services::provider_inspector::list_hooks_for_provider(
+        provider,
         &home,
         project.as_deref(),
     );
@@ -872,7 +874,8 @@ async fn list_commands(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let s = owned(&st, &id, &user.id).await?;
-    if s.tool != "claude" {
+    let provider = s.tool.as_str();
+    if !matches!(provider, "claude" | "gemini" | "codex") {
         return Ok(Json(json!({ "items": [] })));
     }
     let home = std::path::PathBuf::from(
@@ -885,7 +888,8 @@ async fn list_commands(
     } else {
         Some(std::path::PathBuf::from(&s.project_path))
     };
-    let items = crate::services::provider_inspector::list_claude_commands(
+    let items = crate::services::provider_inspector::list_commands_for_provider(
+        provider,
         &home,
         project.as_deref(),
     );
