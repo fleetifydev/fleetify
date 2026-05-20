@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+  "crates/dispatch-mcp",
   "crates/fleet-core",
   "crates/fleet-backend",
   "crates/memory-mcp",
