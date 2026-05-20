@@ -33,7 +33,56 @@ fn deferred(name: &str) -> Value {
 }
 
 async fn list_installed() -> Json<Value> {
-    Json(json!([]))
+    // Scan ~/.fleetify/plugins/ for installed plugins and parse each
+    // .fleetify-plugin/plugin.json. Best-effort: anything that fails
+    // to parse logs + is omitted from the list so a single bad plugin
+    // doesn't make the whole Library tab go 500.
+    use crate::services::plugins::manifest;
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| ".".into());
+    let plugins_dir = std::path::PathBuf::from(home)
+        .join(".fleetify")
+        .join("plugins");
+    let Ok(rd) = std::fs::read_dir(&plugins_dir) else {
+        return Json(Value::Array(Vec::new()));
+    };
+    let mut out: Vec<Value> = Vec::new();
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        match manifest::parse_plugin(&path) {
+            Ok(m) => {
+                // Renderer's installed-list shape: pluginManifest +
+                // install_id (use the install dir name) + on-disk path.
+                let install_id = entry
+                    .file_name()
+                    .to_string_lossy()
+                    .to_string();
+                let mut v = serde_json::to_value(&m).unwrap_or(Value::Null);
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert("install_id".into(), Value::String(install_id));
+                    obj.insert(
+                        "install_path".into(),
+                        Value::String(path.to_string_lossy().into_owned()),
+                    );
+                    obj.insert("enabled".into(), Value::Bool(true));
+                    obj.insert("scope".into(), Value::String("user".into()));
+                }
+                out.push(v);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "plugins",
+                    "skipping {}: {e}",
+                    path.display()
+                );
+            }
+        }
+    }
+    Json(Value::Array(out))
 }
 async fn install_unsupported() -> Json<Value> {
     Json(deferred("install"))
