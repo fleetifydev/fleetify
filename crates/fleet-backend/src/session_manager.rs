@@ -159,7 +159,7 @@ impl SessionManager {
     /// `fleet/<slug>-<id>` worktree under `<repo>/.fleetify-worktrees/`,
     /// worktree-off → carved (or reused) `fleet/<slug>-<id>` branch in the
     /// main repo. Failures are non-fatal (parity).
-    async fn attach_git_setup(&self, pool: &SqlitePool, session: &Session) {
+    pub(crate) async fn attach_git_setup(&self, pool: &SqlitePool, session: &Session) {
         let is_staff = session.title.trim().eq_ignore_ascii_case("staff agent");
         if session.project_path.is_empty() || is_staff {
             return;

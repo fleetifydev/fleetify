@@ -203,7 +203,24 @@ async fn update_session(
     set!("tool", p.tool.clone());
     set!("claude_session_id", p.claude_session_id.clone());
     set!("use_worktree", p.use_worktree);
-    let _ = s; // Phase 2: empty→non-empty project_path triggers attach_git_setup.
+    // ── Empty→non-empty project_path upgrades trigger worktree carve ──
+    // A session created without a folder (the "scratch" path) becomes a
+    // real workspace the first time the user binds it to a directory.
+    // Same idempotent worktree/branch logic the create_session flow
+    // runs, so the user's first PATCH lands a fleet/<slug>-<id> branch
+    // exactly like a brand-new agent.
+    let upgraded_project = matches!(
+        (&p.project_path, s.project_path.is_empty()),
+        (Some(new_path), true) if !new_path.trim().is_empty(),
+    );
+    if upgraded_project {
+        // Re-fetch the row so attach_git_setup sees the new path.
+        let refreshed = sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = ?")
+            .bind(&id)
+            .fetch_one(&st.auth.pool)
+            .await?;
+        st.sm.attach_git_setup(&st.auth.pool, &refreshed).await;
+    }
     let updated = sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = ?")
         .bind(&id)
         .fetch_one(&st.auth.pool)
