@@ -113,19 +113,33 @@ async fn one_connection_attempt(bearer_source: &BearerSource) -> Result<()> {
         ticket.len(), redact_token(&ticket)
     );
 
-    // 2. Open the WS.
-    let url = format!("{}?ticket={}", ws_url(), urlencoding_minimal(&ticket));
+    // 2. Open the WS. Ticket is sent as the SECOND value in the
+    //    `Sec-WebSocket-Protocol` subprotocol list (cloud's auth
+    //    contract — query-param tickets get rejected with
+    //    "missing ticket subprotocol"). Order matches Python's
+    //    `subprotocols=["fleetify-rt.v1", f"ticket.{ticket}"]`.
+    let url = ws_url();
+    let subprotocols = format!("fleetify-rt.v1, ticket.{ticket}");
     tracing::info!(
         target: "fleetify.telemetry.ws",
-        "→ ws connect_async url={}",
-        url.replace(&ticket, &redact_token(&ticket))
+        "→ ws connect_async url={} subprotocols=[fleetify-rt.v1, ticket.{}]",
+        url, redact_token(&ticket)
     );
-    let (ws_stream, handshake_resp) = match tokio_tungstenite::connect_async(&url).await {
+    // Build the HTTP upgrade request manually so we can attach the
+    // subprotocol header. tokio-tungstenite accepts an `http::Request`
+    // and runs the upgrade against it.
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = url.into_client_request()
+        .map_err(|e| anyhow!("ws request build failed: {e}"))?;
+    req.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        subprotocols
+            .parse()
+            .map_err(|e| anyhow!("subprotocol header invalid: {e}"))?,
+    );
+    let (ws_stream, handshake_resp) = match tokio_tungstenite::connect_async(req).await {
         Ok(pair) => pair,
         Err(e) => {
-            // tungstenite errors that carry an HTTP response include the
-            // response body verbatim — pull it out so the user sees
-            // exactly what fleetify.dev rejected.
             log_ws_error(&e);
             return Err(anyhow!("WS upgrade failed: {e}"));
         }
@@ -346,9 +360,11 @@ fn log_ws_error(e: &tokio_tungstenite::tungstenite::Error) {
     }
 }
 
-/// Minimal percent-encoder for ticket strings on the WS URL — UUID +
-/// short opaque ticket so only `:`/`/`/`?` etc would need escaping in
-/// theory. Conservative subset of `encodeURIComponent`.
+/// Minimal percent-encoder for ticket strings on the WS URL — kept
+/// for the urlencoding_handles_uuid_shaped_tickets test that locked
+/// the behaviour in before the subprotocol-based auth flip. Not used
+/// in the live path anymore.
+#[cfg_attr(not(test), allow(dead_code))]
 fn urlencoding_minimal(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {

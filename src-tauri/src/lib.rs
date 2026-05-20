@@ -157,6 +157,11 @@ pub fn run() {
             )
             .title("Fleet")
             .inner_size(1500.0, 960.0)
+            // Hide the OS titlebar — the renderer ships its own custom
+            // title strip (min/max/close handled via the window_*
+            // IPC commands). Without this, Tauri's native frame stacks
+            // on top of the renderer's strip and we get two bars.
+            .decorations(false)
             .initialization_script(PRELOAD)
             .build()?;
 
