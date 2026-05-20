@@ -2,6 +2,7 @@
 
 pub mod activity_logger;
 pub mod auto_planner;
+pub mod compactor;
 pub mod fleet_brain;
 pub mod haiku_breaker;
 pub mod haiku_client;
