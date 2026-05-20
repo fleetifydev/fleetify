@@ -162,7 +162,20 @@ pub struct MarketplaceManifest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MarketplaceEntry {
-    pub name: String,
+    /// Either the directory name within the source repo (when `manifest`
+    /// is inlined) or a leaf identifier. Defaults to "" so the wire
+    /// format that omits it parses; callers fall back to
+    /// `manifest.name` when `path` is empty.
+    #[serde(default, alias = "name")]
+    pub path: String,
+    /// Inline plugin manifest. The fleetifydev/marketplace shape embeds
+    /// the full manifest under this key for every entry; my earlier
+    /// shape only carried a thin pointer. Optional so both shapes
+    /// round-trip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<PluginManifest>,
+    #[serde(default)]
+    pub featured: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -184,10 +184,10 @@ async fn refresh_source(
     AuthUser(user): AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    // Clone the source repo into the catalog cache and walk it for
-    // marketplace.json / plugin.json manifests. Caller doesn't see
-    // the resulting listings here — they pull them via
-    // /marketplace/plugins.
+    // Force-refetch the source's marketplace.json (or fall back to a
+    // single-plugin manifest) via raw.githubusercontent.com. Caller
+    // doesn't see the resulting listings here — they pull them via
+    // /marketplace/plugins (which also reads the same 1h disk cache).
     let row: Option<(String,)> = sqlx::query_as(
         "SELECT repo_url FROM marketplace_sources WHERE id = ? AND user_id = ?",
     )
@@ -198,13 +198,12 @@ async fn refresh_source(
     let Some((repo_url,)) = row else {
         return Err(ApiError::NotFound(format!("source {id} not found")));
     };
-    let dest = catalog_cache_dir().join(&id);
-    let res = clone_or_pull(&repo_url, &dest).await;
-    match res {
-        Ok(_) => Ok(Json(json!({
+    use crate::services::plugins::marketplace_fetch;
+    match marketplace_fetch::load_source(&id, &repo_url, /* force */ true).await {
+        Ok(entries) => Ok(Json(json!({
             "ok": true,
             "refreshed_at": chrono::Utc::now().to_rfc3339(),
-            "cache_path": dest.to_string_lossy(),
+            "plugin_count": entries.len(),
         }))),
         Err(e) => Ok(Json(json!({
             "ok": false,
@@ -216,59 +215,53 @@ async fn catalog_plugins(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
 ) -> Result<Json<Value>, ApiError> {
-    // Aggregate every enabled source's cached plugins. Each source's
-    // clone lives at `<cache>/<source_id>/`; we walk it for either a
-    // `marketplace.json` listing index or, when absent, treat the
-    // repo itself as a single plugin.
-    let rows: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT id, name, repo_url FROM marketplace_sources \
+    use crate::services::plugins::marketplace_fetch;
+    let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
+        "SELECT id, name, repo_url, is_official FROM marketplace_sources \
          WHERE user_id = ? AND enabled = 1",
     )
     .bind(&user.id)
     .fetch_all(&st.auth.pool)
     .await?;
-    let cache = catalog_cache_dir();
+
+    // Concurrently load every enabled source. Failures don't kill the
+    // whole catalog — a single bad source returns an empty list and we
+    // surface the others.
+    let futs: Vec<_> = rows
+        .into_iter()
+        .map(|(sid, sname, repo, is_official)| async move {
+            let entries = marketplace_fetch::load_source(&sid, &repo, false)
+                .await
+                .unwrap_or_default();
+            (sid, sname, is_official, entries)
+        })
+        .collect();
+    let results = futures_util::future::join_all(futs).await;
+
     let mut out: Vec<Value> = Vec::new();
-    for (sid, sname, _) in rows {
-        let clone = cache.join(&sid);
-        if !clone.is_dir() {
-            // Source never refreshed → emit zero rows for it.
-            continue;
-        }
-        use crate::services::plugins::manifest;
-        if manifest::is_marketplace_repo(&clone) {
-            if let Ok(mk) = manifest::parse_marketplace(&clone) {
-                for entry in mk.plugins {
-                    out.push(json!({
-                        "source_id": sid,
-                        "source_name": sname,
-                        "name": entry.name,
-                        "homepage": entry.homepage,
-                        "description": entry.description,
-                        "tags": entry.tags,
-                        "author": entry.author,
-                    }));
-                }
+    for (sid, sname, is_official, entries) in results {
+        for entry in entries {
+            let Some(m) = entry.manifest.as_ref() else {
                 continue;
-            }
-        }
-        // Fall back to "the repo itself IS the plugin" — common for
-        // single-plugin git repos.
-        if manifest::is_plugin_repo(&clone) {
-            if let Ok(m) = manifest::parse_plugin(&clone) {
-                let raw = serde_json::to_value(&m).unwrap_or(Value::Null);
-                out.push(json!({
-                    "source_id": sid,
-                    "source_name": sname,
-                    "name": m.name,
-                    "version": m.version,
-                    "display_name": m.display_name,
-                    "description": m.description,
-                    "tags": m.tags,
-                    "provides": m.provides,
-                    "manifest": raw,
-                }));
-            }
+            };
+            let manifest_value = serde_json::to_value(m).unwrap_or(Value::Null);
+            out.push(json!({
+                "source_id": sid,
+                "source_name": sname,
+                "source_is_official": is_official != 0,
+                "path": entry.path,
+                "featured": entry.featured,
+                "manifest": manifest_value,
+                // Convenience flattened fields the renderer's card grid reads
+                // directly to avoid deep manifest.* paths everywhere.
+                "name": m.name,
+                "display_name": m.display_name,
+                "version": m.version,
+                "description": m.description,
+                "tags": m.tags,
+                "provides": m.provides,
+                "icon": m.icon,
+            }));
         }
     }
     Ok(Json(Value::Array(out)))
@@ -280,84 +273,32 @@ async fn catalog_plugin_detail(
     Path((source_id, plugin_path)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let row: Option<(String,)> = sqlx::query_as(
-        "SELECT id FROM marketplace_sources WHERE id = ? AND user_id = ?",
+        "SELECT repo_url FROM marketplace_sources WHERE id = ? AND user_id = ?",
     )
     .bind(&source_id)
     .bind(&user.id)
     .fetch_optional(&st.auth.pool)
     .await?;
-    if row.is_none() {
+    let Some((repo_url,)) = row else {
         return Err(ApiError::NotFound(format!("source {source_id} not found")));
-    }
-    // Reject traversal in the path segment.
+    };
     if plugin_path.contains("..") || plugin_path.starts_with('/') {
         return Err(ApiError::BadRequest("invalid plugin_path".into()));
     }
-    let clone = catalog_cache_dir().join(&source_id);
-    let plugin_dir = clone.join(&plugin_path);
-    if !plugin_dir.is_dir() {
-        return Err(ApiError::NotFound(format!(
-            "plugin '{plugin_path}' not found in source {source_id}"
-        )));
-    }
-    use crate::services::plugins::manifest;
-    match manifest::parse_plugin(&plugin_dir) {
-        Ok(m) => Ok(Json(serde_json::to_value(m).unwrap_or(Value::Null))),
-        Err(e) => Err(ApiError::Internal(e.to_string())),
-    }
-}
-
-fn catalog_cache_dir() -> std::path::PathBuf {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".into());
-    std::path::PathBuf::from(home)
-        .join(".fleetify")
-        .join("marketplace-cache")
-}
-
-/// Clone (when the dest doesn't exist) or pull (when it does). Best-
-/// effort: any failure returns Err with the stderr trimmed.
-async fn clone_or_pull(repo_url: &str, dest: &std::path::Path) -> Result<(), String> {
-    use std::time::Duration;
-    if dest.exists() {
-        let out = tokio::time::timeout(
-            Duration::from_secs(60),
-            tokio::process::Command::new("git")
-                .args(["pull", "--ff-only"])
-                .current_dir(dest)
-                .output(),
-        )
-        .await;
-        match out {
-            Ok(Ok(o)) if o.status.success() => Ok(()),
-            Ok(Ok(o)) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
-            Ok(Err(e)) => Err(e.to_string()),
-            Err(_) => Err("git pull timed out".into()),
-        }
-    } else {
-        if let Some(parent) = dest.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let out = tokio::time::timeout(
-            Duration::from_secs(120),
-            tokio::process::Command::new("git")
-                .args([
-                    "clone",
-                    "--depth",
-                    "1",
-                    "--single-branch",
-                    repo_url,
-                    dest.to_str().unwrap_or(""),
-                ])
-                .output(),
-        )
-        .await;
-        match out {
-            Ok(Ok(o)) if o.status.success() => Ok(()),
-            Ok(Ok(o)) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
-            Ok(Err(e)) => Err(e.to_string()),
-            Err(_) => Err("git clone timed out".into()),
-        }
-    }
+    use crate::services::plugins::marketplace_fetch;
+    let entries = marketplace_fetch::load_source(&source_id, &repo_url, false)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let entry = entries
+        .into_iter()
+        .find(|e| e.path == plugin_path)
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "plugin '{plugin_path}' not found in source {source_id}"
+            ))
+        })?;
+    let manifest = entry
+        .manifest
+        .ok_or_else(|| ApiError::Internal("plugin manifest unavailable".into()))?;
+    Ok(Json(serde_json::to_value(manifest).unwrap_or(Value::Null)))
 }

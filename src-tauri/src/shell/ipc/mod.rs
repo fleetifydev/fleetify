@@ -819,22 +819,20 @@ pub async fn pty_kill(id: String) -> serde_json::Value {
 }
 
 // ── dialog ───────────────────────────────────────────────────────
-// window.electronAPI.openFolderDialog → Promise<string[]> (paths).
-// Faithful with the Electron-original: empty array on cancel/error;
-// single-entry array on selection (we don't multi-select for folders).
+// `window.electronAPI.openFolderDialog()` → `Promise<string | null>`.
+// Renderer (new-agent-dialog.tsx, session-toolbar.tsx) treats the
+// awaited value as a single path string and gates on `if (p)`. An
+// array would always be truthy and break the `if` check.
 #[tauri::command]
-pub async fn dialog_open_folder(app: tauri::AppHandle) -> Vec<String> {
+pub async fn dialog_open_folder(app: tauri::AppHandle) -> Option<String> {
     use tauri_plugin_dialog::DialogExt;
     let (tx, rx) = tokio::sync::oneshot::channel::<Option<tauri_plugin_dialog::FilePath>>();
     app.dialog().file().pick_folder(move |fp| {
         let _ = tx.send(fp);
     });
     match rx.await {
-        Ok(Some(fp)) => match fp.into_path() {
-            Ok(p) => vec![p.to_string_lossy().to_string()],
-            Err(_) => Vec::new(),
-        },
-        _ => Vec::new(),
+        Ok(Some(fp)) => fp.into_path().ok().map(|p| p.to_string_lossy().to_string()),
+        _ => None,
     }
 }
 
