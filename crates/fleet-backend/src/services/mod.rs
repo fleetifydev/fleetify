@@ -11,4 +11,5 @@ pub mod pricing;
 pub mod provider_inspector;
 pub mod recall_hook;
 pub mod telemetry;
+pub mod workflows;
 pub mod worktree;
