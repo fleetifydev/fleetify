@@ -1,6 +1,7 @@
 //! Non-bridge services. Phase 2 lands worktree/clone + git/gh helpers.
 
 pub mod activity_logger;
+pub mod auto_planner;
 pub mod fleet_brain;
 pub mod haiku_breaker;
 pub mod haiku_client;
