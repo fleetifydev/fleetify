@@ -144,17 +144,43 @@ async fn open_config() -> Json<Value> {
     }
 }
 
-async fn auth_start(Path(_n): Path<String>) -> Json<Value> {
-    Json(json!({
-        "ok": false,
-        "error": "MCP OAuth not implemented yet (Phase 4 follow-up)"
-    }))
+async fn auth_start(Path(name): Path<String>) -> Json<Value> {
+    let Some(cfg) = mcp_registry::get(&name) else {
+        return Json(json!({
+            "ok": false,
+            "error": format!("no MCP server named {name:?}")
+        }));
+    };
+    match crate::services::mcp_auth::start(&name, &cfg) {
+        Ok(url) => Json(json!({ "ok": true, "authorize_url": url })),
+        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
+    }
 }
 
-async fn auth_callback() -> Json<Value> {
-    Json(json!({ "ok": false, "error": "MCP OAuth not implemented yet (Phase 4)" }))
+#[derive(serde::Deserialize)]
+struct CallbackQ {
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
 }
 
-async fn auth_signout(Path(_n): Path<String>) -> Json<Value> {
-    Json(json!({ "ok": true, "was_authenticated": false }))
+async fn auth_callback(
+    axum::extract::Query(q): axum::extract::Query<CallbackQ>,
+) -> Json<Value> {
+    let code = q.code.unwrap_or_default();
+    let state = q.state.unwrap_or_default();
+    if code.is_empty() || state.is_empty() {
+        return Json(json!({ "ok": false, "error": "code + state are required" }));
+    }
+    match crate::services::mcp_auth::callback(&code, &state).await {
+        Ok(name) => Json(json!({ "ok": true, "server": name })),
+        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+async fn auth_signout(Path(name): Path<String>) -> Json<Value> {
+    let was = crate::services::mcp_secrets::get(&name).is_some();
+    crate::services::mcp_auth::signout(&name);
+    json!({ "ok": true, "was_authenticated": was }).into()
 }
