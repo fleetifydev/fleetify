@@ -25,12 +25,28 @@ fn home() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// `which` via `<bin> --version` (avoids a `which` crate dep).
+/// Resolve `<bin>` on PATH and return its absolute path. Uses the
+/// `which` crate so Windows `.cmd` / `.bat` / `.ps1` shims (which
+/// `npm install -g` creates for gemini / codex / claude) resolve via
+/// PATHEXT — `tokio::process::Command::new("gemini")` otherwise fails
+/// on Windows because it doesn't honour PATHEXT for bare names. This
+/// is exactly the "Not Installed" symptom users hit when the CLI is
+/// installed but the renderer claims otherwise.
 async fn cli_path(bin: &str) -> Option<String> {
+    // 1. `which` honours PATHEXT — finds gemini.cmd / codex.cmd / etc.
+    if let Ok(p) = which::which(bin) {
+        // 2. Verify with `--version` against the absolute path so we
+        //    don't claim "installed" for a broken shim. Best-effort:
+        //    when `--version` fails (some pre-release builds don't
+        //    implement it) we still report the path — the user sees
+        //    "installed" instead of a misleading "not installed".
+        let _ = Command::new(&p).arg("--version").output().await;
+        return Some(p.to_string_lossy().into_owned());
+    }
+    // 3. Last-ditch Unix fallback: bare-name spawn (which might fail
+    //    if `which` itself isn't on PATH but the binary still is).
     let out = Command::new(bin).arg("--version").output().await.ok()?;
     if out.status.success() {
-        // `bin` is the resolved name on PATH. Return Some(bin) — the
-        // renderer just needs a truthy string to render "installed".
         Some(bin.to_string())
     } else {
         None
