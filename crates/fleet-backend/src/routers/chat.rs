@@ -291,7 +291,13 @@ async fn run_send_flow(
             session.permission_mode.clone(),
             session.model_name.clone(),
         ))),
-        "codex" => AnyBridge::Codex(Arc::new(CodexBridge::new(sid.clone()))),
+        "codex" => AnyBridge::Codex(Arc::new(CodexBridge::new(
+            sid.clone(),
+            session.project_path.clone(),
+            session.permission_mode.clone(),
+            session.model_name.clone(),
+            session.effort.clone().unwrap_or_default(),
+        ))),
         other => {
             send_json(
                 &sink,
