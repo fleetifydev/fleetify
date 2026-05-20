@@ -305,6 +305,27 @@ async fn run_send_flow(
             b.model_name = session.model_name.clone();
             b.session_title = Some(session.title.clone());
             b.session_mode = session.session_mode.clone();
+            // Staff vs non-staff (parity with chat.py: title gates the
+            // orchestrator role). Staff gets the dispatch-protocol
+            // system prompt; non-staff inherits its template's prompt
+            // (e.g. reverse_engineering) when one is set.
+            let is_staff = session.title == "Staff Agent";
+            b.is_staff = is_staff;
+            b.agent_template = session.agent_template.clone();
+            if is_staff {
+                b.system_prompt = Some(
+                    crate::services::staff_prompt::build(
+                        &st.auth.pool,
+                        &sid,
+                        session.user_id.as_deref(),
+                    )
+                    .await,
+                );
+            } else if let Some(tpl) =
+                crate::services::builtin_templates::get(session.agent_template.as_deref())
+            {
+                b.system_prompt = Some(tpl.system_prompt.to_string());
+            }
             AnyBridge::Claude(Arc::new(b))
         }
         "openai" => {

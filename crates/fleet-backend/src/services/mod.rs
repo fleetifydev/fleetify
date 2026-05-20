@@ -2,6 +2,7 @@
 
 pub mod activity_logger;
 pub mod auto_planner;
+pub mod builtin_templates;
 pub mod compactor;
 pub mod fleet_brain;
 pub mod haiku_breaker;
@@ -18,6 +19,7 @@ pub mod prompt_enhancer;
 pub mod provider_inspector;
 pub mod recall_hook;
 pub mod session_summarizer;
+pub mod staff_prompt;
 pub mod task_enricher;
 pub mod telemetry;
 pub mod workflows;

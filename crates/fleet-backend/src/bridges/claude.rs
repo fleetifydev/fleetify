@@ -269,6 +269,120 @@ pub fn parse_event(event: &Value, st: &mut ParseState) -> Vec<BridgeEvent> {
     out
 }
 
+/// Faithful port of `STAFF_SUBAGENTS` from `sdk_bridge.py:101-162`.
+/// Drives the staff session's `--agents <json>` flag so the model's
+/// `Agent` tool can dispatch to one of five named subagents
+/// (`code-reviewer`, `bug-fixer`, `test-writer`, `researcher`,
+/// `architect`). Built lazily once per process — the JSON is large
+/// and not interesting to re-serialise per turn.
+fn staff_subagents_json() -> &'static serde_json::Value {
+    static AGENTS: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+    AGENTS.get_or_init(|| {
+        serde_json::json!({
+            "code-reviewer": {
+                "description": "Review code for quality, security, and performance",
+                "prompt": "You are an expert code reviewer. Analyze code for:\n\
+                           - Security vulnerabilities\n\
+                           - Performance bottlenecks\n\
+                           - Code quality and maintainability\n\
+                           Be specific, cite file paths and line numbers, give actionable feedback.",
+                "tools": ["Read", "Glob", "Grep"],
+                "model": "claude-sonnet-4-6",
+            },
+            "bug-fixer": {
+                "description": "Find root causes of bugs and propose targeted fixes",
+                "prompt": "You are an expert debugger. Given a bug:\n\
+                           1. Trace the code path to find the root cause\n\
+                           2. Propose a minimal, targeted fix\n\
+                           3. Explain why it works and what it prevents",
+                "tools": ["Read", "Glob", "Grep", "Bash"],
+                "model": "claude-sonnet-4-6",
+            },
+            "test-writer": {
+                "description": "Write comprehensive tests with good edge case coverage",
+                "prompt": "You are a testing expert. Write:\n\
+                           - Unit tests for individual functions\n\
+                           - Integration tests for APIs and components\n\
+                           - Edge cases and error conditions\n\
+                           Follow the project's existing test patterns and framework.",
+                "tools": ["Read", "Write", "Bash", "Glob"],
+                "model": "claude-sonnet-4-6",
+            },
+            "researcher": {
+                "description": "Research topics, libraries, APIs, and best practices",
+                "prompt": "You are a research assistant. Investigate by:\n\
+                           - Searching the web for current information\n\
+                           - Reading documentation and source code\n\
+                           - Synthesizing findings into actionable summaries\n\
+                           Be concise and focus on practical information relevant to the task.",
+                "tools": ["WebSearch", "WebFetch", "Read"],
+                "model": "claude-sonnet-4-6",
+            },
+            "architect": {
+                "description": "Design system architecture, APIs, and data models",
+                "prompt": "You are a software architect. Design:\n\
+                           - System architecture with component diagrams (ASCII)\n\
+                           - API contracts and data models\n\
+                           - Database schemas\n\
+                           - Component interactions and data flows\n\
+                           Focus on scalability, maintainability, and simplicity.",
+                "tools": ["Read", "Glob", "Grep"],
+                "model": "claude-opus-4-7",
+            },
+        })
+    })
+}
+
+/// Splice the OAuth bearer (when present) into the `headers` of an
+/// http/sse MCP server config. Stdio servers and bearer-less http/sse
+/// entries round-trip unchanged. Returns Err with a short reason when
+/// the entry shape is broken so the caller can log a per-server skip
+/// without dropping the rest of the map.
+fn splice_server_config(
+    _name: &str,
+    cfg: &serde_json::Value,
+    secret: &Option<crate::services::mcp_secrets::McpSecret>,
+) -> Result<serde_json::Value, String> {
+    let obj = cfg
+        .as_object()
+        .ok_or_else(|| "config is not a JSON object".to_string())?;
+    let mut spliced = obj.clone();
+    let kind = spliced.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+    if matches!(kind, "http" | "sse") {
+        if let Some(secret) = secret {
+            if let Some(tok) = &secret.access_token {
+                let token_type = secret
+                    .extra
+                    .get("token_type")
+                    .and_then(|v| v.as_str())
+                    .map(|s| {
+                        if s.eq_ignore_ascii_case("bearer") {
+                            "Bearer".to_string()
+                        } else {
+                            s.to_string()
+                        }
+                    })
+                    .unwrap_or_else(|| "Bearer".to_string());
+                let mut headers = spliced
+                    .get("headers")
+                    .and_then(|h| h.as_object())
+                    .cloned()
+                    .unwrap_or_default();
+                headers.insert(
+                    "Authorization".into(),
+                    serde_json::Value::String(format!("{token_type} {tok}")),
+                );
+                spliced.insert(
+                    "headers".into(),
+                    serde_json::Value::Object(headers),
+                );
+            }
+        }
+    }
+    Ok(serde_json::Value::Object(spliced))
+}
+
 /// Drives the `claude` subprocess. `--mcp-config` injection is Phase 4.
 pub struct ClaudeBridge {
     pub session_id: String,
@@ -279,6 +393,19 @@ pub struct ClaudeBridge {
     pub session_title: Option<String>,
     pub system_prompt: Option<String>,
     pub session_mode: String,
+    /// Staff agent (`Session.title == "Staff Agent"`) gets a constrained
+    /// tool set (Agent / WebSearch / WebFetch) + the Fleet text-protocol
+    /// dispatch system prompt. Non-staff agents get the full tool set
+    /// plus the `fleet_dispatch` MCP so they can route subtasks via
+    /// `mcp__fleet_dispatch__dispatch_to_agent`. See
+    /// `services::staff_prompt::build` for the prompt itself and
+    /// `build_mcp_config` for the MCP filtering.
+    pub is_staff: bool,
+    /// Builtin template id (e.g. `"reverse_engineering"`). When set,
+    /// the template's `extra_mcp_servers` opt the session into extra
+    /// stdio MCPs (`fleet_reveng` etc.) beyond the baseline
+    /// memory+dispatch. Matches `Session.agent_template`.
+    pub agent_template: Option<String>,
     child: Arc<Mutex<Option<Child>>>,
     aborted: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -294,6 +421,8 @@ impl ClaudeBridge {
             session_title: None,
             system_prompt: None,
             session_mode: "new".into(),
+            is_staff: false,
+            agent_template: None,
             child: Arc::new(Mutex::new(None)),
             aborted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
@@ -302,6 +431,15 @@ impl ClaudeBridge {
     /// Faithful `_build_command`. `mcp_config_path`, when set, becomes
     /// `--mcp-config <path>` so the agent spawns the configured MCP
     /// servers alongside its built-in tools.
+    ///
+    /// Staff path (`is_staff = true`) maps to two extra flags faithful
+    /// to `sdk_bridge.py:240-265`:
+    ///   • `--allowedTools <names>` — constrain claude to `Agent`,
+    ///     `WebSearch`, `WebFetch` + the `mcp__fleet_memory__*` names
+    ///     (Python's `allowed = ["Agent","WebSearch","WebFetch"] + mcp_tool_names`).
+    ///   • `--agents <json>` — register the 5 STAFF_SUBAGENTS so the
+    ///     `Agent` tool can dispatch to `code-reviewer`, `bug-fixer`,
+    ///     `test-writer`, `researcher`, `architect`.
     pub fn build_command(&self, message: &str, mcp_config_path: Option<&str>) -> Vec<String> {
         let mut c = vec![
             "claude".into(),
@@ -328,8 +466,20 @@ impl ClaudeBridge {
         if let Some(sp) = &self.system_prompt {
             c.push("--system-prompt".into());
             c.push(sp.clone());
-            c.push("--tools".into());
-            c.push(String::new());
+        }
+        if self.is_staff {
+            // Whitelist Agent + research tools + the mounted mcp_memory
+            // tool names. The dispatch token (`[[DISPATCH:id|task]]`) is
+            // text-protocol — staff does NOT mount `fleet_dispatch`, so
+            // its tool name is intentionally absent from this list.
+            let mut allowed: Vec<String> = vec!["Agent".into(), "WebSearch".into(), "WebFetch".into()];
+            for name in self.mcp_tool_names() {
+                allowed.push(name.to_string());
+            }
+            c.push("--allowedTools".into());
+            c.push(allowed.join(","));
+            c.push("--agents".into());
+            c.push(staff_subagents_json().to_string());
         }
         if let Some(path) = mcp_config_path {
             c.push("--mcp-config".into());
@@ -349,60 +499,125 @@ impl ClaudeBridge {
         c
     }
 
-    /// Build a `--mcp-config` JSON blob from the user's MCP registry.
-    /// Caller writes the result to a temp file and passes its path to
-    /// `build_command`. Returns None when the registry is empty so we
-    /// skip the flag entirely (claude defaults to no MCPs).
+    /// Build a `--mcp-config` JSON blob from the user's MCP registry,
+    /// filtered + spliced for THIS session's role. Returns None when
+    /// no servers qualify (skip the `--mcp-config` flag entirely).
+    ///
+    /// Filtering — faithful to `sdk_bridge.py:240-360`:
+    ///   • `fleet_memory`  — both staff and non-staff (project memory).
+    ///   • `fleet_dispatch` — non-staff only (staff has the `[[DISPATCH:]]`
+    ///     text protocol; mounting fleet_dispatch on staff confuses the
+    ///     model into trying to call the MCP tool instead of emitting
+    ///     the text token).
+    ///   • `fleet_reveng`   — only when `agent_template == "reverse_engineering"`
+    ///     (Python equivalent checks `tpl.extra_mcp_servers`).
+    ///   • Everything else (user-registered http/sse/stdio servers) —
+    ///     always included; the user opted them in explicitly.
+    ///
+    /// Per-server isolation — each splice attempt is wrapped in a
+    /// `std::panic::catch_unwind`-equivalent (here just a defensive
+    /// match that swallows malformed entries) so one bad MCP entry
+    /// (missing token, malformed cfg) can't drop the entire
+    /// `mcpServers` map and turn every tool name in the system prompt
+    /// into a hallucination.
     pub fn build_mcp_config(&self) -> Option<serde_json::Value> {
         use crate::services::{mcp_registry, mcp_secrets};
         let entries = mcp_registry::list_all();
         if entries.is_empty() {
             return None;
         }
+
+        let template_reveng = matches!(
+            self.agent_template.as_deref(),
+            Some("reverse_engineering")
+        );
+
         let mut servers = serde_json::Map::new();
+        let mut mounted: Vec<String> = Vec::new();
+        let mut skipped: Vec<String> = Vec::new();
+        let mut failed: Vec<String> = Vec::new();
+
         for (name, cfg) in entries {
-            // Splice the OAuth bearer (when present) into the headers
-            // for http/sse servers — same shape Gemini's registry-to-
-            // ACP mapper uses.
-            let mut spliced = cfg.clone();
-            if let Some(t) = spliced.get("type").and_then(|v| v.as_str()) {
-                if matches!(t, "http" | "sse") {
-                    if let Some(secret) = mcp_secrets::get(&name) {
-                        if let Some(tok) = secret.access_token {
-                            let token_type = secret
-                                .extra
-                                .get("token_type")
-                                .and_then(|v| v.as_str())
-                                .map(|s| {
-                                    if s.to_lowercase() == "bearer" {
-                                        "Bearer".to_string()
-                                    } else {
-                                        s.to_string()
-                                    }
-                                })
-                                .unwrap_or_else(|| "Bearer".to_string());
-                            let headers = spliced
-                                .get_mut("headers")
-                                .and_then(|h| h.as_object_mut())
-                                .cloned();
-                            let mut headers = headers.unwrap_or_default();
-                            headers.insert(
-                                "Authorization".into(),
-                                serde_json::Value::String(format!("{token_type} {tok}")),
-                            );
-                            if let Some(obj) = spliced.as_object_mut() {
-                                obj.insert(
-                                    "headers".into(),
-                                    serde_json::Value::Object(headers),
-                                );
-                            }
-                        }
+            // ── Role/template filtering ──
+            match name.as_str() {
+                "fleet_memory" => { /* always mount */ }
+                "fleet_dispatch" => {
+                    if self.is_staff {
+                        skipped.push(name.clone());
+                        continue;
                     }
                 }
+                "fleet_reveng" => {
+                    if !template_reveng {
+                        skipped.push(name.clone());
+                        continue;
+                    }
+                }
+                _ => { /* user MCP — opted in explicitly */ }
             }
-            servers.insert(name, spliced);
+
+            // ── Per-server splice, isolated so one failure can't poison the rest ──
+            match splice_server_config(&name, &cfg, &mcp_secrets::get(&name)) {
+                Ok(spliced) => {
+                    servers.insert(name.clone(), spliced);
+                    mounted.push(name);
+                }
+                Err(reason) => {
+                    failed.push(format!("{name}: {reason}"));
+                    tracing::warn!(
+                        target: "claude",
+                        mcp = %name,
+                        session_id = %self.session_id,
+                        is_staff = self.is_staff,
+                        "skipping malformed MCP entry: {reason}"
+                    );
+                }
+            }
+        }
+
+        // Single line that answers "did fleet_dispatch / fleet_memory
+        // actually load for this turn?" without spelunking. Mirrors
+        // the `sdk.send mcp_mounted=…` log in sdk_bridge.py.
+        tracing::info!(
+            target: "claude",
+            session_id = %self.session_id,
+            is_staff = self.is_staff,
+            agent_template = self.agent_template.as_deref().unwrap_or(""),
+            mcp_mounted = ?mounted,
+            mcp_skipped = ?skipped,
+            mcp_failed = ?failed,
+            "mcp_config built",
+        );
+
+        if servers.is_empty() {
+            return None;
         }
         Some(serde_json::json!({ "mcpServers": servers }))
+    }
+
+    /// Which `mcp__<server>__<tool>` names should this session's system
+    /// prompt advertise? Drives a future `allowed_tools` whitelist (staff
+    /// path) and is the canonical answer to "is the tool actually
+    /// mounted?" — keeping this aligned with `build_mcp_config` is the
+    /// fix for the "Searched the web for mcp__fleet_dispatch__…"
+    /// fallback: if a tool name appears in the prompt but the MCP
+    /// didn't mount, claude does ToolSearch.
+    pub fn mcp_tool_names(&self) -> Vec<&'static str> {
+        let mut names: Vec<&'static str> =
+            vec!["mcp__fleet_memory__remember", "mcp__fleet_memory__recall",
+                 "mcp__fleet_memory__dump_session_memory"];
+        if !self.is_staff {
+            names.push("mcp__fleet_dispatch__dispatch_to_agent");
+        }
+        if matches!(self.agent_template.as_deref(), Some("reverse_engineering")) {
+            names.extend([
+                "mcp__fleet_reveng__fetch_url",
+                "mcp__fleet_reveng__discover_assets",
+                "mcp__fleet_reveng__find_endpoints",
+                "mcp__fleet_reveng__save_asset",
+            ]);
+        }
+        names
     }
 
     /// Spawn + stream parsed events over an mpsc receiver (faithful
@@ -642,5 +857,69 @@ mod tests {
         assert!(c.windows(2).any(|w| w == ["--mcp-config", "/tmp/mcp.json"]));
         // Message is still the last arg even when --mcp-config is set.
         assert_eq!(c.last().unwrap(), "hi");
+    }
+
+    #[test]
+    fn build_command_staff_emits_constrained_tools_and_subagents() {
+        let mut b = ClaudeBridge::new("s", "/tmp/x");
+        b.is_staff = true;
+        b.system_prompt = Some("you are fleet".into());
+        let c = b.build_command("hi", None);
+
+        // --system-prompt is set without the prior `--tools ""` pair.
+        assert!(c.windows(2).any(|w| w == ["--system-prompt", "you are fleet"]));
+        assert!(!c.windows(2).any(|w| w[0] == "--tools" && w[1].is_empty()));
+
+        // --allowedTools constrains to Agent + research + mcp_memory.
+        let idx = c.iter().position(|s| s == "--allowedTools").expect("--allowedTools");
+        let names = &c[idx + 1];
+        assert!(names.contains("Agent"));
+        assert!(names.contains("WebSearch"));
+        assert!(names.contains("WebFetch"));
+        assert!(names.contains("mcp__fleet_memory__recall"));
+        // Staff path must NOT advertise fleet_dispatch — staff uses the
+        // [[DISPATCH:]] text protocol instead. Mounting the tool name
+        // here would re-introduce the "Searched the web for select:
+        // mcp__fleet_dispatch__dispatch_to_agent" symptom.
+        assert!(!names.contains("mcp__fleet_dispatch__"));
+
+        // --agents JSON registers the 5 named subagents.
+        let aidx = c.iter().position(|s| s == "--agents").expect("--agents");
+        let agents_json: serde_json::Value = serde_json::from_str(&c[aidx + 1]).unwrap();
+        for name in ["code-reviewer", "bug-fixer", "test-writer", "researcher", "architect"] {
+            assert!(agents_json.get(name).is_some(), "missing subagent: {name}");
+        }
+    }
+
+    #[test]
+    fn build_command_non_staff_has_no_tool_restriction() {
+        let b = ClaudeBridge::new("s", "/tmp/x");
+        let c = b.build_command("hi", None);
+        assert!(!c.iter().any(|s| s == "--allowedTools"));
+        assert!(!c.iter().any(|s| s == "--agents"));
+    }
+
+    #[test]
+    fn mcp_tool_names_align_with_role_and_template() {
+        // Non-staff baseline: memory + dispatch.
+        let b = ClaudeBridge::new("s", "/tmp/x");
+        let names = b.mcp_tool_names();
+        assert!(names.contains(&"mcp__fleet_memory__recall"));
+        assert!(names.contains(&"mcp__fleet_dispatch__dispatch_to_agent"));
+        assert!(!names.contains(&"mcp__fleet_reveng__fetch_url"));
+
+        // Staff: memory only.
+        let mut s = ClaudeBridge::new("s", "/tmp/x");
+        s.is_staff = true;
+        let names = s.mcp_tool_names();
+        assert!(names.contains(&"mcp__fleet_memory__recall"));
+        assert!(!names.contains(&"mcp__fleet_dispatch__dispatch_to_agent"));
+
+        // Reverse-engineering template adds reveng tools to non-staff.
+        let mut r = ClaudeBridge::new("s", "/tmp/x");
+        r.agent_template = Some("reverse_engineering".into());
+        let names = r.mcp_tool_names();
+        assert!(names.contains(&"mcp__fleet_reveng__fetch_url"));
+        assert!(names.contains(&"mcp__fleet_reveng__discover_assets"));
     }
 }

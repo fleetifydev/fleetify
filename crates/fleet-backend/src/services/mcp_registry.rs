@@ -91,7 +91,7 @@ pub fn get(name: &str) -> Option<Value> {
 pub const FLEET_BUILTIN_NAMES: &[&str] =
     &["fleet_memory", "fleet_dispatch", "fleet_reveng"];
 
-fn builtin_command(name: &str) -> Option<&'static str> {
+fn builtin_basename(name: &str) -> Option<&'static str> {
     match name {
         "fleet_memory" => Some("fleet-memory-mcp"),
         "fleet_dispatch" => Some("fleet-dispatch-mcp"),
@@ -100,13 +100,48 @@ fn builtin_command(name: &str) -> Option<&'static str> {
     }
 }
 
+/// Resolve a builtin MCP binary to an absolute path so claude/gemini/
+/// codex CLIs can spawn it without depending on PATH. Resolution order:
+///
+///   1. Same directory as the running executable (Tauri-bundled prod
+///      layout: `fleetify-app.exe` + `fleet-*-mcp.exe` side-by-side).
+///   2. `target/debug` / `target/release` next to the running exe
+///      (covered by step 1 in practice since Cargo emits all
+///      workspace binaries to the same target dir).
+///   3. `which::which()` — picks up `cargo install` placements and
+///      PATH-globally-installed copies. Honors PATHEXT on Windows so
+///      `.exe` shims resolve correctly (the same fix providers.rs
+///      uses for the gemini/codex node `.cmd` shims).
+///
+/// Returns the bare basename as a last-resort fallback so a missing
+/// binary still surfaces in logs as a spawn failure (rather than
+/// silently being elided from the registry).
+pub fn resolve_builtin_path(basename: &str) -> String {
+    let exe_name = if cfg!(windows) {
+        format!("{basename}.exe")
+    } else {
+        basename.to_string()
+    };
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join(&exe_name);
+            if candidate.exists() {
+                return candidate.to_string_lossy().into_owned();
+            }
+        }
+    }
+    if let Ok(path) = which::which(basename) {
+        return path.to_string_lossy().into_owned();
+    }
+    basename.to_string()
+}
+
 /// Ensure Fleet's 3 stdio MCP servers are present in the registry.
 /// Idempotent: any name already registered (even by the user
-/// pointing at a custom binary) is left alone. New entries point at
-/// the workspace's `fleet-<name>-mcp` binary by basename — the user
-/// is expected to have installed the workspace with `cargo install
-/// --path crates/<name>-mcp` or to have them on PATH via the
-/// release bundler.
+/// pointing at a custom binary) is left alone. New entries resolve
+/// the `fleet-<name>-mcp` binary to an absolute path via
+/// `resolve_builtin_path` so the claude CLI can spawn it regardless
+/// of PATH state.
 pub fn ensure_fleet_builtins() {
     let mut doc = load();
     let mut changed = false;
@@ -114,14 +149,15 @@ pub fn ensure_fleet_builtins() {
         if doc.mcp_servers.contains_key(*name) {
             continue;
         }
-        let Some(bin) = builtin_command(name) else {
+        let Some(base) = builtin_basename(name) else {
             continue;
         };
+        let command = resolve_builtin_path(base);
         doc.mcp_servers.insert(
             (*name).to_string(),
             serde_json::json!({
                 "type": "stdio",
-                "command": bin,
+                "command": command,
                 "args": [],
                 "env": {},
                 "builtin": true,
@@ -208,8 +244,24 @@ mod tests {
         ensure_fleet_builtins();
         let all = list_all();
         assert_eq!(all["fleet_memory"]["command"], "/custom/path/memory");
-        // Other two still default.
-        assert_eq!(all["fleet_dispatch"]["command"], "fleet-dispatch-mcp");
-        assert_eq!(all["fleet_reveng"]["command"], "fleet-reveng-mcp");
+        // Other two are resolved via `resolve_builtin_path` — in the test
+        // env the binary may or may not exist next to the test runner;
+        // check we still end with a non-empty command string that
+        // either ends in the expected basename (resolved) or equals
+        // the basename verbatim (fallback). The shape contract — a
+        // string command for a stdio server — is what matters.
+        for (name, base) in
+            [("fleet_dispatch", "fleet-dispatch-mcp"), ("fleet_reveng", "fleet-reveng-mcp")]
+        {
+            let cmd = all[name]["command"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{name} command must be a string"));
+            assert!(!cmd.is_empty(), "{name} command must not be empty");
+            let stem = std::path::Path::new(cmd)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(cmd);
+            assert_eq!(stem, base, "{name} should resolve to {base}");
+        }
     }
 }
