@@ -1,14 +1,17 @@
-//! `/api/fleet/*` — Phase-3 stubs. The full fleet_brain (Haiku-driven
-//! continue/ask/done classification + fleet chat Q&A) lands with the
-//! orchestration phase. For now, faithful endpoint surface returning
-//! the degraded-default shape so the FleetCopilot UI in the renderer
-//! renders gracefully instead of 404'ing.
+//! `/api/fleet/*` — Phase-3 Haiku-driven analyze + chat. Wired to the
+//! fleet_brain service which shells to `claude --print` for the
+//! classification + reply (haiku_breaker short-circuits when Haiku
+//! is unavailable so the user never sees a fake "Fleet couldn't
+//! analyze" card sitting on top of their chat).
 
+use axum::extract::State;
 use axum::routing::post;
 use axum::{Json, Router};
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::routers::AppState;
+use crate::services::fleet_brain;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -16,24 +19,48 @@ pub fn router() -> Router<AppState> {
         .route("/fleet/chat", post(chat))
 }
 
-async fn analyze() -> Json<Value> {
-    // Same shape as AnalyzeResult with degraded=true so the renderer
-    // suppresses the Fleet decision card (parity with the Python
-    // _safe_default() path).
-    Json(json!({
-        "decision": "ask",
-        "reasoning": "fleet_brain not implemented yet (Phase 3)",
-        "question": null,
-        "next_prompt": null,
-        "summary": null,
-        "sections": null,
-        "degraded": true
-    }))
+#[derive(Deserialize, Default)]
+struct AnalyzeBody {
+    #[serde(default)]
+    session_id: String,
+    #[serde(default)]
+    prior_prompt: String,
+    #[serde(default)]
+    agent_text: String,
+    #[serde(default)]
+    project_context: Option<String>,
 }
 
-async fn chat() -> Json<Value> {
-    Json(json!({
-        "text": "fleet chat is not implemented yet (Phase 3 follow-up).",
-        "cost_estimate_usd": 0.0
-    }))
+async fn analyze(State(st): State<AppState>, Json(b): Json<AnalyzeBody>) -> Json<Value> {
+    let r = fleet_brain::analyze(
+        &st.auth.pool,
+        &b.session_id,
+        &b.prior_prompt,
+        &b.agent_text,
+        b.project_context.as_deref(),
+    )
+    .await
+    .unwrap_or_else(|e| fleet_brain::safe_default(&e.to_string()));
+    Json(serde_json::to_value(r).unwrap_or(Value::Null))
+}
+
+#[derive(Deserialize, Default)]
+struct ChatBody {
+    #[serde(default)]
+    session_id: String,
+    #[serde(default)]
+    prompt: String,
+    #[serde(default)]
+    fleet_snapshot: String,
+}
+
+async fn chat(State(st): State<AppState>, Json(b): Json<ChatBody>) -> Json<Value> {
+    match fleet_brain::chat(&st.auth.pool, &b.session_id, &b.prompt, &b.fleet_snapshot).await
+    {
+        Ok(r) => Json(serde_json::to_value(r).unwrap_or(Value::Null)),
+        Err(e) => Json(json!({
+            "text": format!("Fleet couldn't reply ({e})."),
+            "cost_estimate_usd": 0.0,
+        })),
+    }
 }
