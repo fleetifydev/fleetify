@@ -803,6 +803,7 @@ async fn process_direct_dispatches(
             sink,
             json!({
                 "type": "dispatch_ack",
+                "session_id": staff_sid,
                 "target_id": d.target_id,
                 "task": d.task,
                 "success": ack_success,
@@ -810,6 +811,23 @@ async fn process_direct_dispatches(
             }),
         )
         .await;
+        // Fire dispatch_incoming on the TARGET session (when found) so
+        // the target's own chat shows the user bubble + Thinking
+        // indicator while the bridge spins up. Faithful with
+        // chat.py:967-972.
+        if ack_success {
+            if let Some(t) = target.as_ref() {
+                st.sm.send_to_session_ws(
+                    &t.id,
+                    json!({
+                        "type": "dispatch_incoming",
+                        "session_id": t.id,
+                        "text": d.task,
+                        "timestamp": chrono::Utc::now().to_rfc3339(),
+                    }),
+                );
+            }
+        }
 
         if !ack_success {
             continue;
@@ -983,12 +1001,30 @@ async fn handle_staff_dispatch_tokens(
         .execute(&st.auth.pool)
         .await;
 
+        // Fire dispatch_incoming on the TARGET session so its own chat
+        // viewers (if any) render the task as a user bubble + start
+        // the "Thinking…" indicator while the bridge spins up.
+        // Faithful with chat.py:967-972.
+        st.sm.send_to_session_ws(
+            &target.id,
+            json!({
+                "type": "dispatch_incoming",
+                "session_id": target.id,
+                "text": full_task,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            }),
+        );
+
         // Ack staff immediately so the pending card flips to "dispatched".
         let display = target.id.chars().take(8).collect::<String>();
         send_json(
             sink,
             json!({
                 "type": "dispatch_ack",
+                // session_id is the renderer's WS-demux routing key —
+                // without it the staff chat-store never sees this ack
+                // and the "Dispatching to X" pending card never paints.
+                "session_id": staff_sid,
                 "target_id": target.id,
                 "task": d.task,
                 "success": true,
@@ -1150,6 +1186,26 @@ async fn run_dispatched_task(
 ) {
     let target_id = target.id.clone();
 
+    // Emit dispatch_progress(phase="received") to staff so the pending
+    // card flips from a bare "Dispatching…" to a labeled phase
+    // immediately, before the bridge spins. Auto-wake flag set when
+    // the target was previously stopped/error so the renderer can
+    // explain the longer-than-usual cold-start.
+    let auto_woken = matches!(
+        target.status.as_str(),
+        "stopped" | "error" | "idle"
+    );
+    sm.send_to_session_ws(
+        &staff_sid,
+        json!({
+            "type": "dispatch_progress",
+            "session_id": staff_sid,
+            "target_id": target_id,
+            "phase": "received",
+            "auto_woken": auto_woken,
+        }),
+    );
+
     // ── Pre-flight budget gate (parity with chat.py:1071-1076) ──
     // Refuse outright when the target's budget cap is exhausted, so
     // a runaway dispatch can't obliterate the limit by appending one
@@ -1264,6 +1320,20 @@ async fn run_dispatched_task(
         }
     };
 
+    // Phase 2: starting — bridge is about to spawn. Auto-woken flag
+    // surfaces in the staff card so the renderer can show a "waking
+    // up…" subtitle on previously-stopped agents.
+    sm.send_to_session_ws(
+        &staff_sid,
+        json!({
+            "type": "dispatch_progress",
+            "session_id": staff_sid,
+            "target_id": target_id,
+            "phase": "starting",
+            "auto_woken": auto_woken,
+        }),
+    );
+
     let mut rx = match any_bridge.send_message(&task).await {
         Ok(rx) => rx,
         Err(e) => {
@@ -1288,6 +1358,7 @@ async fn run_dispatched_task(
                     "task": task_for_card,
                     "success": false,
                     "summary": summary,
+                    "project_path": target.project_path,
                 }),
             );
             return;
@@ -1311,19 +1382,106 @@ async fn run_dispatched_task(
     // live-push to the caller WS, and bail out with whatever partial
     // content already accumulated.
     let bridge_for_abort = any_bridge.clone();
+    let mut running_emitted = false;
     let stream_result = tokio::time::timeout(
         std::time::Duration::from_secs(DISPATCH_TIMEOUT_SECS),
         async {
             while let Some(ev) = rx.recv().await {
-                // Mirror the target's stream live to any viewer of that
-                // session's chat (so dispatching to a visible agent
-                // updates its own bubble in real time, just like a
-                // user-initiated send).
+                // First real event from the bridge → flip the pending
+                // card's phase badge to "running" so the user knows
+                // the agent is actively producing output.
+                if !running_emitted {
+                    running_emitted = true;
+                    sm.send_to_session_ws(
+                        &staff_sid,
+                        json!({
+                            "type": "dispatch_progress",
+                            "session_id": staff_sid,
+                            "target_id": target_id,
+                            "phase": "running",
+                        }),
+                    );
+                }
+
+                // Mirror the target's stream live to any viewer of
+                // that session's chat — dispatching to a visible
+                // agent updates its own bubble in real time, just
+                // like a user-initiated send.
                 let mut payload = ev.to_json();
                 if let Value::Object(ref mut m) = payload {
                     m.insert("session_id".into(), json!(target_id));
                 }
                 sm.send_to_session_ws(&target_id, payload);
+
+                // Mirror high-signal events to the STAFF session as
+                // `dispatch_stream` so the pending card surfaces a
+                // live preview of what the target agent is doing
+                // (faithful with chat.py's dispatch_stream emit).
+                match &ev {
+                    BridgeEvent::MessageDelta { text } => {
+                        sm.send_to_session_ws(
+                            &staff_sid,
+                            json!({
+                                "type": "dispatch_stream",
+                                "session_id": staff_sid,
+                                "target_id": target_id,
+                                "kind": "message_delta",
+                                "text": text,
+                            }),
+                        );
+                    }
+                    BridgeEvent::Thinking { text } => {
+                        sm.send_to_session_ws(
+                            &staff_sid,
+                            json!({
+                                "type": "dispatch_stream",
+                                "session_id": staff_sid,
+                                "target_id": target_id,
+                                "kind": "thinking",
+                                "text": text,
+                            }),
+                        );
+                    }
+                    BridgeEvent::ToolStart { tool_id, name, .. } => {
+                        sm.send_to_session_ws(
+                            &staff_sid,
+                            json!({
+                                "type": "dispatch_stream",
+                                "session_id": staff_sid,
+                                "target_id": target_id,
+                                "kind": "tool_start",
+                                "tool_id": tool_id,
+                                "tool_name": name,
+                            }),
+                        );
+                    }
+                    BridgeEvent::ToolEnd { tool_id, is_error, .. } => {
+                        sm.send_to_session_ws(
+                            &staff_sid,
+                            json!({
+                                "type": "dispatch_stream",
+                                "session_id": staff_sid,
+                                "target_id": target_id,
+                                "kind": "tool_end",
+                                "tool_id": tool_id,
+                                "is_error": is_error,
+                            }),
+                        );
+                    }
+                    BridgeEvent::Error { error } => {
+                        sm.send_to_session_ws(
+                            &staff_sid,
+                            json!({
+                                "type": "dispatch_stream",
+                                "session_id": staff_sid,
+                                "target_id": target_id,
+                                "kind": "error",
+                                "text": error,
+                            }),
+                        );
+                    }
+                    _ => {}
+                }
 
                 match &ev {
                     BridgeEvent::Init { claude_session_id, model, .. } => {
@@ -1441,8 +1599,16 @@ async fn run_dispatched_task(
             p
         }
     };
-    persist_dispatch_result(&pool, &staff_sid, &target_id, &task_for_card, success, &preview)
-        .await;
+    persist_dispatch_result_with_path(
+        &pool,
+        &staff_sid,
+        &target_id,
+        &task_for_card,
+        success,
+        &preview,
+        Some(&target.project_path),
+    )
+    .await;
     // Always clear the target's ancestry chain when its run ends
     // (success, timeout, or error). Without this, a re-dispatched
     // session would inherit stale ancestry from a prior run and
@@ -1450,7 +1616,8 @@ async fn run_dispatched_task(
     sm.clear_dispatch_chain(&target_id);
     // Live push to the caller WS so the pending card resolves
     // immediately. Persistence above is the on-reload backstop;
-    // this is the live UX.
+    // this is the live UX. project_path lets the renderer's
+    // DispatchResultCard show the full target folder.
     sm.send_to_session_ws(
         &staff_sid,
         json!({
@@ -1460,16 +1627,15 @@ async fn run_dispatched_task(
             "task": task_for_card,
             "success": success,
             "summary": preview,
+            "project_path": target.project_path,
         }),
     );
 }
 
 /// Persist a `system`-role `dispatch_result` message on the staff
-/// session's transcript. The renderer's dispatch-card widget reads
-/// this block back on next reload, so the pending card resolves
-/// regardless of whether the staff WS was open when the dispatched
-/// task finished. Faithful with the chat.py "persist as fallback"
-/// branch when the live WS push fails.
+/// session's transcript. Used in early-exit paths where the target's
+/// project_path isn't readily available — see
+/// [`persist_dispatch_result_with_path`] for the regular path.
 async fn persist_dispatch_result(
     pool: &sqlx::SqlitePool,
     staff_sid: &str,
@@ -1478,13 +1644,56 @@ async fn persist_dispatch_result(
     success: bool,
     summary: &str,
 ) {
-    let block = json!([{
-        "type": "dispatch_result",
-        "agent_id": target_id,
-        "task": task,
-        "success": success,
-        "summary": summary,
-    }]);
+    persist_dispatch_result_with_path(
+        pool, staff_sid, target_id, task, success, summary, None,
+    )
+    .await
+}
+
+/// Persist a `system`-role `dispatch_result` message on the staff
+/// session's transcript. The renderer's dispatch-card widget reads
+/// this block back on next reload, so the pending card resolves
+/// regardless of whether the staff WS was open when the dispatched
+/// task finished. Faithful with the chat.py "persist as fallback"
+/// branch when the live WS push fails. `project_path` lets the
+/// DispatchResultCard show the full target folder on reload —
+/// matches the live-push event shape.
+async fn persist_dispatch_result_with_path(
+    pool: &sqlx::SqlitePool,
+    staff_sid: &str,
+    target_id: &str,
+    task: &str,
+    success: bool,
+    summary: &str,
+    project_path: Option<&str>,
+) {
+    let block_entry = match project_path {
+        Some(p) => json!({
+            "type": "dispatch_result",
+            "agent_id": target_id,
+            "task": task,
+            "success": success,
+            "summary": summary,
+            "project_path": p,
+        }),
+        None => json!({
+            "type": "dispatch_result",
+            "agent_id": target_id,
+            "task": task,
+            "success": success,
+            "summary": summary,
+        }),
+    };
+    let block = json!([block_entry]);
+    // (The remainder of the original body — INSERT INTO messages — runs below.)
+    persist_block_into(pool, staff_sid, &block).await;
+}
+
+async fn persist_block_into(
+    pool: &sqlx::SqlitePool,
+    staff_sid: &str,
+    block: &Value,
+) {
     let _ = sqlx::query(
         "INSERT INTO messages (id,session_id,role,content,cost_usd,timestamp) \
          VALUES (?,?,?,?,0.0,?)",
