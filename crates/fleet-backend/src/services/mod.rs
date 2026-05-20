@@ -9,5 +9,6 @@ pub mod migration;
 pub mod plugins;
 pub mod pricing;
 pub mod provider_inspector;
+pub mod recall_hook;
 pub mod telemetry;
 pub mod worktree;
