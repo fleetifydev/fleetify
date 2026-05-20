@@ -98,6 +98,191 @@ pub fn list_claude_skills(home: &Path, project: Option<&Path>) -> Vec<Skill> {
     all
 }
 
+/// One row from `_scan_settings_hooks` — a hook is a `{event, matcher,
+/// command}` triplet pulled out of `~/.claude/settings.json`'s `hooks`
+/// block. Event names are PreToolUse / PostToolUse / Notification etc.
+#[derive(Debug, Clone, Serialize)]
+pub struct Hook {
+    pub kind: &'static str, // "hook"
+    pub provider: &'static str,
+    pub name: String,
+    pub source_tier: &'static str,
+    pub path: String,
+    pub event: String,
+    pub matcher: Option<String>,
+    pub command: String,
+}
+
+/// Walk a Claude `settings.json` `hooks` object and flatten every
+/// matcher's commands into one row each. Shape:
+///   {"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"command":"..."}]}]}}
+fn flatten_claude_hooks_block(
+    settings_path: &Path,
+    tier: &'static str,
+) -> Vec<Hook> {
+    let Ok(text) = std::fs::read_to_string(settings_path) else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    let Some(hooks) = v.get("hooks").and_then(|x| x.as_object()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (event, group) in hooks {
+        let Some(arr) = group.as_array() else { continue };
+        for entry in arr {
+            let Some(obj) = entry.as_object() else { continue };
+            let matcher = obj
+                .get("matcher")
+                .and_then(|x| x.as_str())
+                .map(String::from);
+            let Some(commands) = obj.get("hooks").and_then(|x| x.as_array()) else {
+                continue;
+            };
+            for cmd in commands {
+                let Some(c) = cmd.as_object() else { continue };
+                let command = c
+                    .get("command")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if command.is_empty() {
+                    continue;
+                }
+                // Stable display name — matcher + event keeps two hooks
+                // for the same event apart in the renderer's hooks tab.
+                let name = match &matcher {
+                    Some(m) => format!("{event}: {m}"),
+                    None => event.clone(),
+                };
+                out.push(Hook {
+                    kind: "hook",
+                    provider: "claude",
+                    name,
+                    source_tier: tier,
+                    path: settings_path.to_string_lossy().into_owned(),
+                    event: event.clone(),
+                    matcher: matcher.clone(),
+                    command,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Claude hooks: `~/.claude/settings.json` + `<project>/.claude/settings.json`
+/// + `<project>/.claude/settings.local.json` (project-local overrides).
+pub fn list_claude_hooks(home: &Path, project: Option<&Path>) -> Vec<Hook> {
+    let mut all = flatten_claude_hooks_block(
+        &home.join(".claude").join("settings.json"),
+        "user",
+    );
+    if let Some(p) = project {
+        all.extend(flatten_claude_hooks_block(
+            &p.join(".claude").join("settings.json"),
+            "project",
+        ));
+        all.extend(flatten_claude_hooks_block(
+            &p.join(".claude").join("settings.local.json"),
+            "project",
+        ));
+    }
+    all
+}
+
+/// One row from `_scan_md_commands` — a slash command pulled out of
+/// `<root>/<namespace>/<name>.md` with optional `description:`
+/// frontmatter.
+#[derive(Debug, Clone, Serialize)]
+pub struct Command {
+    pub kind: &'static str, // "command"
+    pub provider: &'static str,
+    pub name: String,
+    pub source_tier: &'static str,
+    pub path: String,
+    pub namespace: Option<String>,
+    pub description: Option<String>,
+}
+
+/// Walk a Claude commands directory recursively (one level deep,
+/// matching the renderer's `/git:commit` style). Subdirectories become
+/// namespaces. Faithful with `_scan_md_commands`.
+fn scan_md_commands(
+    root: &Path,
+    tier: &'static str,
+    force_namespace: Option<&'static str>,
+) -> Vec<Command> {
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(root) else {
+        return out;
+    };
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("md") {
+            push_md_command(&p, tier, force_namespace.map(String::from), &mut out);
+        } else if p.is_dir() {
+            let ns = p
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(String::from);
+            if let Ok(sub) = std::fs::read_dir(&p) {
+                for sub_entry in sub.flatten() {
+                    let sp = sub_entry.path();
+                    if sp.is_file()
+                        && sp.extension().and_then(|s| s.to_str()) == Some("md")
+                    {
+                        push_md_command(&sp, tier, ns.clone(), &mut out);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn push_md_command(
+    md_path: &Path,
+    tier: &'static str,
+    namespace: Option<String>,
+    out: &mut Vec<Command>,
+) {
+    let text = std::fs::read_to_string(md_path).unwrap_or_default();
+    let (_n, desc) = parse_frontmatter(&text);
+    let name = md_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    if name.is_empty() {
+        return;
+    }
+    out.push(Command {
+        kind: "command",
+        provider: "claude",
+        name,
+        source_tier: tier,
+        path: md_path.to_string_lossy().into_owned(),
+        namespace,
+        description: desc,
+    });
+}
+
+/// Claude commands: `~/.claude/commands/**/*.md` + project equivalent.
+pub fn list_claude_commands(home: &Path, project: Option<&Path>) -> Vec<Command> {
+    let mut all = scan_md_commands(&home.join(".claude").join("commands"), "user", None);
+    if let Some(p) = project {
+        all.extend(scan_md_commands(
+            &p.join(".claude").join("commands"),
+            "project",
+            None,
+        ));
+    }
+    all
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,6 +300,85 @@ mod tests {
     fn no_frontmatter_returns_none() {
         let (n, d) = parse_frontmatter("body only");
         assert!(n.is_none() && d.is_none());
+    }
+
+    #[test]
+    fn list_claude_hooks_flattens_event_matcher_command_triplets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(
+            home.join(".claude/settings.json"),
+            r#"{"hooks":{"PreToolUse":[
+                {"matcher":"Bash","hooks":[{"command":"fleet-permission-check"}]},
+                {"matcher":"Edit","hooks":[
+                    {"command":"./pre-edit.sh"},
+                    {"command":"./pre-edit-2.sh"}
+                ]}
+            ],"PostToolUse":[{"hooks":[{"command":"./after.sh"}]}]}}"#,
+        )
+        .unwrap();
+        let items = list_claude_hooks(&home, None);
+        assert_eq!(items.len(), 4);
+        let pre_bash = items
+            .iter()
+            .find(|h| h.event == "PreToolUse" && h.matcher.as_deref() == Some("Bash"))
+            .unwrap();
+        assert_eq!(pre_bash.command, "fleet-permission-check");
+        assert_eq!(pre_bash.source_tier, "user");
+        let posts: Vec<&Hook> = items
+            .iter()
+            .filter(|h| h.event == "PostToolUse")
+            .collect();
+        assert_eq!(posts.len(), 1);
+        assert!(posts[0].matcher.is_none());
+    }
+
+    #[test]
+    fn list_claude_hooks_returns_empty_when_settings_missing_or_malformed() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Missing file entirely.
+        assert!(list_claude_hooks(tmp.path(), None).is_empty());
+        // Present but malformed JSON.
+        let home = tmp.path().join("home2");
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(home.join(".claude/settings.json"), "not json").unwrap();
+        assert!(list_claude_hooks(&home, None).is_empty());
+        // Valid JSON without a `hooks` key.
+        std::fs::write(home.join(".claude/settings.json"), r#"{"other":1}"#).unwrap();
+        assert!(list_claude_hooks(&home, None).is_empty());
+    }
+
+    #[test]
+    fn list_claude_commands_walks_one_level_of_namespaces() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let cmd_root = home.join(".claude/commands");
+        std::fs::create_dir_all(cmd_root.join("git")).unwrap();
+
+        // /flat-command (no namespace).
+        std::fs::write(
+            cmd_root.join("ping.md"),
+            "---\ndescription: pong\n---\nbody",
+        )
+        .unwrap();
+        // /git:commit (namespace = "git").
+        std::fs::write(
+            cmd_root.join("git/commit.md"),
+            "---\ndescription: nice commit\n---\nbody",
+        )
+        .unwrap();
+        // Non-.md sibling — ignored.
+        std::fs::write(cmd_root.join("readme.txt"), "ignore").unwrap();
+
+        let cmds = list_claude_commands(&home, None);
+        assert_eq!(cmds.len(), 2);
+        let flat = cmds.iter().find(|c| c.name == "ping").unwrap();
+        assert!(flat.namespace.is_none());
+        assert_eq!(flat.description.as_deref(), Some("pong"));
+        let ns = cmds.iter().find(|c| c.name == "commit").unwrap();
+        assert_eq!(ns.namespace.as_deref(), Some("git"));
+        assert_eq!(ns.description.as_deref(), Some("nice commit"));
     }
 
     #[test]

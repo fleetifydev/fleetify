@@ -46,8 +46,8 @@ pub fn router() -> Router<AppState> {
             patch(update_memory).delete(delete_memory),
         )
         .route("/sessions/{id}/skills", get(list_skills))
-        .route("/sessions/{id}/hooks", get(empty_items))
-        .route("/sessions/{id}/commands", get(empty_items))
+        .route("/sessions/{id}/hooks", get(list_hooks))
+        .route("/sessions/{id}/commands", get(list_commands))
         .route("/claude-sessions", get(list_claude_sessions))
         .route("/gemini-sessions", get(list_gemini_sessions))
         .route("/codex-sessions", get(list_codex_sessions))
@@ -836,9 +836,64 @@ async fn claude_history(
     Ok(Json(Value::Array(v)))
 }
 
-async fn empty_items() -> Json<Value> {
-    // /hooks /commands — Phase 2/3 ProviderInspector follow-up.
-    Json(json!({"items": []}))
+async fn list_hooks(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let s = owned(&st, &id, &user.id).await?;
+    if s.tool != "claude" {
+        return Ok(Json(json!({ "items": [] })));
+    }
+    let home = std::path::PathBuf::from(
+        std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_else(|_| ".".into()),
+    );
+    let project = if s.project_path.is_empty() {
+        None
+    } else {
+        Some(std::path::PathBuf::from(&s.project_path))
+    };
+    let items = crate::services::provider_inspector::list_claude_hooks(
+        &home,
+        project.as_deref(),
+    );
+    let v: Vec<Value> = items
+        .into_iter()
+        .map(|x| serde_json::to_value(x).unwrap_or(Value::Null))
+        .collect();
+    Ok(Json(json!({ "items": v })))
+}
+
+async fn list_commands(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let s = owned(&st, &id, &user.id).await?;
+    if s.tool != "claude" {
+        return Ok(Json(json!({ "items": [] })));
+    }
+    let home = std::path::PathBuf::from(
+        std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_else(|_| ".".into()),
+    );
+    let project = if s.project_path.is_empty() {
+        None
+    } else {
+        Some(std::path::PathBuf::from(&s.project_path))
+    };
+    let items = crate::services::provider_inspector::list_claude_commands(
+        &home,
+        project.as_deref(),
+    );
+    let v: Vec<Value> = items
+        .into_iter()
+        .map(|x| serde_json::to_value(x).unwrap_or(Value::Null))
+        .collect();
+    Ok(Json(json!({ "items": v })))
 }
 
 /// `/sessions/{id}/skills` — real Claude skills scan via the
