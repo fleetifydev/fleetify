@@ -860,16 +860,29 @@ async fn list_skills(
 
 #[derive(Deserialize)]
 struct PathQ {
-    #[allow(dead_code)]
     path: String,
 }
 
 async fn list_claude_sessions(
     AuthUser(_u): AuthUser,
-    Query(_q): Query<PathQ>,
+    Query(q): Query<PathQ>,
 ) -> Json<Value> {
-    // Phase 2: ~/.claude/projects scan. Empty ⇒ resume picker shows none.
-    Json(json!([]))
+    let project_path = q.path.clone();
+    if project_path.trim().is_empty() {
+        return Json(json!([]));
+    }
+    // Walk + JSONL reads can blow past several MB on long sessions —
+    // offload via spawn_blocking so the axum task keeps serving.
+    let rows = tokio::task::spawn_blocking(move || {
+        crate::services::claude_history::scan_sessions(&project_path)
+    })
+    .await
+    .unwrap_or_default();
+    let v: Vec<Value> = rows
+        .into_iter()
+        .map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
+        .collect();
+    Json(Value::Array(v))
 }
 async fn list_gemini_sessions(AuthUser(_u): AuthUser, Query(_q): Query<PathQ>) -> Json<Value> {
     Json(json!([]))

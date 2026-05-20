@@ -97,6 +97,100 @@ pub fn find_claude_project_dir(path: &str) -> Option<PathBuf> {
     None
 }
 
+/// One row in the resume-picker list — a Claude Code session's id,
+/// modification timestamp, and a short user-prompt preview.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ClaudeSessionPreview {
+    pub session_id: String,
+    pub summary: String,
+    pub updated_at: String,
+}
+
+/// Walk `~/.claude/projects/<encoded>/*.jsonl` and return one row per
+/// transcript file (newest first). Faithful with
+/// `sessions.py::_scan_claude_sessions_sync`. Heavy I/O — call from
+/// a blocking task.
+pub fn scan_sessions(project_path: &str) -> Vec<ClaudeSessionPreview> {
+    let Some(project_dir) = find_claude_project_dir(project_path) else {
+        return Vec::new();
+    };
+    let Ok(rd) = std::fs::read_dir(&project_dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<ClaudeSessionPreview> = Vec::new();
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if p.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let Some(session_id) = p.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let mtime = match entry.metadata().and_then(|m| m.modified()) {
+            Ok(t) => chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339(),
+            Err(_) => chrono::Utc::now().to_rfc3339(),
+        };
+        let summary = first_user_text(&p).unwrap_or_else(|| "No preview".to_string());
+        out.push(ClaudeSessionPreview {
+            session_id: session_id.to_string(),
+            summary,
+            updated_at: mtime,
+        });
+    }
+    // Sort newest first.
+    out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    out
+}
+
+/// First meaningful user-prompt preview from a JSONL transcript,
+/// capped at 120 chars. Skip-prefixes match Python `_SKIP_PREFIXES`.
+pub fn first_user_text(jsonl_path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(jsonl_path).ok()?;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(d) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if d.get("type").and_then(|x| x.as_str()) != Some("user") {
+            continue;
+        }
+        let content = d
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        let texts: Vec<String> = match &content {
+            Value::String(s) => vec![s.clone()],
+            Value::Array(arr) => arr
+                .iter()
+                .filter_map(|b| {
+                    let o = b.as_object()?;
+                    if o.get("type").and_then(|x| x.as_str()) == Some("text") {
+                        o.get("text").and_then(|x| x.as_str()).map(String::from)
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        for raw in texts {
+            let t = raw.trim();
+            if t.is_empty() {
+                continue;
+            }
+            if looks_like_skip_prefix(t) {
+                continue;
+            }
+            return Some(t.chars().take(120).collect());
+        }
+    }
+    None
+}
+
 /// Parse a `<sid>.jsonl` transcript and return the last 120 Fleet-
 /// shaped messages. Best-effort: malformed lines / files are silently
 /// skipped — empty result on any catastrophic failure matches the
@@ -390,6 +484,106 @@ mod tests {
     fn nonexistent_file_returns_empty() {
         let m = parse_jsonl(Path::new("__does_not_exist_5be2__"));
         assert!(m.is_empty());
+    }
+
+    #[test]
+    fn first_user_text_returns_the_first_non_skipped_prompt_capped_at_120() {
+        let prompt = "this is a normal user prompt that should be returned as the preview";
+        let f = tmp_jsonl(&[
+            // First user message uses a skip prefix → must be ignored.
+            r#"{"type":"user","timestamp":"t1","message":{"content":"<command-name>git"}}"#,
+            // Assistant in between — must be skipped (we only want user).
+            r#"{"type":"assistant","timestamp":"t2","message":{"content":[{"type":"text","text":"hi"}]}}"#,
+            // First real user prompt → returned.
+            &format!(r#"{{"type":"user","timestamp":"t3","message":{{"content":"{prompt}"}}}}"#),
+            // Should never be reached.
+            r#"{"type":"user","timestamp":"t4","message":{"content":"later"}}"#,
+        ]);
+        let s = first_user_text(f.path()).unwrap();
+        assert_eq!(s, prompt);
+
+        // Long-prompt cap.
+        let long: String = "abcde".repeat(40); // 200 chars
+        let f2 = tmp_jsonl(&[&format!(
+            r#"{{"type":"user","timestamp":"t","message":{{"content":"{long}"}}}}"#
+        )]);
+        let s2 = first_user_text(f2.path()).unwrap();
+        assert_eq!(s2.chars().count(), 120);
+        assert!(long.starts_with(&s2));
+    }
+
+    #[test]
+    fn first_user_text_handles_array_content_blocks() {
+        let f = tmp_jsonl(&[
+            r#"{"type":"user","timestamp":"t","message":{"content":[{"type":"tool_result","tool_use_id":"x"},{"type":"text","text":"actual prompt"}]}}"#,
+        ]);
+        let s = first_user_text(f.path()).unwrap();
+        assert_eq!(s, "actual prompt");
+    }
+
+    #[test]
+    fn scan_sessions_returns_empty_when_projects_root_missing() {
+        // Point HOME at a tempdir with no .claude/projects subtree
+        // so the function takes the "no projects root" exit.
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
+        std::env::set_var("USERPROFILE", tmp.path());
+        let rows = scan_sessions("/some/project");
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn scan_sessions_lists_jsonl_files_newest_first_with_preview() {
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
+        std::env::set_var("USERPROFILE", tmp.path());
+
+        // Lay out ~/.claude/projects/<encoded>/<sid>.jsonl. Use the
+        // simple "/" → "-" encoding strategy that the resolver tries.
+        let projects = tmp.path().join(".claude").join("projects");
+        let project_path = "/work/myproj";
+        let encoded = project_path.trim_start_matches('/').replace('/', "-");
+        // strategy 3: only `/` → `-`. But original begins with `/`, so leading dash.
+        let project_dir = projects.join(project_path.replace('/', "-"));
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let older = project_dir.join("aaa.jsonl");
+        let newer = project_dir.join("bbb.jsonl");
+        std::fs::write(
+            &older,
+            r#"{"type":"user","timestamp":"t","message":{"content":"older prompt"}}"#,
+        )
+        .unwrap();
+        // Tiny sleep so the newer file's mtime is strictly greater
+        // (filesystem timestamp granularity is OS-dependent; 25ms is
+        // comfortably above the worst case we care about in CI).
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        std::fs::write(
+            &newer,
+            r#"{"type":"user","timestamp":"t","message":{"content":"newer prompt"}}"#,
+        )
+        .unwrap();
+        let _ = encoded;
+
+        let rows = scan_sessions(project_path);
+        assert_eq!(rows.len(), 2);
+        let ids: std::collections::HashSet<&str> =
+            rows.iter().map(|r| r.session_id.as_str()).collect();
+        assert!(ids.contains("aaa"));
+        assert!(ids.contains("bbb"));
+        // Preview text round-trips for both.
+        for r in &rows {
+            match r.session_id.as_str() {
+                "aaa" => assert_eq!(r.summary, "older prompt"),
+                "bbb" => assert_eq!(r.summary, "newer prompt"),
+                _ => panic!("unexpected sid {}", r.session_id),
+            }
+        }
     }
 
     #[test]
