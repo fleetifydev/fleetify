@@ -106,6 +106,21 @@ pub async fn serve(
         tokio::spawn(services::telemetry::run_heartbeat_loop());
     }
 
+    // Ensure the 3 Fleet stdio MCP servers (fleet-memory-mcp /
+    // fleet-dispatch-mcp / fleet-reveng-mcp) are registered in
+    // ~/.fleetify/mcp_servers.json. Idempotent — user-customised
+    // entries are preserved. Skipped quietly when running with
+    // FLEET_DB_URL=sqlite::memory: (test env) to keep tests
+    // hermetic.
+    if std::env::var("FLEET_DB_URL")
+        .ok()
+        .as_deref()
+        .unwrap_or("")
+        .ne("sqlite::memory:")
+    {
+        services::mcp_registry::ensure_fleet_builtins();
+    }
+
     tracing::info!("fleet-backend listening on http://{local_addr}");
     Ok(ServerHandle {
         local_addr,
