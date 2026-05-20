@@ -434,7 +434,20 @@ async fn run_send_flow(
     }
 
     if cost_usd > 0.0 {
-        let g = |k: &str| usage.get(k).and_then(|x| x.as_i64()).unwrap_or(0);
+        // Snapshot the usage counters once so the spawned telemetry task
+        // doesn't try to borrow `usage` past this scope.
+        let in_t = usage.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+        let out_t = usage.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+        let cache_r = usage
+            .get("cache_read_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let cache_w = usage
+            .get("cache_write_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let now_utc = chrono::Utc::now();
+        let cost_model = model_name.clone().unwrap_or_else(|| "unknown".into());
         let _ = sqlx::query(
             "INSERT INTO cost_events \
              (id,session_id,model,input_tokens,output_tokens,cache_read,cache_write,cost_usd,timestamp) \
@@ -442,13 +455,13 @@ async fn run_send_flow(
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(&sid)
-        .bind(model_name.clone().unwrap_or_else(|| "unknown".into()))
-        .bind(g("input_tokens"))
-        .bind(g("output_tokens"))
-        .bind(g("cache_read_tokens"))
-        .bind(g("cache_write_tokens"))
+        .bind(&cost_model)
+        .bind(in_t)
+        .bind(out_t)
+        .bind(cache_r)
+        .bind(cache_w)
         .bind(cost_usd)
-        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(now_utc.to_rfc3339())
         .execute(&st.auth.pool)
         .await;
         let _ = sqlx::query(
@@ -458,6 +471,22 @@ async fn run_send_flow(
         .bind(&sid)
         .execute(&st.auth.pool)
         .await;
+        // Cloud telemetry — fire-and-forget into the outbox (drained by
+        // the WS client when it lands).
+        let sid_owned = sid.clone();
+        tokio::spawn(async move {
+            let _ = crate::services::telemetry::emit_cost(
+                &sid_owned,
+                &cost_model,
+                in_t,
+                out_t,
+                cache_r,
+                cache_w,
+                cost_usd,
+                now_utc,
+            )
+            .await;
+        });
     }
 
     if let Some(cs) = new_claude_sid {
