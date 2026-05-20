@@ -84,6 +84,12 @@ pub fn record_haiku_failure() {
 mod tests {
     use super::*;
 
+    // The breaker is process-wide global state. Test threads must
+    // serialise their access or one test's "record 3 failures" trips
+    // a concurrent test's "available?" check. A dedicated test-only
+    // Mutex (vs. #[serial]) keeps the fix dependency-free.
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn reset() {
         let mut g = breaker().lock().unwrap();
         g.consecutive_failures = 0;
@@ -92,6 +98,7 @@ mod tests {
 
     #[test]
     fn three_failures_open_circuit_then_success_resets() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         reset();
         assert!(is_haiku_available());
         record_haiku_failure();
@@ -108,6 +115,7 @@ mod tests {
 
     #[test]
     fn record_success_resets_failure_counter() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         reset();
         record_haiku_failure();
         record_haiku_failure();
