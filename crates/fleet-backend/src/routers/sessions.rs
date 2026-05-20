@@ -786,10 +786,37 @@ async fn claude_history(
     AuthUser(user): AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    owned(&st, &id, &user.id).await?;
-    // Phase 2: parse ~/.claude/projects/<enc>/<sid>.jsonl. UI falls back
-    // to the DB messages endpoint when this is empty.
-    Ok(Json(json!([])))
+    let s = owned(&st, &id, &user.id).await?;
+    // Two required fields. When either is missing the renderer's
+    // resume picker silently falls back to the DB messages endpoint.
+    let (Some(claude_sid), false) = (s.claude_session_id.as_deref(), s.project_path.is_empty())
+    else {
+        return Ok(Json(json!([])));
+    };
+    let project_path = s.project_path.clone();
+    let claude_sid_owned = claude_sid.to_string();
+    // Parsing JSONL can blow past several MB on long sessions — read
+    // + decode runs on a blocking pool so the axum task keeps serving
+    // other requests. Faithful with the Python `asyncio.to_thread`.
+    let messages = tokio::task::spawn_blocking(move || {
+        let Some(project_dir) =
+            crate::services::claude_history::find_claude_project_dir(&project_path)
+        else {
+            return Vec::new();
+        };
+        let jsonl = project_dir.join(format!("{claude_sid_owned}.jsonl"));
+        if !jsonl.exists() {
+            return Vec::new();
+        }
+        crate::services::claude_history::parse_jsonl(&jsonl)
+    })
+    .await
+    .unwrap_or_default();
+    let v: Vec<Value> = messages
+        .into_iter()
+        .map(|m| serde_json::to_value(m).unwrap_or(Value::Null))
+        .collect();
+    Ok(Json(Value::Array(v)))
 }
 
 async fn empty_items() -> Json<Value> {
