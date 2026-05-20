@@ -182,6 +182,8 @@
           body: o.body || null,
           base: o.base || null,
           draft: !!o.draft,
+          featureBranch: o.featureBranch || null,
+          tool: o.tool || null,
         });
       },
       getPRStatus: function (folder, prNumber) {

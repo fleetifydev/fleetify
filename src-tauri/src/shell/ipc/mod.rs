@@ -349,6 +349,8 @@ pub async fn git_create_pr(
     body: Option<String>,
     base: Option<String>,
     draft: Option<bool>,
+    #[allow(non_snake_case)] featureBranch: Option<String>,
+    tool: Option<String>,
 ) -> serde_json::Value {
     git::create_pr(
         &PathBuf::from(folder),
@@ -356,6 +358,8 @@ pub async fn git_create_pr(
         body.as_deref(),
         base.as_deref(),
         draft.unwrap_or(false),
+        featureBranch.as_deref(),
+        tool.as_deref(),
     )
     .await
 }
