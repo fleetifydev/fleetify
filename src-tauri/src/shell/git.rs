@@ -335,6 +335,240 @@ fn write_gitignore_if_missing(folder: &Path) -> bool {
     std::fs::write(&path, body).is_ok()
 }
 
+/// Orchestrator (faithful with `git:createPR` in electron/main.cjs):
+///   1. Probe `gh --version` + `gh auth status` → gh path.
+///   2. Else check `shell::github_link::get_link()` → REST link path.
+///   3. Else NO_AUTH.
+pub async fn create_pr(
+    folder: &Path,
+    title: &str,
+    body: Option<&str>,
+    base: Option<&str>,
+    draft: bool,
+    feature_branch: Option<&str>,
+    tool: Option<&str>,
+) -> Value {
+    // 1. gh-first
+    let (rc, _, _) = run("gh", &["--version"], folder, Duration::from_secs(3)).await;
+    let has_gh = rc == 0;
+    if has_gh {
+        let (rc, _, _) =
+            run("gh", &["auth", "status"], folder, Duration::from_secs(5)).await;
+        if rc == 0 {
+            tracing::info!(target: "createPR", "dispatch-gh");
+            return create_pr_via_gh(folder, title, body, base, draft, feature_branch, tool)
+                .await;
+        }
+    }
+    // 2. link fallback
+    if let Some(link) = super::github_link::get_link().await {
+        if let Some(token) = link.get("access_token").and_then(|v| v.as_str()) {
+            tracing::info!(target: "createPR", "dispatch-link");
+            // Pre-flight: ensure repo + identity + initial commit so
+            // create_pr_via_link's `rev-parse --abbrev-ref HEAD` step
+            // doesn't fail on an uninitialised folder.
+            let preflight =
+                ensure_repo_for_link(folder, title, base, feature_branch, tool).await;
+            if let Some(err) = preflight {
+                return err;
+            }
+            return super::github_pr::create_pr_via_link(
+                folder,
+                token,
+                title,
+                body.unwrap_or(""),
+                base,
+                draft,
+            )
+            .await;
+        }
+    }
+    tracing::info!(target: "createPR", "no-auth");
+    json!({
+        "ok": false,
+        "code": "NO_AUTH",
+        "error": "No GitHub authentication available. Connect GitHub in Settings → Integrations or install the gh CLI."
+    })
+}
+
+/// Pre-flight a folder before the link-path REST flow: `git init`,
+/// identity seed, initial commit (when no HEAD), feature-branch
+/// carve, and auto-commit of dirty working tree. Same pattern as
+/// the gh path's bootstrap steps. Returns Some(error-Value) on
+/// failure, None on success.
+async fn ensure_repo_for_link(
+    folder: &Path,
+    title: &str,
+    base: Option<&str>,
+    feature_branch: Option<&str>,
+    tool: Option<&str>,
+) -> Option<Value> {
+    let _ = (title, base);
+    if !folder.exists() {
+        return Some(json!({
+            "ok": false,
+            "code": "NO_FOLDER",
+            "error": format!("folder doesn't exist: {}", folder.display())
+        }));
+    }
+    // git init when missing.
+    if !folder.join(".git").exists() {
+        let (rc, _, err) = run(
+            "git",
+            &["init", "-b", "main"],
+            folder,
+            Duration::from_secs(15),
+        )
+        .await;
+        if rc != 0 {
+            // legacy fallback
+            let (rc2, _, err2) =
+                run("git", &["init"], folder, Duration::from_secs(15)).await;
+            if rc2 != 0 {
+                return Some(json!({
+                    "ok": false, "code": "INIT_FAILED",
+                    "error": format!("git init: {}", if err.trim().is_empty() { err2.trim() } else { err.trim() })
+                }));
+            }
+        }
+        write_gitignore_if_missing(folder);
+    }
+    // identity seed (idempotent).
+    let (name_rc, name_out, _) = run(
+        "git",
+        &["config", "--get", "user.name"],
+        folder,
+        Duration::from_secs(5),
+    )
+    .await;
+    let (email_rc, email_out, _) = run(
+        "git",
+        &["config", "--get", "user.email"],
+        folder,
+        Duration::from_secs(5),
+    )
+    .await;
+    if name_rc != 0
+        || name_out.trim().is_empty()
+        || email_rc != 0
+        || email_out.trim().is_empty()
+    {
+        let (ident_name, ident_email) = resolve_git_identity(folder).await;
+        if name_rc != 0 || name_out.trim().is_empty() {
+            let _ = run(
+                "git",
+                &["config", "user.name", &ident_name],
+                folder,
+                Duration::from_secs(5),
+            )
+            .await;
+        }
+        if email_rc != 0 || email_out.trim().is_empty() {
+            let _ = run(
+                "git",
+                &["config", "user.email", &ident_email],
+                folder,
+                Duration::from_secs(5),
+            )
+            .await;
+        }
+    }
+    // Initial commit if no HEAD.
+    let (head_rc, _, _) = run(
+        "git",
+        &["rev-parse", "--verify", "HEAD"],
+        folder,
+        Duration::from_secs(5),
+    )
+    .await;
+    if head_rc != 0 {
+        let _ = run("git", &["add", "-A"], folder, Duration::from_secs(120)).await;
+        let init_msg = with_fleetify_trailer("Initial commit");
+        let (rc, _, err) = run(
+            "git",
+            &["commit", "--allow-empty", "-m", &init_msg],
+            folder,
+            Duration::from_secs(60),
+        )
+        .await;
+        if rc != 0 {
+            return Some(json!({
+                "ok": false, "code": "INITIAL_COMMIT_FAILED",
+                "error": err.trim()
+            }));
+        }
+    }
+    // Carve feature branch when requested + not already on it.
+    if let Some(fb) = feature_branch {
+        let (rc, cur_out, _) = run(
+            "git",
+            &["rev-parse", "--abbrev-ref", "HEAD"],
+            folder,
+            Duration::from_secs(5),
+        )
+        .await;
+        if rc == 0 && cur_out.trim() != fb {
+            let (rc, _, err) = run(
+                "git",
+                &["checkout", "-B", fb],
+                folder,
+                Duration::from_secs(10),
+            )
+            .await;
+            if rc != 0 {
+                return Some(json!({
+                    "ok": false, "code": "CARVE_FAILED",
+                    "error": err.trim()
+                }));
+            }
+        }
+    }
+    // Auto-commit dirty working tree (same AI message as gh path).
+    let (_, dirty_out, _) = run(
+        "git",
+        &["status", "--porcelain"],
+        folder,
+        Duration::from_secs(10),
+    )
+    .await;
+    if !dirty_out.trim().is_empty() {
+        let (rc, _, err) =
+            run("git", &["add", "-A"], folder, Duration::from_secs(120)).await;
+        if rc != 0 {
+            return Some(json!({
+                "ok": false, "code": "ADD_FAILED",
+                "error": err.trim()
+            }));
+        }
+        let msg_val = super::ai_git::generate_commit_message(
+            folder.to_string_lossy().into_owned(),
+            tool.map(String::from),
+            false,
+        )
+        .await;
+        let msg = msg_val
+            .get("message")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| "Working session updates".to_string());
+        let commit_msg = with_fleetify_trailer(&msg);
+        let (rc, _, err) = run(
+            "git",
+            &["commit", "-m", &commit_msg],
+            folder,
+            Duration::from_secs(60),
+        )
+        .await;
+        if rc != 0 {
+            return Some(json!({
+                "ok": false, "code": "COMMIT_FAILED",
+                "error": err.trim()
+            }));
+        }
+    }
+    None
+}
+
 /// Full faithful port of `createPRViaGh` from main.cjs. Validates +
 /// initialises the repo, carves the feature branch, auto-commits any
 /// pending changes with an AI-generated message, ensures an `origin`
@@ -343,7 +577,7 @@ fn write_gitignore_if_missing(folder: &Path) -> bool {
 /// `gh pr create`. Every step gets a trace line in the error message
 /// + a tracing breadcrumb so the user can diagnose without log
 /// spelunking.
-pub async fn create_pr(
+pub async fn create_pr_via_gh(
     folder: &Path,
     title: &str,
     body: Option<&str>,

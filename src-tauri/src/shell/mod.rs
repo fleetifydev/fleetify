@@ -8,6 +8,7 @@ pub mod bearer;
 pub mod config;
 pub mod git;
 pub mod github_link;
+pub mod github_pr;
 pub mod head_watcher;
 pub mod ipc;
 pub mod pty;
