@@ -1149,6 +1149,51 @@ async fn run_dispatched_task(
     task_for_card: String,
 ) {
     let target_id = target.id.clone();
+
+    // ── Pre-flight budget gate (parity with chat.py:1071-1076) ──
+    // Refuse outright when the target's budget cap is exhausted, so
+    // a runaway dispatch can't obliterate the limit by appending one
+    // last expensive turn. Emit a dispatch_result with a clear summary
+    // so the caller's pending card resolves with the real reason.
+    if let Some(limit) = target.budget_limit {
+        if target.budget_used >= limit {
+            tracing::warn!(
+                target: "dispatch",
+                session_id = %target_id,
+                staff = %staff_sid,
+                used = target.budget_used,
+                limit = limit,
+                "dispatch refused: budget exhausted",
+            );
+            let summary = format!(
+                "Budget exhausted: ${:.2} of ${:.2} used. Raise the cap on the target agent to retry.",
+                target.budget_used, limit
+            );
+            persist_dispatch_result(
+                &pool,
+                &staff_sid,
+                &target_id,
+                &task_for_card,
+                false,
+                &summary,
+            )
+            .await;
+            sm.clear_dispatch_chain(&target_id);
+            sm.send_to_session_ws(
+                &staff_sid,
+                json!({
+                    "type": "dispatch_result",
+                    "session_id": staff_sid,
+                    "target_id": target_id,
+                    "task": task_for_card,
+                    "success": false,
+                    "summary": summary,
+                }),
+            );
+            return;
+        }
+    }
+
     let _ = sm
         .update_status(&pool, &target_id, "running")
         .await;
