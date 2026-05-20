@@ -62,9 +62,7 @@ async fn handle(msg: Value) -> Option<Value> {
 
     // Notifications (no id) — we silently accept everything and reply
     // nothing.
-    if id.is_none() {
-        return None;
-    }
+    id.as_ref()?;
     let id = id.unwrap();
 
     match method {

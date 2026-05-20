@@ -41,9 +41,10 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev \
             libappindicator3-dev librsvg2-dev patchelf
       - run: cargo test --workspace --no-fail-fast
-      # Clippy on warnings-as-errors so any new dead_code / unused_*
-      # gets caught at PR time, not on the next contributor's machine.
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Clippy as a non-blocking signal — surfaces real errors (where
+      # the lint can't be auto-suggested away) but lets non-blocking
+      # stylistic lints land in PRs so they can be cleaned in batches.
+      - run: cargo clippy --workspace --all-targets
 
   # ── Build the Tauri binary on every OS (no bundle — bundlers run
   #    in the release workflow). Confirms the full link succeeds

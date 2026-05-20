@@ -132,7 +132,7 @@ async fn one_connection_attempt(bearer_source: &BearerSource) -> Result<()> {
                         "payload": payload,
                     });
                     let frame = serde_json::to_string(&envelope)?;
-                    write.send(Message::Text(frame.into())).await
+                    write.send(Message::Text(frame)).await
                         .map_err(|e| anyhow!("ws send failed: {e}"))?;
                 }
             }
@@ -156,7 +156,7 @@ async fn one_connection_attempt(bearer_source: &BearerSource) -> Result<()> {
             // Keepalive ping
             _ = tokio::time::sleep(ping_interval.saturating_sub(last_ping.elapsed())) => {
                 if last_ping.elapsed() >= ping_interval {
-                    let _ = write.send(Message::Ping(Vec::new().into())).await;
+                    let _ = write.send(Message::Ping(Vec::new())).await;
                     last_ping = std::time::Instant::now();
                 }
             }

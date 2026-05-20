@@ -111,9 +111,7 @@ async fn probe_server(Path(name): Path<String>) -> Json<Value> {
 async fn probe_all() -> Json<Value> {
     // Probe every registered MCP server in parallel; return a
     // `{ <name>: ProbeResult }` map for the renderer's Settings page.
-    let names: Vec<String> = mcp_registry::list_all()
-        .into_iter()
-        .map(|(n, _)| n)
+    let names: Vec<String> = mcp_registry::list_all().into_keys()
         .collect();
     let futs: Vec<_> = names
         .into_iter()

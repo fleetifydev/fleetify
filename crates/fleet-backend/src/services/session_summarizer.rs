@@ -201,7 +201,7 @@ pub async fn maybe_distill_session(
         if title.is_empty() || content.is_empty() {
             continue;
         }
-        if !MEMORY_KINDS.iter().any(|k| *k == kind.as_str()) {
+        if !MEMORY_KINDS.contains(&kind.as_str()) {
             kind = "note".into();
         }
         let title_cap: String = title.chars().take(300).collect();

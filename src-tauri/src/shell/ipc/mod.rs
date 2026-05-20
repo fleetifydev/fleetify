@@ -479,7 +479,7 @@ pub async fn git_apply_recovery(
                 return json!({ "ok": false, "error": "command parsed to zero tokens" });
             }
             let head = tokens[0].clone();
-            if !ai_git::RECOVERY_BINARIES.iter().any(|b| *b == head.as_str()) {
+            if !ai_git::RECOVERY_BINARIES.contains(&head.as_str()) {
                 return json!({
                     "ok": false,
                     "error": format!("binary not allowed: {head}. Only {} are supported.", ai_git::RECOVERY_BINARIES.join(", "))

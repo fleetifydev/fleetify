@@ -129,7 +129,7 @@ pub fn extract_json_object(text: &str) -> Option<Value> {
             let mut inner = &s[start + 3..start + 3 + rel_end];
             for tag in ["json", "JSON"] {
                 if let Some(stripped) = inner.strip_prefix(tag) {
-                    inner = stripped.trim_start_matches(|c: char| c == '\n' || c == '\r' || c == ' ');
+                    inner = stripped.trim_start_matches(['\n', '\r', ' ']);
                     break;
                 }
             }

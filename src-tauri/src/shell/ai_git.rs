@@ -240,9 +240,9 @@ Output ONLY the JSON object, no prose around it, no code fence.\n\n\
             let mut inner = &s[start + 3..start + 3 + rel_end];
             // Drop a leading "json\n" tag if present.
             if let Some(stripped) = inner.strip_prefix("json") {
-                inner = stripped.trim_start_matches(|c: char| c == '\n' || c == '\r' || c == ' ');
+                inner = stripped.trim_start_matches(['\n', '\r', ' ']);
             } else if let Some(stripped) = inner.strip_prefix("JSON") {
-                inner = stripped.trim_start_matches(|c: char| c == '\n' || c == '\r' || c == ' ');
+                inner = stripped.trim_start_matches(['\n', '\r', ' ']);
             }
             s = inner.trim().to_string();
         }
@@ -444,7 +444,7 @@ current branch: {}\n\n\
             let mut inner = &s[start + 3..start + 3 + rel_end];
             for tag in ["json", "JSON"] {
                 if let Some(stripped) = inner.strip_prefix(tag) {
-                    inner = stripped.trim_start_matches(|c: char| c == '\n' || c == '\r' || c == ' ');
+                    inner = stripped.trim_start_matches(['\n', '\r', ' ']);
                     break;
                 }
             }
@@ -470,7 +470,7 @@ current branch: {}\n\n\
         .get("action")
         .and_then(|v| v.as_str())
         .unwrap_or("manual");
-    let mut action = if RECOVERY_ACTIONS.iter().any(|a| *a == requested) {
+    let mut action = if RECOVERY_ACTIONS.contains(&requested) {
         requested.to_string()
     } else {
         "manual".to_string()
@@ -490,7 +490,7 @@ current branch: {}\n\n\
             .map(|c| c.split_whitespace().next().unwrap_or(""))
             .unwrap_or("");
         let bin_ok = !first_tok.is_empty()
-            && RECOVERY_BINARIES.iter().any(|b| *b == first_tok);
+            && RECOVERY_BINARIES.contains(&first_tok);
         let valid = bin_ok
             && !has_shell_meta(command.as_deref().unwrap_or(""));
         if !valid {

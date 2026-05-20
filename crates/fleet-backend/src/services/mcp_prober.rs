@@ -65,9 +65,7 @@ pub async fn probe(name: &str, config: &Value) -> ProbeResult {
             status: "unsupported".into(),
             tool_count: 0,
             tools: Vec::new(),
-            error: Some(format!(
-                "http / sse MCP probe not implemented yet (Phase 4 follow-up)"
-            )),
+            error: Some("http / sse MCP probe not implemented yet (Phase 4 follow-up)".to_string()),
             auth_hint: None,
             probed_at: now_rfc(),
         },

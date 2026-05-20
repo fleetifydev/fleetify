@@ -69,8 +69,8 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
     // Auth (parity: resolve_user_id_from_token_cached; 4401 on failure).
     let user_id = match crate::auth::resolve_user_id_from_token_cached(
         &token,
-        &*st.auth.cfg,
-        &*st.auth.jwks,
+        &st.auth.cfg,
+        &st.auth.jwks,
         &st.auth.pool,
     )
     .await

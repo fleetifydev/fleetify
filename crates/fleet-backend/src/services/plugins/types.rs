@@ -223,7 +223,7 @@ pub fn is_valid_semver(s: &str) -> bool {
 }
 
 pub fn is_known_provider(s: &str) -> bool {
-    KNOWN_PROVIDERS.iter().any(|p| *p == s)
+    KNOWN_PROVIDERS.contains(&s)
 }
 
 #[cfg(test)]
