@@ -14,10 +14,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 fleetify-core.workspace = true
 fleetify-backend.workspace = true
-# `webview-data-url` enables `data:text/html;base64,…` URLs in
-# WebviewWindowBuilder so the splash window can load its inline HTML
-# without a separate bundled file.
-tauri = { version = "2", features = ["webview-data-url"] }
+tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tokio.workspace = true
 tracing.workspace = true
