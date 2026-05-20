@@ -142,17 +142,8 @@ pub fn run() {
             .build()?;
 
             // Embedded backend (no child process, no health-poll).
-            // On Ok → show + focus. On Err → still show so the user
-            // can read any in-renderer toast rather than staring at a
-            // perpetually-hidden window with no feedback. Wall-clock
-            // safety net: if serve() somehow never resolves (shouldn't
-            // happen but defensive), a 10s timer also shows the
-            // window so a stuck startup doesn't leave the app
-            // invisible.
             let addr: SocketAddr = "127.0.0.1:8765".parse().unwrap();
             let sd = static_dir();
-            let win_for_serve = main_window.clone();
-            let win_for_fallback = main_window.clone();
             tauri::async_runtime::spawn(async move {
                 match fleetify_backend::serve(addr, sd).await {
                     Ok(handle) => {
@@ -163,15 +154,48 @@ pub fn run() {
                         tracing::error!("backend failed to start: {e}");
                     }
                 }
-                if let Err(e) = win_for_serve.show() {
+            });
+
+            // Window-reveal gate: poll the webview's target URL
+            // (Vite in debug, the embedded backend in release) until
+            // it answers HTTP — only then show + focus. Otherwise
+            // the user sees a black (no connection) → white (Vite
+            // up but bundle still compiling) flicker for several
+            // seconds while the dev server cold-starts.
+            //
+            // Any response that's NOT a connection error counts as
+            // "up" — even a 404 from a misconfigured static dir is
+            // better than blank, because the renderer can show the
+            // problem to the user. 10s wall-clock cap means a truly
+            // stuck dev server still results in a visible (broken)
+            // window instead of a perpetually-hidden process.
+            let webview_url_owned: String = webview_url().to_string();
+            let win_for_reveal = main_window.clone();
+            tauri::async_runtime::spawn(async move {
+                let client = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_millis(500))
+                    .build()
+                    .expect("reqwest client");
+                let deadline = std::time::Instant::now()
+                    + std::time::Duration::from_secs(15);
+                let mut reached = false;
+                while std::time::Instant::now() < deadline {
+                    if client.get(&webview_url_owned).send().await.is_ok() {
+                        reached = true;
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                }
+                if !reached {
+                    tracing::warn!(
+                        target: "tauri-shell",
+                        "webview url {webview_url_owned} never answered within 15s — showing window anyway",
+                    );
+                }
+                if let Err(e) = win_for_reveal.show() {
                     tracing::warn!("show main window failed: {e}");
                 }
-                let _ = win_for_serve.set_focus();
-            });
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                // Best-effort: idempotent if the window is already visible.
-                let _ = win_for_fallback.show();
+                let _ = win_for_reveal.set_focus();
             });
 
             // Loopback bearer bridge :8770 (telemetry token source / parity).
