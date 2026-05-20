@@ -74,21 +74,35 @@ pub fn gh_raw_url(repo_url: &str, path: &str) -> Result<String> {
 }
 
 async fn http_get_json(url: &str) -> Result<Option<Value>> {
+    tracing::info!(target: "fleetify.marketplace", "→ GET {url}");
     let client = reqwest::Client::builder()
         .timeout(HTTP_TIMEOUT)
         .user_agent("Fleet-Marketplace/0.1")
         .build()?;
     let r = client.get(url).send().await?;
-    if r.status().as_u16() == 404 {
+    let status = r.status();
+    if status.as_u16() == 404 {
+        tracing::info!(target: "fleetify.marketplace", "← 404 {url}");
         return Ok(None);
     }
-    if !r.status().is_success() {
-        return Err(anyhow!(
-            "GET {url} returned {}",
-            r.status().as_u16()
-        ));
+    if !status.is_success() {
+        let body = r.text().await.unwrap_or_default();
+        tracing::warn!(
+            target: "fleetify.marketplace",
+            "← {status} {url} body={}",
+            body.chars().take(500).collect::<String>()
+        );
+        return Err(anyhow!("GET {url} returned {}", status.as_u16()));
     }
     let body: Value = r.json().await?;
+    tracing::info!(
+        target: "fleetify.marketplace",
+        "← 200 {url} (entries={})",
+        body.get("plugins")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0)
+    );
     Ok(Some(body))
 }
 
@@ -204,23 +218,40 @@ pub async fn load_source(
 ) -> Result<Vec<MarketplaceEntry>> {
     if !force && is_fresh(source_id) {
         if let Some((_, mm)) = read_cache(source_id) {
+            tracing::info!(
+                target: "fleetify.marketplace",
+                "{source_id}: cache hit ({} entries)", mm.plugins.len()
+            );
             return Ok(mm.plugins);
         }
     }
+    tracing::info!(
+        target: "fleetify.marketplace",
+        "{source_id}: fetching {repo_url} (force={force})"
+    );
     match fetch_source(repo_url).await {
         Ok(mm) => {
+            let n = mm.plugins.len();
             let _ = write_cache(source_id, &mm);
+            tracing::info!(
+                target: "fleetify.marketplace",
+                "{source_id}: cached {n} entries"
+            );
             Ok(mm.plugins)
         }
         Err(e) => {
-            // Serve stale on error.
             if let Some((_, mm)) = read_cache(source_id) {
                 tracing::warn!(
                     target: "fleetify.marketplace",
-                    "{source_id}: fetch failed ({e}); serving stale cache"
+                    "{source_id}: fetch failed ({e}); serving stale cache ({} entries)",
+                    mm.plugins.len()
                 );
                 return Ok(mm.plugins);
             }
+            tracing::warn!(
+                target: "fleetify.marketplace",
+                "{source_id}: fetch failed ({e}); no cache to fall back to"
+            );
             Err(e)
         }
     }

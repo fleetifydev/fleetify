@@ -32,10 +32,66 @@ fn deferred(name: &str) -> Value {
     })
 }
 
+const OFFICIAL_SOURCE_REPO: &str = "https://github.com/fleetifydev/marketplace";
+const OFFICIAL_SOURCE_NAME: &str = "Fleet Official";
+const OFFICIAL_SOURCE_DESC: &str = "Curated plugins by the Fleetify team.";
+
+/// Seed the Fleet Official marketplace for `user_id` if it isn't
+/// present. Adopts a stale row pre-marked is_official=false. Faithful
+/// with the Python `ensure_official_source`.
+async fn ensure_official_source(
+    pool: &sqlx::SqlitePool,
+    user_id: &str,
+) -> Result<(), sqlx::Error> {
+    let existing: Option<(String, i64)> = sqlx::query_as(
+        "SELECT id, is_official FROM marketplace_sources \
+         WHERE user_id = ? AND repo_url = ?",
+    )
+    .bind(user_id)
+    .bind(OFFICIAL_SOURCE_REPO)
+    .fetch_optional(pool)
+    .await?;
+    if let Some((sid, is_off)) = existing {
+        if is_off == 0 {
+            sqlx::query(
+                "UPDATE marketplace_sources SET is_official = 1, name = ?, description = ? \
+                 WHERE id = ?",
+            )
+            .bind(OFFICIAL_SOURCE_NAME)
+            .bind(OFFICIAL_SOURCE_DESC)
+            .bind(&sid)
+            .execute(pool)
+            .await?;
+        }
+        return Ok(());
+    }
+    let new_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    // UNIQUE(user_id, repo_url) — INSERT OR IGNORE handles the
+    // concurrent-seed race (two requests racing on first sign-in).
+    sqlx::query(
+        "INSERT OR IGNORE INTO marketplace_sources \
+         (id, user_id, name, description, repo_url, is_official, enabled, added_at) \
+         VALUES (?, ?, ?, ?, ?, 1, 1, ?)",
+    )
+    .bind(&new_id)
+    .bind(user_id)
+    .bind(OFFICIAL_SOURCE_NAME)
+    .bind(OFFICIAL_SOURCE_DESC)
+    .bind(OFFICIAL_SOURCE_REPO)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 async fn sources(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
 ) -> Result<Json<Value>, ApiError> {
+    // Seed the Fleet Official source on first hit so a brand-new user
+    // doesn't see an empty Marketplace tab.
+    let _ = ensure_official_source(&st.auth.pool, &user.id).await;
     // Most-recently-added first so a freshly-added source surfaces at
     // the top of the renderer's source list without further sorting.
     let rows: Vec<(String, String, Option<String>, String, i64, i64, String)> = sqlx::query_as(
@@ -216,6 +272,9 @@ async fn catalog_plugins(
     AuthUser(user): AuthUser,
 ) -> Result<Json<Value>, ApiError> {
     use crate::services::plugins::marketplace_fetch;
+    // Same fresh-user seed as the sources endpoint — if the renderer
+    // hits /plugins before /sources, we still get the official rows.
+    let _ = ensure_official_source(&st.auth.pool, &user.id).await;
     let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
         "SELECT id, name, repo_url, is_official FROM marketplace_sources \
          WHERE user_id = ? AND enabled = 1",
@@ -223,6 +282,11 @@ async fn catalog_plugins(
     .bind(&user.id)
     .fetch_all(&st.auth.pool)
     .await?;
+    tracing::info!(
+        target: "fleetify.marketplace",
+        "/catalog → {} enabled source(s) for user={}",
+        rows.len(), user.id
+    );
 
     // Concurrently load every enabled source. Failures don't kill the
     // whole catalog — a single bad source returns an empty list and we

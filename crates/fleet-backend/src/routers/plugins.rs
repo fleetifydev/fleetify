@@ -80,7 +80,12 @@ async fn list_installed() -> Json<Value> {
                 out.push(v);
             }
             Err(e) => {
-                tracing::warn!(
+                // Dropped to debug — old test artifacts (echo-tester,
+                // runtime-test, …) under ~/.fleetify/plugins/ that
+                // never had a manifest aren't errors, just clutter.
+                // Real install failures surface during install_from_git
+                // with a typed error envelope.
+                tracing::debug!(
                     target: "plugins",
                     "skipping {}: {e}",
                     path.display()
