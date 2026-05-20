@@ -493,6 +493,30 @@ async fn run_send_flow(
     let mut model_name: Option<String> = session.model_name.clone();
     let mut new_claude_sid: Option<String> = None;
 
+    // ── Stream-loss-on-session-switch fix ──
+    // Insert a placeholder assistant message NOW + UPDATE its content
+    // on a throttled cadence as the bridge streams. When the user
+    // navigates away mid-stream and re-opens the session, chat-view's
+    // /messages fetch surfaces the partial content + the
+    // session.status='running' makes the renderer show the Thinking
+    // indicator. Without this, the assistant message only appears at
+    // the END of the stream, and partial-progress is invisible after
+    // a remount.
+    let assistant_msg_id = uuid::Uuid::new_v4().to_string();
+    let _ = sqlx::query(
+        "INSERT INTO messages (id,session_id,role,content,cost_usd,timestamp) \
+         VALUES (?,?,?,?,0.0,?)",
+    )
+    .bind(&assistant_msg_id)
+    .bind(&sid)
+    .bind("assistant")
+    .bind(json!([]).to_string())
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(&st.auth.pool)
+    .await;
+    let mut last_persist_at = std::time::Instant::now();
+    let persist_throttle = std::time::Duration::from_millis(800);
+
     while let Some(ev) = rx.recv().await {
         // Forward with session_id injected (renderer demuxes on it).
         let mut payload = ev.to_json();
@@ -576,6 +600,26 @@ async fn run_send_flow(
             }
             _ => {}
         }
+
+        // Throttled mid-stream persist so a session-switch + re-open
+        // shows the partial-so-far instead of a phantom "Thinking…"
+        // with no content. Faithful with what the user sees in
+        // fleetify (Python): switching away during a long agent run
+        // and back keeps showing the live progress. Skips when
+        // content is still empty (no bytes to persist yet).
+        if !content.is_empty()
+            && last_persist_at.elapsed() >= persist_throttle
+        {
+            let _ = sqlx::query(
+                "UPDATE messages SET content = ?, model = ? WHERE id = ?",
+            )
+            .bind(Value::Array(content.clone()).to_string())
+            .bind(&model_name)
+            .bind(&assistant_msg_id)
+            .execute(&st.auth.pool)
+            .await;
+            last_persist_at = std::time::Instant::now();
+        }
     }
 
     // ── Staff dispatch-token processing (parity with chat.py:2682-2793) ──
@@ -620,20 +664,27 @@ async fn run_send_flow(
         }
     }
 
-    // Persist assistant turn + cost + resume id (parity with chat.py tail).
-    if !content.is_empty() {
+    // Finalize the placeholder assistant row we INSERTed before the
+    // stream loop. If the bridge produced nothing (immediate abort,
+    // empty response), drop the placeholder so the transcript doesn't
+    // carry an empty row. Otherwise UPDATE with the final content +
+    // cost + usage + model.
+    if content.is_empty() {
+        let _ = sqlx::query("DELETE FROM messages WHERE id = ?")
+            .bind(&assistant_msg_id)
+            .execute(&st.auth.pool)
+            .await;
+    } else {
         let _ = sqlx::query(
-            "INSERT INTO messages (id,session_id,role,content,model,usage_json,cost_usd,timestamp) \
-             VALUES (?,?,?,?,?,?,?,?)",
+            "UPDATE messages SET content = ?, model = ?, usage_json = ?, \
+             cost_usd = ?, timestamp = ? WHERE id = ?",
         )
-        .bind(uuid::Uuid::new_v4().to_string())
-        .bind(&sid)
-        .bind("assistant")
         .bind(Value::Array(content).to_string())
         .bind(&model_name)
         .bind(if usage.is_null() { None } else { Some(usage.to_string()) })
         .bind(cost_usd)
         .bind(chrono::Utc::now().to_rfc3339())
+        .bind(&assistant_msg_id)
         .execute(&st.auth.pool)
         .await;
     }
@@ -1377,6 +1428,25 @@ async fn run_dispatched_task(
     let mut summary_text = String::new();
     let mut new_claude_sid: Option<String> = None;
 
+    // Stream-loss-on-session-switch fix (same as run_send_flow): insert
+    // a placeholder assistant row on the TARGET session now, UPDATE it
+    // throttled as the stream progresses, finalize at the end. Lets
+    // the target's chat-view show partial progress on remount.
+    let assistant_msg_id = uuid::Uuid::new_v4().to_string();
+    let _ = sqlx::query(
+        "INSERT INTO messages (id,session_id,role,content,cost_usd,timestamp) \
+         VALUES (?,?,?,?,0.0,?)",
+    )
+    .bind(&assistant_msg_id)
+    .bind(&target_id)
+    .bind("assistant")
+    .bind(json!([]).to_string())
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(&pool)
+    .await;
+    let mut last_persist_at = std::time::Instant::now();
+    let persist_throttle = std::time::Duration::from_millis(800);
+
     // Wall-clock cap on the entire stream loop. On timeout we abort
     // the bridge (releasing the subprocess), persist a failure card,
     // live-push to the caller WS, and bail out with whatever partial
@@ -1527,6 +1597,23 @@ async fn run_dispatched_task(
                     }
                     _ => {}
                 }
+
+                // Throttled mid-stream persist so the dispatched
+                // agent's chat-view shows partial progress on remount.
+                // Same shape as run_send_flow.
+                if !content.is_empty()
+                    && last_persist_at.elapsed() >= persist_throttle
+                {
+                    let _ = sqlx::query(
+                        "UPDATE messages SET content = ?, model = ? WHERE id = ?",
+                    )
+                    .bind(Value::Array(content.clone()).to_string())
+                    .bind(&model_name)
+                    .bind(&assistant_msg_id)
+                    .execute(&pool)
+                    .await;
+                    last_persist_at = std::time::Instant::now();
+                }
             }
         },
     )
@@ -1543,20 +1630,25 @@ async fn run_dispatched_task(
         );
     }
 
-    // Persist target assistant content + cost (parity with run_send_flow).
-    if !content.is_empty() {
+    // Finalize the placeholder assistant row we INSERTed before the
+    // stream loop. Empty content (immediate abort / no output) drops
+    // the placeholder so the target's transcript stays clean.
+    if content.is_empty() {
+        let _ = sqlx::query("DELETE FROM messages WHERE id = ?")
+            .bind(&assistant_msg_id)
+            .execute(&pool)
+            .await;
+    } else {
         let _ = sqlx::query(
-            "INSERT INTO messages (id,session_id,role,content,model,usage_json,cost_usd,timestamp) \
-             VALUES (?,?,?,?,?,?,?,?)",
+            "UPDATE messages SET content = ?, model = ?, usage_json = ?, \
+             cost_usd = ?, timestamp = ? WHERE id = ?",
         )
-        .bind(uuid::Uuid::new_v4().to_string())
-        .bind(&target_id)
-        .bind("assistant")
         .bind(Value::Array(content).to_string())
         .bind(&model_name)
         .bind(if usage.is_null() { None } else { Some(usage.to_string()) })
         .bind(cost_usd)
         .bind(chrono::Utc::now().to_rfc3339())
+        .bind(&assistant_msg_id)
         .execute(&pool)
         .await;
     }
