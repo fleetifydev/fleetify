@@ -120,6 +120,25 @@ pub fn run() {
                 shell::bearer::run().await;
             });
 
+            // Telemetry WS client → fleetify.dev. Bearer pulled from
+            // shell::auth.get_access_token() lazily per attempt so a
+            // mid-flow refresh is picked up at the next reconnect.
+            tauri::async_runtime::spawn(async {
+                let source: fleet_backend::services::telemetry::BearerSource =
+                    std::sync::Arc::new(|| {
+                        Box::pin(async {
+                            shell::auth::get_access_token(false)
+                                .await
+                                .and_then(|v| {
+                                    v.get("token")
+                                        .and_then(|t| t.as_str())
+                                        .map(String::from)
+                                })
+                        })
+                    });
+                fleet_backend::services::telemetry::run_ws_client_loop(source).await;
+            });
+
             WebviewWindowBuilder::new(
                 app,
                 "main",
