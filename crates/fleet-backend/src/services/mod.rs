@@ -4,6 +4,7 @@ pub mod activity_logger;
 pub mod auto_planner;
 pub mod builtin_templates;
 pub mod compactor;
+pub mod dispatch;
 pub mod fleet_brain;
 pub mod haiku_breaker;
 pub mod haiku_client;
