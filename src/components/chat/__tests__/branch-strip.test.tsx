@@ -439,7 +439,7 @@ describe("BranchStrip — auto-OAuth pre-flight on Create PR", () => {
     expect(createPRMock).not.toHaveBeenCalled();
     await waitFor(() =>
       expect(pushNotificationMock).toHaveBeenCalledWith(
-        expect.objectContaining({ title: expect.stringMatching(/GitHub bağlantısı kurulamadı/) }),
+        expect.objectContaining({ title: expect.stringMatching(/Couldn't connect to GitHub/) }),
       ),
     );
   });

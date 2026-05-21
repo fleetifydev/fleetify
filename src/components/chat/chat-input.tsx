@@ -20,6 +20,8 @@ import { wsManager } from "@/services/ws-manager";
 import { FileMentionPopup } from "./file-mention-popup";
 import { PRDialog } from "@/components/git/pr-dialog";
 import { ReviewDialog } from "@/components/git/review-dialog";
+import { GithubAuthChoiceDialog } from "@/components/git/github-auth-choice-dialog";
+import { BranchPickerMenu } from "@/components/git/branch-picker-menu";
 import { RecoveryDialog } from "@/components/git/recovery-dialog";
 import { PreflightDialog } from "@/components/git/preflight-dialog";
 import type { PreflightIssue } from "@/lib/git-api";
@@ -1518,6 +1520,17 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   const [pr, setPr]         = useState<PRStatus | null>(null);
   const [folder, setFolder] = useState<string | null>(null);
   const [showDialog, setShowDialog] = useState(false);
+  // Mid-flow GitHub auth picker — shown when the user clicks Create PR
+  // without having picked a method during onboarding (or after they
+  // explicitly Skipped). The promise resolver is captured so the
+  // surrounding await in `executeCreatePR` can suspend on it.
+  const [authChoiceOpen, setAuthChoiceOpen] = useState(false);
+  const authChoiceResolverRef = useRef<((m: "oauth" | "cli" | null) => void) | null>(null);
+  // Branch-switcher popover. Anchored to the branch label in the
+  // BranchStrip; renders the BranchPickerMenu with all branches + a
+  // "Create new branch" CTA. Refresh ctx + pr on every successful
+  // checkout so the strip's PR badge / Merge button stays in sync.
+  const [branchMenuOpen, setBranchMenuOpen] = useState(false);
   const [draftDialog, setDraftDialog] = useState(false);
   // Review dialog state — Conductor-style. Open via the small ScanEye
   // button beside Create PR; the dialog runs the session agent over
@@ -1538,6 +1551,12 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // folder (worktree path) so every session's worktree gets its
   // own one-shot, with retry-on-failure handled inline.
   const autoPrFiredRef = useRef<Set<string>>(new Set());
+  // True while the background auto-PR effect is mid-dispatch (its
+  // `git.createPR` is in flight). Drives the BranchStrip's "Checking…"
+  // placeholder so we never flash Create PR during the 1-3s window
+  // when an existing PR exists but the optimistic setPr hasn't fired
+  // yet. Cleared in the .then/.catch/.finally branches below.
+  const [autoPrInFlight, setAutoPrInFlight] = useState(false);
   // True once prStatus has resolved at least once for the current
   // folder. Without this, the auto-PR effect can't tell "no PR
   // exists" apart from "PR status hasn't loaded yet" — both look
@@ -1670,7 +1689,28 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
     const load = () => {
       git.prStatus(folder).then(r => {
         if (cancelled) return;
-        const incoming = r.ok ? (r.pr ?? null) : null;
+        // Diagnostic so we can see, in DevTools, exactly what each
+        // poll's `gh` call returned — the flicker between Create PR
+        // and Merge in earlier traces was hard to root-cause without
+        // a line per poll.
+        const peek = r.ok ? (r.pr ?? null) : null;
+        console.info("[pr-status] poll", {
+          folder,
+          ok: r.ok,
+          error: r.ok ? undefined : r.error,
+          number: peek?.number ?? null,
+          state: peek?.state ?? null,
+          isDraft: peek?.isDraft ?? null,
+        });
+        // gh transient failure (rc != 0): do NOT clear pr. Could be a
+        // network blip, rate limit, or default-repo-not-set hiccup —
+        // none of which mean the PR went away. The next interval poll
+        // retries; keep the strip on whatever state we already had.
+        if (!r.ok) {
+          setPrStatusLoaded(true);
+          return;
+        }
+        const incoming = r.pr ?? null;
         // Post-merge cleanup filter. After we've sync+carved this
         // branch, gh keeps returning the merged PR for the recreated
         // branch name. Suppress non-OPEN states so the strip stays
@@ -1687,6 +1727,11 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
         }
         setPr(incoming);
         setPrStatusLoaded(true);
+      }).catch(() => {
+        // Network / IPC blip — don't strand the BranchStrip on the
+        // "Checking…" placeholder. Mark resolved but DON'T clear pr;
+        // a transient failure shouldn't wipe known state.
+        if (!cancelled) setPrStatusLoaded(true);
       });
     };
     load();
@@ -1717,6 +1762,7 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
       : ctx.branch === ctx.baseBranch ? "on-default-branch"
       : !prStatusLoaded ? "pr-status-unloaded"
       : pr ? "pr-already-exists"
+      : autoCreating ? "manual-create-in-flight"
       : (ctx.plus === 0 && ctx.minus === 0) ? "no-diff"
       : autoPrFiredRef.current.has(folder) ? "already-fired"
       : "ready-to-fire";
@@ -1729,16 +1775,25 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
       minus: ctx?.minus,
       hasPr: !!pr,
       prStatusLoaded,
+      autoCreating,
     });
 
     if (!folder || !ctx?.branch || !ctx.baseBranch) return;
     if (ctx.branch === ctx.baseBranch) return;
     if (!prStatusLoaded) return;
     if (pr) return;
+    // Don't race the manual click. The user's click sets autoCreating
+    // before its first API call; without this guard the background
+    // draft-PR effect can fire concurrently — both succeed (the second
+    // returns existed:true) BUT the AI summary inside `git_create_pr`
+    // (~12-25s) keeps the second request alive even after the first
+    // landed, so the trace shows duplicate `gh pr create` attempts.
+    if (autoCreating) return;
     if (ctx.plus === 0 && ctx.minus === 0) return;
     if (autoPrFiredRef.current.has(folder)) return;
 
     autoPrFiredRef.current.add(folder);
+    setAutoPrInFlight(true);
     const branchSlug = (ctx.branch || "")
       .replace(/^fleet\//, "").replace(/^claude\//, "")
       .replace(/-[a-f0-9]{8}$/, "");
@@ -1751,12 +1806,37 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
     // throw synchronously and bubble up as an unhandled effect
     // error before .catch can grab it.
     try {
-      git.createPR(folder, { title, body, base: ctx.baseBranch, draft: true })
+      git.createPR(folder, { title, body, base: ctx.baseBranch, draft: false })
         .then(r => {
+          setAutoPrInFlight(false);
           if (r.ok) {
-            console.info("[auto-PR] created", { number: r.prNumber, url: r.prUrl });
-            // Lookup by the specific number — avoids the gh
-            // branch-to-PR resolution lag for freshly-created PRs.
+            console.info("[auto-PR] created", { number: r.prNumber, url: r.prUrl, existed: r.existed });
+            // Optimistic Merge UI — flip the strip from "Create PR"
+            // to "Open + Merge" synchronously. Without this, the
+            // strip stayed on Create PR for the full 800ms +
+            // prStatus round-trip window after an `existed:true`
+            // response, and the user could click Create PR a second
+            // time during that window (which then races into yet
+            // another duplicate dispatch).
+            if (typeof r.prNumber === "number") {
+              const nr = r.prNumber;
+              setPr(prev => prev?.number === nr ? prev : {
+                number: nr,
+                url: r.prUrl ?? "",
+                state: "OPEN",
+                mergeable: "UNKNOWN",
+                isDraft: false,
+                baseRefName: ctx.baseBranch ?? "main",
+                headRefName: ctx.branch ?? "",
+                checks: { passing: 0, failing: 0, pending: 0, total: 0 },
+                commentsCount: 0,
+              });
+              setPrStatusLoaded(true);
+            }
+            // Refine the optimistic state from gh — checks counts,
+            // draft status, etc. Lookup by the specific number to
+            // avoid gh's branch-resolution lag for freshly-created
+            // PRs.
             setTimeout(() => {
               if (folder) git.prStatus(folder, r.prNumber).then(s => {
                 if (s.ok) { setPr(s.pr ?? null); setPrStatusLoaded(true); }
@@ -1782,14 +1862,16 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
           }
         })
         .catch(e => {
+          setAutoPrInFlight(false);
           console.warn("[auto-PR] threw", e);
           autoPrFiredRef.current.delete(folder);
         });
     } catch (e) {
+      setAutoPrInFlight(false);
       console.warn("[auto-PR] threw (sync)", e);
       autoPrFiredRef.current.delete(folder);
     }
-  }, [folder, ctx?.branch, ctx?.baseBranch, ctx?.plus, ctx?.minus, pr, prStatusLoaded, sessionTitle]);
+  }, [folder, ctx?.branch, ctx?.baseBranch, ctx?.plus, ctx?.minus, pr, prStatusLoaded, autoCreating, sessionTitle]);
 
   if (controlCenter) return null;
 
@@ -1829,12 +1911,36 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
     // have switched the local checkout to main.
     const baseBranch = pr.baseRefName || ctx?.baseBranch || "main";
     const mergedPrNumber = pr.number;
-    glog("ui", "merge.start", { prNumber: mergedPrNumber, baseRef: baseBranch });
+    glog("ui", "merge.start", { prNumber: mergedPrNumber, baseRef: baseBranch, wasDraft: pr.isDraft });
     setMerging(true);
     // Mark so the fallback auto-cleanup useEffect could ALSO fire if
     // the state-flip path beats the direct trigger below. Cleared in
     // doSyncAndCarve so we never double-run.
     justMergedRef.current = true;
+    // Always attempt `gh pr ready` before merge — the local
+    // `pr.isDraft` flag can be stale (optimistic setPr defaults it
+    // to false even when the actual PR on GitHub is still a draft
+    // from an earlier auto-PR run that hardcoded draft:true). The
+    // backend's pr_ready treats "already ready" as a silent no-op so
+    // running it unconditionally is cheap. Without this, hitting
+    // Merge on a stale-draft PR produced "GraphQL: Pull Request is
+    // still a draft" from `gh pr merge`.
+    const ready = await git.markPRReady(folder, mergedPrNumber);
+    if (!ready.ok) {
+      setMerging(false);
+      justMergedRef.current = false;
+      const notify = useAppStore.getState().pushNotification;
+      notify({
+        id: crypto.randomUUID(),
+        sessionId: "",
+        title: "Couldn't mark PR ready",
+        summary: ready.error || "gh pr ready failed",
+        success: false,
+        timestamp: Date.now(),
+      });
+      return;
+    }
+    setPr(prev => prev && prev.number === mergedPrNumber ? { ...prev, isDraft: false } : prev);
     const r = await git.mergePR(folder, mergedPrNumber, "squash");
     setMerging(false);
     glog("ui", "merge.result", { ok: r.ok, error: r.ok ? undefined : r.error });
@@ -2048,29 +2154,89 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
         github.getLink(),
       ]);
       if (!ghProbe.authed && !linkProbe.link) {
-        glog("ui", "executeCreatePR.auto-oauth", {});
-        notify({
-          id: crypto.randomUUID(),
-          sessionId: "",
-          title: "GitHub yetkilendirmesi gerekli",
-          summary: "Tarayıcıda Fleetify GitHub App'ini onayla, PR yetkilendirme bittiğinde otomatik açılacak.",
-          success: true,
-          timestamp: Date.now(),
-        });
-        const oauth = await github.beginOAuth();
-        if (!oauth.ok) {
-          glog("ui", "executeCreatePR.auto-oauth-failed", { code: oauth.code || "", error: oauth.error });
+        // No live auth. Read the user's onboarding choice — if they
+        // picked one we honour it silently; if they skipped (or never
+        // chose) we open the mid-flow picker.
+        const stored = (() => {
+          try { return localStorage.getItem("fleet:github-auth-method"); }
+          catch { return null; }
+        })();
+        let chosen: "oauth" | "cli" | null =
+          stored === "oauth" || stored === "cli" ? stored : null;
+        if (!chosen) {
+          glog("ui", "executeCreatePR.auth-choice.open", {});
+          chosen = await new Promise<"oauth" | "cli" | null>((resolve) => {
+            authChoiceResolverRef.current = resolve;
+            setAuthChoiceOpen(true);
+          });
+          setAuthChoiceOpen(false);
+          authChoiceResolverRef.current = null;
+          if (!chosen) {
+            glog("ui", "executeCreatePR.auth-choice.dismissed", {});
+            return;
+          }
+          glog("ui", "executeCreatePR.auth-choice.picked", { method: chosen });
+        }
+        if (chosen === "oauth") {
+          glog("ui", "executeCreatePR.auto-oauth", {});
           notify({
             id: crypto.randomUUID(),
             sessionId: "",
-            title: "GitHub bağlantısı kurulamadı",
-            summary: oauth.error || `OAuth failed: ${oauth.code || "unknown"}`,
-            success: false,
+            title: "GitHub authorization required",
+            summary: "Approve the Fleetify GitHub App in your browser — the PR will open automatically once authorization completes.",
+            success: true,
             timestamp: Date.now(),
           });
-          return;
+          const oauth = await github.beginOAuth();
+          if (!oauth.ok) {
+            glog("ui", "executeCreatePR.auto-oauth-failed", { code: oauth.code || "", error: oauth.error });
+            notify({
+              id: crypto.randomUUID(),
+              sessionId: "",
+              title: "Couldn't connect to GitHub",
+              summary: oauth.error || `OAuth failed: ${oauth.code || "unknown"}`,
+              success: false,
+              timestamp: Date.now(),
+            });
+            return;
+          }
+          glog("ui", "executeCreatePR.auto-oauth-ok", { login: oauth.link.github_login });
+        } else {
+          // "cli" — the dialog already drove `gh auth login` to
+          // completion (it only resolves "cli" once `hasGhCli` reports
+          // authed). If we got here via the stored preference path the
+          // probe at the top of this branch may have been pre-auth, so
+          // re-probe once before proceeding.
+          const re = await git.hasGhCli();
+          if (!re.authed) {
+            glog("ui", "executeCreatePR.cli-not-authed", {});
+            // Pop the picker so the user can complete auth or switch
+            // to OAuth — same as if no preference was stored.
+            const retry = await new Promise<"oauth" | "cli" | null>((resolve) => {
+              authChoiceResolverRef.current = resolve;
+              setAuthChoiceOpen(true);
+            });
+            setAuthChoiceOpen(false);
+            authChoiceResolverRef.current = null;
+            if (!retry) return;
+            // Re-enter the OAuth branch if the user switched method
+            // mid-flow. Falls through to PR creation otherwise.
+            if (retry === "oauth") {
+              const oauth = await github.beginOAuth();
+              if (!oauth.ok) {
+                notify({
+                  id: crypto.randomUUID(),
+                  sessionId: "",
+                  title: "Couldn't connect to GitHub",
+                  summary: oauth.error || `OAuth failed: ${oauth.code || "unknown"}`,
+                  success: false,
+                  timestamp: Date.now(),
+                });
+                return;
+              }
+            }
+          }
         }
-        glog("ui", "executeCreatePR.auto-oauth-ok", { login: oauth.link.github_login });
       }
 
       let title = sessionTitle || defaultPRTitle(branch);
@@ -2122,12 +2288,30 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
       });
       glog("ui", "executeCreatePR.result", { ok: r.ok, code: r.ok ? undefined : r.code, prNumber: r.ok ? r.prNumber : null, existed: r.ok ? !!r.existed : null });
       if (r.ok) {
+        // Optimistic Merge UI — flip the strip from "Create PR" to
+        // "Open + Merge" the instant the backend returns, instead of
+        // waiting for the prStatus round-trip (~200-500ms gh hop).
+        // gh's response refines the details a moment later; in the
+        // interim the user already sees the right affordance and
+        // doesn't get to click Create PR a second time.
+        if (typeof r.prNumber === "number") {
+          setPr(prev => prev?.number === r.prNumber ? prev : {
+            number: r.prNumber as number,
+            url: r.prUrl ?? "",
+            state: "OPEN",
+            mergeable: "UNKNOWN",
+            isDraft: false,
+            baseRefName: ctx?.baseBranch ?? "main",
+            headRefName: ctx?.branch ?? "",
+            checks: { passing: 0, failing: 0, pending: 0, total: 0 },
+            commentsCount: 0,
+          });
+          setPrStatusLoaded(true);
+        }
         // Query gh by the specific prNumber we just got back so the
         // lookup is deterministic — gh's branch-to-PR resolution can
         // briefly miss a freshly-created PR (~1-2s lag), but
-        // `gh pr view <number>` is lag-free. Without this, the
-        // BranchStrip would sometimes stay on "Create PR" until the
-        // 15s interval poll finally catches up.
+        // `gh pr view <number>` is lag-free.
         git.prStatus(folder, r.prNumber).then(s => {
           if (s.ok && s.pr) setPr(s.pr);
         });
@@ -2247,8 +2431,43 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // `showCreatePR` covers no-git, feature branches, and main+diff+no-remote
   // (carve-and-bootstrap). When a PR exists we always swap in the
   // PR-state-driven Merge / Open / Merged / Closed affordance.
+  //
+  // Wait until the first `gh pr view` poll has landed before showing
+  // EITHER Create PR or Merge — otherwise the strip flashes Create PR
+  // for ~0.5-1.5s on session mount and the user can click it before
+  // the existing PR is detected (which then trips the "already exists"
+  // path and a confusing FAIL trace). The `prCheckedOnce` gate is
+  // scoped to feature branches (noGit + on-default still show Create
+  // PR immediately, since they can't have an existing PR yet).
+  //
+  // Also stay on the placeholder while the auto-PR effect is mid-
+  // dispatch (its createPR call detects an existing PR + flips pr
+  // optimistically when it returns). Without this gate the strip
+  // showed Create PR for ~2-3s between "poll said no PR" and
+  // "auto-PR's optimistic setPr fired."
+  const prCheckedOnce = noGit || onDefaultBranch ? true : prStatusLoaded;
+  const checkingPr = !prCheckedOnce || (autoPrInFlight && !pr);
   let action: React.ReactNode = null;
-  if (showCreatePR && !pr) {
+  if (checkingPr) {
+    // Quiet placeholder so the slot stays the same width during the
+    // initial poll — no jumpy layout when Merge / Create PR resolves.
+    action = (
+      <span
+        title="Checking PR status…"
+        style={{
+          display: "inline-flex", alignItems: "center", gap: 6,
+          padding: "3px 10px", borderRadius: 6,
+          background: "rgba(var(--fg-rgb), 0.04)",
+          color: "var(--c-low)",
+          fontSize: 11.5,
+          flexShrink: 0,
+        }}
+      >
+        <Loader2 size={11} style={{ animation: "spin 1.2s linear infinite" }} />
+        Checking…
+      </span>
+    );
+  } else if (showCreatePR && !pr) {
     // Split button: main "Create PR" + chevron-down for variants
     // (draft PR / manually create on the GitHub website).
     action = (
@@ -2416,15 +2635,18 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
       // disable the button.
       const checksFailing = pr.checks.failing > 0;
       const checksPending = pr.checks.pending > 0 && pr.checks.failing === 0;
-      const canMerge = pr.mergeable !== "CONFLICTING" && !checksFailing && !pr.isDraft;
+      // Draft no longer disables Merge — the click handler un-drafts
+      // the PR first (gh pr ready) and then squash-merges.
+      const canMerge = pr.mergeable !== "CONFLICTING" && !checksFailing;
       const mergeTitle = !canMerge
-        ? (pr.isDraft       ? "Draft PR — mark ready in GitHub to merge"
-          : checksFailing   ? `${pr.checks.failing} check${pr.checks.failing > 1 ? "s" : ""} failing`
+        ? (checksFailing   ? `${pr.checks.failing} check${pr.checks.failing > 1 ? "s" : ""} failing`
           : pr.mergeable === "CONFLICTING" ? "Has merge conflicts — resolve on GitHub or rebase locally"
           : "Merge unavailable")
-        : checksPending
-          ? `Auto-merge queued — will squash + merge once ${pr.checks.pending} check${pr.checks.pending > 1 ? "s" : ""} pass`
-          : `Squash + merge #${pr.number} into ${pr.baseRefName}`;
+        : pr.isDraft
+          ? `Mark #${pr.number} ready for review and squash + merge into ${pr.baseRefName}`
+          : checksPending
+            ? `Auto-merge queued — will squash + merge once ${pr.checks.pending} check${pr.checks.pending > 1 ? "s" : ""} pass`
+            : `Squash + merge #${pr.number} into ${pr.baseRefName}`;
       action = (
         <>
           {openBtn}
@@ -2470,13 +2692,29 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
         {/* Branch label — minimal, no decorative dots or pulses.
             Just monospace branch text, with `base ← branch` arrow on
             feature branches. Matches Claude Code's plain-text approach.
-            6 states all flow through here:
-              1. noGit          → <NoGitPill />
-              2. on default     → just branch pill
-              3. feature branch → "main ← fleet/x" (with optional PR badge)
-            Within (3), when baseBranch is null we assume "main" and
-            dim that pill so the user reads it as "we're guessing". */}
-        <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0, flex: 1 }}>
+            Wrapped in a clickable trigger that pops the BranchPickerMenu
+            (switch branches / create a new one) anchored just above. */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            minWidth: 0,
+            flex: 1,
+            position: "relative",
+            cursor: folder && ctxR?.branch ? "pointer" : "default",
+            padding: "1px 2px",
+            borderRadius: 4,
+          }}
+          onClick={() => {
+            if (!folder || !ctxR?.branch) return;
+            setBranchMenuOpen(o => !o);
+          }}
+          onMouseEnter={e => {
+            if (folder && ctxR?.branch) e.currentTarget.style.background = "rgba(255,255,255,0.04)";
+          }}
+          onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
+        >
           {noGit && plannedBranch ? (
             // Planned label — folder isn't a git repo yet, but the
             // dispatcher will carve `plannedBranch` on Create PR. The
@@ -2517,11 +2755,21 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
               {pr && <PRStateBadge pr={pr} />}
             </>
           )}
-          {/* Worktree pill removed — the fleet/<slug>-<id> branch
-              prefix in the label above already conveys "isolated
-              worktree" to anyone who works in this app. The pill
-              was cluttering the strip and the user wanted only
-              "Create PR" on the right. */}
+          {branchMenuOpen && folder && ctxR?.branch && (
+            <BranchPickerMenu
+              folder={folder}
+              currentBranch={ctxR.branch}
+              baseBranch={ctxR.baseBranch ?? "main"}
+              newBranchTopic={
+                sessionTitle ||
+                ((ctxR.branch || "").replace(/^fleet\//, "").replace(/-[a-f0-9]{8}$/, "")) ||
+                "scratch"
+              }
+              onPick={() => setBranchMenuOpen(false)}
+              onCreateNew={() => setBranchMenuOpen(false)}
+              onDismiss={() => setBranchMenuOpen(false)}
+            />
+          )}
         </div>
 
         {/* Diff stats — only when there's something to show. hasDiff
@@ -2646,6 +2894,17 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
             void executeCreatePR();
           }}
           onCancel={() => setPreflight(null)}
+        />
+      )}
+      {authChoiceOpen && (
+        <GithubAuthChoiceDialog
+          onChoose={(method, _username) => {
+            try { localStorage.setItem("fleet:github-auth-method", method); } catch { /* private mode */ }
+            authChoiceResolverRef.current?.(method);
+          }}
+          onDismiss={() => {
+            authChoiceResolverRef.current?.(null);
+          }}
         />
       )}
     </>

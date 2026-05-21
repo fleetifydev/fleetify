@@ -2200,7 +2200,11 @@ function DispatchResultCard({ block }: { block: import("@/types/chat").DispatchR
   const staffSessionId = useAppStore(s => s.staffSessionId);
   const setActiveSession = useAppStore(s => s.setActiveSession);
   const session = sessions.find(s => s.id === block.agent_id);
-  const folder = folderName(session?.project_path) || null;
+  // Prefer the path persisted on the block (survives session eviction /
+  // cold reloads); fall back to the live session lookup. We show the
+  // FULL absolute path next to the folder icon — short names hid which
+  // worktree a dispatch ran in when two agents share a folder name.
+  const folder = block.project_path || session?.project_path || null;
   const failColor = "rgba(248,113,113,0.85)";
 
   // Hover state for the attribution-row button — drives a subtle color

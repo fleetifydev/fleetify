@@ -81,7 +81,24 @@ interface GitAPI {
   applyPreflightFix(folder: string, action: PreflightAction, data?: PreflightIssue["data"]): Promise<ApplyPreflightFixResult>;
   createPR(folder: string, opts: { title: string; body?: string; base?: string; draft?: boolean; featureBranch?: string; tool?: string }): Promise<CreatePRResult>;
   getPRStatus(folder: string, prNumber?: number | null): Promise<PRStatusResult>;
+  /** Bulk PR snapshot for the branch picker — one `gh pr list` call
+   *  drives the per-branch PR badges instead of N `gh pr view`s. */
+  listPRs?(folder: string, limit?: number): Promise<{
+    ok: boolean;
+    prs?: Array<{
+      number: number;
+      state: string;
+      headRefName: string;
+      isDraft?: boolean;
+      mergeable?: string;
+    }>;
+    error?: string;
+  }>;
   mergePR(folder: string, prNumber: number | null, method: "squash" | "merge" | "rebase"): Promise<MergeResult>;
+  /** `gh pr ready <number>` — converts a draft PR to "ready for
+   *  review". Used by the Merge button so one click un-drafts +
+   *  squash-merges in sequence. */
+  markPRReady?(folder: string, prNumber: number): Promise<{ ok: boolean; error?: string }>;
   openPR(folder: string): Promise<{ ok: boolean; error?: string }>;
   syncMain(folder: string, baseBranch?: string): Promise<SyncMainResult>;
   carveNextRound(folder: string, branch: string, baseBranch?: string): Promise<CarveNextRoundResult>;
@@ -155,8 +172,13 @@ export const git = {
                        api().applyPreflightFix(folder, action, data),
   createPR:       (folder: string, opts: { title: string; body?: string; base?: string; draft?: boolean; featureBranch?: string; tool?: string }) => api().createPR(folder, opts),
   prStatus:       (folder: string, prNumber?: number | null) => api().getPRStatus(folder, prNumber),
+  prList:         (folder: string, limit?: number) =>
+                    api().listPRs?.(folder, limit) ?? Promise.resolve({ ok: false, error: "electron unavailable" }),
   mergePR:        (folder: string, prNumber: number | null, method: "squash" | "merge" | "rebase" = "squash") =>
                     api().mergePR(folder, prNumber, method),
+  markPRReady:    (folder: string, prNumber: number) =>
+                    api().markPRReady?.(folder, prNumber)
+                    ?? Promise.resolve({ ok: false, error: "electron unavailable" }),
   openPR:         (folder: string) => api().openPR(folder),
   /** Post-merge cleanup: switch the source repo to `baseBranch`
    *  (default "main") and pull --ff-only. Runs on the SOURCE repo,

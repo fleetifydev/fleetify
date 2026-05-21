@@ -641,6 +641,21 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     //      the ws-manager doesn't add a duplicate user bubble.
     let sid: string | null = staffIdRef.current;
     if (!sid) {
+      // Reuse any pre-existing Staff Agent row before falling through
+      // to createSession. Without this, a fresh-cold-start that races
+      // the `fleet:staffSessionId` localStorage hydration would create
+      // a duplicate staff row on every first message — which then
+      // leaked into the regular session list as "Staff Agent" copies.
+      const existing = useAppStore
+        .getState()
+        .sessions.find(s => (s.title || "").trim() === "Staff Agent");
+      if (existing) {
+        setStaffSessionId(existing.id);
+        staffIdRef.current = existing.id;
+        sid = existing.id;
+      }
+    }
+    if (!sid) {
       if (creatingStaffRef.current) return;
       creatingStaffRef.current = true;
       try {

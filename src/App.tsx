@@ -84,13 +84,35 @@ export function App() {
     window.electronAPI?.setWindowSize(target.w, target.h, { center: screen === "main", animate: true });
   }, [screen]);
 
+  // System-theme-aware OS taskbar icon. Light system ⇒ light taskbar ⇒
+  // dark logo (so it stays visible). Dark system ⇒ light logo.
+  useEffect(() => {
+    const setTaskbar = window.electronAPI?.setTaskbarIcon;
+    if (!setTaskbar) return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const apply = () => {
+      void setTaskbar(mq.matches ? "light" : "dark");
+    };
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, []);
+
 // Verify token on startup before deciding which screen to show
   useEffect(() => {
-    const onboarded = localStorage.getItem("fleet:onboarded") === "1";
-    if (!onboarded) { setScreen("splash"); return; }
     if (!window.fleetify) { setScreen("splash"); return; }
 
     window.fleetify.getState().then((state) => {
+      // FLEETIFY_NOAUTH=1: shell stubs a "John Doe" identity and tags
+      // the payload with `noAuth: true`. Treat the welcome/sign-in
+      // step as already complete so the user lands on onboarding-chat
+      // (or main, if setup-done) without seeing the Fleetify CTA.
+      if (state.noAuth && state.signedIn && state.user) {
+        localStorage.setItem("fleet:onboarded", "1");
+      }
+      const onboarded = localStorage.getItem("fleet:onboarded") === "1";
+      if (!onboarded) { setScreen("splash"); return; }
+
       if (state.signedIn && state.user) {
         const u = state.user;
         const user: AuthUser = {
@@ -185,6 +207,13 @@ export function App() {
   // Logout listener
   useEffect(() => {
     const handler = async () => {
+      // No-auth dev mode keeps the "Sign out" button visible but inert —
+      // there's nothing to sign out of and the welcome screen would just
+      // bounce back to onboarding-chat anyway.
+      try {
+        const state = await window.fleetify?.getState();
+        if (state?.noAuth) return;
+      } catch { /* fall through to normal logout on IPC failure */ }
       try { await window.fleetify?.signOut(); } catch { /* best-effort */ }
       clearToken();
       setSettingsOpen(false);

@@ -8,7 +8,7 @@ declare global {
       signOut:        () => Promise<{ ok: boolean }>;
       userinfo:       () => Promise<any>;
       getAccessToken: (opts?: { force?: boolean }) => Promise<{ token: string; expiresAt: number } | null>;
-      getState:       () => Promise<{ signedIn: boolean; user?: any }>;
+      getState:       () => Promise<{ signedIn: boolean; user?: any; noAuth?: boolean }>;
       // Renderer → main bridge for the sidebar's "Give Feedback" modal.
       // The token is attached in main so the renderer never has to
       // touch it; the response is the {ok, data?, error?} envelope the

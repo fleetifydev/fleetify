@@ -37,6 +37,10 @@ export interface DispatchResultBlock {
   task: string;
   success: boolean;
   summary: string;
+  /** Absolute path of the target agent's working folder. Persisted by
+   *  the backend so the DispatchResultCard can still render the folder
+   *  on reload even after the session row is archived or evicted. */
+  project_path?: string;
 }
 
 /** Inline permission card dispatched agents use to ask the user from the staff chat. */
@@ -243,6 +247,12 @@ export interface WSDispatchAck {
 export interface WSDispatchResult {
   type: "dispatch_result";
   target_id: string;
+  /** Target agent's title (was looked up via app-store on the live event;
+   *  backend now includes it so the card renders correctly even before
+   *  the sessions list has hydrated). */
+  target_name?: string;
+  /** Absolute path of the target agent's working folder. */
+  project_path?: string;
   task: string;
   success: boolean;
   summary: string;

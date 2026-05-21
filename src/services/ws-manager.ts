@@ -1121,10 +1121,20 @@ class WSManager {
               : null,
           );
         }
-        // Resolve agent name from the app store (best effort)
+        // Agent name + project path: backend now includes both on the
+        // live event so the card renders correctly even before the
+        // sessions list has hydrated. Falls back to the app-store
+        // lookup for older backends that don't emit `target_name`.
         const app2 = useAppStore.getState();
         const targetSession = app2.sessions.find(s => s.id === data.target_id);
-        const agentName = targetSession?.title ?? data.target_id?.slice(0, 8) ?? "agent";
+        const agentName =
+          (typeof data.target_name === "string" && data.target_name) ||
+          targetSession?.title ||
+          (typeof data.target_id === "string" ? data.target_id.slice(0, 8) : "agent");
+        const projectPath =
+          (typeof data.project_path === "string" && data.project_path) ||
+          targetSession?.project_path ||
+          undefined;
 
         store.addMessage(sessionId, {
           id: crypto.randomUUID(),
@@ -1136,6 +1146,7 @@ class WSManager {
             task: data.task || "",
             success: data.success !== false,
             summary: data.summary || "Task completed",
+            ...(projectPath ? { project_path: projectPath } : {}),
           }],
           timestamp: new Date().toISOString(),
         });

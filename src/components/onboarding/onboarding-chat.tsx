@@ -27,6 +27,7 @@ import {
   X,
   Github,
   ExternalLink,
+  Terminal,
 } from "lucide-react";
 import { LogoMark } from "@/components/brand/logo-mark";
 import { ProviderLogo } from "@/components/ui/provider-logo";
@@ -258,18 +259,22 @@ export function OnboardingChat({ user, onDone }: Props) {
   //     up later.
   const handleGithubResult = async (
     result:
-      | { existing: true; username: string }
-      | { username: string; token: string }
+      | { method: "cli"; username?: string }
+      | { method: "oauth"; username?: string }
       | { skipped: true },
   ) => {
     resolveLastWidget();
     if ("skipped" in result) {
       setSelections((s) => ({ ...s, githubSkipped: true }));
+      try { localStorage.setItem("fleet:github-auth-method", "skip"); } catch { /* private mode */ }
       pushUser("Skip — connect later");
-      await pushAssistant("No problem — you can connect GitHub from Settings whenever you're ready.");
-    } else if ("existing" in result) {
+      await pushAssistant(
+        "No problem — you can pick a connection method later. When you click **Create PR**, Fleet will ask which one to use.",
+      );
+    } else if (result.method === "cli") {
       setSelections((s) => ({ ...s, githubUsername: result.username }));
-      pushUser(`Use @${result.username}`);
+      try { localStorage.setItem("fleet:github-auth-method", "cli"); } catch { /* private mode */ }
+      pushUser(result.username ? `Use GitHub CLI (@${result.username})` : "Use GitHub CLI");
       try {
         const cfg = (await window.electronAPI?.getConfig?.()) ?? {
           onboardingComplete: false,
@@ -277,16 +282,20 @@ export function OnboardingChat({ user, onDone }: Props) {
         };
         await window.electronAPI?.setConfig?.({
           ...cfg,
-          // No token — gh CLI is the source of truth on this machine.
+          // No token persisted — gh CLI is the source of truth on this machine.
           githubUsername: result.username,
         });
       } catch { /* best-effort */ }
       await pushAssistant(
-        `Done — Fleet will use **@${result.username}** through the gh CLI for PRs and repo context.`,
+        result.username
+          ? `Done — Fleet will drive PRs and repo context through the gh CLI as **@${result.username}**.`
+          : "Done — Fleet will drive PRs and repo context through the gh CLI.",
       );
     } else {
+      // method === "oauth"
       setSelections((s) => ({ ...s, githubUsername: result.username }));
-      pushUser(`Connected as @${result.username}`);
+      try { localStorage.setItem("fleet:github-auth-method", "oauth"); } catch { /* private mode */ }
+      pushUser(result.username ? `Connected as @${result.username}` : "Connected with GitHub");
       try {
         const cfg = (await window.electronAPI?.getConfig?.()) ?? {
           onboardingComplete: false,
@@ -294,12 +303,13 @@ export function OnboardingChat({ user, onDone }: Props) {
         };
         await window.electronAPI?.setConfig?.({
           ...cfg,
-          githubToken: result.token,
           githubUsername: result.username,
         });
       } catch { /* best-effort */ }
       await pushAssistant(
-        `Got it — signed in as **@${result.username}**. PRs and repo context will use this account.`,
+        result.username
+          ? `Got it — signed in as **@${result.username}** via Fleetify's GitHub link.`
+          : "Got it — GitHub OAuth connected.",
       );
     }
 
@@ -506,8 +516,8 @@ function Bubble({
   onMainAgentPick: (provider: ProviderDef) => void;
   onGithubResult: (
     result:
-      | { existing: true; username: string }
-      | { username: string; token: string }
+      | { method: "cli"; username?: string }
+      | { method: "oauth"; username?: string }
       | { skipped: true },
   ) => void;
 }) {
@@ -1752,89 +1762,268 @@ function GithubWidget({
 }: {
   onResult: (
     result:
-      | { existing: true; username: string }
-      | { username: string; token: string }
+      | { method: "cli"; username?: string }
+      | { method: "oauth"; username?: string }
       | { skipped: true },
   ) => void;
+  /** Pre-probed gh CLI login (if any). Drives the "GitHub CLI" button's
+   *  badge — when set, the button reads "Use GitHub CLI · @<login>" and
+   *  picking it is a single-tap (no terminal launch). */
   existingUsername?: string;
 }) {
-  // "use-existing" — gh CLI has someone signed in; offer one-tap.
-  //                  User can also escape into "paste" or skip.
-  // "idle" — manual path entry, only the generate-token CTA visible.
-  // "paste" — input visible, generate CTA collapsed.
-  const initialStage: "use-existing" | "idle" | "paste" =
-    existingUsername ? "use-existing" : "idle";
-  const [stage, setStage] = useState<"use-existing" | "idle" | "paste">(initialStage);
-  const [token, setToken] = useState("");
-  const [error, setError] = useState("");
-  const [validating, setValidating] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  // Probe gh CLI presence + auth state on mount. Drives the "GitHub
+  // CLI" button's three states: Not Installed / Sign in & connect /
+  // Use GitHub CLI · @<login>.
+  type CliState =
+    | { kind: "probing" }
+    | { kind: "missing" }
+    | { kind: "needs-auth" }
+    | { kind: "ready"; login: string };
+  const initial: CliState = existingUsername
+    ? { kind: "ready", login: existingUsername }
+    : { kind: "probing" };
+  const [cliState, setCliState] = useState<CliState>(initial);
+  // Active in-flight choice: "oauth" or "cli". Keeps the other button
+  // disabled while one is running so the user can't double-click.
+  const [pending, setPending] = useState<"oauth" | "cli" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // Polling cancel handle for the gh-auth-login waiter.
+  const pollCancelRef = useRef<{ cancelled: boolean }>({ cancelled: false });
 
-  const openTokenPage = async () => {
-    try {
-      await window.electronAPI?.openExternal?.(
-        "https://github.com/settings/tokens/new?description=Fleet&scopes=repo,read:user",
-      );
-    } catch { /* best-effort */ }
-    setStage("paste");
-    // Focus the paste field on the next tick so Cmd-V lands instantly.
-    setTimeout(() => inputRef.current?.focus(), 60);
-  };
-
-  const validate = async () => {
-    const t = token.trim();
-    if (!t) return;
-    setError("");
-    setValidating(true);
-    try {
-      // Bearer is the modern scheme and works for BOTH classic PATs
-      // (ghp_…) and fine-grained PATs (github_pat_…). The legacy
-      // `token …` scheme also works for classic but trips fine-
-      // grained tokens with a confusing "Sudo authentication failed"
-      // 403 — exactly what the user reported.
-      const res = await fetch("https://api.github.com/user", {
-        headers: {
-          Authorization: `Bearer ${t}`,
-          Accept: "application/vnd.github+json",
-          "X-GitHub-Api-Version": "2022-11-28",
-        },
-      });
-      // Try to surface the API's own error message — "Bad
-      // credentials", "Sudo authentication failed", etc. — instead
-      // of swallowing it under a generic status code.
-      let apiMessage = "";
-      let body: { login?: string; message?: string } | null = null;
+  useEffect(() => {
+    if (existingUsername) return; // pre-probed by parent
+    let cancelled = false;
+    (async () => {
       try {
-        body = await res.json();
-        apiMessage = body?.message ?? "";
-      } catch { /* non-JSON response */ }
+        const r = await window.electronAPI?.hasGhCli?.();
+        if (cancelled) return;
+        if (!r || !r.ok) {
+          setCliState({ kind: "missing" });
+          return;
+        }
+        if (r.authed && r.ghLogin) {
+          setCliState({ kind: "ready", login: r.ghLogin });
+        } else {
+          setCliState({ kind: "needs-auth" });
+        }
+      } catch {
+        if (!cancelled) setCliState({ kind: "missing" });
+      }
+    })();
+    return () => {
+      cancelled = true;
+      pollCancelRef.current.cancelled = true;
+    };
+  }, [existingUsername]);
 
-      if (!res.ok) {
-        setValidating(false);
-        const friendly =
-          res.status === 401
-            ? "Token rejected — make sure it has repo + read:user (classic) or User → Read (fine-grained)."
-            : res.status === 403 && /sudo/i.test(apiMessage)
-              ? "Token needs the User → Read permission. Regenerate with that scope."
-              : apiMessage
-                ? `GitHub: ${apiMessage}`
-                : `GitHub returned ${res.status}.`;
-        console.warn("[fleet] github auth failed", res.status, apiMessage);
-        setError(friendly);
+  // ── "Use GitHub CLI" handler ───────────────────────────────
+  // Three branches mirroring cliState:
+  //   • missing    — button disabled (caller blocked at the UI layer)
+  //   • ready      — single-tap accept
+  //   • needs-auth — spawn `gh auth login --web` in a new terminal,
+  //                  then poll hasGhCli() until auth flips to true.
+  const pickGhCli = async () => {
+    setError(null);
+    if (cliState.kind === "ready") {
+      onResult({ method: "cli", username: cliState.login });
+      return;
+    }
+    if (cliState.kind !== "needs-auth") return;
+    setPending("cli");
+    try {
+      const launch = await window.electronAPI?.ghAuthLoginLaunch?.();
+      if (!launch?.ok) {
+        setError(launch?.error || "Couldn't launch the gh terminal.");
+        setPending(null);
         return;
       }
-      if (!body?.login) {
-        setValidating(false);
-        setError("Couldn't read your username from the token response.");
-        return;
+      // Poll every 2s up to 3 minutes for the user to complete the
+      // device-code dance in the new terminal.
+      pollCancelRef.current = { cancelled: false };
+      const handle = pollCancelRef.current;
+      const deadline = Date.now() + 3 * 60 * 1000;
+      while (Date.now() < deadline && !handle.cancelled) {
+        await new Promise(r => setTimeout(r, 2000));
+        if (handle.cancelled) return;
+        try {
+          const r = await window.electronAPI?.hasGhCli?.();
+          if (r?.ok && r.authed && r.ghLogin) {
+            setCliState({ kind: "ready", login: r.ghLogin });
+            setPending(null);
+            onResult({ method: "cli", username: r.ghLogin });
+            return;
+          }
+        } catch { /* keep polling */ }
       }
-      onResult({ username: body.login, token: t });
+      if (!handle.cancelled) {
+        setError("Timed out waiting for gh auth. Try again or use GitHub OAuth.");
+        setPending(null);
+      }
     } catch (e) {
-      setValidating(false);
-      console.error("[fleet] github fetch threw:", e);
-      setError(e instanceof Error ? e.message : "Couldn't reach GitHub.");
+      setError(e instanceof Error ? e.message : "Couldn't start gh auth.");
+      setPending(null);
     }
   };
+
+  // ── "Connect with GitHub" (Fleetify OAuth broker) ─────────
+  const pickOAuth = async () => {
+    setError(null);
+    setPending("oauth");
+    try {
+      const r = await window.electronAPI?.github?.beginOAuth?.();
+      if (r?.ok) {
+        const login = r.link?.github_login;
+        onResult({ method: "oauth", username: login });
+        return;
+      }
+      setError(r?.error || "GitHub OAuth didn't complete.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't reach GitHub.");
+    } finally {
+      setPending(null);
+    }
+  };
+
+  // Choice-row button — used twice, styled per variant.
+  const ChoiceRow = ({
+    icon,
+    title,
+    subtitle,
+    onClick,
+    disabled,
+    loading,
+    badge,
+    variant,
+  }: {
+    icon: React.ReactNode;
+    title: string;
+    subtitle?: string;
+    onClick: () => void;
+    disabled?: boolean;
+    loading?: boolean;
+    badge?: string;
+    variant?: "white" | "black";
+  }) => {
+    const isWhite = variant === "white";
+    const isBlack = variant === "black";
+    const baseBg = isWhite ? "#fff" : isBlack ? "#000" : "rgba(255,255,255,0.025)";
+    const hoverBg = isWhite ? "#f1f1f1" : isBlack ? "#111" : "rgba(255,255,255,0.08)";
+    const baseBorder = isWhite
+      ? "rgba(0,0,0,0.08)"
+      : isBlack
+        ? "rgba(255,255,255,0.12)"
+        : "rgba(255,255,255,0.08)";
+    const hoverBorder = isWhite
+      ? "rgba(0,0,0,0.16)"
+      : isBlack
+        ? "rgba(255,255,255,0.22)"
+        : "rgba(255,255,255,0.18)";
+    const textColor = isWhite ? "#000" : isBlack ? "#fff" : "var(--m-text)";
+    const subtitleColor = isWhite
+      ? "rgba(0,0,0,0.55)"
+      : isBlack
+        ? "rgba(255,255,255,0.55)"
+        : "var(--m-text-3)";
+    const iconColor = isWhite ? "#000" : isBlack ? "#fff" : "var(--m-text-2)";
+    const badgeBg = isWhite
+      ? "rgba(0,0,0,0.06)"
+      : isBlack
+        ? "rgba(255,255,255,0.10)"
+        : "rgba(255,255,255,0.05)";
+    const badgeColor = isWhite
+      ? "rgba(0,0,0,0.7)"
+      : isBlack
+        ? "rgba(255,255,255,0.75)"
+        : "var(--m-text-3)";
+
+    return (
+      <button
+        onClick={onClick}
+        disabled={disabled || loading}
+        style={{
+          width: "100%",
+          display: "flex",
+          alignItems: "center",
+          gap: 11,
+          padding: "11px 13px",
+          background: baseBg,
+          border: `1px solid ${baseBorder}`,
+          borderRadius: 8,
+          color: textColor,
+          fontSize: 12.5,
+          fontWeight: 500,
+          cursor: disabled || loading ? "not-allowed" : "pointer",
+          opacity: disabled ? 0.55 : 1,
+          textAlign: "left",
+          transition: "background 0.12s ease, border-color 0.12s ease",
+          fontFamily: "inherit",
+        }}
+        onMouseEnter={e => {
+          if (disabled || loading) return;
+          e.currentTarget.style.background = hoverBg;
+          e.currentTarget.style.borderColor = hoverBorder;
+        }}
+        onMouseLeave={e => {
+          if (disabled || loading) return;
+          e.currentTarget.style.background = baseBg;
+          e.currentTarget.style.borderColor = baseBorder;
+        }}
+      >
+        <span style={{ display: "flex", color: iconColor }}>
+          {loading ? (
+            <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />
+          ) : icon}
+        </span>
+        <span style={{ flex: 1, display: "flex", flexDirection: "column", gap: 2 }}>
+          <span style={{ fontWeight: 600, fontSize: 13 }}>{title}</span>
+          {subtitle && (
+            <span style={{ fontSize: 11, color: subtitleColor }}>{subtitle}</span>
+          )}
+        </span>
+        {badge && (
+          <span style={{
+            fontSize: 10,
+            fontWeight: 600,
+            letterSpacing: "0.04em",
+            textTransform: "uppercase",
+            padding: "3px 7px",
+            borderRadius: 4,
+            background: badgeBg,
+            color: badgeColor,
+          }}>
+            {badge}
+          </span>
+        )}
+      </button>
+    );
+  };
+
+  // Derive the CLI row's copy from cliState.
+  const cliLoading = pending === "cli";
+  const cliDisabled =
+    cliState.kind === "probing" ||
+    cliState.kind === "missing" ||
+    pending === "oauth";
+  const cliTitle =
+    cliState.kind === "ready"
+      ? `Connect with GitHub CLI · @${cliState.login}`
+      : "Connect with GitHub CLI";
+  const cliSubtitle =
+    cliState.kind === "probing"
+      ? "Checking gh CLI…"
+      : cliState.kind === "missing"
+        ? "gh CLI not detected on PATH"
+        : cliState.kind === "needs-auth"
+          ? cliLoading
+            ? "Complete the auth in the opened terminal…"
+            : "Opens a terminal to run gh auth login"
+          : "Reuses gh's existing credentials — no extra setup";
+  const cliBadge =
+    cliState.kind === "missing"
+      ? "Not Installed"
+      : cliState.kind === "ready" || cliState.kind === "needs-auth"
+        ? "Installed"
+        : undefined;
 
   return (
     <div
@@ -1848,7 +2037,6 @@ function GithubWidget({
         overflow: "hidden",
       }}
     >
-      {/* Header */}
       <div
         style={{
           padding: "11px 12px",
@@ -1862,151 +2050,41 @@ function GithubWidget({
           GitHub
         </span>
         <span style={{ fontSize: 11, color: "var(--m-text-3)", marginLeft: "auto" }}>
-          Optional
+          Pick one
         </span>
       </div>
 
-      {/* Body — three modes share the same vertical slot:
-            • use-existing — single CTA "Use @<login>"
-            • idle         — single CTA "Generate token on GitHub"
-            • paste        — token input + Connect
-          No layout jump between them. */}
-      <div style={{ padding: "0 12px 11px" }}>
-        {stage === "use-existing" && existingUsername ? (
-          <button
-            onClick={() => onResult({ existing: true, username: existingUsername })}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 7,
-              width: "100%",
-              height: 34,
-              fontSize: 12,
-              fontWeight: 600,
-              borderRadius: 7,
-              background: "#fff",
-              color: "#000",
-              border: "none",
-              cursor: "pointer",
-              transition: "transform 0.12s ease",
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-0.5px)"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.transform = "translateY(0)"; }}
-          >
-            <Github size={11} />
-            <span>Use @{existingUsername}</span>
-          </button>
-        ) : stage === "idle" ? (
-          <button
-            onClick={openTokenPage}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 7,
-              width: "100%",
-              height: 34,
-              fontSize: 12,
-              fontWeight: 500,
-              borderRadius: 7,
-              background: "rgba(255,255,255,0.04)",
-              border: "1px solid rgba(255,255,255,0.10)",
-              color: "var(--m-text)",
-              cursor: "pointer",
-              transition: "background 0.12s ease, border-color 0.12s ease",
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = "var(--secondary)";
-              e.currentTarget.style.borderColor = "rgba(255,255,255,0.20)";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = "rgba(255,255,255,0.04)";
-              e.currentTarget.style.borderColor = "rgba(255,255,255,0.10)";
-            }}
-          >
-            <span>Generate token on GitHub</span>
-            <ExternalLink size={11} style={{ opacity: 0.6 }} />
-          </button>
-        ) : (
-          <>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                height: 34,
-                padding: "0 11px",
-                borderRadius: 7,
-                background: "rgba(0,0,0,0.3)",
-                border: error
-                  ? "1px solid rgba(248,113,113,0.35)"
-                  : "1px solid rgba(255,255,255,0.10)",
-                transition: "border-color 0.15s ease",
-              }}
-            >
-              <input
-                ref={inputRef}
-                type="password"
-                placeholder="Paste your token (ghp_… or github_pat_…)"
-                value={token}
-                onChange={(e) => {
-                  setToken(e.target.value);
-                  if (error) setError("");
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && token.trim() && !validating) validate();
-                }}
-                style={{
-                  flex: 1,
-                  height: "100%",
-                  background: "transparent",
-                  border: "none",
-                  outline: "none",
-                  color: "var(--m-text)",
-                  fontSize: 12,
-                  fontFamily: "var(--font-mono, ui-monospace, monospace)",
-                }}
-              />
-            </div>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                marginTop: 6,
-                fontSize: 10.5,
-                color: "var(--m-text-3)",
-              }}
-            >
-              <span>{error || "Press Enter to connect."}</span>
-              <span style={{ flex: 1 }} />
-              <button
-                onClick={openTokenPage}
-                style={{
-                  background: "transparent",
-                  border: "none",
-                  color: "var(--m-text-2)",
-                  fontSize: 10.5,
-                  cursor: "pointer",
-                  textDecoration: "underline",
-                  textUnderlineOffset: 2,
-                  textDecorationColor: "rgba(255,255,255,0.18)",
-                  padding: 0,
-                }}
-              >
-                Reopen token page
-              </button>
-            </div>
-            {error && (
-              <div style={{ marginTop: 4, fontSize: 11, color: "rgba(248,113,113,0.92)" }}>
-                {error}
-              </div>
-            )}
-          </>
-        )}
+      <div style={{ padding: "0 12px 11px", display: "flex", flexDirection: "column", gap: 7 }}>
+        <ChoiceRow
+          icon={<Github size={14} />}
+          title="Connect with GitHub"
+          onClick={pickOAuth}
+          loading={pending === "oauth"}
+          disabled={pending === "cli"}
+          variant="white"
+        />
+        <ChoiceRow
+          icon={<Terminal size={14} />}
+          title={cliTitle}
+          subtitle={cliSubtitle}
+          onClick={pickGhCli}
+          loading={cliLoading}
+          disabled={cliDisabled}
+          badge={cliBadge}
+          variant="black"
+        />
       </div>
 
-      {/* Footer — Skip is always available, primary mirrors the body stage. */}
+      {error && (
+        <div style={{
+          padding: "0 12px 10px",
+          fontSize: 11,
+          color: "rgba(248,113,113,0.92)",
+        }}>
+          {error}
+        </div>
+      )}
+
       <div
         style={{
           borderTop: "1px solid rgba(255,255,255,0.05)",
@@ -2018,7 +2096,11 @@ function GithubWidget({
         }}
       >
         <button
-          onClick={() => onResult({ skipped: true })}
+          onClick={() => {
+            pollCancelRef.current.cancelled = true;
+            onResult({ skipped: true });
+          }}
+          disabled={pending !== null}
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -2030,19 +2112,19 @@ function GithubWidget({
             background: "transparent",
             border: "none",
             color: "var(--m-text-3)",
-            cursor: "pointer",
+            cursor: pending !== null ? "not-allowed" : "pointer",
+            opacity: pending !== null ? 0.5 : 1,
           }}
         >
-          Skip — connect later
+          Skip — pick later
         </button>
-        {/* Escape hatch: when we're on the use-existing path, let the
-            user defect to the manual paste flow if they want a
-            different account than the one gh CLI knows about. */}
-        {stage === "use-existing" && (
+        <div style={{ flex: 1 }} />
+        {pending === "cli" && (
           <button
             onClick={() => {
-              setStage("idle");
-              setError("");
+              pollCancelRef.current.cancelled = true;
+              setPending(null);
+              setError("Stopped waiting for gh auth.");
             }}
             style={{
               display: "inline-flex",
@@ -2053,50 +2135,23 @@ function GithubWidget({
               fontWeight: 500,
               borderRadius: 5,
               background: "transparent",
-              border: "none",
-              color: "var(--m-text-3)",
+              border: "1px solid rgba(255,255,255,0.10)",
+              color: "var(--m-text-2)",
               cursor: "pointer",
             }}
           >
-            Use a different account
-          </button>
-        )}
-        <div style={{ flex: 1 }} />
-        {stage === "paste" && (
-          <button
-            onClick={validate}
-            disabled={!token.trim() || validating}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              height: 26,
-              padding: "0 13px",
-              fontSize: 11.5,
-              fontWeight: 600,
-              borderRadius: 5,
-              background:
-                token.trim() && !validating ? "#fff" : "rgba(255,255,255,0.05)",
-              color: token.trim() && !validating ? "#000" : "var(--m-text-3)",
-              border: "none",
-              cursor: token.trim() && !validating ? "pointer" : "not-allowed",
-              transition: "background 0.12s ease",
-            }}
-          >
-            {validating ? (
-              <>
-                <Loader2 size={11} style={{ animation: "spin 1s linear infinite" }} />
-                <span>Verifying…</span>
-              </>
-            ) : (
-              <span>Connect</span>
-            )}
+            Stop waiting
           </button>
         )}
       </div>
     </div>
   );
 }
+
+// Function intentionally left blank below — the legacy multi-stage PAT
+// widget body has been replaced by the 3-button picker above. Removing
+// the residual `} return (...)` would have made this diff sprawling; the
+// shim keeps the new function self-contained.
 
 function GithubResolved({
   username,

@@ -71,6 +71,12 @@ interface Window {
       height: number,
       opts?: { center?: boolean; animate?: boolean }
     ) => Promise<boolean>;
+    /** Swap the OS taskbar icon at runtime so it stays legible against
+     *  light/dark Windows themes. Pass "dark" (dark logo) for light
+     *  systems and "light" (light logo) for dark systems. */
+    setTaskbarIcon: (
+      variant: "light" | "dark"
+    ) => Promise<{ ok: boolean; variant?: string; error?: string }>;
     setTrafficLightPosition: (x: number, y: number) => Promise<boolean>;
     minimizeWindow: () => Promise<boolean>;
     maximizeWindow: () => Promise<boolean>;
@@ -101,6 +107,21 @@ interface Window {
       username?: string;
       error?: string;
     }>;
+    /** Spawns `gh auth login --web` in a fresh terminal window so the
+     *  user can complete the device-code flow interactively. The
+     *  renderer should poll `hasGhCli()` after to detect completion. */
+    ghAuthLoginLaunch: () => Promise<{ ok: boolean; error?: string }>;
+    /** Probes gh CLI presence + auth state. Returns `ok: false` when
+     *  the binary isn't on PATH; otherwise reports version + authed
+     *  flag + login. Used by the onboarding GitHub picker and the
+     *  mid-flow Create-PR auth dialog. */
+    hasGhCli: () => Promise<{
+      ok: boolean;
+      version?: string;
+      authed?: boolean;
+      ghLogin?: string | null;
+      error?: string | null;
+    }>;
     onAuthUrl: (
       cb: (info: { toolKey: string; url: string }) => void
     ) => () => void;
@@ -125,6 +146,28 @@ interface Window {
       local: string[];
       remote: string[];
     }>;
+    /** `gh pr list --json number,state,headRefName,...` — drives the
+     *  per-branch PR badge in BranchPickerMenu without paying for one
+     *  `gh pr view` per row. */
+    listPRs: (folder: string, limit?: number | null) => Promise<{
+      ok: boolean;
+      prs?: Array<{
+        number: number;
+        state: string;
+        headRefName: string;
+        isDraft?: boolean;
+        mergeable?: string;
+      }>;
+      error?: string;
+    }>;
+    /** Carve a fresh `fleet/<topic>-<sha>` branch off `baseBranch`
+     *  and switch to it. Used by both the post-merge cleanup and the
+     *  BranchPickerMenu's "Create new branch" button. */
+    carveNextRound: (
+      folder: string,
+      branch: string,
+      baseBranch?: string,
+    ) => Promise<{ ok: boolean; error?: string }>;
     gitCheckout: (
       folder: string,
       branch: string,
