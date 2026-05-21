@@ -18,6 +18,37 @@ use sqlx::SqlitePool;
 
 use crate::models::user::User;
 
+// ── No-auth dev mode ────────────────────────────────────────────────
+// `FLEETIFY_NOAUTH=1` short-circuits every protected route to a stub
+// "John Doe" user so the desktop UI can run without an identity provider.
+//
+// Release builds IGNORE the env var unconditionally — `cfg!(debug_assertions)`
+// is the same gate `shell::auth::is_prod()` uses to pin prod URLs, so the
+// shipped binary cannot be tricked into honouring `FLEETIFY_NOAUTH=1` from
+// the user's environment. Anyone building from source can remove the gate,
+// but that's outside the threat model.
+//
+// Read once via OnceLock; the env var is a process-wide constant set by
+// `npm run dev:noauth`.
+pub fn is_no_auth() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| {
+        if !cfg!(debug_assertions) {
+            return false;
+        }
+        std::env::var("FLEETIFY_NOAUTH").as_deref() == Ok("1")
+    })
+}
+
+fn noauth_principal() -> Principal {
+    Principal {
+        sub: "noauth-john-doe".into(),
+        email: Some("john.doe@fleetify.local".into()),
+        name: Some("John Doe".into()),
+        raw_claims: serde_json::json!({}),
+    }
+}
+
 // ── Config (env, parity with app/auth.py) ───────────────────────────
 #[derive(Debug, Clone)]
 pub struct AuthConfig {
@@ -400,6 +431,10 @@ pub async fn resolve_user_id_from_token_cached(
     jwks: &JwksCache,
     pool: &SqlitePool,
 ) -> anyhow::Result<String> {
+    if is_no_auth() {
+        let user = resolve_user(&noauth_principal(), pool).await?;
+        return Ok(user.id);
+    }
     let key = token_cache_key(token);
     {
         let mut c = token_cache().lock().unwrap();
@@ -445,6 +480,12 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let st = AuthState::from_ref(state);
+        if is_no_auth() {
+            let user = resolve_user(&noauth_principal(), &st.pool)
+                .await
+                .map_err(|e| AuthError::Invalid(e.to_string()))?;
+            return Ok(AuthUser(user));
+        }
         let token = parts
             .headers
             .get(axum::http::header::AUTHORIZATION)

@@ -164,7 +164,12 @@ pub async fn serve(
     // a failed outbox init logs and continues so a busted home dir
     // doesn't kill the backend; emit_* sites will see "telemetry outbox
     // not initialised" and skip enqueue gracefully.
-    if let Err(e) = services::telemetry::outbox::init().await {
+    //
+    // FLEETIFY_NOAUTH=1 skips the heartbeat loop entirely — emit_* is
+    // also short-circuited so the outbox stays empty.
+    if crate::auth::is_no_auth() {
+        tracing::info!("telemetry: disabled (FLEETIFY_NOAUTH=1)");
+    } else if let Err(e) = services::telemetry::outbox::init().await {
         tracing::warn!("telemetry: outbox init failed: {e} (telemetry disabled)");
     } else {
         tokio::spawn(services::telemetry::run_heartbeat_loop());

@@ -49,6 +49,12 @@ fn iso_utc(dt: DateTime<Utc>) -> String {
 }
 
 async fn enqueue_payload(payload: Value) -> Result<()> {
+    // No-auth dev mode: never enqueue. The WS client and heartbeat loop
+    // are also skipped at startup, so without this guard the outbox
+    // would grow unbounded with no consumer.
+    if crate::auth::is_no_auth() {
+        return Ok(());
+    }
     let event_id = uuid::Uuid::new_v4().to_string();
     outbox::enqueue(&event_id, &payload).await?;
     tracing::info!(

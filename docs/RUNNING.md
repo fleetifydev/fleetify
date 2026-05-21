@@ -97,9 +97,22 @@ shipped binary is ~20% smaller than a default release build.
 | `FLEETIFY_ISSUER`        | `https://fleetify.dev` (prod) | OAuth + telemetry cloud endpoint |
 | `FLEETIFY_RESOURCE`      | `https://fleetify.dev/api`    | RFC 8707 resource indicator |
 | `FLEETIFY_DASHBOARD_URL` | `https://app.fleetify.dev`    | "Open dashboard" link target |
+| `FLEETIFY_NOAUTH`        | (unset)                       | `=1` ⇒ skip OAuth, sign in as a stub "John Doe", disable telemetry. Dev only. |
 | `FLEET_DB_URL`           | `sqlite://~/.fleetify/fleet.db?mode=rwc` | Override the local DB; tests set `sqlite::memory:` |
 | `GEMINI_API_KEY`         | (none)                        | Bypass interactive Gemini OAuth |
 | `GOOGLE_*`               | (none)                        | Vertex-AI auth (3 vars: API_KEY + PROJECT + LOCATION) |
+
+#### `FLEETIFY_NOAUTH=1` — offline dev mode
+
+`npm run dev:noauth` boots the desktop UI without contacting the Fleetify
+identity provider. The Tauri shell stubs every `window.fleetify.*` call to a
+synthetic "John Doe" identity (`sub: noauth-john-doe`), the backend's
+`AuthUser` extractor and WS token resolver short-circuit to the same user,
+and the cloud telemetry WebSocket + heartbeat loop are skipped entirely.
+The "Sign in with Fleetify" screen is bypassed; "Sign out" stays visible
+in Settings but is inert. Use this when the IdP is down or to iterate on
+UI without a network round-trip — release builds ignore the flag (prod
+issuer/resource URLs are pinned at compile time).
 
 ### Where things live
 
