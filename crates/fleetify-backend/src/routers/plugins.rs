@@ -45,6 +45,11 @@ async fn list_installed() -> Json<Value> {
     // to parse logs + is omitted from the list so a single bad plugin
     // doesn't make the whole Library tab go 500. The enabled flag +
     // scopes come from the plugin_state.json store (toggle persistence).
+    //
+    // Response shape matches the Python `list_installs` contract — the
+    // manifest is NESTED under `manifest`, not flattened, because the
+    // renderer's `PluginInstall` TS type reads `inst.manifest.declares.*`.
+    // Flattening crashed the Library page on every entry.
     use crate::services::plugins::{manifest, state};
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
@@ -63,35 +68,61 @@ async fn list_installed() -> Json<Value> {
         }
         match manifest::parse_plugin(&path) {
             Ok(m) => {
-                let install_id = entry
-                    .file_name()
-                    .to_string_lossy()
-                    .to_string();
+                let install_id = entry.file_name().to_string_lossy().to_string();
                 let ps = state::get(&install_id);
-                let mut v = serde_json::to_value(&m).unwrap_or(Value::Null);
-                if let Some(obj) = v.as_object_mut() {
-                    obj.insert("install_id".into(), Value::String(install_id.clone()));
-                    obj.insert(
-                        "install_path".into(),
-                        Value::String(path.to_string_lossy().into_owned()),
-                    );
-                    obj.insert("enabled".into(), Value::Bool(ps.master_enabled));
-                    let scopes_v = serde_json::to_value(&ps.scopes)
-                        .unwrap_or(Value::Array(Vec::new()));
-                    obj.insert("scopes".into(), scopes_v);
-                    // Back-compat single-scope field for older renderer
-                    // builds that read "scope" instead of "scopes[]".
-                    // Picks the first enabled scope_type or "user" as
-                    // the default summary.
-                    let summary = ps
-                        .scopes
-                        .iter()
-                        .find(|s| s.enabled)
-                        .map(|s| s.scope_type.clone())
-                        .unwrap_or_else(|| "user".to_string());
-                    obj.insert("scope".into(), Value::String(summary));
-                }
-                out.push(v);
+
+                // Filesystem timestamps stand in for the DB-tracked
+                // installed_at / last_updated_at the Python build used.
+                let (installed_at, last_updated_at) = std::fs::metadata(&path)
+                    .ok()
+                    .map(|meta| {
+                        let created = meta
+                            .created()
+                            .ok()
+                            .map(chrono::DateTime::<chrono::Utc>::from);
+                        let modified = meta
+                            .modified()
+                            .ok()
+                            .map(chrono::DateTime::<chrono::Utc>::from);
+                        (created, modified)
+                    })
+                    .unwrap_or((None, None));
+
+                let plugin_name = m.name.clone();
+                let version = m.version.clone();
+                let manifest_v = serde_json::to_value(&m).unwrap_or(Value::Null);
+                let enablements: Vec<Value> = ps
+                    .scopes
+                    .iter()
+                    .map(|s| {
+                        json!({
+                            "scope_type": s.scope_type,
+                            "scope_id": s.scope_id,
+                            "enabled": s.enabled,
+                        })
+                    })
+                    .collect();
+                // Back-compat single-scope summary for callers that read
+                // `scope` instead of iterating `enablements`.
+                let scope_summary = ps
+                    .scopes
+                    .iter()
+                    .find(|s| s.enabled)
+                    .map(|s| s.scope_type.clone())
+                    .unwrap_or_else(|| "user".to_string());
+
+                out.push(json!({
+                    "id": install_id,
+                    "plugin_name": plugin_name,
+                    "version": version,
+                    "scope": scope_summary,
+                    "master_enabled": ps.master_enabled,
+                    "install_path": path.to_string_lossy(),
+                    "installed_at": installed_at.as_ref().map(|t| t.to_rfc3339()),
+                    "last_updated_at": last_updated_at.as_ref().map(|t| t.to_rfc3339()),
+                    "manifest": manifest_v,
+                    "enablements": enablements,
+                }));
             }
             Err(e) => {
                 tracing::debug!(

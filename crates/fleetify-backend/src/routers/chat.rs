@@ -1280,6 +1280,7 @@ async fn run_dispatched_task(
                 &pool,
                 &staff_sid,
                 &target_id,
+                Some(&target.title),
                 &task_for_card,
                 false,
                 &summary,
@@ -1292,6 +1293,8 @@ async fn run_dispatched_task(
                     "type": "dispatch_result",
                     "session_id": staff_sid,
                     "target_id": target_id,
+                    "target_name": target.title,
+                    "project_path": target.project_path,
                     "task": task_for_card,
                     "success": false,
                     "summary": summary,
@@ -1350,6 +1353,7 @@ async fn run_dispatched_task(
                 &pool,
                 &staff_sid,
                 &target_id,
+                Some(&target.title),
                 &task_for_card,
                 false,
                 &summary,
@@ -1362,6 +1366,8 @@ async fn run_dispatched_task(
                     "type": "dispatch_result",
                     "session_id": staff_sid,
                     "target_id": target_id,
+                    "target_name": target.title,
+                    "project_path": target.project_path,
                     "task": task_for_card,
                     "success": false,
                     "summary": summary,
@@ -1394,6 +1400,7 @@ async fn run_dispatched_task(
                 &pool,
                 &staff_sid,
                 &target_id,
+                Some(&target.title),
                 &task_for_card,
                 false,
                 &summary,
@@ -1406,6 +1413,7 @@ async fn run_dispatched_task(
                     "type": "dispatch_result",
                     "session_id": staff_sid,
                     "target_id": target_id,
+                    "target_name": target.title,
                     "task": task_for_card,
                     "success": false,
                     "summary": summary,
@@ -1695,6 +1703,7 @@ async fn run_dispatched_task(
         &pool,
         &staff_sid,
         &target_id,
+        Some(&target.title),
         &task_for_card,
         success,
         &preview,
@@ -1708,14 +1717,16 @@ async fn run_dispatched_task(
     sm.clear_dispatch_chain(&target_id);
     // Live push to the caller WS so the pending card resolves
     // immediately. Persistence above is the on-reload backstop;
-    // this is the live UX. project_path lets the renderer's
-    // DispatchResultCard show the full target folder.
+    // this is the live UX. `target_name` + `project_path` let the
+    // renderer's DispatchResultCard render correctly even before the
+    // sessions list has hydrated (e.g. fresh cold-start race).
     sm.send_to_session_ws(
         &staff_sid,
         json!({
             "type": "dispatch_result",
             "session_id": staff_sid,
             "target_id": target_id,
+            "target_name": target.title,
             "task": task_for_card,
             "success": success,
             "summary": preview,
@@ -1732,12 +1743,13 @@ async fn persist_dispatch_result(
     pool: &sqlx::SqlitePool,
     staff_sid: &str,
     target_id: &str,
+    target_name: Option<&str>,
     task: &str,
     success: bool,
     summary: &str,
 ) {
     persist_dispatch_result_with_path(
-        pool, staff_sid, target_id, task, success, summary, None,
+        pool, staff_sid, target_id, target_name, task, success, summary, None,
     )
     .await
 }
@@ -1747,37 +1759,40 @@ async fn persist_dispatch_result(
 /// this block back on next reload, so the pending card resolves
 /// regardless of whether the staff WS was open when the dispatched
 /// task finished. Faithful with the chat.py "persist as fallback"
-/// branch when the live WS push fails. `project_path` lets the
-/// DispatchResultCard show the full target folder on reload —
-/// matches the live-push event shape.
+/// branch when the live WS push fails.
+///
+/// `target_name` and `project_path` are persisted alongside the
+/// block so the DispatchResultCard can render the agent's title and
+/// full project folder even after a full reload, when the live
+/// `target_id → session.title` lookup might miss (archived agents,
+/// fresh app launches before the sessions list has hydrated).
+#[allow(clippy::too_many_arguments)]
 async fn persist_dispatch_result_with_path(
     pool: &sqlx::SqlitePool,
     staff_sid: &str,
     target_id: &str,
+    target_name: Option<&str>,
     task: &str,
     success: bool,
     summary: &str,
     project_path: Option<&str>,
 ) {
-    let block_entry = match project_path {
-        Some(p) => json!({
-            "type": "dispatch_result",
-            "agent_id": target_id,
-            "task": task,
-            "success": success,
-            "summary": summary,
-            "project_path": p,
-        }),
-        None => json!({
-            "type": "dispatch_result",
-            "agent_id": target_id,
-            "task": task,
-            "success": success,
-            "summary": summary,
-        }),
-    };
+    let mut block_entry = json!({
+        "type": "dispatch_result",
+        "agent_id": target_id,
+        "task": task,
+        "success": success,
+        "summary": summary,
+    });
+    if let Value::Object(ref mut m) = block_entry {
+        if let Some(n) = target_name {
+            m.insert("agent_name".into(), Value::String(n.to_string()));
+        }
+        if let Some(p) = project_path {
+            m.insert("project_path".into(), Value::String(p.to_string()));
+        }
+    }
     let block = json!([block_entry]);
-    // (The remainder of the original body — INSERT INTO messages — runs below.)
     persist_block_into(pool, staff_sid, &block).await;
 }
 
@@ -1846,6 +1861,7 @@ mod tests {
             &pool,
             "staff-1",
             "target-2",
+            Some("Target Agent"),
             "do the thing",
             true,
             "summary preview",
@@ -1863,6 +1879,7 @@ mod tests {
         let block = &blocks[0];
         assert_eq!(block["type"], "dispatch_result");
         assert_eq!(block["agent_id"], "target-2");
+        assert_eq!(block["agent_name"], "Target Agent");
         assert_eq!(block["task"], "do the thing");
         assert_eq!(block["success"], true);
         assert_eq!(block["summary"], "summary preview");

@@ -117,6 +117,39 @@ async fn create_session(
 ) -> Result<Json<Session>, ApiError> {
     let raw = data.project_path.trim().to_string();
     let is_staff = data.title.trim() == "Staff Agent";
+
+    // Staff session is unique per user. Returning the existing row keeps
+    // the renderer's lazy "create on first send" path idempotent across
+    // cold-starts — without this, every race between localStorage hydration
+    // and the user typing in Fleet produced a fresh "Staff Agent" row that
+    // then leaked into the sidebar as a duplicate agent.
+    //
+    // We also archive any older Staff Agent rows for the same user so
+    // legacy duplicates (created by earlier builds) stop polluting the
+    // session list on the next fetch.
+    if is_staff {
+        let mut staff_rows: Vec<Session> = sqlx::query_as::<_, Session>(
+            "SELECT * FROM sessions \
+             WHERE user_id = ? AND title = 'Staff Agent' AND archived_at IS NULL \
+             ORDER BY created_at ASC",
+        )
+        .bind(&user.id)
+        .fetch_all(&st.auth.pool)
+        .await?;
+        if let Some(keeper) = staff_rows.first().cloned() {
+            // Archive every extra Staff Agent row beyond the first so the
+            // user converges to exactly one canonical staff session.
+            for extra in staff_rows.drain(1..) {
+                let _ = sqlx::query("UPDATE sessions SET archived_at = ? WHERE id = ?")
+                    .bind(chrono::Utc::now().to_rfc3339())
+                    .bind(&extra.id)
+                    .execute(&st.auth.pool)
+                    .await;
+            }
+            return Ok(Json(keeper));
+        }
+    }
+
     if !raw.is_empty() {
         let p = std::path::Path::new(&raw);
         // Strip Windows verbatim (`\\?\`) prefix — `std::fs::canonicalize`
