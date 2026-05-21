@@ -10,8 +10,10 @@
     "lint": "eslint .",
     "test": "vitest run --config vitest.renderer.config.ts",
     "tauri": "tauri",
+    "wipe": "node scripts/wipe.mjs",
     "dev:tauri": "cross-env FLEETIFY_ISSUER=http://localhost:3001 FLEETIFY_DASHBOARD_URL=http://localhost:3000 FLEETIFY_RESOURCE=http://127.0.0.1:8765 FLEETIFY_AUDIENCE=http://127.0.0.1:8765 tauri dev",
-    "prod": "cross-env FLEETIFY_ISSUER=https://fleetify.dev FLEETIFY_DASHBOARD_URL=https://app.fleetify.dev FLEETIFY_RESOURCE=https://fleetify.dev/api FLEETIFY_AUDIENCE=https://fleetify.dev/api tauri dev",
+    "dev:noauth": "cross-env FLEETIFY_NOAUTH=1 FLEETIFY_ISSUER=http://localhost:3001 FLEETIFY_DASHBOARD_URL=http://localhost:3000 FLEETIFY_RESOURCE=http://127.0.0.1:8765 FLEETIFY_AUDIENCE=http://127.0.0.1:8765 tauri dev",
+    "prod": "cross-env WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222 FLEETIFY_ISSUER=https://fleetify.dev FLEETIFY_DASHBOARD_URL=https://app.fleetify.dev FLEETIFY_RESOURCE=https://fleetify.dev/api FLEETIFY_AUDIENCE=https://fleetify.dev/api tauri dev",
     "prod:build": "cross-env FLEETIFY_ISSUER=https://fleetify.dev FLEETIFY_DASHBOARD_URL=https://app.fleetify.dev FLEETIFY_RESOURCE=https://fleetify.dev/api FLEETIFY_AUDIENCE=https://fleetify.dev/api tauri build"
   },
   "dependencies": {

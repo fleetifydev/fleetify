@@ -9,3 +9,6 @@ fleet.db-wal
 fleet.db-shm
 src-tauri/gen
 .env
+
+docs/superpowers/
+.playwright-mcp/
