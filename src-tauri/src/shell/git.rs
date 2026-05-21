@@ -37,7 +37,38 @@ async fn git(args: &[&str], cwd: &Path) -> (i32, String, String) {
 }
 
 async fn gh(args: &[&str], cwd: &Path) -> (i32, String, String) {
-    run("gh", args, cwd, Duration::from_secs(20)).await
+    // If the user authed via "Connect with GitHub" (the Fleetify OAuth
+    // broker), their token is in the keychain — inject it as GH_TOKEN
+    // so `gh` uses it instead of (or in addition to) its own login.
+    // gh respects GH_TOKEN with higher priority than its keyring, so
+    // every PR / repo / merge call goes through the chosen auth path
+    // automatically:
+    //   • OAuth picked  → keychain payload present → GH_TOKEN set → gh authed.
+    //   • CLI picked    → no payload → no env var → gh uses its own auth.
+    //   • Skip / unset  → same as CLI; mid-flow picker still pops on Create PR.
+    let token: Option<String> = crate::shell::github_link::get_link()
+        .await
+        .and_then(|l| l.get("access_token").and_then(|v| v.as_str()).map(String::from));
+
+    let mut cmd = tokio::process::Command::new("gh");
+    cmd.args(args).current_dir(cwd);
+    if let Some(t) = token {
+        cmd.env("GH_TOKEN", t);
+    }
+    let fut = async {
+        match cmd.output().await {
+            Ok(o) => (
+                o.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&o.stdout).to_string(),
+                String::from_utf8_lossy(&o.stderr).to_string(),
+            ),
+            Err(e) => (-1, String::new(), e.to_string()),
+        }
+    };
+    match tokio::time::timeout(Duration::from_secs(20), fut).await {
+        Ok(r) => r,
+        Err(_) => (-1, String::new(), "gh timed out".to_string()),
+    }
 }
 
 pub async fn get_context(folder: &Path) -> Value {
@@ -727,6 +758,28 @@ pub async fn create_pr_via_gh(
     let had_head = head_rc == 0;
     note("rev-parse HEAD", true, if had_head { "exists" } else { "missing" });
     if !had_head {
+        // Force HEAD onto refs/heads/main BEFORE the baseline commit.
+        // Pre-existing `.git` folders inherit the user's
+        // `init.defaultBranch` config — commonly `master` on older
+        // installs — and our `git commit` would land the baseline on
+        // that branch. `git push --all` then ships `master` to the
+        // freshly created GitHub repo as the default branch, and
+        // `gh pr create --base main` 404s with "Base ref must be a
+        // branch". Re-pointing HEAD on an empty repo costs nothing
+        // and makes the rest of the flow assume `main`, matching the
+        // fresh-init branch we already pass to `git init -b main`.
+        let (sr_rc, _, sr_err) = run(
+            "git",
+            &["symbolic-ref", "HEAD", "refs/heads/main"],
+            folder,
+            Duration::from_secs(5),
+        )
+        .await;
+        note(
+            "symbolic-ref HEAD → main",
+            sr_rc == 0,
+            if sr_rc == 0 { "ok" } else { sr_err.trim() },
+        );
         if let Some(fb) = feature_branch {
             // Baseline commit on main, then carve feature branch.
             let baseline_msg = with_fleetify_trailer("Fleetify baseline");
@@ -962,6 +1015,42 @@ pub async fn create_pr_via_gh(
         }
     }
 
+    // 5b. Upfront PR existence probe. `gh pr view --json number,url,state`
+    // resolves the PR for the current branch — if one exists and is
+    // open, we skip the 12-25s AI summary + the noisy "FAIL · gh pr
+    // create" recovery branch and return `existed:true` straight away.
+    // The renderer's optimistic Merge flip handles the rest.
+    {
+        let (rc_view, out_view, _) = gh(
+            &["pr", "view", "--json", "number,url,state"],
+            folder,
+        )
+        .await;
+        if rc_view == 0 {
+            if let Ok(v) = serde_json::from_str::<Value>(out_view.trim()) {
+                let num = v.get("number").and_then(|x| x.as_i64());
+                let state = v.get("state").and_then(|x| x.as_str()).unwrap_or("");
+                let url = v
+                    .get("url")
+                    .and_then(|x| x.as_str())
+                    .map(String::from)
+                    .unwrap_or_default();
+                if let Some(n) = num {
+                    if state.eq_ignore_ascii_case("OPEN") {
+                        note(
+                            "existed PR (pre-check)",
+                            true,
+                            &format!("#{n} — already open, skipping create"),
+                        );
+                        return json!({
+                            "ok": true, "prNumber": n, "prUrl": url, "existed": true
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     // 6. AI-generate PR title/body when body is empty.
     let mut final_title = title.to_string();
     let mut final_body = body.unwrap_or("").to_string();
@@ -1052,6 +1141,15 @@ pub async fn create_pr_via_gh(
                             }
                         })
                         .unwrap_or_default();
+                    // Tag the trace so the recovery is visible — the
+                    // "FAIL · gh pr create" line above made this case
+                    // look broken even when the renderer ultimately
+                    // flips to Merge.
+                    note(
+                        "existed PR",
+                        true,
+                        &format!("#{num} — already open, recovered"),
+                    );
                     return json!({
                         "ok": true, "prNumber": num, "prUrl": url, "existed": true
                     });
@@ -1079,28 +1177,185 @@ pub async fn create_pr_via_gh(
     json!({ "ok": true, "prNumber": pr_number, "prUrl": url })
 }
 
-pub async fn get_pr_status(folder: &Path, pr_number: Option<u64>) -> Value {
-    // `gh pr view [<n>] --json ...` returns the structured fields the
-    // renderer's PR dialog displays.
-    let mut argv: Vec<String> = vec!["pr".into(), "view".into()];
-    if let Some(n) = pr_number {
-        argv.push(n.to_string());
-    }
-    argv.push("--json".into());
-    argv.push(
-        "number,url,state,mergeable,isDraft,baseRefName,headRefName,\
-         statusCheckRollup,commentsCount"
-            .into(),
-    );
-    let argv_ref: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let (rc, out, err) = gh(&argv_ref, folder).await;
+/// `gh pr list --json number,state,headRefName --limit N`. Lets the
+/// BranchPickerMenu show "PR #N · OPEN/MERGED" badges per local
+/// branch without paying for one `gh pr view` per row.
+pub async fn list_prs(folder: &Path, limit: u32) -> Value {
+    let limit_str = limit.to_string();
+    let argv: Vec<&str> = vec![
+        "pr",
+        "list",
+        "--state",
+        "all",
+        "--limit",
+        &limit_str,
+        "--json",
+        "number,state,headRefName,isDraft,mergeable",
+    ];
+    let (rc, out, err) = gh(&argv, folder).await;
     if rc != 0 {
         return json!({ "ok": false, "error": err.trim() });
     }
     match serde_json::from_str::<Value>(out.trim()) {
-        Ok(pr) => json!({ "ok": true, "pr": pr }),
+        Ok(v) => json!({ "ok": true, "prs": v }),
         Err(e) => json!({ "ok": false, "error": format!("parse: {e}") }),
     }
+}
+
+pub async fn get_pr_status(folder: &Path, pr_number: Option<u64>) -> Value {
+    // `gh pr view <n>` is deterministic when we already know the
+    // number. `gh pr view` WITHOUT a number relies on gh's branch
+    // resolution / default-repo heuristic and was observed to be
+    // flaky in this app's workflow — sometimes returning empty even
+    // when a PR clearly exists for the current branch. The poll's
+    // null path then overwrote the BranchStrip's pr state and the
+    // strip flickered Create PR ↔ Merge every 15s.
+    //
+    // For the no-number case we switch to `gh pr list --head <branch>`
+    // which filters by head ref explicitly. That's deterministic and
+    // doesn't depend on gh's default-repo config. We pick the open
+    // PR (preferring OPEN > MERGED > CLOSED) and re-fetch its full
+    // shape via `gh pr view <number>` so the renderer still gets the
+    // same `checks` summary.
+    let field_set = "number,url,state,mergeable,isDraft,baseRefName,headRefName,\
+                     statusCheckRollup,commentsCount";
+    let resolved_number: Option<u64> = match pr_number {
+        Some(n) => Some(n),
+        None => {
+            let Some(branch) = current_branch_str(folder).await else {
+                return json!({ "ok": false, "error": "no current branch" });
+            };
+            let (rc_l, out_l, err_l) = gh(
+                &[
+                    "pr", "list",
+                    "--head", &branch,
+                    "--state", "all",
+                    "--limit", "10",
+                    "--json", "number,state",
+                ],
+                folder,
+            )
+            .await;
+            if rc_l != 0 {
+                // gh failed — could be transient (network, rate limit,
+                // default-repo not set, etc.). Report as a real error so
+                // the renderer can hold the current pr state instead of
+                // mistakenly clearing it. Earlier this returned
+                // `ok:true, pr:null` which the poll treated as "PR was
+                // deleted" → Create PR/Merge flicker every 15s.
+                return json!({
+                    "ok": false,
+                    "error": format!("gh pr list --head failed: {}", err_l.trim()),
+                });
+            }
+            let arr: Value = serde_json::from_str(out_l.trim()).unwrap_or(Value::Null);
+            let prs = arr.as_array().cloned().unwrap_or_default();
+            if prs.is_empty() {
+                // gh succeeded AND returned an empty list — branch
+                // genuinely has no PR. Safe to clear pr state.
+                return json!({ "ok": true, "pr": Value::Null });
+            }
+            // Prefer OPEN; fall back to whatever's freshest in the list
+            // (gh returns newest first).
+            prs.iter()
+                .find(|p| {
+                    p.get("state")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|s| s.eq_ignore_ascii_case("OPEN"))
+                })
+                .or_else(|| prs.first())
+                .and_then(|p| p.get("number").and_then(|v| v.as_u64()))
+        }
+    };
+    let Some(n) = resolved_number else {
+        return json!({ "ok": true, "pr": Value::Null });
+    };
+    let n_str = n.to_string();
+    let argv: Vec<&str> = vec!["pr", "view", &n_str, "--json", field_set];
+    let (rc, out, err) = gh(&argv, folder).await;
+    if rc != 0 {
+        return json!({ "ok": false, "error": err.trim() });
+    }
+    let raw: Value = match serde_json::from_str(out.trim()) {
+        Ok(v) => v,
+        Err(e) => return json!({ "ok": false, "error": format!("parse: {e}") }),
+    };
+    let Some(number) = raw.get("number").and_then(|v| v.as_i64()) else {
+        return json!({ "ok": false, "error": "missing pr.number" });
+    };
+
+    // Aggregate statusCheckRollup → counters. Mirrors summarizePR in
+    // frontend/electron/main.cjs:1690 so the renderer's Merge gate
+    // (`pr.checks.failing > 0`, `pr.checks.pending > 0`) keeps working.
+    let mut passing = 0u32;
+    let mut failing = 0u32;
+    let mut pending = 0u32;
+    let rollup: &[Value] = raw
+        .get("statusCheckRollup")
+        .and_then(|v| v.as_array())
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+    for c in rollup {
+        let status = c
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_uppercase();
+        let concl = c
+            .get("conclusion")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_uppercase();
+        if status == "COMPLETED" {
+            match concl.as_str() {
+                "SUCCESS" => passing += 1,
+                "FAILURE" | "TIMED_OUT" | "CANCELLED" => failing += 1,
+                _ => pending += 1, // skipped / neutral / action_required
+            }
+        } else {
+            pending += 1; // queued / in_progress
+        }
+    }
+
+    let pr = json!({
+        "number": number,
+        "url": raw.get("url"),
+        "state": raw.get("state"),
+        "mergeable": raw.get("mergeable"),
+        "isDraft": raw.get("isDraft").and_then(|v| v.as_bool()).unwrap_or(false),
+        "baseRefName": raw.get("baseRefName"),
+        "headRefName": raw.get("headRefName"),
+        "checks": {
+            "passing": passing,
+            "failing": failing,
+            "pending": pending,
+            "total": rollup.len(),
+        },
+        "commentsCount": raw.get("commentsCount").and_then(|v| v.as_i64()).unwrap_or(0),
+    });
+    json!({ "ok": true, "pr": pr })
+}
+
+/// `gh pr ready <number>` — flips a draft PR to "ready for review".
+/// Used by the BranchStrip's Merge handler so a single click can
+/// undraft + squash-merge in sequence.
+///
+/// Idempotent: `gh` exits non-zero when the PR is already ready, so we
+/// treat that stderr ("already ... ready for review") as success.
+/// Lets `onMerge` call this unconditionally without caring whether
+/// the local `pr.isDraft` flag is fresh or stale.
+pub async fn pr_ready(folder: &Path, pr_number: u64) -> Value {
+    let n = pr_number.to_string();
+    let (rc, _o, err) = gh(&["pr", "ready", &n], folder).await;
+    if rc == 0 {
+        return json!({ "ok": true });
+    }
+    let e = err.trim();
+    let lower = e.to_lowercase();
+    if lower.contains("ready for review") || lower.contains("already") {
+        return json!({ "ok": true, "noop": true });
+    }
+    json!({ "ok": false, "error": e })
 }
 
 pub async fn merge_pr(folder: &Path, pr_number: u64, method: &str) -> Value {

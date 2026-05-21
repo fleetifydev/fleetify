@@ -142,6 +142,47 @@ pub async fn window_set_size(
     serde_json::json!({ "ok": true })
 }
 
+// ── taskbar icon (system-theme-aware swap) ───────────────────────
+// Light system theme ⇒ light OS taskbar ⇒ use the DARK logo (visible
+// against light). Dark system theme ⇒ dark taskbar ⇒ use the LIGHT
+// logo. The renderer detects via `matchMedia("(prefers-color-scheme:
+// dark)")` and calls this on mount + on change.
+//
+// PNGs are embedded at compile time so the swap doesn't depend on
+// the app's working directory or the bundle's resource layout.
+const ICON_LIGHT_PNG: &[u8] = include_bytes!("../../../icons/logo-mark-light.png");
+const ICON_DARK_PNG: &[u8] = include_bytes!("../../../icons/logo-mark-dark.png");
+
+#[tauri::command]
+pub async fn window_set_taskbar_icon(
+    app: tauri::AppHandle,
+    variant: String,
+) -> serde_json::Value {
+    let bytes: &[u8] = match variant.as_str() {
+        "light" => ICON_LIGHT_PNG,
+        "dark" => ICON_DARK_PNG,
+        other => {
+            return serde_json::json!({
+                "ok": false,
+                "error": format!("unknown variant: {other} (expected 'light' or 'dark')")
+            });
+        }
+    };
+    let Some(w) = main_window(&app) else {
+        return serde_json::json!({ "ok": false, "error": "main window not found" });
+    };
+    let image = match tauri::image::Image::from_bytes(bytes) {
+        Ok(img) => img,
+        Err(e) => {
+            return serde_json::json!({ "ok": false, "error": format!("decode failed: {e}") });
+        }
+    };
+    match w.set_icon(image) {
+        Ok(()) => serde_json::json!({ "ok": true, "variant": variant }),
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+    }
+}
+
 // ── fs ───────────────────────────────────────────────────────────
 // Renderer wire shape (parity with Electron preload):
 //   readDirectory → { dirs: [{name, isDir}], error? }
@@ -370,6 +411,11 @@ pub async fn git_get_pr_status(
 ) -> serde_json::Value {
     git::get_pr_status(&PathBuf::from(folder), pr_number).await
 }
+
+#[tauri::command]
+pub async fn git_list_prs(folder: String, limit: Option<u32>) -> serde_json::Value {
+    git::list_prs(&PathBuf::from(folder), limit.unwrap_or(50)).await
+}
 #[tauri::command]
 pub async fn git_merge_pr(
     folder: String,
@@ -382,6 +428,11 @@ pub async fn git_merge_pr(
         method.as_deref().unwrap_or("merge"),
     )
     .await
+}
+
+#[tauri::command]
+pub async fn git_pr_ready(folder: String, pr_number: u64) -> serde_json::Value {
+    git::pr_ready(&PathBuf::from(folder), pr_number).await
 }
 #[tauri::command]
 pub async fn git_sync_main(folder: String, base_branch: String) -> serde_json::Value {
@@ -683,6 +734,52 @@ pub async fn git_unwatch_head(key: String) -> serde_json::Value {
 // `installOllama()` runs the platform's official installer; on any
 // failure we open https://ollama.com/download in the browser so the
 // user has a path forward (matches main.cjs's graceful fallback).
+// Launch `gh auth login --web` in a fresh shell window so the user can
+// complete the device-code flow interactively. Tauri-spawned processes
+// don't surface stdin/stdout to the user, so the shell window is the
+// least-friction way to let `gh` drive its own prompts. The renderer
+// polls `git_has_gh_cli` afterwards to detect when auth finishes.
+#[tauri::command]
+pub async fn gh_auth_login_launch() -> serde_json::Value {
+    let cmdline = "gh auth login --web --hostname github.com --git-protocol https";
+    let spawn_result = if cfg!(windows) {
+        tokio::process::Command::new("cmd")
+            .args([
+                "/c",
+                "start",
+                "\"GitHub authentication\"",
+                "cmd",
+                "/k",
+                cmdline,
+            ])
+            .spawn()
+    } else if cfg!(target_os = "macos") {
+        tokio::process::Command::new("osascript")
+            .args([
+                "-e",
+                &format!("tell application \"Terminal\" to do script \"{cmdline}\""),
+            ])
+            .spawn()
+    } else {
+        // Best-effort Linux: try x-terminal-emulator, then xterm.
+        tokio::process::Command::new("x-terminal-emulator")
+            .args(["-e", "bash", "-c", &format!("{cmdline}; exec bash")])
+            .spawn()
+            .or_else(|_| {
+                tokio::process::Command::new("xterm")
+                    .args(["-e", "bash", "-c", &format!("{cmdline}; exec bash")])
+                    .spawn()
+            })
+    };
+    match spawn_result {
+        Ok(_) => serde_json::json!({ "ok": true }),
+        Err(e) => serde_json::json!({
+            "ok": false,
+            "error": format!("failed to launch terminal: {e}")
+        }),
+    }
+}
+
 #[tauri::command]
 pub async fn shell_check_github_auth() -> serde_json::Value {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));

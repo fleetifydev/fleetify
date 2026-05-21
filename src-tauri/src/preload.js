@@ -50,6 +50,10 @@
       maximizeWindow: function () { return invoke("window_maximize"); },
       closeWindow: function () { return invoke("window_close"); },
       setWindowSize: function (w, h) { return invoke("window_set_size", { width: Number(w), height: Number(h) }); },
+      // System-theme-aware OS taskbar icon. variant: "light" | "dark".
+      // Light theme ⇒ pass "dark" (dark logo on light taskbar). Dark
+      // theme ⇒ pass "light".
+      setTaskbarIcon: function (variant) { return invoke("window_set_taskbar_icon", { variant: String(variant || "dark") }); },
       readDirectory: function (p) { return invoke("fs_read_directory", { dirPath: String(p || "") }); },
       readFile: function (p) { return invoke("fs_read_file", { filePath: String(p || "") }); },
       getExtension: function (p) { return invoke("fs_get_extension", { filePath: String(p || "") }); },
@@ -64,6 +68,10 @@
       },
       openFolderDialog: function () { return invoke("dialog_open_folder"); },
       checkGithubAuth: function () { return invoke("shell_check_github_auth"); },
+      // Launches `gh auth login --web` in a fresh terminal so the user
+      // can complete the device-code flow. Renderer should poll
+      // `hasGhCli()` after calling this to detect when auth finishes.
+      ghAuthLoginLaunch: function () { return invoke("gh_auth_login_launch"); },
       installProvider: function (toolKey) { return invoke("shell_install_provider", { toolKey: String(toolKey || "") }); },
       installOllama: function () { return invoke("shell_install_ollama"); },
       generateCommitMessage: function (folder, opts) {
@@ -192,11 +200,23 @@
           prNumber: prNumber == null ? null : Number(prNumber),
         });
       },
+      listPRs: function (folder, limit) {
+        return invoke("git_list_prs", {
+          folder: String(folder || ""),
+          limit: limit == null ? null : Number(limit),
+        });
+      },
       mergePR: function (folder, prNumber, method) {
         return invoke("git_merge_pr", {
           folder: String(folder || ""),
           prNumber: Number(prNumber),
           method: method || "merge",
+        });
+      },
+      markPRReady: function (folder, prNumber) {
+        return invoke("git_pr_ready", {
+          folder: String(folder || ""),
+          prNumber: Number(prNumber),
         });
       },
       syncMain: function (folder, baseBranch) {

@@ -30,8 +30,37 @@ fn cli_for(tool: Option<&str>) -> (&'static str, &'static [&'static str]) {
     }
 }
 
+/// CLIs to try when the chosen tool's binary isn't on PATH. Order is
+/// "most likely to be installed in a Fleetify dev environment" first,
+/// then the others. We skip the originally-requested tool because the
+/// caller already discovered it's missing.
+fn cli_fallback_chain(skip: &str) -> Vec<(&'static str, &'static [&'static str])> {
+    [CLAUDE, CODEX, GEMINI]
+        .into_iter()
+        .filter(|(bin, _)| *bin != skip)
+        .collect()
+}
+
+/// Cheap PATH probe via `which` (Unix) / `where` (Windows). Used to
+/// detect "binary missing" without paying the spawn cost.
+async fn binary_on_path(bin: &str) -> bool {
+    let probe_cmd = if cfg!(windows) { "where" } else { "which" };
+    let out = tokio::process::Command::new(probe_cmd)
+        .arg(bin)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await;
+    matches!(out, Ok(s) if s.success())
+}
+
 /// `(ok, cli, out, err)`. Mirrors `runSessionCli` — stdout/stderr
 /// captured, soft-killed on timeout, non-zero exit treated as failure.
+///
+/// If the requested tool's binary isn't on PATH, transparently falls
+/// back through the remaining CLIs in `cli_fallback_chain` order so a
+/// user with only `claude` installed still gets a working AI summary
+/// when their session was created with `tool: "gemini"`.
 async fn run_session_cli(
     folder: &str,
     tool: Option<&str>,
@@ -39,6 +68,37 @@ async fn run_session_cli(
     timeout: Duration,
 ) -> (bool, String, String, String) {
     let (bin, args) = cli_for(tool);
+    if !binary_on_path(bin).await {
+        tracing::info!(
+            target: "fleetify.ai_git",
+            "{bin} not on PATH — trying fallback CLIs"
+        );
+        for (alt_bin, alt_args) in cli_fallback_chain(bin) {
+            if binary_on_path(alt_bin).await {
+                tracing::info!(
+                    target: "fleetify.ai_git",
+                    "falling back from {bin} to {alt_bin}"
+                );
+                return spawn_session_cli(folder, alt_bin, alt_args, prompt, timeout).await;
+            }
+        }
+        return (
+            false,
+            bin.to_string(),
+            String::new(),
+            format!("{bin} not on PATH — install claude/codex/gemini CLI to enable AI summaries"),
+        );
+    }
+    spawn_session_cli(folder, bin, args, prompt, timeout).await
+}
+
+async fn spawn_session_cli(
+    folder: &str,
+    bin: &str,
+    args: &[&str],
+    prompt: &str,
+    timeout: Duration,
+) -> (bool, String, String, String) {
     let mut cmd = tokio::process::Command::new(bin);
     cmd.args(args)
         .current_dir(folder)

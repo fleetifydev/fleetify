@@ -65,6 +65,7 @@ pub fn run() {
             shell::ipc::window_maximize,
             shell::ipc::window_close,
             shell::ipc::window_set_size,
+            shell::ipc::window_set_taskbar_icon,
             shell::ipc::fs_read_directory,
             shell::ipc::fs_read_file,
             shell::ipc::fs_get_extension,
@@ -87,11 +88,14 @@ pub fn run() {
             shell::ipc::git_open_pr,
             shell::ipc::git_create_pr,
             shell::ipc::git_get_pr_status,
+            shell::ipc::git_list_prs,
             shell::ipc::git_merge_pr,
+            shell::ipc::git_pr_ready,
             shell::ipc::git_sync_main,
             shell::ipc::git_carve_next_round,
             shell::ipc::git_preflight_check,
             shell::ipc::shell_check_github_auth,
+            shell::ipc::gh_auth_login_launch,
             shell::ipc::shell_install_provider,
             shell::ipc::shell_install_ollama,
             shell::ipc::git_watch_head,
@@ -183,28 +187,32 @@ pub fn run() {
             });
 
             // Loopback bearer bridge :8770 (telemetry token source / parity).
-            tauri::async_runtime::spawn(async {
-                shell::bearer::run().await;
-            });
+            // FLEETIFY_NOAUTH=1 has no consumer to feed and no token to
+            // emit, so skip the listener entirely.
+            if !shell::auth::is_no_auth() {
+                tauri::async_runtime::spawn(async {
+                    shell::bearer::run().await;
+                });
 
-            // Telemetry WS client → fleetify.dev. Bearer pulled from
-            // shell::auth.get_access_token() lazily per attempt so a
-            // mid-flow refresh is picked up at the next reconnect.
-            tauri::async_runtime::spawn(async {
-                let source: fleetify_backend::services::telemetry::BearerSource =
-                    std::sync::Arc::new(|| {
-                        Box::pin(async {
-                            shell::auth::get_access_token(false)
-                                .await
-                                .and_then(|v| {
-                                    v.get("token")
-                                        .and_then(|t| t.as_str())
-                                        .map(String::from)
-                                })
-                        })
-                    });
-                fleetify_backend::services::telemetry::run_ws_client_loop(source).await;
-            });
+                // Telemetry WS client → fleetify.dev. Bearer pulled from
+                // shell::auth.get_access_token() lazily per attempt so a
+                // mid-flow refresh is picked up at the next reconnect.
+                tauri::async_runtime::spawn(async {
+                    let source: fleetify_backend::services::telemetry::BearerSource =
+                        std::sync::Arc::new(|| {
+                            Box::pin(async {
+                                shell::auth::get_access_token(false)
+                                    .await
+                                    .and_then(|v| {
+                                        v.get("token")
+                                            .and_then(|t| t.as_str())
+                                            .map(String::from)
+                                    })
+                            })
+                        });
+                    fleetify_backend::services::telemetry::run_ws_client_loop(source).await;
+                });
+            }
 
             Ok(())
         })

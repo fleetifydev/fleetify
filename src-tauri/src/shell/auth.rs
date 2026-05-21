@@ -25,6 +25,42 @@ fn is_prod() -> bool {
 fn env_or(k: &str, d: &str) -> String {
     std::env::var(k).unwrap_or_else(|_| d.to_string())
 }
+
+/// `FLEETIFY_NOAUTH=1` swaps every IPC-exposed auth call for a stub
+/// "John Doe" identity. Read once at process start.
+///
+/// Release builds IGNORE the env var unconditionally — same `cfg!(debug_assertions)`
+/// gate `is_prod()` uses to pin prod URLs. A user running the shipped
+/// installer cannot set `FLEETIFY_NOAUTH=1` to bypass auth.
+pub fn is_no_auth() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| {
+        if !cfg!(debug_assertions) {
+            return false;
+        }
+        std::env::var("FLEETIFY_NOAUTH").as_deref() == Ok("1")
+    })
+}
+
+const NOAUTH_SUB: &str = "noauth-john-doe";
+
+fn noauth_user_value() -> serde_json::Value {
+    serde_json::json!({
+        "sub": NOAUTH_SUB,
+        "name": "John Doe",
+        "email": "john.doe@fleetify.local",
+    })
+}
+
+fn noauth_tokens() -> Tokens {
+    Tokens {
+        access_token: "noauth".into(),
+        refresh_token: "noauth".into(),
+        id_token: None,
+        expires_at: i64::MAX,
+        scope: DEFAULT_SCOPES.into(),
+    }
+}
 pub fn issuer() -> String {
     if is_prod() {
         "https://fleetify.dev".into()
@@ -256,6 +292,9 @@ fn capture_code() -> Result<Cb, AuthError> {
 }
 
 pub async fn sign_in() -> Result<Tokens, AuthError> {
+    if is_no_auth() {
+        return Ok(noauth_tokens());
+    }
     let (verifier, challenge) = new_pkce();
     let cb = capture_code()?;
 
@@ -303,6 +342,9 @@ pub async fn sign_in() -> Result<Tokens, AuthError> {
 }
 
 pub async fn refresh_if_needed(force: bool) -> Result<Tokens, AuthError> {
+    if is_no_auth() {
+        return Ok(noauth_tokens());
+    }
     if !force {
         if let Some(t) = cached().lock().unwrap().clone() {
             if now() + TOKEN_LEEWAY_S < t.expires_at {
@@ -350,6 +392,9 @@ pub async fn refresh_if_needed(force: bool) -> Result<Tokens, AuthError> {
 /// success in `cached_uid()`; cleared on sign_out (parity with the
 /// Electron `auth.getUserId()` used as the GitHub-link keychain key).
 pub async fn get_user_id() -> Option<String> {
+    if is_no_auth() {
+        return Some(NOAUTH_SUB.to_string());
+    }
     if let Some(u) = cached_uid().lock().unwrap().clone() {
         return Some(u);
     }
@@ -360,6 +405,9 @@ pub async fn get_user_id() -> Option<String> {
 }
 
 pub async fn userinfo() -> Result<serde_json::Value, AuthError> {
+    if is_no_auth() {
+        return Ok(noauth_user_value());
+    }
     let t = refresh_if_needed(false).await?;
     let r = reqwest::Client::new()
         .get(format!("{}/oauth2/userinfo", auth_base()))
@@ -379,6 +427,11 @@ pub async fn userinfo() -> Result<serde_json::Value, AuthError> {
 }
 
 pub async fn sign_out() {
+    if is_no_auth() {
+        // Stay signed in as John Doe; frontend logout handler short-circuits
+        // on state.noAuth so the UI never reacts to this call.
+        return;
+    }
     let rt = cached()
         .lock()
         .unwrap()
@@ -403,6 +456,13 @@ pub async fn sign_out() {
 }
 
 pub async fn get_state() -> serde_json::Value {
+    if is_no_auth() {
+        return serde_json::json!({
+            "signedIn": true,
+            "user": noauth_user_value(),
+            "noAuth": true,
+        });
+    }
     let has_cached = cached().lock().unwrap().is_some();
     if has_cached {
         if let Ok(u) = userinfo().await {
@@ -432,6 +492,9 @@ pub async fn get_state() -> serde_json::Value {
 
 /// `{ token, expiresAt }` | null — matches `window.fleetify.getAccessToken`.
 pub async fn get_access_token(force: bool) -> Option<serde_json::Value> {
+    if is_no_auth() {
+        return Some(serde_json::json!({"token": "noauth", "expiresAt": i64::MAX}));
+    }
     if !force {
         if let Some(t) = cached().lock().unwrap().clone() {
             return Some(serde_json::json!({"token": t.access_token, "expiresAt": t.expires_at}));
