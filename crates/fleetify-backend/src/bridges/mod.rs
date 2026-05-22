@@ -9,6 +9,7 @@ pub mod codex;
 pub mod codex_client;
 pub mod gemini;
 pub mod openai;
+pub mod permission;
 
 use std::sync::Arc;
 
