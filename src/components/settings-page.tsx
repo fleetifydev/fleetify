@@ -16,7 +16,7 @@
  */
 import { useState, useEffect, useCallback } from "react";
 import {
-  Settings, Palette, Wand2, Cpu, Plug, Cable,
+  Settings, Palette, Wand2, Cpu, Plug, Cable, Route,
   FileCode, Webhook, FileText, FolderOpen, Loader2, Bug,
   Check, User, ArrowUpRight, HelpCircle, Sun, ArrowLeft,
   Eye, EyeOff, Volume2, Copy, MessageCircle,
@@ -28,6 +28,7 @@ import { THEMES } from "@/lib/themes";
 import type { ColorTheme } from "@/stores/theme-store";
 import { MCPSection } from "./settings/mcp-section";
 import { IntegrationsSection } from "./settings/integrations-section";
+import { RoutersSection } from "./settings/routers-section";
 import { WindowsTitleBar } from "./layout/windows-title-bar";
 import { openDocs } from "./layout/sidebar";
 import { FeedbackModal } from "./feedback-modal";
@@ -47,6 +48,7 @@ const NAV: { id: string; icon: React.FC<{ size?: number; style?: React.CSSProper
   { id: "Models",       icon: Cpu        },
   { id: "Plugins",      icon: Plug       },
   { id: "Integrations", icon: Cable      },
+  { id: "Routers",      icon: Route      },
   { id: "Rules",        icon: FileCode   },
   { id: "Tools & MCPs", icon: Webhook    },
   { id: "Diagnostics",  icon: Bug        },
@@ -1491,6 +1493,7 @@ export function SettingsPage({ initialTab = "General", onClose }: SettingsProps)
             {active === "Plugins"      && <PluginsSection onClose={onClose} />}
             {active === "Rules"        && <RulesSection />}
             {active === "Integrations" && <IntegrationsSection />}
+            {active === "Routers"      && <RoutersSection />}
             {active === "Tools & MCPs" && <MCPSection />}
             {active === "Diagnostics"  && <DiagnosticsSection />}
           </div>
