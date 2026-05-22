@@ -332,88 +332,6 @@ fn staff_subagents_json() -> &'static serde_json::Value {
     })
 }
 
-/// Splice the OAuth bearer (when present) into the `headers` of an
-/// http/sse MCP server config. Stdio servers and bearer-less http/sse
-/// entries round-trip unchanged. Returns Err with a short reason when
-/// the entry shape is broken so the caller can log a per-server skip
-/// without dropping the rest of the map.
-///
-/// Stdio servers whose name starts with `fleet_` also get the trio of
-/// env vars they need to talk back to the in-process backend:
-///   • FLEETIFY_SESSION_ID    — provided by the caller via `session_id`
-///   • FLEETIFY_INTERNAL_SECRET — pulled from the parent's env
-///   • FLEETIFY_BACKEND_URL   — defaults to http://127.0.0.1:8765
-fn splice_server_config(
-    name: &str,
-    cfg: &serde_json::Value,
-    secret: &Option<crate::services::mcp_secrets::McpSecret>,
-    session_id: &str,
-) -> Result<serde_json::Value, String> {
-    let obj = cfg
-        .as_object()
-        .ok_or_else(|| "config is not a JSON object".to_string())?;
-    let mut spliced = obj.clone();
-    let kind: String = spliced
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    if kind == "stdio" && name.starts_with("fleet_") {
-        let mut env = spliced
-            .get("env")
-            .and_then(|e| e.as_object())
-            .cloned()
-            .unwrap_or_default();
-        env.entry("FLEETIFY_SESSION_ID".to_string())
-            .or_insert_with(|| serde_json::Value::String(session_id.to_string()));
-        if let Ok(secret) = std::env::var("FLEETIFY_INTERNAL_SECRET") {
-            env.entry("FLEETIFY_INTERNAL_SECRET".to_string())
-                .or_insert_with(|| serde_json::Value::String(secret));
-        }
-        env.entry("FLEETIFY_BACKEND_URL".to_string()).or_insert_with(|| {
-            serde_json::Value::String(
-                std::env::var("FLEETIFY_BACKEND_URL")
-                    .unwrap_or_else(|_| "http://127.0.0.1:8765".into()),
-            )
-        });
-        spliced.insert("env".to_string(), serde_json::Value::Object(env));
-    }
-
-    if matches!(kind.as_str(), "http" | "sse") {
-        if let Some(secret) = secret {
-            if let Some(tok) = &secret.access_token {
-                let token_type = secret
-                    .extra
-                    .get("token_type")
-                    .and_then(|v| v.as_str())
-                    .map(|s| {
-                        if s.eq_ignore_ascii_case("bearer") {
-                            "Bearer".to_string()
-                        } else {
-                            s.to_string()
-                        }
-                    })
-                    .unwrap_or_else(|| "Bearer".to_string());
-                let mut headers = spliced
-                    .get("headers")
-                    .and_then(|h| h.as_object())
-                    .cloned()
-                    .unwrap_or_default();
-                headers.insert(
-                    "Authorization".into(),
-                    serde_json::Value::String(format!("{token_type} {tok}")),
-                );
-                spliced.insert(
-                    "headers".into(),
-                    serde_json::Value::Object(headers),
-                );
-            }
-        }
-    }
-    Ok(serde_json::Value::Object(spliced))
-}
-
 /// Drives the `claude` subprocess. `--mcp-config` injection is Phase 4.
 pub struct ClaudeBridge {
     pub session_id: String,
@@ -555,118 +473,27 @@ impl ClaudeBridge {
     /// entry can't drop the whole `mcpServers` map and turn every
     /// advertised tool name into a hallucination.
     pub fn build_mcp_config(&self) -> Option<serde_json::Value> {
-        use crate::services::{mcp_registry, mcp_secrets};
-
-        let template_reveng = matches!(
+        let map = crate::services::mcp_dispatch::build_merged_map(
+            &self.session_id,
+            self.is_staff,
             self.agent_template.as_deref(),
-            Some("reverse_engineering")
         );
-
-        let mut servers = serde_json::Map::new();
-        let mut mounted: Vec<String> = Vec::new();
-        let mut failed: Vec<String> = Vec::new();
-
-        // ── 1. User-added entries from the registry ──
-        for (name, cfg) in mcp_registry::list_all() {
-            match splice_server_config(
-                &name,
-                &cfg,
-                &mcp_secrets::get(&name),
-                &self.session_id,
-            ) {
-                Ok(spliced) => {
-                    servers.insert(name.clone(), spliced);
-                    mounted.push(name);
-                }
-                Err(reason) => {
-                    failed.push(format!("{name}: {reason}"));
-                    tracing::warn!(
-                        target: "claude",
-                        mcp = %name,
-                        session_id = %self.session_id,
-                        is_staff = self.is_staff,
-                        "skipping malformed user MCP entry: {reason}"
-                    );
-                }
-            }
-        }
-
-        // ── 2. Fleet built-in MCPs (spawn-time only, never in registry) ──
-        let want_dispatch = !self.is_staff;
-        let want_reveng = template_reveng;
-        if let Some(cfg) = self.builtin_mcp_config("fleet_memory") {
-            servers.insert("fleet_memory".into(), cfg);
-            mounted.push("fleet_memory".into());
-        }
-        if want_dispatch {
-            if let Some(cfg) = self.builtin_mcp_config("fleet_dispatch") {
-                servers.insert("fleet_dispatch".into(), cfg);
-                mounted.push("fleet_dispatch".into());
-            }
-        }
-        if want_reveng {
-            if let Some(cfg) = self.builtin_mcp_config("fleet_reveng") {
-                servers.insert("fleet_reveng".into(), cfg);
-                mounted.push("fleet_reveng".into());
-            }
-        }
-
         tracing::info!(
             target: "claude",
             session_id = %self.session_id,
             is_staff = self.is_staff,
             agent_template = self.agent_template.as_deref().unwrap_or(""),
-            mcp_mounted = ?mounted,
-            mcp_failed = ?failed,
+            mcp_mounted = ?map.keys().collect::<Vec<_>>(),
             "mcp_config built",
         );
-
-        if servers.is_empty() {
+        if map.is_empty() {
             return None;
         }
-        Some(serde_json::json!({ "mcpServers": servers }))
-    }
-
-    /// Build the stdio config blob for one Fleet builtin MCP. The
-    /// command path is resolved via `current_exe().parent()` →
-    /// `which::which()` → bare-basename fallback so dev (target/debug)
-    /// and Tauri-bundled installs both work without PATH manipulation.
-    /// Env carries the loopback secret + session id so the MCP can
-    /// POST back to `/api/internal/dispatch` and address its caller.
-    fn builtin_mcp_config(&self, name: &str) -> Option<serde_json::Value> {
-        use crate::services::mcp_registry;
-        let basename = match name {
-            "fleet_memory" => "fleet-memory-mcp",
-            "fleet_dispatch" => "fleet-dispatch-mcp",
-            "fleet_reveng" => "fleet-reveng-mcp",
-            _ => return None,
-        };
-        let command = mcp_registry::resolve_builtin_path(basename);
-        let mut env = serde_json::Map::new();
-        env.insert(
-            "FLEETIFY_SESSION_ID".into(),
-            serde_json::Value::String(self.session_id.clone()),
-        );
-        if let Ok(secret) = std::env::var("FLEETIFY_INTERNAL_SECRET") {
-            env.insert(
-                "FLEETIFY_INTERNAL_SECRET".into(),
-                serde_json::Value::String(secret),
-            );
+        let mut servers = serde_json::Map::new();
+        for (k, v) in map {
+            servers.insert(k, v);
         }
-        env.insert(
-            "FLEETIFY_BACKEND_URL".into(),
-            serde_json::Value::String(
-                std::env::var("FLEETIFY_BACKEND_URL")
-                    .unwrap_or_else(|_| "http://127.0.0.1:8765".into()),
-            ),
-        );
-        Some(serde_json::json!({
-            "type": "stdio",
-            "command": command,
-            "args": [],
-            "env": serde_json::Value::Object(env),
-            "builtin": true,
-        }))
+        Some(serde_json::json!({ "mcpServers": servers }))
     }
 
     /// Which `mcp__<server>__<tool>` names should this session's system
