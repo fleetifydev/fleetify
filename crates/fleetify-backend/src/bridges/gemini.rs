@@ -225,6 +225,13 @@ pub struct GeminiBridge {
     pub project_path: String,
     pub permission_mode: String,
     pub model_name: Option<String>,
+    /// Same gating semantics as ClaudeBridge::is_staff — `fleet_dispatch`
+    /// is suppressed on staff sessions so they use the text-protocol
+    /// dispatch path instead.
+    pub is_staff: bool,
+    /// Builtin template id (e.g. `"reverse_engineering"`) — opts the
+    /// session into extra stdio MCPs like `fleet_reveng`.
+    pub agent_template: Option<String>,
     aborted: Arc<AtomicBool>,
     state: Arc<Mutex<Option<State>>>,
 }
@@ -235,12 +242,16 @@ impl GeminiBridge {
         project_path: impl Into<String>,
         permission_mode: impl Into<String>,
         model_name: Option<String>,
+        is_staff: bool,
+        agent_template: Option<String>,
     ) -> Self {
         Self {
             session_id: session_id.into(),
             project_path: project_path.into(),
             permission_mode: permission_mode.into(),
             model_name,
+            is_staff,
+            agent_template,
             aborted: Arc::new(AtomicBool::new(false)),
             state: Arc::new(Mutex::new(None)),
         }
@@ -428,9 +439,24 @@ impl GeminiBridge {
             })?;
         client.authenticate(&method_id).await?;
 
-        // Empty MCP server list for Phase 2 cut (full MCP wiring later).
+        // Materialize merged MCP map (user registry + fleet built-ins)
+        // for ACP session/new. Mirrors codex bridge's MCP wiring.
+        let mcp_map = crate::services::mcp_dispatch::build_merged_map(
+            &self.session_id,
+            self.is_staff,
+            self.agent_template.as_deref(),
+        );
+        let mcp_servers = crate::services::mcp_dispatch::to_acp_servers(&mcp_map);
+        tracing::info!(
+            target: "gemini",
+            session_id = %self.session_id,
+            is_staff = self.is_staff,
+            agent_template = self.agent_template.as_deref().unwrap_or(""),
+            mcp_mounted = ?mcp_map.keys().collect::<Vec<_>>(),
+            "gemini MCP servers built"
+        );
         let acp_session_id = client
-            .session_new(&cwd, json!([]))
+            .session_new(&cwd, mcp_servers)
             .await
             .map_err(|e| anyhow!("session/new failed: {e}"))?;
 
@@ -613,6 +639,8 @@ impl GeminiBridge {
         let project_path = self.project_path.clone();
         let permission_mode = self.permission_mode.clone();
         let model_name = self.model_name.clone();
+        let is_staff = self.is_staff;
+        let agent_template = self.agent_template.clone();
         let state = self.state.clone();
         Box::pin(async move {
             let bridge = GeminiBridge {
@@ -620,6 +648,8 @@ impl GeminiBridge {
                 project_path,
                 permission_mode,
                 model_name,
+                is_staff,
+                agent_template,
                 aborted: Arc::new(AtomicBool::new(false)),
                 state,
             };

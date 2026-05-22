@@ -440,19 +440,29 @@ async fn run_send_flow(
             }
             AnyBridge::OpenAI(Arc::new(b))
         }
-        "gemini" => AnyBridge::Gemini(Arc::new(GeminiBridge::new(
-            sid.clone(),
-            agent_cwd.clone(),
-            session.permission_mode.clone(),
-            session.model_name.clone(),
-        ))),
-        "codex" => AnyBridge::Codex(Arc::new(CodexBridge::new(
-            sid.clone(),
-            agent_cwd.clone(),
-            session.permission_mode.clone(),
-            session.model_name.clone(),
-            session.effort.clone().unwrap_or_default(),
-        ))),
+        "gemini" => {
+            let is_staff = session.title == "Staff Agent";
+            AnyBridge::Gemini(Arc::new(GeminiBridge::new(
+                sid.clone(),
+                agent_cwd.clone(),
+                session.permission_mode.clone(),
+                session.model_name.clone(),
+                is_staff,
+                session.agent_template.clone(),
+            )))
+        }
+        "codex" => {
+            let is_staff = session.title == "Staff Agent";
+            AnyBridge::Codex(Arc::new(CodexBridge::new(
+                sid.clone(),
+                agent_cwd.clone(),
+                session.permission_mode.clone(),
+                session.model_name.clone(),
+                session.effort.clone().unwrap_or_default(),
+                is_staff,
+                session.agent_template.clone(),
+            )))
+        }
         other => {
             send_json(
                 &sink,
@@ -1359,6 +1369,8 @@ async fn run_dispatched_task(
             target_cwd.clone(),
             target.permission_mode.clone(),
             target.model_name.clone(),
+            false, // dispatched tasks always land on non-staff agents
+            target.agent_template.clone(),
         ))),
         "codex" => AnyBridge::Codex(std::sync::Arc::new(CodexBridge::new(
             target_id.clone(),
@@ -1366,6 +1378,8 @@ async fn run_dispatched_task(
             target.permission_mode.clone(),
             target.model_name.clone(),
             target.effort.clone().unwrap_or_default(),
+            false, // dispatched tasks always land on non-staff agents
+            target.agent_template.clone(),
         ))),
         other => {
             let _ = sm.update_status(&pool, &target_id, "idle").await;
