@@ -112,6 +112,13 @@ pub struct CodexBridge {
     pub permission_mode: String,
     pub model_name: Option<String>,
     pub effort: String,
+    /// Same gating semantics as ClaudeBridge::is_staff — `fleet_dispatch`
+    /// is suppressed on staff sessions so they use the text-protocol
+    /// dispatch path instead.
+    pub is_staff: bool,
+    /// Builtin template id (e.g. `"reverse_engineering"`) — opts the
+    /// session into extra stdio MCPs like `fleet_reveng`.
+    pub agent_template: Option<String>,
     aborted: Arc<AtomicBool>,
     state: Arc<Mutex<Option<State>>>,
 }
@@ -123,6 +130,8 @@ impl CodexBridge {
         permission_mode: impl Into<String>,
         model_name: Option<String>,
         effort: impl Into<String>,
+        is_staff: bool,
+        agent_template: Option<String>,
     ) -> Self {
         Self {
             session_id: session_id.into(),
@@ -130,6 +139,8 @@ impl CodexBridge {
             permission_mode: permission_mode.into(),
             model_name,
             effort: effort.into(),
+            is_staff,
+            agent_template,
             aborted: Arc::new(AtomicBool::new(false)),
             state: Arc::new(Mutex::new(None)),
         }
@@ -152,6 +163,27 @@ impl CodexBridge {
         if !codex_effort.is_empty() {
             cmd.arg("-c")
                 .arg(format!("model_reasoning_effort={codex_effort}"));
+        }
+        // Materialize the merged MCP map (user registry + fleet
+        // builtins) into Codex `-c mcp_servers.<n>.X=<toml>` args.
+        // Logged so a missing fleet_dispatch on a non-staff session is
+        // visible without strace-ing the spawn.
+        let mcp_map = crate::services::mcp_dispatch::build_merged_map(
+            &self.session_id,
+            self.is_staff,
+            self.agent_template.as_deref(),
+        );
+        let mcp_args = crate::services::mcp_dispatch::to_codex_cli_args(&mcp_map);
+        tracing::info!(
+            target: "codex",
+            session_id = %self.session_id,
+            is_staff = self.is_staff,
+            mcp_mounted = ?mcp_map.keys().collect::<Vec<_>>(),
+            mcp_arg_count = mcp_args.len(),
+            "codex MCP args built"
+        );
+        for a in &mcp_args {
+            cmd.arg(a);
         }
         let cwd_raw = if self.project_path.is_empty() {
             std::env::var("USERPROFILE")
@@ -546,6 +578,8 @@ impl CodexBridge {
         let permission_mode = self.permission_mode.clone();
         let model_name = self.model_name.clone();
         let effort = self.effort.clone();
+        let is_staff = self.is_staff;
+        let agent_template = self.agent_template.clone();
         let state = self.state.clone();
         Box::pin(async move {
             let bridge = CodexBridge {
@@ -554,6 +588,8 @@ impl CodexBridge {
                 permission_mode,
                 model_name,
                 effort,
+                is_staff,
+                agent_template,
                 aborted: Arc::new(AtomicBool::new(false)),
                 state,
             };
