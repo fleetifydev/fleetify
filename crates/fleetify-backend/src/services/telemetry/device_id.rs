@@ -48,10 +48,7 @@ fn hostname_or_default() -> String {
 }
 
 fn default_path() -> PathBuf {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".fleetify").join("device.json")
+    fleetify_core::fleetify_home().join("device.json")
 }
 
 /// Return the persisted device identity, generating a UUID + writing

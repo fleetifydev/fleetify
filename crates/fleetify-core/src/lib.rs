@@ -45,6 +45,37 @@ pub fn strip_verbatim_prefix(p: &Path) -> PathBuf {
     p.to_path_buf()
 }
 
+/// User's home directory. `USERPROFILE` on Windows, `HOME` elsewhere,
+/// falling back to `.` if neither is set. Use this for *external* CLI
+/// homes (`.claude/`, `.codex/`, `.gemini/`) — the paths those tools own.
+/// For Fleetify's own data dir, use `fleetify_home()` instead so the
+/// FLEETIFY_HOME override is honoured.
+pub fn user_home() -> PathBuf {
+    let h = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| ".".into());
+    PathBuf::from(h)
+}
+
+/// Root of Fleetify's per-installation data dir. Resolution:
+///
+///   1. `$FLEETIFY_HOME` if set and non-empty (full path, not appended
+///      to `.fleetify`). Lets parallel installations / worktrees live
+///      side-by-side without colliding on `telemetry-outbox.sqlite`,
+///      `mcp_servers.json`, `plugins/`, `clones/`, etc.
+///   2. Otherwise `<user_home>/.fleetify` (the historical layout).
+///
+/// Every call site that used to do `home().join(".fleetify")` should
+/// switch to this helper so the override flows everywhere consistently.
+pub fn fleetify_home() -> PathBuf {
+    if let Ok(p) = std::env::var("FLEETIFY_HOME") {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    user_home().join(".fleetify")
+}
+
 /// Top-level error shared across crates. Concrete variants are added per phase.
 #[derive(Debug, thiserror::Error)]
 pub enum FleetError {
