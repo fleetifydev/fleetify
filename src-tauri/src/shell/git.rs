@@ -36,6 +36,227 @@ async fn git(args: &[&str], cwd: &Path) -> (i32, String, String) {
     run("git", args, cwd, Duration::from_secs(8)).await
 }
 
+/// Resolve `git` to an absolute path. Used as a fallback by `has_git`
+/// when the bare `Command::new("git")` spawn fails (host PATH stripped,
+/// per-user install, scoop / choco shim, …). Walks PATH+PATHEXT first,
+/// then a per-OS list of common install locations including per-user
+/// directories that GUI-launched apps often miss.
+pub fn resolve_git() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+
+    let pathexts: Vec<String> = if cfg!(windows) {
+        // PATHEXT order matters: `.EXE` first so we land on git.exe
+        // even on hosts where PATHEXT lists `.COM` ahead of it.
+        let raw = std::env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".into());
+        let mut out: Vec<String> = raw
+            .split(';')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        // Ensure `.EXE` is in the list even if PATHEXT was overridden
+        // to something exotic — Git for Windows always ships git.exe.
+        if !out.iter().any(|e| e.eq_ignore_ascii_case(".exe")) {
+            out.insert(0, ".EXE".into());
+        }
+        out
+    } else {
+        // Unix: no extension append needed; one pass with the empty
+        // suffix covers `/usr/bin/git`, `/opt/homebrew/bin/git`, etc.
+        vec![String::new()]
+    };
+
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            for ext in &pathexts {
+                let candidate = dir.join(format!("git{ext}"));
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+
+    // OS-specific fallbacks for common install locations the host
+    // PATH might not cover (per-user installs, package managers that
+    // don't auto-PATH, GUI launches with stripped PATH on macOS, …).
+    let fallbacks: Vec<std::path::PathBuf> = if cfg!(target_os = "macos") {
+        vec![
+            "/opt/homebrew/bin/git".into(),
+            "/usr/local/bin/git".into(),
+            "/usr/bin/git".into(),
+            "/Library/Developer/CommandLineTools/usr/bin/git".into(),
+            "/Applications/Xcode.app/Contents/Developer/usr/bin/git".into(),
+        ]
+    } else if cfg!(target_os = "linux") {
+        vec![
+            "/usr/bin/git".into(),
+            "/usr/local/bin/git".into(),
+            "/snap/bin/git".into(),
+            "/opt/local/bin/git".into(),
+        ]
+    } else if cfg!(windows) {
+        let mut list: Vec<std::path::PathBuf> = vec![
+            // Git for Windows — default all-users install.
+            r"C:\Program Files\Git\cmd\git.exe".into(),
+            r"C:\Program Files\Git\bin\git.exe".into(),
+            r"C:\Program Files\Git\mingw64\bin\git.exe".into(),
+            r"C:\Program Files (x86)\Git\cmd\git.exe".into(),
+            r"C:\Program Files (x86)\Git\bin\git.exe".into(),
+        ];
+        // Per-user installer ("current user only" option in the
+        // Git for Windows wizard, or winget's user scope).
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            list.push(PathBuf::from(format!(r"{local}\Programs\Git\cmd\git.exe")));
+            list.push(PathBuf::from(format!(r"{local}\Programs\Git\bin\git.exe")));
+        }
+        // Scoop — both the shim and the actual binary.
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            list.push(PathBuf::from(format!(r"{home}\scoop\shims\git.exe")));
+            list.push(PathBuf::from(format!(r"{home}\scoop\apps\git\current\cmd\git.exe")));
+            list.push(PathBuf::from(format!(r"{home}\scoop\apps\git\current\bin\git.exe")));
+        }
+        // Chocolatey — `choco install git` puts a shim in this dir.
+        list.push(r"C:\ProgramData\chocolatey\bin\git.exe".into());
+        // GitHub Desktop bundles its own git.
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            list.push(PathBuf::from(format!(r"{local}\GitHubDesktop\app-current\resources\app\git\cmd\git.exe")));
+        }
+        list
+    } else {
+        vec![]
+    };
+    for p in fallbacks {
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+pub async fn has_git() -> Value {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+
+    // Tier 1 — let the OS resolve `git` via its native PATH lookup.
+    // On Windows, Rust's `Command::new` auto-appends `.exe`; on Unix,
+    // `execvp` searches PATH. This is the simplest, broadest check
+    // and catches every host where git is on the active PATH.
+    let (rc, ver, _) = run("git", &["--version"], &cwd, Duration::from_secs(5)).await;
+    if rc == 0 {
+        return json!({
+            "ok": true,
+            "version": ver.lines().next().unwrap_or("").trim(),
+            "path": "git",
+        });
+    }
+
+    // Tier 2 — manual PATH+PATHEXT walk + common install dirs. Catches
+    // the cases Rust's auto-resolve misses: scoop's `git.cmd` shim,
+    // per-user installs not on PATH, GitHub Desktop's bundled git,
+    // macOS GUI launches without `/opt/homebrew/bin`, etc.
+    if let Some(bin) = resolve_git() {
+        let bin_str = bin.to_str().unwrap_or("git");
+        let (rc, ver, _) = run(bin_str, &["--version"], &cwd, Duration::from_secs(5)).await;
+        if rc == 0 {
+            return json!({
+                "ok": true,
+                "version": ver.lines().next().unwrap_or("").trim(),
+                "path": bin_str,
+            });
+        }
+    }
+
+    // Tier 3 — ask the OS itself. `where` on Windows / `which` on
+    // Unix walks PATH using the host's authoritative rules and
+    // understands shims (scoop, choco, Cygwin, …) better than any
+    // hand-rolled walk can. The first line of output is the winning
+    // candidate.
+    let probe_bin = if cfg!(windows) { "where" } else { "which" };
+    let (rc, out, _) = run(probe_bin, &["git"], &cwd, Duration::from_secs(3)).await;
+    if rc == 0 {
+        if let Some(first) = out.lines().next().map(str::trim).filter(|s| !s.is_empty()) {
+            let (rc2, ver, _) = run(first, &["--version"], &cwd, Duration::from_secs(5)).await;
+            if rc2 == 0 {
+                return json!({
+                    "ok": true,
+                    "version": ver.lines().next().unwrap_or("").trim(),
+                    "path": first,
+                });
+            }
+        }
+    }
+
+    json!({ "ok": false })
+}
+
+/// Resolve the `gh` binary to an absolute path so every spawn (sync via
+/// `run` / async via `gh` / PTY-driven from `ipc::gh_auth_login_capture`)
+/// behaves the same across Windows / macOS / Linux:
+///   * **Windows** — `CreateProcess` only auto-appends `.exe`; iterate
+///     `PATHEXT` so scoop / winget / choco `.cmd` shims still resolve.
+///   * **macOS**   — GUI-launched apps (Finder, Dock, Tauri bundle) get a
+///     stripped PATH that omits `/opt/homebrew/bin` (Apple Silicon) and
+///     `/usr/local/bin` (Intel Homebrew). Fall back to those dirs.
+///   * **Linux**   — desktop-entry / systemd launches frequently miss
+///     `/snap/bin`; the fallback covers Snap-installed gh as well.
+///
+/// Returns `None` when gh isn't found anywhere we know to look — callers
+/// surface a friendly install hint instead of spawning a 127 exit.
+pub fn resolve_gh() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+
+    let pathexts: Vec<String> = if cfg!(windows) {
+        std::env::var("PATHEXT")
+            .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into())
+            .split(';')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    } else {
+        vec![String::new()]
+    };
+
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            for ext in &pathexts {
+                let candidate = dir.join(format!("gh{ext}"));
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+
+    let fallbacks: &[&str] = if cfg!(target_os = "macos") {
+        &["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
+    } else if cfg!(target_os = "linux") {
+        &["/usr/bin/gh", "/usr/local/bin/gh", "/snap/bin/gh"]
+    } else if cfg!(windows) {
+        &[
+            r"C:\Program Files\GitHub CLI\gh.exe",
+            r"C:\Program Files (x86)\GitHub CLI\gh.exe",
+        ]
+    } else {
+        &[]
+    };
+    for f in fallbacks {
+        let p = PathBuf::from(f);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Resolved gh path as `String` for callers that just need an argv[0].
+/// Falls back to the bare name (relying on host PATH) when resolution
+/// fails — preserves the previous behaviour for environments where the
+/// scanner can't see gh but the process spawn somehow still does.
+fn gh_bin() -> String {
+    resolve_gh()
+        .and_then(|p| p.to_str().map(String::from))
+        .unwrap_or_else(|| "gh".into())
+}
+
 async fn gh(args: &[&str], cwd: &Path) -> (i32, String, String) {
     // If the user authed via "Connect with GitHub" (the Fleetify OAuth
     // broker), their token is in the keychain — inject it as GH_TOKEN
@@ -50,7 +271,7 @@ async fn gh(args: &[&str], cwd: &Path) -> (i32, String, String) {
         .await
         .and_then(|l| l.get("access_token").and_then(|v| v.as_str()).map(String::from));
 
-    let mut cmd = tokio::process::Command::new("gh");
+    let mut cmd = tokio::process::Command::new(gh_bin());
     cmd.args(args).current_dir(cwd);
     if let Some(t) = token {
         cmd.env("GH_TOKEN", t);
@@ -116,8 +337,14 @@ pub async fn get_context(folder: &Path) -> Value {
 
 pub async fn has_gh_cli() -> Value {
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    // Bail early if our resolver can't find gh anywhere — covers macOS
+    // GUI launches where PATH is stripped of Homebrew dirs.
+    if resolve_gh().is_none() {
+        return json!({ "ok": false });
+    }
+    let bin = gh_bin();
     let (rc_v, ver, _) =
-        run("gh", &["--version"], &cwd, Duration::from_secs(5)).await;
+        run(&bin, &["--version"], &cwd, Duration::from_secs(5)).await;
     if rc_v != 0 {
         return json!({ "ok": false });
     }
@@ -370,6 +597,12 @@ fn write_gitignore_if_missing(folder: &Path) -> bool {
 ///   1. Probe `gh --version` + `gh auth status` → gh path.
 ///   2. Else check `shell::github_link::get_link()` → REST link path.
 ///   3. Else NO_AUTH.
+// `method` honours the caller's preferred auth path: "gh" / "cli" → only
+// gh CLI, "oauth" / "link" → only the Fleetify OAuth link, None → legacy
+// gh-first / link-fallback. The renderer feeds this from
+// `localStorage["fleet:github-auth-method"]` so the onboarding choice is
+// honoured exactly — picking "Use GitHub CLI" never silently routes
+// through OAuth, and vice versa.
 pub async fn create_pr(
     folder: &Path,
     title: &str,
@@ -378,41 +611,86 @@ pub async fn create_pr(
     draft: bool,
     feature_branch: Option<&str>,
     tool: Option<&str>,
+    method: Option<&str>,
 ) -> Value {
-    // 1. gh-first
-    let (rc, _, _) = run("gh", &["--version"], folder, Duration::from_secs(3)).await;
-    let has_gh = rc == 0;
-    if has_gh {
-        let (rc, _, _) =
-            run("gh", &["auth", "status"], folder, Duration::from_secs(5)).await;
-        if rc == 0 {
-            tracing::info!(target: "createPR", "dispatch-gh");
-            return create_pr_via_gh(folder, title, body, base, draft, feature_branch, tool)
-                .await;
+    let want_gh = matches!(method, Some("gh") | Some("cli"));
+    let want_oauth = matches!(method, Some("oauth") | Some("link"));
+
+    // Probe both auth states once — both paths need them, and the
+    // probes are cheap (1 process spawn + 1 keyring read).
+    let gh_authed = async {
+        let (rc, _, _) = run("gh", &["--version"], folder, Duration::from_secs(3)).await;
+        if rc != 0 {
+            return false;
         }
+        let (rc, _, _) = run("gh", &["auth", "status"], folder, Duration::from_secs(5)).await;
+        rc == 0
     }
-    // 2. link fallback
-    if let Some(link) = super::github_link::get_link().await {
-        if let Some(token) = link.get("access_token").and_then(|v| v.as_str()) {
-            tracing::info!(target: "createPR", "dispatch-link");
-            // Pre-flight: ensure repo + identity + initial commit so
-            // create_pr_via_link's `rev-parse --abbrev-ref HEAD` step
-            // doesn't fail on an uninitialised folder.
-            let preflight =
-                ensure_repo_for_link(folder, title, base, feature_branch, tool).await;
-            if let Some(err) = preflight {
-                return err;
-            }
-            return super::github_pr::create_pr_via_link(
-                folder,
-                token,
-                title,
-                body.unwrap_or(""),
-                base,
-                draft,
-            )
-            .await;
+    .await;
+    let link = super::github_link::get_link().await;
+    let oauth_token = link
+        .as_ref()
+        .and_then(|l| l.get("access_token").and_then(|v| v.as_str()))
+        .map(String::from);
+
+    // Caller asked for a specific method — honour it strictly. If the
+    // requested method has no live auth, error with a code the renderer
+    // can route into the mid-flow picker.
+    if want_gh {
+        if !gh_authed {
+            return json!({
+                "ok": false,
+                "code": "GH_NOT_AUTHED",
+                "error": "GitHub CLI isn't signed in. Run `gh auth login` or switch to GitHub OAuth."
+            });
         }
+        tracing::info!(target: "createPR", "dispatch-gh (requested)");
+        return create_pr_via_gh(folder, title, body, base, draft, feature_branch, tool).await;
+    }
+    if want_oauth {
+        let Some(token) = oauth_token else {
+            return json!({
+                "ok": false,
+                "code": "OAUTH_NOT_LINKED",
+                "error": "No GitHub OAuth link on this machine. Connect with GitHub or switch to the CLI."
+            });
+        };
+        tracing::info!(target: "createPR", "dispatch-link (requested)");
+        let preflight = ensure_repo_for_link(folder, title, base, feature_branch, tool).await;
+        if let Some(err) = preflight {
+            return err;
+        }
+        return super::github_pr::create_pr_via_link(
+            folder,
+            &token,
+            title,
+            body.unwrap_or(""),
+            base,
+            draft,
+        )
+        .await;
+    }
+
+    // No preference — legacy gh-first then link fallback.
+    if gh_authed {
+        tracing::info!(target: "createPR", "dispatch-gh (fallback)");
+        return create_pr_via_gh(folder, title, body, base, draft, feature_branch, tool).await;
+    }
+    if let Some(token) = oauth_token {
+        tracing::info!(target: "createPR", "dispatch-link (fallback)");
+        let preflight = ensure_repo_for_link(folder, title, base, feature_branch, tool).await;
+        if let Some(err) = preflight {
+            return err;
+        }
+        return super::github_pr::create_pr_via_link(
+            folder,
+            &token,
+            title,
+            body.unwrap_or(""),
+            base,
+            draft,
+        )
+        .await;
     }
     tracing::info!(target: "createPR", "no-auth");
     json!({
@@ -504,7 +782,13 @@ async fn ensure_repo_for_link(
             .await;
         }
     }
-    // Initial commit if no HEAD.
+    // Initial commit if no HEAD. When a feature branch is requested we
+    // do the same baseline-split the gh path does: empty commit on main,
+    // carve the feature branch off it, then snapshot everything onto the
+    // feature branch. Without the split, deferred-init sessions (no .git
+    // at session-create time per `attach_git_setup`) would land every
+    // file on main and the carved branch would diff as empty against it
+    // — producing a PR with no changes.
     let (head_rc, _, _) = run(
         "git",
         &["rev-parse", "--verify", "HEAD"],
@@ -513,24 +797,78 @@ async fn ensure_repo_for_link(
     )
     .await;
     if head_rc != 0 {
-        let _ = run("git", &["add", "-A"], folder, Duration::from_secs(120)).await;
-        let init_msg = with_fleetify_trailer("Initial commit");
-        let (rc, _, err) = run(
+        // Pin HEAD to refs/heads/main BEFORE any commit so a host's
+        // `init.defaultBranch=master` doesn't bake the baseline onto a
+        // branch the rest of the flow doesn't know about.
+        let _ = run(
             "git",
-            &["commit", "--allow-empty", "-m", &init_msg],
+            &["symbolic-ref", "HEAD", "refs/heads/main"],
             folder,
-            Duration::from_secs(60),
+            Duration::from_secs(5),
         )
         .await;
-        if rc != 0 {
-            return Some(json!({
-                "ok": false, "code": "INITIAL_COMMIT_FAILED",
-                "error": err.trim()
-            }));
+        if let Some(fb) = feature_branch {
+            let baseline_msg = with_fleetify_trailer("Fleetify baseline");
+            let (rc, _, err) = run(
+                "git",
+                &["commit", "--allow-empty", "-m", &baseline_msg],
+                folder,
+                Duration::from_secs(30),
+            )
+            .await;
+            if rc != 0 {
+                return Some(json!({
+                    "ok": false, "code": "INITIAL_COMMIT_FAILED",
+                    "error": err.trim()
+                }));
+            }
+            let (rc, _, err) = run(
+                "git",
+                &["checkout", "-B", fb],
+                folder,
+                Duration::from_secs(10),
+            )
+            .await;
+            if rc != 0 {
+                return Some(json!({
+                    "ok": false, "code": "CARVE_FAILED",
+                    "error": err.trim()
+                }));
+            }
+            let _ = run("git", &["add", "-A"], folder, Duration::from_secs(120)).await;
+            let init_msg = with_fleetify_trailer("Initial commit");
+            let (rc, _, err) = run(
+                "git",
+                &["commit", "--allow-empty", "-m", &init_msg],
+                folder,
+                Duration::from_secs(60),
+            )
+            .await;
+            if rc != 0 {
+                return Some(json!({
+                    "ok": false, "code": "INITIAL_COMMIT_FAILED",
+                    "error": err.trim()
+                }));
+            }
+        } else {
+            let _ = run("git", &["add", "-A"], folder, Duration::from_secs(120)).await;
+            let init_msg = with_fleetify_trailer("Initial commit");
+            let (rc, _, err) = run(
+                "git",
+                &["commit", "--allow-empty", "-m", &init_msg],
+                folder,
+                Duration::from_secs(60),
+            )
+            .await;
+            if rc != 0 {
+                return Some(json!({
+                    "ok": false, "code": "INITIAL_COMMIT_FAILED",
+                    "error": err.trim()
+                }));
+            }
         }
-    }
-    // Carve feature branch when requested + not already on it.
-    if let Some(fb) = feature_branch {
+    } else if let Some(fb) = feature_branch {
+        // Repo already has commits — carve only when we're not on it.
         let (rc, cur_out, _) = run(
             "git",
             &["rev-parse", "--abbrev-ref", "HEAD"],
@@ -1385,6 +1723,28 @@ fn parse_pr_number(url: &str) -> Option<u64> {
 }
 
 async fn detect_default_branch(folder: &Path) -> Option<String> {
+    // 1. User-set per-repo override (`git config fleetify.baseBranch`) —
+    //    the "Create new main branch" picker action writes this so the
+    //    UI / Create-PR / branch carve all converge on the chosen base
+    //    without touching the actual remote `HEAD` ref or collaborators'
+    //    clones. Only honour it when the branch still exists locally.
+    let (rc, out, _) = git(
+        &["config", "--get", "fleetify.baseBranch"],
+        folder,
+    )
+    .await;
+    if rc == 0 && !out.trim().is_empty() {
+        let candidate = out.trim().to_string();
+        let (rc_v, _, _) = git(
+            &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{candidate}")],
+            folder,
+        )
+        .await;
+        if rc_v == 0 {
+            return Some(candidate);
+        }
+    }
+    // 2. Server-declared default via origin/HEAD.
     let (rc, out, _) = git(
         &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
         folder,
@@ -1394,6 +1754,7 @@ async fn detect_default_branch(folder: &Path) -> Option<String> {
         let v = out.trim();
         return Some(v.split_once('/').map(|(_, b)| b.to_string()).unwrap_or_else(|| v.to_string()));
     }
+    // 3. Local fallbacks.
     for c in ["main", "master"] {
         let (rc2, _, _) = git(
             &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{c}")],
@@ -1405,6 +1766,75 @@ async fn detect_default_branch(folder: &Path) -> Option<String> {
         }
     }
     None
+}
+
+/// Create (or reuse) a branch and pin it as this clone's logical base
+/// via `git config fleetify.baseBranch`. Drives the "Create new main
+/// branch" picker action: nondestructive — does not push, rename, or
+/// touch `refs/remotes/origin/HEAD`, so collaborators / the GitHub
+/// repo's default branch stay exactly as they were.
+///
+/// • If `new_branch` already exists, just promote it.
+/// • Otherwise carve it from the currently-detected base (or `HEAD`
+///   if there isn't one yet — a fresh repo with no remote).
+pub async fn set_base_branch(folder: &Path, new_branch: &str) -> Value {
+    let trimmed = new_branch.trim();
+    if trimmed.is_empty() {
+        return json!({ "ok": false, "error": "branch name is required" });
+    }
+    // Cheap sanity gate: git ref-name rules forbid spaces, control
+    // chars, leading dashes, and a few punctuation runs. Reject the
+    // obvious garbage here so the user gets a clear message instead
+    // of git's tersewall ("fatal: 'foo bar' is not a valid branch name").
+    if trimmed.contains(|c: char| c.is_whitespace() || c.is_control())
+        || trimmed.starts_with('-')
+        || trimmed.contains("..")
+        || trimmed.contains('~')
+        || trimmed.contains('^')
+        || trimmed.contains(':')
+        || trimmed.contains('?')
+        || trimmed.contains('*')
+        || trimmed.contains('[')
+        || trimmed.contains('\\')
+        || trimmed.ends_with('/')
+        || trimmed.ends_with(".lock")
+    {
+        return json!({
+            "ok": false,
+            "error": format!("'{trimmed}' isn't a valid git branch name")
+        });
+    }
+
+    let (rc_exists, _, _) = git(
+        &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{trimmed}")],
+        folder,
+    )
+    .await;
+    if rc_exists != 0 {
+        // Carve from the currently-detected base, or HEAD as a last
+        // resort. Falling back to HEAD covers the "fresh init, no remote,
+        // no main yet" case — gives the user *something* to branch off.
+        let from = detect_default_branch(folder).await.unwrap_or_else(|| "HEAD".to_string());
+        let (rc, _, err) = git(&["branch", trimmed, &from], folder).await;
+        if rc != 0 {
+            return json!({
+                "ok": false,
+                "error": format!("git branch {trimmed} {from}: {}", err.trim())
+            });
+        }
+    }
+    let (rc_cfg, _, err) = git(
+        &["config", "fleetify.baseBranch", trimmed],
+        folder,
+    )
+    .await;
+    if rc_cfg != 0 {
+        return json!({
+            "ok": false,
+            "error": format!("git config fleetify.baseBranch: {}", err.trim())
+        });
+    }
+    json!({ "ok": true, "base": trimmed })
 }
 
 /// `git fetch origin` + checkout base + ff-pull + return to original branch
@@ -1429,11 +1859,42 @@ pub async fn sync_main(folder: &Path, base: &str) -> Value {
     json!({ "ok": true, "base": base, "prevBranch": prev })
 }
 
-/// Carve a new feature branch from `base` (parity with carveNextRound).
+/// Carve a new feature branch from `base`. Best-effort fetches the
+/// latest `origin/<base>` first so the new branch starts at the freshest
+/// commit instead of a stale local base — equivalent semantically to
+/// "merge main into the new branch" without needing the local base to
+/// be clean or fast-forward-able. Falls back to the local base when
+/// origin is missing / offline / the fetch fails. `--no-track` keeps
+/// the feature branch from latching onto origin/main and pulling main
+/// commits on a later `git pull`.
 pub async fn carve_next_round(folder: &Path, branch: &str, base: &str) -> Value {
-    let (rc, _o, err) = git(&["checkout", "-b", branch, base], folder).await;
+    // Try to refresh the base from origin. Failure is non-fatal — `origin`
+    // may not exist yet (fresh repo, no remote), the fetch may time out,
+    // or the user may be offline. We just decide downstream whether to
+    // carve from origin/<base> (if rev-parse confirms the ref landed) or
+    // fall back to local <base>.
+    let _ = git(&["fetch", "origin", base], folder).await;
+    let (rc_ref, _, _) = git(
+        &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{base}")],
+        folder,
+    )
+    .await;
+    let fetched_remote = rc_ref == 0;
+    let from = if fetched_remote {
+        format!("origin/{base}")
+    } else {
+        base.to_string()
+    };
+
+    let (rc, _o, err) =
+        git(&["checkout", "--no-track", "-b", branch, &from], folder).await;
     if rc == 0 {
-        json!({ "ok": true, "branch": branch, "base": base })
+        json!({
+            "ok": true,
+            "branch": branch,
+            "base": base,
+            "fetchedRemote": fetched_remote,
+        })
     } else {
         json!({ "ok": false, "error": err.trim() })
     }

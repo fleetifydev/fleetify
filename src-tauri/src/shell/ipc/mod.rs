@@ -4,11 +4,12 @@
 
 use std::path::PathBuf;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
-use crate::shell::{ai_git, auth, config, git, github_link, head_watcher, pty};
+use crate::shell::{ai_git, auth, config, git, github_link, head_watcher, logging, pty};
 
 #[tauri::command]
 pub async fn auth_sign_in() -> serde_json::Value {
@@ -344,8 +345,19 @@ pub async fn git_has_gh_cli() -> serde_json::Value {
     git::has_gh_cli().await
 }
 #[tauri::command]
+pub async fn git_has_git() -> serde_json::Value {
+    git::has_git().await
+}
+#[tauri::command]
 pub async fn git_list_branches(folder: String) -> serde_json::Value {
     git::list_branches(&PathBuf::from(folder)).await
+}
+#[tauri::command]
+pub async fn git_set_base_branch(
+    folder: String,
+    branch: String,
+) -> serde_json::Value {
+    git::set_base_branch(&PathBuf::from(folder), &branch).await
 }
 #[tauri::command]
 pub async fn git_checkout(
@@ -383,6 +395,11 @@ pub async fn git_diff_summary(folder: String, base_branch: String) -> serde_json
 pub async fn git_open_pr(folder: String) -> serde_json::Value {
     git::open_pr(&PathBuf::from(folder)).await
 }
+/// IPC: create a pull request. `method` selects the auth path:
+/// "gh" | "cli" → GitHub CLI only, "oauth" | "link" → Fleetify OAuth
+/// link only, omitted → legacy gh-first / link-fallback. Renderer
+/// pulls the value from `localStorage["fleet:github-auth-method"]`
+/// so the onboarding choice is honoured exactly.
 #[tauri::command]
 pub async fn git_create_pr(
     folder: String,
@@ -392,6 +409,7 @@ pub async fn git_create_pr(
     draft: Option<bool>,
     #[allow(non_snake_case)] featureBranch: Option<String>,
     tool: Option<String>,
+    method: Option<String>,
 ) -> serde_json::Value {
     git::create_pr(
         &PathBuf::from(folder),
@@ -401,6 +419,7 @@ pub async fn git_create_pr(
         draft.unwrap_or(false),
         featureBranch.as_deref(),
         tool.as_deref(),
+        method.as_deref(),
     )
     .await
 }
@@ -780,6 +799,298 @@ pub async fn gh_auth_login_launch() -> serde_json::Value {
     }
 }
 
+// In-process gh-auth flow that surfaces the one-time device code in the
+// app itself. Spawns `gh auth login --web` under a real PTY so gh sees a
+// terminal, parses output for the code + verification URL, auto-presses
+// Enter so gh opens the browser, and emits `gh-auth-event` updates as it
+// progresses:
+//   • { phase: "code", code: "XXXX-XXXX" } — one-time device code
+//   • { phase: "url",  url:  "https://…" } — verification URL
+//   • { phase: "log",  line: "…" }         — verbatim line (debug)
+//   • { phase: "done", ok, login?, error? } — process exit + resolved user
+// The renderer should listen to `gh-auth-event` to drive its UI and treat
+// the `done` payload as the source of truth. The currently-running child
+// is stashed in `GH_AUTH_CHILD` so `gh_auth_login_cancel` can kill it.
+static GH_AUTH_CHILD: OnceLock<Mutex<Option<Box<dyn portable_pty::Child + Send + Sync>>>> =
+    OnceLock::new();
+fn gh_auth_child_slot() -> &'static Mutex<Option<Box<dyn portable_pty::Child + Send + Sync>>> {
+    GH_AUTH_CHILD.get_or_init(|| Mutex::new(None))
+}
+
+#[tauri::command]
+pub async fn gh_auth_login_capture(app: tauri::AppHandle) -> serde_json::Value {
+    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+
+    // Kill any leftover child from a previous (cancelled) run so we never
+    // race two `gh auth login` processes against the same OAuth slot.
+    if let Ok(mut g) = gh_auth_child_slot().lock() {
+        if let Some(mut prev) = g.take() {
+            let _ = prev.kill();
+        }
+    }
+
+    // Resolve gh once so portable-pty gets an absolute path. CommandBuilder
+    // on Windows would only auto-append ".exe" via CreateProcess; macOS
+    // GUI launches strip /opt/homebrew/bin from PATH. Doing the lookup
+    // ourselves (via the shared resolver in shell::git) makes the spawn
+    // behave the same on Win / macOS / Linux.
+    let gh_bin = match git::resolve_gh() {
+        Some(p) => p,
+        None => {
+            let err = "GitHub CLI (gh) wasn't found. Install it from \
+                       https://cli.github.com/ and re-open Fleet.";
+            let _ = app.emit(
+                "gh-auth-event",
+                serde_json::json!({
+                    "phase": "done",
+                    "ok": false,
+                    "error": err,
+                }),
+            );
+            return serde_json::json!({ "ok": false, "error": err });
+        }
+    };
+
+    let app_inner = app.clone();
+    let gh_bin_inner = gh_bin.clone();
+    let pump = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: 30,
+                cols: 120,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| format!("openpty: {e}"))?;
+
+        let mut cmd = CommandBuilder::new(gh_bin_inner.as_os_str());
+        cmd.args([
+            "auth",
+            "login",
+            "--web",
+            "--hostname",
+            "github.com",
+            "--git-protocol",
+            "https",
+        ]);
+        // gh checks $TERM to decide whether to colorize / animate. Force a
+        // sane value so its prompts render predictably regardless of the
+        // host shell's environment (and so ConPTY-spawned children on
+        // Windows don't fall back to a TERM-less "dumb" mode).
+        cmd.env("TERM", "xterm-256color");
+
+        let child = pair.slave.spawn_command(cmd).map_err(|e| {
+            format!("Couldn't launch gh: {e}. Is the GitHub CLI installed and on PATH?")
+        })?;
+        drop(pair.slave);
+
+        // Stash the child so gh_auth_login_cancel can reach it.
+        if let Ok(mut slot) = gh_auth_child_slot().lock() {
+            *slot = Some(child);
+        }
+
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| format!("clone reader: {e}"))?;
+        let mut writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| format!("take writer: {e}"))?;
+
+        let mut buf = [0u8; 4096];
+        let mut carry = String::new();
+        let mut sent_enter = false;
+        let mut emitted_code = false;
+
+        loop {
+            match std::io::Read::read(&mut reader, &mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    carry.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    while let Some(idx) =
+                        carry.find(|c: char| c == '\n' || c == '\r')
+                    {
+                        let raw: String = carry.drain(..=idx).collect();
+                        let line = strip_ansi(
+                            raw.trim_end_matches(|c: char| c == '\n' || c == '\r')
+                                .trim(),
+                        );
+                        if line.is_empty() {
+                            continue;
+                        }
+
+                        let _ = app_inner.emit(
+                            "gh-auth-event",
+                            serde_json::json!({ "phase": "log", "line": &line }),
+                        );
+
+                        if !emitted_code {
+                            if let Some(code) = parse_device_code(&line) {
+                                let _ = app_inner.emit(
+                                    "gh-auth-event",
+                                    serde_json::json!({ "phase": "code", "code": code }),
+                                );
+                                emitted_code = true;
+                            }
+                        }
+                        if let Some(url) = parse_verification_url(&line) {
+                            let _ = app_inner.emit(
+                                "gh-auth-event",
+                                serde_json::json!({ "phase": "url", "url": url }),
+                            );
+                        }
+                        // gh prints "Press Enter to open …" once the code is
+                        // ready. Auto-confirm so the browser pops without the
+                        // user having to interact with a hidden terminal.
+                        if !sent_enter && line.to_lowercase().contains("press enter") {
+                            let _ = std::io::Write::write_all(&mut writer, b"\r\n");
+                            sent_enter = true;
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        // Reclaim the child to wait on it.
+        let mut child = match gh_auth_child_slot().lock() {
+            Ok(mut slot) => match slot.take() {
+                Some(c) => c,
+                None => return Err("gh process disappeared".into()),
+            },
+            Err(_) => return Err("gh child slot poisoned".into()),
+        };
+        let status = child.wait().map_err(|e| format!("wait: {e}"))?;
+        if !status.success() {
+            return Err(format!(
+                "gh auth login exited with code {}",
+                status.exit_code()
+            ));
+        }
+        Ok(())
+    })
+    .await;
+
+    let pump_result: Result<(), String> = match pump {
+        Ok(r) => r,
+        Err(e) => Err(format!("join: {e}")),
+    };
+
+    let (ok, error) = match pump_result {
+        Ok(_) => (true, None),
+        Err(e) => (false, Some(e)),
+    };
+
+    let login = if ok {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        // Use the same resolved gh path so the post-login probe doesn't
+        // diverge from the spawn (matters on macOS where the GUI app's
+        // PATH may not include the binary's actual install location).
+        let gh_str = gh_bin.to_str().unwrap_or("gh");
+        let (rc, name, _) = git::run(
+            gh_str,
+            &["api", "user", "--jq", ".login"],
+            &cwd,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+        if rc == 0 {
+            let n = name.trim().to_string();
+            if n.is_empty() { None } else { Some(n) }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let _ = app.emit(
+        "gh-auth-event",
+        serde_json::json!({
+            "phase": "done",
+            "ok": ok,
+            "login": login,
+            "error": error,
+        }),
+    );
+
+    if ok {
+        serde_json::json!({ "ok": true, "login": login })
+    } else {
+        serde_json::json!({ "ok": false, "error": error })
+    }
+}
+
+#[tauri::command]
+pub async fn gh_auth_login_cancel() -> serde_json::Value {
+    if let Ok(mut slot) = gh_auth_child_slot().lock() {
+        if let Some(mut child) = slot.take() {
+            let _ = child.kill();
+        }
+    }
+    serde_json::json!({ "ok": true })
+}
+
+// ── helpers for gh_auth_login_capture ─────────────────────────────
+// gh decorates its prompts with ANSI colours; strip CSI sequences so
+// pattern matches on the cleaned text don't need to know about escapes.
+fn strip_ansi(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            i += 2;
+            while i < bytes.len() && !bytes[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            if i < bytes.len() {
+                i += 1;
+            }
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+// One-time device codes are formatted "XXXX-XXXX" — 4 alphanumerics, a
+// dash, then 4 more. gh prints them after "code:" so we anchor on that.
+fn parse_device_code(line: &str) -> Option<String> {
+    let lower = line.to_lowercase();
+    let pos = lower.find("code:")?;
+    let rest = &line[pos + 5..];
+    let candidate: String = rest
+        .chars()
+        .skip_while(|c| c.is_whitespace())
+        .take(9)
+        .collect();
+    if candidate.chars().count() != 9 {
+        return None;
+    }
+    let b = candidate.as_bytes();
+    if b[4] != b'-' {
+        return None;
+    }
+    if !b[..4].iter().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    if !b[5..].iter().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    Some(candidate.to_uppercase())
+}
+
+fn parse_verification_url(line: &str) -> Option<String> {
+    line.split_whitespace()
+        .map(|t| t.trim_matches(|c: char| c == '"' || c == '\'' || c == '.' || c == ','))
+        .find(|t| t.starts_with("https://github.com/login/device"))
+        .map(|s| s.to_string())
+}
+
 #[tauri::command]
 pub async fn shell_check_github_auth() -> serde_json::Value {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -935,6 +1246,156 @@ pub async fn dialog_open_folder(app: tauri::AppHandle) -> Option<String> {
         Ok(Some(fp)) => fp.into_path().ok().map(|p| p.to_string_lossy().to_string()),
         _ => None,
     }
+}
+
+// ── Logging IPC ──────────────────────────────────────────────────────
+// Three commands:
+//   • `app_log`         — renderer routes structured events into the
+//                         backend's tracing pipeline. Both stderr and
+//                         the on-disk file pick them up.
+//   • `logs_export`     — bundle the last N days of logs + a system
+//                         info JSON + a sanitized config snapshot into
+//                         a single .zip the user can attach to a bug
+//                         report. Returns the absolute path.
+//   • `logs_open_folder` — reveal the log directory in Explorer /
+//                          Finder / xdg-open. Power-user shortcut.
+
+#[tauri::command]
+pub fn app_log(
+    level: String,
+    target: String,
+    message: String,
+    fields: Option<serde_json::Value>,
+) -> serde_json::Value {
+    logging::write_renderer_event(&level, &target, &message, fields);
+    serde_json::json!({ "ok": true })
+}
+
+#[tauri::command]
+pub async fn logs_export(app: tauri::AppHandle) -> serde_json::Value {
+    let Some(log_dir) = logging::logs_dir() else {
+        return serde_json::json!({
+            "ok": false,
+            "error": "logging not initialised"
+        });
+    };
+
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    let out_path = std::env::temp_dir()
+        .join(format!("fleetify-diagnostics-{stamp}.zip"));
+
+    let log_dir_owned = log_dir.to_path_buf();
+    let out_path_clone = out_path.clone();
+    let version = app
+        .config()
+        .version
+        .clone()
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    let sys_info = build_system_info(&version);
+
+    // zip / fs work happens on a blocking thread so the IPC future
+    // doesn't stall the tokio runtime on a slow disk.
+    let result = tokio::task::spawn_blocking(move || -> Result<u64, String> {
+        write_diagnostics_zip(&log_dir_owned, &out_path_clone, sys_info)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(bytes)) => serde_json::json!({
+            "ok": true,
+            "path": out_path.to_string_lossy(),
+            "bytes": bytes,
+        }),
+        Ok(Err(e)) => serde_json::json!({ "ok": false, "error": e }),
+        Err(e) => serde_json::json!({ "ok": false, "error": format!("join: {e}") }),
+    }
+}
+
+#[tauri::command]
+pub fn logs_open_folder() -> serde_json::Value {
+    let Some(log_dir) = logging::logs_dir() else {
+        return serde_json::json!({
+            "ok": false,
+            "error": "logging not initialised"
+        });
+    };
+    // Reuse the same OS-correct opener `shell_show_item_in_folder`
+    // uses for files: passing the directory reveals it.
+    let path_str = log_dir.to_string_lossy().to_string();
+    if let Err(e) = open::that(&path_str) {
+        return serde_json::json!({
+            "ok": false,
+            "error": format!("open log folder: {e}")
+        });
+    }
+    serde_json::json!({ "ok": true, "path": path_str })
+}
+
+fn build_system_info(version: &str) -> serde_json::Value {
+    serde_json::json!({
+        "app_version": version,
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "family": std::env::consts::FAMILY,
+        "captured_at": chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+/// Walk the log dir, copy every `fleetify.log.*` file into the zip
+/// alongside `system-info.json`. Returns the final byte size of the
+/// zip so the renderer can show "X MB" in the toast / UI hint.
+fn write_diagnostics_zip(
+    log_dir: &std::path::Path,
+    out_path: &std::path::Path,
+    sys_info: serde_json::Value,
+) -> Result<u64, String> {
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+
+    let f = std::fs::File::create(out_path)
+        .map_err(|e| format!("create zip: {e}"))?;
+    let mut zip = zip::ZipWriter::new(f);
+    let opts = SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    // 1. system-info.json — first entry so a tail-only viewer still
+    //    sees build context.
+    zip.start_file("system-info.json", opts)
+        .map_err(|e| format!("zip start_file: {e}"))?;
+    let info_bytes = serde_json::to_vec_pretty(&sys_info)
+        .map_err(|e| format!("system-info serialize: {e}"))?;
+    zip.write_all(&info_bytes)
+        .map_err(|e| format!("zip write: {e}"))?;
+
+    // 2. Every log file under the log dir. Skip the crash flag and
+    //    anything that doesn't look like a log rotation — the dir
+    //    might pick up unrelated junk over time (manual exports the
+    //    user dropped in there, etc.) which we don't want to ship.
+    let entries = std::fs::read_dir(log_dir)
+        .map_err(|e| format!("read_dir {log_dir:?}: {e}"))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        if !name.starts_with("fleetify.log") {
+            continue;
+        }
+        let archive_name = format!("logs/{name}");
+        zip.start_file(&archive_name, opts)
+            .map_err(|e| format!("zip start_file {archive_name}: {e}"))?;
+        let mut src = std::fs::File::open(&path)
+            .map_err(|e| format!("open {path:?}: {e}"))?;
+        std::io::copy(&mut src, &mut zip)
+            .map_err(|e| format!("copy {path:?}: {e}"))?;
+    }
+
+    zip.finish().map_err(|e| format!("zip finish: {e}"))?;
+    let bytes = std::fs::metadata(out_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    Ok(bytes)
 }
 
 #[cfg(test)]

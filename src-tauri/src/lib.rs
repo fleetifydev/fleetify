@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use tauri::webview::WebviewWindowBuilder;
-use tauri::WebviewUrl;
+use tauri::{Manager, WebviewUrl};
 
 /// Boot shim reconstructing `window.electronAPI` / `window.fleetify`.
 const PRELOAD: &str = include_str!("preload.js");
@@ -35,18 +35,11 @@ fn static_dir() -> Option<PathBuf> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Tracing setup — RUST_LOG honoured ("info,fleetify.telemetry.ws=debug"
-    // is a useful preset for inspecting outbox → cloud traffic). Defaults
-    // to "info,fleetify=info" so the user sees the WS handshake + every
-    // event sent / received in the terminal without needing to set
-    // RUST_LOG manually.
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,fleetify=info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(true) // surface fleetify.telemetry.ws / acp / codex / etc.
-        .compact()
-        .init();
+    // Tracing init moved into `setup()` so the file appender can use
+    // Tauri's resolved `app_log_dir()` (Windows: %LOCALAPPDATA%, macOS:
+    // ~/Library/Logs, Linux: ~/.local/state). The WorkerGuard returned
+    // by `logging::init` is `app.manage()`-d to keep the non-blocking
+    // writer's flush thread alive for the process lifetime.
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -74,7 +67,9 @@ pub fn run() {
             shell::ipc::dialog_open_folder,
             shell::ipc::git_get_context,
             shell::ipc::git_has_gh_cli,
+            shell::ipc::git_has_git,
             shell::ipc::git_list_branches,
+            shell::ipc::git_set_base_branch,
             shell::ipc::git_checkout,
             shell::ipc::git_commit,
             shell::ipc::git_push,
@@ -96,6 +91,8 @@ pub fn run() {
             shell::ipc::git_preflight_check,
             shell::ipc::shell_check_github_auth,
             shell::ipc::gh_auth_login_launch,
+            shell::ipc::gh_auth_login_capture,
+            shell::ipc::gh_auth_login_cancel,
             shell::ipc::shell_install_provider,
             shell::ipc::shell_install_ollama,
             shell::ipc::git_watch_head,
@@ -112,8 +109,20 @@ pub fn run() {
             shell::ipc::git_apply_recovery,
             shell::ipc::git_apply_preflight_fix,
             shell::ipc::git_diff_summary_simple,
+            shell::ipc::app_log,
+            shell::ipc::logs_export,
+            shell::ipc::logs_open_folder,
         ])
         .setup(|app| {
+            // Bring tracing online FIRST so any setup-phase warnings
+            // (auth handle, embedded backend boot, webview build) land
+            // in the log file. The returned WorkerGuard is parked on
+            // the app's state container so the non-blocking writer's
+            // flush thread lives as long as the process.
+            if let Some(guard) = shell::logging::init(&app.handle()) {
+                app.manage(guard);
+            }
+
             // Auth module emits `fleet:auth-event` via this handle.
             shell::auth::set_app_handle(app.handle().clone());
 
@@ -222,6 +231,14 @@ pub fn run() {
             // before-quit cleanup).
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 shell::head_watcher::shutdown();
+                // Mark the shutdown as clean — removes the crash flag
+                // so the next boot doesn't falsely report "previous
+                // session crashed". Window-destroyed is the closest
+                // we get to a deterministic "the user closed the app"
+                // signal in Tauri 2; OS-level kills (Task Manager,
+                // SIGKILL) skip this path on purpose, which is exactly
+                // what makes the flag a useful crash signal.
+                shell::logging::mark_clean_shutdown();
             }
         })
         .run(tauri::generate_context!())

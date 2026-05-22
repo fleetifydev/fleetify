@@ -21,7 +21,13 @@ tauri = { version = "2", features = ["image-png"] }
 tauri-plugin-dialog = "2"
 tokio.workspace = true
 tracing.workspace = true
+# Workspace already pins tracing-subscriber@0.3 with env-filter + json
+# features, both of which the file logger relies on.
 tracing-subscriber.workspace = true
+tracing-appender = "0.2"
+# Used by logs_export to bundle logs + system info into a single zip
+# the user can attach to a bug report.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

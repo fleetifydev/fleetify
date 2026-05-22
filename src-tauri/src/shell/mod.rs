@@ -11,4 +11,5 @@ pub mod github_link;
 pub mod github_pr;
 pub mod head_watcher;
 pub mod ipc;
+pub mod logging;
 pub mod pty;

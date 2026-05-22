@@ -72,6 +72,22 @@
       // can complete the device-code flow. Renderer should poll
       // `hasGhCli()` after calling this to detect when auth finishes.
       ghAuthLoginLaunch: function () { return invoke("gh_auth_login_launch"); },
+      // In-process gh auth flow — captures the one-time device code so we
+      // can surface it inside the app instead of asking the user to dig
+      // through a separate terminal window. Pair with onGhAuthEvent for
+      // live progress, and call ghAuthLoginCancel to kill the child.
+      ghAuthLoginCapture: function () { return invoke("gh_auth_login_capture"); },
+      ghAuthLoginCancel:  function () { return invoke("gh_auth_login_cancel"); },
+      onGhAuthEvent: function (cb) {
+        var unsub = null;
+        var e = ev();
+        if (e) {
+          e.listen("gh-auth-event", function (m) {
+            try { cb(m && m.payload); } catch (_) {}
+          }).then(function (u) { unsub = u; });
+        }
+        return function () { try { unsub && unsub(); } catch (_) {} };
+      },
       installProvider: function (toolKey) { return invoke("shell_install_provider", { toolKey: String(toolKey || "") }); },
       installOllama: function () { return invoke("shell_install_ollama"); },
       generateCommitMessage: function (folder, opts) {
@@ -167,7 +183,39 @@
       },
       getGitContext: function (folder) { return invoke("git_get_context", { folder: String(folder || "") }); },
       hasGhCli: function () { return invoke("git_has_gh_cli"); },
+      // Probe whether `git` is on PATH. Returns { ok, version?, path? }.
+      // Drives the WorktreeToggle in the New Session UI — without git
+      // the toggle collapses into a "Git required" notice instead of
+      // letting the user opt into a feature we can't deliver.
+      hasGit: function () { return invoke("git_has_git"); },
+      // ── Logging bridge ────────────────────────────────────────────
+      // appLog routes one structured event into the backend's tracing
+      // pipeline → stderr + NDJSON log file under the OS log dir.
+      // logsExport bundles the last N days + system info into a zip
+      // the user can attach to a bug report. logsOpenFolder reveals
+      // the log dir in Explorer / Finder / xdg-open.
+      appLog: function (level, target, message, fields) {
+        return invoke("app_log", {
+          level: String(level || "info"),
+          target: String(target || "renderer"),
+          message: String(message || ""),
+          fields: fields == null ? null : fields,
+        });
+      },
+      logsExport: function () { return invoke("logs_export"); },
+      logsOpenFolder: function () { return invoke("logs_open_folder"); },
       listGitBranches: function (folder) { return invoke("git_list_branches", { folder: String(folder || "") }); },
+      // Promote a branch as this clone's logical base branch (drives the
+      // "Create new main branch" picker action). Carves it from the
+      // current base if it doesn't exist yet, then pins it via
+      // `git config fleetify.baseBranch`. Nondestructive — no rename,
+      // no push, no change to remote `HEAD`.
+      setBaseBranch: function (folder, branch) {
+        return invoke("git_set_base_branch", {
+          folder: String(folder || ""),
+          branch: String(branch || ""),
+        });
+      },
       gitCheckout: function (folder, branch, force) { return invoke("git_checkout", { folder: String(folder || ""), branch: String(branch || ""), force: !!force }); },
       gitCommit: function (folder, message) { return invoke("git_commit", { folder: String(folder || ""), message: String(message || "") }); },
       gitPush: function (folder) { return invoke("git_push", { folder: String(folder || "") }); },
@@ -192,6 +240,9 @@
           draft: !!o.draft,
           featureBranch: o.featureBranch || null,
           tool: o.tool || null,
+          // "gh" | "cli" → GitHub CLI only, "oauth" | "link" → Fleetify
+          // OAuth only, omitted → backend picks (gh-first / link fallback).
+          method: o.method || null,
         });
       },
       getPRStatus: function (folder, prNumber) {
