@@ -157,6 +157,29 @@
         })).then(function (u) { unsub = u; });
         return function () { try { unsub && unsub(); } catch (_) {} };
       },
+      // ── routers (Settings → Routers tile management) ──
+      // Mirrors the routers_* Tauri commands; secrets cross IPC only on
+      // the connect call (renderer → keychain via main). list/disconnect
+      // /setActive/setMasterToggle/testRouter never carry secrets.
+      routers: {
+        list:            function () { return invoke("routers_list_routers"); },
+        connect:         function (id, secret, metadata) {
+          return invoke("routers_connect", {
+            id: String(id || ""),
+            secret: String(secret || ""),
+            metadata: metadata || {},
+          });
+        },
+        disconnect:      function (id) { return invoke("routers_disconnect", { id: String(id || "") }); },
+        setActive:       function (category, id) {
+          return invoke("routers_set_active", {
+            category: String(category || ""),
+            id: String(id || ""),
+          });
+        },
+        setMasterToggle: function (enabled) { return invoke("routers_set_master_toggle", { enabled: !!enabled }); },
+        testRouter:      function (id) { return invoke("routers_test_router", { id: String(id || "") }); },
+      },
       // ── github (mirrors window.electronAPI.github in the Electron build) ──
       // Token never crosses IPC; only `link` envelopes do. Faithful with
       // the original `electron/github-link.cjs` surface.
