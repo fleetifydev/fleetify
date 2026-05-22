@@ -391,10 +391,22 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
     // futures unblock with `denied` instead of leaking forever. Same
     // `finally:` semantics as `permission_futures` cleanup in the
     // Python reference's `chat.py::handle_websocket`.
-    {
+    let drained_sids: Vec<String> = {
         let mut map = permission_sessions.lock().await;
+        let sids: Vec<String> = map.keys().cloned().collect();
         for (_, ps) in map.drain() {
             ps.fail_all_pending().await;
+        }
+        sids
+    };
+    // Drop the loopback registry entries too — without this, a stale
+    // closure (whose captured sink points at a now-closed WS) would
+    // keep accepting calls from fleet-permission-mcp and silently
+    // never reach a user.
+    if !drained_sids.is_empty() {
+        let mut reg = st.permission_registry.lock().await;
+        for sid in drained_sids {
+            reg.remove(&sid);
         }
     }
 }
@@ -577,6 +589,21 @@ async fn run_send_flow(
                 crate::services::builtin_templates::get(session.agent_template.as_deref())
             {
                 b.system_prompt = Some(tpl.system_prompt.to_string());
+            }
+            // Claude CLI in default mode stalls on the interactive
+            // prompt when run headless. The MCP at fleet-permission-mcp
+            // gives the CLI a tool to call instead; the binary loops
+            // back through `/api/internal/permission_prompt` to the
+            // handler we register in `permission_registry` just below.
+            // Staff/acceptEdits/bypass paths still skip the dialog.
+            if !is_staff && session.permission_mode == "default" {
+                let handler =
+                    build_permission_handler(&permission_session, &sink, &sid);
+                st.permission_registry
+                    .lock()
+                    .await
+                    .insert(sid.clone(), handler.clone());
+                b = b.with_permission_handler(handler);
             }
             AnyBridge::Claude(Arc::new(b))
         }
