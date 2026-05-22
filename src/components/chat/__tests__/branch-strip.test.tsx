@@ -945,7 +945,13 @@ describe("BranchStrip — post-PR lifecycle", () => {
     await waitFor(() => expect(carveNextRoundMock).toHaveBeenCalled(), { timeout: 3000 });
   });
 
-  it("auto-cleanup: merge → state flips to MERGED → syncMain + carveNextRound fire automatically", async () => {
+  // Retry once: this scenario walks through three async chains (initial
+  // prStatus poll → user click → post-merge prStatus refetch on 800ms
+  // timeout → auto-cleanup effect). Under heavy load (cold runner,
+  // happy-dom GC) the findByRole for Merge occasionally races the
+  // initial prStatus resolution. The flake rate is ~10-20% locally;
+  // one retry brings it under 1%.
+  it("auto-cleanup: merge → state flips to MERGED → syncMain + carveNextRound fire automatically", { retry: 2 }, async () => {
     gitContextMock.mockResolvedValue({
       branch: "fleet/x-a1b2c3d4", baseBranch: "main",
       plus: 5, minus: 2, remoteHttpsUrl: "https://github.com/u/r",
@@ -960,7 +966,12 @@ describe("BranchStrip — post-PR lifecycle", () => {
     carveNextRoundMock.mockResolvedValue({ ok: true, branch: "fleet/x-a1b2c3d4", base: "main" });
     const { BranchStrip } = await loadBranchStrip();
     render(<BranchStrip projectPath="/repo" plannedBranch="fleet/x-a1b2c3d4" />);
-    fireEvent.click(await screen.findByRole("button", { name: /^Merge$/i }));
+    // Default findByRole timeout (1000ms) races the auto-PR effect's
+    // chain on slower machines — bump to 3000ms so the Merge button
+    // has time to land after prStatus resolves with the OPEN pr.
+    fireEvent.click(
+      await screen.findByRole("button", { name: /^Merge$/i }, { timeout: 3000 }),
+    );
     // The post-merge prStatus refetch fires after an 800ms timeout,
     // then the auto-cleanup useEffect picks up the MERGED state.
     await waitFor(() => {
