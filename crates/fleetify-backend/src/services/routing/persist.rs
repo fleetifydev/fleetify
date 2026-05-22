@@ -12,7 +12,9 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 
 use crate::services::routing::orchestrator::RoutingOrchestrator;
-use crate::services::routing::traits::{AgentKind, DecisionSource, RoutingTask, TaskFlow};
+use crate::services::routing::traits::{
+    AgentKind, DecisionSource, ProviderKind, RoutingTask, TaskFlow,
+};
 
 /// Insert a routing decision row. `ts` is Unix epoch seconds.
 #[allow(clippy::too_many_arguments)]
@@ -135,9 +137,10 @@ pub async fn load_session_pin(pool: &SqlitePool, session_id: &str) -> SessionPin
     }
 }
 
-/// Outcome of [`resolve_routing_for_turn`]. Carries the (agent, model)
-/// the bridge should use this turn plus the decision id to attach to
-/// downstream telemetry (`emit_cost`'s `routing_decision_id` argument).
+/// Outcome of [`resolve_routing_for_turn`] / [`resolve_routing_for_dispatch`].
+/// Carries the (agent, model) the bridge should use plus the decision id to
+/// attach to downstream telemetry (`emit_cost`'s `routing_decision_id`
+/// argument).
 #[derive(Debug, Clone)]
 pub struct RoutingResolution {
     /// Agent we're operating as for this turn. Either the session's
@@ -153,6 +156,14 @@ pub struct RoutingResolution {
     /// Set when the resolution wrote a fresh row to `routing_decisions`
     /// AND pinned the session. Used in tests to assert side effects.
     pub freshly_routed: bool,
+    /// Proxy gateway base URL override, if the active proxy gateway is
+    /// not the direct gateway. Populated only by dispatch flow today —
+    /// the chat-turn helper computes this separately because callers
+    /// derive the provider family from the routed agent.
+    pub base_url_override: Option<String>,
+    /// Headers attached by the proxy gateway. Empty when `base_url_override`
+    /// is `None`.
+    pub extra_headers: http::HeaderMap,
 }
 
 /// Per-turn routing decision. Three branches:
@@ -187,6 +198,8 @@ pub async fn resolve_routing_for_turn(
             model: model.to_string(),
             decision_id: pin.decision_id,
             freshly_routed: false,
+            base_url_override: None,
+            extra_headers: http::HeaderMap::new(),
         };
     }
 
@@ -198,6 +211,8 @@ pub async fn resolve_routing_for_turn(
             model: manual_model.unwrap_or_default().to_string(),
             decision_id: None,
             freshly_routed: false,
+            base_url_override: None,
+            extra_headers: http::HeaderMap::new(),
         };
     }
 
@@ -283,6 +298,152 @@ pub async fn resolve_routing_for_turn(
         model: outcome.decision.model,
         decision_id: Some(decision_id),
         freshly_routed: true,
+        base_url_override: None,
+        extra_headers: http::HeaderMap::new(),
+    }
+}
+
+/// Map an `AgentKind` to its outbound `ProviderKind` for proxy gateway
+/// lookups. Codex shares OpenAI's wire format, so it lands on the OpenAI
+/// proxy entry. Exposed at the module level so the dispatch helper and
+/// chat router can both translate without duplicating the match.
+pub fn provider_kind_for(agent: AgentKind) -> ProviderKind {
+    match agent {
+        AgentKind::Claude => ProviderKind::Anthropic,
+        AgentKind::OpenAI | AgentKind::Codex => ProviderKind::OpenAI,
+        AgentKind::Gemini => ProviderKind::Google,
+    }
+}
+
+/// Per-dispatch routing helper. Unlike the chat-turn variant, dispatch
+/// flows do NOT carry session pins — each /api/internal/dispatch call
+/// gets a fresh Layer-2 decision (model tier) bound to the
+/// caller-selected agent identity.
+///
+/// When the orchestrator is disabled (or the target session's `tool`
+/// string is unrecognised), this is a pure pass-through: returns the
+/// target's existing tool + `model_name` verbatim, with no DB writes
+/// and no telemetry emit. When enabled, it calls `orchestrator.route`,
+/// inserts a `routing_decisions` row tagged `task_flow="dispatch"`,
+/// fires off a routing_decision telemetry event, and resolves the
+/// active proxy gateway's base URL + headers for the routed agent's
+/// provider family.
+///
+/// `task_id` is recorded in the `task_ref` column of routing_decisions
+/// so the analytics can pair the row with the dispatched task that
+/// caused it.
+#[allow(clippy::too_many_arguments)]
+pub async fn resolve_routing_for_dispatch(
+    pool: &SqlitePool,
+    orch: &Arc<RoutingOrchestrator>,
+    task_id: &str,
+    _target_session_id: &str,
+    target_tool: &str,
+    target_model: Option<&str>,
+    task_body: &str,
+) -> RoutingResolution {
+    use crate::services::routing::traits::{TaskFlow, WorkspaceHints};
+
+    let target_agent = str_to_agent_kind(target_tool);
+
+    // Disabled router OR unrecognised tool → pure pass-through. The
+    // dispatched bridge will use the target session's configured
+    // model_name and direct provider URLs.
+    if !orch.enabled() || target_agent.is_none() {
+        let agent = target_agent.unwrap_or(AgentKind::Claude);
+        return RoutingResolution {
+            agent,
+            model: target_model.unwrap_or_default().to_string(),
+            decision_id: None,
+            freshly_routed: false,
+            base_url_override: None,
+            extra_headers: http::HeaderMap::new(),
+        };
+    }
+    let agent = target_agent.unwrap();
+    let routing_task = RoutingTask {
+        flow: TaskFlow::Dispatch {
+            task_id: task_id.to_string(),
+        },
+        user_prompt: task_body.to_string(),
+        conversation_history: None,
+        workspace_context: WorkspaceHints::default(),
+        user_hint: None,
+        allowed_agents: vec![agent],
+        budget_remaining: None,
+    };
+
+    let outcome = orch.route(&routing_task, &[]).await;
+    let decision_id = uuid::Uuid::new_v4().to_string();
+    let agent_str = agent_kind_to_str(outcome.decision.agent);
+    let source_str = decision_source_to_str(outcome.decision.source);
+    let candidates: Vec<(AgentKind, String)> = outcome.decision.fallback_chain.clone();
+    let candidates_json = serde_json::to_string(
+        &candidates
+            .iter()
+            .map(|(a, m)| serde_json::json!({ "agent": agent_kind_to_str(*a), "model": m }))
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_else(|_| "[]".into());
+    let now = chrono::Utc::now();
+    let ts = now.timestamp();
+
+    if let Err(e) = insert_routing_decision(
+        pool,
+        &decision_id,
+        "dispatch",
+        Some(task_id),
+        agent_str,
+        &outcome.decision.model,
+        source_str,
+        &outcome.decision.rationale,
+        outcome.latency_ms as i64,
+        outcome.fallback_used,
+        outcome.primary_router_id.as_deref(),
+        &candidates_json,
+        ts,
+    )
+    .await
+    {
+        tracing::warn!(
+            target: "fleet-backend",
+            error = %e,
+            "routing(dispatch): failed to persist routing_decisions row"
+        );
+    }
+
+    // Fire-and-forget telemetry. NOAUTH/uninitialised outbox swallows.
+    let _ = crate::services::telemetry::emit_routing_decision(
+        &decision_id,
+        &TaskFlow::Dispatch {
+            task_id: task_id.to_string(),
+        },
+        Some(task_id),
+        source_str,
+        outcome.decision.agent,
+        &outcome.decision.model,
+        &outcome.decision.rationale,
+        outcome.latency_ms,
+        outcome.fallback_used,
+        outcome.primary_router_id.as_deref(),
+        &candidates,
+        now,
+    )
+    .await;
+
+    let (base_url_override, extra_headers) =
+        match orch.proxy_for(provider_kind_for(outcome.decision.agent)) {
+            Some((u, h)) => (Some(u), h),
+            None => (None, http::HeaderMap::new()),
+        };
+
+    RoutingResolution {
+        agent: outcome.decision.agent,
+        model: outcome.decision.model,
+        decision_id: Some(decision_id),
+        freshly_routed: true,
+        base_url_override,
+        extra_headers,
     }
 }
 

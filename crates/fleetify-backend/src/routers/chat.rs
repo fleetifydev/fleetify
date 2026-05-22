@@ -1062,6 +1062,20 @@ async fn process_direct_dispatches(
         target_chain.push(staff_sid.to_string());
         st.sm.set_dispatch_chain(&target.id, target_chain);
 
+        // Layer-2 routing for this @mention dispatch — see the loopback
+        // /api/internal/dispatch path for the rationale. Reuses the same
+        // helper so all dispatch flows share decision-row provenance.
+        let routing_res = crate::services::routing::persist::resolve_routing_for_dispatch(
+            &st.auth.pool,
+            &st.routing,
+            &target.id,
+            &target.id,
+            &target.tool,
+            target.model_name.as_deref(),
+            &full_task,
+        )
+        .await;
+
         // Background bridge run. dispatch_result + live target stream
         // flow back via SessionManager fanout (subscribed on the WS
         // handler's subscribe path).
@@ -1078,6 +1092,7 @@ async fn process_direct_dispatches(
                 target_owned,
                 full_task,
                 task_for_card,
+                routing_res,
             )
             .await;
         });
@@ -1242,6 +1257,20 @@ async fn handle_staff_dispatch_tokens(
         target_chain.push(staff_sid.to_string());
         st.sm.set_dispatch_chain(&target.id, target_chain);
 
+        // Layer-2 routing for the staff [[DISPATCH:]] path. Same helper
+        // as the @mention DIRECT_DISPATCH and the /api/internal/dispatch
+        // loopback — one routing call per dispatched task.
+        let routing_res = crate::services::routing::persist::resolve_routing_for_dispatch(
+            &st.auth.pool,
+            &st.routing,
+            &target.id,
+            &target.id,
+            &target.tool,
+            target.model_name.as_deref(),
+            &full_task,
+        )
+        .await;
+
         let pool = st.auth.pool.clone();
         let sm = st.sm;
         let staff_sid_owned = staff_sid.to_string();
@@ -1255,6 +1284,7 @@ async fn handle_staff_dispatch_tokens(
                 target_owned,
                 full_task,
                 task_for_card,
+                routing_res,
             )
             .await;
         });
@@ -1360,8 +1390,18 @@ pub(crate) async fn run_dispatched_task_internal(
     target: Session,
     task: String,
     task_for_card: String,
+    routing_res: crate::services::routing::persist::RoutingResolution,
 ) {
-    run_dispatched_task(pool, sm, caller_sid, target, task, task_for_card).await
+    run_dispatched_task(
+        pool,
+        sm,
+        caller_sid,
+        target,
+        task,
+        task_for_card,
+        routing_res,
+    )
+    .await
 }
 
 /// Hard wall-clock cap on a single dispatched run. Matches the Python
@@ -1380,6 +1420,7 @@ async fn run_dispatched_task(
     target: Session,
     task: String,
     task_for_card: String,
+    routing_res: crate::services::routing::persist::RoutingResolution,
 ) {
     let target_id = target.id.clone();
 
@@ -1543,10 +1584,21 @@ async fn run_dispatched_task(
         }),
     );
 
-    let mut rx = match any_bridge
-        .send_message(&task, crate::bridges::BridgeContext::default())
-        .await
-    {
+    // Routing-aware bridge context: when the orchestrator picked a tier
+    // for this dispatch, `routing_res.model` is non-empty and
+    // base_url/headers carry any active proxy gateway. When routing was
+    // disabled or pass-through, all three collapse to the bridge's own
+    // defaults (model = target.model_name, direct provider URLs).
+    let bridge_ctx = crate::bridges::BridgeContext {
+        base_url_override: routing_res.base_url_override.clone(),
+        extra_headers: routing_res.extra_headers.clone(),
+        model_override: if routing_res.model.is_empty() {
+            None
+        } else {
+            Some(routing_res.model.clone())
+        },
+    };
+    let mut rx = match any_bridge.send_message(&task, bridge_ctx).await {
         Ok(rx) => rx,
         Err(e) => {
             let _ = sm.update_status(&pool, &target_id, "error").await;
