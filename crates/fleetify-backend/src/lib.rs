@@ -140,6 +140,7 @@ pub async fn serve(addr: SocketAddr, static_dir: Option<PathBuf>) -> anyhow::Res
         app_cfg: Arc::new(cfg),
         sm: session_manager::session_manager(),
         internal_secret: internal_secret.clone(),
+        permission_registry: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
     // Surface the secret + backend URL through env so MCP processes
     // spawned later (by ClaudeBridge::build_mcp_config) can read them

@@ -41,6 +41,17 @@ pub struct AppState {
     /// auth without exposing the user's bearer to a subprocess. Not
     /// routed past localhost — anything off-loopback ignores it.
     pub internal_secret: std::sync::Arc<String>,
+    /// session_id → live PermissionHandler. Populated by chat.rs WS
+    /// handler when a session opens (currently used only by Claude —
+    /// Codex/Gemini bridge their approval hooks in-process). Consumed
+    /// by the fleet-permission-mcp loopback endpoint, which calls the
+    /// handler so the WS dialog round-trip stays the single source of
+    /// truth across bridge types.
+    pub permission_registry: std::sync::Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<String, crate::bridges::permission::PermissionHandler>,
+        >,
+    >,
 }
 
 impl FromRef<AppState> for AuthState {

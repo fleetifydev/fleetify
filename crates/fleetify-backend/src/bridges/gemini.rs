@@ -232,6 +232,12 @@ pub struct GeminiBridge {
     /// Builtin template id (e.g. `"reverse_engineering"`) — opts the
     /// session into extra stdio MCPs like `fleet_reveng`.
     pub agent_template: Option<String>,
+    /// Optional bridge-out callback for live tool-permission prompts.
+    /// When set AND the ACP approval mode is `"default"`, the ACP
+    /// client's `on_permission_request` routes through this handler
+    /// (which the chat router wires to the renderer's permission
+    /// dialog). Unset → auto-deny stub.
+    pub permission_handler: Option<super::permission::PermissionHandler>,
     aborted: Arc<AtomicBool>,
     state: Arc<Mutex<Option<State>>>,
 }
@@ -252,9 +258,20 @@ impl GeminiBridge {
             model_name,
             is_staff,
             agent_template,
+            permission_handler: None,
             aborted: Arc::new(AtomicBool::new(false)),
             state: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Builder hook for the chat router to inject the live permission
+    /// callback. Same shape as `CodexBridge::with_permission_handler`.
+    pub fn with_permission_handler(
+        mut self,
+        handler: super::permission::PermissionHandler,
+    ) -> Self {
+        self.permission_handler = Some(handler);
+        self
     }
 
     /// Lazily spawn `gemini --acp`, run the ACP handshake, and create
@@ -329,34 +346,63 @@ impl GeminiBridge {
         let client = Arc::new(AcpClient::new());
         client.attach(stdout, stdin).await?;
 
-        // Permission + fs handlers. Same bypass-or-deny shape as the
-        // CodexBridge — once a renderer permission_handler IPC lands,
-        // this routes through Tauri to surface a real dialog instead
-        // of auto-resolving.
+        // Permission handler routing — same three-way split as the
+        // CodexBridge:
+        //   bypassPermissions / dontAsk → auto-allow (allow_once).
+        //   permission_handler set       → call into the chat router's
+        //     WS bridge, await the user's dialog decision, map to ACP
+        //     allow_once / deny.
+        //   neither                      → auto-deny stub (safe fallback).
+        //
+        // The ACP request params carry tool metadata under different
+        // keys depending on Gemini's protocol version; we extract a
+        // best-effort `tool_name` for the renderer's dialog so the
+        // user knows what they're approving. `format_command` in the
+        // permission module handles the human-readable summary itself
+        // (falls back to compact JSON when the tool name is unknown).
         let perm_mode = self.permission_mode.clone();
+        let perm_handler = self.permission_handler.clone();
         client
-            .on_permission_request(Arc::new(move |_params| {
+            .on_permission_request(Arc::new(move |params| {
                 let bypass = matches!(perm_mode.as_str(), "bypassPermissions" | "dontAsk");
+                let handler = perm_handler.clone();
                 Box::pin(async move {
                     if bypass {
-                        Ok(json!({
+                        return Ok(json!({
                             "outcome": {
                                 "outcome": "selected",
                                 "optionId": "allow_once"
                             }
-                        }))
-                    } else {
-                        tracing::warn!(
-                            target: "gemini.permission",
-                            "auto-denied ACP permission request — renderer permission UI not wired"
-                        );
-                        Ok(json!({
+                        }));
+                    }
+                    if let Some(h) = handler {
+                        let tool_name = params
+                            .get("toolCall")
+                            .and_then(|tc| tc.get("name"))
+                            .or_else(|| params.get("tool_name"))
+                            .or_else(|| params.get("name"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let approved = h(tool_name, params.clone()).await;
+                        let option_id = if approved { "allow_once" } else { "deny" };
+                        return Ok(json!({
                             "outcome": {
                                 "outcome": "selected",
-                                "optionId": "deny"
+                                "optionId": option_id
                             }
-                        }))
+                        }));
                     }
+                    tracing::warn!(
+                        target: "gemini.permission",
+                        "auto-denied ACP permission request — no permission_handler wired"
+                    );
+                    Ok(json!({
+                        "outcome": {
+                            "outcome": "selected",
+                            "optionId": "deny"
+                        }
+                    }))
                 })
             }))
             .await;
@@ -629,6 +675,7 @@ impl GeminiBridge {
         let is_staff = self.is_staff;
         let agent_template = self.agent_template.clone();
         let state = self.state.clone();
+        let permission_handler = self.permission_handler.clone();
         Box::pin(async move {
             let bridge = GeminiBridge {
                 session_id,
@@ -639,6 +686,7 @@ impl GeminiBridge {
                 agent_template,
                 aborted: Arc::new(AtomicBool::new(false)),
                 state,
+                permission_handler,
             };
             bridge.cold_start().await
         })

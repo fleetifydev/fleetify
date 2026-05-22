@@ -28,6 +28,11 @@ pub fn builtin_mcp_config(name: &str, session_id: &str) -> Option<Value> {
         "fleet_memory" => "fleet-memory-mcp",
         "fleet_dispatch" => "fleet-dispatch-mcp",
         "fleet_reveng" => "fleet-reveng-mcp",
+        // Claude-only permission-prompt MCP. Claude calls its single
+        // tool via the CLI's `--permission-prompt-tool` flag before
+        // each tool use; the binary POSTs to the loopback backend,
+        // which runs the same WS round-trip Codex/Gemini already use.
+        "fleet_permission" => "fleet-permission-mcp",
         _ => return None,
     };
     let command = mcp_registry::resolve_builtin_path(basename);
