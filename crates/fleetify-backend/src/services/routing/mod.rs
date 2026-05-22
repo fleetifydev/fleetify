@@ -4,6 +4,7 @@
 pub mod traits;
 pub mod capability_matrix;
 pub mod intent;
+pub mod agent_selector;
 
 pub use traits::{
     AgentCandidate, AgentKind, ComplexityHint, DecisionRouter, DecisionSource, Message,
