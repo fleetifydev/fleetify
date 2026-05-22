@@ -24,6 +24,7 @@ pub mod prompt_enhancer;
 pub mod provider_inspector;
 pub mod provider_sessions;
 pub mod recall_hook;
+pub mod routing;
 pub mod session_summarizer;
 pub mod staff_prompt;
 pub mod task_enricher;
