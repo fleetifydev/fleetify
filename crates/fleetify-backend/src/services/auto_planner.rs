@@ -130,7 +130,10 @@ pub fn parse_plan(raw: &str) -> Option<AutoPlanResult> {
             }
         }
     }
-    Some(AutoPlanResult { dispatches, summary })
+    Some(AutoPlanResult {
+        dispatches,
+        summary,
+    })
 }
 
 const PLANNER_SYSTEM_TEMPLATE: &str = r#"You are an agent task router. The user describes a goal; you decide which fleet agents (if any) should handle which sub-tasks. You DO NOT execute anything yourself — you only emit a routing plan as JSON.
@@ -164,8 +167,7 @@ pub async fn plan_dispatches(
             summary: "(empty prompt)".into(),
         });
     }
-    let system =
-        PLANNER_SYSTEM_TEMPLATE.replace("{max_dispatches}", &MAX_DISPATCHES.to_string());
+    let system = PLANNER_SYSTEM_TEMPLATE.replace("{max_dispatches}", &MAX_DISPATCHES.to_string());
     let user_block = build_planner_prompt(user_prompt, fleet, already_routed);
     let raw = match call_haiku_with_meta_cost(
         pool,
@@ -251,7 +253,9 @@ mod tests {
         }];
         let p = build_planner_prompt("fix it", &fleet, &routed);
         assert!(p.contains("User request:\nfix it"));
-        assert!(p.contains("- agent-1 | alpha (project: /proj · status: idle · about: does things)"));
+        assert!(
+            p.contains("- agent-1 | alpha (project: /proj · status: idle · about: does things)")
+        );
         assert!(p.contains("Already routed"));
         assert!(p.contains("- agent-1: already done"));
     }

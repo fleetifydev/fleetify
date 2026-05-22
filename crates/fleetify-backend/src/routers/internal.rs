@@ -77,7 +77,9 @@ async fn dispatch(
             .fetch_optional(&st.auth.pool)
             .await?;
     let Some(caller_row) = caller_row else {
-        return Err(ApiError::NotFound(format!("caller session {caller} not found")));
+        return Err(ApiError::NotFound(format!(
+            "caller session {caller} not found"
+        )));
     };
 
     // Resolve target by UUID first, then case-insensitive title. We
@@ -85,23 +87,27 @@ async fn dispatch(
     // can't route work to someone else's fleet.
     let lower_ref = agent_ref.to_lowercase();
     let candidates: Vec<Session> = match &caller_row.user_id {
-        Some(uid) => sqlx::query_as::<_, Session>(
-            "SELECT * FROM sessions WHERE user_id = ? AND archived_at IS NULL",
-        )
-        .bind(uid)
-        .fetch_all(&st.auth.pool)
-        .await?,
-        None => sqlx::query_as::<_, Session>(
-            "SELECT * FROM sessions WHERE archived_at IS NULL",
-        )
-        .fetch_all(&st.auth.pool)
-        .await?,
+        Some(uid) => {
+            sqlx::query_as::<_, Session>(
+                "SELECT * FROM sessions WHERE user_id = ? AND archived_at IS NULL",
+            )
+            .bind(uid)
+            .fetch_all(&st.auth.pool)
+            .await?
+        }
+        None => {
+            sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE archived_at IS NULL")
+                .fetch_all(&st.auth.pool)
+                .await?
+        }
     };
-    let target = candidates.into_iter().find(|s| {
-        s.id == agent_ref || s.title.to_lowercase() == lower_ref
-    });
+    let target = candidates
+        .into_iter()
+        .find(|s| s.id == agent_ref || s.title.to_lowercase() == lower_ref);
     let Some(target) = target else {
-        return Err(ApiError::NotFound(format!("no session matches {agent_ref:?}")));
+        return Err(ApiError::NotFound(format!(
+            "no session matches {agent_ref:?}"
+        )));
     };
     if target.id == caller {
         return Err(ApiError::BadRequest("cannot dispatch to self".into()));
@@ -237,9 +243,7 @@ mod tests {
             .await
             .unwrap();
         }
-        let cfg = Arc::new(
-            crate::config::AppConfig::load(None).expect("config/default.toml"),
-        );
+        let cfg = Arc::new(crate::config::AppConfig::load(None).expect("config/default.toml"));
         let auth_cfg = Arc::new(AuthConfig::from_env());
         let jwks = crate::auth::default_jwks_cache(&auth_cfg.jwks_url);
         // Per-test SessionManager so dispatch_chain state from one
@@ -325,18 +329,22 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), 200);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["ok"], true);
-        assert_eq!(v["target_session_id"], "bbbbbbbb-0000-0000-0000-000000000002");
+        assert_eq!(
+            v["target_session_id"],
+            "bbbbbbbb-0000-0000-0000-000000000002"
+        );
         // User message landed on the target.
-        let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT role, content FROM messages WHERE session_id = ?",
-        )
-        .bind("bbbbbbbb-0000-0000-0000-000000000002")
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT role, content FROM messages WHERE session_id = ?")
+                .bind("bbbbbbbb-0000-0000-0000-000000000002")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].0, "user");
         assert!(rows[0].1.contains("do the thing"));

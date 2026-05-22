@@ -63,8 +63,7 @@ fn s256_challenge(verifier: &str) -> String {
 fn percent_encode_minimal(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
-        let safe =
-            matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~');
+        let safe = matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~');
         if safe {
             out.push(b as char);
         } else {
@@ -167,10 +166,7 @@ pub async fn callback(code: &str, state: &str) -> Result<String> {
         let body = r.text().await.unwrap_or_default();
         return Err(anyhow!("token POST returned {s}: {body}"));
     }
-    let body: Value = r
-        .json()
-        .await
-        .map_err(|e| anyhow!("token decode: {e}"))?;
+    let body: Value = r.json().await.map_err(|e| anyhow!("token decode: {e}"))?;
     let access = body
         .get("access_token")
         .and_then(|v| v.as_str())

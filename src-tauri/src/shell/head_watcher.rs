@@ -97,10 +97,12 @@ pub async fn watch(app: AppHandle, folder: &str, key: &str) -> serde_json::Value
         return json!({ "ok": false, "error": e.to_string() });
     }
 
-    watchers()
-        .lock()
-        .unwrap()
-        .insert(key.to_string(), Entry { _debouncer: debouncer });
+    watchers().lock().unwrap().insert(
+        key.to_string(),
+        Entry {
+            _debouncer: debouncer,
+        },
+    );
     json!({ "ok": true, "watching": true })
 }
 

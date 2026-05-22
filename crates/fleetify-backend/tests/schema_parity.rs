@@ -33,7 +33,10 @@ async fn schema_has_all_tables_and_key_columns() {
         "plugin_installs",
         "plugin_enablements",
     ] {
-        assert!(tables.contains(&t.to_string()), "missing table {t}; have {tables:?}");
+        assert!(
+            tables.contains(&t.to_string()),
+            "missing table {t}; have {tables:?}"
+        );
     }
 
     let cols: Vec<String> = sqlx::query("PRAGMA table_info(sessions)")
@@ -45,13 +48,40 @@ async fn schema_has_all_tables_and_key_columns() {
         .collect();
 
     for c in [
-        "id", "title", "project_path", "group_path", "tool", "command", "status", "parent_id",
-        "worktree_path", "worktree_branch", "use_worktree", "claude_session_id", "model_name",
-        "permission_mode", "session_mode", "effort", "user_id", "pinned", "order_idx",
-        "created_at", "last_accessed", "notes", "archived_at", "budget_limit", "budget_used",
-        "agent_template", "compact_summary", "compact_at", "compacted_message_count",
+        "id",
+        "title",
+        "project_path",
+        "group_path",
+        "tool",
+        "command",
+        "status",
+        "parent_id",
+        "worktree_path",
+        "worktree_branch",
+        "use_worktree",
+        "claude_session_id",
+        "model_name",
+        "permission_mode",
+        "session_mode",
+        "effort",
+        "user_id",
+        "pinned",
+        "order_idx",
+        "created_at",
+        "last_accessed",
+        "notes",
+        "archived_at",
+        "budget_limit",
+        "budget_used",
+        "agent_template",
+        "compact_summary",
+        "compact_at",
+        "compacted_message_count",
     ] {
-        assert!(cols.contains(&c.to_string()), "sessions missing column {c}; have {cols:?}");
+        assert!(
+            cols.contains(&c.to_string()),
+            "sessions missing column {c}; have {cols:?}"
+        );
     }
 
     let fk: i64 = sqlx::query("PRAGMA foreign_keys")

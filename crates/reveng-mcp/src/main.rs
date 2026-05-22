@@ -330,7 +330,9 @@ fn split_origin_and_dir(url: &str) -> (String, String) {
     };
     let scheme_end = after_scheme.find("://").map(|i| i + 3).unwrap_or(0);
     let after_scheme_body = &after_scheme[scheme_end..];
-    let path_pos = after_scheme_body.find('/').unwrap_or(after_scheme_body.len());
+    let path_pos = after_scheme_body
+        .find('/')
+        .unwrap_or(after_scheme_body.len());
     let origin: String = after_scheme[..scheme_end + path_pos].to_string();
     let mut path = after_scheme[scheme_end + path_pos..].to_string();
     // Strip query / fragment.
@@ -458,7 +460,9 @@ fn find_endpoints(args: Value) -> Result<Value, String> {
         let mut j = 0usize;
         while j < bytes.len() {
             let slice = &content[j..];
-            let Some(rel) = slice.find("fetch(") else { break };
+            let Some(rel) = slice.find("fetch(") else {
+                break;
+            };
             let after = j + rel + "fetch(".len();
             // Skip whitespace.
             let mut k = after;
@@ -475,12 +479,8 @@ fn find_endpoints(args: Value) -> Result<Value, String> {
                 let body_start = k + 1;
                 if let Some(rel_end) = content[body_start..].find(q) {
                     let path = &content[body_start..body_start + rel_end];
-                    if !path.is_empty()
-                        && (path.starts_with('/')
-                            || path.starts_with("http"))
-                    {
-                        let resolved = if !base.is_empty() && path.starts_with('/')
-                        {
+                    if !path.is_empty() && (path.starts_with('/') || path.starts_with("http")) {
+                        let resolved = if !base.is_empty() && path.starts_with('/') {
                             format!("{base}{path}")
                         } else {
                             path.to_string()
@@ -567,7 +567,9 @@ async fn save_asset(args: Value) -> Result<Value, String> {
         .to_string();
     let project = std::env::var("FLEETIFY_PROJECT_PATH")
         .map_err(|_| "FLEETIFY_PROJECT_PATH env var missing".to_string())?;
-    let dir = PathBuf::from(project).join(".fleetify").join("reveng-assets");
+    let dir = PathBuf::from(project)
+        .join(".fleetify")
+        .join("reveng-assets");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(&filename);
     let bytes: Vec<u8> = match encoding.as_str() {

@@ -56,10 +56,7 @@ async fn list_workflows(State(st): State<AppState>) -> Json<Value> {
             if !wf_path.is_file() {
                 continue;
             }
-            let ext = wf_path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
+            let ext = wf_path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if !matches!(ext, "json" | "yaml" | "yml" | "md") {
                 continue;
             }
@@ -123,16 +120,15 @@ async fn run_workflow(
         workflows::finish_run(
             &run_id,
             "failed",
-            Some(&format!("workflow '{name}' not found in install {install_id}")),
+            Some(&format!(
+                "workflow '{name}' not found in install {install_id}"
+            )),
         );
         let r = workflows::get_run(&run_id).map(|r| serde_json::to_value(r).unwrap_or(Value::Null));
         return (StatusCode::NOT_FOUND, Json(r.unwrap_or(Value::Null))).into_response();
     };
     // Verify the install's manifest parses (covers traversal in install_id).
-    let plugin_root = wf_dir
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_default();
+    let plugin_root = wf_dir.parent().map(|p| p.to_path_buf()).unwrap_or_default();
     let plugin_name = match manifest::parse_plugin(&plugin_root) {
         Ok(m) => m.name,
         Err(_) => install_id.clone(),
@@ -141,8 +137,13 @@ async fn run_workflow(
         Ok(s) => s,
         Err(e) => {
             let run_id = workflows::allocate_run(&name, &plugin_name, &user.id, "", &[]);
-            workflows::finish_run(&run_id, "failed", Some(&format!("read {}: {e}", wf_path.display())));
-            let r = workflows::get_run(&run_id).map(|r| serde_json::to_value(r).unwrap_or(Value::Null));
+            workflows::finish_run(
+                &run_id,
+                "failed",
+                Some(&format!("read {}: {e}", wf_path.display())),
+            );
+            let r =
+                workflows::get_run(&run_id).map(|r| serde_json::to_value(r).unwrap_or(Value::Null));
             return (StatusCode::ACCEPTED, Json(r.unwrap_or(Value::Null))).into_response();
         }
     };
@@ -154,13 +155,20 @@ async fn run_workflow(
             workflows::finish_run(
                 &run_id,
                 "failed",
-                Some(&format!("workflow parse failed: {e} (only JSON supported in this cut)")),
+                Some(&format!(
+                    "workflow parse failed: {e} (only JSON supported in this cut)"
+                )),
             );
-            let r = workflows::get_run(&run_id).map(|r| serde_json::to_value(r).unwrap_or(Value::Null));
+            let r =
+                workflows::get_run(&run_id).map(|r| serde_json::to_value(r).unwrap_or(Value::Null));
             return (StatusCode::ACCEPTED, Json(r.unwrap_or(Value::Null))).into_response();
         }
     };
-    let steps_arr = def.get("steps").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let steps_arr = def
+        .get("steps")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     let steps_meta: Vec<(String, String)> = steps_arr
         .iter()
         .map(|s| {
@@ -187,57 +195,55 @@ async fn run_workflow(
         let mut aborted = false;
         for (i, step) in steps_clone.iter().enumerate() {
             if aborted {
-                workflows::record_step(
-                    &run_id_bg,
-                    i,
-                    "skipped",
-                    "",
-                    Some("prior step failed"),
-                );
+                workflows::record_step(&run_id_bg, i, "skipped", "", Some("prior step failed"));
                 continue;
             }
             workflows::record_step(&run_id_bg, i, "running", "", None);
-            let kind = step
-                .get("kind")
-                .and_then(|v| v.as_str())
-                .unwrap_or("tool");
-            let result = match kind {
-                "tool" => {
-                    // V1: echo the input back as the output (matches Python
-                    // placeholder behaviour until real MCP-tool dispatch
-                    // from Fleet ships).
-                    Ok(serde_json::to_string(step.get("input").unwrap_or(&serde_json::Value::Null)).unwrap_or_default())
-                }
-                "agent" => {
-                    // Spawn a one-shot Haiku call and capture the response
-                    // text. system_prompt + message both run through
-                    // `substitute()` so `{{step:N:output}}` references in
-                    // later steps resolve correctly.
-                    let run = match workflows::get_run(&run_id_bg) {
-                        Some(r) => r,
-                        None => {
-                            workflows::record_step(
-                                &run_id_bg, i, "failed", "",
-                                Some("run state vanished"),
-                            );
-                            aborted = true;
-                            continue;
-                        }
-                    };
-                    let sys = step
-                        .get("system_prompt")
-                        .and_then(|v| v.as_str())
-                        .map(|s| workflows::substitute(s, &run, &Default::default()))
-                        .unwrap_or_default();
-                    let msg = step
-                        .get("message")
-                        .and_then(|v| v.as_str())
-                        .map(|s| workflows::substitute(s, &run, &Default::default()))
-                        .unwrap_or_else(|| "Run the step.".into());
-                    run_one_shot_claude(&run.project_path, &sys, &msg).await
-                }
-                other => Err(format!("unknown step kind: {other}")),
-            };
+            let kind = step.get("kind").and_then(|v| v.as_str()).unwrap_or("tool");
+            let result =
+                match kind {
+                    "tool" => {
+                        // V1: echo the input back as the output (matches Python
+                        // placeholder behaviour until real MCP-tool dispatch
+                        // from Fleet ships).
+                        Ok(serde_json::to_string(
+                            step.get("input").unwrap_or(&serde_json::Value::Null),
+                        )
+                        .unwrap_or_default())
+                    }
+                    "agent" => {
+                        // Spawn a one-shot Haiku call and capture the response
+                        // text. system_prompt + message both run through
+                        // `substitute()` so `{{step:N:output}}` references in
+                        // later steps resolve correctly.
+                        let run = match workflows::get_run(&run_id_bg) {
+                            Some(r) => r,
+                            None => {
+                                workflows::record_step(
+                                    &run_id_bg,
+                                    i,
+                                    "failed",
+                                    "",
+                                    Some("run state vanished"),
+                                );
+                                aborted = true;
+                                continue;
+                            }
+                        };
+                        let sys = step
+                            .get("system_prompt")
+                            .and_then(|v| v.as_str())
+                            .map(|s| workflows::substitute(s, &run, &Default::default()))
+                            .unwrap_or_default();
+                        let msg = step
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .map(|s| workflows::substitute(s, &run, &Default::default()))
+                            .unwrap_or_else(|| "Run the step.".into());
+                        run_one_shot_claude(&run.project_path, &sys, &msg).await
+                    }
+                    other => Err(format!("unknown step kind: {other}")),
+                };
             match result {
                 Ok(out) => {
                     workflows::record_step(&run_id_bg, i, "succeeded", &out, None);
@@ -277,10 +283,7 @@ async fn run_one_shot_claude(
         .map_err(|e| e.to_string())
 }
 
-async fn get_run(
-    AuthUser(user): AuthUser,
-    Path(run_id): Path<String>,
-) -> impl IntoResponse {
+async fn get_run(AuthUser(user): AuthUser, Path(run_id): Path<String>) -> impl IntoResponse {
     match workflows::get_run(&run_id) {
         Some(r) if r.user_id == user.id => {
             let v = serde_json::to_value(&r).unwrap_or(Value::Null);

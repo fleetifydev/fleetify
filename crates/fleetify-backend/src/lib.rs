@@ -74,10 +74,9 @@ async fn normalize_legacy_verbatim_project_paths(pool: &sqlx::SqlitePool) {
         .await
         .unwrap_or_default();
         for (id, raw) in rows {
-            let stripped =
-                fleetify_core::strip_verbatim_prefix(std::path::Path::new(&raw))
-                    .to_string_lossy()
-                    .into_owned();
+            let stripped = fleetify_core::strip_verbatim_prefix(std::path::Path::new(&raw))
+                .to_string_lossy()
+                .into_owned();
             if stripped != raw {
                 tracing::info!(
                     target: "fleet-backend",
@@ -102,10 +101,7 @@ async fn normalize_legacy_verbatim_project_paths(pool: &sqlx::SqlitePool) {
 
 /// Bind `addr` and start serving on a background task. `static_dir` is the
 /// built React asset directory for single-origin serving (`None` = API only).
-pub async fn serve(
-    addr: SocketAddr,
-    static_dir: Option<PathBuf>,
-) -> anyhow::Result<ServerHandle> {
+pub async fn serve(addr: SocketAddr, static_dir: Option<PathBuf>) -> anyhow::Result<ServerHandle> {
     // Lifespan parity: one-shot ~/.fleet → ~/.fleetify migration.
     services::migration::migrate_fleet_to_fleetify();
 
@@ -136,7 +132,11 @@ pub async fn serve(
         Arc::new(s)
     };
     let state = routers::AppState {
-        auth: auth::AuthState { pool, cfg: auth_cfg, jwks },
+        auth: auth::AuthState {
+            pool,
+            cfg: auth_cfg,
+            jwks,
+        },
         app_cfg: Arc::new(cfg),
         sm: session_manager::session_manager(),
         internal_secret: internal_secret.clone(),

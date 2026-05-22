@@ -27,10 +27,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    let parts: Vec<String> = items
-        .into_iter()
-        .map(|s| quote(s.as_ref()))
-        .collect();
+    let parts: Vec<String> = items.into_iter().map(|s| quote(s.as_ref())).collect();
     format!("[{}]", parts.join(", "))
 }
 

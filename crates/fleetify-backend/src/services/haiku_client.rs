@@ -42,11 +42,7 @@ pub async fn call_haiku(
     // model id, `--system-prompt` (if provided) is sent as the system
     // message. The prompt itself is piped on stdin to avoid the 32 KB
     // ARG_MAX cliff on Windows.
-    let mut args: Vec<String> = vec![
-        "--print".into(),
-        "--model".into(),
-        DEFAULT_MODEL.into(),
-    ];
+    let mut args: Vec<String> = vec!["--print".into(), "--model".into(), DEFAULT_MODEL.into()];
     if let Some(s) = system {
         args.push("--system-prompt".into());
         args.push(s.to_string());
@@ -71,10 +67,7 @@ pub async fn call_haiku(
         drop(stdin);
     }
 
-    let wait = tokio::time::timeout(
-        timeout.unwrap_or(DEFAULT_TIMEOUT),
-        child.wait_with_output(),
-    );
+    let wait = tokio::time::timeout(timeout.unwrap_or(DEFAULT_TIMEOUT), child.wait_with_output());
     let out = match wait.await {
         Ok(Ok(o)) => o,
         Ok(Err(e)) => {

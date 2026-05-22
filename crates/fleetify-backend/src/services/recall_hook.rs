@@ -46,10 +46,9 @@ const TRIGGER_PHRASES: &[&str] = &[
 ];
 
 const STOPWORDS: &[&str] = &[
-    "the", "and", "for", "with", "this", "that", "from", "have", "what",
-    "when", "where", "why", "how", "did", "does", "are", "was", "were",
-    "you", "your", "into", "about", "than", "then", "them", "they",
-    "bir", "bu", "ne", "ben", "için", "ile", "ama", "ya", "da", "de",
+    "the", "and", "for", "with", "this", "that", "from", "have", "what", "when", "where", "why",
+    "how", "did", "does", "are", "was", "were", "you", "your", "into", "about", "than", "then",
+    "them", "they", "bir", "bu", "ne", "ben", "için", "ile", "ama", "ya", "da", "de",
 ];
 
 /// Path-like token check (filename with extension we care about).
@@ -57,8 +56,8 @@ fn has_path_token(text: &str) -> bool {
     // Look for ".<ext>" where <ext> is in the known set, then verify
     // the preceding token shape is path-like (alphanumeric + ._/- ).
     const EXTS: &[&str] = &[
-        ".py", ".ts", ".tsx", ".js", ".jsx", ".md", ".json", ".yaml",
-        ".yml", ".sh", ".html", ".css", ".sql", ".rs", ".go",
+        ".py", ".ts", ".tsx", ".js", ".jsx", ".md", ".json", ".yaml", ".yml", ".sh", ".html",
+        ".css", ".sql", ".rs", ".go",
     ];
     let lower = text.to_lowercase();
     for ext in EXTS {
@@ -91,11 +90,10 @@ pub fn has_recall_trigger(text: &str) -> bool {
         if lower.contains(p) {
             // Cheap word-boundary check on letters around the match.
             if let Some(pos) = lower.find(p) {
-                let before_ok = pos == 0
-                    || !lower.as_bytes()[pos - 1].is_ascii_alphanumeric();
+                let before_ok = pos == 0 || !lower.as_bytes()[pos - 1].is_ascii_alphanumeric();
                 let after = pos + p.len();
-                let after_ok = after == lower.len()
-                    || !lower.as_bytes()[after].is_ascii_alphanumeric();
+                let after_ok =
+                    after == lower.len() || !lower.as_bytes()[after].is_ascii_alphanumeric();
                 if before_ok && after_ok {
                     return true;
                 }
@@ -125,11 +123,7 @@ pub fn extract_keywords(text: &str) -> Vec<String> {
     out.truncate(8);
     out
 }
-fn push_token(
-    t: String,
-    out: &mut Vec<String>,
-    seen: &mut std::collections::HashSet<String>,
-) {
+fn push_token(t: String, out: &mut Vec<String>, seen: &mut std::collections::HashSet<String>) {
     if t.chars().count() < 4 {
         return;
     }
@@ -226,14 +220,17 @@ pub async fn maybe_build_recall_context(
     }
 
     let now = chrono::Utc::now();
-    let mut lines: Vec<String> = vec![
-        "[RECALL CONTEXT — prior work on this project that may be relevant]".to_string(),
-    ];
+    let mut lines: Vec<String> =
+        vec!["[RECALL CONTEXT — prior work on this project that may be relevant]".to_string()];
     if !mem_hits.is_empty() {
         lines.push("Memory items:".into());
         for m in &mem_hits {
             let ts_age = ago(parse_ts(&m.created_at), now);
-            let cross = if m.session_id == session_id { "" } else { " (other session)" };
+            let cross = if m.session_id == session_id {
+                ""
+            } else {
+                " (other session)"
+            };
             let snippet = {
                 let s = m.content.replace('\n', " ").trim().to_string();
                 if s.chars().count() > 200 {
@@ -334,9 +331,7 @@ mod tests {
 
     #[test]
     fn extract_keywords_caps_at_8() {
-        let k = extract_keywords(
-            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda",
-        );
+        let k = extract_keywords("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda");
         assert!(k.len() <= 8);
     }
 

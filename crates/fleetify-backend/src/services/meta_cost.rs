@@ -34,7 +34,7 @@ fn estimate_tokens(text: &str) -> i64 {
 /// the user-facing flow.
 pub async fn track_meta_call(
     pool: &SqlitePool,
-    kind: &str,                  // 'enricher' | 'planner' | 'expander' | 'summarizer' | 'dump'
+    kind: &str, // 'enricher' | 'planner' | 'expander' | 'summarizer' | 'dump'
     parent_session_id: &str,
     prompt_text: &str,
     output_text: &str,

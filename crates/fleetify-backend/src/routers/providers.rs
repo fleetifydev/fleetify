@@ -85,8 +85,8 @@ async fn check_codex_cli() -> Value {
     let Some(p) = cli_path("codex").await else {
         return json!({ "installed": false, "authenticated": false, "path": null });
     };
-    let authed = home().join(".codex/auth.json").exists()
-        || std::env::var("OPENAI_API_KEY").is_ok();
+    let authed =
+        home().join(".codex/auth.json").exists() || std::env::var("OPENAI_API_KEY").is_ok();
     json!({ "installed": true, "authenticated": authed, "path": p })
 }
 

@@ -20,9 +20,7 @@ pub fn router() -> Router<AppState> {
 
 fn container_id_re() -> &'static regex::Regex {
     static R: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    R.get_or_init(|| {
-        regex::Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._-]*$").expect("container_id_re")
-    })
+    R.get_or_init(|| regex::Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._-]*$").expect("container_id_re"))
 }
 
 #[derive(Deserialize)]
@@ -58,7 +56,11 @@ async fn run_docker(cmd: &[&str], timeout_secs: u64) -> (i32, String, String) {
     )
     .await;
     match wait {
-        Err(_) => (124, String::new(), "Timed out talking to the Docker daemon.".into()),
+        Err(_) => (
+            124,
+            String::new(),
+            "Timed out talking to the Docker daemon.".into(),
+        ),
         Ok(Err(e)) => (-1, String::new(), e.to_string()),
         Ok(Ok(o)) => (
             o.status.code().unwrap_or(0),
@@ -86,8 +88,7 @@ async fn containers() -> Result<Json<Value>, ApiError> {
     }
     let (rc, out, err) = run_docker(&["ps", "--format", "{{json .}}"], 6).await;
     if rc != 0 {
-        let short = last_line(&err)
-            .unwrap_or_else(|| format!("docker ps exited with code {rc}"));
+        let short = last_line(&err).unwrap_or_else(|| format!("docker ps exited with code {rc}"));
         return Err(ApiError::BadRequest(short));
     }
     let mut items: Vec<Value> = Vec::new();
@@ -134,14 +135,9 @@ async fn list_dir(Json(req): Json<ListDirReq>) -> Result<Json<Value>, ApiError> 
           printf '\\n'; \
         done"
     );
-    let (rc, out, err) = run_docker(
-        &["exec", &req.container_id, "sh", "-c", &script],
-        8,
-    )
-    .await;
+    let (rc, out, err) = run_docker(&["exec", &req.container_id, "sh", "-c", &script], 8).await;
     if rc != 0 {
-        let short = last_line(&err)
-            .unwrap_or_else(|| format!("docker exec exited with code {rc}"));
+        let short = last_line(&err).unwrap_or_else(|| format!("docker exec exited with code {rc}"));
         return Err(ApiError::BadRequest(short));
     }
     let mut entries: Vec<Value> = Vec::new();

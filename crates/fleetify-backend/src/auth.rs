@@ -68,7 +68,12 @@ impl AuthConfig {
         let jwks_url = format!("{auth_base}/jwks");
         let expected_audience = std::env::var("FLEETIFY_AUDIENCE")
             .unwrap_or_else(|_| "http://127.0.0.1:8765".to_string());
-        Self { issuer_origin: origin, auth_base, jwks_url, expected_audience }
+        Self {
+            issuer_origin: origin,
+            auth_base,
+            jwks_url,
+            expected_audience,
+        }
     }
 }
 
@@ -218,7 +223,10 @@ impl JwksCache {
                 },
                 // OKP = Ed25519 (better-auth's default). Dropping these
                 // historically made every Bearer fail kid lookup.
-                "OKP" => jwk.x.as_deref().and_then(|x| DecodingKey::from_ed_components(x).ok()),
+                "OKP" => jwk
+                    .x
+                    .as_deref()
+                    .and_then(|x| DecodingKey::from_ed_components(x).ok()),
                 _ => None,
             };
             if let Some(k) = key {
@@ -266,10 +274,7 @@ pub async fn validate_token(
     // algorithm-confusion mitigation, so we pass exactly the header alg —
     // which is consistent with the kid-selected JWKS key.
     let alg = header.alg;
-    if !matches!(
-        alg,
-        Algorithm::EdDSA | Algorithm::RS256 | Algorithm::ES256
-    ) {
+    if !matches!(alg, Algorithm::EdDSA | Algorithm::RS256 | Algorithm::ES256) {
         return Err(AuthError::Invalid(format!("Disallowed alg: {alg:?}")));
     }
     let mut v = Validation::new(alg);
@@ -293,20 +298,29 @@ pub async fn validate_token(
         .and_then(|v| v.as_str())
         .ok_or_else(|| AuthError::Invalid("missing sub".into()))?
         .to_string();
-    let email = claims.get("email").and_then(|v| v.as_str()).map(String::from);
-    let name = claims.get("name").and_then(|v| v.as_str()).map(String::from);
+    let email = claims
+        .get("email")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let name = claims
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(String::from);
 
-    Ok(Principal { sub, email, name, raw_claims: claims })
+    Ok(Principal {
+        sub,
+        email,
+        name,
+        raw_claims: claims,
+    })
 }
 
 // ── User JIT resolution (parity with _resolve_user) ─────────────────
 pub async fn resolve_user(principal: &Principal, pool: &SqlitePool) -> anyhow::Result<User> {
-    if let Some(mut user) = sqlx::query_as::<_, User>(
-        "SELECT * FROM users WHERE external_sub = ?",
-    )
-    .bind(&principal.sub)
-    .fetch_optional(pool)
-    .await?
+    if let Some(mut user) = sqlx::query_as::<_, User>("SELECT * FROM users WHERE external_sub = ?")
+        .bind(&principal.sub)
+        .fetch_optional(pool)
+        .await?
     {
         let mut changed = false;
         if let Some(e) = &principal.email {
@@ -369,16 +383,20 @@ pub async fn resolve_user(principal: &Principal, pool: &SqlitePool) -> anyhow::R
     .await;
 
     match insert {
-        Ok(_) => Ok(sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
-            .bind(&id)
-            .fetch_one(pool)
-            .await?),
+        Ok(_) => Ok(
+            sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
+                .bind(&id)
+                .fetch_one(pool)
+                .await?,
+        ),
         Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
             // Race: another request created it first.
-            Ok(sqlx::query_as::<_, User>("SELECT * FROM users WHERE external_sub = ?")
-                .bind(&principal.sub)
-                .fetch_one(pool)
-                .await?)
+            Ok(
+                sqlx::query_as::<_, User>("SELECT * FROM users WHERE external_sub = ?")
+                    .bind(&principal.sub)
+                    .fetch_one(pool)
+                    .await?,
+            )
         }
         Err(e) => Err(e.into()),
     }

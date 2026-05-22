@@ -12,11 +12,7 @@ use tokio::process::Command;
 /// 8s default timeout — matches the Electron `gitExec` cap.
 pub async fn run(bin: &str, args: &[&str], cwd: &Path, timeout: Duration) -> (i32, String, String) {
     let fut = async {
-        let out = Command::new(bin)
-            .args(args)
-            .current_dir(cwd)
-            .output()
-            .await;
+        let out = Command::new(bin).args(args).current_dir(cwd).output().await;
         match out {
             Ok(o) => (
                 o.status.code().unwrap_or(-1),
@@ -112,14 +108,20 @@ pub fn resolve_git() -> Option<std::path::PathBuf> {
         // Scoop — both the shim and the actual binary.
         if let Ok(home) = std::env::var("USERPROFILE") {
             list.push(PathBuf::from(format!(r"{home}\scoop\shims\git.exe")));
-            list.push(PathBuf::from(format!(r"{home}\scoop\apps\git\current\cmd\git.exe")));
-            list.push(PathBuf::from(format!(r"{home}\scoop\apps\git\current\bin\git.exe")));
+            list.push(PathBuf::from(format!(
+                r"{home}\scoop\apps\git\current\cmd\git.exe"
+            )));
+            list.push(PathBuf::from(format!(
+                r"{home}\scoop\apps\git\current\bin\git.exe"
+            )));
         }
         // Chocolatey — `choco install git` puts a shim in this dir.
         list.push(r"C:\ProgramData\chocolatey\bin\git.exe".into());
         // GitHub Desktop bundles its own git.
         if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            list.push(PathBuf::from(format!(r"{local}\GitHubDesktop\app-current\resources\app\git\cmd\git.exe")));
+            list.push(PathBuf::from(format!(
+                r"{local}\GitHubDesktop\app-current\resources\app\git\cmd\git.exe"
+            )));
         }
         list
     } else {
@@ -267,9 +269,11 @@ async fn gh(args: &[&str], cwd: &Path) -> (i32, String, String) {
     //   • OAuth picked  → keychain payload present → GH_TOKEN set → gh authed.
     //   • CLI picked    → no payload → no env var → gh uses its own auth.
     //   • Skip / unset  → same as CLI; mid-flow picker still pops on Create PR.
-    let token: Option<String> = crate::shell::github_link::get_link()
-        .await
-        .and_then(|l| l.get("access_token").and_then(|v| v.as_str()).map(String::from));
+    let token: Option<String> = crate::shell::github_link::get_link().await.and_then(|l| {
+        l.get("access_token")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+    });
 
     let mut cmd = tokio::process::Command::new(gh_bin());
     cmd.args(args).current_dir(cwd);
@@ -298,8 +302,11 @@ pub async fn get_context(folder: &Path) -> Value {
         return json!({ "error": "not a git repository" });
     }
     let branch = branch.trim();
-    let branch_v: Value =
-        if branch.is_empty() || branch == "HEAD" { Value::Null } else { json!(branch) };
+    let branch_v: Value = if branch.is_empty() || branch == "HEAD" {
+        Value::Null
+    } else {
+        json!(branch)
+    };
 
     let (rc_r, remote, _) = git(&["remote", "get-url", "origin"], folder).await;
     let remote_https = if rc_r == 0 {
@@ -313,8 +320,7 @@ pub async fn get_context(folder: &Path) -> Value {
 
     let (mut plus, mut minus) = (0i64, 0i64);
     if let Some(b) = &base {
-        let (rc_d, num, _) =
-            git(&["diff", "--numstat", &format!("{b}...HEAD")], folder).await;
+        let (rc_d, num, _) = git(&["diff", "--numstat", &format!("{b}...HEAD")], folder).await;
         if rc_d == 0 {
             for line in num.lines() {
                 let mut it = line.split_whitespace();
@@ -343,8 +349,7 @@ pub async fn has_gh_cli() -> Value {
         return json!({ "ok": false });
     }
     let bin = gh_bin();
-    let (rc_v, ver, _) =
-        run(&bin, &["--version"], &cwd, Duration::from_secs(5)).await;
+    let (rc_v, ver, _) = run(&bin, &["--version"], &cwd, Duration::from_secs(5)).await;
     if rc_v != 0 {
         return json!({ "ok": false });
     }
@@ -372,7 +377,11 @@ pub async fn has_gh_cli() -> Value {
 }
 
 pub async fn list_branches(folder: &Path) -> Value {
-    let (rc1, local, _) = git(&["for-each-ref", "--format=%(refname:short)", "refs/heads"], folder).await;
+    let (rc1, local, _) = git(
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+        folder,
+    )
+    .await;
     let (rc2, remote, _) = git(
         &["for-each-ref", "--format=%(refname:short)", "refs/remotes"],
         folder,
@@ -426,11 +435,7 @@ pub async fn push(folder: &Path) -> Value {
     }
 }
 
-pub async fn ensure_repo(
-    folder: &Path,
-    name: Option<&str>,
-    email: Option<&str>,
-) -> Value {
+pub async fn ensure_repo(folder: &Path, name: Option<&str>, email: Option<&str>) -> Value {
     let path = folder.to_string_lossy().to_string();
     // Delegate to fleet-backend's faithful auto-init (init -b main +
     // identity seed + .gitignore + initial commit).
@@ -535,10 +540,7 @@ fn with_fleetify_footer(body: &str) -> String {
 /// generic placeholder when gh isn't authed (`init` still needs SOME
 /// identity to commit).
 async fn resolve_git_identity(folder: &Path) -> (String, String) {
-    let fallback = (
-        "Fleet User".to_string(),
-        "fleet@fleetify.dev".to_string(),
-    );
+    let fallback = ("Fleet User".to_string(), "fleet@fleetify.dev".to_string());
     let (rc, out, _) = gh(&["api", "/user"], folder).await;
     if rc == 0 && !out.is_empty() {
         if let Ok(u) = serde_json::from_str::<Value>(out.trim()) {
@@ -554,7 +556,11 @@ async fn resolve_git_identity(folder: &Path) -> (String, String) {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| {
-                    if !login.is_empty() { login.clone() } else { fallback.0.clone() }
+                    if !login.is_empty() {
+                        login.clone()
+                    } else {
+                        fallback.0.clone()
+                    }
                 });
             let email = u
                 .get("email")
@@ -731,8 +737,7 @@ async fn ensure_repo_for_link(
         .await;
         if rc != 0 {
             // legacy fallback
-            let (rc2, _, err2) =
-                run("git", &["init"], folder, Duration::from_secs(15)).await;
+            let (rc2, _, err2) = run("git", &["init"], folder, Duration::from_secs(15)).await;
             if rc2 != 0 {
                 return Some(json!({
                     "ok": false, "code": "INIT_FAILED",
@@ -757,11 +762,7 @@ async fn ensure_repo_for_link(
         Duration::from_secs(5),
     )
     .await;
-    if name_rc != 0
-        || name_out.trim().is_empty()
-        || email_rc != 0
-        || email_out.trim().is_empty()
-    {
+    if name_rc != 0 || name_out.trim().is_empty() || email_rc != 0 || email_out.trim().is_empty() {
         let (ident_name, ident_email) = resolve_git_identity(folder).await;
         if name_rc != 0 || name_out.trim().is_empty() {
             let _ = run(
@@ -901,8 +902,7 @@ async fn ensure_repo_for_link(
     )
     .await;
     if !dirty_out.trim().is_empty() {
-        let (rc, _, err) =
-            run("git", &["add", "-A"], folder, Duration::from_secs(120)).await;
+        let (rc, _, err) = run("git", &["add", "-A"], folder, Duration::from_secs(120)).await;
         if rc != 0 {
             return Some(json!({
                 "ok": false, "code": "ADD_FAILED",
@@ -995,7 +995,15 @@ pub async fn create_pr_via_gh(
 
     // 1. git init (if needed) + write .gitignore template.
     let owns_repo = folder.join(".git").exists();
-    note("owns-repo", true, if owns_repo { "yes" } else { "no — will git init" });
+    note(
+        "owns-repo",
+        true,
+        if owns_repo {
+            "yes"
+        } else {
+            "no — will git init"
+        },
+    );
     if !owns_repo {
         let (rc, out, err) = run(
             "git",
@@ -1012,8 +1020,7 @@ pub async fn create_pr_via_gh(
         if rc != 0 {
             // Fall back to legacy `git init` for older versions that
             // don't support -b.
-            let (rc2, _, err2) =
-                run("git", &["init"], folder, Duration::from_secs(15)).await;
+            let (rc2, _, err2) = run("git", &["init"], folder, Duration::from_secs(15)).await;
             note("git init (legacy)", rc2 == 0, err2.trim());
             if rc2 != 0 {
                 return step_fail("git init", err2.trim(), &trace);
@@ -1060,8 +1067,7 @@ pub async fn create_pr_via_gh(
         Duration::from_secs(5),
     )
     .await;
-    if name_rc != 0 || name_out.trim().is_empty() || email_rc != 0 || email_out.trim().is_empty()
-    {
+    if name_rc != 0 || name_out.trim().is_empty() || email_rc != 0 || email_out.trim().is_empty() {
         let (ident_name, ident_email) = resolve_git_identity(folder).await;
         if name_rc != 0 || name_out.trim().is_empty() {
             let _ = run(
@@ -1094,7 +1100,11 @@ pub async fn create_pr_via_gh(
     )
     .await;
     let had_head = head_rc == 0;
-    note("rev-parse HEAD", true, if had_head { "exists" } else { "missing" });
+    note(
+        "rev-parse HEAD",
+        true,
+        if had_head { "exists" } else { "missing" },
+    );
     if !had_head {
         // Force HEAD onto refs/heads/main BEFORE the baseline commit.
         // Pre-existing `.git` folders inherit the user's
@@ -1143,8 +1153,7 @@ pub async fn create_pr_via_gh(
             if rc != 0 {
                 return step_fail(&format!("checkout -B {fb}"), err.trim(), &trace);
             }
-            let (rc, _, err) =
-                run("git", &["add", "-A"], folder, Duration::from_secs(120)).await;
+            let (rc, _, err) = run("git", &["add", "-A"], folder, Duration::from_secs(120)).await;
             note("git add -A (feature)", rc == 0, err.trim());
             let init_msg = with_fleetify_trailer("Initial commit");
             let (rc, _, err) = run(
@@ -1159,8 +1168,7 @@ pub async fn create_pr_via_gh(
                 return step_fail("initial commit", err.trim(), &trace);
             }
         } else {
-            let (_, _, _) =
-                run("git", &["add", "-A"], folder, Duration::from_secs(120)).await;
+            let (_, _, _) = run("git", &["add", "-A"], folder, Duration::from_secs(120)).await;
             let init_msg = with_fleetify_trailer("Initial commit");
             let (rc, _, err) = run(
                 "git",
@@ -1211,13 +1219,8 @@ pub async fn create_pr_via_gh(
     let is_dirty = !dirty_out.trim().is_empty();
     if is_dirty {
         let n = dirty_out.lines().count();
-        note(
-            "working tree dirty",
-            true,
-            &format!("{n} entries"),
-        );
-        let (rc, _, err) =
-            run("git", &["add", "-A"], folder, Duration::from_secs(120)).await;
+        note("working tree dirty", true, &format!("{n} entries"));
+        let (rc, _, err) = run("git", &["add", "-A"], folder, Duration::from_secs(120)).await;
         note("git add -A (pre-push)", rc == 0, err.trim());
         if rc != 0 {
             return step_fail("git add", err.trim(), &trace);
@@ -1268,7 +1271,11 @@ pub async fn create_pr_via_gh(
     note(
         "probe origin",
         has_remote,
-        if has_remote { probe_out.trim() } else { probe_err.trim() },
+        if has_remote {
+            probe_out.trim()
+        } else {
+            probe_err.trim()
+        },
     );
     if !has_remote {
         // Derive a repo name from the folder basename — clamp to a
@@ -1359,11 +1366,8 @@ pub async fn create_pr_via_gh(
     // create" recovery branch and return `existed:true` straight away.
     // The renderer's optimistic Merge flip handles the rest.
     {
-        let (rc_view, out_view, _) = gh(
-            &["pr", "view", "--json", "number,url,state"],
-            folder,
-        )
-        .await;
+        let (rc_view, out_view, _) =
+            gh(&["pr", "view", "--json", "number,url,state"], folder).await;
         if rc_view == 0 {
             if let Ok(v) = serde_json::from_str::<Value>(out_view.trim()) {
                 let num = v.get("number").and_then(|x| x.as_i64());
@@ -1565,11 +1569,16 @@ pub async fn get_pr_status(folder: &Path, pr_number: Option<u64>) -> Value {
             };
             let (rc_l, out_l, err_l) = gh(
                 &[
-                    "pr", "list",
-                    "--head", &branch,
-                    "--state", "all",
-                    "--limit", "10",
-                    "--json", "number,state",
+                    "pr",
+                    "list",
+                    "--head",
+                    &branch,
+                    "--state",
+                    "all",
+                    "--limit",
+                    "10",
+                    "--json",
+                    "number,state",
                 ],
                 folder,
             )
@@ -1703,11 +1712,7 @@ pub async fn merge_pr(folder: &Path, pr_number: u64, method: &str) -> Value {
         _ => "--merge",
     };
     let n = pr_number.to_string();
-    let (rc, _o, err) = gh(
-        &["pr", "merge", &n, flag, "--delete-branch"],
-        folder,
-    )
-    .await;
+    let (rc, _o, err) = gh(&["pr", "merge", &n, flag, "--delete-branch"], folder).await;
     if rc == 0 {
         json!({ "ok": true })
     } else {
@@ -1728,15 +1733,16 @@ async fn detect_default_branch(folder: &Path) -> Option<String> {
     //    UI / Create-PR / branch carve all converge on the chosen base
     //    without touching the actual remote `HEAD` ref or collaborators'
     //    clones. Only honour it when the branch still exists locally.
-    let (rc, out, _) = git(
-        &["config", "--get", "fleetify.baseBranch"],
-        folder,
-    )
-    .await;
+    let (rc, out, _) = git(&["config", "--get", "fleetify.baseBranch"], folder).await;
     if rc == 0 && !out.trim().is_empty() {
         let candidate = out.trim().to_string();
         let (rc_v, _, _) = git(
-            &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{candidate}")],
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{candidate}"),
+            ],
             folder,
         )
         .await;
@@ -1752,12 +1758,21 @@ async fn detect_default_branch(folder: &Path) -> Option<String> {
     .await;
     if rc == 0 && !out.trim().is_empty() {
         let v = out.trim();
-        return Some(v.split_once('/').map(|(_, b)| b.to_string()).unwrap_or_else(|| v.to_string()));
+        return Some(
+            v.split_once('/')
+                .map(|(_, b)| b.to_string())
+                .unwrap_or_else(|| v.to_string()),
+        );
     }
     // 3. Local fallbacks.
     for c in ["main", "master"] {
         let (rc2, _, _) = git(
-            &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{c}")],
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{c}"),
+            ],
             folder,
         )
         .await;
@@ -1806,7 +1821,12 @@ pub async fn set_base_branch(folder: &Path, new_branch: &str) -> Value {
     }
 
     let (rc_exists, _, _) = git(
-        &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{trimmed}")],
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{trimmed}"),
+        ],
         folder,
     )
     .await;
@@ -1814,7 +1834,9 @@ pub async fn set_base_branch(folder: &Path, new_branch: &str) -> Value {
         // Carve from the currently-detected base, or HEAD as a last
         // resort. Falling back to HEAD covers the "fresh init, no remote,
         // no main yet" case — gives the user *something* to branch off.
-        let from = detect_default_branch(folder).await.unwrap_or_else(|| "HEAD".to_string());
+        let from = detect_default_branch(folder)
+            .await
+            .unwrap_or_else(|| "HEAD".to_string());
         let (rc, _, err) = git(&["branch", trimmed, &from], folder).await;
         if rc != 0 {
             return json!({
@@ -1823,11 +1845,7 @@ pub async fn set_base_branch(folder: &Path, new_branch: &str) -> Value {
             });
         }
     }
-    let (rc_cfg, _, err) = git(
-        &["config", "fleetify.baseBranch", trimmed],
-        folder,
-    )
-    .await;
+    let (rc_cfg, _, err) = git(&["config", "fleetify.baseBranch", trimmed], folder).await;
     if rc_cfg != 0 {
         return json!({
             "ok": false,
@@ -1841,7 +1859,9 @@ pub async fn set_base_branch(folder: &Path, new_branch: &str) -> Value {
 /// (parity with main.cjs's syncMain — refreshes the local base branch
 /// without leaving the user stranded on it).
 pub async fn sync_main(folder: &Path, base: &str) -> Value {
-    let prev = current_branch_str(folder).await.unwrap_or_else(|| "HEAD".to_string());
+    let prev = current_branch_str(folder)
+        .await
+        .unwrap_or_else(|| "HEAD".to_string());
     let (rcf, _o, errf) = git(&["fetch", "origin"], folder).await;
     if rcf != 0 {
         return json!({ "ok": false, "error": format!("fetch: {}", errf.trim()) });
@@ -1875,7 +1895,12 @@ pub async fn carve_next_round(folder: &Path, branch: &str, base: &str) -> Value 
     // fall back to local <base>.
     let _ = git(&["fetch", "origin", base], folder).await;
     let (rc_ref, _, _) = git(
-        &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{base}")],
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/origin/{base}"),
+        ],
         folder,
     )
     .await;
@@ -1886,8 +1911,7 @@ pub async fn carve_next_round(folder: &Path, branch: &str, base: &str) -> Value 
         base.to_string()
     };
 
-    let (rc, _o, err) =
-        git(&["checkout", "--no-track", "-b", branch, &from], folder).await;
+    let (rc, _o, err) = git(&["checkout", "--no-track", "-b", branch, &from], folder).await;
     if rc == 0 {
         json!({
             "ok": true,
@@ -1956,7 +1980,11 @@ pub async fn preflight_check(folder: &Path) -> Value {
 async fn current_branch_str(folder: &Path) -> Option<String> {
     let (rc, out, _) = git(&["rev-parse", "--abbrev-ref", "HEAD"], folder).await;
     let v = out.trim().to_string();
-    if rc != 0 || v.is_empty() || v == "HEAD" { None } else { Some(v) }
+    if rc != 0 || v.is_empty() || v == "HEAD" {
+        None
+    } else {
+        Some(v)
+    }
 }
 
 /// `git@github.com:foo/bar.git` → `https://github.com/foo/bar.git` (parity
@@ -2054,11 +2082,7 @@ mod tests {
         }
         let tmp = tempfile::tempdir().unwrap();
         // Skip if ancestor repo would mask our state.
-        if fleetify_backend::services::worktree::is_git_repo(
-            &tmp.path().to_string_lossy(),
-        )
-        .await
-        {
+        if fleetify_backend::services::worktree::is_git_repo(&tmp.path().to_string_lossy()).await {
             return;
         }
         let _ = git(&["init", "-b", "main"], tmp.path()).await;
@@ -2083,7 +2107,10 @@ mod tests {
         let v = carve_next_round(tmp.path(), "fleet/x-y", "main").await;
         assert_eq!(v["ok"], true);
         assert_eq!(v["branch"], "fleet/x-y");
-        assert_eq!(current_branch_str(tmp.path()).await.as_deref(), Some("fleet/x-y"));
+        assert_eq!(
+            current_branch_str(tmp.path()).await.as_deref(),
+            Some("fleet/x-y")
+        );
     }
 
     #[tokio::test]

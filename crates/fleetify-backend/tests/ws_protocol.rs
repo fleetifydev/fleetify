@@ -19,7 +19,10 @@ use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::Message as Frame;
 
 fn now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
 }
 
 #[tokio::test]
@@ -83,11 +86,10 @@ async fn ws_sessions_subscribe_and_ping() {
     let sid = s["id"].as_str().unwrap().to_string();
 
     // Connect WS with the bearer in the query.
-    let (mut ws, _) = tokio_tungstenite::connect_async(format!(
-        "{ws_base}/ws/sessions?token={token}"
-    ))
-    .await
-    .expect("ws connect");
+    let (mut ws, _) =
+        tokio_tungstenite::connect_async(format!("{ws_base}/ws/sessions?token={token}"))
+            .await
+            .expect("ws connect");
 
     // ping → pong
     ws.send(Frame::Text(json!({"type":"ping"}).to_string().into()))
@@ -98,7 +100,9 @@ async fn ws_sessions_subscribe_and_ping() {
 
     // subscribe owned → init
     ws.send(Frame::Text(
-        json!({"type":"subscribe","session_ids":[sid]}).to_string().into(),
+        json!({"type":"subscribe","session_ids":[sid]})
+            .to_string()
+            .into(),
     ))
     .await
     .unwrap();
@@ -131,9 +135,7 @@ where
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(500), ws.next()).await {
-            Ok(Some(Ok(Frame::Text(t)))) => {
-                return serde_json::from_str(t.as_str()).expect("json")
-            }
+            Ok(Some(Ok(Frame::Text(t)))) => return serde_json::from_str(t.as_str()).expect("json"),
             Ok(Some(Ok(_))) => continue,
             Ok(Some(Err(e))) => panic!("ws err: {e}"),
             Ok(None) => panic!("ws closed early"),

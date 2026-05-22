@@ -47,7 +47,10 @@ pub async fn run() {
                     Err(e) => {
                         let m = e.to_string().to_lowercase();
                         if m.contains("no refresh token") || m.contains("invalid_grant") {
-                            (401, serde_json::json!({"error":"not-signed-in"}).to_string())
+                            (
+                                401,
+                                serde_json::json!({"error":"not-signed-in"}).to_string(),
+                            )
                         } else {
                             (
                                 503,

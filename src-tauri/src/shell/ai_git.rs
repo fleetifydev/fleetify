@@ -160,18 +160,22 @@ pub async fn generate_commit_message(
     let context = if is_initial {
         let (ls_ok, ls_out) =
             git_out(&path, &["ls-files", "--cached"], Duration::from_secs(5)).await;
-        let (st_ok, st_out) =
-            git_out(&path, &["diff", "--cached", "--shortstat"], Duration::from_secs(5)).await;
+        let (st_ok, st_out) = git_out(
+            &path,
+            &["diff", "--cached", "--shortstat"],
+            Duration::from_secs(5),
+        )
+        .await;
         let files = if ls_ok {
-            ls_out
-                .lines()
-                .take(80)
-                .collect::<Vec<_>>()
-                .join("\n")
+            ls_out.lines().take(80).collect::<Vec<_>>().join("\n")
         } else {
             String::new()
         };
-        let files_block = if files.is_empty() { "(empty)".to_string() } else { files };
+        let files_block = if files.is_empty() {
+            "(empty)".to_string()
+        } else {
+            files
+        };
         format!(
             "# Files in initial commit\n{files_block}\n\n# Shortstat\n{}",
             if st_ok { st_out } else { String::new() }
@@ -350,8 +354,7 @@ pub async fn review_diff(
         Duration::from_secs(8),
     )
     .await;
-    let (wd_ok, wd_out) =
-        git_out(&path, &["diff", "--unified=3"], Duration::from_secs(8)).await;
+    let (wd_ok, wd_out) = git_out(&path, &["diff", "--unified=3"], Duration::from_secs(8)).await;
     let (st_ok, st_out) = git_out(
         &path,
         &["diff", "--shortstat", &range],
@@ -449,10 +452,18 @@ pub async fn diagnose_failure(
     }
     let base = base_branch.unwrap_or_else(|| "main".to_string());
     let path = PathBuf::from(&folder);
-    let (br_ok, br_out) =
-        git_out(&path, &["rev-parse", "--abbrev-ref", "HEAD"], Duration::from_secs(5)).await;
-    let (st_ok, st_out) =
-        git_out(&path, &["status", "--porcelain", "-b"], Duration::from_secs(5)).await;
+    let (br_ok, br_out) = git_out(
+        &path,
+        &["rev-parse", "--abbrev-ref", "HEAD"],
+        Duration::from_secs(5),
+    )
+    .await;
+    let (st_ok, st_out) = git_out(
+        &path,
+        &["status", "--porcelain", "-b"],
+        Duration::from_secs(5),
+    )
+    .await;
     let (lg_ok, lg_out) = git_out(
         &path,
         &["log", "--oneline", "--no-decorate", "-n", "5"],
@@ -518,9 +529,7 @@ current branch: {}\n\n\
     }
     let parsed: Value = match serde_json::from_str(&s) {
         Ok(v) => v,
-        Err(_) => {
-            return json!({ "ok": false, "error": format!("{cli} output wasn't valid JSON") })
-        }
+        Err(_) => return json!({ "ok": false, "error": format!("{cli} output wasn't valid JSON") }),
     };
     let summary = match parsed.get("summary").and_then(|v| v.as_str()) {
         Some(s) if !s.is_empty() => s.chars().take(500).collect::<String>(),
@@ -549,10 +558,8 @@ current branch: {}\n\n\
             .as_deref()
             .map(|c| c.split_whitespace().next().unwrap_or(""))
             .unwrap_or("");
-        let bin_ok = !first_tok.is_empty()
-            && RECOVERY_BINARIES.contains(&first_tok);
-        let valid = bin_ok
-            && !has_shell_meta(command.as_deref().unwrap_or(""));
+        let bin_ok = !first_tok.is_empty() && RECOVERY_BINARIES.contains(&first_tok);
+        let valid = bin_ok && !has_shell_meta(command.as_deref().unwrap_or(""));
         if !valid {
             action = "manual".to_string();
             command = None;

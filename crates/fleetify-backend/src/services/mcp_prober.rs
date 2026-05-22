@@ -82,10 +82,7 @@ pub async fn probe(name: &str, config: &Value) -> ProbeResult {
 }
 
 async fn probe_stdio(name: &str, config: &Value) -> ProbeResult {
-    let command = config
-        .get("command")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let command = config.get("command").and_then(|v| v.as_str()).unwrap_or("");
     if command.is_empty() {
         return ProbeResult {
             name: name.into(),
@@ -247,10 +244,9 @@ async fn handshake_and_list_tools(
         }),
     )
     .await?;
-    let list_resp =
-        tokio::time::timeout(TOOLS_LIST_TIMEOUT, read_next_response(&mut reader, 2))
-            .await
-            .map_err(|_| anyhow!("tools/list timed out"))??;
+    let list_resp = tokio::time::timeout(TOOLS_LIST_TIMEOUT, read_next_response(&mut reader, 2))
+        .await
+        .map_err(|_| anyhow!("tools/list timed out"))??;
     if let Some(err) = list_resp.get("error") {
         return Err(anyhow!(
             "tools/list returned error: {}",

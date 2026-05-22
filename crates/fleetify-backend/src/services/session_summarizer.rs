@@ -72,11 +72,10 @@ pub async fn maybe_distill_session(
 
     // Qualification: enough turns + enough tool events + not already
     // distilled (≥5 agent-created memory items).
-    let (msg_count,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM messages WHERE session_id = ?")
-            .bind(session_id)
-            .fetch_one(pool)
-            .await?;
+    let (msg_count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages WHERE session_id = ?")
+        .bind(session_id)
+        .fetch_one(pool)
+        .await?;
     if msg_count < MIN_TURNS_TO_DISTILL {
         return Ok(0);
     }
@@ -148,7 +147,10 @@ pub async fn maybe_distill_session(
 
     // Mark cooldown BEFORE the LLM call so a slow concurrent trigger
     // doesn't double-fire on the same content.
-    last_distill().lock().unwrap().insert(session_id.to_string(), now);
+    last_distill()
+        .lock()
+        .unwrap()
+        .insert(session_id.to_string(), now);
 
     let user_prompt = format!(
         "Distill the following session transcript into long-term memory items. Return the JSON object:\n\n{}",
@@ -272,7 +274,10 @@ mod tests {
 
         let sid = "test-session-cooldown";
         // Prime the cooldown timestamp directly so the gate fires.
-        last_distill().lock().unwrap().insert(sid.into(), Instant::now());
+        last_distill()
+            .lock()
+            .unwrap()
+            .insert(sid.into(), Instant::now());
         let saved = maybe_distill_session(&pool, sid, None).await.unwrap();
         assert_eq!(saved, 0);
     }

@@ -74,7 +74,12 @@ impl SessionManager {
     }
 
     pub fn register_ws(&self, session_id: &str) {
-        *self.ws.lock().unwrap().entry(session_id.to_string()).or_insert(0) += 1;
+        *self
+            .ws
+            .lock()
+            .unwrap()
+            .entry(session_id.to_string())
+            .or_insert(0) += 1;
     }
     pub fn unregister_ws(&self, session_id: &str) {
         let mut m = self.ws.lock().unwrap();
@@ -90,10 +95,7 @@ impl SessionManager {
     /// returned receiver yields every `Value` published via
     /// `send_to_session_ws` for the same id. Idempotent + safe to
     /// call many times — each subscriber gets its own receiver.
-    pub fn subscribe_session(
-        &self,
-        session_id: &str,
-    ) -> broadcast::Receiver<serde_json::Value> {
+    pub fn subscribe_session(&self, session_id: &str) -> broadcast::Receiver<serde_json::Value> {
         let mut map = self.session_tx.lock().unwrap();
         let tx = map.entry(session_id.to_string()).or_insert_with(|| {
             // 256 buffered messages — comfortably above the burst a
@@ -131,10 +133,7 @@ impl SessionManager {
     }
 
     pub fn clear_dispatch_chain(&self, session_id: &str) {
-        self.dispatch_chains
-            .lock()
-            .unwrap()
-            .remove(session_id);
+        self.dispatch_chains.lock().unwrap().remove(session_id);
     }
 
     /// Publish a JSON payload to every subscriber of `session_id`. Used by
@@ -203,13 +202,8 @@ impl SessionManager {
             session.title.clone()
         };
         if session.use_worktree {
-            match worktree::ensure_worktree(
-                &session.project_path,
-                &session.id,
-                Some(&label),
-                None,
-            )
-            .await
+            match worktree::ensure_worktree(&session.project_path, &session.id, Some(&label), None)
+                .await
             {
                 Ok((path, branch)) => {
                     let _ = sqlx::query(
@@ -237,13 +231,11 @@ impl SessionManager {
             .await
             {
                 Ok(branch) => {
-                    let _ = sqlx::query(
-                        "UPDATE sessions SET worktree_branch = ? WHERE id = ?",
-                    )
-                    .bind(&branch)
-                    .bind(&session.id)
-                    .execute(pool)
-                    .await;
+                    let _ = sqlx::query("UPDATE sessions SET worktree_branch = ? WHERE id = ?")
+                        .bind(&branch)
+                        .bind(&session.id)
+                        .execute(pool)
+                        .await;
                     tracing::info!(session_id=%session.id, %branch,
                         "session.branch.attached");
                 }
@@ -262,12 +254,8 @@ impl SessionManager {
         let sid = session_id.to_string();
         let st = status.to_string();
         tokio::spawn(async move {
-            let _ = crate::services::telemetry::emit_status_change(
-                &sid,
-                &st,
-                chrono::Utc::now(),
-            )
-            .await;
+            let _ =
+                crate::services::telemetry::emit_status_change(&sid, &st, chrono::Utc::now()).await;
         });
     }
 

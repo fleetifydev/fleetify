@@ -196,7 +196,9 @@ mod tests {
     async fn bump_attempt_increments_per_event() {
         ensure_inited().await;
         let _ = reset().await;
-        enqueue("evt-x", &json!({ "kind": "heartbeat" })).await.unwrap();
+        enqueue("evt-x", &json!({ "kind": "heartbeat" }))
+            .await
+            .unwrap();
         let a = bump_attempt("evt-x").await.unwrap();
         let b = bump_attempt("evt-x").await.unwrap();
         assert_eq!(a, 1);

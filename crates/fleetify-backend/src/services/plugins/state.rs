@@ -93,10 +93,7 @@ pub fn save(doc: &StateDoc) -> std::io::Result<()> {
 }
 
 pub fn get(install_id: &str) -> PluginState {
-    load()
-        .plugins
-        .remove(install_id)
-        .unwrap_or_default()
+    load().plugins.remove(install_id).unwrap_or_default()
 }
 
 pub fn set_master_enabled(install_id: &str, enabled: bool) -> std::io::Result<()> {
@@ -200,11 +197,7 @@ mod tests {
             upsert_scope("p", "session", Some("s1"), false).unwrap();
             let s = get("p");
             assert_eq!(s.scopes.len(), 2);
-            let sess = s
-                .scopes
-                .iter()
-                .find(|x| x.scope_type == "session")
-                .unwrap();
+            let sess = s.scopes.iter().find(|x| x.scope_type == "session").unwrap();
             assert!(!sess.enabled);
             remove_scope("p", "session", Some("s1")).unwrap();
             let s = get("p");

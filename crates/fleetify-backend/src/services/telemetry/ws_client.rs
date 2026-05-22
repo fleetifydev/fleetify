@@ -54,9 +54,8 @@ fn ws_url() -> String {
 /// provides a callback that returns the current Fleetify access token
 /// (or None if the user isn't signed in).
 pub type BearerSource = Arc<
-    dyn Fn() -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Option<String>> + Send>,
-        > + Send
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>>
+        + Send
         + Sync,
 >;
 
@@ -129,7 +128,8 @@ async fn one_connection_attempt(bearer_source: &BearerSource) -> Result<()> {
     // subprotocol header. tokio-tungstenite accepts an `http::Request`
     // and runs the upgrade against it.
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-    let mut req = url.into_client_request()
+    let mut req = url
+        .into_client_request()
         .map_err(|e| anyhow!("ws request build failed: {e}"))?;
     req.headers_mut().insert(
         "Sec-WebSocket-Protocol",
@@ -297,8 +297,12 @@ async fn fetch_ticket(bearer: &str, device_id: &str) -> Result<String> {
             truncate(&body_text, 500)
         ));
     }
-    let body: Value = serde_json::from_str(&body_text)
-        .map_err(|e| anyhow!("ticket response decode failed: {e}; raw={}", truncate(&body_text, 500)))?;
+    let body: Value = serde_json::from_str(&body_text).map_err(|e| {
+        anyhow!(
+            "ticket response decode failed: {e}; raw={}",
+            truncate(&body_text, 500)
+        )
+    })?;
     body.get("ticket")
         .and_then(|v| v.as_str())
         .map(String::from)
@@ -313,7 +317,14 @@ fn redact_token(s: &str) -> String {
         return "<short>".into();
     }
     let head: String = s.chars().take(8).collect();
-    let tail: String = s.chars().rev().take(4).collect::<String>().chars().rev().collect();
+    let tail: String = s
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
     format!("{head}…{tail}")
 }
 

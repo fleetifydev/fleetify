@@ -14,7 +14,10 @@ use crate::routers::{ApiError, AppState};
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/marketplace/sources", get(sources).post(add_source))
-        .route("/marketplace/sources/{id}", axum::routing::delete(delete_source))
+        .route(
+            "/marketplace/sources/{id}",
+            axum::routing::delete(delete_source),
+        )
         .route("/marketplace/sources/{id}", patch(patch_source))
         .route("/marketplace/sources/{id}/refresh", post(refresh_source))
         .route("/marketplace/plugins", get(catalog_plugins))
@@ -39,10 +42,7 @@ const OFFICIAL_SOURCE_DESC: &str = "Curated plugins by the Fleetify team.";
 /// Seed the Fleetify Official marketplace for `user_id` if it isn't
 /// present. Adopts a stale row pre-marked is_official=false. Faithful
 /// with the Python `ensure_official_source`.
-async fn ensure_official_source(
-    pool: &sqlx::SqlitePool,
-    user_id: &str,
-) -> Result<(), sqlx::Error> {
+async fn ensure_official_source(pool: &sqlx::SqlitePool, user_id: &str) -> Result<(), sqlx::Error> {
     let existing: Option<(String, i64)> = sqlx::query_as(
         "SELECT id, is_official FROM marketplace_sources \
          WHERE user_id = ? AND repo_url = ?",
@@ -215,14 +215,12 @@ async fn patch_source(
             .await?;
     }
     if let Some(desc) = body.description {
-        sqlx::query(
-            "UPDATE marketplace_sources SET description = ? WHERE id = ? AND user_id = ?",
-        )
-        .bind(desc)
-        .bind(&id)
-        .bind(&user.id)
-        .execute(&st.auth.pool)
-        .await?;
+        sqlx::query("UPDATE marketplace_sources SET description = ? WHERE id = ? AND user_id = ?")
+            .bind(desc)
+            .bind(&id)
+            .bind(&user.id)
+            .execute(&st.auth.pool)
+            .await?;
     }
     if let Some(enabled) = body.enabled {
         sqlx::query("UPDATE marketplace_sources SET enabled = ? WHERE id = ? AND user_id = ?")
@@ -244,13 +242,12 @@ async fn refresh_source(
     // single-plugin manifest) via raw.githubusercontent.com. Caller
     // doesn't see the resulting listings here — they pull them via
     // /marketplace/plugins (which also reads the same 1h disk cache).
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT repo_url FROM marketplace_sources WHERE id = ? AND user_id = ?",
-    )
-    .bind(&id)
-    .bind(&user.id)
-    .fetch_optional(&st.auth.pool)
-    .await?;
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT repo_url FROM marketplace_sources WHERE id = ? AND user_id = ?")
+            .bind(&id)
+            .bind(&user.id)
+            .fetch_optional(&st.auth.pool)
+            .await?;
     let Some((repo_url,)) = row else {
         return Err(ApiError::NotFound(format!("source {id} not found")));
     };
@@ -336,13 +333,12 @@ async fn catalog_plugin_detail(
     AuthUser(user): AuthUser,
     Path((source_id, plugin_path)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT repo_url FROM marketplace_sources WHERE id = ? AND user_id = ?",
-    )
-    .bind(&source_id)
-    .bind(&user.id)
-    .fetch_optional(&st.auth.pool)
-    .await?;
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT repo_url FROM marketplace_sources WHERE id = ? AND user_id = ?")
+            .bind(&source_id)
+            .bind(&user.id)
+            .fetch_optional(&st.auth.pool)
+            .await?;
     let Some((repo_url,)) = row else {
         return Err(ApiError::NotFound(format!("source {source_id} not found")));
     };

@@ -135,11 +135,7 @@ pub async fn emit_cost(
     .await
 }
 
-pub async fn emit_status_change(
-    session_id: &str,
-    status: &str,
-    when: DateTime<Utc>,
-) -> Result<()> {
+pub async fn emit_status_change(session_id: &str, status: &str, when: DateTime<Utc>) -> Result<()> {
     enqueue_payload(json!({
         "kind": "status_change",
         "local_session_id": session_id,

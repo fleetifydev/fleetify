@@ -37,11 +37,7 @@ fn fallback_store() -> &'static Mutex<HashMap<String, String>> {
 
 /// Read the stored secret for an MCP server, if any.
 pub fn get(server_name: &str) -> Option<McpSecret> {
-    let raw = fallback_store()
-        .lock()
-        .ok()?
-        .get(server_name)
-        .cloned()?;
+    let raw = fallback_store().lock().ok()?.get(server_name).cloned()?;
     serde_json::from_str(&raw).ok()
 }
 
@@ -70,7 +66,11 @@ pub fn list() -> Vec<(String, McpSecret)> {
         return Vec::new();
     };
     g.iter()
-        .filter_map(|(k, v)| serde_json::from_str::<McpSecret>(v).ok().map(|s| (k.clone(), s)))
+        .filter_map(|(k, v)| {
+            serde_json::from_str::<McpSecret>(v)
+                .ok()
+                .map(|s| (k.clone(), s))
+        })
         .collect()
 }
 
@@ -110,8 +110,14 @@ mod tests {
         };
         set("test-mcp-extra", &s).unwrap();
         let got = get("test-mcp-extra").unwrap();
-        assert_eq!(got.extra.get("token_type"), Some(&serde_json::json!("Bearer")));
-        assert_eq!(got.extra.get("scope"), Some(&serde_json::json!("read:user")));
+        assert_eq!(
+            got.extra.get("token_type"),
+            Some(&serde_json::json!("Bearer"))
+        );
+        assert_eq!(
+            got.extra.get("scope"),
+            Some(&serde_json::json!("read:user"))
+        );
         delete("test-mcp-extra");
     }
 
@@ -136,8 +142,7 @@ mod tests {
         )
         .unwrap();
         let all = list();
-        let names: std::collections::HashSet<&str> =
-            all.iter().map(|(n, _)| n.as_str()).collect();
+        let names: std::collections::HashSet<&str> = all.iter().map(|(n, _)| n.as_str()).collect();
         assert!(names.contains("test-list-a"));
         assert!(names.contains("test-list-b"));
         delete("test-list-a");

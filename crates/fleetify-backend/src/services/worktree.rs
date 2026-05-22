@@ -25,7 +25,11 @@ fn slug(value: &str) -> String {
     let cleaned = branch_safe().replace_all(value, "-");
     let trimmed = cleaned.trim_matches(|c| c == '-' || c == '/');
     let s: String = trimmed.chars().take(48).collect();
-    if s.is_empty() { "session".into() } else { s }
+    if s.is_empty() {
+        "session".into()
+    } else {
+        s
+    }
 }
 
 pub fn compute_branch_name(label: Option<&str>, session_id: &str) -> String {
@@ -34,7 +38,11 @@ pub fn compute_branch_name(label: Option<&str>, session_id: &str) -> String {
 }
 
 async fn git(args: &[&str], cwd: &str) -> (i32, String, String) {
-    let out = Command::new("git").args(args).current_dir(cwd).output().await;
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .await;
     match out {
         Ok(o) => (
             o.status.code().unwrap_or(-1),
@@ -65,7 +73,11 @@ pub fn has_own_git(path: &str) -> bool {
 
 async fn current_branch(path: &str) -> Option<String> {
     let (rc, out, _) = git(&["rev-parse", "--abbrev-ref", "HEAD"], path).await;
-    if rc != 0 || out.is_empty() || out == "HEAD" { None } else { Some(out) }
+    if rc != 0 || out.is_empty() || out == "HEAD" {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 async fn detect_default_branch(path: &str) -> Option<String> {
@@ -75,11 +87,20 @@ async fn detect_default_branch(path: &str) -> Option<String> {
     )
     .await;
     if rc == 0 && !out.is_empty() {
-        return Some(out.split_once('/').map(|(_, b)| b.to_string()).unwrap_or(out));
+        return Some(
+            out.split_once('/')
+                .map(|(_, b)| b.to_string())
+                .unwrap_or(out),
+        );
     }
     for c in ["main", "master"] {
         let (rc2, _, _) = git(
-            &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{c}")],
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{c}"),
+            ],
             path,
         )
         .await;
@@ -102,12 +123,18 @@ const JAVA: &str = "\n# Java / JVM\n*.class\ntarget/\nbuild/\n.gradle/\n*.jar\n*
 fn detect_kinds(folder: &Path) -> HashSet<&'static str> {
     let mut k = HashSet::new();
     let has = |p: &str| folder.join(p).exists();
-    if has("package.json") { k.insert("node"); }
+    if has("package.json") {
+        k.insert("node");
+    }
     if has("pyproject.toml") || has("requirements.txt") || has("setup.py") || has("setup.cfg") {
         k.insert("python");
     }
-    if has("Cargo.toml") { k.insert("rust"); }
-    if has("go.mod") { k.insert("go"); }
+    if has("Cargo.toml") {
+        k.insert("rust");
+    }
+    if has("go.mod") {
+        k.insert("go");
+    }
     if has("pom.xml") || has("build.gradle") || has("build.gradle.kts") {
         k.insert("java");
     }
@@ -117,9 +144,13 @@ fn detect_kinds(folder: &Path) -> HashSet<&'static str> {
 pub fn gitignore_content(folder: &Path) -> String {
     let k = detect_kinds(folder);
     let mut s = String::from(BASE);
-    for (name, pack) in
-        [("node", NODE), ("python", PYTHON), ("rust", RUST), ("go", GO), ("java", JAVA)]
-    {
+    for (name, pack) in [
+        ("node", NODE),
+        ("python", PYTHON),
+        ("rust", RUST),
+        ("go", GO),
+        ("java", JAVA),
+    ] {
         if k.contains(name) {
             s.push_str(pack);
         }
@@ -140,7 +171,9 @@ fn ensure_worktrees_ignored(folder: &Path) {
     if !gi.exists() {
         return;
     }
-    let Ok(existing) = std::fs::read_to_string(&gi) else { return };
+    let Ok(existing) = std::fs::read_to_string(&gi) else {
+        return;
+    };
     let target = WORKTREES_DIRNAME.trim_end_matches('/');
     for line in existing.lines() {
         let stripped = line.trim().trim_end_matches('/');
@@ -148,7 +181,11 @@ fn ensure_worktrees_ignored(folder: &Path) {
             return;
         }
     }
-    let mut body = if existing.ends_with('\n') { existing } else { existing + "\n" };
+    let mut body = if existing.ends_with('\n') {
+        existing
+    } else {
+        existing + "\n"
+    };
     body.push_str(&format!("\n# Fleetify\n{WORKTREES_DIRNAME}/\n"));
     let _ = std::fs::write(&gi, body);
 }
@@ -171,8 +208,7 @@ pub async fn ensure_git_repo(project_path: &str) -> bool {
         if rc2 != 0 {
             return false;
         }
-        let (rc_b, branch_out, _) =
-            git(&["symbolic-ref", "--short", "HEAD"], project_path).await;
+        let (rc_b, branch_out, _) = git(&["symbolic-ref", "--short", "HEAD"], project_path).await;
         if rc_b == 0 && !branch_out.is_empty() && branch_out != "main" {
             let _ = git(&["branch", "-m", &branch_out, "main"], project_path).await;
         }
@@ -184,7 +220,11 @@ pub async fn ensure_git_repo(project_path: &str) -> bool {
     }
     let (rc_e, email_out, _) = git(&["config", "--get", "user.email"], project_path).await;
     if rc_e != 0 || email_out.is_empty() {
-        let _ = git(&["config", "user.email", "fleet@fleetify.dev"], project_path).await;
+        let _ = git(
+            &["config", "user.email", "fleet@fleetify.dev"],
+            project_path,
+        )
+        .await;
     }
     ensure_gitignore_initial(Path::new(project_path));
     let _ = git(&["add", "."], project_path).await;
@@ -239,12 +279,15 @@ pub async fn ensure_session_branch(
     let base = match base_branch {
         Some(b) => b.to_string(),
         None => {
-            let (rc_h, head, err) =
-                git(&["rev-parse", "--abbrev-ref", "HEAD"], project_path).await;
+            let (rc_h, head, err) = git(&["rev-parse", "--abbrev-ref", "HEAD"], project_path).await;
             if rc_h != 0 {
                 return Err(WorktreeError(format!("could not resolve HEAD: {err}")));
             }
-            if head.is_empty() { "HEAD".into() } else { head }
+            if head.is_empty() {
+                "HEAD".into()
+            } else {
+                head
+            }
         }
     };
 
@@ -301,8 +344,7 @@ pub async fn ensure_worktree(
         )));
     }
 
-    let (rc, root_out, err) =
-        git(&["rev-parse", "--show-toplevel"], project_path).await;
+    let (rc, root_out, err) = git(&["rev-parse", "--show-toplevel"], project_path).await;
     if rc != 0 {
         return Err(WorktreeError(format!("git rev-parse failed: {err}")));
     }
@@ -348,27 +390,25 @@ pub async fn ensure_worktree(
     let base = match base_branch {
         Some(b) => b.to_string(),
         None => {
-            let (rc_h, head, err) =
-                git(&["rev-parse", "--abbrev-ref", "HEAD"], project_path).await;
+            let (rc_h, head, err) = git(&["rev-parse", "--abbrev-ref", "HEAD"], project_path).await;
             if rc_h != 0 {
                 return Err(WorktreeError(format!("could not resolve HEAD: {err}")));
             }
-            if head.is_empty() { "HEAD".into() } else { head }
+            if head.is_empty() {
+                "HEAD".into()
+            } else {
+                head
+            }
         }
     };
 
     let wt_str = wt_dir.to_string_lossy().to_string();
     let cwd = repo_root.to_string_lossy().to_string();
-    let (rc, _, err) = git(
-        &["worktree", "add", "-b", &branch, &wt_str, &base],
-        &cwd,
-    )
-    .await;
+    let (rc, _, err) = git(&["worktree", "add", "-b", &branch, &wt_str, &base], &cwd).await;
     if rc != 0 {
         let lerr = err.to_lowercase();
         if lerr.contains("already exists") || lerr.contains("already used") {
-            let (rc2, _, err2) =
-                git(&["worktree", "add", &wt_str, &branch], &cwd).await;
+            let (rc2, _, err2) = git(&["worktree", "add", &wt_str, &branch], &cwd).await;
             if rc2 != 0 {
                 return Err(WorktreeError(format!(
                     "git worktree add failed: {}",
@@ -429,11 +469,7 @@ mod tests {
         let _ = git(&["init", "-b", "main"], path).await;
         let _ = git(&["config", "user.email", "t@x"], path).await;
         let _ = git(&["config", "user.name", "T"], path).await;
-        let _ = git(
-            &["commit", "-m", "init", "--allow-empty"],
-            path,
-        )
-        .await;
+        let _ = git(&["commit", "-m", "init", "--allow-empty"], path).await;
     }
 
     #[tokio::test]

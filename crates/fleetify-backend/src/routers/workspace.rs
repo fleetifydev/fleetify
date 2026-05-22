@@ -191,7 +191,7 @@ async fn run_git(args: &[&str], cwd: &str) -> (String, i32) {
             return (
                 String::new(),
                 -1, // timeout/spawn-error sentinel
-            )
+            );
         }
     };
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -302,8 +302,7 @@ async fn git_diff(Query(q): Query<DiffQ>) -> Json<Value> {
 
     // Untracked-single-file: synthesise an "all added" diff.
     if let Some(f) = file.as_deref() {
-        let (so, _) =
-            run_git_keep_out(sv(&["status", "--porcelain", "--", f]), path.clone()).await;
+        let (so, _) = run_git_keep_out(sv(&["status", "--porcelain", "--", f]), path.clone()).await;
         if so.trim_start().starts_with("??") {
             let abs = std::path::Path::new(&path).join(f);
             let body = std::fs::read_to_string(&abs).unwrap_or_default();
@@ -408,7 +407,9 @@ async fn git_diff(Query(q): Query<DiffQ>) -> Json<Value> {
         "working" => {
             let out = working_diff(path.clone(), file.clone()).await;
             let scope_label = if out.is_empty() { "empty" } else { "working" };
-            Json(json!({ "diff": out, "scope": scope_label, "baseBranch": Value::Null, "untracked": false }))
+            Json(
+                json!({ "diff": out, "scope": scope_label, "baseBranch": Value::Null, "untracked": false }),
+            )
         }
         "branch" => {
             let base = resolve_base(path.clone()).await;
@@ -423,21 +424,33 @@ async fn git_diff(Query(q): Query<DiffQ>) -> Json<Value> {
             };
             let out = branch_diff(path.clone(), file.clone(), base.clone()).await;
             let scope_label = if out.is_empty() { "empty" } else { "branch" };
-            Json(json!({ "diff": out, "scope": scope_label, "baseBranch": base, "untracked": false }))
+            Json(
+                json!({ "diff": out, "scope": scope_label, "baseBranch": base, "untracked": false }),
+            )
         }
         _ => {
             // "auto"
             let working = working_diff(path.clone(), file.clone()).await;
             if !working.is_empty() {
-                return Json(json!({ "diff": working, "scope": "working", "baseBranch": Value::Null, "untracked": false }));
+                return Json(
+                    json!({ "diff": working, "scope": "working", "baseBranch": Value::Null, "untracked": false }),
+                );
             }
             let base = resolve_base(path.clone()).await;
             let Some(base) = base else {
-                return Json(json!({ "diff": "", "scope": "empty", "baseBranch": Value::Null, "untracked": false }));
+                return Json(
+                    json!({ "diff": "", "scope": "empty", "baseBranch": Value::Null, "untracked": false }),
+                );
             };
             let spec = format!("{base}..HEAD");
-            let (ahead_out, _) =
-                run_git_keep_out(sv(&["rev-list", "--count"]).into_iter().chain(std::iter::once(spec)).collect(), path.clone()).await;
+            let (ahead_out, _) = run_git_keep_out(
+                sv(&["rev-list", "--count"])
+                    .into_iter()
+                    .chain(std::iter::once(spec))
+                    .collect(),
+                path.clone(),
+            )
+            .await;
             let ahead: i64 = ahead_out.trim().parse().unwrap_or(0);
             if ahead == 0 {
                 return Json(

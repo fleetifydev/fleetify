@@ -67,8 +67,7 @@ fn inflight() -> &'static Mutex<HashMap<String, std::sync::Arc<Attempt>>> {
 
 // ── Keychain helpers (Fleetify-GitHub / <user_sub>) ──────────────
 fn entry(user_id: &str) -> keyring::Entry {
-    keyring::Entry::new(KEYCHAIN_SVC, user_id)
-        .expect("keychain entry for Fleetify-GitHub")
+    keyring::Entry::new(KEYCHAIN_SVC, user_id).expect("keychain entry for Fleetify-GitHub")
 }
 
 pub async fn get_link() -> Option<Value> {
@@ -287,8 +286,7 @@ pub async fn begin_oauth(app: AppHandle) -> Value {
                     None => continue,
                 };
                 let mut link = payload;
-                link["connected_at"] =
-                    Value::String(chrono::Utc::now().to_rfc3339());
+                link["connected_at"] = Value::String(chrono::Utc::now().to_rfc3339());
                 if let Err(e) = write_link(&link).await {
                     break fail("KEYCHAIN", &e.to_string());
                 }
@@ -328,7 +326,10 @@ pub async fn refresh_link(app: AppHandle) -> Value {
         .unwrap_or("")
         .to_string();
     let r = reqwest::Client::new()
-        .post(format!("{}/api/integrations/github/link/refresh", api_base()))
+        .post(format!(
+            "{}/api/integrations/github/link/refresh",
+            api_base()
+        ))
         .bearer_auth(&bearer)
         .json(&json!({ "refresh_token": rt }))
         .send()
@@ -363,13 +364,13 @@ pub async fn refresh_link(app: AppHandle) -> Value {
         .and_then(|v| v.as_str())
         .map(String::from)
         .unwrap_or_else(|| rt.clone());
-    let expires_in = body.get("expires_in").and_then(|v| v.as_i64()).unwrap_or(28_800);
-    let new_access_expires = chrono::DateTime::<chrono::Utc>::from_timestamp(
-        now_s + expires_in,
-        0,
-    )
-    .map(|dt| dt.to_rfc3339())
-    .unwrap_or_default();
+    let expires_in = body
+        .get("expires_in")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(28_800);
+    let new_access_expires = chrono::DateTime::<chrono::Utc>::from_timestamp(now_s + expires_in, 0)
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_default();
     let new_refresh_expires = body
         .get("refresh_token_expires_in")
         .and_then(|v| v.as_i64())
@@ -410,7 +411,11 @@ pub async fn open_installation() -> Value {
     let url = match get_link().await {
         Some(l) => l
             .get("installation_id")
-            .and_then(|v| v.as_i64().map(|n| n.to_string()).or_else(|| v.as_str().map(String::from)))
+            .and_then(|v| {
+                v.as_i64()
+                    .map(|n| n.to_string())
+                    .or_else(|| v.as_str().map(String::from))
+            })
             .map(|id| format!("https://github.com/settings/installations/{id}"))
             .unwrap_or_else(|| "https://github.com/settings/installations".to_string()),
         None => "https://github.com/settings/installations".to_string(),

@@ -59,10 +59,7 @@ pub async fn config_get(app: tauri::AppHandle) -> serde_json::Value {
 }
 
 #[tauri::command]
-pub async fn config_set(
-    app: tauri::AppHandle,
-    config: serde_json::Value,
-) -> serde_json::Value {
+pub async fn config_set(app: tauri::AppHandle, config: serde_json::Value) -> serde_json::Value {
     if let Ok(dir) = app.path().app_data_dir() {
         let _ = config::save_config_to(&dir, &config);
     }
@@ -82,7 +79,10 @@ pub async fn shell_open_external(url: String) -> serde_json::Value {
 pub async fn shell_show_item_in_folder(path: String) -> serde_json::Value {
     // Open the parent dir in the system file browser (Finder/Explorer).
     let p = std::path::Path::new(&path);
-    let target = p.parent().map(|x| x.to_path_buf()).unwrap_or_else(|| p.to_path_buf());
+    let target = p
+        .parent()
+        .map(|x| x.to_path_buf())
+        .unwrap_or_else(|| p.to_path_buf());
     match ::open::that(&target) {
         Ok(_) => serde_json::json!({ "ok": true }),
         Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
@@ -132,11 +132,7 @@ pub async fn window_close(app: tauri::AppHandle) -> serde_json::Value {
 }
 
 #[tauri::command]
-pub async fn window_set_size(
-    app: tauri::AppHandle,
-    width: f64,
-    height: f64,
-) -> serde_json::Value {
+pub async fn window_set_size(app: tauri::AppHandle, width: f64, height: f64) -> serde_json::Value {
     if let Some(w) = main_window(&app) {
         let _ = w.set_size(tauri::LogicalSize::new(width, height));
     }
@@ -155,10 +151,7 @@ const ICON_LIGHT_PNG: &[u8] = include_bytes!("../../../icons/logo-mark-light.png
 const ICON_DARK_PNG: &[u8] = include_bytes!("../../../icons/logo-mark-dark.png");
 
 #[tauri::command]
-pub async fn window_set_taskbar_icon(
-    app: tauri::AppHandle,
-    variant: String,
-) -> serde_json::Value {
+pub async fn window_set_taskbar_icon(app: tauri::AppHandle, variant: String) -> serde_json::Value {
     let bytes: &[u8] = match variant.as_str() {
         "light" => ICON_LIGHT_PNG,
         "dark" => ICON_DARK_PNG,
@@ -295,13 +288,12 @@ pub fn scaffold_plugin_impl(
         let target = plugin_path.join(rel_path);
         // Belt-and-braces: ensure the resolved path stays inside plugin_path
         // even after lexical traversal in the relative path.
-        let normalized = target.components().fold(
-            std::path::PathBuf::new(),
-            |mut acc, c| {
+        let normalized = target
+            .components()
+            .fold(std::path::PathBuf::new(), |mut acc, c| {
                 acc.push(c);
                 acc
-            },
-        );
+            });
         if !normalized.starts_with(&plugin_path) {
             return json!({ "error": format!("unsafe path in scaffold: {rel}") });
         }
@@ -353,10 +345,7 @@ pub async fn git_list_branches(folder: String) -> serde_json::Value {
     git::list_branches(&PathBuf::from(folder)).await
 }
 #[tauri::command]
-pub async fn git_set_base_branch(
-    folder: String,
-    branch: String,
-) -> serde_json::Value {
+pub async fn git_set_base_branch(folder: String, branch: String) -> serde_json::Value {
     git::set_base_branch(&PathBuf::from(folder), &branch).await
 }
 #[tauri::command]
@@ -424,10 +413,7 @@ pub async fn git_create_pr(
     .await
 }
 #[tauri::command]
-pub async fn git_get_pr_status(
-    folder: String,
-    pr_number: Option<u64>,
-) -> serde_json::Value {
+pub async fn git_get_pr_status(folder: String, pr_number: Option<u64>) -> serde_json::Value {
     git::get_pr_status(&PathBuf::from(folder), pr_number).await
 }
 
@@ -528,11 +514,21 @@ pub async fn git_apply_recovery(
     let (bin, argv): (String, Vec<String>) = match action.as_str() {
         "pull-rebase" => (
             "git".into(),
-            vec!["pull".into(), "--rebase".into(), "origin".into(), base.clone()],
+            vec![
+                "pull".into(),
+                "--rebase".into(),
+                "origin".into(),
+                base.clone(),
+            ],
         ),
         "force-with-lease" => (
             "git".into(),
-            vec!["push".into(), "--force-with-lease".into(), "origin".into(), "HEAD".into()],
+            vec![
+                "push".into(),
+                "--force-with-lease".into(),
+                "origin".into(),
+                "HEAD".into(),
+            ],
         ),
         "set-upstream" => (
             "git".into(),
@@ -909,9 +905,7 @@ pub async fn gh_auth_login_capture(app: tauri::AppHandle) -> serde_json::Value {
                 Ok(0) => break,
                 Ok(n) => {
                     carry.push_str(&String::from_utf8_lossy(&buf[..n]));
-                    while let Some(idx) =
-                        carry.find(|c: char| c == '\n' || c == '\r')
-                    {
+                    while let Some(idx) = carry.find(|c: char| c == '\n' || c == '\r') {
                         let raw: String = carry.drain(..=idx).collect();
                         let line = strip_ansi(
                             raw.trim_end_matches(|c: char| c == '\n' || c == '\r')
@@ -998,7 +992,11 @@ pub async fn gh_auth_login_capture(app: tauri::AppHandle) -> serde_json::Value {
         .await;
         if rc == 0 {
             let n = name.trim().to_string();
-            if n.is_empty() { None } else { Some(n) }
+            if n.is_empty() {
+                None
+            } else {
+                Some(n)
+            }
         } else {
             None
         }
@@ -1281,8 +1279,7 @@ pub async fn logs_export(app: tauri::AppHandle) -> serde_json::Value {
     };
 
     let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
-    let out_path = std::env::temp_dir()
-        .join(format!("fleetify-diagnostics-{stamp}.zip"));
+    let out_path = std::env::temp_dir().join(format!("fleetify-diagnostics-{stamp}.zip"));
 
     let log_dir_owned = log_dir.to_path_buf();
     let out_path_clone = out_path.clone();
@@ -1352,18 +1349,16 @@ fn write_diagnostics_zip(
     use std::io::Write;
     use zip::write::SimpleFileOptions;
 
-    let f = std::fs::File::create(out_path)
-        .map_err(|e| format!("create zip: {e}"))?;
+    let f = std::fs::File::create(out_path).map_err(|e| format!("create zip: {e}"))?;
     let mut zip = zip::ZipWriter::new(f);
-    let opts = SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
+    let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
     // 1. system-info.json — first entry so a tail-only viewer still
     //    sees build context.
     zip.start_file("system-info.json", opts)
         .map_err(|e| format!("zip start_file: {e}"))?;
-    let info_bytes = serde_json::to_vec_pretty(&sys_info)
-        .map_err(|e| format!("system-info serialize: {e}"))?;
+    let info_bytes =
+        serde_json::to_vec_pretty(&sys_info).map_err(|e| format!("system-info serialize: {e}"))?;
     zip.write_all(&info_bytes)
         .map_err(|e| format!("zip write: {e}"))?;
 
@@ -1371,8 +1366,7 @@ fn write_diagnostics_zip(
     //    anything that doesn't look like a log rotation — the dir
     //    might pick up unrelated junk over time (manual exports the
     //    user dropped in there, etc.) which we don't want to ship.
-    let entries = std::fs::read_dir(log_dir)
-        .map_err(|e| format!("read_dir {log_dir:?}: {e}"))?;
+    let entries = std::fs::read_dir(log_dir).map_err(|e| format!("read_dir {log_dir:?}: {e}"))?;
     for entry in entries.flatten() {
         let path = entry.path();
         let name = match path.file_name().and_then(|n| n.to_str()) {
@@ -1385,16 +1379,12 @@ fn write_diagnostics_zip(
         let archive_name = format!("logs/{name}");
         zip.start_file(&archive_name, opts)
             .map_err(|e| format!("zip start_file {archive_name}: {e}"))?;
-        let mut src = std::fs::File::open(&path)
-            .map_err(|e| format!("open {path:?}: {e}"))?;
-        std::io::copy(&mut src, &mut zip)
-            .map_err(|e| format!("copy {path:?}: {e}"))?;
+        let mut src = std::fs::File::open(&path).map_err(|e| format!("open {path:?}: {e}"))?;
+        std::io::copy(&mut src, &mut zip).map_err(|e| format!("copy {path:?}: {e}"))?;
     }
 
     zip.finish().map_err(|e| format!("zip finish: {e}"))?;
-    let bytes = std::fs::metadata(out_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let bytes = std::fs::metadata(out_path).map(|m| m.len()).unwrap_or(0);
     Ok(bytes)
 }
 

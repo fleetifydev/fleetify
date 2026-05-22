@@ -17,7 +17,15 @@ pub fn router() -> Router<AppState> {
         .route("/runtime/workflows", get(workflows))
 }
 
-async fn templates() -> Json<Value> { Json(json!([])) }
-async fn commands() -> Json<Value> { Json(json!([])) }
-async fn skills() -> Json<Value> { Json(json!([])) }
-async fn workflows() -> Json<Value> { Json(json!([])) }
+async fn templates() -> Json<Value> {
+    Json(json!([]))
+}
+async fn commands() -> Json<Value> {
+    Json(json!([]))
+}
+async fn skills() -> Json<Value> {
+    Json(json!([]))
+}
+async fn workflows() -> Json<Value> {
+    Json(json!([]))
+}

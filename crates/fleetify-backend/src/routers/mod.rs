@@ -64,12 +64,8 @@ impl IntoResponse for ApiError {
             ApiError::NotFound(m) => (StatusCode::NOT_FOUND, m).into_response(),
             ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, m).into_response(),
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m).into_response(),
-            ApiError::Conflict(v) => {
-                (StatusCode::CONFLICT, axum::Json(v)).into_response()
-            }
-            ApiError::Internal(m) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, m).into_response()
-            }
+            ApiError::Conflict(v) => (StatusCode::CONFLICT, axum::Json(v)).into_response(),
+            ApiError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m).into_response(),
         }
     }
 }

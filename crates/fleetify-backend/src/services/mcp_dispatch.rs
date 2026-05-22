@@ -113,7 +113,12 @@ pub fn build_merged_map(
 /// dropping the rest of the map. Verbatim port of the Claude bridge's
 /// `splice_server_config` so behaviour is identical for the user-
 /// facing registry no matter which CLI is consuming it.
-fn splice_oauth(name: &str, cfg: &Value, secret: Option<&mcp_secrets::McpSecret>, session_id: &str) -> Result<Value, String> {
+fn splice_oauth(
+    name: &str,
+    cfg: &Value,
+    secret: Option<&mcp_secrets::McpSecret>,
+    session_id: &str,
+) -> Result<Value, String> {
     let obj = cfg
         .as_object()
         .ok_or_else(|| "config is not a JSON object".to_string())?;
@@ -136,12 +141,13 @@ fn splice_oauth(name: &str, cfg: &Value, secret: Option<&mcp_secrets::McpSecret>
             env.entry("FLEETIFY_INTERNAL_SECRET".to_string())
                 .or_insert_with(|| Value::String(secret));
         }
-        env.entry("FLEETIFY_BACKEND_URL".to_string()).or_insert_with(|| {
-            Value::String(
-                std::env::var("FLEETIFY_BACKEND_URL")
-                    .unwrap_or_else(|_| "http://127.0.0.1:8765".into()),
-            )
-        });
+        env.entry("FLEETIFY_BACKEND_URL".to_string())
+            .or_insert_with(|| {
+                Value::String(
+                    std::env::var("FLEETIFY_BACKEND_URL")
+                        .unwrap_or_else(|_| "http://127.0.0.1:8765".into()),
+                )
+            });
         spliced.insert("env".to_string(), Value::Object(env));
     }
 
@@ -189,24 +195,21 @@ pub fn to_codex_cli_args(map: &BTreeMap<String, Value>) -> Vec<String> {
             "http" | "sse" | "streamable_http" => {
                 if let Some(url) = obj.get("url").and_then(|v| v.as_str()) {
                     out.push("-c".into());
-                    out.push(format!(
-                        "mcp_servers.{name}.url={}",
-                        codex_toml::quote(url)
-                    ));
+                    out.push(format!("mcp_servers.{name}.url={}", codex_toml::quote(url)));
                 }
                 if let Some(headers) = obj.get("headers").and_then(|v| v.as_object()) {
                     if !headers.is_empty() {
                         let pairs: Vec<(&str, String)> = headers
                             .iter()
-                            .filter_map(|(k, v)| {
-                                v.as_str().map(|s| (k.as_str(), s.to_string()))
-                            })
+                            .filter_map(|(k, v)| v.as_str().map(|s| (k.as_str(), s.to_string())))
                             .collect();
                         if !pairs.is_empty() {
                             out.push("-c".into());
                             out.push(format!(
                                 "mcp_servers.{name}.http_headers={}",
-                                codex_toml::inline_table(pairs.iter().map(|(k, v)| (*k, v.as_str())))
+                                codex_toml::inline_table(
+                                    pairs.iter().map(|(k, v)| (*k, v.as_str()))
+                                )
                             ));
                         }
                     }
@@ -234,15 +237,15 @@ pub fn to_codex_cli_args(map: &BTreeMap<String, Value>) -> Vec<String> {
                     if !env.is_empty() {
                         let pairs: Vec<(&str, String)> = env
                             .iter()
-                            .filter_map(|(k, v)| {
-                                v.as_str().map(|s| (k.as_str(), s.to_string()))
-                            })
+                            .filter_map(|(k, v)| v.as_str().map(|s| (k.as_str(), s.to_string())))
                             .collect();
                         if !pairs.is_empty() {
                             out.push("-c".into());
                             out.push(format!(
                                 "mcp_servers.{name}.env={}",
-                                codex_toml::inline_table(pairs.iter().map(|(k, v)| (*k, v.as_str())))
+                                codex_toml::inline_table(
+                                    pairs.iter().map(|(k, v)| (*k, v.as_str()))
+                                )
                             ));
                         }
                     }
@@ -308,7 +311,10 @@ mod tests {
 
     #[test]
     fn builtin_names_gating() {
-        assert_eq!(builtin_names_for(false, None), vec!["fleet_memory", "fleet_dispatch"]);
+        assert_eq!(
+            builtin_names_for(false, None),
+            vec!["fleet_memory", "fleet_dispatch"]
+        );
         assert_eq!(builtin_names_for(true, None), vec!["fleet_memory"]);
         assert_eq!(
             builtin_names_for(false, Some("reverse_engineering")),
@@ -319,7 +325,10 @@ mod tests {
             vec!["fleet_memory", "fleet_reveng"]
         );
         // Unknown template ignored.
-        assert_eq!(builtin_names_for(false, Some("other")), vec!["fleet_memory", "fleet_dispatch"]);
+        assert_eq!(
+            builtin_names_for(false, Some("other")),
+            vec!["fleet_memory", "fleet_dispatch"]
+        );
     }
 
     #[test]
@@ -407,14 +416,13 @@ mod tests {
         // should return Err and the entry should be skipped without
         // affecting the rest of the map.
         mcp_registry::add("broken", json!([1, 2, 3])).unwrap();
-        mcp_registry::add(
-            "good",
-            json!({"type": "http", "url": "https://x"}),
-        )
-        .unwrap();
+        mcp_registry::add("good", json!({"type": "http", "url": "https://x"})).unwrap();
 
         let merged = build_merged_map("sess-2", false, None);
-        assert!(!merged.contains_key("broken"), "malformed entry should be dropped");
+        assert!(
+            !merged.contains_key("broken"),
+            "malformed entry should be dropped"
+        );
         assert!(merged.contains_key("good"), "valid entry should survive");
         assert!(merged.contains_key("fleet_memory"), "builtins still mount");
     }
@@ -466,8 +474,10 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "-c", "mcp_servers.github.url=\"https://api.example/mcp\"",
-                "-c", "mcp_servers.github.http_headers={ \"Authorization\" = \"Bearer abc\" }",
+                "-c",
+                "mcp_servers.github.url=\"https://api.example/mcp\"",
+                "-c",
+                "mcp_servers.github.http_headers={ \"Authorization\" = \"Bearer abc\" }",
             ]
         );
     }
@@ -488,9 +498,12 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "-c", "mcp_servers.local.command=\"node\"",
-                "-c", "mcp_servers.local.args=[\"index.js\", \"--flag\"]",
-                "-c", "mcp_servers.local.env={ \"FOO\" = \"bar\" }",
+                "-c",
+                "mcp_servers.local.command=\"node\"",
+                "-c",
+                "mcp_servers.local.args=[\"index.js\", \"--flag\"]",
+                "-c",
+                "mcp_servers.local.env={ \"FOO\" = \"bar\" }",
             ]
         );
     }
@@ -498,7 +511,10 @@ mod tests {
     #[test]
     fn codex_args_skips_unknown_type_and_continues() {
         let mut map = BTreeMap::new();
-        map.insert("weird".to_string(), json!({"type": "telepathy", "url": "x"}));
+        map.insert(
+            "weird".to_string(),
+            json!({"type": "telepathy", "url": "x"}),
+        );
         map.insert(
             "good".to_string(),
             json!({"type": "http", "url": "https://x"}),

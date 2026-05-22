@@ -40,7 +40,10 @@ fn repo_name_re() -> &'static Regex {
 pub fn repo_name_from_url(url: &str) -> String {
     let cleaned = url.trim().trim_end_matches('/');
     let cleaned = cleaned.strip_suffix(".git").unwrap_or(cleaned);
-    let last = cleaned.rsplit(|c| c == '/' || c == ':').next().unwrap_or("");
+    let last = cleaned
+        .rsplit(|c| c == '/' || c == ':')
+        .next()
+        .unwrap_or("");
     let safe = repo_name_re().replace_all(last, "-");
     let trimmed = safe.trim_matches('-');
     if trimmed.is_empty() {
@@ -65,11 +68,8 @@ pub async fn git_cmd(
     }
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_secs),
-        cmd.output(),
-    )
-    .await;
+    let output =
+        tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output()).await;
     match output {
         Err(_) => (-1, String::new(), "git command timed out".into()),
         Ok(Err(e)) => (-1, String::new(), e.to_string()),
@@ -99,12 +99,8 @@ pub async fn clone_or_pull(
 
     if path.exists() {
         // Verify it's a real git repo (not a half-checked-out left-over).
-        let (rc, _out, _err) = git_cmd(
-            &["rev-parse", "--is-inside-work-tree"],
-            Some(&path),
-            30,
-        )
-        .await;
+        let (rc, _out, _err) =
+            git_cmd(&["rev-parse", "--is-inside-work-tree"], Some(&path), 30).await;
         if rc != 0 {
             return Err(CloneError::Failed(format!(
                 "Existing folder {} is not a git repository — delete it manually and retry",
@@ -114,12 +110,7 @@ pub async fn clone_or_pull(
         // Best-effort fetch. A failed fetch (offline, auth changed)
         // still hands the path back — the user works with whatever
         // snapshot they already have. Matches Python behaviour.
-        let (rc_f, _out, err) = git_cmd(
-            &["fetch", "--all", "--prune"],
-            Some(&path),
-            120,
-        )
-        .await;
+        let (rc_f, _out, err) = git_cmd(&["fetch", "--all", "--prune"], Some(&path), 120).await;
         if rc_f != 0 {
             tracing::warn!(
                 target: "clone",
@@ -153,12 +144,8 @@ pub async fn clone_or_pull(
         }
     }
 
-    let (rc_b, head_out, _) = git_cmd(
-        &["rev-parse", "--abbrev-ref", "HEAD"],
-        Some(&path),
-        30,
-    )
-    .await;
+    let (rc_b, head_out, _) =
+        git_cmd(&["rev-parse", "--abbrev-ref", "HEAD"], Some(&path), 30).await;
     let current_branch = if rc_b == 0 && !head_out.is_empty() {
         head_out
     } else {
@@ -194,10 +181,7 @@ mod tests {
             "proj"
         );
         // Edge: trailing slash + no .git.
-        assert_eq!(
-            repo_name_from_url("https://github.com/o/r/"),
-            "r"
-        );
+        assert_eq!(repo_name_from_url("https://github.com/o/r/"), "r");
         // Edge: bare host as last segment — Python returns the host
         // verbatim because dots are safe. The function isn't trying
         // to detect "real" repos, just produce a sensible folder

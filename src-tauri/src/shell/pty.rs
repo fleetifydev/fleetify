@@ -33,7 +33,12 @@ pub fn spawn(
 ) -> Result<String, String> {
     let pty_system = native_pty_system();
     let pair = pty_system
-        .openpty(PtySize { rows: 30, cols: 100, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows: 30,
+            cols: 100,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| e.to_string())?;
 
     let shell = shell.unwrap_or_else(|| {
@@ -85,7 +90,11 @@ pub fn spawn(
 
     registry().lock().unwrap().insert(
         id.clone(),
-        PtyEntry { master: pair.master, writer, child },
+        PtyEntry {
+            master: pair.master,
+            writer,
+            child,
+        },
     );
 
     // Exit-watch thread: waits on the child + emits pty:exit:<id>.
@@ -96,7 +105,9 @@ pub fn spawn(
         loop {
             std::thread::sleep(std::time::Duration::from_millis(150));
             let mut guard = registry().lock().unwrap();
-            let Some(entry) = guard.get_mut(&id_exit) else { return };
+            let Some(entry) = guard.get_mut(&id_exit) else {
+                return;
+            };
             match entry.child.try_wait() {
                 Ok(Some(status)) => {
                     let code = status.exit_code() as i64;
@@ -123,9 +134,10 @@ pub fn spawn(
 
 pub fn write(id: &str, data: &str) -> Result<(), String> {
     let mut guard = registry().lock().unwrap();
-    let entry = guard.get_mut(id).ok_or_else(|| "unknown pty id".to_string())?;
-    std::io::Write::write_all(&mut entry.writer, data.as_bytes())
-        .map_err(|e| e.to_string())
+    let entry = guard
+        .get_mut(id)
+        .ok_or_else(|| "unknown pty id".to_string())?;
+    std::io::Write::write_all(&mut entry.writer, data.as_bytes()).map_err(|e| e.to_string())
 }
 
 pub fn resize(id: &str, cols: u16, rows: u16) -> Result<(), String> {
@@ -133,7 +145,12 @@ pub fn resize(id: &str, cols: u16, rows: u16) -> Result<(), String> {
     let entry = guard.get(id).ok_or_else(|| "unknown pty id".to_string())?;
     entry
         .master
-        .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| e.to_string())
 }
 

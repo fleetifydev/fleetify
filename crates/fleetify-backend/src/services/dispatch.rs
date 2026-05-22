@@ -29,9 +29,7 @@ use std::sync::OnceLock;
 /// first `||` in code. Faithful with the Python regex's intent.
 fn dispatch_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| {
-        Regex::new(r"(?is)\[\[DISPATCH:([a-f0-9-]+)\|(.+?)\]\]").expect("DISPATCH_RE")
-    })
+    R.get_or_init(|| Regex::new(r"(?is)\[\[DISPATCH:([a-f0-9-]+)\|(.+?)\]\]").expect("DISPATCH_RE"))
 }
 
 /// `[[DIRECT_DISPATCH:<sid>|<body>]]` — frontend injects this when the
@@ -40,8 +38,7 @@ fn dispatch_re() -> &'static Regex {
 fn direct_dispatch_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
-        Regex::new(r"(?is)\[\[DIRECT_DISPATCH:([a-f0-9-]+)\|(.+?)\]\]")
-            .expect("DIRECT_DISPATCH_RE")
+        Regex::new(r"(?is)\[\[DIRECT_DISPATCH:([a-f0-9-]+)\|(.+?)\]\]").expect("DIRECT_DISPATCH_RE")
     })
 }
 
@@ -176,9 +173,7 @@ mod tests {
 
     #[test]
     fn dispatch_extracts_target_and_task() {
-        let text = format!(
-            "[[DISPATCH:{SID}|Explore makeup_check project structure]] Dispatched."
-        );
+        let text = format!("[[DISPATCH:{SID}|Explore makeup_check project structure]] Dispatched.");
         let d = parse_dispatches(&text);
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].target_id, SID);
@@ -190,9 +185,7 @@ mod tests {
     fn dispatch_preserves_single_pipe_and_bracket_in_task() {
         // "filter | grep" and "fix the [bug]" used to truncate with the
         // old `[^\]|]+` pattern. The new shape preserves them.
-        let text = format!(
-            "[[DISPATCH:{SID}|filter | grep results from fix the [bug] path]]"
-        );
+        let text = format!("[[DISPATCH:{SID}|filter | grep results from fix the [bug] path]]");
         let d = parse_dispatches(&text);
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].task, "filter | grep results from fix the [bug] path");
@@ -200,9 +193,7 @@ mod tests {
 
     #[test]
     fn dispatch_captures_extra_context() {
-        let text = format!(
-            "[[DISPATCH:{SID}|main task description||extra trailing context]]"
-        );
+        let text = format!("[[DISPATCH:{SID}|main task description||extra trailing context]]");
         let d = parse_dispatches(&text);
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].task, "main task description");
@@ -211,9 +202,7 @@ mod tests {
 
     #[test]
     fn multiple_dispatches_preserve_order() {
-        let text = format!(
-            "first: [[DISPATCH:{SID}|task A]] and [[DISPATCH:{SID2}|task B]]"
-        );
+        let text = format!("first: [[DISPATCH:{SID}|task A]] and [[DISPATCH:{SID2}|task B]]");
         let d = parse_dispatches(&text);
         assert_eq!(d.len(), 2);
         assert_eq!(d[0].target_id, SID);
@@ -246,15 +235,16 @@ mod tests {
 
     #[test]
     fn direct_dispatch_is_a_separate_namespace() {
-        let text = format!(
-            "[[DIRECT_DISPATCH:{SID}|user typed @Backend fix the bug]]"
-        );
+        let text = format!("[[DIRECT_DISPATCH:{SID}|user typed @Backend fix the bug]]");
         // DIRECT_DISPATCH must NOT match the plain DISPATCH pattern —
         // the dispatcher routes the two differently (direct = trusted
         // by the renderer, plain = LLM output that needs ownership
         // verification). Mixing them up would double-dispatch.
         let plain = parse_dispatches(&text);
-        assert!(plain.is_empty(), "direct_dispatch leaked into DISPATCH_RE: {plain:?}");
+        assert!(
+            plain.is_empty(),
+            "direct_dispatch leaked into DISPATCH_RE: {plain:?}"
+        );
         let direct = parse_direct_dispatches(&text);
         assert_eq!(direct.len(), 1);
         assert_eq!(direct[0].target_id, SID);
@@ -268,8 +258,17 @@ mod tests {
              [[STOP:{SID2}]] [[RESTART:{SID}]] [[DIRECT_DISPATCH:{SID}|x||y]] end"
         );
         let cleaned = strip_all_tokens(&text);
-        for needle in ["[[DISPATCH:", "[[READ_AGENT:", "[[STOP:", "[[RESTART:", "[[DIRECT_DISPATCH:"] {
-            assert!(!cleaned.contains(needle), "token leaked: {needle} in {cleaned:?}");
+        for needle in [
+            "[[DISPATCH:",
+            "[[READ_AGENT:",
+            "[[STOP:",
+            "[[RESTART:",
+            "[[DIRECT_DISPATCH:",
+        ] {
+            assert!(
+                !cleaned.contains(needle),
+                "token leaked: {needle} in {cleaned:?}"
+            );
         }
         assert!(cleaned.contains("lead text"));
         assert!(cleaned.contains("end"));

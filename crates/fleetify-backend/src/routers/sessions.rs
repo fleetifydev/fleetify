@@ -23,7 +23,12 @@ pub fn router() -> Router<AppState> {
         .route("/sessions/empty-drafts", delete(delete_empty_drafts))
         .route("/sessions/stats/overview", get(stats_overview))
         .route("/sessions/stats/bulk", get(stats_bulk))
-        .route("/sessions/{id}", get(get_session).patch(update_session).delete(delete_session))
+        .route(
+            "/sessions/{id}",
+            get(get_session)
+                .patch(update_session)
+                .delete(delete_session),
+        )
         .route("/sessions/{id}/detail", get(session_detail))
         .route("/sessions/{id}/claude-history", get(claude_history))
         .route("/sessions/{id}/messages", delete(clear_messages))
@@ -37,10 +42,7 @@ pub fn router() -> Router<AppState> {
         .route("/sessions/{id}/budget", patch(set_budget))
         .route("/sessions/{id}/activity", get(get_activity))
         .route("/sessions/{id}/files", get(get_files))
-        .route(
-            "/sessions/{id}/memory",
-            get(get_memory).post(create_memory),
-        )
+        .route("/sessions/{id}/memory", get(get_memory).post(create_memory))
         .route(
             "/sessions/{id}/memory/{item}",
             patch(update_memory).delete(delete_memory),
@@ -55,11 +57,7 @@ pub fn router() -> Router<AppState> {
         .route("/git/clone", post(clone_repository))
 }
 
-async fn owned(
-    st: &AppState,
-    id: &str,
-    user_id: &str,
-) -> Result<Session, ApiError> {
+async fn owned(st: &AppState, id: &str, user_id: &str) -> Result<Session, ApiError> {
     let s = sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = ?")
         .bind(id)
         .fetch_optional(&st.auth.pool)
@@ -96,8 +94,11 @@ async fn list_sessions(
         .fetch_all(&st.auth.pool)
         .await?;
     // Claim unclaimed (legacy user_id NULL) rows for this user.
-    let unclaimed: Vec<&str> =
-        rows.iter().filter(|s| s.user_id.is_none()).map(|s| s.id.as_str()).collect();
+    let unclaimed: Vec<&str> = rows
+        .iter()
+        .filter(|s| s.user_id.is_none())
+        .map(|s| s.id.as_str())
+        .collect();
     if !unclaimed.is_empty() {
         for sid in &unclaimed {
             sqlx::query("UPDATE sessions SET user_id = ? WHERE id = ?")
@@ -285,12 +286,7 @@ async fn delete_session(
     let tool_owned = s.tool.clone();
     let when = chrono::Utc::now();
     tokio::spawn(async move {
-        let _ = crate::services::telemetry::emit_session_stop(
-            &sid_owned,
-            &tool_owned,
-            when,
-        )
-        .await;
+        let _ = crate::services::telemetry::emit_session_stop(&sid_owned, &tool_owned, when).await;
     });
     Ok(Json(json!({"ok": true})))
 }
@@ -360,7 +356,9 @@ async fn reset_session(
         .bind(&id)
         .execute(&st.auth.pool)
         .await?;
-    Ok(Json(json!({"ok": true, "status": "idle", "claude_session_id": null})))
+    Ok(Json(
+        json!({"ok": true, "status": "idle", "claude_session_id": null}),
+    ))
 }
 
 async fn archive_session(
@@ -484,7 +482,9 @@ async fn set_budget(
         .bind(&id)
         .fetch_one(&st.auth.pool)
         .await?;
-    Ok(Json(json!({"ok": true, "budget_limit": s.budget_limit, "budget_used": s.budget_used})))
+    Ok(Json(
+        json!({"ok": true, "budget_limit": s.budget_limit, "budget_used": s.budget_used}),
+    ))
 }
 
 // ── activity / files / memory (pure DB, faithful) ───────────────────
@@ -581,17 +581,16 @@ async fn get_memory(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let s = owned(&st, &id, &user.id).await?;
-    let rows: Vec<(String, String, String, String, String, String, String)> =
-        sqlx::query_as(
-            "SELECT id,session_id,title,content,kind,created_at,created_by \
+    let rows: Vec<(String, String, String, String, String, String, String)> = sqlx::query_as(
+        "SELECT id,session_id,title,content,kind,created_at,created_by \
              FROM session_memory WHERE session_id = ? \
              OR (project_path IS NOT NULL AND project_path = ?) \
              ORDER BY created_at DESC LIMIT 200",
-        )
-        .bind(&id)
-        .bind(&s.project_path)
-        .fetch_all(&st.auth.pool)
-        .await?;
+    )
+    .bind(&id)
+    .bind(&s.project_path)
+    .fetch_all(&st.auth.pool)
+    .await?;
     let out: Vec<Value> = rows
         .into_iter()
         .map(|(rid, sid, title, content, kind, created_at, by)| {
@@ -624,7 +623,9 @@ async fn create_memory(
     let title = b.title.trim();
     let content = b.content.trim();
     if title.is_empty() || content.is_empty() {
-        return Err(ApiError::BadRequest("title and content are required".into()));
+        return Err(ApiError::BadRequest(
+            "title and content are required".into(),
+        ));
     }
     let mut kind = b.kind.trim().to_lowercase();
     if !MEMORY_KINDS.contains(&kind.as_str()) {
@@ -652,8 +653,10 @@ async fn create_memory(
     .bind(&created)
     .execute(&st.auth.pool)
     .await?;
-    Ok(Json(json!({"id": rid, "title": title_t, "content": content_t,
-        "kind": kind, "created_at": created, "created_by": "user"})))
+    Ok(Json(
+        json!({"id": rid, "title": title_t, "content": content_t,
+        "kind": kind, "created_at": created, "created_by": "user"}),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -670,13 +673,12 @@ async fn update_memory(
     Json(b): Json<MemUpdate>,
 ) -> Result<Json<Value>, ApiError> {
     owned(&st, &id, &user.id).await?;
-    let exists: Option<(String,)> = sqlx::query_as(
-        "SELECT id FROM session_memory WHERE id = ? AND session_id = ?",
-    )
-    .bind(&item)
-    .bind(&id)
-    .fetch_optional(&st.auth.pool)
-    .await?;
+    let exists: Option<(String,)> =
+        sqlx::query_as("SELECT id FROM session_memory WHERE id = ? AND session_id = ?")
+            .bind(&item)
+            .bind(&id)
+            .fetch_optional(&st.auth.pool)
+            .await?;
     if exists.is_none() {
         return Err(ApiError::NotFound("Memory item not found".into()));
     }
@@ -687,7 +689,12 @@ async fn update_memory(
             .execute(&st.auth.pool)
             .await?;
     }
-    if let Some(c) = b.content.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    if let Some(c) = b
+        .content
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
         sqlx::query("UPDATE session_memory SET content = ? WHERE id = ?")
             .bind(trunc(c, 4000))
             .bind(&item)
@@ -709,8 +716,10 @@ async fn update_memory(
     .bind(&item)
     .fetch_one(&st.auth.pool)
     .await?;
-    Ok(Json(json!({"id": r.0, "title": r.1, "content": r.2, "kind": r.3,
-        "created_at": r.4, "created_by": r.5})))
+    Ok(Json(
+        json!({"id": r.0, "title": r.1, "content": r.2, "kind": r.3,
+        "created_at": r.4, "created_by": r.5}),
+    ))
 }
 
 async fn delete_memory(
@@ -817,11 +826,10 @@ async fn stats_overview(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
 ) -> Result<Json<Value>, ApiError> {
-    let (sessions,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM sessions WHERE user_id = ?")
-            .bind(&user.id)
-            .fetch_one(&st.auth.pool)
-            .await?;
+    let (sessions,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM sessions WHERE user_id = ?")
+        .bind(&user.id)
+        .fetch_one(&st.auth.pool)
+        .await?;
     let (messages,): (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM messages WHERE session_id IN \
          (SELECT id FROM sessions WHERE user_id = ?)",
@@ -982,10 +990,7 @@ struct PathQ {
     path: String,
 }
 
-async fn list_claude_sessions(
-    AuthUser(_u): AuthUser,
-    Query(q): Query<PathQ>,
-) -> Json<Value> {
+async fn list_claude_sessions(AuthUser(_u): AuthUser, Query(q): Query<PathQ>) -> Json<Value> {
     let project_path = q.path.clone();
     if project_path.trim().is_empty() {
         return Json(json!([]));
@@ -1044,8 +1049,7 @@ async fn list_user_repos(AuthUser(_u): AuthUser) -> Result<Json<Value>, ApiError
         Ok(p) => p.to_string_lossy().into_owned(),
         Err(_) => {
             return Err(ApiError::Internal(
-                "gh CLI is not installed — install it from cli.github.com to list repos"
-                    .into(),
+                "gh CLI is not installed — install it from cli.github.com to list repos".into(),
             ));
         }
     };
@@ -1072,8 +1076,7 @@ async fn list_user_repos(AuthUser(_u): AuthUser) -> Result<Json<Value>, ApiError
         } else {
             stderr
         };
-        if msg.to_lowercase().contains("authentication")
-            || msg.to_lowercase().contains("logged in")
+        if msg.to_lowercase().contains("authentication") || msg.to_lowercase().contains("logged in")
         {
             return Err(ApiError::Forbidden(
                 "Not signed in to gh — run `gh auth login` in your terminal".into(),
@@ -1106,9 +1109,7 @@ async fn clone_repository(
             "path": path,
             "branch": branch,
         }))),
-        Err(crate::services::clone::CloneError::Failed(msg)) => {
-            Err(ApiError::BadRequest(msg))
-        }
+        Err(crate::services::clone::CloneError::Failed(msg)) => Err(ApiError::BadRequest(msg)),
     }
 }
 

@@ -111,13 +111,7 @@ pub fn generate_feature_branch_name(title: &str) -> String {
     let slug: String = title
         .to_lowercase()
         .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c
-            } else {
-                '-'
-            }
-        })
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
     let collapsed = collapse_hyphens(&slug);
     let trimmed = collapsed.trim_matches('-');
@@ -292,7 +286,10 @@ async fn create_user_repo(token: &str, base_name: &str) -> Value {
         if status >= 500 {
             return fail("GITHUB_DOWN", &format!("GitHub returned {status}."));
         }
-        return fail("UNKNOWN", &format!("GitHub returned {status} on repo create."));
+        return fail(
+            "UNKNOWN",
+            &format!("GitHub returned {status} on repo create."),
+        );
     }
     fail("NAME_TAKEN", "Tried 9 suffixed names, all taken.")
 }
@@ -404,7 +401,10 @@ async fn call_pr(
         return fail("VALIDATION", &errors);
     }
     if status.as_u16() >= 500 {
-        return fail("GITHUB_DOWN", &format!("GitHub returned {}.", status.as_u16()));
+        return fail(
+            "GITHUB_DOWN",
+            &format!("GitHub returned {}.", status.as_u16()),
+        );
     }
     fail("UNKNOWN", &format!("GitHub returned {}.", status.as_u16()))
 }
@@ -472,7 +472,10 @@ pub async fn create_pr_via_link(
     }
     let mut branch = branch_out.trim().to_string();
     if branch == "HEAD" {
-        return fail("DETACHED_HEAD", "HEAD is detached — checkout a branch first.");
+        return fail(
+            "DETACHED_HEAD",
+            "HEAD is detached — checkout a branch first.",
+        );
     }
 
     // 3. Auto-carve when on the default branch.
@@ -616,7 +619,12 @@ mod tests {
         let n = generate_feature_branch_name("Refactor auth module");
         assert!(n.starts_with("fleet/refactor-auth-module-"));
         // 8 hex chars suffix.
-        assert!(n.split('-').next_back().unwrap().chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(n
+            .split('-')
+            .next_back()
+            .unwrap()
+            .chars()
+            .all(|c| c.is_ascii_hexdigit()));
 
         // Empty title falls back to "fleet".
         let n2 = generate_feature_branch_name("");

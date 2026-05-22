@@ -57,8 +57,7 @@ pub struct WorkflowRun {
 }
 
 fn runs() -> &'static Mutex<std::collections::HashMap<String, WorkflowRun>> {
-    static R: OnceLock<Mutex<std::collections::HashMap<String, WorkflowRun>>> =
-        OnceLock::new();
+    static R: OnceLock<Mutex<std::collections::HashMap<String, WorkflowRun>>> = OnceLock::new();
     R.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
@@ -74,7 +73,10 @@ pub fn list_runs() -> Vec<WorkflowRun> {
 }
 
 pub fn list_runs_for_user(user_id: &str) -> Vec<WorkflowRun> {
-    list_runs().into_iter().filter(|r| r.user_id == user_id).collect()
+    list_runs()
+        .into_iter()
+        .filter(|r| r.user_id == user_id)
+        .collect()
 }
 
 fn now_secs() -> f64 {
@@ -86,7 +88,11 @@ fn now_secs() -> f64 {
 
 /// `{{step:N:output}}` and `{{argname}}` substitution. Matches the
 /// Python `_substitute` byte-for-byte.
-pub fn substitute(template: &str, run: &WorkflowRun, args: &serde_json::Map<String, Value>) -> String {
+pub fn substitute(
+    template: &str,
+    run: &WorkflowRun,
+    args: &serde_json::Map<String, Value>,
+) -> String {
     if template.is_empty() {
         return String::new();
     }
@@ -104,9 +110,7 @@ pub fn substitute(template: &str, run: &WorkflowRun, args: &serde_json::Map<Stri
                     if let Some((idx_str, tail)) = rest.split_once(':') {
                         if tail == "output" {
                             if let Ok(idx) = idx_str.parse::<usize>() {
-                                if idx < run.steps.len()
-                                    && run.steps[idx].status == "succeeded"
-                                {
+                                if idx < run.steps.len() && run.steps[idx].status == "succeeded" {
                                     Some(run.steps[idx].output.clone())
                                 } else {
                                     Some(String::new())
@@ -126,7 +130,9 @@ pub fn substitute(template: &str, run: &WorkflowRun, args: &serde_json::Map<Stri
                     // `{{argname}}` → args[name] (or "").
                     Some(
                         args.get(inner)
-                            .and_then(|v| v.as_str().map(String::from).or_else(|| Some(v.to_string())))
+                            .and_then(|v| {
+                                v.as_str().map(String::from).or_else(|| Some(v.to_string()))
+                            })
                             .unwrap_or_default(),
                     )
                 } else {
@@ -149,7 +155,11 @@ pub fn substitute(template: &str, run: &WorkflowRun, args: &serde_json::Map<Stri
         }
         out.push(template[i..].chars().next().unwrap());
         // Advance by char-byte length so multi-byte UTF-8 doesn't desync.
-        i += template[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+        i += template[i..]
+            .chars()
+            .next()
+            .map(|c| c.len_utf8())
+            .unwrap_or(1);
     }
     out
 }

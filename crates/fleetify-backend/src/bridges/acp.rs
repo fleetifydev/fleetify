@@ -36,18 +36,13 @@ use tokio::sync::{oneshot, Mutex};
 /// (session/request_permission, fs/read_text_file, fs/write_text_file).
 /// Must return a JSON-RPC `result` value.
 pub type RequestHandler = Arc<
-    dyn Fn(Value) -> Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>>
-        + Send
-        + Sync,
+    dyn Fn(Value) -> Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>> + Send + Sync,
 >;
 
 /// Handler signature for inbound agent-initiated notifications
 /// (session/update etc.). Errors are logged but do not propagate.
-pub type NotificationHandler = Arc<
-    dyn Fn(Value) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-        + Send
-        + Sync,
->;
+pub type NotificationHandler =
+    Arc<dyn Fn(Value) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
 #[derive(Default)]
 struct Handlers {
@@ -190,7 +185,8 @@ impl AcpClient {
     }
 
     pub async fn authenticate(&self, method_id: &str) -> Result<Value> {
-        self.call("authenticate", json!({ "methodId": method_id })).await
+        self.call("authenticate", json!({ "methodId": method_id }))
+            .await
     }
 
     pub async fn session_new(&self, cwd: &str, mcp_servers: Value) -> Result<String> {
@@ -224,11 +220,7 @@ impl AcpClient {
         Ok(())
     }
 
-    pub async fn session_prompt(
-        &self,
-        session_id: &str,
-        content: Value,
-    ) -> Result<Value> {
+    pub async fn session_prompt(&self, session_id: &str, content: Value) -> Result<Value> {
         self.call(
             "session/prompt",
             json!({ "sessionId": session_id, "prompt": content }),
@@ -242,10 +234,7 @@ impl AcpClient {
     }
 }
 
-async fn write_frame(
-    writer: &Arc<Mutex<Option<DynWriter>>>,
-    frame: &Value,
-) -> Result<()> {
+async fn write_frame(writer: &Arc<Mutex<Option<DynWriter>>>, frame: &Value) -> Result<()> {
     let mut guard = writer.lock().await;
     let Some(w) = guard.as_mut() else {
         return Err(anyhow!("AcpClient not attached"));
@@ -257,11 +246,7 @@ async fn write_frame(
     Ok(())
 }
 
-async fn write_result(
-    writer: &Arc<Mutex<Option<DynWriter>>>,
-    req_id: i64,
-    result: Value,
-) {
+async fn write_result(writer: &Arc<Mutex<Option<DynWriter>>>, req_id: i64, result: Value) {
     let frame = json!({ "jsonrpc": "2.0", "id": req_id, "result": result });
     let _ = write_frame(writer, &frame).await;
 }
@@ -342,10 +327,7 @@ async fn dispatch(
                         .to_string();
                     let _ = tx.send(Err(anyhow!("ACP error {code}: {m}")));
                 } else {
-                    let r = msg
-                        .get("result")
-                        .cloned()
-                        .unwrap_or(Value::Null);
+                    let r = msg.get("result").cloned().unwrap_or(Value::Null);
                     let _ = tx.send(Ok(r));
                 }
             }
@@ -372,7 +354,10 @@ async fn handle_inbound_request(
     handlers: Arc<Mutex<Handlers>>,
     writer: Arc<Mutex<Option<DynWriter>>>,
 ) {
-    let params = msg.get("params").cloned().unwrap_or(Value::Object(Default::default()));
+    let params = msg
+        .get("params")
+        .cloned()
+        .unwrap_or(Value::Object(Default::default()));
     let h = {
         let guard = handlers.lock().await;
         match method.as_str() {
@@ -383,7 +368,13 @@ async fn handle_inbound_request(
         }
     };
     let Some(handler) = h else {
-        write_error(&writer, req_id, -32601, format!("Method not handled: {method}")).await;
+        write_error(
+            &writer,
+            req_id,
+            -32601,
+            format!("Method not handled: {method}"),
+        )
+        .await;
         return;
     };
     // Spawn so a slow handler can't block the read loop.
@@ -399,12 +390,11 @@ async fn handle_inbound_request(
     });
 }
 
-async fn handle_inbound_notification(
-    method: String,
-    msg: Value,
-    handlers: Arc<Mutex<Handlers>>,
-) {
-    let params = msg.get("params").cloned().unwrap_or(Value::Object(Default::default()));
+async fn handle_inbound_notification(method: String, msg: Value, handlers: Arc<Mutex<Handlers>>) {
+    let params = msg
+        .get("params")
+        .cloned()
+        .unwrap_or(Value::Object(Default::default()));
     if method == "session/update" {
         let h = handlers.lock().await.session_update.clone();
         if let Some(h) = h {
@@ -524,10 +514,13 @@ mod tests {
         let mut reader = BufReader::new(client_to_agent_r);
         let mut line = String::new();
         // Bounded wait so a regression hangs the test, not the suite.
-        tokio::time::timeout(std::time::Duration::from_secs(2), reader.read_line(&mut line))
-            .await
-            .expect("timed out waiting for response")
-            .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            reader.read_line(&mut line),
+        )
+        .await
+        .expect("timed out waiting for response")
+        .unwrap();
         let resp: Value = serde_json::from_str(line.trim()).unwrap();
         assert_eq!(resp["id"], 42);
         assert_eq!(resp["result"]["outcome"]["outcome"], "selected");

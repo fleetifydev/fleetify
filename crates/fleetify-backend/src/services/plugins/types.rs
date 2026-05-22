@@ -249,7 +249,7 @@ mod tests {
         assert!(is_valid_name("foo-bar"));
         assert!(is_valid_name("foo123"));
         assert!(is_valid_name("0foo")); // digit first is OK
-        // Bad cases:
+                                        // Bad cases:
         assert!(!is_valid_name(""));
         assert!(!is_valid_name("-foo")); // leading hyphen
         assert!(!is_valid_name("Foo")); // uppercase
@@ -272,13 +272,7 @@ mod tests {
             assert!(is_valid_semver(ok), "should be valid: {ok}");
         }
         for bad in [
-            "",
-            "1",
-            "1.2",
-            "1.2.",
-            ".1.2.3",
-            "1.2.3.4",
-            "01.0.0", // leading zero
+            "", "1", "1.2", "1.2.", ".1.2.3", "1.2.3.4", "01.0.0", // leading zero
             "v1.2.3", // v-prefix
             "1.2.x",
         ] {
@@ -301,7 +295,15 @@ mod tests {
         let p = derive_provides(&d);
         assert_eq!(
             p,
-            vec!["mcp", "skills", "commands", "prompts", "hooks", "subagents", "workflows"]
+            vec![
+                "mcp",
+                "skills",
+                "commands",
+                "prompts",
+                "hooks",
+                "subagents",
+                "workflows"
+            ]
         );
 
         // codex.prompts on its own does NOT surface anything (deprecated).

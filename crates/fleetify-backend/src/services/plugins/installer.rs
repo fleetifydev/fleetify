@@ -68,7 +68,14 @@ pub async fn install_from_git(repo_url: &str) -> Result<InstallResult, InstallEr
     let tmp = plugins.join(format!(".staging-{}", uuid::Uuid::new_v4()));
     let clone_res = run_cmd(
         "git",
-        &["clone", "--depth", "1", "--single-branch", repo_url, tmp.to_str().unwrap()],
+        &[
+            "clone",
+            "--depth",
+            "1",
+            "--single-branch",
+            repo_url,
+            tmp.to_str().unwrap(),
+        ],
         None,
         Duration::from_secs(90),
     )
@@ -147,10 +154,7 @@ pub async fn install_from_git(repo_url: &str) -> Result<InstallResult, InstallEr
 
     let mut manifest_value = serde_json::to_value(&m).unwrap_or(Value::Null);
     if let Some(obj) = manifest_value.as_object_mut() {
-        obj.insert(
-            "materialization".into(),
-            Value::Object(materialization),
-        );
+        obj.insert("materialization".into(), Value::Object(materialization));
     }
     Ok(InstallResult {
         install_id: m.name.clone(),
@@ -322,6 +326,9 @@ mod tests {
         assert!(b.join("top.txt").is_file());
         assert!(b.join("nested/inner.txt").is_file());
         assert_eq!(std::fs::read_to_string(b.join("top.txt")).unwrap(), "T");
-        assert_eq!(std::fs::read_to_string(b.join("nested/inner.txt")).unwrap(), "I");
+        assert_eq!(
+            std::fs::read_to_string(b.join("nested/inner.txt")).unwrap(),
+            "I"
+        );
     }
 }

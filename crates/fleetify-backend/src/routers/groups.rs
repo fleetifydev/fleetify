@@ -17,9 +17,7 @@ pub fn router() -> Router<AppState> {
         .route("/groups/{*path}", axum::routing::delete(delete_group))
 }
 
-async fn list_groups(
-    State(st): State<AppState>,
-) -> Result<Json<Vec<Group>>, ApiError> {
+async fn list_groups(State(st): State<AppState>) -> Result<Json<Vec<Group>>, ApiError> {
     let rows = sqlx::query_as::<_, Group>("SELECT * FROM groups ORDER BY order_idx")
         .fetch_all(&st.auth.pool)
         .await?;
@@ -38,11 +36,10 @@ async fn create_group(
     State(st): State<AppState>,
     Json(b): Json<GroupBody>,
 ) -> Result<Json<Group>, ApiError> {
-    let exists: Option<(String,)> =
-        sqlx::query_as("SELECT path FROM groups WHERE path = ?")
-            .bind(&b.path)
-            .fetch_optional(&st.auth.pool)
-            .await?;
+    let exists: Option<(String,)> = sqlx::query_as("SELECT path FROM groups WHERE path = ?")
+        .bind(&b.path)
+        .fetch_optional(&st.auth.pool)
+        .await?;
     if exists.is_some() {
         return Err(ApiError::Conflict(
             json!({ "detail": "Group already exists" }),

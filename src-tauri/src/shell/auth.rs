@@ -102,7 +102,10 @@ pub struct AuthError {
 }
 impl AuthError {
     fn new(m: impl Into<String>, k: impl Into<String>) -> Self {
-        Self { message: m.into(), kind: k.into() }
+        Self {
+            message: m.into(),
+            kind: k.into(),
+        }
     }
 }
 impl std::fmt::Display for AuthError {
@@ -138,7 +141,10 @@ fn emit_event(payload: serde_json::Value) {
 }
 
 fn now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
 }
 fn b64url(b: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
@@ -263,14 +269,16 @@ fn capture_code() -> Result<Cb, AuthError> {
         let code = q.get("code").cloned();
         let stt = q.get("state").cloned();
         let err = q.get("error").cloned();
-        let mut success = url::Url::parse(&dash).unwrap_or_else(|_| {
-            url::Url::parse("http://localhost").unwrap()
-        });
+        let mut success =
+            url::Url::parse(&dash).unwrap_or_else(|_| url::Url::parse("http://localhost").unwrap());
         if let Some(e) = &err {
             success.set_path("/oauth/error");
             success.query_pairs_mut().append_pair("error", e);
             let _ = req.respond(redirect(&success));
-            let _ = tx.send(Err(AuthError::new(format!("Authorize failed: {e}"), "auth")));
+            let _ = tx.send(Err(AuthError::new(
+                format!("Authorize failed: {e}"),
+                "auth",
+            )));
             break;
         }
         if code.is_none() || stt.as_deref() != Some(state_c.as_str()) {
@@ -288,7 +296,11 @@ fn capture_code() -> Result<Cb, AuthError> {
         break;
     });
 
-    Ok(Cb { redirect_uri, state, rx })
+    Ok(Cb {
+        redirect_uri,
+        state,
+        rx,
+    })
 }
 
 pub async fn sign_in() -> Result<Tokens, AuthError> {
@@ -317,8 +329,7 @@ pub async fn sign_in() -> Result<Tokens, AuthError> {
     let joined = tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(300)))
         .await
         .map_err(|e| AuthError::new(e.to_string(), "auth"))?;
-    let code = joined
-        .map_err(|_| AuthError::new("Sign-in timed out.", "auth"))??;
+    let code = joined.map_err(|_| AuthError::new("Sign-in timed out.", "auth"))??;
 
     let client = reqwest::Client::new();
     let res = resource();

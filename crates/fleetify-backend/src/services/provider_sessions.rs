@@ -61,7 +61,9 @@ pub fn list_gemini_sessions(project_path: &str) -> Vec<SessionPreview> {
         } else {
             None
         };
-        let Some(session_id) = session_id else { continue };
+        let Some(session_id) = session_id else {
+            continue;
+        };
         let mtime = match entry.metadata().and_then(|m| m.modified()) {
             Ok(t) => chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339(),
             Err(_) => chrono::Utc::now().to_rfc3339(),
@@ -102,8 +104,12 @@ pub fn list_codex_sessions(project_path: &str) -> Vec<SessionPreview> {
         if p.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&p) else { continue };
-        let Ok(data) = serde_json::from_str::<Value>(&text) else { continue };
+        let Ok(text) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        let Ok(data) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
         let cwd_in_file = data
             .get("cwd")
             .and_then(|x| x.as_str())
@@ -112,8 +118,7 @@ pub fn list_codex_sessions(project_path: &str) -> Vec<SessionPreview> {
         if cwd_in_file != path_norm {
             continue;
         }
-        let Some(session_id) = p.file_stem().and_then(|s| s.to_str()).map(String::from)
-        else {
+        let Some(session_id) = p.file_stem().and_then(|s| s.to_str()).map(String::from) else {
             continue;
         };
         let mtime = match entry.metadata().and_then(|m| m.modified()) {
@@ -190,10 +195,7 @@ mod tests {
         assert_eq!(gemini_project_hash("/proj/"), "proj");
     }
 
-    fn install_fake_home() -> (
-        std::sync::MutexGuard<'static, ()>,
-        tempfile::TempDir,
-    ) {
+    fn install_fake_home() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
         let g = crate::test_support::home_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
@@ -213,7 +215,12 @@ mod tests {
     fn list_gemini_sessions_returns_files_with_preview_and_newest_first() {
         let (_g, tmp) = install_fake_home();
         let hash = gemini_project_hash("/work/proj");
-        let dir = tmp.path().join(".gemini").join("tmp").join(hash).join("checkpoints");
+        let dir = tmp
+            .path()
+            .join(".gemini")
+            .join("tmp")
+            .join(hash)
+            .join("checkpoints");
         std::fs::create_dir_all(&dir).unwrap();
 
         // One JSON checkpoint with a user prompt → returns preview.

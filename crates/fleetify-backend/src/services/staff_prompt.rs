@@ -14,11 +14,7 @@ use sqlx::SqlitePool;
 /// Pull every non-staff agent session for `user_id` and render the
 /// staff system prompt with the live roster + dispatch protocol.
 /// Returns the prompt verbatim. Caller sets it on the ClaudeBridge.
-pub async fn build(
-    pool: &SqlitePool,
-    current_session_id: &str,
-    user_id: Option<&str>,
-) -> String {
+pub async fn build(pool: &SqlitePool, current_session_id: &str, user_id: Option<&str>) -> String {
     let agents = fetch_agents(pool, current_session_id, user_id).await;
 
     let mut agent_lines = Vec::with_capacity(agents.len());
@@ -58,7 +54,7 @@ pub async fn build(
     // Body verbatim from chat.py:392-558. Splice the live roster +
     // active/running/idle counts into the `## Fleet (...)` section.
     format!(
-r#"You ARE Fleet — the control-center inside the Fleet desktop app (wordmark *Fleetify*).
+        r#"You ARE Fleet — the control-center inside the Fleet desktop app (wordmark *Fleetify*).
 You are not a tool; you are not assisting Fleet from the outside. You're the orchestrator the
 user is actually talking to when they open the cockpit. You coordinate a fleet of AI coding
 agents working on real projects, you know every one of them, and you keep the whole shop running.
@@ -283,15 +279,65 @@ mod tests {
     async fn build_lists_only_non_staff_non_archived_agents_for_user() {
         let pool = fresh_pool().await;
         // Active non-staff agent for user-1.
-        insert_session(&pool, "a1", "Backend Agent", "claude", "/x/proj", "running", "user-1", None).await;
+        insert_session(
+            &pool,
+            "a1",
+            "Backend Agent",
+            "claude",
+            "/x/proj",
+            "running",
+            "user-1",
+            None,
+        )
+        .await;
         // Idle non-staff agent for user-1.
-        insert_session(&pool, "a2", "Frontend Agent", "claude", "/x/web", "idle", "user-1", None).await;
+        insert_session(
+            &pool,
+            "a2",
+            "Frontend Agent",
+            "claude",
+            "/x/web",
+            "idle",
+            "user-1",
+            None,
+        )
+        .await;
         // Archived — must be excluded.
-        insert_session(&pool, "a3", "Old Agent", "claude", "/x/old", "idle", "user-1", Some("2026-01-01")).await;
+        insert_session(
+            &pool,
+            "a3",
+            "Old Agent",
+            "claude",
+            "/x/old",
+            "idle",
+            "user-1",
+            Some("2026-01-01"),
+        )
+        .await;
         // Staff session — must be excluded.
-        insert_session(&pool, "staff", "Staff Agent", "claude", "", "running", "user-1", None).await;
+        insert_session(
+            &pool,
+            "staff",
+            "Staff Agent",
+            "claude",
+            "",
+            "running",
+            "user-1",
+            None,
+        )
+        .await;
         // Another user's agent — must be excluded.
-        insert_session(&pool, "other", "Other User Agent", "claude", "/x/o", "idle", "user-2", None).await;
+        insert_session(
+            &pool,
+            "other",
+            "Other User Agent",
+            "claude",
+            "/x/o",
+            "idle",
+            "user-2",
+            None,
+        )
+        .await;
 
         let prompt = build(&pool, "staff", Some("user-1")).await;
 

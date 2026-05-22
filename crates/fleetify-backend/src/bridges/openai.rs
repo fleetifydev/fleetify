@@ -48,16 +48,15 @@ impl OpenAIBridge {
     }
 
     pub async fn abort(&self) {
-        self.aborted.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.aborted
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Spawn the streaming request → mpsc<BridgeEvent> (init/running/
     /// message_delta*/cost/done). Errors emit `Error` + `Status done`.
-    pub async fn send_message(
-        &self,
-        message: &str,
-    ) -> anyhow::Result<mpsc::Receiver<BridgeEvent>> {
-        self.aborted.store(false, std::sync::atomic::Ordering::SeqCst);
+    pub async fn send_message(&self, message: &str) -> anyhow::Result<mpsc::Receiver<BridgeEvent>> {
+        self.aborted
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         let (tx, rx) = mpsc::channel::<BridgeEvent>(256);
 
         if self.api_key.is_none() {
@@ -67,7 +66,11 @@ impl OpenAIBridge {
                     error: "OPENAI_API_KEY env var is not set".into(),
                 })
                 .await;
-            let _ = tx.send(BridgeEvent::Status { status: "done".into() }).await;
+            let _ = tx
+                .send(BridgeEvent::Status {
+                    status: "done".into(),
+                })
+                .await;
             return Ok(rx);
         }
 
@@ -103,7 +106,11 @@ impl OpenAIBridge {
             let history = st.history.clone();
             drop(st);
 
-            let _ = tx.send(BridgeEvent::Status { status: "running".into() }).await;
+            let _ = tx
+                .send(BridgeEvent::Status {
+                    status: "running".into(),
+                })
+                .await;
 
             let url = format!("{}/v1/chat/completions", base.trim_end_matches('/'));
             let body = json!({
@@ -126,7 +133,11 @@ impl OpenAIBridge {
                             error: format!("OpenAI request failed: {e}"),
                         })
                         .await;
-                    let _ = tx.send(BridgeEvent::Status { status: "done".into() }).await;
+                    let _ = tx
+                        .send(BridgeEvent::Status {
+                            status: "done".into(),
+                        })
+                        .await;
                     return;
                 }
             };
@@ -139,7 +150,11 @@ impl OpenAIBridge {
                         error: format!("OpenAI {s}: {}", &body[..body.len().min(400)]),
                     })
                     .await;
-                let _ = tx.send(BridgeEvent::Status { status: "done".into() }).await;
+                let _ = tx
+                    .send(BridgeEvent::Status {
+                        status: "done".into(),
+                    })
+                    .await;
                 return;
             }
 
@@ -185,17 +200,31 @@ impl OpenAIBridge {
             // Python OpenAIBridge: it always computes via pricing because
             // the OpenAI SDK doesn't report cost_usd). Pricing table:
             // services::pricing.
-            let i = usage.get("input_tokens").and_then(|x| x.as_i64()).unwrap_or(0);
-            let o = usage.get("output_tokens").and_then(|x| x.as_i64()).unwrap_or(0);
+            let i = usage
+                .get("input_tokens")
+                .and_then(|x| x.as_i64())
+                .unwrap_or(0);
+            let o = usage
+                .get("output_tokens")
+                .and_then(|x| x.as_i64())
+                .unwrap_or(0);
             let cr = usage
                 .get("cache_read_tokens")
                 .and_then(|x| x.as_i64())
                 .unwrap_or(0);
             let cost_usd = crate::services::pricing::calculate_cost(&model, i, o, cr, 0);
             let _ = tx
-                .send(BridgeEvent::Cost { usage, cost_usd, model })
+                .send(BridgeEvent::Cost {
+                    usage,
+                    cost_usd,
+                    model,
+                })
                 .await;
-            let _ = tx.send(BridgeEvent::Status { status: "done".into() }).await;
+            let _ = tx
+                .send(BridgeEvent::Status {
+                    status: "done".into(),
+                })
+                .await;
         });
 
         Ok(rx)
@@ -214,11 +243,7 @@ fn find_double_newline(buf: &[u8]) -> Option<usize> {
 
 /// Parse one SSE message block (possibly multi-line `data:` continuation)
 /// into BridgeEvent steps. Pure — unit-testable without HTTP.
-fn parse_sse_event(
-    block: &str,
-    assistant_text: &mut String,
-    usage: &mut Value,
-) -> Vec<SseStep> {
+fn parse_sse_event(block: &str, assistant_text: &mut String, usage: &mut Value) -> Vec<SseStep> {
     let mut out = Vec::new();
     let mut data = String::new();
     for line in block.lines() {
@@ -248,7 +273,9 @@ fn parse_sse_event(
         {
             if !text.is_empty() {
                 assistant_text.push_str(text);
-                out.push(SseStep::Event(BridgeEvent::MessageDelta { text: text.into() }));
+                out.push(SseStep::Event(BridgeEvent::MessageDelta {
+                    text: text.into(),
+                }));
             }
         }
     }

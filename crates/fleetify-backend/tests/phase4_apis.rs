@@ -15,7 +15,10 @@ use rsa::traits::PublicKeyParts;
 use rsa::{RsaPrivateKey, RsaPublicKey};
 
 fn now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
 }
 
 #[tokio::test]
@@ -136,7 +139,9 @@ async fn phase4_apis_smoke() {
     assert_eq!(arr.len(), 2);
     // User source is added_at-newer so it sorts first; official is the
     // seed with is_official = true.
-    assert!(arr.iter().any(|r| r["repo_url"] == "https://example.com/repo"));
+    assert!(arr
+        .iter()
+        .any(|r| r["repo_url"] == "https://example.com/repo"));
     assert!(arr.iter().any(|r| r["is_official"] == true));
 
     // PATCH (disable).
@@ -169,7 +174,10 @@ async fn phase4_apis_smoke() {
     assert_eq!(r.status(), 200);
     let v: serde_json::Value = r.json().await.unwrap();
     assert_eq!(v["ok"], false);
-    assert!(v["error"].as_str().unwrap().contains("repo_url is required"));
+    assert!(v["error"]
+        .as_str()
+        .unwrap()
+        .contains("repo_url is required"));
 
     // ── /api/workflows lists 0 (no plugins installed in test home) ──
     let r = client
@@ -179,7 +187,13 @@ async fn phase4_apis_smoke() {
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
-    assert!(r.json::<serde_json::Value>().await.unwrap().as_array().unwrap().is_empty());
+    assert!(r
+        .json::<serde_json::Value>()
+        .await
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .is_empty());
 
     // ── /api/mcp/auth/callback rejects missing params ──
     let r = client
@@ -191,7 +205,10 @@ async fn phase4_apis_smoke() {
     assert_eq!(r.status(), 200);
     let v: serde_json::Value = r.json().await.unwrap();
     assert_eq!(v["ok"], false);
-    assert!(v["error"].as_str().unwrap().contains("code + state are required"));
+    assert!(v["error"]
+        .as_str()
+        .unwrap()
+        .contains("code + state are required"));
 
     // ── healthz still works (anchor sanity) ──
     let r = client.get(format!("{base}/healthz")).send().await.unwrap();

@@ -55,8 +55,7 @@ struct ChatBody {
 }
 
 async fn chat(State(st): State<AppState>, Json(b): Json<ChatBody>) -> Json<Value> {
-    match fleet_brain::chat(&st.auth.pool, &b.session_id, &b.prompt, &b.fleet_snapshot).await
-    {
+    match fleet_brain::chat(&st.auth.pool, &b.session_id, &b.prompt, &b.fleet_snapshot).await {
         Ok(r) => Json(serde_json::to_value(r).unwrap_or(Value::Null)),
         Err(e) => Json(json!({
             "text": format!("Fleet couldn't reply ({e})."),

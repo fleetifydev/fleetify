@@ -133,7 +133,11 @@ async fn run_ssh_cmd(cmd: &[String], timeout_secs: u64) -> (i32, String, String)
     )
     .await;
     match wait {
-        Err(_) => (124, String::new(), "Timed out while contacting the host.".into()),
+        Err(_) => (
+            124,
+            String::new(),
+            "Timed out while contacting the host.".into(),
+        ),
         Ok(Err(e)) => (-1, String::new(), e.to_string()),
         Ok(Ok(o)) => (
             o.status.code().unwrap_or(0),
@@ -437,5 +441,4 @@ mod tests {
         assert_eq!(last_line(txt).as_deref(), Some("second"));
         assert!(last_line("").is_none());
     }
-
 }

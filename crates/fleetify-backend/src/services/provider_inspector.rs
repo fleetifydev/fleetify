@@ -46,17 +46,16 @@ pub fn parse_frontmatter(text: &str) -> (Option<String>, Option<String>) {
 fn strip_quotes(s: &str) -> String {
     let t = s.trim();
     let t = t.trim_start_matches('"').trim_end_matches('"');
-    t.trim_start_matches('\'').trim_end_matches('\'').to_string()
+    t.trim_start_matches('\'')
+        .trim_end_matches('\'')
+        .to_string()
 }
 
 fn scan_root(root: &Path, provider: &str, tier: &'static str) -> Vec<Skill> {
     let Ok(rd) = std::fs::read_dir(root) else {
         return Vec::new();
     };
-    let mut entries: Vec<PathBuf> = rd
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .collect();
+    let mut entries: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
     entries.sort();
 
     let mut out = Vec::new();
@@ -93,7 +92,11 @@ fn scan_root(root: &Path, provider: &str, tier: &'static str) -> Vec<Skill> {
 pub fn list_claude_skills(home: &Path, project: Option<&Path>) -> Vec<Skill> {
     let mut all = scan_root(&home.join(".claude").join("skills"), "claude", "user");
     if let Some(p) = project {
-        all.extend(scan_root(&p.join(".claude").join("skills"), "claude", "project"));
+        all.extend(scan_root(
+            &p.join(".claude").join("skills"),
+            "claude",
+            "project",
+        ));
     }
     all
 }
@@ -140,11 +143,7 @@ fn skill_roots(
 /// /skills tab regardless of `session.tool`. Returns an empty list
 /// for unknown providers (parity with Python returning [] in that
 /// branch).
-pub fn list_skills_for_provider(
-    provider: &str,
-    home: &Path,
-    project: Option<&Path>,
-) -> Vec<Skill> {
+pub fn list_skills_for_provider(provider: &str, home: &Path, project: Option<&Path>) -> Vec<Skill> {
     let mut all: Vec<Skill> = Vec::new();
     for (root, tier) in skill_roots(provider, home, project) {
         all.extend(scan_root(&root, provider, tier));
@@ -188,29 +187,34 @@ fn flatten_hooks_block(
     };
     let mut out = Vec::new();
     for (event, groups) in hooks {
-        let Some(arr) = groups.as_array() else { continue };
+        let Some(arr) = groups.as_array() else {
+            continue;
+        };
         for group in arr {
-            let Some(obj) = group.as_object() else { continue };
+            let Some(obj) = group.as_object() else {
+                continue;
+            };
             let matcher = obj
                 .get("matcher")
                 .and_then(|x| x.as_str())
                 .map(String::from);
             // Shape 1: { matcher, hooks: [...] } — Claude/Gemini convention.
             // Shape 2: { matcher, command } directly — older Codex configs.
-            let handlers: Vec<&serde_json::Value> = if let Some(arr) =
-                obj.get("hooks").and_then(|x| x.as_array())
-            {
-                arr.iter().collect()
-            } else if obj.contains_key("command")
-                || obj.contains_key("url")
-                || obj.contains_key("prompt")
-            {
-                vec![group]
-            } else {
-                Vec::new()
-            };
+            let handlers: Vec<&serde_json::Value> =
+                if let Some(arr) = obj.get("hooks").and_then(|x| x.as_array()) {
+                    arr.iter().collect()
+                } else if obj.contains_key("command")
+                    || obj.contains_key("url")
+                    || obj.contains_key("prompt")
+                {
+                    vec![group]
+                } else {
+                    Vec::new()
+                };
             for handler in handlers {
-                let Some(h) = handler.as_object() else { continue };
+                let Some(h) = handler.as_object() else {
+                    continue;
+                };
                 let command = h
                     .get("command")
                     .or_else(|| h.get("url"))
@@ -259,11 +263,7 @@ fn flatten_hooks_block(
 
 /// Read a JSON settings file and flatten its top-level `hooks` block.
 /// Empty result on missing-file / malformed-JSON / missing-`hooks` key.
-fn scan_settings_hooks(
-    path: &Path,
-    provider: &'static str,
-    tier: &'static str,
-) -> Vec<Hook> {
+fn scan_settings_hooks(path: &Path, provider: &'static str, tier: &'static str) -> Vec<Hook> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -279,11 +279,7 @@ fn scan_settings_hooks(
 /// Codex accepts hooks in either `hooks.json` or `[hooks]` of
 /// `config.toml`; when both exist `hooks.json` wins. Faithful with
 /// `_scan_codex_hooks`.
-fn scan_codex_hooks(
-    json_path: &Path,
-    toml_path: &Path,
-    tier: &'static str,
-) -> Vec<Hook> {
+fn scan_codex_hooks(json_path: &Path, toml_path: &Path, tier: &'static str) -> Vec<Hook> {
     if json_path.is_file() {
         if let Ok(text) = std::fs::read_to_string(json_path) {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
@@ -297,17 +293,13 @@ fn scan_codex_hooks(
     if toml_path.is_file() {
         if let Ok(text) = std::fs::read_to_string(toml_path) {
             if let Ok(v) = toml::from_str::<toml::Value>(&text) {
-                let Some(hooks) = v.get("hooks") else { return Vec::new() };
+                let Some(hooks) = v.get("hooks") else {
+                    return Vec::new();
+                };
                 // Round-trip TOML→JSON via serde_json so the JSON-based
                 // flattener can reuse its logic.
                 if let Ok(json_v) = serde_json::to_value(hooks) {
-                    return flatten_hooks_block(
-                        &json_v,
-                        "codex",
-                        tier,
-                        toml_path,
-                        "toml",
-                    );
+                    return flatten_hooks_block(&json_v, "codex", tier, toml_path, "toml");
                 }
             }
         }
@@ -375,11 +367,7 @@ pub fn list_codex_hooks(home: &Path, project: Option<&Path>) -> Vec<Hook> {
 
 /// Provider-aware hook scanner — same dispatch shape as
 /// `list_skills_for_provider`. Unknown tools return [].
-pub fn list_hooks_for_provider(
-    provider: &str,
-    home: &Path,
-    project: Option<&Path>,
-) -> Vec<Hook> {
+pub fn list_hooks_for_provider(provider: &str, home: &Path, project: Option<&Path>) -> Vec<Hook> {
     match provider {
         "claude" => list_claude_hooks(home, project),
         "gemini" => list_gemini_hooks(home, project),
@@ -428,15 +416,13 @@ fn scan_md_commands(
                 &mut out,
             );
         } else if p.is_dir() {
-            let ns = force_namespace.map(String::from).or_else(|| {
-                p.file_name().and_then(|s| s.to_str()).map(String::from)
-            });
+            let ns = force_namespace
+                .map(String::from)
+                .or_else(|| p.file_name().and_then(|s| s.to_str()).map(String::from));
             if let Ok(sub) = std::fs::read_dir(&p) {
                 for sub_entry in sub.flatten() {
                     let sp = sub_entry.path();
-                    if sp.is_file()
-                        && sp.extension().and_then(|s| s.to_str()) == Some("md")
-                    {
+                    if sp.is_file() && sp.extension().and_then(|s| s.to_str()) == Some("md") {
                         push_md_command(&sp, provider, tier, ns.clone(), &mut out);
                     }
                 }
@@ -496,11 +482,7 @@ pub fn list_claude_commands(home: &Path, project: Option<&Path>) -> Vec<Command>
 /// Walk a Gemini commands directory (TOML files instead of MD).
 /// Subdirectories become namespaces like `/git:commit`. Description
 /// comes from a top-level `description = "…"` TOML key.
-fn scan_toml_commands(
-    root: &Path,
-    provider: &'static str,
-    tier: &'static str,
-) -> Vec<Command> {
+fn scan_toml_commands(root: &Path, provider: &'static str, tier: &'static str) -> Vec<Command> {
     let mut out = Vec::new();
     let Ok(rd) = std::fs::read_dir(root) else {
         return out;
@@ -510,16 +492,11 @@ fn scan_toml_commands(
         if p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("toml") {
             push_toml_command(&p, provider, tier, None, &mut out);
         } else if p.is_dir() {
-            let ns = p
-                .file_name()
-                .and_then(|s| s.to_str())
-                .map(String::from);
+            let ns = p.file_name().and_then(|s| s.to_str()).map(String::from);
             if let Ok(sub) = std::fs::read_dir(&p) {
                 for sub_entry in sub.flatten() {
                     let sp = sub_entry.path();
-                    if sp.is_file()
-                        && sp.extension().and_then(|s| s.to_str()) == Some("toml")
-                    {
+                    if sp.is_file() && sp.extension().and_then(|s| s.to_str()) == Some("toml") {
                         push_toml_command(&sp, provider, tier, ns.clone(), &mut out);
                     }
                 }
@@ -564,11 +541,7 @@ fn push_toml_command(
 
 /// Gemini commands: `~/.gemini/commands/**/*.toml` + project equivalent.
 pub fn list_gemini_commands(home: &Path, project: Option<&Path>) -> Vec<Command> {
-    let mut all = scan_toml_commands(
-        &home.join(".gemini").join("commands"),
-        "gemini",
-        "user",
-    );
+    let mut all = scan_toml_commands(&home.join(".gemini").join("commands"), "gemini", "user");
     if let Some(p) = project {
         all.extend(scan_toml_commands(
             &p.join(".gemini").join("commands"),
@@ -612,8 +585,7 @@ mod tests {
 
     #[test]
     fn frontmatter_extracts_name_and_description() {
-        let text =
-            "---\nname: My Skill\ndescription: \"Does a thing\"\nother: ignore\n---\nbody";
+        let text = "---\nname: My Skill\ndescription: \"Does a thing\"\nother: ignore\n---\nbody";
         let (n, d) = parse_frontmatter(text);
         assert_eq!(n.as_deref(), Some("My Skill"));
         assert_eq!(d.as_deref(), Some("Does a thing"));
@@ -692,10 +664,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre_bash.command, "fleet-permission-check");
         assert_eq!(pre_bash.source_tier, "user");
-        let posts: Vec<&Hook> = items
-            .iter()
-            .filter(|h| h.event == "PostToolUse")
-            .collect();
+        let posts: Vec<&Hook> = items.iter().filter(|h| h.event == "PostToolUse").collect();
         assert_eq!(posts.len(), 1);
         assert!(posts[0].matcher.is_none());
     }
@@ -781,11 +750,7 @@ mod tests {
         let home = tmp.path().join("home");
         let cmd_root = home.join(".gemini/commands");
         std::fs::create_dir_all(cmd_root.join("git")).unwrap();
-        std::fs::write(
-            cmd_root.join("ping.toml"),
-            r#"description = "pong""#,
-        )
-        .unwrap();
+        std::fs::write(cmd_root.join("ping.toml"), r#"description = "pong""#).unwrap();
         std::fs::write(
             cmd_root.join("git/commit.toml"),
             r#"description = "nice commit""#,

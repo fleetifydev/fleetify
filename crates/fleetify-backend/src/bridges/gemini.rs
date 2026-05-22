@@ -336,10 +336,7 @@ impl GeminiBridge {
         let perm_mode = self.permission_mode.clone();
         client
             .on_permission_request(Arc::new(move |_params| {
-                let bypass = matches!(
-                    perm_mode.as_str(),
-                    "bypassPermissions" | "dontAsk"
-                );
+                let bypass = matches!(perm_mode.as_str(), "bypassPermissions" | "dontAsk");
                 Box::pin(async move {
                     if bypass {
                         Ok(json!({
@@ -372,18 +369,15 @@ impl GeminiBridge {
             .on_fs_read(Arc::new(move |params: Value| {
                 let project = project_for_read.clone();
                 Box::pin(async move {
-                    let path = params
-                        .get("path")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
                     if path.is_empty() {
                         return Err(anyhow!("path is required"));
                     }
                     if !project.is_empty() && !path.starts_with(&project) {
                         return Err(anyhow!("path outside project: {path}"));
                     }
-                    let body = std::fs::read_to_string(path)
-                        .map_err(|e| anyhow!("read {path}: {e}"))?;
+                    let body =
+                        std::fs::read_to_string(path).map_err(|e| anyhow!("read {path}: {e}"))?;
                     Ok(json!({ "content": body }))
                 })
             }))
@@ -394,14 +388,8 @@ impl GeminiBridge {
             .on_fs_write(Arc::new(move |params: Value| {
                 let project = project_for_write.clone();
                 Box::pin(async move {
-                    let path = params
-                        .get("path")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let content = params
-                        .get("content")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                    let content = params.get("content").and_then(|v| v.as_str()).unwrap_or("");
                     if path.is_empty() {
                         return Err(anyhow!("path is required"));
                     }
@@ -411,8 +399,7 @@ impl GeminiBridge {
                     if let Some(parent) = std::path::Path::new(path).parent() {
                         let _ = std::fs::create_dir_all(parent);
                     }
-                    std::fs::write(path, content)
-                        .map_err(|e| anyhow!("write {path}: {e}"))?;
+                    std::fs::write(path, content).map_err(|e| anyhow!("write {path}: {e}"))?;
                     Ok(json!({}))
                 })
             }))
@@ -668,7 +655,8 @@ struct UsageAcc {
 }
 impl UsageAcc {
     fn has_any(&self) -> bool {
-        self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_write_tokens > 0
+        self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_write_tokens
+            > 0
     }
     fn to_json(&self) -> Value {
         json!({
@@ -698,10 +686,7 @@ async fn translate_session_update(
     match kind {
         "agent_message_chunk" => {
             let content = update.get("content").cloned().unwrap_or(Value::Null);
-            let text = content
-                .get("text")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let text = content.get("text").and_then(|v| v.as_str()).unwrap_or("");
             let is_thought = content
                 .get("annotations")
                 .and_then(|a| a.get("thought"))
@@ -771,12 +756,10 @@ async fn translate_session_update(
                     let bt = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
                     if bt == "diff" {
                         if let Some(old) = block.get("oldText").and_then(|v| v.as_str()) {
-                            input_patch
-                                .insert("old_string".into(), Value::String(old.to_string()));
+                            input_patch.insert("old_string".into(), Value::String(old.to_string()));
                         }
                         if let Some(new) = block.get("newText").and_then(|v| v.as_str()) {
-                            input_patch
-                                .insert("new_string".into(), Value::String(new.to_string()));
+                            input_patch.insert("new_string".into(), Value::String(new.to_string()));
                         }
                         if !input_patch.contains_key("file_path") {
                             if let Some(p) = block.get("path").and_then(|v| v.as_str()) {
@@ -796,9 +779,7 @@ async fn translate_session_update(
                     .await;
             }
             if status == "completed" || status == "failed" {
-                let output = extract_tool_output(
-                    update.get("content").unwrap_or(&Value::Null),
-                );
+                let output = extract_tool_output(update.get("content").unwrap_or(&Value::Null));
                 let _ = tx
                     .send(BridgeEvent::ToolEnd {
                         tool_id,

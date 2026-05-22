@@ -200,10 +200,7 @@ async fn recall(args: Value) -> Result<Value, String> {
     if !r.status().is_success() {
         return Err(format!("GET {url} returned {}", r.status().as_u16()));
     }
-    let body: Value = r
-        .json()
-        .await
-        .map_err(|e| format!("decode failed: {e}"))?;
+    let body: Value = r.json().await.map_err(|e| format!("decode failed: {e}"))?;
     // Optional client-side filter by query — the backend's memory
     // endpoint doesn't support full-text search natively (Phase 4
     // follow-up), so we do a simple substring filter.

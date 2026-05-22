@@ -36,9 +36,7 @@ pub struct CompactionResult {
 pub enum CompactionError {
     #[error("session {0} not found")]
     NotFound(String),
-    #[error(
-        "Conversation too short to compact — need at least {min} messages, have {have}."
-    )]
+    #[error("Conversation too short to compact — need at least {min} messages, have {have}.")]
     TooFewMessages { min: i64, have: i64 },
     #[error(
         "Not enough context to compact — need at least {min} characters of conversation, have {have}."
@@ -87,7 +85,9 @@ fn render_history(rows: &[(String, String, String)]) -> String {
     for (_id, role, content_raw) in rows {
         let blocks: Value = serde_json::from_str(content_raw).unwrap_or_else(|_| {
             // Fall back to one-text-block rendering of the raw string.
-            Value::Array(vec![serde_json::json!({ "type": "text", "text": content_raw })])
+            Value::Array(vec![
+                serde_json::json!({ "type": "text", "text": content_raw }),
+            ])
         });
         let Some(arr) = blocks.as_array() else {
             continue;
@@ -118,10 +118,7 @@ fn render_history(rows: &[(String, String, String)]) -> String {
                     rendered.push(format!("[Tool: {name}]"));
                 }
                 "tool_result" => {
-                    let out = b
-                        .get("output")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let out = b.get("output").and_then(|v| v.as_str()).unwrap_or("");
                     let trimmed: String = out.chars().take(300).collect();
                     rendered.push(format!("[Result] {trimmed}"));
                 }
@@ -185,10 +182,7 @@ pub async fn compact_session(
         .filter(|(_, role, content)| !is_compact_summary_message(role, content))
         .collect();
     let msg_count = new_messages.len() as i64;
-    let char_count: i64 = new_messages
-        .iter()
-        .map(|(_, _, c)| c.len() as i64)
-        .sum();
+    let char_count: i64 = new_messages.iter().map(|(_, _, c)| c.len() as i64).sum();
     if msg_count < MIN_MESSAGE_COUNT {
         return Err(CompactionError::TooFewMessages {
             min: MIN_MESSAGE_COUNT,

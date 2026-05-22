@@ -242,10 +242,7 @@ impl CodexBridge {
         let perm_mode = self.permission_mode.clone();
         client
             .on_approval_request(Arc::new(move |method: String, _params| {
-                let bypass = matches!(
-                    perm_mode.as_str(),
-                    "bypassPermissions" | "dontAsk"
-                );
+                let bypass = matches!(perm_mode.as_str(), "bypassPermissions" | "dontAsk");
                 Box::pin(async move {
                     if bypass {
                         // Approval shape varies per method; the safest
@@ -664,7 +661,11 @@ async fn accumulate_usage(acc: &Arc<Mutex<UsageAcc>>, params: &Value) {
                 break;
             }
         }
-        for key in ["cachedInputTokens", "cached_input_tokens", "cache_read_tokens"] {
+        for key in [
+            "cachedInputTokens",
+            "cached_input_tokens",
+            "cache_read_tokens",
+        ] {
             if let Some(v) = src.get(key).and_then(|v| v.as_u64()) {
                 guard.cache_read_tokens += v;
                 break;

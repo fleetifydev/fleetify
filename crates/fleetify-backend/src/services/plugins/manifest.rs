@@ -93,10 +93,7 @@ pub fn parse_plugin(dir: &Path) -> Result<PluginManifest, ManifestInvalid> {
     if !is_valid_name(&m.name) {
         issues.push(ManifestIssue {
             field: "name".into(),
-            message: format!(
-                "must match ^[a-z0-9][a-z0-9-]*$, got {:?}",
-                m.name
-            ),
+            message: format!("must match ^[a-z0-9][a-z0-9-]*$, got {:?}", m.name),
         });
     }
     if !is_valid_semver(&m.version) {

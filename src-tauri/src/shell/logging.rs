@@ -94,7 +94,12 @@ fn friendly_log_dir() -> Option<PathBuf> {
         Some(PathBuf::from(base).join("Fleetify").join("logs"))
     } else if cfg!(target_os = "macos") {
         let home = std::env::var_os("HOME")?;
-        Some(PathBuf::from(home).join("Library").join("Logs").join("Fleetify"))
+        Some(
+            PathBuf::from(home)
+                .join("Library")
+                .join("Logs")
+                .join("Fleetify"),
+        )
     } else {
         // Linux / BSD — XDG base directory spec.
         let xdg = std::env::var_os("XDG_STATE_HOME");
@@ -244,11 +249,21 @@ pub fn write_renderer_event(level: &str, target: &str, message: &str, fields: Op
     // log shape). `target` carries the renderer namespace (e.g.
     // "ui.branch-picker") so backend grep can correlate with UI events.
     match lvl {
-        Level::TRACE => tracing::trace!(target: "renderer", origin = %target, fields = ?redacted_fields, "{redacted_msg}"),
-        Level::DEBUG => tracing::debug!(target: "renderer", origin = %target, fields = ?redacted_fields, "{redacted_msg}"),
-        Level::INFO => tracing::info!(target: "renderer", origin = %target, fields = ?redacted_fields, "{redacted_msg}"),
-        Level::WARN => tracing::warn!(target: "renderer", origin = %target, fields = ?redacted_fields, "{redacted_msg}"),
-        Level::ERROR => tracing::error!(target: "renderer", origin = %target, fields = ?redacted_fields, "{redacted_msg}"),
+        Level::TRACE => {
+            tracing::trace!(target: "renderer", origin = %target, fields = ?redacted_fields, "{redacted_msg}")
+        }
+        Level::DEBUG => {
+            tracing::debug!(target: "renderer", origin = %target, fields = ?redacted_fields, "{redacted_msg}")
+        }
+        Level::INFO => {
+            tracing::info!(target: "renderer", origin = %target, fields = ?redacted_fields, "{redacted_msg}")
+        }
+        Level::WARN => {
+            tracing::warn!(target: "renderer", origin = %target, fields = ?redacted_fields, "{redacted_msg}")
+        }
+        Level::ERROR => {
+            tracing::error!(target: "renderer", origin = %target, fields = ?redacted_fields, "{redacted_msg}")
+        }
     }
 }
 
@@ -284,12 +299,11 @@ fn check_and_set_crash_flag(log_dir: &Path) -> bool {
 /// errors logged but never propagated — log housekeeping must not
 /// block boot.
 fn run_janitor(log_dir: &Path) {
-    let cutoff = match SystemTime::now()
-        .checked_sub(Duration::from_secs(LOG_RETENTION_DAYS * 86_400))
-    {
-        Some(t) => t,
-        None => return,
-    };
+    let cutoff =
+        match SystemTime::now().checked_sub(Duration::from_secs(LOG_RETENTION_DAYS * 86_400)) {
+            Some(t) => t,
+            None => return,
+        };
     let entries = match fs::read_dir(log_dir) {
         Ok(e) => e,
         Err(e) => {
@@ -310,7 +324,10 @@ fn run_janitor(log_dir: &Path) {
             if let Ok(modified) = meta.modified() {
                 if modified < cutoff {
                     if let Err(e) = fs::remove_file(entry.path()) {
-                        eprintln!("[logging] janitor: failed to delete {:?}: {e}", entry.path());
+                        eprintln!(
+                            "[logging] janitor: failed to delete {:?}: {e}",
+                            entry.path()
+                        );
                     } else {
                         deleted += 1;
                     }
@@ -340,7 +357,10 @@ fn init_panic_hook() {
             .location()
             .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
             .unwrap_or_else(|| "<unknown>".into());
-        let thread = std::thread::current().name().unwrap_or("<unnamed>").to_string();
+        let thread = std::thread::current()
+            .name()
+            .unwrap_or("<unnamed>")
+            .to_string();
         tracing::error!(
             target: "panic",
             thread = %thread,
@@ -423,19 +443,19 @@ pub fn redact_value(v: Value) -> Value {
 /// next whitespace / quote / closing brace, which is wide enough to
 /// catch real tokens without devouring half the surrounding message.
 const TOKEN_PREFIXES: &[(&str, &str)] = &[
-    ("sk-",   "OpenAI-style"),
-    ("sk_",   "Stripe-style"),
-    ("ghp_",  "GitHub PAT"),
-    ("gho_",  "GitHub OAuth"),
-    ("ghs_",  "GitHub server-to-server"),
-    ("ghu_",  "GitHub user-to-server"),
-    ("gha_",  "GitHub app"),
+    ("sk-", "OpenAI-style"),
+    ("sk_", "Stripe-style"),
+    ("ghp_", "GitHub PAT"),
+    ("gho_", "GitHub OAuth"),
+    ("ghs_", "GitHub server-to-server"),
+    ("ghu_", "GitHub user-to-server"),
+    ("gha_", "GitHub app"),
     ("glpat-", "GitLab PAT"),
     ("xoxb-", "Slack bot"),
     ("xoxp-", "Slack user"),
-    ("AIza",  "Google API key"),
-    ("AKIA",  "AWS access key"),
-    ("hf_",   "Hugging Face"),
+    ("AIza", "Google API key"),
+    ("AKIA", "AWS access key"),
+    ("hf_", "Hugging Face"),
 ];
 
 /// Object keys whose VALUES are always treated as secret regardless of
@@ -467,7 +487,15 @@ fn redact_prefix(s: &str, prefix: &str) -> String {
             // Find the end of the token (next whitespace / quote / closer).
             let tail = &s[abs..];
             let end = tail
-                .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '}' || c == ']' || c == ',' || c == ')' )
+                .find(|c: char| {
+                    c.is_whitespace()
+                        || c == '"'
+                        || c == '\''
+                        || c == '}'
+                        || c == ']'
+                        || c == ','
+                        || c == ')'
+                })
                 .unwrap_or(tail.len());
             if end >= prefix.len() + 8 {
                 // Likely a real token — keep prefix for context.
@@ -500,7 +528,15 @@ fn redact_bearer(s: &str) -> String {
             out.push_str(&s[abs..abs + 7]);
             let tail = &s[abs + 7..];
             let end = tail
-                .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '}' || c == ']' || c == ',' || c == ')')
+                .find(|c: char| {
+                    c.is_whitespace()
+                        || c == '"'
+                        || c == '\''
+                        || c == '}'
+                        || c == ']'
+                        || c == ','
+                        || c == ')'
+                })
                 .unwrap_or(tail.len());
             if end > 0 {
                 out.push_str("<redacted>");

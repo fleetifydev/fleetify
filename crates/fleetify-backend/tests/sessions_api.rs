@@ -12,7 +12,10 @@ use rsa::traits::PublicKeyParts;
 use rsa::{RsaPrivateKey, RsaPublicKey};
 
 fn now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
 }
 
 #[tokio::test]
@@ -84,7 +87,11 @@ async fn sessions_api_round_trip_with_auth() {
     assert_eq!(hz["version"], "0.1.0");
 
     // No bearer → 401.
-    let unauth = client.get(format!("{base}/api/sessions")).send().await.unwrap();
+    let unauth = client
+        .get(format!("{base}/api/sessions"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(unauth.status().as_u16(), 401);
 
     // POST /api/sessions (project_path must be an existing dir).
@@ -100,7 +107,10 @@ async fn sessions_api_round_trip_with_auth() {
     let s: serde_json::Value = created.json().await.unwrap();
     assert!(s["id"].as_str().is_some());
     assert_eq!(s["tool"], "claude");
-    assert_eq!(s["command"], "claude -p --output-format stream-json --verbose");
+    assert_eq!(
+        s["command"],
+        "claude -p --output-format stream-json --verbose"
+    );
 
     // GET /api/sessions → contains it.
     let list: serde_json::Value = client

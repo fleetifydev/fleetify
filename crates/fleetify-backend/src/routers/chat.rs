@@ -47,7 +47,11 @@ async fn ws_entry(
 }
 
 async fn send_json(sink: &Sink, v: Value) {
-    let _ = sink.lock().await.send(Message::Text(v.to_string().into())).await;
+    let _ = sink
+        .lock()
+        .await
+        .send(Message::Text(v.to_string().into()))
+        .await;
 }
 
 async fn owned_session(st: &AppState, sid: &str, user_id: &str) -> Option<Session> {
@@ -88,8 +92,7 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
     };
 
     let mut subscribed: HashSet<String> = HashSet::new();
-    let bridges: Arc<Mutex<HashMap<String, AnyBridge>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let bridges: Arc<Mutex<HashMap<String, AnyBridge>>> = Arc::new(Mutex::new(HashMap::new()));
     let streaming: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
     // Per-session live fanout tasks. Each subscribed session id gets a
     // forwarder spawned that pulls broadcast::Value events from
@@ -104,7 +107,9 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
             Message::Close(_) => break,
             _ => continue,
         };
-        let Ok(v) = serde_json::from_str::<Value>(&text) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
         let mtype = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
 
         match mtype {
@@ -141,13 +146,17 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
                                             }
                                             send_json(&sink_for, payload).await;
                                         }
-                                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                        Err(tokio::sync::broadcast::error::RecvError::Lagged(
+                                            _,
+                                        )) => {
                                             // Drop lagged messages and keep going —
                                             // dispatched runs can burst faster than the
                                             // socket. Live UI degradation > full stall.
                                             continue;
                                         }
-                                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                            break
+                                        }
                                     }
                                 }
                             });
@@ -195,7 +204,10 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
             }
 
             "send" => {
-                let Some(sid) = v.get("session_id").and_then(|x| x.as_str()).map(String::from)
+                let Some(sid) = v
+                    .get("session_id")
+                    .and_then(|x| x.as_str())
+                    .map(String::from)
                 else {
                     continue;
                 };
@@ -221,8 +233,12 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
                                             }
                                             send_json(&sink_for, payload).await;
                                         }
-                                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                                        Err(tokio::sync::broadcast::error::RecvError::Lagged(
+                                            _,
+                                        )) => continue,
+                                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                            break
+                                        }
                                     }
                                 }
                             });
@@ -239,8 +255,12 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
                         }
                     }
                 }
-                let user_text =
-                    v.get("message").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+                let user_text = v
+                    .get("message")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
                 if user_text.is_empty() {
                     continue;
                 }
@@ -284,9 +304,10 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
 
 fn sid_list(v: &Value) -> Vec<String> {
     match v.get("session_ids") {
-        Some(Value::Array(a)) => {
-            a.iter().filter_map(|x| x.as_str().map(String::from)).collect()
-        }
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|x| x.as_str().map(String::from))
+            .collect(),
         Some(Value::String(s)) => vec![s.clone()],
         _ => Vec::new(),
     }
@@ -485,13 +506,14 @@ async fn run_send_flow(
     } else {
         Some(session.project_path.as_str())
     };
-    let effective_text = if let Some(ctx) = crate::services::recall_hook::maybe_build_recall_context(
-        &st.auth.pool,
-        &text,
-        &sid,
-        project_for_recall,
-    )
-    .await
+    let effective_text = if let Some(ctx) =
+        crate::services::recall_hook::maybe_build_recall_context(
+            &st.auth.pool,
+            &text,
+            &sid,
+            project_for_recall,
+        )
+        .await
     {
         format!("{ctx}\n\n{text}")
     } else {
@@ -550,7 +572,11 @@ async fn run_send_flow(
         send_json(&sink, payload).await;
 
         match &ev {
-            BridgeEvent::Init { claude_session_id, model, .. } => {
+            BridgeEvent::Init {
+                claude_session_id,
+                model,
+                ..
+            } => {
                 if claude_session_id.is_some() {
                     new_claude_sid = claude_session_id.clone();
                 }
@@ -560,7 +586,11 @@ async fn run_send_flow(
             }
             BridgeEvent::MessageDelta { text } => push_text(&mut content, "text", text),
             BridgeEvent::Thinking { text } => push_text(&mut content, "thinking", text),
-            BridgeEvent::ToolStart { tool_id, name, input } => {
+            BridgeEvent::ToolStart {
+                tool_id,
+                name,
+                input,
+            } => {
                 content.push(json!({"type":"tool_use","tool_id":tool_id,
                     "tool_name":name,"input":input}));
             }
@@ -574,7 +604,11 @@ async fn run_send_flow(
                     }
                 }
             }
-            BridgeEvent::ToolEnd { tool_id, output, is_error } => {
+            BridgeEvent::ToolEnd {
+                tool_id,
+                output,
+                is_error,
+            } => {
                 content.push(json!({"type":"tool_result","tool_id":tool_id,
                     "output":output,"is_error":is_error}));
                 // Record one row in the activity ledger so the Activity /
@@ -586,8 +620,7 @@ async fn run_send_flow(
                     .rev()
                     .find_map(|b| {
                         if b.get("type").and_then(|x| x.as_str()) == Some("tool_use")
-                            && b.get("tool_id").and_then(|x| x.as_str())
-                                == Some(tool_id.as_str())
+                            && b.get("tool_id").and_then(|x| x.as_str()) == Some(tool_id.as_str())
                         {
                             Some((
                                 b.get("tool_name")
@@ -615,7 +648,11 @@ async fn run_send_flow(
                     .await;
                 }
             }
-            BridgeEvent::Cost { usage: u, cost_usd: c, model } => {
+            BridgeEvent::Cost {
+                usage: u,
+                cost_usd: c,
+                model,
+            } => {
                 usage = u.clone();
                 cost_usd = *c;
                 if model != "unknown" {
@@ -631,17 +668,13 @@ async fn run_send_flow(
         // fleetify (Python): switching away during a long agent run
         // and back keeps showing the live progress. Skips when
         // content is still empty (no bytes to persist yet).
-        if !content.is_empty()
-            && last_persist_at.elapsed() >= persist_throttle
-        {
-            let _ = sqlx::query(
-                "UPDATE messages SET content = ?, model = ? WHERE id = ?",
-            )
-            .bind(Value::Array(content.clone()).to_string())
-            .bind(&model_name)
-            .bind(&assistant_msg_id)
-            .execute(&st.auth.pool)
-            .await;
+        if !content.is_empty() && last_persist_at.elapsed() >= persist_throttle {
+            let _ = sqlx::query("UPDATE messages SET content = ?, model = ? WHERE id = ?")
+                .bind(Value::Array(content.clone()).to_string())
+                .bind(&model_name)
+                .bind(&assistant_msg_id)
+                .execute(&st.auth.pool)
+                .await;
             last_persist_at = std::time::Instant::now();
         }
     }
@@ -666,21 +699,14 @@ async fn run_send_flow(
             .collect::<Vec<_>>()
             .join("");
         if !full_text.is_empty() {
-            handle_staff_dispatch_tokens(
-                &st,
-                &sink,
-                &sid,
-                session.user_id.as_deref(),
-                &full_text,
-            )
-            .await;
+            handle_staff_dispatch_tokens(&st, &sink, &sid, session.user_id.as_deref(), &full_text)
+                .await;
             // Strip every token from each text block so the persisted
             // assistant message + the user-visible bubble stay clean.
             for b in content.iter_mut() {
                 if b.get("type").and_then(|x| x.as_str()) == Some("text") {
                     if let Some(t) = b.get("text").and_then(|x| x.as_str()) {
-                        let cleaned =
-                            crate::services::dispatch::strip_all_tokens(t);
+                        let cleaned = crate::services::dispatch::strip_all_tokens(t);
                         b["text"] = json!(cleaned);
                     }
                 }
@@ -705,7 +731,11 @@ async fn run_send_flow(
         )
         .bind(Value::Array(content).to_string())
         .bind(&model_name)
-        .bind(if usage.is_null() { None } else { Some(usage.to_string()) })
+        .bind(if usage.is_null() {
+            None
+        } else {
+            Some(usage.to_string())
+        })
         .bind(cost_usd)
         .bind(chrono::Utc::now().to_rfc3339())
         .bind(&assistant_msg_id)
@@ -716,8 +746,14 @@ async fn run_send_flow(
     if cost_usd > 0.0 {
         // Snapshot the usage counters once so the spawned telemetry task
         // doesn't try to borrow `usage` past this scope.
-        let in_t = usage.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-        let out_t = usage.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+        let in_t = usage
+            .get("input_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let out_t = usage
+            .get("output_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         let cache_r = usage
             .get("cache_read_tokens")
             .and_then(|v| v.as_i64())
@@ -831,14 +867,13 @@ async fn process_direct_dispatches(
 
     let mut cleaned = text.to_string();
     for d in direct {
-        let target: Option<Session> = sqlx::query_as::<_, Session>(
-            "SELECT * FROM sessions WHERE id = ?",
-        )
-        .bind(&d.target_id)
-        .fetch_optional(&st.auth.pool)
-        .await
-        .ok()
-        .flatten();
+        let target: Option<Session> =
+            sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = ?")
+                .bind(&d.target_id)
+                .fetch_optional(&st.auth.pool)
+                .await
+                .ok()
+                .flatten();
         let allowed = match (&target, staff_user_id) {
             (Some(t), Some(uid)) => t.user_id.as_deref().is_none_or(|tu| tu == uid),
             (Some(_), None) => true,
@@ -852,7 +887,10 @@ async fn process_direct_dispatches(
             "[[DIRECT_DISPATCH:{}|{}{}]]",
             d.target_id,
             d.task,
-            d.extra.as_deref().map(|e| format!("||{e}")).unwrap_or_default()
+            d.extra
+                .as_deref()
+                .map(|e| format!("||{e}"))
+                .unwrap_or_default()
         );
         let marker = if target.is_none() {
             " (✗ dispatch failed)"
@@ -871,7 +909,10 @@ async fn process_direct_dispatches(
         let display = d.target_id.chars().take(8).collect::<String>();
         let (ack_success, ack_message) = match (&target, allowed) {
             (None, _) => (false, format!("Agent `{display}…` not found")),
-            (Some(_), false) => (false, "Dispatch refused — that agent isn't yours.".to_string()),
+            (Some(_), false) => (
+                false,
+                "Dispatch refused — that agent isn't yours.".to_string(),
+            ),
             (Some(_), true) => (true, "Dispatched directly via @mention".to_string()),
         };
         send_json(
@@ -1024,14 +1065,13 @@ async fn handle_staff_dispatch_tokens(
         // Ownership check: untrusted LLM output could name another
         // user's session id. Refuse and tell staff so the pending
         // card resolves.
-        let target: Option<Session> = sqlx::query_as::<_, Session>(
-            "SELECT * FROM sessions WHERE id = ?",
-        )
-        .bind(&d.target_id)
-        .fetch_optional(&st.auth.pool)
-        .await
-        .ok()
-        .flatten();
+        let target: Option<Session> =
+            sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = ?")
+                .bind(&d.target_id)
+                .fetch_optional(&st.auth.pool)
+                .await
+                .ok()
+                .flatten();
         let allowed = match (&target, staff_user_id) {
             (Some(t), Some(uid)) => t.user_id.as_deref().is_none_or(|tu| tu == uid),
             (Some(_), None) => true, // staff session is unowned — allow
@@ -1137,12 +1177,11 @@ async fn handle_staff_dispatch_tokens(
 
     // ── STOP / RESTART ──
     for stop_id in parse_stops(text) {
-        if let Ok(Some(target)) = sqlx::query_as::<_, Session>(
-            "SELECT * FROM sessions WHERE id = ?",
-        )
-        .bind(&stop_id)
-        .fetch_optional(&st.auth.pool)
-        .await
+        if let Ok(Some(target)) =
+            sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = ?")
+                .bind(&stop_id)
+                .fetch_optional(&st.auth.pool)
+                .await
         {
             let _ = st.sm.stop_session(&st.auth.pool, &stop_id).await;
             send_json(
@@ -1157,15 +1196,17 @@ async fn handle_staff_dispatch_tokens(
         }
     }
     for restart_id in parse_restarts(text) {
-        if let Ok(Some(target)) = sqlx::query_as::<_, Session>(
-            "SELECT * FROM sessions WHERE id = ?",
-        )
-        .bind(&restart_id)
-        .fetch_optional(&st.auth.pool)
-        .await
+        if let Ok(Some(target)) =
+            sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = ?")
+                .bind(&restart_id)
+                .fetch_optional(&st.auth.pool)
+                .await
         {
             let _ = st.sm.stop_session(&st.auth.pool, &restart_id).await;
-            let _ = st.sm.update_status(&st.auth.pool, &restart_id, "idle").await;
+            let _ = st
+                .sm
+                .update_status(&st.auth.pool, &restart_id, "idle")
+                .await;
             send_json(
                 sink,
                 json!({
@@ -1182,11 +1223,7 @@ async fn handle_staff_dispatch_tokens(
 /// Fetch the most-recent `limit` messages for `target_id` and format
 /// them as a single text block the staff session can prepend to its
 /// next turn. Faithful with `chat.py::_inject_agent_context`.
-async fn inject_agent_context(
-    pool: &sqlx::SqlitePool,
-    target_id: &str,
-    limit: i64,
-) -> String {
+async fn inject_agent_context(pool: &sqlx::SqlitePool, target_id: &str, limit: i64) -> String {
     let rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT role, content FROM messages WHERE session_id = ? \
          ORDER BY timestamp DESC LIMIT ?",
@@ -1266,10 +1303,7 @@ async fn run_dispatched_task(
     // immediately, before the bridge spins. Auto-wake flag set when
     // the target was previously stopped/error so the renderer can
     // explain the longer-than-usual cold-start.
-    let auto_woken = matches!(
-        target.status.as_str(),
-        "stopped" | "error" | "idle"
-    );
+    let auto_woken = matches!(target.status.as_str(), "stopped" | "error" | "idle");
     sm.send_to_session_ws(
         &staff_sid,
         json!({
@@ -1328,9 +1362,7 @@ async fn run_dispatched_task(
         }
     }
 
-    let _ = sm
-        .update_status(&pool, &target_id, "running")
-        .await;
+    let _ = sm.update_status(&pool, &target_id, "running").await;
 
     // Same worktree-aware cwd resolution as the primary chat path.
     // Dispatched tasks run inside the target's isolated worktree so a
@@ -1350,9 +1382,9 @@ async fn run_dispatched_task(
             b.session_mode = target.session_mode.clone();
             b.is_staff = false; // dispatched tasks always land on non-staff agents
             b.agent_template = target.agent_template.clone();
-            if let Some(tpl) = crate::services::builtin_templates::get(
-                target.agent_template.as_deref(),
-            ) {
+            if let Some(tpl) =
+                crate::services::builtin_templates::get(target.agent_template.as_deref())
+            {
                 b.system_prompt = Some(tpl.system_prompt.to_string());
             }
             AnyBridge::Claude(std::sync::Arc::new(b))
@@ -1383,8 +1415,7 @@ async fn run_dispatched_task(
         ))),
         other => {
             let _ = sm.update_status(&pool, &target_id, "idle").await;
-            let summary =
-                format!("Cannot dispatch: agent uses unsupported tool `{other}`.");
+            let summary = format!("Cannot dispatch: agent uses unsupported tool `{other}`.");
             persist_dispatch_result(
                 &pool,
                 &staff_sid,
@@ -1569,7 +1600,9 @@ async fn run_dispatched_task(
                             }),
                         );
                     }
-                    BridgeEvent::ToolEnd { tool_id, is_error, .. } => {
+                    BridgeEvent::ToolEnd {
+                        tool_id, is_error, ..
+                    } => {
                         sm.send_to_session_ws(
                             &staff_sid,
                             json!({
@@ -1598,7 +1631,11 @@ async fn run_dispatched_task(
                 }
 
                 match &ev {
-                    BridgeEvent::Init { claude_session_id, model, .. } => {
+                    BridgeEvent::Init {
+                        claude_session_id,
+                        model,
+                        ..
+                    } => {
                         if claude_session_id.is_some() {
                             new_claude_sid = claude_session_id.clone();
                         }
@@ -1610,10 +1647,12 @@ async fn run_dispatched_task(
                         summary_text.push_str(text);
                         push_text(&mut content, "text", text);
                     }
-                    BridgeEvent::Thinking { text } => {
-                        push_text(&mut content, "thinking", text)
-                    }
-                    BridgeEvent::ToolStart { tool_id, name, input } => {
+                    BridgeEvent::Thinking { text } => push_text(&mut content, "thinking", text),
+                    BridgeEvent::ToolStart {
+                        tool_id,
+                        name,
+                        input,
+                    } => {
                         content.push(json!({"type":"tool_use","tool_id":tool_id,
                             "tool_name":name,"input":input}));
                     }
@@ -1628,11 +1667,19 @@ async fn run_dispatched_task(
                             }
                         }
                     }
-                    BridgeEvent::ToolEnd { tool_id, output, is_error } => {
+                    BridgeEvent::ToolEnd {
+                        tool_id,
+                        output,
+                        is_error,
+                    } => {
                         content.push(json!({"type":"tool_result","tool_id":tool_id,
                             "output":output,"is_error":is_error}));
                     }
-                    BridgeEvent::Cost { usage: u, cost_usd: c, model } => {
+                    BridgeEvent::Cost {
+                        usage: u,
+                        cost_usd: c,
+                        model,
+                    } => {
                         usage = u.clone();
                         cost_usd = *c;
                         if model != "unknown" {
@@ -1645,17 +1692,13 @@ async fn run_dispatched_task(
                 // Throttled mid-stream persist so the dispatched
                 // agent's chat-view shows partial progress on remount.
                 // Same shape as run_send_flow.
-                if !content.is_empty()
-                    && last_persist_at.elapsed() >= persist_throttle
-                {
-                    let _ = sqlx::query(
-                        "UPDATE messages SET content = ?, model = ? WHERE id = ?",
-                    )
-                    .bind(Value::Array(content.clone()).to_string())
-                    .bind(&model_name)
-                    .bind(&assistant_msg_id)
-                    .execute(&pool)
-                    .await;
+                if !content.is_empty() && last_persist_at.elapsed() >= persist_throttle {
+                    let _ = sqlx::query("UPDATE messages SET content = ?, model = ? WHERE id = ?")
+                        .bind(Value::Array(content.clone()).to_string())
+                        .bind(&model_name)
+                        .bind(&assistant_msg_id)
+                        .execute(&pool)
+                        .await;
                     last_persist_at = std::time::Instant::now();
                 }
             }
@@ -1689,7 +1732,11 @@ async fn run_dispatched_task(
         )
         .bind(Value::Array(content).to_string())
         .bind(&model_name)
-        .bind(if usage.is_null() { None } else { Some(usage.to_string()) })
+        .bind(if usage.is_null() {
+            None
+        } else {
+            Some(usage.to_string())
+        })
         .bind(cost_usd)
         .bind(chrono::Utc::now().to_rfc3339())
         .bind(&assistant_msg_id)
@@ -1785,7 +1832,14 @@ async fn persist_dispatch_result(
     summary: &str,
 ) {
     persist_dispatch_result_with_path(
-        pool, staff_sid, target_id, target_name, task, success, summary, None,
+        pool,
+        staff_sid,
+        target_id,
+        target_name,
+        task,
+        success,
+        summary,
+        None,
     )
     .await
 }
@@ -1832,11 +1886,7 @@ async fn persist_dispatch_result_with_path(
     persist_block_into(pool, staff_sid, &block).await;
 }
 
-async fn persist_block_into(
-    pool: &sqlx::SqlitePool,
-    staff_sid: &str,
-    block: &Value,
-) {
+async fn persist_block_into(pool: &sqlx::SqlitePool, staff_sid: &str, block: &Value) {
     let _ = sqlx::query(
         "INSERT INTO messages (id,session_id,role,content,cost_usd,timestamp) \
          VALUES (?,?,?,?,0.0,?)",
@@ -1855,7 +1905,10 @@ async fn persist_block_into(
 fn push_text(content: &mut Vec<Value>, kind: &str, chunk: &str) {
     if let Some(last) = content.last_mut() {
         if last.get("type").and_then(|x| x.as_str()) == Some(kind) {
-            if let Some(t) = last.get_mut("text").and_then(|x| x.as_str().map(String::from)) {
+            if let Some(t) = last
+                .get_mut("text")
+                .and_then(|x| x.as_str().map(String::from))
+            {
                 last["text"] = json!(format!("{t}{chunk}"));
                 return;
             }
@@ -1903,12 +1956,11 @@ mod tests {
             "summary preview",
         )
         .await;
-        let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT role, content FROM messages WHERE session_id = 'staff-1'",
-        )
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT role, content FROM messages WHERE session_id = 'staff-1'")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].0, "system");
         let blocks: Value = serde_json::from_str(&rows[0].1).unwrap();

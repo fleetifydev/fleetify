@@ -180,8 +180,7 @@ pub fn run() {
                     .timeout(std::time::Duration::from_millis(500))
                     .build()
                     .expect("reqwest client");
-                let deadline = std::time::Instant::now()
-                    + std::time::Duration::from_secs(15);
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
                 while std::time::Instant::now() < deadline {
                     if client.get(&webview_url_owned).send().await.is_ok() {
                         break;
@@ -210,13 +209,9 @@ pub fn run() {
                     let source: fleetify_backend::services::telemetry::BearerSource =
                         std::sync::Arc::new(|| {
                             Box::pin(async {
-                                shell::auth::get_access_token(false)
-                                    .await
-                                    .and_then(|v| {
-                                        v.get("token")
-                                            .and_then(|t| t.as_str())
-                                            .map(String::from)
-                                    })
+                                shell::auth::get_access_token(false).await.and_then(|v| {
+                                    v.get("token").and_then(|t| t.as_str()).map(String::from)
+                                })
                             })
                         });
                     fleetify_backend::services::telemetry::run_ws_client_loop(source).await;

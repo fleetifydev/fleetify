@@ -174,11 +174,7 @@ fn tail_chars(s: &str, max: usize) -> String {
     }
 }
 
-fn build_user_block(
-    prior_prompt: &str,
-    agent_text: &str,
-    project_context: Option<&str>,
-) -> String {
+fn build_user_block(prior_prompt: &str, agent_text: &str, project_context: Option<&str>) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(p) = project_context.filter(|s| !s.trim().is_empty()) {
         parts.push(format!("Project: {}", cap_chars(p.trim(), 200)));
@@ -213,7 +209,11 @@ pub fn parse_analyze(raw: &str) -> Option<AnalyzeResult> {
         .unwrap_or("")
         .trim()
         .to_string();
-    let reasoning = if reasoning.is_empty() { "—".to_string() } else { reasoning };
+    let reasoning = if reasoning.is_empty() {
+        "—".to_string()
+    } else {
+        reasoning
+    };
 
     let str_or_none = |k: &str| -> Option<String> {
         obj.get(k)
@@ -268,9 +268,21 @@ pub fn parse_analyze(raw: &str) -> Option<AnalyzeResult> {
     Some(AnalyzeResult {
         decision: decision.clone(),
         reasoning,
-        next_prompt: if decision == "continue" { str_or_none("next_prompt") } else { None },
-        question: if decision == "ask" { str_or_none("question") } else { None },
-        summary: if decision == "done" { str_or_none("summary") } else { None },
+        next_prompt: if decision == "continue" {
+            str_or_none("next_prompt")
+        } else {
+            None
+        },
+        question: if decision == "ask" {
+            str_or_none("question")
+        } else {
+            None
+        },
+        summary: if decision == "done" {
+            str_or_none("summary")
+        } else {
+            None
+        },
         sections,
         degraded: false,
     })
@@ -344,7 +356,10 @@ mod tests {
         .to_string();
         let r = parse_analyze(&raw).unwrap();
         assert_eq!(r.decision, "continue");
-        assert_eq!(r.next_prompt.as_deref(), Some("Run the test suite and report the result."));
+        assert_eq!(
+            r.next_prompt.as_deref(),
+            Some("Run the test suite and report the result.")
+        );
         assert!(r.question.is_none());
         assert!(r.summary.is_none());
         assert!(!r.degraded);

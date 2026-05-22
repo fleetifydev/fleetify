@@ -96,19 +96,27 @@ pub fn parse_event(event: &Value, st: &mut ParseState) -> Vec<BridgeEvent> {
             if it == "content_block_start" {
                 let block = inner.get("content_block").cloned().unwrap_or(json!({}));
                 if block.get("type").and_then(|x| x.as_str()) == Some("tool_use") {
-                    let tool_id = s(&block, "id")
-                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                    let tool_id =
+                        s(&block, "id").unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                     let name = s(&block, "name").unwrap_or_else(|| "unknown".into());
                     let initial = block.get("input").cloned().unwrap_or(json!({}));
                     let idx = inner.get("index").and_then(|x| x.as_i64()).unwrap_or(-1);
                     let input_map = initial.as_object().cloned().unwrap_or_default();
                     st.tool_input_buffers.insert(
                         idx,
-                        ToolBuf { tool_id: tool_id.clone(), json: String::new(), input: input_map },
+                        ToolBuf {
+                            tool_id: tool_id.clone(),
+                            json: String::new(),
+                            input: input_map,
+                        },
                     );
                     st.streamed_tool_ids.insert(tool_id.clone());
                     st.tool_states.insert(tool_id.clone(), initial.clone());
-                    out.push(BridgeEvent::ToolStart { tool_id, name, input: initial });
+                    out.push(BridgeEvent::ToolStart {
+                        tool_id,
+                        name,
+                        input: initial,
+                    });
                 }
             } else if it == "content_block_delta" {
                 let delta = inner.get("delta").cloned().unwrap_or(json!({}));
@@ -139,8 +147,7 @@ pub fn parse_event(event: &Value, st: &mut ParseState) -> Vec<BridgeEvent> {
                 let idx = inner.get("index").and_then(|x| x.as_i64()).unwrap_or(-1);
                 if let Some(buf) = st.tool_input_buffers.remove(&idx) {
                     if !buf.json.is_empty() {
-                        if let Ok(Value::Object(parsed)) =
-                            serde_json::from_str::<Value>(&buf.json)
+                        if let Ok(Value::Object(parsed)) = serde_json::from_str::<Value>(&buf.json)
                         {
                             let mut input = buf.input.clone();
                             input.extend(parsed);
@@ -181,8 +188,8 @@ pub fn parse_event(event: &Value, st: &mut ParseState) -> Vec<BridgeEvent> {
                         });
                     }
                     "tool_use" => {
-                        let tool_id = s(&block, "id")
-                            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                        let tool_id =
+                            s(&block, "id").unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                         let name = s(&block, "name").unwrap_or_else(|| "unknown".into());
                         let input = block.get("input").cloned().unwrap_or(json!({}));
                         if st.streamed_tool_ids.contains(&tool_id) {
@@ -197,7 +204,11 @@ pub fn parse_event(event: &Value, st: &mut ParseState) -> Vec<BridgeEvent> {
                             continue;
                         }
                         st.tool_states.insert(tool_id.clone(), input.clone());
-                        out.push(BridgeEvent::ToolStart { tool_id, name, input });
+                        out.push(BridgeEvent::ToolStart {
+                            tool_id,
+                            name,
+                            input,
+                        });
                     }
                     "tool_result" => {
                         let tool_id = s(&block, "tool_use_id").unwrap_or_default();
@@ -217,9 +228,15 @@ pub fn parse_event(event: &Value, st: &mut ParseState) -> Vec<BridgeEvent> {
                         } else {
                             content.to_string()
                         };
-                        let is_error =
-                            block.get("is_error").and_then(|x| x.as_bool()).unwrap_or(false);
-                        out.push(BridgeEvent::ToolEnd { tool_id, output, is_error });
+                        let is_error = block
+                            .get("is_error")
+                            .and_then(|x| x.as_bool())
+                            .unwrap_or(false);
+                        out.push(BridgeEvent::ToolEnd {
+                            tool_id,
+                            output,
+                            is_error,
+                        });
                     }
                     _ => {}
                 }
@@ -421,7 +438,8 @@ impl ClaudeBridge {
             // tool names. The dispatch token (`[[DISPATCH:id|task]]`) is
             // text-protocol — staff does NOT mount `fleet_dispatch`, so
             // its tool name is intentionally absent from this list.
-            let mut allowed: Vec<String> = vec!["Agent".into(), "WebSearch".into(), "WebFetch".into()];
+            let mut allowed: Vec<String> =
+                vec!["Agent".into(), "WebSearch".into(), "WebFetch".into()];
             for name in self.mcp_tool_names() {
                 allowed.push(name.to_string());
             }
@@ -504,9 +522,11 @@ impl ClaudeBridge {
     /// fallback: if a tool name appears in the prompt but the MCP
     /// didn't mount, claude does ToolSearch.
     pub fn mcp_tool_names(&self) -> Vec<&'static str> {
-        let mut names: Vec<&'static str> =
-            vec!["mcp__fleet_memory__remember", "mcp__fleet_memory__recall",
-                 "mcp__fleet_memory__dump_session_memory"];
+        let mut names: Vec<&'static str> = vec![
+            "mcp__fleet_memory__remember",
+            "mcp__fleet_memory__recall",
+            "mcp__fleet_memory__dump_session_memory",
+        ];
         if !self.is_staff {
             names.push("mcp__fleet_dispatch__dispatch_to_agent");
         }
@@ -548,7 +568,8 @@ impl ClaudeBridge {
             None => None,
         };
         let cmd = self.build_command(message, mcp_cfg_path.as_deref());
-        self.aborted.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.aborted
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         let cwd_raw = if self.project_path.is_empty() {
             std::env::var("USERPROFILE")
                 .or_else(|_| std::env::var("HOME"))
@@ -579,7 +600,11 @@ impl ClaudeBridge {
         let aborted = self.aborted.clone();
 
         tokio::spawn(async move {
-            let _ = tx.send(BridgeEvent::Status { status: "running".into() }).await;
+            let _ = tx
+                .send(BridgeEvent::Status {
+                    status: "running".into(),
+                })
+                .await;
             let mut st = ParseState::new(our_id);
             let mut lines = BufReader::new(stdout).lines();
             let mut buffer = String::new();
@@ -631,14 +656,19 @@ impl ClaudeBridge {
                     }
                 }
             }
-            let _ = tx.send(BridgeEvent::Status { status: "done".into() }).await;
+            let _ = tx
+                .send(BridgeEvent::Status {
+                    status: "done".into(),
+                })
+                .await;
         });
 
         Ok(rx)
     }
 
     pub async fn abort(&self) {
-        self.aborted.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.aborted
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         if let Some(c) = self.child.lock().await.as_mut() {
             let _ = c.start_kill();
         }
@@ -678,9 +708,14 @@ mod tests {
                 "index":0,"content_block":{"type":"tool_use","id":"t1","name":"Bash","input":{}}}}),
             &mut st,
         );
-        assert_eq!(e1, vec![BridgeEvent::ToolStart {
-            tool_id: "t1".into(), name: "Bash".into(), input: json!({})
-        }]);
+        assert_eq!(
+            e1,
+            vec![BridgeEvent::ToolStart {
+                tool_id: "t1".into(),
+                name: "Bash".into(),
+                input: json!({})
+            }]
+        );
         // input_json_delta accumulates, content_block_stop → ToolUpdate.
         parse_event(
             &json!({"type":"stream_event","event":{"type":"content_block_delta",
@@ -691,16 +726,23 @@ mod tests {
             &json!({"type":"stream_event","event":{"type":"content_block_stop","index":0}}),
             &mut st,
         );
-        assert_eq!(e3, vec![BridgeEvent::ToolUpdate {
-            tool_id: "t1".into(), input: json!({"command":"ls"})
-        }]);
+        assert_eq!(
+            e3,
+            vec![BridgeEvent::ToolUpdate {
+                tool_id: "t1".into(),
+                input: json!({"command":"ls"})
+            }]
+        );
         // Trailing assistant tool_use with SAME id+input → deduped (no event).
         let e4 = parse_event(
             &json!({"type":"assistant","message":{"content":[
                 {"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}),
             &mut st,
         );
-        assert!(e4.is_empty(), "duplicate tool_use must be suppressed: {e4:?}");
+        assert!(
+            e4.is_empty(),
+            "duplicate tool_use must be suppressed: {e4:?}"
+        );
     }
 
     #[test]
@@ -711,13 +753,21 @@ mod tests {
                 "index":0,"delta":{"type":"text_delta","text":"Hello"}}}),
             &mut st,
         );
-        assert_eq!(d, vec![BridgeEvent::MessageDelta { text: "Hello".into() }]);
+        assert_eq!(
+            d,
+            vec![BridgeEvent::MessageDelta {
+                text: "Hello".into()
+            }]
+        );
         let a = parse_event(
             &json!({"type":"assistant","message":{"content":[
                 {"type":"text","text":"Hello world"}]}}),
             &mut st,
         );
-        assert!(a.is_empty(), "summary text must be suppressed after streaming");
+        assert!(
+            a.is_empty(),
+            "summary text must be suppressed after streaming"
+        );
     }
 
     #[test]
@@ -733,12 +783,15 @@ mod tests {
                 "cache_read_input_tokens":5,"cache_creation_input_tokens":3}}),
             &mut st,
         );
-        assert_eq!(evs, vec![BridgeEvent::Cost {
-            usage: json!({"input_tokens":10,"output_tokens":20,
+        assert_eq!(
+            evs,
+            vec![BridgeEvent::Cost {
+                usage: json!({"input_tokens":10,"output_tokens":20,
                           "cache_read_tokens":5,"cache_write_tokens":3}),
-            cost_usd: 0.0123,
-            model: "claude-opus-4-7".into()
-        }]);
+                cost_usd: 0.0123,
+                model: "claude-opus-4-7".into()
+            }]
+        );
     }
 
     #[test]
@@ -747,12 +800,21 @@ mod tests {
         b.model_name = Some("claude-opus-4-7".into());
         b.permission_mode = "acceptEdits".into();
         let c = b.build_command("hi", None);
-        assert_eq!(&c[..6], &[
-            "claude","-p","--output-format","stream-json","--verbose",
-            "--include-partial-messages"
-        ]);
-        assert!(c.windows(2).any(|w| w == ["--model","claude-opus-4-7"]));
-        assert!(c.windows(2).any(|w| w == ["--permission-mode","acceptEdits"]));
+        assert_eq!(
+            &c[..6],
+            &[
+                "claude",
+                "-p",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--include-partial-messages"
+            ]
+        );
+        assert!(c.windows(2).any(|w| w == ["--model", "claude-opus-4-7"]));
+        assert!(c
+            .windows(2)
+            .any(|w| w == ["--permission-mode", "acceptEdits"]));
         assert_eq!(c.last().unwrap(), "hi");
     }
 
@@ -764,8 +826,10 @@ mod tests {
         // <configs...> from slurping the trailing prompt as a second
         // MCP path. See the comment in build_command itself.
         assert!(c.iter().any(|a| a == "--mcp-config=/tmp/mcp.json"));
-        assert!(!c.iter().any(|a| a == "--mcp-config"),
-            "must NOT use space-separated form which slurps positional message");
+        assert!(
+            !c.iter().any(|a| a == "--mcp-config"),
+            "must NOT use space-separated form which slurps positional message"
+        );
         // Message is still the last arg even when --mcp-config is set.
         assert_eq!(c.last().unwrap(), "hi");
     }
@@ -778,11 +842,16 @@ mod tests {
         let c = b.build_command("hi", None);
 
         // --system-prompt is set without the prior `--tools ""` pair.
-        assert!(c.windows(2).any(|w| w == ["--system-prompt", "you are fleet"]));
+        assert!(c
+            .windows(2)
+            .any(|w| w == ["--system-prompt", "you are fleet"]));
         assert!(!c.windows(2).any(|w| w[0] == "--tools" && w[1].is_empty()));
 
         // --allowedTools constrains to Agent + research + mcp_memory.
-        let idx = c.iter().position(|s| s == "--allowedTools").expect("--allowedTools");
+        let idx = c
+            .iter()
+            .position(|s| s == "--allowedTools")
+            .expect("--allowedTools");
         let names = &c[idx + 1];
         assert!(names.contains("Agent"));
         assert!(names.contains("WebSearch"));
@@ -797,7 +866,13 @@ mod tests {
         // --agents JSON registers the 5 named subagents.
         let aidx = c.iter().position(|s| s == "--agents").expect("--agents");
         let agents_json: serde_json::Value = serde_json::from_str(&c[aidx + 1]).unwrap();
-        for name in ["code-reviewer", "bug-fixer", "test-writer", "researcher", "architect"] {
+        for name in [
+            "code-reviewer",
+            "bug-fixer",
+            "test-writer",
+            "researcher",
+            "architect",
+        ] {
             assert!(agents_json.get(name).is_some(), "missing subagent: {name}");
         }
     }

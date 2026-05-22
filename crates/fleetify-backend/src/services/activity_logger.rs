@@ -48,16 +48,27 @@ pub fn summarise_tool_input(name: &str, tool_input: &Value) -> String {
     };
 
     match name {
-        "Bash" => cap(pick_str("command").unwrap_or_else(|| "(empty command)".into()), 200),
-        "Edit" | "Write" | "MultiEdit" | "NotebookEdit" | "Read" => {
-            cap(pick_str("file_path").unwrap_or_else(|| format!("({name})")), 200)
-        }
+        "Bash" => cap(
+            pick_str("command").unwrap_or_else(|| "(empty command)".into()),
+            200,
+        ),
+        "Edit" | "Write" | "MultiEdit" | "NotebookEdit" | "Read" => cap(
+            pick_str("file_path").unwrap_or_else(|| format!("({name})")),
+            200,
+        ),
         "WebFetch" => cap(pick_str("url").unwrap_or_else(|| "(WebFetch)".into()), 200),
-        "WebSearch" => cap(pick_str("query").unwrap_or_else(|| "(WebSearch)".into()), 200),
-        "Grep" | "Glob" => cap(pick_str("pattern").unwrap_or_else(|| format!("({name})")), 200),
-        "Agent" | "Task" => {
-            cap(pick_str("prompt").unwrap_or_else(|| format!("({name})")), 160)
-        }
+        "WebSearch" => cap(
+            pick_str("query").unwrap_or_else(|| "(WebSearch)".into()),
+            200,
+        ),
+        "Grep" | "Glob" => cap(
+            pick_str("pattern").unwrap_or_else(|| format!("({name})")),
+            200,
+        ),
+        "Agent" | "Task" => cap(
+            pick_str("prompt").unwrap_or_else(|| format!("({name})")),
+            160,
+        ),
         _ => {
             // Generic fallback — first informative string field.
             for k in ["description", "path", "query", "command"] {
@@ -148,7 +159,9 @@ pub async fn record_tool_event(
     if tool_name == "TodoWrite" {
         if let Some(todos) = inp.get("todos").and_then(|v| v.as_array()) {
             for todo in todos {
-                let Some(obj) = todo.as_object() else { continue };
+                let Some(obj) = todo.as_object() else {
+                    continue;
+                };
                 let content = obj
                     .get("content")
                     .and_then(|v| v.as_str())
@@ -196,7 +209,11 @@ pub async fn record_tool_event(
         }
     }
 
-    let kind: &str = if is_error { "error" } else { classify_tool(tool_name) };
+    let kind: &str = if is_error {
+        "error"
+    } else {
+        classify_tool(tool_name)
+    };
     let summary = summarise_tool_input(tool_name, inp);
 
     let mut payload = json!({ "tool": tool_name });
@@ -215,7 +232,15 @@ pub async fn record_tool_event(
         }
     }
 
-    record_activity(pool, session_id, project_path, kind, &summary, Some(&payload)).await
+    record_activity(
+        pool,
+        session_id,
+        project_path,
+        kind,
+        &summary,
+        Some(&payload),
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -247,10 +272,7 @@ mod tests {
             summarise_tool_input("Edit", &json!({ "file_path": "src/x.rs" })),
             "src/x.rs"
         );
-        assert_eq!(
-            summarise_tool_input("Read", &json!({})),
-            "(Read)"
-        );
+        assert_eq!(summarise_tool_input("Read", &json!({})), "(Read)");
         assert_eq!(
             summarise_tool_input("WebSearch", &json!({ "query": "rust async" })),
             "rust async"

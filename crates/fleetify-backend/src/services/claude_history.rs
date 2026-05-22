@@ -69,9 +69,7 @@ pub fn find_claude_project_dir(path: &str) -> Option<PathBuf> {
                     let original = v
                         .get("originalPath")
                         .and_then(|x| x.as_str())
-                        .map(|s| {
-                            s.trim_end_matches('/').trim_end_matches('\\').to_string()
-                        })
+                        .map(|s| s.trim_end_matches('/').trim_end_matches('\\').to_string())
                         .unwrap_or_default();
                     if original == normalized {
                         return Some(d);
@@ -243,24 +241,16 @@ pub fn parse_jsonl(jsonl_file: &Path) -> Vec<HistoryMessage> {
             "assistant" => {
                 let blocks = assistant_blocks(&content_raw);
                 if !blocks.is_empty() {
-                    let model = msg
-                        .get("model")
-                        .and_then(|x| x.as_str())
-                        .map(String::from);
-                    let usage = msg
-                        .get("usage")
-                        .filter(|v| v.is_object())
-                        .map(|u| {
-                            let g = |k: &str| {
-                                u.get(k).and_then(|x| x.as_i64()).unwrap_or(0)
-                            };
-                            json!({
-                                "input_tokens": g("input_tokens"),
-                                "output_tokens": g("output_tokens"),
-                                "cache_read_tokens": g("cache_read_input_tokens"),
-                                "cache_write_tokens": g("cache_creation_input_tokens"),
-                            })
-                        });
+                    let model = msg.get("model").and_then(|x| x.as_str()).map(String::from);
+                    let usage = msg.get("usage").filter(|v| v.is_object()).map(|u| {
+                        let g = |k: &str| u.get(k).and_then(|x| x.as_i64()).unwrap_or(0);
+                        json!({
+                            "input_tokens": g("input_tokens"),
+                            "output_tokens": g("output_tokens"),
+                            "cache_read_tokens": g("cache_read_input_tokens"),
+                            "cache_write_tokens": g("cache_creation_input_tokens"),
+                        })
+                    });
                     messages.push(HistoryMessage {
                         id,
                         role: "assistant".into(),
@@ -296,11 +286,10 @@ fn user_blocks(content_raw: &Value) -> Vec<Value> {
         }
         Value::Array(arr) => {
             for block in arr {
-                let Some(obj) = block.as_object() else { continue };
-                let btype = obj
-                    .get("type")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("");
+                let Some(obj) = block.as_object() else {
+                    continue;
+                };
+                let btype = obj.get("type").and_then(|x| x.as_str()).unwrap_or("");
                 match btype {
                     "text" => {
                         let t = obj
@@ -358,12 +347,16 @@ fn assistant_blocks(content_raw: &Value) -> Vec<Value> {
         return blocks;
     };
     for block in arr {
-        let Some(obj) = block.as_object() else { continue };
+        let Some(obj) = block.as_object() else {
+            continue;
+        };
         let btype = obj.get("type").and_then(|x| x.as_str()).unwrap_or("");
         match btype {
             "text" => {
-                if let Some(t) =
-                    obj.get("text").and_then(|x| x.as_str()).filter(|s| !s.is_empty())
+                if let Some(t) = obj
+                    .get("text")
+                    .and_then(|x| x.as_str())
+                    .filter(|s| !s.is_empty())
                 {
                     blocks.push(json!({"type": "text", "text": t}));
                 }
@@ -415,7 +408,10 @@ mod tests {
         let m = parse_jsonl(f.path());
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].role, "user");
-        assert_eq!(m[0].content, vec![json!({"type":"text","text":"hello fleet"})]);
+        assert_eq!(
+            m[0].content,
+            vec![json!({"type":"text","text":"hello fleet"})]
+        );
     }
 
     #[test]

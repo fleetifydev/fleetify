@@ -76,10 +76,7 @@ struct UpdateBody {
     config: Value,
 }
 
-async fn update_server(
-    Path(name): Path<String>,
-    Json(b): Json<UpdateBody>,
-) -> impl IntoResponse {
+async fn update_server(Path(name): Path<String>, Json(b): Json<UpdateBody>) -> impl IntoResponse {
     match mcp_registry::update(&name, b.config.clone()) {
         Ok(_) => Json(row(&name, &b.config)).into_response(),
         Err(e) => (StatusCode::NOT_FOUND, Json(json!({ "detail": e }))).into_response(),
@@ -111,8 +108,7 @@ async fn probe_server(Path(name): Path<String>) -> Json<Value> {
 async fn probe_all() -> Json<Value> {
     // Probe every registered MCP server in parallel; return a
     // `{ <name>: ProbeResult }` map for the renderer's Settings page.
-    let names: Vec<String> = mcp_registry::list_all().into_keys()
-        .collect();
+    let names: Vec<String> = mcp_registry::list_all().into_keys().collect();
     let futs: Vec<_> = names
         .into_iter()
         .filter_map(|n| {
@@ -163,9 +159,7 @@ struct CallbackQ {
     state: Option<String>,
 }
 
-async fn auth_callback(
-    axum::extract::Query(q): axum::extract::Query<CallbackQ>,
-) -> Json<Value> {
+async fn auth_callback(axum::extract::Query(q): axum::extract::Query<CallbackQ>) -> Json<Value> {
     let code = q.code.unwrap_or_default();
     let state = q.state.unwrap_or_default();
     if code.is_empty() || state.is_empty() {

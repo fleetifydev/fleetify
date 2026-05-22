@@ -12,7 +12,10 @@ use rsa::traits::PublicKeyParts;
 use rsa::{RsaPrivateKey, RsaPublicKey};
 
 fn now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
 }
 
 async fn start_jwks(doc: serde_json::Value) -> String {
@@ -84,7 +87,9 @@ async fn valid_token_yields_principal() {
             "iat": now(), "exp": now() + 3600
         }),
     );
-    let p = validate_token(&token, &f.cfg, &f.jwks).await.expect("valid");
+    let p = validate_token(&token, &f.cfg, &f.jwks)
+        .await
+        .expect("valid");
     assert_eq!(p.sub, "user-1");
     assert_eq!(p.email.as_deref(), Some("a@b.com"));
     assert_eq!(p.name.as_deref(), Some("Alice"));

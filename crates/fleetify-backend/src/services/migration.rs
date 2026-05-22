@@ -21,7 +21,9 @@ pub fn migrate_fleet_to_fleetify() {
 /// Test seam — separate home paths for old and new to exercise
 /// missing-old, normal-move, skip-on-existing, and partial-remove.
 fn migrate_at(old_home: Option<&std::path::Path>, new_home: Option<&std::path::Path>) {
-    let (Some(oh), Some(nh)) = (old_home, new_home) else { return };
+    let (Some(oh), Some(nh)) = (old_home, new_home) else {
+        return;
+    };
     let old = oh.join(".fleet");
     if !old.is_dir() {
         return;
@@ -49,7 +51,10 @@ fn migrate_at(old_home: Option<&std::path::Path>, new_home: Option<&std::path::P
         tracing::info!(moved, skipped, "fleet.migration_complete");
     }
     // Remove the old root if now empty (parity: leave it if anything remains).
-    if std::fs::read_dir(&old).map(|mut rd| rd.next().is_none()).unwrap_or(false) {
+    if std::fs::read_dir(&old)
+        .map(|mut rd| rd.next().is_none())
+        .unwrap_or(false)
+    {
         let _ = std::fs::remove_dir(&old);
     }
 }

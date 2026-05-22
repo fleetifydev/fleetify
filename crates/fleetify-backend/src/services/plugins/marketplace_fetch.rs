@@ -19,7 +19,9 @@ fn cache_dir() -> PathBuf {
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".fleetify").join("marketplace-cache")
+    PathBuf::from(home)
+        .join(".fleetify")
+        .join("marketplace-cache")
 }
 
 /// `https://github.com/<owner>/<repo>` → `(<owner>, <repo>)` with the
@@ -35,7 +37,9 @@ pub fn validate_github_repo_url(repo_url: &str) -> Result<(String, String)> {
         .strip_prefix("https://")
         .ok_or_else(|| anyhow!("only https URLs are accepted: {repo_url:?}"))?;
     if rest.contains('@') || rest.contains('?') || rest.contains('#') {
-        return Err(anyhow!("URL must not contain auth/query/fragment: {repo_url:?}"));
+        return Err(anyhow!(
+            "URL must not contain auth/query/fragment: {repo_url:?}"
+        ));
     }
     let (host, path) = rest
         .split_once('/')
@@ -162,8 +166,8 @@ pub async fn fetch_source(repo_url: &str) -> Result<MarketplaceManifest> {
             "{repo_url} is not a Fleet marketplace or plugin (no marketplace.json or .fleetify-plugin/plugin.json)"
         ));
     };
-    let manifest: PluginManifest = serde_json::from_value(raw)
-        .map_err(|e| anyhow!("plugin.json parse failed: {e}"))?;
+    let manifest: PluginManifest =
+        serde_json::from_value(raw).map_err(|e| anyhow!("plugin.json parse failed: {e}"))?;
     Ok(MarketplaceManifest {
         name: String::new(),
         description: String::new(),

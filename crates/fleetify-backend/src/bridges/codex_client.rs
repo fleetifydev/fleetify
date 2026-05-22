@@ -28,10 +28,7 @@ use tokio::sync::{oneshot, Mutex};
 /// the 5 approval methods which all funnel through a single dispatcher
 /// in the bridge layer.
 pub type ApprovalHandler = Arc<
-    dyn Fn(
-            String,
-            Value,
-        ) -> Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>>
+    dyn Fn(String, Value) -> Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>>
         + Send
         + Sync,
 >;
@@ -39,17 +36,12 @@ pub type ApprovalHandler = Arc<
 /// Handler for inbound `params → result` requests
 /// (fs/readFile, fs/writeFile, item/tool/requestUserInput).
 pub type RequestHandler = Arc<
-    dyn Fn(Value) -> Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>>
-        + Send
-        + Sync,
+    dyn Fn(Value) -> Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>> + Send + Sync,
 >;
 
 /// Handler for inbound notifications (no response expected).
-pub type NotificationHandler = Arc<
-    dyn Fn(Value) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-        + Send
-        + Sync,
->;
+pub type NotificationHandler =
+    Arc<dyn Fn(Value) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
 #[derive(Default)]
 struct Handlers {
@@ -258,11 +250,7 @@ impl CodexClient {
         Ok(())
     }
 
-    pub async fn thread_inject_items(
-        &self,
-        thread_id: &str,
-        items: Value,
-    ) -> Result<Value> {
+    pub async fn thread_inject_items(&self, thread_id: &str, items: Value) -> Result<Value> {
         self.call(
             "thread/inject_items",
             json!({ "threadId": thread_id, "items": items }),
@@ -310,10 +298,7 @@ impl CodexClient {
     }
 }
 
-async fn write_frame(
-    writer: &Arc<Mutex<Option<DynWriter>>>,
-    frame: &Value,
-) -> Result<()> {
+async fn write_frame(writer: &Arc<Mutex<Option<DynWriter>>>, frame: &Value) -> Result<()> {
     let mut guard = writer.lock().await;
     let Some(w) = guard.as_mut() else {
         return Err(anyhow!("CodexClient not attached"));
@@ -325,11 +310,7 @@ async fn write_frame(
     Ok(())
 }
 
-async fn write_result(
-    writer: &Arc<Mutex<Option<DynWriter>>>,
-    req_id: Value,
-    result: Value,
-) {
+async fn write_result(writer: &Arc<Mutex<Option<DynWriter>>>, req_id: Value, result: Value) {
     let frame = json!({ "jsonrpc": "2.0", "id": req_id, "result": result });
     let _ = write_frame(writer, &frame).await;
 }
@@ -419,8 +400,7 @@ async fn dispatch(
             return;
         }
         if let Some(m) = method {
-            handle_inbound_request(id_v.clone(), m, msg, handlers.clone(), writer.clone())
-                .await;
+            handle_inbound_request(id_v.clone(), m, msg, handlers.clone(), writer.clone()).await;
             return;
         }
     }
@@ -502,11 +482,7 @@ async fn handle_inbound_request(
     });
 }
 
-async fn handle_inbound_notification(
-    method: String,
-    msg: Value,
-    handlers: Arc<Mutex<Handlers>>,
-) {
+async fn handle_inbound_notification(method: String, msg: Value, handlers: Arc<Mutex<Handlers>>) {
     let params = msg
         .get("params")
         .cloned()
@@ -622,10 +598,13 @@ mod tests {
         let mut reader = BufReader::new(client_to_agent_r);
         for _ in 0..3 {
             let mut line = String::new();
-            tokio::time::timeout(std::time::Duration::from_secs(2), reader.read_line(&mut line))
-                .await
-                .expect("timeout")
-                .unwrap();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                reader.read_line(&mut line),
+            )
+            .await
+            .expect("timeout")
+            .unwrap();
             let resp: Value = serde_json::from_str(line.trim()).unwrap();
             assert_eq!(resp["result"]["decision"], "approved");
         }

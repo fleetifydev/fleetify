@@ -168,10 +168,7 @@ struct EnabledBody {
     enabled: bool,
 }
 
-async fn set_enabled(
-    Path(install_id): Path<String>,
-    Json(b): Json<EnabledBody>,
-) -> Json<Value> {
+async fn set_enabled(Path(install_id): Path<String>, Json(b): Json<EnabledBody>) -> Json<Value> {
     match crate::services::plugins::state::set_master_enabled(&install_id, b.enabled) {
         Ok(_) => Json(json!({ "ok": true, "enabled": b.enabled })),
         Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
@@ -190,10 +187,7 @@ fn default_true() -> bool {
     true
 }
 
-async fn set_scope(
-    Path(install_id): Path<String>,
-    Json(b): Json<ScopeBody>,
-) -> Json<Value> {
+async fn set_scope(Path(install_id): Path<String>, Json(b): Json<ScopeBody>) -> Json<Value> {
     let res = if b.enabled {
         crate::services::plugins::state::upsert_scope(
             &install_id,
