@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AgentKind {
     Claude,
     OpenAI,
@@ -12,6 +13,7 @@ pub enum AgentKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
     Anthropic,
     OpenAI,
@@ -20,6 +22,7 @@ pub enum ProviderKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DecisionSource {
     BuiltIn,
     NotDiamond,
@@ -39,6 +42,7 @@ pub struct RouterDecision {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum TaskFlow {
     Chat { session_id: String },
     Dispatch { task_id: String },
@@ -52,6 +56,7 @@ pub struct WorkspaceHints {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ComplexityHint {
     Trivial,
     Simple,
@@ -150,5 +155,42 @@ mod tests {
             budget_remaining: None,
         };
         assert!(matches!(t.flow, TaskFlow::Chat { .. }));
+    }
+
+    #[test]
+    fn router_decision_serde_round_trip() {
+        let d = RouterDecision {
+            agent: AgentKind::Claude,
+            model: "claude-sonnet-4-6".into(),
+            rationale: "x".into(),
+            source: DecisionSource::BuiltIn,
+            fallback_chain: vec![(AgentKind::OpenAI, "gpt-4o".into())],
+        };
+        let s = serde_json::to_string(&d).unwrap();
+        let back: RouterDecision = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.agent, AgentKind::Claude);
+        assert_eq!(back.source, DecisionSource::BuiltIn);
+        assert_eq!(back.fallback_chain.len(), 1);
+        assert_eq!(back.fallback_chain[0].0, AgentKind::OpenAI);
+    }
+
+    #[test]
+    fn routing_task_serde_round_trip() {
+        let t = RoutingTask {
+            flow: TaskFlow::Chat { session_id: "s1".into() },
+            user_prompt: "hi".into(),
+            conversation_history: None,
+            workspace_context: WorkspaceHints::default(),
+            user_hint: Some(ComplexityHint::Medium),
+            allowed_agents: vec![AgentKind::Claude, AgentKind::Gemini],
+            budget_remaining: Some(1.5),
+        };
+        let s = serde_json::to_string(&t).unwrap();
+        let back: RoutingTask = serde_json::from_str(&s).unwrap();
+        assert!(matches!(back.flow, TaskFlow::Chat { session_id } if session_id == "s1"));
+        assert!(matches!(back.user_hint, Some(ComplexityHint::Medium)));
+        assert_eq!(back.allowed_agents.len(), 2);
+        // Verify externally-tagged JSON format — for TaskFlow this should contain "type":"chat"
+        assert!(s.contains("\"type\":\"chat\""), "TaskFlow should use tagged serde format, got: {}", s);
     }
 }
