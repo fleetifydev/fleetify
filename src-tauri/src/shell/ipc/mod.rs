@@ -9,7 +9,7 @@ use tauri::{Emitter, Manager};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use crate::shell::{ai_git, auth, config, git, github_link, head_watcher, logging, pty};
+use crate::shell::{ai_git, auth, config, feedback, git, github_link, head_watcher, logging, pty};
 
 #[tauri::command]
 pub async fn auth_sign_in() -> serde_json::Value {
@@ -1305,6 +1305,26 @@ pub async fn logs_export(app: tauri::AppHandle) -> serde_json::Value {
         Ok(Err(e)) => serde_json::json!({ "ok": false, "error": e }),
         Err(e) => serde_json::json!({ "ok": false, "error": format!("join: {e}") }),
     }
+}
+
+/// `window.fleetify.sendFeedback({ comment, email?, attachments? })`.
+/// Wire format mirrors the Electron build's IPC: comment + optional
+/// email + repeated `{ name, data_url }` image attachments. The Rust
+/// side decodes, validates, multiparts, and POSTs to `<issuer>/api/feedback`.
+#[tauri::command]
+pub async fn feedback_send(body: serde_json::Value) -> serde_json::Value {
+    let parsed: feedback::FeedbackBody = match serde_json::from_value(body) {
+        Ok(b) => b,
+        Err(e) => {
+            return serde_json::json!({
+                "ok": false,
+                "error": format!("Invalid feedback payload: {e}"),
+                "code": "VALIDATION",
+                "status": -1,
+            });
+        }
+    };
+    feedback::send_feedback(parsed).await
 }
 
 #[tauri::command]

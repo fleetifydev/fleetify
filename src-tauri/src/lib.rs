@@ -112,6 +112,7 @@ pub fn run() {
             shell::ipc::app_log,
             shell::ipc::logs_export,
             shell::ipc::logs_open_folder,
+            shell::ipc::feedback_send,
         ])
         .setup(|app| {
             // Bring tracing online FIRST so any setup-phase warnings
