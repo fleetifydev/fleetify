@@ -55,11 +55,7 @@ impl RoutingOrchestrator {
 
     /// Route a task to an (agent, model) decision. NEVER returns Err — on
     /// any failure of the primary decision router, falls back to built-in.
-    pub async fn route(
-        &self,
-        task: &RoutingTask,
-        candidates: &[AgentCandidate],
-    ) -> RouteOutcome {
+    pub async fn route(&self, task: &RoutingTask, candidates: &[AgentCandidate]) -> RouteOutcome {
         let started = Instant::now();
         let (primary, builtin): (Arc<dyn DecisionRouter>, Arc<dyn DecisionRouter>) = {
             let reg = self.decision.read();
@@ -117,11 +113,19 @@ impl RoutingOrchestrator {
     pub async fn test_router(&self, id: &str) -> Result<bool, String> {
         let dec = self.decision.read().routers.get(id).cloned();
         if let Some(d) = dec {
-            return d.health_check().await.map(|_| true).map_err(|e| e.to_string());
+            return d
+                .health_check()
+                .await
+                .map(|_| true)
+                .map_err(|e| e.to_string());
         }
         let prx = self.proxy.read().gateways.get(id).cloned();
         if let Some(p) = prx {
-            return p.health_check().await.map(|_| true).map_err(|e| e.to_string());
+            return p
+                .health_check()
+                .await
+                .map(|_| true)
+                .map_err(|e| e.to_string());
         }
         Err(format!("router {id} not found"))
     }
@@ -135,7 +139,11 @@ fn elapsed_ms(start: Instant) -> u64 {
 /// Last-resort decision when even the built-in router errors. Returns the
 /// first allowed agent at a hardcoded default model.
 fn fallback_default(task: &RoutingTask) -> RouterDecision {
-    let agent = task.allowed_agents.first().copied().unwrap_or(AgentKind::Claude);
+    let agent = task
+        .allowed_agents
+        .first()
+        .copied()
+        .unwrap_or(AgentKind::Claude);
     RouterDecision {
         agent,
         model: match agent {
@@ -162,7 +170,8 @@ mod tests {
     use crate::services::routing::traits::{RouterError, RoutingTask, TaskFlow, WorkspaceHints};
 
     fn matrix() -> CapabilityMatrix {
-        toml::from_str(r#"
+        toml::from_str(
+            r#"
 [agents.claude]
 supports_tool_use = true
 supports_vision = true
@@ -170,12 +179,16 @@ max_context = 200000
 mcp_support = true
 default_model = "claude-sonnet-4-6"
 tiers = ["claude-haiku-4-5", "claude-sonnet-4-6"]
-        "#).unwrap()
+        "#,
+        )
+        .unwrap()
     }
 
     fn task(prompt: &str) -> RoutingTask {
         RoutingTask {
-            flow: TaskFlow::Chat { session_id: "s".into() },
+            flow: TaskFlow::Chat {
+                session_id: "s".into(),
+            },
             user_prompt: prompt.into(),
             conversation_history: None,
             workspace_context: WorkspaceHints::default(),
@@ -223,9 +236,15 @@ tiers = ["claude-haiku-4-5", "claude-sonnet-4-6"]
     struct ErroringRouter;
     #[async_trait]
     impl DecisionRouter for ErroringRouter {
-        fn id(&self) -> &'static str { "erroring" }
-        fn display_name(&self) -> &'static str { "Erroring Mock" }
-        async fn health_check(&self) -> Result<(), RouterError> { Err(RouterError::Auth) }
+        fn id(&self) -> &'static str {
+            "erroring"
+        }
+        fn display_name(&self) -> &'static str {
+            "Erroring Mock"
+        }
+        async fn health_check(&self) -> Result<(), RouterError> {
+            Err(RouterError::Auth)
+        }
         async fn recommend(
             &self,
             _task: &RoutingTask,
@@ -251,12 +270,20 @@ tiers = ["claude-haiku-4-5", "claude-sonnet-4-6"]
     }
 
     // Slow router that holds the call open past the 2s timeout.
-    struct SlowRouter { calls: AtomicUsize }
+    struct SlowRouter {
+        calls: AtomicUsize,
+    }
     #[async_trait]
     impl DecisionRouter for SlowRouter {
-        fn id(&self) -> &'static str { "slow" }
-        fn display_name(&self) -> &'static str { "Slow Mock" }
-        async fn health_check(&self) -> Result<(), RouterError> { Ok(()) }
+        fn id(&self) -> &'static str {
+            "slow"
+        }
+        fn display_name(&self) -> &'static str {
+            "Slow Mock"
+        }
+        async fn health_check(&self) -> Result<(), RouterError> {
+            Ok(())
+        }
         async fn recommend(
             &self,
             _task: &RoutingTask,
@@ -271,7 +298,9 @@ tiers = ["claude-haiku-4-5", "claude-sonnet-4-6"]
     #[tokio::test(start_paused = true)]
     async fn falls_back_on_timeout() {
         let orch = make_orch();
-        let slow = Arc::new(SlowRouter { calls: AtomicUsize::new(0) });
+        let slow = Arc::new(SlowRouter {
+            calls: AtomicUsize::new(0),
+        });
         {
             let mut reg = orch.decision.write();
             reg.register(slow.clone());

@@ -10,11 +10,21 @@ pub struct DirectGateway;
 
 #[async_trait]
 impl ProxyGateway for DirectGateway {
-    fn id(&self) -> &'static str { "none-proxy" }
-    fn display_name(&self) -> &'static str { "None / Direct" }
-    fn base_url(&self, _provider: ProviderKind) -> Option<String> { None }
-    fn extra_headers(&self) -> HeaderMap { HeaderMap::new() }
-    async fn health_check(&self) -> Result<(), RouterError> { Ok(()) }
+    fn id(&self) -> &'static str {
+        "none-proxy"
+    }
+    fn display_name(&self) -> &'static str {
+        "None / Direct"
+    }
+    fn base_url(&self, _provider: ProviderKind) -> Option<String> {
+        None
+    }
+    fn extra_headers(&self) -> HeaderMap {
+        HeaderMap::new()
+    }
+    async fn health_check(&self) -> Result<(), RouterError> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

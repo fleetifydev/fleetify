@@ -21,8 +21,8 @@ impl AgentSelector {
     /// present in the matrix" so we never return empty unless allowed_agents is
     /// itself empty.
     pub fn rank(&self, task: &RoutingTask) -> Vec<AgentCandidate> {
-        let needs_tool_use = task.user_prompt.contains("```")
-            || task.workspace_context.file_count.unwrap_or(0) > 0;
+        let needs_tool_use =
+            task.user_prompt.contains("```") || task.workspace_context.file_count.unwrap_or(0) > 0;
 
         let mut filtered = Vec::new();
         for agent in &task.allowed_agents {
@@ -44,10 +44,13 @@ impl AgentSelector {
         task.allowed_agents
             .iter()
             .filter_map(|a| {
-                self.matrix.agents.get(agent_key(*a)).map(|cap| AgentCandidate {
-                    agent: *a,
-                    tiers: cap.tiers.clone(),
-                })
+                self.matrix
+                    .agents
+                    .get(agent_key(*a))
+                    .map(|cap| AgentCandidate {
+                        agent: *a,
+                        tiers: cap.tiers.clone(),
+                    })
             })
             .collect()
     }
@@ -68,7 +71,8 @@ mod tests {
     use crate::services::routing::traits::{TaskFlow, WorkspaceHints};
 
     fn matrix() -> CapabilityMatrix {
-        toml::from_str(r#"
+        toml::from_str(
+            r#"
 [agents.claude]
 supports_tool_use = true
 supports_vision = true
@@ -84,12 +88,16 @@ max_context = 128000
 mcp_support = false
 default_model = "gpt-4o"
 tiers = ["gpt-4o-mini", "gpt-4o"]
-        "#).unwrap()
+        "#,
+        )
+        .unwrap()
     }
 
     fn task(prompt: &str, allowed: Vec<AgentKind>) -> RoutingTask {
         RoutingTask {
-            flow: TaskFlow::Chat { session_id: "s".into() },
+            flow: TaskFlow::Chat {
+                session_id: "s".into(),
+            },
             user_prompt: prompt.into(),
             conversation_history: None,
             workspace_context: WorkspaceHints::default(),
@@ -125,7 +133,10 @@ tiers = ["gpt-4o-mini", "gpt-4o"]
     #[test]
     fn code_block_prompt_keeps_tool_use_agents() {
         let sel = AgentSelector::new(matrix());
-        let c = sel.rank(&task("```py\nprint(1)\n```", vec![AgentKind::Claude, AgentKind::OpenAI]));
+        let c = sel.rank(&task(
+            "```py\nprint(1)\n```",
+            vec![AgentKind::Claude, AgentKind::OpenAI],
+        ));
         // Both agents support tool use, both should survive.
         assert_eq!(c.len(), 2);
     }

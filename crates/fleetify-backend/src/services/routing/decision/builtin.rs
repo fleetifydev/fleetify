@@ -147,10 +147,7 @@ tiers = ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7"]
     async fn recommends_with_fallback_chain() {
         let r = BuiltInRouter::new(matrix());
         let d = r
-            .recommend(
-                &task("Refactor this module", vec![AgentKind::Claude]),
-                &[],
-            )
+            .recommend(&task("Refactor this module", vec![AgentKind::Claude]), &[])
             .await
             .unwrap();
         assert_eq!(d.agent, AgentKind::Claude);
@@ -158,8 +155,14 @@ tiers = ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7"]
         assert_eq!(d.source, DecisionSource::BuiltIn);
         // complex keyword -> Complex -> opus (last tier); fallback has Haiku + Sonnet remaining
         assert_eq!(d.model, "claude-opus-4-7");
-        assert!(d.fallback_chain.iter().any(|(_, m)| m == "claude-haiku-4-5"));
-        assert!(d.fallback_chain.iter().any(|(_, m)| m == "claude-sonnet-4-6"));
+        assert!(d
+            .fallback_chain
+            .iter()
+            .any(|(_, m)| m == "claude-haiku-4-5"));
+        assert!(d
+            .fallback_chain
+            .iter()
+            .any(|(_, m)| m == "claude-sonnet-4-6"));
     }
 
     #[tokio::test]

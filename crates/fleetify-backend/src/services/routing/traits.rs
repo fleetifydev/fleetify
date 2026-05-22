@@ -146,7 +146,9 @@ mod tests {
     #[test]
     fn routing_task_minimum_fields() {
         let t = RoutingTask {
-            flow: TaskFlow::Chat { session_id: "s1".into() },
+            flow: TaskFlow::Chat {
+                session_id: "s1".into(),
+            },
             user_prompt: "hello".into(),
             conversation_history: None,
             workspace_context: WorkspaceHints::default(),
@@ -177,7 +179,9 @@ mod tests {
     #[test]
     fn routing_task_serde_round_trip() {
         let t = RoutingTask {
-            flow: TaskFlow::Chat { session_id: "s1".into() },
+            flow: TaskFlow::Chat {
+                session_id: "s1".into(),
+            },
             user_prompt: "hi".into(),
             conversation_history: None,
             workspace_context: WorkspaceHints::default(),
@@ -191,6 +195,10 @@ mod tests {
         assert!(matches!(back.user_hint, Some(ComplexityHint::Medium)));
         assert_eq!(back.allowed_agents.len(), 2);
         // Verify externally-tagged JSON format — for TaskFlow this should contain "type":"chat"
-        assert!(s.contains("\"type\":\"chat\""), "TaskFlow should use tagged serde format, got: {}", s);
+        assert!(
+            s.contains("\"type\":\"chat\""),
+            "TaskFlow should use tagged serde format, got: {}",
+            s
+        );
     }
 }

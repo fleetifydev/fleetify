@@ -28,8 +28,7 @@ impl CapabilityMatrix {
     /// Load the capability matrix from an explicit path.
     pub fn load(path: impl AsRef<Path>) -> std::io::Result<Self> {
         let raw = std::fs::read_to_string(path.as_ref())?;
-        toml::from_str(&raw)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        toml::from_str(&raw).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 
     /// Search order parity with `crates::config::AppConfig::load`: cwd then workspace-root.

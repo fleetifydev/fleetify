@@ -37,7 +37,9 @@ mod migration_tests {
 
     #[tokio::test]
     async fn routing_decisions_table_exists_after_migration() {
-        let pool = init_pool("sqlite::memory:").await.expect("open in-memory db");
+        let pool = init_pool("sqlite::memory:")
+            .await
+            .expect("open in-memory db");
         let row = sqlx::query(
             "SELECT COUNT(*) AS cnt FROM sqlite_master \
              WHERE type='table' AND name='routing_decisions'",
@@ -51,7 +53,9 @@ mod migration_tests {
 
     #[tokio::test]
     async fn sessions_table_has_pinning_columns() {
-        let pool = init_pool("sqlite::memory:").await.expect("open in-memory db");
+        let pool = init_pool("sqlite::memory:")
+            .await
+            .expect("open in-memory db");
         let rows = sqlx::query("PRAGMA table_info(sessions)")
             .fetch_all(&pool)
             .await

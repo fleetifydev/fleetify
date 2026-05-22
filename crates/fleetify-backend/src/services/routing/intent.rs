@@ -17,8 +17,13 @@ impl IntentClassifier {
         let words = prompt.split_whitespace().count();
 
         let has_complex_keyword = [
-            "refactor", "migrate", "architect", "design", "redesign",
-            "deadlock", "race condition",
+            "refactor",
+            "migrate",
+            "architect",
+            "design",
+            "redesign",
+            "deadlock",
+            "race condition",
         ]
         .iter()
         .any(|k| lower.contains(k));
@@ -57,7 +62,9 @@ mod tests {
 
     fn task(prompt: &str) -> RoutingTask {
         RoutingTask {
-            flow: TaskFlow::Chat { session_id: "t".into() },
+            flow: TaskFlow::Chat {
+                session_id: "t".into(),
+            },
             user_prompt: prompt.into(),
             conversation_history: None,
             workspace_context: WorkspaceHints::default(),
@@ -71,39 +78,57 @@ mod tests {
     fn user_hint_overrides_heuristic() {
         let mut t = task("anything goes here");
         t.user_hint = Some(ComplexityHint::Trivial);
-        assert!(matches!(IntentClassifier.classify(&t), ComplexityHint::Trivial));
+        assert!(matches!(
+            IntentClassifier.classify(&t),
+            ComplexityHint::Trivial
+        ));
     }
 
     #[test]
     fn complex_keyword_classifies_complex() {
         let t = task("Please refactor the auth module");
-        assert!(matches!(IntentClassifier.classify(&t), ComplexityHint::Complex));
+        assert!(matches!(
+            IntentClassifier.classify(&t),
+            ComplexityHint::Complex
+        ));
     }
 
     #[test]
     fn short_simple_classifies_trivial() {
         let t = task("rename foo to bar");
-        assert!(matches!(IntentClassifier.classify(&t), ComplexityHint::Trivial));
+        assert!(matches!(
+            IntentClassifier.classify(&t),
+            ComplexityHint::Trivial
+        ));
     }
 
     #[test]
     fn very_short_classifies_simple() {
         let t = task("hello");
-        assert!(matches!(IntentClassifier.classify(&t), ComplexityHint::Simple));
+        assert!(matches!(
+            IntentClassifier.classify(&t),
+            ComplexityHint::Simple
+        ));
     }
 
     #[test]
     fn long_prompt_classifies_complex() {
         let long = "lorem ipsum ".repeat(60);
         let t = task(&long);
-        assert!(matches!(IntentClassifier.classify(&t), ComplexityHint::Complex));
+        assert!(matches!(
+            IntentClassifier.classify(&t),
+            ComplexityHint::Complex
+        ));
     }
 
     #[test]
     fn many_files_classifies_complex() {
         let mut t = task("fix the build");
         t.workspace_context.file_count = Some(50);
-        assert!(matches!(IntentClassifier.classify(&t), ComplexityHint::Complex));
+        assert!(matches!(
+            IntentClassifier.classify(&t),
+            ComplexityHint::Complex
+        ));
     }
 
     #[test]
