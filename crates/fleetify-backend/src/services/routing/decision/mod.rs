@@ -2,3 +2,4 @@
 //! available, offline), notdiamond (Task 11), weave (Task 12), inworld (v1.1).
 
 pub mod builtin;
+pub mod registry;
