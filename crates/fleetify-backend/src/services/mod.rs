@@ -10,6 +10,7 @@ pub mod dispatch;
 pub mod fleet_brain;
 pub mod haiku_breaker;
 pub mod haiku_client;
+pub mod codex_toml;
 pub mod mcp_auth;
 pub mod mcp_prober;
 pub mod mcp_registry;
