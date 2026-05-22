@@ -148,6 +148,15 @@ pub async fn reset() -> Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use tokio::sync::Mutex;
+
+    // Tests in this module share one process-wide OnceLock<SqlitePool>.
+    // cargo test runs #[tokio::test] cases in parallel by default, so a
+    // sibling test calling `reset()` mid-roundtrip would wipe the events
+    // this test just enqueued and assertions would race. Serialise them
+    // through a tokio Mutex (held across awaits) — cheaper than a
+    // per-test pool, and the two tests run in <100 ms anyway.
+    static TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
     // Each test must use its OWN sqlite file because POOL is a process-
     // wide OnceLock — once initialised, subsequent init_at() calls are
@@ -165,6 +174,7 @@ mod tests {
 
     #[tokio::test]
     async fn enqueue_peek_ack_roundtrip() {
+        let _g = TEST_LOCK.lock().await;
         ensure_inited().await;
         let _ = reset().await;
         enqueue("evt-1", &json!({ "kind": "session_start", "id": "s1" }))
@@ -194,6 +204,7 @@ mod tests {
 
     #[tokio::test]
     async fn bump_attempt_increments_per_event() {
+        let _g = TEST_LOCK.lock().await;
         ensure_inited().await;
         let _ = reset().await;
         enqueue("evt-x", &json!({ "kind": "heartbeat" }))
