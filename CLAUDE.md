@@ -156,11 +156,61 @@ docs/                      # RELEASE.md, RUNNING.md, PHASE_STATUS.md, etc.
 
 ---
 
-## Commit etiquette
+## Commit etiquette — release-please contract
 
-- Conventional-commit titles (`feat(scope):`, `fix(scope):`, `ci:`, `docs:`, `chore:`, `test:`, `refactor:`, `perf:`, `deps:`, `revert:`, `build:`). PR title becomes the changelog entry once release-please lands.
+**The PR title is the changelog entry.** Once release-please ships (see `docs/superpowers/specs/2026-05-22-github-workflows-design.md` §5), every merge to `main` is parsed by [release-please](https://github.com/googleapis/release-please) to derive the next semver bump and write `CHANGELOG.md`. The squashed commit subject is what release-please reads, and that subject is whatever the PR title was at merge time. **The PR title is the only thing that matters — individual commit subjects on the feature branch are advisory.**
+
+### Prefix → version-bump + changelog effect
+
+| Prefix | Version bump (pre-1.0) | Changelog section |
+|---|---|---|
+| `feat:` / `feat(scope):` | **minor** (0.1.x → 0.2.0) | Features |
+| `fix:` / `fix(scope):` | **minor** pre-1.0 (`bump-minor-pre-major`) / **patch** post-1.0 | Bug Fixes |
+| `perf:` | **patch** | Performance |
+| `deps:` | **patch** | Dependencies |
+| `revert:` | **patch** | Reverts |
+| `feat!:` / footer `BREAKING CHANGE:` | **minor** pre-1.0 / **major** post-1.0 | Features (with `!`) |
+| `docs:` | none | hidden |
+| `chore:` | none | hidden |
+| `refactor:` | none | hidden |
+| `test:` | none | hidden |
+| `ci:` | none | hidden |
+| `build:` | none | hidden |
+| `style:` | none | hidden (release-please doesn't define it; `amannn/action-semantic-pull-request` accepts it) |
+
+**Pre-1.0 footgun:** we're at 0.1.x today, so `bump-minor-pre-major: true` + `bump-patch-for-minor-pre-major: true` are both ON. That means **`fix:` bumps the minor while pre-1.0**, not the patch — surprising if you're used to the post-1.0 semantics. Stops mattering once we cut 1.0.
+
+### How to pick the right prefix
+
+- Did this change ship a user-visible capability that wasn't there before? → `feat:`
+- Did this change correct user-visible broken behaviour? → `fix:`
+- Did this change improve speed / memory / latency with no behaviour delta? → `perf:`
+- Did this change bump a dependency or generated lockfile? → `deps:`
+- Did this change roll back a prior commit? → `revert:`
+- Did this change touch only tests / CI / docs / formatting / internal cleanup / build scripts? → pick the corresponding hidden prefix (`test:` / `ci:` / `docs:` / `style:` / `chore:` / `refactor:` / `build:`). **These do not trigger a release.**
+
+When unsure between `feat:` and `chore:`, ask: *"would I want this line to show up in the public changelog?"* If yes, `feat:` (or `fix:`); if no, a hidden prefix.
+
+### Breaking changes
+
+Use the `!` marker AND a `BREAKING CHANGE:` footer when you ship one:
+
+```
+feat(api)!: drop /v1/sessions in favour of /v2/sessions
+
+<body explaining the migration>
+
+BREAKING CHANGE: /v1/sessions has been removed. Callers must migrate
+to /v2/sessions which returns a paginated envelope instead of a
+bare array.
+```
+
+Pre-1.0 this still triggers only a minor bump (we're 0.x — semver lets us break things). Post-1.0 it forces a major bump.
+
+### Body + co-author
+
 - Body: explain *why*, not *what*. The diff shows what.
-- One logical change per commit. If a refactor lands alongside a feature, split them.
+- One logical change per commit on a feature branch. The PR can squash them, but reviewers read individual commits.
 - Co-author footer for AI-assisted commits:
   ```
   Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
