@@ -23,12 +23,15 @@ vi.mock("@/lib/api", async () => {
   };
 });
 
-// Suppress getGitContext pre-check
+// Suppress getGitContext pre-check; hasGit must return ok:true so the
+// WorktreeToggle doesn't collapse to "Git required" mode (which forces
+// use_worktree to false and hides the "will initialize" hint).
 Object.defineProperty(window, "electronAPI", {
   configurable: true,
   value: {
     getGitContext: async () => ({ branch: "main", baseBranch: "main" }),
     openFolderDialog: async () => null,
+    hasGit: async () => ({ ok: true }),
   },
 });
 
