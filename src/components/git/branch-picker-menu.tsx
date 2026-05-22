@@ -1,17 +1,31 @@
 /**
- * BranchPickerMenu — pops up from the BranchStrip's branch label.
+ * BranchPickerMenu — opens above the BranchStrip pills.
  *
- *   • Lists every local branch with a "PR #N · OPEN/MERGED" badge.
- *   • Click a row → checks that branch out, caller refreshes ctx + pr.
- *   • "+ Create new branch" carves a fresh `fleet/<topic>-<8hex>`
- *     from the current base and switches to it.
+ * Two modes:
+ *   • mode="base"     → only the detected base branch + "Create new main
+ *                       branch" (text input). Pins the new branch as the
+ *                       logical base via `setBaseBranch`. Nondestructive
+ *                       — does not touch the remote default.
+ *   • mode="working"  → every other branch (base filtered out) + a
+ *                       "Create new branch" action that carves a fresh
+ *                       fleet/<topic>-<hex> off the current base.
  *
- * One `gh pr list` call drives every badge (cheap), one `git_list_branches`
- * call drives the row list. Both fire when the menu opens.
+ * Both modes show a per-branch PR badge (one `gh pr list` call drives
+ * every row). Click-outside / Esc dismiss.
  */
 
 import { useEffect, useRef, useState, useMemo } from "react";
-import { Plus, GitBranch, Check, GitPullRequest, Loader2 } from "lucide-react";
+import { Plus, GitBranch, Check, GitPullRequest, Loader2, GitMerge } from "lucide-react";
+import { pushChatError } from "@/stores/chat-store";
+import { useAppStore, COMPOSER_CHAT_KEY } from "@/stores/app-store";
+
+// Surface a branch-op failure as a red bubble in the active chat in
+// addition to the picker's inline error line — the inline copy
+// vanishes the moment the menu closes, the chat record persists.
+function surfaceBranchError(message: string) {
+  const sid = useAppStore.getState().activeSessionId || COMPOSER_CHAT_KEY;
+  pushChatError(sid, message);
+}
 
 interface PRSummary {
   number: number;
@@ -22,16 +36,25 @@ interface PRSummary {
 
 interface Props {
   folder: string;
+  /** "base" pill click → shows the detected base + new-main action.
+   *  "working" pill click → shows every other branch + new-branch action. */
+  mode: "base" | "working";
   /** Currently checked-out branch — rendered with a check and pinned
    *  to the top of the list. */
   currentBranch: string | null;
-  /** Base branch to carve new feature branches from. Defaults to main. */
-  baseBranch?: string;
-  /** Suggested topic for the new branch name. We append `-<8hex>` to
-   *  match the existing `fleet/<topic>-<sha>` convention. */
+  /** Detected base for this clone (`git_get_context.baseBranch`). When
+   *  null we fall back to "main" for the carve-from arg, but the base
+   *  menu hides its "Create new" affordance so we never end up writing
+   *  `fleetify.baseBranch` for a repo that doesn't have one yet. */
+  baseBranch: string | null;
+  /** Suggested topic for the new working branch name. We append
+   *  `-<8hex>` to match the existing `fleet/<topic>-<sha>` convention. */
   newBranchTopic: string;
   onPick: (branch: string) => void;
   onCreateNew: (newBranch: string) => void;
+  /** Fired after a successful setBaseBranch — caller refreshes
+   *  context so the strip picks up the new base. */
+  onBaseChanged?: (newBase: string) => void;
   onDismiss: () => void;
 }
 
@@ -43,21 +66,27 @@ interface ListBranchesResult {
 
 export function BranchPickerMenu({
   folder,
+  mode,
   currentBranch,
   baseBranch,
   newBranchTopic,
   onPick,
   onCreateNew,
+  onBaseChanged,
   onDismiss,
 }: Props) {
   const [branches, setBranches] = useState<ListBranchesResult | null>(null);
   const [prs, setPrs] = useState<PRSummary[]>([]);
   const [busy, setBusy] = useState<string | null>(null); // branch name being checked out
   const [creating, setCreating] = useState(false);
+  // "base" mode: when null the row + button are visible; when set, the
+  // input is open with this value (typed text). Submit pins it.
+  const [newBaseDraft, setNewBaseDraft] = useState<string | null>(null);
+  const [pinning, setPinning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  // Hydrate both branches + PR list on open. Parallel fetches.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -76,23 +105,37 @@ export function BranchPickerMenu({
     return () => { cancelled = true; };
   }, [folder]);
 
-  // Click-outside + Esc dismissal.
+  useEffect(() => {
+    if (newBaseDraft !== null) inputRef.current?.focus();
+  }, [newBaseDraft]);
+
+  // Click-outside + Esc dismissal. Esc on the new-base input cancels
+  // just the input instead of closing the whole menu.
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
       if (!wrapperRef.current) return;
       if (!wrapperRef.current.contains(e.target as Node)) onDismiss();
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onDismiss(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (newBaseDraft !== null) {
+        setNewBaseDraft(null);
+        setError(null);
+        e.stopPropagation();
+        return;
+      }
+      onDismiss();
+    };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [onDismiss]);
+  }, [onDismiss, newBaseDraft]);
 
-  // PR-state lookup table keyed by branch name. Newer entries win when
-  // the same branch has multiple PRs (rare — happens on rebase + reopen).
+  // PR-state lookup keyed by branch name. Newer entries win when the
+  // same branch has multiple PRs (rare — happens on rebase + reopen).
   const prByBranch = useMemo(() => {
     const m = new Map<string, PRSummary>();
     for (const p of prs) {
@@ -106,6 +149,10 @@ export function BranchPickerMenu({
     return m;
   }, [prs]);
 
+  // Rows depend on mode. Base mode shows only the detected base (we
+  // could surface a "main-ish" candidate list but the user's spec only
+  // calls for the current main + the new-main action). Working mode
+  // shows everything except the base.
   const rows = useMemo(() => {
     if (!branches) return [] as string[];
     const seen = new Set<string>();
@@ -115,21 +162,50 @@ export function BranchPickerMenu({
       seen.add(b);
       ordered.push(b);
     };
-    if (branches.current) push(branches.current);
-    for (const b of branches.local) push(b);
-    // Remote-only branches (no local tracking) listed last with the
-    // `origin/` prefix stripped for display, so the user can fetch
-    // and switch to them from the picker.
+
+    if (mode === "base") {
+      if (baseBranch) push(baseBranch);
+      return ordered;
+    }
+
+    // working mode
+    if (branches.current && branches.current !== baseBranch) push(branches.current);
+    for (const b of branches.local) {
+      if (b === baseBranch) continue;
+      push(b);
+    }
     for (const r of branches.remote) {
       const trimmed = r.replace(/^origin\//, "");
-      if (trimmed && trimmed !== "HEAD") push(trimmed);
+      if (!trimmed || trimmed === "HEAD") continue;
+      if (trimmed === baseBranch) continue;
+      push(trimmed);
     }
     return ordered;
-  }, [branches]);
+  }, [branches, mode, baseBranch]);
+
+  // What counts as "the selected row" per mode — drives both the
+  // isCurrent visual (bold + check + soft background) and the no-op
+  // dismissal when the user clicks the already-selected entry:
+  //   • base mode    → baseBranch is the source of branching. We never
+  //                    try to `git checkout` it because in a worktree
+  //                    session main is locked to the source repo's HEAD
+  //                    and the checkout would fail with `fatal: 'main'
+  //                    is already used by worktree at …`.
+  //   • working mode → currentBranch is the worktree's HEAD; switching
+  //                    to it is a no-op so we just dismiss.
+  const selectedBranch = mode === "base" ? baseBranch : currentBranch;
 
   const handlePick = async (branch: string) => {
-    if (busy || creating) return;
-    if (branch === currentBranch) {
+    if (busy || creating || pinning) return;
+    // Base mode is read-only: the base branch isn't somewhere you
+    // switch TO from a feature branch, it's where you carve FROM.
+    // Clicking it (or anything else in the base list) just closes
+    // the menu without touching git.
+    if (mode === "base") {
+      onDismiss();
+      return;
+    }
+    if (branch === selectedBranch) {
       onDismiss();
       return;
     }
@@ -138,19 +214,23 @@ export function BranchPickerMenu({
     try {
       const r = await window.electronAPI?.gitCheckout?.(folder, branch, false);
       if (r?.ok === false) {
-        setError(r.error || `git checkout ${branch} failed`);
+        const msg = r.error || `git checkout ${branch} failed`;
+        setError(msg);
+        surfaceBranchError(msg);
         setBusy(null);
         return;
       }
       onPick(branch);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Checkout failed");
+      const msg = e instanceof Error ? e.message : "Checkout failed";
+      setError(msg);
+      surfaceBranchError(msg);
       setBusy(null);
     }
   };
 
-  const handleCreate = async () => {
-    if (busy || creating) return;
+  const handleCreateWorking = async () => {
+    if (busy || creating || pinning) return;
     setCreating(true);
     setError(null);
     const slug = (newBranchTopic || "scratch")
@@ -170,16 +250,49 @@ export function BranchPickerMenu({
         baseBranch || "main",
       );
       if (r?.ok === false) {
-        setError(r.error || "carve failed");
+        const msg = r.error || `Carve ${newBranch} failed`;
+        setError(msg);
+        surfaceBranchError(msg);
         setCreating(false);
         return;
       }
       onCreateNew(newBranch);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Carve failed");
+      const msg = e instanceof Error ? e.message : "Carve failed";
+      setError(msg);
+      surfaceBranchError(msg);
       setCreating(false);
     }
   };
+
+  const handlePinBase = async () => {
+    const name = (newBaseDraft || "").trim();
+    if (!name) {
+      setError("Type a branch name first.");
+      return;
+    }
+    if (busy || creating || pinning) return;
+    setPinning(true);
+    setError(null);
+    try {
+      const r = await window.electronAPI?.setBaseBranch?.(folder, name);
+      if (!r?.ok) {
+        const msg = r?.error || `Couldn't pin base branch '${name}'`;
+        setError(msg);
+        surfaceBranchError(msg);
+        setPinning(false);
+        return;
+      }
+      onBaseChanged?.(r.base || name);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Couldn't pin base branch.";
+      setError(msg);
+      surfaceBranchError(msg);
+      setPinning(false);
+    }
+  };
+
+  const title = mode === "base" ? "Switch base branch" : "Switch working branch";
 
   return (
     <div
@@ -211,7 +324,7 @@ export function BranchPickerMenu({
         textTransform: "uppercase",
         color: "var(--c-low)",
       }}>
-        Switch branch
+        {title}
       </div>
 
       <div style={{
@@ -228,18 +341,22 @@ export function BranchPickerMenu({
         )}
         {branches !== null && rows.length === 0 && (
           <div style={{ padding: "12px 14px", fontSize: 12, color: "var(--c-low)" }}>
-            No branches yet.
+            {mode === "base" ? "No base branch detected yet." : "No other branches."}
           </div>
         )}
         {rows.map(branch => {
-          const isCurrent = branch === currentBranch;
+          // In base mode the base entry reads as "selected" even when
+          // the worktree's actual HEAD is on a feature branch — the
+          // base IS what this side of the picker tracks.
+          const isCurrent = branch === selectedBranch;
+          const isBase = branch === baseBranch;
           const pr = prByBranch.get(branch);
           const isBusy = busy === branch;
           return (
             <button
               key={branch}
               onClick={() => handlePick(branch)}
-              disabled={isBusy || creating}
+              disabled={isBusy || creating || pinning}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -253,22 +370,24 @@ export function BranchPickerMenu({
                 fontSize: 12.5,
                 fontFamily: "inherit",
                 textAlign: "left",
-                cursor: isBusy || creating ? "default" : "pointer",
+                cursor: isBusy || creating || pinning ? "default" : "pointer",
                 transition: "background 0.1s",
               }}
               onMouseEnter={e => {
-                if (isCurrent || isBusy || creating) return;
+                if (isCurrent || isBusy || creating || pinning) return;
                 e.currentTarget.style.background = "rgba(255,255,255,0.04)";
               }}
               onMouseLeave={e => {
-                if (isCurrent || isBusy || creating) return;
+                if (isCurrent || isBusy || creating || pinning) return;
                 e.currentTarget.style.background = "transparent";
               }}
             >
               <span style={{ display: "flex", color: "var(--c-low)", flexShrink: 0 }}>
                 {isBusy
                   ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} />
-                  : <GitBranch size={12} />}
+                  : isBase
+                    ? <GitMerge size={12} />
+                    : <GitBranch size={12} />}
               </span>
               <span style={{
                 flex: 1,
@@ -312,39 +431,106 @@ export function BranchPickerMenu({
         borderTop: "1px solid rgba(255,255,255,0.06)",
         padding: 4,
       }}>
-        <button
-          onClick={handleCreate}
-          disabled={busy !== null || creating}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            width: "100%",
-            padding: "8px 10px",
-            background: "transparent",
-            border: "none",
-            borderRadius: 6,
-            color: "var(--c-fg)",
-            fontSize: 12.5,
-            fontFamily: "inherit",
-            textAlign: "left",
-            cursor: busy !== null || creating ? "default" : "pointer",
-          }}
-          onMouseEnter={e => {
-            if (busy !== null || creating) return;
-            e.currentTarget.style.background = "rgba(255,255,255,0.04)";
-          }}
-          onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
-        >
-          <span style={{ display: "flex", color: "var(--c-low)" }}>
-            {creating
-              ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} />
-              : <Plus size={13} strokeWidth={2.2} />}
-          </span>
-          <span style={{ flex: 1 }}>
-            {creating ? "Creating branch…" : "Create new branch"}
-          </span>
-        </button>
+        {mode === "working" && (
+          <button
+            onClick={handleCreateWorking}
+            disabled={busy !== null || creating || pinning}
+            style={createButtonStyle(busy !== null || creating || pinning)}
+            onMouseEnter={e => {
+              if (busy !== null || creating || pinning) return;
+              e.currentTarget.style.background = "rgba(255,255,255,0.04)";
+            }}
+            onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
+          >
+            <span style={{ display: "flex", color: "var(--c-low)" }}>
+              {creating
+                ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} />
+                : <Plus size={13} strokeWidth={2.2} />}
+            </span>
+            <span style={{ flex: 1 }}>
+              {creating ? "Creating branch…" : "Create new branch"}
+            </span>
+          </button>
+        )}
+
+        {mode === "base" && newBaseDraft === null && (
+          <button
+            onClick={() => { setNewBaseDraft(""); setError(null); }}
+            disabled={busy !== null || creating || pinning}
+            style={createButtonStyle(busy !== null || creating || pinning)}
+            onMouseEnter={e => {
+              if (busy !== null || creating || pinning) return;
+              e.currentTarget.style.background = "rgba(255,255,255,0.04)";
+            }}
+            onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
+          >
+            <span style={{ display: "flex", color: "var(--c-low)" }}>
+              <Plus size={13} strokeWidth={2.2} />
+            </span>
+            <span style={{ flex: 1 }}>Create new main branch</span>
+          </button>
+        )}
+
+        {mode === "base" && newBaseDraft !== null && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "6px 8px",
+            }}
+          >
+            <input
+              ref={inputRef}
+              value={newBaseDraft}
+              onChange={e => setNewBaseDraft(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handlePinBase();
+                }
+              }}
+              placeholder="e.g. release-v3"
+              spellCheck={false}
+              autoComplete="off"
+              disabled={pinning}
+              style={{
+                flex: 1,
+                height: 28,
+                padding: "0 8px",
+                fontSize: 12.5,
+                fontFamily: "var(--font-mono, ui-monospace, monospace)",
+                background: "rgba(255,255,255,0.04)",
+                border: "1px solid rgba(255,255,255,0.12)",
+                borderRadius: 5,
+                color: "var(--c-fg)",
+                outline: "none",
+              }}
+            />
+            <button
+              onClick={handlePinBase}
+              disabled={pinning || !newBaseDraft?.trim()}
+              style={{
+                height: 28,
+                padding: "0 11px",
+                fontSize: 11.5,
+                fontWeight: 600,
+                borderRadius: 5,
+                background: "var(--c-fg)",
+                color: "var(--c-bg, #0c0c0c)",
+                border: "none",
+                cursor: pinning || !newBaseDraft?.trim() ? "default" : "pointer",
+                opacity: pinning || !newBaseDraft?.trim() ? 0.55 : 1,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+              }}
+            >
+              {pinning && <Loader2 size={11} style={{ animation: "spin 1s linear infinite" }} />}
+              Pin
+            </button>
+          </div>
+        )}
       </div>
 
       {error && (
@@ -358,6 +544,24 @@ export function BranchPickerMenu({
       )}
     </div>
   );
+}
+
+function createButtonStyle(disabled: boolean): React.CSSProperties {
+  return {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    width: "100%",
+    padding: "8px 10px",
+    background: "transparent",
+    border: "none",
+    borderRadius: 6,
+    color: "var(--c-fg)",
+    fontSize: 12.5,
+    fontFamily: "inherit",
+    textAlign: "left",
+    cursor: disabled ? "default" : "pointer",
+  };
 }
 
 function prBadgeBg(state: string): string {

@@ -10,7 +10,7 @@ import {
   ExternalLink,
   AlignLeft,
   Sparkles, Undo2, Wand2,
-  ScanEye, Plug, RefreshCw,
+  ScanEye, Plug, RefreshCw, FolderTree,
 } from "lucide-react";
 import { truncateMid, folderName } from "@/lib/utils";
 import { searchProjectFiles, apiFetch, type FileSearchEntry, updateSession as apiUpdateSession, fetchSessionDetail, enhancePrompt } from "@/lib/api";
@@ -20,7 +20,7 @@ import { wsManager } from "@/services/ws-manager";
 import { FileMentionPopup } from "./file-mention-popup";
 import { PRDialog } from "@/components/git/pr-dialog";
 import { ReviewDialog } from "@/components/git/review-dialog";
-import { GithubAuthChoiceDialog } from "@/components/git/github-auth-choice-dialog";
+import { AuthChoicePopover } from "@/components/git/auth-choice-popover";
 import { BranchPickerMenu } from "@/components/git/branch-picker-menu";
 import { RecoveryDialog } from "@/components/git/recovery-dialog";
 import { PreflightDialog } from "@/components/git/preflight-dialog";
@@ -29,7 +29,8 @@ import { git, type PRStatus, defaultPRTitle, defaultPRBody } from "@/lib/git-api
 import { github } from "@/lib/github-link-api";
 import { glog } from "@/lib/git-log";
 import { useAppStore } from "@/stores/app-store";
-import { useChatStore } from "@/stores/chat-store";
+import { useChatStore, pushChatError } from "@/stores/chat-store";
+import { COMPOSER_CHAT_KEY } from "@/stores/app-store";
 import { useMCPStore } from "@/stores/mcp-store";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { commandsForContext, type SlashCmdDef } from "@/lib/slash-commands";
@@ -1402,6 +1403,12 @@ const KNOWN_DEFAULTS = new Set(["main", "master"]);
    Matches the user's reference: text + faint copy glyph sliding in
    under a soft hover background. */
 function BranchPill({ text, tone, dim }: {
+  /** Full branch name. The pill MIDDLE-truncates for display when the
+   *  name exceeds 32 chars, but `text` is what lands in the clipboard
+   *  — copying a `fleet/long-feature-branch-name-deadbeef` gave us a
+   *  truncated `fleet/long-fe…ef` instead of the original because
+   *  callers used to pass the already-truncated string. Internalising
+   *  the truncation keeps display and copy in lockstep. */
   text: string;
   tone: "low" | "med";
   dim?: boolean;
@@ -1414,6 +1421,7 @@ function BranchPill({ text, tone, dim }: {
       setTimeout(() => setCopied(false), 1400);
     });
   }, [text]);
+  const display = truncateMid(text, 32);
   return (
     <button
       type="button"
@@ -1435,12 +1443,12 @@ function BranchPill({ text, tone, dim }: {
         background: hovered ? "rgba(var(--fg-rgb), 0.08)" : "transparent",
         transition: "background 0.12s",
         maxWidth: 320,
-        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        overflow: "hidden", whiteSpace: "nowrap",
         opacity: dim ? 0.55 : 1,
         border: dim ? "1px dashed rgba(var(--fg-rgb), 0.20)" : "none",
       }}
     >
-      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{text}</span>
+      <span>{display}</span>
       {(hovered || copied) && (
         copied
           ? <Check size={10} strokeWidth={2.2} style={{ color: "var(--c-high)" }} />
@@ -1474,6 +1482,49 @@ function NoGitPill() {
   );
 }
 
+/* ── PillTrigger ──
+   Click-only wrapper around a BranchPill so the base + working pills
+   in BranchStrip can open their respective BranchPickerMenu modes
+   independently. Keeps the per-pill hover feedback subtle (just a soft
+   surface lift), separate from any outer container hover. */
+function PillTrigger({
+  onClick,
+  children,
+}: {
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      onClick={e => { e.stopPropagation(); onClick(); }}
+      onKeyDown={e => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          e.stopPropagation();
+          onClick();
+        }
+      }}
+      onMouseEnter={e => {
+        e.currentTarget.style.background = "rgba(var(--fg-rgb), 0.04)";
+      }}
+      onMouseLeave={e => {
+        e.currentTarget.style.background = "transparent";
+      }}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        borderRadius: 5,
+        cursor: "pointer",
+        transition: "background 0.1s",
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
 /* ── computeBranchName ──
    Renderer-side mirror of backend/app/services/worktree.py's
    `compute_branch_name`. Used by the BranchStrip to render the
@@ -1482,15 +1533,35 @@ function NoGitPill() {
    repo is still on main). Keep the slug rules byte-identical to
    the Python helper — drift means the renderer shows one name and
    the backend creates a different one. */
-export function computeBranchName(label: string | null | undefined, sessionId: string): string {
-  const raw = (label && label.trim()) || sessionId;
+export function computeBranchName(
+  label: string | null | undefined,
+  sessionId: string,
+  /** Optional fallback when `label` is empty or the "New chat"
+   *  placeholder — derives the slug from the folder basename instead
+   *  of the raw session id. Lets compose-mode strips show
+   *  `fleet/<folder>-<id>` immediately when the user picks a folder
+   *  without us having to mirror the title into composer state. */
+  projectPath?: string | null,
+): string {
+  const labelTrimmed = label?.trim();
+  const usableLabel = labelTrimmed && labelTrimmed !== "New chat"
+    ? labelTrimmed
+    : null;
+  const fallback = projectPath ? folderName(projectPath) : "";
+  const raw = usableLabel || fallback || sessionId;
   const cleaned = raw.replace(/[^A-Za-z0-9._/-]+/g, "-").replace(/^[-/]+|[-/]+$/g, "");
   const slug = cleaned.slice(0, 48) || "session";
   return `fleet/${slug}-${sessionId.slice(0, 8)}`;
 }
 
-export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sessionTitle, plannedBranch }: {
+export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sessionTitle, plannedBranch, isWorktree }: {
   projectPath?: string | null;
+  /** True when the resolved projectPath is a git worktree under
+   *  `<source-repo>/.fleetify-worktrees/<session-id>/`. Drives the
+   *  small "Worktree" indicator pill — communicates to the user that
+   *  their file ops live in an isolated checkout, not the source
+   *  repo's working tree. */
+  isWorktree?: boolean;
   /** Always the SOURCE repo — even when `projectPath` points to a
    *  worktree (worktree-on sessions). Post-merge "Sync main" acts on
    *  this path so the user's main repo catches up with the merged
@@ -1526,11 +1597,13 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // surrounding await in `executeCreatePR` can suspend on it.
   const [authChoiceOpen, setAuthChoiceOpen] = useState(false);
   const authChoiceResolverRef = useRef<((m: "oauth" | "cli" | null) => void) | null>(null);
-  // Branch-switcher popover. Anchored to the branch label in the
-  // BranchStrip; renders the BranchPickerMenu with all branches + a
-  // "Create new branch" CTA. Refresh ctx + pr on every successful
-  // checkout so the strip's PR badge / Merge button stays in sync.
-  const [branchMenuOpen, setBranchMenuOpen] = useState(false);
+  // Branch-switcher popover. Anchored to the BranchStrip pills. Two
+  // distinct modes — "base" pops from the base/main pill (list current
+  // base + "Create new main branch"), "working" pops from the working
+  // pill (list every other branch + "Create new branch"). null = closed.
+  // Refresh ctx + pr on every successful checkout so the strip's PR
+  // badge / Merge button stays in sync.
+  const [branchMenuMode, setBranchMenuMode] = useState<"base" | "working" | null>(null);
   const [draftDialog, setDraftDialog] = useState(false);
   // Review dialog state — Conductor-style. Open via the small ScanEye
   // button beside Create PR; the dialog runs the session agent over
@@ -1873,6 +1946,35 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
     }
   }, [folder, ctx?.branch, ctx?.baseBranch, ctx?.plus, ctx?.minus, pr, prStatusLoaded, autoCreating, sessionTitle]);
 
+  // Auto-cleanup after merge. When prStatus poll observes the PR
+  // flip to MERGED AND we were the ones who triggered the merge
+  // (justMergedRef set in onMerge), run the same Sync main + carve
+  // next round flow the manual button does. The user no longer has
+  // to click Sync main after every merge — the session immediately
+  // reaches the "ready for next round" state.
+  //
+  // Gating: justMergedRef is the safeguard against firing this for
+  // MERGED states the user didn't trigger (e.g. someone merged via
+  // GitHub web, or the app boots into a session whose PR was merged
+  // last week). In those cases the strip still shows Open + Sync
+  // main and the user has manual control.
+  //
+  // HOISTED above the `controlCenter` early return below: React's
+  // Rules of Hooks require the hook call count to stay constant
+  // across renders for the same component instance. Without this
+  // hoist, navigating from the Fleet hub (controlCenter=true → early
+  // return BEFORE the hook) to a real session (controlCenter=false →
+  // hook fires) shifted the hook count and React tore the tree down
+  // with `Rendered more hooks than during the previous render.`
+  useEffect(() => {
+    if (controlCenter) return;
+    if (pr?.state !== "MERGED") return;
+    if (!justMergedRef.current) return;
+    glog("ui", "auto-cleanup.fire", { prNumber: pr.number });
+    void onSyncMain();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pr?.state, controlCenter]);
+
   if (controlCenter) return null;
 
   const noGit = !ctx?.branch;
@@ -1929,35 +2031,17 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
     if (!ready.ok) {
       setMerging(false);
       justMergedRef.current = false;
-      const notify = useAppStore.getState().pushNotification;
-      notify({
-        id: crypto.randomUUID(),
-        sessionId: "",
-        title: "Couldn't mark PR ready",
-        summary: ready.error || "gh pr ready failed",
-        success: false,
-        timestamp: Date.now(),
-      });
       return;
     }
     setPr(prev => prev && prev.number === mergedPrNumber ? { ...prev, isDraft: false } : prev);
     const r = await git.mergePR(folder, mergedPrNumber, "squash");
     setMerging(false);
     glog("ui", "merge.result", { ok: r.ok, error: r.ok ? undefined : r.error });
-    const notify = useAppStore.getState().pushNotification;
     if (r.ok) {
       // Drop the OPEN pr immediately. The prStatus poll will not be
       // re-fetched here — doSyncAndCarve clears pr at its end too,
       // and the regular poll resumes when ctx settles.
       setPr(null);
-      notify({
-        id: crypto.randomUUID(),
-        sessionId: "",
-        title: "PR merge queued",
-        summary: `#${mergedPrNumber} will merge once checks pass`,
-        success: true,
-        timestamp: Date.now(),
-      });
       // Trigger sync+carve DIRECTLY. We don't wait for pr.state to
       // flip to MERGED via prStatus — `gh pr merge --auto
       // --delete-branch` switches the local checkout to main and
@@ -1969,15 +2053,11 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
     } else {
       // mergePR rejected (checks failing, auth, …) — wasn't really
       // a merge, clear the flag so the useEffect can't fire either.
+      // Surface the failure as a red bubble so the user sees it
+      // without having to dig through devtools.
       justMergedRef.current = false;
-      notify({
-        id: crypto.randomUUID(),
-        sessionId: "",
-        title: "PR merge failed",
-        summary: r.error || "gh pr merge failed",
-        success: false,
-        timestamp: Date.now(),
-      });
+      const errSid = useAppStore.getState().activeSessionId || COMPOSER_CHAT_KEY;
+      pushChatError(errSid, r.error || "Merge failed");
     }
   };
 
@@ -1999,62 +2079,29 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
     setSyncing(true);
     const r = await git.syncMain(sourceTarget, base);
     glog("ui", "syncMain.result", { ok: r.ok, error: r.ok ? undefined : r.error });
-    const notify = useAppStore.getState().pushNotification;
     if (!r.ok) {
       setSyncing(false);
-      notify({
-        id: crypto.randomUUID(),
-        sessionId: "",
-        title: "Sync main failed",
-        summary: r.error || "git pull failed",
-        success: false,
-        timestamp: Date.now(),
-      });
+      const errSid = useAppStore.getState().activeSessionId || COMPOSER_CHAT_KEY;
+      pushChatError(errSid, r.error || `Sync ${base} failed`);
       return;
     }
 
     // Source is now up-to-date. Try to carve the session's next
     // round in the agent's working dir (worktree for worktree-on,
-    // source for worktree-off). Failure here isn't fatal — Sync
-    // already succeeded; we just surface a softer warning toast so
-    // the user knows the branch reset didn't happen.
-    let carveErr: string | null = null;
+    // source for worktree-off). Carve failure isn't fatal — Sync
+    // already succeeded — but we still surface it so the user knows
+    // the next-round branch reset didn't happen.
     if (folder && plannedBranch) {
       glog("ui", "carveNextRound.start", { folder, branch: plannedBranch, base: r.base });
       const c = await git.carveNextRound(folder, plannedBranch, r.base);
       glog("ui", "carveNextRound.result", { ok: c.ok, error: c.ok ? undefined : c.error });
-      if (!c.ok) carveErr = c.error;
+      if (!c.ok) {
+        const errSid = useAppStore.getState().activeSessionId || COMPOSER_CHAT_KEY;
+        pushChatError(errSid, c.error || `Carve ${plannedBranch} failed`);
+      }
     }
     setSyncing(false);
 
-    if (carveErr) {
-      notify({
-        id: crypto.randomUUID(),
-        sessionId: "",
-        title: "Main synced — next round skipped",
-        summary: `Source repo on ${r.base} now. Couldn't reset branch: ${carveErr}`,
-        success: true,
-        timestamp: Date.now(),
-      });
-    } else if (plannedBranch && folder) {
-      notify({
-        id: crypto.randomUUID(),
-        sessionId: "",
-        title: "Ready for next round",
-        summary: `Local ${r.base} synced · ${plannedBranch} reset to origin/${r.base}.`,
-        success: true,
-        timestamp: Date.now(),
-      });
-    } else {
-      notify({
-        id: crypto.randomUUID(),
-        sessionId: "",
-        title: "Main synced",
-        summary: `Local ${r.base} is up to date with origin.`,
-        success: true,
-        timestamp: Date.now(),
-      });
-    }
     // Mark the branch as "post-cleanup". The next prStatus poll
     // would otherwise return the just-merged PR (GitHub keeps the
     // branch ↔ merged-PR association), making the strip render
@@ -2071,28 +2118,6 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
     const base = pr.baseRefName || ctx?.baseBranch || "main";
     return doSyncAndCarve(base);
   };
-
-  // Auto-cleanup after merge. When prStatus poll observes the PR
-  // flip to MERGED AND we were the ones who triggered the merge
-  // (justMergedRef set in onMerge), run the same Sync main + carve
-  // next round flow the manual button does. The user no longer has
-  // to click Sync main after every merge — the session immediately
-  // reaches the "ready for next round" state.
-  //
-  // Gating: justMergedRef is the safeguard against firing this for
-  // MERGED states the user didn't trigger (e.g. someone merged via
-  // GitHub web, or the app boots into a session whose PR was merged
-  // last week). In those cases the strip still shows Open + Sync
-  // main and the user has manual control.
-  useEffect(() => {
-    if (pr?.state !== "MERGED") return;
-    if (!justMergedRef.current) return;
-    glog("ui", "auto-cleanup.fire", { prNumber: pr.number });
-    // onSyncMain clears the ref itself, syncs the source, carves
-    // the next-round branch, and toasts.
-    void onSyncMain();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pr?.state]);
 
   const onOpenPR = () => folder && git.openPR(folder);
 
@@ -2141,7 +2166,6 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
     // exists", producing a confusing failure log even though the
     // user's PR succeeds.
     if (folder) autoPrFiredRef.current.add(folder);
-    const notify = useAppStore.getState().pushNotification;
     try {
       // Pre-flight auth. The dispatcher's createPR bounces with NO_AUTH
       // when neither `gh` CLI nor a Fleetify GitHub link is available,
@@ -2179,25 +2203,9 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
         }
         if (chosen === "oauth") {
           glog("ui", "executeCreatePR.auto-oauth", {});
-          notify({
-            id: crypto.randomUUID(),
-            sessionId: "",
-            title: "GitHub authorization required",
-            summary: "Approve the Fleetify GitHub App in your browser — the PR will open automatically once authorization completes.",
-            success: true,
-            timestamp: Date.now(),
-          });
           const oauth = await github.beginOAuth();
           if (!oauth.ok) {
             glog("ui", "executeCreatePR.auto-oauth-failed", { code: oauth.code || "", error: oauth.error });
-            notify({
-              id: crypto.randomUUID(),
-              sessionId: "",
-              title: "Couldn't connect to GitHub",
-              summary: oauth.error || `OAuth failed: ${oauth.code || "unknown"}`,
-              success: false,
-              timestamp: Date.now(),
-            });
             return;
           }
           glog("ui", "executeCreatePR.auto-oauth-ok", { login: oauth.link.github_login });
@@ -2224,14 +2232,6 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
             if (retry === "oauth") {
               const oauth = await github.beginOAuth();
               if (!oauth.ok) {
-                notify({
-                  id: crypto.randomUUID(),
-                  sessionId: "",
-                  title: "Couldn't connect to GitHub",
-                  summary: oauth.error || `OAuth failed: ${oauth.code || "unknown"}`,
-                  success: false,
-                  timestamp: Date.now(),
-                });
                 return;
               }
             }
@@ -2279,12 +2279,27 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
           reason: !hasCommittedDiff ? "no-committed-diff" : "bootstrap",
         });
       }
-      glog("ui", "executeCreatePR.dispatch", { titleLen: title.length, bodyLen: body.length, featureBranch: featureBranch || null });
+      // Resolve the auth method the user picked during onboarding (or
+      // mid-flow earlier in this call). Empty / unrecognised → undefined,
+      // which makes the backend fall back to its legacy gh-first / link
+      // order. Honouring the explicit choice means "Use GitHub CLI"
+      // never silently routes through OAuth and vice versa, even when
+      // both auths happen to be live on the machine.
+      const persistedMethod = (() => {
+        try { return localStorage.getItem("fleet:github-auth-method"); }
+        catch { return null; }
+      })();
+      const method: "gh" | "oauth" | undefined =
+        persistedMethod === "cli" ? "gh"
+        : persistedMethod === "oauth" ? "oauth"
+        : undefined;
+      glog("ui", "executeCreatePR.dispatch", { titleLen: title.length, bodyLen: body.length, featureBranch: featureBranch || null, method: method || null });
       const r = await git.createPR(folder, {
         title: title.slice(0, 80),
         body, base: baseBranch, draft: false,
         ...(featureBranch ? { featureBranch } : {}),
         tool: tool ?? undefined,
+        ...(method ? { method } : {}),
       });
       glog("ui", "executeCreatePR.result", { ok: r.ok, code: r.ok ? undefined : r.code, prNumber: r.ok ? r.prNumber : null, existed: r.ok ? !!r.existed : null });
       if (r.ok) {
@@ -2317,54 +2332,20 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
         });
         // Clear any in-flight recovery banner — the retry worked.
         setRecovery(null);
-        if (r.existed) {
-          notify({
-            id: crypto.randomUUID(),
-            sessionId: "",
-            title: "PR already exists",
-            summary: `#${r.prNumber ?? "?"} — ${title.slice(0, 60)}`,
-            success: true,
-            timestamp: Date.now(),
-          });
-        } else if (r.repoCreated && r.repoUrl) {
-          notify({
-            id: crypto.randomUUID(),
-            sessionId: "",
-            title: "PR created",
-            summary: `#${r.prNumber ?? "?"} · Created private repo`,
-            success: true,
-            timestamp: Date.now(),
-            action: { label: "View on GitHub", url: r.repoUrl },
-          });
-        } else {
-          notify({
-            id: crypto.randomUUID(),
-            sessionId: "",
-            title: "PR created",
-            summary: `#${r.prNumber ?? "?"} — ${title.slice(0, 60)}`,
-            success: true,
-            timestamp: Date.now(),
-          });
-        }
       } else {
         const raw = r.error || "";
         const code = r.code;
 
-        // REPO_CREATE_FORBIDDEN keeps its dedicated toast — the
-        // recovery is "create on github.com first", not something the
-        // RecoveryDialog's allow-list can express. Bail before
-        // surfacing the dialog so the user lands on the toast that
-        // links straight to github.com/new.
+        // REPO_CREATE_FORBIDDEN — the recovery ("create on github.com
+        // first") isn't something the RecoveryDialog's allow-list can
+        // express, so we surface a red error bubble in the chat and
+        // bail. The user clicks the github.com link from there.
         if (code === "REPO_CREATE_FORBIDDEN") {
-          notify({
-            id: crypto.randomUUID(),
-            sessionId: "",
-            title: "Fleetify can't auto-create this repo",
-            summary: "Install gh CLI to auto-create, or create the repo on github.com first and click Create PR again.",
-            success: false,
-            timestamp: Date.now(),
-            action: { label: "Open github.com/new", url: "https://github.com/new" },
-          });
+          const errSid = useAppStore.getState().activeSessionId || COMPOSER_CHAT_KEY;
+          pushChatError(
+            errSid,
+            "GitHub denied repository creation. Create the repo on github.com/new first, then retry Create PR.",
+          );
           setAutoCreating(false);
           return;
         }
@@ -2380,14 +2361,9 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
         setRecovery({ error: raw || "Create PR failed with no error string." });
       }
     } catch (err) {
-      notify({
-        id: crypto.randomUUID(),
-        sessionId: "",
-        title: "PR creation failed",
-        summary: err instanceof Error ? err.message : String(err),
-        success: false,
-        timestamp: Date.now(),
-      });
+      const msg = err instanceof Error ? err.message : String(err);
+      const errSid = useAppStore.getState().activeSessionId || COMPOSER_CHAT_KEY;
+      pushChatError(errSid, msg || "Create PR failed");
     } finally {
       setAutoCreating(false);
     }
@@ -2594,6 +2570,29 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
             />
           </div>
         )}
+
+        {/* Auth-method picker — surfaces here (anchored above the
+            Create PR button) the instant the dispatcher needs to pick
+            between Connect with GitHub and Use GitHub CLI. Replaces
+            the legacy modal dialog: clicking anywhere outside dismisses
+            without ceremony, and the popover stays open through the gh
+            device-code dance so the user sees the code without leaving
+            the page. */}
+        {authChoiceOpen && (
+          <AuthChoicePopover
+            onChoose={(method) => {
+              try { localStorage.setItem("fleet:github-auth-method", method); } catch { /* private mode */ }
+              setAuthChoiceOpen(false);
+              authChoiceResolverRef.current?.(method);
+              authChoiceResolverRef.current = null;
+            }}
+            onDismiss={() => {
+              setAuthChoiceOpen(false);
+              authChoiceResolverRef.current?.(null);
+              authChoiceResolverRef.current = null;
+            }}
+          />
+        )}
       </div>
     );
   } else if (pr) {
@@ -2690,10 +2689,12 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
         </span>
 
         {/* Branch label — minimal, no decorative dots or pulses.
-            Just monospace branch text, with `base ← branch` arrow on
-            feature branches. Matches Claude Code's plain-text approach.
-            Wrapped in a clickable trigger that pops the BranchPickerMenu
-            (switch branches / create a new one) anchored just above. */}
+            Per-pill click handlers: the base/main pill opens the
+            BranchPickerMenu in "base" mode (current base + Create new
+            main branch), the working pill opens it in "working" mode
+            (every other branch + Create new branch). noGit and pure
+            planned-only renders stay informational — no menu until a
+            real repo exists. */}
         <div
           style={{
             display: "flex",
@@ -2702,75 +2703,115 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
             minWidth: 0,
             flex: 1,
             position: "relative",
-            cursor: folder && ctxR?.branch ? "pointer" : "default",
             padding: "1px 2px",
             borderRadius: 4,
           }}
-          onClick={() => {
-            if (!folder || !ctxR?.branch) return;
-            setBranchMenuOpen(o => !o);
-          }}
-          onMouseEnter={e => {
-            if (folder && ctxR?.branch) e.currentTarget.style.background = "rgba(255,255,255,0.04)";
-          }}
-          onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
         >
           {noGit && plannedBranch ? (
             // Planned label — folder isn't a git repo yet, but the
             // dispatcher will carve `plannedBranch` on Create PR. The
-            // dimmed/dashed pills read as "not landed yet" while
-            // still letting the user copy either name.
+            // dimmed/dashed pills read as "not landed yet" — no menu
+            // yet because there's nothing to switch *to*.
             <>
               <BranchPill text="main" tone="low" dim />
               <ArrowLeft size={11} strokeWidth={1.75}
                 style={{ color: "var(--c-ghost)", flexShrink: 0, opacity: 0.7 }} />
-              <BranchPill text={truncateMid(plannedBranch, 32)} tone="med" dim />
+              <BranchPill text={plannedBranch} tone="med" dim />
             </>
           ) : noGit ? (
             <NoGitPill />
           ) : onDefaultBranch && plannedBranch && plannedBranch !== ctxR.branch ? (
-            // Same shape, but we DO have a git repo — agent's current
-            // checkout is on main/master and a feature branch will be
-            // carved by the dispatcher. Render the planned target
-            // beside the current branch so the user previews what
-            // Create PR will do.
+            // We DO have a git repo — agent's on main/master and a
+            // feature branch will be carved on Create PR. The current
+            // (base) pill is clickable for base-menu; planned target
+            // stays informational since it doesn't exist yet.
             <>
-              <BranchPill text={ctxR.branch} tone="low" dim />
+              <PillTrigger onClick={() => setBranchMenuMode("base")}>
+                <BranchPill text={ctxR.branch} tone="low" dim />
+              </PillTrigger>
               <ArrowLeft size={11} strokeWidth={1.75}
                 style={{ color: "var(--c-ghost)", flexShrink: 0, opacity: 0.7 }} />
-              <BranchPill text={truncateMid(plannedBranch, 32)} tone="med" dim />
+              <BranchPill text={plannedBranch} tone="med" dim />
             </>
           ) : onDefaultBranch ? (
-            <BranchPill text={ctxR.branch} tone="low" />
+            <PillTrigger onClick={() => setBranchMenuMode("base")}>
+              <BranchPill text={ctxR.branch} tone="low" />
+            </PillTrigger>
           ) : (
             <>
-              <BranchPill
-                text={ctxR.baseBranch ?? "main"}
-                tone="low"
-                dim={!ctxR.baseBranch}
-              />
+              <PillTrigger onClick={() => setBranchMenuMode("base")}>
+                <BranchPill
+                  text={ctxR.baseBranch ?? "main"}
+                  tone="low"
+                  dim={!ctxR.baseBranch}
+                />
+              </PillTrigger>
               <ArrowLeft size={11} strokeWidth={1.75}
                 style={{ color: "var(--c-ghost)", flexShrink: 0, opacity: 0.7 }} />
-              <BranchPill text={truncateMid(ctxR.branch, 32)} tone="med" />
+              <PillTrigger onClick={() => setBranchMenuMode("working")}>
+                <BranchPill text={ctxR.branch} tone="med" />
+              </PillTrigger>
               {pr && <PRStateBadge pr={pr} />}
             </>
           )}
-          {branchMenuOpen && folder && ctxR?.branch && (
+          {branchMenuMode && folder && (
             <BranchPickerMenu
               folder={folder}
-              currentBranch={ctxR.branch}
-              baseBranch={ctxR.baseBranch ?? "main"}
+              mode={branchMenuMode}
+              currentBranch={ctxR?.branch ?? null}
+              baseBranch={ctxR?.baseBranch ?? null}
               newBranchTopic={
                 sessionTitle ||
-                ((ctxR.branch || "").replace(/^fleet\//, "").replace(/-[a-f0-9]{8}$/, "")) ||
+                ((ctxR?.branch || "").replace(/^fleet\//, "").replace(/-[a-f0-9]{8}$/, "")) ||
                 "scratch"
               }
-              onPick={() => setBranchMenuOpen(false)}
-              onCreateNew={() => setBranchMenuOpen(false)}
-              onDismiss={() => setBranchMenuOpen(false)}
+              onPick={() => setBranchMenuMode(null)}
+              onCreateNew={() => setBranchMenuMode(null)}
+              onBaseChanged={() => {
+                setBranchMenuMode(null);
+                // Re-pull git context so the detected base reflects
+                // the new `fleetify.baseBranch` config. The 5s poll
+                // would catch it eventually, but a direct refetch
+                // keeps the strip from showing the stale base for up
+                // to one tick.
+                if (folder) {
+                  const api = (window as unknown as { electronAPI?: {
+                    getGitContext?: (f: string) => Promise<GitContext>;
+                  } }).electronAPI;
+                  api?.getGitContext?.(folder)
+                    .then(c => setCtx(c ?? null))
+                    .catch(() => {});
+                }
+              }}
+              onDismiss={() => setBranchMenuMode(null)}
             />
           )}
         </div>
+
+        {/* Worktree indicator — surfaces only when the session's
+            project path is a `.fleetify-worktrees/<id>/` checkout, so
+            the user knows their file ops are isolated from the source
+            repo's working tree. Subtle: low-contrast pill, same height
+            as the diff stats, no border. */}
+        {isWorktree && (
+          <span
+            title="This session runs in an isolated git worktree under .fleetify-worktrees/"
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 4,
+              padding: "1px 7px", borderRadius: 5,
+              background: "rgba(var(--fg-rgb), 0.05)",
+              color: "var(--c-low)",
+              fontSize: 10.5,
+              fontWeight: 500,
+              fontFamily: "var(--font-mono)",
+              letterSpacing: "0.02em",
+              flexShrink: 0,
+            }}
+          >
+            <FolderTree size={10} strokeWidth={1.85} />
+            worktree
+          </span>
+        )}
 
         {/* Diff stats — only when there's something to show. hasDiff
             already guarantees ctx is non-null and has positive +/-,
@@ -2896,17 +2937,10 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
           onCancel={() => setPreflight(null)}
         />
       )}
-      {authChoiceOpen && (
-        <GithubAuthChoiceDialog
-          onChoose={(method, _username) => {
-            try { localStorage.setItem("fleet:github-auth-method", method); } catch { /* private mode */ }
-            authChoiceResolverRef.current?.(method);
-          }}
-          onDismiss={() => {
-            authChoiceResolverRef.current?.(null);
-          }}
-        />
-      )}
+      {/* The mid-flow auth picker now renders as a popover anchored to
+          the Create PR button (see action-area JSX above). The legacy
+          full-screen GithubAuthChoiceDialog is kept as a fallback for
+          code paths that don't have a Create PR button to anchor on. */}
     </>
   );
 }
@@ -4464,7 +4498,8 @@ export function ChatInput({
               tool={tool}
               controlCenter={controlCenter}
               sessionTitle={sessionTitle}
-              plannedBranch={sessionId ? computeBranchName(sessionTitle, sessionId) : null}
+              plannedBranch={sessionId ? computeBranchName(sessionTitle, sessionId, projectPath) : null}
+              isWorktree={!!worktreePath}
             />
           </div>
         )}

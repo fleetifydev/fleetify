@@ -79,7 +79,7 @@ interface GitAPI {
   applyRecovery(folder: string, action: RecoveryAction, baseBranch?: string, command?: string): Promise<ApplyRecoveryResult>;
   preflightCheck(folder: string): Promise<PreflightResult>;
   applyPreflightFix(folder: string, action: PreflightAction, data?: PreflightIssue["data"]): Promise<ApplyPreflightFixResult>;
-  createPR(folder: string, opts: { title: string; body?: string; base?: string; draft?: boolean; featureBranch?: string; tool?: string }): Promise<CreatePRResult>;
+  createPR(folder: string, opts: { title: string; body?: string; base?: string; draft?: boolean; featureBranch?: string; tool?: string; method?: "gh" | "cli" | "oauth" | "link" }): Promise<CreatePRResult>;
   getPRStatus(folder: string, prNumber?: number | null): Promise<PRStatusResult>;
   /** Bulk PR snapshot for the branch picker — one `gh pr list` call
    *  drives the per-branch PR badges instead of N `gh pr view`s. */
@@ -102,6 +102,7 @@ interface GitAPI {
   openPR(folder: string): Promise<{ ok: boolean; error?: string }>;
   syncMain(folder: string, baseBranch?: string): Promise<SyncMainResult>;
   carveNextRound(folder: string, branch: string, baseBranch?: string): Promise<CarveNextRoundResult>;
+  setBaseBranch?(folder: string, branch: string): Promise<{ ok: boolean; base?: string; error?: string }>;
 }
 
 const FAIL = (error: string) => ({ ok: false as const, error });
@@ -170,7 +171,7 @@ export const git = {
   /** Apply a single whitelisted preflight fix. */
   applyPreflightFix: (folder: string, action: PreflightAction, data?: PreflightIssue["data"]) =>
                        api().applyPreflightFix(folder, action, data),
-  createPR:       (folder: string, opts: { title: string; body?: string; base?: string; draft?: boolean; featureBranch?: string; tool?: string }) => api().createPR(folder, opts),
+  createPR:       (folder: string, opts: { title: string; body?: string; base?: string; draft?: boolean; featureBranch?: string; tool?: string; method?: "gh" | "cli" | "oauth" | "link" }) => api().createPR(folder, opts),
   prStatus:       (folder: string, prNumber?: number | null) => api().getPRStatus(folder, prNumber),
   prList:         (folder: string, limit?: number) =>
                     api().listPRs?.(folder, limit) ?? Promise.resolve({ ok: false, error: "electron unavailable" }),
@@ -190,6 +191,13 @@ export const git = {
    *  starts from a fresh, up-to-date branch. */
   carveNextRound: (folder: string, branch: string, baseBranch?: string) =>
                     api().carveNextRound(folder, branch, baseBranch),
+  /** "Create new main branch" — pins `branch` as this clone's logical
+   *  base via `git config fleetify.baseBranch`, carving it from the
+   *  current base when it doesn't already exist. Nondestructive: does
+   *  not push, rename, or change the remote default. */
+  setBaseBranch:  (folder: string, branch: string) =>
+                    api().setBaseBranch?.(folder, branch)
+                    ?? Promise.resolve({ ok: false, error: "electron unavailable" }),
 };
 
 /**

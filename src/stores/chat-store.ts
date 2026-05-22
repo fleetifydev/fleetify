@@ -1006,6 +1006,29 @@ export const selectSession = (sessionId: string | null | undefined) =>
   (state: ChatState): SessionChatState =>
     (sessionId && state.sessions[sessionId]) || EMPTY_SESSION;
 
+/** Surface an error as a red message-bubble inside the session's chat.
+ *  Replaces the retired toast/notification system for failures the user
+ *  needs to see (Create PR errors, branch op errors, WS task failures,
+ *  …). The `error-` id prefix keeps `hasRealMessage` in chat-view from
+ *  treating it as proof of conversation, so a fresh draft that hits a
+ *  failure still shows the folder picker / compose surface rather than
+ *  flipping into "Create PR" mode.
+ *
+ *  No dedupe by design — every failed attempt produces a fresh bubble
+ *  so the user sees that the second click ALSO failed (matches the
+ *  user's explicit "1 kerelik değil" requirement for the folder
+ *  warning). */
+export function pushChatError(sessionId: string, message: string): void {
+  if (!sessionId) return;
+  const text = message.startsWith("Task failed:") ? message : `Task failed: ${message}`;
+  useChatStore.getState().addMessage(sessionId, {
+    id: `error-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    role: "system",
+    content: [{ type: "text", text }],
+    timestamp: new Date().toISOString(),
+  });
+}
+
 /**
  * Type out an existing assistant message char-by-char so it reads
  * like the agent is composing it live. Drops the full text into

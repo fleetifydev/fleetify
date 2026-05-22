@@ -965,17 +965,10 @@ export function Sidebar() {
     ).then(results => {
       const failed = results.filter(r => r.status === "rejected").length;
       if (failed > 0) {
-        // Push a notification so the user notices a partial save and
-        // knows to retry the reorder (instead of silently waking up to
-        // a scrambled list on the next poll).
-        useAppStore.getState().pushNotification({
-          id: crypto.randomUUID(),
-          sessionId: "",
-          title: "Order not fully saved",
-          summary: `${failed} of ${next.length} agents could not be reordered. Try again.`,
-          success: false,
-          timestamp: Date.now(),
-        });
+        // Partial reorder failure — used to surface a notification toast,
+        // but the notification system has been removed. Log so the failure
+        // is at least visible in the console.
+        console.warn(`[sidebar] Order not fully saved: ${failed} of ${next.length} agents could not be reordered.`);
       }
     });
     setDragId(null); setDropId(null);

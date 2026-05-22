@@ -421,19 +421,6 @@ async function execute(routine: Routine): Promise<void> {
       finishedAt: new Date().toISOString(),
       error: msg,
     });
-    // Surface the failure to the user — without this, a misconfigured
-    // routine fails silently and the Routines page just shows a red
-    // status the user has to dig into to understand.
-    try {
-      useAppStore.getState().pushNotification({
-        id: crypto.randomUUID(),
-        sessionId: "",
-        title: `Routine "${routine.name}" failed`,
-        summary: msg,
-        success: false,
-        timestamp: Date.now(),
-      });
-    } catch { /* notification store unavailable */ }
   } finally {
     inflight.delete(routine.id);
   }

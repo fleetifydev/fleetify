@@ -19,7 +19,7 @@ const WorkflowsPage = lazy(() =>
 );
 import { useAppStore } from "@/stores/app-store";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
-import { fetchSessions, deleteEmptyDrafts } from "@/lib/api";
+import { fetchSessions, deleteEmptyDrafts, updateSession as apiUpdateSession } from "@/lib/api";
 import type { Session, SessionStatus } from "@/types/session";
 
 const LEFT_MIN = 170;
@@ -250,6 +250,23 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
       if (!stillExists) {
         const fallback = serverData.find(s => s.title === "Staff Agent");
         setStaffSessionId(fallback ? fallback.id : null);
+      }
+    }
+    // ── Staff-title recovery ──
+    // Defense-in-depth for users whose staff session got renamed by a
+    // prior bug (the breadcrumb auto-rename / handleAgentSend "New
+    // chat" fallback / auto-intro markdown parser used to fire on the
+    // Fleet hub's underlying staff row, leaving it titled "selam" or
+    // whatever the user's first message was). All three paths are now
+    // guarded against `targetSessionId === staffSessionId` going
+    // forward, but the existing renamed row keeps showing up in the
+    // right sidebar's Fleet entry until we force it back. Idempotent:
+    // skips when the title is already canonical.
+    if (staffSessionId) {
+      const staffRow = serverData.find(s => s.id === staffSessionId);
+      if (staffRow && staffRow.title !== "Staff Agent") {
+        useAppStore.getState().updateSession(staffSessionId, { title: "Staff Agent" });
+        apiUpdateSession(staffSessionId, { title: "Staff Agent" }).catch(() => {});
       }
     }
   }, [sessionsData, setSessions, staffSessionId, setStaffSessionId, pruneRemovedIds, _removedIds]);

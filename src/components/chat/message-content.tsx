@@ -2932,23 +2932,49 @@ function MessageContentInner({ message, msgRef }: { message: ChatMessage; msgRef
     const artifactBlock = message.content.find(b => b.type === "artifact") as ArtifactBlock | undefined;
     if (artifactBlock) return <ArtifactCard block={artifactBlock} />;
 
-    // Legacy text-based system messages
+    // Legacy text-based system messages. Errors get a more prominent
+    // card so failures in Create PR / branch ops / WS / agent runs
+    // can't be missed mid-conversation — the previous styling was so
+    // muted the user mistook failed PR attempts for silent no-ops.
     const text = message.content.find(b => b.type === "text")?.text ?? "";
     const isResult = text.startsWith("Task complete:");
     const isError = text.startsWith("Task failed:");
-    const icon = isResult ? <CheckCircle2 size={12} /> : isError ? <AlertCircle size={12} /> : <ArrowRightLeft size={12} />;
-    const color = isError ? "rgba(248,113,113,0.8)" : "var(--c-dim)";
-    const bg = isError ? "rgba(248,113,113,0.06)" : "var(--c-srf)";
-    const border = isError ? "rgba(248,113,113,0.15)" : "var(--c-brd)";
+    const icon = isResult ? <CheckCircle2 size={12} /> : isError ? <AlertCircle size={13} /> : <ArrowRightLeft size={12} />;
+    const color = isError ? "rgb(248,113,113)" : "var(--c-dim)";
+    const bg = isError ? "rgba(248,113,113,0.10)" : "var(--c-srf)";
+    const border = isError ? "rgba(248,113,113,0.40)" : "var(--c-brd)";
+    const body = isError && text.startsWith("Task failed:")
+      ? text.replace(/^Task failed:\s*/, "")
+      : text;
     return (
       <div className="fade-in" style={{
-        margin: "4px 0 14px", padding: "7px 12px",
+        margin: isError ? "8px 0 16px" : "4px 0 14px",
+        padding: isError ? "10px 13px" : "7px 12px",
         borderRadius: 8, background: bg, border: `1px solid ${border}`,
-        display: "flex", alignItems: "flex-start", gap: 8,
+        display: "flex", alignItems: "flex-start", gap: 9,
         overflow: "hidden",
       }}>
-        <span style={{ color, flexShrink: 0, marginTop: 1 }}>{icon}</span>
-        <span style={{ fontSize: 12.5, color, lineHeight: 1.5, flex: 1, minWidth: 0, wordBreak: "break-word", overflowWrap: "anywhere" }}>{text}</span>
+        <span style={{ color, flexShrink: 0, marginTop: isError ? 2 : 1 }}>{icon}</span>
+        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
+          {isError && (
+            <span style={{
+              fontSize: 11, fontWeight: 600,
+              color,
+              letterSpacing: "0.04em",
+              textTransform: "uppercase",
+            }}>
+              Error
+            </span>
+          )}
+          <span style={{
+            fontSize: isError ? 13 : 12.5,
+            color: isError ? "var(--c-fg)" : color,
+            lineHeight: 1.5,
+            wordBreak: "break-word", overflowWrap: "anywhere",
+          }}>
+            {body}
+          </span>
+        </div>
       </div>
     );
   }

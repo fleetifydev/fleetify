@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState, useMemo, memo } from "react";
-import { useAppStore } from "@/stores/app-store";
+import { useAppStore, COMPOSER_CHAT_KEY } from "@/stores/app-store";
 import { useChatStore, selectSession, typeOutAssistantMessage } from "@/stores/chat-store";
 import { wsManager, compactionOptimisticId } from "@/services/ws-manager";
 import { ChatInput, type Attachment } from "./chat-input";
@@ -8,11 +8,11 @@ import { CompactionPill } from "./compaction-pill";
 import { PermissionDialog } from "./permission-dialog";
 import { SessionToolbar } from "./session-toolbar";
 import { fetchMessages, fetchClaudeHistory, createSession, clearSessionMessages, updateSession as apiUpdateSession, stopSession, restartSession, analyzeFleetResponse } from "@/lib/api";
-import { isWindowsPlatform, folderName } from "@/lib/utils";
+import { isWindowsPlatform, folderName, truncateMid } from "@/lib/utils";
 import { FleetDecisionCard } from "./fleet-decision-card";
 import { useFleetStore, AUTO_CHAIN_CAP } from "@/stores/fleet-store";
 import { LogoMark } from "@/components/brand/logo-mark";
-import { PanelLeft, PanelRight, Trash2, X, Check, CheckCircle2, AlertCircle, GitCompareArrows, ListTodo, Terminal as TerminalIcon, ChevronDown, Keyboard, Folder, Play, FolderOpen, Layers, Monitor, Github, Server, Box, ArrowRight, ExternalLink } from "lucide-react";
+import { PanelLeft, PanelRight, Trash2, X, Check, GitCompareArrows, ListTodo, Terminal as TerminalIcon, Keyboard, Folder, Play, FolderOpen, Layers, Monitor, Github, Server, Box, ArrowRight, Pencil } from "lucide-react";
 import type { ContentBlock, ChatMessage } from "@/types/chat";
 import type { Session } from "@/types/session";
 import type { WorkspaceView } from "@/stores/app-store";
@@ -123,10 +123,32 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   const toggleFleetAutoMode = useAppStore((s) => s.toggleFleetAutoMode);
   const beginDraft         = useAppStore((s) => s.beginDraft);
   const commitDraft        = useAppStore((s) => s.commitDraft);
+  // Composer state — drives the "New session" compose surface. When
+  // open AND no real session is active, chat-view renders the welcome
+  // typewriter + folder picker + chat input bound to composer fields
+  // instead of falling through to the Staff Agent. Replaces the old
+  // local_only draft-session-in-sessions[] mechanism. See ComposerState
+  // in app-store.ts for the rationale.
+  const composer           = useAppStore((s) => s.composer);
+  const composerOpen       = composer.open;
+  const commitComposer     = useAppStore((s) => s.commitComposer);
+  const setComposerField   = useAppStore((s) => s.setComposerField);
 
-  const effectiveSessionId = activeSessionId || staffSessionId;
+  // While composing we deliberately do NOT fall through to staffSessionId —
+  // the compose surface owns the chat area and must not render the staff
+  // chat behind it. effectiveSessionId is `null` in that case; render
+  // paths gate on `isComposing` separately from `isControlCenter`.
+  const effectiveSessionId = composerOpen
+    ? null
+    : (activeSessionId || staffSessionId);
 
-  const sessionState = useChatStore(selectSession(effectiveSessionId));
+  // Chat-store reads use the COMPOSER_CHAT_KEY sentinel while
+  // composing — compose-time messages (welcome typewriter, folder
+  // warnings) live there since the real session id doesn't exist yet.
+  // closeComposer / commitComposer wipe the sentinel; nothing is
+  // migrated to the new session.
+  const chatStoreKey = composerOpen ? COMPOSER_CHAT_KEY : effectiveSessionId;
+  const sessionState = useChatStore(selectSession(chatStoreKey));
   const { messages, streamingText, streamingThinking, isStreaming, permissionRequest, compactionPill } = sessionState;
   // True while the inline compaction status owns the feedback surface.
   // Lets us hide the streaming "Thinking…" UI for /compact since the
@@ -137,15 +159,61 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   const clearAllForSession = useChatStore((s) => s.clearAll);
   const ensureSession = useChatStore((s) => s.ensureSession);
 
-  // Active session — direct lookup. Local-only (draft) sessions now
-  // live in `sessions[]` carrying `local_only: true`, so the old
-  // draft-singleton fallback branch is gone. Header title, chip
-  // strip, toolbar all read the same shape regardless of whether
-  // the user has committed yet.
-  const activeSession = useMemo<Session | undefined>(
+  // Active session — direct lookup against the real sessions[]. The
+  // legacy "draft session in sessions[]" mechanism is gone (see
+  // ComposerState in app-store.ts); compose mode is signalled by
+  // composer.open + a NULL activeSessionId. To avoid forking every
+  // downstream consumer (SessionToolbar / ChatInput / handleAgentSend
+  // …) we synthesise a virtual Session from composer fields for the
+  // render layer ONLY — this object NEVER hits sessions[], the WS
+  // layer, the sidebar, or any /detail poll. It exists for the next
+  // ~10 lines of prop plumbing, full stop. `local_only: true` is set
+  // on the virtual so the existing compose-mode UI gates (isDraft /
+  // isLocalOnlyActive / SessionToolbar render gate) continue to work.
+  const realActiveSession = useMemo<Session | undefined>(
     () => sessions.find((s) => s.id === activeSessionId),
     [sessions, activeSessionId],
   );
+  const composerVirtualSession = useMemo<Session | undefined>(() => {
+    if (!composerOpen) return undefined;
+    // A complete-enough Session shape so SessionToolbar's
+    // `useAppStore(s => s.sessions.find(...))` lookup miss is
+    // tolerated. We don't push this into sessions[]; we just pass
+    // it as `activeSession` to the render gates below.
+    return {
+      id: "__composer__",
+      title: composer.title,
+      project_path: composer.projectPath,
+      group_path: "",
+      tool: composer.tool,
+      command: "",
+      status: "idle",
+      pinned: false,
+      parent_id: null,
+      worktree_path: null,
+      worktree_branch: null,
+      claude_session_id: composer.claudeSessionId,
+      model_name: composer.modelName,
+      permission_mode: composer.permissionMode,
+      session_mode: "interactive",
+      order_idx: 0,
+      created_at: new Date().toISOString(),
+      last_accessed: null,
+      notes: null,
+      use_worktree: composer.useWorktree,
+      local_only: true,
+    };
+  }, [
+    composerOpen,
+    composer.title,
+    composer.projectPath,
+    composer.tool,
+    composer.modelName,
+    composer.permissionMode,
+    composer.useWorktree,
+    composer.claudeSessionId,
+  ]);
+  const activeSession = realActiveSession ?? composerVirtualSession;
   const isLocalOnlyActive = activeSession?.local_only === true;
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -560,17 +628,10 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
       // the reply as a transient toast instead and trigger the lazy
       // create flow upstream.
       if (!sid) {
-        // Last-ditch surface: write to console + push a notification so
-        // the user at least sees the slash-command response.
+        // Last-ditch surface: log to console; the slash-command response
+        // would have been a notification toast, but the notification
+        // system has been removed.
         console.warn("[staff slash] no staff session yet — reply suppressed:", msg);
-        useAppStore.getState().pushNotification({
-          id: crypto.randomUUID(),
-          sessionId: "",
-          title: "Fleetify",
-          summary: msg.slice(0, 200),
-          success: true,
-          timestamp: Date.now(),
-        });
         return;
       }
       useChatStore.getState().addMessage(sid, {
@@ -777,14 +838,6 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
           console.error(`Broadcast to ${agent.title} failed:`, err)
         );
       });
-      useAppStore.getState().pushNotification({
-        id: crypto.randomUUID(),
-        sessionId: currentStaffId ?? "fleet",
-        title: "Broadcast",
-        summary: `Broadcasting to ${currentAgentSessions.length} agent${currentAgentSessions.length !== 1 ? "s" : ""}`,
-        success: true,
-        timestamp: Date.now(),
-      });
     }
 
     // ── Send to staff agent ───────────────────────────────────────────────
@@ -799,37 +852,30 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
 
   const handleAgentSend = useCallback(async (text: string, attachments?: Attachment[]) => {
     if (text.trim() === "/new") { void beginDraft(); return; }
-    if (!activeSessionId) return;
 
-    // ── Draft → real session bridge ──
-    // If the active surface is the in-flight draft, the user just
-    // sent the first message. Promote the draft to a real Session
-    // row, swap the active id to the freshly-minted one, and route
-    // the WS send through the real id. Until this moment NOTHING
-    // has been written to the DB — no row, no message, no spend.
-    let targetSessionId = activeSessionId;
-    let targetSession: Session | undefined = activeSession;
-    // Single-warning policy: one stable warn id per session. Sending
-    // again without a folder pins the user's attempt to chat but does
-    // NOT add a second warning card. The previous Date.now() id stacked
-    // a fresh warning on every send, producing the duplicate cards the
-    // user saw in chat.
+    // Fire the "pick a folder" warning EVERY time the user tries to
+    // send without one — each attempt echoes the typed text + a fresh
+    // assistant warning bubble. No dedupe: the user explicitly asked
+    // for repeated warnings instead of a single pinned one, so
+    // attempt-folder-* and warn-folder-* both carry a unique timestamp
+    // suffix and live as independent message rows. (Both prefixes are
+    // already in `hasRealMessage`'s skip list so the strip / Create PR
+    // gate stays correctly hidden no matter how many warnings stack
+    // up.) Hoisted above the compose branch so it can be called with
+    // the COMPOSER_CHAT_KEY sentinel — compose mode has no real
+    // session id to echo under.
     const surfaceFolderWarning = (sid: string, attemptText: string) => {
       const cs = useChatStore.getState();
-      // Echo the user's typed message so they can see what they tried
-      // to send (the bridge never received it, so it would otherwise
-      // be invisible).
+      const stamp = Date.now();
       if (attemptText.trim()) {
         cs.addMessage(sid, {
-          id: `attempt-folder-${Date.now()}`,
+          id: `attempt-folder-${stamp}`,
           role: "user",
           content: [{ type: "text", text: attemptText }],
           timestamp: new Date().toISOString(),
         });
       }
-      const warnId = `warn-folder-${sid}`;
-      const existing = (cs.sessions[sid]?.messages ?? []).some(m => m.id === warnId);
-      if (existing) return;  // dedupe — already shown for this session
+      const warnId = `warn-folder-${stamp}`;
       const warnText =
         "I can't start without a folder.\n\n" +
         "Please **click the folder chip above** and pick the project I should work in. " +
@@ -843,7 +889,36 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
       typeOutAssistantMessage(sid, warnId, warnText);
     };
 
-    if (isLocalOnlyActive && activeSession) {
+    // Compose mode: no activeSessionId yet — the user is firing the
+    // first message of a not-yet-persisted session. If the folder isn't
+    // picked, echo the typed text + a "pick a folder" warning into the
+    // sentinel chat-store key (chat-view reads from it while composing).
+    // Otherwise commit the composer to get a real session id and
+    // continue the dispatch with that id.
+    let composedSessionId: string | null = null;
+    if (composerOpen && !activeSessionId) {
+      if (!composer.projectPath) {
+        surfaceFolderWarning(COMPOSER_CHAT_KEY, text);
+        return;
+      }
+      composedSessionId = await commitComposer();
+      if (!composedSessionId) return;
+    }
+
+    const effectiveActiveId = composedSessionId ?? activeSessionId;
+    if (!effectiveActiveId) return;
+
+    let targetSessionId = effectiveActiveId;
+    let targetSession: Session | undefined = composedSessionId
+      ? useAppStore.getState().sessions.find(s => s.id === composedSessionId)
+      : activeSession;
+
+    // Legacy draft bridge — fires for the (now-unused) "local_only
+    // session in sessions[]" pattern. The compose-mode branch above
+    // already handled the Phase-7 composer flow, so guard with
+    // `!composedSessionId` to avoid double-commit. Kept around until
+    // every caller is migrated off the old draft mechanism.
+    if (!composedSessionId && isLocalOnlyActive && activeSession && activeSessionId) {
       if (!activeSession.project_path) {
         surfaceFolderWarning(activeSessionId, text);
         return;
@@ -855,8 +930,11 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
       // swapped the local-only entry for the backend row so our
       // closure-captured `activeSession` is now stale.
       targetSession = useAppStore.getState().sessions.find(s => s.id === committedId);
-    } else if (!activeSession?.project_path) {
+    } else if (!composedSessionId && !activeSession?.project_path && activeSessionId) {
       // Non-draft sessions missing a project_path hit the same path.
+      // composedSessionId guard: a freshly-committed composer session
+      // always has project_path set (commitComposer requires it), so
+      // we skip the warning when we just committed.
       surfaceFolderWarning(activeSessionId, text);
       return;
     }
@@ -864,6 +942,13 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     if (
       (targetSession?.title === "New agent" || targetSession?.title === "New chat")
       && !text.startsWith("[fleet:compaction]")
+      // Never rename the Staff Agent session — it's the Fleet hub's
+      // backing chat, not a regular agent row. A rename here orphans
+      // it from the title-based lookup the backend / handleStaffSend
+      // use to find an existing staff row, which then creates a new
+      // duplicate on the next Fleet open and leaks the renamed
+      // session into the sidebar as a normal agent.
+      && targetSessionId !== staffSessionId
     ) {
       const title = text.slice(0, 50) + (text.length > 50 ? "..." : "");
       updateSession(targetSessionId, { title });
@@ -895,7 +980,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     }
 
     sendViaWs(text, targetSessionId, attachments);
-  }, [activeSessionId, activeSession, isLocalOnlyActive, commitDraft, updateSession, sendViaWs, beginDraft]);
+  }, [activeSessionId, activeSession, isLocalOnlyActive, commitDraft, updateSession, sendViaWs, beginDraft, composerOpen, composer.projectPath, commitComposer]);
 
   // Pre-compute "has the user actually sent something" — used by the
   // auto-intro guard below AND the toolbar / BranchStrip swap further
@@ -913,11 +998,15 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   // the auto-intro response is assistant-role so hasUserMessage stays
   // false; we still want the toolbar to swap out for BranchStrip the
   // moment the agent's first real reply lands. Synthetic IDs use the
-  // welcome- / warn- / attempt- prefix and are filtered here.
+  // welcome- / warn- / attempt- / error- prefix and are filtered here.
+  // (error- covers stale-session WS failures so a fresh draft doesn't
+  // flip into "Create PR" mode just because the multiplex socket sent
+  // a "Forbidden or not found" before commitDraft finished.)
   const hasRealMessage = messages.some(m =>
     !m.id.startsWith("welcome-")
     && !m.id.startsWith("warn-")
     && !m.id.startsWith("attempt-")
+    && !m.id.startsWith("error-")
   );
 
   // ── Auto-intro on folder pick ──
@@ -1320,6 +1409,13 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   // folder name stays as a sensible default.
   useEffect(() => {
     if (!activeSessionId) return;
+    // Staff Agent is the Fleet hub — never let the auto-intro
+    // markdown parser rename it. Without this guard a bolded word
+    // in the staff's first response (broadcast confirmation, etc.)
+    // would rewrite "Staff Agent" to that word and the next Fleet
+    // open would fail to find the title-keyed staff row, spawning
+    // a duplicate.
+    if (activeSessionId === staffSessionId) return;
     if (!autoIntroFiredRef.current.has(activeSessionId)) return;
     if (autoIntroTitleParsedRef.current.has(activeSessionId)) return;
     if (isStreaming) return;
@@ -1344,7 +1440,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     }
     autoIntroTitleParsedRef.current.add(activeSessionId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSessionId, messages, isStreaming]);
+  }, [activeSessionId, messages, isStreaming, staffSessionId]);
 
   // ── Auto-intro "ready" follow-up ──
   // Once the agent's analysis has fully streamed in (isStreaming
@@ -1429,7 +1525,13 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSessionId, sessions.map(s => `${s.id}:${s.status}`).join(","), staffSessionId]);
 
-  const isControlCenter = !activeSessionId;
+  // Composer takes priority — when the user clicks "New session" we
+  // want the compose surface, not the Fleet hub. isControlCenter stays
+  // strict (no active session AND no composer) so Hub-specific UI like
+  // the routines / marketplace chrome doesn't leak into the compose
+  // screen.
+  const isComposing = composerOpen;
+  const isControlCenter = !activeSessionId && !isComposing;
   // Draft sessions ("New chat" placeholder title — created by the
   // sidebar's New session button before any folder/message is set)
   // are hidden from the sidebar list. They shouldn't show up in the
@@ -1536,66 +1638,37 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                 same context the user sees in the sidebar. The previous
                 version showed nothing but the title — high-traffic
                 surface, zero information density. */}
-            {!isControlCenter && activeSession && (
-              // ── Breadcrumb identity ──
-              //   📁 project_name / session_title  ⌄
-              // A single tappable cluster that opens a session menu
-              // (rename, archive, switch session within project, etc.).
-              // Replaces the previous logo + title + chip + dot + cost
-              // pile-up — too many tiers competed for attention. Status
-              // and cost moved to the right side as small monospace
-              // metas, where ambient state belongs. The model dropdown
-              // already lives in the input toolbar; this header is for
-              // identity only.
-              (() => {
-                const proj = activeSession.project_path
-                  ? folderName(activeSession.project_path)
-                  : null;
-                const sessionTitle = activeSession.title || "Untitled session";
-                return (
-                  <button
-                    title={activeSession.project_path ?? sessionTitle}
-                    onClick={(e) => {
-                      // Replicate the sidebar's session right-click menu:
-                      // dispatch a custom event the right panel / agent
-                      // list can wire up later. For now it's purely
-                      // visual — the breadcrumb is informational.
-                      e.preventDefault();
-                    }}
-                    style={{
-                      display: "inline-flex", alignItems: "center", gap: 7,
-                      padding: "4px 8px", borderRadius: 6, flexShrink: 1, minWidth: 0,
-                      background: "none", border: "none", cursor: "pointer",
-                      color: "var(--c-high)",
-                      transition: "background 0.12s",
-                    }}
-                    onMouseEnter={ev => { ev.currentTarget.style.background = "var(--c-srf)"; }}
-                    onMouseLeave={ev => { ev.currentTarget.style.background = "none"; }}
-                  >
-                    <Folder size={13} strokeWidth={1.75} style={{ color: "var(--c-low)", flexShrink: 0 }} />
-                    {proj && (
-                      <>
-                        <span style={{
-                          fontSize: 13.5, fontWeight: 500, color: "var(--c-high)",
-                          whiteSpace: "nowrap", flexShrink: 0,
-                          fontFamily: "var(--font-mono)",
-                        }}>
-                          {proj}
-                        </span>
-                        <span style={{ color: "var(--c-dim)", fontSize: 13, flexShrink: 0 }}>/</span>
-                      </>
-                    )}
-                    <span style={{
-                      fontSize: 13.5, fontWeight: 400, color: "var(--c-med)",
-                      whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                      minWidth: 0,
-                    }}>
-                      {sessionTitle}
-                    </span>
-                    <ChevronDown size={12} strokeWidth={2} style={{ color: "var(--c-low)", flexShrink: 0, marginLeft: 1 }} />
-                  </button>
-                );
-              })()
+            {isControlCenter ? (
+              // Fleet hub: fixed "Fleet" label, no pencil affordance,
+              // no rename. The Fleet hub is the command center — its
+              // identity isn't a per-session title the user owns, so
+              // we drop both the folder slot and the edit pencil.
+              <SessionBreadcrumb
+                projectPath={null}
+                title="Fleet"
+                readonly
+                onRename={() => { /* no-op — readonly */ }}
+              />
+            ) : activeSession && (
+              <SessionBreadcrumb
+                projectPath={activeSession.project_path || null}
+                title={activeSession.title || "Untitled session"}
+                onRename={(next) => {
+                  // Compose mode → write to composer; real session →
+                  // optimistic store update + backend PATCH. Both
+                  // paths leave the breadcrumb showing the new title
+                  // immediately and the dropdown closes itself in the
+                  // child.
+                  if (composerOpen && !activeSessionId) {
+                    setComposerField({ title: next });
+                    return;
+                  }
+                  if (activeSessionId) {
+                    updateSession(activeSessionId, { title: next });
+                    apiUpdateSession(activeSessionId, { title: next }).catch(() => {});
+                  }
+                }}
+              />
             )}
             {/* Fleet hub: header reads as empty wordmark space — the
                 "Fleet" label + running/idle stat strip were removed
@@ -1905,10 +1978,16 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                   chat goes live, the toolbar unmounts and BranchStrip
                   takes over with the full base ← branch / diff / PR
                   view. */}
-              {!isControlCenter && effectiveSessionId && activeSession
+              {!isControlCenter && activeSession
                 && !hasRealMessage && !isStreaming && (
                 <SessionToolbar
-                  sessionId={effectiveSessionId}
+                  // In compose mode `effectiveSessionId` is null —
+                  // pass the synthetic id so the toolbar's internal
+                  // store lookup (`sessions.find(s => s.id === ...)`)
+                  // misses cleanly and falls back to props. The id
+                  // never reaches backend / WS — chat-view's render
+                  // is the only place that sees it.
+                  sessionId={effectiveSessionId ?? activeSession.id}
                   projectPath={activeSession.project_path || null}
                   tool={activeSession.tool ?? "claude"}
                   model={activeSession.model_name ?? null}
@@ -1941,7 +2020,6 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
           })() : undefined}
         />
       </div>
-      <NotificationStack onSelectSession={setActiveSession} />
     </div>
   );
 }
@@ -1949,6 +2027,158 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
 /* ══════════════════════════════════════
    FLEET — control-center surface (dashboard or empty welcome)
 ══════════════════════════════════════ */
+
+/* ── SessionBreadcrumb ────────────────────────────────────────────
+   Top-left of the chat header:
+     📁 <folder path> / <session title>  [✎ on hover]
+   Hover over the cluster surfaces a pencil glyph next to the title;
+   clicking it swaps the title <span> for an inline <input> at the
+   same position. Enter commits, Esc cancels, blur saves (same as
+   Enter) so the user can't accidentally lose a typed name. No
+   separate dropdown / popover — feels more like an in-place rename
+   than a modal action.
+
+   The folder side is the FULL project_path (not just the basename) —
+   the previous breadcrumb showed `folderName / sessionTitle` which
+   read as `lalala / lalala` once the session title was derived from
+   the same basename. Showing the full path makes the two halves
+   carry distinct information again. Long paths middle-truncate to
+   keep the header from blowing out. */
+function SessionBreadcrumb({
+  projectPath,
+  title,
+  onRename,
+  readonly = false,
+}: {
+  projectPath: string | null;
+  title: string;
+  onRename: (next: string) => void;
+  /** Fleet hub passes `readonly: true` to lock the breadcrumb to a
+   *  fixed "Fleet" label — no hover pencil, no inline edit. */
+  readonly?: boolean;
+}) {
+  const [hover, setHover] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(title);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Refocus + select-all when we enter edit mode so the user can
+  // type immediately. Re-sync the draft from the prop too — covers
+  // the case where the title changed under us (commitComposer
+  // resolved title via folder basename, etc.) since the last edit.
+  useEffect(() => {
+    if (editing) {
+      setDraft(title);
+      requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      });
+    }
+  }, [editing, title]);
+
+  const commit = () => {
+    const next = draft.trim();
+    if (next && next !== title) onRename(next);
+    setEditing(false);
+  };
+
+  // Middle-truncate the full path so the header stays a single line.
+  // Tooltip carries the full text for users who need to read the
+  // whole thing.
+  const pathDisplay = projectPath ? truncateMid(projectPath, 48) : null;
+
+  return (
+    <div
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={projectPath ? `${projectPath} / ${title}` : title}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 7,
+        padding: "4px 8px", borderRadius: 6, flexShrink: 1, minWidth: 0,
+        color: "var(--c-high)",
+        transition: "background 0.12s",
+        background: hover ? "var(--c-srf)" : "none",
+      }}
+    >
+      {/* Fleet hub (readonly + no projectPath) skips the folder
+          icon — its identity is the "Fleet" wordmark, not a path. */}
+      {!readonly && (
+        <Folder size={13} strokeWidth={1.75} style={{ color: "var(--c-low)", flexShrink: 0 }} />
+      )}
+      {pathDisplay && (
+        <>
+          <span style={{
+            fontSize: 13.5, fontWeight: 500, color: "var(--c-high)",
+            whiteSpace: "nowrap", flexShrink: 1, minWidth: 0,
+            overflow: "hidden", textOverflow: "ellipsis",
+            fontFamily: "var(--font-mono)",
+          }}>
+            {pathDisplay}
+          </span>
+          <span style={{ color: "var(--c-dim)", fontSize: 13, flexShrink: 0 }}>/</span>
+        </>
+      )}
+      {editing ? (
+        <input
+          ref={inputRef}
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === "Enter") { e.preventDefault(); commit(); }
+            else if (e.key === "Escape") { e.preventDefault(); setEditing(false); }
+          }}
+          onBlur={commit}
+          spellCheck={false}
+          style={{
+            // Match the surrounding title <span> visuals so the
+            // transition feels in-place rather than modal.
+            fontSize: 13.5, fontWeight: 400,
+            color: "var(--c-high)",
+            background: "rgba(255,255,255,0.05)",
+            border: "1px solid rgba(255,255,255,0.14)",
+            borderRadius: 4,
+            padding: "1px 6px",
+            outline: "none",
+            minWidth: 120,
+            maxWidth: 320,
+            fontFamily: "inherit",
+          }}
+        />
+      ) : (
+        <span style={{
+          fontSize: 13.5, fontWeight: 400, color: "var(--c-med)",
+          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          minWidth: 0,
+        }}>
+          {title}
+        </span>
+      )}
+      {!editing && !readonly && (
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          title="Rename session"
+          aria-label="Rename session"
+          style={{
+            display: "inline-flex", alignItems: "center", justifyContent: "center",
+            width: 20, height: 20, borderRadius: 4,
+            background: "transparent", border: "none",
+            color: "var(--c-low)", cursor: "pointer",
+            // Pencil only appears on hover; hidden otherwise so the
+            // header stays calm in steady state.
+            opacity: hover ? 1 : 0,
+            transition: "opacity 0.12s, background 0.12s",
+            flexShrink: 0,
+          }}
+          onMouseEnter={ev => { ev.currentTarget.style.background = "rgba(var(--fg-rgb), 0.10)"; }}
+          onMouseLeave={ev => { ev.currentTarget.style.background = "transparent"; }}
+        >
+          <Pencil size={11} strokeWidth={1.85} />
+        </button>
+      )}
+    </div>
+  );
+}
 
 function FleetChatEmptyState({ agents, onNewAgent, onSelectAgent: _onSelectAgent }: {
   agents: Session[];
@@ -2183,192 +2413,6 @@ function BrandLockup({
   );
 }
 
-
-/* ══════════════════════════════════════
-   NOTIFICATION STACK
-══════════════════════════════════════ */
-
-function NotificationStack({ onSelectSession }: { onSelectSession: (id: string) => void }) {
-  // Granular selectors — same reason as ChatView. Was: a destructure
-  // of the entire app-store, so the toast stack re-rendered on EVERY
-  // store change (status updates, session-list polls, sidebar toggle,
-  // active-session navigation) even when no notification field
-  // changed. The dismiss loop would then re-arm every timer.
-  const notifications      = useAppStore((s) => s.notifications);
-  const dismissNotification = useAppStore((s) => s.dismissNotification);
-  const sessions           = useAppStore((s) => s.sessions);
-  const staffSessionId     = useAppStore((s) => s.staffSessionId);
-  const activeSessionId    = useAppStore((s) => s.activeSessionId);
-
-  // ── Per-id auto-dismiss timers ──
-  // The previous implementation deps-keyed the effect on the joined id
-  // list. Every new notification arrived → all existing timers were
-  // cleared and re-armed for a fresh 6s. Under busy fleets (5+
-  // dispatches finishing in 30s) notifications never auto-dismissed
-  // because each one kept resetting the others' clocks. Fix: keep a
-  // ref-keyed Map<id, timeoutHandle> and only arm a timer for ids we
-  // haven't already armed; clear timers for ids that disappeared.
-  const dismissTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
-  useEffect(() => {
-    const timers = dismissTimersRef.current;
-    const liveIds = new Set(notifications.map(n => n.id));
-    // Arm timers for newly-arrived notifications.
-    // Action-bearing toasts (e.g. "View on GitHub", "Open github.com/new")
-    // get 12s so the user has time to read the message and click the link
-    // before it auto-dismisses. Plain toasts keep the 6s baseline. Spec §8.2.
-    for (const n of notifications) {
-      if (timers.has(n.id)) continue;
-      const ttl = n.action ? 12000 : 6000;
-      timers.set(n.id, setTimeout(() => {
-        dismissNotification(n.id);
-        timers.delete(n.id);
-      }, ttl));
-    }
-    // Clear timers for notifications that disappeared (dismissed,
-    // cleared) — drop their pending dismiss callbacks.
-    for (const [id, t] of timers.entries()) {
-      if (!liveIds.has(id)) {
-        clearTimeout(t);
-        timers.delete(id);
-      }
-    }
-  }, [notifications, dismissNotification]);
-  // Final cleanup on unmount — drop any straggler timers.
-  useEffect(() => {
-    const timers = dismissTimersRef.current;
-    return () => {
-      for (const t of timers.values()) clearTimeout(t);
-      timers.clear();
-    };
-  }, []);
-
-  // Click handler: instead of yanking the user to the dispatched
-  // agent's chat, keep them on Fleet and scroll-highlight the matching
-  // dispatch_result card. The card already lives in the staff chat —
-  // the notification just helps the user find it. If they're not
-  // currently on Fleet, switch them there first, then scroll.
-  const handleNotifClick = (n: { id: string; sessionId: string }) => {
-    dismissNotification(n.id);
-    const onStaff = !activeSessionId || activeSessionId === staffSessionId;
-    const scrollAndHighlight = () => {
-      // Find every dispatch_result card for this target agent; the
-      // newest is the one the notification just announced.
-      const cards = document.querySelectorAll<HTMLElement>(
-        `[data-dispatch-result-agent="${n.sessionId}"]`,
-      );
-      const card = cards[cards.length - 1];
-      if (!card) return;
-      card.scrollIntoView({ behavior: "smooth", block: "center" });
-      // Brief flash so the eye lands on it. Solid theme color (not rgba)
-      // per the contrast pattern rule. Reverts after 1.6s.
-      const original = card.style.background;
-      card.style.background = "var(--c-srf2)";
-      card.style.boxShadow = "0 0 0 2px var(--c-brd2)";
-      setTimeout(() => {
-        card.style.background = original;
-        card.style.boxShadow = "";
-      }, 1600);
-    };
-    if (onStaff) {
-      // Already on Fleet — scroll on the next tick so any pending
-      // re-render commits first (e.g. a freshly-added result card).
-      setTimeout(scrollAndHighlight, 50);
-    } else {
-      // Switch to staff first, then wait for chat to mount + load.
-      onSelectSession(staffSessionId ?? n.sessionId);
-      setTimeout(scrollAndHighlight, 350);
-    }
-  };
-
-  if (notifications.length === 0) return null;
-
-  return (
-    <div style={{
-      position: "absolute", bottom: 100, right: 20, zIndex: 50,
-      display: "flex", flexDirection: "column", gap: 8,
-      maxWidth: 360, pointerEvents: "none",
-    }}>
-      {notifications.map((n) => {
-        const session = sessions.find((s) => s.id === n.sessionId);
-        const title = session?.title ?? n.title;
-        return (
-          <div
-            key={n.id}
-            onClick={() => handleNotifClick(n)}
-            style={{
-              pointerEvents: "auto",
-              padding: "11px 14px", borderRadius: 10,
-              background: "var(--card)", border: `1px solid ${n.success ? "var(--c-brd)" : "rgba(248,113,113,0.25)"}`,
-              boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
-              cursor: "pointer", animation: "slideInNotif 0.3s cubic-bezier(0.22,1,0.36,1)",
-              display: "flex", gap: 10, alignItems: "flex-start",
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-1px)"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; }}
-          >
-            <span style={{ color: n.success ? "var(--c-med)" : "rgba(248,113,113,0.9)", flexShrink: 0, marginTop: 1 }}>
-              {n.success ? <CheckCircle2 size={14} /> : <AlertCircle size={14} />}
-            </span>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--c-high)", marginBottom: 2,
-                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {/* " finished" only makes sense when the notification
-                    is an agent-task completion (sessionId resolves to a
-                    real agent). System notifications already include
-                    their own verb in the title — appending "finished"
-                    produced things like "PR creation failed finished". */}
-                {session ? `${title} finished` : title}
-              </div>
-              <div style={{ fontSize: 11.5, color: "var(--c-low)", lineHeight: 1.4,
-                display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
-                overflow: "hidden" }}>
-                {n.summary}
-              </div>
-              {n.action && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    const w = window as unknown as { electronAPI?: { openExternal?: (url: string) => Promise<unknown> } };
-                    w.electronAPI?.openExternal?.(n.action!.url);
-                  }}
-                  style={{
-                    marginTop: 6,
-                    background: "transparent", border: "none",
-                    color: "var(--c-fg)", cursor: "pointer",
-                    fontSize: 11.5, padding: 0,
-                    display: "inline-flex", alignItems: "center", gap: 4,
-                    fontFamily: "inherit",
-                  }}
-                >
-                  {n.action.label}
-                  <ExternalLink size={10} />
-                </button>
-              )}
-            </div>
-            <button
-              onClick={(e) => { e.stopPropagation(); dismissNotification(n.id); }}
-              style={{
-                background: "none", border: "none", padding: 2, cursor: "pointer",
-                color: "var(--c-dim)", display: "flex", alignItems: "center",
-                borderRadius: 4, flexShrink: 0,
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = "var(--c-srf)"; e.currentTarget.style.color = "var(--c-high)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = "none"; e.currentTarget.style.color = "var(--c-dim)"; }}
-            >
-              <X size={12} />
-            </button>
-          </div>
-        );
-      })}
-      <style>{`
-        @keyframes slideInNotif {
-          from { opacity: 0; transform: translateX(20px); }
-          to   { opacity: 1; transform: translateX(0); }
-        }
-      `}</style>
-    </div>
-  );
-}
 
 /* ── Panel view menu ──
  *

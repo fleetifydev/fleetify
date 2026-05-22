@@ -650,6 +650,12 @@ const SessionRow = memo(function SessionRow({
   const [hovered, setHovered] = useState(false);
   const [stopping, setStopping] = useState(false);
   const cs = useChatStore(s => s.sessions[session.id]);
+  // Identity check via staffSessionId, not the title. The title used
+  // to be the discriminator but a regression that renamed staff to
+  // the first user message ("selam", "test", …) broke that lookup;
+  // the id-based check survives any future title bug.
+  const staffSessionId = useAppStore(s => s.staffSessionId);
+  const isStaff = staffSessionId !== null && session.id === staffSessionId;
   const isRunning = session.status === "running" || session.status === "starting";
   const isWaiting = session.status === "waiting" || !!cs?.permissionRequest;
   const info = statusInfo(fleetStatus, isRunning, session.status);
@@ -750,7 +756,7 @@ const SessionRow = memo(function SessionRow({
         />
         {session.tool && <ProviderLogo tool={session.tool} size={11} />}
         <span style={{
-          flex: 1, minWidth: 0, overflow: "hidden",
+          minWidth: 0, overflow: "hidden",
           WebkitMaskImage: "linear-gradient(to right, black 90%, transparent 100%)",
           maskImage: "linear-gradient(to right, black 90%, transparent 100%)",
           fontSize: 13.5,
@@ -760,6 +766,24 @@ const SessionRow = memo(function SessionRow({
           color: "var(--c-high)",
           whiteSpace: "nowrap",
         }}>{session.title || "Untitled"}</span>
+        {/* FLEET badge — surfaces the staff session as "the command
+            center" when it appears in the regular Sessions list.
+            id-based detection so a future title regression can't hide
+            the badge or mis-tag a normal session as Fleet. */}
+        {isStaff && (
+          <span style={{
+            fontSize: 9, fontWeight: 700,
+            letterSpacing: "0.08em",
+            padding: "2px 6px",
+            borderRadius: 4,
+            background: "rgba(var(--fg-rgb), 0.10)",
+            color: "var(--c-fg)",
+            flexShrink: 0,
+          }}>
+            FLEET
+          </span>
+        )}
+        <span style={{ flex: 1 }} />
         <span style={{
           fontSize: 9.5, fontWeight: 700,
           color: fleetStatus === "paused" || fleetStatus === "awaiting-user" || isWaiting ? info.color : "var(--c-low)",

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   CheckCircle2, Circle, Loader2,
   ArrowLeft, AlertCircle,
@@ -2098,33 +2098,6 @@ export function ControlCenterPanel({ sessions: allSessions, onClose }: Props) {
     document.addEventListener("visibilitychange", onVis);
     return () => { clearInterval(iv); document.removeEventListener("visibilitychange", onVis); };
   }, []);
-
-  // Budget warning: fire a notification when any session crosses 80% of its limit
-  const pushNotification = useAppStore((s) => s.pushNotification);
-  const warnedRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    for (const s of sessions) {
-      const limit = s.budget_limit;
-      const used  = s.budget_used ?? 0;
-      if (limit == null || limit <= 0) continue;
-      const ratio = used / limit;
-      if (ratio >= 0.8 && ratio < 1.0 && !warnedRef.current.has(s.id)) {
-        warnedRef.current.add(s.id);
-        pushNotification({
-          id: crypto.randomUUID(),
-          sessionId: s.id,
-          title: "Budget warning",
-          summary: `${s.title} has used ${(ratio * 100).toFixed(0)}% of its budget ($${used.toFixed(2)} / $${limit.toFixed(2)})`,
-          success: false,
-          timestamp: Date.now(),
-        });
-      }
-      // Reset warning token if usage drops below 80% (e.g., limit was raised)
-      if (ratio < 0.8) {
-        warnedRef.current.delete(s.id);
-      }
-    }
-  }, [sessions, pushNotification]);
 
   // ── Narrow selector ──
   // Project per-session permissionRequest values DIRECTLY (not wrapped

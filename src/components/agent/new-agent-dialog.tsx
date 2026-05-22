@@ -888,6 +888,79 @@ function WorktreeToggle({ value, onChange, folderInGit }: {
   onChange: (v: boolean) => void;
   folderInGit?: boolean | null;
 }) {
+  // Probe `git` on PATH. Without it, worktrees can't be carved AND
+  // Create PR can't run (both shell out to `git`); rather than offer
+  // a toggle that does nothing, we collapse the row into a single
+  // "Git required" notice and force `value` to false so the session
+  // doesn't get created with use_worktree=true on a git-less host.
+  // null = probing (initial render), true/false = settled.
+  const [gitPresent, setGitPresent] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await window.electronAPI?.hasGit?.();
+        if (!cancelled) setGitPresent(!!r?.ok);
+      } catch {
+        if (!cancelled) setGitPresent(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Force value off when git is provably missing — keeps SessionCreate
+  // from carrying a `use_worktree: true` payload to the backend on a
+  // host that can't honour it. Only fires on the explicit `false`
+  // transition (not the probing/null phase) so we don't flicker.
+  useEffect(() => {
+    if (gitPresent === false && value) onChange(false);
+  }, [gitPresent, value, onChange]);
+
+  if (gitPresent === false) {
+    return (
+      <div style={{
+        display: "flex", flexDirection: "column", gap: 6,
+        padding: "10px 12px",
+        borderRadius: 7,
+        border: "1px dashed var(--c-brd)",
+        background: "rgba(var(--fg-rgb), 0.02)",
+      }}>
+        <div style={{
+          display: "flex", alignItems: "center", gap: 9,
+          fontSize: 12.5, fontWeight: 500, color: "var(--c-dim)",
+        }}>
+          <span style={{
+            width: 14, height: 14,
+            display: "inline-flex", alignItems: "center", justifyContent: "center",
+            borderRadius: 4,
+            background: "rgba(var(--fg-rgb), 0.06)",
+            color: "var(--c-dim)",
+            fontSize: 10, fontWeight: 700,
+          }}>—</span>
+          Git not detected on this system
+        </div>
+        <div style={{
+          fontSize: 11, color: "var(--c-low)",
+          lineHeight: 1.5, paddingLeft: 23,
+        }}>
+          Isolated worktrees and Create PR both need Git. Sessions still run without it,
+          but they'll share your working directory and skip the PR flow.{" "}
+          <a
+            href="https://git-scm.com/downloads"
+            onClick={(e) => {
+              e.preventDefault();
+              try { window.electronAPI?.openExternal?.("https://git-scm.com/downloads"); }
+              catch { /* best effort */ }
+            }}
+            style={{ color: "var(--c-med)", textDecoration: "underline", cursor: "pointer" }}
+          >
+            Install Git ↗
+          </a>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{
       display: "flex", flexDirection: "column", gap: 6,

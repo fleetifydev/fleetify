@@ -1174,34 +1174,14 @@ class WSManager {
           }
         }
 
-        // Surface a dismissible notification card in the Control Center.
-        app2.pushNotification({
-          id: crypto.randomUUID(),
-          sessionId: data.target_id,
-          title: "Agent finished",
-          summary: data.summary || "Task complete",
-          success: data.success !== false,
-          timestamp: Date.now(),
-        });
-
         break;
       }
       case "agent_stopped": {
         useAppStore.getState().updateSession(data.target_id, { status: "stopped" });
-        useAppStore.getState().pushNotification({
-          id: crypto.randomUUID(), sessionId: data.target_id,
-          title: `${data.name} stopped`, summary: "Agent was stopped by Fleet.",
-          success: true, timestamp: Date.now(),
-        });
         break;
       }
       case "agent_restarted": {
         useAppStore.getState().updateSession(data.target_id, { status: "idle" });
-        useAppStore.getState().pushNotification({
-          id: crypto.randomUUID(), sessionId: data.target_id,
-          title: `${data.name} restarted`, summary: "Agent was restarted by Fleet.",
-          success: true, timestamp: Date.now(),
-        });
         break;
       }
       case "agent_report": {
@@ -1414,27 +1394,40 @@ class WSManager {
             typeof data.error === "string" ? data.error : "Compaction failed",
           );
         }
+        // "Forbidden or not found" is a transient sync error — the
+        // backend's WS subscribe fired for a session that wasn't (yet
+        // or any longer) in the DB. Most common cause is a phantom
+        // session in `sessions[]` that the visibility-change /
+        // sessions-sweep handler tried to re-subscribe to after the
+        // backend row was gone (DB reset, account switch, …).
+        //
+        // Surfacing it as a chat message confused users on fresh
+        // drafts (the strip flipped to "Create PR" because the error
+        // counted as a real assistant turn). Drop the message AND
+        // unsubscribe so we stop pinging the dead session every focus
+        // change — leaves the renderer's `sessions[]` entry alone for
+        // a higher layer (sidebar reconcile) to prune at its own pace.
+        const isStaleSessionError = typeof data.error === "string"
+          && /forbidden or not found/i.test(data.error);
+        if (isStaleSessionError) {
+          if (typeof console !== "undefined") {
+            console.warn("[ws] dropped stale-session error for", sessionId, data.error);
+          }
+          try { this.disconnect(sessionId); } catch { /* defensive */ }
+          break;
+        }
+        // Prefix the synthetic ID with `error-` so the chat-view's
+        // `hasRealMessage` gate (which keys off `welcome-`/`warn-`/
+        // `attempt-` prefixes) doesn't treat a bare error toast as
+        // proof that the session has produced real conversation —
+        // otherwise the BranchStrip / Create PR surface unhid itself
+        // on draft sessions that never actually ran an agent.
         store.addMessage(sessionId, {
-          id: crypto.randomUUID(),
+          id: `error-${crypto.randomUUID()}`,
           role: "system",
           content: [{ type: "text", text: `Task failed: ${data.error ?? "unknown error"}` }],
           timestamp: new Date().toISOString(),
         });
-        // Surface budget-exceeded as a dismissible notification
-        if (typeof data.error === "string" && data.error.startsWith("Budget limit")) {
-          const app = useAppStore.getState();
-          const budgetSession = app.sessions.find(s => s.id === sessionId);
-          const budgetUsed  = budgetSession?.budget_used  ?? 0;
-          const budgetLimit = budgetSession?.budget_limit ?? 0;
-          app.pushNotification({
-            id: crypto.randomUUID(),
-            sessionId,
-            title: "Budget exceeded",
-            summary: `${budgetSession?.title ?? "Agent"} hit its $${(budgetLimit).toFixed(2)} limit (spent $${(budgetUsed).toFixed(2)})`,
-            success: false,
-            timestamp: Date.now(),
-          });
-        }
         break;
       }
       default:

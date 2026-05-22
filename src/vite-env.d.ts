@@ -111,6 +111,31 @@ interface Window {
      *  user can complete the device-code flow interactively. The
      *  renderer should poll `hasGhCli()` after to detect completion. */
     ghAuthLoginLaunch: () => Promise<{ ok: boolean; error?: string }>;
+    /** In-process gh auth flow: spawns `gh auth login --web` under a PTY
+     *  and emits `gh-auth-event` payloads (phase: "code" | "url" | "log"
+     *  | "done") so the renderer can surface the one-time device code
+     *  inside the app. Resolves once gh exits — `done` events also fire
+     *  on the listener so the UI can react without awaiting the promise. */
+    ghAuthLoginCapture: () => Promise<
+      | { ok: true; login?: string | null }
+      | { ok: false; error?: string }
+    >;
+    /** Kills the gh process started by ghAuthLoginCapture (if any).
+     *  Safe to call when nothing is running — returns {ok:true} either way. */
+    ghAuthLoginCancel: () => Promise<{ ok: boolean }>;
+    /** Subscribe to streaming updates from ghAuthLoginCapture. Phases:
+     *   - "code": one-time device code is ready (display it prominently)
+     *   - "url":  verification URL (open in browser)
+     *   - "log":  verbatim line from gh (for debugging only)
+     *   - "done": gh exited; ok flag + resolved login (or error) */
+    onGhAuthEvent: (
+      cb: (payload:
+        | { phase: "code"; code: string }
+        | { phase: "url"; url: string }
+        | { phase: "log"; line: string }
+        | { phase: "done"; ok: boolean; login?: string | null; error?: string | null }
+      ) => void
+    ) => () => void;
     /** Probes gh CLI presence + auth state. Returns `ok: false` when
      *  the binary isn't on PATH; otherwise reports version + authed
      *  flag + login. Used by the onboarding GitHub picker and the
@@ -122,6 +147,36 @@ interface Window {
       ghLogin?: string | null;
       error?: string | null;
     }>;
+    /** Probes whether the `git` binary is on PATH. Drives the
+     *  WorktreeToggle in the New Session UI — `ok:false` collapses
+     *  the toggle into a "Git required" notice. */
+    hasGit: () => Promise<{
+      ok: boolean;
+      version?: string;
+      path?: string;
+    }>;
+    /** Route one structured event from the renderer into the backend
+     *  tracing pipeline. Lands in stderr (dev) + the on-disk NDJSON
+     *  log file (`fleetify.log.YYYY-MM-DD`). Pair with `lib/log.ts`
+     *  which batches these calls under the hood. */
+    appLog: (
+      level: "trace" | "debug" | "info" | "warn" | "error",
+      target: string,
+      message: string,
+      fields?: Record<string, unknown> | null,
+    ) => Promise<{ ok: boolean }>;
+    /** Bundle the on-disk log files + system info into a single zip
+     *  under the OS temp dir. Renderer reads `path` and either opens
+     *  a Save dialog or reveals it in the file manager. */
+    logsExport: () => Promise<
+      | { ok: true; path: string; bytes: number }
+      | { ok: false; error: string }
+    >;
+    /** Reveal the log directory in Explorer / Finder / xdg-open. */
+    logsOpenFolder: () => Promise<
+      | { ok: true; path: string }
+      | { ok: false; error: string }
+    >;
     onAuthUrl: (
       cb: (info: { toolKey: string; url: string }) => void
     ) => () => void;
@@ -146,6 +201,14 @@ interface Window {
       local: string[];
       remote: string[];
     }>;
+    /** Pin a branch as this clone's logical base — drives the "Create
+     *  new main branch" picker action. Carves it from the current base
+     *  if missing, then writes `git config fleetify.baseBranch <name>`.
+     *  Nondestructive: doesn't push, rename, or change remote HEAD. */
+    setBaseBranch: (
+      folder: string,
+      branch: string,
+    ) => Promise<{ ok: boolean; base?: string; error?: string }>;
     /** `gh pr list --json number,state,headRefName,...` — drives the
      *  per-branch PR badge in BranchPickerMenu without paying for one
      *  `gh pr view` per row. */

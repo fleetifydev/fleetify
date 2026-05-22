@@ -17,7 +17,7 @@
 import { useState, useEffect, useCallback } from "react";
 import {
   Settings, Palette, Wand2, Cpu, Plug, Cable,
-  FileCode, Webhook,
+  FileCode, Webhook, FileText, FolderOpen, Loader2, Bug,
   Check, User, ArrowUpRight, HelpCircle, Sun, ArrowLeft,
   Eye, EyeOff, Volume2, Copy, MessageCircle,
 } from "lucide-react";
@@ -49,6 +49,7 @@ const NAV: { id: string; icon: React.FC<{ size?: number; style?: React.CSSProper
   { id: "Integrations", icon: Cable      },
   { id: "Rules",        icon: FileCode   },
   { id: "Tools & MCPs", icon: Webhook    },
+  { id: "Diagnostics",  icon: Bug        },
 ];
 
 /* ── Audible "ding" using WebAudio. Used both as the test-button
@@ -350,6 +351,194 @@ function useConfigField<K extends keyof FleetConfig>(
 /* ══════════════════════════════════════════════════════════════
    Section: Account
 ══════════════════════════════════════════════════════════════ */
+/* ── Diagnostics ───────────────────────────────────────────────────
+   Three actions the user / support might need:
+     • Export logs — bundles the last N days of on-disk log files +
+                     system info JSON into a single .zip the user
+                     attaches to a bug report.
+     • Open log folder — reveals the log directory in the OS file
+                         manager. For power users who want to tail
+                         live or scrub specific files manually.
+     • Copy diagnostic info — short JSON dump (app version, OS, arch,
+                              user agent) on the clipboard. Useful in
+                              quick async support exchanges where the
+                              full zip is overkill.
+
+   No PII / credentials surface in any of these — the export bundles
+   logs that the backend redact layer already scrubbed, and the
+   diagnostic info is build metadata only. */
+function DiagnosticsSection() {
+  const [exporting, setExporting] = useState(false);
+  const [opening,   setOpening]   = useState(false);
+  const [copied,    setCopied]    = useState(false);
+  const [status,    setStatus]    = useState<string | null>(null);
+  const [error,     setError]     = useState<string | null>(null);
+
+  const onExport = useCallback(async () => {
+    setStatus(null); setError(null); setExporting(true);
+    try {
+      const r = await window.electronAPI?.logsExport?.();
+      if (!r) { setError("Logging IPC unavailable."); return; }
+      if (!r.ok) { setError(r.error || "Export failed."); return; }
+      const mb = (r.bytes / (1024 * 1024)).toFixed(2);
+      setStatus(`Saved diagnostics bundle (${mb} MB)`);
+      // Reveal the zip in OS file manager so the user can grab it
+      // without having to memorise the temp dir path.
+      try { await window.electronAPI?.showItemInFolder?.(r.path); } catch { /* best effort */ }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Export failed.");
+    } finally {
+      setExporting(false);
+    }
+  }, []);
+
+  const onOpenFolder = useCallback(async () => {
+    setStatus(null); setError(null); setOpening(true);
+    try {
+      const r = await window.electronAPI?.logsOpenFolder?.();
+      if (!r) { setError("Logging IPC unavailable."); return; }
+      if (!r.ok) { setError(r.error || "Couldn't open folder."); return; }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't open folder.");
+    } finally {
+      setOpening(false);
+    }
+  }, []);
+
+  const onCopyDiag = useCallback(async () => {
+    setStatus(null); setError(null);
+    const info = {
+      app_version: __APP_VERSION__ ?? "unknown",
+      user_agent: typeof navigator !== "undefined" ? navigator.userAgent : null,
+      language: typeof navigator !== "undefined" ? navigator.language : null,
+      platform: typeof navigator !== "undefined" ? navigator.platform : null,
+      captured_at: new Date().toISOString(),
+    };
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(info, null, 2));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't copy.");
+    }
+  }, []);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
+      <div>
+        <h2 style={{ fontSize: 14, fontWeight: 600, color: "var(--c-high)", margin: "0 0 4px" }}>
+          Logs & diagnostics
+        </h2>
+        <p style={{ fontSize: 12.5, color: "var(--c-med)", margin: 0, lineHeight: 1.55, maxWidth: 540 }}>
+          Fleetify keeps the last 30 days of logs locally on your machine —
+          tokens, API keys, and message bodies are scrubbed before they hit
+          disk. Export the bundle and share it with support when you run into
+          a bug.
+        </p>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, maxWidth: 540 }}>
+        <DiagButton
+          icon={exporting ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <FileText size={14} />}
+          label={exporting ? "Bundling…" : "Export logs"}
+          hint="Save a .zip of recent logs + system info"
+          onClick={onExport}
+          disabled={exporting}
+          primary
+        />
+        <DiagButton
+          icon={opening ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <FolderOpen size={14} />}
+          label={opening ? "Opening…" : "Open log folder"}
+          hint="Reveal the on-disk log directory"
+          onClick={onOpenFolder}
+          disabled={opening}
+        />
+        <DiagButton
+          icon={copied ? <Check size={14} /> : <Copy size={14} />}
+          label={copied ? "Copied" : "Copy diagnostic info"}
+          hint="Build version + OS + locale on the clipboard"
+          onClick={onCopyDiag}
+        />
+      </div>
+
+      {status && (
+        <div style={{
+          padding: "9px 12px", borderRadius: 7,
+          background: "rgba(74,222,128,0.08)",
+          border: "1px solid rgba(74,222,128,0.25)",
+          color: "rgb(74,222,128)",
+          fontSize: 12.5,
+          maxWidth: 540,
+        }}>{status}</div>
+      )}
+      {error && (
+        <div style={{
+          padding: "9px 12px", borderRadius: 7,
+          background: "rgba(248,113,113,0.08)",
+          border: "1px solid rgba(248,113,113,0.30)",
+          color: "rgb(248,113,113)",
+          fontSize: 12.5,
+          maxWidth: 540,
+        }}>{error}</div>
+      )}
+    </div>
+  );
+}
+
+function DiagButton({
+  icon, label, hint, onClick, disabled, primary,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  hint: string;
+  onClick: () => void;
+  disabled?: boolean;
+  primary?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        display: "flex", alignItems: "center", gap: 10,
+        padding: "11px 13px",
+        background: primary ? "var(--c-fg)" : "rgba(var(--fg-rgb), 0.04)",
+        border: primary ? "1px solid var(--c-fg)" : "1px solid var(--c-brd)",
+        borderRadius: 8,
+        color: primary ? "var(--c-bg, #0c0c0c)" : "var(--c-high)",
+        cursor: disabled ? "default" : "pointer",
+        opacity: disabled ? 0.55 : 1,
+        fontFamily: "inherit",
+        textAlign: "left",
+        transition: "background 0.12s, border-color 0.12s",
+      }}
+      onMouseEnter={e => {
+        if (disabled) return;
+        if (!primary) e.currentTarget.style.background = "rgba(var(--fg-rgb), 0.07)";
+      }}
+      onMouseLeave={e => {
+        if (disabled) return;
+        if (!primary) e.currentTarget.style.background = "rgba(var(--fg-rgb), 0.04)";
+      }}
+    >
+      <span style={{ display: "inline-flex", flexShrink: 0 }}>{icon}</span>
+      <span style={{ flex: 1, display: "flex", flexDirection: "column", gap: 1 }}>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>{label}</span>
+        <span style={{
+          fontSize: 11.5,
+          color: primary ? "rgba(0,0,0,0.65)" : "var(--c-low)",
+          fontWeight: 400,
+        }}>{hint}</span>
+      </span>
+    </button>
+  );
+}
+
+// Build-time replaced by Vite's `define` if configured; falls back to
+// the package version otherwise. We keep this string literal so the
+// renderer doesn't need a runtime fetch for something this static.
+declare const __APP_VERSION__: string | undefined;
+
 function AccountSection() {
   const { patch } = useFleetConfig();
   const raw = (() => {
@@ -1303,6 +1492,7 @@ export function SettingsPage({ initialTab = "General", onClose }: SettingsProps)
             {active === "Rules"        && <RulesSection />}
             {active === "Integrations" && <IntegrationsSection />}
             {active === "Tools & MCPs" && <MCPSection />}
+            {active === "Diagnostics"  && <DiagnosticsSection />}
           </div>
         </div>
       </div>

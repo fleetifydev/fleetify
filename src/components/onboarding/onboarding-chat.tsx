@@ -1789,6 +1789,14 @@ function GithubWidget({
   const [error, setError] = useState<string | null>(null);
   // Polling cancel handle for the gh-auth-login waiter.
   const pollCancelRef = useRef<{ cancelled: boolean }>({ cancelled: false });
+  // The one-time device code + verification URL captured live from
+  // `gh auth login --web`. Surfaced in the picker so the user never has
+  // to leave the app to read them. Cleared between attempts.
+  const [deviceCode, setDeviceCode] = useState<string | null>(null);
+  const [verifyUrl, setVerifyUrl] = useState<string | null>(null);
+  // Unsubscribe handle for onGhAuthEvent — kept on a ref so cleanup
+  // works whether the flow resolves, errors, or the user cancels.
+  const ghEventUnsubRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     if (existingUsername) return; // pre-probed by parent
@@ -1820,8 +1828,10 @@ function GithubWidget({
   // Three branches mirroring cliState:
   //   • missing    — button disabled (caller blocked at the UI layer)
   //   • ready      — single-tap accept
-  //   • needs-auth — spawn `gh auth login --web` in a new terminal,
-  //                  then poll hasGhCli() until auth flips to true.
+  //   • needs-auth — spawn `gh auth login --web` under an in-process PTY
+  //                  and surface the one-time device code inside the app
+  //                  via the `gh-auth-event` stream. Resolves once gh
+  //                  reports phase="done".
   const pickGhCli = async () => {
     setError(null);
     if (cliState.kind === "ready") {
@@ -1829,41 +1839,79 @@ function GithubWidget({
       return;
     }
     if (cliState.kind !== "needs-auth") return;
+
     setPending("cli");
+    setDeviceCode(null);
+    setVerifyUrl(null);
+    pollCancelRef.current = { cancelled: false };
+
+    // Subscribe to gh's progress before we kick off the spawn — gh prints
+    // the one-time code within the first second, so we can't afford to
+    // attach the listener after the awaited call returns.
+    try { ghEventUnsubRef.current?.(); } catch { /* idempotent */ }
+    ghEventUnsubRef.current = window.electronAPI?.onGhAuthEvent?.((ev) => {
+      if (pollCancelRef.current.cancelled) return;
+      if (ev.phase === "code") {
+        setDeviceCode(ev.code);
+      } else if (ev.phase === "url") {
+        setVerifyUrl(ev.url);
+        // Open the browser ourselves the moment we know the URL so the
+        // user doesn't have to wait for gh's own browser hand-off.
+        try { window.electronAPI?.openExternal?.(ev.url); } catch { /* best effort */ }
+      } else if (ev.phase === "done") {
+        if (ev.ok && ev.login) {
+          setCliState({ kind: "ready", login: ev.login });
+          setPending(null);
+          try { ghEventUnsubRef.current?.(); } catch { /* idempotent */ }
+          ghEventUnsubRef.current = null;
+          onResult({ method: "cli", username: ev.login });
+        } else if (!ev.ok) {
+          setError(ev.error || "gh auth didn't complete.");
+          setPending(null);
+        }
+      }
+    }) || null;
+
     try {
-      const launch = await window.electronAPI?.ghAuthLoginLaunch?.();
-      if (!launch?.ok) {
-        setError(launch?.error || "Couldn't launch the gh terminal.");
-        setPending(null);
-        return;
-      }
-      // Poll every 2s up to 3 minutes for the user to complete the
-      // device-code dance in the new terminal.
-      pollCancelRef.current = { cancelled: false };
-      const handle = pollCancelRef.current;
-      const deadline = Date.now() + 3 * 60 * 1000;
-      while (Date.now() < deadline && !handle.cancelled) {
-        await new Promise(r => setTimeout(r, 2000));
-        if (handle.cancelled) return;
-        try {
-          const r = await window.electronAPI?.hasGhCli?.();
-          if (r?.ok && r.authed && r.ghLogin) {
-            setCliState({ kind: "ready", login: r.ghLogin });
-            setPending(null);
-            onResult({ method: "cli", username: r.ghLogin });
-            return;
-          }
-        } catch { /* keep polling */ }
-      }
-      if (!handle.cancelled) {
-        setError("Timed out waiting for gh auth. Try again or use GitHub OAuth.");
+      const r = await window.electronAPI?.ghAuthLoginCapture?.();
+      // The "done" event already drove the success path. We only land
+      // here for the error case — guard against double-handling.
+      if (r && !r.ok && !pollCancelRef.current.cancelled) {
+        setError(r.error || "Couldn't run gh auth login.");
         setPending(null);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't start gh auth.");
-      setPending(null);
+      if (!pollCancelRef.current.cancelled) {
+        setError(e instanceof Error ? e.message : "Couldn't start gh auth.");
+        setPending(null);
+      }
+    } finally {
+      try { ghEventUnsubRef.current?.(); } catch { /* idempotent */ }
+      ghEventUnsubRef.current = null;
     }
   };
+
+  // Cancel button: kill the gh child + tear down the listener so the
+  // user can pick OAuth (or Skip) without a zombie process holding a
+  // device code slot.
+  const cancelGhCli = async () => {
+    pollCancelRef.current.cancelled = true;
+    try { await window.electronAPI?.ghAuthLoginCancel?.(); } catch { /* best effort */ }
+    try { ghEventUnsubRef.current?.(); } catch { /* idempotent */ }
+    ghEventUnsubRef.current = null;
+    setPending(null);
+    setDeviceCode(null);
+    setVerifyUrl(null);
+  };
+
+  // Tear the listener down on unmount so a half-finished flow can't keep
+  // firing into a dead component.
+  useEffect(() => {
+    return () => {
+      try { ghEventUnsubRef.current?.(); } catch { /* idempotent */ }
+      ghEventUnsubRef.current = null;
+    };
+  }, []);
 
   // ── "Connect with GitHub" (Fleetify OAuth broker) ─────────
   const pickOAuth = async () => {
@@ -1884,11 +1932,13 @@ function GithubWidget({
     }
   };
 
-  // Choice-row button — used twice, styled per variant.
+  // Choice-row button — single-line, icon-left, title centered. Two
+  // variants: "white" (Connect with GitHub) and "black" (Use GitHub CLI).
+  // A "Not Installed" badge floats on the right when the gh CLI isn't
+  // available; otherwise the row is pure icon + centered title.
   const ChoiceRow = ({
     icon,
     title,
-    subtitle,
     onClick,
     disabled,
     loading,
@@ -1897,7 +1947,6 @@ function GithubWidget({
   }: {
     icon: React.ReactNode;
     title: string;
-    subtitle?: string;
     onClick: () => void;
     disabled?: boolean;
     loading?: boolean;
@@ -1919,11 +1968,6 @@ function GithubWidget({
         ? "rgba(255,255,255,0.22)"
         : "rgba(255,255,255,0.18)";
     const textColor = isWhite ? "#000" : isBlack ? "#fff" : "var(--m-text)";
-    const subtitleColor = isWhite
-      ? "rgba(0,0,0,0.55)"
-      : isBlack
-        ? "rgba(255,255,255,0.55)"
-        : "var(--m-text-3)";
     const iconColor = isWhite ? "#000" : isBlack ? "#fff" : "var(--m-text-2)";
     const badgeBg = isWhite
       ? "rgba(0,0,0,0.06)"
@@ -1942,19 +1986,19 @@ function GithubWidget({
         disabled={disabled || loading}
         style={{
           width: "100%",
+          position: "relative",
           display: "flex",
           alignItems: "center",
-          gap: 11,
-          padding: "11px 13px",
+          height: 40,
+          padding: "0 13px",
           background: baseBg,
           border: `1px solid ${baseBorder}`,
           borderRadius: 8,
           color: textColor,
-          fontSize: 12.5,
-          fontWeight: 500,
+          fontSize: 13,
+          fontWeight: 600,
           cursor: disabled || loading ? "not-allowed" : "pointer",
           opacity: disabled ? 0.55 : 1,
-          textAlign: "left",
           transition: "background 0.12s ease, border-color 0.12s ease",
           fontFamily: "inherit",
         }}
@@ -1969,28 +2013,38 @@ function GithubWidget({
           e.currentTarget.style.borderColor = baseBorder;
         }}
       >
-        <span style={{ display: "flex", color: iconColor }}>
+        <span
+          style={{
+            position: "absolute",
+            left: 13,
+            top: "50%",
+            transform: "translateY(-50%)",
+            display: "flex",
+            color: iconColor,
+          }}
+        >
           {loading ? (
             <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />
           ) : icon}
         </span>
-        <span style={{ flex: 1, display: "flex", flexDirection: "column", gap: 2 }}>
-          <span style={{ fontWeight: 600, fontSize: 13 }}>{title}</span>
-          {subtitle && (
-            <span style={{ fontSize: 11, color: subtitleColor }}>{subtitle}</span>
-          )}
-        </span>
+        <span style={{ flex: 1, textAlign: "center" }}>{title}</span>
         {badge && (
-          <span style={{
-            fontSize: 10,
-            fontWeight: 600,
-            letterSpacing: "0.04em",
-            textTransform: "uppercase",
-            padding: "3px 7px",
-            borderRadius: 4,
-            background: badgeBg,
-            color: badgeColor,
-          }}>
+          <span
+            style={{
+              position: "absolute",
+              right: 10,
+              top: "50%",
+              transform: "translateY(-50%)",
+              fontSize: 10,
+              fontWeight: 600,
+              letterSpacing: "0.04em",
+              textTransform: "uppercase",
+              padding: "3px 7px",
+              borderRadius: 4,
+              background: badgeBg,
+              color: badgeColor,
+            }}
+          >
             {badge}
           </span>
         )}
@@ -1998,32 +2052,20 @@ function GithubWidget({
     );
   };
 
-  // Derive the CLI row's copy from cliState.
+  // Derive the CLI row's copy from cliState. The row is intentionally
+  // minimal — title + "Not Installed" badge only — so the picker stays
+  // visually calm. Live progress (device code, waiting state) is shown
+  // in a separate panel below the buttons.
   const cliLoading = pending === "cli";
   const cliDisabled =
     cliState.kind === "probing" ||
     cliState.kind === "missing" ||
     pending === "oauth";
   const cliTitle =
-    cliState.kind === "ready"
-      ? `Connect with GitHub CLI · @${cliState.login}`
-      : "Connect with GitHub CLI";
-  const cliSubtitle =
-    cliState.kind === "probing"
-      ? "Checking gh CLI…"
-      : cliState.kind === "missing"
-        ? "gh CLI not detected on PATH"
-        : cliState.kind === "needs-auth"
-          ? cliLoading
-            ? "Complete the auth in the opened terminal…"
-            : "Opens a terminal to run gh auth login"
-          : "Reuses gh's existing credentials — no extra setup";
-  const cliBadge =
-    cliState.kind === "missing"
-      ? "Not Installed"
-      : cliState.kind === "ready" || cliState.kind === "needs-auth"
-        ? "Installed"
-        : undefined;
+    cliState.kind === "ready" && cliState.login
+      ? `Use GitHub CLI · @${cliState.login}`
+      : "Use GitHub CLI";
+  const cliBadge = cliState.kind === "missing" ? "Not Installed" : undefined;
 
   return (
     <div
@@ -2066,7 +2108,6 @@ function GithubWidget({
         <ChoiceRow
           icon={<Terminal size={14} />}
           title={cliTitle}
-          subtitle={cliSubtitle}
           onClick={pickGhCli}
           loading={cliLoading}
           disabled={cliDisabled}
@@ -2074,6 +2115,100 @@ function GithubWidget({
           variant="black"
         />
       </div>
+
+      {pending === "cli" && (
+        <div
+          style={{
+            margin: "0 12px 11px",
+            padding: "11px 12px",
+            borderRadius: 8,
+            background: "rgba(255,255,255,0.03)",
+            border: "1px solid rgba(255,255,255,0.08)",
+          }}
+        >
+          <div
+            style={{
+              fontSize: 11,
+              color: "var(--m-text-3)",
+              textTransform: "uppercase",
+              letterSpacing: "0.06em",
+              marginBottom: 6,
+            }}
+          >
+            {deviceCode ? "One-time code" : "Starting gh auth…"}
+          </div>
+          {deviceCode ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <code
+                style={{
+                  fontFamily:
+                    "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                  fontSize: 18,
+                  fontWeight: 700,
+                  letterSpacing: "0.18em",
+                  color: "var(--c-high)",
+                  padding: "4px 10px",
+                  borderRadius: 6,
+                  background: "rgba(255,255,255,0.06)",
+                }}
+              >
+                {deviceCode}
+              </code>
+              <button
+                onClick={() => {
+                  try { window.electronAPI?.writeText?.(deviceCode); } catch { /* best effort */ }
+                }}
+                style={{
+                  height: 24,
+                  padding: "0 9px",
+                  fontSize: 11,
+                  fontWeight: 500,
+                  borderRadius: 5,
+                  background: "transparent",
+                  border: "1px solid rgba(255,255,255,0.12)",
+                  color: "var(--m-text-2)",
+                  cursor: "pointer",
+                }}
+              >
+                Copy
+              </button>
+              {verifyUrl && (
+                <button
+                  onClick={() => {
+                    try { window.electronAPI?.openExternal?.(verifyUrl); } catch { /* best effort */ }
+                  }}
+                  style={{
+                    height: 24,
+                    padding: "0 9px",
+                    fontSize: 11,
+                    fontWeight: 500,
+                    borderRadius: 5,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                    background: "transparent",
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    color: "var(--m-text-2)",
+                    cursor: "pointer",
+                  }}
+                >
+                  Open browser <ExternalLink size={10} />
+                </button>
+              )}
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--m-text-2)", fontSize: 12 }}>
+              <Loader2 size={13} style={{ animation: "spin 1s linear infinite" }} />
+              Waiting for the device code…
+            </div>
+          )}
+          {deviceCode && (
+            <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--m-text-3)", lineHeight: 1.45 }}>
+              Paste this code into the GitHub tab that just opened, then come back here — we'll continue automatically once you authorize.
+            </div>
+          )}
+        </div>
+      )}
 
       {error && (
         <div style={{
@@ -2098,6 +2233,9 @@ function GithubWidget({
         <button
           onClick={() => {
             pollCancelRef.current.cancelled = true;
+            try { window.electronAPI?.ghAuthLoginCancel?.(); } catch { /* best effort */ }
+            try { ghEventUnsubRef.current?.(); } catch { /* idempotent */ }
+            ghEventUnsubRef.current = null;
             onResult({ skipped: true });
           }}
           disabled={pending !== null}
@@ -2122,8 +2260,7 @@ function GithubWidget({
         {pending === "cli" && (
           <button
             onClick={() => {
-              pollCancelRef.current.cancelled = true;
-              setPending(null);
+              cancelGhCli();
               setError("Stopped waiting for gh auth.");
             }}
             style={{

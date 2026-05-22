@@ -124,14 +124,54 @@ export function SessionToolbar({
   const updateSessionLocal = useAppStore(s => s.updateSession);
   const setDraftField      = useAppStore(s => s.setDraftField);
   const setMessages        = useChatStore(s => s.setMessages);
-  // Are we configuring an in-flight (compose-phase) session right now?
-  // When true, the chip strip writes to the local-only session entry
+  // Are we configuring a not-yet-committed session right now? Two
+  // signals collapse into one boolean:
+  //   • composer.open  — Phase-7 composer is the canonical source; the
+  //                      session doesn't exist in sessions[] yet and
+  //                      its render fields come from chat-view's
+  //                      virtual-session synthesis.
+  //   • legacy local_only — kept for any remaining call sites that
+  //                         still pass a real `sessions[]` row with the
+  //                         old draft flag (none should after Phase 7c
+  //                         but the check is cheap defensiveness).
+  // While isDraft, the chip strip writes to composer / draft state
   // only — NO backend PATCH, NO worktree creation, NO row anywhere —
   // because the session doesn't exist server-side yet. The first user
-  // message will commit it via commitDraft().
+  // message commits it via commitDraft → commitComposer.
   const session = useAppStore(s => s.sessions.find(x => x.id === sessionId));
-  const isDraft = session?.local_only === true;
+  const composerOpen = useAppStore(s => s.composer.open);
+  const isDraft = composerOpen || session?.local_only === true;
   const [openMenu, setOpenMenu] = useState<MenuId>(null);
+
+  // ── git binary presence ──
+  // Same probe new-agent-dialog's WorktreeToggle runs. When git
+  // isn't on PATH, branch + worktree chips become disabled with a
+  // helpful tooltip — every backend git op (init, worktree carve,
+  // Create PR) would hard-fail without it. Forced `use_worktree=false`
+  // below mirrors the dialog's auto-off behaviour so the session
+  // doesn't get persisted with a flag we can't honour.
+  const [gitPresent, setGitPresent] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await window.electronAPI?.hasGit?.();
+        if (!cancelled) setGitPresent(!!r?.ok);
+      } catch {
+        if (!cancelled) setGitPresent(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    if (gitPresent === false && useWorktree) {
+      // Mirror the new-agent-dialog auto-off — never let the session
+      // carry use_worktree=true on a git-less host.
+      if (isDraft) {
+        setDraftField({ use_worktree: false });
+      }
+    }
+  }, [gitPresent, useWorktree, isDraft, setDraftField]);
 
   // ── Git branch chip data ──
   // Reads the picked folder's local + remote branches via the
@@ -323,34 +363,31 @@ export function SessionToolbar({
     catch (e) { console.error("toolbar patch failed:", e); }
   }, [isDraft, setDraftField, sessionId, updateSessionLocal]);
 
-  /** Derive a sensible session title from a folder/repo path so the
-   *  backend's worktree creator gets a real slug to work with.
-   *  Without this, the worktree branch becomes `fleet/new-chat-<id>`
-   *  (the placeholder draft title) instead of e.g.
-   *  `fleet/ai-social-media-agents-<id>`. We patch title and
-   *  project_path in the SAME PATCH so the backend sees the new
-   *  title before it spins up the worktree. */
-  const titleFromPath = (p: string): string => {
-    const name = p.split("/").filter(Boolean).pop() ?? "";
-    if (!name) return "Session";
-    // Strip noisy prefixes/suffixes — clones land at
-    // ~/.fleetify/clones/<name>/, sometimes with a trailing .git slug.
-    return name.replace(/\.git$/, "").trim() || "Session";
-  };
+  // Folder-pick / clone handlers only patch `project_path` now. The
+  // session's title (and therefore the branch name) is derived from
+  // the folder basename downstream — `commitComposer` falls back to
+  // `folderName(projectPath)` when composer.title is the "New chat"
+  // placeholder, and the BranchStrip's `computeBranchName(label, id,
+  // projectPath)` mirrors the same fallback for the planned-branch
+  // label. This way Windows path edge cases (titleFromPath used to
+  // split on `/` only, producing slugs like `fleet/C-Users-Lenovo-
+  // Desktop-foo-…` when run on `C:\Users\Lenovo\Desktop\foo`) live
+  // in one place: `folderName` in `@/lib/utils`, which already
+  // handles both separators.
 
   const pickFolder = useCallback(async () => {
     const w = window as unknown as { electronAPI?: { openFolderDialog?: () => Promise<string | null> } };
     if (w.electronAPI?.openFolderDialog) {
       const p = await w.electronAPI.openFolderDialog();
       if (p) {
-        await patch({ project_path: p, title: titleFromPath(p) });
+        await patch({ project_path: p });
         setOpenMenu(null);
       }
       return;
     }
     const p = window.prompt("Project folder path");
     if (p) {
-      await patch({ project_path: p, title: titleFromPath(p) });
+      await patch({ project_path: p });
       setOpenMenu(null);
     }
   }, [patch]);
@@ -361,7 +398,7 @@ export function SessionToolbar({
     setCloning(true); setCloneError(null);
     try {
       const r = await cloneRepository(url);
-      await patch({ project_path: r.path, title: titleFromPath(r.path) });
+      await patch({ project_path: r.path });
       setCloneUrl("");
       setOpenMenu(null);
     } catch (e) {
@@ -705,7 +742,7 @@ export function SessionToolbar({
             {sourceTab === "remote" && (
               <RemoteSshPanel
                 onPick={(remoteUrl) => {
-                  void patch({ project_path: remoteUrl, title: titleFromPath(remoteUrl) });
+                  void patch({ project_path: remoteUrl });
                   setOpenMenu(null);
                 }}
               />
@@ -718,7 +755,7 @@ export function SessionToolbar({
             {sourceTab === "container" && (
               <DockerContainerPanel
                 onPick={(containerUrl) => {
-                  void patch({ project_path: containerUrl, title: titleFromPath(containerUrl) });
+                  void patch({ project_path: containerUrl });
                   setOpenMenu(null);
                 }}
               />
@@ -849,7 +886,13 @@ export function SessionToolbar({
             Both segments individually disable when no folder is
             picked. ── */}
       {(() => {
-        const disabled = !projectPath;
+        // Git missing on the host disables both segments — neither the
+        // branch picker nor the worktree toggle has anything to do
+        // without git. We pass through to the same `disabled` /
+        // `branchDisabled` flags so the rest of the chip's visuals
+        // (opacity, cursor, etc.) just work.
+        const gitMissing = gitPresent === false;
+        const disabled = !projectPath || gitMissing;
         const noRepo = !disabled && !branchesLoading && branches.current === null && branches.local.length === 0;
         const branchDisabled = disabled || noRepo;
         const current = branches.current ?? "—";
@@ -857,12 +900,14 @@ export function SessionToolbar({
         const matchedLocal  = branches.local.filter(b => !filter || b.toLowerCase().includes(filter));
         const matchedRemote = branches.remote.filter(b => !filter || b.toLowerCase().includes(filter));
         const branchTitle =
-          disabled  ? "Pick a folder first to see branches"
+          gitMissing ? "Git not detected — install Git to use branches"
+          : disabled  ? "Pick a folder first to see branches"
           : noRepo  ? "Git unavailable in this folder"
           : branchSwitching ? "Switching branch…"
           : `On '${current}'. Click to switch.`;
         const wtTitle =
-          disabled  ? "Pick a folder first"
+          gitMissing ? "Git not detected — worktrees require Git"
+          : disabled  ? "Pick a folder first"
           : useWorktree
             ? "Working in an isolated worktree — parallel-safe. Click to disable."
             : "Working directly in the project — no worktree. Click to enable.";

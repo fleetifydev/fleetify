@@ -13,15 +13,14 @@ function activeFolder(): string | null {
   return s?.project_path ?? null;
 }
 
-/** Toast helper — push a one-off notification via the app store so the
- *  user sees git/PR action results without requiring a console open. */
+/** Toast helper — the renderer used to push a one-off notification via
+ *  the app store; the notification system has been removed so this
+ *  routes through the console instead. The call sites keep the same
+ *  signature so the surrounding control flow (early returns on failure)
+ *  doesn't need to change. */
 function toast(title: string, summary: string, success: boolean) {
-  useAppStore.getState().pushNotification({
-    id: crypto.randomUUID(),
-    sessionId: useAppStore.getState().activeSessionId ?? "",
-    title, summary, success,
-    timestamp: Date.now(),
-  });
+  const line = `[shortcut] ${title}: ${summary}`;
+  if (success) console.info(line); else console.warn(line);
 }
 
 /**

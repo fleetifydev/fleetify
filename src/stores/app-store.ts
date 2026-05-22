@@ -2,23 +2,17 @@ import { create } from "zustand";
 import type { Session } from "@/types/session";
 import { wsManager } from "@/services/ws-manager";
 import { useChatStore, typeOutAssistantMessage } from "@/stores/chat-store";
+
+/** Sentinel chat-store key used for compose-time messages (welcome
+ *  typewriter, "pick a folder" warnings, etc.). The composer doesn't
+ *  have a session id yet, so these messages live under this fixed key
+ *  in chat-store. They are NOT migrated to the real session id on
+ *  commitComposer — by design, they're transient compose-mode UX and
+ *  disappear the moment the surface flips to the real session. */
+export const COMPOSER_CHAT_KEY = "__composer__";
 import { createSession as apiCreateSession } from "@/lib/api";
 import { folderName } from "@/lib/utils";
 
-export interface AgentNotification {
-  id: string;
-  sessionId: string;
-  title: string;
-  summary: string;
-  success: boolean;
-  timestamp: number;
-  /** Optional CTA link rendered as a small button beneath the
-   *  summary. Click → shell.openExternal(action.url). Used by
-   *  notifications that benefit from a one-click jump (e.g. the
-   *  auto-branch-push toast's "View on GitHub", or the
-   *  REPO_CREATE_FORBIDDEN error's "Open github.com/new"). */
-  action?: { label: string; url: string };
-}
 
 // View ids for the chat-side panel picker. Matches the Claude Code-
 // style dropdown the user pinned: Preview, Diff, Terminal, Files,
@@ -42,27 +36,46 @@ export type WorkspaceView =
   | "editor";
 export type MainView = "fleet" | "workflows" | "marketplace";
 
-/** Draft session — a NOT-YET-PERSISTED chat the user is configuring.
- *  Implemented as a regular `Session` entry in `sessions[]` carrying
- *  `local_only: true`. Lives entirely in renderer state: zero DB
- *  rows, zero backend calls, zero token spend. Promoted to a real
- *  Session row via `commitDraft()` the moment the user fires the
- *  first message — the local-only entry is removed and replaced with
- *  the server-issued one.
+/** Composer state — a NOT-YET-PERSISTED setup screen for a new session.
+ *  Lives entirely in renderer state, OUTSIDE `sessions[]` (it isn't a
+ *  session — a session only exists after `commitComposer` creates the
+ *  backend row). While the composer is open, `activeSessionId` is null
+ *  and chat-view renders the compose surface (welcome typewriter +
+ *  folder picker + chat input bound to composer fields). On first send,
+ *  `commitComposer` calls `apiCreateSession`, sets `activeSessionId` to
+ *  the new id, closes the composer, and lets the caller fire the first
+ *  user message over the WS.
  *
- *  Why a flag on Session vs. a separate "draft" singleton: pre-2026
- *  this lived as `draft: DraftSession | null` with a `draft-<random>`
- *  id prefix used as the discriminator. Every backend-touching
- *  surface (WS subscribe, /detail poll, history fetch, infinite
- *  scroll) had to remember to early-out on `id.startsWith("draft-")`,
- *  and two of them forgot, spamming 404s every 8s. Folding the draft
- *  into `sessions[]` with an explicit `local_only` flag means the
- *  discriminator IS session data — derivable, greppable, robust to
- *  the chip-strip writing real values (project_path, claude_session_id)
- *  onto a draft before commit.
- *
- *  Backwards-compat alias only — callers of `setDraftField` accept
- *  this shape; new code should reach for `Partial<Session>`. */
+ *  Why composer-state vs the old "draft session in sessions[]" pattern:
+ *  the old shape (`local_only: true` flag on a Session row) created a
+ *  phantom session entity that every backend-touching surface had to
+ *  remember to skip — WS subscribe, /detail poll, history fetch, etc.
+ *  A miss anywhere produced "Forbidden or not found" errors that
+ *  leaked into the compose UI, surfacing a Create PR button before the
+ *  session existed. With the composer split out, "session" always means
+ *  "real backend-backed row," and the WS multiplex never sees the
+ *  compose surface at all. */
+export interface ComposerState {
+  open: boolean;
+  projectPath: string;
+  tool: Session["tool"];
+  /** Default model to seed the new session with — same shape the
+   *  backend expects in `SessionCreate.model_name`. */
+  modelName: string | null;
+  permissionMode: Session["permission_mode"];
+  useWorktree: boolean;
+  /** Title the user has typed (or "New chat" placeholder). commitComposer
+   *  treats the placeholder as "user didn't customise the title" and
+   *  falls back to the folder basename, matching the legacy contract. */
+  title: string;
+  /** Pre-seeded `--resume` target if the user picked one from History
+   *  before sending the first message. */
+  claudeSessionId: string | null;
+}
+
+/** @deprecated kept only so external imports (tests, callers that
+ *  unwrap the patch object) continue to compile. New code should
+ *  reach for `Partial<ComposerState>` or `Partial<Session>` directly. */
 export type DraftSession = Partial<Session>;
 /** Right-panel surface — "hub" stays the operations center (vision: always
  *  reachable); "workspace" is the per-agent file/diff/terminal drill-down. */
@@ -154,9 +167,13 @@ interface AppState {
   openFilePath: string | null;
   mainView: MainView;
   newAgentDialogOpen: boolean;
-  notifications: AgentNotification[];
   fleetAutoMode: boolean;
   _removedIds: Set<string>;
+  /** Compose surface state — see ComposerState docs. `open: false` means
+   *  the user is either on the Control Center (`activeSessionId === null`)
+   *  or in a real session (`activeSessionId !== null`); `open: true` AND
+   *  `activeSessionId === null` is the compose mode. */
+  composer: ComposerState;
 
   setSessions: (sessions: Session[]) => void;
   addSession: (session: Session) => void;
@@ -204,24 +221,40 @@ interface AppState {
   setRightPanelTab: (tab: RightPanelTab) => void;
   setMainView: (view: MainView) => void;
   setNewAgentDialogOpen: (open: boolean) => void;
-  /** Begin a new draft session — pure client-side, no DB write.
-   *  Pushes a `local_only: true` entry into `sessions[]` and points
-   *  `activeSessionId` at it so the chat surface renders the compose
-   *  view. The entry stays out of the sidebar list (filtered by
-   *  `local_only`) until commitDraft() swaps it for the real row. */
-  beginDraft: () => Promise<void>;
-  /** Patch fields on the currently-active local-only session. No-op
-   *  when there isn't one. Used by the chip strip to settle folder /
-   *  tool / model / permission / claude_session_id during compose. */
-  setDraftField: (patch: Partial<Session>) => void;
-  /** Promote the active local-only session into a real backend row.
+  /** Open the compose surface — pure client-side, no DB write, no
+   *  Session entry in `sessions[]`. Sets `composer.open = true` and
+   *  `activeSessionId = null`; chat-view detects the combination and
+   *  renders the compose UI (welcome typewriter + chat input bound to
+   *  composer fields). The session itself only comes into existence
+   *  when `commitComposer` runs on first send. */
+  openComposer: () => Promise<void>;
+  /** Patch fields on the open composer. No-op when the composer is
+   *  closed. Used by the chip strip to settle folder / tool / model /
+   *  permission / claudeSessionId during compose. */
+  setComposerField: (patch: Partial<ComposerState>) => void;
+  /** Promote the open composer into a real backend session row.
    *  Returns the new server-issued id so the caller can fire the
-   *  first message through the WS, or null on failure. Removes the
-   *  local-only entry from `sessions[]` and updates activeSessionId. */
+   *  first message through the WS, or null on failure. Closes the
+   *  composer and points activeSessionId at the new row. */
+  commitComposer: () => Promise<string | null>;
+  /** Throw the open composer away (user clicked Back / closed Settings
+   *  / switched to a real session). No-op when the composer is closed. */
+  closeComposer: () => void;
+
+  // ── Legacy draft API — thin aliases over the composer ──
+  // The old "draft session in sessions[]" model has been retired (see
+  // ComposerState docs). These wrappers translate the old call sites
+  // (App.tsx, use-keyboard-shortcuts, app-shell, sidebar, …) to the
+  // composer actions so we don't have to flag-day every consumer at
+  // once. New code should reach for the openComposer/etc. surface
+  // directly; these will be removed once the call sites are migrated.
+  /** @deprecated use `openComposer` */
+  beginDraft: () => Promise<void>;
+  /** @deprecated use `setComposerField` (patch is mapped from Session shape) */
+  setDraftField: (patch: Partial<Session>) => void;
+  /** @deprecated use `commitComposer` */
   commitDraft: () => Promise<string | null>;
-  /** Throw the active local-only session away (user clicked Back /
-   *  closed Settings / switched to a real session). No-op when there
-   *  isn't one. */
+  /** @deprecated use `closeComposer` */
   discardDraft: () => void;
   /** First-launch variant: same draft session, but the assistant's
    *  opening line is a personal "welcome to Fleet" instead of the
@@ -267,13 +300,9 @@ interface AppState {
   paneSetWorkspaceView: (sessionId: string, view: WorkspaceView) => void;
   setTranscriptView: (v: AppState["transcriptView"]) => void;
   setTranscriptFontScale: (n: number) => void;
-
-  pushNotification: (n: AgentNotification) => void;
-  dismissNotification: (id: string) => void;
-  clearNotifications: () => void;
 }
 
-export const useAppStore = create<AppState>((set) => ({
+export const useAppStore = create<AppState>((set, get) => ({
   sessions: [],
   activeSessionId: null,
   staffSessionId: localStorage.getItem("fleet:staffSessionId"),
@@ -297,8 +326,17 @@ export const useAppStore = create<AppState>((set) => ({
   openFilePath: null,
   mainView: "fleet",
   newAgentDialogOpen: false,
-  notifications: [],
   fleetAutoMode: localStorage.getItem("fleet:autoMode") === "true",
+  composer: {
+    open: false,
+    projectPath: "",
+    tool: "claude",
+    modelName: null,
+    permissionMode: "default",
+    useWorktree: true,
+    title: "New chat",
+    claudeSessionId: null,
+  },
 
   setSessions: (sessions) => set({ sessions }),
 
@@ -325,7 +363,6 @@ export const useAppStore = create<AppState>((set) => ({
         _removedIds: removed,
         sessions: state.sessions.filter((s) => s.id !== id),
         activeSessionId: state.activeSessionId === id ? null : state.activeSessionId,
-        notifications: state.notifications.filter((n) => n.sessionId !== id),
       };
     });
   },
@@ -360,17 +397,41 @@ export const useAppStore = create<AppState>((set) => ({
 
   setActiveSession: (id) =>
     set((state) => {
+      // ANY explicit navigation closes the composer — clicking a
+      // session row, the Fleet hub button (id=null), the command
+      // palette, etc. The compose surface is an explicit user mode,
+      // not a passive fallback; once the user goes anywhere else they
+      // mean to leave it. Without this clamp, opening "New session"
+      // then clicking the Fleet rail button traps the user on the
+      // compose surface instead of the Fleet hub.
+      if (state.composer.open) {
+        try { useChatStore.getState().clearSession(COMPOSER_CHAT_KEY); } catch { /* noop */ }
+      }
+      // Staff Agent IS the Fleet hub. If the user somehow lands on
+      // a click that targets the staff session id (sidebar row that
+      // slipped past the filter, command-palette match, etc.), route
+      // it to Fleet hub instead of rendering the staff as a regular
+      // agent surface. Staff was never meant to be a navigable
+      // session — it's an execution context for the hub UI.
+      const targetId = id && state.staffSessionId && id === state.staffSessionId ? null : id;
       // When in split mode, "set active" updates the focused pane's
       // session rather than the global activeSessionId — the user's
       // mental model is "I clicked a session in the sidebar, put it
       // in the pane I'm looking at".
-      if (state.splitPaneIds.length > 1 && id) {
+      if (state.splitPaneIds.length > 1 && targetId) {
         const idx = Math.min(state.focusedPaneIdx, state.splitPaneIds.length - 1);
         const next = state.splitPaneIds.slice();
-        next[idx] = id;
-        return { activeSessionId: id, splitPaneIds: next };
+        next[idx] = targetId;
+        return {
+          activeSessionId: targetId,
+          splitPaneIds: next,
+          composer: { ...state.composer, open: false },
+        };
       }
-      return { activeSessionId: id };
+      return {
+        activeSessionId: targetId,
+        composer: { ...state.composer, open: false },
+      };
     }),
 
   // ── Split-pane actions ──
@@ -657,161 +718,151 @@ export const useAppStore = create<AppState>((set) => ({
   // Routines / Marketplace don't have a session-scoped right panel to
   // show, so leaving it open just steals horizontal space from those
   // pages. Fleet view preserves the existing rightPanelOpen state.
-  setMainView: (view) => set((state) => ({
-    mainView: view,
-    activeSessionId: view === "fleet" ? null : state.activeSessionId,
-    rightPanelOpen: view === "fleet" ? state.rightPanelOpen : false,
-  })),
+  setMainView: (view) => {
+    // Same composer-closing semantics as setActiveSession: navigating
+    // to any main view (Fleet hub, Workflows, Marketplace) is an
+    // explicit "leave compose mode" signal.
+    if (get().composer.open) {
+      try { useChatStore.getState().clearSession(COMPOSER_CHAT_KEY); } catch { /* noop */ }
+    }
+    set((state) => ({
+      mainView: view,
+      activeSessionId: view === "fleet" ? null : state.activeSessionId,
+      rightPanelOpen: view === "fleet" ? state.rightPanelOpen : false,
+      composer: { ...state.composer, open: false },
+    }));
+  },
   setNewAgentDialogOpen: (open) => set({ newAgentDialogOpen: open }),
-  beginDraft: async () => {
-    // Pure client-side draft — NO DB write, NO backend call, NO
-    // token spend. The chip strip above the chat input mutates this
-    // object until the user fires the first message, at which point
-    // commitDraft() turns it into a real Session row.
+  // ── Composer state (new) ──
+  // The compose surface is NOT a session. Opening it sets composer.open
+  // and clears activeSessionId; chat-view renders the welcome / folder
+  // picker / chat input UI from composer fields. A backend Session row
+  // is created only when the user fires their first message
+  // (commitComposer → apiCreateSession). This replaces the old
+  // "local_only draft session in sessions[]" mechanism so the WS layer,
+  // sidebar reconcile, history fetch, /detail poll, etc. never have to
+  // remember to skip a phantom entry.
+  openComposer: async () => {
     let defaultModel = "claude-sonnet-4-6";
+    let defaultProvider: Session["tool"] = "claude";
     try {
       const cfg = await window.electronAPI?.getConfig?.();
       if (cfg?.defaultModel) defaultModel = cfg.defaultModel;
-    } catch { /* keep fallback */ }
-    let defaultProvider = "claude";
-    try {
-      const cfg = await window.electronAPI?.getConfig?.();
-      if (cfg?.defaultProvider) defaultProvider = cfg.defaultProvider;
-    } catch { /* keep fallback */ }
-
-    // Real UUID (matches backend uuid.uuid4() format) so callers
-    // can't accidentally use the id as a "is this a draft?" check —
-    // they MUST look at `session.local_only` instead. crypto.randomUUID
-    // is available in all Electron/Chromium renderers we ship to.
-    const id = crypto.randomUUID();
-    const draftSession: Session = {
-      id,
-      // Placeholder shown in the toolbar / breadcrumb until the user
-      // sends their first message. commitDraft treats this literal as
-      // "user hasn't picked a title" and falls back to folderName.
-      title: "New chat",
-      project_path: "",
-      group_path: "",
-      tool: defaultProvider as Session["tool"],
-      command: "",
-      status: "idle",
-      pinned: false,
-      parent_id: null,
-      worktree_path: null,
-      worktree_branch: null,
-      claude_session_id: null,
-      model_name: defaultModel,
-      permission_mode: "default",
-      session_mode: "interactive",
-      order_idx: 0,
-      created_at: new Date().toISOString(),
-      last_accessed: null,
-      notes: null,
-      use_worktree: true,
-      local_only: true,
-    };
-    set((state) => ({
-      sessions: [...state.sessions, draftSession],
-      activeSessionId: id,           // chat-view picks this up and renders the compose surface
+      if (cfg?.defaultProvider) defaultProvider = cfg.defaultProvider as Session["tool"];
+    } catch { /* keep fallbacks */ }
+    set({
+      composer: {
+        open: true,
+        projectPath: "",
+        tool: defaultProvider,
+        modelName: defaultModel,
+        permissionMode: "default",
+        useWorktree: true,
+        title: "New chat",
+        claudeSessionId: null,
+      },
+      activeSessionId: null,   // chat-view + composer.open == compose surface
       mainView: "fleet",
-      splitPaneIds: [],              // exit split mode while composing
+      splitPaneIds: [],        // exit split mode while composing
       focusedPaneIdx: 0,
-    }));
-
-    // Short typewriter greeting so the chat isn't a blank wall while
-    // the user picks a folder. As soon as project_path lands, the
-    // auto-intro effect in chat-view fires the real first prompt and
-    // removes this placeholder (chat-view:844, removeMessage on
-    // `welcome-${sid}`). Local-only — no WS round-trip, no token cost.
-    const welcomeId = `welcome-${id}`;
-    useChatStore.getState().addMessage(id, {
+    });
+    // Seed the compose-mode welcome typewriter under the sentinel
+    // chat-store key. Anything written here (welcome line, folder
+    // warnings on attempted-send-without-folder, …) is purely
+    // compose-time UX — clearComposer / commitComposer wipe it the
+    // moment the surface flips away.
+    try { useChatStore.getState().clearSession(COMPOSER_CHAT_KEY); } catch { /* noop */ }
+    const welcomeId = `welcome-${COMPOSER_CHAT_KEY}`;
+    useChatStore.getState().addMessage(COMPOSER_CHAT_KEY, {
       id: welcomeId,
       role: "assistant",
       content: [{ type: "text", text: "" }],
       timestamp: new Date().toISOString(),
     });
     typeOutAssistantMessage(
-      id, welcomeId,
+      COMPOSER_CHAT_KEY,
+      welcomeId,
       "Pick a folder above and I'll take a look at the project before you send your first task.",
       14,
     );
   },
 
-  setDraftField: (patch) =>
+  setComposerField: (patch) =>
     set((state) => {
-      const activeId = state.activeSessionId;
-      if (!activeId) return {};
-      // Only the currently-active session is editable via the chip
-      // strip, and only when it's still local-only. Real sessions go
-      // through the normal `updateSession` PATCH path.
-      const idx = state.sessions.findIndex(s => s.id === activeId && s.local_only);
-      if (idx < 0) return {};
-      const next = [...state.sessions];
-      next[idx] = { ...next[idx], ...patch } as Session;
-      return { sessions: next };
+      if (!state.composer.open) return {};
+      return { composer: { ...state.composer, ...patch } };
     }),
 
-  commitDraft: async () => {
-    const state = useAppStore.getState();
-    const activeId = state.activeSessionId;
-    if (!activeId) return null;
-    const draft = state.sessions.find(s => s.id === activeId && s.local_only);
-    if (!draft) return null;
+  commitComposer: async () => {
+    const state = get();
+    const c = state.composer;
+    if (!c.open) return null;
     try {
       // Coerce the "New chat" placeholder back to the folder basename
-      // (or "Session" as a last-resort label). Treating "New chat" as
-      // "user didn't customise the title" mirrors the pre-refactor
-      // contract where draft.title started as "" and the same fallback
-      // ladder kicked in. After the first send, chat-view's send
-      // handler will overwrite this with the message's first 50 chars.
-      const customTitle = draft.title && draft.title !== "New chat"
-        ? draft.title
-        : (draft.project_path
-          ? (folderName(draft.project_path) || "Session")
-          : "New chat");
+      // (or "Session" as a last-resort label) — matches the pre-Phase-7
+      // contract where commitDraft normalised "New chat" the same way.
+      const customTitle = c.title && c.title !== "New chat"
+        ? c.title
+        : (c.projectPath ? (folderName(c.projectPath) || "Session") : "New chat");
       const session = await apiCreateSession({
         title: customTitle,
-        project_path: draft.project_path,
-        tool: draft.tool,
-        permission_mode: draft.permission_mode,
-        model_name: draft.model_name ?? undefined,
-        // Pre-seed --resume target if the user picked one from History.
-        claude_session_id: draft.claude_session_id ?? undefined,
-        use_worktree: draft.use_worktree,
+        project_path: c.projectPath,
+        tool: c.tool,
+        permission_mode: c.permissionMode,
+        model_name: c.modelName ?? undefined,
+        claude_session_id: c.claudeSessionId ?? undefined,
+        use_worktree: c.useWorktree,
       });
-      // The welcome typewriter (and any auto-intro echoes) wrote to
-      // chatStore under the local-only id. That id is about to
-      // disappear — clear its chat slot so we don't leak the
-      // assistant placeholder under a now-orphan key.
-      try { useChatStore.getState().clearSession(draft.id); } catch { /* noop */ }
+      // Wipe compose-time messages (welcome typewriter, folder
+      // warnings, …) before the surface flips to the real session —
+      // they're transient compose-mode UX, not part of the new
+      // session's conversation.
+      try { useChatStore.getState().clearSession(COMPOSER_CHAT_KEY); } catch { /* noop */ }
       set((s) => ({
-        // Replace the local-only entry with the backend-issued one
-        // in-place; the new row has a fresh UUID and no `local_only`
-        // flag, so all the early-out guards naturally release.
-        sessions: s.sessions.map(x => x.id === draft.id ? session : x),
+        sessions: [...s.sessions, session],
         activeSessionId: session.id,
+        composer: { ...s.composer, open: false },
         mainView: "fleet",
       }));
       return session.id;
     } catch (err) {
-      console.error("commitDraft failed:", err);
+      console.error("commitComposer failed:", err);
       return null;
     }
   },
 
-  discardDraft: () =>
-    set((state) => {
-      const activeId = state.activeSessionId;
-      if (!activeId) return {};
-      const draft = state.sessions.find(s => s.id === activeId && s.local_only);
-      if (!draft) return {};
-      try { useChatStore.getState().clearSession(draft.id); } catch { /* noop */ }
-      return {
-        sessions: state.sessions.filter(s => s.id !== draft.id),
-        // Active surface was the discarded draft → fall back to Fleet hub.
-        activeSessionId: null,
-      };
-    }),
+  closeComposer: () => {
+    // Drop any compose-time chat-store entries (welcome / warnings)
+    // so a fresh openComposer doesn't inherit them.
+    try { useChatStore.getState().clearSession(COMPOSER_CHAT_KEY); } catch { /* noop */ }
+    set((state) => ({
+      composer: { ...state.composer, open: false },
+      activeSessionId: state.activeSessionId,
+    }));
+  },
+
+  // ── Legacy draft aliases ──
+  // beginDraft/setDraftField/commitDraft/discardDraft are thin
+  // adapters around the composer actions so existing call sites keep
+  // working without a flag-day migration. The internal mechanism (no
+  // Session row created at "new session" click) is the new one.
+  beginDraft: async () => {
+    await get().openComposer();
+  },
+  setDraftField: (patch) => {
+    // Translate Session-shape keys → ComposerState keys.
+    const c: Partial<ComposerState> = {};
+    if (patch.project_path !== undefined) c.projectPath = patch.project_path;
+    if (patch.tool !== undefined) c.tool = patch.tool;
+    if (patch.model_name !== undefined) c.modelName = patch.model_name ?? null;
+    if (patch.permission_mode !== undefined) c.permissionMode = patch.permission_mode;
+    if (patch.use_worktree !== undefined) c.useWorktree = patch.use_worktree;
+    if (patch.title !== undefined) c.title = patch.title;
+    if (patch.claude_session_id !== undefined) c.claudeSessionId = patch.claude_session_id ?? null;
+    get().setComposerField(c);
+  },
+  commitDraft: async () => get().commitComposer(),
+  discardDraft: () => get().closeComposer(),
 
   createWelcomeSession: async (userName) => {
     // ── Idempotent guard ──
@@ -920,17 +971,4 @@ export const useAppStore = create<AppState>((set) => ({
       localStorage.setItem("fleet:autoMode", String(next));
       return { fleetAutoMode: next };
     }),
-
-  pushNotification: (n) =>
-    set((state) => {
-      // Dedupe by session_id — a new notification for the same agent replaces
-      // the older one, keeping the stack focused on the latest update per agent.
-      const filtered = state.notifications.filter((x) => x.sessionId !== n.sessionId);
-      return { notifications: [n, ...filtered].slice(0, 8) };
-    }),
-
-  dismissNotification: (id) =>
-    set((state) => ({ notifications: state.notifications.filter((n) => n.id !== id) })),
-
-  clearNotifications: () => set({ notifications: [] }),
 }));
