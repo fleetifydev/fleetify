@@ -800,6 +800,7 @@ async fn run_send_flow(
                 cache_w,
                 cost_usd,
                 now_utc,
+                None,
             )
             .await;
         });
