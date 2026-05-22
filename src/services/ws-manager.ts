@@ -330,11 +330,10 @@ class WSManager {
    *  `subscribed` set (covers reconnect after a drop). On close:
    *  flush any buffered deltas back into the store and clear
    *  per-session streaming state for every subscribed session. */
-  private openSharedSocket(): Promise<WebSocket> {
-    return new Promise(async (resolve, reject) => {
-      const ws = await createSessionsWebSocket();
-      this.socket = ws;
-
+  private async openSharedSocket(): Promise<WebSocket> {
+    const ws = await createSessionsWebSocket();
+    this.socket = ws;
+    return new Promise<WebSocket>((resolve, reject) => {
       ws.onopen = () => {
         this.connectPromise = null;
         // Connection landed — wipe the backoff counter so the next

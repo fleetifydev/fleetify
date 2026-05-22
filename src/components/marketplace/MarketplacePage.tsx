@@ -53,7 +53,7 @@ interface QueryState {
 function readQuery(): QueryState {
   const u = new URLSearchParams(window.location.search);
   const tab = u.get("tab");
-  let view: View =
+  const view: View =
     tab === "installed" ? { kind: "installed" }
     : tab === "sources" ? { kind: "sources" }
     : tab === "publish" ? { kind: "publish" }

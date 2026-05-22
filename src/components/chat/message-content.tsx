@@ -172,7 +172,7 @@ function describeShellCommand(cmd: string): string | null {
   // Network / ports
   const lsof = c.match(/lsof\s+-iTCP:(\d+)/);
   if (lsof) return `Checked port ${lsof[1]}`;
-  const curl = c.match(/curl\s+[^|]*?https?:\/\/([^\s\/'"]+)(\/[^\s|'"]*)?/);
+  const curl = c.match(/curl\s+[^|]*?https?:\/\/([^\s/'"]+)(\/[^\s|'"]*)?/);
   if (curl) {
     const host = curl[1];
     const path = curl[2] || "";

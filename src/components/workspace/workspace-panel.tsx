@@ -252,7 +252,6 @@ function TreeItem({ entry, depth, selectedPath, onSelect, gitMap, query, onRefre
   const dim      = ["node_modules","__pycache__",".git"].includes(entry.name);
 
   const matches = !query || entry.name.toLowerCase().includes(query.toLowerCase());
-  if (!matches && !isFolder) return null;
 
   const loadChildren = useCallback(async () => {
     const kids = await apiDir(entry.path);
@@ -265,6 +264,8 @@ function TreeItem({ entry, depth, selectedPath, onSelect, gitMap, query, onRefre
     if (!expanded) await loadChildren();
     setExpanded(v => !v);
   }, [isFolder, expanded, entry, onSelect, loadChildren]);
+
+  if (!matches && !isFolder) return null;
 
   const handleCtx = (e: React.MouseEvent) => {
     e.preventDefault(); e.stopPropagation();
@@ -858,7 +859,7 @@ async function buildEditorExtensions(
           v.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: inp.value })) })
         );
         inp.addEventListener("keydown", (e) => {
-          if (e.key === "Enter") { e.preventDefault(); e.shiftKey ? findPrevious(v) : findNext(v); }
+          if (e.key === "Enter") { e.preventDefault(); if (e.shiftKey) { findPrevious(v); } else { findNext(v); } }
           else if (e.key === "Escape") closeSearchPanel(v);
         });
 

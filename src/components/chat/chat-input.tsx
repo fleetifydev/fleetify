@@ -2566,7 +2566,7 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
             <CreateMenuItem
               icon={<ExternalLink size={12} />}
               label="Open on GitHub"
-              onClick={() => { setCreateMenuOpen(false); folder && git.openPR(folder); }}
+              onClick={() => { setCreateMenuOpen(false); if (folder) git.openPR(folder); }}
             />
           </div>
         )}
