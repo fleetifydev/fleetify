@@ -3,3 +3,4 @@
 
 pub mod direct;
 pub mod registry;
+pub mod weave;

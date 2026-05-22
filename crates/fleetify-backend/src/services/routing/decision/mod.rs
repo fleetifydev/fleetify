@@ -4,3 +4,4 @@
 pub mod builtin;
 pub mod notdiamond;
 pub mod registry;
+pub mod weave;
