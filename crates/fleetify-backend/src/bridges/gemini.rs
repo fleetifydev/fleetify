@@ -260,7 +260,7 @@ impl GeminiBridge {
     /// Lazily spawn `gemini --acp`, run the ACP handshake, and create
     /// the ACP session. Idempotent — first call sets up State, later
     /// calls return immediately.
-    async fn cold_start(&self) -> Result<()> {
+    async fn cold_start(&self, base_url_override: Option<String>) -> Result<()> {
         let mut guard = self.state.lock().await;
         if guard.is_some() {
             return Ok(());
@@ -274,6 +274,9 @@ impl GeminiBridge {
         cmd.arg("--acp").arg("--approval-mode").arg(approval);
         if let Some(m) = &self.model_name {
             cmd.arg("--model").arg(m);
+        }
+        if let Some(ref url) = base_url_override {
+            cmd.env("GEMINI_API_BASE", url);
         }
         // Defensive: even if an older session row still has a `\\?\`-
         // prefixed project_path, strip it before handing the cwd to
@@ -461,10 +464,30 @@ impl GeminiBridge {
         Ok(())
     }
 
-    pub async fn send_message(&self, msg: &str) -> Result<mpsc::Receiver<BridgeEvent>> {
+    pub async fn send_message(
+        &self,
+        msg: &str,
+        ctx: super::BridgeContext,
+    ) -> Result<mpsc::Receiver<BridgeEvent>> {
         self.aborted.store(false, Ordering::SeqCst);
         let (tx, rx) = mpsc::channel::<BridgeEvent>(32);
         let bridge_tx = tx.clone();
+
+        // model_override is not honoured at runtime for the Gemini ACP
+        // bridge: model selection happens through ACP `session/new` or
+        // config — there is no live-swap path. Documented Day-1 limit.
+        if ctx.model_override.is_some() {
+            tracing::warn!(
+                target: "gemini",
+                "Gemini bridge: model_override not supported at runtime (ACP session is already created). Ignoring."
+            );
+        }
+        // base_url_override is applied as GEMINI_API_BASE in the cold
+        // start path (subprocess env). Once the subprocess is up, env
+        // changes don't take effect — this only matters on first turn.
+        if let Some(ref url) = ctx.base_url_override {
+            tracing::debug!(target: "gemini", "Gemini base_url_override request: {url} (only applies on cold start)");
+        }
 
         // Drive the turn on a background task so the caller gets the rx
         // immediately and events flow as they arrive.
@@ -474,7 +497,7 @@ impl GeminiBridge {
         let msg_owned = msg.to_string();
         let needs_cold_start = state_mu.lock().await.is_none();
         let cold_starter = if needs_cold_start {
-            Some(self.cold_start_fut())
+            Some(self.cold_start_fut(ctx.base_url_override.clone()))
         } else {
             None
         };
@@ -620,6 +643,7 @@ impl GeminiBridge {
     // spawned task can drive it without holding the bridge ref.
     fn cold_start_fut(
         &self,
+        base_url_override: Option<String>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> {
         // SAFETY: we only need a clone of fields; the future has 'static lifetime.
         let session_id = self.session_id.clone();
@@ -640,7 +664,7 @@ impl GeminiBridge {
                 aborted: Arc::new(AtomicBool::new(false)),
                 state,
             };
-            bridge.cold_start().await
+            bridge.cold_start(base_url_override).await
         })
     }
 }
@@ -839,6 +863,15 @@ async fn fold_usage_from_prompt_result(result: &Value, acc: &Arc<Mutex<UsageAcc>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn send_message_accepts_bridge_context() {
+        // Compile-only — just construct a default ctx and assert its shape.
+        let ctx = crate::bridges::BridgeContext::default();
+        assert!(ctx.base_url_override.is_none());
+        assert!(ctx.extra_headers.is_empty());
+        assert!(ctx.model_override.is_none());
+    }
 
     #[test]
     fn approval_mapping() {

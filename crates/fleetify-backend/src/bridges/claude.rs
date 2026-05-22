@@ -546,6 +546,7 @@ impl ClaudeBridge {
     pub async fn send_message(
         &self,
         message: &str,
+        ctx: super::BridgeContext,
     ) -> anyhow::Result<tokio::sync::mpsc::Receiver<BridgeEvent>> {
         // Materialize the user's MCP registry to a temp file (when
         // non-empty) so claude spawns those servers alongside its
@@ -567,7 +568,16 @@ impl ClaudeBridge {
             }
             None => None,
         };
-        let cmd = self.build_command(message, mcp_cfg_path.as_deref());
+        let mut cmd = self.build_command(message, mcp_cfg_path.as_deref());
+        // Apply ctx.model_override by injecting `--model <m>` into the
+        // argv. We append (rather than replace any pre-existing
+        // `--model` produced by build_command) — claude CLI accepts a
+        // repeated flag and uses the last value, so this gives the
+        // routing override precedence over the bridge's default.
+        if let Some(ref m) = ctx.model_override {
+            cmd.push("--model".into());
+            cmd.push(m.clone());
+        }
         self.aborted
             .store(false, std::sync::atomic::Ordering::SeqCst);
         let cwd_raw = if self.project_path.is_empty() {
@@ -589,6 +599,9 @@ impl ClaudeBridge {
             .current_dir(&cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(ref url) = ctx.base_url_override {
+            command.env("ANTHROPIC_BASE_URL", url);
+        }
         let mut child = command.spawn()?;
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take();
@@ -678,6 +691,15 @@ impl ClaudeBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn send_message_accepts_bridge_context() {
+        // Compile-only — just construct a default ctx and assert its shape.
+        let ctx = crate::bridges::BridgeContext::default();
+        assert!(ctx.base_url_override.is_none());
+        assert!(ctx.extra_headers.is_empty());
+        assert!(ctx.model_override.is_none());
+    }
 
     #[test]
     fn system_init_emits_init_with_our_session_id() {

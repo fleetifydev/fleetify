@@ -520,7 +520,10 @@ async fn run_send_flow(
         text.clone()
     };
 
-    let mut rx = match any_bridge.send_message(&effective_text).await {
+    let mut rx = match any_bridge
+        .send_message(&effective_text, crate::bridges::BridgeContext::default())
+        .await
+    {
         Ok(rx) => rx,
         Err(e) => {
             send_json(
@@ -1459,7 +1462,10 @@ async fn run_dispatched_task(
         }),
     );
 
-    let mut rx = match any_bridge.send_message(&task).await {
+    let mut rx = match any_bridge
+        .send_message(&task, crate::bridges::BridgeContext::default())
+        .await
+    {
         Ok(rx) => rx,
         Err(e) => {
             let _ = sm.update_status(&pool, &target_id, "error").await;

@@ -12,6 +12,29 @@ pub mod openai;
 
 use std::sync::Arc;
 
+use http::HeaderMap;
+
+/// Per-request override for a bridge. When `None`/empty, the bridge uses
+/// its own construction-time defaults (env vars, hardcoded URLs, etc.).
+/// Populated by the routing orchestrator (Task 16) when intelligent
+/// routing is active.
+#[derive(Debug, Clone, Default)]
+pub struct BridgeContext {
+    /// Overrides the bridge's outbound HTTP base URL.
+    /// HTTP bridges apply directly; CLI bridges translate to env vars
+    /// (`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `GEMINI_API_BASE`).
+    pub base_url_override: Option<String>,
+    /// Extra headers attached to outbound requests. HTTP bridges merge
+    /// these into their request builder; CLI bridges currently ignore
+    /// (CLIs negotiate their own auth).
+    pub extra_headers: HeaderMap,
+    /// Overrides the bridge's model selection. HTTP bridges substitute
+    /// into the request body; Claude CLI passes via `--model`. Codex/
+    /// Gemini CLIs may not honour runtime model override — flag as a
+    /// known limitation but don't block.
+    pub model_override: Option<String>,
+}
+
 /// Tool-dispatch wrapper used by the `/ws/sessions` send flow (parity
 /// with chat.py picking ClaudeBridge / SdkBridge / OpenAIBridge / Gemini
 /// / Codex by `session.tool`). Gemini + Codex are honest deferred stubs
@@ -28,12 +51,13 @@ impl AnyBridge {
     pub async fn send_message(
         &self,
         msg: &str,
+        ctx: BridgeContext,
     ) -> anyhow::Result<tokio::sync::mpsc::Receiver<BridgeEvent>> {
         match self {
-            AnyBridge::Claude(b) => b.send_message(msg).await,
-            AnyBridge::OpenAI(b) => b.send_message(msg).await,
-            AnyBridge::Gemini(b) => b.send_message(msg).await,
-            AnyBridge::Codex(b) => b.send_message(msg).await,
+            AnyBridge::Claude(b) => b.send_message(msg, ctx).await,
+            AnyBridge::OpenAI(b) => b.send_message(msg, ctx).await,
+            AnyBridge::Gemini(b) => b.send_message(msg, ctx).await,
+            AnyBridge::Codex(b) => b.send_message(msg, ctx).await,
         }
     }
     pub async fn abort(&self) {

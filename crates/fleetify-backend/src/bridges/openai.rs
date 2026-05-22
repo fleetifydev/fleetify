@@ -54,7 +54,11 @@ impl OpenAIBridge {
 
     /// Spawn the streaming request → mpsc<BridgeEvent> (init/running/
     /// message_delta*/cost/done). Errors emit `Error` + `Status done`.
-    pub async fn send_message(&self, message: &str) -> anyhow::Result<mpsc::Receiver<BridgeEvent>> {
+    pub async fn send_message(
+        &self,
+        message: &str,
+        ctx: super::BridgeContext,
+    ) -> anyhow::Result<mpsc::Receiver<BridgeEvent>> {
         self.aborted
             .store(false, std::sync::atomic::Ordering::SeqCst);
         let (tx, rx) = mpsc::channel::<BridgeEvent>(256);
@@ -75,13 +79,20 @@ impl OpenAIBridge {
         }
 
         let sid = self.session_id.clone();
-        let model = self.model.clone();
-        let base = self.base_url.clone();
+        let model = ctx
+            .model_override
+            .clone()
+            .unwrap_or_else(|| self.model.clone());
+        let base = ctx
+            .base_url_override
+            .clone()
+            .unwrap_or_else(|| self.base_url.clone());
         let api_key = self.api_key.clone().unwrap();
         let system = self.system_prompt.clone();
         let state = self.state.clone();
         let aborted = self.aborted.clone();
         let msg = message.to_string();
+        let extra_headers = ctx.extra_headers.clone();
 
         tokio::spawn(async move {
             // ── Init (once) ──
@@ -119,13 +130,14 @@ impl OpenAIBridge {
                 "stream": true,
                 "stream_options": {"include_usage": true},
             });
-            let resp = match reqwest::Client::new()
+            let mut req = reqwest::Client::new()
                 .post(&url)
                 .bearer_auth(&api_key)
-                .json(&body)
-                .send()
-                .await
-            {
+                .json(&body);
+            for (k, v) in extra_headers.iter() {
+                req = req.header(k.as_str(), v.as_bytes());
+            }
+            let resp = match req.send().await {
                 Ok(r) => r,
                 Err(e) => {
                     let _ = tx
@@ -354,7 +366,10 @@ mod tests {
         std::env::set_var("OPENAI_API_KEY", "test-key");
         let mut b = OpenAIBridge::new("s1");
         b.base_url = format!("http://{addr}");
-        let mut rx = b.send_message("hi").await.unwrap();
+        let mut rx = b
+            .send_message("hi", super::super::BridgeContext::default())
+            .await
+            .unwrap();
 
         let mut events: Vec<BridgeEvent> = Vec::new();
         while let Some(ev) = rx.recv().await {
@@ -386,5 +401,14 @@ mod tests {
         assert_eq!(cost["output_tokens"], 2);
         assert_eq!(cost["cache_read_tokens"], 1);
         assert!(matches!(events.last(), Some(BridgeEvent::Status { status }) if status == "done"));
+    }
+
+    #[test]
+    fn send_message_accepts_bridge_context() {
+        // Compile-only — just construct a default ctx and assert its shape.
+        let ctx = crate::bridges::BridgeContext::default();
+        assert!(ctx.base_url_override.is_none());
+        assert!(ctx.extra_headers.is_empty());
+        assert!(ctx.model_override.is_none());
     }
 }
