@@ -1900,6 +1900,46 @@ async fn run_dispatched_task(
         .bind(&target_id)
         .execute(&pool)
         .await;
+
+        // Cloud telemetry — same shape as the chat-handle path, with
+        // `routing_decision_id` plumbed through from the dispatch's
+        // RoutingResolution so analytics can join the cost back to the
+        // routing decision that picked the (agent, model). Fire-and-forget
+        // into the outbox; the WS client drains it when it lands.
+        let in_t = usage
+            .get("input_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let out_t = usage
+            .get("output_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let cache_r = usage
+            .get("cache_read_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let cache_w = usage
+            .get("cache_write_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let now_utc = chrono::Utc::now();
+        let cost_model = model_name.clone().unwrap_or_else(|| "unknown".into());
+        let target_id_owned = target_id.clone();
+        let decision_id_for_cost = routing_res.decision_id.clone();
+        tokio::spawn(async move {
+            let _ = crate::services::telemetry::emit_cost(
+                &target_id_owned,
+                &cost_model,
+                in_t,
+                out_t,
+                cache_r,
+                cache_w,
+                cost_usd,
+                now_utc,
+                decision_id_for_cost.as_deref(),
+            )
+            .await;
+        });
     }
     let final_status = if timed_out { "error" } else { "idle" };
     let _ = sm.update_status(&pool, &target_id, final_status).await;

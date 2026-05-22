@@ -321,6 +321,19 @@ impl CodexBridge {
         if let Some(ref url) = ctx.base_url_override {
             tracing::debug!(target: "codex", "Codex base_url_override request: {url} (only applies on cold start)");
         }
+        // CLI subprocess bridges only get the base URL — codex-cli has
+        // no hook for injecting custom HTTP headers into its outbound
+        // calls. Day-1 proxy routing is OpenAI-only via the OpenAI
+        // bridge's reqwest client; for Codex, extra_headers from the
+        // active proxy gateway (e.g. Weave's bearer) are silently
+        // dropped. See the E2E test-plan's "Known Day-1 limitations".
+        if !ctx.extra_headers.is_empty() {
+            tracing::warn!(
+                target: "codex",
+                "codex bridge: extra_headers from active proxy are ignored on CLI subprocess — \
+                 proxy auth headers won't reach the upstream. Day-1 proxy routing is OpenAI-only."
+            );
+        }
 
         let session_id = self.session_id.clone();
         let state_mu = self.state.clone();

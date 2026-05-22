@@ -227,12 +227,18 @@ pub struct RoutingResolution {
     pub extra_headers: http::HeaderMap,
 }
 
-/// Per-turn routing decision. Three branches:
+/// Per-turn routing decision. Three branches, evaluated in this order:
 /// 1. Session has BOTH `pinned_agent` and `pinned_model` set → reuse them.
 ///    No `route()` call, no DB write. `decision_id` carries the session's
-///    existing `routing_decision_id` if any.
-/// 2. Orchestrator is disabled → use the caller-supplied `manual_tool` +
-///    `manual_model` (`session.tool` / `session.model_name`). No DB write.
+///    existing `routing_decision_id` if any. **This branch runs FIRST,
+///    regardless of `routing.enabled()`** — toggling the master switch
+///    OFF mid-session must not "unpin" an already-routed session, or the
+///    user would see their agent/model swap to the manual fields under
+///    them. The pin is per-session sticky; the master toggle only gates
+///    *new* routing decisions.
+/// 2. Orchestrator is disabled AND no pin → use the caller-supplied
+///    `manual_tool` + `manual_model` (`session.tool` / `session.model_name`).
+///    No DB write.
 /// 3. Orchestrator enabled and session has no pin → call `route()`, insert
 ///    a `routing_decisions` row, UPDATE the session's `pinned_*` columns,
 ///    emit a `routing_decision` telemetry event, return the new id.
@@ -252,6 +258,10 @@ pub async fn resolve_routing_for_turn(
     let pin = load_session_pin(pool, session_id).await;
 
     // Branch 1: existing pin — sticky for the session lifetime.
+    // MUST be checked before `routing.enabled()`: a session pinned by an
+    // earlier routed turn keeps its (agent, model) even if the user
+    // toggles auto-routing OFF mid-session. Unit-tested by
+    // `pin_survives_routing_disabled` below.
     if let (Some(agent_str), Some(model)) = (pin.agent.as_deref(), pin.model.as_deref()) {
         let agent = str_to_agent_kind(agent_str).unwrap_or(AgentKind::Claude);
         return RoutingResolution {
@@ -264,7 +274,9 @@ pub async fn resolve_routing_for_turn(
         };
     }
 
-    // Branch 2: orchestrator master toggle off.
+    // Branch 2: orchestrator master toggle off AND no pin → pass through
+    // to the user's manual selection. (A pinned session does NOT reach
+    // this branch — see comment on Branch 1.)
     if !routing.enabled() {
         let agent = str_to_agent_kind(manual_tool).unwrap_or(AgentKind::Claude);
         return RoutingResolution {
@@ -698,5 +710,78 @@ mod tests {
             assert_eq!(str_to_agent_kind(agent_kind_to_str(a)), Some(a));
         }
         assert_eq!(str_to_agent_kind("bogus"), None);
+    }
+
+    /// Regression: pinned session keeps its (agent, model) even when the
+    /// master routing toggle is OFF. The pin check MUST run before the
+    /// `routing.enabled()` check in `resolve_routing_for_turn`, otherwise
+    /// toggling routing OFF mid-session would silently swap the user's
+    /// agent/model to the manual fields (`session.tool` / `model_name`).
+    #[tokio::test]
+    async fn pin_survives_routing_disabled() {
+        use crate::services::routing::traits::{TaskFlow, WorkspaceHints};
+        let pool = init_pool("sqlite::memory:").await.unwrap();
+        // Seed a session with manual fields set to ONE thing and the
+        // routed pin set to ANOTHER, so we can tell which branch fired.
+        sqlx::query(
+            "INSERT INTO sessions (id, title, project_path, group_path, tool, model_name, command, status, \
+             permission_mode, session_mode, pinned, order_idx, created_at, budget_used) \
+             VALUES ('s-pin','t','/p','','claude','claude-haiku-4-5','','idle','default','new',0,0,'2026-01-01',0.0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        insert_routing_decision(
+            &pool,
+            "d-pin",
+            "chat",
+            Some("s-pin"),
+            "openai",
+            "gpt-4o",
+            "builtin",
+            "rat",
+            5,
+            false,
+            None,
+            "[]",
+            1_700_000_100,
+        )
+        .await
+        .unwrap();
+        // Pin to a DIFFERENT (agent, model) than the manual fields.
+        pin_session(&pool, "s-pin", "openai", "gpt-4o", "d-pin")
+            .await
+            .unwrap();
+
+        // Orchestrator with routing DISABLED.
+        let orch = RoutingOrchestrator::with_empty_defaults(false);
+        assert!(!orch.enabled());
+
+        let task = RoutingTask {
+            flow: TaskFlow::Chat {
+                session_id: "s-pin".into(),
+            },
+            user_prompt: "hi".into(),
+            conversation_history: None,
+            workspace_context: WorkspaceHints::default(),
+            user_hint: None,
+            allowed_agents: vec![AgentKind::Claude],
+            budget_remaining: None,
+        };
+        let res = resolve_routing_for_turn(
+            &pool,
+            &orch,
+            "s-pin",
+            "claude",                 // manual tool — must be IGNORED
+            Some("claude-haiku-4-5"), // manual model — must be IGNORED
+            task,
+        )
+        .await;
+        // Pin wins, NOT the manual fields. This proves Branch 1 ran
+        // before the `routing.enabled()` check.
+        assert_eq!(res.agent, AgentKind::OpenAI);
+        assert_eq!(res.model, "gpt-4o");
+        assert_eq!(res.decision_id.as_deref(), Some("d-pin"));
+        assert!(!res.freshly_routed);
     }
 }

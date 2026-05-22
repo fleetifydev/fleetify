@@ -11,8 +11,9 @@ use crate::services::routing::decision::registry::DecisionRouterRegistry;
 use crate::services::routing::proxy::registry::ProxyGatewayRegistry;
 use crate::services::routing::traits::{
     AgentCandidate, AgentKind, DecisionRouter, DecisionSource, ProviderKind, ProxyGateway,
-    RouterDecision, RoutingTask,
+    RouterDecision, RouterError, RoutingTask,
 };
+use crate::services::telemetry::{emit_routing_failure, RoutingFailureKind};
 
 pub struct RoutingOrchestrator {
     decision: Arc<RwLock<DecisionRouterRegistry>>,
@@ -98,28 +99,84 @@ impl RoutingOrchestrator {
             };
         }
 
-        // External primary: race against 2s timeout.
+        // External primary: race against 2s timeout. Capture the
+        // outcome before branching so the fallback arm can map it to a
+        // categorised `RoutingFailureKind` for the cloud telemetry event.
         let primary_id = primary.id().to_string();
         let timeout = Duration::from_millis(self.timeout_ms);
-        match tokio::time::timeout(timeout, primary.recommend(task, candidates)).await {
-            Ok(Ok(d)) => RouteOutcome {
+        let outcome = tokio::time::timeout(timeout, primary.recommend(task, candidates)).await;
+
+        if let Ok(Ok(d)) = outcome {
+            return RouteOutcome {
                 decision: d,
                 latency_ms: elapsed_ms(started),
                 fallback_used: false,
                 primary_router_id: Some(primary_id),
-            },
-            Ok(Err(_)) | Err(_) => {
-                let d = builtin
-                    .recommend(task, candidates)
-                    .await
-                    .unwrap_or_else(|_| fallback_default(task));
-                RouteOutcome {
-                    decision: d,
-                    latency_ms: elapsed_ms(started),
-                    fallback_used: true,
-                    primary_router_id: Some(primary_id),
-                }
+            };
+        }
+
+        // Fallback path. Categorise the failure for telemetry: the outer
+        // `Err(_)` is `tokio::time::Elapsed` (the 2s deadline), while
+        // `Ok(Err(RouterError::*))` is the router's own error variant.
+        // `RouterError::Timeout` (self-reported) maps to the same
+        // `RoutingFailureKind::Timeout` as our deadline, since both look
+        // identical from the cloud's perspective. `Internal(_)` is
+        // shoved under `Upstream` rather than introducing a new variant
+        // — the analytics chart doesn't differentiate, and adding a
+        // variant churns the wire format. Day-1 narrow set is fine.
+        let (failure_kind, error_message) = match &outcome {
+            Err(_) => (
+                RoutingFailureKind::Timeout,
+                format!("deadline {}ms elapsed", self.timeout_ms),
+            ),
+            Ok(Err(RouterError::Network(s))) => (RoutingFailureKind::Network, s.clone()),
+            Ok(Err(RouterError::Upstream(s))) => (RoutingFailureKind::Upstream, s.clone()),
+            Ok(Err(RouterError::InvalidResponse(s))) => {
+                (RoutingFailureKind::InvalidResponse, s.clone())
             }
+            Ok(Err(RouterError::Auth)) => (RoutingFailureKind::Auth, "auth failed".into()),
+            Ok(Err(RouterError::NotConfigured)) => (
+                RoutingFailureKind::NotConfigured,
+                "router not configured".into(),
+            ),
+            Ok(Err(RouterError::Timeout(ms))) => (
+                RoutingFailureKind::Timeout,
+                format!("router self-reported timeout after {ms}ms"),
+            ),
+            Ok(Err(RouterError::Internal(s))) => {
+                (RoutingFailureKind::Upstream, format!("internal: {s}"))
+            }
+            Ok(Ok(_)) => unreachable!("handled by the early return above"),
+        };
+        let elapsed = elapsed_ms(started);
+        // Fire-and-forget telemetry; the outbox swallows errors when
+        // not initialised (NOAUTH mode). `user_visible=false`: Day-1
+        // doesn't surface a banner — the fallback is transparent.
+        let fallback_to = builtin.id().to_string();
+        let primary_for_event = primary_id.clone();
+        let error_msg_owned = error_message;
+        tokio::spawn(async move {
+            let _ = emit_routing_failure(
+                &primary_for_event,
+                failure_kind,
+                Some(&fallback_to),
+                false,
+                elapsed,
+                &error_msg_owned,
+                chrono::Utc::now(),
+            )
+            .await;
+        });
+
+        let d = builtin
+            .recommend(task, candidates)
+            .await
+            .unwrap_or_else(|_| fallback_default(task));
+        RouteOutcome {
+            decision: d,
+            latency_ms: elapsed_ms(started),
+            fallback_used: true,
+            primary_router_id: Some(primary_id),
         }
     }
 

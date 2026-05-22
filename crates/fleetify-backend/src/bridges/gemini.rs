@@ -488,6 +488,19 @@ impl GeminiBridge {
         if let Some(ref url) = ctx.base_url_override {
             tracing::debug!(target: "gemini", "Gemini base_url_override request: {url} (only applies on cold start)");
         }
+        // CLI subprocess bridges only get the base URL — gemini-cli has
+        // no hook for injecting custom HTTP headers into its outbound
+        // calls. Day-1 proxy routing is OpenAI-only; for Gemini, any
+        // extra_headers from the active proxy gateway (e.g. Weave's
+        // bearer) are silently dropped. See the E2E test-plan's
+        // "Known Day-1 limitations" section.
+        if !ctx.extra_headers.is_empty() {
+            tracing::warn!(
+                target: "gemini",
+                "gemini bridge: extra_headers from active proxy are ignored on CLI subprocess — \
+                 proxy auth headers won't reach the upstream. Day-1 proxy routing is OpenAI-only."
+            );
+        }
 
         // Drive the turn on a background task so the caller gets the rx
         // immediately and events flow as they arrive.

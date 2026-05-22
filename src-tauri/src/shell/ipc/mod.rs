@@ -1410,6 +1410,17 @@ pub async fn routers_list_routers(app: tauri::AppHandle) -> serde_json::Value {
     let cfg = config::load_config_from(&dir);
     let routing = config::routing_from(&cfg);
 
+    // TODO(v1.1): replace this hardcoded list with a query against the
+    // live `RoutingOrchestrator`'s `DecisionRouterRegistry::list()` and
+    // `ProxyGatewayRegistry::list()`. The orchestrator owns the source
+    // of truth for which routers are actually registered, but it lives
+    // inside the embedded backend process and isn't directly reachable
+    // from this Tauri IPC layer — fixing this requires a backend HTTP
+    // endpoint (e.g. `GET /api/routing/registered`) and an internal
+    // fetch from here. Day-1 simplification: keep the list in sync with
+    // the four known routers + the direct gateway. See
+    // `docs/superpowers/test-plans/2026-05-22-provider-router-e2e.md`
+    // "Known Day-1 limitations" for the user-facing caveat.
     let known: &[(&'static str, &'static str, &'static [&'static str])] = &[
         ("builtin", "Built-in (Fleetify)", &["decision"]),
         ("notdiamond", "Not Diamond", &["decision"]),

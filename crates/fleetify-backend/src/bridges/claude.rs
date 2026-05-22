@@ -602,6 +602,23 @@ impl ClaudeBridge {
         if let Some(ref url) = ctx.base_url_override {
             command.env("ANTHROPIC_BASE_URL", url);
         }
+        // CLI subprocess bridges only get the base URL — there is no
+        // mechanism to inject custom HTTP headers into claude-code's
+        // outbound calls. Day-1 proxy routing is OpenAI-only; for the
+        // other agents, extra_headers from the active proxy gateway
+        // (e.g. Weave Router's bearer) are silently dropped here. The
+        // proxy works for unauthenticated routes, but anything that
+        // needs custom auth headers won't reach the upstream. Surface
+        // this as a runtime warn so it's visible in `tracing` logs
+        // when someone is debugging "why isn't my Weave token being
+        // honoured on Claude". E2E test plan documents this limit.
+        if !ctx.extra_headers.is_empty() {
+            tracing::warn!(
+                target: "claude",
+                "claude bridge: extra_headers from active proxy are ignored on CLI subprocess — \
+                 proxy auth headers won't reach the upstream. Day-1 proxy routing is OpenAI-only."
+            );
+        }
         let mut child = command.spawn()?;
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take();
