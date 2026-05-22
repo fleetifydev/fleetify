@@ -31,9 +31,12 @@ use crate::routers::{ApiError, AppState};
 
 pub fn router() -> Router<AppState> {
     // Mounted at `/api/internal` by `http::app`; this router just
-    // adds the `/dispatch` leaf so the final path is
-    // `POST /api/internal/dispatch`.
-    Router::new().route("/dispatch", post(dispatch))
+    // adds the leaf routes so the final paths are
+    // `POST /api/internal/dispatch` and
+    // `POST /api/internal/permission_prompt`.
+    Router::new()
+        .route("/dispatch", post(dispatch))
+        .route("/permission_prompt", post(permission_prompt))
 }
 
 #[derive(Deserialize)]
@@ -205,6 +208,79 @@ async fn dispatch(
     })))
 }
 
+#[derive(Deserialize)]
+struct PermissionPromptBody {
+    caller_session_id: String,
+    tool_name: String,
+    #[serde(default)]
+    input: Value,
+}
+
+/// Loopback endpoint hit by `fleet-permission-mcp` (the stdio MCP
+/// Claude spawns via `--permission-prompt-tool`). Looks up the
+/// in-process PermissionSession for the caller, runs the usual WS
+/// round-trip, and returns the decision in the shape Claude's CLI
+/// expects — a JSON body whose `behavior` field is the source of
+/// truth (`allow` + `updatedInput`, or `deny` + `message`). The
+/// permission-mcp binary forwards this body verbatim as the tool
+/// result's text content.
+async fn permission_prompt(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(b): Json<PermissionPromptBody>,
+) -> Result<Json<Value>, ApiError> {
+    let presented = headers
+        .get("x-fleet-internal")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !constant_time_eq(presented.as_bytes(), st.internal_secret.as_bytes()) {
+        return Err(ApiError::Forbidden("internal-secret mismatch".into()));
+    }
+    let sid = b.caller_session_id.trim();
+    let tool = b.tool_name.trim();
+    if sid.is_empty() || tool.is_empty() {
+        return Err(ApiError::BadRequest(
+            "caller_session_id and tool_name are required".into(),
+        ));
+    }
+
+    // The PermissionSession is registered by chat.rs when the user's
+    // WS opens. If the session never opened a WS — or it already
+    // closed — we have nowhere to surface the dialog, so default to
+    // deny (safer than silently allow). Claude treats `deny` as a
+    // soft refusal and offers the user a chance to retry.
+    let handler = {
+        let guard = st.permission_registry.lock().await;
+        guard.get(sid).cloned()
+    };
+    let Some(handler) = handler else {
+        tracing::warn!(
+            target: "perm",
+            session_id = %sid,
+            tool = %tool,
+            "permission_prompt for unregistered session — denying"
+        );
+        return Ok(Json(json!({
+            "behavior": "deny",
+            "message": "Fleetify chat is not open for this session — open it to approve tools.",
+        })));
+    };
+
+    let approved = handler(tool.to_string(), b.input.clone()).await;
+    if approved {
+        // Pass `input` straight through — we don't rewrite tool args.
+        Ok(Json(json!({
+            "behavior": "allow",
+            "updatedInput": b.input,
+        })))
+    } else {
+        Ok(Json(json!({
+            "behavior": "deny",
+            "message": "User declined this action.",
+        })))
+    }
+}
+
 /// Constant-time byte-slice equality. Tiny implementation — fine for
 /// 32-byte secrets like the loopback token.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -281,6 +357,9 @@ mod tests {
             sm,
             internal_secret: Arc::new(secret.to_string()),
             routing,
+            permission_registry: Arc::new(
+                tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            ),
         };
         let app = axum::Router::new()
             .nest("/api/internal", router())

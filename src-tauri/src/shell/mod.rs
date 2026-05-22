@@ -6,6 +6,7 @@ pub mod ai_git;
 pub mod auth;
 pub mod bearer;
 pub mod config;
+pub mod feedback;
 pub mod git;
 pub mod github_link;
 pub mod github_pr;

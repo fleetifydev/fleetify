@@ -94,6 +94,17 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
     let mut subscribed: HashSet<String> = HashSet::new();
     let bridges: Arc<Mutex<HashMap<String, AnyBridge>>> = Arc::new(Mutex::new(HashMap::new()));
     let streaming: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+    // Per-session permission round-trips. The bridges Codex/Gemini
+    // route their CLI/protocol approval hooks through a closure built
+    // off this PermissionSession; the `permission_response` WS arm
+    // resolves the matching oneshot. On disconnect we
+    // `fail_all_pending` so bridge tasks still parked on receivers
+    // unblock with `denied` instead of leaking forever (same finally
+    // semantics as the Python reference's `permission_futures` cleanup
+    // in `chat.py::handle_websocket`).
+    let permission_sessions: Arc<
+        Mutex<HashMap<String, Arc<crate::bridges::permission::PermissionSession>>>,
+    > = Arc::new(Mutex::new(HashMap::new()));
     // Per-session live fanout tasks. Each subscribed session id gets a
     // forwarder spawned that pulls broadcast::Value events from
     // SessionManager and writes them to this WS's sink. Cancelled on
@@ -199,8 +210,62 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
             }
 
             "permission_response" => {
-                // Phase 2: interactive permission protocol.
-                tracing::debug!("permission_response deferred to Phase 2");
+                // Renderer's permission dialog wired up. Payload shape
+                // (parity with the Electron build):
+                //   { type: "permission_response",
+                //     session_id, id, approved, always, tool_name }
+                // We pop the matching oneshot sender from THIS
+                // session's PermissionSession and resolve it with the
+                // user's decision; `always` adds the tool name to the
+                // session-scoped allow-list so subsequent prompts for
+                // the same tool short-circuit without a round-trip.
+                let sid = v
+                    .get("session_id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let req_id = v
+                    .get("id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let approved = v.get("approved").and_then(|x| x.as_bool()).unwrap_or(false);
+                let always = v.get("always").and_then(|x| x.as_bool()).unwrap_or(false);
+                let tool_name = v
+                    .get("tool_name")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if sid.is_empty() || req_id.is_empty() {
+                    tracing::warn!(
+                        target: "perm",
+                        "permission_response missing session_id or id — ignored"
+                    );
+                    continue;
+                }
+                let session_opt = permission_sessions.lock().await.get(&sid).cloned();
+                if let Some(ps) = session_opt {
+                    if approved && always && !tool_name.is_empty() {
+                        ps.allow_always(&tool_name).await;
+                    }
+                    let resolved = ps.resolve(&req_id, approved).await;
+                    tracing::info!(
+                        target: "perm",
+                        session = %sid,
+                        req_id = %req_id,
+                        approved,
+                        always,
+                        resolved,
+                        "permission_response.local"
+                    );
+                } else {
+                    tracing::warn!(
+                        target: "perm",
+                        session = %sid,
+                        req_id = %req_id,
+                        "permission_response for unknown session — dropped"
+                    );
+                }
             }
 
             "send" => {
@@ -271,13 +336,37 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
                     continue;
                 };
 
+                // Ensure a PermissionSession exists for this id BEFORE
+                // we hand control to the spawned task. The spawned
+                // task may build a bridge that immediately fires a
+                // permission request; a missing entry here would mean
+                // the WS `permission_response` arm couldn't find the
+                // session to resolve.
+                let perm_session = {
+                    let mut map = permission_sessions.lock().await;
+                    map.entry(sid.clone())
+                        .or_insert_with(|| {
+                            Arc::new(crate::bridges::permission::PermissionSession::new())
+                        })
+                        .clone()
+                };
+
                 streaming.lock().await.insert(sid.clone());
                 let st2 = st.clone();
                 let sink2 = sink.clone();
                 let bridges2 = bridges.clone();
                 let streaming2 = streaming.clone();
+                let perm_session2 = perm_session.clone();
                 tokio::spawn(async move {
-                    run_send_flow(st2, sink2, bridges2.clone(), session, user_text).await;
+                    run_send_flow(
+                        st2,
+                        sink2,
+                        bridges2.clone(),
+                        session,
+                        user_text,
+                        perm_session2,
+                    )
+                    .await;
                     streaming2.lock().await.remove(&sid);
                     bridges2.lock().await.remove(&sid);
                 });
@@ -300,6 +389,28 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
     for (_, b) in bridges.lock().await.iter() {
         b.abort().await;
     }
+    // Fail every parked permission prompt so bridge tasks awaiting these
+    // futures unblock with `denied` instead of leaking forever. Same
+    // `finally:` semantics as `permission_futures` cleanup in the
+    // Python reference's `chat.py::handle_websocket`.
+    let drained_sids: Vec<String> = {
+        let mut map = permission_sessions.lock().await;
+        let sids: Vec<String> = map.keys().cloned().collect();
+        for (_, ps) in map.drain() {
+            ps.fail_all_pending().await;
+        }
+        sids
+    };
+    // Drop the loopback registry entries too — without this, a stale
+    // closure (whose captured sink points at a now-closed WS) would
+    // keep accepting calls from fleet-permission-mcp and silently
+    // never reach a user.
+    if !drained_sids.is_empty() {
+        let mut reg = st.permission_registry.lock().await;
+        for sid in drained_sids {
+            reg.remove(&sid);
+        }
+    }
 }
 
 fn sid_list(v: &Value) -> Vec<String> {
@@ -315,12 +426,41 @@ fn sid_list(v: &Value) -> Vec<String> {
 
 /// Persist user msg → spawn ClaudeBridge → stream events (session_id
 /// injected) → accumulate + persist assistant msg + cost + claude_session_id.
+/// Build the bridge-facing `PermissionHandler` for one session.
+///
+/// The returned closure ships `tool_permission_request` payloads via
+/// the WS sink and awaits the matching `permission_response` arm's
+/// resolution. Stamped with `session_id` so the renderer's dialog
+/// (which routes per-session via the chat-store) can correlate.
+fn build_permission_handler(
+    permission_session: &Arc<crate::bridges::permission::PermissionSession>,
+    sink: &Sink,
+    session_id: &str,
+) -> crate::bridges::permission::PermissionHandler {
+    let sink = sink.clone();
+    let sid = session_id.to_string();
+    permission_session.make_handler(move |mut payload| {
+        // Stamp the outbound JSON with session_id so the renderer's
+        // ws-manager routes it to the right per-session permission
+        // store entry. The PermissionSession itself is session-
+        // agnostic; we add the field here at the edge.
+        if let Value::Object(ref mut m) = payload {
+            m.insert("session_id".into(), Value::String(sid.clone()));
+        }
+        let sink = sink.clone();
+        Box::pin(async move {
+            send_json(&sink, payload).await;
+        })
+    })
+}
+
 async fn run_send_flow(
     st: AppState,
     sink: Sink,
     bridges: Arc<Mutex<HashMap<String, AnyBridge>>>,
     session: Session,
     user_text: String,
+    permission_session: Arc<crate::bridges::permission::PermissionSession>,
 ) {
     let sid = session.id.clone();
 
@@ -452,6 +592,20 @@ async fn run_send_flow(
             {
                 b.system_prompt = Some(tpl.system_prompt.to_string());
             }
+            // Claude CLI in default mode stalls on the interactive
+            // prompt when run headless. The MCP at fleet-permission-mcp
+            // gives the CLI a tool to call instead; the binary loops
+            // back through `/api/internal/permission_prompt` to the
+            // handler we register in `permission_registry` just below.
+            // Staff/acceptEdits/bypass paths still skip the dialog.
+            if !is_staff && session.permission_mode == "default" {
+                let handler = build_permission_handler(&permission_session, &sink, &sid);
+                st.permission_registry
+                    .lock()
+                    .await
+                    .insert(sid.clone(), handler.clone());
+                b = b.with_permission_handler(handler);
+            }
             AnyBridge::Claude(Arc::new(b))
         }
         "openai" => {
@@ -463,18 +617,32 @@ async fn run_send_flow(
         }
         "gemini" => {
             let is_staff = session.title == "Staff Agent";
-            AnyBridge::Gemini(Arc::new(GeminiBridge::new(
+            let mut b = GeminiBridge::new(
                 sid.clone(),
                 agent_cwd.clone(),
                 session.permission_mode.clone(),
                 session.model_name.clone(),
                 is_staff,
                 session.agent_template.clone(),
-            )))
+            );
+            // Wire the live permission dialog only when the user opted
+            // into a mode that asks. ACP's `default` is the one mode
+            // that routes through `on_permission_request`; bypass /
+            // dontAsk run autonomously and would never invoke the
+            // callback anyway. Staff sessions skip the dialog entirely
+            // (they only call safe read-only tools).
+            if !is_staff && session.permission_mode == "default" {
+                b = b.with_permission_handler(build_permission_handler(
+                    &permission_session,
+                    &sink,
+                    &sid,
+                ));
+            }
+            AnyBridge::Gemini(Arc::new(b))
         }
         "codex" => {
             let is_staff = session.title == "Staff Agent";
-            AnyBridge::Codex(Arc::new(CodexBridge::new(
+            let mut b = CodexBridge::new(
                 sid.clone(),
                 agent_cwd.clone(),
                 session.permission_mode.clone(),
@@ -482,7 +650,25 @@ async fn run_send_flow(
                 session.effort.clone().unwrap_or_default(),
                 is_staff,
                 session.agent_template.clone(),
-            )))
+            );
+            // Codex V2 surfaces approvals through `on_approval_request`
+            // in every mode except bypass/dontAsk. Mirror the Python
+            // build's gate: install the dialog handler whenever the
+            // user-facing mode could ask. The bridge itself short-
+            // circuits inside the closure when perm_mode is bypass.
+            if !is_staff
+                && !matches!(
+                    session.permission_mode.as_str(),
+                    "bypassPermissions" | "dontAsk"
+                )
+            {
+                b = b.with_permission_handler(build_permission_handler(
+                    &permission_session,
+                    &sink,
+                    &sid,
+                ));
+            }
+            AnyBridge::Codex(Arc::new(b))
         }
         other => {
             send_json(

@@ -372,6 +372,16 @@ pub struct ClaudeBridge {
     /// stdio MCPs (`fleet_reveng` etc.) beyond the baseline
     /// memory+dispatch. Matches `Session.agent_template`.
     pub agent_template: Option<String>,
+    /// When set, this bridge mounts `fleet_permission` (the stdio MCP
+    /// at `fleet-permission-mcp`) and passes
+    /// `--permission-prompt-tool mcp__fleet_permission__permission_prompt`
+    /// so the CLI routes every tool prompt through Fleetify's WS
+    /// dialog instead of stalling in headless mode. Storing the
+    /// handler here is informational only — the actual lookup at
+    /// prompt time happens via the AppState `permission_registry`
+    /// keyed by `session_id`, since the MCP runs in a subprocess and
+    /// can only round-trip through the loopback HTTP endpoint.
+    pub permission_handler: Option<super::permission::PermissionHandler>,
     child: Arc<Mutex<Option<Child>>>,
     aborted: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -389,9 +399,22 @@ impl ClaudeBridge {
             session_mode: "new".into(),
             is_staff: false,
             agent_template: None,
+            permission_handler: None,
             child: Arc::new(Mutex::new(None)),
             aborted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// Attach a Fleetify permission handler. The bridge then injects
+    /// the `fleet_permission` stdio MCP into `--mcp-config` and passes
+    /// `--permission-prompt-tool` so the CLI routes prompts through
+    /// it. Builder shape matches Gemini/Codex bridges.
+    pub fn with_permission_handler(
+        mut self,
+        handler: super::permission::PermissionHandler,
+    ) -> Self {
+        self.permission_handler = Some(handler);
+        self
     }
 
     /// Faithful `_build_command`. `mcp_config_path`, when set, becomes
@@ -464,7 +487,17 @@ impl ClaudeBridge {
                 c.push("--permission-mode".into());
                 c.push("acceptEdits".into());
             }
-            _ => {}
+            _ => {
+                // Default permission mode: when we have a Fleetify
+                // permission handler attached, point the CLI at the
+                // fleet_permission MCP tool so every tool use round-
+                // trips through the renderer dialog instead of
+                // stalling on the CLI's interactive prompt.
+                if self.permission_handler.is_some() && mcp_config_path.is_some() {
+                    c.push("--permission-prompt-tool".into());
+                    c.push("mcp__fleet_permission__permission_prompt".into());
+                }
+            }
         }
         c.push(message.to_string());
         c
@@ -491,11 +524,24 @@ impl ClaudeBridge {
     /// entry can't drop the whole `mcpServers` map and turn every
     /// advertised tool name into a hallucination.
     pub fn build_mcp_config(&self) -> Option<serde_json::Value> {
-        let map = crate::services::mcp_dispatch::build_merged_map(
+        let mut map = crate::services::mcp_dispatch::build_merged_map(
             &self.session_id,
             self.is_staff,
             self.agent_template.as_deref(),
         );
+        // Splice in fleet_permission ONLY when a handler is wired AND
+        // we're in default mode — acceptEdits/bypass skip the prompt
+        // entirely, so mounting an unused MCP just wastes a
+        // subprocess. The MCP itself is keyed by FLEETIFY_SESSION_ID,
+        // so each spawn has its own per-session prompt routing.
+        if self.permission_handler.is_some() && self.permission_mode == "default" {
+            if let Some(cfg) = crate::services::mcp_dispatch::builtin_mcp_config(
+                "fleet_permission",
+                &self.session_id,
+            ) {
+                map.insert("fleet_permission".into(), cfg);
+            }
+        }
         tracing::info!(
             target: "claude",
             session_id = %self.session_id,
@@ -922,6 +968,66 @@ mod tests {
         let c = b.build_command("hi", None);
         assert!(!c.iter().any(|s| s == "--allowedTools"));
         assert!(!c.iter().any(|s| s == "--agents"));
+    }
+
+    #[test]
+    fn permission_handler_in_default_mode_emits_prompt_tool_flag() {
+        // With handler attached + default mode + an mcp config path,
+        // the CLI gets `--permission-prompt-tool mcp__fleet_permission__permission_prompt`
+        // so claude calls the fleet MCP instead of stalling on its
+        // interactive prompt.
+        let handler: super::super::permission::PermissionHandler =
+            std::sync::Arc::new(|_n, _i| Box::pin(async { false }));
+        let b = ClaudeBridge::new("s", "/tmp/x").with_permission_handler(handler);
+        let c = b.build_command("hi", Some("/tmp/mcp.json"));
+        assert!(c.windows(2).any(|w| w
+            == [
+                "--permission-prompt-tool",
+                "mcp__fleet_permission__permission_prompt"
+            ]));
+    }
+
+    #[test]
+    fn no_handler_means_no_prompt_tool_flag() {
+        // The flag must NOT appear when no handler is wired — claude
+        // would otherwise fail with "MCP tool not found".
+        let b = ClaudeBridge::new("s", "/tmp/x");
+        let c = b.build_command("hi", Some("/tmp/mcp.json"));
+        assert!(!c.iter().any(|a| a == "--permission-prompt-tool"));
+    }
+
+    #[test]
+    fn permission_handler_in_accept_edits_mode_skips_prompt_tool_flag() {
+        // acceptEdits handles approvals via the CLI's built-in heuristic
+        // — wiring fleet_permission on top would prompt for every tool
+        // the user wanted auto-approved.
+        let handler: super::super::permission::PermissionHandler =
+            std::sync::Arc::new(|_n, _i| Box::pin(async { false }));
+        let mut b = ClaudeBridge::new("s", "/tmp/x").with_permission_handler(handler);
+        b.permission_mode = "acceptEdits".into();
+        let c = b.build_command("hi", Some("/tmp/mcp.json"));
+        assert!(!c.iter().any(|a| a == "--permission-prompt-tool"));
+    }
+
+    #[test]
+    fn build_mcp_config_splices_fleet_permission_in_default_mode() {
+        let handler: super::super::permission::PermissionHandler =
+            std::sync::Arc::new(|_n, _i| Box::pin(async { false }));
+        let b = ClaudeBridge::new("s", "/tmp/x").with_permission_handler(handler);
+        let cfg = b.build_mcp_config().expect("mcp config must exist");
+        let servers = cfg.get("mcpServers").and_then(|v| v.as_object()).unwrap();
+        assert!(servers.contains_key("fleet_permission"));
+    }
+
+    #[test]
+    fn build_mcp_config_skips_fleet_permission_in_bypass_mode() {
+        let handler: super::super::permission::PermissionHandler =
+            std::sync::Arc::new(|_n, _i| Box::pin(async { false }));
+        let mut b = ClaudeBridge::new("s", "/tmp/x").with_permission_handler(handler);
+        b.permission_mode = "bypassPermissions".into();
+        let cfg = b.build_mcp_config().expect("mcp config must exist");
+        let servers = cfg.get("mcpServers").and_then(|v| v.as_object()).unwrap();
+        assert!(!servers.contains_key("fleet_permission"));
     }
 
     #[test]

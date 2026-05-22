@@ -289,6 +289,7 @@ pub async fn serve_with_routing_setup(
         sm: session_manager::session_manager(),
         internal_secret: internal_secret.clone(),
         routing,
+        permission_registry: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
     // Surface the secret + backend URL through env so MCP processes
     // spawned later (by ClaudeBridge::build_mcp_config) can read them

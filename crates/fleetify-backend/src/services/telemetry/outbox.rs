@@ -28,10 +28,7 @@ CREATE INDEX IF NOT EXISTS telemetry_outbox_enqueued_idx
 static POOL: OnceLock<SqlitePool> = OnceLock::new();
 
 fn outbox_dir() -> PathBuf {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".fleetify")
+    fleetify_core::fleetify_home()
 }
 
 fn outbox_path() -> PathBuf {

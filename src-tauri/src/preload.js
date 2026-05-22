@@ -28,9 +28,15 @@
       }
       return function () { if (unlisten) unlisten(); };
     },
-    // Feedback bridge lands with the github/feedback IPC in a later phase.
-    sendFeedback: function () {
-      return Promise.resolve({ ok: false, error: "not-implemented", status: -1 });
+    // Feedback bridge — POST <issuer>/api/feedback (multipart) via the
+    // `feedback_send` Tauri command. Mirrors the Electron build's
+    // payload shape: { comment, email?, attachments? } where each
+    // attachment is { name, data_url } with a `data:image/…;base64,…`
+    // URL. Resolves to { ok: true, data } on 2xx, { ok: false, error,
+    // code, status, requestId? } on every failure (including the
+    // synthetic NO_BEARER short-circuit when no access token is cached).
+    sendFeedback: function (body) {
+      return invoke("feedback_send", { body: body || {} });
     },
   };
 

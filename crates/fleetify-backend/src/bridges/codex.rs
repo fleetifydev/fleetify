@@ -119,6 +119,13 @@ pub struct CodexBridge {
     /// Builtin template id (e.g. `"reverse_engineering"`) — opts the
     /// session into extra stdio MCPs like `fleet_reveng`.
     pub agent_template: Option<String>,
+    /// Optional bridge-out callback for live tool-permission prompts.
+    /// When set AND the permission mode requires user approval, the
+    /// codex client's `on_approval_request` routes through this handler
+    /// (which the chat router's WS layer wires to the renderer's
+    /// permission dialog). Unset → auto-deny stub (back-compat for
+    /// places that haven't migrated yet).
+    pub permission_handler: Option<super::permission::PermissionHandler>,
     aborted: Arc<AtomicBool>,
     state: Arc<Mutex<Option<State>>>,
 }
@@ -141,9 +148,22 @@ impl CodexBridge {
             effort: effort.into(),
             is_staff,
             agent_template,
+            permission_handler: None,
             aborted: Arc::new(AtomicBool::new(false)),
             state: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Builder-style hook so the chat router can inject the live
+    /// permission callback after construction without bloating `new`'s
+    /// arg list. Returning `Self` lets the caller chain it inline:
+    /// `CodexBridge::new(...).with_permission_handler(handler)`.
+    pub fn with_permission_handler(
+        mut self,
+        handler: super::permission::PermissionHandler,
+    ) -> Self {
+        self.permission_handler = Some(handler);
+        self
     }
 
     async fn cold_start(&self, base_url_override: Option<String>) -> Result<()> {
@@ -236,28 +256,37 @@ impl CodexBridge {
         let client = Arc::new(CodexClient::new());
         client.attach(stdout, stdin).await?;
 
-        // Approval handler: auto-allow when permission_mode is one of
-        // the bypass variants (where the user already opted into "no
-        // prompts"), otherwise deny — the renderer's permission UI for
-        // Codex sessions isn't wired yet so deny is the safe default.
-        // The Python ships a richer renderer-prompt-and-wait flow; that
-        // lands once a renderer permission_handler IPC exists.
+        // Approval handler routing:
+        //   bypassPermissions / dontAsk → auto-allow (user opted out
+        //     of prompts entirely).
+        //   permission_handler set      → ship `(method, params)` to
+        //     the renderer via the WS permission dialog and await the
+        //     decision. Same flow the Python reference's `can_use_tool`
+        //     callback drives.
+        //   neither                     → fall back to auto-deny so
+        //     unwired call sites still fail safely.
         let perm_mode = self.permission_mode.clone();
+        let perm_handler = self.permission_handler.clone();
         client
-            .on_approval_request(Arc::new(move |method: String, _params| {
+            .on_approval_request(Arc::new(move |method: String, params| {
                 let bypass = matches!(perm_mode.as_str(), "bypassPermissions" | "dontAsk");
+                let handler = perm_handler.clone();
                 Box::pin(async move {
                     if bypass {
                         // Approval shape varies per method; the safest
                         // shared shape is `{ decision: "approved" }`.
-                        Ok(serde_json::json!({ "decision": "approved" }))
-                    } else {
-                        tracing::warn!(
-                            target: "codex.approval",
-                            "auto-denied approval for {method} — renderer permission UI not wired"
-                        );
-                        Ok(serde_json::json!({ "decision": "denied" }))
+                        return Ok(serde_json::json!({ "decision": "approved" }));
                     }
+                    if let Some(h) = handler {
+                        let approved = h(method.clone(), params.clone()).await;
+                        let decision = if approved { "approved" } else { "denied" };
+                        return Ok(serde_json::json!({ "decision": decision }));
+                    }
+                    tracing::warn!(
+                        target: "codex.approval",
+                        "auto-denied approval for {method} — no permission_handler wired"
+                    );
+                    Ok(serde_json::json!({ "decision": "denied" }))
                 })
             }))
             .await;
@@ -616,6 +645,7 @@ impl CodexBridge {
         let is_staff = self.is_staff;
         let agent_template = self.agent_template.clone();
         let state = self.state.clone();
+        let permission_handler = self.permission_handler.clone();
         Box::pin(async move {
             let bridge = CodexBridge {
                 session_id,
@@ -627,6 +657,7 @@ impl CodexBridge {
                 agent_template,
                 aborted: Arc::new(AtomicBool::new(false)),
                 state,
+                permission_handler,
             };
             bridge.cold_start(base_url_override).await
         })

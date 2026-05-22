@@ -47,6 +47,17 @@ pub struct AppState {
     /// dispatch flows consult this on every turn (when enabled) to pick
     /// (agent, model) and resolve proxy base URLs / headers.
     pub routing: std::sync::Arc<RoutingOrchestrator>,
+    /// session_id → live PermissionHandler. Populated by chat.rs WS
+    /// handler when a session opens (currently used only by Claude —
+    /// Codex/Gemini bridge their approval hooks in-process). Consumed
+    /// by the fleet-permission-mcp loopback endpoint, which calls the
+    /// handler so the WS dialog round-trip stays the single source of
+    /// truth across bridge types.
+    pub permission_registry: std::sync::Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<String, crate::bridges::permission::PermissionHandler>,
+        >,
+    >,
 }
 
 impl FromRef<AppState> for AuthState {

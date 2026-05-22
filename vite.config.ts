@@ -53,25 +53,23 @@ export default defineConfig({
       },
     },
   },
-  server: {
-    port: 3000,
-    proxy: {
-      "/api": {
-        target: "http://127.0.0.1:8765",
-        changeOrigin: true,
+  // Dev-server + backend ports come from env so the parallel-worktree
+  // helper (`scripts/dev-tauri-wt.mjs`) can boot a second instance on
+  // sibling ports without colliding with the default 3000/8765 pair.
+  server: (() => {
+    const vitePort = Number(process.env.VITE_PORT) || 3000;
+    const backendPort = Number(process.env.FLEETIFY_BACKEND_PORT) || 8765;
+    const httpTarget = `http://127.0.0.1:${backendPort}`;
+    const wsTarget = `ws://127.0.0.1:${backendPort}`;
+    return {
+      port: vitePort,
+      strictPort: true,
+      proxy: {
+        "/api":     { target: httpTarget, changeOrigin: true },
+        "/ws":      { target: wsTarget,   ws: true },
+        "/events":  { target: httpTarget, changeOrigin: true },
+        "/healthz": { target: httpTarget, changeOrigin: true },
       },
-      "/ws": {
-        target: "ws://127.0.0.1:8765",
-        ws: true,
-      },
-      "/events": {
-        target: "http://127.0.0.1:8765",
-        changeOrigin: true,
-      },
-      "/healthz": {
-        target: "http://127.0.0.1:8765",
-        changeOrigin: true,
-      },
-    },
-  },
+    };
+  })(),
 });
