@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Map, Value};
 
-use crate::services::{mcp_registry, mcp_secrets};
+use crate::services::{codex_toml, mcp_registry, mcp_secrets};
 
 /// One Fleet built-in stdio MCP config blob. The basename → binary
 /// mapping moved here so codex/gemini can use the same lookup that
@@ -176,6 +176,86 @@ fn splice_oauth(name: &str, cfg: &Value, secret: Option<&mcp_secrets::McpSecret>
     Ok(Value::Object(spliced))
 }
 
+/// Emit Codex `-c mcp_servers.<n>.<key>=<toml>` args from a merged map.
+/// Mirrors `_registry_to_codex_cli_args` from codex_bridge.py.
+pub fn to_codex_cli_args(map: &BTreeMap<String, Value>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (name, cfg) in map {
+        let Some(obj) = cfg.as_object() else {
+            continue;
+        };
+        let kind = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        match kind {
+            "http" | "sse" | "streamable_http" => {
+                if let Some(url) = obj.get("url").and_then(|v| v.as_str()) {
+                    out.push("-c".into());
+                    out.push(format!(
+                        "mcp_servers.{name}.url={}",
+                        codex_toml::quote(url)
+                    ));
+                }
+                if let Some(headers) = obj.get("headers").and_then(|v| v.as_object()) {
+                    if !headers.is_empty() {
+                        let pairs: Vec<(&str, String)> = headers
+                            .iter()
+                            .filter_map(|(k, v)| {
+                                v.as_str().map(|s| (k.as_str(), s.to_string()))
+                            })
+                            .collect();
+                        if !pairs.is_empty() {
+                            out.push("-c".into());
+                            out.push(format!(
+                                "mcp_servers.{name}.http_headers={}",
+                                codex_toml::inline_table(pairs.iter().map(|(k, v)| (*k, v.as_str())))
+                            ));
+                        }
+                    }
+                }
+            }
+            "stdio" => {
+                if let Some(cmd) = obj.get("command").and_then(|v| v.as_str()) {
+                    out.push("-c".into());
+                    out.push(format!(
+                        "mcp_servers.{name}.command={}",
+                        codex_toml::quote(cmd)
+                    ));
+                }
+                if let Some(arr) = obj.get("args").and_then(|v| v.as_array()) {
+                    let strs: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+                    if !strs.is_empty() {
+                        out.push("-c".into());
+                        out.push(format!(
+                            "mcp_servers.{name}.args={}",
+                            codex_toml::inline_array(strs)
+                        ));
+                    }
+                }
+                if let Some(env) = obj.get("env").and_then(|v| v.as_object()) {
+                    if !env.is_empty() {
+                        let pairs: Vec<(&str, String)> = env
+                            .iter()
+                            .filter_map(|(k, v)| {
+                                v.as_str().map(|s| (k.as_str(), s.to_string()))
+                            })
+                            .collect();
+                        if !pairs.is_empty() {
+                            out.push("-c".into());
+                            out.push(format!(
+                                "mcp_servers.{name}.env={}",
+                                codex_toml::inline_table(pairs.iter().map(|(k, v)| (*k, v.as_str())))
+                            ));
+                        }
+                    }
+                }
+            }
+            _ => {
+                tracing::warn!(target: "mcp_dispatch", name=%name, kind=%kind, "skipping MCP entry with unknown type");
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,5 +403,63 @@ mod tests {
         );
         // FLEETIFY_BACKEND_URL was NOT user-supplied; should be filled in.
         assert!(merged["fleet_custom"]["env"]["FLEETIFY_BACKEND_URL"].is_string());
+    }
+
+    #[test]
+    fn codex_args_emits_http_url_and_headers() {
+        let mut map = BTreeMap::new();
+        map.insert(
+            "github".to_string(),
+            json!({
+                "type": "http",
+                "url": "https://api.example/mcp",
+                "headers": {"Authorization": "Bearer abc"}
+            }),
+        );
+        let args = to_codex_cli_args(&map);
+        assert_eq!(
+            args,
+            vec![
+                "-c", "mcp_servers.github.url=\"https://api.example/mcp\"",
+                "-c", "mcp_servers.github.http_headers={ \"Authorization\" = \"Bearer abc\" }",
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_args_emits_stdio_command_args_env() {
+        let mut map = BTreeMap::new();
+        map.insert(
+            "local".to_string(),
+            json!({
+                "type": "stdio",
+                "command": "node",
+                "args": ["index.js", "--flag"],
+                "env": {"FOO": "bar"}
+            }),
+        );
+        let args = to_codex_cli_args(&map);
+        assert_eq!(
+            args,
+            vec![
+                "-c", "mcp_servers.local.command=\"node\"",
+                "-c", "mcp_servers.local.args=[\"index.js\", \"--flag\"]",
+                "-c", "mcp_servers.local.env={ \"FOO\" = \"bar\" }",
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_args_skips_unknown_type_and_continues() {
+        let mut map = BTreeMap::new();
+        map.insert("weird".to_string(), json!({"type": "telepathy", "url": "x"}));
+        map.insert(
+            "good".to_string(),
+            json!({"type": "http", "url": "https://x"}),
+        );
+        let args = to_codex_cli_args(&map);
+        // Weird is skipped, good still emits.
+        assert!(args.iter().any(|s| s.contains("mcp_servers.good.url")));
+        assert!(!args.iter().any(|s| s.contains("mcp_servers.weird")));
     }
 }
