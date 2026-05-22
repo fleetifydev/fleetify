@@ -50,6 +50,19 @@ pub async fn is_git_repo(path: &str) -> bool {
     rc == 0 && out == "true"
 }
 
+/// Strict variant of `is_git_repo`: true only when the folder owns its
+/// own `.git` (dir for a normal repo, file for a worktree checkout) at
+/// the top level. `is_git_repo` returns true for ANY folder that lives
+/// inside an ancestor repo (e.g. a fresh subfolder under `$HOME` when
+/// `$HOME` is itself a git repo) — which makes `ensure_git_repo` skip
+/// init even though the user explicitly picked this subfolder as their
+/// workspace. The strict check lets us decide based on the user's
+/// intent: this folder is the workspace, so it should be its own repo
+/// root with its own `.fleetify-worktrees/` next to its own `.git`.
+pub fn has_own_git(path: &str) -> bool {
+    Path::new(path).join(".git").exists()
+}
+
 async fn current_branch(path: &str) -> Option<String> {
     let (rc, out, _) = git(&["rev-parse", "--abbrev-ref", "HEAD"], path).await;
     if rc != 0 || out.is_empty() || out == "HEAD" { None } else { Some(out) }
@@ -141,7 +154,15 @@ fn ensure_worktrees_ignored(folder: &Path) {
 }
 
 pub async fn ensure_git_repo(project_path: &str) -> bool {
-    if is_git_repo(project_path).await {
+    // Strict ownership check (`<path>/.git` exists) rather than git's
+    // own "are we inside SOME repo" probe. A folder nested inside an
+    // ancestor repo (e.g. a fresh subfolder under `$HOME` when `$HOME`
+    // itself is a git repo) would pass `is_git_repo` and skip init,
+    // and `ensure_worktree`'s `rev-parse --show-toplevel` would then
+    // create `.fleetify-worktrees/` in the ANCESTOR root — invisible
+    // from the user's folder. The strict check forces a nested init
+    // so the user's picked folder becomes its own repo root.
+    if has_own_git(project_path) {
         return false;
     }
     let (rc, _, _) = git(&["init", "-b", "main"], project_path).await;
@@ -234,6 +255,37 @@ pub async fn ensure_session_branch(
         )));
     }
     Ok(branch)
+}
+
+/// Tear down a session's git worktree at `<source>/.fleetify-worktrees/<id>/`.
+/// `--force` because the user is explicitly deleting the session — any
+/// uncommitted state in the worktree is going away with the session, and
+/// without `--force` the call fails on a dirty checkout. Idempotent:
+/// missing source repo / missing worktree both noop to `true`.
+pub async fn remove_worktree(source_path: &str, worktree_path: &str) -> bool {
+    if source_path.is_empty() || worktree_path.is_empty() {
+        return true;
+    }
+    if !is_git_repo(source_path).await {
+        // Source repo gone — nothing to ask git to clean up; the user
+        // may have deleted the project folder manually.
+        let _ = std::fs::remove_dir_all(worktree_path);
+        return true;
+    }
+    let (rc, _, _) = git(
+        &["worktree", "remove", "--force", worktree_path],
+        source_path,
+    )
+    .await;
+    if rc != 0 {
+        // `git worktree remove` failed (worktree directory missing,
+        // already pruned, locked, …). Fall back to a manual rm so the
+        // session's bytes don't linger on disk, then ask git to clean
+        // its own bookkeeping.
+        let _ = std::fs::remove_dir_all(worktree_path);
+        let _ = git(&["worktree", "prune"], source_path).await;
+    }
+    true
 }
 
 pub async fn ensure_worktree(

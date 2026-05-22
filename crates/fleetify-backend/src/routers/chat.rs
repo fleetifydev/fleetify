@@ -388,9 +388,23 @@ async fn run_send_flow(
 
     // Tool-based bridge selection (parity with chat.py). Gemini/Codex/
     // SdkBridge land later in Phase 2; unknown tool → faithful error.
+    //
+    // `agent_cwd` is the working directory the bridge spawns the CLI
+    // in. When `worktree_path` is populated (use_worktree=true sessions
+    // — see services::worktree::ensure_worktree) we use the worktree
+    // checkout so every file the agent creates, every `git` invocation
+    // it makes, every relative path it resolves lands INSIDE the
+    // session's isolated `.fleetify-worktrees/<id>/` rather than
+    // bleeding into the source repo. Falls back to `project_path` for
+    // in-place sessions (use_worktree=false).
+    let agent_cwd = session
+        .worktree_path
+        .clone()
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| session.project_path.clone());
     let any_bridge: AnyBridge = match session.tool.as_str() {
         "claude" => {
-            let mut b = ClaudeBridge::new(sid.clone(), session.project_path.clone());
+            let mut b = ClaudeBridge::new(sid.clone(), agent_cwd.clone());
             b.claude_session_id = session.claude_session_id.clone();
             b.permission_mode = session.permission_mode.clone();
             b.model_name = session.model_name.clone();
@@ -428,13 +442,13 @@ async fn run_send_flow(
         }
         "gemini" => AnyBridge::Gemini(Arc::new(GeminiBridge::new(
             sid.clone(),
-            session.project_path.clone(),
+            agent_cwd.clone(),
             session.permission_mode.clone(),
             session.model_name.clone(),
         ))),
         "codex" => AnyBridge::Codex(Arc::new(CodexBridge::new(
             sid.clone(),
-            session.project_path.clone(),
+            agent_cwd.clone(),
             session.permission_mode.clone(),
             session.model_name.clone(),
             session.effort.clone().unwrap_or_default(),
@@ -1308,9 +1322,17 @@ async fn run_dispatched_task(
         .update_status(&pool, &target_id, "running")
         .await;
 
+    // Same worktree-aware cwd resolution as the primary chat path.
+    // Dispatched tasks run inside the target's isolated worktree so a
+    // staff-driven build / refactor doesn't bleed into the source repo.
+    let target_cwd = target
+        .worktree_path
+        .clone()
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| target.project_path.clone());
     let any_bridge: AnyBridge = match target.tool.as_str() {
         "claude" => {
-            let mut b = ClaudeBridge::new(target_id.clone(), target.project_path.clone());
+            let mut b = ClaudeBridge::new(target_id.clone(), target_cwd.clone());
             b.claude_session_id = target.claude_session_id.clone();
             b.permission_mode = target.permission_mode.clone();
             b.model_name = target.model_name.clone();
@@ -1334,13 +1356,13 @@ async fn run_dispatched_task(
         }
         "gemini" => AnyBridge::Gemini(std::sync::Arc::new(GeminiBridge::new(
             target_id.clone(),
-            target.project_path.clone(),
+            target_cwd.clone(),
             target.permission_mode.clone(),
             target.model_name.clone(),
         ))),
         "codex" => AnyBridge::Codex(std::sync::Arc::new(CodexBridge::new(
             target_id.clone(),
-            target.project_path.clone(),
+            target_cwd.clone(),
             target.permission_mode.clone(),
             target.model_name.clone(),
             target.effort.clone().unwrap_or_default(),

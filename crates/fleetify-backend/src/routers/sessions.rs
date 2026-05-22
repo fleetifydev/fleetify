@@ -268,6 +268,14 @@ async fn delete_session(
 ) -> Result<Json<Value>, ApiError> {
     st.sm.stop_session(&st.auth.pool, &id).await?;
     let s = owned(&st, &id, &user.id).await?;
+    // Tear down the session's git worktree (if any) BEFORE removing the
+    // row — once the DB forgets `worktree_path` we can't reconstruct
+    // where to look. The branch itself is intentionally preserved so
+    // the user can resume the work on another machine or by carving a
+    // new session off the same name.
+    if let Some(wt) = s.worktree_path.as_deref() {
+        let _ = crate::services::worktree::remove_worktree(&s.project_path, wt).await;
+    }
     sqlx::query("DELETE FROM sessions WHERE id = ?")
         .bind(&id)
         .execute(&st.auth.pool)

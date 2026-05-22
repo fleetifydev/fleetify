@@ -159,12 +159,44 @@ impl SessionManager {
     /// `fleet/<slug>-<id>` worktree under `<repo>/.fleetify-worktrees/`,
     /// worktree-off → carved (or reused) `fleet/<slug>-<id>` branch in the
     /// main repo. Failures are non-fatal (parity).
+    ///
+    /// Init policy on a non-git folder:
+    ///   • `use_worktree=true`  → eager init. `ensure_worktree` below
+    ///     calls `ensure_git_repo` internally (git init -b main + identity
+    ///     + .gitignore + initial commit) and then carves
+    ///     `.fleetify-worktrees/<id>/` on the carved `fleet/<slug>-<id>`
+    ///     branch. The user explicitly opted in to worktree isolation,
+    ///     so materialising it at session-create time honours that
+    ///     choice and lets multi-session work in the same folder be
+    ///     parallel from the first send.
+    ///   • `use_worktree=false` → deferred. Skip every git op here;
+    ///     the Create-PR dispatcher (`git::create_pr_via_gh` /
+    ///     `ensure_repo_for_link`) materialises init + the first carve
+    ///     when the user actually opens a PR. Avoids littering the
+    ///     folder with a half-empty repo for sessions that never
+    ///     produce a PR.
     pub(crate) async fn attach_git_setup(&self, pool: &SqlitePool, session: &Session) {
         let is_staff = session.title.trim().eq_ignore_ascii_case("staff agent");
         if session.project_path.is_empty() || is_staff {
             return;
         }
         use crate::services::worktree;
+        // Strict "does THIS folder own a .git?" — see worktree::has_own_git.
+        // We deliberately avoid `is_git_repo` here because that returns
+        // true for folders nested inside ancestor repos (e.g. a fresh
+        // subfolder under `$HOME` when `$HOME` is its own repo). The
+        // user picked THIS folder as their workspace; if it doesn't
+        // have its own .git, treat it as a fresh repo regardless of
+        // whatever ancestor lives further up the tree.
+        let folder_owns_git = worktree::has_own_git(&session.project_path);
+        if !folder_owns_git && !session.use_worktree {
+            tracing::info!(
+                session_id=%session.id,
+                project=%session.project_path,
+                "session.git_setup.deferred (no .git, worktree off — will materialise at Create PR)"
+            );
+            return;
+        }
         let label = if session.title.trim().is_empty() {
             "session".to_string()
         } else {
