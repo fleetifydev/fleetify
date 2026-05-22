@@ -13,3 +13,4 @@ src-tauri/gen
 docs/superpowers/
 .playwright-mcp/
 .claude/
+.firecrawl/
