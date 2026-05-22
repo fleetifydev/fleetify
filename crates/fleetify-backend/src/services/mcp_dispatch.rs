@@ -256,6 +256,50 @@ pub fn to_codex_cli_args(map: &BTreeMap<String, Value>) -> Vec<String> {
     out
 }
 
+/// Emit Gemini ACP `mcpServers` array from a merged map. Each entry
+/// gets `name` prefixed; `headers` / `env` get converted from JSON
+/// objects to `[{name, value}]` arrays.
+pub fn to_acp_servers(map: &BTreeMap<String, Value>) -> Value {
+    let mut arr: Vec<Value> = Vec::new();
+    for (name, cfg) in map {
+        let Some(obj) = cfg.as_object() else {
+            continue;
+        };
+        let mut entry = Map::new();
+        entry.insert("name".into(), Value::String(name.clone()));
+        for (k, v) in obj {
+            match k.as_str() {
+                "headers" | "env" => {
+                    let converted = dict_to_name_value_array(v);
+                    entry.insert(k.clone(), converted);
+                }
+                _ => {
+                    entry.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        arr.push(Value::Object(entry));
+    }
+    Value::Array(arr)
+}
+
+fn dict_to_name_value_array(v: &Value) -> Value {
+    let Some(obj) = v.as_object() else {
+        return v.clone();
+    };
+    let arr: Vec<Value> = obj
+        .iter()
+        .map(|(k, v)| {
+            let s = match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            json!({"name": k, "value": s})
+        })
+        .collect();
+    Value::Array(arr)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,5 +505,62 @@ mod tests {
         // Weird is skipped, good still emits.
         assert!(args.iter().any(|s| s.contains("mcp_servers.good.url")));
         assert!(!args.iter().any(|s| s.contains("mcp_servers.weird")));
+    }
+
+    #[test]
+    fn acp_servers_converts_http_headers_to_name_value_array() {
+        let mut map = BTreeMap::new();
+        map.insert(
+            "github".to_string(),
+            json!({
+                "type": "http",
+                "url": "https://api.example/mcp",
+                "headers": {"Authorization": "Bearer abc"}
+            }),
+        );
+        let arr = to_acp_servers(&map);
+        let arr = arr.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["name"], "github");
+        assert_eq!(arr[0]["type"], "http");
+        let headers = arr[0]["headers"].as_array().unwrap();
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0]["name"], "Authorization");
+        assert_eq!(headers[0]["value"], "Bearer abc");
+    }
+
+    #[test]
+    fn acp_servers_converts_stdio_env_to_name_value_array() {
+        let mut map = BTreeMap::new();
+        map.insert(
+            "local".to_string(),
+            json!({
+                "type": "stdio",
+                "command": "node",
+                "args": ["x.js"],
+                "env": {"FOO": "bar"}
+            }),
+        );
+        let arr = to_acp_servers(&map);
+        let arr = arr.as_array().unwrap();
+        assert_eq!(arr[0]["command"], "node");
+        let env = arr[0]["env"].as_array().unwrap();
+        assert_eq!(env[0]["name"], "FOO");
+        assert_eq!(env[0]["value"], "bar");
+    }
+
+    #[test]
+    fn acp_servers_preserves_entries_with_no_headers_or_env() {
+        let mut map = BTreeMap::new();
+        map.insert(
+            "bare".to_string(),
+            json!({"type": "http", "url": "https://x"}),
+        );
+        let arr = to_acp_servers(&map);
+        let arr = arr.as_array().unwrap();
+        assert_eq!(arr[0]["name"], "bare");
+        assert_eq!(arr[0]["url"], "https://x");
+        // No `headers` field present in input → no `headers` field in output.
+        assert!(arr[0].get("headers").is_none());
     }
 }
