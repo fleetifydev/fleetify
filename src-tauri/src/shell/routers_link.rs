@@ -4,10 +4,6 @@
 //! (matches the GitHub-link tile pattern). Secrets never leave the Tauri
 //! main process — renderer hits IPC commands only (Task 19).
 
-// IPC commands that consume these helpers land in Task 19. Allow dead_code
-// in the meantime so `-D warnings` stays clean.
-#![allow(dead_code)]
-
 use keyring::Entry;
 
 const SERVICE_PREFIX: &str = "Fleetify-Router-";

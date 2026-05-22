@@ -115,10 +115,12 @@ mod tests {
     #[test]
     fn routing_section_round_trip() {
         let mut cfg = json!({});
-        let mut r = RoutingConfig::default();
-        r.enabled = true;
-        r.active_decision_router = "notdiamond".into();
-        r.active_proxy_gateway = "weave".into();
+        let mut r = RoutingConfig {
+            enabled: true,
+            active_decision_router: "notdiamond".into(),
+            active_proxy_gateway: "weave".into(),
+            ..Default::default()
+        };
         r.connected_routers.insert(
             "notdiamond".into(),
             ConnectedRouter {
