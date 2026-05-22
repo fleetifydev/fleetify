@@ -910,9 +910,11 @@ mod tests {
 
     #[test]
     fn usage_acc_to_json_shape_matches_python() {
-        let mut acc = UsageAcc::default();
-        acc.input_tokens = 5;
-        acc.output_tokens = 7;
+        let acc = UsageAcc {
+            input_tokens: 5,
+            output_tokens: 7,
+            ..Default::default()
+        };
         let v = acc.to_json();
         assert_eq!(v["input_tokens"], 5);
         assert_eq!(v["output_tokens"], 7);

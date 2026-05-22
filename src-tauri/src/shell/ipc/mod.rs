@@ -389,6 +389,8 @@ pub async fn git_open_pr(folder: String) -> serde_json::Value {
 /// link only, omitted → legacy gh-first / link-fallback. Renderer
 /// pulls the value from `localStorage["fleet:github-auth-method"]`
 /// so the onboarding choice is honoured exactly.
+// 8 args is one over the default 7; refactor to a struct is out of scope for this cleanup.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn git_create_pr(
     folder: String,
@@ -905,12 +907,9 @@ pub async fn gh_auth_login_capture(app: tauri::AppHandle) -> serde_json::Value {
                 Ok(0) => break,
                 Ok(n) => {
                     carry.push_str(&String::from_utf8_lossy(&buf[..n]));
-                    while let Some(idx) = carry.find(|c: char| c == '\n' || c == '\r') {
+                    while let Some(idx) = carry.find(['\n', '\r']) {
                         let raw: String = carry.drain(..=idx).collect();
-                        let line = strip_ansi(
-                            raw.trim_end_matches(|c: char| c == '\n' || c == '\r')
-                                .trim(),
-                        );
+                        let line = strip_ansi(raw.trim_end_matches(['\n', '\r']).trim());
                         if line.is_empty() {
                             continue;
                         }

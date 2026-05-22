@@ -30,7 +30,7 @@ pub fn gemini_project_hash(path: &str) -> String {
         .trim_end_matches('/')
         .trim_end_matches('\\')
         .to_string();
-    let dashed = normalized.replace('\\', "-").replace('/', "-");
+    let dashed = normalized.replace(['\\', '/'], "-");
     dashed.trim_start_matches('-').to_string()
 }
 

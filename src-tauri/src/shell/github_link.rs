@@ -13,7 +13,7 @@
 //!   - `github:disconnect`        → `{ ok }`
 //!   - `github:openInstallation`  → `{ ok }`
 //!   - events: `github-link-changed { link }`,
-//!             `github-link-browser-fallback { url }`
+//!     `github-link-browser-fallback { url }`
 //!
 //! Faithful with the Electron flow: ping `/api/integrations/github/
 //! link/{begin,poll,refresh}` on the Fleetify cloud, supersede earlier

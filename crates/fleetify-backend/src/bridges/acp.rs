@@ -32,6 +32,8 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{oneshot, Mutex};
 
+type PendingMap = HashMap<i64, oneshot::Sender<Result<Value>>>;
+
 /// Handler signature for inbound agent-initiated requests
 /// (session/request_permission, fs/read_text_file, fs/write_text_file).
 /// Must return a JSON-RPC `result` value.
@@ -59,7 +61,7 @@ type DynReader = Pin<Box<dyn tokio::io::AsyncBufRead + Send + Unpin>>;
 
 pub struct AcpClient {
     writer: Arc<Mutex<Option<DynWriter>>>,
-    pending: Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value>>>>>,
+    pending: Arc<Mutex<PendingMap>>,
     handlers: Arc<Mutex<Handlers>>,
     next_id: AtomicI64,
     read_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -267,7 +269,7 @@ async fn write_error(
 
 async fn read_loop(
     mut reader: DynReader,
-    pending: Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value>>>>>,
+    pending: Arc<Mutex<PendingMap>>,
     handlers: Arc<Mutex<Handlers>>,
     writer: Arc<Mutex<Option<DynWriter>>>,
 ) {
@@ -306,7 +308,7 @@ async fn read_loop(
 
 async fn dispatch(
     msg: Value,
-    pending: &Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value>>>>>,
+    pending: &Arc<Mutex<PendingMap>>,
     handlers: &Arc<Mutex<Handlers>>,
     writer: &Arc<Mutex<Option<DynWriter>>>,
 ) {

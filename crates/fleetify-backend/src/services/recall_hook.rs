@@ -149,9 +149,7 @@ pub async fn maybe_build_recall_context(
     session_id: &str,
     project_path: Option<&str>,
 ) -> Option<String> {
-    let Some(pp) = project_path.filter(|s| !s.is_empty()) else {
-        return None;
-    };
+    let pp = project_path.filter(|s| !s.is_empty())?;
     if user_text.trim().is_empty() {
         return None;
     }

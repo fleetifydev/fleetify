@@ -2,6 +2,7 @@
 //!   - auth via ?token=, ping→pong
 //!   - subscribe owned session → init
 //!   - subscribe foreign id → error
+//!
 //! Send→ClaudeBridge flow needs a real CLI and is exercised by manual
 //! e2e in Tauri dev. The fidelity-critical stream-json parser is unit-
 //! tested in `bridges::claude::tests`.
@@ -92,7 +93,7 @@ async fn ws_sessions_subscribe_and_ping() {
             .expect("ws connect");
 
     // ping → pong
-    ws.send(Frame::Text(json!({"type":"ping"}).to_string().into()))
+    ws.send(Frame::Text(json!({"type":"ping"}).to_string()))
         .await
         .unwrap();
     let pong = recv_json(&mut ws).await;
@@ -100,9 +101,7 @@ async fn ws_sessions_subscribe_and_ping() {
 
     // subscribe owned → init
     ws.send(Frame::Text(
-        json!({"type":"subscribe","session_ids":[sid]})
-            .to_string()
-            .into(),
+        json!({"type":"subscribe","session_ids":[sid]}).to_string(),
     ))
     .await
     .unwrap();
@@ -114,8 +113,7 @@ async fn ws_sessions_subscribe_and_ping() {
     // subscribe a bogus id → error scoped to that sid
     ws.send(Frame::Text(
         json!({"type":"subscribe","session_ids":["00000000-0000-0000-0000-000000000000"]})
-            .to_string()
-            .into(),
+            .to_string(),
     ))
     .await
     .unwrap();

@@ -98,10 +98,7 @@ pub fn get(install_id: &str) -> PluginState {
 
 pub fn set_master_enabled(install_id: &str, enabled: bool) -> std::io::Result<()> {
     let mut doc = load();
-    let entry = doc
-        .plugins
-        .entry(install_id.to_string())
-        .or_insert_with(PluginState::default);
+    let entry = doc.plugins.entry(install_id.to_string()).or_default();
     entry.master_enabled = enabled;
     save(&doc)
 }
@@ -116,10 +113,7 @@ pub fn upsert_scope(
     enabled: bool,
 ) -> std::io::Result<()> {
     let mut doc = load();
-    let entry = doc
-        .plugins
-        .entry(install_id.to_string())
-        .or_insert_with(PluginState::default);
+    let entry = doc.plugins.entry(install_id.to_string()).or_default();
     let scope_id_owned = scope_id.map(String::from);
     let pos = entry
         .scopes

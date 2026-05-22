@@ -44,6 +44,7 @@ fn home() -> PathBuf {
 ///      Claude writes this for every project).
 ///   2. `/` → `-` AND `_` → `-` encoding (Claude's current encoding).
 ///   3. `/` → `-` only (older Claude versions kept underscores).
+///
 /// Returns None when the projects root doesn't exist or no candidate
 /// matches — caller treats that as "no resumable sessions".
 pub fn find_claude_project_dir(path: &str) -> Option<PathBuf> {
@@ -80,7 +81,7 @@ pub fn find_claude_project_dir(path: &str) -> Option<PathBuf> {
     }
 
     // ── Strategy 2: '/' and '_' → '-' ──
-    let encoded_both = normalized.replace('/', "-").replace('_', "-");
+    let encoded_both = normalized.replace(['/', '_'], "-");
     let cand = projects_root.join(&encoded_both);
     if cand.is_dir() {
         return Some(cand);

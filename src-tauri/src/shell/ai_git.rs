@@ -11,7 +11,7 @@
 //! same truncation thresholds (30 kB commit diff, 60 kB PR diff,
 //! 50/20 kB committed/working review diffs).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -145,7 +145,7 @@ async fn spawn_session_cli(
     (true, bin.to_string(), stdout, String::new())
 }
 
-async fn git_out(folder: &PathBuf, args: &[&str], timeout: Duration) -> (bool, String) {
+async fn git_out(folder: &Path, args: &[&str], timeout: Duration) -> (bool, String) {
     let (rc, out, _) = git::run("git", args, folder, timeout).await;
     (rc == 0, out)
 }

@@ -5,10 +5,10 @@
 //! classifies what should happen next:
 //!   - `continue`: an obvious next step exists; emit `next_prompt`.
 //!   - `ask`:      agent left a fork or claimed-but-unverified work;
-//!                 emit `question` to surface to the user.
+//!     emit `question` to surface to the user.
 //!   - `done`:     concrete evidence the task finished (tests pass /
-//!                 commit / definitive answer); emit `summary` + the
-//!                 optional structured `sections` block.
+//!     commit / definitive answer); emit `summary` + the
+//!     optional structured `sections` block.
 //!
 //! Degraded path: on parse failure / Haiku breaker open / timeout the
 //! caller gets `decision=ask, degraded=true` so the frontend filters

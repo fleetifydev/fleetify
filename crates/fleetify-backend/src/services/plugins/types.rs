@@ -41,7 +41,7 @@ pub struct CodexProviderDeclares {
     pub skills: u32,
     /// DEPRECATED — kept so older manifests that emit
     /// `providers.codex.prompts: 0` round-trip. The codex materializer
-    /// + `derive_provides` ignore this value; prompts moved up to
+    /// and `derive_provides` ignore this value; prompts moved up to
     /// `Declares.prompts` (Fleetify-native).
     #[serde(default)]
     pub prompts: u32,

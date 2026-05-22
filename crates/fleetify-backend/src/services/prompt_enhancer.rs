@@ -56,7 +56,7 @@ ASSISTANT: Refactor the auth module for readability: extract helper functions, a
 /// Enhance the user's draft prompt. Returns the rewritten text, or
 /// `no_op = true` when the model decided the prompt was already
 /// sharp enough. On any Haiku failure path returns the original text
-/// + no_op = true so the renderer's wand button silently degrades
+/// and `no_op = true` so the renderer's wand button silently degrades
 /// rather than showing an error.
 pub async fn enhance(
     pool: &SqlitePool,

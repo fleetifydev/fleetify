@@ -119,7 +119,7 @@ pub fn run() {
             // in the log file. The returned WorkerGuard is parked on
             // the app's state container so the non-blocking writer's
             // flush thread lives as long as the process.
-            if let Some(guard) = shell::logging::init(&app.handle()) {
+            if let Some(guard) = shell::logging::init(app.handle()) {
                 app.manage(guard);
             }
 

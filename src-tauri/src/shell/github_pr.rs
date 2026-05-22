@@ -340,7 +340,7 @@ async fn call_pr(
     draft: bool,
 ) -> Value {
     let res = reqwest::Client::new()
-        .post(&format!(
+        .post(format!(
             "https://api.github.com/repos/{}/{}/pulls",
             origin.owner, origin.repo
         ))

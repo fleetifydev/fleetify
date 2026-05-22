@@ -239,9 +239,11 @@ impl JwksCache {
     }
 }
 
+type JwksCacheSingleton = Mutex<Option<(String, Arc<JwksCache>)>>;
+
 /// Singleton keyed by URL (parity with `get_default_jwks_cache`).
 pub fn default_jwks_cache(jwks_url: &str) -> Arc<JwksCache> {
-    static SINGLETON: OnceLock<Mutex<Option<(String, Arc<JwksCache>)>>> = OnceLock::new();
+    static SINGLETON: OnceLock<JwksCacheSingleton> = OnceLock::new();
     let cell = SINGLETON.get_or_init(|| Mutex::new(None));
     let mut guard = cell.lock().unwrap();
     if let Some((url, cache)) = guard.as_ref() {

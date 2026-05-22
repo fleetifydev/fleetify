@@ -73,17 +73,17 @@ static LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
 ///
 /// Resolution per platform:
 ///   * **Windows** — `%LOCALAPPDATA%\Fleetify\logs\`
-///                   Matches the dominant Win32 app convention; user
-///                   sees a clean folder when browsing AppData.
-///   * **macOS**   — `~/Library/Logs/Fleetify/`
-///                   Apple recommends `~/Library/Logs/<app>` for app
-///                   logs (Spotify / Notion / Slack all do this).
-///                   Lighter touch than `app_log_dir()`'s
-///                   `~/Library/Logs/<identifier>/`.
-///   * **Linux**   — `$XDG_STATE_HOME/fleetify/logs/` if set,
-///                   else `~/.local/state/fleetify/logs/`. XDG state
-///                   dir is the canonical place for logs per
-///                   freedesktop.org's basedir spec.
+///     Matches the dominant Win32 app convention; user
+///     sees a clean folder when browsing AppData.
+///   * **macOS** — `~/Library/Logs/Fleetify/`
+///     Apple recommends `~/Library/Logs/<app>` for app
+///     logs (Spotify / Notion / Slack all do this).
+///     Lighter touch than `app_log_dir()`'s
+///     `~/Library/Logs/<identifier>/`.
+///   * **Linux** — `$XDG_STATE_HOME/fleetify/logs/` if set,
+///     else `~/.local/state/fleetify/logs/`. XDG state
+///     dir is the canonical place for logs per
+///     freedesktop.org's basedir spec.
 ///
 /// Returns `None` only when we can't resolve a home dir on Unix or
 /// `LOCALAPPDATA` on Windows — extremely rare; caller falls back to

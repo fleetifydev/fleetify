@@ -127,12 +127,7 @@ pub fn resolve_git() -> Option<std::path::PathBuf> {
     } else {
         vec![]
     };
-    for p in fallbacks {
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    None
+    fallbacks.into_iter().find(|p| p.is_file())
 }
 
 pub async fn has_git() -> Value {
@@ -609,6 +604,8 @@ fn write_gitignore_if_missing(folder: &Path) -> bool {
 // `localStorage["fleet:github-auth-method"]` so the onboarding choice is
 // honoured exactly — picking "Use GitHub CLI" never silently routes
 // through OAuth, and vice versa.
+// 8 args is one over the default 7; refactor to a struct is out of scope for this cleanup.
+#[allow(clippy::too_many_arguments)]
 pub async fn create_pr(
     folder: &Path,
     title: &str,
@@ -938,13 +935,13 @@ async fn ensure_repo_for_link(
     None
 }
 
-/// Full faithful port of `createPRViaGh` from main.cjs. Validates +
+/// Full faithful port of `createPRViaGh` from main.cjs. Validates and
 /// initialises the repo, carves the feature branch, auto-commits any
 /// pending changes with an AI-generated message, ensures an `origin`
 /// remote (creating a GitHub repo when missing), pushes, runs the AI
 /// PR-summary fallback when body is empty, and finally invokes
 /// `gh pr create`. Every step gets a trace line in the error message
-/// + a tracing breadcrumb so the user can diagnose without log
+/// and a tracing breadcrumb so the user can diagnose without log
 /// spelunking.
 pub async fn create_pr_via_gh(
     folder: &Path,
@@ -2094,7 +2091,7 @@ mod tests {
             .iter()
             .map(|x| x["type"].as_str().unwrap())
             .collect();
-        assert!(kinds.iter().any(|k| *k == "nested-no-commits"));
+        assert!(kinds.contains(&"nested-no-commits"));
     }
 
     #[tokio::test]

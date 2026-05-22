@@ -24,6 +24,8 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{oneshot, Mutex};
 
+type PendingMap = HashMap<String, oneshot::Sender<Result<Value>>>;
+
 /// Handler for inbound `(method, params) → result` requests — used by
 /// the 5 approval methods which all funnel through a single dispatcher
 /// in the bridge layer.
@@ -66,7 +68,7 @@ type DynReader = Pin<Box<dyn tokio::io::AsyncBufRead + Send + Unpin>>;
 
 pub struct CodexClient {
     writer: Arc<Mutex<Option<DynWriter>>>,
-    pending: Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value>>>>>,
+    pending: Arc<Mutex<PendingMap>>,
     handlers: Arc<Mutex<Handlers>>,
     read_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -331,7 +333,7 @@ async fn write_error(
 
 async fn read_loop(
     mut reader: DynReader,
-    pending: Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value>>>>>,
+    pending: Arc<Mutex<PendingMap>>,
     handlers: Arc<Mutex<Handlers>>,
     writer: Arc<Mutex<Option<DynWriter>>>,
 ) {
@@ -369,7 +371,7 @@ async fn read_loop(
 
 async fn dispatch(
     msg: Value,
-    pending: &Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value>>>>>,
+    pending: &Arc<Mutex<PendingMap>>,
     handlers: &Arc<Mutex<Handlers>>,
     writer: &Arc<Mutex<Option<DynWriter>>>,
 ) {

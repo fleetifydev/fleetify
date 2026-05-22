@@ -142,6 +142,8 @@ pub async fn record_activity(
 /// Persist one tool-end event from the bridge's stream loop. Special-
 /// cases `TodoWrite` to explode each todo into its own row + an
 /// umbrella `tool` row, matching the renderer's Tasks panel contract.
+// 8 args is one over the default 7; refactor to a struct is out of scope for this cleanup.
+#[allow(clippy::too_many_arguments)]
 pub async fn record_tool_event(
     pool: &SqlitePool,
     session_id: &str,

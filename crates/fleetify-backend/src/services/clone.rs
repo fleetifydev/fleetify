@@ -40,10 +40,7 @@ fn repo_name_re() -> &'static Regex {
 pub fn repo_name_from_url(url: &str) -> String {
     let cleaned = url.trim().trim_end_matches('/');
     let cleaned = cleaned.strip_suffix(".git").unwrap_or(cleaned);
-    let last = cleaned
-        .rsplit(|c| c == '/' || c == ':')
-        .next()
-        .unwrap_or("");
+    let last = cleaned.rsplit(['/', ':']).next().unwrap_or("");
     let safe = repo_name_re().replace_all(last, "-");
     let trimmed = safe.trim_matches('-');
     if trimmed.is_empty() {

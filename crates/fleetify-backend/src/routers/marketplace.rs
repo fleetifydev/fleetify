@@ -85,6 +85,8 @@ async fn ensure_official_source(pool: &sqlx::SqlitePool, user_id: &str) -> Resul
     Ok(())
 }
 
+type MarketplaceSourceRow = (String, String, Option<String>, String, i64, i64, String);
+
 async fn sources(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
@@ -94,7 +96,7 @@ async fn sources(
     let _ = ensure_official_source(&st.auth.pool, &user.id).await;
     // Most-recently-added first so a freshly-added source surfaces at
     // the top of the renderer's source list without further sorting.
-    let rows: Vec<(String, String, Option<String>, String, i64, i64, String)> = sqlx::query_as(
+    let rows: Vec<MarketplaceSourceRow> = sqlx::query_as(
         "SELECT id, name, description, repo_url, is_official, enabled, added_at \
          FROM marketplace_sources WHERE user_id = ? ORDER BY added_at DESC",
     )
