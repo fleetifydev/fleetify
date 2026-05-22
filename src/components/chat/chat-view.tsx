@@ -11,6 +11,7 @@ import { fetchMessages, fetchClaudeHistory, createSession, clearSessionMessages,
 import { isWindowsPlatform, folderName, truncateMid } from "@/lib/utils";
 import { FleetDecisionCard } from "./fleet-decision-card";
 import { useFleetStore, AUTO_CHAIN_CAP } from "@/stores/fleet-store";
+import { useSessionRouting } from "@/hooks/use-session-routing";
 import { LogoMark } from "@/components/brand/logo-mark";
 import { PanelLeft, PanelRight, Trash2, X, Check, GitCompareArrows, ListTodo, Terminal as TerminalIcon, Keyboard, Folder, Play, FolderOpen, Layers, Monitor, Github, Server, Box, ArrowRight, Pencil } from "lucide-react";
 import type { ContentBlock, ChatMessage } from "@/types/chat";
@@ -215,6 +216,14 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   ]);
   const activeSession = realActiveSession ?? composerVirtualSession;
   const isLocalOnlyActive = activeSession?.local_only === true;
+
+  // Routing pin for the active session — drives the small chip next to
+  // the breadcrumb that shows whether this turn is auto-routed or a
+  // manual pin. Composer mode and the Fleet hub don't have a real session
+  // id yet, so the hook resolves to null and the chip renders nothing.
+  const sessionRouting = useSessionRouting(
+    !composerOpen && activeSessionId ? activeSessionId : null,
+  );
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -1650,25 +1659,35 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                 onRename={() => { /* no-op — readonly */ }}
               />
             ) : activeSession && (
-              <SessionBreadcrumb
-                projectPath={activeSession.project_path || null}
-                title={activeSession.title || "Untitled session"}
-                onRename={(next) => {
-                  // Compose mode → write to composer; real session →
-                  // optimistic store update + backend PATCH. Both
-                  // paths leave the breadcrumb showing the new title
-                  // immediately and the dropdown closes itself in the
-                  // child.
-                  if (composerOpen && !activeSessionId) {
-                    setComposerField({ title: next });
-                    return;
-                  }
-                  if (activeSessionId) {
-                    updateSession(activeSessionId, { title: next });
-                    apiUpdateSession(activeSessionId, { title: next }).catch(() => {});
-                  }
-                }}
-              />
+              <>
+                <SessionBreadcrumb
+                  projectPath={activeSession.project_path || null}
+                  title={activeSession.title || "Untitled session"}
+                  onRename={(next) => {
+                    // Compose mode → write to composer; real session →
+                    // optimistic store update + backend PATCH. Both
+                    // paths leave the breadcrumb showing the new title
+                    // immediately and the dropdown closes itself in the
+                    // child.
+                    if (composerOpen && !activeSessionId) {
+                      setComposerField({ title: next });
+                      return;
+                    }
+                    if (activeSessionId) {
+                      updateSession(activeSessionId, { title: next });
+                      apiUpdateSession(activeSessionId, { title: next }).catch(() => {});
+                    }
+                  }}
+                />
+                {/* Routing chip — surfaces the active pin's rationale on
+                    hover. Source = "pinned" means the user manually picked
+                    the agent (in the new-session screen), everything else
+                    is a decision-router id and reads as auto-routed. The
+                    chip is purely informational; it never blocks a turn
+                    and is fetched once via useSessionRouting on mount.
+                    Hidden entirely when the session has no pin yet. */}
+                <SessionRoutingChip routing={sessionRouting} />
+              </>
             )}
             {/* Fleet hub: header reads as empty wordmark space — the
                 "Fleet" label + running/idle stat strip were removed
@@ -2027,6 +2046,47 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
 /* ══════════════════════════════════════
    FLEET — control-center surface (dashboard or empty welcome)
 ══════════════════════════════════════ */
+
+/* ── SessionRoutingChip ───────────────────────────────────────────
+   Small chip rendered next to the breadcrumb. Surfaces the result of
+   the provider-router pin for the active session:
+     • source === "pinned" → "Manual · <model>"
+     • anything else       → "Auto-routed → <model>"
+   Hover tooltip carries the full rationale string from the decision
+   row. Returns null when there's no pin (fresh session, composer mode,
+   Fleet hub) so the header doesn't flash an empty button. */
+function SessionRoutingChip({
+  routing,
+}: {
+  routing: import("@/hooks/use-session-routing").SessionRoutingInfo | null;
+}) {
+  if (!routing) return null;
+  const isManual = routing.source === "pinned";
+  const label = isManual
+    ? `Manual · ${routing.model}`
+    : `Auto-routed → ${routing.model}`;
+  return (
+    <button
+      type="button"
+      title={routing.rationale || (isManual ? "Manually pinned" : "Auto-routed")}
+      style={{
+        fontSize: 11,
+        padding: "2px 7px",
+        borderRadius: 4,
+        background: "var(--c-srf2)",
+        color: "var(--c-dim)",
+        border: "1px solid var(--c-brd)",
+        cursor: "help",
+        fontFamily: "inherit",
+        marginLeft: 4,
+        whiteSpace: "nowrap",
+        flexShrink: 0,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
 
 /* ── SessionBreadcrumb ────────────────────────────────────────────
    Top-left of the chat header:

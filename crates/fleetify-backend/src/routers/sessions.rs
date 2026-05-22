@@ -30,6 +30,7 @@ pub fn router() -> Router<AppState> {
                 .delete(delete_session),
         )
         .route("/sessions/{id}/detail", get(session_detail))
+        .route("/sessions/{id}/routing", get(get_session_routing))
         .route("/sessions/{id}/claude-history", get(claude_history))
         .route("/sessions/{id}/messages", delete(clear_messages))
         .route("/sessions/{id}/start", post(start_session))
@@ -797,6 +798,36 @@ async fn session_detail(
         "memory_items": [],
         "plans": []
     })))
+}
+
+/// `GET /api/sessions/:id/routing` — returns the session's current routing
+/// pin joined against its originating `routing_decisions` row, so the chat
+/// header can render a "Auto-routed → claude-sonnet-4-6" chip with the
+/// rationale visible on hover.
+///
+/// Response shape:
+///   { ok: true, routing: { agent, model, source, rationale } | null }
+///
+/// `routing` is `null` when the session hasn't been pinned/routed yet
+/// (fresh session before the first turn lands). Ownership is enforced
+/// the same way `get_session` does it — a foreign user reading another
+/// user's session id gets a 403.
+async fn get_session_routing(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let _ = owned(&st, &id, &user.id).await?;
+    let info = crate::services::routing::persist::load_session_routing(&st.auth.pool, &id).await;
+    let routing = info.map(|r| {
+        json!({
+            "agent": r.agent,
+            "model": r.model,
+            "source": r.source,
+            "rationale": r.rationale,
+        })
+    });
+    Ok(Json(json!({ "ok": true, "routing": routing })))
 }
 
 async fn stats_bulk(

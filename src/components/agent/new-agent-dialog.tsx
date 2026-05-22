@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from "react";
-import { X, FolderOpen, Clock, ChevronDown, Check, Sparkles } from "lucide-react";
+import { X, FolderOpen, Clock, ChevronDown, Check, Sparkles, Wand2 } from "lucide-react";
 import { ClaudeLogo, OpenAILogo, GeminiLogo } from "@/components/ui/provider-logo";
 import { createSession, fetchClaudeSessions, fetchGeminiSessions, fetchCodexSessions, apiFetch, type ClaudeSession } from "@/lib/api";
 import { useAppStore } from "@/stores/app-store";
+import { useRouterConfig } from "@/hooks/use-router-config";
 
 interface PluginTemplate {
   name: string; title: string; description: string;
@@ -199,6 +200,22 @@ export function NewAgentView({ onClose }: Props) {
   // (no folder yet, probe in flight, or probe failed); true/false drives the
   // "will initialize" hint inside <WorktreeToggle>.
   const [pathIsGit, setPathIsGit] = useState<boolean | null>(null);
+  // Provider-router master toggle + the currently active decision router
+  // (the tile flagged `active_for_decision: true`). When the master is on
+  // we collapse the agent/model picker behind a "🪄 Auto-routing enabled"
+  // banner and let the backend's orchestrator pick on the first turn.
+  // Power users can still pin manually by expanding the override.
+  const { tiles: routerTiles, masterEnabled: routingMasterEnabled } = useRouterConfig();
+  const activeDecisionRouter = routerTiles.find(t => t.active_for_decision);
+  // When routing is on we default to "auto" — the picker is hidden and the
+  // backend resolves the decision. Toggling the override surfaces the
+  // original provider/model picker so the user can pin a specific agent.
+  const [overrideAgent, setOverrideAgent] = useState(false);
+  // Show picker if routing is OFF (original UX) OR the user has explicitly
+  // expanded the override. New sessions started while routing is enabled
+  // default to "no pick" — the create payload omits explicit tool/model
+  // and the backend's first turn calls `resolve_routing_for_turn` (Task 16).
+  const showAgentPicker = !routingMasterEnabled || overrideAgent;
 
   useEffect(() => {
     if (path) return;
@@ -707,43 +724,109 @@ export function NewAgentView({ onClose }: Props) {
             <SecHead style={{ marginTop:20 }}>Model</SecHead>
             <div style={{ display:"flex", flexDirection:"column", gap:10, marginTop:10, marginBottom:20 }}>
 
-              <Fld label="Provider">
-                <div className="na-seg-wrap">
-                  {PROVIDERS.map(p => (
-                    <button key={p.id} className={`na-prov${provider === p.id ? " on" : ""}`} onClick={() => changeProvider(p.id)}>
-                      <p.icon size={13}/>{p.name}
-                    </button>
-                  ))}
-                </div>
-              </Fld>
-
-              <Fld label="Model">
-                <div ref={modelRef} style={{ position:"relative" }}>
-                  <button onClick={() => setShowModel(v => !v)} className="na-inp" style={{ display:"flex", alignItems:"center", justifyContent:"space-between", cursor:"pointer", height:32, padding:"0 10px", textAlign:"left", boxSizing:"border-box" }}>
-                    <span style={{ fontSize:12.5, fontWeight:500, color:"var(--foreground)" }}>{curModel.label}</span>
-                    <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                      <span style={{ fontSize:11, color:"var(--c-ghost)" }}>{curModel.desc}</span>
-                      <ChevronDown size={11} style={{ color:"var(--c-dim)", flexShrink:0, transform:showModel ? "rotate(180deg)" : "none", transition:"transform .15s" }}/>
+              {/* Auto-routing banner — replaces the provider/model picker
+                  when the master toggle is on AND the user hasn't expanded
+                  the override. Names the active decision router so the
+                  user knows which surface is making the call. The picker
+                  re-appears below when "Override agent" is clicked. */}
+              {routingMasterEnabled && !overrideAgent && (
+                <div style={{
+                  display:"flex", alignItems:"flex-start", gap:10,
+                  padding:"11px 12px", borderRadius:8,
+                  background:"var(--c-srf2)",
+                  border:"1px solid var(--c-brd2)",
+                }}>
+                  <Wand2 size={14} style={{ color:"var(--c-low)", marginTop:1, flexShrink:0 }}/>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:12.5, fontWeight:500, color:"var(--foreground)", lineHeight:1.3 }}>
+                      Auto-routing enabled
                     </div>
-                  </button>
-                  {showModel && (
-                    <div style={{ position:"absolute", left:0, right:0, top:"calc(100% + 4px)", zIndex:20, borderRadius:8, border:"1px solid var(--c-brd2)", background:"var(--card)", boxShadow:"0 12px 32px rgba(0,0,0,0.65)", overflow:"hidden" }}>
-                      {curProv.models.map(m => (
-                        <button key={m.id} className="na-model-opt" onClick={() => { setModelId(m.id); setShowModel(false); }}>
-                          <div style={{ display:"flex", alignItems:"center", gap:7 }}>
-                            {modelId === m.id
-                              ? <Check size={10} style={{ color:"var(--foreground)", flexShrink:0 }}/>
-                              : <div style={{ width:10, flexShrink:0 }}/>
-                            }
-                            <span style={{ fontSize:12.5, fontWeight:modelId === m.id ? 600 : 400, color:modelId === m.id ? "var(--foreground)" : "var(--c-low)" }}>{m.label}</span>
-                          </div>
-                          <span style={{ fontSize:11, color:"var(--c-ghost)" }}>{m.desc}</span>
+                    <div style={{ fontSize:11, color:"var(--c-dim)", marginTop:3, lineHeight:1.45 }}>
+                      {activeDecisionRouter
+                        ? <>The <strong style={{ color:"var(--c-med)" }}>{activeDecisionRouter.display_name}</strong> router will pick the agent and model on the first turn.</>
+                        : <>The active decision router will pick the agent and model on the first turn.</>
+                      }
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setOverrideAgent(true)}
+                      style={{
+                        marginTop:7, height:24, padding:"0 9px",
+                        background:"var(--c-srf)", border:"1px solid var(--c-brd)",
+                        borderRadius:5, color:"var(--c-med)",
+                        fontSize:11, fontFamily:"inherit", cursor:"pointer",
+                        display:"inline-flex", alignItems:"center", gap:5,
+                      }}
+                    >
+                      <ChevronDown size={10}/>
+                      Override agent
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {showAgentPicker && (
+                <>
+                  {routingMasterEnabled && overrideAgent && (
+                    <div style={{
+                      display:"flex", alignItems:"center", justifyContent:"space-between",
+                      padding:"6px 4px", marginBottom:2,
+                    }}>
+                      <span style={{ fontSize:11, color:"var(--c-dim)" }}>
+                        Manual override — routing skipped for this session.
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setOverrideAgent(false)}
+                        style={{
+                          background:"none", border:"none", padding:0,
+                          color:"var(--c-low)", fontSize:11, fontFamily:"inherit",
+                          cursor:"pointer", textDecoration:"underline",
+                        }}
+                      >
+                        Use auto
+                      </button>
+                    </div>
+                  )}
+                  <Fld label="Provider">
+                    <div className="na-seg-wrap">
+                      {PROVIDERS.map(p => (
+                        <button key={p.id} className={`na-prov${provider === p.id ? " on" : ""}`} onClick={() => changeProvider(p.id)}>
+                          <p.icon size={13}/>{p.name}
                         </button>
                       ))}
                     </div>
-                  )}
-                </div>
-              </Fld>
+                  </Fld>
+
+                  <Fld label="Model">
+                    <div ref={modelRef} style={{ position:"relative" }}>
+                      <button onClick={() => setShowModel(v => !v)} className="na-inp" style={{ display:"flex", alignItems:"center", justifyContent:"space-between", cursor:"pointer", height:32, padding:"0 10px", textAlign:"left", boxSizing:"border-box" }}>
+                        <span style={{ fontSize:12.5, fontWeight:500, color:"var(--foreground)" }}>{curModel.label}</span>
+                        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                          <span style={{ fontSize:11, color:"var(--c-ghost)" }}>{curModel.desc}</span>
+                          <ChevronDown size={11} style={{ color:"var(--c-dim)", flexShrink:0, transform:showModel ? "rotate(180deg)" : "none", transition:"transform .15s" }}/>
+                        </div>
+                      </button>
+                      {showModel && (
+                        <div style={{ position:"absolute", left:0, right:0, top:"calc(100% + 4px)", zIndex:20, borderRadius:8, border:"1px solid var(--c-brd2)", background:"var(--card)", boxShadow:"0 12px 32px rgba(0,0,0,0.65)", overflow:"hidden" }}>
+                          {curProv.models.map(m => (
+                            <button key={m.id} className="na-model-opt" onClick={() => { setModelId(m.id); setShowModel(false); }}>
+                              <div style={{ display:"flex", alignItems:"center", gap:7 }}>
+                                {modelId === m.id
+                                  ? <Check size={10} style={{ color:"var(--foreground)", flexShrink:0 }}/>
+                                  : <div style={{ width:10, flexShrink:0 }}/>
+                                }
+                                <span style={{ fontSize:12.5, fontWeight:modelId === m.id ? 600 : 400, color:modelId === m.id ? "var(--foreground)" : "var(--c-low)" }}>{m.label}</span>
+                              </div>
+                              <span style={{ fontSize:11, color:"var(--c-ghost)" }}>{m.desc}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </Fld>
+                </>
+              )}
 
             </div>
 

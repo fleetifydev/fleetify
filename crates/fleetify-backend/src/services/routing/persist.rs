@@ -114,6 +114,27 @@ pub struct SessionPin {
     pub decision_id: Option<String>,
 }
 
+/// Session routing snapshot — the pinned (agent, model) plus the
+/// decision row's source + rationale joined in. Returned by the
+/// `GET /api/sessions/:id/routing` endpoint so the chat header can
+/// render a "Auto-routed → claude-sonnet-4-6" chip with the rationale
+/// on hover. None of these fields is optional at the row level: the
+/// row only exists when the session has been pinned AND a decision
+/// row exists (LEFT JOIN allows the rationale-less case but we
+/// require pinned_agent/pinned_model to be set on the session itself).
+#[derive(Debug, Clone)]
+pub struct SessionRoutingInfo {
+    pub agent: String,
+    pub model: String,
+    /// `pinned` when the user manually overrode, otherwise the
+    /// decision router id (`builtin`, `notdiamond`, `weave`, …).
+    pub source: String,
+    /// Human-readable explanation from the routing decision. Empty
+    /// when the session has no `routing_decision_id` (manual pin
+    /// path — the user clicked an agent in the picker).
+    pub rationale: String,
+}
+
 /// Read the pinning columns for a session in a single query so we don't
 /// have to extend the existing `Session` struct (which derives `FromRow`
 /// against `SELECT *`). Returns the default (all-None) if the row is
@@ -134,6 +155,46 @@ pub async fn load_session_pin(pool: &SqlitePool, session_id: &str) -> SessionPin
             decision_id,
         },
         None => SessionPin::default(),
+    }
+}
+
+/// JOIN `sessions` against `routing_decisions` to surface the rationale.
+/// Returns `None` when the session has no `pinned_agent` (i.e. nothing has
+/// been routed or manually pinned yet). When the decision row is missing
+/// (e.g. legacy session with manual pin pre-routing), `source` falls back
+/// to `"pinned"` and `rationale` to an empty string.
+pub async fn load_session_routing(
+    pool: &SqlitePool,
+    session_id: &str,
+) -> Option<SessionRoutingInfo> {
+    // (pinned_agent, pinned_model, source, rationale) — all nullable because
+    // the LEFT JOIN can produce NULLs for the decision-row columns. Pulled
+    // into a `type` alias purely to keep clippy::type_complexity quiet.
+    type Row = (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT s.pinned_agent, s.pinned_model, rd.source, rd.rationale \
+         FROM sessions s \
+         LEFT JOIN routing_decisions rd ON s.routing_decision_id = rd.id \
+         WHERE s.id = ? AND s.pinned_agent IS NOT NULL AND s.pinned_model IS NOT NULL",
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    match row {
+        Some((Some(agent), Some(model), source, rationale)) => Some(SessionRoutingInfo {
+            agent,
+            model,
+            source: source.unwrap_or_else(|| "pinned".into()),
+            rationale: rationale.unwrap_or_default(),
+        }),
+        _ => None,
     }
 }
 
@@ -571,6 +632,58 @@ mod tests {
         assert_eq!(row.0.as_deref(), Some("claude"));
         assert_eq!(row.1.as_deref(), Some("claude-haiku-4-5"));
         assert_eq!(row.2.as_deref(), Some("d-3"));
+    }
+
+    #[tokio::test]
+    async fn load_session_routing_joins_decision_row() {
+        let pool = init_pool("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "INSERT INTO sessions (id, title, project_path, group_path, tool, command, status, \
+             permission_mode, session_mode, pinned, order_idx, created_at, budget_used) \
+             VALUES ('s-r1','t','/p','','claude','','idle','default','new',0,0,'2026-01-01',0.0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        insert_routing_decision(
+            &pool,
+            "d-r1",
+            "chat",
+            Some("s-r1"),
+            "claude",
+            "claude-sonnet-4-6",
+            "builtin",
+            "balanced for general coding",
+            12,
+            false,
+            None,
+            "[]",
+            1_700_000_010,
+        )
+        .await
+        .unwrap();
+        pin_session(&pool, "s-r1", "claude", "claude-sonnet-4-6", "d-r1")
+            .await
+            .unwrap();
+        let info = load_session_routing(&pool, "s-r1").await.unwrap();
+        assert_eq!(info.agent, "claude");
+        assert_eq!(info.model, "claude-sonnet-4-6");
+        assert_eq!(info.source, "builtin");
+        assert_eq!(info.rationale, "balanced for general coding");
+    }
+
+    #[tokio::test]
+    async fn load_session_routing_returns_none_when_unpinned() {
+        let pool = init_pool("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "INSERT INTO sessions (id, title, project_path, group_path, tool, command, status, \
+             permission_mode, session_mode, pinned, order_idx, created_at, budget_used) \
+             VALUES ('s-r2','t','/p','','claude','','idle','default','new',0,0,'2026-01-01',0.0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(load_session_routing(&pool, "s-r2").await.is_none());
     }
 
     #[test]
