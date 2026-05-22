@@ -28,10 +28,7 @@ use serde::{Deserialize, Serialize};
 const FILE: &str = "plugin_state.json";
 
 fn fleetify_dir() -> PathBuf {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".fleetify")
+    fleetify_core::fleetify_home()
 }
 
 fn state_path() -> PathBuf {

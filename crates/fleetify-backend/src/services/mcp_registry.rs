@@ -13,15 +13,8 @@ use serde_json::Value;
 
 const FILE: &str = "mcp_servers.json";
 
-fn home() -> PathBuf {
-    let h = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".into());
-    PathBuf::from(h)
-}
-
 pub fn fleetify_dir() -> PathBuf {
-    home().join(".fleetify")
+    fleetify_core::fleetify_home()
 }
 
 pub fn registry_path() -> PathBuf {

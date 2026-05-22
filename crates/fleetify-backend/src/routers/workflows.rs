@@ -28,12 +28,7 @@ async fn list_workflows(State(st): State<AppState>) -> Json<Value> {
     // shape the renderer's <WorkflowsList> reads.
     let _ = st; // kept for future scope-based filtering
     use crate::services::plugins::manifest;
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".into());
-    let plugins_dir = std::path::PathBuf::from(home)
-        .join(".fleetify")
-        .join("plugins");
+    let plugins_dir = fleetify_core::fleetify_home().join("plugins");
     let Ok(rd) = std::fs::read_dir(&plugins_dir) else {
         return Json(Value::Array(Vec::new()));
     };
@@ -100,11 +95,7 @@ async fn run_workflow(
     // scaffold emits today).
     use crate::services::plugins::manifest;
     let _ = body; // args carried inside the run when expansion lands.
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".into());
-    let wf_dir = std::path::PathBuf::from(home)
-        .join(".fleetify")
+    let wf_dir = fleetify_core::fleetify_home()
         .join("plugins")
         .join(&install_id)
         .join("workflows");

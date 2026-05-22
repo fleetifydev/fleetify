@@ -51,10 +51,7 @@ pub struct InstallResult {
 }
 
 fn plugins_dir() -> PathBuf {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".fleetify").join("plugins")
+    fleetify_core::fleetify_home().join("plugins")
 }
 
 /// Clone `repo_url` and place the result at

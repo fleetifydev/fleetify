@@ -15,18 +15,8 @@ pub enum CloneError {
     Failed(String),
 }
 
-const CLONES_DIRNAME: &str = ".fleetify/clones";
-
-fn home() -> PathBuf {
-    PathBuf::from(
-        std::env::var("USERPROFILE")
-            .or_else(|_| std::env::var("HOME"))
-            .unwrap_or_else(|_| ".".to_string()),
-    )
-}
-
 fn clones_root() -> PathBuf {
-    home().join(CLONES_DIRNAME)
+    fleetify_core::fleetify_home().join("clones")
 }
 
 fn repo_name_re() -> &'static Regex {

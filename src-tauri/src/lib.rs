@@ -13,12 +13,30 @@ use tauri::{Manager, WebviewUrl};
 /// Boot shim reconstructing `window.electronAPI` / `window.fleetify`.
 const PRELOAD: &str = include_str!("preload.js");
 
-fn webview_url() -> &'static str {
+/// URL the main webview is pointed at. Debug builds load the Vite dev
+/// server (`VITE_PORT`, default 3000); release builds load the
+/// embedded backend serving the bundled dist (`FLEETIFY_BACKEND_PORT`,
+/// default 8765). Honouring the env vars is what lets the
+/// `dev:tauri:wt` script (and the parallel-worktree workflow it
+/// enables) run two app instances on different ports side-by-side.
+fn webview_url() -> String {
     if cfg!(debug_assertions) {
-        "http://localhost:3000"
+        let port = std::env::var("VITE_PORT").unwrap_or_else(|_| "3000".into());
+        format!("http://localhost:{port}")
     } else {
-        "http://127.0.0.1:8765"
+        let port = std::env::var("FLEETIFY_BACKEND_PORT").unwrap_or_else(|_| "8765".into());
+        format!("http://127.0.0.1:{port}")
     }
+}
+
+/// Parse `FLEETIFY_BACKEND_PORT` with a hard-coded 8765 fallback. The
+/// embedded backend binds this port; the webview URL in release mode
+/// (and the Vite dev proxy in debug mode) target the same port.
+fn backend_port() -> u16 {
+    std::env::var("FLEETIFY_BACKEND_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8765)
 }
 
 fn static_dir() -> Option<PathBuf> {
@@ -112,6 +130,7 @@ pub fn run() {
             shell::ipc::app_log,
             shell::ipc::logs_export,
             shell::ipc::logs_open_folder,
+            shell::ipc::feedback_send,
         ])
         .setup(|app| {
             // Bring tracing online FIRST so any setup-phase warnings
@@ -152,7 +171,10 @@ pub fn run() {
             .build()?;
 
             // Embedded backend (no child process, no health-poll).
-            let addr: SocketAddr = "127.0.0.1:8765".parse().unwrap();
+            // Port is FLEETIFY_BACKEND_PORT (default 8765) so a second
+            // instance launched via `npm run dev:tauri:wt -- <slot>`
+            // can run on a sibling port without colliding.
+            let addr: SocketAddr = format!("127.0.0.1:{}", backend_port()).parse().unwrap();
             let sd = static_dir();
             tauri::async_runtime::spawn(async move {
                 match fleetify_backend::serve(addr, sd).await {
@@ -173,7 +195,7 @@ pub fn run() {
             // dev server doesn't leave the user with a permanently
             // invisible app. 120ms grace before show() lets the
             // first React frame paint so we don't flash white.
-            let webview_url_owned: String = webview_url().to_string();
+            let webview_url_owned: String = webview_url();
             let main_for_reveal = main_window.clone();
             tauri::async_runtime::spawn(async move {
                 let client = reqwest::Client::builder()
