@@ -6,6 +6,7 @@ pub mod capability_matrix;
 pub mod decision;
 pub mod intent;
 pub mod orchestrator;
+pub mod persist;
 pub mod proxy;
 pub mod traits;
 

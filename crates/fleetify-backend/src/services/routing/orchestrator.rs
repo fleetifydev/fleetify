@@ -21,6 +21,28 @@ pub struct RoutingOrchestrator {
     timeout_ms: u64,
 }
 
+impl RoutingOrchestrator {
+    /// Convenience constructor for tests / app-entry-point fallback paths:
+    /// builds an orchestrator with an empty BuiltInRouter (capability
+    /// matrix with no agents) + DirectGateway. `enabled` flag is the
+    /// initial master toggle. The `route()` happy-path falls into the
+    /// built-in router's defensive branch for empty pools.
+    pub fn with_empty_defaults(enabled: bool) -> Arc<Self> {
+        use crate::services::routing::capability_matrix::CapabilityMatrix;
+        use crate::services::routing::decision::builtin::BuiltInRouter;
+        use crate::services::routing::proxy::direct::DirectGateway;
+
+        let matrix = CapabilityMatrix {
+            agents: Default::default(),
+        };
+        let builtin: Arc<dyn DecisionRouter> = Arc::new(BuiltInRouter::new(matrix));
+        let dr = Arc::new(RwLock::new(DecisionRouterRegistry::new(builtin)));
+        let direct: Arc<dyn ProxyGateway> = Arc::new(DirectGateway);
+        let pr = Arc::new(RwLock::new(ProxyGatewayRegistry::new(direct)));
+        Arc::new(Self::new(dr, pr, enabled))
+    }
+}
+
 pub struct RouteOutcome {
     pub decision: RouterDecision,
     pub latency_ms: u64,

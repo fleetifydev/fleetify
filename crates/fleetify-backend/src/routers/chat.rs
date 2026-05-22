@@ -520,10 +520,90 @@ async fn run_send_flow(
         text.clone()
     };
 
-    let mut rx = match any_bridge
-        .send_message(&effective_text, crate::bridges::BridgeContext::default())
-        .await
-    {
+    // ── Provider routing per turn (Task 16) ──
+    // Three branches:
+    //   * session already has a pin    → reuse it, no routing call
+    //   * orchestrator disabled        → manual fallback to session.tool/model
+    //   * enabled and no prior pin     → route(), persist decision, pin session
+    // The resolution drives BridgeContext.model_override + the routing
+    // decision id we pass to the cost emitter at the end of the turn.
+    let route_task = crate::services::routing::traits::RoutingTask {
+        flow: crate::services::routing::traits::TaskFlow::Chat {
+            session_id: sid.clone(),
+        },
+        user_prompt: text.clone(),
+        conversation_history: None,
+        workspace_context: crate::services::routing::traits::WorkspaceHints::default(),
+        user_hint: None,
+        allowed_agents: match session.tool.as_str() {
+            "claude" => vec![crate::services::routing::traits::AgentKind::Claude],
+            "openai" => vec![crate::services::routing::traits::AgentKind::OpenAI],
+            "gemini" => vec![crate::services::routing::traits::AgentKind::Gemini],
+            "codex" => vec![crate::services::routing::traits::AgentKind::Codex],
+            _ => vec![crate::services::routing::traits::AgentKind::Claude],
+        },
+        budget_remaining: None,
+    };
+    let resolution = crate::services::routing::persist::resolve_routing_for_turn(
+        &st.auth.pool,
+        &st.routing,
+        &sid,
+        &session.tool,
+        session.model_name.as_deref(),
+        route_task,
+    )
+    .await;
+    // If routing picked a DIFFERENT agent than the bridge we already
+    // constructed from session.tool, warn — we can override the model
+    // via BridgeContext but cannot swap the bridge identity mid-turn.
+    // Full bridge-swap is deferred (see task notes).
+    let bridge_tool_str = match session.tool.as_str() {
+        "claude" | "openai" | "gemini" | "codex" => session.tool.as_str(),
+        _ => "claude",
+    };
+    let resolution_tool_str =
+        crate::services::routing::persist::agent_kind_to_str(resolution.agent);
+    if resolution_tool_str != bridge_tool_str {
+        tracing::warn!(
+            target: "fleet-backend",
+            session_id = %sid,
+            bridge_agent = bridge_tool_str,
+            routed_agent = resolution_tool_str,
+            "routing: decision picked a different agent than session.tool; \
+             keeping bridge identity, applying model override only"
+        );
+    }
+
+    // Build the BridgeContext: model override is always set (so the
+    // bridge uses the pinned / freshly-routed tier). Proxy gateway
+    // resolution depends on the routed agent's provider family.
+    let provider_for_proxy = match resolution.agent {
+        crate::services::routing::traits::AgentKind::Claude => {
+            crate::services::routing::traits::ProviderKind::Anthropic
+        }
+        crate::services::routing::traits::AgentKind::OpenAI
+        | crate::services::routing::traits::AgentKind::Codex => {
+            crate::services::routing::traits::ProviderKind::OpenAI
+        }
+        crate::services::routing::traits::AgentKind::Gemini => {
+            crate::services::routing::traits::ProviderKind::Google
+        }
+    };
+    let mut bridge_ctx = crate::bridges::BridgeContext {
+        model_override: if resolution.model.is_empty() {
+            None
+        } else {
+            Some(resolution.model.clone())
+        },
+        ..Default::default()
+    };
+    if let Some((url, headers)) = st.routing.proxy_for(provider_for_proxy) {
+        bridge_ctx.base_url_override = Some(url);
+        bridge_ctx.extra_headers = headers;
+    }
+    let decision_id_opt = resolution.decision_id.clone();
+
+    let mut rx = match any_bridge.send_message(&effective_text, bridge_ctx).await {
         Ok(rx) => rx,
         Err(e) => {
             send_json(
@@ -793,6 +873,7 @@ async fn run_send_flow(
         // Cloud telemetry — fire-and-forget into the outbox (drained by
         // the WS client when it lands).
         let sid_owned = sid.clone();
+        let decision_id_for_cost = decision_id_opt.clone();
         tokio::spawn(async move {
             let _ = crate::services::telemetry::emit_cost(
                 &sid_owned,
@@ -803,7 +884,7 @@ async fn run_send_flow(
                 cache_w,
                 cost_usd,
                 now_utc,
-                None,
+                decision_id_for_cost.as_deref(),
             )
             .await;
         });

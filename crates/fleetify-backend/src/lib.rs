@@ -131,6 +131,42 @@ pub async fn serve(addr: SocketAddr, static_dir: Option<PathBuf>) -> anyhow::Res
         }
         Arc::new(s)
     };
+    // Routing orchestrator: BuiltInRouter (capability-matrix backed) +
+    // DirectGateway are the always-present defaults. External routers
+    // (Not Diamond, Weave, LiteLLM) register at runtime via IPC commands
+    // (Task 19) once the user connects them in Settings. Master toggle
+    // defaults OFF — opting in is a deliberate user choice.
+    let routing = {
+        use parking_lot::RwLock;
+        use services::routing::capability_matrix::CapabilityMatrix;
+        use services::routing::decision::builtin::BuiltInRouter;
+        use services::routing::decision::registry::DecisionRouterRegistry;
+        use services::routing::proxy::direct::DirectGateway;
+        use services::routing::proxy::registry::ProxyGatewayRegistry;
+        use services::routing::traits::{DecisionRouter, ProxyGateway};
+        use services::routing::RoutingOrchestrator;
+
+        // Capability matrix is best-effort: a missing or malformed
+        // config/agents.toml shouldn't kill the backend. The built-in
+        // router degrades to "no candidates" (still returns a defensive
+        // fallback decision) when its matrix is empty.
+        let matrix = CapabilityMatrix::load_default().unwrap_or_else(|e| {
+            tracing::warn!(
+                target: "fleet-backend",
+                error = %e,
+                "routing: capability matrix load failed; using empty matrix"
+            );
+            CapabilityMatrix {
+                agents: Default::default(),
+            }
+        });
+        let builtin: Arc<dyn DecisionRouter> = Arc::new(BuiltInRouter::new(matrix));
+        let dr = Arc::new(RwLock::new(DecisionRouterRegistry::new(builtin)));
+        let direct: Arc<dyn ProxyGateway> = Arc::new(DirectGateway);
+        let pr = Arc::new(RwLock::new(ProxyGatewayRegistry::new(direct)));
+        Arc::new(RoutingOrchestrator::new(dr, pr, false))
+    };
+
     let state = routers::AppState {
         auth: auth::AuthState {
             pool,
@@ -140,6 +176,7 @@ pub async fn serve(addr: SocketAddr, static_dir: Option<PathBuf>) -> anyhow::Res
         app_cfg: Arc::new(cfg),
         sm: session_manager::session_manager(),
         internal_secret: internal_secret.clone(),
+        routing,
     };
     // Surface the secret + backend URL through env so MCP processes
     // spawned later (by ClaudeBridge::build_mcp_config) can read them

@@ -252,6 +252,7 @@ mod tests {
         // process-wide singleton across the test suite.
         let sm: &'static crate::session_manager::SessionManager =
             Box::leak(Box::new(crate::session_manager::SessionManager::for_tests()));
+        let routing = crate::services::routing::RoutingOrchestrator::with_empty_defaults(false);
         let state = AppState {
             auth: AuthState {
                 pool: pool.clone(),
@@ -261,6 +262,7 @@ mod tests {
             app_cfg: cfg,
             sm,
             internal_secret: Arc::new(secret.to_string()),
+            routing,
         };
         let app = axum::Router::new()
             .nest("/api/internal", router())

@@ -179,7 +179,7 @@ tiers = ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7"]
     async fn medium_picks_middle_tier() {
         let r = BuiltInRouter::new(matrix());
         // ~25 words → Medium bucket per intent classifier
-        let prompt: String = std::iter::repeat("word ").take(25).collect();
+        let prompt: String = "word ".repeat(25);
         let d = r
             .recommend(&task(&prompt, vec![AgentKind::Claude]), &[])
             .await

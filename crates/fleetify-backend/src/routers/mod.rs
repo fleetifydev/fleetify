@@ -26,6 +26,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 use crate::auth::AuthState;
+use crate::services::routing::RoutingOrchestrator;
 use crate::session_manager::SessionManager;
 
 #[derive(Clone)]
@@ -41,6 +42,11 @@ pub struct AppState {
     /// auth without exposing the user's bearer to a subprocess. Not
     /// routed past localhost — anything off-loopback ignores it.
     pub internal_secret: std::sync::Arc<String>,
+    /// Provider router orchestrator. Holds the active DecisionRouter +
+    /// ProxyGateway registries and the master `enabled` toggle. Chat /
+    /// dispatch flows consult this on every turn (when enabled) to pick
+    /// (agent, model) and resolve proxy base URLs / headers.
+    pub routing: std::sync::Arc<RoutingOrchestrator>,
 }
 
 impl FromRef<AppState> for AuthState {
