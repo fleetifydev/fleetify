@@ -158,10 +158,29 @@ pub fn run() {
             .build()?;
 
             // Embedded backend (no child process, no health-poll).
+            // Compose RoutingSetup from fleet.config.json + the per-user
+            // keychain BEFORE spawning serve(): the backend stays Tauri-
+            // agnostic but starts with external routers (Not Diamond,
+            // Weave, LiteLLM) already registered when the user had them
+            // connected. Fresh installs hand over an empty setup and
+            // the backend boots with builtin + DirectGateway only.
             let addr: SocketAddr = "127.0.0.1:8765".parse().unwrap();
             let sd = static_dir();
+            let app_data_dir = app.path().app_data_dir().ok();
             tauri::async_runtime::spawn(async move {
-                match fleetify_backend::serve(addr, sd).await {
+                let routing_setup = match app_data_dir {
+                    Some(dir) => {
+                        let uid = shell::auth::get_user_id().await;
+                        shell::routing_setup::build(&dir, uid.as_deref())
+                    }
+                    None => {
+                        tracing::warn!(
+                            "app_data_dir unavailable; routing orchestrator boots with defaults"
+                        );
+                        fleetify_backend::services::routing::setup::RoutingSetup::default()
+                    }
+                };
+                match fleetify_backend::serve_with_routing_setup(addr, sd, routing_setup).await {
                     Ok(handle) => {
                         std::mem::forget(handle);
                         tracing::info!("embedded backend up on {addr}");

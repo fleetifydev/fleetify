@@ -8,6 +8,7 @@ pub mod intent;
 pub mod orchestrator;
 pub mod persist;
 pub mod proxy;
+pub mod setup;
 pub mod traits;
 
 pub use orchestrator::{RouteOutcome, RoutingOrchestrator};

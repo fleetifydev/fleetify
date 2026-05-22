@@ -130,6 +130,32 @@ impl RoutingOrchestrator {
         g.base_url(provider).map(|u| (u, g.extra_headers()))
     }
 
+    /// Register an external decision router after construction. Used by
+    /// the startup hydration path (Task 20) to plug in Not Diamond / Weave
+    /// once their credentials are resolved on the Tauri side. Registering
+    /// the builtin id is a no-op (the registry refuses to overwrite it).
+    pub fn register_decision(&self, r: Arc<dyn DecisionRouter>) {
+        self.decision.write().register(r);
+    }
+
+    /// Register an external proxy gateway after construction. Mirrors
+    /// `register_decision` for the proxy side (Weave / LiteLLM).
+    pub fn register_proxy(&self, g: Arc<dyn ProxyGateway>) {
+        self.proxy.write().register(g);
+    }
+
+    /// Set the active decision router by id. Errors if `id` isn't
+    /// registered. Used by startup hydration after `register_decision`.
+    pub fn set_active_decision(&self, id: &str) -> Result<(), String> {
+        self.decision.write().set_active(id)
+    }
+
+    /// Set the active proxy gateway by id. Errors if `id` isn't
+    /// registered. Used by startup hydration after `register_proxy`.
+    pub fn set_active_proxy(&self, id: &str) -> Result<(), String> {
+        self.proxy.write().set_active(id)
+    }
+
     /// Look up a router (decision OR proxy) by id and call its health_check.
     /// Used by the `test_router` IPC command (Task 20 wiring).
     pub async fn test_router(&self, id: &str) -> Result<bool, String> {
@@ -350,5 +376,28 @@ tiers = ["claude-haiku-4-5", "claude-sonnet-4-6"]
     async fn test_router_direct_ok() {
         let orch = make_orch();
         assert_eq!(orch.test_router("none-proxy").await.ok(), Some(true));
+    }
+
+    #[tokio::test]
+    async fn external_router_register_and_activate() {
+        use crate::services::routing::decision::notdiamond::NotDiamondRouter;
+        let orch = RoutingOrchestrator::with_empty_defaults(true);
+        let r = Arc::new(NotDiamondRouter::new("test-key".into()));
+        orch.register_decision(r);
+        assert!(orch.set_active_decision("notdiamond").is_ok());
+        assert!(orch.set_active_decision("does-not-exist-router").is_err());
+    }
+
+    #[tokio::test]
+    async fn external_proxy_register_and_activate() {
+        use crate::services::routing::proxy::litellm::LiteLLMGateway;
+        let orch = RoutingOrchestrator::with_empty_defaults(true);
+        let g = Arc::new(LiteLLMGateway::new(
+            "test-key".into(),
+            "http://localhost:4000".into(),
+        ));
+        orch.register_proxy(g);
+        assert!(orch.set_active_proxy("litellm").is_ok());
+        assert!(orch.set_active_proxy("does-not-exist-proxy").is_err());
     }
 }
