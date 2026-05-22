@@ -2,6 +2,7 @@
 //! Spec: docs/superpowers/specs/2026-05-22-provider-router-design.md
 
 pub mod traits;
+pub mod capability_matrix;
 
 pub use traits::{
     AgentCandidate, AgentKind, ComplexityHint, DecisionRouter, DecisionSource, Message,
