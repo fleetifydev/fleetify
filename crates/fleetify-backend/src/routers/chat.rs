@@ -440,12 +440,17 @@ async fn run_send_flow(
             }
             AnyBridge::OpenAI(Arc::new(b))
         }
-        "gemini" => AnyBridge::Gemini(Arc::new(GeminiBridge::new(
-            sid.clone(),
-            agent_cwd.clone(),
-            session.permission_mode.clone(),
-            session.model_name.clone(),
-        ))),
+        "gemini" => {
+            let is_staff = session.title == "Staff Agent";
+            AnyBridge::Gemini(Arc::new(GeminiBridge::new(
+                sid.clone(),
+                agent_cwd.clone(),
+                session.permission_mode.clone(),
+                session.model_name.clone(),
+                is_staff,
+                session.agent_template.clone(),
+            )))
+        }
         "codex" => {
             let is_staff = session.title == "Staff Agent";
             AnyBridge::Codex(Arc::new(CodexBridge::new(
@@ -1364,6 +1369,8 @@ async fn run_dispatched_task(
             target_cwd.clone(),
             target.permission_mode.clone(),
             target.model_name.clone(),
+            false, // dispatched tasks always land on non-staff agents
+            target.agent_template.clone(),
         ))),
         "codex" => AnyBridge::Codex(std::sync::Arc::new(CodexBridge::new(
             target_id.clone(),
