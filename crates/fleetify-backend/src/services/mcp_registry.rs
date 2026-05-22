@@ -91,12 +91,12 @@ pub fn get(name: &str) -> Option<Value> {
 pub const FLEET_BUILTIN_NAMES: &[&str] =
     &["fleet_memory", "fleet_dispatch", "fleet_reveng"];
 
-// ClaudeBridge::builtin_mcp_config now owns the basename→binary
-// mapping inline. Older versions exposed `builtin_basename` here for
+// `services::mcp_dispatch::builtin_mcp_config` now owns the basename→binary
+// mapping. Older versions exposed `builtin_basename` here for
 // `ensure_fleet_builtins` to seed the registry; both have been
 // retired (builtins are spawn-time-only) but the constant + the
 // resolve_builtin_path helper below stay because integration tests +
-// the bridge still rely on them.
+// the bridges still rely on them.
 
 /// Resolve a builtin MCP binary to an absolute path so claude/gemini/
 /// codex CLIs can spawn it without depending on PATH. Resolution order:

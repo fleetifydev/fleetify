@@ -273,6 +273,8 @@ pub fn to_acp_servers(map: &BTreeMap<String, Value>) -> Value {
                     let converted = dict_to_name_value_array(v);
                     entry.insert(k.clone(), converted);
                 }
+                // Internal marker — not part of the ACP wire format.
+                "builtin" => {}
                 _ => {
                     entry.insert(k.clone(), v.clone());
                 }
@@ -562,5 +564,28 @@ mod tests {
         assert_eq!(arr[0]["url"], "https://x");
         // No `headers` field present in input → no `headers` field in output.
         assert!(arr[0].get("headers").is_none());
+    }
+
+    #[test]
+    fn acp_servers_strips_internal_builtin_marker() {
+        let mut map = BTreeMap::new();
+        map.insert(
+            "fleet_memory".to_string(),
+            json!({
+                "type": "stdio",
+                "command": "/path/to/fleet-memory-mcp",
+                "args": [],
+                "env": {"FLEETIFY_SESSION_ID": "sess-1"},
+                "builtin": true,
+            }),
+        );
+        let arr = to_acp_servers(&map);
+        let arr = arr.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        // `builtin` field is internal; must not appear in ACP wire format.
+        assert!(arr[0].get("builtin").is_none());
+        // Other fields pass through unchanged.
+        assert_eq!(arr[0]["type"], "stdio");
+        assert_eq!(arr[0]["command"], "/path/to/fleet-memory-mcp");
     }
 }

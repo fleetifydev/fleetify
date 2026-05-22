@@ -178,6 +178,7 @@ impl CodexBridge {
             target: "codex",
             session_id = %self.session_id,
             is_staff = self.is_staff,
+            agent_template = self.agent_template.as_deref().unwrap_or(""),
             mcp_mounted = ?mcp_map.keys().collect::<Vec<_>>(),
             mcp_arg_count = mcp_args.len(),
             "codex MCP args built"
