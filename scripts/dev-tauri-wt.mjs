@@ -97,6 +97,13 @@ function main() {
     VITE_PORT: String(vitePort),
     FLEETIFY_BACKEND_PORT: String(backendPort),
     FLEETIFY_HOME: fleetifyHome,
+    // No-auth mode by default — worktree dev sessions shouldn't lock
+    // the user out of their primary ~/.fleetify cloud session, and
+    // signing into the real OIDC issuer from N parallel processes
+    // burns tokens. Override with `FLEETIFY_NOAUTH=0 npm run
+    // dev:tauri:wt` if you actually need the real auth flow from a
+    // worktree.
+    FLEETIFY_NOAUTH: process.env.FLEETIFY_NOAUTH ?? '1',
     // Mirror dev:tauri's OIDC env. The auth issuer / dashboard URL
     // don't shift per-slot (they're shared dev endpoints); only the
     // RESOURCE / AUDIENCE follow the backend port.
@@ -111,6 +118,7 @@ function main() {
   console.log(`  VITE_PORT=${vitePort}`);
   console.log(`  FLEETIFY_BACKEND_PORT=${backendPort}`);
   console.log(`  FLEETIFY_HOME=${fleetifyHome}`);
+  console.log(`  FLEETIFY_NOAUTH=${env.FLEETIFY_NOAUTH}`);
 
   // `npx tauri dev` so the user's local @tauri-apps/cli is honoured
   // (matches the other dev scripts in package.json). `shell: true` is
