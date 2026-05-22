@@ -36,9 +36,8 @@ use uuid::Uuid;
 /// `bridges::codex_client::ApprovalHandler` and Gemini's
 /// `on_permission_request` so each bridge can adapt with a thin
 /// closure.
-pub type PermissionHandler = Arc<
-    dyn Fn(String, Value) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync,
->;
+pub type PermissionHandler =
+    Arc<dyn Fn(String, Value) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync>;
 
 type PendingMap = HashMap<String, oneshot::Sender<bool>>;
 
@@ -80,19 +79,12 @@ impl PermissionSession {
     }
 
     /// Internal: actually run a single permission round-trip.
-    async fn request<F>(
-        &self,
-        tool_name: String,
-        tool_input: Value,
-        send_payload: Arc<F>,
-    ) -> bool
+    async fn request<F>(&self, tool_name: String, tool_input: Value, send_payload: Arc<F>) -> bool
     where
         F: Fn(Value) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync + 'static,
     {
         // Fast-path: always-allow set hit.
-        if !tool_name.is_empty()
-            && self.always_allow.lock().await.contains(&tool_name)
-        {
+        if !tool_name.is_empty() && self.always_allow.lock().await.contains(&tool_name) {
             tracing::debug!(target: "perm", tool = %tool_name, "auto-allow (always_allow)");
             return true;
         }
@@ -141,10 +133,7 @@ impl PermissionSession {
         if tool_name.is_empty() {
             return;
         }
-        self.always_allow
-            .lock()
-            .await
-            .insert(tool_name.to_string());
+        self.always_allow.lock().await.insert(tool_name.to_string());
     }
 
     /// Resolve every currently-pending request with `false`. Used in
@@ -204,22 +193,14 @@ pub fn format_command(tool_name: &str, tool_input: &Value) -> String {
         }
         "glob" | "grep" => get("pattern"),
         "webfetch" | "websearch" => first_nonempty(&[get("url"), get("query")]),
-        "askuserquestion" => first_nonempty(&[
-            get("question"),
-            get("prompt"),
-            get("text"),
-        ])
-        .trim()
-        .to_string(),
-        "exitplanmode" => {
-            let plan = first_nonempty(&[
-                get("plan"),
-                get("message"),
-                get("summary"),
-                get("content"),
-            ])
+        "askuserquestion" => first_nonempty(&[get("question"), get("prompt"), get("text")])
             .trim()
-            .to_string();
+            .to_string(),
+        "exitplanmode" => {
+            let plan =
+                first_nonempty(&[get("plan"), get("message"), get("summary"), get("content")])
+                    .trim()
+                    .to_string();
             plan.chars().take(600).collect()
         }
         "enterplanmode" => String::new(),
@@ -313,9 +294,7 @@ mod tests {
         let s = Arc::new(PermissionSession::new());
         let h = s.make_handler(|_payload| Box::pin(async {}));
         let s2 = Arc::clone(&s);
-        let task = tokio::spawn(async move {
-            h("Bash".into(), json!({})).await
-        });
+        let task = tokio::spawn(async move { h("Bash".into(), json!({})).await });
         // Give the closure a beat to register itself in pending.
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         s2.fail_all_pending().await;

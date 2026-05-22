@@ -24,6 +24,27 @@ interface GitHubLinkPayload {
   connected_at: string;
 }
 
+interface RouterTileMetadata {
+  id: string;
+  display_name: string;
+  capabilities: ("decision" | "proxy")[];
+  connected: boolean;
+  active_for_decision: boolean;
+  active_for_proxy: boolean;
+}
+
+type RoutersListResult =
+  | { ok: true; tiles: RouterTileMetadata[]; enabled: boolean }
+  | { ok: false; error: string; tiles: RouterTileMetadata[]; enabled: boolean };
+
+type RoutersConnectResult =
+  | { ok: true }
+  | { ok: false; code: "NO_USER" | "KEYCHAIN" | "CONFIG"; error: string };
+
+type RoutersTestResult =
+  | { ok: true; always_available?: boolean; has_secret?: boolean }
+  | { ok: false; code: "NO_USER" | "NO_SECRET" | "KEYCHAIN"; error?: string };
+
 interface FleetConfig {
   onboardingComplete: boolean;
   apiKeys: {
@@ -260,6 +281,25 @@ interface Window {
       offLinkChanged: (cb: (payload: { link: GitHubLinkPayload | null }) => void) => void;
       onBrowserFallback: (cb: (payload: { url: string }) => void) => () => void;
       offBrowserFallback: (cb: (payload: { url: string }) => void) => void;
+    };
+
+    // ── Routers bridge (Settings → Routers tile management) ──
+    routers?: {
+      list: () => Promise<RoutersListResult>;
+      connect: (
+        id: string,
+        secret: string,
+        metadata: Record<string, unknown>,
+      ) => Promise<RoutersConnectResult>;
+      disconnect: (id: string) => Promise<{ ok: boolean }>;
+      setActive: (
+        category: "decision" | "proxy",
+        id: string,
+      ) => Promise<{ ok: boolean; error?: string }>;
+      setMasterToggle: (
+        enabled: boolean,
+      ) => Promise<{ ok: boolean; error?: string }>;
+      testRouter: (id: string) => Promise<RoutersTestResult>;
     };
   };
 }

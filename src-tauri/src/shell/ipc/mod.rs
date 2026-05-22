@@ -1407,6 +1407,173 @@ fn write_diagnostics_zip(
     Ok(bytes)
 }
 
+// ── Routers (Settings → Routers tile management) ───────────────────
+
+#[derive(serde::Serialize)]
+pub struct RouterTileMetadata {
+    pub id: String,
+    pub display_name: String,
+    pub capabilities: Vec<&'static str>,
+    pub connected: bool,
+    pub active_for_decision: bool,
+    pub active_for_proxy: bool,
+}
+
+#[tauri::command]
+pub async fn routers_list_routers(app: tauri::AppHandle) -> serde_json::Value {
+    let dir = match app.path().app_data_dir() {
+        Ok(d) => d,
+        Err(_) => {
+            return serde_json::json!({ "ok": false, "error": "no app data dir", "tiles": [], "enabled": false })
+        }
+    };
+    let cfg = config::load_config_from(&dir);
+    let routing = config::routing_from(&cfg);
+
+    // TODO(v1.1): replace this hardcoded list with a query against the
+    // live `RoutingOrchestrator`'s `DecisionRouterRegistry::list()` and
+    // `ProxyGatewayRegistry::list()`. The orchestrator owns the source
+    // of truth for which routers are actually registered, but it lives
+    // inside the embedded backend process and isn't directly reachable
+    // from this Tauri IPC layer — fixing this requires a backend HTTP
+    // endpoint (e.g. `GET /api/routing/registered`) and an internal
+    // fetch from here. Day-1 simplification: keep the list in sync with
+    // the four known routers + the direct gateway. See
+    // `docs/superpowers/test-plans/2026-05-22-provider-router-e2e.md`
+    // "Known Day-1 limitations" for the user-facing caveat.
+    let known: &[(&'static str, &'static str, &'static [&'static str])] = &[
+        ("builtin", "Built-in (Fleetify)", &["decision"]),
+        ("notdiamond", "Not Diamond", &["decision"]),
+        ("weave", "Weave Router", &["decision", "proxy"]),
+        ("litellm", "LiteLLM", &["proxy"]),
+        ("none-proxy", "None / Direct", &["proxy"]),
+    ];
+
+    let tiles: Vec<RouterTileMetadata> = known
+        .iter()
+        .map(|(id, name, caps)| {
+            let always_present = *id == "builtin" || *id == "none-proxy";
+            let connected = always_present
+                || routing
+                    .connected_routers
+                    .get(*id)
+                    .map(|r| r.connected)
+                    .unwrap_or(false);
+            RouterTileMetadata {
+                id: (*id).to_string(),
+                display_name: (*name).to_string(),
+                capabilities: caps.to_vec(),
+                connected,
+                active_for_decision: routing.active_decision_router == *id,
+                active_for_proxy: routing.active_proxy_gateway == *id,
+            }
+        })
+        .collect();
+
+    serde_json::json!({ "ok": true, "tiles": tiles, "enabled": routing.enabled })
+}
+
+#[tauri::command]
+pub async fn routers_connect(
+    app: tauri::AppHandle,
+    id: String,
+    secret: String,
+    metadata: serde_json::Value,
+) -> serde_json::Value {
+    let Some(uid) = auth::get_user_id().await else {
+        return serde_json::json!({ "ok": false, "code": "NO_USER", "error": "Fleetify sign-in required" });
+    };
+    if let Err(e) = crate::shell::routers_link::store_secret(&id, &uid, &secret) {
+        return serde_json::json!({ "ok": false, "code": "KEYCHAIN", "error": e });
+    }
+    if let Ok(dir) = app.path().app_data_dir() {
+        let mut cfg = config::load_config_from(&dir);
+        let mut routing = config::routing_from(&cfg);
+        routing.connected_routers.insert(
+            id.clone(),
+            config::ConnectedRouter {
+                connected: true,
+                metadata,
+            },
+        );
+        config::routing_set(&mut cfg, &routing);
+        if let Err(e) = config::save_config_to(&dir, &cfg) {
+            return serde_json::json!({ "ok": false, "code": "CONFIG", "error": e.to_string() });
+        }
+    }
+    serde_json::json!({ "ok": true })
+}
+
+#[tauri::command]
+pub async fn routers_disconnect(app: tauri::AppHandle, id: String) -> serde_json::Value {
+    if let Some(uid) = auth::get_user_id().await {
+        let _ = crate::shell::routers_link::delete_secret(&id, &uid);
+    }
+    if let Ok(dir) = app.path().app_data_dir() {
+        let mut cfg = config::load_config_from(&dir);
+        let mut routing = config::routing_from(&cfg);
+        routing.connected_routers.remove(&id);
+        if routing.active_decision_router == id {
+            routing.active_decision_router = "builtin".into();
+        }
+        if routing.active_proxy_gateway == id {
+            routing.active_proxy_gateway = "none-proxy".into();
+        }
+        config::routing_set(&mut cfg, &routing);
+        let _ = config::save_config_to(&dir, &cfg);
+    }
+    serde_json::json!({ "ok": true })
+}
+
+#[tauri::command]
+pub async fn routers_set_active(
+    app: tauri::AppHandle,
+    category: String,
+    id: String,
+) -> serde_json::Value {
+    let Ok(dir) = app.path().app_data_dir() else {
+        return serde_json::json!({ "ok": false, "error": "no app data dir" });
+    };
+    let mut cfg = config::load_config_from(&dir);
+    let mut routing = config::routing_from(&cfg);
+    match category.as_str() {
+        "decision" => routing.active_decision_router = id,
+        "proxy" => routing.active_proxy_gateway = id,
+        _ => return serde_json::json!({ "ok": false, "error": "invalid category" }),
+    }
+    config::routing_set(&mut cfg, &routing);
+    let _ = config::save_config_to(&dir, &cfg);
+    serde_json::json!({ "ok": true })
+}
+
+#[tauri::command]
+pub async fn routers_set_master_toggle(app: tauri::AppHandle, enabled: bool) -> serde_json::Value {
+    let Ok(dir) = app.path().app_data_dir() else {
+        return serde_json::json!({ "ok": false, "error": "no app data dir" });
+    };
+    let mut cfg = config::load_config_from(&dir);
+    let mut routing = config::routing_from(&cfg);
+    routing.enabled = enabled;
+    config::routing_set(&mut cfg, &routing);
+    let _ = config::save_config_to(&dir, &cfg);
+    serde_json::json!({ "ok": true })
+}
+
+#[tauri::command]
+pub async fn routers_test_router(id: String) -> serde_json::Value {
+    if id == "builtin" || id == "none-proxy" {
+        return serde_json::json!({ "ok": true, "always_available": true });
+    }
+    let Some(uid) = auth::get_user_id().await else {
+        return serde_json::json!({ "ok": false, "code": "NO_USER" });
+    };
+    match crate::shell::routers_link::read_secret(&id, &uid) {
+        Ok(Some(_)) => serde_json::json!({ "ok": true, "has_secret": true }),
+        Ok(None) => serde_json::json!({ "ok": false, "code": "NO_SECRET" }),
+        Err(e) => serde_json::json!({ "ok": false, "code": "KEYCHAIN", "error": e }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2,6 +2,7 @@
 //! `setConfig`. Faithful in spirit to the Electron `electron-store`-style
 //! JSON-on-disk used by the original.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use serde_json::{json, Value};
@@ -29,6 +30,63 @@ pub fn save_config_to(path: &Path, cfg: &Value) -> std::io::Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RoutingConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_decision_router")]
+    pub active_decision_router: String,
+    #[serde(default = "default_proxy_gateway")]
+    pub active_proxy_gateway: String,
+    #[serde(default)]
+    pub connected_routers: HashMap<String, ConnectedRouter>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConnectedRouter {
+    pub connected: bool,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+}
+
+fn default_decision_router() -> String {
+    "builtin".into()
+}
+fn default_proxy_gateway() -> String {
+    "none-proxy".into()
+}
+
+impl Default for RoutingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            active_decision_router: default_decision_router(),
+            active_proxy_gateway: default_proxy_gateway(),
+            connected_routers: HashMap::new(),
+        }
+    }
+}
+
+/// Read the `"routing"` section from a config Value, defaulting when absent or invalid.
+pub fn routing_from(cfg: &Value) -> RoutingConfig {
+    cfg.get("routing")
+        .and_then(|v| serde_json::from_value::<RoutingConfig>(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// Replace the `"routing"` section in a config Value.
+pub fn routing_set(cfg: &mut Value, routing: &RoutingConfig) {
+    let val = serde_json::to_value(routing).unwrap_or_else(|_| json!({}));
+    match cfg {
+        Value::Object(map) => {
+            map.insert("routing".into(), val);
+        }
+        _ => {
+            *cfg = json!({ "routing": val });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -52,5 +110,52 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join(CONFIG_FILE), "{not valid json").unwrap();
         assert_eq!(load_config_from(tmp.path()), json!({}));
+    }
+
+    #[test]
+    fn routing_section_round_trip() {
+        let mut cfg = json!({});
+        let mut r = RoutingConfig {
+            enabled: true,
+            active_decision_router: "notdiamond".into(),
+            active_proxy_gateway: "weave".into(),
+            ..Default::default()
+        };
+        r.connected_routers.insert(
+            "notdiamond".into(),
+            ConnectedRouter {
+                connected: true,
+                metadata: json!({ "workspace_id": "ws_1" }),
+            },
+        );
+        routing_set(&mut cfg, &r);
+
+        let back = routing_from(&cfg);
+        assert!(back.enabled);
+        assert_eq!(back.active_decision_router, "notdiamond");
+        assert_eq!(back.active_proxy_gateway, "weave");
+        assert!(back.connected_routers.contains_key("notdiamond"));
+        assert_eq!(
+            back.connected_routers["notdiamond"].metadata,
+            json!({ "workspace_id": "ws_1" })
+        );
+    }
+
+    #[test]
+    fn routing_section_defaults_when_missing() {
+        let cfg = json!({ "theme": "dark" });
+        let r = routing_from(&cfg);
+        assert!(!r.enabled);
+        assert_eq!(r.active_decision_router, "builtin");
+        assert_eq!(r.active_proxy_gateway, "none-proxy");
+        assert!(r.connected_routers.is_empty());
+    }
+
+    #[test]
+    fn routing_section_defaults_when_corrupt() {
+        let cfg = json!({ "routing": "not an object" });
+        let r = routing_from(&cfg);
+        assert!(!r.enabled);
+        assert_eq!(r.active_decision_router, "builtin");
     }
 }

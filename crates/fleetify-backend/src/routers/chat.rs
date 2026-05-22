@@ -229,14 +229,8 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
                     .and_then(|x| x.as_str())
                     .unwrap_or("")
                     .to_string();
-                let approved = v
-                    .get("approved")
-                    .and_then(|x| x.as_bool())
-                    .unwrap_or(false);
-                let always = v
-                    .get("always")
-                    .and_then(|x| x.as_bool())
-                    .unwrap_or(false);
+                let approved = v.get("approved").and_then(|x| x.as_bool()).unwrap_or(false);
+                let always = v.get("always").and_then(|x| x.as_bool()).unwrap_or(false);
                 let tool_name = v
                     .get("tool_name")
                     .and_then(|x| x.as_str())
@@ -364,7 +358,15 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
                 let streaming2 = streaming.clone();
                 let perm_session2 = perm_session.clone();
                 tokio::spawn(async move {
-                    run_send_flow(st2, sink2, bridges2.clone(), session, user_text, perm_session2).await;
+                    run_send_flow(
+                        st2,
+                        sink2,
+                        bridges2.clone(),
+                        session,
+                        user_text,
+                        perm_session2,
+                    )
+                    .await;
                     streaming2.lock().await.remove(&sid);
                     bridges2.lock().await.remove(&sid);
                 });
@@ -597,8 +599,7 @@ async fn run_send_flow(
             // handler we register in `permission_registry` just below.
             // Staff/acceptEdits/bypass paths still skip the dialog.
             if !is_staff && session.permission_mode == "default" {
-                let handler =
-                    build_permission_handler(&permission_session, &sink, &sid);
+                let handler = build_permission_handler(&permission_session, &sink, &sid);
                 st.permission_registry
                     .lock()
                     .await
@@ -705,7 +706,90 @@ async fn run_send_flow(
         text.clone()
     };
 
-    let mut rx = match any_bridge.send_message(&effective_text).await {
+    // ── Provider routing per turn (Task 16) ──
+    // Three branches:
+    //   * session already has a pin    → reuse it, no routing call
+    //   * orchestrator disabled        → manual fallback to session.tool/model
+    //   * enabled and no prior pin     → route(), persist decision, pin session
+    // The resolution drives BridgeContext.model_override + the routing
+    // decision id we pass to the cost emitter at the end of the turn.
+    let route_task = crate::services::routing::traits::RoutingTask {
+        flow: crate::services::routing::traits::TaskFlow::Chat {
+            session_id: sid.clone(),
+        },
+        user_prompt: text.clone(),
+        conversation_history: None,
+        workspace_context: crate::services::routing::traits::WorkspaceHints::default(),
+        user_hint: None,
+        allowed_agents: match session.tool.as_str() {
+            "claude" => vec![crate::services::routing::traits::AgentKind::Claude],
+            "openai" => vec![crate::services::routing::traits::AgentKind::OpenAI],
+            "gemini" => vec![crate::services::routing::traits::AgentKind::Gemini],
+            "codex" => vec![crate::services::routing::traits::AgentKind::Codex],
+            _ => vec![crate::services::routing::traits::AgentKind::Claude],
+        },
+        budget_remaining: None,
+    };
+    let resolution = crate::services::routing::persist::resolve_routing_for_turn(
+        &st.auth.pool,
+        &st.routing,
+        &sid,
+        &session.tool,
+        session.model_name.as_deref(),
+        route_task,
+    )
+    .await;
+    // If routing picked a DIFFERENT agent than the bridge we already
+    // constructed from session.tool, warn — we can override the model
+    // via BridgeContext but cannot swap the bridge identity mid-turn.
+    // Full bridge-swap is deferred (see task notes).
+    let bridge_tool_str = match session.tool.as_str() {
+        "claude" | "openai" | "gemini" | "codex" => session.tool.as_str(),
+        _ => "claude",
+    };
+    let resolution_tool_str =
+        crate::services::routing::persist::agent_kind_to_str(resolution.agent);
+    if resolution_tool_str != bridge_tool_str {
+        tracing::warn!(
+            target: "fleet-backend",
+            session_id = %sid,
+            bridge_agent = bridge_tool_str,
+            routed_agent = resolution_tool_str,
+            "routing: decision picked a different agent than session.tool; \
+             keeping bridge identity, applying model override only"
+        );
+    }
+
+    // Build the BridgeContext: model override is always set (so the
+    // bridge uses the pinned / freshly-routed tier). Proxy gateway
+    // resolution depends on the routed agent's provider family.
+    let provider_for_proxy = match resolution.agent {
+        crate::services::routing::traits::AgentKind::Claude => {
+            crate::services::routing::traits::ProviderKind::Anthropic
+        }
+        crate::services::routing::traits::AgentKind::OpenAI
+        | crate::services::routing::traits::AgentKind::Codex => {
+            crate::services::routing::traits::ProviderKind::OpenAI
+        }
+        crate::services::routing::traits::AgentKind::Gemini => {
+            crate::services::routing::traits::ProviderKind::Google
+        }
+    };
+    let mut bridge_ctx = crate::bridges::BridgeContext {
+        model_override: if resolution.model.is_empty() {
+            None
+        } else {
+            Some(resolution.model.clone())
+        },
+        ..Default::default()
+    };
+    if let Some((url, headers)) = st.routing.proxy_for(provider_for_proxy) {
+        bridge_ctx.base_url_override = Some(url);
+        bridge_ctx.extra_headers = headers;
+    }
+    let decision_id_opt = resolution.decision_id.clone();
+
+    let mut rx = match any_bridge.send_message(&effective_text, bridge_ctx).await {
         Ok(rx) => rx,
         Err(e) => {
             send_json(
@@ -975,6 +1059,7 @@ async fn run_send_flow(
         // Cloud telemetry — fire-and-forget into the outbox (drained by
         // the WS client when it lands).
         let sid_owned = sid.clone();
+        let decision_id_for_cost = decision_id_opt.clone();
         tokio::spawn(async move {
             let _ = crate::services::telemetry::emit_cost(
                 &sid_owned,
@@ -985,6 +1070,7 @@ async fn run_send_flow(
                 cache_w,
                 cost_usd,
                 now_utc,
+                decision_id_for_cost.as_deref(),
             )
             .await;
         });
@@ -1162,6 +1248,20 @@ async fn process_direct_dispatches(
         target_chain.push(staff_sid.to_string());
         st.sm.set_dispatch_chain(&target.id, target_chain);
 
+        // Layer-2 routing for this @mention dispatch — see the loopback
+        // /api/internal/dispatch path for the rationale. Reuses the same
+        // helper so all dispatch flows share decision-row provenance.
+        let routing_res = crate::services::routing::persist::resolve_routing_for_dispatch(
+            &st.auth.pool,
+            &st.routing,
+            &target.id,
+            &target.id,
+            &target.tool,
+            target.model_name.as_deref(),
+            &full_task,
+        )
+        .await;
+
         // Background bridge run. dispatch_result + live target stream
         // flow back via SessionManager fanout (subscribed on the WS
         // handler's subscribe path).
@@ -1178,6 +1278,7 @@ async fn process_direct_dispatches(
                 target_owned,
                 full_task,
                 task_for_card,
+                routing_res,
             )
             .await;
         });
@@ -1342,6 +1443,20 @@ async fn handle_staff_dispatch_tokens(
         target_chain.push(staff_sid.to_string());
         st.sm.set_dispatch_chain(&target.id, target_chain);
 
+        // Layer-2 routing for the staff [[DISPATCH:]] path. Same helper
+        // as the @mention DIRECT_DISPATCH and the /api/internal/dispatch
+        // loopback — one routing call per dispatched task.
+        let routing_res = crate::services::routing::persist::resolve_routing_for_dispatch(
+            &st.auth.pool,
+            &st.routing,
+            &target.id,
+            &target.id,
+            &target.tool,
+            target.model_name.as_deref(),
+            &full_task,
+        )
+        .await;
+
         let pool = st.auth.pool.clone();
         let sm = st.sm;
         let staff_sid_owned = staff_sid.to_string();
@@ -1355,6 +1470,7 @@ async fn handle_staff_dispatch_tokens(
                 target_owned,
                 full_task,
                 task_for_card,
+                routing_res,
             )
             .await;
         });
@@ -1460,8 +1576,18 @@ pub(crate) async fn run_dispatched_task_internal(
     target: Session,
     task: String,
     task_for_card: String,
+    routing_res: crate::services::routing::persist::RoutingResolution,
 ) {
-    run_dispatched_task(pool, sm, caller_sid, target, task, task_for_card).await
+    run_dispatched_task(
+        pool,
+        sm,
+        caller_sid,
+        target,
+        task,
+        task_for_card,
+        routing_res,
+    )
+    .await
 }
 
 /// Hard wall-clock cap on a single dispatched run. Matches the Python
@@ -1480,6 +1606,7 @@ async fn run_dispatched_task(
     target: Session,
     task: String,
     task_for_card: String,
+    routing_res: crate::services::routing::persist::RoutingResolution,
 ) {
     let target_id = target.id.clone();
 
@@ -1643,7 +1770,21 @@ async fn run_dispatched_task(
         }),
     );
 
-    let mut rx = match any_bridge.send_message(&task).await {
+    // Routing-aware bridge context: when the orchestrator picked a tier
+    // for this dispatch, `routing_res.model` is non-empty and
+    // base_url/headers carry any active proxy gateway. When routing was
+    // disabled or pass-through, all three collapse to the bridge's own
+    // defaults (model = target.model_name, direct provider URLs).
+    let bridge_ctx = crate::bridges::BridgeContext {
+        base_url_override: routing_res.base_url_override.clone(),
+        extra_headers: routing_res.extra_headers.clone(),
+        model_override: if routing_res.model.is_empty() {
+            None
+        } else {
+            Some(routing_res.model.clone())
+        },
+    };
+    let mut rx = match any_bridge.send_message(&task, bridge_ctx).await {
         Ok(rx) => rx,
         Err(e) => {
             let _ = sm.update_status(&pool, &target_id, "error").await;
@@ -1945,6 +2086,46 @@ async fn run_dispatched_task(
         .bind(&target_id)
         .execute(&pool)
         .await;
+
+        // Cloud telemetry — same shape as the chat-handle path, with
+        // `routing_decision_id` plumbed through from the dispatch's
+        // RoutingResolution so analytics can join the cost back to the
+        // routing decision that picked the (agent, model). Fire-and-forget
+        // into the outbox; the WS client drains it when it lands.
+        let in_t = usage
+            .get("input_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let out_t = usage
+            .get("output_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let cache_r = usage
+            .get("cache_read_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let cache_w = usage
+            .get("cache_write_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let now_utc = chrono::Utc::now();
+        let cost_model = model_name.clone().unwrap_or_else(|| "unknown".into());
+        let target_id_owned = target_id.clone();
+        let decision_id_for_cost = routing_res.decision_id.clone();
+        tokio::spawn(async move {
+            let _ = crate::services::telemetry::emit_cost(
+                &target_id_owned,
+                &cost_model,
+                in_t,
+                out_t,
+                cache_r,
+                cache_w,
+                cost_usd,
+                now_utc,
+                decision_id_for_cost.as_deref(),
+            )
+            .await;
+        });
     }
     let final_status = if timed_out { "error" } else { "idle" };
     let _ = sm.update_status(&pool, &target_id, final_status).await;

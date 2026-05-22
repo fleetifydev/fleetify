@@ -101,7 +101,29 @@ async fn normalize_legacy_verbatim_project_paths(pool: &sqlx::SqlitePool) {
 
 /// Bind `addr` and start serving on a background task. `static_dir` is the
 /// built React asset directory for single-origin serving (`None` = API only).
+///
+/// Convenience wrapper around `serve_with_routing_setup` for callers that
+/// don't have hydrated router credentials (tests, headless dev runs).
+/// External routers stay un-registered — only builtin + DirectGateway are
+/// available, and the master toggle defaults to OFF.
 pub async fn serve(addr: SocketAddr, static_dir: Option<PathBuf>) -> anyhow::Result<ServerHandle> {
+    serve_with_routing_setup(
+        addr,
+        static_dir,
+        services::routing::setup::RoutingSetup::default(),
+    )
+    .await
+}
+
+/// Bind `addr` and start serving, hydrating the routing orchestrator with
+/// the supplied `routing_setup`. The Tauri shell composes the setup from
+/// `fleet.config.json` + the per-user keychain before invoking this so
+/// the backend stays Tauri-agnostic.
+pub async fn serve_with_routing_setup(
+    addr: SocketAddr,
+    static_dir: Option<PathBuf>,
+    routing_setup: services::routing::setup::RoutingSetup,
+) -> anyhow::Result<ServerHandle> {
     // Lifespan parity: one-shot ~/.fleet → ~/.fleetify migration.
     services::migration::migrate_fleet_to_fleetify();
 
@@ -131,6 +153,132 @@ pub async fn serve(addr: SocketAddr, static_dir: Option<PathBuf>) -> anyhow::Res
         }
         Arc::new(s)
     };
+    // Routing orchestrator: BuiltInRouter (capability-matrix backed) +
+    // DirectGateway are the always-present defaults. External routers
+    // (Not Diamond, Weave, LiteLLM) are hydrated below from `routing_setup`
+    // — the Tauri shell composed it from fleet.config.json + the per-user
+    // keychain before calling us. Master toggle reflects the user's saved
+    // choice (default OFF for fresh installs).
+    let routing = {
+        use parking_lot::RwLock;
+        use services::routing::capability_matrix::CapabilityMatrix;
+        use services::routing::decision::builtin::BuiltInRouter;
+        use services::routing::decision::registry::DecisionRouterRegistry;
+        use services::routing::proxy::direct::DirectGateway;
+        use services::routing::proxy::registry::ProxyGatewayRegistry;
+        use services::routing::traits::{DecisionRouter, ProxyGateway};
+        use services::routing::RoutingOrchestrator;
+
+        // Capability matrix is best-effort: a missing or malformed
+        // config/agents.toml shouldn't kill the backend. The built-in
+        // router degrades to "no candidates" (still returns a defensive
+        // fallback decision) when its matrix is empty.
+        let matrix = CapabilityMatrix::load_default().unwrap_or_else(|e| {
+            tracing::warn!(
+                target: "fleet-backend",
+                error = %e,
+                "routing: capability matrix load failed; using empty matrix"
+            );
+            CapabilityMatrix {
+                agents: Default::default(),
+            }
+        });
+        let builtin: Arc<dyn DecisionRouter> = Arc::new(BuiltInRouter::new(matrix));
+        let dr = Arc::new(RwLock::new(DecisionRouterRegistry::new(builtin)));
+        let direct: Arc<dyn ProxyGateway> = Arc::new(DirectGateway);
+        let pr = Arc::new(RwLock::new(ProxyGatewayRegistry::new(direct)));
+        let orch = Arc::new(RoutingOrchestrator::new(dr, pr, false));
+
+        // Hydrate external routers from the supplied setup. Walk the
+        // resolved-credentials map, register the right router type per
+        // known id, then apply the saved active selections + master
+        // toggle. Unknown ids are logged + skipped so a stale config
+        // entry can't brick the backend.
+        {
+            use services::routing::decision::notdiamond::NotDiamondRouter;
+            use services::routing::decision::weave::{WeaveDecisionRouter, DEFAULT_MANAGED_URL};
+            use services::routing::proxy::litellm::LiteLLMGateway;
+            use services::routing::proxy::weave::WeaveProxyGateway;
+
+            for (id, cred) in routing_setup.resolved.iter() {
+                match id.as_str() {
+                    "notdiamond" => {
+                        let r = NotDiamondRouter::new(cred.api_key.clone());
+                        orch.register_decision(Arc::new(r));
+                    }
+                    "weave" => {
+                        let base = cred
+                            .base_url
+                            .clone()
+                            .unwrap_or_else(|| DEFAULT_MANAGED_URL.to_string());
+                        let dec =
+                            WeaveDecisionRouter::with_base_url(cred.api_key.clone(), base.clone());
+                        let prx = WeaveProxyGateway::new(cred.api_key.clone(), base);
+                        orch.register_decision(Arc::new(dec));
+                        orch.register_proxy(Arc::new(prx));
+                    }
+                    "litellm" => {
+                        let base = cred
+                            .base_url
+                            .clone()
+                            .unwrap_or_else(|| "http://localhost:4000".to_string());
+                        let prx = LiteLLMGateway::new(cred.api_key.clone(), base);
+                        orch.register_proxy(Arc::new(prx));
+                    }
+                    other => {
+                        tracing::warn!(
+                            target: "fleet-backend",
+                            router_id = %other,
+                            "routing: unknown router id in setup; skipping"
+                        );
+                    }
+                }
+            }
+
+            // Apply saved active selections — log+ignore failures so a
+            // disconnected router that's still pinned in config falls
+            // back to builtin / none-proxy via the registry's `active()`
+            // accessor (which defensively returns the immortal default
+            // when the saved active id is unregistered).
+            if !routing_setup.active_decision_router.is_empty()
+                && routing_setup.active_decision_router != "builtin"
+            {
+                if let Err(e) = orch.set_active_decision(&routing_setup.active_decision_router) {
+                    tracing::warn!(
+                        target: "fleet-backend",
+                        router_id = %routing_setup.active_decision_router,
+                        error = %e,
+                        "routing: saved active decision router not registered; using builtin"
+                    );
+                }
+            }
+            if !routing_setup.active_proxy_gateway.is_empty()
+                && routing_setup.active_proxy_gateway != "none-proxy"
+            {
+                if let Err(e) = orch.set_active_proxy(&routing_setup.active_proxy_gateway) {
+                    tracing::warn!(
+                        target: "fleet-backend",
+                        gateway_id = %routing_setup.active_proxy_gateway,
+                        error = %e,
+                        "routing: saved active proxy gateway not registered; using none-proxy"
+                    );
+                }
+            }
+
+            orch.set_enabled(routing_setup.enabled);
+            tracing::info!(
+                target: "fleet-backend",
+                enabled = routing_setup.enabled,
+                resolved = routing_setup.resolved.len(),
+                active_decision = %routing_setup.active_decision_router,
+                active_proxy = %routing_setup.active_proxy_gateway,
+                "routing: orchestrator hydrated"
+            );
+        }
+
+        orch
+    };
+
     let state = routers::AppState {
         auth: auth::AuthState {
             pool,
@@ -140,6 +288,7 @@ pub async fn serve(addr: SocketAddr, static_dir: Option<PathBuf>) -> anyhow::Res
         app_cfg: Arc::new(cfg),
         sm: session_manager::session_manager(),
         internal_secret: internal_secret.clone(),
+        routing,
         permission_registry: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
     // Surface the secret + backend URL through env so MCP processes

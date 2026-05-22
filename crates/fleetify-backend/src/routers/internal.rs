@@ -158,6 +158,23 @@ async fn dispatch(
     let mut target_chain = caller_chain;
     target_chain.push(caller.to_string());
 
+    // ── Layer-2 routing for dispatch ──
+    // The TARGET agent identity is already chosen by the caller (Layer 1
+    // does not apply to dispatch). Routing here picks the model tier for
+    // the dispatched task and resolves any active proxy-gateway override.
+    // No session pin is written — dispatch sessions are short-lived and
+    // each call gets a fresh decision row.
+    let routing_res = crate::services::routing::persist::resolve_routing_for_dispatch(
+        &st.auth.pool,
+        &st.routing,
+        &target.id, // dispatch task_id surrogate
+        &target.id,
+        &target.tool,
+        target.model_name.as_deref(),
+        task,
+    )
+    .await;
+
     // Spawn the target's bridge in the background. Same shape as the
     // staff [[DISPATCH:]] path so the result flows through the
     // SessionManager fanout + the dispatch_result system-message
@@ -179,6 +196,7 @@ async fn dispatch(
             target_owned,
             task_owned,
             task_for_card,
+            routing_res,
         )
         .await;
     });
@@ -328,6 +346,7 @@ mod tests {
         // process-wide singleton across the test suite.
         let sm: &'static crate::session_manager::SessionManager =
             Box::leak(Box::new(crate::session_manager::SessionManager::for_tests()));
+        let routing = crate::services::routing::RoutingOrchestrator::with_empty_defaults(false);
         let state = AppState {
             auth: AuthState {
                 pool: pool.clone(),
@@ -337,9 +356,10 @@ mod tests {
             app_cfg: cfg,
             sm,
             internal_secret: Arc::new(secret.to_string()),
-            permission_registry: Arc::new(tokio::sync::Mutex::new(
-                std::collections::HashMap::new(),
-            )),
+            routing,
+            permission_registry: Arc::new(
+                tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            ),
         };
         let app = axum::Router::new()
             .nest("/api/internal", router())

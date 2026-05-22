@@ -166,7 +166,7 @@ impl CodexBridge {
         self
     }
 
-    async fn cold_start(&self) -> Result<()> {
+    async fn cold_start(&self, base_url_override: Option<String>) -> Result<()> {
         let mut guard = self.state.lock().await;
         if guard.is_some() {
             return Ok(());
@@ -179,6 +179,9 @@ impl CodexBridge {
 
         let mut cmd = Command::new(&bin);
         cmd.args(["app-server", "--listen", "stdio://"]);
+        if let Some(ref url) = base_url_override {
+            cmd.env("OPENAI_BASE_URL", url);
+        }
         let codex_effort = effort_to_codex(&self.effort);
         if !codex_effort.is_empty() {
             cmd.arg("-c")
@@ -323,10 +326,43 @@ impl CodexBridge {
         Ok(())
     }
 
-    pub async fn send_message(&self, msg: &str) -> Result<mpsc::Receiver<BridgeEvent>> {
+    pub async fn send_message(
+        &self,
+        msg: &str,
+        ctx: super::BridgeContext,
+    ) -> Result<mpsc::Receiver<BridgeEvent>> {
         self.aborted.store(false, Ordering::SeqCst);
         let (tx, rx) = mpsc::channel::<BridgeEvent>(64);
         let bridge_tx = tx.clone();
+
+        // model_override is not honoured at runtime for the Codex CLI
+        // bridge: model is configured via TOML at app-server startup.
+        // Documented Day-1 limit (v1.1 routing risk per spec).
+        if ctx.model_override.is_some() {
+            tracing::warn!(
+                target: "codex",
+                "Codex bridge: model_override not supported (TOML-only config). Ignoring."
+            );
+        }
+        // base_url_override is applied as OPENAI_BASE_URL in the cold
+        // start path. Once the app-server subprocess is up, mid-session
+        // env changes don't take effect — first turn only.
+        if let Some(ref url) = ctx.base_url_override {
+            tracing::debug!(target: "codex", "Codex base_url_override request: {url} (only applies on cold start)");
+        }
+        // CLI subprocess bridges only get the base URL — codex-cli has
+        // no hook for injecting custom HTTP headers into its outbound
+        // calls. Day-1 proxy routing is OpenAI-only via the OpenAI
+        // bridge's reqwest client; for Codex, extra_headers from the
+        // active proxy gateway (e.g. Weave's bearer) are silently
+        // dropped. See the E2E test-plan's "Known Day-1 limitations".
+        if !ctx.extra_headers.is_empty() {
+            tracing::warn!(
+                target: "codex",
+                "codex bridge: extra_headers from active proxy are ignored on CLI subprocess — \
+                 proxy auth headers won't reach the upstream. Day-1 proxy routing is OpenAI-only."
+            );
+        }
 
         let session_id = self.session_id.clone();
         let state_mu = self.state.clone();
@@ -334,7 +370,7 @@ impl CodexBridge {
         let msg_owned = msg.to_string();
         let needs_cold_start = state_mu.lock().await.is_none();
         let cold_starter = if needs_cold_start {
-            Some(self.cold_start_fut())
+            Some(self.cold_start_fut(ctx.base_url_override.clone()))
         } else {
             None
         };
@@ -599,6 +635,7 @@ impl CodexBridge {
 
     fn cold_start_fut(
         &self,
+        base_url_override: Option<String>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> {
         let session_id = self.session_id.clone();
         let project_path = self.project_path.clone();
@@ -622,7 +659,7 @@ impl CodexBridge {
                 state,
                 permission_handler,
             };
-            bridge.cold_start().await
+            bridge.cold_start(base_url_override).await
         })
     }
 }
@@ -902,6 +939,15 @@ fn item_to_tool_end(params: &Value) -> Option<(String, String, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn send_message_accepts_bridge_context() {
+        // Compile-only — just construct a default ctx and assert its shape.
+        let ctx = crate::bridges::BridgeContext::default();
+        assert!(ctx.base_url_override.is_none());
+        assert!(ctx.extra_headers.is_empty());
+        assert!(ctx.model_override.is_none());
+    }
 
     #[test]
     fn permission_mapping() {

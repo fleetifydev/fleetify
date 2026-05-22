@@ -592,6 +592,7 @@ impl ClaudeBridge {
     pub async fn send_message(
         &self,
         message: &str,
+        ctx: super::BridgeContext,
     ) -> anyhow::Result<tokio::sync::mpsc::Receiver<BridgeEvent>> {
         // Materialize the user's MCP registry to a temp file (when
         // non-empty) so claude spawns those servers alongside its
@@ -613,7 +614,16 @@ impl ClaudeBridge {
             }
             None => None,
         };
-        let cmd = self.build_command(message, mcp_cfg_path.as_deref());
+        let mut cmd = self.build_command(message, mcp_cfg_path.as_deref());
+        // Apply ctx.model_override by injecting `--model <m>` into the
+        // argv. We append (rather than replace any pre-existing
+        // `--model` produced by build_command) — claude CLI accepts a
+        // repeated flag and uses the last value, so this gives the
+        // routing override precedence over the bridge's default.
+        if let Some(ref m) = ctx.model_override {
+            cmd.push("--model".into());
+            cmd.push(m.clone());
+        }
         self.aborted
             .store(false, std::sync::atomic::Ordering::SeqCst);
         let cwd_raw = if self.project_path.is_empty() {
@@ -635,6 +645,26 @@ impl ClaudeBridge {
             .current_dir(&cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(ref url) = ctx.base_url_override {
+            command.env("ANTHROPIC_BASE_URL", url);
+        }
+        // CLI subprocess bridges only get the base URL — there is no
+        // mechanism to inject custom HTTP headers into claude-code's
+        // outbound calls. Day-1 proxy routing is OpenAI-only; for the
+        // other agents, extra_headers from the active proxy gateway
+        // (e.g. Weave Router's bearer) are silently dropped here. The
+        // proxy works for unauthenticated routes, but anything that
+        // needs custom auth headers won't reach the upstream. Surface
+        // this as a runtime warn so it's visible in `tracing` logs
+        // when someone is debugging "why isn't my Weave token being
+        // honoured on Claude". E2E test plan documents this limit.
+        if !ctx.extra_headers.is_empty() {
+            tracing::warn!(
+                target: "claude",
+                "claude bridge: extra_headers from active proxy are ignored on CLI subprocess — \
+                 proxy auth headers won't reach the upstream. Day-1 proxy routing is OpenAI-only."
+            );
+        }
         let mut child = command.spawn()?;
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take();
@@ -724,6 +754,15 @@ impl ClaudeBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn send_message_accepts_bridge_context() {
+        // Compile-only — just construct a default ctx and assert its shape.
+        let ctx = crate::bridges::BridgeContext::default();
+        assert!(ctx.base_url_override.is_none());
+        assert!(ctx.extra_headers.is_empty());
+        assert!(ctx.model_override.is_none());
+    }
 
     #[test]
     fn system_init_emits_init_with_our_session_id() {
@@ -937,14 +976,15 @@ mod tests {
         // the CLI gets `--permission-prompt-tool mcp__fleet_permission__permission_prompt`
         // so claude calls the fleet MCP instead of stalling on its
         // interactive prompt.
-        let handler: super::super::permission::PermissionHandler = std::sync::Arc::new(
-            |_n, _i| Box::pin(async { false }),
-        );
+        let handler: super::super::permission::PermissionHandler =
+            std::sync::Arc::new(|_n, _i| Box::pin(async { false }));
         let b = ClaudeBridge::new("s", "/tmp/x").with_permission_handler(handler);
         let c = b.build_command("hi", Some("/tmp/mcp.json"));
-        assert!(c.windows(2).any(
-            |w| w == ["--permission-prompt-tool", "mcp__fleet_permission__permission_prompt"]
-        ));
+        assert!(c.windows(2).any(|w| w
+            == [
+                "--permission-prompt-tool",
+                "mcp__fleet_permission__permission_prompt"
+            ]));
     }
 
     #[test]
@@ -961,9 +1001,8 @@ mod tests {
         // acceptEdits handles approvals via the CLI's built-in heuristic
         // — wiring fleet_permission on top would prompt for every tool
         // the user wanted auto-approved.
-        let handler: super::super::permission::PermissionHandler = std::sync::Arc::new(
-            |_n, _i| Box::pin(async { false }),
-        );
+        let handler: super::super::permission::PermissionHandler =
+            std::sync::Arc::new(|_n, _i| Box::pin(async { false }));
         let mut b = ClaudeBridge::new("s", "/tmp/x").with_permission_handler(handler);
         b.permission_mode = "acceptEdits".into();
         let c = b.build_command("hi", Some("/tmp/mcp.json"));
@@ -972,9 +1011,8 @@ mod tests {
 
     #[test]
     fn build_mcp_config_splices_fleet_permission_in_default_mode() {
-        let handler: super::super::permission::PermissionHandler = std::sync::Arc::new(
-            |_n, _i| Box::pin(async { false }),
-        );
+        let handler: super::super::permission::PermissionHandler =
+            std::sync::Arc::new(|_n, _i| Box::pin(async { false }));
         let b = ClaudeBridge::new("s", "/tmp/x").with_permission_handler(handler);
         let cfg = b.build_mcp_config().expect("mcp config must exist");
         let servers = cfg.get("mcpServers").and_then(|v| v.as_object()).unwrap();
@@ -983,9 +1021,8 @@ mod tests {
 
     #[test]
     fn build_mcp_config_skips_fleet_permission_in_bypass_mode() {
-        let handler: super::super::permission::PermissionHandler = std::sync::Arc::new(
-            |_n, _i| Box::pin(async { false }),
-        );
+        let handler: super::super::permission::PermissionHandler =
+            std::sync::Arc::new(|_n, _i| Box::pin(async { false }));
         let mut b = ClaudeBridge::new("s", "/tmp/x").with_permission_handler(handler);
         b.permission_mode = "bypassPermissions".into();
         let cfg = b.build_mcp_config().expect("mcp config must exist");

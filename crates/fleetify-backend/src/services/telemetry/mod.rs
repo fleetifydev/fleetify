@@ -28,8 +28,9 @@ pub mod ws_client;
 
 pub use device_id::{get_or_create, DeviceInfo};
 pub use emitters::{
-    emit_activity, emit_cost, emit_heartbeat, emit_session_start, emit_session_stop,
-    emit_status_change,
+    emit_activity, emit_cost, emit_heartbeat, emit_router_health_change, emit_routing_decision,
+    emit_routing_failure, emit_session_start, emit_session_stop, emit_status_change, HealthState,
+    RoutingFailureKind,
 };
 pub use heartbeat::run_heartbeat_loop;
 pub use ws_client::{run_ws_client_loop, BearerSource};

@@ -120,6 +120,12 @@ pub fn run() {
             shell::ipc::github_refresh_link,
             shell::ipc::github_disconnect,
             shell::ipc::github_open_installation,
+            shell::ipc::routers_list_routers,
+            shell::ipc::routers_connect,
+            shell::ipc::routers_disconnect,
+            shell::ipc::routers_set_active,
+            shell::ipc::routers_set_master_toggle,
+            shell::ipc::routers_test_router,
             shell::ipc::git_generate_commit_message,
             shell::ipc::git_generate_pr_summary,
             shell::ipc::git_review_diff,
@@ -174,10 +180,30 @@ pub fn run() {
             // Port is FLEETIFY_BACKEND_PORT (default 8765) so a second
             // instance launched via `npm run dev:tauri:wt -- <slot>`
             // can run on a sibling port without colliding.
+            //
+            // Compose RoutingSetup from fleet.config.json + the per-user
+            // keychain BEFORE spawning serve(): the backend stays Tauri-
+            // agnostic but starts with external routers (Not Diamond,
+            // Weave, LiteLLM) already registered when the user had them
+            // connected. Fresh installs hand over an empty setup and
+            // the backend boots with builtin + DirectGateway only.
             let addr: SocketAddr = format!("127.0.0.1:{}", backend_port()).parse().unwrap();
             let sd = static_dir();
+            let app_data_dir = app.path().app_data_dir().ok();
             tauri::async_runtime::spawn(async move {
-                match fleetify_backend::serve(addr, sd).await {
+                let routing_setup = match app_data_dir {
+                    Some(dir) => {
+                        let uid = shell::auth::get_user_id().await;
+                        shell::routing_setup::build(&dir, uid.as_deref())
+                    }
+                    None => {
+                        tracing::warn!(
+                            "app_data_dir unavailable; routing orchestrator boots with defaults"
+                        );
+                        fleetify_backend::services::routing::setup::RoutingSetup::default()
+                    }
+                };
+                match fleetify_backend::serve_with_routing_setup(addr, sd, routing_setup).await {
                     Ok(handle) => {
                         std::mem::forget(handle);
                         tracing::info!("embedded backend up on {addr}");
