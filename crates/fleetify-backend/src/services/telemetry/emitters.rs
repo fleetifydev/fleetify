@@ -225,6 +225,13 @@ impl HealthState {
     }
 }
 
+// `agent_key` + the three `payload_for_*` helpers below are kept in
+// place for when the cloud telemetry ingest learns the new event kinds
+// (`routing_decision`, `routing_failure`, `router_health_change`) and we
+// switch the public emit_* functions back to the `enqueue_payload`
+// path. Right now those emit_* live-call `tracing` to avoid the NACK
+// loop, so the helpers look dead to clippy.
+#[allow(dead_code)]
 fn agent_key(a: AgentKind) -> &'static str {
     match a {
         AgentKind::Claude => "claude",
@@ -237,6 +244,7 @@ fn agent_key(a: AgentKind) -> &'static str {
 /// Build the JSON payload for a `routing_decision` event. Pure: no side
 /// effects, no privacy guard — `emit_routing_decision` wraps this with
 /// `enqueue_payload`.
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 fn payload_for_routing_decision(
     decision_id: &str,
@@ -279,6 +287,16 @@ fn payload_for_routing_decision(
 
 /// Emit a `routing_decision` event: which router picked which agent/model,
 /// why, how fast, and whether a fallback was used.
+///
+/// **Local-only.** The cloud telemetry ingest currently rejects this
+/// `kind` ("Invalid option: expected one of session_start | session_stop |
+/// cost | status_change | activity | device_heartbeat") and the outbox
+/// would otherwise retry the NACK'd event on every flush — turning the
+/// log into an infinite loop. Until the cloud schema picks up the new
+/// kinds, we record the decision via `tracing` (always available, no
+/// retry loop) and store it in the local `routing_decisions` SQLite
+/// table for in-app analytics. The function signature stays unchanged
+/// so callers don't need updates when the cloud path lands later.
 #[allow(clippy::too_many_arguments)]
 pub async fn emit_routing_decision(
     decision_id: &str,
@@ -291,26 +309,27 @@ pub async fn emit_routing_decision(
     latency_ms: u64,
     fallback_used: bool,
     primary_router_if_fallback: Option<&str>,
-    candidates: &[(AgentKind, String)],
-    occurred_at: DateTime<Utc>,
+    _candidates: &[(AgentKind, String)],
+    _occurred_at: DateTime<Utc>,
 ) -> Result<()> {
-    let payload = payload_for_routing_decision(
-        decision_id,
-        task_flow,
-        task_ref,
-        router_source,
-        selected_agent,
-        selected_model,
-        rationale,
-        latency_ms,
-        fallback_used,
-        primary_router_if_fallback,
-        candidates,
-        occurred_at,
+    tracing::info!(
+        target: "fleetify.routing",
+        decision_id = %decision_id,
+        task_flow = ?task_flow,
+        task_ref = ?task_ref,
+        router_source = %router_source,
+        agent = ?selected_agent,
+        model = %selected_model,
+        latency_ms = latency_ms,
+        fallback_used = fallback_used,
+        primary_router_if_fallback = ?primary_router_if_fallback,
+        rationale = %trunc(Some(rationale), RATIONALE_MAX).unwrap_or_default(),
+        "routing decision"
     );
-    enqueue_payload(payload).await
+    Ok(())
 }
 
+#[allow(dead_code)]
 fn payload_for_routing_failure(
     router_id: &str,
     failure_kind: RoutingFailureKind,
@@ -333,6 +352,7 @@ fn payload_for_routing_failure(
 }
 
 /// Emit a `routing_failure` event when a router errors or times out.
+/// **Local-only** — see `emit_routing_decision` for the rationale.
 pub async fn emit_routing_failure(
     router_id: &str,
     failure_kind: RoutingFailureKind,
@@ -340,20 +360,22 @@ pub async fn emit_routing_failure(
     user_visible: bool,
     latency_ms: u64,
     error_message: &str,
-    occurred_at: DateTime<Utc>,
+    _occurred_at: DateTime<Utc>,
 ) -> Result<()> {
-    enqueue_payload(payload_for_routing_failure(
-        router_id,
-        failure_kind,
-        fell_back_to,
-        user_visible,
-        latency_ms,
-        error_message,
-        occurred_at,
-    ))
-    .await
+    tracing::warn!(
+        target: "fleetify.routing",
+        router_id = %router_id,
+        failure_kind = failure_kind.as_str(),
+        fell_back_to = ?fell_back_to,
+        user_visible = user_visible,
+        latency_ms = latency_ms,
+        error_message = %trunc(Some(error_message), ERROR_MAX).unwrap_or_default(),
+        "routing failure"
+    );
+    Ok(())
 }
 
+#[allow(dead_code)]
 fn payload_for_router_health_change(
     router_id: &str,
     from: HealthState,
@@ -370,20 +392,21 @@ fn payload_for_router_health_change(
 }
 
 /// Emit a `router_health_change` event when a router transitions between
-/// liveness states (healthy / degraded / unreachable).
+/// liveness states. **Local-only** — see `emit_routing_decision`.
 pub async fn emit_router_health_change(
     router_id: &str,
     from: HealthState,
     to: HealthState,
-    occurred_at: DateTime<Utc>,
+    _occurred_at: DateTime<Utc>,
 ) -> Result<()> {
-    enqueue_payload(payload_for_router_health_change(
-        router_id,
-        from,
-        to,
-        occurred_at,
-    ))
-    .await
+    tracing::info!(
+        target: "fleetify.routing",
+        router_id = %router_id,
+        from = from.as_str(),
+        to = to.as_str(),
+        "router health change"
+    );
+    Ok(())
 }
 
 #[cfg(test)]

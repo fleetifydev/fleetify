@@ -60,6 +60,31 @@ pub async fn init_at(path: PathBuf) -> Result<()> {
         .connect_with(opts)
         .await?;
     sqlx::query(DDL).execute(&pool).await?;
+
+    // One-time self-heal: an earlier build enqueued `routing_decision`,
+    // `routing_failure`, and `router_health_change` events into the
+    // outbox even though the cloud ingest schema doesn't accept those
+    // kinds yet. Those events get NACK'd on every flush forever, which
+    // both spams the logs and prevents legitimate events ahead of them
+    // from being acked promptly. Drop them at startup so the user
+    // doesn't have to manually wipe the SQLite file.
+    let dropped = sqlx::query(
+        "DELETE FROM telemetry_outbox \
+         WHERE json_extract(payload, '$.kind') IN \
+           ('routing_decision', 'routing_failure', 'router_health_change')",
+    )
+    .execute(&pool)
+    .await
+    .map(|r| r.rows_affected())
+    .unwrap_or(0);
+    if dropped > 0 {
+        tracing::info!(
+            target: "fleetify.telemetry",
+            dropped,
+            "outbox: pruned legacy routing_* events not accepted by cloud schema"
+        );
+    }
+
     let _ = POOL.set(pool);
     Ok(())
 }

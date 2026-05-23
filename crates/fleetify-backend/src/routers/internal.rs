@@ -32,11 +32,37 @@ use crate::routers::{ApiError, AppState};
 pub fn router() -> Router<AppState> {
     // Mounted at `/api/internal` by `http::app`; this router just
     // adds the leaf routes so the final paths are
-    // `POST /api/internal/dispatch` and
-    // `POST /api/internal/permission_prompt`.
+    // `POST /api/internal/dispatch`,
+    // `POST /api/internal/permission_prompt`, and
+    // `POST /api/internal/routing/reload`.
     Router::new()
         .route("/dispatch", post(dispatch))
         .route("/permission_prompt", post(permission_prompt))
+        .route("/routing/reload", post(routing_reload))
+}
+
+/// Live reload of the routing orchestrator from a fresh `RoutingSetup`
+/// composed by the Tauri IPC layer (after the user connects / disconnects
+/// / activates a router). Without this endpoint, the orchestrator would
+/// only see new routers after a backend restart — the user's selection
+/// in Settings → Routers would be a no-op until they relaunched the app.
+async fn routing_reload(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(setup): Json<crate::services::routing::setup::RoutingSetup>,
+) -> Result<Json<Value>, ApiError> {
+    // Same loopback-secret auth shape as `/dispatch` — constant-time
+    // compare so a known-prefix timing attack can't probe the secret.
+    let presented = headers
+        .get("x-fleet-internal")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !constant_time_eq(presented.as_bytes(), st.internal_secret.as_bytes()) {
+        return Err(ApiError::Forbidden("internal-secret mismatch".into()));
+    }
+
+    st.routing.reload_from_setup(setup);
+    Ok(Json(json!({ "ok": true })))
 }
 
 #[derive(Deserialize)]

@@ -788,6 +788,21 @@ async fn run_send_flow(
         bridge_ctx.extra_headers = headers;
     }
     let decision_id_opt = resolution.decision_id.clone();
+    // Surface the routing decision in the dev console so you can see at a
+    // glance which provider/proxy got chosen for this turn and what's about
+    // to land in the bridge. Pairs with the per-bridge `…bridge spawn` log.
+    tracing::info!(
+        target: "fleetify::routing::dispatch",
+        session = %sid,
+        flow = "chat-turn",
+        agent = ?resolution.agent,
+        model = %resolution.model,
+        decision_id = ?decision_id_opt,
+        provider = ?provider_for_proxy,
+        base_url_override = ?bridge_ctx.base_url_override,
+        proxy_header_count = bridge_ctx.extra_headers.len(),
+        "routing decision applied to bridge context"
+    );
 
     let mut rx = match any_bridge.send_message(&effective_text, bridge_ctx).await {
         Ok(rx) => rx,
@@ -1784,6 +1799,16 @@ async fn run_dispatched_task(
             Some(routing_res.model.clone())
         },
     };
+    tracing::info!(
+        target: "fleetify::routing::dispatch",
+        staff_session = %staff_sid,
+        target_session = %target_id,
+        flow = "agent-dispatch",
+        model = %routing_res.model,
+        base_url_override = ?bridge_ctx.base_url_override,
+        proxy_header_count = bridge_ctx.extra_headers.len(),
+        "routing decision applied to dispatched bridge context"
+    );
     let mut rx = match any_bridge.send_message(&task, bridge_ctx).await {
         Ok(rx) => rx,
         Err(e) => {

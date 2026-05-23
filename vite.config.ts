@@ -70,6 +70,24 @@ export default defineConfig({
         "/events":  { target: httpTarget, changeOrigin: true },
         "/healthz": { target: httpTarget, changeOrigin: true },
       },
+      watch: {
+        // SQLite + the WAL / SHM sidecars churn on every chat turn,
+        // background dispatch, and telemetry flush. Without this guard,
+        // Vite's chokidar watcher fires "file changed" for `fleet.db`,
+        // `fleet.db-wal`, and `fleet.db-shm` every few seconds and HMR
+        // does a full page reload — which remounts the entire React tree
+        // mid-conversation and feels like the app is broken. We also
+        // exclude the per-worktree Tauri target dirs and the Cargo build
+        // artefacts which can land in src-tauri/ during `cargo tauri dev`.
+        ignored: [
+          "**/src-tauri/fleet.db",
+          "**/src-tauri/fleet.db-wal",
+          "**/src-tauri/fleet.db-shm",
+          "**/src-tauri/fleet.db-journal",
+          "**/src-tauri/target/**",
+          "**/.claude/worktrees/**",
+        ],
+      },
     };
   })(),
 });

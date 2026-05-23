@@ -184,7 +184,30 @@ impl RoutingOrchestrator {
     /// proxy gateway. Returns None when the active gateway is DirectGateway.
     pub fn proxy_for(&self, provider: ProviderKind) -> Option<(String, http::HeaderMap)> {
         let g: Arc<dyn ProxyGateway> = self.proxy.read().active();
-        g.base_url(provider).map(|u| (u, g.extra_headers()))
+        let proxy_id = g.id();
+        let result = g.base_url(provider).map(|u| (u, g.extra_headers()));
+        match &result {
+            Some((url, headers)) => {
+                let header_names: Vec<&str> = headers.keys().map(|k| k.as_str()).collect();
+                tracing::debug!(
+                    target: "fleetify::routing::proxy",
+                    proxy = proxy_id,
+                    provider = ?provider,
+                    base_url = %url,
+                    headers = ?header_names,
+                    "proxy_for: resolved via active gateway"
+                );
+            }
+            None => {
+                tracing::debug!(
+                    target: "fleetify::routing::proxy",
+                    proxy = proxy_id,
+                    provider = ?provider,
+                    "proxy_for: direct (no proxy gateway)"
+                );
+            }
+        }
+        result
     }
 
     /// Register an external decision router after construction. Used by
@@ -211,6 +234,119 @@ impl RoutingOrchestrator {
     /// registered. Used by startup hydration after `register_proxy`.
     pub fn set_active_proxy(&self, id: &str) -> Result<(), String> {
         self.proxy.write().set_active(id)
+    }
+
+    /// Live reload — wipes external registry entries and re-hydrates from
+    /// a freshly-built `RoutingSetup`. Triggered by the Tauri IPC layer
+    /// whenever the user connects / disconnects / activates a router so
+    /// the change takes effect immediately, without an app restart.
+    ///
+    /// Built-in (decision) and None-Direct (proxy) survive the wipe — the
+    /// registries refuse to unregister them, and `reset_to_setup` knows
+    /// not to try.
+    pub fn reload_from_setup(&self, setup: crate::services::routing::setup::RoutingSetup) {
+        use crate::services::routing::decision::notdiamond::NotDiamondRouter;
+        use crate::services::routing::decision::weave::WeaveDecisionRouter;
+        use crate::services::routing::proxy::litellm::LiteLLMGateway;
+        use crate::services::routing::proxy::weave::WeaveProxyGateway;
+
+        const DEFAULT_WEAVE_MANAGED: &str = "https://router.workweave.ai";
+        const DEFAULT_LITELLM_LOCAL: &str = "http://localhost:4000";
+
+        // Build the new external registries first (cheap), then swap inside
+        // the locks so the registry is never half-populated mid-routing.
+        let mut new_decisions: Vec<Arc<dyn DecisionRouter>> = Vec::new();
+        let mut new_proxies: Vec<Arc<dyn ProxyGateway>> = Vec::new();
+
+        for (id, cred) in setup.resolved.iter() {
+            match id.as_str() {
+                "notdiamond" => {
+                    new_decisions.push(Arc::new(NotDiamondRouter::new(cred.api_key.clone())));
+                }
+                "weave" => {
+                    let url = cred
+                        .base_url
+                        .clone()
+                        .unwrap_or_else(|| DEFAULT_WEAVE_MANAGED.into());
+                    new_decisions.push(Arc::new(WeaveDecisionRouter::with_base_url(
+                        cred.api_key.clone(),
+                        url.clone(),
+                    )));
+                    new_proxies.push(Arc::new(WeaveProxyGateway::new(cred.api_key.clone(), url)));
+                }
+                "litellm" => {
+                    let url = cred
+                        .base_url
+                        .clone()
+                        .unwrap_or_else(|| DEFAULT_LITELLM_LOCAL.into());
+                    new_proxies.push(Arc::new(LiteLLMGateway::new(cred.api_key.clone(), url)));
+                }
+                other => {
+                    tracing::warn!(target: "fleet-backend", "routing reload: unknown router id {other}");
+                }
+            }
+        }
+
+        // Wipe + re-register decision side. We collect ids first so the
+        // borrow checker doesn't choke on `unregister` mutating the map
+        // while we iterate it.
+        {
+            let mut dr = self.decision.write();
+            let ids_to_drop: Vec<String> = dr
+                .list()
+                .into_iter()
+                .filter_map(|(id, _name)| if id != "builtin" { Some(id) } else { None })
+                .collect();
+            for id in ids_to_drop {
+                dr.unregister(&id);
+            }
+            for r in new_decisions {
+                dr.register(r);
+            }
+            if let Err(e) = dr.set_active(&setup.active_decision_router) {
+                tracing::warn!(
+                    target: "fleet-backend",
+                    "routing reload: set_active_decision({}) failed: {e}; falling back to builtin",
+                    setup.active_decision_router
+                );
+                let _ = dr.set_active("builtin");
+            }
+        }
+
+        // Same for the proxy side, preserving none-proxy.
+        {
+            let mut pr = self.proxy.write();
+            let ids_to_drop: Vec<String> = pr
+                .list()
+                .into_iter()
+                .filter_map(|(id, _name)| if id != "none-proxy" { Some(id) } else { None })
+                .collect();
+            for id in ids_to_drop {
+                pr.unregister(&id);
+            }
+            for g in new_proxies {
+                pr.register(g);
+            }
+            if let Err(e) = pr.set_active(&setup.active_proxy_gateway) {
+                tracing::warn!(
+                    target: "fleet-backend",
+                    "routing reload: set_active_proxy({}) failed: {e}; falling back to none-proxy",
+                    setup.active_proxy_gateway
+                );
+                let _ = pr.set_active("none-proxy");
+            }
+        }
+
+        self.set_enabled(setup.enabled);
+
+        tracing::info!(
+            target: "fleet-backend",
+            enabled = setup.enabled,
+            resolved = setup.resolved.len(),
+            active_decision = %setup.active_decision_router,
+            active_proxy = %setup.active_proxy_gateway,
+            "routing: orchestrator reloaded"
+        );
     }
 
     /// Look up a router (decision OR proxy) by id and call its health_check.
@@ -456,5 +592,99 @@ tiers = ["claude-haiku-4-5", "claude-sonnet-4-6"]
         orch.register_proxy(g);
         assert!(orch.set_active_proxy("litellm").is_ok());
         assert!(orch.set_active_proxy("does-not-exist-proxy").is_err());
+    }
+
+    #[tokio::test]
+    async fn reload_from_setup_swaps_external_routers_and_active_selection() {
+        use crate::services::routing::setup::{ResolvedRouterCredential, RoutingSetup};
+        use std::collections::HashMap;
+
+        let orch = RoutingOrchestrator::with_empty_defaults(false);
+
+        // Start clean: only builtin + none-proxy.
+        assert_eq!(orch.decision.read().list().len(), 1);
+        assert_eq!(orch.proxy.read().list().len(), 1);
+
+        // Reload with notdiamond registered + weave (decision + proxy) +
+        // litellm proxy. Active selections + enabled flag flip too.
+        let mut resolved = HashMap::new();
+        resolved.insert(
+            "notdiamond".into(),
+            ResolvedRouterCredential {
+                id: "notdiamond".into(),
+                api_key: "k1".into(),
+                base_url: None,
+            },
+        );
+        resolved.insert(
+            "weave".into(),
+            ResolvedRouterCredential {
+                id: "weave".into(),
+                api_key: "k2".into(),
+                base_url: Some("https://my-weave.example".into()),
+            },
+        );
+        resolved.insert(
+            "litellm".into(),
+            ResolvedRouterCredential {
+                id: "litellm".into(),
+                api_key: "k3".into(),
+                base_url: Some("http://localhost:4000".into()),
+            },
+        );
+        let setup = RoutingSetup {
+            enabled: true,
+            active_decision_router: "notdiamond".into(),
+            active_proxy_gateway: "weave".into(),
+            resolved,
+        };
+        orch.reload_from_setup(setup);
+
+        assert!(orch.enabled());
+        let dr = orch.decision.read();
+        // builtin + notdiamond + weave
+        let dec_ids: std::collections::HashSet<String> =
+            dr.list().into_iter().map(|(id, _)| id).collect();
+        assert!(dec_ids.contains("builtin"));
+        assert!(dec_ids.contains("notdiamond"));
+        assert!(dec_ids.contains("weave"));
+        assert_eq!(dr.active().id(), "notdiamond");
+        drop(dr);
+
+        let pr = orch.proxy.read();
+        let prx_ids: std::collections::HashSet<String> =
+            pr.list().into_iter().map(|(id, _)| id).collect();
+        assert!(prx_ids.contains("none-proxy"));
+        assert!(prx_ids.contains("weave"));
+        assert!(prx_ids.contains("litellm"));
+        assert_eq!(pr.active().id(), "weave");
+        drop(pr);
+
+        // Reload with empty setup → external routers wiped, active falls
+        // back to defaults.
+        orch.reload_from_setup(RoutingSetup::default());
+        assert!(!orch.enabled());
+        let dr = orch.decision.read();
+        assert_eq!(dr.list().len(), 1, "only builtin should remain");
+        assert_eq!(dr.active().id(), "builtin");
+        drop(dr);
+        let pr = orch.proxy.read();
+        assert_eq!(pr.list().len(), 1, "only none-proxy should remain");
+        assert_eq!(pr.active().id(), "none-proxy");
+    }
+
+    #[tokio::test]
+    async fn reload_with_invalid_active_falls_back_to_builtin() {
+        use crate::services::routing::setup::RoutingSetup;
+        let orch = RoutingOrchestrator::with_empty_defaults(true);
+        let setup = RoutingSetup {
+            enabled: true,
+            active_decision_router: "ghost-router".into(),
+            active_proxy_gateway: "ghost-proxy".into(),
+            resolved: Default::default(),
+        };
+        orch.reload_from_setup(setup);
+        assert_eq!(orch.decision.read().active().id(), "builtin");
+        assert_eq!(orch.proxy.read().active().id(), "none-proxy");
     }
 }

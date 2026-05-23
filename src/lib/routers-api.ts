@@ -21,7 +21,15 @@ export interface RouterTile {
   connected: boolean;
   active_for_decision: boolean;
   active_for_proxy: boolean;
+  /** Non-secret metadata saved at connect time. Currently carries the
+   *  user-supplied `base_url` for self-hosted routers so the Edit form
+   *  can be pre-populated without a separate IPC round-trip. */
+  metadata?: Record<string, unknown> | null;
 }
+
+export type RoutersKeyPreviewResult =
+  | { ok: true; preview: string | null }
+  | { ok: false; code: "NO_USER" | "KEYCHAIN"; error?: string };
 
 export type RoutersListResult =
   | { ok: true; tiles: RouterTile[]; enabled: boolean }
@@ -51,6 +59,7 @@ interface RoutersAPI {
     enabled: boolean,
   ) => Promise<{ ok: boolean; error?: string }>;
   testRouter: (id: string) => Promise<RoutersTestResult>;
+  getKeyPreview: (id: string) => Promise<RoutersKeyPreviewResult>;
 }
 
 function api(): RoutersAPI {
@@ -81,6 +90,7 @@ function api(): RoutersAPI {
         code: "KEYCHAIN",
         error: "electron unavailable",
       }),
+      getKeyPreview: async () => ({ ok: true, preview: null }),
     }
   );
 }
@@ -97,4 +107,5 @@ export const routers = {
     api().setActive(category, id),
   setMasterToggle: (enabled: boolean) => api().setMasterToggle(enabled),
   testRouter: (id: string) => api().testRouter(id),
+  getKeyPreview: (id: string) => api().getKeyPreview(id),
 };

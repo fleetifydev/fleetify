@@ -5,25 +5,28 @@
 //! agnostic while still allowing it to register external routers
 //! (Not Diamond, Weave, LiteLLM) without round-tripping IPC at boot.
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Resolved credentials for one external router, ready to register.
 /// `base_url` falls back to the router's documented default when None.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedRouterCredential {
     pub id: String,
     pub api_key: String,
     pub base_url: Option<String>,
 }
 
-/// Bundle of hydrated config the orchestrator needs at startup.
+/// Bundle of hydrated config the orchestrator needs at startup OR on a
+/// live IPC-triggered reload.
 ///
 /// Composed on the Tauri side from `fleet.config.json` + the user's
-/// keychain entries, then passed into `serve_with_routing_setup()`.
-/// `enabled` is the master "intelligent routing" toggle; the two
-/// `active_*` ids are the saved user selections (default builtin /
-/// none-proxy when unset).
-#[derive(Debug, Clone, Default)]
+/// keychain entries, then either passed into `serve_with_routing_setup()`
+/// at boot or POSTed to `/api/internal/routing/reload` while the backend
+/// is already running. `enabled` is the master "intelligent routing"
+/// toggle; the two `active_*` ids are the saved user selections (default
+/// builtin / none-proxy when unset).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RoutingSetup {
     pub enabled: bool,
     pub active_decision_router: String,
