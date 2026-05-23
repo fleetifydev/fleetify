@@ -648,23 +648,47 @@ impl ClaudeBridge {
         if let Some(ref url) = ctx.base_url_override {
             command.env("ANTHROPIC_BASE_URL", url);
         }
-        // CLI subprocess bridges only get the base URL — there is no
-        // mechanism to inject custom HTTP headers into claude-code's
-        // outbound calls. Day-1 proxy routing is OpenAI-only; for the
-        // other agents, extra_headers from the active proxy gateway
-        // (e.g. Weave Router's bearer) are silently dropped here. The
-        // proxy works for unauthenticated routes, but anything that
-        // needs custom auth headers won't reach the upstream. Surface
-        // this as a runtime warn so it's visible in `tracing` logs
-        // when someone is debugging "why isn't my Weave token being
-        // honoured on Claude". E2E test plan documents this limit.
+        // Forward proxy auth headers to claude-code via its
+        // `ANTHROPIC_CUSTOM_HEADERS` env var (newline-separated
+        // `Name: Value` pairs — claude-code attaches each one to its
+        // outbound HTTP requests). This is what makes proxies like Weave
+        // and LiteLLM work for Claude turns: their gateways inject an
+        // auth header (`X-Weave-Router-Key`, `Authorization`) into
+        // `ctx.extra_headers`, and routing those to the upstream is
+        // the whole point of activating a proxy. Headers whose
+        // name/value can't be rendered as a clean ASCII line are
+        // skipped defensively (claude-code rejects the whole env if
+        // it can't parse a line).
+        let mut forwarded_header_names: Vec<String> = Vec::new();
         if !ctx.extra_headers.is_empty() {
-            tracing::warn!(
-                target: "claude",
-                "claude bridge: extra_headers from active proxy are ignored on CLI subprocess — \
-                 proxy auth headers won't reach the upstream. Day-1 proxy routing is OpenAI-only."
-            );
+            let mut lines: Vec<String> = Vec::new();
+            for (name, value) in ctx.extra_headers.iter() {
+                let Ok(v) = value.to_str() else { continue };
+                if v.contains('\n') || v.contains('\r') {
+                    continue;
+                }
+                lines.push(format!("{}: {}", name.as_str(), v));
+                forwarded_header_names.push(name.as_str().to_string());
+            }
+            if !lines.is_empty() {
+                command.env("ANTHROPIC_CUSTOM_HEADERS", lines.join("\n"));
+            }
         }
+        // One-line dispatch log so the user can grep `claude bridge spawn`
+        // in their terminal and see exactly what got fired off: which model
+        // claude-code will request, whether a proxy is in front of
+        // Anthropic, and which auth headers the proxy attached. Header
+        // VALUES are intentionally omitted — names only (sufficient to spot
+        // a misnamed-header bug like the Weave `x-weave-auth` regression).
+        tracing::info!(
+            target: "fleetify::bridges::claude",
+            session = %self.session_id,
+            project = %self.project_path,
+            model_override = ?ctx.model_override,
+            base_url_override = ?ctx.base_url_override,
+            proxy_headers = ?forwarded_header_names,
+            "claude bridge spawn"
+        );
         let mut child = command.spawn()?;
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take();

@@ -184,7 +184,30 @@ impl RoutingOrchestrator {
     /// proxy gateway. Returns None when the active gateway is DirectGateway.
     pub fn proxy_for(&self, provider: ProviderKind) -> Option<(String, http::HeaderMap)> {
         let g: Arc<dyn ProxyGateway> = self.proxy.read().active();
-        g.base_url(provider).map(|u| (u, g.extra_headers()))
+        let proxy_id = g.id();
+        let result = g.base_url(provider).map(|u| (u, g.extra_headers()));
+        match &result {
+            Some((url, headers)) => {
+                let header_names: Vec<&str> = headers.keys().map(|k| k.as_str()).collect();
+                tracing::debug!(
+                    target: "fleetify::routing::proxy",
+                    proxy = proxy_id,
+                    provider = ?provider,
+                    base_url = %url,
+                    headers = ?header_names,
+                    "proxy_for: resolved via active gateway"
+                );
+            }
+            None => {
+                tracing::debug!(
+                    target: "fleetify::routing::proxy",
+                    proxy = proxy_id,
+                    provider = ?provider,
+                    "proxy_for: direct (no proxy gateway)"
+                );
+            }
+        }
+        result
     }
 
     /// Register an external decision router after construction. Used by

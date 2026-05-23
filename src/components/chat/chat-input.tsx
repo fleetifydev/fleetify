@@ -33,6 +33,7 @@ import { useChatStore, pushChatError } from "@/stores/chat-store";
 import { COMPOSER_CHAT_KEY } from "@/stores/app-store";
 import { useMCPStore } from "@/stores/mcp-store";
 import { ProviderLogo } from "@/components/ui/provider-logo";
+import { RoutingChip } from "@/components/settings/routers/routing-chip";
 import { commandsForContext, type SlashCmdDef } from "@/lib/slash-commands";
 
 /* ─────────────────── constants ─────────────────── */
@@ -5119,6 +5120,12 @@ export function ChatInput({
             display: "flex", alignItems: "center", gap: 6,
             flexShrink: 0,
           }}>
+            {/* Routing status — sits LEFT of the model button. Green
+                dot when intelligent routing is on; clicking opens a
+                small popover with the active decision + proxy. The
+                "below the composer" status bar is replaced by this
+                tighter placement so the toolbar doesn't get crowded. */}
+            <RoutingChip />
             <button
               onClick={() => setOpenDrop(d => d === "model" ? null : "model")}
               style={{
