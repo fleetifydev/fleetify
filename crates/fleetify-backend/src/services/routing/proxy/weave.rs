@@ -59,13 +59,32 @@ impl ProxyGateway for WeaveProxyGateway {
         "Weave Router"
     }
 
-    fn base_url(&self, provider: ProviderKind) -> Option<String> {
-        let suffix = match provider {
-            ProviderKind::Anthropic => "/anthropic",
-            ProviderKind::OpenAI | ProviderKind::OpenAICompatible => "/openai",
-            ProviderKind::Google => "/google",
-        };
-        Some(format!("{}{}", self.base_url.trim_end_matches('/'), suffix))
+    fn base_url(&self, _provider: ProviderKind) -> Option<String> {
+        // Weave Router serves all three wire formats from the SAME root URL
+        // (per https://github.com/workweave/router README):
+        //   • Anthropic Messages       — POST /v1/messages
+        //   • OpenAI Chat Completions  — POST /v1/chat/completions
+        //   • Gemini generateContent   — POST /v1beta/models/:action
+        // Each consumer (HTTP bridge or CLI subprocess via its
+        // *_BASE_URL env var) appends its own path. So we return just
+        // the router root — claude-code does `<base>/v1/messages`, the
+        // OpenAI HTTP bridge does `<base>/v1/chat/completions`, etc.
+        //
+        // Earlier this returned `<root>/anthropic`, `<root>/openai`,
+        // `<root>/google`. Those routes don't exist on Weave; every
+        // proxied turn 404'd, and claude-code mistranslated 404 as
+        // "model doesn't exist". Verified against Weave's official
+        // installer (`npx @workweave/router --claude`) which sets
+        // `ANTHROPIC_BASE_URL=https://router.workweave.ai` (root).
+        //
+        // NOTE: codex-cli is opinionated and wants
+        // `base_url = <root>/v1` plus `wire_api = "responses"` in
+        // ~/.codex/config.toml — that can't be achieved via env var
+        // alone. Weave's `npx @workweave/router --codex` installer
+        // writes that block; full Codex+Weave support from Fleet
+        // would need either a runtime config patcher or to ship the
+        // user instructions for the one-shot installer.
+        Some(self.base_url.trim_end_matches('/').to_string())
     }
 
     fn extra_headers(&self) -> HeaderMap {
@@ -127,24 +146,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn base_url_per_provider() {
+    fn base_url_returns_router_root_for_every_provider() {
+        // Regression: each consumer (claude-code, OpenAI HTTP bridge,
+        // gemini-cli) appends its own path to whatever Weave returns.
+        // The earlier `/anthropic`/`/openai`/`/google` suffixes routed
+        // every request to a non-existent path and 404'd upstream.
         let g = WeaveProxyGateway::new("k".into(), "https://router.workweave.ai".into());
-        assert_eq!(
-            g.base_url(ProviderKind::Anthropic).as_deref(),
-            Some("https://router.workweave.ai/anthropic")
-        );
-        assert_eq!(
-            g.base_url(ProviderKind::OpenAI).as_deref(),
-            Some("https://router.workweave.ai/openai")
-        );
-        assert_eq!(
-            g.base_url(ProviderKind::Google).as_deref(),
-            Some("https://router.workweave.ai/google")
-        );
-        assert_eq!(
-            g.base_url(ProviderKind::OpenAICompatible).as_deref(),
-            Some("https://router.workweave.ai/openai")
-        );
+        for provider in [
+            ProviderKind::Anthropic,
+            ProviderKind::OpenAI,
+            ProviderKind::Google,
+            ProviderKind::OpenAICompatible,
+        ] {
+            assert_eq!(
+                g.base_url(provider).as_deref(),
+                Some("https://router.workweave.ai"),
+                "provider {:?} should resolve to the router root",
+                provider
+            );
+        }
     }
 
     #[test]
@@ -152,7 +172,7 @@ mod tests {
         let g = WeaveProxyGateway::new("k".into(), "https://router.workweave.ai/".into());
         assert_eq!(
             g.base_url(ProviderKind::Anthropic).as_deref(),
-            Some("https://router.workweave.ai/anthropic")
+            Some("https://router.workweave.ai")
         );
     }
 
