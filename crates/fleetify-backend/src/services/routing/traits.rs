@@ -10,6 +10,7 @@ pub enum AgentKind {
     OpenAI,
     Gemini,
     Codex,
+    Kimi,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

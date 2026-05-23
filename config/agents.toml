@@ -33,3 +33,14 @@ mcp_support = true
 acp = false
 default_model = "gpt-5-codex"
 tiers = ["gpt-5-codex"]
+
+# Kimi Code CLI (Moonshot). ACP-based like Gemini — when the spawn impl
+# lands in bridges/kimi.rs the routing layer is already ready.
+[agents.kimi]
+supports_tool_use = true
+supports_vision = true
+max_context = 200000
+mcp_support = true
+acp = true
+default_model = "kimi-k2-instruct"
+tiers = ["kimi-k1.5-preview", "kimi-k2-instruct", "kimi-k2-thinking"]

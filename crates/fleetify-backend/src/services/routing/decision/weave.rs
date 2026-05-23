@@ -64,6 +64,8 @@ fn weave_provider(a: AgentKind) -> &'static str {
         AgentKind::Claude => "anthropic",
         AgentKind::OpenAI | AgentKind::Codex => "openai",
         AgentKind::Gemini => "google",
+        // Weave's openai-compat endpoint handles Moonshot.
+        AgentKind::Kimi => "openai",
     }
 }
 

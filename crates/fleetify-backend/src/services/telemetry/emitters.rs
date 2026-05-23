@@ -238,6 +238,7 @@ fn agent_key(a: AgentKind) -> &'static str {
         AgentKind::OpenAI => "openai",
         AgentKind::Gemini => "gemini",
         AgentKind::Codex => "codex",
+        AgentKind::Kimi => "kimi",
     }
 }
 
@@ -407,6 +408,68 @@ pub async fn emit_router_health_change(
         "router health change"
     );
     Ok(())
+}
+
+// ─── Provider / agent telemetry (local-only, like the routing block) ───
+//
+// Wire surface: `emit_provider_test_connection` / `emit_provider_connected` /
+// `emit_provider_disconnected` / `emit_agent_detected`. Same NACK-avoidance
+// pattern as `emit_routing_decision` — the cloud telemetry ingest doesn't
+// know these `kind`s yet, so we route via `tracing` (always available, no
+// outbox retry loop) and let analytics queries hit the local log instead.
+// Switching to outbox enqueue is a one-line flip per emit_* when the cloud
+// schema picks up the new kinds.
+
+/// Settings → Models "Test Connection" result. Captures latency + the
+/// failure-mode bucket so we can spot patterns like "DeepSeek auth fails
+/// the most" without sending the user's key anywhere.
+pub async fn emit_provider_test_connection(
+    provider_id: &str,
+    ok: bool,
+    code: Option<&str>,
+    latency_ms: Option<u64>,
+) {
+    tracing::info!(
+        target: "fleetify.providers",
+        provider = %provider_id,
+        ok = ok,
+        code = ?code,
+        latency_ms = ?latency_ms,
+        "provider test connection"
+    );
+}
+
+/// User saved a key for a provider in Settings → Models. Fires AFTER
+/// the keychain write + config update succeed.
+pub async fn emit_provider_connected(provider_id: &str) {
+    tracing::info!(
+        target: "fleetify.providers",
+        provider = %provider_id,
+        "provider connected"
+    );
+}
+
+/// User clicked Disconnect on a provider tile. Mirrors the connected
+/// event so dashboards can pair them up by `provider`.
+pub async fn emit_provider_disconnected(provider_id: &str) {
+    tracing::info!(
+        target: "fleetify.providers",
+        provider = %provider_id,
+        "provider disconnected"
+    );
+}
+
+/// `/api/agents/scan` observation. Lets us see how often "installed
+/// but not authenticated" shows up in the wild — likely an onboarding
+/// friction point that wants a better login UX.
+pub async fn emit_agent_detected(agent_id: &str, installed: bool, authenticated: bool) {
+    tracing::info!(
+        target: "fleetify.providers",
+        agent = %agent_id,
+        installed = installed,
+        authenticated = authenticated,
+        "agent detected"
+    );
 }
 
 #[cfg(test)]

@@ -127,6 +127,14 @@ pub fn run() {
             shell::ipc::routers_set_master_toggle,
             shell::ipc::routers_test_router,
             shell::ipc::routers_get_key_preview,
+            shell::ipc::providers_list_catalog,
+            shell::ipc::providers_set_key,
+            shell::ipc::providers_get_key_preview,
+            shell::ipc::providers_delete_key,
+            shell::ipc::providers_test_connection,
+            shell::ipc::providers_ollama_probe,
+            shell::ipc::providers_set_enabled_models,
+            shell::ipc::providers_set_ollama_base_url,
             shell::ipc::git_generate_commit_message,
             shell::ipc::git_generate_pr_summary,
             shell::ipc::git_review_diff,
@@ -151,6 +159,16 @@ pub fn run() {
 
             // Auth module emits `fleet:auth-event` via this handle.
             shell::auth::set_app_handle(app.handle().clone());
+
+            // One-shot lift of any plaintext `cfg.apiKeys` entries into
+            // the OS keychain. Idempotent — empty / already-migrated
+            // configs are a no-op. Runs on the async runtime so a slow
+            // / unavailable keychain backend (e.g. Linux without
+            // secret-service) doesn't block the rest of setup().
+            let app_for_migration = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                shell::migration::migrate_api_keys_to_keychain(&app_for_migration).await;
+            });
 
             // No splash — by explicit user preference. The main
             // window is built `.visible(false)` and stays hidden until

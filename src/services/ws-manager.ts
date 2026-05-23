@@ -92,6 +92,22 @@ class WSManager {
   // running its own timer after the stream ends.
   private thinkingStarts = new Map<string, number>();
 
+  // Citations / search-results buffered during the streaming window.
+  // Perplexity (and any future search-grounded provider) emits these
+  // alongside text deltas; we accumulate them here and push a single
+  // CitationBlock onto contentSoFar right before the message is
+  // finalized so the card renders once, at the bottom of the bubble.
+  private citationBuffers = new Map<
+    string,
+    Array<{
+      url: string;
+      title?: string;
+      snippet?: string;
+      date?: string;
+      kind: "citation" | "search_result";
+    }>
+  >();
+
   // Debounce auth-retry storms. The backend's "Unauthorized" reply
   // triggers a single force-refresh + reconnect; if THAT one also
   // gets rejected we surface the failure normally instead of looping.
@@ -231,6 +247,24 @@ class WSManager {
     this.thinkingStarts.delete(sessionId);
     store.pushContentBlock(sessionId, { type: "thinking", text: pending, duration_ms });
     store.clearStreamingThinking(sessionId);
+  }
+
+  /** Pop buffered citations / search results into a single CitationBlock
+   *  at the END of contentSoFar so the finalized assistant message
+   *  carries them as a footer card. Idempotent — called from both the
+   *  status:done and cost handlers; whichever fires first wins, the
+   *  second invocation no-ops because the buffer is cleared here. */
+  private flushCitations(sessionId: string): void {
+    const items = this.citationBuffers.get(sessionId);
+    if (!items || items.length === 0) {
+      this.citationBuffers.delete(sessionId);
+      return;
+    }
+    useChatStore.getState().pushContentBlock(sessionId, {
+      type: "citations",
+      items,
+    });
+    this.citationBuffers.delete(sessionId);
   }
 
   /** Ensure the shared multiplex socket is open AND that this session
@@ -780,6 +814,38 @@ class WSManager {
         });
         break;
       }
+      case "citation": {
+        // Search-grounded providers (Perplexity) emit one of these per
+        // URL after the text streaming completes. Buffer until status:
+        // done so we can attach a single CitationBlock to the final
+        // message in chronological order.
+        const url = typeof data.url === "string" ? data.url : "";
+        if (!url) break;
+        const buf = this.citationBuffers.get(sessionId) ?? [];
+        buf.push({
+          url,
+          title: typeof data.title === "string" ? data.title : undefined,
+          snippet: typeof data.snippet === "string" ? data.snippet : undefined,
+          kind: "citation",
+        });
+        this.citationBuffers.set(sessionId, buf);
+        break;
+      }
+      case "search_result": {
+        const url = typeof data.url === "string" ? data.url : "";
+        const title = typeof data.title === "string" ? data.title : "";
+        if (!url || !title) break;
+        const buf = this.citationBuffers.get(sessionId) ?? [];
+        buf.push({
+          url,
+          title,
+          snippet: typeof data.snippet === "string" ? data.snippet : undefined,
+          date: typeof data.date === "string" ? data.date : undefined,
+          kind: "search_result",
+        });
+        this.citationBuffers.set(sessionId, buf);
+        break;
+      }
       case "status":
         if ("status" in data && data.status === "done") {
           this.flushDelta(sessionId); // Commit any buffered text before finalizing
@@ -787,6 +853,7 @@ class WSManager {
           // the reasoning visible on the persisted message instead of
           // dropping it with clearStreaming.
           this.flushThinking(sessionId);
+          this.flushCitations(sessionId);
           const current = store.sessions[sessionId];
           if (current && current.contentSoFar.length > 0) {
             store.finalizeAssistantMessage(sessionId, crypto.randomUUID(), current.contentSoFar);
@@ -797,6 +864,7 @@ class WSManager {
       case "cost": {
         this.flushDelta(sessionId); // Commit any buffered text before finalizing
         this.flushThinking(sessionId);
+        this.flushCitations(sessionId);
         const current = store.sessions[sessionId];
         const usage = data.usage as Record<string, number> | undefined;
         const costUsd = typeof data.cost_usd === "number" ? data.cost_usd : undefined;

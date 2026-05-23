@@ -33,12 +33,52 @@ pub fn router() -> Router<AppState> {
     // Mounted at `/api/internal` by `http::app`; this router just
     // adds the leaf routes so the final paths are
     // `POST /api/internal/dispatch`,
-    // `POST /api/internal/permission_prompt`, and
-    // `POST /api/internal/routing/reload`.
+    // `POST /api/internal/permission_prompt`,
+    // `POST /api/internal/routing/reload`, and
+    // `POST /api/internal/providers/reload`.
     Router::new()
         .route("/dispatch", post(dispatch))
         .route("/permission_prompt", post(permission_prompt))
         .route("/routing/reload", post(routing_reload))
+        .route("/providers/reload", post(providers_reload))
+}
+
+/// Hot-reload hook for provider state. The Tauri shell walks the OS
+/// keychain after every `providers_*` mutation, builds a `{provider_id:
+/// api_key}` map, and POSTs it here so the in-process bridge dispatch
+/// can read fresh credentials on the very next chat turn. Empty body
+/// (or no `keys` field) is accepted as a no-op ping — keeps the wire
+/// format flexible for future fields.
+async fn providers_reload(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    body: Option<Json<Value>>,
+) -> Result<Json<Value>, ApiError> {
+    let presented = headers
+        .get("x-fleet-internal")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !constant_time_eq(presented.as_bytes(), st.internal_secret.as_bytes()) {
+        return Err(ApiError::Forbidden("internal-secret mismatch".into()));
+    }
+    if let Some(Json(v)) = body {
+        if let Some(obj) = v.get("keys").and_then(|k| k.as_object()) {
+            let map: std::collections::HashMap<String, String> = obj
+                .iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect();
+            let count = map.len();
+            crate::providers::keys::set_keys(map);
+            tracing::info!(
+                target: "fleet-backend",
+                count = count,
+                "providers reload: cache hydrated"
+            );
+        }
+    }
+    Ok(Json(
+        json!({ "ok": true, "cached_keys": crate::providers::keys::len() }),
+    ))
 }
 
 /// Live reload of the routing orchestrator from a fresh `RoutingSetup`
@@ -547,5 +587,48 @@ mod tests {
         assert!(!constant_time_eq(b"abc", b"abd"));
         assert!(!constant_time_eq(b"abc", b"abcd"));
         assert!(constant_time_eq(b"", b""));
+    }
+
+    #[tokio::test]
+    async fn providers_reload_rejects_missing_or_wrong_secret() {
+        let (app, _pool, _sm) = build_app("correct-secret").await;
+        // Missing header.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/internal/providers/reload")
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 403, "missing header must 403");
+        // Wrong header value.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/internal/providers/reload")
+            .header("content-type", "application/json")
+            .header("X-Fleet-Internal", "wrong")
+            .body(Body::from("{}"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 403, "wrong header must 403");
+    }
+
+    #[tokio::test]
+    async fn providers_reload_acks_with_correct_secret() {
+        let (app, _pool, _sm) = build_app("s").await;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/internal/providers/reload")
+            .header("content-type", "application/json")
+            .header("X-Fleet-Internal", "s")
+            .body(Body::from("{}"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["ok"], true);
     }
 }

@@ -187,6 +187,56 @@
         testRouter:      function (id) { return invoke("routers_test_router", { id: String(id || "") }); },
         getKeyPreview:   function (id) { return invoke("routers_get_key_preview", { id: String(id || "") }); },
       },
+      // ── providers (Settings → Models + Agents tile management) ──
+      // Same shape as `routers` above. Secrets only on setKey + testConnection
+      // (where the test consumes the user's draft input but doesn't persist).
+      // listCatalog returns the static spec + per-provider state so the
+      // renderer can render Settings from a single round-trip.
+      providers: {
+        listCatalog:      function () { return invoke("providers_list_catalog"); },
+        setKey:           function (id, key) {
+          return invoke("providers_set_key", {
+            id: String(id || ""),
+            key: String(key || ""),
+          });
+        },
+        getKeyPreview:    function (id) { return invoke("providers_get_key_preview", { id: String(id || "") }); },
+        deleteKey:        function (id) { return invoke("providers_delete_key", { id: String(id || "") }); },
+        testConnection:   function (id, key) {
+          return invoke("providers_test_connection", {
+            id: String(id || ""),
+            key: String(key || ""),
+          });
+        },
+        ollamaProbe:      function (baseUrl) {
+          return invoke("providers_ollama_probe", {
+            baseUrl: baseUrl == null ? null : String(baseUrl),
+          });
+        },
+        setEnabledModels: function (id, models) {
+          return invoke("providers_set_enabled_models", {
+            id: String(id || ""),
+            models: Array.isArray(models) ? models.map(String) : [],
+          });
+        },
+        setOllamaBaseUrl: function (baseUrl) {
+          return invoke("providers_set_ollama_base_url", { baseUrl: String(baseUrl || "") });
+        },
+        // Fires when any providers_* mutation lands. Renderer's
+        // useProvidersConfig store listens so cross-tab edits (e.g.
+        // Settings → Models change while the chat composer is open)
+        // refresh the picker without a manual reload.
+        onChanged: function (cb) {
+          var unsub = null;
+          var e = ev();
+          if (e) {
+            e.listen("providers-config-changed", function (m) {
+              try { cb(m && m.payload); } catch (_) {}
+            }).then(function (u) { unsub = u; });
+          }
+          return function () { try { unsub && unsub(); } catch (_) {} };
+        },
+      },
       // ── github (mirrors window.electronAPI.github in the Electron build) ──
       // Token never crosses IPC; only `link` envelopes do. Faithful with
       // the original `electron/github-link.cjs` surface.

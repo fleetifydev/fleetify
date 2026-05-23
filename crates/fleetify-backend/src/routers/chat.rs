@@ -21,7 +21,9 @@ use tokio::sync::Mutex;
 use crate::bridges::claude::ClaudeBridge;
 use crate::bridges::codex::CodexBridge;
 use crate::bridges::gemini::GeminiBridge;
-use crate::bridges::openai::OpenAIBridge;
+// crate::bridges::openai::OpenAIBridge — retired from dispatch in favour
+// of OpenAICompatBridge. File stays for the mockito unit tests until a
+// follow-up sweep retires it entirely.
 use crate::bridges::{AnyBridge, BridgeEvent};
 use crate::models::session::Session;
 use crate::routers::AppState;
@@ -608,13 +610,76 @@ async fn run_send_flow(
             }
             AnyBridge::Claude(Arc::new(b))
         }
-        "openai" => {
-            let mut b = OpenAIBridge::new(sid.clone());
-            if let Some(m) = &session.model_name {
-                b.model = m.clone();
+        // Generic OpenAI-compatible cloud providers (including "openai"
+        // itself). Each one's catalog entry supplies the base URL,
+        // env-var hint, and default model list — the bridge stays
+        // provider-agnostic. The legacy `OpenAIBridge` (bridges/openai.rs)
+        // is no longer dispatched; it stays in the tree for its existing
+        // mockito-based unit test and will be retired in a follow-up.
+        "openai" | "deepseek" | "grok" | "nvidia-nim" | "kimi-api" | "gemini-api" | "ollama" => {
+            let pid = session.tool.as_str();
+            let Some(spec) = crate::providers::find_provider(pid) else {
+                send_json(
+                    &sink,
+                    json!({"type":"error","session_id":sid,
+                           "error":format!("unknown provider {pid}")}),
+                )
+                .await;
+                let _ = st.sm.update_status(&st.auth.pool, &sid, "idle").await;
+                return;
+            };
+            let model = session.model_name.clone().unwrap_or_else(|| {
+                spec.default_models
+                    .first()
+                    .map(|m| m.id.to_string())
+                    .unwrap_or_default()
+            });
+            // Ollama is the one provider where the base URL is user-
+            // configurable (LAN remote, custom port). Pull it from
+            // ProvidersConfig via the loaded fleet.config.json so the
+            // chat path matches what Settings → Models advertises.
+            // Other providers stick to the static catalog URL.
+            let mut b = crate::bridges::openai_compat::OpenAICompatBridge::from_spec(
+                spec,
+                sid.clone(),
+                model,
+            );
+            if pid == "ollama" {
+                if let Ok(home) = std::env::var("FLEETIFY_HOME") {
+                    let cfg_path = std::path::PathBuf::from(home);
+                    let cfg = std::fs::read_to_string(cfg_path.join("fleet.config.json"))
+                        .ok()
+                        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                        .unwrap_or_else(|| json!({}));
+                    if let Some(url) = cfg
+                        .get("providers")
+                        .and_then(|p| p.get("ollama_base_url"))
+                        .and_then(|u| u.as_str())
+                    {
+                        b.base_url = url.to_string();
+                    }
+                }
             }
-            AnyBridge::OpenAI(Arc::new(b))
+            AnyBridge::OpenAICompat(Arc::new(b))
         }
+        "perplexity" => {
+            let model = session
+                .model_name
+                .clone()
+                .unwrap_or_else(|| "sonar".to_string());
+            AnyBridge::Perplexity(Arc::new(crate::bridges::perplexity::PerplexityBridge::new(
+                sid.clone(),
+                model,
+            )))
+        }
+        "kimi" => AnyBridge::Kimi(Arc::new(crate::bridges::kimi::KimiBridge::new(
+            sid.clone(),
+            agent_cwd.clone(),
+            session.permission_mode.clone(),
+            session.model_name.clone(),
+            session.title == "Staff Agent",
+            session.agent_template.clone(),
+        ))),
         "gemini" => {
             let is_staff = session.title == "Staff Agent";
             let mut b = GeminiBridge::new(
@@ -778,6 +843,11 @@ async fn run_send_flow(
         }
         crate::services::routing::traits::AgentKind::Gemini => {
             crate::services::routing::traits::ProviderKind::Google
+        }
+        // Kimi is OpenAI-compatible on the wire — proxies that fan out
+        // by provider family put it on the OpenAI-compat endpoint.
+        crate::services::routing::traits::AgentKind::Kimi => {
+            crate::services::routing::traits::ProviderKind::OpenAICompatible
         }
     };
     let mut bridge_ctx = crate::bridges::BridgeContext {
@@ -1723,13 +1793,43 @@ async fn run_dispatched_task(
             }
             AnyBridge::Claude(std::sync::Arc::new(b))
         }
-        "openai" => {
-            let mut b = OpenAIBridge::new(target_id.clone());
-            if let Some(m) = &target.model_name {
-                b.model = m.clone();
-            }
-            AnyBridge::OpenAI(std::sync::Arc::new(b))
+        "openai" | "deepseek" | "grok" | "nvidia-nim" | "kimi-api" | "gemini-api" | "ollama" => {
+            let pid = target.tool.as_str();
+            let Some(spec) = crate::providers::find_provider(pid) else {
+                let _ = sm.update_status(&pool, &target_id, "idle").await;
+                return;
+            };
+            let model = target.model_name.clone().unwrap_or_else(|| {
+                spec.default_models
+                    .first()
+                    .map(|m| m.id.to_string())
+                    .unwrap_or_default()
+            });
+            AnyBridge::OpenAICompat(std::sync::Arc::new(
+                crate::bridges::openai_compat::OpenAICompatBridge::from_spec(
+                    spec,
+                    target_id.clone(),
+                    model,
+                ),
+            ))
         }
+        "perplexity" => {
+            let model = target
+                .model_name
+                .clone()
+                .unwrap_or_else(|| "sonar".to_string());
+            AnyBridge::Perplexity(std::sync::Arc::new(
+                crate::bridges::perplexity::PerplexityBridge::new(target_id.clone(), model),
+            ))
+        }
+        "kimi" => AnyBridge::Kimi(std::sync::Arc::new(crate::bridges::kimi::KimiBridge::new(
+            target_id.clone(),
+            target_cwd.clone(),
+            target.permission_mode.clone(),
+            target.model_name.clone(),
+            false,
+            target.agent_template.clone(),
+        ))),
         "gemini" => AnyBridge::Gemini(std::sync::Arc::new(GeminiBridge::new(
             target_id.clone(),
             target_cwd.clone(),

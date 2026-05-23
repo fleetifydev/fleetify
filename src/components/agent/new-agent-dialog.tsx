@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { X, FolderOpen, Clock, ChevronDown, Check, Sparkles, Wand2 } from "lucide-react";
-import { ClaudeLogo, OpenAILogo, GeminiLogo } from "@/components/ui/provider-logo";
+import { ClaudeLogo, OpenAILogo, GeminiLogo, KimiLogo } from "@/components/ui/provider-logo";
 import { createSession, fetchClaudeSessions, fetchGeminiSessions, fetchCodexSessions, apiFetch, type ClaudeSession } from "@/lib/api";
 import { useAppStore } from "@/stores/app-store";
 import { useRouterConfig } from "@/hooks/use-router-config";
@@ -148,6 +148,14 @@ const PROVIDERS = [
     { id: "gemini-3.1-pro-preview",        label: "3.1 Pro",  desc: "Best",    default: true },
     { id: "gemini-3-flash-preview",        label: "3 Flash",  desc: "Fast"    },
     { id: "gemini-3.1-flash-lite-preview", label: "3.1 Lite", desc: "Fastest" },
+  ]},
+  // Kimi Code CLI (Moonshot). Tier mapping aligns with the capability-
+  // matrix entry in config/agents.toml — fast → k1.5-preview, balanced
+  // → k2-instruct (default), max → k2-thinking.
+  { id: "kimi", name: "Kimi", icon: KimiLogo, models: [
+    { id: "kimi-k1.5-preview",  label: "K1.5 Preview",  desc: "Fast"     },
+    { id: "kimi-k2-instruct",   label: "K2 Instruct",   desc: "Balanced", default: true },
+    { id: "kimi-k2-thinking",   label: "K2 Thinking",   desc: "Most capable" },
   ]},
 ];
 

@@ -7,6 +7,7 @@ import {
   SkillsCard, HooksCard, CommandsCard, UsageCard, MCPStatusCard,
   InitDoneCard, InfoCard,
 } from "./staff-message-cards";
+import { CitationCard } from "./citation-card";
 import { ChevronRight, Copy, Check, ArrowRightLeft, CheckCircle2, AlertCircle, Terminal, FileText, Globe, Search, Cpu, CheckSquare, FolderSearch, Pencil, Wrench, Brain, MoveHorizontal, Trash2, FolderOpen, Download, Code2, BarChart2, BookOpen, Image, CornerDownLeft, Send, Bookmark, BookmarkCheck, RotateCcw, X } from "lucide-react";
 import { createSessionMemory } from "@/lib/api";
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
@@ -2016,6 +2017,8 @@ function AssistantMessage({ message }: { message: ChatMessage }) {
             } else if (block.type === "resource_card") {
               const card = renderResourceCard(block as ResourceCardBlock);
               if (card) out.push(<div key={i}>{card}</div>);
+            } else if (block.type === "citations") {
+              out.push(<CitationCard key={i} block={block} />);
             }
           });
           flushTools("tail");

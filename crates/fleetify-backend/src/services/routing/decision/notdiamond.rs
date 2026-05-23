@@ -105,6 +105,10 @@ fn provider_prefix(a: AgentKind) -> &'static str {
         AgentKind::OpenAI => "openai",
         AgentKind::Gemini => "google",
         AgentKind::Codex => "openai",
+        // Not Diamond doesn't currently support Kimi as a routing target.
+        // Returning the openai-compat prefix means the router will at
+        // least round-trip with a sane provider family for telemetry.
+        AgentKind::Kimi => "openai",
     }
 }
 

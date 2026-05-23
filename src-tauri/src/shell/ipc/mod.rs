@@ -1647,6 +1647,322 @@ pub async fn routers_test_router(id: String) -> serde_json::Value {
     }
 }
 
+// ── Providers (Settings → Models + Agents tile management) ─────────────
+//
+// Schema mirrors the routers_* block above: list/setKey/deleteKey return
+// `{ ok, ... }` envelopes; secrets cross IPC only on setKey + testConnection
+// (which carries a *draft* key the user just typed — the saved key is read
+// from the keychain server-side). list returns spec + per-tile state so the
+// renderer can render the whole Settings page from a single round-trip.
+
+#[derive(serde::Serialize)]
+pub struct ProviderTilePayload {
+    pub spec: &'static fleetify_backend::providers::ProviderSpec,
+    pub connected: bool,
+    pub has_key: bool,
+    pub enabled_models: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn providers_list_catalog(app: tauri::AppHandle) -> serde_json::Value {
+    let dir = match app.path().app_data_dir() {
+        Ok(d) => d,
+        Err(_) => {
+            return serde_json::json!({ "ok": false, "error": "no app data dir", "tiles": [] })
+        }
+    };
+    let cfg = config::load_config_from(&dir);
+    let providers_cfg = config::providers_from(&cfg);
+
+    // has_key lookup is best-effort: skip it when the user isn't signed in
+    // so we don't surface a confusing NO_USER on every Settings render.
+    // Renderer treats has_key as a hint, not the source of truth.
+    let uid = auth::get_user_id().await;
+
+    let tiles: Vec<ProviderTilePayload> = fleetify_backend::providers::CATALOG
+        .iter()
+        .map(|spec| {
+            let connected = providers_cfg
+                .connected
+                .get(spec.id)
+                .copied()
+                .unwrap_or(false);
+            let has_key = match (uid.as_deref(), spec.id) {
+                (Some(u), id) => {
+                    matches!(
+                        crate::shell::providers_link::read_secret(id, u),
+                        Ok(Some(_))
+                    )
+                }
+                _ => false,
+            };
+            let enabled_models = providers_cfg
+                .enabled_models
+                .get(spec.id)
+                .cloned()
+                .unwrap_or_default();
+            ProviderTilePayload {
+                spec,
+                connected,
+                has_key,
+                enabled_models,
+            }
+        })
+        .collect();
+
+    serde_json::json!({ "ok": true, "tiles": tiles })
+}
+
+#[tauri::command]
+pub async fn providers_set_key(
+    app: tauri::AppHandle,
+    id: String,
+    key: String,
+) -> serde_json::Value {
+    if fleetify_backend::providers::find_provider(&id).is_none() {
+        return serde_json::json!({ "ok": false, "code": "UNKNOWN_PROVIDER", "error": format!("unknown provider {id}") });
+    }
+    let Some(uid) = auth::get_user_id().await else {
+        return serde_json::json!({ "ok": false, "code": "NO_USER", "error": "Fleetify sign-in required" });
+    };
+    if let Err(e) = crate::shell::providers_link::store_secret(&id, &uid, &key) {
+        return serde_json::json!({ "ok": false, "code": "KEYCHAIN", "error": e });
+    }
+    if let Ok(dir) = app.path().app_data_dir() {
+        let mut cfg = config::load_config_from(&dir);
+        let mut providers = config::providers_from(&cfg);
+        providers.connected.insert(id.clone(), true);
+        config::providers_set(&mut cfg, &providers);
+        if let Err(e) = config::save_config_to(&dir, &cfg) {
+            return serde_json::json!({ "ok": false, "code": "CONFIG", "error": e.to_string() });
+        }
+    }
+    crate::shell::providers_setup::reload_backend(&app).await;
+    fleetify_backend::services::telemetry::emitters::emit_provider_connected(&id).await;
+    serde_json::json!({ "ok": true })
+}
+
+#[tauri::command]
+pub async fn providers_get_key_preview(id: String) -> serde_json::Value {
+    // Local-only providers (ollama) never have a keychain entry.
+    if let Some(spec) = fleetify_backend::providers::find_provider(&id) {
+        if matches!(
+            spec.kind,
+            fleetify_backend::providers::ProviderKind::LocalHttp
+        ) {
+            return serde_json::json!({ "ok": true, "preview": null });
+        }
+    } else {
+        return serde_json::json!({ "ok": false, "code": "UNKNOWN_PROVIDER" });
+    }
+    let Some(uid) = auth::get_user_id().await else {
+        return serde_json::json!({ "ok": false, "code": "NO_USER" });
+    };
+    match crate::shell::providers_link::read_secret(&id, &uid) {
+        Ok(Some(secret)) => serde_json::json!({ "ok": true, "preview": mask_secret(&secret) }),
+        Ok(None) => serde_json::json!({ "ok": true, "preview": null }),
+        Err(e) => serde_json::json!({ "ok": false, "code": "KEYCHAIN", "error": e }),
+    }
+}
+
+#[tauri::command]
+pub async fn providers_delete_key(app: tauri::AppHandle, id: String) -> serde_json::Value {
+    if let Some(uid) = auth::get_user_id().await {
+        let _ = crate::shell::providers_link::delete_secret(&id, &uid);
+    }
+    if let Ok(dir) = app.path().app_data_dir() {
+        let mut cfg = config::load_config_from(&dir);
+        let mut providers = config::providers_from(&cfg);
+        providers.connected.insert(id.clone(), false);
+        config::providers_set(&mut cfg, &providers);
+        let _ = config::save_config_to(&dir, &cfg);
+    }
+    crate::shell::providers_setup::reload_backend(&app).await;
+    fleetify_backend::services::telemetry::emitters::emit_provider_disconnected(&id).await;
+    serde_json::json!({ "ok": true })
+}
+
+/// Probe the provider's `/models` endpoint with the supplied draft key.
+/// Returns `{ok, latency_ms, model_count?}` on success or
+/// `{ok: false, code: "AUTH|NETWORK|TIMEOUT|NOT_FOUND", error}` on
+/// failure. The draft key is consumed in-process only and never persisted
+/// — the renderer is responsible for calling `providers_set_key`
+/// separately when the user clicks Save.
+///
+/// Phase 1 keeps the check to `GET <base>/models`; Phase 3 may add a
+/// 1-token completion fallback for providers (Perplexity) that don't
+/// expose a models endpoint. Until then, those providers report
+/// NOT_FOUND and the user can still Save without testing.
+#[tauri::command]
+pub async fn providers_test_connection(id: String, key: String) -> serde_json::Value {
+    let Some(spec) = fleetify_backend::providers::find_provider(&id) else {
+        return serde_json::json!({ "ok": false, "code": "UNKNOWN_PROVIDER", "error": format!("unknown provider {id}") });
+    };
+    if matches!(
+        spec.kind,
+        fleetify_backend::providers::ProviderKind::LocalHttp
+    ) {
+        return serde_json::json!({ "ok": false, "code": "USE_PROBE", "error": "Use providers_ollama_probe for local providers" });
+    }
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(4))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return serde_json::json!({ "ok": false, "code": "NETWORK", "error": e.to_string() })
+        }
+    };
+    let url = format!("{}/models", spec.default_base_url.trim_end_matches('/'));
+    let started = std::time::Instant::now();
+    let result = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {key}"))
+        .send()
+        .await;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let outcome = match result {
+        Ok(resp) => {
+            let status = resp.status();
+            if status.is_success() {
+                let model_count = resp.json::<serde_json::Value>().await.ok().and_then(|v| {
+                    v.get("data")
+                        .and_then(|d| d.as_array())
+                        .map(|a| a.len())
+                        // Some providers (e.g. Ollama-compat shims) return the bare array.
+                        .or_else(|| v.as_array().map(|a| a.len()))
+                });
+                serde_json::json!({ "ok": true, "latency_ms": elapsed_ms, "model_count": model_count })
+            } else if status.as_u16() == 401 || status.as_u16() == 403 {
+                serde_json::json!({ "ok": false, "code": "AUTH", "error": format!("HTTP {status}"), "latency_ms": elapsed_ms })
+            } else if status.as_u16() == 404 {
+                serde_json::json!({ "ok": false, "code": "NOT_FOUND", "error": format!("HTTP {status} at {url}"), "latency_ms": elapsed_ms })
+            } else {
+                serde_json::json!({ "ok": false, "code": "NETWORK", "error": format!("HTTP {status}"), "latency_ms": elapsed_ms })
+            }
+        }
+        Err(e) if e.is_timeout() => {
+            serde_json::json!({ "ok": false, "code": "TIMEOUT", "error": e.to_string() })
+        }
+        Err(e) => {
+            serde_json::json!({ "ok": false, "code": "NETWORK", "error": e.to_string() })
+        }
+    };
+    let ok = outcome.get("ok").and_then(|b| b.as_bool()).unwrap_or(false);
+    let code = outcome.get("code").and_then(|c| c.as_str());
+    fleetify_backend::services::telemetry::emitters::emit_provider_test_connection(
+        &id,
+        ok,
+        code,
+        Some(elapsed_ms),
+    )
+    .await;
+    outcome
+}
+
+/// Probe an Ollama server for the model catalog. `base_url` defaults to
+/// the user's configured value (or `http://localhost:11434`). Returns the
+/// model list verbatim so the renderer can drive checkbox state.
+#[tauri::command]
+pub async fn providers_ollama_probe(
+    app: tauri::AppHandle,
+    base_url: Option<String>,
+) -> serde_json::Value {
+    let resolved = base_url
+        .or_else(|| {
+            app.path()
+                .app_data_dir()
+                .ok()
+                .map(|d| config::providers_from(&config::load_config_from(&d)))
+                .and_then(|p| p.ollama_base_url)
+        })
+        .unwrap_or_else(|| "http://localhost:11434".into());
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return serde_json::json!({ "ok": false, "running": false, "code": "NETWORK", "error": e.to_string(), "base_url": resolved })
+        }
+    };
+    let url = format!("{}/api/tags", resolved.trim_end_matches('/'));
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(body) => {
+                let models = body
+                    .get("models")
+                    .and_then(|m| m.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                serde_json::json!({ "ok": true, "running": true, "base_url": resolved, "models": models })
+            }
+            Err(e) => {
+                serde_json::json!({ "ok": false, "running": true, "code": "PARSE", "error": e.to_string(), "base_url": resolved })
+            }
+        },
+        Ok(resp) => {
+            serde_json::json!({ "ok": false, "running": false, "code": "NETWORK", "error": format!("HTTP {}", resp.status()), "base_url": resolved })
+        }
+        Err(e) if e.is_timeout() => {
+            serde_json::json!({ "ok": false, "running": false, "code": "TIMEOUT", "error": e.to_string(), "base_url": resolved })
+        }
+        Err(e) => {
+            serde_json::json!({ "ok": false, "running": false, "code": "NETWORK", "error": e.to_string(), "base_url": resolved })
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn providers_set_enabled_models(
+    app: tauri::AppHandle,
+    id: String,
+    models: Vec<String>,
+) -> serde_json::Value {
+    if fleetify_backend::providers::find_provider(&id).is_none() {
+        return serde_json::json!({ "ok": false, "code": "UNKNOWN_PROVIDER", "error": format!("unknown provider {id}") });
+    }
+    let Ok(dir) = app.path().app_data_dir() else {
+        return serde_json::json!({ "ok": false, "error": "no app data dir" });
+    };
+    let mut cfg = config::load_config_from(&dir);
+    let mut providers = config::providers_from(&cfg);
+    providers.enabled_models.insert(id, models);
+    config::providers_set(&mut cfg, &providers);
+    if let Err(e) = config::save_config_to(&dir, &cfg) {
+        return serde_json::json!({ "ok": false, "code": "CONFIG", "error": e.to_string() });
+    }
+    // Picker reads renderer-side state via the Zustand store, which the
+    // setEnabledModels mutator updates locally — no backend reload needed.
+    serde_json::json!({ "ok": true })
+}
+
+#[tauri::command]
+pub async fn providers_set_ollama_base_url(
+    app: tauri::AppHandle,
+    base_url: String,
+) -> serde_json::Value {
+    let Ok(dir) = app.path().app_data_dir() else {
+        return serde_json::json!({ "ok": false, "error": "no app data dir" });
+    };
+    let mut cfg = config::load_config_from(&dir);
+    let mut providers = config::providers_from(&cfg);
+    let trimmed = base_url.trim().to_string();
+    providers.ollama_base_url = if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    };
+    config::providers_set(&mut cfg, &providers);
+    if let Err(e) = config::save_config_to(&dir, &cfg) {
+        return serde_json::json!({ "ok": false, "code": "CONFIG", "error": e.to_string() });
+    }
+    crate::shell::providers_setup::reload_backend(&app).await;
+    serde_json::json!({ "ok": true })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

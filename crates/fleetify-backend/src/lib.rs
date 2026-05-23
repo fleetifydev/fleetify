@@ -10,6 +10,7 @@ pub mod bridges;
 pub mod config;
 pub mod db;
 pub mod models;
+pub mod providers;
 pub mod routers;
 pub mod services;
 pub mod session_manager;

@@ -62,6 +62,7 @@ fn agent_key(a: AgentKind) -> &'static str {
         AgentKind::OpenAI => "openai",
         AgentKind::Gemini => "gemini",
         AgentKind::Codex => "codex",
+        AgentKind::Kimi => "kimi",
     }
 }
 

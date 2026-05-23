@@ -12,7 +12,20 @@ export type AgentTool =
   | "codex"
   | "aider"
   | "opencode"
-  | "custom";
+  | "custom"
+  // ── Cloud HTTP providers from the registry (Settings → Models) ──
+  // These map to the same `session.tool` column the CLI agents use;
+  // chat.rs's dispatch keys off the bare string so the backend doesn't
+  // need to know about the union — only the renderer does.
+  | "openai"
+  | "deepseek"
+  | "grok"
+  | "nvidia-nim"
+  | "kimi-api"
+  | "gemini-api"
+  | "perplexity"
+  | "ollama"
+  | "kimi";
 
 export interface Session {
   id: string;

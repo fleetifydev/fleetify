@@ -16,6 +16,57 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/models", get(list_models))
         .route("/providers/scan", get(scan_providers))
+        .route("/providers/catalog", get(providers_catalog))
+        .route("/agents/scan", get(scan_agents_registry))
+}
+
+/// Static catalog that drives Settings → Models tiles, Settings → Agents
+/// tiles, and the chat composer's grouped model picker. Returns the
+/// `'static` provider registry verbatim — no I/O, no auth check, safe to
+/// poll without rate-limiting concerns.
+async fn providers_catalog() -> Json<&'static [crate::providers::ProviderSpec]> {
+    Json(crate::providers::CATALOG)
+}
+
+/// Registry-driven CLI agent scan — replacement for `scan_providers`
+/// that consumes `providers::list_cli_agents()` instead of hardcoding
+/// claude/codex/gemini. Each entry reports presence on PATH + whether
+/// any of the registry's `auth_indicators` fire. Drives Settings →
+/// Agents tiles + the New Agent dialog detection chips.
+async fn scan_agents_registry() -> Json<Value> {
+    use crate::providers::AuthIndicator;
+    let mut out = serde_json::Map::new();
+    for spec in crate::providers::list_cli_agents() {
+        let path = cli_path(spec.bin).await;
+        let installed = path.is_some();
+        let authenticated = if installed {
+            spec.auth_indicators.iter().any(|ind| match ind {
+                AuthIndicator::HomeDir { path } => home().join(path).exists(),
+                AuthIndicator::EnvVar { name } => std::env::var(name).is_ok(),
+            })
+        } else {
+            false
+        };
+        crate::services::telemetry::emitters::emit_agent_detected(
+            spec.id,
+            installed,
+            authenticated,
+        )
+        .await;
+        out.insert(
+            spec.id.to_string(),
+            json!({
+                "id": spec.id,
+                "display_name": spec.display_name,
+                "installed": installed,
+                "authenticated": authenticated,
+                "path": path,
+                "install_hint": spec.install_hint,
+                "login_hint": spec.login_hint,
+            }),
+        );
+    }
+    Json(Value::Object(out))
 }
 
 fn home() -> PathBuf {
@@ -90,24 +141,30 @@ async fn check_codex_cli() -> Value {
     json!({ "installed": true, "authenticated": authed, "path": p })
 }
 
-async fn check_ollama() -> Value {
+/// Probe an Ollama daemon. Base URL is parameterized so callers can
+/// point at a LAN box (`http://192.168.1.50:11434`) when the user has
+/// configured `ProvidersConfig.ollama_base_url`. Defaults to localhost
+/// when no value is supplied.
+async fn check_ollama(base_url: Option<&str>) -> Value {
+    let base = base_url.unwrap_or("http://localhost:11434");
+    let url = format!("{}/api/tags", base.trim_end_matches('/'));
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
     {
         Ok(c) => c,
-        Err(_) => return json!({ "running": false, "models": [] }),
+        Err(_) => return json!({ "running": false, "models": [], "base_url": base }),
     };
-    let resp = match client.get("http://localhost:11434/api/tags").send().await {
+    let resp = match client.get(&url).send().await {
         Ok(r) => r,
-        Err(_) => return json!({ "running": false, "models": [] }),
+        Err(_) => return json!({ "running": false, "models": [], "base_url": base }),
     };
     if !resp.status().is_success() {
-        return json!({ "running": false, "models": [] });
+        return json!({ "running": false, "models": [], "base_url": base });
     }
     let body: Value = match resp.json().await {
         Ok(v) => v,
-        Err(_) => return json!({ "running": false, "models": [] }),
+        Err(_) => return json!({ "running": false, "models": [], "base_url": base }),
     };
     let models: Vec<String> = body
         .get("models")
@@ -119,15 +176,20 @@ async fn check_ollama() -> Value {
                 .collect()
         })
         .unwrap_or_default();
-    json!({ "running": true, "models": models })
+    json!({ "running": true, "models": models, "base_url": base })
 }
 
 async fn scan_providers() -> Json<Value> {
+    // The legacy scan endpoint doesn't have access to ProvidersConfig
+    // (it lives in the Tauri shell's fleet.config.json, not the
+    // backend's AppState), so we fall back to the localhost default
+    // here. The new `providers_ollama_probe` IPC honours the user's
+    // configured URL for the Settings surface.
     let (claude, gemini, codex, ollama) = tokio::join!(
         check_claude_cli(),
         check_gemini_cli(),
         check_codex_cli(),
-        check_ollama(),
+        check_ollama(None),
     );
     Json(json!({
         "claude_cli": claude,

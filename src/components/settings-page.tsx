@@ -19,7 +19,10 @@ import {
   Settings, Palette, Wand2, Cpu, Plug, Cable, Route,
   FileCode, Webhook, FileText, FolderOpen, Loader2, Bug,
   Check, User, ArrowUpRight, HelpCircle, Sun, ArrowLeft,
-  Eye, EyeOff, Volume2, Copy, MessageCircle,
+  Volume2, Copy, MessageCircle,
+  // ExternalLink: AccountSection's "Change settings" link (added on main).
+  // Eye/EyeOff dropped — the legacy ApiKeyRow that used them was retired
+  // when ModelsSection moved to settings/models-section.tsx.
   ExternalLink,
 } from "lucide-react";
 import { isWindowsPlatform } from "@/lib/utils";
@@ -30,6 +33,8 @@ import type { ColorTheme } from "@/stores/theme-store";
 import { MCPSection } from "./settings/mcp-section";
 import { IntegrationsSection } from "./settings/integrations-section";
 import { RoutersSection } from "./settings/routers-section";
+import { ModelsSection } from "./settings/models-section";
+import { AgentsSection as AgentsSectionV2 } from "./settings/agents-section";
 import { WindowsTitleBar } from "./layout/windows-title-bar";
 import { openDocs } from "./layout/sidebar";
 import { FeedbackModal } from "./feedback-modal";
@@ -923,165 +928,11 @@ function AppearanceSection() {
    Section: Models
 ══════════════════════════════════════════════════════════════ */
 
-type ProviderKey = "anthropic" | "openai" | "gemini" | "groq";
-
-const MODELS = [
-  { id: "claude-opus-4-7",           label: "Claude Opus 4.7",   desc: "Most capable — complex tasks, long context" },
-  { id: "claude-sonnet-4-6",         label: "Claude Sonnet 4.6", desc: "Balanced speed and quality" },
-  { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5",  desc: "Fastest — simple tasks and quick responses" },
-];
-
-const PROVIDERS: { key: ProviderKey; label: string; placeholder: string; desc: string }[] = [
-  { key: "anthropic", label: "Anthropic",       placeholder: "sk-ant-…", desc: "Claude models — Opus, Sonnet, Haiku" },
-  { key: "openai",    label: "OpenAI",          placeholder: "sk-…",     desc: "GPT models, used by Codex CLI" },
-  { key: "gemini",    label: "Google Gemini",   placeholder: "AIza…",    desc: "Gemini models, used by Gemini CLI" },
-  { key: "groq",      label: "Groq",            placeholder: "gsk_…",    desc: "Fast inference for open models" },
-];
-
-/* ── ApiKeyRow — masked input + reveal/save controls ─────────── */
-function ApiKeyRow({
-  label, desc, value, onSave, placeholder, last,
-}: {
-  label: string;
-  desc: string;
-  value: string;
-  onSave: (v: string) => Promise<void> | void;
-  placeholder: string;
-  last?: boolean;
-}) {
-  const [draft, setDraft] = useState(value);
-  const [revealed, setRevealed] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const dirty = draft !== value;
-
-  // Sync from outer value when config loads
-  useEffect(() => { setDraft(value); }, [value]);
-
-  const handleSave = async () => {
-    await onSave(draft.trim());
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1600);
-  };
-
-  return (
-    <div style={{
-      padding: "13px 14px",
-      borderBottom: last ? "none" : "1px solid var(--c-brd)",
-    }}>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, marginBottom: 8 }}>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 500, color: "var(--c-high)", lineHeight: 1.3 }}>
-            {label}
-            {value && (
-              <span style={{
-                marginLeft: 8, fontSize: 10.5, fontWeight: 600, letterSpacing: "0.05em",
-                color: "rgb(74,222,128)", textTransform: "uppercase",
-              }}>● Saved</span>
-            )}
-          </div>
-          <div style={{ fontSize: 12, color: "var(--c-low)", marginTop: 3, lineHeight: 1.5 }}>
-            {desc}
-          </div>
-        </div>
-      </div>
-      <div style={{ display: "flex", gap: 6 }}>
-        <div style={{ flex: 1, position: "relative" }}>
-          <input
-            type={revealed ? "text" : "password"}
-            value={draft}
-            placeholder={placeholder}
-            onChange={e => setDraft(e.target.value)}
-            style={{
-              width: "100%", boxSizing: "border-box",
-              background: "var(--c-srf)",
-              border: "1px solid var(--c-brd)",
-              borderRadius: 7, padding: "7px 32px 7px 10px",
-              fontSize: 12.5, color: "var(--c-high)",
-              fontFamily: "var(--font-mono, ui-monospace, monospace)",
-              outline: "none", transition: "border-color 0.12s",
-            }}
-            onFocus={e => (e.currentTarget.style.borderColor = "var(--c-brd2)")}
-            onBlur={e => (e.currentTarget.style.borderColor = "var(--c-brd)")}
-          />
-          <button
-            onClick={() => setRevealed(v => !v)}
-            title={revealed ? "Hide" : "Reveal"}
-            style={{
-              position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)",
-              width: 24, height: 24, borderRadius: 5,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              background: "transparent", border: "none", cursor: "pointer",
-              color: "var(--c-dim)", outline: "none",
-            }}
-            onMouseEnter={e => (e.currentTarget.style.color = "var(--c-high)")}
-            onMouseLeave={e => (e.currentTarget.style.color = "var(--c-dim)")}
-          >
-            {revealed ? <EyeOff size={13} /> : <Eye size={13} />}
-          </button>
-        </div>
-        <PrimaryButton onClick={handleSave} disabled={!dirty}>
-          {saved ? <><Check size={12} /> Saved</> : "Save"}
-        </PrimaryButton>
-      </div>
-    </div>
-  );
-}
-
-function ModelsSection() {
-  const { cfg, loaded, patch } = useFleetConfig();
-  const defaultModel = cfg?.defaultModel ?? "claude-sonnet-4-6";
-
-  const pick = (id: string) => { void patch({ defaultModel: id }); };
-  const saveKey = async (key: ProviderKey, value: string) => {
-    await patch({ apiKeys: { ...(cfg?.apiKeys ?? {}), [key]: value || undefined } });
-  };
-
-  return (
-    <>
-      <SectionHeader>Default Model</SectionHeader>
-      <Card>
-        {MODELS.map((m, i, arr) => {
-          const active = defaultModel === m.id;
-          return (
-            <Row key={m.id} title={m.label} desc={m.desc} last={i === arr.length - 1}>
-              <button
-                onClick={() => pick(m.id)}
-                aria-label={active ? "Selected" : "Select"}
-                style={{
-                  width: 18, height: 18, borderRadius: "50%",
-                  border: active
-                    ? "5px solid rgb(74,222,128)"
-                    : "1.5px solid var(--c-brd2)",
-                  background: "transparent",
-                  cursor: "pointer", outline: "none",
-                  transition: "border 0.12s",
-                }}
-              />
-            </Row>
-          );
-        })}
-      </Card>
-
-      <SectionHeader>API Keys</SectionHeader>
-      <Card>
-        {PROVIDERS.map((p, i, arr) => (
-          <ApiKeyRow
-            key={p.key}
-            label={p.label}
-            desc={p.desc}
-            placeholder={p.placeholder}
-            value={loaded ? (cfg?.apiKeys?.[p.key] ?? "") : ""}
-            onSave={(v) => saveKey(p.key, v)}
-            last={i === arr.length - 1}
-          />
-        ))}
-      </Card>
-      <div style={{ fontSize: 11.5, color: "var(--c-dim)", marginTop: -10, marginBottom: 22, paddingLeft: 2 }}>
-        Keys are stored locally on this machine and never sent to Fleetify servers.
-      </div>
-    </>
-  );
-}
+// Section: Models — full implementation moved to ./settings/models-section.tsx.
+// The legacy MODELS / PROVIDERS arrays and inline ApiKeyRow lived here
+// before Phase 1; they're gone now because the registry-driven UI
+// covers every shape they used to handle (cloud HTTP + local Ollama +
+// per-model toggles + masked keychain previews).
 
 /* ══════════════════════════════════════════════════════════════
    Section: Agents — defaults that apply when creating new sessions
@@ -1113,6 +964,9 @@ function AgentsSection() {
           />
         </Row>
       </Card>
+
+      {/* Registry-driven CLI agent grid — detection + install/login hints. */}
+      <AgentsSectionV2 />
 
       <SectionHeader>Per-session controls</SectionHeader>
       <Card>

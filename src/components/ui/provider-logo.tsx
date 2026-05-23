@@ -110,6 +110,54 @@ export function CursorLogo({ size = 18 }: { size?: number }) {
   );
 }
 
+/* ── DeepSeek: stylized whale mark in their brand blue ── */
+export function DeepSeekLogo({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" role="img" aria-label="DeepSeek">
+      <path
+        d="M20.5 6.5c-.5-.4-1.4-.2-2.4.4-.7-.9-1.8-1.5-3-1.5-1.7 0-3.2 1.2-3.7 2.8-1.4-.3-3 0-4.2 1-1.4 1.2-2 3-1.4 4.7.4 1.3 1.5 2.3 2.8 2.7l.4 2.5c.1.5.5.9 1 .9h6c.5 0 .9-.4 1-.9l.5-2.7c1.6-.7 2.8-2.3 2.8-4.1 0-1.6-.9-3.1-2.4-3.8.5-.8.8-1.5.6-2zM10.5 13c-.6 0-1-.4-1-1s.4-1 1-1 1 .4 1 1-.4 1-1 1zm5 0c-.6 0-1-.4-1-1s.4-1 1-1 1 .4 1 1-.4 1-1 1z"
+        fill="#4D6BFE"
+      />
+    </svg>
+  );
+}
+
+/* ── Grok (xAI): bold X mark ── */
+export function GrokLogo({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" role="img" aria-label="Grok">
+      <path
+        d="M4 4l7.5 8L4 20h3l5.8-6.2L18 20h3l-7.5-8L20.5 4h-3L12.7 10 7.5 4z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+/* ── NVIDIA: green eye logo abstraction ── */
+export function NvidiaLogo({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" role="img" aria-label="NVIDIA">
+      <path
+        d="M9.5 7.5c-3.6 0-6 2.6-6 4.5s2 4.5 6 4.5c3.4 0 6-2 7.5-4-1.2.8-2.5 1.3-3.7 1.3-2 0-3.5-1.4-3.5-2.8 0-1.5 1.6-2.8 3.5-2.8 1.2 0 2.5.4 3.7 1.2-1.5-2-4-2.9-7.5-2.9zm0 2c1.4 0 2.6.5 3.3 1.2-.9-.3-1.8-.4-2.6-.4-1.7 0-3.2 1-3.2 2.2 0 1.1 1.5 2.2 3.2 2.2.8 0 1.7-.1 2.6-.4-.7.7-1.9 1.2-3.3 1.2-2.5 0-4-1.4-4-2.9 0-1.6 1.5-3.1 4-3.1z"
+        fill="#76B900"
+      />
+    </svg>
+  );
+}
+
+/* ── Perplexity: blue "P" with citation arc ── */
+export function PerplexityLogo({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" role="img" aria-label="Perplexity">
+      <path
+        d="M12 2.5L4 7v10l8 4.5L20 17V7L12 2.5zm0 2.3l5.5 3.1v8.2L12 19.2 6.5 16.1V7.9L12 4.8zm-2 5.2v6h1.5v-2.3h.7l1.5 2.3h1.8l-1.7-2.5c.7-.3 1.2-1 1.2-1.8 0-1.2-.9-2-2.2-2H10zm1.5 1.4h1.3c.6 0 1 .3 1 .8s-.4.8-1 .8h-1.3v-1.6z"
+        fill="#20B8CD"
+      />
+    </svg>
+  );
+}
+
 /* ── Groq: simple coral G in Groq's brand color ── */
 export function GroqLogo({ size = 18 }: { size?: number }) {
   return (
@@ -143,8 +191,14 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
     case "gemini":     return <GeminiLogo size={size} />;
     case "ollama":     return <OllamaLogo size={size} />;
     case "kimi":       return <KimiLogo size={size} />;
+    case "kimi-api":   return <KimiLogo size={size} />;
     case "openai":     return <OpenAILogo size={size} />;
     case "groq":       return <GroqLogo size={size} />;
+    case "deepseek":   return <DeepSeekLogo size={size} />;
+    case "grok":       return <GrokLogo size={size} />;
+    case "nvidia-nim": return <NvidiaLogo size={size} />;
+    case "perplexity": return <PerplexityLogo size={size} />;
+    case "gemini-api": return <GeminiLogo size={size} />;
     case "opencode":   return <OpenCodeLogo size={size} />;
     case "aider":      return <AiderLogo size={size} />;
     default:           return <CustomAgentLogo size={size} />;

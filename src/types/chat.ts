@@ -108,6 +108,24 @@ export interface ResourceCardBlock {
   data: unknown;
 }
 
+/** Web citation / search result block — emitted by search-grounded
+ *  providers (Perplexity Sonar). Collected during streaming and
+ *  rendered as a CitationCard underneath the assistant bubble. The
+ *  block carries the full list rather than one entry per block so the
+ *  card renders as a single cohesive footer instead of N stacked
+ *  pills. */
+export interface CitationBlock {
+  type: "citations";
+  items: Array<{
+    url: string;
+    title?: string;
+    snippet?: string;
+    date?: string;
+    /** "citation" | "search_result" — drives which icon the card uses. */
+    kind: "citation" | "search_result";
+  }>;
+}
+
 export type ContentBlock =
   | TextBlock
   | ThinkingBlock
@@ -119,7 +137,8 @@ export type ContentBlock =
   | AgentReportBlock
   | DispatchPendingBlock
   | ArtifactBlock
-  | ResourceCardBlock;
+  | ResourceCardBlock
+  | CitationBlock;
 
 export interface ChatMessage {
   id: string;
@@ -382,6 +401,25 @@ export interface WSCompactionStatus {
  *  server. `error` is non-null when the summariser model failed; the
  *  inline status flips to "Compact failed" and the message hard-delete
  *  is skipped. */
+/** Web citation emitted by search-grounded providers (Perplexity Sonar).
+ *  ws-manager buffers these during streaming and pushes a single
+ *  CitationBlock onto the assistant message when the stream finalizes. */
+export interface WSCitation {
+  type: "citation";
+  url: string;
+  title?: string | null;
+  snippet?: string | null;
+}
+
+/** Richer search-result row from Perplexity's `search_results` field. */
+export interface WSSearchResult {
+  type: "search_result";
+  url: string;
+  title: string;
+  snippet?: string | null;
+  date?: string | null;
+}
+
 export interface WSCompactionDone {
   type: "compaction_done";
   provider: string;
@@ -432,4 +470,6 @@ export type WSServerMessage =
   | WSAgentRestarted
   | WSEnhanceDone
   | WSCompactionStatus
-  | WSCompactionDone;
+  | WSCompactionDone
+  | WSCitation
+  | WSSearchResult;

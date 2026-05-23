@@ -7,9 +7,18 @@ serves the React UI + REST API + WebSocket chat from the same origin.
 ## At a glance
 
 - **6 workspace crates**, **95+ commits**.
-- All bridges real (Claude / OpenAI / Gemini / Codex) with cost
-  computation, telemetry sync, activity ledger, recall-on-trigger,
-  end-of-session distillation, app-owned `/compact`.
+- All bridges real (Claude / OpenAI / Gemini / Codex + the 7 OpenAI-
+  compat HTTP providers + Perplexity) with cost computation,
+  telemetry sync, activity ledger, recall-on-trigger, end-of-session
+  distillation, app-owned `/compact`.
+- **4 CLI agents** (Claude, OpenAI Codex, Gemini, Kimi) and **8 HTTP
+  providers** (OpenAI, DeepSeek, Grok / xAI, NVIDIA NIM, Kimi /
+  Moonshot, Gemini API, Perplexity Sonar with citations, Ollama
+  local + LAN-remote) — all driven by the static registry in
+  `crates/fleetify-backend/src/providers/catalog.rs`. Keys live in
+  the OS keychain; Settings → Models / Agents render from the
+  registry; see [`docs/PROVIDERS.md`](docs/PROVIDERS.md) +
+  [`docs/AGENTS.md`](docs/AGENTS.md).
 - 3 stdio MCP server binaries shipped (`fleet-memory-mcp`,
   `fleet-dispatch-mcp`, `fleet-reveng-mcp`) auto-registered on first
   launch and spliced into Claude sessions via `--mcp-config`.

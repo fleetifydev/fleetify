@@ -8,8 +8,11 @@ pub mod claude;
 pub mod codex;
 pub mod codex_client;
 pub mod gemini;
+pub mod kimi;
 pub mod openai;
+pub mod openai_compat;
 pub mod permission;
+pub mod perplexity;
 
 use std::sync::Arc;
 
@@ -46,6 +49,21 @@ pub enum AnyBridge {
     OpenAI(Arc<openai::OpenAIBridge>),
     Gemini(Arc<gemini::GeminiBridge>),
     Codex(Arc<codex::CodexBridge>),
+    /// Shared driver for every OpenAI-compatible cloud provider in the
+    /// catalog (DeepSeek, Grok, NVIDIA NIM, Kimi-API, Gemini-API,
+    /// Ollama, plus OpenAI itself going forward). Provider id lives on
+    /// the inner bridge so we can preserve isolation in error messages
+    /// + telemetry without N near-identical enum variants.
+    OpenAICompat(Arc<openai_compat::OpenAICompatBridge>),
+    /// Perplexity (Sonar) gets its own variant because it ALSO emits
+    /// citations / search_results alongside the text delta — bridges
+    /// see those as new `BridgeEvent`s, the renderer parks them under
+    /// the assistant bubble.
+    Perplexity(Arc<perplexity::PerplexityBridge>),
+    /// Kimi Code CLI (placeholder — the registry / dispatch surface is
+    /// wired but the actual ACP spawn is deferred until Moonshot
+    /// publishes a stable protocol spec).
+    Kimi(Arc<kimi::KimiBridge>),
 }
 
 impl AnyBridge {
@@ -59,6 +77,9 @@ impl AnyBridge {
             AnyBridge::OpenAI(b) => b.send_message(msg, ctx).await,
             AnyBridge::Gemini(b) => b.send_message(msg, ctx).await,
             AnyBridge::Codex(b) => b.send_message(msg, ctx).await,
+            AnyBridge::OpenAICompat(b) => b.send_message(msg, ctx).await,
+            AnyBridge::Perplexity(b) => b.send_message(msg, ctx).await,
+            AnyBridge::Kimi(b) => b.send_message(msg, ctx).await,
         }
     }
     pub async fn abort(&self) {
@@ -67,6 +88,9 @@ impl AnyBridge {
             AnyBridge::OpenAI(b) => b.abort().await,
             AnyBridge::Gemini(b) => b.abort().await,
             AnyBridge::Codex(b) => b.abort().await,
+            AnyBridge::OpenAICompat(b) => b.abort().await,
+            AnyBridge::Perplexity(b) => b.abort().await,
+            AnyBridge::Kimi(b) => b.abort().await,
         }
     }
     /// claude_session_id (if the agent emitted one in `init`). For
@@ -125,6 +149,25 @@ pub enum BridgeEvent {
     CompactBoundary {
         compact_metadata: Value,
     },
+    /// Web citation emitted by search-grounded providers (Perplexity
+    /// Sonar). Renderer renders these as a CitationCard under the
+    /// assistant bubble; multiple Citation events accumulate into the
+    /// same card client-side.
+    Citation {
+        url: String,
+        title: Option<String>,
+        snippet: Option<String>,
+    },
+    /// Richer search-result row from providers that surface them
+    /// separately from citations (Perplexity's `search_results` field).
+    /// Carries an explicit title + optional date so the card can render
+    /// "Article — Site — 2026-01-01" rows.
+    SearchResult {
+        url: String,
+        title: String,
+        snippet: Option<String>,
+        date: Option<String>,
+    },
 }
 
 impl BridgeEvent {
@@ -173,6 +216,28 @@ impl BridgeEvent {
             BridgeEvent::CompactBoundary { compact_metadata } => {
                 json!({"type": "compact_boundary", "compact_metadata": compact_metadata})
             }
+            BridgeEvent::Citation {
+                url,
+                title,
+                snippet,
+            } => json!({
+                "type": "citation",
+                "url": url,
+                "title": title,
+                "snippet": snippet,
+            }),
+            BridgeEvent::SearchResult {
+                url,
+                title,
+                snippet,
+                date,
+            } => json!({
+                "type": "search_result",
+                "url": url,
+                "title": title,
+                "snippet": snippet,
+                "date": date,
+            }),
         }
     }
 }

@@ -151,3 +151,29 @@ stable across multiple runs.
   (fetch_url + save_asset).
 - `src-tauri` — `fleetify-app` Tauri v2 binary (embeds
   `fleetify-backend` library at runtime).
+
+## Multi-Provider + Multi-Agent Expansion ✅
+
+| Sub-area | Status |
+|---|---|
+| `providers/` registry module (CATALOG, helpers, keys cache) | ✅ |
+| Tauri `providers_link` keychain CRUD + 8 IPC commands | ✅ |
+| Silent `cfg.apiKeys` → keychain migration (idempotent, partial-fail tolerant) | ✅ |
+| `useProvidersConfig` Zustand store + `providers-api.ts` IPC wrapper | ✅ |
+| Settings → Models tile grid (provider-card, ollama-config-card, connection-status-pill) | ✅ |
+| Settings → Agents tile grid (agent-card + `/api/agents/scan`) | ✅ |
+| `bridges/openai_compat.rs` (drives OpenAI / DeepSeek / Grok / NVIDIA NIM / Kimi-API / Gemini-API / Ollama) | ✅ |
+| `bridges/perplexity.rs` + `BridgeEvent::Citation` / `SearchResult` | ✅ |
+| `bridges/kimi.rs` (registry + dispatch wired; ACP spawn deferred until Moonshot spec) | 🟡 stub |
+| Chat composer model picker reads from `useProvidersConfig` + CLI catalog | ✅ |
+| `CitationCard` renders Perplexity sources under assistant bubbles | ✅ |
+| `AgentKind::Kimi` + capability matrix entry in `config/agents.toml` | ✅ |
+| Telemetry emitters (provider connect/disconnect/test, agent detect) — local-only via tracing | ✅ |
+| Docs: `PROVIDERS.md`, `AGENTS.md` | ✅ |
+| Per-bridge wiremock integration tests | ⏳ (unit coverage on parsers + URL builder + citations + key cache + migration is in place) |
+
+End-to-end: user opens Settings → Models, pastes a key for any of the
+8 providers, picks one of its models in the chat composer, sends a
+message, sees the stream. Perplexity also surfaces a CitationCard
+footer with favicon + title + hostname + snippet for each cited
+source.

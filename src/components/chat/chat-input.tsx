@@ -35,6 +35,7 @@ import { useMCPStore } from "@/stores/mcp-store";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { RoutingChip } from "@/components/settings/routers/routing-chip";
 import { commandsForContext, type SlashCmdDef } from "@/lib/slash-commands";
+import { useProvidersConfig } from "@/hooks/use-providers-config";
 
 /* ─────────────────── constants ─────────────────── */
 
@@ -69,17 +70,13 @@ function modelsFor(tool: string | null | undefined): ModelOption[] {
   return CLAUDE_MODELS;
 }
 
-/** Provider catalog for the cross-provider model picker. The
- *  bottom-right model dropdown uses this to render every model
- *  grouped by provider so the user can flip providers (Claude →
- *  GPT, etc.) in a single click rather than going hunting for a
- *  separate "tool" chip. */
-// "openai" is intentionally absent — codex (the OpenAI Codex CLI)
-// is the only OpenAI bridge we ship today, so listing both would
-// confuse the picker. AgentTool's union doesn't include "openai"
-// either, which is why we'd otherwise hit a type error on PATCH.
-type ProviderId = "claude" | "codex" | "gemini";
-const PROVIDER_CATALOG: { id: ProviderId; label: string; models: ModelOption[] }[] = [
+/** CLI-agent slice of the picker catalog. These have their model lists
+ *  baked into each CLI binary, so they stay hardcoded here rather than
+ *  flowing through `useProvidersConfig` (which knows about HTTP-provider
+ *  models only). The cloud / local-HTTP entries get merged in at render
+ *  time from the registry. */
+type ProviderId = string; // includes catalog ids: deepseek, perplexity, etc.
+const CLI_PROVIDER_CATALOG: { id: ProviderId; label: string; models: ModelOption[] }[] = [
   { id: "claude", label: "Claude", models: CLAUDE_MODELS },
   { id: "codex",  label: "Codex",  models: CODEX_MODELS  },
   { id: "gemini", label: "Gemini", models: GEMINI_MODELS },
@@ -3135,6 +3132,37 @@ export function ChatInput({
     rationale: string | null;
     attachments: Attachment[];
   } | null>(null);
+  // Provider/model picker catalog merges the (always-present) CLI agents
+  // with whatever cloud / local-HTTP providers the user has connected in
+  // Settings → Models. Empty provider entries (no key, no enabled
+  // models) are filtered so the picker doesn't read like an empty menu.
+  const { tiles: providerTiles } = useProvidersConfig();
+  const providerCatalog = useMemo(() => {
+    const apiEntries = providerTiles
+      .filter(
+        (t) =>
+          (t.spec.kind === "api" || t.spec.kind === "local_http") &&
+          (t.connected || t.has_key) &&
+          (t.enabled_models.length > 0 || t.spec.default_models.length > 0),
+      )
+      .map((t) => {
+        const idsToShow =
+          t.enabled_models.length > 0
+            ? t.enabled_models
+            : t.spec.default_models.map((m) => m.id);
+        const models: ModelOption[] = idsToShow.map((id) => {
+          const spec = t.spec.default_models.find((m) => m.id === id);
+          return {
+            id,
+            label: spec?.label ?? id,
+            ctx: spec?.context_window ?? "",
+          };
+        });
+        return { id: t.spec.id, label: t.spec.display_name, models };
+      });
+    return [...CLI_PROVIDER_CATALOG, ...apiEntries];
+  }, [providerTiles]);
+
   const fleetMode = useFleetStore(s => sessionId ? s.getSession(sessionId).mode : "manual");
   const fleetPaused = useFleetStore(s => sessionId ? s.getSession(sessionId).status === "paused" : false);
   const recordCost = useFleetStore(s => s.recordCost);
@@ -4196,7 +4224,7 @@ export function ChatInput({
               <span style={{ fontSize: 10.5, color: "var(--c-dim)", fontWeight: 500 }}>Models</span>
               <div style={{ display: "flex", gap: 2 }}><Kbd>⇧</Kbd><Kbd>⌘</Kbd><Kbd>I</Kbd></div>
             </div>
-            {PROVIDER_CATALOG.map(p => (
+            {providerCatalog.map(p => (
               <div key={p.id}>
                 <div style={{
                   display: "flex", alignItems: "center", gap: 6,
@@ -4218,9 +4246,10 @@ export function ChatInput({
                         // tool too so the bridge runs the right
                         // CLI for the chosen model.
                         if (p.id !== tool && sessionId) {
-                          apiUpdateSession(sessionId, { tool: p.id, model_name: m.id }).catch(() => {});
+                          const tid = p.id as import("@/types/session").AgentTool;
+                          apiUpdateSession(sessionId, { tool: tid, model_name: m.id }).catch(() => {});
                           useAppStore.getState().updateSession(sessionId, {
-                            tool: p.id,
+                            tool: tid,
                             model_name: m.id,
                           });
                         } else {

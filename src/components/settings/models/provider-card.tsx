@@ -1,0 +1,348 @@
+/**
+ * One tile in Settings → Models for a cloud HTTP provider (OpenAI,
+ * DeepSeek, Grok, NVIDIA NIM, Kimi-API, Gemini-API, Perplexity).
+ *
+ * Header is a single tap target — clicking expands the card to reveal
+ * the key input + model checkboxes. Click again (or away) to collapse.
+ * Status pill in the header reflects the persisted state so the user
+ * doesn't need to expand every tile to see what's connected.
+ */
+import { useState } from "react";
+import { Eye, EyeOff, X, Loader2 } from "lucide-react";
+import { ProviderLogo } from "@/components/ui/provider-logo";
+import {
+  providers as providersApi,
+  type ProviderTile,
+  type ProvidersTestResult,
+} from "@/lib/providers-api";
+import { useProvidersConfig } from "@/hooks/use-providers-config";
+import { ConnectionStatusPill } from "./connection-status-pill";
+
+const inputStyle: React.CSSProperties = {
+  width: "100%",
+  boxSizing: "border-box",
+  background: "var(--c-srf)",
+  border: "1px solid var(--c-brd)",
+  borderRadius: 7,
+  padding: "7px 32px 7px 10px",
+  fontSize: 12.5,
+  color: "var(--c-high)",
+  fontFamily: "var(--font-mono, ui-monospace, monospace)",
+  outline: "none",
+  transition: "border-color 0.12s",
+};
+
+const ghostBtn: React.CSSProperties = {
+  fontFamily: "inherit",
+  cursor: "pointer",
+  outline: "none",
+  padding: "6px 12px",
+  borderRadius: 7,
+  fontSize: 12,
+  fontWeight: 500,
+  background: "transparent",
+  border: "1px solid var(--c-brd)",
+  color: "var(--c-high)",
+};
+
+const primaryBtn: React.CSSProperties = {
+  fontFamily: "inherit",
+  cursor: "pointer",
+  outline: "none",
+  padding: "6px 14px",
+  borderRadius: 7,
+  fontSize: 12,
+  fontWeight: 600,
+  background: "var(--c-high)",
+  border: "none",
+  color: "var(--card)",
+};
+
+const dangerBtn: React.CSSProperties = {
+  fontFamily: "inherit",
+  cursor: "pointer",
+  outline: "none",
+  padding: "6px 12px",
+  borderRadius: 7,
+  fontSize: 12,
+  fontWeight: 500,
+  background: "rgba(248,113,113,0.10)",
+  border: "1px solid rgba(248,113,113,0.30)",
+  color: "rgb(248,113,113)",
+};
+
+export function ProviderCard({ tile }: { tile: ProviderTile }) {
+  const { setKey, deleteKey, setEnabledModels } = useProvidersConfig();
+  const [expanded, setExpanded] = useState(false);
+  const [draftKey, setDraftKey] = useState("");
+  const [keyRevealed, setKeyRevealed] = useState(false);
+  const [savedPreview, setSavedPreview] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [testResult, setTestResult] = useState<ProvidersTestResult | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const allModelIds = tile.spec.default_models.map((m) => m.id);
+  const enabled = tile.enabled_models.length > 0 ? tile.enabled_models : allModelIds;
+
+  const status = tile.connected
+    ? ("connected" as const)
+    : tile.has_key
+    ? ("needs_setup" as const)
+    : ("needs_setup" as const);
+
+  // Lazy-load masked key preview when the user expands the card (avoids
+  // an N×N IPC storm on initial Settings page render).
+  const onToggleExpand = async () => {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && tile.has_key && savedPreview === null) {
+      setPreviewLoading(true);
+      const r = await providersApi.getKeyPreview(tile.spec.id);
+      if (r.ok) setSavedPreview(r.preview);
+      setPreviewLoading(false);
+    }
+  };
+
+  const onSaveKey = async () => {
+    const k = draftKey.trim();
+    if (!k) return;
+    setSaving(true);
+    await setKey(tile.spec.id, k);
+    setDraftKey("");
+    setSavedPreview(null); // force re-fetch on next expand
+    setSaving(false);
+  };
+
+  const onDisconnect = async () => {
+    await deleteKey(tile.spec.id);
+    setSavedPreview(null);
+    setTestResult(null);
+  };
+
+  const onTest = async () => {
+    const k = draftKey.trim();
+    if (!k) return;
+    setTesting(true);
+    setTestResult(null);
+    const r = await providersApi.testConnection(tile.spec.id, k);
+    setTestResult(r);
+    setTesting(false);
+  };
+
+  const onToggleModel = async (modelId: string) => {
+    const next = new Set(enabled);
+    if (next.has(modelId)) next.delete(modelId);
+    else next.add(modelId);
+    // Persist the explicit list. If user re-checks every model, we
+    // still write the full list rather than `[]` — keeps backend logic
+    // simpler ("empty array means all defaults" is one rule, but
+    // explicit lists round-trip more predictably).
+    await setEnabledModels(tile.spec.id, Array.from(next));
+  };
+
+  return (
+    <div
+      style={{
+        border: `1px solid ${tile.connected ? "rgba(74,222,128,0.30)" : "var(--c-brd)"}`,
+        borderRadius: 10,
+        marginBottom: 10,
+        overflow: "hidden",
+        background: "var(--card)",
+        transition: "border-color 0.15s",
+      }}
+    >
+      {/* ── header row (always visible, click to expand) ── */}
+      <button
+        onClick={onToggleExpand}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          padding: "12px 14px",
+          width: "100%",
+          background: "transparent",
+          border: "none",
+          textAlign: "left",
+          cursor: "pointer",
+          color: "var(--c-high)",
+          fontFamily: "inherit",
+        }}
+      >
+        <ProviderLogo tool={tile.spec.id} size={20} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 500 }}>{tile.spec.display_name}</div>
+          <div style={{ fontSize: 11.5, color: "var(--c-low)", marginTop: 2 }}>
+            {tile.spec.default_models.length} models · {tile.spec.default_base_url}
+          </div>
+        </div>
+        <ConnectionStatusPill status={status} />
+        <span
+          style={{
+            marginLeft: 6,
+            transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
+            transition: "transform 0.15s",
+            display: "inline-block",
+            color: "var(--c-dim)",
+            fontSize: 12,
+          }}
+        >
+          ▸
+        </span>
+      </button>
+
+      {expanded && (
+        <div style={{ padding: "0 14px 14px 14px", borderTop: "1px solid var(--c-brd)" }}>
+          {/* ── API key row ── */}
+          <div style={{ padding: "14px 0 12px 0" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+              <div style={{ fontSize: 12, fontWeight: 500, color: "var(--c-high)" }}>
+                API Key
+              </div>
+              {tile.has_key && (
+                <div style={{ fontSize: 11.5, color: "var(--c-low)", fontFamily: "var(--font-mono, monospace)" }}>
+                  {previewLoading ? "loading…" : savedPreview ?? "saved"}
+                </div>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <div style={{ flex: 1, position: "relative" }}>
+                <input
+                  type={keyRevealed ? "text" : "password"}
+                  value={draftKey}
+                  placeholder={tile.has_key ? "Enter a new key to replace…" : `Paste your ${tile.spec.display_name} key`}
+                  onChange={(e) => setDraftKey(e.target.value)}
+                  style={inputStyle}
+                />
+                <button
+                  onClick={() => setKeyRevealed((v) => !v)}
+                  title={keyRevealed ? "Hide" : "Reveal"}
+                  style={{
+                    position: "absolute",
+                    right: 6,
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    width: 24,
+                    height: 24,
+                    borderRadius: 5,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    background: "transparent",
+                    border: "none",
+                    cursor: "pointer",
+                    color: "var(--c-dim)",
+                    outline: "none",
+                  }}
+                >
+                  {keyRevealed ? <EyeOff size={13} /> : <Eye size={13} />}
+                </button>
+              </div>
+              <button
+                onClick={onTest}
+                disabled={!draftKey.trim() || testing}
+                style={{ ...ghostBtn, opacity: !draftKey.trim() || testing ? 0.5 : 1 }}
+              >
+                {testing ? <Loader2 size={12} className="spin" /> : "Test"}
+              </button>
+              <button
+                onClick={onSaveKey}
+                disabled={!draftKey.trim() || saving}
+                style={{ ...primaryBtn, opacity: !draftKey.trim() || saving ? 0.5 : 1 }}
+              >
+                {saving ? <Loader2 size={12} className="spin" /> : "Save"}
+              </button>
+            </div>
+            {testResult && (
+              <div style={{ marginTop: 8 }}>
+                {testResult.ok ? (
+                  <ConnectionStatusPill
+                    status="connected"
+                    label={`✓ ${testResult.latency_ms}ms${
+                      testResult.model_count ? ` · ${testResult.model_count} models` : ""
+                    }`}
+                  />
+                ) : (
+                  <ConnectionStatusPill
+                    status="error"
+                    label={`${testResult.code}${testResult.error ? ` — ${testResult.error}` : ""}`}
+                  />
+                )}
+              </div>
+            )}
+            {tile.connected && (
+              <div style={{ marginTop: 10 }}>
+                <button onClick={onDisconnect} style={dangerBtn}>
+                  <X size={11} /> Disconnect
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* ── Model checkbox list ── */}
+          {tile.spec.default_models.length > 0 && (
+            <div style={{ padding: "12px 0 4px 0", borderTop: "1px solid var(--c-brd)" }}>
+              <div style={{ fontSize: 12, fontWeight: 500, color: "var(--c-high)", marginBottom: 8 }}>
+                Available models in picker
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 6 }}>
+                {tile.spec.default_models.map((m) => {
+                  const checked = enabled.includes(m.id);
+                  return (
+                    <label
+                      key={m.id}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        padding: "6px 8px",
+                        borderRadius: 6,
+                        cursor: "pointer",
+                        fontSize: 12,
+                        color: "var(--c-high)",
+                        background: checked ? "var(--c-srf)" : "transparent",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => onToggleModel(m.id)}
+                        style={{ cursor: "pointer" }}
+                      />
+                      <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {m.label}
+                      </span>
+                      {m.context_window && (
+                        <span style={{ fontSize: 10, color: "var(--c-dim)" }}>{m.context_window}</span>
+                      )}
+                      {m.note && (
+                        <span
+                          style={{
+                            fontSize: 9.5,
+                            fontWeight: 600,
+                            letterSpacing: "0.04em",
+                            color: "var(--c-dim)",
+                            textTransform: "uppercase",
+                          }}
+                        >
+                          {m.note}
+                        </span>
+                      )}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* ── env-hint footer (small) ── */}
+          {tile.spec.auth.kind === "bearer" && tile.spec.auth.env_hint && (
+            <div style={{ fontSize: 11, color: "var(--c-dim)", marginTop: 10 }}>
+              Falls back to <code>{tile.spec.auth.env_hint}</code> env var when no key is saved.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
