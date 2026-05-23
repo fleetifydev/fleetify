@@ -1414,6 +1414,11 @@ pub struct RouterTileMetadata {
     pub id: String,
     pub display_name: String,
     pub capabilities: Vec<&'static str>,
+    /// Connection modes the router accepts. Empty = no credentials needed
+    /// (`builtin`, `none-proxy`). `"managed"` = there's a default hosted
+    /// endpoint and the user just provides an API key. `"self_hosted"` =
+    /// the user must provide their own base URL alongside the key.
+    pub modes: Vec<&'static str>,
     pub connected: bool,
     pub active_for_decision: bool,
     pub active_for_proxy: bool,
@@ -1441,17 +1446,32 @@ pub async fn routers_list_routers(app: tauri::AppHandle) -> serde_json::Value {
     // the four known routers + the direct gateway. See
     // `docs/superpowers/test-plans/2026-05-22-provider-router-e2e.md`
     // "Known Day-1 limitations" for the user-facing caveat.
-    let known: &[(&'static str, &'static str, &'static [&'static str])] = &[
-        ("builtin", "Built-in (Fleetify)", &["decision"]),
-        ("notdiamond", "Not Diamond", &["decision"]),
-        ("weave", "Weave Router", &["decision", "proxy"]),
-        ("litellm", "LiteLLM", &["proxy"]),
-        ("none-proxy", "None / Direct", &["proxy"]),
+    // (id, display_name, capabilities, modes)
+    //   - capabilities: which dropdowns the router shows up in
+    //   - modes: which credential flavors the router accepts. Drives the
+    //     UI's "Managed / Self-hosted" radio in the Routers settings.
+    type RouterCatalogEntry = (
+        &'static str,
+        &'static str,
+        &'static [&'static str],
+        &'static [&'static str],
+    );
+    let known: &[RouterCatalogEntry] = &[
+        ("builtin", "Built-in (Fleetify)", &["decision"], &[]),
+        ("notdiamond", "Not Diamond", &["decision"], &["managed"]),
+        (
+            "weave",
+            "Weave Router",
+            &["decision", "proxy"],
+            &["managed", "self_hosted"],
+        ),
+        ("litellm", "LiteLLM", &["proxy"], &["self_hosted"]),
+        ("none-proxy", "None / Direct", &["proxy"], &[]),
     ];
 
     let tiles: Vec<RouterTileMetadata> = known
         .iter()
-        .map(|(id, name, caps)| {
+        .map(|(id, name, caps, modes)| {
             let always_present = *id == "builtin" || *id == "none-proxy";
             let connected = always_present
                 || routing
@@ -1463,6 +1483,7 @@ pub async fn routers_list_routers(app: tauri::AppHandle) -> serde_json::Value {
                 id: (*id).to_string(),
                 display_name: (*name).to_string(),
                 capabilities: caps.to_vec(),
+                modes: modes.to_vec(),
                 connected,
                 active_for_decision: routing.active_decision_router == *id,
                 active_for_proxy: routing.active_proxy_gateway == *id,
