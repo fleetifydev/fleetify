@@ -20,6 +20,7 @@ import {
   FileCode, Webhook, FileText, FolderOpen, Loader2, Bug,
   Check, User, ArrowUpRight, HelpCircle, Sun, ArrowLeft,
   Eye, EyeOff, Volume2, Copy, MessageCircle,
+  ExternalLink,
 } from "lucide-react";
 import { isWindowsPlatform } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
@@ -542,15 +543,13 @@ function DiagButton({
 declare const __APP_VERSION__: string | undefined;
 
 function AccountSection() {
-  const { patch } = useFleetConfig();
   const raw = (() => {
     try { return localStorage.getItem("fleet:user"); } catch { return null; }
   })();
   const stored = raw ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : null;
 
-  const [name, setName] = useState<string>(stored?.name ?? "");
-  const [saved, setSaved] = useState(false);
   const [copiedId, setCopiedId] = useState(false);
+  const name = stored?.name ?? "";
   const email = stored?.email ?? "";
   const accountId = stored?.id ?? "";
   // First-launch timestamp — best-effort. Stored on first sign-in so we can
@@ -564,7 +563,6 @@ function AccountSection() {
       return now;
     } catch { return null; }
   })();
-  const dirty = name.trim() !== (stored?.name ?? "");
 
   const initials = (name
     .split(/\s+/)
@@ -572,15 +570,16 @@ function AccountSection() {
     .map((w: string) => w[0]?.toUpperCase() ?? "")
     .join("") || email[0]?.toUpperCase() || "?").slice(0, 2);
 
-  const handleSave = async () => {
-    const trimmed = name.trim();
-    try {
-      const next = { ...(stored ?? {}), name: trimmed };
-      localStorage.setItem("fleet:user", JSON.stringify(next));
-    } catch { /* noop */ }
-    await patch({ userName: trimmed });
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1800);
+  // Profile fields (display name, email, account ID) are managed in the
+  // hosted dashboard, not in-app. The "Change settings" link at the bottom
+  // sends the user there; everything in this section is read-only.
+  const openHostedSettings = () => {
+    const url = "https://app.fleetify.dev/dashboard/settings";
+    if (window.electronAPI?.openExternal) {
+      window.electronAPI.openExternal(url).catch(() => {});
+    } else {
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
   };
 
   const copyId = () => {
@@ -606,7 +605,6 @@ function AccountSection() {
         display: "flex", alignItems: "center", gap: 16,
         padding: "4px 0 22px",
         marginBottom: 6,
-        borderBottom: "1px solid var(--c-brd)",
       }}>
         <div style={{
           width: 56, height: 56, borderRadius: 14, flexShrink: 0,
@@ -637,43 +635,9 @@ function AccountSection() {
 
       <SectionHeader>Account details</SectionHeader>
       <Card>
-        {/* Display name — title on the left, edit field + Save inline on
-            the right, just like every other Row in the app. */}
-        <div style={{
-          display: "flex", alignItems: "center", justifyContent: "space-between",
-          padding: "13px 14px", gap: 16,
-          borderBottom: "1px solid var(--c-brd)",
-        }}>
-          <div style={{ flex: "0 0 auto", minWidth: 0 }}>
-            <div style={{ fontSize: 13, fontWeight: 500, color: "var(--c-high)", lineHeight: 1.3 }}>
-              Display name
-            </div>
-            <div style={{ fontSize: 12, color: "var(--c-low)", marginTop: 3, lineHeight: 1.5 }}>
-              Shown in chat exports and the sidebar.
-            </div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-            <input
-              value={name}
-              onChange={e => setName(e.target.value)}
-              placeholder="Your name"
-              style={{
-                width: 200, boxSizing: "border-box",
-                background: "var(--c-srf)",
-                border: "1px solid var(--c-brd)",
-                borderRadius: 7, padding: "6px 10px",
-                fontSize: 12.5, color: "var(--c-high)",
-                fontFamily: "inherit", outline: "none",
-                transition: "border-color 0.12s",
-              }}
-              onFocus={e => (e.currentTarget.style.borderColor = "var(--c-brd2)")}
-              onBlur={e => (e.currentTarget.style.borderColor = "var(--c-brd)")}
-            />
-            <PrimaryButton onClick={handleSave} disabled={!dirty && !saved}>
-              {saved ? <><Check size={12} /> Saved</> : "Save"}
-            </PrimaryButton>
-          </div>
-        </div>
+        <Row title="Display name" desc="Shown in chat exports and the sidebar.">
+          <ValueText>{name || "—"}</ValueText>
+        </Row>
 
         <Row title="Email" desc="Managed by your Fleetify identity.">
           <ValueText>{email}</ValueText>
@@ -704,8 +668,26 @@ function AccountSection() {
           <ValueText>{memberLabel}</ValueText>
         </Row>
       </Card>
+      <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: 22 }}>
+        <GhostButton onClick={openHostedSettings}>
+          Change settings
+          <ExternalLink size={12} />
+        </GhostButton>
+      </div>
 
-      <SectionHeader>Sign out</SectionHeader>
+      <div style={{
+        display: "flex", alignItems: "baseline", justifyContent: "space-between",
+        marginTop: 4, marginBottom: 10, paddingLeft: 1,
+        gap: 12,
+      }}>
+        <div style={{
+          fontSize: 10.5, fontWeight: 600, letterSpacing: "0.10em",
+          color: "var(--c-dim)",
+          textTransform: "uppercase",
+        }}>
+          Sign out
+        </div>
+      </div>
       <Card>
         <Row title="Sign out of Fleetify" desc="You'll need to sign in again to use Fleet." last>
           <button
