@@ -4,6 +4,7 @@ import { ClaudeLogo, OpenAILogo, GeminiLogo } from "@/components/ui/provider-log
 import { createSession, fetchClaudeSessions, fetchGeminiSessions, fetchCodexSessions, apiFetch, type ClaudeSession } from "@/lib/api";
 import { useAppStore } from "@/stores/app-store";
 import { useRouterConfig } from "@/hooks/use-router-config";
+import { RoutersStatusBar } from "@/components/settings/routers/routers-status-bar";
 
 interface PluginTemplate {
   name: string; title: string; description: string;
@@ -908,6 +909,13 @@ export function NewAgentView({ onClose }: Props) {
               })}
             </div>
 
+          </div>
+
+          {/* Routers status — shows the active Decision + Proxy routers
+              so the user knows which surface will handle the first turn
+              of this session. Sits just above the Cancel / Launch footer. */}
+          <div style={{ padding: "8px 20px 0", flexShrink: 0 }}>
+            <RoutersStatusBar compact />
           </div>
 
           {/* Footer */}

@@ -1,21 +1,22 @@
 /**
- * A single router card. Renders three visually-distinct states in one shell:
+ * A single router card. The whole card is clickable:
+ *   - Active card → click is a no-op (it's already active).
+ *   - Connected, not active → click flips active to this router.
+ *   - Disconnected (needs credentials) → click expands the inline setup
+ *     form (API key + optional base URL with a Managed / Self-hosted
+ *     toggle for routers that support both).
+ *   - Immortal (Built-in / None / Direct) → click sets it active.
  *
- *   1. Active           — currently the live router for `category`. Card
- *                         shows a filled radio dot and an "active" pill.
- *   2. Connected, idle  — credentials exist but another router is active.
- *                         "Set as active" button + Edit/Disconnect actions.
- *   3. Disconnected     — needs credentials. "Set up & activate" expands
- *                         the inline form (mode toggle, optional base URL,
- *                         API key, and a clearly-visible primary button).
+ * The active card shows ONLY a small "active" pill — no green border or
+ * tinted background. Cards that aren't expanded have a subtle hover
+ * affordance so it's obvious the whole row is interactive.
  *
- * Built-in (decision) and None / Direct (proxy) are immortal: no
- * credentials, no Edit/Disconnect, just the active dot + radio.
- *
- * The mode toggle (Managed / Self-hosted) only appears when the router
- * advertises both modes — currently only Weave Router. Single-mode
- * routers skip the radios and show the relevant fields directly.
+ * Interactive children (inputs, buttons inside the expanded form, the
+ * inline Edit / Disconnect links) call `e.stopPropagation()` so the
+ * card-level click handler doesn't trigger when the user is editing
+ * credentials or pressing Cancel.
  */
+import type { MouseEvent } from "react";
 import { useState } from "react";
 import { ExternalLink } from "lucide-react";
 
@@ -44,27 +45,8 @@ const cardBase: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: 8,
-  transition: "border-color 120ms ease, background 120ms ease",
+  transition: "background 120ms ease, border-color 120ms ease",
 };
-
-const cardActive: React.CSSProperties = {
-  ...cardBase,
-  borderColor: "rgba(34,197,94,0.55)",
-  background:
-    "linear-gradient(0deg, rgba(34,197,94,0.04), rgba(34,197,94,0.04)), var(--card)",
-};
-
-const radioDot = (active: boolean): React.CSSProperties => ({
-  width: 12,
-  height: 12,
-  borderRadius: "50%",
-  border: active
-    ? "2px solid #22c55e"
-    : "2px solid var(--c-brd, rgba(255,255,255,0.2))",
-  background: active ? "#22c55e" : "transparent",
-  flexShrink: 0,
-  boxSizing: "border-box",
-});
 
 const nameStyle: React.CSSProperties = {
   fontSize: 13.5,
@@ -76,7 +58,6 @@ const descStyle: React.CSSProperties = {
   fontSize: 12,
   color: "var(--c-low)",
   lineHeight: 1.5,
-  marginLeft: 20,
 };
 
 const activePill: React.CSSProperties = {
@@ -85,8 +66,8 @@ const activePill: React.CSSProperties = {
   letterSpacing: 0.5,
   padding: "2px 7px",
   borderRadius: 4,
-  background: "rgba(34,197,94,0.15)",
-  color: "#22c55e",
+  background: "var(--c-srf2)",
+  color: "var(--c-high)",
   fontWeight: 700,
 };
 
@@ -96,9 +77,10 @@ const connectedPill: React.CSSProperties = {
   letterSpacing: 0.5,
   padding: "2px 7px",
   borderRadius: 4,
-  background: "var(--c-srf2)",
-  color: "var(--c-high)",
+  background: "transparent",
+  color: "var(--c-low)",
   fontWeight: 600,
+  border: "1px solid var(--c-brd)",
 };
 
 const primaryBtn: React.CSSProperties = {
@@ -169,12 +151,20 @@ const radioLabel: React.CSSProperties = {
   color: "var(--c-high)",
 };
 
+const chevron: React.CSSProperties = {
+  fontSize: 14,
+  color: "var(--c-low)",
+  marginLeft: 4,
+};
+
 export function RouterCard({ tile, category, meta, onChanged }: Props) {
   const isActive =
     category === "decision" ? tile.active_for_decision : tile.active_for_proxy;
   const isImmortal = tile.id === "builtin" || tile.id === "none-proxy";
+  const needsSetup = tile.modes.length > 0 && !tile.connected;
 
   const [expanded, setExpanded] = useState(false);
+  const [hover, setHover] = useState(false);
   const [mode, setMode] = useState<RouterMode>(tile.modes[0] ?? "managed");
   const [secret, setSecret] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -183,6 +173,21 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
 
   const hasModeChoice = tile.modes.length > 1;
   const needsUrl = mode === "self_hosted";
+
+  // The whole-card click semantics:
+  //   - active or expanded → no-op (let inner controls handle it)
+  //   - connected & not active → flip active immediately
+  //   - immortal & not active → flip active immediately
+  //   - disconnected → expand into the setup form
+  const cardClickable = !isActive && !expanded;
+  const cardCursor = cardClickable ? "pointer" : "default";
+  const cardBg = hover && cardClickable ? "var(--c-srf2)" : "var(--card)";
+
+  const cardStyle: React.CSSProperties = {
+    ...cardBase,
+    cursor: cardCursor,
+    background: cardBg,
+  };
 
   const setAsActive = async () => {
     setSubmitting(true);
@@ -214,7 +219,22 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
     setError(null);
   };
 
-  const submit = async () => {
+  const onCardClick = () => {
+    if (!cardClickable) return;
+    if (tile.connected || isImmortal) {
+      void setAsActive();
+    } else {
+      setExpanded(true);
+    }
+  };
+
+  // Used on inner interactive elements so they don't bubble up to the
+  // card-level click handler. We still want the inner element to run its
+  // own onClick if it has one.
+  const stop = (e: MouseEvent) => e.stopPropagation();
+
+  const submit = async (e: MouseEvent) => {
+    stop(e);
     setSubmitting(true);
     setError(null);
     try {
@@ -241,22 +261,23 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
       }
       collapseAndReset();
       await onChanged();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSubmitting(false);
     }
   };
 
-  const disconnect = async () => {
+  const disconnect = async (e: MouseEvent) => {
+    stop(e);
     setSubmitting(true);
     setError(null);
     try {
       await routers.disconnect(tile.id);
       collapseAndReset();
       await onChanged();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSubmitting(false);
     }
@@ -265,7 +286,19 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
   return (
     <div
       data-testid={`router-card-${category}-${tile.id}`}
-      style={isActive ? cardActive : cardBase}
+      style={cardStyle}
+      onClick={onCardClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      role={cardClickable ? "button" : undefined}
+      tabIndex={cardClickable ? 0 : undefined}
+      onKeyDown={(e) => {
+        if (!cardClickable) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onCardClick();
+        }
+      }}
     >
       <div
         style={{
@@ -275,7 +308,6 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
           flexWrap: "wrap",
         }}
       >
-        <span style={radioDot(isActive)} aria-hidden />
         <span style={nameStyle}>{tile.display_name}</span>
         {isActive && <span style={activePill}>active</span>}
         {!isActive && tile.connected && !isImmortal && (
@@ -286,71 +318,81 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
           style={{
             marginLeft: "auto",
             display: "flex",
-            gap: 8,
+            gap: 10,
             alignItems: "center",
             flexWrap: "wrap",
           }}
         >
-          {/* Disconnected & not immortal → primary "Set up & activate" */}
-          {!tile.connected && !isImmortal && !expanded && (
+          {/* Disconnected, needs setup → primary "Set up" (also triggered
+              by clicking anywhere on the card). */}
+          {needsSetup && !expanded && (
             <button
               type="button"
               style={primaryBtn}
-              onClick={() => setExpanded(true)}
+              onClick={(e) => {
+                stop(e);
+                setExpanded(true);
+              }}
               data-testid={`router-setup-${category}-${tile.id}`}
             >
-              Set up &amp; activate
+              Set up
             </button>
           )}
 
-          {/* Connected but not active → "Set as active" + Edit + Disconnect */}
+          {/* Connected but not active → explicit "Use this" button
+              (in addition to clicking the card) so the action is obvious
+              for users who don't realise the whole card is clickable. */}
           {tile.connected && !isActive && !isImmortal && !expanded && (
-            <>
-              <button
-                type="button"
-                style={primaryBtn}
-                disabled={submitting}
-                onClick={setAsActive}
-                data-testid={`router-activate-${category}-${tile.id}`}
-              >
-                {submitting ? "Activating…" : "Set as active"}
-              </button>
-              <button
-                type="button"
-                style={ghostLink}
-                onClick={() => setExpanded(true)}
-                data-testid={`router-edit-${category}-${tile.id}`}
-              >
-                Edit
-              </button>
-            </>
+            <button
+              type="button"
+              style={primaryBtn}
+              disabled={submitting}
+              onClick={(e) => {
+                stop(e);
+                void setAsActive();
+              }}
+              data-testid={`router-activate-${category}-${tile.id}`}
+            >
+              {submitting ? "Activating…" : "Use this"}
+            </button>
           )}
 
-          {/* Active, connected, not immortal → Edit + Disconnect (no primary) */}
-          {tile.connected && isActive && !isImmortal && !expanded && (
-            <>
-              <button
-                type="button"
-                style={ghostLink}
-                onClick={() => setExpanded(true)}
-                data-testid={`router-edit-${category}-${tile.id}`}
-              >
-                Edit credentials
-              </button>
-            </>
-          )}
-
-          {/* Immortal & not active → "Set as active" */}
+          {/* Immortal & not active → "Use this" */}
           {isImmortal && !isActive && (
             <button
               type="button"
               style={primaryBtn}
               disabled={submitting}
-              onClick={setAsActive}
+              onClick={(e) => {
+                stop(e);
+                void setAsActive();
+              }}
               data-testid={`router-activate-${category}-${tile.id}`}
             >
-              {submitting ? "Activating…" : "Set as active"}
+              {submitting ? "Activating…" : "Use this"}
             </button>
+          )}
+
+          {/* Connected and non-immortal → small Edit link, regardless of
+              active state. Lets the user rotate keys without disconnecting. */}
+          {tile.connected && !isImmortal && !expanded && (
+            <button
+              type="button"
+              style={ghostLink}
+              onClick={(e) => {
+                stop(e);
+                setExpanded(true);
+              }}
+              data-testid={`router-edit-${category}-${tile.id}`}
+            >
+              Edit
+            </button>
+          )}
+
+          {cardClickable && !expanded && (
+            <span style={chevron} aria-hidden>
+              ›
+            </span>
           )}
         </div>
       </div>
@@ -360,6 +402,7 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
       {expanded && (
         <div
           data-testid={`router-form-${category}-${tile.id}`}
+          onClick={stop}
           style={{
             marginTop: 6,
             paddingTop: 12,
@@ -367,6 +410,7 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
             display: "flex",
             flexDirection: "column",
             gap: 12,
+            cursor: "default",
           }}
         >
           {meta.docsUrl && (
@@ -374,6 +418,7 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
               href={meta.docsUrl}
               target="_blank"
               rel="noopener noreferrer"
+              onClick={stop}
               style={{
                 fontSize: 11.5,
                 color: "#60a5fa",
@@ -392,7 +437,7 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
               <span style={labelStyle}>Connection mode</span>
               <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
                 {tile.modes.map((m) => (
-                  <label key={m} style={radioLabel}>
+                  <label key={m} style={radioLabel} onClick={stop}>
                     <input
                       type="radio"
                       name={`mode-${tile.id}-${category}`}
@@ -422,6 +467,7 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
                 }
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
+                onClick={stop}
                 data-testid={`router-baseurl-${category}-${tile.id}`}
                 autoComplete="off"
               />
@@ -436,6 +482,7 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
               placeholder="••••••••••••••••••••"
               value={secret}
               onChange={(e) => setSecret(e.target.value)}
+              onClick={stop}
               data-testid={`router-secret-${category}-${tile.id}`}
               autoComplete="off"
               autoFocus
@@ -469,7 +516,10 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
             <button
               type="button"
               style={secondaryBtn}
-              onClick={collapseAndReset}
+              onClick={(e) => {
+                stop(e);
+                collapseAndReset();
+              }}
               disabled={submitting}
             >
               Cancel
