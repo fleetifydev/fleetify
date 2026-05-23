@@ -1,135 +1,70 @@
 /**
  * Routers section — Settings → Routers tab body.
  *
- * Layout:
- *   - Master toggle ("Use intelligent routing for Fleet Hub")
- *   - Decision Router dropdown (always Built-in + any connected router
- *     that supports the decision capability)
- *   - Proxy Gateway dropdown (None/Direct + any connected proxy)
- *   - Inline RouterConfigPanel when the user picks a router that needs
- *     credentials, or clicks "Edit" on an already-connected one.
+ * Visual model: two lists of cards under "Decision Router" and "Proxy
+ * Gateway" headings. Each card knows its own state (active / connected /
+ * disconnected) and exposes its actions directly — no separate dropdown,
+ * no separate active-selector summary, no modal. The active router in
+ * each category is the one with a filled green radio dot and an "active"
+ * pill.
  *
- * State machine:
- *   - The two dropdowns reflect either (a) the backend's active selection
- *     or (b) the user's pending selection for a router they're configuring.
- *   - Picking an *already-connected* router fires `routers.setActive`
- *     immediately and clears any pending state.
- *   - Picking a *not-yet-connected* router promotes it to the pending
- *     slot for that category and the config panel slides in below.
- *   - Successful connect → setActive → refresh → pending cleared.
- *   - Cancel → pending cleared, dropdown snaps back to the active router.
+ * Built-in (decision) and None / Direct (proxy) cards never disappear:
+ * they're the immortal fallbacks the orchestrator always has registered.
  */
-import { useCallback, useState } from "react";
 import type { RouterTile } from "@/lib/routers-api";
 import { useRouterConfig } from "@/hooks/use-router-config";
 import { MasterToggle } from "./routers/master-toggle";
-import { RouterDropdown } from "./routers/router-dropdown";
-import { RouterConfigPanel } from "./routers/router-config-panel";
-
-type Category = "decision" | "proxy";
+import { RouterCard } from "./routers/router-card";
 
 interface RouterMeta {
+  description: string;
   docsUrl?: string;
   managedBaseUrl?: string;
 }
 
 // Per-router presentation hints. The catalog (id list, names, capabilities,
-// modes) lives in the backend; this map just adds renderer-only metadata
-// (docs link, what URL "Managed" means).
+// modes) lives in the backend; this map adds renderer-only copy + the docs
+// link + which URL "Managed" mode means for the user.
 const ROUTER_META: Record<string, RouterMeta> = {
+  builtin: {
+    description:
+      "Offline, deterministic router. Heuristic complexity classifier picks an agent + tier from the capability matrix. Always available as a fallback.",
+  },
   notdiamond: {
+    description:
+      "ML-based per-prompt model recommendation. Built for autonomous coding agents.",
     docsUrl: "https://app.notdiamond.ai/api-keys",
     managedBaseUrl: "https://api.notdiamond.ai",
   },
   weave: {
+    description:
+      "Cost-optimizing proxy with built-in routing decisions. Same key powers both Decision and Proxy capabilities when used together.",
     docsUrl: "https://router.workweave.ai/dashboard",
     managedBaseUrl: "https://router.workweave.ai",
   },
   litellm: {
+    description:
+      "Self-hosted gateway with fallback chains and budget controls. Point Fleet at your LiteLLM proxy URL.",
     docsUrl: "https://docs.litellm.ai/docs/proxy/quick_start",
+  },
+  "none-proxy": {
+    description:
+      "No proxy — bridges hit provider URLs directly. The default for Day-1 installs.",
   },
 };
 
-function defaultDecisionId(tiles: RouterTile[]): string {
-  return tiles.find((t) => t.active_for_decision)?.id ?? "builtin";
-}
-
-function defaultProxyId(tiles: RouterTile[]): string {
-  return tiles.find((t) => t.active_for_proxy)?.id ?? "none-proxy";
-}
+const sectionHeader: React.CSSProperties = {
+  fontSize: 11,
+  color: "var(--c-low)",
+  fontWeight: 700,
+  textTransform: "uppercase",
+  letterSpacing: 0.6,
+  marginBottom: 2,
+};
 
 export function RoutersSection() {
-  const { tiles, masterEnabled, setMasterEnabled, setActive, refresh, loading } =
+  const { tiles, masterEnabled, setMasterEnabled, refresh, loading } =
     useRouterConfig();
-
-  // Pending selection per category. `null` means "no override — dropdown
-  // mirrors the backend's active router". A non-null value means the user
-  // picked a router that needs setup, and the config panel below is open
-  // for it.
-  const [pendingDecision, setPendingDecision] = useState<string | null>(null);
-  const [pendingProxy, setPendingProxy] = useState<string | null>(null);
-
-  // Whether the user clicked "Edit" on the currently-active router. Lets
-  // them rotate the API key without disconnecting first.
-  const [editingDecision, setEditingDecision] = useState<boolean>(false);
-  const [editingProxy, setEditingProxy] = useState<boolean>(false);
-
-  const handleDropdownChange = useCallback(
-    async (category: Category, newId: string) => {
-      const tile = tiles.find((t) => t.id === newId);
-      if (!tile) return;
-      const needsSetup = tile.modes.length > 0 && !tile.connected;
-      if (needsSetup) {
-        // Promote to pending; config panel will render below.
-        if (category === "decision") {
-          setPendingDecision(newId);
-          setEditingDecision(false);
-        } else {
-          setPendingProxy(newId);
-          setEditingProxy(false);
-        }
-      } else {
-        // Already connected (or immortal default) — flip the backend
-        // active selection right away.
-        await setActive(category, newId);
-        if (category === "decision") {
-          setPendingDecision(null);
-          setEditingDecision(false);
-        } else {
-          setPendingProxy(null);
-          setEditingProxy(false);
-        }
-      }
-    },
-    [tiles, setActive],
-  );
-
-  const handleConfigSaved = useCallback(
-    async (category: Category) => {
-      // The config panel already called setActive on success. Just refresh
-      // the tile list so connected/active flags pick up the new state, and
-      // clear pending so the dropdown sticks to the now-active router.
-      await refresh();
-      if (category === "decision") {
-        setPendingDecision(null);
-        setEditingDecision(false);
-      } else {
-        setPendingProxy(null);
-        setEditingProxy(false);
-      }
-    },
-    [refresh],
-  );
-
-  const cancelPending = useCallback((category: Category) => {
-    if (category === "decision") {
-      setPendingDecision(null);
-      setEditingDecision(false);
-    } else {
-      setPendingProxy(null);
-      setEditingProxy(false);
-    }
-  }, []);
 
   if (loading) {
     return (
@@ -142,58 +77,30 @@ export function RoutersSection() {
     );
   }
 
-  const decisionOptions = tiles.filter((t) =>
+  const decisionRouters: RouterTile[] = tiles.filter((t) =>
     t.capabilities.includes("decision"),
   );
-  const proxyOptions = tiles.filter((t) => t.capabilities.includes("proxy"));
-
-  const activeDecisionId = defaultDecisionId(tiles);
-  const activeProxyId = defaultProxyId(tiles);
-
-  // The dropdown's currently-displayed value — pending takes precedence
-  // so the user sees what they picked, even before saving.
-  const selectedDecisionId = pendingDecision ?? activeDecisionId;
-  const selectedProxyId = pendingProxy ?? activeProxyId;
-
-  // Resolve the tiles for the config panels (when shown).
-  const decisionConfigTile =
-    (pendingDecision ?? (editingDecision ? activeDecisionId : null)) !== null
-      ? tiles.find(
-          (t) => t.id === (pendingDecision ?? activeDecisionId),
-        )
-      : null;
-  const proxyConfigTile =
-    (pendingProxy ?? (editingProxy ? activeProxyId : null)) !== null
-      ? tiles.find(
-          (t) => t.id === (pendingProxy ?? activeProxyId),
-        )
-      : null;
-
-  // Filter: don't show config panel for routers that don't take credentials.
-  const showDecisionConfig =
-    !!decisionConfigTile && decisionConfigTile.modes.length > 0;
-  const showProxyConfig =
-    !!proxyConfigTile && proxyConfigTile.modes.length > 0;
-
-  const sameService = selectedDecisionId === selectedProxyId;
+  const proxyRouters: RouterTile[] = tiles.filter((t) =>
+    t.capabilities.includes("proxy"),
+  );
 
   return (
     <div
       data-testid="routers-section"
-      style={{ display: "flex", flexDirection: "column", gap: 14 }}
+      style={{ display: "flex", flexDirection: "column", gap: 16 }}
     >
       <div
         style={{
           fontSize: 13,
           color: "var(--c-low)",
-          marginBottom: 2,
           lineHeight: 1.55,
         }}
       >
-        Pick which decision and proxy router Fleet uses when intelligent
-        routing is enabled. Routers needing an API key open a configuration
-        form inline after selection. The Built-in router is always available
-        as a fallback.
+        Pick which router Fleet uses to choose the agent + model
+        (decision) and to proxy outbound requests (proxy). Connecting a
+        router stores its API key in the OS keychain — only the active
+        router runs on each turn, the others stay available for instant
+        switching.
       </div>
 
       <MasterToggle enabled={masterEnabled} onChange={setMasterEnabled} />
@@ -212,108 +119,36 @@ export function RoutersSection() {
           }}
         >
           Intelligent routing is disabled. Fleet Hub will use your
-          manually-selected agent for each session.
+          manually-selected agent for each session. Routers below can still
+          be configured ahead of time.
         </div>
       )}
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: 12,
-        }}
-      >
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <RouterDropdown
-            label="Decision Router"
-            testId="decision-router-select"
-            options={decisionOptions}
-            value={selectedDecisionId}
-            onChange={(id) => void handleDropdownChange("decision", id)}
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={sectionHeader}>Decision Router</div>
+        {decisionRouters.map((t) => (
+          <RouterCard
+            key={`dec-${t.id}`}
+            tile={t}
+            category="decision"
+            meta={ROUTER_META[t.id] ?? { description: "" }}
+            onChanged={refresh}
           />
-          {!showDecisionConfig &&
-            decisionConfigTile === null &&
-            activeDecisionId !== "builtin" && (
-              <button
-                type="button"
-                onClick={() => setEditingDecision(true)}
-                style={editLinkStyle}
-                data-testid="decision-edit"
-              >
-                Edit credentials
-              </button>
-            )}
-        </div>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <RouterDropdown
-            label="Proxy Gateway"
-            testId="proxy-gateway-select"
-            options={proxyOptions}
-            value={selectedProxyId}
-            onChange={(id) => void handleDropdownChange("proxy", id)}
-          />
-          {!showProxyConfig &&
-            proxyConfigTile === null &&
-            activeProxyId !== "none-proxy" && (
-              <button
-                type="button"
-                onClick={() => setEditingProxy(true)}
-                style={editLinkStyle}
-                data-testid="proxy-edit"
-              >
-                Edit credentials
-              </button>
-            )}
-        </div>
+        ))}
       </div>
 
-      {sameService && selectedDecisionId !== "builtin" && (
-        <div
-          style={{
-            fontSize: 11.5,
-            color: "var(--c-dim)",
-            marginTop: -4,
-            lineHeight: 1.5,
-          }}
-        >
-          Decisions are made in-line — no extra network hop.
-        </div>
-      )}
-
-      {showDecisionConfig && decisionConfigTile && (
-        <RouterConfigPanel
-          tile={decisionConfigTile}
-          category="decision"
-          docsUrl={ROUTER_META[decisionConfigTile.id]?.docsUrl}
-          managedBaseUrl={ROUTER_META[decisionConfigTile.id]?.managedBaseUrl}
-          onSaved={() => handleConfigSaved("decision")}
-          onCancel={() => cancelPending("decision")}
-        />
-      )}
-
-      {showProxyConfig && proxyConfigTile && (
-        <RouterConfigPanel
-          tile={proxyConfigTile}
-          category="proxy"
-          docsUrl={ROUTER_META[proxyConfigTile.id]?.docsUrl}
-          managedBaseUrl={ROUTER_META[proxyConfigTile.id]?.managedBaseUrl}
-          onSaved={() => handleConfigSaved("proxy")}
-          onCancel={() => cancelPending("proxy")}
-        />
-      )}
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={sectionHeader}>Proxy Gateway</div>
+        {proxyRouters.map((t) => (
+          <RouterCard
+            key={`prx-${t.id}`}
+            tile={t}
+            category="proxy"
+            meta={ROUTER_META[t.id] ?? { description: "" }}
+            onChanged={refresh}
+          />
+        ))}
+      </div>
     </div>
   );
 }
-
-const editLinkStyle: React.CSSProperties = {
-  alignSelf: "flex-start",
-  background: "transparent",
-  border: "none",
-  padding: 0,
-  fontSize: 11.5,
-  color: "var(--c-low)",
-  textDecoration: "underline",
-  cursor: "pointer",
-  fontFamily: "inherit",
-};
