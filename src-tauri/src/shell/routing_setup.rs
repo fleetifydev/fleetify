@@ -2,14 +2,13 @@
 //! (`fleet.config.json`) and the per-user keychain. Called once from the
 //! Tauri setup hook before `fleetify_backend::serve_with_routing_setup`
 //! so external routers (Not Diamond, Weave, LiteLLM) are registered with
-//! the orchestrator at boot rather than left dormant until the user
-//! re-saves them in Settings.
+//! the orchestrator at boot.
 //!
-//! Disconnect / reconnect cycles via the `routers_*` IPC commands write
-//! the config + keychain but do NOT mutate the live orchestrator —
-//! they'll take effect on the next backend boot. Day-1 behaviour, by
-//! design (keeps router lifetimes simple and avoids tearing reqwest
-//! clients mid-request).
+//! Also re-used by every `routers_*` IPC mutation: after writing config
+//! plus keychain the IPC handler rebuilds the `RoutingSetup` from disk
+//! and POSTs it to the running backend at `/api/internal/routing/reload`
+//! so the change takes effect immediately rather than waiting for the
+//! next app restart.
 
 use std::path::Path;
 
@@ -88,6 +87,74 @@ pub fn build(app_data_dir: &Path, user_id: Option<&str>) -> RoutingSetup {
     }
 
     setup
+}
+
+/// Rebuild the setup from disk and POST it to the running backend's
+/// `/api/internal/routing/reload` endpoint. Called after each `routers_*`
+/// IPC mutation so the live orchestrator picks up new credentials /
+/// active selections without an app restart.
+///
+/// Fire-and-forget: failures are logged but never propagated to the IPC
+/// caller. The config + keychain are already updated regardless, so the
+/// next backend boot will pick up the change even if this round-trip
+/// fails (e.g. backend not yet listening, transient I/O hiccup).
+pub async fn reload_backend(app: &tauri::AppHandle) {
+    use tauri::Manager;
+
+    let Ok(dir) = app.path().app_data_dir() else {
+        tracing::warn!(target: "fleet-shell", "routing reload: app_data_dir unavailable");
+        return;
+    };
+    let uid = crate::shell::auth::get_user_id().await;
+    let setup = build(&dir, uid.as_deref());
+
+    let port = std::env::var("FLEETIFY_BACKEND_PORT").unwrap_or_else(|_| "8765".into());
+    let secret = match std::env::var("FLEETIFY_INTERNAL_SECRET") {
+        Ok(s) => s,
+        Err(_) => {
+            tracing::warn!(
+                target: "fleet-shell",
+                "routing reload: FLEETIFY_INTERNAL_SECRET not set — backend may not be ready yet"
+            );
+            return;
+        }
+    };
+    let url = format!("http://127.0.0.1:{port}/api/internal/routing/reload");
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+    match client
+        .post(&url)
+        .header("X-Fleet-Internal", &secret)
+        .json(&setup)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            tracing::info!(
+                target: "fleet-shell",
+                resolved = setup.resolved.len(),
+                active_decision = %setup.active_decision_router,
+                "routing reload: backend acked"
+            );
+        }
+        Ok(resp) => {
+            tracing::warn!(
+                target: "fleet-shell",
+                status = %resp.status(),
+                "routing reload: backend returned non-2xx"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "fleet-shell",
+                error = %e,
+                "routing reload: POST failed (config + keychain still updated; next boot will pick up the change)"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

@@ -126,6 +126,7 @@ pub fn run() {
             shell::ipc::routers_set_active,
             shell::ipc::routers_set_master_toggle,
             shell::ipc::routers_test_router,
+            shell::ipc::routers_get_key_preview,
             shell::ipc::git_generate_commit_message,
             shell::ipc::git_generate_pr_summary,
             shell::ipc::git_review_diff,

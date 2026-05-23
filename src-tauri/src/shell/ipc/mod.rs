@@ -1422,6 +1422,11 @@ pub struct RouterTileMetadata {
     pub connected: bool,
     pub active_for_decision: bool,
     pub active_for_proxy: bool,
+    /// User-supplied non-secret metadata (currently just `base_url` for
+    /// self-hosted routers). Lets the renderer pre-populate the Edit form
+    /// without round-tripping the IPC layer for each field.
+    #[serde(default)]
+    pub metadata: serde_json::Value,
 }
 
 #[tauri::command]
@@ -1479,6 +1484,11 @@ pub async fn routers_list_routers(app: tauri::AppHandle) -> serde_json::Value {
                     .get(*id)
                     .map(|r| r.connected)
                     .unwrap_or(false);
+            let metadata = routing
+                .connected_routers
+                .get(*id)
+                .map(|r| r.metadata.clone())
+                .unwrap_or(serde_json::Value::Null);
             RouterTileMetadata {
                 id: (*id).to_string(),
                 display_name: (*name).to_string(),
@@ -1487,6 +1497,7 @@ pub async fn routers_list_routers(app: tauri::AppHandle) -> serde_json::Value {
                 connected,
                 active_for_decision: routing.active_decision_router == *id,
                 active_for_proxy: routing.active_proxy_gateway == *id,
+                metadata,
             }
         })
         .collect();
@@ -1522,6 +1533,9 @@ pub async fn routers_connect(
             return serde_json::json!({ "ok": false, "code": "CONFIG", "error": e.to_string() });
         }
     }
+    // Hot-reload the orchestrator so the new credentials are usable on the
+    // very next chat / dispatch turn (vs. waiting until next app boot).
+    crate::shell::routing_setup::reload_backend(&app).await;
     serde_json::json!({ "ok": true })
 }
 
@@ -1543,6 +1557,7 @@ pub async fn routers_disconnect(app: tauri::AppHandle, id: String) -> serde_json
         config::routing_set(&mut cfg, &routing);
         let _ = config::save_config_to(&dir, &cfg);
     }
+    crate::shell::routing_setup::reload_backend(&app).await;
     serde_json::json!({ "ok": true })
 }
 
@@ -1564,6 +1579,7 @@ pub async fn routers_set_active(
     }
     config::routing_set(&mut cfg, &routing);
     let _ = config::save_config_to(&dir, &cfg);
+    crate::shell::routing_setup::reload_backend(&app).await;
     serde_json::json!({ "ok": true })
 }
 
@@ -1577,7 +1593,43 @@ pub async fn routers_set_master_toggle(app: tauri::AppHandle, enabled: bool) -> 
     routing.enabled = enabled;
     config::routing_set(&mut cfg, &routing);
     let _ = config::save_config_to(&dir, &cfg);
+    crate::shell::routing_setup::reload_backend(&app).await;
     serde_json::json!({ "ok": true })
+}
+
+/// Returns a masked preview of the stored API key for a connected router
+/// (e.g. `sk-…1234`). The full secret never crosses the IPC boundary —
+/// only the first 3 and last 4 visible characters do. Lets the renderer
+/// show the user "yes, you have a key on file" + an Edit link, without
+/// surfacing the actual credential in renderer memory.
+fn mask_secret(s: &str) -> String {
+    let total = s.chars().count();
+    if total <= 8 {
+        return "•".repeat(total.max(4));
+    }
+    let prefix: String = s.chars().take(3).collect();
+    let suffix: String = {
+        let v: Vec<char> = s.chars().collect();
+        v.iter().rev().take(4).rev().collect::<String>()
+    };
+    format!("{prefix}•••{suffix}")
+}
+
+#[tauri::command]
+pub async fn routers_get_key_preview(id: String) -> serde_json::Value {
+    if id == "builtin" || id == "none-proxy" {
+        return serde_json::json!({ "ok": true, "preview": null });
+    }
+    let Some(uid) = auth::get_user_id().await else {
+        return serde_json::json!({ "ok": false, "code": "NO_USER" });
+    };
+    match crate::shell::routers_link::read_secret(&id, &uid) {
+        Ok(Some(secret)) => {
+            serde_json::json!({ "ok": true, "preview": mask_secret(&secret) })
+        }
+        Ok(None) => serde_json::json!({ "ok": true, "preview": null }),
+        Err(e) => serde_json::json!({ "ok": false, "code": "KEYCHAIN", "error": e }),
+    }
 }
 
 #[tauri::command]

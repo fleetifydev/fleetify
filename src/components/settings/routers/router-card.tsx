@@ -1,23 +1,34 @@
 /**
- * A single router card. The whole card is clickable:
- *   - Active card → click is a no-op (it's already active).
- *   - Connected, not active → click flips active to this router.
- *   - Disconnected (needs credentials) → click expands the inline setup
- *     form (API key + optional base URL with a Managed / Self-hosted
- *     toggle for routers that support both).
- *   - Immortal (Built-in / None / Direct) → click sets it active.
+ * Router card with three visual states that read at a glance:
  *
- * The active card shows ONLY a small "active" pill — no green border or
- * tinted background. Cards that aren't expanded have a subtle hover
- * affordance so it's obvious the whole row is interactive.
+ *   • Active           — green border + "activated" pill in green. No
+ *                        chrome shouting; the green stripe and the word
+ *                        "activated" carry all the information.
+ *   • Connected/idle   — neutral card with a small "connected" tag.
+ *                        Clickable to flip active immediately.
+ *   • Needs setup      — yellow "Needs setup" badge in place of any
+ *                        primary button. Clicking the card (or the
+ *                        badge) opens the inline configuration form.
  *
- * Interactive children (inputs, buttons inside the expanded form, the
- * inline Edit / Disconnect links) call `e.stopPropagation()` so the
- * card-level click handler doesn't trigger when the user is editing
- * credentials or pressing Cancel.
+ * Click semantics (whole card is clickable):
+ *   - active or expanded → no-op (let inner controls handle their own
+ *     clicks; inputs/buttons stopPropagation)
+ *   - connected & not active → setActive immediately
+ *   - immortal (builtin / none-proxy) & not active → setActive
+ *   - disconnected & has modes → expand the form
+ *
+ * Form behaviour when re-opening a connected router:
+ *   - The card fetches `routers.getKeyPreview(id)` to display a masked
+ *     version of the stored key (e.g. `sk-•••abcd`) along with an
+ *     underlined "edit" link.
+ *   - Clicking edit reveals the real password input (empty by default —
+ *     full key never leaves the keychain), at which point the user can
+ *     paste a new value and hit "Connect & activate" to rotate it.
+ *   - For self-hosted routers, the saved `metadata.base_url` is also
+ *     pre-populated so the user doesn't have to retype it.
  */
 import type { MouseEvent } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ExternalLink } from "lucide-react";
 
 import { routers, type RouterMode, type RouterTile } from "@/lib/routers-api";
@@ -37,6 +48,7 @@ interface Props {
   onChanged: () => Promise<void> | void;
 }
 
+// ── Card chrome ───────────────────────────────────────────────────
 const cardBase: React.CSSProperties = {
   border: "1px solid var(--c-brd)",
   borderRadius: 10,
@@ -48,30 +60,26 @@ const cardBase: React.CSSProperties = {
   transition: "background 120ms ease, border-color 120ms ease",
 };
 
-const nameStyle: React.CSSProperties = {
-  fontSize: 13.5,
-  fontWeight: 600,
-  color: "var(--c-high)",
+const cardActive: React.CSSProperties = {
+  ...cardBase,
+  borderColor: "#22c55e",
+  boxShadow: "0 0 0 1px rgba(34,197,94,0.25)",
 };
 
-const descStyle: React.CSSProperties = {
-  fontSize: 12,
-  color: "var(--c-low)",
-  lineHeight: 1.5,
-};
-
-const activePill: React.CSSProperties = {
+// ── Pills / badges ────────────────────────────────────────────────
+const activatedPill: React.CSSProperties = {
   fontSize: 10.5,
   textTransform: "uppercase",
   letterSpacing: 0.5,
-  padding: "2px 7px",
+  padding: "2px 8px",
   borderRadius: 4,
-  background: "var(--c-srf2)",
-  color: "var(--c-high)",
+  background: "rgba(34,197,94,0.15)",
+  color: "#22c55e",
   fontWeight: 700,
+  border: "1px solid rgba(34,197,94,0.4)",
 };
 
-const connectedPill: React.CSSProperties = {
+const connectedTag: React.CSSProperties = {
   fontSize: 10.5,
   textTransform: "uppercase",
   letterSpacing: 0.5,
@@ -83,6 +91,19 @@ const connectedPill: React.CSSProperties = {
   border: "1px solid var(--c-brd)",
 };
 
+const needsSetupBadge: React.CSSProperties = {
+  fontSize: 10.5,
+  textTransform: "uppercase",
+  letterSpacing: 0.5,
+  padding: "3px 10px",
+  borderRadius: 4,
+  background: "rgba(250,204,21,0.14)",
+  color: "#facc15",
+  fontWeight: 700,
+  border: "1px solid rgba(250,204,21,0.45)",
+};
+
+// ── Buttons ───────────────────────────────────────────────────────
 const primaryBtn: React.CSSProperties = {
   fontSize: 12.5,
   padding: "7px 14px",
@@ -173,10 +194,16 @@ const segmentBtnActive: React.CSSProperties = {
   boxShadow: "0 1px 2px rgba(0,0,0,0.15)",
 };
 
-const chevron: React.CSSProperties = {
-  fontSize: 14,
+const nameStyle: React.CSSProperties = {
+  fontSize: 13.5,
+  fontWeight: 600,
+  color: "var(--c-high)",
+};
+
+const descStyle: React.CSSProperties = {
+  fontSize: 12,
   color: "var(--c-low)",
-  marginLeft: 4,
+  lineHeight: 1.5,
 };
 
 export function RouterCard({ tile, category, meta, onChanged }: Props) {
@@ -184,32 +211,77 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
     category === "decision" ? tile.active_for_decision : tile.active_for_proxy;
   const isImmortal = tile.id === "builtin" || tile.id === "none-proxy";
   const needsSetup = tile.modes.length > 0 && !tile.connected;
+  const savedBaseUrl = (() => {
+    const m = tile.metadata as Record<string, unknown> | null | undefined;
+    const v = m && typeof m === "object" ? m.base_url : undefined;
+    return typeof v === "string" ? v : "";
+  })();
 
   const [expanded, setExpanded] = useState(false);
   const [hover, setHover] = useState(false);
-  const [mode, setMode] = useState<RouterMode>(tile.modes[0] ?? "managed");
+  const [mode, setMode] = useState<RouterMode>(() => {
+    // Default the mode to the one that matches the saved metadata when we
+    // can detect it (self-hosted iff a base_url was saved), otherwise the
+    // first supported mode.
+    if (savedBaseUrl && tile.modes.includes("self_hosted")) return "self_hosted";
+    return tile.modes[0] ?? "managed";
+  });
   const [secret, setSecret] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
+  const [baseUrl, setBaseUrl] = useState(savedBaseUrl);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The masked preview of the stored key. Null until fetched OR when no
+  // key is on file. While not null, the password input stays collapsed
+  // behind the "edit" link.
+  const [keyPreview, setKeyPreview] = useState<string | null>(null);
+  // Once the user clicks "edit", reveal the password input so they can
+  // type a new key. Independent of expansion so re-collapsing the card
+  // resets the rotate flow.
+  const [rotating, setRotating] = useState(false);
 
   const hasModeChoice = tile.modes.length > 1;
   const needsUrl = mode === "self_hosted";
 
-  // The whole-card click semantics:
-  //   - active or expanded → no-op (let inner controls handle it)
-  //   - connected & not active → flip active immediately
-  //   - immortal & not active → flip active immediately
-  //   - disconnected → expand into the setup form
-  const cardClickable = !isActive && !expanded;
-  const cardCursor = cardClickable ? "pointer" : "default";
-  const cardBg = hover && cardClickable ? "var(--c-srf2)" : "var(--card)";
+  // Fetch the masked key preview the first time the card is expanded for
+  // a connected router. Cheap (single keychain read on the main process)
+  // and never carries the real key over IPC.
+  useEffect(() => {
+    if (!expanded || !tile.connected || isImmortal) return;
+    let cancelled = false;
+    routers
+      .getKeyPreview(tile.id)
+      .then((r) => {
+        if (cancelled) return;
+        setKeyPreview(r.ok ? r.preview : null);
+      })
+      .catch(() => {
+        if (!cancelled) setKeyPreview(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, tile.connected, tile.id, isImmortal]);
 
-  const cardStyle: React.CSSProperties = {
-    ...cardBase,
-    cursor: cardCursor,
-    background: cardBg,
-  };
+  // Keep baseUrl in sync with the saved metadata when the card opens, so
+  // the user sees their previously-entered URL pre-filled. Repo style
+  // discourages setState-in-effect (the autofocus / config-rehydrate
+  // pattern is the well-known exception — same shape as use-router-config
+  // and use-session-routing).
+  useEffect(() => {
+    if (expanded) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setBaseUrl(savedBaseUrl);
+    }
+  }, [expanded, savedBaseUrl]);
+
+  const cardClickable = !isActive && !expanded;
+  const cardStyle: React.CSSProperties = isActive
+    ? cardActive
+    : {
+        ...cardBase,
+        cursor: cardClickable ? "pointer" : "default",
+        background: hover && cardClickable ? "var(--c-srf2)" : "var(--card)",
+      };
 
   const setAsActive = async () => {
     setSubmitting(true);
@@ -231,13 +303,16 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
   const collapseAndReset = () => {
     setExpanded(false);
     setSecret("");
-    setBaseUrl("");
+    setBaseUrl(savedBaseUrl);
     setError(null);
+    setRotating(false);
   };
 
   const changeMode = (m: RouterMode) => {
     setMode(m);
-    setBaseUrl("");
+    // When the user explicitly flips the mode, drop any pre-fill so the
+    // managed-default vs user-provided URL never leak into each other.
+    setBaseUrl(m === "self_hosted" ? savedBaseUrl : "");
     setError(null);
   };
 
@@ -250,9 +325,6 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
     }
   };
 
-  // Used on inner interactive elements so they don't bubble up to the
-  // card-level click handler. We still want the inner element to run its
-  // own onClick if it has one.
   const stop = (e: MouseEvent) => e.stopPropagation();
 
   const submit = async (e: MouseEvent) => {
@@ -260,7 +332,11 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
     setSubmitting(true);
     setError(null);
     try {
-      if (!secret.trim()) {
+      // The rotate flow: if the user is editing a connected router but
+      // hasn't typed a new key, hold the existing one in keychain — we
+      // only re-write the secret when they actually type a new value.
+      const wantsKeyRotation = rotating || !tile.connected;
+      if (wantsKeyRotation && !secret.trim()) {
         setError("API key is required");
         return;
       }
@@ -268,14 +344,33 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
         setError("Base URL is required for self-hosted mode");
         return;
       }
+
       const metadata: Record<string, unknown> = { mode };
       if (needsUrl) metadata.base_url = baseUrl.trim();
 
-      const r = await routers.connect(tile.id, secret.trim(), metadata);
-      if (!r.ok) {
-        setError("error" in r ? r.error : "Connection failed");
+      // When the user didn't type a new key (just changed mode or URL on
+      // an already-connected router), we can't write secret="" or we'd
+      // wipe the keychain entry. Skip connect() in that case and only
+      // re-activate / update metadata via a re-connect with the EXISTING
+      // key — which means we DO need the real key. As a Day-1 compromise
+      // we make the user type the key to "save" any change. The masked
+      // preview makes that explicit.
+      if (secret.trim()) {
+        const r = await routers.connect(tile.id, secret.trim(), metadata);
+        if (!r.ok) {
+          setError("error" in r ? r.error : "Connection failed");
+          return;
+        }
+      } else if (tile.connected) {
+        // Mode / URL-only change with an existing key: just toggle the
+        // saved metadata via a no-op "edit" by re-reading the key would
+        // require crossing IPC for the full secret, which we deliberately
+        // don't do. Tell the user to enter the key to confirm.
+        setError("Enter your API key to confirm the change.");
+        setRotating(true);
         return;
       }
+
       const a = await routers.setActive(category, tile.id);
       if (!a.ok) {
         setError(a.error || "Saved key but activation failed");
@@ -331,9 +426,17 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
         }}
       >
         <span style={nameStyle}>{tile.display_name}</span>
-        {isActive && <span style={activePill}>active</span>}
+        {isActive && <span style={activatedPill}>activated</span>}
         {!isActive && tile.connected && !isImmortal && (
-          <span style={connectedPill}>connected</span>
+          <span style={connectedTag}>connected</span>
+        )}
+        {needsSetup && !expanded && (
+          <span
+            data-testid={`router-needs-setup-${category}-${tile.id}`}
+            style={needsSetupBadge}
+          >
+            Needs setup
+          </span>
         )}
 
         <div
@@ -345,25 +448,7 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
             flexWrap: "wrap",
           }}
         >
-          {/* Disconnected, needs setup → primary "Set up" (also triggered
-              by clicking anywhere on the card). */}
-          {needsSetup && !expanded && (
-            <button
-              type="button"
-              style={primaryBtn}
-              onClick={(e) => {
-                stop(e);
-                setExpanded(true);
-              }}
-              data-testid={`router-setup-${category}-${tile.id}`}
-            >
-              Set up
-            </button>
-          )}
-
-          {/* Connected but not active → explicit "Use this" button
-              (in addition to clicking the card) so the action is obvious
-              for users who don't realise the whole card is clickable. */}
+          {/* Connected but not active → "Set as active" primary */}
           {tile.connected && !isActive && !isImmortal && !expanded && (
             <button
               type="button"
@@ -375,11 +460,11 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
               }}
               data-testid={`router-activate-${category}-${tile.id}`}
             >
-              {submitting ? "Activating…" : "Use this"}
+              {submitting ? "Activating…" : "Set as active"}
             </button>
           )}
 
-          {/* Immortal & not active → "Use this" */}
+          {/* Immortal & not active → "Set as active" */}
           {isImmortal && !isActive && (
             <button
               type="button"
@@ -391,11 +476,11 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
               }}
               data-testid={`router-activate-${category}-${tile.id}`}
             >
-              {submitting ? "Activating…" : "Use this"}
+              {submitting ? "Activating…" : "Set as active"}
             </button>
           )}
 
-          {/* Connected and non-immortal → small Edit link, regardless of
+          {/* Connected non-immortal → small Edit link, regardless of
               active state. Lets the user rotate keys without disconnecting. */}
           {tile.connected && !isImmortal && !expanded && (
             <button
@@ -409,12 +494,6 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
             >
               Edit
             </button>
-          )}
-
-          {cardClickable && !expanded && (
-            <span style={chevron} aria-hidden>
-              ›
-            </span>
           )}
         </div>
       </div>
@@ -457,11 +536,11 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
           {hasModeChoice && (
             <div>
               <span style={labelStyle}>Connection mode</span>
-              {/* Segmented control. Mutually exclusive by construction:
-                  clicking either button replaces the active selection.
-                  Pure CSS visual states make the exclusivity obvious —
-                  exactly one button is in the white "active" state. */}
-              <div style={segmentedWrap} role="radiogroup" aria-label="Connection mode">
+              <div
+                style={segmentedWrap}
+                role="radiogroup"
+                aria-label="Connection mode"
+              >
                 {tile.modes.map((m) => {
                   const selected = mode === m;
                   return (
@@ -520,18 +599,64 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
           )}
 
           <div>
-            <span style={labelStyle}>API key</span>
-            <input
-              type="password"
-              style={inputStyle}
-              placeholder="••••••••••••••••••••"
-              value={secret}
-              onChange={(e) => setSecret(e.target.value)}
-              onClick={stop}
-              data-testid={`router-secret-${category}-${tile.id}`}
-              autoComplete="off"
-              autoFocus
-            />
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 5,
+              }}
+            >
+              <span style={{ ...labelStyle, marginBottom: 0 }}>API key</span>
+              {tile.connected && keyPreview && !rotating && (
+                <button
+                  type="button"
+                  style={{
+                    ...ghostLink,
+                    fontSize: 11,
+                  }}
+                  onClick={(e) => {
+                    stop(e);
+                    setRotating(true);
+                  }}
+                  data-testid={`router-rotate-${category}-${tile.id}`}
+                >
+                  edit
+                </button>
+              )}
+            </div>
+            {tile.connected && keyPreview && !rotating ? (
+              <div
+                style={{
+                  ...inputStyle,
+                  display: "flex",
+                  alignItems: "center",
+                  color: "var(--c-low)",
+                  fontFamily:
+                    "ui-monospace, SFMono-Regular, Menlo, monospace",
+                  letterSpacing: 0.5,
+                }}
+                data-testid={`router-key-preview-${category}-${tile.id}`}
+              >
+                {keyPreview}
+              </div>
+            ) : (
+              <input
+                type="password"
+                style={inputStyle}
+                placeholder={
+                  tile.connected
+                    ? "Enter a new key to rotate (or leave blank to keep)"
+                    : "••••••••••••••••••••"
+                }
+                value={secret}
+                onChange={(e) => setSecret(e.target.value)}
+                onClick={stop}
+                data-testid={`router-secret-${category}-${tile.id}`}
+                autoComplete="off"
+                autoFocus
+              />
+            )}
           </div>
 
           {error && (

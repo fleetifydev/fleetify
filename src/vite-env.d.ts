@@ -32,6 +32,7 @@ interface RouterTileMetadata {
   connected: boolean;
   active_for_decision: boolean;
   active_for_proxy: boolean;
+  metadata?: Record<string, unknown> | null;
 }
 
 type RoutersListResult =
@@ -45,6 +46,10 @@ type RoutersConnectResult =
 type RoutersTestResult =
   | { ok: true; always_available?: boolean; has_secret?: boolean }
   | { ok: false; code: "NO_USER" | "NO_SECRET" | "KEYCHAIN"; error?: string };
+
+type RoutersKeyPreviewResult =
+  | { ok: true; preview: string | null }
+  | { ok: false; code: "NO_USER" | "KEYCHAIN"; error?: string };
 
 interface FleetConfig {
   onboardingComplete: boolean;
@@ -301,6 +306,7 @@ interface Window {
         enabled: boolean,
       ) => Promise<{ ok: boolean; error?: string }>;
       testRouter: (id: string) => Promise<RoutersTestResult>;
+      getKeyPreview: (id: string) => Promise<RoutersKeyPreviewResult>;
     };
   };
 }

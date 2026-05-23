@@ -185,6 +185,7 @@
         },
         setMasterToggle: function (enabled) { return invoke("routers_set_master_toggle", { enabled: !!enabled }); },
         testRouter:      function (id) { return invoke("routers_test_router", { id: String(id || "") }); },
+        getKeyPreview:   function (id) { return invoke("routers_get_key_preview", { id: String(id || "") }); },
       },
       // ── github (mirrors window.electronAPI.github in the Electron build) ──
       // Token never crosses IPC; only `link` envelopes do. Faithful with
