@@ -752,7 +752,30 @@ impl ClaudeBridge {
                     let _ = tokio::io::AsyncReadExt::read_to_string(&mut e, &mut buf).await;
                     let t = buf.trim();
                     if !t.is_empty() {
+                        // Surface the raw stderr to the dev terminal so
+                        // proxy / model / auth errors from claude-code are
+                        // greppable. Truncated to 2 KiB to keep the log
+                        // line readable when the upstream returns a huge
+                        // JSON body (the renderer still gets the full
+                        // string via BridgeEvent::Error for the user).
+                        let preview = if t.len() > 2048 {
+                            format!("{}…[truncated {}b]", &t[..2048], t.len() - 2048)
+                        } else {
+                            t.to_string()
+                        };
+                        tracing::error!(
+                            target: "fleetify::bridges::claude",
+                            exit_code = code.unwrap_or(-1),
+                            "claude-code subprocess exited non-zero — stderr: {}",
+                            preview
+                        );
                         let _ = tx.send(BridgeEvent::Error { error: t.into() }).await;
+                    } else {
+                        tracing::warn!(
+                            target: "fleetify::bridges::claude",
+                            exit_code = code.unwrap_or(-1),
+                            "claude-code subprocess exited non-zero with empty stderr"
+                        );
                     }
                 }
             }
