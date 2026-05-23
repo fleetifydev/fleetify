@@ -7,10 +7,17 @@
  * for tests / Storybook).
  */
 
+export type RouterMode = "managed" | "self_hosted";
+
 export interface RouterTile {
   id: string;
   display_name: string;
   capabilities: ("decision" | "proxy")[];
+  /** Credential modes the router accepts. Empty when no credentials are
+   *  needed (`builtin`, `none-proxy`). `managed` = router has a default
+   *  hosted endpoint and the user just supplies an API key. `self_hosted`
+   *  = the user must also supply the base URL of their own deployment. */
+  modes: RouterMode[];
   connected: boolean;
   active_for_decision: boolean;
   active_for_proxy: boolean;

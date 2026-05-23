@@ -28,6 +28,7 @@ interface RouterTileMetadata {
   id: string;
   display_name: string;
   capabilities: ("decision" | "proxy")[];
+  modes: ("managed" | "self_hosted")[];
   connected: boolean;
   active_for_decision: boolean;
   active_for_proxy: boolean;
