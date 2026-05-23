@@ -87,13 +87,14 @@ const primaryBtn: React.CSSProperties = {
   fontSize: 12.5,
   padding: "7px 14px",
   borderRadius: 7,
-  background: "var(--c-fg)",
-  border: "1px solid var(--c-fg)",
-  color: "var(--card, #0d0d0d)",
+  background: "#ffffff",
+  border: "1px solid #e5e5e5",
+  color: "#0d0d0d",
   cursor: "pointer",
   fontWeight: 600,
   fontFamily: "inherit",
   whiteSpace: "nowrap",
+  boxShadow: "0 1px 2px rgba(0,0,0,0.18)",
 };
 
 const secondaryBtn: React.CSSProperties = {
@@ -142,13 +143,34 @@ const labelStyle: React.CSSProperties = {
   display: "block",
 };
 
-const radioLabel: React.CSSProperties = {
+const segmentedWrap: React.CSSProperties = {
   display: "inline-flex",
-  alignItems: "center",
-  gap: 6,
+  background: "var(--c-srf2)",
+  border: "1px solid var(--c-brd)",
+  borderRadius: 8,
+  padding: 3,
+  gap: 2,
+};
+
+const segmentBtnBase: React.CSSProperties = {
+  fontSize: 12,
+  padding: "5px 14px",
+  borderRadius: 5,
+  border: "none",
   cursor: "pointer",
-  fontSize: 12.5,
-  color: "var(--c-high)",
+  fontFamily: "inherit",
+  fontWeight: 600,
+  letterSpacing: 0.3,
+  transition: "background 120ms ease, color 120ms ease",
+  background: "transparent",
+  color: "var(--c-low)",
+};
+
+const segmentBtnActive: React.CSSProperties = {
+  ...segmentBtnBase,
+  background: "#ffffff",
+  color: "#0d0d0d",
+  boxShadow: "0 1px 2px rgba(0,0,0,0.15)",
 };
 
 const chevron: React.CSSProperties = {
@@ -435,21 +457,44 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
           {hasModeChoice && (
             <div>
               <span style={labelStyle}>Connection mode</span>
-              <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
-                {tile.modes.map((m) => (
-                  <label key={m} style={radioLabel} onClick={stop}>
-                    <input
-                      type="radio"
-                      name={`mode-${tile.id}-${category}`}
-                      checked={mode === m}
-                      onChange={() => changeMode(m)}
+              {/* Segmented control. Mutually exclusive by construction:
+                  clicking either button replaces the active selection.
+                  Pure CSS visual states make the exclusivity obvious —
+                  exactly one button is in the white "active" state. */}
+              <div style={segmentedWrap} role="radiogroup" aria-label="Connection mode">
+                {tile.modes.map((m) => {
+                  const selected = mode === m;
+                  return (
+                    <button
+                      key={m}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      onClick={(e) => {
+                        stop(e);
+                        if (!selected) changeMode(m);
+                      }}
+                      style={selected ? segmentBtnActive : segmentBtnBase}
                       data-testid={`router-mode-${category}-${tile.id}-${m}`}
-                    />
-                    {m === "managed"
-                      ? `Managed${meta.managedBaseUrl ? ` (${meta.managedBaseUrl})` : ""}`
-                      : "Self-hosted"}
-                  </label>
-                ))}
+                    >
+                      {m === "managed" ? "API" : "Local"}
+                    </button>
+                  );
+                })}
+              </div>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--c-dim)",
+                  marginTop: 6,
+                  lineHeight: 1.5,
+                }}
+              >
+                {mode === "managed"
+                  ? meta.managedBaseUrl
+                    ? `Uses the hosted API at ${meta.managedBaseUrl}. Provide your API key below.`
+                    : "Uses the hosted API. Provide your API key below."
+                  : "Self-hosted deployment. Provide the base URL of your instance + an API key."}
               </div>
             </div>
           )}
