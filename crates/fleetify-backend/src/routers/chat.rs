@@ -762,7 +762,12 @@ async fn run_send_flow(
 
     // Build the BridgeContext: model override is always set (so the
     // bridge uses the pinned / freshly-routed tier). Proxy gateway
-    // resolution depends on the routed agent's provider family.
+    // resolution depends on the routed agent's provider family AND on
+    // the master toggle — when routing is disabled in Settings → Routers
+    // we MUST NOT redirect outbound traffic through the active proxy
+    // gateway. Mirrors the gate `resolve_routing_for_dispatch` applies in
+    // `persist.rs` so chat and dispatch flows agree on what "routing off"
+    // means end-to-end.
     let provider_for_proxy = match resolution.agent {
         crate::services::routing::traits::AgentKind::Claude => {
             crate::services::routing::traits::ProviderKind::Anthropic
@@ -783,9 +788,11 @@ async fn run_send_flow(
         },
         ..Default::default()
     };
-    if let Some((url, headers)) = st.routing.proxy_for(provider_for_proxy) {
-        bridge_ctx.base_url_override = Some(url);
-        bridge_ctx.extra_headers = headers;
+    if st.routing.enabled() {
+        if let Some((url, headers)) = st.routing.proxy_for(provider_for_proxy) {
+            bridge_ctx.base_url_override = Some(url);
+            bridge_ctx.extra_headers = headers;
+        }
     }
     let decision_id_opt = resolution.decision_id.clone();
     // Surface the routing decision in the dev console so you can see at a
