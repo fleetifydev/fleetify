@@ -12,6 +12,7 @@ import { isWindowsPlatform, folderName, truncateMid } from "@/lib/utils";
 import { FleetDecisionCard } from "./fleet-decision-card";
 import { useFleetStore, AUTO_CHAIN_CAP } from "@/stores/fleet-store";
 import { useSessionRouting } from "@/hooks/use-session-routing";
+import { RoutersStatusBar } from "@/components/settings/routers/routers-status-bar";
 import { LogoMark } from "@/components/brand/logo-mark";
 import { PanelLeft, PanelRight, Trash2, X, Check, GitCompareArrows, ListTodo, Terminal as TerminalIcon, Keyboard, Folder, Play, FolderOpen, Layers, Monitor, Github, Server, Box, ArrowRight, Pencil } from "lucide-react";
 import type { ContentBlock, ChatMessage } from "@/types/chat";
@@ -2038,6 +2039,11 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
             return [...agents, ...folders];
           })() : undefined}
         />
+        {/* Show the active decision + proxy router under the composer so
+            the user sees at a glance what will handle the outgoing prompt.
+            Hidden when the master toggle is off via the component's own
+            condition. */}
+        <RoutersStatusBar />
       </div>
     </div>
   );
