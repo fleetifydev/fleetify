@@ -76,6 +76,31 @@ interface FleetConfig {
   githubUsername?: string;
   /** Default model for new agent sessions. Persisted from Settings → Models. */
   defaultModel?: string;
+  /** Master toggle for OS-level notifications (completion, errors,
+   *  budget warnings). When false, all per-event notification toggles are
+   *  ignored. Default true. */
+  notificationsEnabled?: boolean;
+  /** Toggle for "notify me when an agent errors out". Default true. */
+  notifyErrorsEnabled?: boolean;
+  /** Toggle for "notify me when an agent nears its budget cap". Default true. */
+  notifyBudgetEnabled?: boolean;
+  /** Mute all notifications regardless of the other toggles. Default false. */
+  doNotDisturb?: boolean;
+  /** Launch Fleetify on system startup. Default false. Honored when the
+   *  Tauri autostart plugin is wired; otherwise the toggle stores intent
+   *  only and surfaces a "Restart required" hint. */
+  launchOnStartup?: boolean;
+  /** Restore the last session on launch (vs. start at the workspace
+   *  picker). Default true. */
+  restoreLastSession?: boolean;
+  /** Auto-install background updates when available. Default true. */
+  updatesAuto?: boolean;
+  /** Update channel — Stable / Beta / Canary. Default "stable". */
+  updatesChannel?: "stable" | "beta" | "canary";
+  /** Anonymous usage analytics opt-out. Default true (opt-in by install). */
+  telemetryEnabled?: boolean;
+  /** Crash report opt-out. Default true (opt-in by install). */
+  crashReportsEnabled?: boolean;
 }
 
 interface Window {

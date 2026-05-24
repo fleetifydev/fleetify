@@ -10,6 +10,14 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  // Inject the app version as a build-time literal. Renderer code reads
+  // `__APP_VERSION__` (declared via `declare const` in settings-page.tsx
+  // and general/updates-card.tsx) and without this define it throws a
+  // ReferenceError at runtime — which had been silently breaking the
+  // Diagnostics "Copy diagnostic info" handler.
+  define: {
+    __APP_VERSION__: JSON.stringify(process.env.npm_package_version ?? "dev"),
+  },
   build: {
     // Source maps are only useful in dev — shipping them with the
     // production renderer bundle bloats the asar by ~10MB and exposes

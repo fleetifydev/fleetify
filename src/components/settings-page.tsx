@@ -19,13 +19,17 @@ import {
   Settings, Palette, Wand2, Cpu, Plug, Cable, Route,
   FileCode, Webhook, FileText, FolderOpen, Loader2, Bug,
   Check, User, ArrowUpRight, HelpCircle, Sun, ArrowLeft,
-  Volume2, Copy, MessageCircle,
+  Copy, MessageCircle,
+  // Volume2 / playCompletionBeep / useToggle / Toggle all retired with the
+  // legacy single-toggle GeneralSection; the Notifications card under
+  // settings/general/ owns those primitives now.
   // ExternalLink: AccountSection's "Change settings" link (added on main).
   // Eye/EyeOff dropped — the legacy ApiKeyRow that used them was retired
   // when ModelsSection moved to settings/models-section.tsx.
   ExternalLink,
 } from "lucide-react";
 import { isWindowsPlatform } from "@/lib/utils";
+import { copyText } from "@/lib/clipboard";
 import { useAppStore } from "@/stores/app-store";
 import { useThemeStore } from "@/stores/theme-store";
 import { THEMES } from "@/lib/themes";
@@ -35,6 +39,7 @@ import { IntegrationsSection } from "./settings/integrations-section";
 import { RoutersSection } from "./settings/routers-section";
 import { ModelsSection } from "./settings/models-section";
 import { AgentsSection as AgentsSectionV2 } from "./settings/agents-section";
+import { GeneralSection as GeneralSectionV2 } from "./settings/general/general-section";
 import { WindowsTitleBar } from "./layout/windows-title-bar";
 import { openDocs } from "./layout/sidebar";
 import { FeedbackModal } from "./feedback-modal";
@@ -60,80 +65,10 @@ const NAV: { id: string; icon: React.FC<{ size?: number; style?: React.CSSProper
   { id: "Diagnostics",  icon: Bug        },
 ];
 
-/* ── Audible "ding" using WebAudio. Used both as the test-button
-   action in Settings and (eventually) by the agent-completion event. ── */
-function playCompletionBeep() {
-  try {
-    const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    if (!Ctx) return;
-    const ctx = new Ctx();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(880, ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(660, ctx.currentTime + 0.18);
-    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.18, ctx.currentTime + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.32);
-    osc.connect(gain).connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.34);
-    osc.onended = () => { ctx.close().catch(() => {}); };
-  } catch { /* WebAudio unavailable — silently no-op */ }
-}
-
-/* ══ Local-storage hook for boolean toggles ══════════════════════
-   Persists the current state under "fleet:settings:<key>". Default
-   value is used on first read. Writes happen synchronously on every
-   change — fine because settings change is a rare event. */
-function useToggle(key: string, defaultValue: boolean): [boolean, () => void] {
-  const [v, setV] = useState<boolean>(() => {
-    try {
-      const raw = localStorage.getItem(`fleet:settings:${key}`);
-      return raw == null ? defaultValue : raw === "1";
-    } catch {
-      return defaultValue;
-    }
-  });
-  const toggle = useCallback(() => {
-    setV(prev => {
-      const next = !prev;
-      try { localStorage.setItem(`fleet:settings:${key}`, next ? "1" : "0"); } catch { /* noop */ }
-      return next;
-    });
-  }, [key]);
-  return [v, toggle];
-}
-
-/* ── Toggle — pill switch ─────────────────────────────────────── */
-function Toggle({ on, onChange }: { on: boolean; onChange: () => void }) {
-  return (
-    <button
-      onClick={onChange}
-      role="switch"
-      aria-checked={on}
-      style={{
-        width: 36, height: 21, borderRadius: 999,
-        padding: 0,
-        position: "relative",
-        border: "1px solid var(--c-brd)",
-        cursor: "pointer", flexShrink: 0,
-        background: on ? "rgb(74,222,128)" : "var(--c-srf)",
-        transition: "background 0.18s, border-color 0.18s",
-        outline: "none",
-      }}
-    >
-      <span style={{
-        position: "absolute",
-        top: 2, left: on ? 17 : 2,
-        width: 15, height: 15, borderRadius: "50%",
-        background: "#fff",
-        boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
-        transition: "left 0.18s cubic-bezier(0.4,0,0.2,1)",
-      }} />
-    </button>
-  );
-}
+/* The legacy `playCompletionBeep`, `useToggle`, and inline `Toggle`
+   primitives moved to `./settings/general/_primitives.tsx` and
+   `./settings/general/notifications-card.tsx` alongside the General
+   section overhaul. Nothing else in this file consumed them. */
 
 /* ── Row — single preference row inside a Card ────────────────── */
 function Row({
@@ -222,16 +157,6 @@ const btnGhost: React.CSSProperties = {
   transition: "background 0.12s, border-color 0.12s",
 };
 
-const btnPrimary: React.CSSProperties = {
-  fontFamily: "inherit", cursor: "pointer", outline: "none",
-  display: "inline-flex", alignItems: "center", gap: 5,
-  padding: "6px 14px", borderRadius: 7, fontSize: 12.5, fontWeight: 600,
-  background: "var(--c-high)",
-  border: "none",
-  color: "var(--card)",
-  transition: "opacity 0.12s, transform 0.08s",
-};
-
 const btnDanger: React.CSSProperties = {
   fontFamily: "inherit", cursor: "pointer", outline: "none",
   display: "inline-flex", alignItems: "center", gap: 5,
@@ -254,22 +179,6 @@ function GhostButton({ children, onClick }: { children: React.ReactNode; onClick
         e.currentTarget.style.background = "transparent";
         e.currentTarget.style.borderColor = "var(--c-brd)";
       }}
-    >
-      {children}
-    </button>
-  );
-}
-
-function PrimaryButton({ children, onClick, disabled }: { children: React.ReactNode; onClick?: () => void; disabled?: boolean }) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      style={{ ...btnPrimary, opacity: disabled ? 0.5 : 1, cursor: disabled ? "default" : "pointer" }}
-      onMouseEnter={e => { if (!disabled) e.currentTarget.style.opacity = "0.85"; }}
-      onMouseLeave={e => { if (!disabled) e.currentTarget.style.opacity = "1"; }}
-      onMouseDown={e => { if (!disabled) e.currentTarget.style.transform = "translateY(0.5px)"; }}
-      onMouseUp={e => { if (!disabled) e.currentTarget.style.transform = "none"; }}
     >
       {children}
     </button>
@@ -422,12 +331,12 @@ function DiagnosticsSection() {
       platform: typeof navigator !== "undefined" ? navigator.platform : null,
       captured_at: new Date().toISOString(),
     };
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(info, null, 2));
+    const ok = await copyText(JSON.stringify(info, null, 2));
+    if (ok) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't copy.");
+    } else {
+      setError("Couldn't copy — your OS denied clipboard access.");
     }
   }, []);
 
@@ -452,7 +361,6 @@ function DiagnosticsSection() {
           hint="Save a .zip of recent logs + system info"
           onClick={onExport}
           disabled={exporting}
-          primary
         />
         <DiagButton
           icon={opening ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <FolderOpen size={14} />}
@@ -494,14 +402,13 @@ function DiagnosticsSection() {
 }
 
 function DiagButton({
-  icon, label, hint, onClick, disabled, primary,
+  icon, label, hint, onClick, disabled,
 }: {
   icon: React.ReactNode;
   label: string;
   hint: string;
   onClick: () => void;
   disabled?: boolean;
-  primary?: boolean;
 }) {
   return (
     <button
@@ -510,10 +417,10 @@ function DiagButton({
       style={{
         display: "flex", alignItems: "center", gap: 10,
         padding: "11px 13px",
-        background: primary ? "var(--c-fg)" : "rgba(var(--fg-rgb), 0.04)",
-        border: primary ? "1px solid var(--c-fg)" : "1px solid var(--c-brd)",
+        background: "rgba(var(--fg-rgb), 0.04)",
+        border: "1px solid var(--c-brd)",
         borderRadius: 8,
-        color: primary ? "var(--c-bg, #0c0c0c)" : "var(--c-high)",
+        color: "var(--c-high)",
         cursor: disabled ? "default" : "pointer",
         opacity: disabled ? 0.55 : 1,
         fontFamily: "inherit",
@@ -522,11 +429,11 @@ function DiagButton({
       }}
       onMouseEnter={e => {
         if (disabled) return;
-        if (!primary) e.currentTarget.style.background = "rgba(var(--fg-rgb), 0.07)";
+        e.currentTarget.style.background = "rgba(var(--fg-rgb), 0.07)";
       }}
       onMouseLeave={e => {
         if (disabled) return;
-        if (!primary) e.currentTarget.style.background = "rgba(var(--fg-rgb), 0.04)";
+        e.currentTarget.style.background = "rgba(var(--fg-rgb), 0.04)";
       }}
     >
       <span style={{ display: "inline-flex", flexShrink: 0 }}>{icon}</span>
@@ -534,7 +441,7 @@ function DiagButton({
         <span style={{ fontSize: 13, fontWeight: 600 }}>{label}</span>
         <span style={{
           fontSize: 11.5,
-          color: primary ? "rgba(0,0,0,0.65)" : "var(--c-low)",
+          color: "var(--c-low)",
           fontWeight: 400,
         }}>{hint}</span>
       </span>
@@ -587,11 +494,13 @@ function AccountSection() {
     }
   };
 
-  const copyId = () => {
+  const copyId = async () => {
     if (!accountId) return;
-    void window.electronAPI?.writeText?.(accountId);
-    setCopiedId(true);
-    setTimeout(() => setCopiedId(false), 1400);
+    const ok = await copyText(accountId);
+    if (ok) {
+      setCopiedId(true);
+      setTimeout(() => setCopiedId(false), 1400);
+    }
   };
 
   const memberLabel = memberSince
@@ -730,100 +639,10 @@ function ValueText({ children }: { children: React.ReactNode }) {
 }
 
 /* ══════════════════════════════════════════════════════════════
-   Section: General
+   Section: General — moved to `./settings/general/general-section.tsx`.
+   The composer there renders four cards (Startup, Notifications,
+   Updates, Privacy) and replaces the old single-toggle Sound stub.
 ══════════════════════════════════════════════════════════════ */
-function GeneralSection() {
-  const [completionSound, toggleCompletionSound] = useToggle("completion-sound", false);
-  const { cfg, patch } = useFleetConfig();
-  const githubUser = cfg?.githubUsername ?? "";
-  const [checking, setChecking] = useState(false);
-
-  const connectGithub = async () => {
-    setChecking(true);
-    try {
-      const res = await window.electronAPI?.checkGithubAuth?.();
-      if (res?.ok && res.username) {
-        await patch({ githubUsername: res.username });
-      }
-    } finally {
-      setChecking(false);
-    }
-  };
-
-  const disconnectGithub = async () => {
-    await patch({ githubUsername: undefined, githubToken: undefined });
-  };
-
-  return (
-    <>
-      <SectionHeader>Integrations</SectionHeader>
-      <Card>
-        <Row
-          title="GitHub"
-          desc={githubUser
-            ? `Connected as @${githubUser}. Used for git operations the agent runs on your behalf.`
-            : "Authorize the GitHub CLI so agents can clone, push, and open PRs as you."}
-          last
-        >
-          {githubUser ? (
-            <button
-              onClick={disconnectGithub}
-              style={btnDanger}
-              onMouseEnter={e => {
-                e.currentTarget.style.background = "rgba(248,113,113,0.18)";
-                e.currentTarget.style.borderColor = "rgba(248,113,113,0.45)";
-              }}
-              onMouseLeave={e => {
-                e.currentTarget.style.background = "rgba(248,113,113,0.10)";
-                e.currentTarget.style.borderColor = "rgba(248,113,113,0.30)";
-              }}
-            >
-              Disconnect
-            </button>
-          ) : (
-            <PrimaryButton onClick={connectGithub} disabled={checking}>
-              {checking ? "Checking…" : "Connect"}
-            </PrimaryButton>
-          )}
-        </Row>
-      </Card>
-
-      <SectionHeader>Sound</SectionHeader>
-      <Card>
-        <Row title="Completion sound" desc="Play a short ding when an agent finishes a task." last>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <button
-              onClick={() => playCompletionBeep()}
-              title="Test sound"
-              style={{
-                width: 26, height: 26, borderRadius: 6,
-                display: "flex", alignItems: "center", justifyContent: "center",
-                background: "transparent",
-                border: "1px solid var(--c-brd)",
-                color: "var(--c-med)",
-                cursor: "pointer", outline: "none",
-                transition: "background 0.1s, color 0.1s, border-color 0.1s",
-              }}
-              onMouseEnter={e => {
-                e.currentTarget.style.background = "var(--c-srf2)";
-                e.currentTarget.style.color = "var(--c-high)";
-                e.currentTarget.style.borderColor = "var(--c-brd2)";
-              }}
-              onMouseLeave={e => {
-                e.currentTarget.style.background = "transparent";
-                e.currentTarget.style.color = "var(--c-med)";
-                e.currentTarget.style.borderColor = "var(--c-brd)";
-              }}
-            >
-              <Volume2 size={12} />
-            </button>
-            <Toggle on={completionSound} onChange={toggleCompletionSound} />
-          </div>
-        </Row>
-      </Card>
-    </>
-  );
-}
 
 /* ══════════════════════════════════════════════════════════════
    Section: Appearance
@@ -1322,7 +1141,7 @@ export function SettingsPage({ initialTab = "General", onClose }: SettingsProps)
             </h1>
 
             {active === "Account"      && <AccountSection />}
-            {active === "General"      && <GeneralSection />}
+            {active === "General"      && <GeneralSectionV2 />}
             {active === "Appearance"   && <AppearanceSection />}
             {active === "Agents"       && <AgentsSection />}
             {active === "Models"       && <ModelsSection />}

@@ -16,7 +16,7 @@ import {
   type ProvidersTestResult,
 } from "@/lib/providers-api";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
-import { ConnectionStatusPill } from "./connection-status-pill";
+import { ConnectionStatusPill } from "@/components/settings/shared/connection-status-pill";
 
 const inputStyle: React.CSSProperties = {
   width: "100%",

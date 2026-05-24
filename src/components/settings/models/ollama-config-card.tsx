@@ -12,7 +12,7 @@ import {
   type OllamaModelEntry,
 } from "@/lib/providers-api";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
-import { ConnectionStatusPill, type ConnectionStatus } from "./connection-status-pill";
+import { ConnectionStatusPill, type ConnectionStatus } from "@/components/settings/shared/connection-status-pill";
 
 const inputStyle: React.CSSProperties = {
   width: "100%",

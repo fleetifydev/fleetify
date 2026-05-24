@@ -1,11 +1,24 @@
 /**
- * Small status pill that tells the user where a provider tile stands:
- * Connected (green), Needs setup (gray), Error (red), Testing (amber).
- * Shared between provider-card and ollama-config-card so the visual
- * language stays consistent across the Settings → Models surface.
+ * Shared status pill used across Settings → Models, Settings → Routers,
+ * and (incrementally) other settings surfaces that need an at-a-glance
+ * connection indicator. Lives in shared/ because two adjacent surfaces
+ * (Models and Routers) consume it; promote to a deeper shared location
+ * only if a non-settings caller appears.
+ *
+ *   activated   — green, slightly stronger than connected. Used for
+ *                 "this router is currently active" or similar one-of-N
+ *                 selections.
+ *   connected   — green. Used for "tile has credentials saved".
+ *   needs_setup — gray. Used for "tile exists but nothing configured".
+ *   error       — red. Used for failed test / probe.
+ *   testing     — amber. Used during in-flight probes.
  */
-
-export type ConnectionStatus = "connected" | "needs_setup" | "error" | "testing";
+export type ConnectionStatus =
+  | "activated"
+  | "connected"
+  | "needs_setup"
+  | "error"
+  | "testing";
 
 export function ConnectionStatusPill({
   status,
@@ -14,7 +27,16 @@ export function ConnectionStatusPill({
   status: ConnectionStatus;
   label?: string;
 }) {
-  const palette: Record<ConnectionStatus, { fg: string; bg: string; dot: string; text: string }> = {
+  const palette: Record<
+    ConnectionStatus,
+    { fg: string; bg: string; dot: string; text: string }
+  > = {
+    activated: {
+      fg: "rgb(74,222,128)",
+      bg: "rgba(74,222,128,0.15)",
+      dot: "rgb(74,222,128)",
+      text: label ?? "Activated",
+    },
     connected: {
       fg: "rgb(74,222,128)",
       bg: "rgba(74,222,128,0.10)",

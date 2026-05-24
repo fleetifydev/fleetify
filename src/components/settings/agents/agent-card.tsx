@@ -14,7 +14,7 @@ import { useState } from "react";
 import { Check, Copy, Terminal, Loader2 } from "lucide-react";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import type { ProviderSpec } from "@/lib/providers-api";
-import { ConnectionStatusPill } from "../models/connection-status-pill";
+import { ConnectionStatusPill } from "@/components/settings/shared/connection-status-pill";
 
 export interface AgentScanEntry {
   id: string;

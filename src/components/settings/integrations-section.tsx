@@ -1,4 +1,4 @@
-import { GitHubTile } from "./github-tile";
+import { GitHubIntegrationTile } from "./integrations/github-integration-tile";
 
 export function IntegrationsSection() {
   return (
@@ -9,7 +9,7 @@ export function IntegrationsSection() {
       }}>
         Connect external services Fleetify can act on for you.
       </div>
-      <GitHubTile />
+      <GitHubIntegrationTile />
       {/* Future: GitLabTile, LinearTile, SlackTile, ... */}
     </div>
   );

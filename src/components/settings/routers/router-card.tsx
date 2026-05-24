@@ -32,6 +32,7 @@ import { useEffect, useState } from "react";
 import { ExternalLink } from "lucide-react";
 
 import { routers, type RouterMode, type RouterTile } from "@/lib/routers-api";
+import { ConnectionStatusPill } from "@/components/settings/shared/connection-status-pill";
 
 type Category = "decision" | "proxy";
 
@@ -64,43 +65,6 @@ const cardActive: React.CSSProperties = {
   ...cardBase,
   borderColor: "#22c55e",
   boxShadow: "0 0 0 1px rgba(34,197,94,0.25)",
-};
-
-// ── Pills / badges ────────────────────────────────────────────────
-const activatedPill: React.CSSProperties = {
-  fontSize: 10.5,
-  textTransform: "uppercase",
-  letterSpacing: 0.5,
-  padding: "2px 8px",
-  borderRadius: 4,
-  background: "rgba(34,197,94,0.15)",
-  color: "#22c55e",
-  fontWeight: 700,
-  border: "1px solid rgba(34,197,94,0.4)",
-};
-
-const connectedTag: React.CSSProperties = {
-  fontSize: 10.5,
-  textTransform: "uppercase",
-  letterSpacing: 0.5,
-  padding: "2px 7px",
-  borderRadius: 4,
-  background: "transparent",
-  color: "var(--c-low)",
-  fontWeight: 600,
-  border: "1px solid var(--c-brd)",
-};
-
-const needsSetupBadge: React.CSSProperties = {
-  fontSize: 10.5,
-  textTransform: "uppercase",
-  letterSpacing: 0.5,
-  padding: "3px 10px",
-  borderRadius: 4,
-  background: "rgba(250,204,21,0.14)",
-  color: "#facc15",
-  fontWeight: 700,
-  border: "1px solid rgba(250,204,21,0.45)",
 };
 
 // ── Buttons ───────────────────────────────────────────────────────
@@ -426,16 +390,13 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
         }}
       >
         <span style={nameStyle}>{tile.display_name}</span>
-        {isActive && <span style={activatedPill}>activated</span>}
+        {isActive && <ConnectionStatusPill status="activated" />}
         {!isActive && tile.connected && !isImmortal && (
-          <span style={connectedTag}>connected</span>
+          <ConnectionStatusPill status="connected" />
         )}
         {needsSetup && !expanded && (
-          <span
-            data-testid={`router-needs-setup-${category}-${tile.id}`}
-            style={needsSetupBadge}
-          >
-            Needs setup
+          <span data-testid={`router-needs-setup-${category}-${tile.id}`}>
+            <ConnectionStatusPill status="needs_setup" label="Needs setup" />
           </span>
         )}
 
