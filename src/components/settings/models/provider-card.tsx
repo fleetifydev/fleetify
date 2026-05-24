@@ -17,6 +17,7 @@ import {
 } from "@/lib/providers-api";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { ConnectionStatusPill } from "@/components/settings/shared/connection-status-pill";
+import type { ProviderHealth } from "@/hooks/use-provider-health";
 
 const inputStyle: React.CSSProperties = {
   width: "100%",
@@ -71,7 +72,15 @@ const dangerBtn: React.CSSProperties = {
   color: "rgb(248,113,113)",
 };
 
-export function ProviderCard({ tile }: { tile: ProviderTile }) {
+export function ProviderCard({
+  tile,
+  health,
+  onHealthChange,
+}: {
+  tile: ProviderTile;
+  health: ProviderHealth;
+  onHealthChange: () => void;
+}) {
   const { setKey, deleteKey, setEnabledModels } = useProvidersConfig();
   const [expanded, setExpanded] = useState(false);
   const [draftKey, setDraftKey] = useState("");
@@ -85,11 +94,27 @@ export function ProviderCard({ tile }: { tile: ProviderTile }) {
   const allModelIds = tile.spec.default_models.map((m) => m.id);
   const enabled = tile.enabled_models.length > 0 ? tile.enabled_models : allModelIds;
 
-  const status = tile.connected
-    ? ("connected" as const)
-    : tile.has_key
-    ? ("needs_setup" as const)
-    : ("needs_setup" as const);
+  // Pill drives off the parent hook's launch-time test result. We never
+  // fall back to tile.connected here — `health` is the single source of
+  // truth, with `no_key` as the safe default the parent passes when a
+  // tile lacks a saved key.
+  const status =
+    health.kind === "ok"
+      ? ("connected" as const)
+      : health.kind === "failed"
+      ? ("error" as const)
+      : health.kind === "testing"
+      ? ("testing" as const)
+      : ("needs_setup" as const);
+
+  const statusLabel: string | undefined =
+    health.kind === "ok"
+      ? `Connected · ${health.latencyMs}ms`
+      : health.kind === "failed"
+      ? `Error · ${health.code ?? "?"}`
+      : health.kind === "testing"
+      ? "Testing…"
+      : "Not connected";
 
   // Lazy-load masked key preview when the user expands the card (avoids
   // an N×N IPC storm on initial Settings page render).
@@ -112,12 +137,16 @@ export function ProviderCard({ tile }: { tile: ProviderTile }) {
     setDraftKey("");
     setSavedPreview(null); // force re-fetch on next expand
     setSaving(false);
+    // Re-run the parent's launch-time scan so the pill transitions
+    // testing → ok/failed without waiting for a page reload.
+    onHealthChange();
   };
 
   const onDisconnect = async () => {
     await deleteKey(tile.spec.id);
     setSavedPreview(null);
     setTestResult(null);
+    onHealthChange();
   };
 
   const onTest = async () => {
@@ -176,7 +205,7 @@ export function ProviderCard({ tile }: { tile: ProviderTile }) {
             {tile.spec.default_models.length} models · {tile.spec.default_base_url}
           </div>
         </div>
-        <ConnectionStatusPill status={status} />
+        <ConnectionStatusPill status={status} label={statusLabel} />
         <span
           style={{
             marginLeft: 6,

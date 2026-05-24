@@ -16,6 +16,7 @@
  * `defaultModel` semantics move into Settings → Agents.
  */
 import { useProvidersConfig } from "@/hooks/use-providers-config";
+import { useProviderHealth } from "@/hooks/use-provider-health";
 import { ProviderCard } from "./models/provider-card";
 import { OllamaConfigCard } from "./models/ollama-config-card";
 
@@ -32,6 +33,11 @@ const sectionHeader: React.CSSProperties = {
 
 export function ModelsSection() {
   const { tiles, loading } = useProvidersConfig();
+  // Owns launch-time Ollama scan + parallel API-provider validation.
+  // ProviderCard consumes `health.providers[id]` for its pill and calls
+  // `health.refresh` after Save/Disconnect so the pill updates without a
+  // page reload.
+  const health = useProviderHealth({ tiles });
 
   if (loading) {
     return (
@@ -48,12 +54,23 @@ export function ModelsSection() {
     <>
       <div style={sectionHeader}>API Providers</div>
       {apiTiles.map((t) => (
-        <ProviderCard key={t.spec.id} tile={t} />
+        <ProviderCard
+          key={t.spec.id}
+          tile={t}
+          health={health.providers[t.spec.id] ?? { kind: "no_key" }}
+          onHealthChange={health.refresh}
+        />
       ))}
 
       <div style={{ ...sectionHeader, marginTop: 22 }}>Local Models</div>
       {localTiles.map((t) => (
-        <OllamaConfigCard key={t.spec.id} tile={t} />
+        <OllamaConfigCard
+          key={t.spec.id}
+          tile={t}
+          health={health.ollama}
+          onInstall={health.installOllama}
+          onCancelInstall={health.cancelInstall}
+        />
       ))}
 
       <div

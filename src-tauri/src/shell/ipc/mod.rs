@@ -1806,6 +1806,26 @@ pub async fn providers_test_connection(id: String, key: String) -> serde_json::V
         return serde_json::json!({ "ok": false, "code": "USE_PROBE", "error": "Use providers_ollama_probe for local providers" });
     }
 
+    // Empty key means "use the saved keychain key" — lets the renderer
+    // launch-time health scan validate every saved-key tile without
+    // needing the user's plaintext key in JS memory.
+    let effective_key = if key.is_empty() {
+        match auth::get_user_id().await {
+            Some(uid) => match crate::shell::providers_link::read_secret(&id, &uid) {
+                Ok(Some(secret)) => secret,
+                Ok(None) => {
+                    return serde_json::json!({ "ok": false, "code": "AUTH", "error": "no saved key for this provider" })
+                }
+                Err(e) => return serde_json::json!({ "ok": false, "code": "AUTH", "error": e }),
+            },
+            None => {
+                return serde_json::json!({ "ok": false, "code": "AUTH", "error": "Fleetify sign-in required" })
+            }
+        }
+    } else {
+        key
+    };
+
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(4))
         .build()
@@ -1819,7 +1839,7 @@ pub async fn providers_test_connection(id: String, key: String) -> serde_json::V
     let started = std::time::Instant::now();
     let result = client
         .get(&url)
-        .header("Authorization", format!("Bearer {key}"))
+        .header("Authorization", format!("Bearer {effective_key}"))
         .send()
         .await;
     let elapsed_ms = started.elapsed().as_millis() as u64;

@@ -9,6 +9,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import type { ProviderTile } from "@/lib/providers-api";
+import type { ProviderHealth } from "@/hooks/use-provider-health";
 
 const hookMock = vi.hoisted(() => ({
   setKey: vi.fn(async () => {}),
@@ -60,6 +61,92 @@ function makeTile(overrides: Partial<ProviderTile> = {}): ProviderTile {
   };
 }
 
+const noKey: ProviderHealth = { kind: "no_key" };
+
+describe("ProviderCard health pill", () => {
+  beforeEach(() => {
+    hookMock.setKey.mockReset();
+    hookMock.deleteKey.mockReset();
+    hookMock.setEnabledModels.mockReset();
+    apiMock.getKeyPreview.mockReset();
+    apiMock.testConnection.mockReset();
+    apiMock.getKeyPreview.mockResolvedValue({ ok: true, preview: null });
+    hookMock.setKey.mockResolvedValue(undefined);
+    hookMock.deleteKey.mockResolvedValue(undefined);
+    hookMock.setEnabledModels.mockResolvedValue(undefined);
+  });
+
+  it("renders 'Not connected' when health is no_key", () => {
+    const health: ProviderHealth = { kind: "no_key" };
+    render(
+      <ProviderCard
+        tile={makeTile({ has_key: false })}
+        health={health}
+        onHealthChange={() => {}}
+      />,
+    );
+    expect(screen.getByText(/Not connected/i)).toBeInTheDocument();
+  });
+
+  it("renders 'Testing…' when health is testing", () => {
+    const health: ProviderHealth = { kind: "testing" };
+    render(
+      <ProviderCard
+        tile={makeTile({ has_key: true })}
+        health={health}
+        onHealthChange={() => {}}
+      />,
+    );
+    expect(screen.getByText(/Testing/i)).toBeInTheDocument();
+  });
+
+  it("renders 'Connected · Xms' when health is ok", () => {
+    const health: ProviderHealth = { kind: "ok", latencyMs: 142, modelCount: 7 };
+    render(
+      <ProviderCard
+        tile={makeTile({ has_key: true, connected: true })}
+        health={health}
+        onHealthChange={() => {}}
+      />,
+    );
+    expect(screen.getByText(/Connected · 142ms/)).toBeInTheDocument();
+  });
+
+  it("renders 'Error · CODE' when health is failed", () => {
+    const health: ProviderHealth = { kind: "failed", code: "AUTH", message: "401" };
+    render(
+      <ProviderCard
+        tile={makeTile({ has_key: true })}
+        health={health}
+        onHealthChange={() => {}}
+      />,
+    );
+    expect(screen.getByText(/Error · AUTH/)).toBeInTheDocument();
+  });
+
+  it("calls onHealthChange after Save", async () => {
+    const onHealthChange = vi.fn();
+    const t = makeTile({ has_key: false });
+    render(
+      <ProviderCard
+        tile={t}
+        health={{ kind: "no_key" }}
+        onHealthChange={onHealthChange}
+      />,
+    );
+    // Expand the card.
+    fireEvent.click(screen.getByRole("button", { name: /DeepSeek/i }));
+    // Type a draft key.
+    const input = screen.getByPlaceholderText(/Paste your DeepSeek key/i) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "sk-test" } });
+    // Click Save.
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
+    // Wait for async setKey + onHealthChange.
+    await screen.findByPlaceholderText(/Enter a new key to replace/i, {}, { timeout: 2000 }).catch(() => {});
+    expect(onHealthChange).toHaveBeenCalled();
+  });
+});
+
 describe("ProviderCard", () => {
   beforeEach(() => {
     hookMock.setKey.mockReset();
@@ -79,18 +166,25 @@ describe("ProviderCard", () => {
   });
 
   it("renders the provider name and a 'Not connected' pill when disconnected", () => {
-    render(<ProviderCard tile={makeTile()} />);
+    render(<ProviderCard tile={makeTile()} health={noKey} onHealthChange={() => {}} />);
     expect(screen.getByText("DeepSeek")).toBeTruthy();
     expect(screen.getByText("Not connected")).toBeTruthy();
   });
 
-  it("renders 'Connected' pill when tile.connected=true", () => {
-    render(<ProviderCard tile={makeTile({ connected: true, has_key: true })} />);
-    expect(screen.getByText("Connected")).toBeTruthy();
+  it("renders 'Connected' pill when health is ok", () => {
+    const health: ProviderHealth = { kind: "ok", latencyMs: 50 };
+    render(
+      <ProviderCard
+        tile={makeTile({ connected: true, has_key: true })}
+        health={health}
+        onHealthChange={() => {}}
+      />,
+    );
+    expect(screen.getByText(/Connected/)).toBeTruthy();
   });
 
   it("expand reveals the API key input + model checkboxes", async () => {
-    render(<ProviderCard tile={makeTile()} />);
+    render(<ProviderCard tile={makeTile()} health={noKey} onHealthChange={() => {}} />);
     fireEvent.click(screen.getByText("DeepSeek"));
     await waitFor(() => {
       expect(
@@ -102,7 +196,7 @@ describe("ProviderCard", () => {
   });
 
   it("Save calls setKey with the typed key", async () => {
-    render(<ProviderCard tile={makeTile()} />);
+    render(<ProviderCard tile={makeTile()} health={noKey} onHealthChange={() => {}} />);
     fireEvent.click(screen.getByText("DeepSeek"));
     const input = await screen.findByPlaceholderText(/Paste your DeepSeek key/i);
     fireEvent.change(input, { target: { value: "sk-test-123" } });
@@ -113,7 +207,13 @@ describe("ProviderCard", () => {
   });
 
   it("Disconnect calls deleteKey when the tile is connected", async () => {
-    render(<ProviderCard tile={makeTile({ connected: true, has_key: true })} />);
+    render(
+      <ProviderCard
+        tile={makeTile({ connected: true, has_key: true })}
+        health={noKey}
+        onHealthChange={() => {}}
+      />,
+    );
     fireEvent.click(screen.getByText("DeepSeek"));
     const disconnect = await screen.findByText(/Disconnect/i);
     fireEvent.click(disconnect);
@@ -123,7 +223,7 @@ describe("ProviderCard", () => {
   });
 
   it("Test button calls testConnection and renders the latency pill on success", async () => {
-    render(<ProviderCard tile={makeTile()} />);
+    render(<ProviderCard tile={makeTile()} health={noKey} onHealthChange={() => {}} />);
     fireEvent.click(screen.getByText("DeepSeek"));
     const input = await screen.findByPlaceholderText(/Paste your DeepSeek key/i);
     fireEvent.change(input, { target: { value: "sk-test-123" } });
@@ -138,7 +238,7 @@ describe("ProviderCard", () => {
   });
 
   it("toggling a model checkbox calls setEnabledModels", async () => {
-    render(<ProviderCard tile={makeTile()} />);
+    render(<ProviderCard tile={makeTile()} health={noKey} onHealthChange={() => {}} />);
     fireEvent.click(screen.getByText("DeepSeek"));
     const checkbox = (await screen.findAllByRole("checkbox"))[0];
     fireEvent.click(checkbox);
@@ -187,7 +287,13 @@ describe("ProviderCard grouping", () => {
   });
 
   it("renders both group headers for Perplexity", async () => {
-    render(<ProviderCard tile={buildPerplexityTile()} />);
+    render(
+      <ProviderCard
+        tile={buildPerplexityTile()}
+        health={noKey}
+        onHealthChange={() => {}}
+      />,
+    );
     // Header expand: click the header button so the body renders.
     await fireEvent.click(screen.getByRole("button", { name: /Perplexity/ }));
     expect(screen.getByText("Sonar API")).toBeInTheDocument();
@@ -195,7 +301,13 @@ describe("ProviderCard grouping", () => {
   });
 
   it("places models in their declared group", async () => {
-    render(<ProviderCard tile={buildPerplexityTile()} />);
+    render(
+      <ProviderCard
+        tile={buildPerplexityTile()}
+        health={noKey}
+        onHealthChange={() => {}}
+      />,
+    );
     await fireEvent.click(screen.getByRole("button", { name: /Perplexity/ }));
     // Find the Sonar API heading's parent section and assert "Sonar Pro"
     // lives under it (not under Agent API).
