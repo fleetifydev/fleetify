@@ -1122,6 +1122,7 @@ const NPM_PROVIDER_PKG: &[(&str, &str)] = &[
     ("claude", "@anthropic-ai/claude-code"),
     ("codex", "@openai/codex"),
     ("gemini", "@google/gemini-cli"),
+    ("kimi", "@moonshot-ai/kimi-code"),
 ];
 
 #[tauri::command]

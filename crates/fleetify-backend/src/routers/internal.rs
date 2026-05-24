@@ -426,6 +426,7 @@ mod tests {
             permission_registry: Arc::new(
                 tokio::sync::Mutex::new(std::collections::HashMap::new()),
             ),
+            agent_scan_cache: crate::routers::providers::AgentScanCache::default(),
         };
         let app = axum::Router::new()
             .nest("/api/internal", router())

@@ -55,6 +55,21 @@ pub struct ModelSpec {
     /// model in the picker so users can tell newer variants apart.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<&'static str>,
+    /// Optional grouping label. Renderer buckets models by this string
+    /// inside one provider tile (Perplexity uses "Sonar API" / "Agent
+    /// API" today). `None` => render flat, matching current behaviour.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<&'static str>,
+    /// Optional per-model endpoint override consulted by the backend
+    /// dispatch layer (Perplexity's `/v1/agent` lives at a different
+    /// path than its Sonar chat completions). `None` => fall back to
+    /// `ProviderSpec::default_base_url`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<&'static str>,
+    /// True when the model exposes a reasoning-effort lever the
+    /// composer's Effort column should be enabled for. False for
+    /// pure chat models — the column is then rendered greyed out.
+    pub supports_effort: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -98,6 +113,17 @@ pub enum AuthIndicator {
     EnvVar { name: &'static str },
 }
 
+/// Per-OS install command set. Resolved at scan time by
+/// `routers::providers::resolve_install_hint` using `cfg!()` so the
+/// renderer only ever sees the one string that applies to the user's
+/// machine.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct InstallHints {
+    pub windows: &'static str,
+    pub macos: &'static str,
+    pub linux: &'static str,
+}
+
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct ProviderSpec {
     pub id: &'static str,
@@ -123,6 +149,11 @@ pub struct ProviderSpec {
     /// (e.g. `"npm install -g @anthropic-ai/claude-code"`). Empty for HTTP
     /// providers, which surface their own "Get an API key" link instead.
     pub install_hint: &'static str,
+    /// Per-OS override for `install_hint`. When `Some`, the scan endpoint
+    /// picks the OS-matching string via `cfg!()` and ignores `install_hint`.
+    /// When `None` (CLI agents installing via `npm install -g`), the single
+    /// `install_hint` works everywhere.
+    pub install_hints: Option<InstallHints>,
     /// Shown verbatim when the binary is installed but the auth indicator
     /// hasn't fired (e.g. `"claude login"`). Empty otherwise.
     pub login_hint: &'static str,
@@ -132,67 +163,133 @@ pub struct ProviderSpec {
 
 const OPENAI_MODELS: &[ModelSpec] = &[
     ModelSpec {
-        id: "o3",
-        label: "o3",
-        context_window: Some("200K"),
+        id: "gpt-5.5",
+        label: "GPT-5.5",
+        context_window: Some("400K"),
         note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: true,
     },
     ModelSpec {
-        id: "o3-mini",
-        label: "o3 mini",
-        context_window: Some("200K"),
+        id: "gpt-5.5-pro",
+        label: "GPT-5.5 Pro",
+        context_window: Some("400K"),
         note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: true,
     },
     ModelSpec {
-        id: "o4-mini",
-        label: "o4 mini",
-        context_window: Some("200K"),
+        id: "gpt-5.4",
+        label: "GPT-5.4",
+        context_window: Some("400K"),
         note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: true,
     },
     ModelSpec {
-        id: "gpt-4o",
-        label: "GPT-4o",
-        context_window: Some("128K"),
+        id: "gpt-5.4-mini",
+        label: "GPT-5.4 mini",
+        context_window: Some("400K"),
         note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: true,
     },
     ModelSpec {
-        id: "gpt-4o-mini",
-        label: "GPT-4o mini",
-        context_window: Some("128K"),
+        id: "gpt-5.4-nano",
+        label: "GPT-5.4 nano",
+        context_window: Some("400K"),
         note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: true,
     },
     ModelSpec {
-        id: "gpt-4-turbo",
-        label: "GPT-4 Turbo",
-        context_window: Some("128K"),
-        note: Some("Legacy"),
+        id: "gpt-5",
+        label: "GPT-5",
+        context_window: Some("400K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: true,
     },
     ModelSpec {
-        id: "gpt-3.5-turbo",
-        label: "GPT-3.5 Turbo",
-        context_window: Some("16K"),
-        note: Some("Legacy"),
+        id: "gpt-5-mini",
+        label: "GPT-5 mini",
+        context_window: Some("400K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "gpt-5-nano",
+        label: "GPT-5 nano",
+        context_window: Some("400K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "gpt-5.3-codex",
+        label: "GPT-5.3 Codex",
+        context_window: Some("400K"),
+        note: Some("Coding"),
+        group: None,
+        endpoint: None,
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "gpt-4.1",
+        label: "GPT-4.1",
+        context_window: Some("1M"),
+        note: Some("Long context"),
+        group: None,
+        endpoint: None,
+        supports_effort: false,
     },
 ];
 
 const DEEPSEEK_MODELS: &[ModelSpec] = &[
     ModelSpec {
-        id: "deepseek-chat",
-        label: "DeepSeek Chat",
-        context_window: Some("128K"),
+        id: "deepseek-v4-pro",
+        label: "DeepSeek V4 Pro",
+        context_window: Some("1M"),
         note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: true,
     },
     ModelSpec {
-        id: "deepseek-coder",
-        label: "DeepSeek Coder",
-        context_window: Some("128K"),
+        id: "deepseek-v4-flash",
+        label: "DeepSeek V4 Flash",
+        context_window: Some("1M"),
         note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: true,
     },
     ModelSpec {
-        id: "deepseek-reasoner",
-        label: "DeepSeek Reasoner",
+        id: "deepseek-v3.1",
+        label: "DeepSeek V3.1",
         context_window: Some("128K"),
         note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "deepseek-r1",
+        label: "DeepSeek R1",
+        context_window: Some("128K"),
+        note: Some("Reasoning"),
+        group: None,
+        endpoint: None,
+        supports_effort: true,
     },
 ];
 
@@ -200,20 +297,20 @@ const GROK_MODELS: &[ModelSpec] = &[
     ModelSpec {
         id: "grok-4.3",
         label: "Grok 4.3",
-        context_window: Some("256K"),
+        context_window: Some("1M"),
         note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: true,
     },
     ModelSpec {
-        id: "grok-3",
-        label: "Grok 3",
-        context_window: Some("256K"),
-        note: None,
-    },
-    ModelSpec {
-        id: "grok-3-mini",
-        label: "Grok 3 mini",
-        context_window: Some("256K"),
-        note: None,
+        id: "grok-4.1-fast",
+        label: "Grok 4.1 Fast",
+        context_window: Some("2M"),
+        note: Some("Highest context"),
+        group: None,
+        endpoint: None,
+        supports_effort: true,
     },
 ];
 
@@ -222,139 +319,332 @@ const GROK_MODELS: &[ModelSpec] = &[
 /// canonical for NIM and passed through to the SSE call as-is.
 const NVIDIA_NIM_MODELS: &[ModelSpec] = &[
     ModelSpec {
-        id: "meta/llama-3.3-70b-instruct",
-        label: "Llama 3.3 70B Instruct",
-        context_window: Some("128K"),
-        note: None,
-    },
-    ModelSpec {
-        id: "qwen/qwen3-coder-480b-a35b",
-        label: "Qwen3 Coder 480B",
-        context_window: Some("128K"),
-        note: None,
-    },
-    ModelSpec {
         id: "deepseek-ai/deepseek-v4-pro",
         label: "DeepSeek V4 Pro",
-        context_window: Some("128K"),
+        context_window: Some("1M"),
         note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
     },
     ModelSpec {
-        id: "moonshotai/kimi-k2-thinking",
-        label: "Kimi K2 Thinking",
-        context_window: Some("200K"),
+        id: "deepseek-ai/deepseek-v4-flash",
+        label: "DeepSeek V4 Flash",
+        context_window: Some("1M"),
         note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "qwen/qwen3.5-coder-480b",
+        label: "Qwen 3.5 Coder 480B",
+        context_window: Some("256K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "moonshotai/kimi-k2.6",
+        label: "Kimi K2.6",
+        context_window: Some("256K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: true,
     },
     ModelSpec {
         id: "openai/gpt-oss-120b",
         label: "GPT-OSS 120B",
         context_window: Some("128K"),
         note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "openai/gpt-oss-20b",
+        label: "GPT-OSS 20B",
+        context_window: Some("128K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
     },
     ModelSpec {
         id: "nvidia/nemotron-3-super-120b-a12b",
         label: "Nemotron 3 Super 120B",
         context_window: Some("128K"),
         note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: true,
     },
     ModelSpec {
-        id: "mistralai/mistral-nemotron",
-        label: "Mistral Nemotron",
+        id: "meta/llama-4-405b-instruct",
+        label: "Llama 4 405B Instruct",
+        context_window: Some("256K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "meta/llama-4-70b-instruct",
+        label: "Llama 4 70B Instruct",
         context_window: Some("128K"),
         note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
     },
     ModelSpec {
-        id: "microsoft/phi-4-mini-flash-reasoning",
-        label: "Phi-4 Mini Flash Reasoning",
-        context_window: Some("128K"),
-        note: None,
-    },
-    ModelSpec {
-        id: "z-ai/glm5.1",
+        id: "z-ai/glm-5.1",
         label: "GLM 5.1",
         context_window: Some("128K"),
         note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
     },
     ModelSpec {
         id: "minimaxai/minimax-m2.7",
         label: "MiniMax M2.7",
         context_window: Some("128K"),
         note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
     },
     ModelSpec {
-        id: "qwen/qwen3-next-80b-a3b-thinking",
-        label: "Qwen3 Next 80B Thinking",
+        id: "mistralai/mistral-nemotron",
+        label: "Mistral Nemotron",
         context_window: Some("128K"),
         note: None,
-    },
-    ModelSpec {
-        id: "qwen/qwen2.5-coder-32b-instruct",
-        label: "Qwen2.5 Coder 32B",
-        context_window: Some("128K"),
-        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
     },
 ];
 
 const KIMI_API_MODELS: &[ModelSpec] = &[
     ModelSpec {
-        id: "moonshot-v1-128k",
-        label: "Moonshot v1 128K",
-        context_window: Some("128K"),
+        id: "kimi-k2.6",
+        label: "Kimi K2.6",
+        context_window: Some("256K"),
         note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
     },
     ModelSpec {
-        id: "kimi-k2-0905",
-        label: "Kimi K2 (0905)",
-        context_window: Some("200K"),
-        note: None,
+        id: "kimi-k2.6-thinking",
+        label: "Kimi K2.6 Thinking",
+        context_window: Some("256K"),
+        note: Some("Reasoning"),
+        group: None,
+        endpoint: None,
+        supports_effort: true,
     },
     ModelSpec {
-        id: "moonshot-v1-32k",
-        label: "Moonshot v1 32K",
-        context_window: Some("32K"),
-        note: None,
+        id: "kimi-k2.6-agent",
+        label: "Kimi K2.6 Agent",
+        context_window: Some("256K"),
+        note: Some("Tool use"),
+        group: None,
+        endpoint: None,
+        supports_effort: true,
     },
 ];
 
 const GEMINI_API_MODELS: &[ModelSpec] = &[
     ModelSpec {
-        id: "gemini-2.5-pro",
-        label: "Gemini 2.5 Pro",
+        id: "gemini-3.5-flash",
+        label: "Gemini 3.5 Flash",
         context_window: Some("1M"),
         note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: true,
     },
     ModelSpec {
-        id: "gemini-2.5-flash",
-        label: "Gemini 2.5 Flash",
-        context_window: Some("1M"),
-        note: None,
-    },
-    ModelSpec {
-        id: "gemini-3.1-pro-preview",
+        id: "gemini-3.1-pro",
         label: "Gemini 3.1 Pro",
+        context_window: Some("2M"),
+        note: Some("Most capable"),
+        group: None,
+        endpoint: None,
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "gemini-3.1-flash-lite",
+        label: "Gemini 3.1 Flash-Lite",
         context_window: Some("1M"),
-        note: Some("Preview"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "gemini-3-flash",
+        label: "Gemini 3 Flash",
+        context_window: Some("1M"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "gemini-omni",
+        label: "Gemini Omni",
+        context_window: Some("1M"),
+        note: Some("Multimodal"),
+        group: None,
+        endpoint: None,
+        supports_effort: false,
     },
 ];
 
+const PERPLEXITY_AGENT_EP: &str = "https://api.perplexity.ai/v1/agent";
+
 const PERPLEXITY_MODELS: &[ModelSpec] = &[
+    // ── Sonar API (native search models, default base URL) ──────
     ModelSpec {
         id: "sonar",
         label: "Sonar",
         context_window: Some("128K"),
         note: None,
+        group: Some("Sonar API"),
+        endpoint: None,
+        supports_effort: false,
     },
     ModelSpec {
         id: "sonar-pro",
         label: "Sonar Pro",
         context_window: Some("200K"),
         note: None,
+        group: Some("Sonar API"),
+        endpoint: None,
+        supports_effort: false,
     },
     ModelSpec {
-        id: "sonar-reasoning",
-        label: "Sonar Reasoning",
+        id: "sonar-reasoning-pro",
+        label: "Sonar Reasoning Pro",
         context_window: Some("128K"),
+        note: Some("Reasoning"),
+        group: Some("Sonar API"),
+        endpoint: None,
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "sonar-deep-research",
+        label: "Sonar Deep Research",
+        context_window: Some("128K"),
+        note: Some("Research"),
+        group: Some("Sonar API"),
+        endpoint: None,
+        supports_effort: true,
+    },
+    // ── Agent API (marketplace, base URL = /v1/agent) ───────────
+    ModelSpec {
+        id: "anthropic/claude-opus-4-7",
+        label: "Claude Opus 4.7",
+        context_window: Some("200K"),
         note: None,
+        group: Some("Agent API"),
+        endpoint: Some(PERPLEXITY_AGENT_EP),
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "anthropic/claude-opus-4-6",
+        label: "Claude Opus 4.6",
+        context_window: Some("200K"),
+        note: None,
+        group: Some("Agent API"),
+        endpoint: Some(PERPLEXITY_AGENT_EP),
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "anthropic/claude-sonnet-4-6",
+        label: "Claude Sonnet 4.6",
+        context_window: Some("200K"),
+        note: None,
+        group: Some("Agent API"),
+        endpoint: Some(PERPLEXITY_AGENT_EP),
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "anthropic/claude-haiku-4-5",
+        label: "Claude Haiku 4.5",
+        context_window: Some("200K"),
+        note: None,
+        group: Some("Agent API"),
+        endpoint: Some(PERPLEXITY_AGENT_EP),
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "openai/gpt-5.5",
+        label: "GPT-5.5",
+        context_window: Some("400K"),
+        note: None,
+        group: Some("Agent API"),
+        endpoint: Some(PERPLEXITY_AGENT_EP),
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "openai/gpt-5.4-mini",
+        label: "GPT-5.4 mini",
+        context_window: Some("400K"),
+        note: None,
+        group: Some("Agent API"),
+        endpoint: Some(PERPLEXITY_AGENT_EP),
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "openai/gpt-5",
+        label: "GPT-5",
+        context_window: Some("400K"),
+        note: None,
+        group: Some("Agent API"),
+        endpoint: Some(PERPLEXITY_AGENT_EP),
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "google/gemini-3.1-pro-preview",
+        label: "Gemini 3.1 Pro",
+        context_window: Some("2M"),
+        note: None,
+        group: Some("Agent API"),
+        endpoint: Some(PERPLEXITY_AGENT_EP),
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "google/gemini-3.5-flash",
+        label: "Gemini 3.5 Flash",
+        context_window: Some("1M"),
+        note: None,
+        group: Some("Agent API"),
+        endpoint: Some(PERPLEXITY_AGENT_EP),
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "xai/grok-4.3",
+        label: "Grok 4.3",
+        context_window: Some("1M"),
+        note: None,
+        group: Some("Agent API"),
+        endpoint: Some(PERPLEXITY_AGENT_EP),
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "xai/grok-4.20-reasoning",
+        label: "Grok 4.20 Reasoning",
+        context_window: Some("1M"),
+        note: Some("Reasoning"),
+        group: Some("Agent API"),
+        endpoint: Some(PERPLEXITY_AGENT_EP),
+        supports_effort: true,
     },
 ];
 
@@ -433,6 +723,7 @@ pub static CATALOG: &[ProviderSpec] = &[
         bin: "",
         auth_indicators: &[],
         install_hint: "",
+        install_hints: None,
         login_hint: "",
     },
     ProviderSpec {
@@ -451,6 +742,7 @@ pub static CATALOG: &[ProviderSpec] = &[
         bin: "",
         auth_indicators: &[],
         install_hint: "",
+        install_hints: None,
         login_hint: "",
     },
     ProviderSpec {
@@ -469,6 +761,7 @@ pub static CATALOG: &[ProviderSpec] = &[
         bin: "",
         auth_indicators: &[],
         install_hint: "",
+        install_hints: None,
         login_hint: "",
     },
     ProviderSpec {
@@ -487,6 +780,7 @@ pub static CATALOG: &[ProviderSpec] = &[
         bin: "",
         auth_indicators: &[],
         install_hint: "",
+        install_hints: None,
         login_hint: "",
     },
     ProviderSpec {
@@ -505,6 +799,7 @@ pub static CATALOG: &[ProviderSpec] = &[
         bin: "",
         auth_indicators: &[],
         install_hint: "",
+        install_hints: None,
         login_hint: "",
     },
     ProviderSpec {
@@ -524,6 +819,7 @@ pub static CATALOG: &[ProviderSpec] = &[
         bin: "",
         auth_indicators: &[],
         install_hint: "",
+        install_hints: None,
         login_hint: "",
     },
     ProviderSpec {
@@ -544,6 +840,7 @@ pub static CATALOG: &[ProviderSpec] = &[
         bin: "",
         auth_indicators: &[],
         install_hint: "",
+        install_hints: None,
         login_hint: "",
     },
     ProviderSpec {
@@ -564,6 +861,11 @@ pub static CATALOG: &[ProviderSpec] = &[
         bin: "ollama",
         auth_indicators: OLLAMA_CLI_INDICATORS,
         install_hint: "Install Ollama from https://ollama.com/download",
+        install_hints: Some(InstallHints {
+            windows: "winget install Ollama.Ollama",
+            macos: "brew install --cask ollama",
+            linux: "curl -fsSL https://ollama.com/install.sh | sh",
+        }),
         login_hint: "",
     },
     // ── CLI agents ────
@@ -578,6 +880,7 @@ pub static CATALOG: &[ProviderSpec] = &[
         bin: "claude",
         auth_indicators: CLAUDE_INDICATORS,
         install_hint: "npm install -g @anthropic-ai/claude-code",
+        install_hints: None,
         login_hint: "claude login",
     },
     ProviderSpec {
@@ -591,6 +894,7 @@ pub static CATALOG: &[ProviderSpec] = &[
         bin: "codex",
         auth_indicators: CODEX_INDICATORS,
         install_hint: "npm install -g @openai/codex",
+        install_hints: None,
         login_hint: "codex login",
     },
     ProviderSpec {
@@ -604,6 +908,7 @@ pub static CATALOG: &[ProviderSpec] = &[
         bin: "gemini",
         auth_indicators: GEMINI_CLI_INDICATORS,
         install_hint: "npm install -g @google/gemini-cli",
+        install_hints: None,
         login_hint: "gemini",
     },
     ProviderSpec {
@@ -617,6 +922,7 @@ pub static CATALOG: &[ProviderSpec] = &[
         bin: "kimi",
         auth_indicators: KIMI_CLI_INDICATORS,
         install_hint: "npm install -g @moonshot-ai/kimi-code",
+        install_hints: None,
         login_hint: "kimi login",
     },
 ];
@@ -726,5 +1032,320 @@ mod tests {
         assert!(s.contains("\"openai\""));
         assert!(s.contains("\"perplexity\""));
         assert!(s.contains("\"claude\""));
+    }
+
+    #[test]
+    fn perplexity_has_two_groups() {
+        let p = CATALOG.iter().find(|p| p.id == "perplexity").unwrap();
+        let groups: std::collections::HashSet<&str> =
+            p.default_models.iter().filter_map(|m| m.group).collect();
+        assert_eq!(groups.len(), 2);
+        assert!(groups.contains("Sonar API"));
+        assert!(groups.contains("Agent API"));
+        // Every Perplexity model must carry a group label — no flat fallback.
+        assert!(p.default_models.iter().all(|m| m.group.is_some()));
+    }
+
+    #[test]
+    fn perplexity_agent_models_carry_endpoint() {
+        let p = CATALOG.iter().find(|p| p.id == "perplexity").unwrap();
+        for m in p.default_models.iter() {
+            match m.group {
+                Some("Agent API") => {
+                    let ep = m.endpoint.expect("Agent API model needs an endpoint");
+                    assert!(
+                        ep.ends_with("/v1/agent"),
+                        "Agent endpoint should point at /v1/agent, got {ep}",
+                    );
+                }
+                Some("Sonar API") => {
+                    assert!(
+                        m.endpoint.is_none(),
+                        "Sonar models fall back to default_base_url",
+                    );
+                }
+                _ => panic!("unexpected group: {:?}", m.group),
+            }
+        }
+    }
+
+    #[test]
+    fn perplexity_exposes_anthropic_and_google_via_agent_group() {
+        let p = CATALOG.iter().find(|p| p.id == "perplexity").unwrap();
+        let agent_ids: Vec<&str> = p
+            .default_models
+            .iter()
+            .filter(|m| m.group == Some("Agent API"))
+            .map(|m| m.id)
+            .collect();
+        // Spot-check that the marketplace is wired up.
+        assert!(agent_ids
+            .iter()
+            .any(|id| id.starts_with("anthropic/claude-")));
+        assert!(agent_ids.iter().any(|id| id.starts_with("google/gemini-")));
+        assert!(agent_ids.iter().any(|id| id.starts_with("xai/grok-")));
+        assert!(agent_ids.iter().any(|id| id.starts_with("openai/gpt-")));
+    }
+
+    #[test]
+    fn provider_spec_carries_optional_install_hints() {
+        let p = CATALOG.iter().find(|p| p.id == "openai").unwrap();
+        // OpenAI is HTTP-only; no install command applies. Keep None.
+        assert!(p.install_hints.is_none());
+    }
+
+    #[test]
+    fn openai_lineup_is_2026_flagship_only() {
+        let p = CATALOG.iter().find(|p| p.id == "openai").unwrap();
+        let ids: Vec<&str> = p.default_models.iter().map(|m| m.id).collect();
+        for retired in [
+            "gpt-3.5-turbo",
+            "gpt-4-turbo",
+            "gpt-4o",
+            "gpt-4o-mini",
+            "o3",
+            "o3-mini",
+            "o4-mini",
+        ] {
+            assert!(
+                !ids.contains(&retired),
+                "retired model still in catalog: {retired}"
+            );
+        }
+        for current in [
+            "gpt-5.5",
+            "gpt-5.5-pro",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.3-codex",
+            "gpt-4.1",
+        ] {
+            assert!(ids.contains(&current), "missing 2026 model: {current}");
+        }
+    }
+
+    #[test]
+    fn deepseek_lineup_drops_chat_and_reasoner_for_v4() {
+        let p = CATALOG.iter().find(|p| p.id == "deepseek").unwrap();
+        let ids: Vec<&str> = p.default_models.iter().map(|m| m.id).collect();
+        for retired in ["deepseek-chat", "deepseek-reasoner", "deepseek-coder"] {
+            assert!(!ids.contains(&retired), "retired DeepSeek model: {retired}");
+        }
+        assert!(ids.contains(&"deepseek-v4-pro"));
+        assert!(ids.contains(&"deepseek-v4-flash"));
+        assert!(ids.contains(&"deepseek-r1"));
+    }
+
+    #[test]
+    fn grok_lineup_promotes_4_3() {
+        let p = CATALOG.iter().find(|p| p.id == "grok").unwrap();
+        let ids: Vec<&str> = p.default_models.iter().map(|m| m.id).collect();
+        for retired in ["grok-3", "grok-3-mini"] {
+            assert!(!ids.contains(&retired), "retired Grok model: {retired}");
+        }
+        assert!(ids.contains(&"grok-4.3"));
+        assert!(ids.contains(&"grok-4.1-fast"));
+    }
+
+    #[test]
+    fn kimi_api_lineup_is_k2_6() {
+        let p = CATALOG.iter().find(|p| p.id == "kimi-api").unwrap();
+        let ids: Vec<&str> = p.default_models.iter().map(|m| m.id).collect();
+        for retired in ["moonshot-v1-128k", "moonshot-v1-32k", "kimi-k2-0905"] {
+            assert!(!ids.contains(&retired), "retired Kimi model: {retired}");
+        }
+        assert!(ids.contains(&"kimi-k2.6"));
+        assert!(ids.contains(&"kimi-k2.6-thinking"));
+        assert!(ids.contains(&"kimi-k2.6-agent"));
+    }
+
+    #[test]
+    fn gemini_api_lineup_is_3_x_only() {
+        let p = CATALOG.iter().find(|p| p.id == "gemini-api").unwrap();
+        let ids: Vec<&str> = p.default_models.iter().map(|m| m.id).collect();
+        for retired in ["gemini-2.5-pro", "gemini-2.5-flash"] {
+            assert!(!ids.contains(&retired), "retired Gemini model: {retired}");
+        }
+        assert!(ids.contains(&"gemini-3.5-flash"));
+        assert!(ids.contains(&"gemini-3.1-pro"));
+        assert!(ids.contains(&"gemini-3.1-flash-lite"));
+        assert!(ids.contains(&"gemini-omni"));
+    }
+
+    #[test]
+    fn no_model_carries_legacy_note() {
+        // The "Legacy" badge is gone — every entry kept in the 2026 catalog
+        // is current.
+        for p in CATALOG.iter() {
+            for m in p.default_models.iter() {
+                assert_ne!(
+                    m.note,
+                    Some("Legacy"),
+                    "model {} on provider {} still flagged Legacy",
+                    m.id,
+                    p.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ollama_has_per_os_install_hints() {
+        let p = CATALOG.iter().find(|p| p.id == "ollama").unwrap();
+        let h = p
+            .install_hints
+            .as_ref()
+            .expect("ollama needs install_hints");
+        assert!(h.windows.contains("winget") || h.windows.contains("Ollama"));
+        assert!(h.macos.contains("brew") || h.macos.contains("ollama"));
+        assert!(h.linux.contains("curl") && h.linux.contains("install.sh"));
+    }
+
+    #[test]
+    fn cli_agents_have_no_per_os_overrides() {
+        // npm install -g works on every OS; CLI agents leave install_hints None.
+        for p in CATALOG
+            .iter()
+            .filter(|p| matches!(p.kind, ProviderKind::Cli))
+        {
+            assert!(
+                p.install_hints.is_none(),
+                "{} should rely on the single npm install_hint",
+                p.id,
+            );
+        }
+    }
+
+    #[test]
+    fn every_model_declares_supports_effort_flag() {
+        // Schema check: the field must exist and be set on every catalog
+        // entry. Per-provider value tables are asserted in Task 2.
+        for provider in CATALOG {
+            for model in provider.default_models {
+                let _ = model.supports_effort;
+            }
+        }
+    }
+
+    #[test]
+    fn openai_reasoning_models_support_effort() {
+        let p = CATALOG.iter().find(|p| p.id == "openai").unwrap();
+        let by_id = |id: &str| p.default_models.iter().find(|m| m.id == id).unwrap();
+        // The entire GPT-5 family carries a reasoning lever.
+        for id in [
+            "gpt-5",
+            "gpt-5-mini",
+            "gpt-5-nano",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.4-nano",
+            "gpt-5.5",
+            "gpt-5.5-pro",
+            "gpt-5.3-codex",
+        ] {
+            assert!(by_id(id).supports_effort, "{id} should support effort");
+        }
+        // gpt-4.1 is the long-context chat model — no reasoning lever.
+        assert!(!by_id("gpt-4.1").supports_effort);
+    }
+
+    #[test]
+    fn deepseek_reasoning_models_support_effort() {
+        let p = CATALOG.iter().find(|p| p.id == "deepseek").unwrap();
+        let by_id = |id: &str| p.default_models.iter().find(|m| m.id == id).unwrap();
+        for id in ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-r1"] {
+            assert!(by_id(id).supports_effort, "{id} should support effort");
+        }
+        assert!(!by_id("deepseek-v3.1").supports_effort);
+    }
+
+    #[test]
+    fn grok_reasoning_models_support_effort() {
+        let p = CATALOG.iter().find(|p| p.id == "grok").unwrap();
+        let by_id = |id: &str| p.default_models.iter().find(|m| m.id == id).unwrap();
+        assert!(by_id("grok-4.3").supports_effort);
+        assert!(by_id("grok-4.1-fast").supports_effort);
+    }
+
+    #[test]
+    fn gemini_api_reasoning_models_support_effort() {
+        let p = CATALOG.iter().find(|p| p.id == "gemini-api").unwrap();
+        let by_id = |id: &str| p.default_models.iter().find(|m| m.id == id).unwrap();
+        for id in ["gemini-3.1-pro", "gemini-3-flash", "gemini-3.5-flash"] {
+            assert!(by_id(id).supports_effort, "{id} should support effort");
+        }
+        for id in ["gemini-3.1-flash-lite", "gemini-omni"] {
+            assert!(!by_id(id).supports_effort, "{id} should NOT support effort");
+        }
+    }
+
+    #[test]
+    fn kimi_api_thinking_modes_support_effort() {
+        let p = CATALOG.iter().find(|p| p.id == "kimi-api").unwrap();
+        let by_id = |id: &str| p.default_models.iter().find(|m| m.id == id).unwrap();
+        assert!(by_id("kimi-k2.6-thinking").supports_effort);
+        assert!(by_id("kimi-k2.6-agent").supports_effort);
+        assert!(!by_id("kimi-k2.6").supports_effort);
+    }
+
+    #[test]
+    fn perplexity_sonar_reasoning_supports_effort() {
+        let p = CATALOG.iter().find(|p| p.id == "perplexity").unwrap();
+        let by_id = |id: &str| p.default_models.iter().find(|m| m.id == id).unwrap();
+        assert!(by_id("sonar-reasoning-pro").supports_effort);
+        assert!(by_id("sonar-deep-research").supports_effort);
+        assert!(!by_id("sonar").supports_effort);
+        assert!(!by_id("sonar-pro").supports_effort);
+    }
+
+    #[test]
+    fn perplexity_agent_marketplace_inherits_effort_support() {
+        let p = CATALOG.iter().find(|p| p.id == "perplexity").unwrap();
+        let by_id = |id: &str| p.default_models.iter().find(|m| m.id == id).unwrap();
+        // Every Claude / GPT / Gemini / Grok entry routed through
+        // Perplexity Agent matches its direct-provider equivalent.
+        for id in [
+            "anthropic/claude-opus-4-7",
+            "anthropic/claude-opus-4-6",
+            "anthropic/claude-sonnet-4-6",
+            "anthropic/claude-haiku-4-5",
+            "openai/gpt-5.5",
+            "openai/gpt-5.4-mini",
+            "openai/gpt-5",
+            "google/gemini-3.1-pro-preview",
+            "google/gemini-3.5-flash",
+            "xai/grok-4.3",
+            "xai/grok-4.20-reasoning",
+        ] {
+            assert!(
+                by_id(id).supports_effort,
+                "{id} (Agent API) should support effort"
+            );
+        }
+    }
+
+    #[test]
+    fn nvidia_nim_reasoning_subset_supports_effort() {
+        let p = CATALOG.iter().find(|p| p.id == "nvidia-nim").unwrap();
+        let by_id = |id: &str| p.default_models.iter().find(|m| m.id == id).unwrap();
+        // Reasoning-capable NIM entries match upstream.
+        for id in [
+            "moonshotai/kimi-k2.6",
+            "openai/gpt-oss-120b",
+            "nvidia/nemotron-3-super-120b-a12b",
+        ] {
+            assert!(by_id(id).supports_effort, "{id} should support effort");
+        }
+        // Non-reasoning entries (Llama 4 / Qwen / GLM / MiniMax / Mistral) stay false.
+        for id in [
+            "meta/llama-4-405b-instruct",
+            "meta/llama-4-70b-instruct",
+            "qwen/qwen3.5-coder-480b",
+            "z-ai/glm-5.1",
+            "minimaxai/minimax-m2.7",
+            "mistralai/mistral-nemotron",
+        ] {
+            assert!(!by_id(id).supports_effort, "{id} should NOT support effort");
+        }
     }
 }

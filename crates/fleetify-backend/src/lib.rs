@@ -291,6 +291,7 @@ pub async fn serve_with_routing_setup(
         internal_secret: internal_secret.clone(),
         routing,
         permission_registry: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        agent_scan_cache: routers::providers::AgentScanCache::default(),
     };
     // Surface the secret + backend URL through env so MCP processes
     // spawned later (by ClaudeBridge::build_mcp_config) can read them
@@ -301,6 +302,7 @@ pub async fn serve_with_routing_setup(
     let local_addr = listener.local_addr()?;
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
+    let agent_scan_cache = state.agent_scan_cache.clone();
     let router = app(state, static_dir);
     tokio::spawn(async move {
         let server = axum::serve(listener, router).with_graceful_shutdown(async {
@@ -309,6 +311,15 @@ pub async fn serve_with_routing_setup(
         if let Err(e) = server.await {
             tracing::error!("fleet-backend server error: {e}");
         }
+    });
+
+    // Warm the CLI agent scan cache so Settings → Agents renders
+    // instantly on first open. Best-effort: any failure logs and the
+    // first scan endpoint call falls back to a live scan.
+    tokio::spawn(async move {
+        let snapshot = routers::providers::scan_all_agents().await;
+        agent_scan_cache.set(snapshot).await;
+        tracing::debug!("agent_scan_cache: warmed at startup");
     });
 
     // Telemetry pipeline — outbox init + heartbeat loop. Best-effort:

@@ -43,11 +43,13 @@ impl PerplexityBridge {
     pub fn new(session_id: impl Into<String>, model: impl Into<String>) -> Self {
         let api_key = crate::providers::keys::get_key(PROVIDER_ID)
             .or_else(|| std::env::var("PERPLEXITY_API_KEY").ok());
+        let model = model.into();
+        let base_url = resolve_base_url(&model);
         Self {
             session_id: session_id.into(),
-            model: model.into(),
+            model,
             system_prompt: None,
-            base_url: DEFAULT_BASE.into(),
+            base_url,
             api_key,
             state: Arc::new(Mutex::new(PerplexityState::default())),
             aborted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -291,6 +293,19 @@ impl PerplexityBridge {
     }
 }
 
+/// Pick the request base URL for a Perplexity model. Marketplace ids
+/// (`anthropic/…`, `openai/…`, `google/…`, `xai/…`, `nvidia/…`) live at
+/// `/v1/agent`; native Sonar ids hit the default chat-completions base.
+fn resolve_base_url(model: &str) -> String {
+    crate::providers::CATALOG
+        .iter()
+        .find(|p| p.id == PROVIDER_ID)
+        .and_then(|p| p.default_models.iter().find(|m| m.id == model))
+        .and_then(|m| m.endpoint)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| DEFAULT_BASE.to_string())
+}
+
 #[derive(Debug)]
 enum SseStep {
     Event(BridgeEvent),
@@ -372,6 +387,32 @@ fn parse_sse_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn model_endpoint(model_id: &str) -> Option<&'static str> {
+        crate::providers::CATALOG
+            .iter()
+            .find(|p| p.id == "perplexity")
+            .and_then(|p| p.default_models.iter().find(|m| m.id == model_id))
+            .and_then(|m| m.endpoint)
+    }
+
+    #[test]
+    fn sonar_model_uses_default_base() {
+        let b = PerplexityBridge::new("s1", "sonar");
+        assert_eq!(b.base_url, DEFAULT_BASE);
+    }
+
+    #[test]
+    fn agent_model_uses_v1_agent_endpoint() {
+        // The bridge looks up the catalog by model id; agent models
+        // override the base URL via ModelSpec.endpoint.
+        let b = PerplexityBridge::new("s1", "anthropic/claude-sonnet-4-6");
+        assert!(b.base_url.ends_with("/v1/agent"));
+        assert_eq!(
+            b.base_url,
+            model_endpoint("anthropic/claude-sonnet-4-6").unwrap()
+        );
+    }
 
     #[test]
     fn parser_extracts_citations_alongside_deltas() {

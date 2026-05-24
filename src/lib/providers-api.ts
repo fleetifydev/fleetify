@@ -21,6 +21,16 @@ export interface ModelSpec {
   label: string;
   context_window?: string | null;
   note?: string | null;
+  /** Optional grouping label inside a single provider tile.
+   *  Perplexity uses "Sonar API" / "Agent API"; null/undefined ⇒ flat. */
+  group?: string | null;
+  /** Optional per-model endpoint override — informational on the
+   *  client (backend dispatch resolves this). null/undefined ⇒
+   *  fall back to ProviderSpec.default_base_url. */
+  endpoint?: string | null;
+  /** True when the model exposes a reasoning-effort lever. Drives
+   *  whether the UnifiedModelPicker's Effort column is enabled. */
+  supports_effort: boolean;
 }
 
 export interface ProviderExtras {
@@ -34,6 +44,12 @@ export type AuthIndicator =
   | { kind: "home_dir"; path: string }
   | { kind: "env_var"; name: string };
 
+export interface InstallHints {
+  windows: string;
+  macos: string;
+  linux: string;
+}
+
 export interface ProviderSpec {
   id: string;
   display_name: string;
@@ -45,6 +61,10 @@ export interface ProviderSpec {
   bin: string;
   auth_indicators: AuthIndicator[];
   install_hint: string;
+  /** Per-OS install command set. Backend resolves to one string for the
+   *  user's current OS before sending; this field is reserved for
+   *  future renderer features (e.g. "show me the macOS command too"). */
+  install_hints?: InstallHints | null;
   login_hint: string;
 }
 

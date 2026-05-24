@@ -36,6 +36,8 @@ import { ProviderLogo } from "@/components/ui/provider-logo";
 import { RoutingChip } from "@/components/settings/routers/routing-chip";
 import { commandsForContext, type SlashCmdDef } from "@/lib/slash-commands";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
+import { UnifiedModelPicker, type Effort as UMEffort } from "./unified-model-picker";
+import { buildPickerGroups, resolveDispatchTool } from "@/lib/picker-groups";
 
 /* ─────────────────── constants ─────────────────── */
 
@@ -70,17 +72,6 @@ function modelsFor(tool: string | null | undefined): ModelOption[] {
   return CLAUDE_MODELS;
 }
 
-/** CLI-agent slice of the picker catalog. These have their model lists
- *  baked into each CLI binary, so they stay hardcoded here rather than
- *  flowing through `useProvidersConfig` (which knows about HTTP-provider
- *  models only). The cloud / local-HTTP entries get merged in at render
- *  time from the registry. */
-type ProviderId = string; // includes catalog ids: deepseek, perplexity, etc.
-const CLI_PROVIDER_CATALOG: { id: ProviderId; label: string; models: ModelOption[] }[] = [
-  { id: "claude", label: "Claude", models: CLAUDE_MODELS },
-  { id: "codex",  label: "Codex",  models: CODEX_MODELS  },
-  { id: "gemini", label: "Gemini", models: GEMINI_MODELS },
-];
 
 type Effort = "low" | "medium" | "high" | "extra_high" | "max";
 const EFFORTS: { id: Effort; label: string }[] = [
@@ -3132,36 +3123,9 @@ export function ChatInput({
     rationale: string | null;
     attachments: Attachment[];
   } | null>(null);
-  // Provider/model picker catalog merges the (always-present) CLI agents
-  // with whatever cloud / local-HTTP providers the user has connected in
-  // Settings → Models. Empty provider entries (no key, no enabled
-  // models) are filtered so the picker doesn't read like an empty menu.
+  // Provider tiles flow from the registry; the UnifiedModelPicker builds
+  // its own groups via buildPickerGroups (called inline in the JSX).
   const { tiles: providerTiles } = useProvidersConfig();
-  const providerCatalog = useMemo(() => {
-    const apiEntries = providerTiles
-      .filter(
-        (t) =>
-          (t.spec.kind === "api" || t.spec.kind === "local_http") &&
-          (t.connected || t.has_key) &&
-          (t.enabled_models.length > 0 || t.spec.default_models.length > 0),
-      )
-      .map((t) => {
-        const idsToShow =
-          t.enabled_models.length > 0
-            ? t.enabled_models
-            : t.spec.default_models.map((m) => m.id);
-        const models: ModelOption[] = idsToShow.map((id) => {
-          const spec = t.spec.default_models.find((m) => m.id === id);
-          return {
-            id,
-            label: spec?.label ?? id,
-            ctx: spec?.context_window ?? "",
-          };
-        });
-        return { id: t.spec.id, label: t.spec.display_name, models };
-      });
-    return [...CLI_PROVIDER_CATALOG, ...apiEntries];
-  }, [providerTiles]);
 
   const fleetMode = useFleetStore(s => sessionId ? s.getSession(sessionId).mode : "manual");
   const fleetPaused = useFleetStore(s => sessionId ? s.getSession(sessionId).status === "paused" : false);
@@ -4201,121 +4165,32 @@ export function ChatInput({
           </div>
         )}
 
-        {/* Model + Effort dropdown — cross-provider. Picking a
-            model from a different provider PATCHes the session's
-            tool to that provider too, so the toolbar's provider
-            logo flips to match the chosen model. */}
+        {/* Model + Effort dropdown — replaced by the shared three-column
+            UnifiedModelPicker. Picking a model from a different provider
+            PATCHes the session's tool so the toolbar logo flips to match. */}
         {openDrop === "model" && (
-          <div style={{
-            position: "absolute", bottom: "calc(100% + 8px)", right: 0,
-            width: 240, zIndex: 50,
-            background: "var(--popover)", border: "1px solid var(--c-brd)",
-            borderRadius: 9, padding: "3px 0",
-            maxHeight: "min(60vh, 420px)", overflowY: "auto",
-            boxShadow: "0 16px 40px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.2)",
-            animation: "fleet-popover-up 0.14s ease-out both",
-          }}>
-            {/* Models section — grouped by provider so the user can
-                jump from Claude → GPT in a single click. The whole
-                catalog is rendered (4 providers × 3 models = 12
-                rows) but filtered enough that the menu still fits
-                the viewport. */}
-            <div style={{ padding: "5px 10px 3px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <span style={{ fontSize: 10.5, color: "var(--c-dim)", fontWeight: 500 }}>Models</span>
-              <div style={{ display: "flex", gap: 2 }}><Kbd>⇧</Kbd><Kbd>⌘</Kbd><Kbd>I</Kbd></div>
-            </div>
-            {providerCatalog.map(p => (
-              <div key={p.id}>
-                <div style={{
-                  display: "flex", alignItems: "center", gap: 6,
-                  padding: "5px 10px 2px",
-                  fontSize: 9.5, fontWeight: 600,
-                  color: "var(--c-dim)",
-                  letterSpacing: 0.4, textTransform: "uppercase",
-                }}>
-                  <ProviderLogo tool={p.id} size={9} />
-                  <span>{p.label}</span>
-                </div>
-                {p.models.map(m => {
-                  const active = model === m.id && tool === p.id;
-                  return (
-                    <button key={`${p.id}-${m.id}`}
-                      onClick={() => {
-                        // If the user picked a model from a
-                        // different provider, flip the session's
-                        // tool too so the bridge runs the right
-                        // CLI for the chosen model.
-                        if (p.id !== tool && sessionId) {
-                          const tid = p.id as import("@/types/session").AgentTool;
-                          apiUpdateSession(sessionId, { tool: tid, model_name: m.id }).catch(() => {});
-                          useAppStore.getState().updateSession(sessionId, {
-                            tool: tid,
-                            model_name: m.id,
-                          });
-                        } else {
-                          onModelChange?.(m.id);
-                        }
-                        setOpenDrop(null);
-                      }}
-                      style={{
-                        display: "flex", alignItems: "center", justifyContent: "space-between",
-                        width: "100%", padding: "5px 10px",
-                        background: active ? "var(--c-srf)" : "none",
-                        border: "none", cursor: "pointer", textAlign: "left",
-                        outline: "none",
-                      }}
-                      onMouseEnter={e => { if (!active) e.currentTarget.style.background = "var(--c-srf)"; }}
-                      onMouseLeave={e => { if (!active) e.currentTarget.style.background = "none"; }}
-                      onMouseDown={e => e.preventDefault()}
-                    >
-                      <span style={{
-                        fontSize: 12.5,
-                        fontWeight: active ? 500 : 400,
-                        color: active ? "var(--c-high)" : "var(--c-low)",
-                      }}>{m.label}</span>
-                      <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                        <span style={{ fontSize: 10, color: "var(--c-ghost)", fontFamily: "var(--font-mono)" }}>
-                          {m.ctx}
-                        </span>
-                        {active && <Check size={10} style={{ color: "var(--c-dim)" }} />}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            ))}
-
-            <div style={{ height: 1, background: "var(--c-brd)", margin: "4px 0" }} />
-
-            {/* Effort section */}
-            <div style={{ padding: "4px 10px 3px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <span style={{ fontSize: 10.5, color: "var(--c-dim)", fontWeight: 500 }}>Effort</span>
-              <div style={{ display: "flex", gap: 2 }}><Kbd>⇧</Kbd><Kbd>⌘</Kbd><Kbd>E</Kbd></div>
-            </div>
-            {EFFORTS.map(e => {
-              const active = effort === e.id;
-              return (
-                <button key={e.id} onClick={() => { setEffort(e.id); setOpenDrop(null); }}
-                  style={{
-                    display: "flex", alignItems: "center", justifyContent: "space-between",
-                    width: "100%", padding: "5px 10px",
-                    background: active ? "var(--c-srf)" : "none",
-                    border: "none", cursor: "pointer", textAlign: "left",
-                    outline: "none",
-                  }}
-                  onMouseEnter={ev => { if (!active) ev.currentTarget.style.background = "var(--c-srf)"; }}
-                  onMouseLeave={ev => { if (!active) ev.currentTarget.style.background = "none"; }}
-                  onMouseDown={ev => ev.preventDefault()}
-                >
-                  <span style={{ fontSize: 12.5, fontWeight: active ? 500 : 400, color: active ? "var(--c-high)" : "var(--c-low)" }}>
-                    {e.label}
-                  </span>
-                  {active && <Check size={10} style={{ color: "var(--c-dim)" }} />}
-                </button>
-              );
-            })}
-            <div style={{ height: 3 }} />
-          </div>
+          <UnifiedModelPicker
+            tool={tool ?? "claude"}
+            model={model ?? null}
+            effort={effort as UMEffort}
+            groups={buildPickerGroups(
+              providerTiles,
+              providerTiles.filter((t) => t.spec.kind === "cli").map((t) => t.spec.id),
+            )}
+            onPickModel={(groupId, modelId) => {
+              const dispatchTool = resolveDispatchTool(groupId);
+              if (dispatchTool !== tool && sessionId) {
+                const tid = dispatchTool as import("@/types/session").AgentTool;
+                apiUpdateSession(sessionId, { tool: tid, model_name: modelId }).catch(() => {});
+                useAppStore.getState().updateSession(sessionId, { tool: tid, model_name: modelId });
+              } else {
+                onModelChange?.(modelId);
+              }
+            }}
+            onPickEffort={(e) => setEffort(e)}
+            onClose={() => setOpenDrop(null)}
+            anchor="bottom"
+          />
         )}
 
 

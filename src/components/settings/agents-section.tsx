@@ -1,11 +1,4 @@
-/**
- * Settings → Agents section. Registry-driven replacement for the legacy
- * one-dropdown AgentsSection. Shows one AgentCard per CLI agent in the
- * catalog (claude, codex, gemini, kimi), each with its detection state
- * (installed + authenticated) plus enable/disable toggle that writes to
- * ProvidersConfig.enabled_agents.
- */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
 import type { ProviderSpec } from "@/lib/providers-api";
@@ -22,9 +15,11 @@ const sectionHeader: React.CSSProperties = {
   paddingLeft: 1,
 };
 
-async function fetchAgentScan(): Promise<Record<string, AgentScanEntry>> {
+async function fetchAgentScan(refresh: boolean): Promise<Record<string, AgentScanEntry>> {
   try {
-    const r = await fetch("/api/agents/scan", { credentials: "include" });
+    const r = await fetch(`/api/agents/scan${refresh ? "?refresh=1" : ""}`, {
+      credentials: "include",
+    });
     if (!r.ok) return {};
     return (await r.json()) as Record<string, AgentScanEntry>;
   } catch {
@@ -32,21 +27,63 @@ async function fetchAgentScan(): Promise<Record<string, AgentScanEntry>> {
   }
 }
 
+interface InstallApi {
+  installProvider?: (toolKey: string) => Promise<{ success?: boolean; error?: string }>;
+}
+
 export function AgentsSection() {
   const { tiles, loading } = useProvidersConfig();
   const [scan, setScan] = useState<Record<string, AgentScanEntry>>({});
   const [scanLoading, setScanLoading] = useState(true);
+  const [installing, setInstalling] = useState<Set<string>>(new Set());
+  const [installError, setInstallError] = useState<Record<string, string>>({});
+  const installingRef = useRef<Set<string>>(new Set());
 
-  const refreshScan = async () => {
-    setScanLoading(true);
-    const s = await fetchAgentScan();
+  const refreshScan = async (force = false) => {
+    if (force) setScanLoading(true);
+    const s = await fetchAgentScan(force);
     setScan(s);
     setScanLoading(false);
   };
 
   useEffect(() => {
-    void refreshScan();
+    void refreshScan(false);
   }, []);
+
+  const handleInstall = async (specId: string) => {
+    if (installingRef.current.has(specId)) return;
+    installingRef.current.add(specId);
+    setInstalling(new Set(installingRef.current));
+    setInstallError((m) => {
+      const next = { ...m };
+      delete next[specId];
+      return next;
+    });
+
+    const api = (window as unknown as { electronAPI?: InstallApi }).electronAPI;
+    if (!api?.installProvider) {
+      installingRef.current.delete(specId);
+      setInstalling(new Set(installingRef.current));
+      setInstallError((m) => ({ ...m, [specId]: "Restart Fleet to enable Install" }));
+      return;
+    }
+
+    try {
+      const result = await api.installProvider(specId);
+      if (!result?.success) {
+        const rawErr = result?.error ?? "Install failed";
+        const err = (rawErr.split("\n")[0] ?? rawErr).slice(0, 80);
+        setInstallError((m) => ({ ...m, [specId]: err }));
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message.slice(0, 80) : "Install failed";
+      setInstallError((m) => ({ ...m, [specId]: msg }));
+    } finally {
+      installingRef.current.delete(specId);
+      setInstalling(new Set(installingRef.current));
+      await refreshScan(true); // bust the backend cache, reflect post-install state
+    }
+  };
 
   if (loading || scanLoading) {
     return (
@@ -77,7 +114,10 @@ export function AgentsSection() {
           key={spec.id}
           spec={spec}
           scan={scan[spec.id]}
-          onChanged={refreshScan}
+          onChanged={() => refreshScan(true)}
+          installing={installing.has(spec.id)}
+          installError={installError[spec.id]}
+          onInstall={() => handleInstall(spec.id)}
         />
       ))}
       <div
@@ -88,9 +128,8 @@ export function AgentsSection() {
           paddingLeft: 2,
         }}
       >
-        CLI agents run as subprocesses. Use the Install / Login buttons to
-        copy the right command or launch a terminal — Fleetify never runs
-        them on your behalf.
+        Install buttons run npm install -g in the background. The Copy
+        icon next to each command lets you run it manually instead.
       </div>
     </>
   );

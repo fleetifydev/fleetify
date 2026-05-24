@@ -37,7 +37,7 @@ const sampleTile = {
     default_base_url: "https://api.openai.com/v1",
     auth: { kind: "bearer" as const, env_hint: "OPENAI_API_KEY" },
     default_models: [
-      { id: "o3", label: "o3", context_window: "200K", note: null },
+      { id: "o3", label: "o3", context_window: "200K", note: null, supports_effort: true },
     ],
     extras: { supports_streaming: true },
     bin: "",

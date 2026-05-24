@@ -144,7 +144,7 @@ export function ProviderCard({ tile }: { tile: ProviderTile }) {
   return (
     <div
       style={{
-        border: `1px solid ${tile.connected ? "rgba(74,222,128,0.30)" : "var(--c-brd)"}`,
+        border: "1px solid var(--c-brd)",
         borderRadius: 10,
         marginBottom: 10,
         overflow: "hidden",
@@ -285,53 +285,91 @@ export function ProviderCard({ tile }: { tile: ProviderTile }) {
               <div style={{ fontSize: 12, fontWeight: 500, color: "var(--c-high)", marginBottom: 8 }}>
                 Available models in picker
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 6 }}>
-                {tile.spec.default_models.map((m) => {
-                  const checked = enabled.includes(m.id);
-                  return (
-                    <label
-                      key={m.id}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        padding: "6px 8px",
-                        borderRadius: 6,
-                        cursor: "pointer",
-                        fontSize: 12,
-                        color: "var(--c-high)",
-                        background: checked ? "var(--c-srf)" : "transparent",
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => onToggleModel(m.id)}
-                        style={{ cursor: "pointer" }}
-                      />
-                      <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {m.label}
-                      </span>
-                      {m.context_window && (
-                        <span style={{ fontSize: 10, color: "var(--c-dim)" }}>{m.context_window}</span>
-                      )}
-                      {m.note && (
-                        <span
-                          style={{
-                            fontSize: 9.5,
-                            fontWeight: 600,
-                            letterSpacing: "0.04em",
-                            color: "var(--c-dim)",
-                            textTransform: "uppercase",
-                          }}
-                        >
-                          {m.note}
-                        </span>
-                      )}
-                    </label>
-                  );
-                })}
-              </div>
+              {(() => {
+                // Bucket models by `group`. Undefined groups render as a
+                // single unlabelled bucket so non-Perplexity providers
+                // keep their original flat grid.
+                const buckets = new Map<string, typeof tile.spec.default_models>();
+                for (const m of tile.spec.default_models) {
+                  const key = m.group ?? "";
+                  if (!buckets.has(key)) buckets.set(key, [] as typeof tile.spec.default_models);
+                  buckets.get(key)!.push(m);
+                }
+                const entries = Array.from(buckets.entries());
+                return entries.map(([groupName, models]) => (
+                  <div key={groupName || "__flat"} style={{ marginBottom: 12 }}>
+                    {groupName && (
+                      <div
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          letterSpacing: "0.06em",
+                          color: "var(--c-dim)",
+                          textTransform: "uppercase",
+                          margin: "6px 0",
+                        }}
+                      >
+                        {groupName}
+                      </div>
+                    )}
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 6 }}>
+                      {models.map((m) => {
+                        const checked = enabled.includes(m.id);
+                        return (
+                          <label
+                            key={m.id}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                              padding: "6px 8px",
+                              borderRadius: 6,
+                              cursor: "pointer",
+                              fontSize: 12,
+                              color: "var(--c-high)",
+                              background: checked ? "var(--c-srf)" : "transparent",
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => onToggleModel(m.id)}
+                              style={{ cursor: "pointer" }}
+                            />
+                            <span
+                              style={{
+                                flex: 1,
+                                minWidth: 0,
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              {m.label}
+                            </span>
+                            {m.context_window && (
+                              <span style={{ fontSize: 10, color: "var(--c-dim)" }}>{m.context_window}</span>
+                            )}
+                            {m.note && (
+                              <span
+                                style={{
+                                  fontSize: 9.5,
+                                  fontWeight: 600,
+                                  letterSpacing: "0.04em",
+                                  color: "var(--c-dim)",
+                                  textTransform: "uppercase",
+                                }}
+                              >
+                                {m.note}
+                              </span>
+                            )}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ));
+              })()}
             </div>
           )}
 

@@ -2,22 +2,55 @@
 //! provider/CLI scan (claude/gemini/codex CLI presence + auth indicators,
 //! ollama HTTP probe, env-key inventory).
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
+use axum::extract::{Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::process::Command;
+use tokio::sync::RwLock;
 
 use crate::routers::AppState;
+
+/// In-memory cache of the most recent CLI agent scan. Backend warms it
+/// at startup, the endpoint reads it on every poll, install/refresh
+/// flows invalidate it.
+#[derive(Clone, Default)]
+pub struct AgentScanCache {
+    inner: Arc<RwLock<Option<HashMap<String, Value>>>>,
+}
+
+impl AgentScanCache {
+    pub async fn get(&self) -> Option<HashMap<String, Value>> {
+        self.inner.read().await.clone()
+    }
+
+    pub async fn set(&self, snapshot: HashMap<String, Value>) {
+        *self.inner.write().await = Some(snapshot);
+    }
+
+    pub async fn invalidate(&self) {
+        *self.inner.write().await = None;
+    }
+}
+
+#[derive(Deserialize)]
+struct ScanQuery {
+    #[serde(default)]
+    refresh: Option<u8>,
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/models", get(list_models))
         .route("/providers/scan", get(scan_providers))
         .route("/providers/catalog", get(providers_catalog))
-        .route("/agents/scan", get(scan_agents_registry))
+        .route("/agents/scan", get(scan_agents_cached))
 }
 
 /// Static catalog that drives Settings → Models tiles, Settings → Agents
@@ -28,14 +61,29 @@ async fn providers_catalog() -> Json<&'static [crate::providers::ProviderSpec]> 
     Json(crate::providers::CATALOG)
 }
 
-/// Registry-driven CLI agent scan — replacement for `scan_providers`
-/// that consumes `providers::list_cli_agents()` instead of hardcoding
-/// claude/codex/gemini. Each entry reports presence on PATH + whether
-/// any of the registry's `auth_indicators` fire. Drives Settings →
-/// Agents tiles + the New Agent dialog detection chips.
-async fn scan_agents_registry() -> Json<Value> {
+/// Resolve the per-OS install hint for a provider. Returns the override
+/// matching `cfg!()` when `install_hints` is set, otherwise falls back
+/// to the static `install_hint`.
+pub fn resolve_install_hint(spec: &crate::providers::ProviderSpec) -> &'static str {
+    spec.install_hints
+        .as_ref()
+        .map(|h| {
+            if cfg!(windows) {
+                h.windows
+            } else if cfg!(target_os = "macos") {
+                h.macos
+            } else {
+                h.linux
+            }
+        })
+        .unwrap_or(spec.install_hint)
+}
+
+/// Shared scanner used by both the HTTP endpoint and the startup
+/// warm-up. Returns a JSON-serializable map keyed by provider id.
+pub async fn scan_all_agents() -> HashMap<String, Value> {
     use crate::providers::AuthIndicator;
-    let mut out = serde_json::Map::new();
+    let mut out = HashMap::new();
     for spec in crate::providers::list_cli_agents() {
         let path = cli_path(spec.bin).await;
         let installed = path.is_some();
@@ -61,12 +109,32 @@ async fn scan_agents_registry() -> Json<Value> {
                 "installed": installed,
                 "authenticated": authenticated,
                 "path": path,
-                "install_hint": spec.install_hint,
+                "install_hint": resolve_install_hint(spec),
                 "login_hint": spec.login_hint,
             }),
         );
     }
-    Json(Value::Object(out))
+    out
+}
+
+/// Cache-aware CLI agent scan handler. Reads from the shared cache on
+/// every poll; `?refresh=1` invalidates first so install / manual flows
+/// can force a re-scan. Drives Settings → Agents tiles + the New Agent
+/// dialog detection chips.
+async fn scan_agents_cached(
+    State(state): State<AppState>,
+    Query(q): Query<ScanQuery>,
+) -> Json<Value> {
+    let force = matches!(q.refresh, Some(n) if n != 0);
+    if force {
+        state.agent_scan_cache.invalidate().await;
+    }
+    if let Some(snapshot) = state.agent_scan_cache.get().await {
+        return Json(Value::Object(snapshot.into_iter().collect()));
+    }
+    let fresh = scan_all_agents().await;
+    state.agent_scan_cache.set(fresh.clone()).await;
+    Json(Value::Object(fresh.into_iter().collect()))
 }
 
 fn home() -> PathBuf {
@@ -271,4 +339,83 @@ async fn list_models() -> Json<Value> {
             }
         ]
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn agent_scan_cache_returns_primed_value_without_rescan() {
+        let cache = AgentScanCache::default();
+        let mut primed = HashMap::new();
+        primed.insert(
+            "test-agent".to_string(),
+            json!({ "id": "test-agent", "installed": true }),
+        );
+        cache.set(primed.clone()).await;
+        let read = cache.get().await.expect("cache should be populated");
+        assert_eq!(read.len(), 1);
+        assert_eq!(read.get("test-agent"), primed.get("test-agent"));
+    }
+
+    #[tokio::test]
+    async fn agent_scan_cache_invalidate_clears() {
+        let cache = AgentScanCache::default();
+        cache.set(HashMap::new()).await;
+        assert!(cache.get().await.is_some());
+        cache.invalidate().await;
+        assert!(cache.get().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn scan_endpoint_caches_repeated_calls() {
+        let cache = AgentScanCache::default();
+        // Cold call populates the cache.
+        let cold = scan_all_agents().await;
+        cache.set(cold.clone()).await;
+        let warm = cache.get().await.expect("cache should be hot");
+        assert_eq!(cold, warm, "cached and fresh scans must match shape");
+    }
+
+    #[tokio::test]
+    async fn scan_all_agents_returns_one_entry_per_cli_provider() {
+        let snapshot = scan_all_agents().await;
+        let cli_count = crate::providers::CATALOG
+            .iter()
+            .filter(|p| matches!(p.kind, crate::providers::ProviderKind::Cli))
+            .count();
+        assert_eq!(snapshot.len(), cli_count);
+        for spec in crate::providers::list_cli_agents() {
+            assert!(snapshot.contains_key(spec.id), "missing {}", spec.id);
+        }
+    }
+
+    #[test]
+    fn resolve_install_hint_picks_os_specific_when_set() {
+        let p = crate::providers::CATALOG
+            .iter()
+            .find(|p| p.id == "ollama")
+            .unwrap();
+        let resolved = resolve_install_hint(p);
+        if cfg!(windows) {
+            assert!(resolved.contains("winget"), "got {resolved}");
+        } else if cfg!(target_os = "macos") {
+            assert!(resolved.contains("brew"), "got {resolved}");
+        } else {
+            assert!(resolved.contains("curl"), "got {resolved}");
+        }
+    }
+
+    #[test]
+    fn resolve_install_hint_falls_back_to_static_when_unset() {
+        let p = crate::providers::CATALOG
+            .iter()
+            .find(|p| p.id == "claude")
+            .unwrap();
+        // CLI agents have install_hints: None, so the resolver falls back
+        // to the single install_hint string (npm install -g …).
+        assert_eq!(resolve_install_hint(p), p.install_hint);
+        assert!(p.install_hint.contains("npm"));
+    }
 }

@@ -58,6 +58,9 @@ pub struct AppState {
             std::collections::HashMap<String, crate::bridges::permission::PermissionHandler>,
         >,
     >,
+    /// CLI agent scan result, primed at backend startup and refreshed
+    /// on install / manual ?refresh=1 hits. See routers::providers.
+    pub agent_scan_cache: crate::routers::providers::AgentScanCache,
 }
 
 impl FromRef<AppState> for AuthState {

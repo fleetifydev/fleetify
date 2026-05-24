@@ -51,6 +51,7 @@ export interface Session {
   budget_limit?: number | null;
   budget_used?: number;
   use_worktree?: boolean;
+  effort?: "low" | "medium" | "high" | "extra_high" | "max";
   /** Renderer-only flag: this session was created client-side by
    *  `beginDraft` and has no backend row yet. `commitDraft` swaps it
    *  out for a server-issued Session (which never carries this flag)

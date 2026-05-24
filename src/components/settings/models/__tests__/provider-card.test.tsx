@@ -44,8 +44,8 @@ function makeTile(overrides: Partial<ProviderTile> = {}): ProviderTile {
       default_base_url: "https://api.deepseek.com",
       auth: { kind: "bearer", env_hint: "DEEPSEEK_API_KEY" },
       default_models: [
-        { id: "deepseek-chat", label: "DeepSeek Chat", context_window: "128K", note: null },
-        { id: "deepseek-coder", label: "DeepSeek Coder", context_window: "128K", note: null },
+        { id: "deepseek-chat", label: "DeepSeek Chat", context_window: "128K", note: null, supports_effort: false },
+        { id: "deepseek-coder", label: "DeepSeek Coder", context_window: "128K", note: null, supports_effort: false },
       ],
       extras: { supports_streaming: true },
       bin: "",
@@ -149,5 +149,59 @@ describe("ProviderCard", () => {
     const args = hookMock.setEnabledModels.mock.calls[0];
     expect(args[0]).toBe("deepseek");
     expect(Array.isArray(args[1])).toBe(true);
+  });
+});
+
+function buildPerplexityTile(): ProviderTile {
+  return {
+    spec: {
+      id: "perplexity",
+      display_name: "Perplexity",
+      kind: "api",
+      default_base_url: "https://api.perplexity.ai",
+      auth: { kind: "bearer", env_hint: "PERPLEXITY_API_KEY" },
+      default_models: [
+        { id: "sonar",                            label: "Sonar",            context_window: "128K", group: "Sonar API",  supports_effort: false },
+        { id: "sonar-pro",                        label: "Sonar Pro",        context_window: "200K", group: "Sonar API",  supports_effort: false },
+        { id: "anthropic/claude-sonnet-4-6",      label: "Claude Sonnet 4.6",context_window: "200K", group: "Agent API", endpoint: "https://api.perplexity.ai/v1/agent", supports_effort: false },
+        { id: "google/gemini-3.5-flash",          label: "Gemini 3.5 Flash", context_window: "1M",   group: "Agent API", endpoint: "https://api.perplexity.ai/v1/agent", supports_effort: false },
+      ],
+      extras: { citations: true, search_results: true, supports_streaming: true },
+      bin: "",
+      auth_indicators: [],
+      install_hint: "",
+      login_hint: "",
+    },
+    connected: true,
+    has_key: true,
+    enabled_models: [],
+  };
+}
+
+describe("ProviderCard grouping", () => {
+  beforeEach(() => {
+    apiMock.getKeyPreview.mockResolvedValue({ ok: true, preview: null });
+    hookMock.setKey.mockResolvedValue(undefined);
+    hookMock.deleteKey.mockResolvedValue(undefined);
+    hookMock.setEnabledModels.mockResolvedValue(undefined);
+  });
+
+  it("renders both group headers for Perplexity", async () => {
+    render(<ProviderCard tile={buildPerplexityTile()} />);
+    // Header expand: click the header button so the body renders.
+    await fireEvent.click(screen.getByRole("button", { name: /Perplexity/ }));
+    expect(screen.getByText("Sonar API")).toBeInTheDocument();
+    expect(screen.getByText("Agent API")).toBeInTheDocument();
+  });
+
+  it("places models in their declared group", async () => {
+    render(<ProviderCard tile={buildPerplexityTile()} />);
+    await fireEvent.click(screen.getByRole("button", { name: /Perplexity/ }));
+    // Find the Sonar API heading's parent section and assert "Sonar Pro"
+    // lives under it (not under Agent API).
+    const sonarHeading = screen.getByText("Sonar API");
+    const sonarSection = sonarHeading.parentElement!;
+    expect(sonarSection.textContent).toContain("Sonar Pro");
+    expect(sonarSection.textContent).not.toContain("Claude Sonnet");
   });
 });

@@ -11,7 +11,7 @@
  * shell-injection blast radius and makes the action transparent.
  */
 import { useState } from "react";
-import { Check, Copy, Terminal } from "lucide-react";
+import { Check, Copy, Terminal, Loader2 } from "lucide-react";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import type { ProviderSpec } from "@/lib/providers-api";
 import { ConnectionStatusPill } from "../models/connection-status-pill";
@@ -42,6 +42,19 @@ const ghostBtn: React.CSSProperties = {
   gap: 6,
 };
 
+const primaryBtn: React.CSSProperties = {
+  fontFamily: "inherit",
+  cursor: "pointer",
+  outline: "none",
+  padding: "8px 14px",
+  borderRadius: 7,
+  fontSize: 12,
+  fontWeight: 600,
+  background: "var(--c-high)",
+  border: "none",
+  color: "var(--card)",
+};
+
 async function copyToClipboard(text: string): Promise<boolean> {
   // Tauri's preload wires writeText — fall back to navigator.clipboard
   // for tests / Storybook.
@@ -66,17 +79,22 @@ export function AgentCard({
   spec,
   scan,
   onChanged,
+  installing = false,
+  installError,
+  onInstall,
 }: {
   spec: ProviderSpec;
   scan: AgentScanEntry | undefined;
   onChanged: () => void;
+  installing?: boolean;
+  installError?: string;
+  onInstall?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [copiedInstall, setCopiedInstall] = useState(false);
   const [copiedLogin, setCopiedLogin] = useState(false);
   const installed = scan?.installed ?? false;
   const authenticated = scan?.authenticated ?? false;
-  const path = scan?.path ?? null;
   const installHint = scan?.install_hint || spec.install_hint;
   const loginHint = scan?.login_hint || spec.login_hint;
 
@@ -114,7 +132,7 @@ export function AgentCard({
   return (
     <div
       style={{
-        border: `1px solid ${authenticated && installed ? "rgba(74,222,128,0.30)" : "var(--c-brd)"}`,
+        border: "1px solid var(--c-brd)",
         borderRadius: 10,
         marginBottom: 10,
         overflow: "hidden",
@@ -141,15 +159,8 @@ export function AgentCard({
         <ProviderLogo tool={spec.id} size={20} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 13, fontWeight: 500 }}>{spec.display_name}</div>
-          <div
-            style={{
-              fontSize: 11.5,
-              color: "var(--c-low)",
-              marginTop: 2,
-              fontFamily: path ? "var(--font-mono, monospace)" : "inherit",
-            }}
-          >
-            {path ? path : "CLI agent"}
+          <div style={{ fontSize: 11.5, color: "var(--c-low)", marginTop: 2 }}>
+            CLI agent
           </div>
         </div>
         <ConnectionStatusPill status={status} label={statusLabel} />
@@ -205,6 +216,42 @@ export function AgentCard({
                   {copiedInstall ? "Copied" : "Copy"}
                 </button>
               </div>
+              {onInstall && (
+                <button
+                  type="button"
+                  onClick={onInstall}
+                  disabled={installing}
+                  style={{
+                    ...primaryBtn,
+                    width: "100%",
+                    marginTop: 8,
+                    opacity: installing ? 0.6 : 1,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 8,
+                  }}
+                >
+                  {installing ? (
+                    <>
+                      <Loader2 size={12} className="spin" /> Installing…
+                    </>
+                  ) : (
+                    "Install"
+                  )}
+                </button>
+              )}
+              {installError && (
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: "rgb(248,113,113)",
+                    marginTop: 6,
+                  }}
+                >
+                  {installError}
+                </div>
+              )}
             </div>
           )}
 

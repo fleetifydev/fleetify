@@ -30,8 +30,8 @@ import {
   GitBranch, Search as SearchIcon,
   Search, Github, Server, Box,
 } from "lucide-react";
-import { ClaudeLogo, OpenAILogo, GeminiLogo, ProviderLogo } from "@/components/ui/provider-logo";
-import { updateSession as apiUpdateSession, cloneRepository, listUserRepos, listModels, fetchClaudeSessions, fetchClaudeHistory, type ClaudeSession, type GhRepo, type CatalogProvider } from "@/lib/api";
+import { ProviderLogo } from "@/components/ui/provider-logo";
+import { updateSession as apiUpdateSession, cloneRepository, listUserRepos, fetchClaudeSessions, fetchClaudeHistory, type ClaudeSession, type GhRepo } from "@/lib/api";
 import { useAppStore } from "@/stores/app-store";
 import { useChatStore } from "@/stores/chat-store";
 import type { ChatMessage } from "@/types/chat";
@@ -39,57 +39,11 @@ import type { Session } from "@/types/session";
 import { RemoteSshPanel } from "./remote-ssh-panel";
 import { DockerContainerPanel } from "./docker-container-panel";
 import { folderName as folderNameUtil } from "@/lib/utils";
+import { UnifiedModelPicker, type Effort as UMEffort } from "./unified-model-picker";
+import { buildPickerGroups, resolveDispatchTool, type PickerGroup } from "@/lib/picker-groups";
+import { useProvidersConfig } from "@/hooks/use-providers-config";
 
 type MenuId = "source" | "git" | "model" | "perms" | "history" | null;
-
-interface ProviderDef {
-  id: "claude" | "codex" | "gemini" | "openai";
-  label: string;
-  Logo: React.FC<{ size?: number }>;
-  /** ctx field mirrors the chat-input MODELS table so the toolbar
-   *  surfaces the same context-window label the bottom-right "Sonnet
-   *  4.6 1M · High" indicator shows. note is optional and lights a
-   *  small "Preview" / "Legacy" pill next to the row. */
-  models: { id: string; label: string; ctx: string; note?: string }[];
-}
-
-// Provider logos — picked by id when we render a fetched provider.
-// Looking these up by literal id keeps the fetched catalog flexible
-// (backend can add a provider without us shipping a new logo, the UI
-// just falls back to the OpenAI mark for unknown providers).
-const PROVIDER_LOGOS: Record<string, React.FC<{ size?: number }>> = {
-  claude: ClaudeLogo,
-  codex:  OpenAILogo,
-  openai: OpenAILogo,
-  gemini: GeminiLogo,
-};
-
-// Hardcoded fallback — used when the /api/models fetch fails (no
-// backend, auth blip, cold start). Mirrors backend/app/utils/models.py
-// in shape but trimmed to the Sonnet/Opus/etc. set the user is most
-// likely to reach for.
-const FALLBACK_PROVIDERS: ProviderDef[] = [
-  { id: "claude", label: "Claude", Logo: ClaudeLogo, models: [
-    { id: "claude-opus-4-7",           label: "Opus 4.7",   ctx: "200K" },
-    { id: "claude-sonnet-4-6",         label: "Sonnet 4.6", ctx: "200K" },
-    { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5",  ctx: "200K" },
-  ]},
-  { id: "codex",  label: "Codex",  Logo: OpenAILogo, models: [
-    { id: "gpt-5.2", label: "GPT-5.2", ctx: "200K" },
-    { id: "gpt-5.4", label: "GPT-5.4", ctx: "200K" },
-    { id: "gpt-5.5", label: "GPT-5.5", ctx: "200K" },
-  ]},
-  { id: "openai", label: "OpenAI", Logo: OpenAILogo, models: [
-    { id: "gpt-4o",      label: "GPT-4o",  ctx: "128K" },
-    { id: "gpt-4o-mini", label: "4o mini", ctx: "128K" },
-    { id: "o3",          label: "o3",      ctx: "200K" },
-  ]},
-  { id: "gemini", label: "Gemini", Logo: GeminiLogo, models: [
-    { id: "gemini-3.1-pro-preview",        label: "3.1 Pro",  ctx: "1M" },
-    { id: "gemini-3-flash-preview",        label: "3 Flash",  ctx: "1M" },
-    { id: "gemini-3.1-flash-lite-preview", label: "3.1 Lite", ctx: "1M" },
-  ]},
-];
 
 const PERMS: { id: string; label: string; desc: string }[] = [
   { id: "default",           label: "Ask",          desc: "Confirm before edits & shell" },
@@ -280,38 +234,7 @@ export function SessionToolbar({
   const [ghReposLoading, setGhReposLoading] = useState(false);
   const [ghReposError,   setGhReposError]   = useState<string | null>(null);
   const [repoFilter,     setRepoFilter]     = useState("");
-  // Fetched model catalog — replaces the hardcoded list once /api/models
-  // returns. Falls back to FALLBACK_PROVIDERS during the in-flight
-  // window or when the API is unreachable.
-  const [providers, setProviders] = useState<ProviderDef[]>(FALLBACK_PROVIDERS);
   const wrapRef = useRef<HTMLDivElement>(null);
-
-  // Pull the full provider/model catalog from the backend once. Any
-  // failure leaves the fallback in place — the picker stays usable.
-  useEffect(() => {
-    let cancelled = false;
-    listModels().then(r => {
-      if (cancelled) return;
-      if (!r.providers || r.providers.length === 0) return;
-      const mapped: ProviderDef[] = r.providers
-        // Only keep providers the bridge can actually drive. Filter
-        // happens BEFORE the map so the resulting items are typed
-        // narrowly enough to satisfy ProviderDef["id"].
-        .filter((p: CatalogProvider) =>
-          p.id === "claude" || p.id === "codex" || p.id === "openai" || p.id === "gemini"
-        )
-        .map((p: CatalogProvider) => ({
-          id: p.id as ProviderDef["id"],
-          label: p.label,
-          Logo: PROVIDER_LOGOS[p.id] ?? OpenAILogo,
-          models: p.models.map(m => ({
-            id: m.id, label: m.label, ctx: m.ctx ?? "", note: m.note,
-          })),
-        }));
-      if (mapped.length > 0) setProviders(mapped);
-    }).catch(() => { /* silent — fallback already wired */ });
-    return () => { cancelled = true; };
-  }, []);
 
   useEffect(() => {
     if (!openMenu) return;
@@ -430,20 +353,12 @@ export function SessionToolbar({
     ? (folderNameUtil(projectPath) || projectPath)
     : null;
 
-  const providerDef = providers.find(p => p.id === tool) ?? providers[0]!;
-  const modelLabel  = providerDef.models.find(m => m.id === model)?.label ?? model ?? "Model";
   const permLabel   = PERMS.find(p => p.id === permissionMode)?.label ?? permissionMode;
 
-  // Pick a model from any provider. Selecting a model from a
-  // different provider also flips the tool, so the chip and bridge
-  // stay coherent. Combined into ONE menu to avoid the user
-  // bouncing between two dropdowns to land on the right model.
-  const pickAnyModel = useCallback((providerId: ProviderDef["id"], modelId: string) => {
-    const updates: Record<string, unknown> = { model_name: modelId };
-    if (providerId !== tool) updates.tool = providerId;
-    patch(updates);
-    setOpenMenu(null);
-  }, [patch, tool]);
+  const { tiles: providerTiles } = useProvidersConfig();
+  const effort: UMEffort = session?.effort ?? "high";
+  const enabledAgentIds = providerTiles.filter((t) => t.spec.kind === "cli").map((t) => t.spec.id);
+  const groups: PickerGroup[] = buildPickerGroups(providerTiles, enabledAgentIds);
 
   return (
     <div
@@ -832,26 +747,48 @@ export function SessionToolbar({
       })()}
 
       {/* ── Model — single chip carrying the provider logo + the
-            current model name. The dropdown is a grouped list of
-            every provider's models so the user lands on what they
-            want in one click rather than bouncing between two
-            chips. ── */}
-      <Chip
-        active={openMenu === "model"}
-        chevron
-        onClick={() => setOpenMenu(openMenu === "model" ? null : "model")}
-      >
-        <ProviderLogo tool={providerDef.id} size={12} />
-        <span>{modelLabel}</span>
-        {openMenu === "model" && (
-          <ModelMenu
-            tool={tool}
-            model={model}
-            providers={providers}
-            onPick={pickAnyModel}
-          />
-        )}
-      </Chip>
+            current model name + effort. Opens UnifiedModelPicker
+            (three-column: providers | models | effort). ── */}
+      {(() => {
+        const activeGroup =
+          groups.find((g) => g.models.some((m) => m.id === model)) ??
+          groups.find((g) => g.id === tool);
+        const activeModel = activeGroup?.models.find((m) => m.id === model);
+        const modelLabel = activeModel?.label ?? model ?? "Model";
+        const dispatchTool = resolveDispatchTool(activeGroup?.id ?? tool);
+        const effortShort: Record<UMEffort, string> = {
+          low: "Low", medium: "Med", high: "High", extra_high: "X-Hi", max: "Max",
+        };
+        return (
+          <Chip
+            active={openMenu === "model"}
+            chevron
+            onClick={() => setOpenMenu(openMenu === "model" ? null : "model")}
+          >
+            <ProviderLogo tool={dispatchTool} size={12} />
+            <span>{modelLabel}</span>
+            <span style={{ color: "var(--c-dim)", fontSize: 10 }}>·</span>
+            <span style={{ color: "var(--c-low)", fontSize: 10.5 }}>{effortShort[effort]}</span>
+            {openMenu === "model" && (
+              <UnifiedModelPicker
+                tool={tool}
+                model={model}
+                effort={effort}
+                groups={groups}
+                onPickModel={(groupId, modelId) => {
+                  const next = resolveDispatchTool(groupId);
+                  const updates: Record<string, unknown> = { model_name: modelId };
+                  if (next !== tool) updates.tool = next;
+                  patch(updates);
+                }}
+                onPickEffort={(e) => patch({ effort: e })}
+                onClose={() => setOpenMenu(null)}
+                anchor="bottom"
+              />
+            )}
+          </Chip>
+        );
+      })()}
 
       {/* ── Permission ── */}
       <Chip
@@ -1616,136 +1553,6 @@ function MenuRow({
       {right ? <span style={{ flexShrink: 0, display: "inline-flex" }}>{right}</span>
         : active ? <Check size={12} strokeWidth={2.5} style={{ color: "var(--c-fg, #e6e6e6)", flexShrink: 0 }} /> : null}
     </button>
-  );
-}
-
-/* ─── ModelMenu — provider list with hover-revealed model panel ───
-   Replaces the old "every model from every provider in one flat
-   scroll" dropdown. Two columns:
-     LEFT  — one row per provider (Claude / Codex / OpenAI / Gemini)
-     RIGHT — that provider's models, swapped in on hover or click
-
-   Hover on a provider row immediately swaps the right panel to its
-   models (no click required) so a user landing on the menu can scan
-   without committing. Click on a model commits + closes. Keeps the
-   "currently active" provider highlighted on the left, and the
-   currently active model checkmarked on the right when its provider
-   is the visible one. */
-function ModelMenu({
-  tool, model, providers, onPick,
-}: {
-  tool: string;
-  model: string | null;
-  providers: ProviderDef[];
-  onPick: (providerId: ProviderDef["id"], modelId: string) => void;
-}) {
-  // The provider whose models are currently shown on the right. Defaults
-  // to the active tool so the user lands looking at "what they already
-  // have" instead of an arbitrary first item.
-  const initial = (providers.find(p => p.id === tool) ?? providers[0]!).id;
-  const [hoveredId, setHoveredId] = useState<ProviderDef["id"]>(initial);
-  const visible = providers.find(p => p.id === hoveredId) ?? providers[0]!;
-  return (
-    <div
-      role="menu"
-      onClick={e => e.stopPropagation()}
-      onMouseDown={e => e.stopPropagation()}
-      style={{
-        position: "absolute",
-        // Open UPWARD — toolbar lives at the bottom of the chat
-        // surface, so a downward menu was getting clipped past the
-        // window edge. Bottom-anchored matches the standard Menu
-        // (Local/Git/perms/history all open up too).
-        bottom: "calc(100% + 6px)",
-        left: 0,
-        zIndex: 60,
-        display: "flex",
-        background: "var(--popover, #1a1a1a)",
-        border: "1px solid var(--c-brd, rgba(255,255,255,0.10))",
-        borderRadius: 8,
-        boxShadow: "0 -14px 36px rgba(0,0,0,0.45)",
-        animation: "fleet-popover-up 0.14s ease-out both",
-        overflow: "hidden",
-        textAlign: "left",
-      }}
-    >
-      {/* Provider rail */}
-      <div style={{
-        display: "flex", flexDirection: "column",
-        padding: 4, minWidth: 132,
-        borderRight: "1px solid var(--c-brd, rgba(255,255,255,0.08))",
-      }}>
-        {providers.map(p => {
-          const isHovered = p.id === hoveredId;
-          const isActive  = p.id === tool;
-          return (
-            <button
-              key={p.id}
-              onMouseEnter={() => setHoveredId(p.id)}
-              onFocus={() => setHoveredId(p.id)}
-              onClick={() => setHoveredId(p.id)}
-              style={{
-                display: "flex", alignItems: "center", gap: 9,
-                width: "100%", textAlign: "left",
-                padding: "6px 10px",
-                background: isHovered
-                  ? "var(--c-srf, rgba(255,255,255,0.06))"
-                  : "transparent",
-                border: "none", outline: "none", cursor: "pointer",
-                borderRadius: 5,
-                color: "var(--c-fg, #e6e6e6)",
-                fontFamily: "var(--font-sans)",
-                fontSize: 12.5, fontWeight: isActive ? 600 : 500,
-              }}
-            >
-              <p.Logo size={12} />
-              <span style={{ flex: 1 }}>{p.label}</span>
-              {isActive && (
-                <span style={{
-                  width: 5, height: 5, borderRadius: "50%",
-                  background: "var(--c-fg, #e6e6e6)",
-                  flexShrink: 0,
-                }} />
-              )}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Model panel — height matches the 4-row provider rail so the
-          popover stays compact ("provider'lerin büyüklüğünde olsun"
-          per the user). Long catalogs scroll inside this fixed box;
-          short ones leave neutral whitespace at the bottom. Stable
-          height also prevents the bottom-anchored popover's top edge
-          from jumping when the user hovers between providers. */}
-      <div style={{
-        display: "flex", flexDirection: "column",
-        padding: 4, width: 260,
-        height: 240, overflowY: "auto",
-      }}>
-        <div style={{
-          padding: "5px 10px 4px",
-          fontSize: 10.5, fontWeight: 500,
-          letterSpacing: 0.3, textTransform: "uppercase",
-          color: "var(--c-dim, #7a7a7a)",
-          position: "sticky", top: 0,
-          background: "var(--popover, #1a1a1a)",
-          zIndex: 1,
-        }}>
-          {visible.label} models
-        </div>
-        {visible.models.map(m => (
-          <MenuRow
-            key={m.id}
-            active={model === m.id && tool === visible.id}
-            onClick={() => onPick(visible.id, m.id)}
-            primary={m.label}
-            secondary={m.ctx}
-            tag={m.note}
-          />
-        ))}
-      </div>
-    </div>
   );
 }
 
