@@ -927,6 +927,28 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
     try { localStorage.setItem("fleet:staffSessionId", session.id); } catch { /* noop */ }
 
+    const sid = session.id;
+
+    // ── Skip typewriter on a reused staff session ──
+    // existingStaffId is set when this function fires against a staff
+    // session that ALREADY existed (returning user, rapid restart, dev
+    // hot-reload). The welcome message was shown on a prior launch, so
+    // re-typing serves no UX purpose — and it actively harms the chat
+    // because the typewriter's `setMessages(sid, [single-welcome])`
+    // CLOBBERS the existing chat history. On a session with backend
+    // messages already loaded, the clobber shrinks the message list to
+    // 1 item; the chat-view's scroll-up handler then fires (scrollTop
+    // hits 0 on the now-tiny list), fetches 50 older messages with
+    // `before: welcomeTimestamp`, and re-sets messages to
+    // `[50_backend, welcome]` (51 items). The typewriter's next tick
+    // clobbers back to 1, the scroll handler refills to 51, and the
+    // user sees the welcome flashing between "alone at top" and
+    // "appended at bottom" at ~30-100ms intervals — perceived as the
+    // welcome being typed in two places simultaneously.
+    if (existingStaffId) {
+      return { sessionId: sid, durationMs: 0 };
+    }
+
     const firstName = (userName ?? "").trim().split(/\s+/)[0] || "";
     const greeting = firstName ? `Welcome to Fleet, ${firstName}.` : "Welcome aboard.";
     const welcomeText =
@@ -934,8 +956,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       `Spawn an agent from the sidebar whenever you have a task, or just tell me what you need right here and I'll route it to the right model.\n\n` +
       `Quick tour of the interface starting in a sec.`;
     const speedMs = 12;
-    const welcomeId = `welcome-${session.id}`;
-    const sid = session.id;
+    const welcomeId = `welcome-${sid}`;
 
     // Race-proof typing — idempotently overwrite the staff session's
     // messages every tick so chat-view's initial fetch (which races
@@ -947,6 +968,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     // this guard the interval kept firing forever, hammering the
     // chat store with stale ids and orphaning a small bit of
     // memory per dropped session.
+    //
+    // The clobbering setMessages is SAFE here because we only reach
+    // this code on a freshly-created staff session (existingStaffId
+    // was null) — there's nothing to clobber.
     let i = 0;
     const interval = setInterval(() => {
       const stillThere = useAppStore.getState().sessions.some(s => s.id === sid);

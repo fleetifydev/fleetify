@@ -18,6 +18,56 @@ export interface PickerGroup {
   models: PickerModel[];
 }
 
+/** Hardcoded model lists for the CLI agents whose backends bake models
+ *  into the binary (so the registry can't ship them). When buildPickerGroups
+ *  encounters a CLI tile whose catalog `default_models` is empty, it pulls
+ *  the list from here instead. Mirrors src/components/chat/chat-input.tsx's
+ *  CLAUDE_MODELS / CODEX_MODELS / GEMINI_MODELS (kept in sync by hand). */
+const CLI_MODELS: Record<string, PickerModel[]> = {
+  claude: [
+    { id: "claude-opus-4-7",           label: "Opus 4.7",   ctx: "200K", supports_effort: true },
+    { id: "claude-sonnet-4-6",         label: "Sonnet 4.6", ctx: "200K", supports_effort: true },
+    { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5",  ctx: "200K", supports_effort: true },
+  ],
+  codex: [
+    { id: "gpt-5.2", label: "GPT-5.2", ctx: "200K", supports_effort: true },
+    { id: "gpt-5.4", label: "GPT-5.4", ctx: "200K", supports_effort: true },
+    { id: "gpt-5.5", label: "GPT-5.5", ctx: "200K", supports_effort: true },
+  ],
+  gemini: [
+    { id: "gemini-3.1-pro-preview",        label: "3.1 Pro",  ctx: "1M", supports_effort: true },
+    { id: "gemini-3-flash-preview",        label: "3 Flash",  ctx: "1M", supports_effort: true },
+    { id: "gemini-3.1-flash-lite-preview", label: "3.1 Lite", ctx: "1M", supports_effort: false },
+  ],
+  kimi: [
+    { id: "kimi-k2.6",          label: "Kimi K2.6",          ctx: "256K", supports_effort: false },
+    { id: "kimi-k2.6-thinking", label: "Kimi K2.6 Thinking", ctx: "256K", supports_effort: true },
+    { id: "kimi-k2.6-agent",    label: "Kimi K2.6 Agent",    ctx: "256K", supports_effort: true },
+  ],
+};
+
+/** Display names for the four CLI agents — matches each CLI ProviderSpec's
+ *  catalog `display_name`. Used as fallback when `providerTiles` is empty
+ *  (cold-start race or transient IPC failure) so the picker never shows a
+ *  blank rail. */
+const CLI_FALLBACK_LABELS: Record<string, string> = {
+  claude: "Claude Code",
+  codex:  "Codex CLI",
+  gemini: "Gemini CLI",
+  kimi:   "Kimi Code CLI",
+};
+
+/** Flat lookup of every CLI model id → its friendly label, derived from
+ *  CLI_MODELS. Exported so callers (chip-face label resolution in the
+ *  session toolbar) can avoid showing the raw model id when groups
+ *  hasn't loaded yet. */
+export const CLI_MODEL_LABELS: Record<string, string> = Object.values(CLI_MODELS)
+  .flat()
+  .reduce<Record<string, string>>((acc, m) => {
+    acc[m.id] = m.label;
+    return acc;
+  }, {});
+
 /** Short brand labels for the HTTP API rail. CLI tiles use the
  *  catalog's `display_name` verbatim ("Claude Code" etc.) — see
  *  `buildPickerGroups` below. */
@@ -74,14 +124,42 @@ export function buildPickerGroups(
   const out: PickerGroup[] = [];
 
   // 1. CLI agents — filtered by enabledAgentIds, use display_name verbatim.
+  //    CLI ProviderSpecs declare default_models: &[] because models live inside
+  //    each CLI binary, not the registry. Fall back to CLI_MODELS when empty.
+  const emittedCliIds = new Set<string>();
   for (const t of tiles) {
     if (t.spec.kind !== "cli") continue;
     if (!enabledAgentIds.includes(t.spec.id)) continue;
+    const catalogModels = t.spec.default_models.map(modelFromSpec);
+    const fallbackModels = CLI_MODELS[t.spec.id] ?? [];
+    const models = catalogModels.length > 0 ? catalogModels : fallbackModels;
     out.push({
       id: t.spec.id,
       label: t.spec.display_name,
-      models: t.spec.default_models.map(modelFromSpec),
+      models,
     });
+    emittedCliIds.add(t.spec.id);
+  }
+
+  // Defensive fallback: if NO CLI tiles made it through (tiles was empty
+  // due to a cold-start race or transient IPC failure) the picker would
+  // render with a blank Providers rail + raw model ids on the chip face.
+  // Emit all four known CLI agents from CLI_MODELS so the user always sees
+  // a workable picker.
+  //
+  // We DON'T fill in only-some-missing CLI agents — if any CLI rail made
+  // it through, the caller has a valid (possibly user-filtered) view and
+  // we shouldn't second-guess it.
+  if (emittedCliIds.size === 0) {
+    for (const cliId of Object.keys(CLI_MODELS)) {
+      const models = CLI_MODELS[cliId] ?? [];
+      if (models.length === 0) continue;
+      out.push({
+        id: cliId,
+        label: CLI_FALLBACK_LABELS[cliId] ?? cliId,
+        models,
+      });
+    }
   }
 
   // 2. HTTP / local_http providers — only connected ones, short brand labels.

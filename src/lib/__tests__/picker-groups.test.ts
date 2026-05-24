@@ -116,4 +116,47 @@ describe("buildPickerGroups", () => {
     expect(resolveDispatchTool("claude")).toBe("claude");
     expect(resolveDispatchTool("openai")).toBe("openai");
   });
+
+  it("populates CLI agent groups with hardcoded model lists", () => {
+    const tiles = [
+      baseTile("claude", "Claude Code", "cli"),
+      baseTile("codex", "Codex CLI", "cli"),
+      baseTile("gemini", "Gemini CLI", "cli"),
+      baseTile("kimi", "Kimi Code CLI", "cli"),
+    ];
+    const groups = buildPickerGroups(tiles, ["claude", "codex", "gemini", "kimi"]);
+    const claude = groups.find((g) => g.id === "claude");
+    expect(claude?.models.length).toBeGreaterThan(0);
+    expect(claude?.models.some((m) => m.id.startsWith("claude-"))).toBe(true);
+    const codex = groups.find((g) => g.id === "codex");
+    expect(codex?.models.length).toBeGreaterThan(0);
+    expect(codex?.models.some((m) => m.id.startsWith("gpt-5"))).toBe(true);
+    const gemini = groups.find((g) => g.id === "gemini");
+    expect(gemini?.models.length).toBeGreaterThan(0);
+    expect(gemini?.models.some((m) => m.id.startsWith("gemini-"))).toBe(true);
+    const kimi = groups.find((g) => g.id === "kimi");
+    expect(kimi?.models.length).toBeGreaterThan(0);
+    expect(kimi?.models.some((m) => m.id.startsWith("kimi-") || m.id.startsWith("moonshot"))).toBe(true);
+  });
+
+  // Regression: when providerTiles is empty (cold-start race or transient
+  // IPC failure), buildPickerGroups must still return the four CLI agent
+  // rails populated from CLI_MODELS so the picker isn't a blank popover.
+  it("emits the four CLI rails even when tiles is empty", () => {
+    const groups = buildPickerGroups([], []);
+    const ids = groups.map((g) => g.id);
+    expect(ids).toEqual(expect.arrayContaining(["claude", "codex", "gemini", "kimi"]));
+    for (const id of ["claude", "codex", "gemini", "kimi"]) {
+      const g = groups.find((gg) => gg.id === id);
+      expect(g?.models.length ?? 0).toBeGreaterThan(0);
+    }
+  });
+
+  it("CLI rail labels match the catalog display_name even when tiles is empty", () => {
+    const groups = buildPickerGroups([], []);
+    expect(groups.find((g) => g.id === "claude")?.label).toBe("Claude Code");
+    expect(groups.find((g) => g.id === "codex")?.label).toBe("Codex CLI");
+    expect(groups.find((g) => g.id === "gemini")?.label).toBe("Gemini CLI");
+    expect(groups.find((g) => g.id === "kimi")?.label).toBe("Kimi Code CLI");
+  });
 });

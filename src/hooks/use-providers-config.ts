@@ -49,7 +49,16 @@ const useStore = create<InternalState>((set, get) => ({
   fetchStarted: false,
   refresh: async () => {
     const r = await providers.listCatalog();
-    set({ tiles: r.tiles ?? [], loading: false });
+    // Defensive: a transient IPC failure (electron unavailable, backend
+    // restarting during dev hot-reload, ...) returns ok=false + tiles: [].
+    // Clobbering the store with [] in that case erases a previously-good
+    // load and makes the picker render a blank rail until the next
+    // refresh. Only replace tiles when the call actually succeeded.
+    if (r.ok) {
+      set({ tiles: r.tiles, loading: false });
+    } else {
+      set({ loading: false });
+    }
   },
   setKey: async (id: string, key: string) => {
     await providers.setKey(id, key);

@@ -40,7 +40,12 @@ import { RemoteSshPanel } from "./remote-ssh-panel";
 import { DockerContainerPanel } from "./docker-container-panel";
 import { folderName as folderNameUtil } from "@/lib/utils";
 import { UnifiedModelPicker, type Effort as UMEffort } from "./unified-model-picker";
-import { buildPickerGroups, resolveDispatchTool, type PickerGroup } from "@/lib/picker-groups";
+import {
+  buildPickerGroups,
+  resolveDispatchTool,
+  CLI_MODEL_LABELS,
+  type PickerGroup,
+} from "@/lib/picker-groups";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
 
 type MenuId = "source" | "git" | "model" | "perms" | "history" | null;
@@ -754,7 +759,16 @@ export function SessionToolbar({
           groups.find((g) => g.models.some((m) => m.id === model)) ??
           groups.find((g) => g.id === tool);
         const activeModel = activeGroup?.models.find((m) => m.id === model);
-        const modelLabel = activeModel?.label ?? model ?? "Model";
+        // Resolution order for the chip face: matching group model > the
+        // hardcoded CLI label table (covers cold-start races where groups
+        // hasn't fetched yet) > the raw id > the literal "Model" string.
+        // The CLI fallback prevents the chip from showing
+        // `claude-sonnet-4-6` when providerTiles is briefly empty.
+        const modelLabel =
+          activeModel?.label
+          ?? (model ? CLI_MODEL_LABELS[model] : undefined)
+          ?? model
+          ?? "Model";
         const dispatchTool = resolveDispatchTool(activeGroup?.id ?? tool);
         const effortShort: Record<UMEffort, string> = {
           low: "Low", medium: "Med", high: "High", extra_high: "X-Hi", max: "Max",
