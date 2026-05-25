@@ -57,5 +57,18 @@ notify-debouncer-mini = "0.4"
 # timestamps the cloud expects (Z-suffix RFC 3339, matches Electron).
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 
+# macOS only: unlocks WKWebView's 60 FPS cap on macOS 13–15 so
+# CSS animations, scrolling, requestAnimationFrame, and xterm
+# rendering run at the display's native refresh rate (120 Hz on
+# ProMotion MacBooks, 144/240 Hz on external monitors). On macOS 26+
+# Apple removed the cap upstream and the plugin no-ops. The plugin
+# toggles WebKit's private `PreferPageRenderingUpdatesNear60FPSEnabled`
+# feature flag via the same private `_features` API Safari uses
+# internally — there is no public API equivalent. That makes the
+# binary ineligible for the Mac App Store, which we don't ship to
+# anyway (DMG + Homebrew + GitHub releases per Phase 5 packaging).
+[target.'cfg(target_os = "macos")'.dependencies]
+tauri-plugin-macos-fps = "0.1"
+
 [dev-dependencies]
 tempfile = "3"

@@ -59,8 +59,20 @@ pub fn run() {
     // by `logging::init` is `app.manage()`-d to keep the non-blocking
     // writer's flush thread alive for the process lifetime.
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+
+    // macOS 13–15 (Ventura–Sequoia): WKWebView caps requestAnimationFrame
+    // and the renderer's page-update tick at ~60 Hz regardless of the
+    // display's actual refresh rate, so ProMotion MacBooks and 144/240 Hz
+    // externals see the same chop a 60 Hz panel does. The plugin flips
+    // WebKit's private `PreferPageRenderingUpdatesNear60FPSEnabled` feature
+    // flag at webview-ready time. macOS 26+ already runs at native refresh
+    // rate upstream — the plugin detects this and no-ops. Not compiled in
+    // on Windows / Linux (target-gated in Cargo.toml).
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_plugin_macos_fps::init());
+
+    builder
         .invoke_handler(tauri::generate_handler![
             shell::ipc::auth_sign_in,
             shell::ipc::auth_sign_out,
