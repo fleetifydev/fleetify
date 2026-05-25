@@ -61,7 +61,10 @@ interface ProviderDef {
   logo: string;
   /** Bucket — drives the section header in the picker. */
   kind: "cli" | "api";
-  scanKey?: keyof Pick<ProviderScan, "claude_cli" | "gemini_cli" | "codex_cli">;
+  scanKey?: keyof Pick<
+    ProviderScan,
+    "claude_cli" | "gemini_cli" | "codex_cli" | "agy_cli" | "antigravity_sdk"
+  >;
   envKey?: keyof ProviderScan["env_keys"];
   ollama?: boolean;
   /** Used in scan readouts only — the picker uses section grouping instead. */
@@ -71,12 +74,22 @@ interface ProviderDef {
 const PROVIDERS: ProviderDef[] = [
   { id: "claude",    label: "Claude Code", logo: "claude", kind: "cli", scanKey: "claude_cli", hint: "Anthropic CLI" },
   { id: "codex",     label: "Codex",       logo: "codex",  kind: "cli", scanKey: "codex_cli",  hint: "OpenAI CLI" },
+  // Antigravity sits next to its predecessor Gemini CLI — Google sunsets
+  // the latter for individual AI Pro/Ultra users on 2026-06-18, so
+  // surfacing both side-by-side gives migrating users a one-tap path.
   { id: "gemini",    label: "Gemini",      logo: "gemini", kind: "cli", scanKey: "gemini_cli", hint: "Google CLI" },
-  { id: "ollama",    label: "Ollama",      logo: "ollama", kind: "cli", ollama: true,           hint: "Local models" },
-  { id: "anthropic", label: "Anthropic",   logo: "claude", kind: "api", envKey: "anthropic",    hint: "API key" },
-  { id: "openai",    label: "OpenAI",      logo: "openai", kind: "api", envKey: "openai",       hint: "API key" },
-  { id: "googleai",  label: "Google AI",   logo: "gemini", kind: "api", envKey: "gemini",       hint: "API key" },
-  { id: "groq",      label: "Groq",        logo: "groq",   kind: "api", envKey: "groq",         hint: "API key" },
+  { id: "agy",            label: "Antigravity",     logo: "agy",  kind: "cli", scanKey: "agy_cli",         hint: "Google's terminal agent (OAuth)" },
+  // The SDK pairs an install step (`pip install google-antigravity`)
+  // with an API key entry (GEMINI_API_KEY from Google AI Studio). It
+  // sits between cli and api in shape: kind: "api" so the Add-key
+  // flow surfaces, plus a scanKey so the install state reads back.
+  // The verify panel handles the dual nature based on the scan probe.
+  { id: "antigravity-sdk", label: "Antigravity SDK", logo: "agy",  kind: "api", envKey: "gemini",            scanKey: "antigravity_sdk", hint: "Python SDK + Gemini key" },
+  { id: "ollama",         label: "Ollama",          logo: "ollama", kind: "cli", ollama: true,                hint: "Local models" },
+  { id: "anthropic",      label: "Anthropic",       logo: "claude", kind: "api", envKey: "anthropic",         hint: "API key" },
+  { id: "openai",         label: "OpenAI",          logo: "openai", kind: "api", envKey: "openai",            hint: "API key" },
+  { id: "googleai",       label: "Google AI",       logo: "gemini", kind: "api", envKey: "gemini",            hint: "API key" },
+  { id: "groq",           label: "Groq",            logo: "groq",   kind: "api", envKey: "groq",              hint: "API key" },
 ];
 
 const TYPE_BASE_MS = 12;

@@ -680,6 +680,26 @@ async fn run_send_flow(
             session.title == "Staff Agent",
             session.agent_template.clone(),
         ))),
+        "agy" => AnyBridge::Antigravity(Arc::new(
+            crate::bridges::antigravity::AntigravityBridge::new(
+                sid.clone(),
+                agent_cwd.clone(),
+                session.permission_mode.clone(),
+                session.model_name.clone(),
+                session.title == "Staff Agent",
+                session.agent_template.clone(),
+            ),
+        )),
+        "antigravity-sdk" => AnyBridge::AntigravitySdk(Arc::new(
+            crate::bridges::antigravity_sdk::AntigravitySdkBridge::new(
+                sid.clone(),
+                agent_cwd.clone(),
+                session.permission_mode.clone(),
+                session.model_name.clone(),
+                session.title == "Staff Agent",
+                session.agent_template.clone(),
+            ),
+        )),
         "gemini" => {
             let is_staff = session.title == "Staff Agent";
             let mut b = GeminiBridge::new(
@@ -1847,6 +1867,26 @@ async fn run_dispatched_task(
             false, // dispatched tasks always land on non-staff agents
             target.agent_template.clone(),
         ))),
+        "agy" => AnyBridge::Antigravity(std::sync::Arc::new(
+            crate::bridges::antigravity::AntigravityBridge::new(
+                target_id.clone(),
+                target_cwd.clone(),
+                target.permission_mode.clone(),
+                target.model_name.clone(),
+                false, // dispatched tasks always land on non-staff agents
+                target.agent_template.clone(),
+            ),
+        )),
+        "antigravity-sdk" => AnyBridge::AntigravitySdk(std::sync::Arc::new(
+            crate::bridges::antigravity_sdk::AntigravitySdkBridge::new(
+                target_id.clone(),
+                target_cwd.clone(),
+                target.permission_mode.clone(),
+                target.model_name.clone(),
+                false, // dispatched tasks always land on non-staff agents
+                target.agent_template.clone(),
+            ),
+        )),
         other => {
             let _ = sm.update_status(&pool, &target_id, "idle").await;
             let summary = format!("Cannot dispatch: agent uses unsupported tool `{other}`.");

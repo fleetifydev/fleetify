@@ -200,9 +200,15 @@ export async function apiMe(): Promise<AuthUser | null> {
 
 // ── Providers ────────────────────────────────────────────────
 export interface ProviderScan {
-  claude_cli: { installed: boolean; authenticated: boolean; path: string | null };
-  gemini_cli: { installed: boolean; authenticated: boolean; path: string | null };
-  codex_cli:  { installed: boolean; authenticated: boolean; path: string | null };
+  claude_cli:      { installed: boolean; authenticated: boolean; path: string | null };
+  gemini_cli:      { installed: boolean; authenticated: boolean; path: string | null };
+  codex_cli:       { installed: boolean; authenticated: boolean; path: string | null };
+  agy_cli:         { installed: boolean; authenticated: boolean; path: string | null };
+  /** Python interpreter + `google-antigravity` package + GEMINI_API_KEY
+   *  state. Driving the SDK from Fleetify needs all three; this surface
+   *  rolls them into the same `installed`/`authenticated` pair the other
+   *  CLI agents report so the Settings → Agents card renders identically. */
+  antigravity_sdk: { installed: boolean; authenticated: boolean; path: string | null };
   ollama: { running: boolean; models: string[] };
   env_keys: { anthropic: boolean; openai: boolean; gemini: boolean; groq: boolean };
 }

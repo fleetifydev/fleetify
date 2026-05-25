@@ -854,7 +854,17 @@ class WSManager {
           // dropping it with clearStreaming.
           this.flushThinking(sessionId);
           this.flushCitations(sessionId);
-          const current = store.sessions[sessionId];
+          // Re-read FRESH state here — the `store` reference captured at
+          // the top of dispatchEvent is a snapshot taken BEFORE the flush
+          // calls above mutated the store. Reading `store.sessions[id]`
+          // would see the pre-flush contentSoFar (empty), skip finalize,
+          // then clearStreaming would wipe the buffered text — so the
+          // assistant bubble would never appear in the live view (only
+          // after navigate-away-and-back, which forces a DB refetch).
+          // This bug bit any bridge whose entire turn arrives in a
+          // single MessageDelta + Status pair (Antigravity print mode,
+          // dispatched-task summaries, etc).
+          const current = useChatStore.getState().sessions[sessionId];
           if (current && current.contentSoFar.length > 0) {
             store.finalizeAssistantMessage(sessionId, crypto.randomUUID(), current.contentSoFar);
           }
@@ -865,7 +875,8 @@ class WSManager {
         this.flushDelta(sessionId); // Commit any buffered text before finalizing
         this.flushThinking(sessionId);
         this.flushCitations(sessionId);
-        const current = store.sessions[sessionId];
+        // Same stale-snapshot fix as case "status" above — read fresh.
+        const current = useChatStore.getState().sessions[sessionId];
         const usage = data.usage as Record<string, number> | undefined;
         const costUsd = typeof data.cost_usd === "number" ? data.cost_usd : undefined;
         const model = typeof data.model === "string" ? data.model : undefined;

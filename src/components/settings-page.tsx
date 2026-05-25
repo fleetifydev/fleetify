@@ -772,12 +772,14 @@ function AgentsSection() {
             value={provider}
             onChange={setProvider}
             options={[
-              { value: "claude", label: "Claude Code" },
-              { value: "codex",  label: "Codex"       },
-              { value: "cursor", label: "Cursor"      },
-              { value: "gemini", label: "Gemini CLI"  },
-              { value: "kimi",   label: "Kimi"        },
-              { value: "ollama", label: "Ollama"      },
+              { value: "claude",          label: "Claude Code"     },
+              { value: "codex",           label: "Codex"           },
+              { value: "cursor",          label: "Cursor"          },
+              { value: "gemini",          label: "Gemini CLI"      },
+              { value: "kimi",            label: "Kimi"            },
+              { value: "agy",             label: "Antigravity"     },
+              { value: "antigravity-sdk", label: "Antigravity SDK" },
+              { value: "ollama",          label: "Ollama"          },
             ]}
             width={170}
           />

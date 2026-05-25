@@ -43,6 +43,10 @@ tiny_http = "0.12"
 url = "2"
 arboard = "3"
 portable-pty = "0.9"
+# `shell_install_provider` resolves the user's Python via PATHEXT-aware
+# lookup before piping a pip install — matches how fleetify-backend
+# locates CLI binaries so install + dispatch agree on the interpreter.
+which = "6"
 uuid = { version = "1", features = ["v4"] }
 # .git/HEAD watcher for the renderer's branch strip — debouncer-mini
 # wraps `notify` and collapses the double-write that `git checkout`

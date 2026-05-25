@@ -92,6 +92,37 @@ export function KimiLogo({ size = 18 }: { size?: number }) {
   );
 }
 
+/* ── Antigravity (agy): orbital arc with rising mass ── */
+export function AgyLogo({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" role="img" aria-label="Antigravity">
+      {/* Gravity-well arc + an arrow rising through it — reads as
+          "anti-gravity" without copying Google's specific brand mark. */}
+      <defs>
+        <linearGradient id="agy-grad" x1="0" y1="24" x2="24" y2="0" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#4F8AFF" />
+          <stop offset="100%" stopColor="#9D6BFF" />
+        </linearGradient>
+      </defs>
+      <path
+        d="M 3.5 16 a 9 9 0 0 1 17 0"
+        stroke="url(#agy-grad)"
+        strokeWidth="2"
+        strokeLinecap="round"
+        fill="none"
+      />
+      <path
+        d="M 12 21 L 12 6 M 8.5 9.5 L 12 6 L 15.5 9.5"
+        stroke="url(#agy-grad)"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    </svg>
+  );
+}
+
 /* ── Cursor: official brand mark from cursor.com favicon ── */
 export function CursorLogo({ size = 18 }: { size?: number }) {
   return (
@@ -199,6 +230,9 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
     case "nvidia-nim": return <NvidiaLogo size={size} />;
     case "perplexity": return <PerplexityLogo size={size} />;
     case "gemini-api": return <GeminiLogo size={size} />;
+    case "agy":            return <AgyLogo size={size} />;
+    case "antigravity":    return <AgyLogo size={size} />;
+    case "antigravity-sdk":return <AgyLogo size={size} />;
     case "opencode":   return <OpenCodeLogo size={size} />;
     case "aider":      return <AiderLogo size={size} />;
     default:           return <CustomAgentLogo size={size} />;
@@ -208,7 +242,8 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
 export function providerName(tool: string): string {
   const names: Record<string, string> = {
     claude: "Claude", codex: "Codex", cursor: "Cursor", gemini: "Gemini",
-    ollama: "Ollama", kimi: "Kimi",
+    ollama: "Ollama", kimi: "Kimi", agy: "Antigravity",
+    "antigravity-sdk": "Antigravity SDK",
     opencode: "OpenCode", aider: "Aider",
   };
   return names[tool] ?? "Custom";

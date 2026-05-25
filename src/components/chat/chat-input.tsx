@@ -59,6 +59,26 @@ const CODEX_MODELS: ModelOption[] = [
   { id: "gpt-5.4", label: "GPT-5.4", ctx: "200K" },
   { id: "gpt-5.5", label: "GPT-5.5", ctx: "200K" },
 ];
+// Antigravity print mode pins to the user's server-side model selection
+// (set via the TUI's `/model` slash command and persisted by agy's
+// backend). No local override surface exists — see `picker-groups.ts`
+// for the long list of vectors we tested. Single "Auto" entry until
+// PTY-driven dispatch lands and we can run `/model <id>` per turn.
+const AGY_MODELS: ModelOption[] = [
+  { id: "agy-default", label: "Auto", ctx: "1M" },
+];
+// Antigravity SDK exposes full per-(model × effort) selection because
+// `LocalAgentConfig(model=...)` accepts the id at construction. List
+// mirrors agy's `/model` TUI output verbatim.
+const AGY_SDK_MODELS: ModelOption[] = [
+  { id: "gemini-3.5-flash-medium",     label: "Gemini 3.5 Flash (Medium)",   ctx: "1M"   },
+  { id: "gemini-3.5-flash-high",       label: "Gemini 3.5 Flash (High)",     ctx: "1M"   },
+  { id: "gemini-3.1-pro-low",          label: "Gemini 3.1 Pro (Low)",        ctx: "1M"   },
+  { id: "gemini-3.1-pro-high",         label: "Gemini 3.1 Pro (High)",       ctx: "1M"   },
+  { id: "claude-sonnet-4-6-thinking",  label: "Claude Sonnet 4.6 (Thinking)", ctx: "200K" },
+  { id: "claude-opus-4-6-thinking",    label: "Claude Opus 4.6 (Thinking)",   ctx: "200K" },
+  { id: "gpt-oss-120b-medium",         label: "GPT-OSS 120B (Medium)",        ctx: "128K" },
+];
 const OPENAI_MODELS: ModelOption[] = [
   { id: "gpt-4o",      label: "GPT-4o",  ctx: "128K" },
   { id: "gpt-4o-mini", label: "4o mini", ctx: "128K" },
@@ -68,6 +88,8 @@ const OPENAI_MODELS: ModelOption[] = [
 function modelsFor(tool: string | null | undefined): ModelOption[] {
   if (tool === "gemini") return GEMINI_MODELS;
   if (tool === "codex")  return CODEX_MODELS;
+  if (tool === "agy")    return AGY_MODELS;
+  if (tool === "antigravity-sdk") return AGY_SDK_MODELS;
   if (tool === "openai") return OPENAI_MODELS;
   return CLAUDE_MODELS;
 }
@@ -97,6 +119,8 @@ function fmtModel(id: string | null | undefined, tool?: string | null): string {
   // For codex, fall back to the dialog default rather than the legacy GPT-4o.
   if (!id) {
     if (tool === "codex") return "GPT-5.4";
+    if (tool === "agy") return "Auto";
+    if (tool === "antigravity-sdk") return "Gemini 3.5 Flash (Medium)";
     return list[0]?.label ?? "Model";
   }
   // Fallback: best-effort label inference from the id substring.

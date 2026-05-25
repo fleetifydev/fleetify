@@ -209,6 +209,86 @@ async fn check_codex_cli() -> Value {
     json!({ "installed": true, "authenticated": authed, "path": p })
 }
 
+async fn check_agy_cli() -> Value {
+    let Some(p) = cli_path("agy").await else {
+        return json!({ "installed": false, "authenticated": false, "path": null });
+    };
+    // Agy nests under `~/.gemini/antigravity-cli/` and writes
+    // `installation_id` on first onboarded launch. Fall back to the
+    // shared `oauth_creds.json` (also written by Gemini CLI) or a
+    // Google API key for headless setups.
+    let authed = home()
+        .join(".gemini/antigravity-cli/installation_id")
+        .exists()
+        || home().join(".gemini/oauth_creds.json").exists()
+        || std::env::var("GOOGLE_API_KEY").is_ok();
+    json!({ "installed": true, "authenticated": authed, "path": p })
+}
+
+/// Detect the Antigravity SDK installation. Two parts:
+///   1. **Installed**: Python is on PATH AND `google-antigravity` can be
+///      imported. We probe by spawning `python -c "import google.antigravity"`
+///      with a short timeout — fast when the module is present, returns
+///      non-zero when it's not.
+///   2. **Authenticated**: a Gemini API key exists in the OS keyring under
+///      `Fleetify-Provider-antigravity-sdk` OR the `GEMINI_API_KEY` env var
+///      is set. Either one satisfies the auth gate; the bridge prefers
+///      the keyring at dispatch time.
+async fn check_antigravity_sdk_cli() -> Value {
+    // Locate ANY usable Python — `FLEETIFY_EMBEDDED_PYTHON` first
+    // (manual override / future lazy-fetch slot), then system PATH.
+    // Both common executable names are tried; Windows usually resolves
+    // "python", macOS/Linux "python3". `cli_path` reuses
+    // `which::which` so it honours PATHEXT for .cmd shims on Windows.
+    let python_path: Option<String> = match std::env::var("FLEETIFY_EMBEDDED_PYTHON") {
+        Ok(p) if std::path::Path::new(&p).exists() => Some(p),
+        _ => match cli_path("python3").await {
+            Some(p) => Some(p),
+            None => cli_path("python").await,
+        },
+    };
+
+    let Some(py) = python_path else {
+        return json!({ "installed": false, "authenticated": false, "path": null });
+    };
+
+    // Module-import probe. 5s is generous — a fresh interpreter startup
+    // + import of google.antigravity is sub-second on every machine
+    // I've tested. If it spins longer than this, something is wrong
+    // (broken venv, Python repair pending) and we'd rather surface
+    // "Not installed" than block the Settings → Agents tile.
+    let installed_pkg = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::process::Command::new(&py)
+            .args(["-c", "import google.antigravity"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status(),
+    )
+    .await
+    .map(|r| r.map(|s| s.success()).unwrap_or(false))
+    .unwrap_or(false);
+
+    if !installed_pkg {
+        // Python exists but the SDK package isn't installed. Surface
+        // installed=false so the Settings card shows the "pip install"
+        // button rather than masquerading as ready-to-use.
+        return json!({ "installed": false, "authenticated": false, "path": py });
+    }
+
+    // Keyring presence check. Mirrors how the bridge reads its key.
+    let key_in_keyring = keyring::Entry::new("Fleetify-Provider-antigravity-sdk", "default")
+        .ok()
+        .and_then(|e| e.get_password().ok())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    let authed = key_in_keyring
+        || std::env::var("GEMINI_API_KEY")
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+    json!({ "installed": true, "authenticated": authed, "path": py })
+}
+
 /// Probe an Ollama daemon. Base URL is parameterized so callers can
 /// point at a LAN box (`http://192.168.1.50:11434`) when the user has
 /// configured `ProvidersConfig.ollama_base_url`. Defaults to localhost
@@ -253,16 +333,20 @@ async fn scan_providers() -> Json<Value> {
     // backend's AppState), so we fall back to the localhost default
     // here. The new `providers_ollama_probe` IPC honours the user's
     // configured URL for the Settings surface.
-    let (claude, gemini, codex, ollama) = tokio::join!(
+    let (claude, gemini, codex, agy, agy_sdk, ollama) = tokio::join!(
         check_claude_cli(),
         check_gemini_cli(),
         check_codex_cli(),
+        check_agy_cli(),
+        check_antigravity_sdk_cli(),
         check_ollama(None),
     );
     Json(json!({
         "claude_cli": claude,
         "gemini_cli": gemini,
         "codex_cli": codex,
+        "agy_cli": agy,
+        "antigravity_sdk": agy_sdk,
         "ollama": ollama,
         "env_keys": {
             "anthropic": std::env::var("ANTHROPIC_API_KEY").is_ok(),

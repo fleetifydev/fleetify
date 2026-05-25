@@ -7,6 +7,8 @@ vi.mock("@/lib/api", () => ({
     claude_cli: { installed: false, authenticated: false, path: null },
     gemini_cli: { installed: false, authenticated: false, path: null },
     codex_cli:  { installed: false, authenticated: false, path: null },
+    agy_cli:    { installed: false, authenticated: false, path: null },
+    antigravity_sdk: { installed: false, authenticated: false, path: null },
     ollama:     { running: false, models: [] },
     env_keys:   { anthropic: false, openai: false, gemini: false, groq: false },
   })),

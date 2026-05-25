@@ -11,9 +11,9 @@
  * shell-injection blast radius and makes the action transparent.
  */
 import { useState } from "react";
-import { Check, Copy, Terminal, Loader2 } from "lucide-react";
+import { Check, Copy, Terminal, Loader2, KeyRound, ExternalLink } from "lucide-react";
 import { ProviderLogo } from "@/components/ui/provider-logo";
-import type { ProviderSpec } from "@/lib/providers-api";
+import { providers as providersApi, type ProviderSpec } from "@/lib/providers-api";
 import { ConnectionStatusPill } from "@/components/settings/shared/connection-status-pill";
 
 export interface AgentScanEntry {
@@ -93,6 +93,15 @@ export function AgentCard({
   const [expanded, setExpanded] = useState(false);
   const [copiedInstall, setCopiedInstall] = useState(false);
   const [copiedLogin, setCopiedLogin] = useState(false);
+  // Antigravity SDK auths via Gemini API key (no OAuth, no env-var
+  // login command). The agent card renders a key-input panel inline
+  // instead of the usual "copy this login command" hint when this
+  // particular agent needs a key.
+  const isSdk = spec.id === "antigravity-sdk";
+  const [keyInput, setKeyInput] = useState("");
+  const [savingKey, setSavingKey] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [showKeyEditor, setShowKeyEditor] = useState(false);
   const installed = scan?.installed ?? false;
   const authenticated = scan?.authenticated ?? false;
   const installHint = scan?.install_hint || spec.install_hint;
@@ -127,6 +136,38 @@ export function AgentCard({
     // Re-scan in case the user runs the login in another window — they
     // can click "Refresh" inside the expanded card too.
     setTimeout(onChanged, 800);
+  };
+
+  // SDK key save: writes to keychain via the same providers IPC the
+  // HTTP-provider tiles use (service: Fleetify-Provider-antigravity-sdk).
+  // Then triggers a re-scan so the status pill flips from "Login
+  // required" to "Detected" without a manual refresh click.
+  const onSaveKey = async () => {
+    const trimmed = keyInput.trim();
+    if (!trimmed) {
+      setSaveError("Paste a Gemini API key first.");
+      return;
+    }
+    setSavingKey(true);
+    setSaveError(null);
+    try {
+      const result = await providersApi.setKey("antigravity-sdk", trimmed);
+      if (!result.ok) {
+        setSaveError(result.error || "Key save failed.");
+        setSavingKey(false);
+        return;
+      }
+      setKeyInput("");
+      setShowKeyEditor(false);
+      // Tiny defer so the keychain write settles before we re-probe.
+      setTimeout(() => {
+        onChanged();
+        setSavingKey(false);
+      }, 250);
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e));
+      setSavingKey(false);
+    }
   };
 
   return (
@@ -255,7 +296,87 @@ export function AgentCard({
             </div>
           )}
 
-          {installed && !authenticated && loginHint && (
+          {/* SDK-specific: API key entry replaces the standard
+              "run this login command" block. Shown when the SDK
+              package is installed but no key is on file (or when
+              the user clicks "Replace key" on an already-authed
+              card to rotate). */}
+          {isSdk && installed && (!authenticated || showKeyEditor) && (
+            <div>
+              <div
+                style={{
+                  fontSize: 12,
+                  fontWeight: 500,
+                  color: "var(--c-high)",
+                  marginBottom: 6,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <KeyRound size={12} /> Gemini API key
+              </div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={keyInput}
+                  onChange={(e) => {
+                    setKeyInput(e.target.value);
+                    setSaveError(null);
+                  }}
+                  placeholder="AIza…"
+                  style={{
+                    flex: 1,
+                    padding: "8px 10px",
+                    borderRadius: 6,
+                    background: "var(--c-srf)",
+                    border: "1px solid var(--c-brd)",
+                    color: "var(--c-high)",
+                    fontFamily: "var(--font-mono, monospace)",
+                    fontSize: 12,
+                    outline: "none",
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && keyInput.trim()) onSaveKey();
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={onSaveKey}
+                  disabled={savingKey || !keyInput.trim()}
+                  style={{
+                    ...primaryBtn,
+                    opacity: savingKey || !keyInput.trim() ? 0.55 : 1,
+                    cursor:
+                      savingKey || !keyInput.trim() ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {savingKey ? <Loader2 size={11} className="spin" /> : "Save"}
+                </button>
+              </div>
+              <div style={{ fontSize: 11, color: "var(--c-dim)", display: "flex", alignItems: "center", gap: 4 }}>
+                <a
+                  href="https://aistudio.google.com/apikey"
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: "var(--c-link, #4F8AFF)", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}
+                >
+                  Get a key from Google AI Studio <ExternalLink size={10} />
+                </a>
+                <span style={{ marginLeft: "auto" }}>
+                  Stored in {navigator?.userAgent?.includes("Mac") ? "Keychain" : "Credential Manager"}
+                </span>
+              </div>
+              {saveError && (
+                <div style={{ fontSize: 11, color: "rgb(248,113,113)", marginTop: 6 }}>
+                  {saveError}
+                </div>
+              )}
+            </div>
+          )}
+
+          {!isSdk && installed && !authenticated && loginHint && (
             <div>
               <div style={{ fontSize: 12, fontWeight: 500, color: "var(--c-high)", marginBottom: 6 }}>
                 Login
@@ -290,10 +411,27 @@ export function AgentCard({
             </div>
           )}
 
-          {installed && authenticated && (
-            <div style={{ fontSize: 11.5, color: "var(--c-low)" }}>
-              Ready to use. Pick this agent from the chat composer's
-              tool chip or the New Agent dialog.
+          {installed && authenticated && !showKeyEditor && (
+            <div style={{ fontSize: 11.5, color: "var(--c-low)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+              <span>
+                Ready to use. Pick this agent from the chat composer's
+                tool chip or the New Agent dialog.
+              </span>
+              {/* SDK key rotation — opens the inline editor without
+                  losing the existing key until the user saves a new one. */}
+              {isSdk && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowKeyEditor(true);
+                    setSaveError(null);
+                    setKeyInput("");
+                  }}
+                  style={{ ...ghostBtn, fontSize: 11 }}
+                >
+                  <KeyRound size={10} /> Replace key
+                </button>
+              )}
             </div>
           )}
 

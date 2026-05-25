@@ -44,17 +44,51 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
     { id: "kimi-k2.6-thinking", label: "Kimi K2.6 Thinking", ctx: "256K", supports_effort: true },
     { id: "kimi-k2.6-agent",    label: "Kimi K2.6 Agent",    ctx: "256K", supports_effort: true },
   ],
+  // Antigravity's `-p` (print) mode pins to whatever model the user
+  // last selected via the TUI's `/model` slash command — that selection
+  // is stored server-side (agy backend writes it via `setUserSettings`,
+  // reads it via `fetchAvailableModels`). Exhaustive testing confirmed
+  // there is NO local override surface: 25+ vectors tried (every CLI
+  // flag variant, env vars, both settings.json files, project
+  // descriptors, plugin.json, stdin slash injection, interactive-mode
+  // pipe) — all are silently ignored by the print-mode pipeline.
+  //
+  // So the picker exposes a single "Auto" entry that reflects "use
+  // whatever agy is configured to use." When upstream lands a `--model`
+  // flag (or we ship PTY-driven dispatch that can run `/model <id>`
+  // before each turn), the full per-(model × effort) list returns.
+  agy: [
+    { id: "agy-default", label: "Auto", ctx: "1M", supports_effort: false },
+  ],
+  // Antigravity SDK — sibling of `agy` driven from a Python sidecar
+  // wrapping `google.antigravity`. Here we DO expose the full per-
+  // (model × effort) lineup because `LocalAgentConfig(model=...)`
+  // accepts the model id at construction time and honours it for the
+  // turn. The bridge passes the id verbatim to the sidecar, which
+  // strips the effort suffix (-medium/-high/-low/-thinking) before
+  // handing to the SDK's base-name parameter.
+  "antigravity-sdk": [
+    { id: "gemini-3.5-flash-medium",     label: "Gemini 3.5 Flash (Medium)",   ctx: "1M",   supports_effort: false },
+    { id: "gemini-3.5-flash-high",       label: "Gemini 3.5 Flash (High)",     ctx: "1M",   supports_effort: false },
+    { id: "gemini-3.1-pro-low",          label: "Gemini 3.1 Pro (Low)",        ctx: "1M",   supports_effort: false },
+    { id: "gemini-3.1-pro-high",         label: "Gemini 3.1 Pro (High)",       ctx: "1M",   supports_effort: false },
+    { id: "claude-sonnet-4-6-thinking",  label: "Claude Sonnet 4.6 (Thinking)", ctx: "200K", supports_effort: false },
+    { id: "claude-opus-4-6-thinking",    label: "Claude Opus 4.6 (Thinking)",   ctx: "200K", supports_effort: false },
+    { id: "gpt-oss-120b-medium",         label: "GPT-OSS 120B (Medium)",        ctx: "128K", supports_effort: false },
+  ],
 };
 
-/** Display names for the four CLI agents — matches each CLI ProviderSpec's
+/** Display names for the five CLI agents — matches each CLI ProviderSpec's
  *  catalog `display_name`. Used as fallback when `providerTiles` is empty
  *  (cold-start race or transient IPC failure) so the picker never shows a
  *  blank rail. */
 const CLI_FALLBACK_LABELS: Record<string, string> = {
-  claude: "Claude Code",
-  codex:  "Codex CLI",
-  gemini: "Gemini CLI",
-  kimi:   "Kimi Code CLI",
+  claude:            "Claude Code",
+  codex:             "Codex CLI",
+  gemini:            "Gemini CLI",
+  kimi:              "Kimi Code CLI",
+  agy:               "Antigravity",
+  "antigravity-sdk": "Antigravity SDK",
 };
 
 /** Flat lookup of every CLI model id → its friendly label, derived from

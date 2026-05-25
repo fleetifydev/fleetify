@@ -140,13 +140,15 @@ describe("buildPickerGroups", () => {
   });
 
   // Regression: when providerTiles is empty (cold-start race or transient
-  // IPC failure), buildPickerGroups must still return the four CLI agent
-  // rails populated from CLI_MODELS so the picker isn't a blank popover.
-  it("emits the four CLI rails even when tiles is empty", () => {
+  // IPC failure), buildPickerGroups must still return all CLI agent rails
+  // populated from CLI_MODELS so the picker isn't a blank popover.
+  it("emits every CLI rail even when tiles is empty", () => {
     const groups = buildPickerGroups([], []);
     const ids = groups.map((g) => g.id);
-    expect(ids).toEqual(expect.arrayContaining(["claude", "codex", "gemini", "kimi"]));
-    for (const id of ["claude", "codex", "gemini", "kimi"]) {
+    expect(ids).toEqual(
+      expect.arrayContaining(["claude", "codex", "gemini", "kimi", "agy", "antigravity-sdk"]),
+    );
+    for (const id of ["claude", "codex", "gemini", "kimi", "agy", "antigravity-sdk"]) {
       const g = groups.find((gg) => gg.id === id);
       expect(g?.models.length ?? 0).toBeGreaterThan(0);
     }
@@ -158,5 +160,19 @@ describe("buildPickerGroups", () => {
     expect(groups.find((g) => g.id === "codex")?.label).toBe("Codex CLI");
     expect(groups.find((g) => g.id === "gemini")?.label).toBe("Gemini CLI");
     expect(groups.find((g) => g.id === "kimi")?.label).toBe("Kimi Code CLI");
+    expect(groups.find((g) => g.id === "agy")?.label).toBe("Antigravity");
+    expect(groups.find((g) => g.id === "antigravity-sdk")?.label).toBe("Antigravity SDK");
+  });
+
+  it("antigravity-sdk exposes per-(model × effort) lineup unlike agy CLI", () => {
+    const groups = buildPickerGroups([], []);
+    const sdk = groups.find((g) => g.id === "antigravity-sdk");
+    const cli = groups.find((g) => g.id === "agy");
+    // CLI side collapses to a single "Auto" entry because print mode
+    // can't accept a model override; SDK side gets the full lineup.
+    expect(cli?.models.length).toBe(1);
+    expect(sdk?.models.length).toBeGreaterThanOrEqual(6);
+    expect(sdk?.models.some((m) => m.id.startsWith("gemini-"))).toBe(true);
+    expect(sdk?.models.some((m) => m.id.startsWith("claude-"))).toBe(true);
   });
 });

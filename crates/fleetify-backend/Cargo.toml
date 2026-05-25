@@ -34,6 +34,12 @@ parking_lot = "0.12"
 # Used by the Gemini bridge to resolve the `gemini` binary explicitly on
 # Windows (where PATH resolution for .cmd wrappers via Command differs).
 which = "6"
+# Antigravity SDK bridge reads `GEMINI_API_KEY` from the OS keyring under
+# `Fleetify-Provider-antigravity-sdk` — same store the Tauri shell writes
+# to via providers_link, so a single source of truth flows through.
+# `windows-native` keeps the credential in the Windows Credential Manager
+# (Tauri shell uses the same feature set).
+keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

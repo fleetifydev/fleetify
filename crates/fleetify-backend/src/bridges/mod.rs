@@ -4,6 +4,8 @@
 //! shape the `/ws/sessions` handler forwards (unchanged React client).
 
 pub mod acp;
+pub mod antigravity;
+pub mod antigravity_sdk;
 pub mod claude;
 pub mod codex;
 pub mod codex_client;
@@ -64,6 +66,15 @@ pub enum AnyBridge {
     /// wired but the actual ACP spawn is deferred until Moonshot
     /// publishes a stable protocol spec).
     Kimi(Arc<kimi::KimiBridge>),
+    /// Antigravity (`agy`) CLI — Google's terminal coding agent.
+    /// Headless `-p` mode with `--conversation <uuid>` resume; no
+    /// streaming until upstream adds a `stream-json` mode.
+    Antigravity(Arc<antigravity::AntigravityBridge>),
+    /// Antigravity SDK — the Python `google-antigravity` package, driven
+    /// from a sidecar process. Sibling of `Antigravity` above but with
+    /// real per-turn model selection (`LocalAgentConfig(model=...)`)
+    /// and API-key auth instead of the CLI's OAuth.
+    AntigravitySdk(Arc<antigravity_sdk::AntigravitySdkBridge>),
 }
 
 impl AnyBridge {
@@ -80,6 +91,8 @@ impl AnyBridge {
             AnyBridge::OpenAICompat(b) => b.send_message(msg, ctx).await,
             AnyBridge::Perplexity(b) => b.send_message(msg, ctx).await,
             AnyBridge::Kimi(b) => b.send_message(msg, ctx).await,
+            AnyBridge::Antigravity(b) => b.send_message(msg, ctx).await,
+            AnyBridge::AntigravitySdk(b) => b.send_message(msg, ctx).await,
         }
     }
     pub async fn abort(&self) {
@@ -91,6 +104,8 @@ impl AnyBridge {
             AnyBridge::OpenAICompat(b) => b.abort().await,
             AnyBridge::Perplexity(b) => b.abort().await,
             AnyBridge::Kimi(b) => b.abort().await,
+            AnyBridge::Antigravity(b) => b.abort().await,
+            AnyBridge::AntigravitySdk(b) => b.abort().await,
         }
     }
     /// claude_session_id (if the agent emitted one in `init`). For

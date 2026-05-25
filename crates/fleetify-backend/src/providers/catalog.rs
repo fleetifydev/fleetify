@@ -458,6 +458,79 @@ const KIMI_API_MODELS: &[ModelSpec] = &[
     },
 ];
 
+// SDK model lineup matches the picker labels we surfaced earlier from
+// agy's `/model` TUI (Gemini 3.5 Flash Medium/High, 3.1 Pro Low/High,
+// Claude Sonnet/Opus 4.6 Thinking, GPT-OSS 120B Medium). The id format
+// bakes the effort suffix in; the Python sidecar strips it before
+// passing to `LocalAgentConfig(model=...)` so the SDK sees a clean
+// base name. context_window labels mirror the family-level windows
+// agy itself advertises.
+const ANTIGRAVITY_SDK_MODELS: &[ModelSpec] = &[
+    ModelSpec {
+        id: "gemini-3.5-flash-medium",
+        label: "Gemini 3.5 Flash (Medium)",
+        context_window: Some("1M"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "gemini-3.5-flash-high",
+        label: "Gemini 3.5 Flash (High)",
+        context_window: Some("1M"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "gemini-3.1-pro-low",
+        label: "Gemini 3.1 Pro (Low)",
+        context_window: Some("1M"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "gemini-3.1-pro-high",
+        label: "Gemini 3.1 Pro (High)",
+        context_window: Some("1M"),
+        note: Some("Most capable"),
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "claude-sonnet-4-6-thinking",
+        label: "Claude Sonnet 4.6 (Thinking)",
+        context_window: Some("200K"),
+        note: Some("Reasoning"),
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "claude-opus-4-6-thinking",
+        label: "Claude Opus 4.6 (Thinking)",
+        context_window: Some("200K"),
+        note: Some("Reasoning"),
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "gpt-oss-120b-medium",
+        label: "GPT-OSS 120B (Medium)",
+        context_window: Some("128K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+];
+
 const GEMINI_API_MODELS: &[ModelSpec] = &[
     ModelSpec {
         id: "gemini-3.5-flash",
@@ -698,6 +771,35 @@ const KIMI_CLI_INDICATORS: &[AuthIndicator] = &[
     },
 ];
 
+// Antigravity CLI nests its own runtime data under `~/.gemini/` (shares the
+// auth tree with Gemini CLI), so `installation_id` is the agy-specific
+// "I've been here" marker. `oauth_creds.json` covers users who only ever
+// authed through the Antigravity onboarding (no prior Gemini CLI install).
+const AGY_CLI_INDICATORS: &[AuthIndicator] = &[
+    AuthIndicator::HomeDir {
+        path: ".gemini/antigravity-cli/installation_id",
+    },
+    AuthIndicator::HomeDir {
+        path: ".gemini/oauth_creds.json",
+    },
+    AuthIndicator::EnvVar {
+        name: "GOOGLE_API_KEY",
+    },
+];
+
+// Antigravity SDK auth detection. The bridge reads `GEMINI_API_KEY` from
+// the keychain at dispatch time (service: `Fleetify-Provider-antigravity-sdk`)
+// AND the env var as a fallback for scripted launches. Whichever surface
+// has a key, the agent counts as "authed" for the Settings → Agents tile.
+const ANTIGRAVITY_SDK_INDICATORS: &[AuthIndicator] = &[
+    AuthIndicator::EnvVar {
+        name: "GEMINI_API_KEY",
+    },
+    AuthIndicator::EnvVar {
+        name: "GOOGLE_API_KEY",
+    },
+];
+
 // Ollama CLI is detect-only: no `login` flow exists. Presence of the
 // binary alone counts as "ready" (the daemon may or may not be running,
 // which the LocalHttp probe answers separately).
@@ -925,6 +1027,65 @@ pub static CATALOG: &[ProviderSpec] = &[
         install_hints: None,
         login_hint: "kimi login",
     },
+    // Antigravity ships a Go binary outside npm (curl/irm installer), so
+    // `install_hint` stays empty and the per-OS `install_hints` carry the
+    // real commands. The shell IPC layer branches on this when wiring the
+    // Install button.
+    ProviderSpec {
+        id: "agy",
+        display_name: "Antigravity",
+        kind: ProviderKind::Cli,
+        default_base_url: "",
+        auth: AuthSpec::None,
+        default_models: &[],
+        extras: ProviderExtras::DEFAULT,
+        bin: "agy",
+        auth_indicators: AGY_CLI_INDICATORS,
+        install_hint: "",
+        install_hints: Some(InstallHints {
+            windows: "irm https://antigravity.google/cli/install.ps1 | iex",
+            macos: "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+            linux: "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+        }),
+        login_hint: "agy",
+    },
+    // Antigravity SDK — second face of the same engine, driven from a
+    // Python sidecar that wraps `google-antigravity`. Same kind (`Cli`)
+    // as the agy CLI so it lands in Settings → Agents next to its
+    // sibling, but `bin: "python3"` because the actual binary we spawn
+    // is a Python interpreter that loads the SDK; and `auth: ApiKey`
+    // because the SDK requires `GEMINI_API_KEY` (no OAuth). The
+    // renderer special-cases this id to render a key-input panel inside
+    // the AgentCard.
+    ProviderSpec {
+        id: "antigravity-sdk",
+        display_name: "Antigravity SDK",
+        kind: ProviderKind::Cli,
+        default_base_url: "",
+        auth: AuthSpec::ApiKey {
+            header: "x-goog-api-key",
+            env_hint: Some("GEMINI_API_KEY"),
+        },
+        // Curated model lineup driven by the SDK's `LocalAgentConfig(
+        // model=...)` parameter. Each picker entry maps 1:1 to the
+        // base model id the SDK accepts; the `-medium`/`-high`/etc
+        // suffix encodes the thinking level (stripped server-side by
+        // the sidecar before construction).
+        default_models: ANTIGRAVITY_SDK_MODELS,
+        extras: ProviderExtras {
+            supports_streaming: true,
+            ..ProviderExtras::DEFAULT
+        },
+        bin: "python3",
+        auth_indicators: ANTIGRAVITY_SDK_INDICATORS,
+        install_hint: "",
+        install_hints: Some(InstallHints {
+            windows: "pip install google-antigravity",
+            macos: "pip3 install google-antigravity",
+            linux: "pip3 install google-antigravity",
+        }),
+        login_hint: "Set GEMINI_API_KEY (Google AI Studio → Get API key)",
+    },
 ];
 
 impl ProviderExtras {
@@ -970,12 +1131,13 @@ mod tests {
             .iter()
             .filter(|p| matches!(p.kind, ProviderKind::Cli))
             .count();
-        // 7 cloud HTTP providers + 1 local (ollama) + 4 CLI agents.
+        // 7 cloud HTTP providers + 1 local (ollama) + 6 CLI agents
+        // (Claude, Codex, Gemini, Kimi, Antigravity CLI, Antigravity SDK).
         // If you intentionally added/removed a provider, update these
         // constants together with the catalog.
         assert_eq!(api, 7, "expected 7 Api providers, got {api}");
         assert_eq!(local, 1, "expected 1 LocalHttp provider, got {local}");
-        assert_eq!(cli, 4, "expected 4 Cli agents, got {cli}");
+        assert_eq!(cli, 6, "expected 6 Cli agents, got {cli}");
     }
 
     #[test]
@@ -985,9 +1147,13 @@ mod tests {
             .filter(|p| matches!(p.kind, ProviderKind::Cli))
         {
             assert!(!p.bin.is_empty(), "{} has empty bin", p.id);
+            // Either the universal `install_hint` (npm CLIs) or the per-OS
+            // `install_hints` (shell-installer CLIs like agy) must be set —
+            // the renderer needs at least one path to render the Install
+            // button.
             assert!(
-                !p.install_hint.is_empty(),
-                "{} has empty install_hint",
+                !p.install_hint.is_empty() || p.install_hints.is_some(),
+                "{} has no install_hint and no install_hints",
                 p.id
             );
         }
@@ -1008,6 +1174,22 @@ mod tests {
                 p.id
             );
         }
+    }
+
+    #[test]
+    fn antigravity_cli_and_sdk_are_distinct_siblings() {
+        // Two halves of the same engine; same display family ("Antigravity"),
+        // separate ids/auth/dispatch. The CLI keeps the picker collapsed to
+        // "Auto" (server-side model pin); the SDK exposes a real picker
+        // (per-turn LocalAgentConfig(model=...)).
+        let cli = CATALOG.iter().find(|p| p.id == "agy").unwrap();
+        let sdk = CATALOG.iter().find(|p| p.id == "antigravity-sdk").unwrap();
+        assert!(matches!(cli.auth, AuthSpec::None));
+        assert!(matches!(sdk.auth, AuthSpec::ApiKey { .. }));
+        assert!(cli.default_models.is_empty());
+        assert!(!sdk.default_models.is_empty());
+        assert_eq!(cli.bin, "agy");
+        assert_eq!(sdk.bin, "python3");
     }
 
     #[test]
@@ -1202,18 +1384,81 @@ mod tests {
     }
 
     #[test]
-    fn cli_agents_have_no_per_os_overrides() {
-        // npm install -g works on every OS; CLI agents leave install_hints None.
+    fn npm_cli_agents_have_no_per_os_overrides() {
+        // `npm install -g` is portable, so CLIs that ship as npm packages
+        // leave `install_hints` None and rely on the single `install_hint`.
+        // Antigravity is the exception — its installer is a per-OS shell
+        // script (curl/irm), so it populates `install_hints` instead. See
+        // `agy_has_per_os_install_hints` below for that side of the contract.
+        const NPM_CLI_IDS: &[&str] = &["claude", "codex", "gemini", "kimi"];
         for p in CATALOG
             .iter()
             .filter(|p| matches!(p.kind, ProviderKind::Cli))
+            .filter(|p| NPM_CLI_IDS.contains(&p.id))
         {
             assert!(
                 p.install_hints.is_none(),
-                "{} should rely on the single npm install_hint",
+                "{} (npm-installed) should leave install_hints None",
                 p.id,
             );
         }
+    }
+
+    #[test]
+    fn antigravity_sdk_has_api_key_auth_and_pip_install_hints() {
+        let p = CATALOG.iter().find(|p| p.id == "antigravity-sdk").unwrap();
+        // SDK lives in Settings → Agents (kind: Cli) but auths via API
+        // key — distinct from the agy CLI sibling which uses OAuth.
+        assert!(matches!(p.kind, ProviderKind::Cli));
+        assert!(
+            matches!(
+                p.auth,
+                AuthSpec::ApiKey {
+                    env_hint: Some("GEMINI_API_KEY"),
+                    ..
+                }
+            ),
+            "SDK must declare GEMINI_API_KEY as the env_hint for its ApiKey auth",
+        );
+        let h = p
+            .install_hints
+            .as_ref()
+            .expect("antigravity-sdk needs per-OS install_hints");
+        // Pip command on every platform — only the binary name (pip vs
+        // pip3) differs between Windows and macOS/Linux.
+        assert!(h.windows.contains("pip install google-antigravity"));
+        assert!(h.macos.contains("pip3 install google-antigravity"));
+        assert!(h.linux.contains("pip3 install google-antigravity"));
+        // SDK ships a real curated picker list — unlike the agy CLI
+        // which collapses to a single "Auto" entry because print mode
+        // can't accept a model override.
+        assert!(
+            !p.default_models.is_empty(),
+            "SDK picker should expose per-(model × effort) entries"
+        );
+        assert!(
+            p.default_models.iter().any(|m| m.id.starts_with("gemini-")),
+            "SDK lineup includes Gemini variants"
+        );
+        assert!(
+            p.default_models.iter().any(|m| m.id.starts_with("claude-")),
+            "SDK lineup includes Claude variants"
+        );
+    }
+
+    #[test]
+    fn agy_has_per_os_install_hints() {
+        let p = CATALOG.iter().find(|p| p.id == "agy").unwrap();
+        let h = p
+            .install_hints
+            .as_ref()
+            .expect("agy needs per-OS install_hints");
+        assert!(h.windows.contains("irm") && h.windows.contains("antigravity.google"));
+        assert!(h.macos.contains("curl") && h.macos.contains("install.sh"));
+        assert!(h.linux.contains("curl") && h.linux.contains("install.sh"));
+        // `install_hint` stays empty so the install IPC doesn't fall
+        // back to an npm command for agy.
+        assert!(p.install_hint.is_empty());
     }
 
     #[test]

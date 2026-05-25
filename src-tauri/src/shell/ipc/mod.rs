@@ -1127,6 +1127,95 @@ const NPM_PROVIDER_PKG: &[(&str, &str)] = &[
 
 #[tauri::command]
 pub async fn shell_install_provider(tool_key: String) -> serde_json::Value {
+    // Antigravity SDK installs via pip — a different runner than every
+    // other provider in the catalog. We invoke `pip install --user
+    // google-antigravity` against the SAME Python interpreter the bridge
+    // will later spawn for dispatch, so install + dispatch agree on the
+    // site-packages set. `--user` is what makes this work without an
+    // elevated shell on Windows AND without tripping PEP 668's "externally
+    // managed" guard on recent macOS / Debian / Ubuntu Pythons.
+    if tool_key == "antigravity-sdk" {
+        // Phase 1: system Python only. `FLEETIFY_EMBEDDED_PYTHON` is a
+        // manual override the bridge already honours; we honour it here
+        // too so the two halves can never disagree on the interpreter.
+        let python: Option<String> = match std::env::var("FLEETIFY_EMBEDDED_PYTHON") {
+            Ok(p) if std::path::Path::new(&p).exists() => Some(p),
+            _ => ["python3", "python"]
+                .iter()
+                .find_map(|name| which::which(name).ok().map(|p| p.display().to_string())),
+        };
+        let Some(py) = python else {
+            return serde_json::json!({
+                "success": false,
+                "error": "No Python interpreter found. Install Python 3.10+ first, then click Install again."
+            });
+        };
+        let res = tokio::process::Command::new(&py)
+            .args([
+                "-m",
+                "pip",
+                "install",
+                "--user",
+                "--upgrade",
+                "google-antigravity",
+            ])
+            .output()
+            .await;
+        return match res {
+            Ok(o) if o.status.success() => serde_json::json!({
+                "success": true,
+                "out": String::from_utf8_lossy(&o.stdout).trim().to_string()
+            }),
+            Ok(o) => serde_json::json!({
+                "success": false,
+                "error": String::from_utf8_lossy(&o.stderr).trim().to_string()
+            }),
+            Err(e) => serde_json::json!({
+                "success": false,
+                "error": format!("pip spawn failed: {e}. Python path: {py}")
+            }),
+        };
+    }
+    // Antigravity ships as a Go binary outside npm — its installer is a
+    // per-OS shell script (irm on Windows, curl|bash elsewhere). Mirror
+    // the `shell_install_ollama` pattern so the renderer's Install button
+    // works for it without an npm package.
+    if tool_key == "agy" {
+        let res = if cfg!(windows) {
+            tokio::process::Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    "iex (irm https://antigravity.google/cli/install.ps1)",
+                ])
+                .output()
+                .await
+        } else {
+            tokio::process::Command::new("sh")
+                .args([
+                    "-c",
+                    "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+                ])
+                .output()
+                .await
+        };
+        return match res {
+            Ok(o) if o.status.success() => serde_json::json!({
+                "success": true,
+                "out": String::from_utf8_lossy(&o.stdout).trim().to_string()
+            }),
+            Ok(o) => serde_json::json!({
+                "success": false,
+                "error": String::from_utf8_lossy(&o.stderr).trim().to_string()
+            }),
+            Err(e) => serde_json::json!({
+                "success": false,
+                "error": format!("antigravity installer spawn failed: {e}")
+            }),
+        };
+    }
     let pkg = NPM_PROVIDER_PKG
         .iter()
         .find(|(k, _)| *k == tool_key)
