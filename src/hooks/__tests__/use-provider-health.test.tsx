@@ -14,12 +14,19 @@ vi.mock("@/lib/api", () => ({
   })),
 }));
 
-const testConnectionMock = vi.fn();
+const providersMock = {
+  testConnection: vi.fn(),
+  fetchHealth: vi.fn(),
+};
 vi.mock("@/lib/providers-api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/providers-api")>("@/lib/providers-api");
   return {
     ...actual,
-    providers: { ...actual.providers, testConnection: (id: string, key: string) => testConnectionMock(id, key) },
+    providers: {
+      ...actual.providers,
+      testConnection: (id: string, key: string) => providersMock.testConnection(id, key),
+      fetchHealth: () => providersMock.fetchHealth(),
+    },
   };
 });
 
@@ -30,8 +37,19 @@ function tileWithKey(id: string, hasKey: boolean) {
   };
 }
 
+function apiTile(id: string, opts: { has_key: boolean }) {
+  return {
+    spec: { id, display_name: id, kind: "api" as const, default_base_url: "", auth: { kind: "none" as const }, default_models: [], extras: {}, bin: "", auth_indicators: [], install_hint: "", login_hint: "" },
+    connected: opts.has_key,
+    has_key: opts.has_key,
+    enabled_models: [],
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: fetchHealth returns empty cache so fan-out tests are unaffected.
+  providersMock.fetchHealth.mockResolvedValue({ ok: true, providers: {} });
   (window as unknown as { electronAPI?: unknown }).electronAPI = {
     installOllama: vi.fn(async () => ({ success: true })),
   };
@@ -64,11 +82,11 @@ describe("useProviderHealth", () => {
     const tiles = [tileWithKey("openai", false)];
     const { result } = renderHook(() => useProviderHealth({ tiles }));
     await waitFor(() => expect(result.current.providers.openai?.kind).toBe("no_key"));
-    expect(testConnectionMock).not.toHaveBeenCalled();
+    expect(providersMock.testConnection).not.toHaveBeenCalled();
   });
 
   it("provider with has_key=true goes testing → ok with latency", async () => {
-    testConnectionMock.mockResolvedValueOnce({ ok: true, latency_ms: 123, model_count: 7 });
+    providersMock.testConnection.mockResolvedValueOnce({ ok: true, latency_ms: 123, model_count: 7 });
     const tiles = [tileWithKey("openai", true)];
     const { result } = renderHook(() => useProviderHealth({ tiles }));
     // testing first
@@ -81,7 +99,7 @@ describe("useProviderHealth", () => {
   });
 
   it("provider failed test reflects code", async () => {
-    testConnectionMock.mockResolvedValueOnce({ ok: false, code: "AUTH", error: "401" });
+    providersMock.testConnection.mockResolvedValueOnce({ ok: false, code: "AUTH", error: "401" });
     const tiles = [tileWithKey("openai", true)];
     const { result } = renderHook(() => useProviderHealth({ tiles }));
     await waitFor(() => expect(result.current.providers.openai?.kind).toBe("failed"));
@@ -144,6 +162,28 @@ describe("useProviderHealth", () => {
         expect(o.substate).toBe("waiting-daemon");
       }
     });
+  });
+
+  it("reads health snapshot from /providers/health on mount, skips local testConnection fan-out", async () => {
+    providersMock.fetchHealth.mockResolvedValue({
+      ok: true,
+      providers: {
+        openai: { kind: "ok", latency_ms: 142, model_count: 36 },
+        "gemini-api": { kind: "failed", code: "AUTH", message: "401" },
+      },
+    });
+
+    const tiles = [
+      apiTile("openai", { has_key: true }),
+      apiTile("gemini-api", { has_key: true }),
+    ];
+    const { result } = renderHook(() => useProviderHealth({ tiles }));
+
+    await waitFor(() => {
+      expect(result.current.providers["openai"]).toEqual({ kind: "ok", latencyMs: 142, modelCount: 36 });
+    });
+    expect(result.current.providers["gemini-api"]).toEqual({ kind: "failed", code: "AUTH", message: "401" });
+    expect(providersMock.testConnection).not.toHaveBeenCalled();
   });
 
   it("cancelInstall returns to missing", async () => {

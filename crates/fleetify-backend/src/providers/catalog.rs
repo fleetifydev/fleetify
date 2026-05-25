@@ -161,20 +161,16 @@ pub struct ProviderSpec {
 
 // ─── HTTP providers ──────────────────────────────────────────────────────
 
+// Verified against developers.openai.com/api/docs/models (2026-05-25).
+// gpt-5.5 / gpt-5.4 / gpt-5.4-mini confirmed on models page with context windows.
+// gpt-5.4-nano referenced in docs text + Perplexity Agent pricing table.
+// gpt-5 / gpt-5-mini confirmed via Perplexity Agent docs (openai.com hrefs).
+// Dropped: gpt-5.5-pro, gpt-5.3-codex (not in any live docs), gpt-5-nano (not confirmed).
 const OPENAI_MODELS: &[ModelSpec] = &[
     ModelSpec {
         id: "gpt-5.5",
         label: "GPT-5.5",
-        context_window: Some("400K"),
-        note: None,
-        group: None,
-        endpoint: None,
-        supports_effort: true,
-    },
-    ModelSpec {
-        id: "gpt-5.5-pro",
-        label: "GPT-5.5 Pro",
-        context_window: Some("400K"),
+        context_window: Some("1M"),
         note: None,
         group: None,
         endpoint: None,
@@ -183,7 +179,7 @@ const OPENAI_MODELS: &[ModelSpec] = &[
     ModelSpec {
         id: "gpt-5.4",
         label: "GPT-5.4",
-        context_window: Some("400K"),
+        context_window: Some("1M"),
         note: None,
         group: None,
         endpoint: None,
@@ -210,7 +206,7 @@ const OPENAI_MODELS: &[ModelSpec] = &[
     ModelSpec {
         id: "gpt-5",
         label: "GPT-5",
-        context_window: Some("400K"),
+        context_window: Some("1M"),
         note: None,
         group: None,
         endpoint: None,
@@ -226,34 +222,21 @@ const OPENAI_MODELS: &[ModelSpec] = &[
         supports_effort: true,
     },
     ModelSpec {
-        id: "gpt-5-nano",
-        label: "GPT-5 nano",
-        context_window: Some("400K"),
-        note: None,
-        group: None,
-        endpoint: None,
-        supports_effort: true,
-    },
-    ModelSpec {
-        id: "gpt-5.3-codex",
-        label: "GPT-5.3 Codex",
-        context_window: Some("400K"),
-        note: Some("Coding"),
-        group: None,
-        endpoint: None,
-        supports_effort: true,
-    },
-    ModelSpec {
         id: "gpt-4.1",
         label: "GPT-4.1",
         context_window: Some("1M"),
-        note: Some("Long context"),
+        note: Some("Non-reasoning"),
         group: None,
         endpoint: None,
         supports_effort: false,
     },
 ];
 
+// Verified against api-docs.deepseek.com/quick_start/pricing (2026-05-25).
+// Exactly two models in the "Model Details" table.
+// deepseek-v3.1 and deepseek-r1 are NOT present — deprecated/stale.
+// Footnote: deepseek-chat → non-thinking deepseek-v4-flash (being deprecated).
+//           deepseek-reasoner → thinking deepseek-v4-flash (being deprecated).
 const DEEPSEEK_MODELS: &[ModelSpec] = &[
     ModelSpec {
         id: "deepseek-v4-pro",
@@ -273,50 +256,29 @@ const DEEPSEEK_MODELS: &[ModelSpec] = &[
         endpoint: None,
         supports_effort: true,
     },
-    ModelSpec {
-        id: "deepseek-v3.1",
-        label: "DeepSeek V3.1",
-        context_window: Some("128K"),
-        note: None,
-        group: None,
-        endpoint: None,
-        supports_effort: false,
-    },
-    ModelSpec {
-        id: "deepseek-r1",
-        label: "DeepSeek R1",
-        context_window: Some("128K"),
-        note: Some("Reasoning"),
-        group: None,
-        endpoint: None,
-        supports_effort: true,
-    },
 ];
 
-const GROK_MODELS: &[ModelSpec] = &[
-    ModelSpec {
-        id: "grok-4.3",
-        label: "Grok 4.3",
-        context_window: Some("1M"),
-        note: None,
-        group: None,
-        endpoint: None,
-        supports_effort: true,
-    },
-    ModelSpec {
-        id: "grok-4.1-fast",
-        label: "Grok 4.1 Fast",
-        context_window: Some("2M"),
-        note: Some("Highest context"),
-        group: None,
-        endpoint: None,
-        supports_effort: true,
-    },
-];
+// Verified against docs.x.ai/developers/models (2026-05-25, last updated May 15 2026).
+// Only ONE text model listed: grok-4.3 with 1M context and configurable reasoning.
+// grok-4.1-fast is an ALIAS of grok-4.3 per the Aliases table — not a real model.
+// grok-4.20-* variants appear via Perplexity Agent API (separate route).
+const GROK_MODELS: &[ModelSpec] = &[ModelSpec {
+    id: "grok-4.3",
+    label: "Grok 4.3",
+    context_window: Some("1M"),
+    note: None,
+    group: None,
+    endpoint: None,
+    supports_effort: true,
+}];
 
-/// NVIDIA NIM curated subset of build.nvidia.com — keep ~20 to avoid
+/// NVIDIA NIM curated subset of build.nvidia.com — keep ~10 to avoid
 /// drowning the picker. Provider-prefixed ids (`vendor/model`) are
 /// canonical for NIM and passed through to the SSE call as-is.
+/// Verified against build.nvidia.com model pages (2026-05-25).
+/// Dropped: qwen/qwen3.5-coder-480b (404), meta/llama-4-405b-instruct (404),
+///          meta/llama-4-70b-instruct (404).
+/// Replaced llama-4 with meta/llama-4-maverick-17b-128e-instruct (live).
 const NVIDIA_NIM_MODELS: &[ModelSpec] = &[
     ModelSpec {
         id: "deepseek-ai/deepseek-v4-pro",
@@ -331,15 +293,6 @@ const NVIDIA_NIM_MODELS: &[ModelSpec] = &[
         id: "deepseek-ai/deepseek-v4-flash",
         label: "DeepSeek V4 Flash",
         context_window: Some("1M"),
-        note: None,
-        group: None,
-        endpoint: None,
-        supports_effort: false,
-    },
-    ModelSpec {
-        id: "qwen/qwen3.5-coder-480b",
-        label: "Qwen 3.5 Coder 480B",
-        context_window: Some("256K"),
         note: None,
         group: None,
         endpoint: None,
@@ -375,24 +328,15 @@ const NVIDIA_NIM_MODELS: &[ModelSpec] = &[
     ModelSpec {
         id: "nvidia/nemotron-3-super-120b-a12b",
         label: "Nemotron 3 Super 120B",
-        context_window: Some("128K"),
+        context_window: Some("1M"),
         note: None,
         group: None,
         endpoint: None,
         supports_effort: true,
     },
     ModelSpec {
-        id: "meta/llama-4-405b-instruct",
-        label: "Llama 4 405B Instruct",
-        context_window: Some("256K"),
-        note: None,
-        group: None,
-        endpoint: None,
-        supports_effort: false,
-    },
-    ModelSpec {
-        id: "meta/llama-4-70b-instruct",
-        label: "Llama 4 70B Instruct",
+        id: "meta/llama-4-maverick-17b-128e-instruct",
+        label: "Llama 4 Maverick 17B",
         context_window: Some("128K"),
         note: None,
         group: None,
@@ -428,6 +372,11 @@ const NVIDIA_NIM_MODELS: &[ModelSpec] = &[
     },
 ];
 
+// Verified against platform.kimi.ai/docs/models (2026-05-25).
+// Multi-modal model table lists kimi-k2.6 and kimi-k2.5 (both 256K).
+// kimi-k2.6-thinking and kimi-k2.6-agent are NOT valid model IDs —
+// thinking is a mode of kimi-k2.6, agent is a capability flag.
+// kimi-k2 series (kimi-k2-thinking etc.) being discontinued May 25 2026.
 const KIMI_API_MODELS: &[ModelSpec] = &[
     ModelSpec {
         id: "kimi-k2.6",
@@ -436,22 +385,13 @@ const KIMI_API_MODELS: &[ModelSpec] = &[
         note: None,
         group: None,
         endpoint: None,
-        supports_effort: false,
-    },
-    ModelSpec {
-        id: "kimi-k2.6-thinking",
-        label: "Kimi K2.6 Thinking",
-        context_window: Some("256K"),
-        note: Some("Reasoning"),
-        group: None,
-        endpoint: None,
         supports_effort: true,
     },
     ModelSpec {
-        id: "kimi-k2.6-agent",
-        label: "Kimi K2.6 Agent",
+        id: "kimi-k2.5",
+        label: "Kimi K2.5",
         context_window: Some("256K"),
-        note: Some("Tool use"),
+        note: None,
         group: None,
         endpoint: None,
         supports_effort: true,
@@ -532,20 +472,31 @@ const ANTIGRAVITY_SDK_MODELS: &[ModelSpec] = &[
 ];
 
 const GEMINI_API_MODELS: &[ModelSpec] = &[
+    // Verified against ai.google.dev/gemini-api/docs/models (2026-05-25).
+    // Source B (live v1beta REST) returned 400 (no key) — relying on Source A only.
     ModelSpec {
         id: "gemini-3.5-flash",
         label: "Gemini 3.5 Flash",
         context_window: Some("1M"),
-        note: None,
+        note: Some("Stable; frontier agentic/coding"),
         group: None,
         endpoint: None,
         supports_effort: true,
     },
     ModelSpec {
-        id: "gemini-3.1-pro",
-        label: "Gemini 3.1 Pro",
-        context_window: Some("2M"),
-        note: Some("Most capable"),
+        id: "gemini-3.1-pro-preview",
+        label: "Gemini 3.1 Pro Preview",
+        context_window: Some("1M"),
+        note: Some("Most capable; advanced reasoning"),
+        group: None,
+        endpoint: None,
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "gemini-3-flash-preview",
+        label: "Gemini 3 Flash Preview",
+        context_window: Some("1M"),
+        note: None,
         group: None,
         endpoint: None,
         supports_effort: true,
@@ -554,25 +505,34 @@ const GEMINI_API_MODELS: &[ModelSpec] = &[
         id: "gemini-3.1-flash-lite",
         label: "Gemini 3.1 Flash-Lite",
         context_window: Some("1M"),
-        note: None,
-        group: None,
-        endpoint: None,
-        supports_effort: false,
-    },
-    ModelSpec {
-        id: "gemini-3-flash",
-        label: "Gemini 3 Flash",
-        context_window: Some("1M"),
-        note: None,
+        note: Some("Stable; budget/fast"),
         group: None,
         endpoint: None,
         supports_effort: true,
     },
     ModelSpec {
-        id: "gemini-omni",
-        label: "Gemini Omni",
+        id: "gemini-2.5-pro",
+        label: "Gemini 2.5 Pro",
         context_window: Some("1M"),
-        note: Some("Multimodal"),
+        note: Some("Stable; deep reasoning"),
+        group: None,
+        endpoint: None,
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "gemini-2.5-flash",
+        label: "Gemini 2.5 Flash",
+        context_window: Some("1M"),
+        note: Some("Stable; best price-performance"),
+        group: None,
+        endpoint: None,
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "gemini-2.5-flash-lite",
+        label: "Gemini 2.5 Flash-Lite",
+        context_window: Some("1M"),
+        note: Some("Stable; fastest/cheapest"),
         group: None,
         endpoint: None,
         supports_effort: false,
@@ -581,6 +541,11 @@ const GEMINI_API_MODELS: &[ModelSpec] = &[
 
 const PERPLEXITY_AGENT_EP: &str = "https://api.perplexity.ai/v1/agent";
 
+// Verified against docs.perplexity.ai/docs/sonar/models and
+// docs.perplexity.ai/docs/agent-api/models (2026-05-25).
+// Sonar 4-model lineup unchanged.
+// Agent API: added claude-opus-4-5, claude-sonnet-4-5, openai/gpt-5.4,
+//   google/gemini-3.1-flash-lite, google/gemini-3-flash-preview.
 const PERPLEXITY_MODELS: &[ModelSpec] = &[
     // ── Sonar API (native search models, default base URL) ──────
     ModelSpec {
@@ -639,8 +604,26 @@ const PERPLEXITY_MODELS: &[ModelSpec] = &[
         supports_effort: true,
     },
     ModelSpec {
+        id: "anthropic/claude-opus-4-5",
+        label: "Claude Opus 4.5",
+        context_window: Some("200K"),
+        note: None,
+        group: Some("Agent API"),
+        endpoint: Some(PERPLEXITY_AGENT_EP),
+        supports_effort: true,
+    },
+    ModelSpec {
         id: "anthropic/claude-sonnet-4-6",
         label: "Claude Sonnet 4.6",
+        context_window: Some("200K"),
+        note: None,
+        group: Some("Agent API"),
+        endpoint: Some(PERPLEXITY_AGENT_EP),
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "anthropic/claude-sonnet-4-5",
+        label: "Claude Sonnet 4.5",
         context_window: Some("200K"),
         note: None,
         group: Some("Agent API"),
@@ -654,12 +637,21 @@ const PERPLEXITY_MODELS: &[ModelSpec] = &[
         note: None,
         group: Some("Agent API"),
         endpoint: Some(PERPLEXITY_AGENT_EP),
-        supports_effort: true,
+        supports_effort: false,
     },
     ModelSpec {
         id: "openai/gpt-5.5",
         label: "GPT-5.5",
-        context_window: Some("400K"),
+        context_window: Some("1M"),
+        note: None,
+        group: Some("Agent API"),
+        endpoint: Some(PERPLEXITY_AGENT_EP),
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "openai/gpt-5.4",
+        label: "GPT-5.4",
+        context_window: Some("1M"),
         note: None,
         group: Some("Agent API"),
         endpoint: Some(PERPLEXITY_AGENT_EP),
@@ -677,7 +669,16 @@ const PERPLEXITY_MODELS: &[ModelSpec] = &[
     ModelSpec {
         id: "openai/gpt-5",
         label: "GPT-5",
-        context_window: Some("400K"),
+        context_window: Some("1M"),
+        note: None,
+        group: Some("Agent API"),
+        endpoint: Some(PERPLEXITY_AGENT_EP),
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "google/gemini-3.5-flash",
+        label: "Gemini 3.5 Flash",
+        context_window: Some("1M"),
         note: None,
         group: Some("Agent API"),
         endpoint: Some(PERPLEXITY_AGENT_EP),
@@ -693,13 +694,22 @@ const PERPLEXITY_MODELS: &[ModelSpec] = &[
         supports_effort: true,
     },
     ModelSpec {
-        id: "google/gemini-3.5-flash",
-        label: "Gemini 3.5 Flash",
+        id: "google/gemini-3.1-flash-lite",
+        label: "Gemini 3.1 Flash Lite",
         context_window: Some("1M"),
         note: None,
         group: Some("Agent API"),
         endpoint: Some(PERPLEXITY_AGENT_EP),
-        supports_effort: true,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "google/gemini-3-flash-preview",
+        label: "Gemini 3 Flash",
+        context_window: Some("1M"),
+        note: None,
+        group: Some("Agent API"),
+        endpoint: Some(PERPLEXITY_AGENT_EP),
+        supports_effort: false,
     },
     ModelSpec {
         id: "xai/grok-4.3",
@@ -1280,6 +1290,7 @@ mod tests {
     fn openai_lineup_is_2026_flagship_only() {
         let p = CATALOG.iter().find(|p| p.id == "openai").unwrap();
         let ids: Vec<&str> = p.default_models.iter().map(|m| m.id).collect();
+        // Retired / fabricated ids must never appear.
         for retired in [
             "gpt-3.5-turbo",
             "gpt-4-turbo",
@@ -1288,18 +1299,23 @@ mod tests {
             "o3",
             "o3-mini",
             "o4-mini",
+            "gpt-5.5-pro",   // not in live docs
+            "gpt-5.3-codex", // not in live docs
+            "gpt-5-nano",    // not confirmed
         ] {
             assert!(
                 !ids.contains(&retired),
-                "retired model still in catalog: {retired}"
+                "retired/fabricated model still in catalog: {retired}"
             );
         }
+        // Verified 2026 lineup (developers.openai.com 2026-05-25).
         for current in [
             "gpt-5.5",
-            "gpt-5.5-pro",
             "gpt-5.4",
             "gpt-5.4-mini",
-            "gpt-5.3-codex",
+            "gpt-5.4-nano",
+            "gpt-5",
+            "gpt-5-mini",
             "gpt-4.1",
         ] {
             assert!(ids.contains(&current), "missing 2026 model: {current}");
@@ -1310,48 +1326,78 @@ mod tests {
     fn deepseek_lineup_drops_chat_and_reasoner_for_v4() {
         let p = CATALOG.iter().find(|p| p.id == "deepseek").unwrap();
         let ids: Vec<&str> = p.default_models.iter().map(|m| m.id).collect();
-        for retired in ["deepseek-chat", "deepseek-reasoner", "deepseek-coder"] {
+        // api-docs.deepseek.com/quick_start/pricing (2026-05-25): exactly 2 models.
+        for retired in [
+            "deepseek-chat",
+            "deepseek-reasoner",
+            "deepseek-coder",
+            "deepseek-v3.1", // never appeared in live docs
+            "deepseek-r1",   // deprecated — use deepseek-v4-flash thinking mode
+        ] {
             assert!(!ids.contains(&retired), "retired DeepSeek model: {retired}");
         }
         assert!(ids.contains(&"deepseek-v4-pro"));
         assert!(ids.contains(&"deepseek-v4-flash"));
-        assert!(ids.contains(&"deepseek-r1"));
+        assert_eq!(ids.len(), 2, "DeepSeek docs list exactly 2 models");
     }
 
     #[test]
-    fn grok_lineup_promotes_4_3() {
+    fn grok_lineup_is_single_4_3() {
         let p = CATALOG.iter().find(|p| p.id == "grok").unwrap();
         let ids: Vec<&str> = p.default_models.iter().map(|m| m.id).collect();
-        for retired in ["grok-3", "grok-3-mini"] {
-            assert!(!ids.contains(&retired), "retired Grok model: {retired}");
+        // docs.x.ai/developers/models (2026-05-25): one text model listed.
+        // grok-4.1-fast is an alias of grok-4.3 — not a separate model.
+        for stale in ["grok-3", "grok-3-mini", "grok-4.1-fast"] {
+            assert!(
+                !ids.contains(&stale),
+                "stale/alias Grok id in catalog: {stale}"
+            );
         }
         assert!(ids.contains(&"grok-4.3"));
-        assert!(ids.contains(&"grok-4.1-fast"));
+        assert_eq!(ids.len(), 1, "xAI docs list exactly 1 text model");
     }
 
     #[test]
-    fn kimi_api_lineup_is_k2_6() {
+    fn kimi_api_lineup_is_k2_6_and_k2_5() {
         let p = CATALOG.iter().find(|p| p.id == "kimi-api").unwrap();
         let ids: Vec<&str> = p.default_models.iter().map(|m| m.id).collect();
-        for retired in ["moonshot-v1-128k", "moonshot-v1-32k", "kimi-k2-0905"] {
-            assert!(!ids.contains(&retired), "retired Kimi model: {retired}");
+        // platform.kimi.ai/docs/models (2026-05-25): Multi-modal table = k2.6, k2.5.
+        // kimi-k2.6-thinking / kimi-k2.6-agent are NOT valid model IDs.
+        for invalid in [
+            "moonshot-v1-128k",
+            "moonshot-v1-32k",
+            "kimi-k2-0905",
+            "kimi-k2.6-thinking", // thinking is a mode, not a model id
+            "kimi-k2.6-agent",    // agent is a capability, not a model id
+        ] {
+            assert!(
+                !ids.contains(&invalid),
+                "invalid/stale Kimi model id: {invalid}"
+            );
         }
         assert!(ids.contains(&"kimi-k2.6"));
-        assert!(ids.contains(&"kimi-k2.6-thinking"));
-        assert!(ids.contains(&"kimi-k2.6-agent"));
+        assert!(ids.contains(&"kimi-k2.5"));
     }
 
     #[test]
-    fn gemini_api_lineup_is_3_x_only() {
+    fn gemini_api_lineup_contains_verified_ids() {
         let p = CATALOG.iter().find(|p| p.id == "gemini-api").unwrap();
         let ids: Vec<&str> = p.default_models.iter().map(|m| m.id).collect();
-        for retired in ["gemini-2.5-pro", "gemini-2.5-flash"] {
-            assert!(!ids.contains(&retired), "retired Gemini model: {retired}");
+        // IDs that were speculative/fake and must not be present.
+        for removed in ["gemini-3.1-pro", "gemini-3-flash", "gemini-omni"] {
+            assert!(
+                !ids.contains(&removed),
+                "stale/fake Gemini model id: {removed}"
+            );
         }
+        // IDs verified against ai.google.dev/gemini-api/docs/models (2026-05-25).
         assert!(ids.contains(&"gemini-3.5-flash"));
-        assert!(ids.contains(&"gemini-3.1-pro"));
+        assert!(ids.contains(&"gemini-3.1-pro-preview"));
+        assert!(ids.contains(&"gemini-3-flash-preview"));
         assert!(ids.contains(&"gemini-3.1-flash-lite"));
-        assert!(ids.contains(&"gemini-omni"));
+        assert!(ids.contains(&"gemini-2.5-pro"));
+        assert!(ids.contains(&"gemini-2.5-flash"));
+        assert!(ids.contains(&"gemini-2.5-flash-lite"));
     }
 
     #[test]
@@ -1476,21 +1522,18 @@ mod tests {
     fn openai_reasoning_models_support_effort() {
         let p = CATALOG.iter().find(|p| p.id == "openai").unwrap();
         let by_id = |id: &str| p.default_models.iter().find(|m| m.id == id).unwrap();
-        // The entire GPT-5 family carries a reasoning lever.
+        // All GPT-5.x and GPT-5 variants carry a reasoning lever per docs.
         for id in [
-            "gpt-5",
-            "gpt-5-mini",
-            "gpt-5-nano",
+            "gpt-5.5",
             "gpt-5.4",
             "gpt-5.4-mini",
             "gpt-5.4-nano",
-            "gpt-5.5",
-            "gpt-5.5-pro",
-            "gpt-5.3-codex",
+            "gpt-5",
+            "gpt-5-mini",
         ] {
             assert!(by_id(id).supports_effort, "{id} should support effort");
         }
-        // gpt-4.1 is the long-context chat model — no reasoning lever.
+        // gpt-4.1 is explicitly non-reasoning per docs ("Smartest non-reasoning model").
         assert!(!by_id("gpt-4.1").supports_effort);
     }
 
@@ -1498,39 +1541,46 @@ mod tests {
     fn deepseek_reasoning_models_support_effort() {
         let p = CATALOG.iter().find(|p| p.id == "deepseek").unwrap();
         let by_id = |id: &str| p.default_models.iter().find(|m| m.id == id).unwrap();
-        for id in ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-r1"] {
+        // Both V4 models support thinking (non-thinking + thinking modes per docs).
+        for id in ["deepseek-v4-pro", "deepseek-v4-flash"] {
             assert!(by_id(id).supports_effort, "{id} should support effort");
         }
-        assert!(!by_id("deepseek-v3.1").supports_effort);
     }
 
     #[test]
     fn grok_reasoning_models_support_effort() {
         let p = CATALOG.iter().find(|p| p.id == "grok").unwrap();
         let by_id = |id: &str| p.default_models.iter().find(|m| m.id == id).unwrap();
+        // grok-4.3 supports configurable reasoning (none/low/med/high).
         assert!(by_id("grok-4.3").supports_effort);
-        assert!(by_id("grok-4.1-fast").supports_effort);
     }
 
     #[test]
     fn gemini_api_reasoning_models_support_effort() {
         let p = CATALOG.iter().find(|p| p.id == "gemini-api").unwrap();
         let by_id = |id: &str| p.default_models.iter().find(|m| m.id == id).unwrap();
-        for id in ["gemini-3.1-pro", "gemini-3-flash", "gemini-3.5-flash"] {
+        // All Gemini 3.x + 2.5 Pro/Flash support Thinking per docs.
+        for id in [
+            "gemini-3.5-flash",
+            "gemini-3.1-pro-preview",
+            "gemini-3-flash-preview",
+            "gemini-3.1-flash-lite",
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+        ] {
             assert!(by_id(id).supports_effort, "{id} should support effort");
         }
-        for id in ["gemini-3.1-flash-lite", "gemini-omni"] {
-            assert!(!by_id(id).supports_effort, "{id} should NOT support effort");
-        }
+        // Flash-Lite 2.5 is the budget tier — no reasoning lever exposed.
+        assert!(!by_id("gemini-2.5-flash-lite").supports_effort);
     }
 
     #[test]
-    fn kimi_api_thinking_modes_support_effort() {
+    fn kimi_api_models_support_effort() {
         let p = CATALOG.iter().find(|p| p.id == "kimi-api").unwrap();
         let by_id = |id: &str| p.default_models.iter().find(|m| m.id == id).unwrap();
-        assert!(by_id("kimi-k2.6-thinking").supports_effort);
-        assert!(by_id("kimi-k2.6-agent").supports_effort);
-        assert!(!by_id("kimi-k2.6").supports_effort);
+        // Both kimi-k2.6 and kimi-k2.5 support thinking + non-thinking modes.
+        assert!(by_id("kimi-k2.6").supports_effort);
+        assert!(by_id("kimi-k2.5").supports_effort);
     }
 
     #[test]
@@ -1547,18 +1597,20 @@ mod tests {
     fn perplexity_agent_marketplace_inherits_effort_support() {
         let p = CATALOG.iter().find(|p| p.id == "perplexity").unwrap();
         let by_id = |id: &str| p.default_models.iter().find(|m| m.id == id).unwrap();
-        // Every Claude / GPT / Gemini / Grok entry routed through
-        // Perplexity Agent matches its direct-provider equivalent.
+        // Verified against docs.perplexity.ai/docs/agent-api/models (2026-05-25).
+        // Reasoning-capable Agent API entries:
         for id in [
             "anthropic/claude-opus-4-7",
             "anthropic/claude-opus-4-6",
+            "anthropic/claude-opus-4-5",
             "anthropic/claude-sonnet-4-6",
-            "anthropic/claude-haiku-4-5",
+            "anthropic/claude-sonnet-4-5",
             "openai/gpt-5.5",
+            "openai/gpt-5.4",
             "openai/gpt-5.4-mini",
             "openai/gpt-5",
-            "google/gemini-3.1-pro-preview",
             "google/gemini-3.5-flash",
+            "google/gemini-3.1-pro-preview",
             "xai/grok-4.3",
             "xai/grok-4.20-reasoning",
         ] {
@@ -1567,13 +1619,25 @@ mod tests {
                 "{id} (Agent API) should support effort"
             );
         }
+        // Non-reasoning Agent API entries:
+        for id in [
+            "anthropic/claude-haiku-4-5",
+            "google/gemini-3.1-flash-lite",
+            "google/gemini-3-flash-preview",
+        ] {
+            assert!(
+                !by_id(id).supports_effort,
+                "{id} (Agent API) should NOT support effort"
+            );
+        }
     }
 
     #[test]
     fn nvidia_nim_reasoning_subset_supports_effort() {
         let p = CATALOG.iter().find(|p| p.id == "nvidia-nim").unwrap();
         let by_id = |id: &str| p.default_models.iter().find(|m| m.id == id).unwrap();
-        // Reasoning-capable NIM entries match upstream.
+        // Verified against build.nvidia.com (2026-05-25).
+        // Reasoning-capable NIM entries:
         for id in [
             "moonshotai/kimi-k2.6",
             "openai/gpt-oss-120b",
@@ -1581,16 +1645,106 @@ mod tests {
         ] {
             assert!(by_id(id).supports_effort, "{id} should support effort");
         }
-        // Non-reasoning entries (Llama 4 / Qwen / GLM / MiniMax / Mistral) stay false.
+        // Non-reasoning entries (Llama 4 Maverick / GLM / MiniMax / Mistral / OSS-20B) stay false.
         for id in [
-            "meta/llama-4-405b-instruct",
-            "meta/llama-4-70b-instruct",
-            "qwen/qwen3.5-coder-480b",
+            "meta/llama-4-maverick-17b-128e-instruct",
             "z-ai/glm-5.1",
             "minimaxai/minimax-m2.7",
             "mistralai/mistral-nemotron",
+            "openai/gpt-oss-20b",
         ] {
             assert!(!by_id(id).supports_effort, "{id} should NOT support effort");
+        }
+        // Stale ids must not be present.
+        let ids: Vec<&str> = p.default_models.iter().map(|m| m.id).collect();
+        for gone in [
+            "meta/llama-4-405b-instruct", // 404 on build.nvidia.com
+            "meta/llama-4-70b-instruct",  // 404 on build.nvidia.com
+            "qwen/qwen3.5-coder-480b",    // 404 on build.nvidia.com
+        ] {
+            assert!(
+                !ids.contains(&gone),
+                "stale NIM model still in catalog: {gone}"
+            );
+        }
+    }
+
+    /// Exhaustive verified-id allowlist across every Api-kind slice.
+    /// When you add or rename a model id, add it here AND update the research doc.
+    /// Fails fast in CI so stale/fabricated ids are caught before release.
+    #[test]
+    fn no_stale_model_ids() {
+        #[rustfmt::skip]
+        const KNOWN_GOOD: &[&str] = &[
+            // ── OpenAI (developers.openai.com 2026-05-25) ──────────────────
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.4-nano",
+            "gpt-5",
+            "gpt-5-mini",
+            "gpt-4.1",
+            // ── DeepSeek (api-docs.deepseek.com 2026-05-25) ────────────────
+            "deepseek-v4-pro",
+            "deepseek-v4-flash",
+            // ── xAI Grok (docs.x.ai 2026-05-25) ───────────────────────────
+            "grok-4.3",
+            // ── NVIDIA NIM (build.nvidia.com 2026-05-25) ───────────────────
+            "deepseek-ai/deepseek-v4-pro",
+            "deepseek-ai/deepseek-v4-flash",
+            "moonshotai/kimi-k2.6",
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
+            "nvidia/nemotron-3-super-120b-a12b",
+            "meta/llama-4-maverick-17b-128e-instruct",
+            "z-ai/glm-5.1",
+            "minimaxai/minimax-m2.7",
+            "mistralai/mistral-nemotron",
+            // ── Kimi (platform.kimi.ai 2026-05-25) ────────────────────────
+            "kimi-k2.6",
+            "kimi-k2.5",
+            // ── Gemini API (ai.google.dev 2026-05-25) ─────────────────────
+            "gemini-3.5-flash",
+            "gemini-3.1-pro-preview",
+            "gemini-3-flash-preview",
+            "gemini-3.1-flash-lite",
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+            // ── Perplexity Sonar (docs.perplexity.ai 2026-05-25) ──────────
+            "sonar",
+            "sonar-pro",
+            "sonar-reasoning-pro",
+            "sonar-deep-research",
+            // ── Perplexity Agent (docs.perplexity.ai/docs/agent-api 2026-05-25)
+            "anthropic/claude-opus-4-7",
+            "anthropic/claude-opus-4-6",
+            "anthropic/claude-opus-4-5",
+            "anthropic/claude-sonnet-4-6",
+            "anthropic/claude-sonnet-4-5",
+            "anthropic/claude-haiku-4-5",
+            "openai/gpt-5.5",
+            "openai/gpt-5.4",
+            "openai/gpt-5.4-mini",
+            "openai/gpt-5",
+            "google/gemini-3.5-flash",
+            "google/gemini-3.1-pro-preview",
+            "google/gemini-3.1-flash-lite",
+            "google/gemini-3-flash-preview",
+            "xai/grok-4.3",
+            "xai/grok-4.20-reasoning",
+        ];
+        let catalog_ids: Vec<&str> = CATALOG
+            .iter()
+            .filter(|s| matches!(s.kind, ProviderKind::Api))
+            .flat_map(|s| s.default_models.iter().map(|m| m.id))
+            .collect();
+        for id in catalog_ids {
+            assert!(
+                KNOWN_GOOD.contains(&id),
+                "catalog ships {id} but it's not in the verified known-good list — \
+                 refresh research docs + this test together"
+            );
         }
     }
 }

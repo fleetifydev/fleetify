@@ -39,6 +39,66 @@ impl AgentScanCache {
     }
 }
 
+/// Per-provider health snapshot recorded by the boot warm-up and the
+/// user-driven Test button. Reads land in `/api/providers/health` so
+/// the renderer can paint status pills without firing its own probe
+/// fan-out on every Settings mount.
+#[derive(Clone, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HealthSnapshot {
+    /// Key absent — `connected = false` in `ProvidersConfig`, so we
+    /// don't even try to dial the upstream.
+    NoKey,
+    /// Live round-trip succeeded. `latency_ms` is the end-to-end
+    /// reqwest timing; `model_count` is the number of entries the
+    /// provider's `/models` endpoint returned (None for providers
+    /// without a list endpoint, e.g. fixed-lineup APIs).
+    Ok {
+        latency_ms: u64,
+        model_count: Option<usize>,
+    },
+    /// Live round-trip failed. `code` mirrors the existing renderer
+    /// strings ("AUTH", "NETWORK", "TIMEOUT", "NOT_FOUND") so the
+    /// chip pill renders identically. `message` is the short upstream
+    /// error body when one is available.
+    Failed {
+        code: String,
+        message: Option<String>,
+    },
+}
+
+/// Twin of `AgentScanCache` but for HTTP providers — populated by the
+/// boot-time warm-up hook in the Tauri shell. Lives on `AppState` so
+/// both the public `/api/providers/health` endpoint and the
+/// `providers_*` IPC layer can read+invalidate it.
+#[derive(Clone, Default)]
+pub struct HttpHealthCache {
+    inner: Arc<RwLock<Option<HashMap<String, HealthSnapshot>>>>,
+}
+
+impl HttpHealthCache {
+    pub async fn get(&self) -> Option<HashMap<String, HealthSnapshot>> {
+        self.inner.read().await.clone()
+    }
+
+    pub async fn set(&self, snapshot: HashMap<String, HealthSnapshot>) {
+        *self.inner.write().await = Some(snapshot);
+    }
+
+    pub async fn invalidate(&self) {
+        *self.inner.write().await = None;
+    }
+
+    /// Replace the entry for a single provider id without clobbering
+    /// the rest of the cache. Used after `providers_test_connection`
+    /// so a manual Test refreshes only that tile.
+    pub async fn upsert(&self, provider_id: String, snapshot: HealthSnapshot) {
+        let mut guard = self.inner.write().await;
+        let map = guard.get_or_insert_with(HashMap::new);
+        map.insert(provider_id, snapshot);
+    }
+}
+
 #[derive(Deserialize)]
 struct ScanQuery {
     #[serde(default)]
@@ -50,6 +110,7 @@ pub fn router() -> Router<AppState> {
         .route("/models", get(list_models))
         .route("/providers/scan", get(scan_providers))
         .route("/providers/catalog", get(providers_catalog))
+        .route("/providers/health", get(http_health))
         .route("/agents/scan", get(scan_agents_cached))
 }
 
@@ -59,6 +120,14 @@ pub fn router() -> Router<AppState> {
 /// poll without rate-limiting concerns.
 async fn providers_catalog() -> Json<&'static [crate::providers::ProviderSpec]> {
     Json(crate::providers::CATALOG)
+}
+
+/// Read the prewarmed HTTP-provider health cache. Always returns a
+/// 200 + a snapshot map; missing entries mean "warm hasn't completed
+/// yet". The renderer treats absent ids as a brief Testing… state.
+async fn http_health(State(st): State<AppState>) -> Json<Value> {
+    let snapshot = st.http_health_cache.get().await.unwrap_or_default();
+    Json(json!({ "ok": true, "providers": snapshot }))
 }
 
 /// Resolve the per-OS install hint for a provider. Returns the override
@@ -428,6 +497,135 @@ async fn list_models() -> Json<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn http_health_cache_round_trip() {
+        let cache = HttpHealthCache::default();
+        assert!(cache.get().await.is_none(), "cold cache returns None");
+        let mut snapshot = HashMap::new();
+        snapshot.insert(
+            "openai".to_string(),
+            HealthSnapshot::Ok {
+                latency_ms: 142,
+                model_count: Some(36),
+            },
+        );
+        snapshot.insert(
+            "perplexity".to_string(),
+            HealthSnapshot::Failed {
+                code: "AUTH".into(),
+                message: Some("401".into()),
+            },
+        );
+        cache.set(snapshot.clone()).await;
+        let read = cache.get().await.expect("cache populated");
+        assert_eq!(read.len(), 2);
+        assert!(matches!(
+            read.get("openai"),
+            Some(HealthSnapshot::Ok {
+                latency_ms: 142,
+                ..
+            })
+        ));
+        cache.invalidate().await;
+        assert!(cache.get().await.is_none(), "invalidate clears cache");
+    }
+
+    #[tokio::test]
+    async fn http_health_cache_concurrent_writes_dont_panic() {
+        let cache = HttpHealthCache::default();
+        let mut handles = Vec::new();
+        for i in 0..20 {
+            let c = cache.clone();
+            handles.push(tokio::spawn(async move {
+                let mut s = HashMap::new();
+                s.insert(
+                    format!("id-{i}"),
+                    HealthSnapshot::Ok {
+                        latency_ms: i * 10,
+                        model_count: None,
+                    },
+                );
+                c.set(s).await;
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        assert!(
+            cache.get().await.is_some(),
+            "some writer's snapshot survived"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_health_endpoint_returns_cached_snapshot() {
+        use crate::auth::{AuthConfig, AuthState};
+        use crate::routers::AppState;
+        use axum::body::Body;
+        use axum::http::Request;
+        use std::sync::Arc;
+        use tower::ServiceExt;
+
+        // Minimal AppState — mirrors the build_app helper in routers/internal.rs.
+        // We only touch http_health_cache, so all other fields are empty/default.
+        let pool = crate::db::init_pool("sqlite::memory:").await.unwrap();
+        let cfg = Arc::new(crate::config::AppConfig::load(None).expect("config/default.toml"));
+        let auth_cfg = Arc::new(AuthConfig::from_env());
+        let jwks = crate::auth::default_jwks_cache(&auth_cfg.jwks_url);
+        let sm: &'static crate::session_manager::SessionManager =
+            Box::leak(Box::new(crate::session_manager::SessionManager::for_tests()));
+        let routing = crate::services::routing::RoutingOrchestrator::with_empty_defaults(false);
+        let state = AppState {
+            auth: AuthState {
+                pool,
+                cfg: auth_cfg,
+                jwks,
+            },
+            app_cfg: cfg,
+            sm,
+            internal_secret: Arc::new("test-secret".to_string()),
+            routing,
+            permission_registry: Arc::new(
+                tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            ),
+            agent_scan_cache: AgentScanCache::default(),
+            http_health_cache: HttpHealthCache::default(),
+        };
+
+        let mut snap = HashMap::new();
+        snap.insert(
+            "openai".to_string(),
+            HealthSnapshot::Ok {
+                latency_ms: 99,
+                model_count: Some(12),
+            },
+        );
+        snap.insert("perplexity".to_string(), HealthSnapshot::NoKey);
+        state.http_health_cache.set(snap).await;
+
+        let app = crate::routers::providers::router().with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/providers/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["providers"]["openai"]["kind"], "ok");
+        assert_eq!(body["providers"]["openai"]["latency_ms"], 99);
+        assert_eq!(body["providers"]["perplexity"]["kind"], "no_key");
+    }
 
     #[tokio::test]
     async fn agent_scan_cache_returns_primed_value_without_rescan() {

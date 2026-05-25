@@ -21,7 +21,19 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiScanProviders } from "@/lib/api";
-import { providers as providersApi, type ProviderTile } from "@/lib/providers-api";
+import { providers as providersApi, type ProviderTile, type ProviderHealthSnapshot } from "@/lib/providers-api";
+
+function snapToHealth(
+  snap: ProviderHealthSnapshot | undefined,
+  hasKey: boolean,
+): ProviderHealth {
+  if (!snap) return hasKey ? { kind: "testing" } : { kind: "no_key" };
+  switch (snap.kind) {
+    case "no_key": return { kind: "no_key" };
+    case "ok": return { kind: "ok", latencyMs: snap.latency_ms, modelCount: snap.model_count ?? undefined };
+    case "failed": return { kind: "failed", code: snap.code, message: snap.message ?? undefined };
+  }
+}
 
 export type InstallSubstate = "running-installer" | "waiting-daemon" | "timeout";
 
@@ -107,27 +119,48 @@ export function useProviderHealth({ tiles }: { tiles: ProviderTile[] }): UseProv
       }
     }
 
-    // 2. Per-provider tests in parallel.
-    const apiTiles = currentTiles.filter((t) => t.spec.kind === "api" && t.has_key);
-    await Promise.all(
-      apiTiles.map(async (t) => {
-        try {
-          // Empty key tells the backend to use the saved keychain key.
-          const r = await providersApi.testConnection(t.spec.id, "");
-          setProviders((prev) => ({
-            ...prev,
-            [t.spec.id]: r.ok
-              ? { kind: "ok", latencyMs: r.latency_ms, modelCount: r.model_count }
-              : { kind: "failed", code: r.code, message: r.error },
-          }));
-        } catch (e) {
-          setProviders((prev) => ({
-            ...prev,
-            [t.spec.id]: { kind: "failed", message: e instanceof Error ? e.message : "test threw" },
-          }));
-        }
-      }),
-    );
+    // 2. Per-provider health — cache-first, fan-out fallback.
+    const apiTiles = currentTiles.filter((t) => t.spec.kind === "api");
+    let usedCache = false;
+    try {
+      const health = await providersApi.fetchHealth();
+      if (health.ok && Object.keys(health.providers).length > 0) {
+        usedCache = true;
+        setProviders((prev) => {
+          const next = { ...prev };
+          for (const t of apiTiles) {
+            next[t.spec.id] = snapToHealth(health.providers[t.spec.id], t.has_key);
+          }
+          return next;
+        });
+      }
+    } catch {
+      // fetchHealth failed — fall through to local fan-out below.
+    }
+
+    if (!usedCache) {
+      // Fan-out fallback: used on cold start (cache empty) or if fetchHealth threw.
+      const keyedTiles = apiTiles.filter((t) => t.has_key);
+      await Promise.all(
+        keyedTiles.map(async (t) => {
+          try {
+            // Empty key tells the backend to use the saved keychain key.
+            const r = await providersApi.testConnection(t.spec.id, "");
+            setProviders((prev) => ({
+              ...prev,
+              [t.spec.id]: r.ok
+                ? { kind: "ok", latencyMs: r.latency_ms, modelCount: r.model_count }
+                : { kind: "failed", code: r.code, message: r.error },
+            }));
+          } catch (e) {
+            setProviders((prev) => ({
+              ...prev,
+              [t.spec.id]: { kind: "failed", message: e instanceof Error ? e.message : "test threw" },
+            }));
+          }
+        }),
+      );
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tilesSig]);
 

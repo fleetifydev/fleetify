@@ -107,6 +107,18 @@ export type ProvidersTestResult =
       latency_ms?: number;
     };
 
+/** Mirrors crates/fleetify-backend/src/routers/providers.rs HealthSnapshot
+ *  serde tag layout. */
+export type ProviderHealthSnapshot =
+  | { kind: "no_key" }
+  | { kind: "ok"; latency_ms: number; model_count: number | null }
+  | { kind: "failed"; code: string; message: string | null };
+
+export interface ProvidersHealthResult {
+  ok: boolean;
+  providers: Record<string, ProviderHealthSnapshot>;
+}
+
 export interface OllamaModelEntry {
   name: string;
   size?: number;
@@ -129,6 +141,7 @@ export type ProvidersMutationResult = { ok: boolean; error?: string };
 
 interface ProvidersAPI {
   listCatalog: () => Promise<ProvidersListResult>;
+  fetchHealth: () => Promise<ProvidersHealthResult>;
   setKey: (id: string, key: string) => Promise<ProvidersSetKeyResult>;
   getKeyPreview: (id: string) => Promise<ProvidersKeyPreviewResult>;
   deleteKey: (id: string) => Promise<ProvidersDeleteResult>;
@@ -150,6 +163,7 @@ function api(): ProvidersAPI {
         error: "electron unavailable",
         tiles: [],
       }),
+      fetchHealth: async () => ({ ok: true, providers: {} }),
       setKey: async () => ({
         ok: false,
         code: "KEYCHAIN",
@@ -177,6 +191,7 @@ function api(): ProvidersAPI {
 
 export const providers = {
   listCatalog: () => api().listCatalog(),
+  fetchHealth: () => api().fetchHealth(),
   setKey: (id: string, key: string) => api().setKey(id, key),
   getKeyPreview: (id: string) => api().getKeyPreview(id),
   deleteKey: (id: string) => api().deleteKey(id),

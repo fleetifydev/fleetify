@@ -245,6 +245,30 @@ pub fn run() {
                 }
             });
 
+            // Boot-time providers warm-up: hydrate PROVIDER_KEYS from
+            // the keychain and prime HttpHealthCache so the first chat
+            // turn doesn't hit "No API key" and Settings → Models
+            // opens with final pills instead of the "Testing…" flash.
+            // Waits for the embedded backend to bind before hitting it
+            // (200ms × 20 = 4s upper bound covers a cold Rust startup).
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                // Wait for the embedded backend to bind its port before
+                // we try to reach it. 200ms × 20 = 4s upper bound covers
+                // a cold Rust startup on a slow disk.
+                let port = std::env::var("FLEETIFY_BACKEND_PORT").unwrap_or_else(|_| "8765".into());
+                let health_url = format!("http://127.0.0.1:{port}/health");
+                for _ in 0..20 {
+                    if let Ok(r) = reqwest::get(&health_url).await {
+                        if r.status().is_success() {
+                            break;
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+                crate::shell::providers_setup::warm_providers_at_boot(&handle).await;
+            });
+
             // Reveal-when-ready: poll the webview URL until it
             // answers HTTP, then show + focus. Any non-connection-
             // error response counts as "up" (even 404 → renderer can

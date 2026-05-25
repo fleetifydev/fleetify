@@ -83,6 +83,7 @@ export function ProviderCard({
 }) {
   const { setKey, deleteKey, setEnabledModels } = useProvidersConfig();
   const [expanded, setExpanded] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [draftKey, setDraftKey] = useState("");
   const [keyRevealed, setKeyRevealed] = useState(false);
   const [savedPreview, setSavedPreview] = useState<string | null>(null);
@@ -137,6 +138,7 @@ export function ProviderCard({
     setDraftKey("");
     setSavedPreview(null); // force re-fetch on next expand
     setSaving(false);
+    setEditing(false);
     // Re-run the parent's launch-time scan so the pill transitions
     // testing → ok/failed without waiting for a page reload.
     onHealthChange();
@@ -223,90 +225,123 @@ export function ProviderCard({
       {expanded && (
         <div style={{ padding: "0 14px 14px 14px", borderTop: "1px solid var(--c-brd)" }}>
           {/* ── API key row ── */}
-          <div style={{ padding: "14px 0 12px 0" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-              <div style={{ fontSize: 12, fontWeight: 500, color: "var(--c-high)" }}>
-                API Key
+          {tile.has_key && !editing ? (
+            /* ── Saved-key view: masked preview + Edit + Disconnect ── */
+            <div style={{ padding: "14px 0 12px 0" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                  <span style={{
+                    fontFamily: "var(--font-mono, monospace)",
+                    fontSize: 12.5,
+                    color: "var(--c-high)",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}>
+                    {previewLoading ? "loading…" : (savedPreview ?? "saved")}
+                  </span>
+                  <span style={{ fontSize: 11, color: "var(--c-dim)" }}>✓ Saved</span>
+                </div>
+                <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                  <button onClick={() => setEditing(true)} style={ghostBtn}>Edit</button>
+                  {tile.connected && (
+                    <button onClick={onDisconnect} style={dangerBtn}>
+                      <X size={11} /> Disconnect
+                    </button>
+                  )}
+                </div>
               </div>
-              {tile.has_key && (
-                <div style={{ fontSize: 11.5, color: "var(--c-low)", fontFamily: "var(--font-mono, monospace)" }}>
-                  {previewLoading ? "loading…" : savedPreview ?? "saved"}
+            </div>
+          ) : (
+            /* ── Input view: no-key initial flow OR editing an existing key ── */
+            <div style={{ padding: "14px 0 12px 0" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                <div style={{ fontSize: 12, fontWeight: 500, color: "var(--c-high)" }}>
+                  {editing ? `Replacing ${savedPreview ?? "key"}` : "API Key"}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <div style={{ flex: 1, position: "relative" }}>
+                  <input
+                    type={keyRevealed ? "text" : "password"}
+                    value={draftKey}
+                    placeholder={editing ? `Replace key for ${tile.spec.display_name}…` : `Paste your ${tile.spec.display_name} key`}
+                    onChange={(e) => setDraftKey(e.target.value)}
+                    style={inputStyle}
+                  />
+                  <button
+                    onClick={() => setKeyRevealed((v) => !v)}
+                    title={keyRevealed ? "Hide" : "Reveal"}
+                    style={{
+                      position: "absolute",
+                      right: 6,
+                      top: "50%",
+                      transform: "translateY(-50%)",
+                      width: 24,
+                      height: 24,
+                      borderRadius: 5,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      background: "transparent",
+                      border: "none",
+                      cursor: "pointer",
+                      color: "var(--c-dim)",
+                      outline: "none",
+                    }}
+                  >
+                    {keyRevealed ? <EyeOff size={13} /> : <Eye size={13} />}
+                  </button>
+                </div>
+                <button
+                  onClick={onTest}
+                  disabled={!draftKey.trim() || testing}
+                  style={{ ...ghostBtn, opacity: !draftKey.trim() || testing ? 0.5 : 1 }}
+                >
+                  {testing ? <Loader2 size={12} className="spin" /> : "Test"}
+                </button>
+                <button
+                  onClick={onSaveKey}
+                  disabled={!draftKey.trim() || saving}
+                  style={{ ...primaryBtn, opacity: !draftKey.trim() || saving ? 0.5 : 1 }}
+                >
+                  {saving ? <Loader2 size={12} className="spin" /> : "Save"}
+                </button>
+                {editing && (
+                  <button
+                    onClick={() => { setEditing(false); setDraftKey(""); }}
+                    style={ghostBtn}
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+              {testResult && (
+                <div style={{ marginTop: 8 }}>
+                  {testResult.ok ? (
+                    <ConnectionStatusPill
+                      status="connected"
+                      label={`✓ ${testResult.latency_ms}ms${
+                        testResult.model_count ? ` · ${testResult.model_count} models` : ""
+                      }`}
+                    />
+                  ) : (
+                    <ConnectionStatusPill
+                      status="error"
+                      label={`${testResult.code}${testResult.error ? ` — ${testResult.error}` : ""}`}
+                    />
+                  )}
+                </div>
+              )}
+              {tile.connected && !editing && (
+                <div style={{ marginTop: 10 }}>
+                  <button onClick={onDisconnect} style={dangerBtn}>
+                    <X size={11} /> Disconnect
+                  </button>
                 </div>
               )}
             </div>
-            <div style={{ display: "flex", gap: 6 }}>
-              <div style={{ flex: 1, position: "relative" }}>
-                <input
-                  type={keyRevealed ? "text" : "password"}
-                  value={draftKey}
-                  placeholder={tile.has_key ? "Enter a new key to replace…" : `Paste your ${tile.spec.display_name} key`}
-                  onChange={(e) => setDraftKey(e.target.value)}
-                  style={inputStyle}
-                />
-                <button
-                  onClick={() => setKeyRevealed((v) => !v)}
-                  title={keyRevealed ? "Hide" : "Reveal"}
-                  style={{
-                    position: "absolute",
-                    right: 6,
-                    top: "50%",
-                    transform: "translateY(-50%)",
-                    width: 24,
-                    height: 24,
-                    borderRadius: 5,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    background: "transparent",
-                    border: "none",
-                    cursor: "pointer",
-                    color: "var(--c-dim)",
-                    outline: "none",
-                  }}
-                >
-                  {keyRevealed ? <EyeOff size={13} /> : <Eye size={13} />}
-                </button>
-              </div>
-              <button
-                onClick={onTest}
-                disabled={!draftKey.trim() || testing}
-                style={{ ...ghostBtn, opacity: !draftKey.trim() || testing ? 0.5 : 1 }}
-              >
-                {testing ? <Loader2 size={12} className="spin" /> : "Test"}
-              </button>
-              <button
-                onClick={onSaveKey}
-                disabled={!draftKey.trim() || saving}
-                style={{ ...primaryBtn, opacity: !draftKey.trim() || saving ? 0.5 : 1 }}
-              >
-                {saving ? <Loader2 size={12} className="spin" /> : "Save"}
-              </button>
-            </div>
-            {testResult && (
-              <div style={{ marginTop: 8 }}>
-                {testResult.ok ? (
-                  <ConnectionStatusPill
-                    status="connected"
-                    label={`✓ ${testResult.latency_ms}ms${
-                      testResult.model_count ? ` · ${testResult.model_count} models` : ""
-                    }`}
-                  />
-                ) : (
-                  <ConnectionStatusPill
-                    status="error"
-                    label={`${testResult.code}${testResult.error ? ` — ${testResult.error}` : ""}`}
-                  />
-                )}
-              </div>
-            )}
-            {tile.connected && (
-              <div style={{ marginTop: 10 }}>
-                <button onClick={onDisconnect} style={dangerBtn}>
-                  <X size={11} /> Disconnect
-                </button>
-              </div>
-            )}
-          </div>
+          )}
 
           {/* ── Model checkbox list ── */}
           {tile.spec.default_models.length > 0 && (

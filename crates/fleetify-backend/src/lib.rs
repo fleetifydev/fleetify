@@ -135,6 +135,12 @@ pub async fn serve_with_routing_setup(
     let pool = db::init_pool(&db_url).await?;
     reset_stale_session_state(&pool).await;
     normalize_legacy_verbatim_project_paths(&pool).await;
+    // One-shot rewrite of `sessions.model_name` rows whose pinned id was
+    // dropped from the provider catalog by Tasks 7+8. Idempotent — once
+    // every row points at a live id this becomes a no-op. Runs before
+    // the HTTP server binds so the first chat turn after boot can't race
+    // against an un-migrated row.
+    services::session_migrations::migrate_orphaned_model_names(&pool).await;
 
     let auth_cfg = Arc::new(auth::AuthConfig::from_env());
     let jwks = auth::default_jwks_cache(&auth_cfg.jwks_url);
@@ -292,6 +298,7 @@ pub async fn serve_with_routing_setup(
         routing,
         permission_registry: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         agent_scan_cache: routers::providers::AgentScanCache::default(),
+        http_health_cache: routers::providers::HttpHealthCache::default(),
     };
     // Surface the secret + backend URL through env so MCP processes
     // spawned later (by ClaudeBridge::build_mcp_config) can read them

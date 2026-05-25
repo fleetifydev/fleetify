@@ -41,6 +41,7 @@ pub fn router() -> Router<AppState> {
         .route("/permission_prompt", post(permission_prompt))
         .route("/routing/reload", post(routing_reload))
         .route("/providers/reload", post(providers_reload))
+        .route("/providers/warm-health", post(providers_warm_health))
 }
 
 /// Hot-reload hook for provider state. The Tauri shell walks the OS
@@ -347,6 +348,22 @@ async fn permission_prompt(
     }
 }
 
+async fn providers_warm_health(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let presented = headers
+        .get("x-fleet-internal")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !constant_time_eq(presented.as_bytes(), st.internal_secret.as_bytes()) {
+        return Err(ApiError::Forbidden("internal-secret mismatch".into()));
+    }
+    crate::services::providers_health::warm_all(&st.http_health_cache).await;
+    let cached = st.http_health_cache.get().await.unwrap_or_default();
+    Ok(Json(json!({ "ok": true, "warmed": cached.len() })))
+}
+
 /// Constant-time byte-slice equality. Tiny implementation — fine for
 /// 32-byte secrets like the loopback token.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -427,6 +444,7 @@ mod tests {
                 tokio::sync::Mutex::new(std::collections::HashMap::new()),
             ),
             agent_scan_cache: crate::routers::providers::AgentScanCache::default(),
+            http_health_cache: crate::routers::providers::HttpHealthCache::default(),
         };
         let app = axum::Router::new()
             .nest("/api/internal", router())
@@ -588,6 +606,24 @@ mod tests {
         assert!(!constant_time_eq(b"abc", b"abd"));
         assert!(!constant_time_eq(b"abc", b"abcd"));
         assert!(constant_time_eq(b"", b""));
+    }
+
+    #[tokio::test]
+    async fn warm_health_writes_cache_for_every_keyed_provider() {
+        use crate::routers::providers::{HealthSnapshot, HttpHealthCache};
+        crate::providers::keys::_reset_for_tests();
+        let mut keys = std::collections::HashMap::new();
+        keys.insert("openai".to_string(), "sk-stub-openai".to_string());
+        keys.insert("gemini-api".to_string(), "stub-gemini-key".to_string());
+        crate::providers::keys::set_keys(keys);
+
+        let cache = HttpHealthCache::default();
+        crate::services::providers_health::warm_all(&cache).await;
+        let snap = cache.get().await.expect("cache populated");
+        assert!(snap.contains_key("openai"));
+        assert!(snap.contains_key("gemini-api"));
+        // Providers with no key written as NoKey explicitly.
+        assert!(matches!(snap.get("deepseek"), Some(HealthSnapshot::NoKey)));
     }
 
     #[tokio::test]

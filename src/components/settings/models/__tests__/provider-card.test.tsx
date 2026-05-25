@@ -278,6 +278,50 @@ function buildPerplexityTile(): ProviderTile {
   };
 }
 
+describe("ProviderCard Edit/Cancel flow (has_key tile)", () => {
+  beforeEach(() => {
+    hookMock.setKey.mockReset();
+    hookMock.deleteKey.mockReset();
+    hookMock.setEnabledModels.mockReset();
+    apiMock.getKeyPreview.mockReset();
+    apiMock.testConnection.mockReset();
+    apiMock.getKeyPreview.mockResolvedValue({ ok: true, preview: "sk-•••N5kJ" });
+    hookMock.setKey.mockResolvedValue(undefined);
+    hookMock.deleteKey.mockResolvedValue(undefined);
+    hookMock.setEnabledModels.mockResolvedValue(undefined);
+  });
+
+  it("collapses the input behind an Edit button when has_key is true", async () => {
+    const tile = makeTile({ has_key: true, connected: true });
+    render(<ProviderCard tile={tile} health={{ kind: "ok", latencyMs: 50 }} onHealthChange={() => {}} />);
+
+    // Expand the card.
+    fireEvent.click(screen.getByRole("button", { name: /DeepSeek/i }));
+
+    // Saved-key view: masked preview loads async, then Edit + Disconnect appear;
+    // raw key input must NOT be in the DOM.
+    expect(await screen.findByText("sk-•••N5kJ")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Edit$/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Disconnect/ })).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/Enter a new key/i)).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/Paste your/i)).not.toBeInTheDocument();
+
+    // Click Edit → input + Cancel appear.
+    fireEvent.click(screen.getByRole("button", { name: /^Edit$/ }));
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText(/Replace key/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: /Cancel/ })).toBeInTheDocument();
+
+    // Cancel → back to saved-key view; input gone, Edit button back.
+    fireEvent.click(screen.getByRole("button", { name: /Cancel/ }));
+    await waitFor(() =>
+      expect(screen.queryByPlaceholderText(/Replace key/i)).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: /^Edit$/ })).toBeInTheDocument();
+  });
+});
+
 describe("ProviderCard grouping", () => {
   beforeEach(() => {
     apiMock.getKeyPreview.mockResolvedValue({ ok: true, preview: null });

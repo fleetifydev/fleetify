@@ -103,3 +103,59 @@ pub async fn reload_backend(app: &tauri::AppHandle) {
         }
     }
 }
+
+/// Boot-time hydration: hydrate PROVIDER_KEYS *and* prime the
+/// HttpHealthCache so the first chat turn doesn't see a "No API key"
+/// error and Settings → Models doesn't flash a "Testing…" state.
+///
+/// Fire-and-forget. If the backend isn't listening yet, the inner
+/// HTTP calls fail and log — the next user-driven IPC will rerun
+/// reload_backend, and the user can hit Test in Settings to refresh
+/// health manually. No retry loop: the boot path stays simple.
+pub async fn warm_providers_at_boot(app: &tauri::AppHandle) {
+    // 1) hydrate PROVIDER_KEYS from the keychain.
+    reload_backend(app).await;
+
+    // 2) hit /api/internal/providers/warm-health to fan-out health
+    //    probes against every keyed provider.
+    let port = std::env::var("FLEETIFY_BACKEND_PORT").unwrap_or_else(|_| "8765".into());
+    let secret = match std::env::var("FLEETIFY_INTERNAL_SECRET") {
+        Ok(s) => s,
+        Err(_) => {
+            tracing::warn!(
+                target: "fleet-shell",
+                "warm-health: FLEETIFY_INTERNAL_SECRET not set — skipping (next IPC will warm)"
+            );
+            return;
+        }
+    };
+    let url = format!("http://127.0.0.1:{port}/api/internal/providers/warm-health");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .unwrap_or_default();
+    match client
+        .post(&url)
+        .header("X-Fleet-Internal", &secret)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => {
+            tracing::info!(target: "fleet-shell", "warm-health: backend acked");
+        }
+        Ok(r) => {
+            tracing::warn!(
+                target: "fleet-shell",
+                status = %r.status(),
+                "warm-health: backend returned non-2xx"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "fleet-shell",
+                error = %e,
+                "warm-health: POST failed (next manual Test will refresh)"
+            );
+        }
+    }
+}

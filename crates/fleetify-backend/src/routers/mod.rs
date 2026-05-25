@@ -61,6 +61,11 @@ pub struct AppState {
     /// CLI agent scan result, primed at backend startup and refreshed
     /// on install / manual ?refresh=1 hits. See routers::providers.
     pub agent_scan_cache: crate::routers::providers::AgentScanCache,
+    /// HTTP provider health snapshots, primed at backend startup by the
+    /// Tauri warm-up hook. Read by `/api/providers/health`; invalidated
+    /// by `providers_test_connection` IPC after a manual Test. See
+    /// routers::providers::HttpHealthCache.
+    pub http_health_cache: crate::routers::providers::HttpHealthCache,
 }
 
 impl FromRef<AppState> for AuthState {
