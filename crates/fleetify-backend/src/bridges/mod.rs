@@ -4,6 +4,7 @@
 //! shape the `/ws/sessions` handler forwards (unchanged React client).
 
 pub mod acp;
+pub mod agentic_runner;
 pub mod antigravity;
 pub mod antigravity_sdk;
 pub mod claude;
@@ -13,6 +14,7 @@ pub mod gemini;
 pub mod kimi;
 pub mod openai;
 pub mod openai_compat;
+pub mod openai_compat_tools;
 pub mod permission;
 pub mod perplexity;
 
@@ -75,6 +77,14 @@ pub enum AnyBridge {
     /// real per-turn model selection (`LocalAgentConfig(model=...)`)
     /// and API-key auth instead of the CLI's OAuth.
     AntigravitySdk(Arc<antigravity_sdk::AntigravitySdkBridge>),
+    /// Provider-agnostic agentic runner. Wraps any `ToolAdapter`
+    /// (OpenAI-compat today; Anthropic/Gemini-direct/others slot in
+    /// without enum churn) and drives the shared `drive_agentic_loop`,
+    /// translating `TurnEvent` → `BridgeEvent` so the WS handler stays
+    /// untouched. Dispatched by `chat.rs` when the session opts into
+    /// tool use via `permission_mode = "acceptEdits"` (Chat-mode tools)
+    /// or `"bypassPermissions"` (Autonomous tools).
+    Agentic(Arc<agentic_runner::AgenticBridgeRunner>),
 }
 
 impl AnyBridge {
@@ -93,6 +103,7 @@ impl AnyBridge {
             AnyBridge::Kimi(b) => b.send_message(msg, ctx).await,
             AnyBridge::Antigravity(b) => b.send_message(msg, ctx).await,
             AnyBridge::AntigravitySdk(b) => b.send_message(msg, ctx).await,
+            AnyBridge::Agentic(b) => b.send_message(msg, ctx).await,
         }
     }
     pub async fn abort(&self) {
@@ -106,6 +117,7 @@ impl AnyBridge {
             AnyBridge::Kimi(b) => b.abort().await,
             AnyBridge::Antigravity(b) => b.abort().await,
             AnyBridge::AntigravitySdk(b) => b.abort().await,
+            AnyBridge::Agentic(b) => b.abort().await,
         }
     }
     /// claude_session_id (if the agent emitted one in `init`). For
@@ -183,6 +195,18 @@ pub enum BridgeEvent {
         snippet: Option<String>,
         date: Option<String>,
     },
+    /// The agentic loop's permission gate is asking the user to approve
+    /// a write/shell tool that the session's mode flagged as Ask. The
+    /// renderer shows an inline approve/deny dialog tied to `call_id`;
+    /// clicking either button POSTs back to
+    /// `/api/chat/permission_response`, which resolves the gate's
+    /// pending oneshot and the loop continues. `tool_name` + `input`
+    /// are included so the dialog can summarise the action.
+    PermissionRequest {
+        call_id: String,
+        tool_name: String,
+        input: Value,
+    },
 }
 
 impl BridgeEvent {
@@ -252,6 +276,20 @@ impl BridgeEvent {
                 "title": title,
                 "snippet": snippet,
                 "date": date,
+            }),
+            BridgeEvent::PermissionRequest {
+                call_id,
+                tool_name,
+                input,
+            } => json!({
+                "type": "permission_request",
+                // `id` (not `call_id`) on the wire so the renderer reuses
+                // its existing PermissionRequest store entry + dialog
+                // component shape from the CLI-MCP flow. Backend keeps
+                // `call_id` internally for clarity.
+                "id": call_id,
+                "tool_name": tool_name,
+                "input": input,
             }),
         }
     }

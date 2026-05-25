@@ -311,6 +311,23 @@ function getToolMeta(toolName: string, toolKind?: string): { icon: React.ReactNo
   };
   if (claudeTools[toolName]) return claudeTools[toolName];
 
+  // Fleetify agentic catalog — snake_case tool names emitted by the
+  // shared `crates/fleetify-backend/src/agentic/` executor when an
+  // HTTP-provider session is dispatched through `drive_agentic_loop`.
+  // Names map 1:1 to the same icons / verbs as Claude's PascalCase
+  // equivalents above so a user moving between providers sees the same
+  // visual vocabulary.
+  const agenticTools: Record<string, { icon: React.ReactNode; color: string; verb: string }> = {
+    read_file:   { icon: <FileText size={11} />,     color: "var(--c-ghost)",        verb: "Read"   },
+    edit_file:   { icon: <Pencil size={11} />,       color: "rgba(96,165,250,0.65)", verb: "Edit"   },
+    write_file:  { icon: <FileText size={11} />,     color: "rgba(96,165,250,0.65)", verb: "Write"  },
+    list_dir:    { icon: <FolderSearch size={11} />, color: "var(--c-ghost)",        verb: "List"   },
+    grep:        { icon: <Search size={11} />,       color: "var(--c-ghost)",        verb: "Search" },
+    glob:        { icon: <FolderSearch size={11} />, color: "var(--c-ghost)",        verb: "Glob"   },
+    run_command: { icon: <Terminal size={11} />,     color: "var(--c-med)",          verb: "Run"    },
+  };
+  if (agenticTools[toolName]) return agenticTools[toolName];
+
   // Gemini tools — keyed by ACP `kind`
   const kindMap: Record<string, { icon: React.ReactNode; color: string; verb: string }> = {
     read:    { icon: <FileText size={11} />,        color: "var(--c-ghost)",        verb: "Read"   },

@@ -22,6 +22,22 @@ Stdin: ONE JSON object terminated by `\n`. Shape:
                                                 #   Defaults to [cwd].
         "app_data_dir": str | null,             # optional — override the SDK's
                                                 #   per-instance scratch dir.
+        "mode": "chat" | "accept_edits" | "autonomous",  # optional — tool autonomy:
+                                                #   "chat" → reads allowed,
+                                                #     writes + shell denied.
+                                                #     The default for new
+                                                #     sessions; agent can
+                                                #     suggest code but can't
+                                                #     apply it.
+                                                #   "accept_edits" → reads +
+                                                #     writes allowed; shell
+                                                #     still denied.
+                                                #   "autonomous" → all tools
+                                                #     allowed without prompts.
+                                                #   Anything unrecognised
+                                                #     (older callers sending
+                                                #     "default" / "") falls
+                                                #     through to "chat".
     }
 
 Stdout: NEWLINE-DELIMITED JSON events. One event per line. Examples:
@@ -87,6 +103,15 @@ try:
         GeminiConfig,
         types as ag_types,
     )
+    # `policy` and `CapabilitiesConfig` are the autonomy knobs. They
+    # arrived in the SDK after the initial release; older installs may
+    # not have them. Import optionally — when missing we fall back to
+    # SDK defaults, which means the "mode" knob silently no-ops (the
+    # bridge still works, just without autonomy control).
+    try:
+        from google.antigravity import policy as ag_policy  # type: ignore[attr-defined]
+    except ImportError:
+        ag_policy = None  # type: ignore[assignment]
 except ModuleNotFoundError as exc:  # noqa: BLE001
     sys.stdout.write(
         json.dumps(
@@ -132,6 +157,87 @@ def _strip_effort_suffix(model_id: str) -> str:
     return model_id
 
 
+def _apply_autonomy_mode(kwargs: dict[str, Any], mode: str) -> None:
+    """Configure `capabilities` + `policies` on the LocalAgentConfig
+    based on the autonomy mode the bridge requested.
+
+    Three tiers, mirroring Fleetify's `Mode` enum so a user's Perms chip
+    selection means the same thing whether the session targets an HTTP
+    provider or the SDK:
+
+    - `"chat"`: read tools (view_file, list_dir, grep) allowed;
+      edit_file, write_file, run_command explicitly denied. The model
+      sees the denials as tool errors and adapts ("I'd write but you
+      have me in chat mode — here's the code instead"). Default for new
+      sessions: every session gets workspace context AND read access on
+      day one; the user opts up to writes / shell via the Perms chip.
+    - `"accept_edits"`: read + write tools allowed (view_file, list_dir,
+      grep, edit_file, write_file); shell still denied. Middle ground.
+    - `"autonomous"`: write capabilities enabled, all tools auto-allowed
+      via `allow_all()`. The user accepts responsibility; the renderer
+      surfaces a Stop button to abort runaway loops.
+    - anything else (missing field, unknown value, legacy `"default"`):
+      falls through to "chat" — the safest tier that still gives the
+      model context. NEVER leaves SDK defaults in place, because the
+      stock `confirm_run_command` policy would hang on stdin in our
+      headless sidecar.
+
+    Both `policy` and `CapabilitiesConfig` are gated on SDK version —
+    if either is missing on the installed SDK we silently no-op and
+    fall back to SDK defaults. The bridge keeps working; the user just
+    doesn't get tool autonomy until they upgrade the SDK.
+    """
+    if ag_policy is None:
+        return
+
+    CapabilitiesConfig = getattr(ag_types, "CapabilitiesConfig", None)
+
+    if mode == "autonomous":
+        # `CapabilitiesConfig()` with no args enables all writes per the
+        # SDK README; we mirror that to avoid hardcoding individual
+        # field names that may drift between SDK versions.
+        if CapabilitiesConfig is not None:
+            kwargs["capabilities"] = CapabilitiesConfig()
+        # `allow_all` is the SDK's documented "unrestricted" policy.
+        # Every tool call goes through without the human-in-the-loop
+        # confirm prompt — matches Fleetify's Autonomous contract.
+        kwargs["policies"] = [ag_policy.allow_all()]
+        return
+
+    if mode == "accept_edits":
+        # Same write-capability shape as autonomous (the SDK has no
+        # finer-grained switch for "edits but not shell" on
+        # CapabilitiesConfig), but the policies allow-list excludes
+        # run_command so the model gets a clean tool-error for shell
+        # attempts and can adapt.
+        if CapabilitiesConfig is not None:
+            kwargs["capabilities"] = CapabilitiesConfig()
+        kwargs["policies"] = [
+            ag_policy.allow("view_file"),
+            ag_policy.allow("list_dir"),
+            ag_policy.allow("grep"),
+            ag_policy.allow("edit_file"),
+            ag_policy.allow("write_file"),
+            ag_policy.deny("run_command"),
+        ]
+        return
+
+    # "chat" — and everything we don't recognise (including legacy
+    # callers still sending "default"). Read-only.
+    if CapabilitiesConfig is not None:
+        # Default capabilities: writes off, so edit_file / write_file
+        # aren't even available for the model to call.
+        kwargs["capabilities"] = CapabilitiesConfig()
+    kwargs["policies"] = [
+        ag_policy.allow("view_file"),
+        ag_policy.allow("list_dir"),
+        ag_policy.allow("grep"),
+        ag_policy.deny("edit_file"),
+        ag_policy.deny("write_file"),
+        ag_policy.deny("run_command"),
+    ]
+
+
 def _build_config(req: dict[str, Any]) -> LocalAgentConfig:
     """Translate the inbound JSON request into a `LocalAgentConfig`.
 
@@ -158,6 +264,8 @@ def _build_config(req: dict[str, Any]) -> LocalAgentConfig:
         kwargs["workspaces"] = list(req["workspaces"])
     if req.get("app_data_dir"):
         kwargs["app_data_dir"] = req["app_data_dir"]
+
+    _apply_autonomy_mode(kwargs, str(req.get("mode") or "chat"))
 
     return LocalAgentConfig(**kwargs)
 

@@ -1,0 +1,808 @@
+//! OpenAI-compatible `ToolAdapter` implementation.
+//!
+//! Wires the shared `agentic::drive_agentic_loop` to every provider in the
+//! catalog that speaks the `/chat/completions` SSE wire with the standard
+//! tool-use shape: **openai, deepseek, grok, nvidia-nim, kimi-api,
+//! gemini-api** (the OpenAI-compat shim, not the native Gemini API).
+//! Perplexity is intentionally out of scope here because it also emits
+//! `citations` events the renderer wants to surface separately — it gets
+//! its own adapter in the sibling file.
+//!
+//! Why a separate file from `openai_compat.rs`
+//! -------------------------------------------
+//!
+//! The legacy `OpenAICompatBridge` is a single-shot chat driver — push
+//! one user message, stream text back. Adding tool-use to it would
+//! either bloat that file with a parallel code path (`if has_tools { ...
+//! }`) or force a sweeping refactor. Instead, this file ships a thin
+//! adapter that plugs into the new agentic loop; legacy sessions that
+//! never opt into tools keep running through the old bridge unchanged.
+//!
+//! Wire shape (per OpenAI spec)
+//! ----------------------------
+//!
+//! Request body:
+//! ```json
+//! {
+//!   "model": "...",
+//!   "messages": [
+//!     {"role": "system", "content": "..."},
+//!     {"role": "user", "content": "..."},
+//!     {"role": "assistant", "content": null, "tool_calls": [
+//!       {"id": "...", "type": "function", "function": {"name": "read_file", "arguments": "{...}"}}
+//!     ]},
+//!     {"role": "tool", "tool_call_id": "...", "content": "..."}
+//!   ],
+//!   "tools": [{"type": "function", "function": {"name", "description", "parameters"}}],
+//!   "tool_choice": "auto",
+//!   "stream": true,
+//!   "stream_options": {"include_usage": true}
+//! }
+//! ```
+//!
+//! SSE deltas relevant to tool use:
+//! - `choices[0].delta.content` → text chunk.
+//! - `choices[0].delta.tool_calls[i].id` + `function.name` → first delta
+//!   for index `i` (id + name arrive once each).
+//! - `choices[0].delta.tool_calls[i].function.arguments` → JSON-string
+//!   fragments that concatenate into a complete JSON object.
+//! - `choices[0].finish_reason: "tool_calls"|"stop"` → turn boundary.
+
+use std::collections::BTreeMap;
+
+use anyhow::{anyhow, Result};
+use futures_util::StreamExt;
+use serde_json::{json, Value};
+use tokio::sync::mpsc;
+
+use crate::agentic::{
+    adapter::ToolAdapter,
+    catalog::Tool,
+    events::{AdapterHistory, TurnEvent, TurnOutcome},
+    executor::{ToolCall, ToolResult},
+};
+
+pub struct OpenAICompatToolAdapter {
+    pub provider_id: &'static str,
+    pub model: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub extra_headers: http::HeaderMap,
+    http: reqwest::Client,
+}
+
+impl OpenAICompatToolAdapter {
+    /// Build from a catalog `ProviderSpec`. Pulls the API key the same
+    /// way the legacy bridge does (process-wide keyring cache → env-var
+    /// fallback) so users get tool-use without re-entering keys.
+    pub fn from_spec(
+        spec: &'static crate::providers::ProviderSpec,
+        model: impl Into<String>,
+        ctx: &super::BridgeContext,
+    ) -> Result<Self> {
+        let env_hint = match spec.auth {
+            crate::providers::AuthSpec::Bearer { env_hint } => env_hint,
+            _ => None,
+        };
+        let api_key = crate::providers::keys::get_key(spec.id)
+            .or_else(|| env_hint.and_then(|n| std::env::var(n).ok()))
+            .ok_or_else(|| {
+                anyhow!(
+                    "no API key for provider `{}` — connect it in Settings → Models",
+                    spec.id
+                )
+            })?;
+        Ok(Self {
+            provider_id: spec.id,
+            model: ctx.model_override.clone().unwrap_or_else(|| model.into()),
+            base_url: ctx
+                .base_url_override
+                .clone()
+                .unwrap_or_else(|| spec.default_base_url.to_string()),
+            api_key,
+            extra_headers: ctx.extra_headers.clone(),
+            http: reqwest::Client::new(),
+        })
+    }
+
+    /// Test/internal constructor — bypasses key resolution so wiremock
+    /// tests can point at a stubbed URL without touching the keyring.
+    pub fn new_raw(
+        provider_id: &'static str,
+        model: String,
+        base_url: String,
+        api_key: String,
+    ) -> Self {
+        Self {
+            provider_id,
+            model,
+            base_url,
+            api_key,
+            extra_headers: http::HeaderMap::new(),
+            http: reqwest::Client::new(),
+        }
+    }
+
+    fn chat_endpoint(&self) -> String {
+        // Same suffix logic as `openai_compat.rs`: bases already ending
+        // in `/v1` or containing `/v1beta` get only `/chat/completions`
+        // appended; bare roots get `/v1/chat/completions`. Keeps the
+        // adapter's URL contract identical to the legacy bridge so
+        // tested base URLs work in both paths.
+        let trimmed = self.base_url.trim_end_matches('/');
+        if trimmed.ends_with("/v1") || trimmed.contains("/v1beta") {
+            format!("{trimmed}/chat/completions")
+        } else {
+            format!("{trimmed}/v1/chat/completions")
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ToolAdapter for OpenAICompatToolAdapter {
+    fn init_history(&self, system_prompt: &str, user_message: &str) -> AdapterHistory {
+        AdapterHistory {
+            messages: vec![
+                json!({"role": "system", "content": system_prompt}),
+                json!({"role": "user", "content": user_message}),
+            ],
+            system: system_prompt.into(),
+        }
+    }
+
+    async fn execute_turn(
+        &self,
+        history: &AdapterHistory,
+        catalog: &[Tool],
+        sink: &mpsc::Sender<TurnEvent>,
+    ) -> Result<TurnOutcome> {
+        let body = json!({
+            "model": self.model,
+            "messages": history.messages,
+            "tools": render_tools(catalog),
+            "tool_choice": "auto",
+            "stream": true,
+            "stream_options": {"include_usage": true},
+        });
+
+        let mut req = self
+            .http
+            .post(self.chat_endpoint())
+            .bearer_auth(&self.api_key)
+            .json(&body);
+        for (k, v) in self.extra_headers.iter() {
+            req = req.header(k.as_str(), v.as_bytes());
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| anyhow!("{}: request failed: {e}", self.provider_id))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "{}: provider returned {status}: {}",
+                self.provider_id,
+                &body[..body.len().min(400)]
+            ));
+        }
+
+        parse_sse_stream(resp, sink).await
+    }
+
+    fn append_assistant(&self, history: &mut AdapterHistory, outcome: &TurnOutcome) {
+        let mut msg = json!({
+            "role": "assistant",
+            // OpenAI accepts content:null when only tool_calls are present.
+            // Some compat providers (notably Groq) reject {content:""} so
+            // we send null for the empty-text case rather than empty string.
+            "content": if outcome.text.is_empty() {
+                Value::Null
+            } else {
+                Value::String(outcome.text.clone())
+            },
+        });
+        if !outcome.tool_calls.is_empty() {
+            let calls: Vec<Value> = outcome
+                .tool_calls
+                .iter()
+                .map(|c| {
+                    json!({
+                        "id": c.id,
+                        "type": "function",
+                        "function": {
+                            "name": c.name,
+                            // arguments is a STRING containing JSON (per
+                            // OpenAI spec). serde_json::to_string preserves
+                            // whatever shape the model emitted; we don't
+                            // re-canonicalise to avoid drifting from what
+                            // the model put on the wire.
+                            "arguments": serde_json::to_string(&c.input).unwrap_or_else(|_| "{}".into()),
+                        },
+                    })
+                })
+                .collect();
+            msg["tool_calls"] = Value::Array(calls);
+        }
+        history.messages.push(msg);
+    }
+
+    fn append_tool_results(&self, history: &mut AdapterHistory, results: &[ToolResult]) {
+        for r in results {
+            history.messages.push(json!({
+                "role": "tool",
+                "tool_call_id": r.tool_call_id,
+                // OpenAI's spec accepts any string here. We don't tag the
+                // error path differently — the model is expected to read
+                // the content and figure out what went wrong (Tool error:
+                // ... prefix from the executor is enough).
+                "content": r.content,
+            }));
+        }
+    }
+}
+
+// ───── tool schema renderer ────────────────────────────────────────────
+
+fn render_tools(catalog: &[Tool]) -> Value {
+    Value::Array(
+        catalog
+            .iter()
+            .map(|t| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    }
+                })
+            })
+            .collect(),
+    )
+}
+
+// ───── SSE stream parser ───────────────────────────────────────────────
+
+/// Per-index partial tool call accumulated across SSE deltas. The first
+/// delta carries `id` + `function.name`; subsequent deltas carry
+/// arguments fragments that concatenate into a complete JSON object.
+#[derive(Debug, Default)]
+struct PartialToolCall {
+    id: Option<String>,
+    name: Option<String>,
+    arguments: String,
+}
+
+impl PartialToolCall {
+    fn finalize(self) -> Result<ToolCall> {
+        let id = self
+            .id
+            .ok_or_else(|| anyhow!("tool_call delta missing id"))?;
+        let name = self
+            .name
+            .ok_or_else(|| anyhow!("tool_call delta missing function.name"))?;
+        // The model emits a JSON-as-string. If parsing fails we surface
+        // the raw payload as an error rather than swallowing — typically
+        // means the model emitted invalid JSON the provider didn't catch.
+        let input: Value = serde_json::from_str(&self.arguments).map_err(|e| {
+            anyhow!(
+                "tool_call {name} (id={id}) had invalid JSON arguments `{}`: {e}",
+                self.arguments
+            )
+        })?;
+        Ok(ToolCall { id, name, input })
+    }
+}
+
+fn find_double_newline(buf: &[u8]) -> Option<usize> {
+    buf.windows(2).position(|w| w == b"\n\n")
+}
+
+async fn parse_sse_stream(
+    resp: reqwest::Response,
+    sink: &mpsc::Sender<TurnEvent>,
+) -> Result<TurnOutcome> {
+    let mut stream = resp.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    let mut text = String::new();
+    let mut tool_calls: BTreeMap<usize, PartialToolCall> = BTreeMap::new();
+    let mut usage_in: u64 = 0;
+    let mut usage_out: u64 = 0;
+
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|e| anyhow!("SSE chunk read failed: {e}"))?;
+        buf.extend_from_slice(&bytes);
+
+        while let Some(pos) = find_double_newline(&buf) {
+            let raw: Vec<u8> = buf.drain(..pos + 2).collect();
+            let block = String::from_utf8_lossy(&raw);
+            handle_sse_block(
+                &block,
+                &mut text,
+                &mut tool_calls,
+                &mut usage_in,
+                &mut usage_out,
+                sink,
+            )
+            .await?;
+        }
+    }
+
+    let calls: Vec<ToolCall> = tool_calls
+        .into_values()
+        .map(|p| p.finalize())
+        .collect::<Result<_>>()?;
+
+    Ok(TurnOutcome {
+        text,
+        tool_calls: calls,
+        usage: if usage_in + usage_out > 0 {
+            Some((usage_in, usage_out))
+        } else {
+            None
+        },
+    })
+}
+
+/// Parse one SSE block (`data: ...\n\n`). Updates the per-turn
+/// accumulators (text, tool_calls, usage) and pushes streaming events
+/// (TextDelta) into the sink as they arrive.
+async fn handle_sse_block(
+    block: &str,
+    text: &mut String,
+    tool_calls: &mut BTreeMap<usize, PartialToolCall>,
+    usage_in: &mut u64,
+    usage_out: &mut u64,
+    sink: &mpsc::Sender<TurnEvent>,
+) -> Result<()> {
+    // Combine `data:` lines (per SSE spec, single field can span lines;
+    // OpenAI in practice always sends one `data:` per block but we
+    // handle the spec-compliant case for safety).
+    let mut data = String::new();
+    for line in block.lines() {
+        if let Some(rest) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(rest.trim_start());
+        }
+    }
+    if data.is_empty() || data.trim() == "[DONE]" {
+        return Ok(());
+    }
+    let v: Value = serde_json::from_str(&data)
+        .map_err(|e| anyhow!("SSE payload not JSON: {e} — payload: `{data}`"))?;
+
+    // Token usage (only present on the final chunk when
+    // stream_options.include_usage=true).
+    if let Some(u) = v.get("usage") {
+        let g = |k: &str| u.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+        *usage_in = g("prompt_tokens");
+        *usage_out = g("completion_tokens");
+    }
+
+    let Some(choices) = v.get("choices").and_then(|c| c.as_array()) else {
+        return Ok(());
+    };
+    let Some(choice) = choices.first() else {
+        return Ok(());
+    };
+
+    if let Some(delta) = choice.get("delta") {
+        // Text content delta.
+        if let Some(t) = delta.get("content").and_then(|x| x.as_str()) {
+            if !t.is_empty() {
+                text.push_str(t);
+                let _ = sink.send(TurnEvent::TextDelta { text: t.into() }).await;
+            }
+        }
+        // Reasoning content delta (OpenAI o-series / DeepSeek-R1 surface
+        // reasoning under `reasoning_content`; the OpenAI Responses API
+        // uses `reasoning`. Forward both as ThinkingDelta.)
+        for key in ["reasoning_content", "reasoning"] {
+            if let Some(t) = delta.get(key).and_then(|x| x.as_str()) {
+                if !t.is_empty() {
+                    let _ = sink.send(TurnEvent::ThinkingDelta { text: t.into() }).await;
+                }
+            }
+        }
+        // Tool call deltas.
+        if let Some(calls) = delta.get("tool_calls").and_then(|c| c.as_array()) {
+            for partial in calls {
+                let idx = partial.get("index").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+                let entry = tool_calls.entry(idx).or_default();
+                if let Some(id) = partial.get("id").and_then(|x| x.as_str()) {
+                    entry.id = Some(id.to_string());
+                }
+                if let Some(f) = partial.get("function") {
+                    if let Some(n) = f.get("name").and_then(|x| x.as_str()) {
+                        entry.name = Some(n.to_string());
+                    }
+                    if let Some(a) = f.get("arguments").and_then(|x| x.as_str()) {
+                        entry.arguments.push_str(a);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agentic::catalog::catalog_v1;
+    use crate::agentic::events::AdapterHistory;
+    use crate::agentic::executor::ToolResult;
+    use serde_json::json;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn adapter_for(server: &MockServer) -> OpenAICompatToolAdapter {
+        OpenAICompatToolAdapter::new_raw(
+            "test-provider",
+            "test-model".into(),
+            server.uri(),
+            "test-key".into(),
+        )
+    }
+
+    // ─── Pure schema / mapping tests ──────────────────────────────────
+
+    #[test]
+    fn render_tools_wraps_each_in_function_envelope() {
+        let cat = catalog_v1();
+        let v = render_tools(&cat);
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 7);
+        for entry in arr {
+            assert_eq!(entry["type"], "function");
+            assert!(entry["function"]["name"].is_string());
+            assert!(entry["function"]["description"].is_string());
+            assert_eq!(entry["function"]["parameters"]["type"], "object");
+        }
+    }
+
+    #[test]
+    fn append_assistant_emits_null_content_when_only_tools() {
+        let adapter =
+            OpenAICompatToolAdapter::new_raw("x", "m".into(), "http://x".into(), "k".into());
+        let mut h = AdapterHistory::default();
+        adapter.append_assistant(
+            &mut h,
+            &TurnOutcome {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: "tc-1".into(),
+                    name: "read_file".into(),
+                    input: json!({"path": "a.txt"}),
+                }],
+                usage: None,
+            },
+        );
+        let msg = h.messages.last().unwrap();
+        assert_eq!(msg["role"], "assistant");
+        assert_eq!(msg["content"], Value::Null);
+        let calls = msg["tool_calls"].as_array().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["id"], "tc-1");
+        // arguments is the STRING-encoded JSON, not nested JSON.
+        let args_str = calls[0]["function"]["arguments"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(args_str).unwrap();
+        assert_eq!(parsed["path"], "a.txt");
+    }
+
+    #[test]
+    fn append_tool_results_emits_one_role_tool_per_result() {
+        let adapter =
+            OpenAICompatToolAdapter::new_raw("x", "m".into(), "http://x".into(), "k".into());
+        let mut h = AdapterHistory::default();
+        adapter.append_tool_results(
+            &mut h,
+            &[
+                ToolResult {
+                    tool_call_id: "tc-1".into(),
+                    content: "first".into(),
+                    is_error: false,
+                },
+                ToolResult {
+                    tool_call_id: "tc-2".into(),
+                    content: "second".into(),
+                    is_error: true,
+                },
+            ],
+        );
+        assert_eq!(h.messages.len(), 2);
+        assert_eq!(h.messages[0]["role"], "tool");
+        assert_eq!(h.messages[0]["tool_call_id"], "tc-1");
+        assert_eq!(h.messages[0]["content"], "first");
+        assert_eq!(h.messages[1]["tool_call_id"], "tc-2");
+    }
+
+    #[test]
+    fn endpoint_logic_matches_legacy_bridge() {
+        let a = OpenAICompatToolAdapter::new_raw(
+            "x",
+            "m".into(),
+            "https://api.openai.com/v1".into(),
+            "k".into(),
+        );
+        assert_eq!(
+            a.chat_endpoint(),
+            "https://api.openai.com/v1/chat/completions"
+        );
+
+        let b = OpenAICompatToolAdapter::new_raw(
+            "x",
+            "m".into(),
+            "https://api.deepseek.com".into(),
+            "k".into(),
+        );
+        assert_eq!(
+            b.chat_endpoint(),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
+
+        let c = OpenAICompatToolAdapter::new_raw(
+            "x",
+            "m".into(),
+            "https://generativelanguage.googleapis.com/v1beta/openai".into(),
+            "k".into(),
+        );
+        assert_eq!(
+            c.chat_endpoint(),
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        );
+    }
+
+    #[test]
+    fn partial_tool_call_finalises_with_complete_id_name_args() {
+        let p = PartialToolCall {
+            id: Some("tc-1".into()),
+            name: Some("read_file".into()),
+            arguments: r#"{"path":"a.txt"}"#.into(),
+        };
+        let call = p.finalize().unwrap();
+        assert_eq!(call.id, "tc-1");
+        assert_eq!(call.name, "read_file");
+        assert_eq!(call.input["path"], "a.txt");
+    }
+
+    #[test]
+    fn partial_tool_call_finalise_errors_on_invalid_json_args() {
+        let p = PartialToolCall {
+            id: Some("tc-1".into()),
+            name: Some("x".into()),
+            arguments: "not-json".into(),
+        };
+        let err = p.finalize().unwrap_err();
+        assert!(err.to_string().contains("invalid JSON"));
+    }
+
+    // ─── wiremock integration: full agentic loop end-to-end ───────────
+
+    fn sse_chunk(json: serde_json::Value) -> String {
+        format!("data: {}\n\n", serde_json::to_string(&json).unwrap())
+    }
+
+    #[tokio::test]
+    async fn execute_turn_streams_text_delta_and_reports_usage() {
+        let server = MockServer::start().await;
+        let body = [
+            sse_chunk(json!({"choices":[{"index":0,"delta":{"content":"Hello "}}]})),
+            sse_chunk(json!({"choices":[{"index":0,"delta":{"content":"world"}}]})),
+            sse_chunk(json!({"choices":[{"index":0,"finish_reason":"stop"}]})),
+            sse_chunk(json!({"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":2}})),
+            "data: [DONE]\n\n".into(),
+        ]
+        .concat();
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(header("authorization", "Bearer test-key"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(body),
+            )
+            .mount(&server)
+            .await;
+
+        let adapter = adapter_for(&server);
+        let history = adapter.init_history("sys", "hi");
+        let (tx, mut rx) = mpsc::channel(32);
+
+        let outcome = adapter
+            .execute_turn(&history, &catalog_v1(), &tx)
+            .await
+            .unwrap();
+
+        // Streaming side: two TextDelta events arrived.
+        drop(tx);
+        let mut text_events = Vec::new();
+        while let Some(e) = rx.recv().await {
+            if let TurnEvent::TextDelta { text } = e {
+                text_events.push(text);
+            }
+        }
+        assert_eq!(text_events.join(""), "Hello world");
+
+        // Consolidated outcome.
+        assert_eq!(outcome.text, "Hello world");
+        assert!(outcome.tool_calls.is_empty());
+        assert_eq!(outcome.usage, Some((7, 2)));
+    }
+
+    #[tokio::test]
+    async fn execute_turn_accumulates_tool_call_across_argument_deltas() {
+        let server = MockServer::start().await;
+        // Realistic OpenAI flow: first delta has id+name+empty args,
+        // subsequent deltas stream the args JSON in pieces.
+        let body = [
+            sse_chunk(json!({"choices":[{"index":0,"delta":{"tool_calls":[
+                {"index":0,"id":"call_abc","type":"function","function":{"name":"read_file","arguments":""}}
+            ]}}]})),
+            sse_chunk(json!({"choices":[{"index":0,"delta":{"tool_calls":[
+                {"index":0,"function":{"arguments":"{\"path\":\""}}
+            ]}}]})),
+            sse_chunk(json!({"choices":[{"index":0,"delta":{"tool_calls":[
+                {"index":0,"function":{"arguments":"foo.txt\"}"}}
+            ]}}]})),
+            sse_chunk(json!({"choices":[{"index":0,"finish_reason":"tool_calls"}]})),
+            "data: [DONE]\n\n".into(),
+        ]
+        .concat();
+
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(body),
+            )
+            .mount(&server)
+            .await;
+
+        let adapter = adapter_for(&server);
+        let history = adapter.init_history("sys", "find foo");
+        let (tx, _rx) = mpsc::channel(32);
+
+        let outcome = adapter
+            .execute_turn(&history, &catalog_v1(), &tx)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.text, "");
+        assert_eq!(outcome.tool_calls.len(), 1);
+        let call = &outcome.tool_calls[0];
+        assert_eq!(call.id, "call_abc");
+        assert_eq!(call.name, "read_file");
+        assert_eq!(call.input["path"], "foo.txt");
+    }
+
+    #[tokio::test]
+    async fn execute_turn_surfaces_provider_error_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(401).set_body_string(
+                r#"{"error":{"message":"invalid api key","type":"invalid_request"}}"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let adapter = adapter_for(&server);
+        let history = adapter.init_history("sys", "hi");
+        let (tx, _rx) = mpsc::channel(8);
+
+        let err = adapter
+            .execute_turn(&history, &catalog_v1(), &tx)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("401"));
+        assert!(msg.contains("invalid api key"));
+    }
+
+    #[tokio::test]
+    async fn full_loop_executes_tool_and_completes_with_text() {
+        // Two-turn flow: provider asks read_file; bridge executes against
+        // a real tempdir; provider receives the result and answers with
+        // text. Validates the entire agentic pipeline end-to-end.
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("hello.txt"), "hi from disk\n").unwrap();
+
+        let server = MockServer::start().await;
+
+        // Turn 1: model emits read_file tool call.
+        let turn1 = [
+            sse_chunk(json!({"choices":[{"index":0,"delta":{"tool_calls":[
+                {"index":0,"id":"call_1","type":"function","function":{
+                    "name":"read_file","arguments":"{\"path\":\"hello.txt\"}"
+                }}
+            ]}}]})),
+            sse_chunk(json!({"choices":[{"index":0,"finish_reason":"tool_calls"}]})),
+            "data: [DONE]\n\n".into(),
+        ]
+        .concat();
+
+        // Turn 2: model emits final text, no more tools.
+        let turn2 = [
+            sse_chunk(
+                json!({"choices":[{"index":0,"delta":{"content":"The file says: hi from disk"}}]}),
+            ),
+            sse_chunk(json!({"choices":[{"index":0,"finish_reason":"stop"}]})),
+            "data: [DONE]\n\n".into(),
+        ]
+        .concat();
+
+        // wiremock matches mounts in FIFO registration order; once a
+        // mock hits its `up_to_n_times` cap it stops matching and the
+        // next eligible mock takes over. Register turn1 first so the
+        // FIRST request gets the tool-call response, then turn2.
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(turn1),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(turn2),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        let adapter = adapter_for(&server);
+        let ws = crate::agentic::Workspace::new(dir.path()).unwrap();
+        let (tx, mut rx) = mpsc::channel(64);
+
+        crate::agentic::drive_agentic_loop(
+            &adapter,
+            &ws,
+            crate::agentic::Mode::Autonomous,
+            &crate::agentic::StaticGate(true),
+            "you are helpful",
+            "read hello.txt".into(),
+            &catalog_v1(),
+            tx,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .await
+        .unwrap();
+
+        let mut events = Vec::new();
+        while let Some(e) = rx.recv().await {
+            events.push(e);
+        }
+        let mut saw_tool_start = false;
+        let mut saw_tool_end = false;
+        let mut saw_final_text = false;
+        for e in &events {
+            match e {
+                TurnEvent::ToolStart { call } if call.name == "read_file" => saw_tool_start = true,
+                TurnEvent::ToolEnd { result } => {
+                    saw_tool_end = true;
+                    assert!(result.content.contains("hi from disk"));
+                    assert!(!result.is_error);
+                }
+                TurnEvent::TextDelta { text } if text.contains("hi from disk") => {
+                    saw_final_text = true
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_tool_start, "expected ToolStart for read_file");
+        assert!(saw_tool_end, "expected ToolEnd with file contents");
+        assert!(saw_final_text, "expected final text describing the file");
+    }
+}

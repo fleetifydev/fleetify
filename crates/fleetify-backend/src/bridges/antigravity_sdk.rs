@@ -65,6 +65,12 @@ pub struct AntigravitySdkBridge {
     pub session_id: String,
     pub agent_cwd: String,
     pub model: String,
+    /// Maps the session's `permission_mode` to the autonomy mode the
+    /// sidecar configures on `LocalAgentConfig`. Stored as the wire
+    /// value (`"default"|"chat"|"autonomous"`) so the bridge stays a
+    /// thin pass-through and the policy decisions live in one place
+    /// (the Python sidecar's `_apply_autonomy_mode`).
+    pub autonomy_mode: String,
     /// Captured from the sidecar's `{type:"conversation_id"}` event so
     /// subsequent turns can resume the same `Conversation`. SDK
     /// equivalent of the agy CLI bridge's per-cwd cache lookup.
@@ -75,11 +81,36 @@ pub struct AntigravitySdkBridge {
     aborted: Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// Translate a session's `permission_mode` (the existing field reused
+/// across CLI + HTTP + SDK providers as the tool-autonomy knob) into
+/// the wire value the SDK sidecar understands.
+///
+/// Mirrors the HTTP-agentic mapping in `routers::chat` so a user's
+/// Perms chip selection has the same meaning regardless of which
+/// provider their session targets:
+///
+/// - `"bypassPermissions"` → `"autonomous"` — everything allowed.
+/// - `"acceptEdits"` → `"accept_edits"` — reads + writes (view_file /
+///   list_dir / grep / edit_file / write_file) allowed; shell still
+///   denied.
+/// - anything else (including the new default `"default"`) → `"chat"`
+///   — read tools allowed, writes + shell denied. Every session gets
+///   workspace context; "default" is no longer the SDK's stock
+///   `confirm_run_command` policy (which would hang on stdin in
+///   headless dispatch).
+pub fn autonomy_mode_from_permission(permission_mode: &str) -> &'static str {
+    match permission_mode {
+        "bypassPermissions" => "autonomous",
+        "acceptEdits" => "accept_edits",
+        _ => "chat",
+    }
+}
+
 impl AntigravitySdkBridge {
     pub fn new(
         session_id: impl Into<String>,
         agent_cwd: impl Into<String>,
-        _permission_mode: String,
+        permission_mode: String,
         model_name: Option<String>,
         _is_staff: bool,
         _agent_template: Option<String>,
@@ -92,6 +123,7 @@ impl AntigravitySdkBridge {
             // claude-sonnet-4-6, etc) when the user picks something
             // explicit from the picker.
             model: model_name.unwrap_or_else(|| "gemini-3.5-flash".into()),
+            autonomy_mode: autonomy_mode_from_permission(&permission_mode).to_string(),
             conversation_id: Arc::new(Mutex::new(None)),
             child: Arc::new(Mutex::new(None)),
             aborted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -266,6 +298,7 @@ impl AntigravitySdkBridge {
         let session_id_out = self.session_id.clone();
         let model_out = self.model.clone();
         let agent_cwd = self.agent_cwd.clone();
+        let autonomy_mode = self.autonomy_mode.clone();
         let conv_handle = self.conversation_id.clone();
         let child_handle = self.child.clone();
         let aborted = self.aborted.clone();
@@ -278,6 +311,7 @@ impl AntigravitySdkBridge {
             script = %script_path.display(),
             cwd = %agent_cwd,
             model = %model_out,
+            mode = %autonomy_mode,
             conv = ?cached_conv_id,
             "antigravity-sdk bridge spawn"
         );
@@ -298,6 +332,7 @@ impl AntigravitySdkBridge {
                 "api_key": api_key,
                 "conversation_id": cached_conv_id,
                 "workspaces": [agent_cwd.clone()],
+                "mode": autonomy_mode,
             });
 
             let mut command = tokio::process::Command::new(&python_path);
@@ -597,5 +632,56 @@ impl AntigravitySdkBridge {
         });
 
         Ok(rx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn autonomy_mode_maps_permission_mode_to_wire_value() {
+        // "default" now lands in chat (read tools auto, writes/shell
+        // denied) — was the SDK's stock "confirm_run_command" which
+        // would hang on stdin in headless dispatch. Every session gets
+        // workspace context regardless of the user's autonomy choice.
+        assert_eq!(autonomy_mode_from_permission("default"), "chat");
+        assert_eq!(autonomy_mode_from_permission("acceptEdits"), "accept_edits");
+        assert_eq!(
+            autonomy_mode_from_permission("bypassPermissions"),
+            "autonomous"
+        );
+        // Unknown / experimental values fall through to chat — the safest
+        // tier that still gives the model context.
+        assert_eq!(autonomy_mode_from_permission("plan"), "chat");
+        assert_eq!(autonomy_mode_from_permission(""), "chat");
+    }
+
+    #[test]
+    fn new_captures_autonomy_mode_on_construction() {
+        // Bridge construction is the moment we lock in the autonomy
+        // setting for the session. We pin it here rather than reading
+        // each turn so changing permission_mode mid-session requires a
+        // fresh bridge (same contract every other field has).
+        let b = AntigravitySdkBridge::new(
+            "sess-1",
+            "C:/tmp",
+            "bypassPermissions".into(),
+            None,
+            false,
+            None,
+        );
+        assert_eq!(b.autonomy_mode, "autonomous");
+
+        let b = AntigravitySdkBridge::new(
+            "sess-2",
+            "C:/tmp",
+            "default".into(),
+            Some("gemini-3.5-flash".into()),
+            false,
+            None,
+        );
+        assert_eq!(b.autonomy_mode, "chat");
+        assert_eq!(b.model, "gemini-3.5-flash");
     }
 }

@@ -245,6 +245,26 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
                     );
                     continue;
                 }
+
+                // Agentic runner path: HTTP-provider sessions running
+                // through `drive_agentic_loop` register their pending
+                // permissions on the AgenticBridgeRunner. Check there
+                // first — if the call_id matches a pending agentic
+                // request, resolve it and short-circuit (the legacy CLI
+                // PermissionSession below uses a different mechanism
+                // entirely; only one is in play per session).
+                let bridge_opt = bridges.lock().await.get(&sid).cloned();
+                if let Some(AnyBridge::Agentic(runner)) = bridge_opt.as_ref() {
+                    if runner.resolve_permission(&req_id, approved) {
+                        tracing::info!(
+                            target: "perm",
+                            session = %sid, req_id = %req_id, approved,
+                            "permission_response.agentic"
+                        );
+                        continue;
+                    }
+                }
+
                 let session_opt = permission_sessions.lock().await.get(&sid).cloned();
                 if let Some(ps) = session_opt {
                     if approved && always && !tool_name.is_empty() {
@@ -634,33 +654,113 @@ async fn run_send_flow(
                     .map(|m| m.id.to_string())
                     .unwrap_or_default()
             });
-            // Ollama is the one provider where the base URL is user-
-            // configurable (LAN remote, custom port). Pull it from
-            // ProvidersConfig via the loaded fleet.config.json so the
-            // chat path matches what Settings → Models advertises.
-            // Other providers stick to the static catalog URL.
-            let mut b = crate::bridges::openai_compat::OpenAICompatBridge::from_spec(
-                spec,
-                sid.clone(),
-                model,
-            );
-            if pid == "ollama" {
-                if let Ok(home) = std::env::var("FLEETIFY_HOME") {
-                    let cfg_path = std::path::PathBuf::from(home);
-                    let cfg = std::fs::read_to_string(cfg_path.join("fleet.config.json"))
-                        .ok()
-                        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-                        .unwrap_or_else(|| json!({}));
-                    if let Some(url) = cfg
-                        .get("providers")
-                        .and_then(|p| p.get("ollama_base_url"))
-                        .and_then(|u| u.as_str())
-                    {
-                        b.base_url = url.to_string();
+
+            // Agentic dispatch: HTTP-provider sessions ALWAYS run through
+            // the agentic loop (workspace context in the system prompt +
+            // tool access scaled to the session's permission_mode). The
+            // legacy single-shot bridge survives ONLY for Ollama, where
+            // local models can't reliably emit OpenAI-style tool_call
+            // deltas and a half-broken loop would burn wall-clock on
+            // turns that never converge.
+            //
+            // permission_mode → agentic Mode:
+            //   "bypassPermissions" → Autonomous   (all tools auto)
+            //   "acceptEdits"       → AcceptEdits  (reads + writes auto)
+            //   anything else       → Chat         (reads auto, writes/shell deny)
+            //
+            // "default" now lands in Chat (was: legacy = no tools, no
+            // context). Result: every HTTP session gets workspace context
+            // and read tools from day one; the user opts up to writes /
+            // shell via the Perms chip as needed.
+            let agentic_mode = if pid == "ollama" {
+                None
+            } else {
+                Some(match session.permission_mode.as_str() {
+                    "bypassPermissions" => crate::agentic::Mode::Autonomous,
+                    "acceptEdits" => crate::agentic::Mode::AcceptEdits,
+                    _ => crate::agentic::Mode::Chat,
+                })
+            };
+
+            if let Some(mode) = agentic_mode {
+                let workspace = match crate::agentic::Workspace::new(&agent_cwd) {
+                    Ok(w) => w,
+                    Err(e) => {
+                        send_json(
+                            &sink,
+                            json!({
+                                "type":"error","session_id":sid,
+                                "error":format!("agentic workspace init failed: {e}")
+                            }),
+                        )
+                        .await;
+                        let _ = st.sm.update_status(&st.auth.pool, &sid, "idle").await;
+                        return;
+                    }
+                };
+                let adapter =
+                    match crate::bridges::openai_compat_tools::OpenAICompatToolAdapter::from_spec(
+                        spec,
+                        model.clone(),
+                        &crate::bridges::BridgeContext::default(),
+                    ) {
+                        Ok(a) => a,
+                        Err(e) => {
+                            send_json(
+                                &sink,
+                                json!({
+                                    "type":"error","session_id":sid,
+                                    "error":format!("agentic adapter init failed: {e}")
+                                }),
+                            )
+                            .await;
+                            let _ = st.sm.update_status(&st.auth.pool, &sid, "idle").await;
+                            return;
+                        }
+                    };
+                // System prompt build walks the workspace tree once at
+                // session start; the runner caches it for the session's
+                // lifetime. Stale-tree risk is acceptable (file listing
+                // staleness; nothing the model couldn't recover via
+                // list_dir on demand).
+                let system_prompt = crate::agentic::build_system_context(&workspace).await;
+                AnyBridge::Agentic(Arc::new(
+                    crate::bridges::agentic_runner::AgenticBridgeRunner::new(
+                        sid.clone(),
+                        model,
+                        std::sync::Arc::new(adapter),
+                        workspace,
+                        mode,
+                        system_prompt,
+                    ),
+                ))
+            } else {
+                // Legacy path — single-shot chat, no tools, identical to
+                // pre-agentic behaviour. Ollama always lands here for now
+                // (see comment above on tool_call reliability).
+                let mut b = crate::bridges::openai_compat::OpenAICompatBridge::from_spec(
+                    spec,
+                    sid.clone(),
+                    model,
+                );
+                if pid == "ollama" {
+                    if let Ok(home) = std::env::var("FLEETIFY_HOME") {
+                        let cfg_path = std::path::PathBuf::from(home);
+                        let cfg = std::fs::read_to_string(cfg_path.join("fleet.config.json"))
+                            .ok()
+                            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                            .unwrap_or_else(|| json!({}));
+                        if let Some(url) = cfg
+                            .get("providers")
+                            .and_then(|p| p.get("ollama_base_url"))
+                            .and_then(|u| u.as_str())
+                        {
+                            b.base_url = url.to_string();
+                        }
                     }
                 }
+                AnyBridge::OpenAICompat(Arc::new(b))
             }
-            AnyBridge::OpenAICompat(Arc::new(b))
         }
         "perplexity" => {
             let model = session

@@ -1199,6 +1199,7 @@ dependencies = [
  "chrono",
  "fleetify-core",
  "futures-util",
+ "glob",
  "http",
  "jsonwebtoken",
  "keyring",
@@ -1221,6 +1222,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "uuid",
+ "walkdir",
  "which",
  "wiremock",
 ]

@@ -333,6 +333,17 @@ export interface WSPermissionRequest {
   command: string;
 }
 
+/** Emitted by the agentic loop's permission gate when the session's mode
+ *  flags a tool as Ask. Distinct event type from `tool_permission_request`
+ *  (the CLI-MCP flow) so the renderer can keep the two surfaces apart,
+ *  even though both feed into the same store entry + dialog component. */
+export interface WSAgenticPermissionRequest {
+  type: "permission_request";
+  id: string;
+  tool_name: string;
+  input: Record<string, unknown>;
+}
+
 export interface WSDispatchPermissionRequest {
   type: "dispatch_permission_request";
   request_id: string;
@@ -463,6 +474,7 @@ export type WSServerMessage =
   | WSDispatchStream
   | WSDispatchProgress
   | WSPermissionRequest
+  | WSAgenticPermissionRequest
   | WSDispatchPermissionRequest
   | WSDispatchPermissionResolved
   | WSAgentReport

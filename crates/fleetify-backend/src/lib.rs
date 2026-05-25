@@ -5,6 +5,7 @@
 
 mod http;
 
+pub mod agentic;
 pub mod auth;
 pub mod bridges;
 pub mod config;

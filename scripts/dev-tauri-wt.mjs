@@ -28,9 +28,10 @@
 //! single-data-dir behaviour, run `npm run dev:tauri` instead.
 
 import { spawn, execSync } from 'node:child_process';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
 import { createHash } from 'node:crypto';
+import { writeFileSync, mkdtempSync } from 'node:fs';
 
 /** Return the linked-worktree name, or null when in a main checkout. */
 function detectWorktreeName() {
@@ -120,10 +121,28 @@ function main() {
   console.log(`  FLEETIFY_HOME=${fleetifyHome}`);
   console.log(`  FLEETIFY_NOAUTH=${env.FLEETIFY_NOAUTH}`);
 
+  // Tauri's `tauri.conf.json::build.devUrl` is hardcoded to
+  // `http://localhost:3000`, but worktrees run Vite on `3000+slot`. Without
+  // an override, Tauri's `beforeDevCommand` polls port 3000 forever, the
+  // WebView2 loads a dead URL, and the user sees a blank window.
+  //
+  // `tauri dev --config <path>` deep-merges a JSON file into the file
+  // config. We write a tiny one to the OS tempdir so we avoid quoting
+  // hell with `--config '<inline>'` (Windows shells strip the quotes
+  // around the JSON and the parser rejects unquoted keys). Slot 0 lands
+  // at 3000 and matches the file's default — the override is a no-op
+  // there but we always pass it to keep the code path single-branch.
+  const overrideDir = mkdtempSync(join(tmpdir(), `fleetify-wt-${padded}-`));
+  const overrideFile = join(overrideDir, 'tauri.dev.overrides.json');
+  writeFileSync(
+    overrideFile,
+    JSON.stringify({ build: { devUrl: `http://localhost:${vitePort}` } }, null, 2),
+  );
+
   // `npx tauri dev` so the user's local @tauri-apps/cli is honoured
   // (matches the other dev scripts in package.json). `shell: true` is
   // needed on Windows so `.cmd` shims resolve.
-  const proc = spawn('npx', ['tauri', 'dev'], {
+  const proc = spawn('npx', ['tauri', 'dev', '--config', overrideFile], {
     env,
     stdio: 'inherit',
     shell: true,

@@ -50,11 +50,17 @@ import { useProvidersConfig } from "@/hooks/use-providers-config";
 
 type MenuId = "source" | "git" | "model" | "perms" | "history" | null;
 
+// The `id` values double as both the CLI agents' `--permission-mode`
+// flag AND the agentic-loop autonomy switch for HTTP-provider sessions
+// (mapping lives in `chat.rs` + `bridges/antigravity_sdk.rs`). HTTP
+// providers ALWAYS get workspace context regardless of choice — the
+// tiers control which tools (read / edit / shell) the model can run
+// unattended.
 const PERMS: { id: string; label: string; desc: string }[] = [
-  { id: "default",           label: "Ask",          desc: "Confirm before edits & shell" },
-  { id: "acceptEdits",       label: "Accept edits", desc: "Auto-approve file edits" },
+  { id: "default",           label: "Ask",          desc: "Read tools auto; edits & shell denied (HTTP) / confirm (CLI)" },
+  { id: "acceptEdits",       label: "Accept edits", desc: "Read + write auto; shell denied (HTTP) / confirm (CLI)" },
   { id: "bypassPermissions", label: "Bypass permissions", desc: "All tools without asking" },
-  { id: "plan",              label: "Plan only",    desc: "No execution — just a plan" },
+  { id: "plan",              label: "Plan only",    desc: "No execution — just a plan (CLI agents only)" },
 ];
 
 export function SessionToolbar({

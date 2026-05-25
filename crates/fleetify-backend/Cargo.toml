@@ -34,6 +34,11 @@ parking_lot = "0.12"
 # Used by the Gemini bridge to resolve the `gemini` binary explicitly on
 # Windows (where PATH resolution for .cmd wrappers via Command differs).
 which = "6"
+# `agentic::executor` uses walkdir + glob for grep / glob tool impls — pure
+# Rust, no external `rg` / `find` shellout, so the agent works on a clean
+# Windows install without a unix toolchain.
+walkdir = "2"
+glob = "0.3"
 # Antigravity SDK bridge reads `GEMINI_API_KEY` from the OS keyring under
 # `Fleetify-Provider-antigravity-sdk` — same store the Tauri shell writes
 # to via providers_link, so a single source of truth flows through.

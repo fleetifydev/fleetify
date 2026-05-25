@@ -20,6 +20,23 @@ export const COMPACTION_MARKER = "[fleet:compaction]";
 export const compactionOptimisticId = (sessionId: string) =>
   `optimistic-compact-${sessionId}`;
 
+/** Short human description for the agentic catalog's snake_case tool
+ *  names — surfaced in the permission dialog so the user sees "Run a
+ *  shell command" rather than the bare identifier. Names that aren't
+ *  in this map fall back to a generic placeholder. */
+function agenticToolDescription(toolName: string): string {
+  switch (toolName) {
+    case "edit_file":   return "Replace text inside a file in your workspace.";
+    case "write_file":  return "Create or overwrite a file in your workspace.";
+    case "run_command": return "Run a shell command in your workspace.";
+    case "read_file":   return "Read a file from your workspace.";
+    case "list_dir":    return "List the contents of a directory.";
+    case "grep":        return "Search workspace files for a pattern.";
+    case "glob":        return "Find workspace files matching a glob.";
+    default:            return `Run the ${toolName} tool.`;
+  }
+}
+
 /**
  * Multiplexed WebSocket manager. ONE physical socket carries
  * traffic for every active session — the user sees a single
@@ -1284,6 +1301,36 @@ class WSManager {
           tool_name: data.tool_name,
           tool_description: data.tool_description,
           command: data.command,
+        });
+        useAppStore.getState().updateSession(sessionId, { status: "waiting" });
+        break;
+      }
+      case "permission_request": {
+        // Agentic loop (HTTP-provider sessions running through
+        // `drive_agentic_loop`) is asking the user. Reuse the same
+        // PermissionRequest store entry + dialog component the CLI MCP
+        // flow uses — just synthesise the `command` and description from
+        // the tool name + input. The user's reply goes back through
+        // `sendPermissionResponse` with the same `id`, and the backend
+        // routes it to `AgenticBridgeRunner::resolve_permission` first
+        // before falling through to the CLI PermissionSession.
+        const input = (data.input ?? {}) as Record<string, unknown>;
+        const command =
+          data.tool_name === "run_command"
+            ? (typeof input.command === "string" ? input.command : "")
+            : data.tool_name === "edit_file"
+              ? `edit ${input.path ?? "?"}`
+              : data.tool_name === "write_file"
+                ? `write ${input.path ?? "?"} (${
+                    typeof input.content === "string" ? (input.content as string).length : 0
+                  } bytes)`
+                : `${data.tool_name}(${JSON.stringify(input)})`;
+        const desc = agenticToolDescription(data.tool_name as string);
+        store.setPermissionRequest(sessionId, {
+          id: data.id,
+          tool_name: data.tool_name,
+          tool_description: desc,
+          command,
         });
         useAppStore.getState().updateSession(sessionId, { status: "waiting" });
         break;
