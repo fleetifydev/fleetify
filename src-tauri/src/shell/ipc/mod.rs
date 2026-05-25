@@ -1281,6 +1281,50 @@ pub async fn shell_install_ollama() -> serde_json::Value {
     }
 }
 
+/// Probe whether Python is installed and report its version. Used by
+/// the renderer to render a "Python required" affordance on the
+/// Antigravity SDK tile before offering Setup.
+#[tauri::command]
+pub async fn shell_check_python_runtime() -> serde_json::Value {
+    // Match the bridge + shell_install_provider resolution chain so the
+    // renderer sees the same Python those flows will use.
+    let python: Option<String> = match std::env::var("FLEETIFY_EMBEDDED_PYTHON") {
+        Ok(p) if std::path::Path::new(&p).exists() => Some(p),
+        _ => ["python3", "python", "py"]
+            .iter()
+            .find_map(|name| which::which(name).ok().map(|p| p.display().to_string())),
+    };
+    let Some(py) = python else {
+        return serde_json::json!({ "installed": false, "version": null, "path": null });
+    };
+    // 3s timeout — `--version` is instant on every healthy Python; a
+    // hang here usually means Windows Store python launcher, which we
+    // treat as not-installed for our purposes (it never resolves a
+    // real interpreter without an interactive install dialog).
+    let res = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        tokio::process::Command::new(&py).arg("--version").output(),
+    )
+    .await;
+    let version: Option<String> = match res {
+        Ok(Ok(o)) if o.status.success() => {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            let s = if s.is_empty() {
+                String::from_utf8_lossy(&o.stderr).trim().to_string()
+            } else {
+                s
+            };
+            s.strip_prefix("Python ").map(|v| v.to_string()).or(Some(s))
+        }
+        _ => None,
+    };
+    serde_json::json!({
+        "installed": version.is_some(),
+        "version": version,
+        "path": py
+    })
+}
+
 // ── PTY ──────────────────────────────────────────────────────────
 #[tauri::command]
 pub async fn pty_spawn(

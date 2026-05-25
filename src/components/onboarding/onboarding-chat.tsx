@@ -31,7 +31,8 @@ import {
 } from "lucide-react";
 import { LogoMark } from "@/components/brand/logo-mark";
 import { ProviderLogo } from "@/components/ui/provider-logo";
-import { apiScanProviders, type ProviderScan, type AuthUser } from "@/lib/api";
+import { apiScanProviders, checkPythonRuntime, type ProviderScan, type AuthUser } from "@/lib/api";
+import { AntigravitySdkSetupRow } from "@/components/settings/agents/antigravity-sdk-setup";
 
 interface Props {
   user: AuthUser | null;
@@ -78,7 +79,7 @@ const PROVIDERS: ProviderDef[] = [
   // the latter for individual AI Pro/Ultra users on 2026-06-18, so
   // surfacing both side-by-side gives migrating users a one-tap path.
   { id: "gemini",    label: "Gemini",      logo: "gemini", kind: "cli", scanKey: "gemini_cli", hint: "Google CLI" },
-  { id: "agy",            label: "Antigravity",     logo: "agy",  kind: "cli", scanKey: "agy_cli",         hint: "Google's terminal agent (OAuth)" },
+  { id: "agy",            label: "Antigravity CLI", logo: "agy",  kind: "cli", scanKey: "agy_cli",         hint: "Google's terminal agent (OAuth)" },
   // The SDK pairs an install step (`pip install google-antigravity`)
   // with an API key entry (GEMINI_API_KEY from Google AI Studio). It
   // sits between cli and api in shape: kind: "api" so the Add-key
@@ -110,6 +111,12 @@ interface Selections {
    *  null = probe completed and nothing's signed in.
    *  undefined = probe still in flight. */
   existingGithub?: { username: string } | null;
+  /** Python runtime probe result — fetched in parallel with the
+   *  provider scan when the user confirms their provider selection.
+   *  Passed into ScanWidget so the Antigravity SDK row can surface
+   *  the same three-state Python required → Setup → Done affordance
+   *  as Settings → Agents. null = probed, nothing found. */
+  pythonRuntime?: PythonRuntimeResult | null;
 }
 
 export function OnboardingChat({ user, onDone }: Props) {
@@ -186,9 +193,11 @@ export function OnboardingChat({ user, onDone }: Props) {
     pushUser(humanList(providers.map((p) => p.label)));
     setSelections((s) => ({ ...s, providers }));
 
-    // Pre-fetch the scan in parallel with the assistant typing so
-    // the verification panel has data the moment it mounts.
-    const scanPromise = apiScanProviders().catch(() => null);
+    // Pre-fetch the scan and Python runtime in parallel with the
+    // assistant typing so the verification panel has data the moment
+    // it mounts. Python runtime is needed by the Antigravity SDK row.
+    const scanPromise   = apiScanProviders().catch(() => null);
+    const pythonPromise = checkPythonRuntime().catch(() => null);
 
     const intro =
       providers.length === 1
@@ -196,8 +205,8 @@ export function OnboardingChat({ user, onDone }: Props) {
         : `Got it — **${providers.length} providers**. I'll verify each one end-to-end so you don't get a surprise the first time you hit send.`;
     await pushAssistant(intro, "scan");
 
-    const scan = await scanPromise;
-    setSelections((s) => ({ ...s, scan }));
+    const [scan, pythonRuntime] = await Promise.all([scanPromise, pythonPromise]);
+    setSelections((s) => ({ ...s, scan, pythonRuntime }));
     // Wait for the scan animation: per-provider verify time + small tail.
     // ScanWidget may also auto-install a missing CLI in this window;
     // npm install can take a while, so cap generously and re-fetch
@@ -446,6 +455,7 @@ export function OnboardingChat({ user, onDone }: Props) {
             githubUsername={selections.githubUsername}
             githubSkipped={selections.githubSkipped}
             existingGithub={selections.existingGithub}
+            pythonRuntime={selections.pythonRuntime ?? null}
             onProvidersConfirm={handleProvidersConfirm}
             onMainAgentPick={handleMainAgentPick}
             onGithubResult={handleGithubResult}
@@ -515,6 +525,7 @@ function Bubble({
   githubUsername,
   githubSkipped,
   existingGithub,
+  pythonRuntime,
   onProvidersConfirm,
   onMainAgentPick,
   onGithubResult,
@@ -525,6 +536,8 @@ function Bubble({
   githubUsername?: string;
   githubSkipped?: boolean;
   existingGithub?: { username: string } | null;
+  /** Forwarded to ScanWidget for the Antigravity SDK row. */
+  pythonRuntime?: PythonRuntimeResult | null;
   onProvidersConfirm: (providers: ProviderDef[]) => void;
   onMainAgentPick: (provider: ProviderDef) => void;
   onGithubResult: (
@@ -595,6 +608,7 @@ function Bubble({
           providers={chosenProviders}
           scan={scan ?? null}
           frozen={Boolean(msg.resolved)}
+          pythonRuntime={pythonRuntime ?? null}
         />
       )}
       {!msg.typing && !msg.resolved && msg.widget === "main-agent" && chosenProviders && (
@@ -918,10 +932,15 @@ function ScanWidget({
   providers,
   scan,
   frozen = false,
+  pythonRuntime,
 }: {
   providers: ProviderDef[];
   scan: ProviderScan | null;
   frozen?: boolean;
+  /** Python runtime probe — forwarded to AntigravitySdkSetupRow when
+   *  the user has selected the Antigravity SDK provider. null means the
+   *  probe ran and found no Python installation. */
+  pythonRuntime?: PythonRuntimeResult | null;
 }) {
   const [states, setStates] = useState<Record<string, ProviderState>>({});
   // Track which provider rows are currently signing in so concurrent
@@ -1364,6 +1383,29 @@ function ScanWidget({
         // simultaneous sign-ins for two providers each get their
         // own re-open icon pointing at the right URL.
         const authUrl = p.scanKey ? authUrls[p.scanKey] : undefined;
+
+        // Antigravity SDK gets the same three-state Setup affordance
+        // as Settings → Agents: Python required → Setup → Done.
+        // Derive installing/installError from the existing states map
+        // so we don't need a separate state slice.
+        if (p.id === "antigravity-sdk") {
+          const fallbackPython: PythonRuntimeResult = { installed: false, version: null, path: null };
+          return (
+            <div
+              key={p.id}
+              style={{ padding: "8px 10px" }}
+            >
+              <AntigravitySdkSetupRow
+                python={pythonRuntime ?? fallbackPython}
+                sdkInstalled={!!scan?.antigravity_sdk?.installed}
+                installing={st.status === "running"}
+                installError={st.status === "fail" ? (st.detail || "Install failed") : null}
+                onSetup={() => handleInstall(p)}
+              />
+            </div>
+          );
+        }
+
         return (
           <ScanRow
             key={p.id}

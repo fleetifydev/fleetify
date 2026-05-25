@@ -87,7 +87,7 @@ const CLI_FALLBACK_LABELS: Record<string, string> = {
   codex:             "Codex CLI",
   gemini:            "Gemini CLI",
   kimi:              "Kimi Code CLI",
-  agy:               "Antigravity",
+  agy:               "Antigravity CLI",
   "antigravity-sdk": "Antigravity SDK",
 };
 

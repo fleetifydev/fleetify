@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { AgentCard, type AgentScanEntry } from "../agent-card";
 import type { ProviderSpec } from "@/lib/providers-api";
@@ -100,5 +100,53 @@ describe("AgentCard", () => {
     fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
     const installBtn = screen.getByRole("button", { name: /Installing/i });
     expect(installBtn).toBeDisabled();
+  });
+
+  it("renders the AntigravitySdkSetupRow for the antigravity-sdk provider", async () => {
+    // Mock electronAPI.checkPythonRuntime to return no Python.
+    (window as any).electronAPI = {
+      ...(window as any).electronAPI,
+      checkPythonRuntime: vi.fn().mockResolvedValue({ installed: false, version: null, path: null }),
+    };
+    const sdkSpec: ProviderSpec = {
+      id: "antigravity-sdk",
+      display_name: "Antigravity SDK",
+      kind: "cli",
+      default_base_url: "",
+      auth: { kind: "none" },
+      default_models: [],
+      extras: {},
+      bin: "python3",
+      auth_indicators: [],
+      install_hint: "pip install google-antigravity",
+      login_hint: "",
+    };
+    const sdkScan: AgentScanEntry = {
+      id: "antigravity-sdk",
+      display_name: "Antigravity SDK",
+      installed: false,
+      authenticated: false,
+      path: null,
+      install_hint: "pip install google-antigravity",
+      login_hint: "",
+    };
+    render(
+      <AgentCard
+        spec={sdkSpec}
+        scan={sdkScan}
+        onChanged={vi.fn()}
+        installing={false}
+        installError={undefined}
+        onInstall={vi.fn()}
+      />
+    );
+    // Expand the card to reveal the body.
+    fireEvent.click(screen.getByRole("button", { name: /antigravity sdk/i }));
+    // Wait for the Python probe to resolve.
+    await waitFor(() => {
+      expect(screen.getByText(/Python required/i)).toBeInTheDocument();
+    });
+    // The legacy "$ pip install" hint + Install button should NOT render.
+    expect(screen.queryByText(/\$ pip install/)).not.toBeInTheDocument();
   });
 });

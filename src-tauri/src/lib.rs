@@ -124,6 +124,7 @@ pub fn run() {
             shell::ipc::gh_auth_login_capture,
             shell::ipc::gh_auth_login_cancel,
             shell::ipc::shell_install_provider,
+            shell::ipc::shell_check_python_runtime,
             shell::ipc::shell_install_ollama,
             shell::ipc::git_watch_head,
             shell::ipc::git_unwatch_head,

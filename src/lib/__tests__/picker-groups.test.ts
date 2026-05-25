@@ -160,7 +160,7 @@ describe("buildPickerGroups", () => {
     expect(groups.find((g) => g.id === "codex")?.label).toBe("Codex CLI");
     expect(groups.find((g) => g.id === "gemini")?.label).toBe("Gemini CLI");
     expect(groups.find((g) => g.id === "kimi")?.label).toBe("Kimi Code CLI");
-    expect(groups.find((g) => g.id === "agy")?.label).toBe("Antigravity");
+    expect(groups.find((g) => g.id === "agy")?.label).toBe("Antigravity CLI");
     expect(groups.find((g) => g.id === "antigravity-sdk")?.label).toBe("Antigravity SDK");
   });
 

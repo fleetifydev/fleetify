@@ -148,13 +148,62 @@ pub fn resolve_install_hint(spec: &crate::providers::ProviderSpec) -> &'static s
         .unwrap_or(spec.install_hint)
 }
 
+/// Per-provider scan strategy. `scan_all_agents` picks one based on
+/// provider id; the default is `BinOnly` which preserves the
+/// pre-refactor behaviour of `cli_path(spec.bin)`.
+#[derive(Debug, Clone)]
+enum ScanProbe {
+    /// Just check the binary on PATH (and Windows PATHEXT shims).
+    BinOnly { bin: &'static str },
+    /// agy CLI: PATH lookup OR `~/.gemini/antigravity-cli/installation_id`
+    /// marker. Shell installer updates PATH on next login only, so the
+    /// marker rescues the "I just installed it" UX without a restart.
+    AgyCli,
+    /// Resolve any usable Python, then run `python -c "import <module>"`
+    /// against it. Both must succeed for `installed` to be true.
+    PythonModule { module: &'static str },
+}
+
+/// Map a catalog id to the probe strategy used by `scan_all_agents`.
+/// New providers default to `BinOnly { bin }`. Special cases live
+/// here so the catalog's `ProviderSpec` stays declarative.
+fn scan_probe_for(id: &'static str, bin: &'static str) -> ScanProbe {
+    match id {
+        "agy" => ScanProbe::AgyCli,
+        "antigravity-sdk" => ScanProbe::PythonModule {
+            module: "google.antigravity",
+        },
+        _ => ScanProbe::BinOnly { bin },
+    }
+}
+
 /// Shared scanner used by both the HTTP endpoint and the startup
 /// warm-up. Returns a JSON-serializable map keyed by provider id.
 pub async fn scan_all_agents() -> HashMap<String, Value> {
     use crate::providers::AuthIndicator;
     let mut out = HashMap::new();
     for spec in crate::providers::list_cli_agents() {
-        let path = cli_path(spec.bin).await;
+        let probe = scan_probe_for(spec.id, spec.bin);
+        let path = match &probe {
+            ScanProbe::BinOnly { bin } => cli_path(bin).await,
+            ScanProbe::AgyCli => {
+                if let Some(p) = cli_path("agy").await {
+                    Some(p)
+                } else if agy_installed_via_marker(&home()) {
+                    Some("<installer marker>".to_string())
+                } else {
+                    None
+                }
+            }
+            ScanProbe::PythonModule { module } => {
+                let probe = python_module_installed(module).await;
+                if probe.installed {
+                    probe.path
+                } else {
+                    None
+                }
+            }
+        };
         let installed = path.is_some();
         let authenticated = if installed {
             spec.auth_indicators.iter().any(|ind| match ind {
@@ -211,6 +260,86 @@ fn home() -> PathBuf {
         .or_else(|_| std::env::var("HOME"))
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Read-only probe: does the agy installation_id marker exist under `home`?
+/// Caller passes `home()` from a real scan or a tempdir from tests.
+fn agy_installed_via_marker(home: &std::path::Path) -> bool {
+    home.join(".gemini")
+        .join("antigravity-cli")
+        .join("installation_id")
+        .exists()
+}
+
+/// Shape of the python_module_installed probe result.
+pub struct PythonProbe {
+    pub installed: bool,
+    pub path: Option<String>,
+}
+
+/// Resolve the first Python interpreter on PATH that actually executes
+/// successfully (exit-success on `--version`). This filters out the
+/// Microsoft Store stub on Windows (`python3.exe` / `python.exe` in
+/// `%LOCALAPPDATA%\Microsoft\WindowsApps\`) which is on PATH and passes
+/// `which::which` but exits non-zero when run without the Store package
+/// installed behind it.
+async fn working_python_path() -> Option<String> {
+    for name in &["python3", "python", "py"] {
+        // Resolve via `which` first so we get the absolute path and
+        // honour PATHEXT shims. If `which` fails, try a bare spawn.
+        let candidate: Option<String> = if let Ok(p) = which::which(name) {
+            Some(p.to_string_lossy().into_owned())
+        } else {
+            None
+        };
+        let Some(path) = candidate else { continue };
+        // Verify the candidate actually runs — the Store stub on Windows
+        // passes `which` but exits 9009 when there is no real interpreter.
+        let ok = tokio::process::Command::new(&path)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Probe whether `module` is importable under the first Python we can
+/// resolve. Honours FLEETIFY_EMBEDDED_PYTHON for forward-compat with a
+/// bundled interpreter. 5-second timeout — startup + stdlib import is
+/// sub-second on real machines.
+pub async fn python_module_installed(module: &str) -> PythonProbe {
+    let python_path: Option<String> = match std::env::var("FLEETIFY_EMBEDDED_PYTHON") {
+        Ok(p) if std::path::Path::new(&p).exists() => Some(p),
+        _ => working_python_path().await,
+    };
+    let Some(py) = python_path else {
+        return PythonProbe {
+            installed: false,
+            path: None,
+        };
+    };
+    let installed = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::process::Command::new(&py)
+            .args(["-c", &format!("import {module}")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status(),
+    )
+    .await
+    .map(|r| r.map(|s| s.success()).unwrap_or(false))
+    .unwrap_or(false);
+    PythonProbe {
+        installed,
+        path: Some(py),
+    }
 }
 
 /// Resolve `<bin>` on PATH and return its absolute path. Uses the
@@ -673,6 +802,57 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn scan_probe_for_id_returns_bin_only_for_legacy_clis() {
+        let probes: Vec<(&str, ScanProbe)> = crate::providers::list_cli_agents()
+            .iter()
+            .map(|s| (s.id, scan_probe_for(s.id, s.bin)))
+            .collect();
+        for (id, probe) in probes {
+            match (id, probe) {
+                ("claude", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "claude"),
+                ("codex", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "codex"),
+                ("gemini", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "gemini"),
+                ("kimi", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "kimi"),
+                ("agy", ScanProbe::AgyCli) => {}
+                ("antigravity-sdk", ScanProbe::PythonModule { module }) => {
+                    assert_eq!(module, "google.antigravity");
+                }
+                (other, _) => panic!("unmapped CLI id in scan_probe_for: {other}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn scan_probe_for_agy_uses_agy_cli_variant() {
+        let probe = scan_probe_for("agy", "agy");
+        assert!(
+            matches!(probe, ScanProbe::AgyCli),
+            "agy must use AgyCli probe so installation_id fallback works"
+        );
+    }
+
+    #[test]
+    fn agy_cli_probe_returns_installed_when_installation_id_exists() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let marker = tmp.path().join(".gemini/antigravity-cli/installation_id");
+        std::fs::create_dir_all(marker.parent().unwrap()).expect("mkdir");
+        std::fs::write(&marker, "fake-id").expect("write marker");
+        assert!(
+            agy_installed_via_marker(tmp.path()),
+            "installation_id present => installed"
+        );
+    }
+
+    #[test]
+    fn agy_cli_probe_returns_false_when_marker_absent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert!(
+            !agy_installed_via_marker(tmp.path()),
+            "no marker => not installed via marker path"
+        );
+    }
+
     #[test]
     fn resolve_install_hint_picks_os_specific_when_set() {
         let p = crate::providers::CATALOG
@@ -699,5 +879,60 @@ mod tests {
         // to the single install_hint string (npm install -g …).
         assert_eq!(resolve_install_hint(p), p.install_hint);
         assert!(p.install_hint.contains("npm"));
+    }
+
+    #[tokio::test]
+    async fn scan_probe_for_antigravity_sdk_uses_python_module() {
+        let probe = scan_probe_for("antigravity-sdk", "python3");
+        match probe {
+            ScanProbe::PythonModule { module } => assert_eq!(module, "google.antigravity"),
+            other => panic!("expected PythonModule probe, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn python_module_probe_returns_installed_for_stdlib_module() {
+        let py_works = ["python3", "python", "py"].iter().any(|name| {
+            std::process::Command::new(name)
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        });
+        if !py_works {
+            eprintln!("skipping: no working python on PATH");
+            return;
+        }
+        let result = python_module_installed("json").await;
+        assert!(
+            result.installed,
+            "json (stdlib) must import successfully when Python is present"
+        );
+        assert!(result.path.is_some(), "python path should be reported");
+    }
+
+    #[tokio::test]
+    async fn python_module_probe_returns_not_installed_for_bogus_module() {
+        let py_works = ["python3", "python", "py"].iter().any(|name| {
+            std::process::Command::new(name)
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        });
+        if !py_works {
+            eprintln!("skipping: no working python on PATH");
+            return;
+        }
+        let result = python_module_installed("definitely_not_a_real_module_2026").await;
+        assert!(!result.installed, "bogus module must not import");
+        assert!(
+            result.path.is_some(),
+            "python is still installed, only the module is missing"
+        );
     }
 }

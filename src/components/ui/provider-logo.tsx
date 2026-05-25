@@ -95,7 +95,7 @@ export function KimiLogo({ size = 18 }: { size?: number }) {
 /* ── Antigravity (agy): orbital arc with rising mass ── */
 export function AgyLogo({ size = 18 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" role="img" aria-label="Antigravity">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" role="img" aria-label="Antigravity CLI">
       {/* Gravity-well arc + an arrow rising through it — reads as
           "anti-gravity" without copying Google's specific brand mark. */}
       <defs>
@@ -242,7 +242,7 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
 export function providerName(tool: string): string {
   const names: Record<string, string> = {
     claude: "Claude", codex: "Codex", cursor: "Cursor", gemini: "Gemini",
-    ollama: "Ollama", kimi: "Kimi", agy: "Antigravity",
+    ollama: "Ollama", kimi: "Kimi", agy: "Antigravity CLI",
     "antigravity-sdk": "Antigravity SDK",
     opencode: "OpenCode", aider: "Aider",
   };

@@ -10,11 +10,13 @@
  * user runs it in their own terminal — keeps Fleetify out of the
  * shell-injection blast radius and makes the action transparent.
  */
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Check, Copy, Terminal, Loader2, KeyRound, ExternalLink } from "lucide-react";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { providers as providersApi, type ProviderSpec } from "@/lib/providers-api";
 import { ConnectionStatusPill } from "@/components/settings/shared/connection-status-pill";
+import { AntigravitySdkSetupRow } from "./antigravity-sdk-setup";
+import { checkPythonRuntime } from "@/lib/api";
 
 export interface AgentScanEntry {
   id: string;
@@ -102,6 +104,16 @@ export function AgentCard({
   const [savingKey, setSavingKey] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [showKeyEditor, setShowKeyEditor] = useState(false);
+  const [pythonProbe, setPythonProbe] = useState<PythonRuntimeResult | null>(null);
+  useEffect(() => {
+    if (!isSdk) return;
+    if (!expanded) return;
+    let cancelled = false;
+    void checkPythonRuntime().then((r) => {
+      if (!cancelled) setPythonProbe(r);
+    });
+    return () => { cancelled = true; };
+  }, [isSdk, expanded]);
   const installed = scan?.installed ?? false;
   const authenticated = scan?.authenticated ?? false;
   const installHint = scan?.install_hint || spec.install_hint;
@@ -229,7 +241,18 @@ export function AgentCard({
             gap: 12,
           }}
         >
-          {!installed && installHint && (
+          {/* Antigravity SDK uses the dedicated Setup row: Python required → Setup → Done. */}
+          {isSdk && !installed && pythonProbe && (
+            <AntigravitySdkSetupRow
+              python={pythonProbe}
+              sdkInstalled={installed}
+              installing={!!installing}
+              installError={installError ?? null}
+              onSetup={() => onInstall?.()}
+            />
+          )}
+          {/* All other agents keep the legacy install-hint block. */}
+          {!isSdk && !installed && installHint && (
             <div>
               <div style={{ fontSize: 12, fontWeight: 500, color: "var(--c-high)", marginBottom: 6 }}>
                 Install

@@ -777,7 +777,7 @@ function AgentsSection() {
               { value: "cursor",          label: "Cursor"          },
               { value: "gemini",          label: "Gemini CLI"      },
               { value: "kimi",            label: "Kimi"            },
-              { value: "agy",             label: "Antigravity"     },
+              { value: "agy",             label: "Antigravity CLI" },
               { value: "antigravity-sdk", label: "Antigravity SDK" },
               { value: "ollama",          label: "Ollama"          },
             ]}

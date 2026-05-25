@@ -95,6 +95,7 @@
         return function () { try { unsub && unsub(); } catch (_) {} };
       },
       installProvider: function (toolKey) { return invoke("shell_install_provider", { toolKey: String(toolKey || "") }); },
+      checkPythonRuntime: function () { return invoke("shell_check_python_runtime"); },
       installOllama: function () { return invoke("shell_install_ollama"); },
       generateCommitMessage: function (folder, opts) {
         var o = opts || {};

@@ -1043,7 +1043,7 @@ pub static CATALOG: &[ProviderSpec] = &[
     // Install button.
     ProviderSpec {
         id: "agy",
-        display_name: "Antigravity",
+        display_name: "Antigravity CLI",
         kind: ProviderKind::Cli,
         default_base_url: "",
         auth: AuthSpec::None,
@@ -1746,5 +1746,17 @@ mod tests {
                  refresh research docs + this test together"
             );
         }
+    }
+
+    #[test]
+    fn agy_display_name_says_cli() {
+        let p = CATALOG
+            .iter()
+            .find(|p| p.id == "agy")
+            .expect("agy in catalog");
+        assert_eq!(
+            p.display_name, "Antigravity CLI",
+            "tile must say 'Antigravity CLI' so users can distinguish from the SDK sibling"
+        );
     }
 }

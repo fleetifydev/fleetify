@@ -51,6 +51,12 @@ type RoutersKeyPreviewResult =
   | { ok: true; preview: string | null }
   | { ok: false; code: "NO_USER" | "KEYCHAIN"; error?: string };
 
+interface PythonRuntimeResult {
+  installed: boolean;
+  version: string | null;
+  path: string | null;
+}
+
 interface FleetConfig {
   onboardingComplete: boolean;
   apiKeys: {
@@ -136,6 +142,7 @@ interface Window {
     installProvider: (
       toolKey: string
     ) => Promise<{ success: boolean; output?: string; error?: string }>;
+    checkPythonRuntime: () => Promise<PythonRuntimeResult>;
     installOllama: () => Promise<{
       success: boolean;
       output?: string;

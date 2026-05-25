@@ -219,6 +219,13 @@ export async function apiScanProviders(): Promise<ProviderScan> {
   return res.json();
 }
 
+export async function checkPythonRuntime(): Promise<PythonRuntimeResult> {
+  if (!window.electronAPI?.checkPythonRuntime) {
+    return { installed: false, version: null, path: null };
+  }
+  return window.electronAPI.checkPythonRuntime();
+}
+
 export async function fetchSessions() {
   const res = await apiFetch(`${API_BASE}/sessions`);
   if (!res.ok) throw new Error("Failed to fetch sessions");
