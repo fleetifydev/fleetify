@@ -81,7 +81,12 @@ export function App() {
         : screen === "onboarding-chat"
           ? ONBOARDING_CHAT_SIZE
           : ONBOARDING_SIZE;
-    window.electronAPI?.setWindowSize(target.w, target.h, { center: screen === "main", animate: true });
+    // Always recenter on a screen change: each mode has its own size
+    // (760×820 vs 1500×960 etc.) and without recentering, shrinking
+    // from the larger main canvas to the onboarding panel leaves the
+    // smaller window anchored to the previous top-left — the user
+    // sees it pinned to the side of where main used to sit.
+    window.electronAPI?.setWindowSize(target.w, target.h, { center: true, animate: true });
   }, [screen]);
 
   // System-theme-aware OS taskbar icon. Light system ⇒ light taskbar ⇒

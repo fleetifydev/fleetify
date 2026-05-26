@@ -199,6 +199,11 @@ pub fn run() {
             )
             .title("Fleetify")
             .inner_size(1500.0, 960.0)
+            // Open on the current monitor's centre on first launch.
+            // Without this Tauri falls back to the OS WM's default
+            // placement (Windows lands somewhere top-left-ish, looks
+            // misaligned on wide displays).
+            .center()
             // Hide the OS titlebar — the renderer ships its own custom
             // title strip (min/max/close handled via the window_*
             // IPC commands). Without this, Tauri's native frame stacks

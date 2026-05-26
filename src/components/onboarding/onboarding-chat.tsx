@@ -32,7 +32,7 @@ import {
 import { LogoMark } from "@/components/brand/logo-mark";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { apiScanProviders, checkPythonRuntime, type ProviderScan, type AuthUser } from "@/lib/api";
-import { AntigravitySdkSetupRow } from "@/components/settings/agents/antigravity-sdk-setup";
+import { providers as providersApi } from "@/lib/providers-api";
 
 interface Props {
   user: AuthUser | null;
@@ -66,42 +66,78 @@ interface ProviderDef {
     ProviderScan,
     "claude_cli" | "gemini_cli" | "codex_cli" | "agy_cli" | "antigravity_sdk"
   >;
+  /** Optional env-var bucket on `scan.env_keys`. Only set when the
+   *  scan probe actually checks for this provider's key — the four
+   *  legacy buckets (anthropic / openai / gemini / groq) plus the
+   *  SDK's reuse of `gemini`. New catalog providers (DeepSeek, Grok,
+   *  Kimi API, Perplexity, NVIDIA NIM) don't have probes; their
+   *  presence is tracked via `keysAdded[id]` after an inline save. */
   envKey?: keyof ProviderScan["env_keys"];
   ollama?: boolean;
+  /** When true, the verify loop fires `installProvider()` automatically
+   *  for this row if it's detected as not installed. Reserved for the
+   *  fast, idempotent, well-known `npm install -g <pkg>` flow used by
+   *  Claude / Codex / Gemini. Antigravity CLI (`agy`) runs a remote
+   *  shell installer (`iex (irm ...)` / `curl|bash`) and the
+   *  Antigravity SDK row has its own dedicated Setup affordance — both
+   *  must wait for the user's explicit click instead of firing
+   *  silently behind the verify spinner. */
+  autoInstall?: boolean;
   /** Used in scan readouts only — the picker uses section grouping instead. */
   hint: string;
 }
 
+// IDs MUST match the backend `providers::CATALOG` (see
+// crates/fleetify-backend/src/providers/catalog.rs). `providers.setKey`
+// validates against the catalog and returns `unknown provider <id>` for
+// anything missing — the previous list shipped "anthropic" / "googleai"
+// / "groq" which the catalog doesn't carry and the save failed silently.
+//
+// Aligned set: 4 CLI agents + the SDK + Ollama + every API provider
+// in the catalog (DeepSeek, Grok-xAI, Kimi API, Perplexity, NVIDIA NIM,
+// plus OpenAI and the renamed `gemini-api`). Anthropic and Groq-Inc
+// drop out because neither is in the catalog today — users still get
+// Claude via the Claude Code CLI row at the top.
 const PROVIDERS: ProviderDef[] = [
-  { id: "claude",    label: "Claude Code", logo: "claude", kind: "cli", scanKey: "claude_cli", hint: "Anthropic CLI" },
-  { id: "codex",     label: "Codex",       logo: "codex",  kind: "cli", scanKey: "codex_cli",  hint: "OpenAI CLI" },
+  { id: "claude",         label: "Claude Code",       logo: "claude", kind: "cli", scanKey: "claude_cli", autoInstall: true, hint: "Anthropic CLI" },
+  { id: "codex",          label: "Codex CLI",         logo: "codex",  kind: "cli", scanKey: "codex_cli",  autoInstall: true, hint: "OpenAI CLI" },
   // Antigravity sits next to its predecessor Gemini CLI — Google sunsets
   // the latter for individual AI Pro/Ultra users on 2026-06-18, so
   // surfacing both side-by-side gives migrating users a one-tap path.
-  { id: "gemini",    label: "Gemini",      logo: "gemini", kind: "cli", scanKey: "gemini_cli", hint: "Google CLI" },
-  { id: "agy",            label: "Antigravity CLI", logo: "agy",  kind: "cli", scanKey: "agy_cli",         hint: "Google's terminal agent (OAuth)" },
-  // The SDK pairs an install step (`pip install google-antigravity`)
-  // with an API key entry (GEMINI_API_KEY from Google AI Studio). It
-  // sits between cli and api in shape: kind: "api" so the Add-key
-  // flow surfaces, plus a scanKey so the install state reads back.
-  // The verify panel handles the dual nature based on the scan probe.
-  { id: "antigravity-sdk", label: "Antigravity SDK", logo: "agy",  kind: "api", envKey: "gemini",            scanKey: "antigravity_sdk", hint: "Python SDK + Gemini key" },
-  { id: "ollama",         label: "Ollama",          logo: "ollama", kind: "cli", ollama: true,                hint: "Local models" },
-  { id: "anthropic",      label: "Anthropic",       logo: "claude", kind: "api", envKey: "anthropic",         hint: "API key" },
-  { id: "openai",         label: "OpenAI",          logo: "openai", kind: "api", envKey: "openai",            hint: "API key" },
-  { id: "googleai",       label: "Google AI",       logo: "gemini", kind: "api", envKey: "gemini",            hint: "API key" },
-  { id: "groq",           label: "Groq",            logo: "groq",   kind: "api", envKey: "groq",              hint: "API key" },
+  { id: "gemini",         label: "Gemini CLI",        logo: "gemini", kind: "cli", scanKey: "gemini_cli", autoInstall: true, hint: "Google CLI" },
+  // No autoInstall — the agy installer runs a remote shell script
+  // (`iex (irm https://antigravity.google/cli/install.ps1)` on Windows,
+  // `curl … | bash` elsewhere) which we don't fire without an explicit click.
+  { id: "agy",            label: "Antigravity CLI",   logo: "agy",    kind: "cli", scanKey: "agy_cli",                       hint: "Google's terminal agent (OAuth)" },
+  // SDK pairs a pip install with a GEMINI_API_KEY entry. The renderer
+  // handles the two-stage flow inline.
+  { id: "antigravity-sdk",label: "Antigravity SDK",   logo: "agy",    kind: "api", envKey: "gemini", scanKey: "antigravity_sdk", hint: "Python SDK + Gemini key" },
+  { id: "ollama",         label: "Ollama",            logo: "ollama", kind: "cli", ollama: true,                              hint: "Local models" },
+  { id: "openai",         label: "OpenAI",            logo: "openai", kind: "api", envKey: "openai",                          hint: "API key" },
+  // Backend catalog id is "gemini-api" (the OpenAI-compat endpoint
+  // at /v1beta/openai); the label is just "Gemini" so the row
+  // matches the brand the user knows it by.
+  { id: "gemini-api",     label: "Gemini",            logo: "gemini", kind: "api", envKey: "gemini",                          hint: "API key (Gemini API)" },
+  { id: "deepseek",       label: "DeepSeek",          logo: "deepseek", kind: "api",                                          hint: "API key" },
+  { id: "grok",           label: "Grok (xAI)",        logo: "grok",   kind: "api",                                            hint: "API key" },
+  { id: "kimi-api",       label: "Kimi (Moonshot)",   logo: "kimi",   kind: "api",                                            hint: "API key" },
+  { id: "perplexity",     label: "Perplexity",        logo: "perplexity", kind: "api",                                        hint: "API key" },
+  { id: "nvidia-nim",     label: "NVIDIA NIM",        logo: "nvidia-nim", kind: "api",                                        hint: "API key" },
 ];
 
 const TYPE_BASE_MS = 12;
 const TYPE_PUNCT_MS = 110;
 const PAUSE_BETWEEN_BUBBLES = 420;
 const PROVIDER_REVEAL_STAGGER_MS = 55;
-const PROVIDER_VERIFY_MS = 950;
 
 interface Selections {
   providers?: ProviderDef[];
   scan?: ProviderScan | null;
+  /** Subset of `providers` that reached a ready state during the verify
+   *  step (CLI installed + signed in, Ollama running, API key saved +
+   *  tested). Drives the main-agent picker filter so the user can't
+   *  pick a not-yet-ready provider as the default. */
+  readyProviders?: ProviderDef[];
   defaultProvider?: ProviderDef;
   githubUsername?: string;
   githubSkipped?: boolean;
@@ -132,6 +168,19 @@ export function OnboardingChat({ user, onDone }: Props) {
   useEffect(() => { selectionsRef.current = selections; }, [selections]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const startedRef = useRef(false);
+  // Provider ids the user filled in inline (API key paste / Ollama
+  // URL set) during the verify step. The scan probe checks env vars
+  // and the running daemon — neither flips after a keychain write or
+  // a config-file URL update — so we track the explicit saves here
+  // and feed them into buildScanReadout so the summary doesn't tell
+  // the user "Add key in Settings" for a key they just pasted.
+  const inlineSavedRef = useRef<Set<string>>(new Set());
+  // Resolver for the verify-step Continue button. handleProvidersConfirm
+  // creates the promise and waits on it; ScanWidget's Continue click
+  // (forwarded via Bubble → onScanContinue) resolves it. Replaces the
+  // timer-based auto-progress so the user controls the pace and can
+  // finish inline key entry before the summary message lands.
+  const scanContinueResolverRef = useRef<(() => void) | null>(null);
   const firstName = (user?.name || "").trim().split(/\s+/)[0] || "there";
 
   useEffect(() => {
@@ -207,11 +256,15 @@ export function OnboardingChat({ user, onDone }: Props) {
 
     const [scan, pythonRuntime] = await Promise.all([scanPromise, pythonPromise]);
     setSelections((s) => ({ ...s, scan, pythonRuntime }));
-    // Wait for the scan animation: per-provider verify time + small tail.
-    // ScanWidget may also auto-install a missing CLI in this window;
-    // npm install can take a while, so cap generously and re-fetch
-    // the scan afterwards so the readout reflects post-install state.
-    await new Promise((r) => setTimeout(r, providers.length * PROVIDER_VERIFY_MS + 350));
+
+    // Wait for the user to click Continue inside the ScanWidget. The
+    // widget's button is gated on "at least one provider ready"
+    // (CLI verified ok, Ollama running, API key saved + tested) so
+    // we never advance with a fully-empty roster.
+    await new Promise<void>((resolve) => {
+      scanContinueResolverRef.current = resolve;
+    });
+    scanContinueResolverRef.current = null;
     resolveLastWidget();
 
     // Re-scan once more — picks up any auto-install that happened
@@ -219,18 +272,25 @@ export function OnboardingChat({ user, onDone }: Props) {
     const finalScan = (await apiScanProviders().catch(() => null)) ?? scan;
     if (finalScan !== scan) setSelections((s) => ({ ...s, scan: finalScan }));
 
-    await pushAssistant(buildScanReadout(providers, finalScan));
+    await pushAssistant(buildScanReadout(providers, finalScan, inlineSavedRef.current));
 
-    if (providers.length > 1) {
-      // Multi-pick → ask which one Fleet should drive by default.
-      // Single-pick is auto-set further down.
+    // Main-agent picker only renders the providers that actually
+    // reached "ready" — picking a not-installed CLI as the default
+    // would set the user up for an error on their first message.
+    const readyProviders = providers.filter((p) =>
+      isProviderReady(p, finalScan, inlineSavedRef.current),
+    );
+    setSelections((s) => ({ ...s, readyProviders }));
+
+    if (readyProviders.length > 1) {
       await pushAssistant(
         "Since you've got more than one wired up, **which should Fleet drive by default?** I'll fall back to the others when this one isn't a fit (or you can switch per-session).",
         "main-agent",
       );
-    } else {
-      // Single pick — auto-set as default + skip the question.
-      const only = providers[0]!;
+    } else if (readyProviders.length === 1) {
+      // Exactly one ready provider — auto-set as default + skip the
+      // question. Save to config so first launch picks it up.
+      const only = readyProviders[0]!;
       setSelections((s) => ({ ...s, defaultProvider: only }));
       try {
         const cfg = (await window.electronAPI?.getConfig?.()) ?? {
@@ -240,6 +300,10 @@ export function OnboardingChat({ user, onDone }: Props) {
         await window.electronAPI?.setConfig?.({ ...cfg, defaultProvider: only.id });
       } catch { /* best-effort */ }
 
+      await pushAssistant(githubIntroCopy(getCurrentExistingGithub()), "github");
+    } else {
+      // No ready providers — skip the picker entirely and move on
+      // to GitHub. The user can finish setup from Settings later.
       await pushAssistant(githubIntroCopy(getCurrentExistingGithub()), "github");
     }
   };
@@ -452,6 +516,7 @@ export function OnboardingChat({ user, onDone }: Props) {
             msg={m}
             scan={selections.scan}
             chosenProviders={selections.providers}
+            readyProviders={selections.readyProviders}
             githubUsername={selections.githubUsername}
             githubSkipped={selections.githubSkipped}
             existingGithub={selections.existingGithub}
@@ -459,6 +524,8 @@ export function OnboardingChat({ user, onDone }: Props) {
             onProvidersConfirm={handleProvidersConfirm}
             onMainAgentPick={handleMainAgentPick}
             onGithubResult={handleGithubResult}
+            onKeySaved={(id) => inlineSavedRef.current.add(id)}
+            onScanContinue={() => scanContinueResolverRef.current?.()}
           />
         ))}
       </div>
@@ -522,6 +589,7 @@ function Bubble({
   msg,
   scan,
   chosenProviders,
+  readyProviders,
   githubUsername,
   githubSkipped,
   existingGithub,
@@ -529,10 +597,16 @@ function Bubble({
   onProvidersConfirm,
   onMainAgentPick,
   onGithubResult,
+  onKeySaved,
+  onScanContinue,
 }: {
   msg: ChatMsg;
   scan?: ProviderScan | null;
   chosenProviders?: ProviderDef[];
+  /** Subset of `chosenProviders` that reached ready in the verify
+   *  step. Filters the main-agent picker so the user can only pick
+   *  something they can actually chat with. */
+  readyProviders?: ProviderDef[];
   githubUsername?: string;
   githubSkipped?: boolean;
   existingGithub?: { username: string } | null;
@@ -546,6 +620,13 @@ function Bubble({
       | { method: "oauth"; username?: string }
       | { skipped: true },
   ) => void;
+  /** Threaded through to ScanWidget so OnboardingChat can stash the
+   *  ids the user saved inline and feed them into the readout
+   *  builder (env probe lags a keychain write by definition). */
+  onKeySaved?: (id: string) => void;
+  /** ScanWidget's Continue button → resolves the parent's pending
+   *  promise so the summary + main-agent picker can land. */
+  onScanContinue?: () => void;
 }) {
   if (msg.sender === "user") {
     return (
@@ -609,10 +690,15 @@ function Bubble({
           scan={scan ?? null}
           frozen={Boolean(msg.resolved)}
           pythonRuntime={pythonRuntime ?? null}
+          onKeySaved={onKeySaved}
+          onContinue={onScanContinue}
         />
       )}
       {!msg.typing && !msg.resolved && msg.widget === "main-agent" && chosenProviders && (
-        <MainAgentWidget providers={chosenProviders} onPick={onMainAgentPick} />
+        <MainAgentWidget
+          providers={readyProviders ?? chosenProviders}
+          onPick={onMainAgentPick}
+        />
       )}
       {/* No resolved card for main-agent — the user's message bubble
           plus the assistant's "Locked in — X drives by default" reply
@@ -893,9 +979,15 @@ function ProviderRow({
 // Computes the "Installed / Not installed" hint shown next to each
 // provider name in the picker. Different providers have different
 // notions of "ready":
-//   • CLI tools     → binary is on PATH (scan.<key>.installed)
-//   • Ollama        → daemon answers at localhost:11434 (running)
-//   • API keys      → matching env var is set
+//   • CLI tools          → binary is on PATH (scan.<key>.installed)
+//   • Ollama             → daemon answers at localhost:11434 (running)
+//   • API key (legacy)   → matching env var is set (anthropic / openai /
+//                          gemini / groq buckets baked into the probe)
+//   • API key (catalog)  → no env-var probe (DeepSeek / Grok / Kimi
+//                          API / Perplexity / NVIDIA NIM). The picker
+//                          still wants an "Add key" hint so the user
+//                          knows the row will prompt for input in the
+//                          verify step.
 function getInstallInfo(p: ProviderDef, scan: ProviderScan): { ready: boolean; label: string } {
   if (p.scanKey) {
     const s = scan[p.scanKey];
@@ -912,6 +1004,9 @@ function getInstallInfo(p: ProviderDef, scan: ProviderScan): { ready: boolean; l
     return scan.env_keys[p.envKey]
       ? { ready: true,  label: "Key found" }
       : { ready: false, label: "Add key" };
+  }
+  if (p.kind === "api") {
+    return { ready: false, label: "Add key" };
   }
   return { ready: false, label: "" };
 }
@@ -933,14 +1028,27 @@ function ScanWidget({
   scan,
   frozen = false,
   pythonRuntime,
+  onKeySaved,
+  onContinue,
 }: {
   providers: ProviderDef[];
   scan: ProviderScan | null;
   frozen?: boolean;
-  /** Python runtime probe — forwarded to AntigravitySdkSetupRow when
-   *  the user has selected the Antigravity SDK provider. null means the
-   *  probe ran and found no Python installation. */
+  /** Python runtime probe — forwarded to the Antigravity SDK row so
+   *  it can swap between Setup / Add key / Ready states. null means
+   *  the probe ran and found no Python installation. */
   pythonRuntime?: PythonRuntimeResult | null;
+  /** Bubbled out so the parent's scan-readout summary knows the user
+   *  finished a key entry inline (the on-disk env probe wouldn't
+   *  pick up a keychain write). Called once per provider id when
+   *  setKey / setOllamaBaseUrl succeeds inside this widget. */
+  onKeySaved?: (id: string) => void;
+  /** Continue button click handler. Resolves the parent's pending
+   *  promise so the readout + main-agent picker can land. Gated on
+   *  ≥1 provider being ready (CLI verified ok / Ollama running /
+   *  API key saved + tested) so we never advance with nothing
+   *  wired up. */
+  onContinue?: () => void;
 }) {
   const [states, setStates] = useState<Record<string, ProviderState>>({});
   // Track which provider rows are currently signing in so concurrent
@@ -956,6 +1064,18 @@ function ScanWidget({
   // "re-open browser" icon while the URL is known, so the user can
   // recover if they accidentally close the auth tab.
   const [authUrls, setAuthUrls] = useState<Record<string, string>>({});
+  // Provider ids the user has just saved a key/URL for in this
+  // session. The scan probes env vars (PATH-bound) and Ollama's
+  // running daemon — neither flips immediately after a
+  // `providers.setKey` to the keychain or a `setOllamaBaseUrl` write
+  // to the config. Tracking the save locally lets the row + the
+  // summary readout reflect the user's action without round-tripping
+  // a full scan.
+  const [keysAdded, setKeysAdded] = useState<Record<string, boolean>>({});
+  const markKeyAdded = (id: string) => {
+    setKeysAdded((prev) => (prev[id] ? prev : { ...prev, [id]: true }));
+    onKeySaved?.(id);
+  };
 
   useEffect(() => {
     if (!window.electronAPI?.onAuthUrl) return;
@@ -976,77 +1096,75 @@ function ScanWidget({
     setStates(init);
 
     const run = async () => {
-      // Refreshable scan reference — we re-fetch after auto-install
-      // so the row reflects post-install state instead of staying
-      // on the original "Not installed" snapshot.
-      let currentScan = scan;
+      // Flip every row to "running" up front so the spinners light up
+      // in unison; previously rows verified sequentially with a 250 ms
+      // stagger and the user watched a slow drip. Verification is
+      // read-only (`apiScanProviders` for everything, `installProvider`
+      // for autoInstall rows) so the concurrent fan-out is safe.
+      setStates(() => {
+        const running: Record<string, ProviderState> = {};
+        providers.forEach((p) => {
+          running[p.id] = { status: "running", detail: "Verifying…" };
+        });
+        return running;
+      });
 
-      for (const p of providers) {
-        if (cancelled) return;
-        setStates((prev) => ({
-          ...prev,
-          [p.id]: { status: "running", detail: "Verifying…" },
-        }));
-        await new Promise((r) => setTimeout(r, PROVIDER_VERIFY_MS - 250));
-        if (cancelled) return;
+      // Tiny visual hold so the user sees the spinners light up before
+      // any row resolves — without it, fast scans (already-installed
+      // providers) flip ok before the running state ever paints and the
+      // verify step feels like it didn't run.
+      await new Promise((r) => setTimeout(r, 400));
+      if (cancelled) return;
 
-        let result = resolveProvider(p, currentScan);
+      const verifyOne = async (p: ProviderDef): Promise<void> => {
+        let result = resolveProvider(p, scan);
 
-        // ── Auto-install for missing CLIs ──
-        // If a CLI provider (Claude / Codex / Gemini) isn't installed,
-        // fire installProvider() immediately and refresh the scan
-        // before we settle. The user picked it — they want it. Skip
-        // for non-CLI rows (Ollama / API keys) where installation is
-        // out-of-scope for npm.
+        // ── Auto-install for missing npm CLIs ──
+        // Gated on `p.autoInstall === true` so non-npm installers
+        // (Antigravity CLI's remote shell installer, Antigravity SDK's
+        // pip + Setup affordance) only install on an explicit click,
+        // not silently behind the verify spinner.
         const isMissingCli =
           result.status === "fail" &&
           /not installed/i.test(result.detail) &&
-          p.scanKey;
+          p.scanKey &&
+          p.autoInstall === true;
 
-        if (isMissingCli) {
-          if (!window.electronAPI?.installProvider) {
-            console.warn("[fleet] electronAPI.installProvider missing — skipping auto-install");
-          } else {
-            setStates((prev) => ({
-              ...prev,
-              [p.id]: { status: "running", detail: "Installing…" },
-            }));
-            try {
-              // Backend `shell_install_provider` routes on the kebab id
-              // ("agy", "antigravity-sdk", "claude"…), not the snake-case
-              // scanKey ("agy_cli", "antigravity_sdk", "claude_cli") used
-              // by the scan probe. scanKey gates *whether* we install
-              // (this row owns an installable binary); id selects *what*.
-              const installRes = await window.electronAPI.installProvider(p.id);
+        if (isMissingCli && window.electronAPI?.installProvider) {
+          setStates((prev) => ({
+            ...prev,
+            [p.id]: { status: "running", detail: "Installing…" },
+          }));
+          try {
+            // Backend `shell_install_provider` routes on the kebab id
+            // ("claude", "codex", "gemini"), not the snake-case
+            // scanKey ("claude_cli", …) used by the scan probe.
+            const installRes = await window.electronAPI.installProvider(p.id);
+            if (cancelled) return;
+            if (installRes?.success) {
+              const fresh = await apiScanProviders().catch(() => null);
               if (cancelled) return;
-              if (installRes?.success) {
-                // Re-scan so resolveProvider sees the fresh installed
-                // (and possibly already-authenticated) flag.
-                const fresh = await apiScanProviders().catch(() => null);
-                if (cancelled) return;
-                if (fresh) {
-                  currentScan = fresh;
-                  result = resolveProvider(p, fresh);
-                }
-              } else {
-                result = {
-                  status: "fail",
-                  detail: installRes?.error?.split("\n")[0]?.slice(0, 60) || "Install failed",
-                };
-              }
-            } catch (e) {
-              console.error("[fleet] installProvider threw:", e);
+              if (fresh) result = resolveProvider(p, fresh);
+            } else {
               result = {
                 status: "fail",
-                detail: e instanceof Error ? e.message.slice(0, 60) : "Install failed",
+                detail: installRes?.error?.split("\n")[0]?.slice(0, 60) || "Install failed",
               };
             }
+          } catch (e) {
+            console.error("[fleet] installProvider threw:", e);
+            result = {
+              status: "fail",
+              detail: e instanceof Error ? e.message.slice(0, 60) : "Install failed",
+            };
           }
         }
 
+        if (cancelled) return;
         setStates((prev) => ({ ...prev, [p.id]: result }));
-        await new Promise((r) => setTimeout(r, 250));
-      }
+      };
+
+      await Promise.all(providers.map(verifyOne));
     };
     run();
     return () => {
@@ -1392,25 +1510,127 @@ function ScanWidget({
         // own re-open icon pointing at the right URL.
         const authUrl = p.scanKey ? authUrls[p.scanKey] : undefined;
 
-        // Antigravity SDK gets the same three-state Setup affordance
-        // as Settings → Agents: Python required → Setup → Done.
-        // Derive installing/installError from the existing states map
-        // so we don't need a separate state slice.
+        // Antigravity SDK rolls up into the same single-row visual as
+        // the CLI rows. Per-state mapping:
+        //   • !sdkInstalled, !python.installed → "Get Python" → python.org
+        //   • !sdkInstalled, installing        → "Installing…" pill
+        //   • !sdkInstalled, python.installed  → "Setup" → pip install
+        //                                        (also on install-failed —
+        //                                        surfaces retry path
+        //                                        without "Setup failed")
+        //   • sdkInstalled, no key             → KeyEntryRow ("Add key")
+        //   • sdkInstalled, key set            → "Ready" pill
+        // While the row is still verifying, render the plain ScanRow
+        // so the user sees a spinner and a "Verifying…" pill instead
+        // of an interactive KeyEntryRow that hasn't determined its
+        // initial state yet. Once the verify resolves, the dispatch
+        // re-routes to the appropriate inline component.
+        const verifying = st.status === "running" && st.detail === "Verifying…";
+        if (verifying) {
+          return <ScanRow key={p.id} provider={p} state={st} />;
+        }
+
         if (p.id === "antigravity-sdk") {
           const fallbackPython: PythonRuntimeResult = { installed: false, version: null, path: null };
+          const python = pythonRuntime ?? fallbackPython;
+          const sdkInstalled = !!scan?.antigravity_sdk?.installed;
+          const sdkAuthenticated = !!scan?.antigravity_sdk?.authenticated;
+          const installing = st.status === "running" && st.detail !== "Verifying…";
+
+          // Two-stage SDK flow:
+          //   1. pip not done yet → Setup / Get Python / Installing
+          //   2. pip done → KeyEntryRow (paste Gemini key)
+          if (sdkInstalled) {
+            const hasKey = sdkAuthenticated || !!keysAdded[p.id];
+            return (
+              <KeyEntryRow
+                key={p.id}
+                provider={p}
+                initiallyHasKey={hasKey}
+                frozen={frozen}
+                onSaved={() => markKeyAdded(p.id)}
+              />
+            );
+          }
+
+          let pillState: ProviderState;
+          let action: { label: string; onClick: () => void } | null = null;
+          if (installing) {
+            pillState = { status: "running", detail: "Installing…" };
+          } else if (!python.installed) {
+            pillState = { status: "fail", detail: "Python required" };
+            action = {
+              label: "Get Python",
+              onClick: () => {
+                window.electronAPI?.openExternal?.("https://www.python.org/downloads/").catch(() => {});
+              },
+            };
+          } else {
+            pillState = { status: "fail", detail: "Not installed" };
+            action = { label: "Setup", onClick: () => handleInstall(p) };
+          }
+
           return (
             <div
               key={p.id}
-              style={{ padding: "8px 10px" }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                padding: "0 10px",
+                height: 34,
+                borderRadius: 6,
+              }}
             >
-              <AntigravitySdkSetupRow
-                python={pythonRuntime ?? fallbackPython}
-                sdkInstalled={!!scan?.antigravity_sdk?.installed}
-                installing={st.status === "running"}
-                installError={st.status === "fail" ? (st.detail || "Install failed") : null}
-                onSetup={() => handleInstall(p)}
-              />
+              <ProviderLogo tool={p.logo} size={13} />
+              <span style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1, color: "var(--c-high)" }}>
+                {p.label}
+              </span>
+              <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
+                {action && !frozen && <ActionButton label={action.label} onClick={action.onClick} />}
+                <StatusPill state={pillState} />
+              </div>
             </div>
+          );
+        }
+
+        // Ollama — local daemon, no API key. Settings → Models lets
+        // the user repoint the base URL when the daemon listens on a
+        // non-default host/port; mirror that here so the row offers
+        // both the standard download (handleDownloadOllama) AND an
+        // inline URL entry without bouncing the user into Settings.
+        if (p.ollama) {
+          const running = !!scan?.ollama?.running || !!keysAdded[p.id];
+          return (
+            <OllamaUrlRow
+              key={p.id}
+              provider={p}
+              running={running}
+              frozen={frozen}
+              onDownload={() => handleDownloadOllama(p)}
+              onSaved={() => markKeyAdded(p.id)}
+            />
+          );
+        }
+
+        // All pure-API providers (kind: "api", no scanKey, no ollama)
+        // — OpenAI / Gemini API / DeepSeek / Grok / Kimi API /
+        // Perplexity / NVIDIA NIM. The user enters the key inline;
+        // the row tests it via providers.testConnection (Settings →
+        // Models parity) and flips to a saved-state view with a
+        // masked preview + Edit link.
+        if (p.kind === "api" && !p.scanKey && !p.ollama) {
+          const envKeyHasKey =
+            p.envKey && scan ? !!scan.env_keys[p.envKey] : false;
+          const hasKey = envKeyHasKey || !!keysAdded[p.id];
+          return (
+            <KeyEntryRow
+              key={p.id}
+              provider={p}
+              initiallyHasKey={hasKey}
+              frozen={frozen}
+              onSaved={() => markKeyAdded(p.id)}
+            />
           );
         }
 
@@ -1420,12 +1640,65 @@ function ScanWidget({
             provider={p}
             state={st}
             authUrl={authUrl}
-            onSignIn={p.scanKey ? () => handleSignIn(p) : undefined}
-            onInstall={p.scanKey ? () => handleInstall(p) : undefined}
-            onDownload={p.ollama ? () => handleDownloadOllama(p) : undefined}
+            onSignIn={!frozen && p.scanKey ? () => handleSignIn(p) : undefined}
+            onInstall={!frozen && p.scanKey ? () => handleInstall(p) : undefined}
+            onDownload={!frozen && p.ollama ? () => handleDownloadOllama(p) : undefined}
           />
         );
       })}
+      {!frozen && onContinue && (
+        <ContinueRow
+          enabled={providers.some((p) => isProviderReady(p, scan, new Set(Object.keys(keysAdded).filter((k) => keysAdded[k]))))}
+          onContinue={onContinue}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Continue affordance at the bottom of the verify list. Disabled
+ *  until at least one provider in the list is fully ready — gating
+ *  the parent's main-agent picker / readout cascade on something the
+ *  user can actually drive a chat with. */
+function ContinueRow({
+  enabled,
+  onContinue,
+}: {
+  enabled: boolean;
+  onContinue: () => void;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "flex-end",
+        padding: "10px 8px 4px",
+      }}
+    >
+      <button
+        type="button"
+        onClick={onContinue}
+        disabled={!enabled}
+        title={enabled ? "" : "Set up at least one provider to continue"}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 6,
+          height: 28,
+          padding: "0 14px",
+          borderRadius: 6,
+          fontSize: 12,
+          fontWeight: 600,
+          background: enabled ? "rgba(255,255,255,0.92)" : "rgba(255,255,255,0.18)",
+          color: enabled ? "#000" : "var(--m-text-3)",
+          border: "none",
+          cursor: enabled ? "pointer" : "not-allowed",
+          transition: "background 0.12s ease",
+        }}
+      >
+        Continue
+        <ArrowRight size={12} strokeWidth={2.4} />
+      </button>
     </div>
   );
 }
@@ -1674,6 +1947,449 @@ function StatusDot({ status }: { status: ScanStatus }) {
   );
 }
 
+/* ── KeyEntryRow ──────────────────────────────────────────────────
+   Inline API-key entry + saved-state preview in the onboarding
+   verify list. Same row chrome as ScanRow (logo + label + action +
+   status pill); the action and body swap between three modes:
+
+     * entry    — input + Save; user hasn't pasted a key yet.
+     * saving   — Save click in flight (setKey + testConnection).
+     * saved    — masked preview ("sk-…abcd") + underlined Edit link;
+                  click Edit → back to entry.
+
+   On Save we run `providers.setKey` (keychain write) AND
+   `providers.testConnection` (matches the Settings → Models pattern)
+   so the Ready pill only lights up once the key actually answers a
+   model-list call. `onSaved` bubbles the id to the parent so the
+   readout / continue gating reflects the inline save. */
+function KeyEntryRow({
+  provider,
+  initiallyHasKey,
+  frozen,
+  onSaved,
+}: {
+  provider: ProviderDef;
+  initiallyHasKey: boolean;
+  /** True once the parent's Continue button has fired. Hides the
+   *  Edit / Save / Cancel chrome so the verify list reads as a
+   *  static summary the user can't accidentally retype. */
+  frozen?: boolean;
+  onSaved: () => void;
+}) {
+  type Mode = "entry" | "saving" | "saved";
+  const [mode, setMode] = useState<Mode>(initiallyHasKey ? "saved" : "entry");
+  const [value, setValue] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  // True when `setKey` landed but `testConnection` couldn't actually
+  // reach the provider's API (network / timeout / no `/models` endpoint).
+  // We still let the user move on — they may be offline — but surface
+  // the difference in the pill so they don't read it as "fully Ready".
+  const [savedUnverified, setSavedUnverified] = useState(false);
+
+  // Fetch the keychain-stored preview when we land in saved mode
+  // (mount-with-existing-key OR transition from saving → saved).
+  // getKeyPreview returns something like "sk-…abcd" (last 4 chars of
+  // a redacted middle); falls back to a generic mask when absent.
+  useEffect(() => {
+    if (mode !== "saved") return;
+    let cancelled = false;
+    providersApi
+      .getKeyPreview(provider.id)
+      .then((r) => {
+        if (cancelled) return;
+        if (r.ok && r.preview) setPreview(r.preview);
+        else setPreview("•••••••");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPreview("•••••••");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, provider.id]);
+
+  const save = async () => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    setMode("saving");
+    setError(null);
+    try {
+      const setResult = await providersApi.setKey(provider.id, trimmed);
+      if (!setResult.ok) {
+        setMode("entry");
+        setError(setResult.error || "Save failed");
+        return;
+      }
+      // Test the key against the provider's API — mirrors the test
+      // Settings → Models runs after a paste. AUTH or zero-model
+      // responses block the save (the key didn't actually
+      // authenticate); NETWORK / TIMEOUT save but flag the row as
+      // "Saved, untested" so the user knows we couldn't confirm.
+      const test = await providersApi.testConnection(provider.id, trimmed);
+      if (test.ok) {
+        // A 200 with an empty model list usually means the endpoint
+        // returned its public catalogue without ever checking auth
+        // (Gemini's /v1beta/openai/models has been observed doing
+        // this on bad keys). Don't trust ok=true unless the response
+        // actually came back with models.
+        if (test.model_count !== null && test.model_count > 0) {
+          setMode("saved");
+          setSavedUnverified(false);
+          setValue("");
+          setPreview(null);
+          onSaved();
+          return;
+        }
+        setMode("entry");
+        setError(
+          "Saved, but the provider didn't list any models — usually a sign the key was rejected. Double-check and try again.",
+        );
+        return;
+      }
+      if (test.code === "AUTH") {
+        setMode("entry");
+        setError(test.error || "Key rejected by the provider");
+        return;
+      }
+      // NETWORK / TIMEOUT / USE_PROBE / NOT_FOUND — key landed in
+      // the keychain but we couldn't reach the host to confirm.
+      // Save with the untested flag so the pill reads "Saved,
+      // untested" instead of a misleading "Ready".
+      setMode("saved");
+      setSavedUnverified(true);
+      setValue("");
+      setPreview(null);
+      onSaved();
+    } catch (e) {
+      setMode("entry");
+      setError(e instanceof Error ? e.message : "Save failed");
+    }
+  };
+
+  const cancel = () => {
+    setMode(initiallyHasKey ? "saved" : "entry");
+    setValue("");
+    setError(null);
+  };
+
+  const pill: ProviderState =
+    mode === "saved"
+      ? savedUnverified
+        ? { status: "warn", detail: "Saved, untested" }
+        : { status: "ok", detail: "Ready" }
+      : mode === "saving"
+        ? { status: "running", detail: "Testing key…" }
+        : value.length > 0
+          ? { status: "running", detail: "Awaiting save" }
+          : { status: "warn", detail: "Add key" };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "0 10px",
+          height: 34,
+          borderRadius: 6,
+        }}
+      >
+        <ProviderLogo tool={provider.logo} size={13} />
+        <span style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1, color: "var(--c-high)" }}>
+          {provider.label}
+        </span>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+          {mode === "saved" && (
+            <>
+              <span
+                style={{
+                  fontSize: 11,
+                  color: "var(--m-text-3)",
+                  fontFamily: "var(--font-mono, monospace)",
+                  letterSpacing: "0.02em",
+                }}
+              >
+                {preview ?? "•••••••"}
+              </span>
+              {!frozen && (
+                <button
+                  type="button"
+                  onClick={() => setMode("entry")}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: "var(--m-text-2)",
+                    fontSize: 11,
+                    fontWeight: 500,
+                    cursor: "pointer",
+                    padding: 0,
+                    textDecoration: "underline",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  Edit Key
+                </button>
+              )}
+            </>
+          )}
+          <StatusPill state={pill} />
+        </div>
+      </div>
+      {!frozen && mode === "entry" && (
+        <div style={{ padding: "4px 10px 8px 33px", display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input
+              type="password"
+              autoFocus
+              placeholder={`Paste your ${provider.label} API key`}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") save();
+                if (e.key === "Escape") cancel();
+              }}
+              style={{
+                flex: 1,
+                height: 26,
+                padding: "0 8px",
+                borderRadius: 5,
+                background: "rgba(0,0,0,0.25)",
+                border: "1px solid rgba(255,255,255,0.10)",
+                color: "var(--c-high)",
+                fontSize: 12,
+                fontFamily: "inherit",
+                outline: "none",
+              }}
+            />
+            <button
+              type="button"
+              onClick={save}
+              disabled={!value.trim()}
+              style={{
+                height: 26,
+                padding: "0 10px",
+                borderRadius: 5,
+                fontSize: 11,
+                fontWeight: 600,
+                background: !value.trim() ? "rgba(255,255,255,0.30)" : "rgba(255,255,255,0.92)",
+                color: "#000",
+                border: "none",
+                cursor: !value.trim() ? "default" : "pointer",
+              }}
+            >
+              Save
+            </button>
+            {initiallyHasKey && (
+              <button
+                type="button"
+                onClick={cancel}
+                style={{
+                  height: 26,
+                  padding: "0 10px",
+                  borderRadius: 5,
+                  fontSize: 11,
+                  fontWeight: 500,
+                  background: "transparent",
+                  color: "var(--m-text-2)",
+                  border: "1px solid rgba(255,255,255,0.10)",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+          {error && (
+            <div style={{ fontSize: 11, color: "rgb(248,113,113)" }}>{error}</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── OllamaUrlRow ─────────────────────────────────────────────────
+   Mirrors Settings → Models' Ollama config card: the user can re-
+   point the daemon base URL when it listens on a non-default
+   host/port. Standard Download button stays available for users
+   who haven't installed Ollama yet. */
+function OllamaUrlRow({
+  provider,
+  running,
+  frozen,
+  onDownload,
+  onSaved,
+}: {
+  provider: ProviderDef;
+  running: boolean;
+  /** True after Continue: collapse to a static header. */
+  frozen?: boolean;
+  onDownload: () => void;
+  onSaved: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState("http://localhost:11434");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async () => {
+    const trimmed = value.trim();
+    if (!trimmed || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const r = await providersApi.setOllamaBaseUrl(trimmed);
+      if (r.ok) {
+        // Probe immediately so we know if the daemon actually
+        // answers at the new URL — saving the config without
+        // confirming connectivity would leave the row in a
+        // confusing "saved but still not running" middle state.
+        const probe = await providersApi.ollamaProbe(trimmed);
+        if (probe.ok && probe.running) {
+          setOpen(false);
+          setValue("");
+          onSaved();
+        } else {
+          setError(
+            probe.ok
+              ? "Saved, but the daemon didn't answer at that URL"
+              : probe.error || "Saved, but couldn't reach the daemon",
+          );
+        }
+      } else {
+        setError(r.error || "Save failed");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const pill: ProviderState = running
+    ? { status: "ok", detail: "Running" }
+    : open
+      ? { status: "running", detail: "Awaiting URL…" }
+      : { status: "fail", detail: "Not running" };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "0 10px",
+          height: 34,
+          borderRadius: 6,
+        }}
+      >
+        <ProviderLogo tool={provider.logo} size={13} />
+        <span style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1, color: "var(--c-high)" }}>
+          {provider.label}
+        </span>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
+          {!frozen && !running && !open && <ActionButton label="Download" onClick={onDownload} />}
+          {!frozen && !running && (
+            <ActionButton
+              label={open ? "Cancel" : "Set URL"}
+              onClick={() => {
+                if (open) {
+                  setOpen(false);
+                  setError(null);
+                } else {
+                  setOpen(true);
+                }
+              }}
+            />
+          )}
+          <StatusPill state={pill} />
+        </div>
+      </div>
+      {!frozen && open && !running && (
+        <div style={{ padding: "4px 10px 8px 33px", display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input
+              type="text"
+              autoFocus
+              placeholder="http://localhost:11434"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") save();
+                if (e.key === "Escape") {
+                  setOpen(false);
+                  setError(null);
+                }
+              }}
+              style={{
+                flex: 1,
+                height: 26,
+                padding: "0 8px",
+                borderRadius: 5,
+                background: "rgba(0,0,0,0.25)",
+                border: "1px solid rgba(255,255,255,0.10)",
+                color: "var(--c-high)",
+                fontSize: 12,
+                fontFamily: "inherit",
+                outline: "none",
+              }}
+            />
+            <button
+              type="button"
+              onClick={save}
+              disabled={saving || !value.trim()}
+              style={{
+                height: 26,
+                padding: "0 10px",
+                borderRadius: 5,
+                fontSize: 11,
+                fontWeight: 600,
+                background: !value.trim() || saving ? "rgba(255,255,255,0.30)" : "rgba(255,255,255,0.92)",
+                color: "#000",
+                border: "none",
+                cursor: !value.trim() || saving ? "default" : "pointer",
+              }}
+            >
+              {saving ? "Saving…" : "Save"}
+            </button>
+          </div>
+          {error && (
+            <div style={{ fontSize: 11, color: "rgb(248,113,113)" }}>{error}</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Snapshot a provider's readiness for the Continue gate / main-agent
+ *  filter. Matches the dispatch logic in ScanWidget: CLI rows need
+ *  `installed + authenticated` from the scan probe; Ollama needs the
+ *  daemon to answer; API rows are ready as soon as their key is in
+ *  the keychain (either via env probe or an inline save). */
+function isProviderReady(
+  p: ProviderDef,
+  scan: ProviderScan | null,
+  inlineSaved: Set<string>,
+): boolean {
+  if (inlineSaved.has(p.id)) return true;
+  if (!scan) return false;
+  if (p.scanKey) {
+    const s = scan[p.scanKey];
+    // The SDK has both a scanKey + envKey; its `authenticated` flag
+    // covers the Gemini key. Pure CLIs need both flags.
+    return s.installed && s.authenticated;
+  }
+  if (p.ollama) return scan.ollama.running;
+  if (p.envKey) return !!scan.env_keys[p.envKey];
+  return false;
+}
+
 function resolveProvider(p: ProviderDef, scan: ProviderScan | null): ProviderState {
   if (!scan) return { status: "fail", detail: "Scan unreachable" };
   if (p.scanKey) {
@@ -1695,11 +2411,27 @@ function resolveProvider(p: ProviderDef, scan: ProviderScan | null): ProviderSta
   return { status: "warn", detail: "Manual setup" };
 }
 
-function buildScanReadout(providers: ProviderDef[], scan: ProviderScan | null): string {
+function buildScanReadout(
+  providers: ProviderDef[],
+  scan: ProviderScan | null,
+  inlineSaved: Set<string> = new Set(),
+): string {
   if (!scan) {
     return "Couldn't reach the backend to verify — but you can finish setup any time from **Settings → Providers**.";
   }
-  const states = providers.map((p) => ({ p, st: resolveProvider(p, scan) }));
+  // Inline saves (API-key paste / Ollama URL set in the verify
+  // widget) override the scan probe — the env-var / running-daemon
+  // checks the probe runs don't see a keychain write or a config
+  // file update until the next reload.
+  const states = providers.map((p) => {
+    const base = resolveProvider(p, scan);
+    return {
+      p,
+      st: inlineSaved.has(p.id)
+        ? ({ status: "ok" as ScanStatus, detail: "Ready" } as ProviderState)
+        : base,
+    };
+  });
   const ready = states.filter((s) => s.st.status === "ok");
   const needs = states.filter((s) => s.st.status !== "ok");
 
@@ -1708,12 +2440,17 @@ function buildScanReadout(providers: ProviderDef[], scan: ProviderScan | null): 
       ? `**${providers[0]!.label}** is good to go — installed, signed in, and reachable.`
       : `All set — ${humanList(providers.map((p) => `**${p.label}**`))} are ready.`;
   }
+  // Use markdown list markers (`- `) instead of the Unicode bullet
+  // (`•`) so ReactMarkdown renders each entry on its own row. With the
+  // bullet character CommonMark treats the consecutive lines as a
+  // single soft-broken paragraph and they wrap together — the screen
+  // looked like one giant run-on sentence.
   if (ready.length === 0) {
-    const lines = needs.map((s) => `• **${s.p.label}** — ${s.st.detail}`).join("\n");
+    const lines = needs.map((s) => `- **${s.p.label}** — ${s.st.detail}`).join("\n");
     return `Looks like a couple of things still need a touch:\n\n${lines}\n\nYou can finish setup from **Settings → Providers** any time.`;
   }
   const readyLine = humanList(ready.map((s) => `**${s.p.label}**`));
-  const needLines = needs.map((s) => `• **${s.p.label}** — ${s.st.detail}`).join("\n");
+  const needLines = needs.map((s) => `- **${s.p.label}** — ${s.st.detail}`).join("\n");
   return `${readyLine} ${ready.length === 1 ? "is" : "are"} ready. A couple still need attention:\n\n${needLines}\n\nYou can finish those from **Settings → Providers** whenever.`;
 }
 
