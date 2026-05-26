@@ -79,19 +79,23 @@ class WSManager {
   // Keyed by `${sessionId}:${pendingMessageId}`.
   private _orphanTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  // Buffer incoming text deltas and flush at ~60fps to avoid per-token
-  // re-renders. The buffer is flushed synchronously before any finalization.
+  // Buffer incoming text deltas and flush on every vsync (display
+  // refresh rate, 60–120Hz on ProMotion). Avoids per-token re-renders.
+  // The buffer is flushed synchronously before any finalization.
+  // Timer ids are `requestAnimationFrame` handles (number) — `number`
+  // here covers both browser rAF and stays compatible if a future
+  // setTimeout fallback path needs to be reintroduced.
   private deltaBuffers = new Map<string, string>();
-  private deltaTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private deltaTimers = new Map<string, number>();
 
   // Per-token thinking deltas have the same setState-per-token cost as
   // message_delta did before batching. Verbose reasoning bursts (Claude
   // extended thinking, Codex reasoning blobs) can fire 200+ deltas in a
   // single turn — each triggered a full re-render of the sessions tree.
-  // Coalesce on the same 16ms cadence as text and flush via a single
+  // Coalesce on the same vsync cadence as text and flush via a single
   // store action. Keyed by sessionId.
   private thinkingBuffers = new Map<string, string>();
-  private thinkingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private thinkingTimers = new Map<string, number>();
 
   // Sub-agent + dispatch-stream deltas. These fire from the SAME backend
   // event stream as parent deltas (often interleaved), and each token
@@ -100,7 +104,7 @@ class WSManager {
   // "subtext" | "subthink" | "preview-text" | "preview-think". The flush
   // routes back into the right store action.
   private auxBuffers = new Map<string, string>();
-  private auxTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private auxTimers = new Map<string, number>();
 
   // First-delta timestamp per session for the in-flight reasoning burst.
   // Started when a thinking event arrives with an empty buffer, cleared
@@ -144,7 +148,7 @@ class WSManager {
   private flushDelta(sessionId: string): void {
     const timer = this.deltaTimers.get(sessionId);
     if (timer !== undefined) {
-      clearTimeout(timer);
+      cancelAnimationFrame(timer);
       this.deltaTimers.delete(sessionId);
     }
     const text = this.deltaBuffers.get(sessionId);
@@ -152,7 +156,7 @@ class WSManager {
       this.deltaBuffers.delete(sessionId);
       // Single combined action — was two separate set() calls back-to-
       // back, which produced two patches of the giant `sessions` record
-      // per 16ms tick. Every store subscriber rendered twice per delta;
+      // per vsync tick. Every store subscriber rendered twice per delta;
       // halving that is a measurable win during a long stream.
       useChatStore.getState().appendStreamAndContent(sessionId, text);
     }
@@ -160,12 +164,12 @@ class WSManager {
 
   /** Flush the in-flight thinking buffer for one session — appends the
    *  accumulated tokens as a single setState rather than one-per-token.
-   *  Matches the flushDelta cadence (16ms) so a reasoning burst that
+   *  Matches the flushDelta vsync cadence so a reasoning burst that
    *  fires 200+ deltas costs one render per frame, not 200. */
   private flushThinkingBuffer(sessionId: string): void {
     const timer = this.thinkingTimers.get(sessionId);
     if (timer !== undefined) {
-      clearTimeout(timer);
+      cancelAnimationFrame(timer);
       this.thinkingTimers.delete(sessionId);
     }
     const text = this.thinkingBuffers.get(sessionId);
@@ -181,7 +185,7 @@ class WSManager {
   private flushAux(key: string): void {
     const timer = this.auxTimers.get(key);
     if (timer !== undefined) {
-      clearTimeout(timer);
+      cancelAnimationFrame(timer);
       this.auxTimers.delete(key);
     }
     const text = this.auxBuffers.get(key);
@@ -216,21 +220,24 @@ class WSManager {
     // Cancel any orphan timers whose buffer was already drained.
     for (const [key, timer] of Array.from(this.auxTimers.entries())) {
       if (key.startsWith(prefix) && !this.auxBuffers.has(key)) {
-        clearTimeout(timer);
+        cancelAnimationFrame(timer);
         this.auxTimers.delete(key);
       }
     }
   }
 
-  /** Enqueue a token onto a buffer and arm a 16ms flush if not already
-   *  scheduled. Hard-caps at 32KB to bound memory on uninterrupted
-   *  streams. Generic across thinking + aux buffers via the buffer/
-   *  timer map pair. */
+  /** Enqueue a token onto a buffer and arm a vsync-aligned flush via
+   *  requestAnimationFrame if not already scheduled. Hard-caps at 32KB
+   *  to bound memory on uninterrupted streams. Generic across thinking
+   *  + aux buffers via the buffer / timer map pair. rAF replaces the
+   *  earlier `setTimeout(..., 16)` cadence so streaming flushes on
+   *  every vsync tick (60Hz on stock displays, 120Hz on ProMotion)
+   *  instead of being capped at ~60fps by a wallclock timer. */
   private bufferAndScheduleFlush(
     key: string,
     text: string,
     buffers: Map<string, string>,
-    timers: Map<string, ReturnType<typeof setTimeout>>,
+    timers: Map<string, number>,
     flush: (k: string) => void,
   ): void {
     const next = (buffers.get(key) ?? "") + text;
@@ -238,7 +245,7 @@ class WSManager {
     if (next.length >= 32 * 1024) {
       flush(key);
     } else if (!timers.has(key)) {
-      timers.set(key, setTimeout(() => flush(key), 16));
+      timers.set(key, requestAnimationFrame(() => flush(key)));
     }
   }
 
@@ -441,11 +448,11 @@ class WSManager {
           try { this.flushThinkingBuffer(sid); } catch { /* defensive */ }
           try { this.flushAuxPrefix(`${sid}::`); } catch { /* defensive */ }
           const dt = this.deltaTimers.get(sid);
-          if (dt) clearTimeout(dt);
+          if (dt) cancelAnimationFrame(dt);
           this.deltaTimers.delete(sid);
           this.deltaBuffers.delete(sid);
           const tt = this.thinkingTimers.get(sid);
-          if (tt) clearTimeout(tt);
+          if (tt) cancelAnimationFrame(tt);
           this.thinkingTimers.delete(sid);
           this.thinkingBuffers.delete(sid);
           this.thinkingStarts.delete(sid);
@@ -671,8 +678,11 @@ class WSManager {
           );
           break;
         }
-        // Parent-session text: accumulate + schedule a 16ms flush
-        // (avoids per-token renders).
+        // Parent-session text: accumulate + arm a vsync-aligned flush
+        // via requestAnimationFrame (avoids per-token renders, and
+        // matches the display refresh rate so ProMotion screens get
+        // 120Hz streaming instead of the old 60Hz cap from
+        // setTimeout(..., 16)'s wallclock cadence).
         const next = (this.deltaBuffers.get(sessionId) ?? "") + text;
         this.deltaBuffers.set(sessionId, next);
         // Hard cap: flush eagerly when a single buffered chunk crosses 32KB
@@ -680,7 +690,7 @@ class WSManager {
         if (next.length >= 32 * 1024) {
           this.flushDelta(sessionId);
         } else if (!this.deltaTimers.has(sessionId)) {
-          this.deltaTimers.set(sessionId, setTimeout(() => this.flushDelta(sessionId), 16));
+          this.deltaTimers.set(sessionId, requestAnimationFrame(() => this.flushDelta(sessionId)));
         }
         break;
       }
@@ -1560,6 +1570,32 @@ class WSManager {
     }
   }
 
+  /**
+   * Wait for any in-flight turn on `sessionId` to finish before letting
+   * a new "send" frame onto the wire. Backend's `chat.rs` keeps a
+   * per-session `streaming` set and SILENTLY drops a second `send`
+   * (`if streaming.contains(sid) { continue; }`) — without this gate
+   * the optimistic user bubble would sit forever under a "Thinking…"
+   * indicator with no response coming back. Polling the store keeps
+   * the optimistic-append path unchanged; only the wire write defers
+   * until the previous turn's bridge releases the session. 5-minute
+   * cap so a stuck bridge can't pin this gate indefinitely.
+   */
+  private async waitForStreamingClear(sessionId: string): Promise<void> {
+    const start = Date.now();
+    const cap = 5 * 60_000;
+    while (useChatStore.getState().sessions[sessionId]?.isStreaming) {
+      if (Date.now() - start > cap) {
+        // Best-effort: give up after 5 min so a wedged session can
+        // still receive a fresh send. The backend's own
+        // `streaming.contains(sid)` will then drop ours but the user
+        // gets explicit feedback via the new error frame.
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+
   async send(sessionId: string, text: string, attachments?: Attachment[]) {
     const store = useChatStore.getState();
     store.ensureSession(sessionId);
@@ -1601,6 +1637,14 @@ class WSManager {
       content,
       timestamp: new Date().toISOString(),
     });
+    // If a prior turn is still streaming, hold the wire write until
+    // the bridge clears the session. The optimistic bubble is
+    // already on screen above; we just defer the actual send so the
+    // backend's `streaming.contains(sid)` guard doesn't silently
+    // drop this one. resetContent + setIsStreaming move INSIDE the
+    // gate so streaming bookkeeping flips only when we're actually
+    // about to dispatch.
+    await this.waitForStreamingClear(sessionId);
     store.resetContent(sessionId);
     store.setIsStreaming(sessionId, true);
 
@@ -1742,6 +1786,12 @@ class WSManager {
     // ws-manager to add a second one).
     const store = useChatStore.getState();
     store.ensureSession(sessionId);
+    // Same back-to-back guard as `send()` — the backend silently
+    // drops a "send" frame when the session is already in its
+    // `streaming` set, so handleStaffSend / auto-mode would orphan
+    // the optimistic user bubble. Defer the wire write until the
+    // previous turn's bridge releases the session.
+    await this.waitForStreamingClear(sessionId);
     store.resetContent(sessionId);
     store.setIsStreaming(sessionId, true);
 
@@ -1820,24 +1870,24 @@ class WSManager {
     this.lastActivity.delete(sessionId);
 
     // Flush any pending message_delta first — losing the buffered text
-    // is fine for an archived session, but we still clear the timer
+    // is fine for an archived session, but we still cancel the rAF
     // before deletion so it can't fire after the buffer's gone.
     const dt = this.deltaTimers.get(sessionId);
-    if (dt) clearTimeout(dt);
+    if (dt) cancelAnimationFrame(dt);
     this.deltaTimers.delete(sessionId);
     this.deltaBuffers.delete(sessionId);
     // Tear down thinking + aux buffers/timers for this session too —
-    // they were added when we extended the 16ms coalesce to thinking
+    // they were added when we extended the vsync coalesce to thinking
     // / sub-agent / dispatch-preview deltas. Leaving them would fire
-    // setTimeout callbacks into a store row that no longer exists.
+    // rAF callbacks into a store row that no longer exists.
     const tt = this.thinkingTimers.get(sessionId);
-    if (tt) clearTimeout(tt);
+    if (tt) cancelAnimationFrame(tt);
     this.thinkingTimers.delete(sessionId);
     this.thinkingBuffers.delete(sessionId);
     const auxPrefix = `${sessionId}::`;
     for (const [key, timer] of Array.from(this.auxTimers.entries())) {
       if (key.startsWith(auxPrefix)) {
-        clearTimeout(timer);
+        cancelAnimationFrame(timer);
         this.auxTimers.delete(key);
       }
     }

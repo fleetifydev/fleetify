@@ -704,9 +704,6 @@ body {
 .scroll-subtle:hover::-webkit-scrollbar-thumb { background: var(--c-brd2); }
 ::selection { background: var(--c-brd2); }
 
-/* ─── Smooth panel transitions ─── */
-* { transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1); }
-
 /* ─── Electron drag ─── */
 .drag-region { -webkit-app-region: drag; app-region: drag; }
 .no-drag { -webkit-app-region: no-drag; app-region: no-drag; }
@@ -779,3 +776,18 @@ textarea:focus { outline: none; }
 .markdown-content table { width: 100%; border-collapse: collapse; margin-bottom: 0.75em; }
 .markdown-content th, .markdown-content td { border: 1px solid var(--border); padding: 6px 12px; text-align: left; font-size: 12px; }
 .markdown-content th { background: var(--card); font-weight: 600; }
+
+/* ─── Respect the OS "Reduce motion" setting ───
+   macOS Accessibility → Reduce Motion, GNOME Reduce Animation,
+   KDE Animations: None, and Windows "Show animations" all flip
+   prefers-reduced-motion to "reduce". We cancel motion outright
+   instead of running it at 0.01ms — the 0.01ms pattern only exists
+   to keep `transitionend`/`animationend` listeners firing, and this
+   codebase has none (verified with rg). WCAG 2.3.3. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
