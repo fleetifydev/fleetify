@@ -7,6 +7,8 @@
  * dev preview).
  */
 
+import { apiFetch } from "@/lib/api";
+
 // ─── Static catalog (backend `ProviderSpec`) ────────────────────────────
 
 export type ProviderKind = "api" | "local_http" | "cli";
@@ -82,6 +84,10 @@ export interface ProviderTile {
   /** Subset of `spec.default_models[*].id` the user wants in the picker.
    *  Empty array ⇒ all defaults enabled (matches backend behaviour). */
   enabled_models: string[];
+  /** True when this tile is the current Fleet default (top-level
+   *  `defaultProvider` in fleet.config.json). At most one tile carries
+   *  this flag at a time. */
+  is_default: boolean;
 }
 
 export type ProvidersListResult =
@@ -145,6 +151,8 @@ interface ProvidersAPI {
   setKey: (id: string, key: string) => Promise<ProvidersSetKeyResult>;
   getKeyPreview: (id: string) => Promise<ProvidersKeyPreviewResult>;
   deleteKey: (id: string) => Promise<ProvidersDeleteResult>;
+  setEnabled: (id: string, enabled: boolean) => Promise<ProvidersMutationResult>;
+  setDefault: (id: string) => Promise<ProvidersMutationResult & { default_model?: string | null }>;
   testConnection: (id: string, key: string) => Promise<ProvidersTestResult>;
   ollamaProbe: (baseUrl?: string | null) => Promise<ProvidersOllamaProbeResult>;
   setEnabledModels: (id: string, models: string[]) => Promise<ProvidersMutationResult>;
@@ -171,6 +179,8 @@ function api(): ProvidersAPI {
       }),
       getKeyPreview: async () => ({ ok: true, preview: null }),
       deleteKey: async () => ({ ok: false }),
+      setEnabled: async () => ({ ok: false, error: "electron unavailable" }),
+      setDefault: async () => ({ ok: false, error: "electron unavailable" }),
       testConnection: async () => ({
         ok: false,
         code: "NETWORK",
@@ -191,10 +201,30 @@ function api(): ProvidersAPI {
 
 export const providers = {
   listCatalog: () => api().listCatalog(),
-  fetchHealth: () => api().fetchHealth(),
+  /**
+   * Reads the backend's prewarmed `HttpHealthCache` via the public
+   * `/api/providers/health` endpoint. Not routed through the preload
+   * IPC because the cache is non-secret and the backend already exposes
+   * an HTTP route — going direct skips the IPC roundtrip and avoids a
+   * dedicated Tauri command. Returns the empty-providers shape on any
+   * transport failure so callers can detect "cache cold / unreachable"
+   * via `Object.keys(result.providers).length === 0`.
+   */
+  fetchHealth: async (): Promise<ProvidersHealthResult> => {
+    try {
+      const res = await apiFetch("/api/providers/health");
+      if (!res.ok) return { ok: false, providers: {} };
+      const body = (await res.json()) as ProvidersHealthResult;
+      return body;
+    } catch {
+      return { ok: false, providers: {} };
+    }
+  },
   setKey: (id: string, key: string) => api().setKey(id, key),
   getKeyPreview: (id: string) => api().getKeyPreview(id),
   deleteKey: (id: string) => api().deleteKey(id),
+  setEnabled: (id: string, enabled: boolean) => api().setEnabled(id, enabled),
+  setDefault: (id: string) => api().setDefault(id),
   testConnection: (id: string, key: string) => api().testConnection(id, key),
   ollamaProbe: (baseUrl?: string | null) => api().ollamaProbe(baseUrl ?? null),
   setEnabledModels: (id: string, models: string[]) => api().setEnabledModels(id, models),

@@ -30,6 +30,17 @@ export interface ProvidersConfigState {
   refresh: () => Promise<void>;
   setKey: (id: string, key: string) => Promise<void>;
   deleteKey: (id: string) => Promise<void>;
+  /** Master enable/disable for a tile. Writes the explicit override
+   *  into `ProvidersConfig.connected[id]` so the chat composer's
+   *  picker hides a disabled provider even when its keychain entry
+   *  is still present. */
+  setEnabled: (id: string, enabled: boolean) => Promise<void>;
+  /** Mark a tile as the Fleet default. Writes both `defaultProvider`
+   *  and a matching `defaultModel` (best model from the catalog) so
+   *  the chat composer's `openComposer` seeds a new chat with both
+   *  fields consistent. Onboarding and Settings → {Agents, Models}
+   *  both route through this single method. */
+  setDefault: (id: string) => Promise<void>;
   setEnabledModels: (id: string, models: string[]) => Promise<void>;
   setOllamaBaseUrl: (baseUrl: string) => Promise<void>;
   /** Test does NOT mutate the store — caller renders the result inline
@@ -68,6 +79,14 @@ const useStore = create<InternalState>((set, get) => ({
     await providers.deleteKey(id);
     await get().refresh();
   },
+  setEnabled: async (id: string, enabled: boolean) => {
+    await providers.setEnabled(id, enabled);
+    await get().refresh();
+  },
+  setDefault: async (id: string) => {
+    await providers.setDefault(id);
+    await get().refresh();
+  },
   setEnabledModels: async (id: string, models: string[]) => {
     await providers.setEnabledModels(id, models);
     await get().refresh();
@@ -85,6 +104,8 @@ export function useProvidersConfig(): ProvidersConfigState {
   const refresh = useStore((s) => s.refresh);
   const setKey = useStore((s) => s.setKey);
   const deleteKey = useStore((s) => s.deleteKey);
+  const setEnabled = useStore((s) => s.setEnabled);
+  const setDefault = useStore((s) => s.setDefault);
   const setEnabledModels = useStore((s) => s.setEnabledModels);
   const setOllamaBaseUrl = useStore((s) => s.setOllamaBaseUrl);
   const testConnection = useStore((s) => s.testConnection);
@@ -109,6 +130,8 @@ export function useProvidersConfig(): ProvidersConfigState {
     refresh,
     setKey,
     deleteKey,
+    setEnabled,
+    setDefault,
     setEnabledModels,
     setOllamaBaseUrl,
     testConnection,

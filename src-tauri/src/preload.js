@@ -55,7 +55,20 @@
       minimizeWindow: function () { return invoke("window_minimize"); },
       maximizeWindow: function () { return invoke("window_maximize"); },
       closeWindow: function () { return invoke("window_close"); },
-      setWindowSize: function (w, h) { return invoke("window_set_size", { width: Number(w), height: Number(h) }); },
+      setWindowSize: function (w, h, opts) {
+        var o = opts || {};
+        return invoke("window_set_size", {
+          width: Number(w),
+          height: Number(h),
+          // `animate` was an Electron-era affordance that Tauri doesn't
+          // expose — silently dropped. `center` matters: every screen
+          // mode (onboarding 760×740, onboarding-chat 760×820, main
+          // 1500×960) has a different size, so after a resize the window
+          // would otherwise stay anchored to its previous top-left
+          // corner. Forward it so the Rust handler can recenter.
+          center: !!o.center,
+        });
+      },
       // System-theme-aware OS taskbar icon. variant: "light" | "dark".
       // Light theme ⇒ pass "dark" (dark logo on light taskbar). Dark
       // theme ⇒ pass "light".
@@ -203,6 +216,15 @@
         },
         getKeyPreview:    function (id) { return invoke("providers_get_key_preview", { id: String(id || "") }); },
         deleteKey:        function (id) { return invoke("providers_delete_key", { id: String(id || "") }); },
+        setEnabled:       function (id, enabled) {
+          return invoke("providers_set_enabled", {
+            id: String(id || ""),
+            enabled: !!enabled,
+          });
+        },
+        setDefault:       function (id) {
+          return invoke("providers_set_default", { id: String(id || "") });
+        },
         testConnection:   function (id, key) {
           return invoke("providers_test_connection", {
             id: String(id || ""),
@@ -244,6 +266,12 @@
       github: {
         getLink:          function () { return invoke("github_get_link"); },
         beginOAuth:       function () { return invoke("github_begin_oauth"); },
+        // Best-effort abort of the in-flight beginOAuth for this Fleetify
+        // user. Resolves the awaiting beginOAuth promise with
+        // { ok: false, code: "ABORTED" } so the Connect button re-enables
+        // immediately. Safe to call on cleanup paths whether or not an
+        // OAuth is actually running — backend treats no-attempt as ok.
+        cancelOAuth:      function () { return invoke("github_cancel_oauth"); },
         disconnect:       function () { return invoke("github_disconnect"); },
         refreshLink:      function () { return invoke("github_refresh_link"); },
         openInstallation: function () { return invoke("github_open_installation"); },
@@ -263,7 +291,9 @@
         },
       },
       getGitContext: function (folder) { return invoke("git_get_context", { folder: String(folder || "") }); },
-      hasGhCli: function () { return invoke("git_has_gh_cli"); },
+      hasGhCli: function (opts) {
+        return invoke("git_has_gh_cli", { refresh: !!(opts && opts.refresh) });
+      },
       // Probe whether `git` is on PATH. Returns { ok, version?, path? }.
       // Drives the WorktreeToggle in the New Session UI — without git
       // the toggle collapses into a "Git required" notice instead of

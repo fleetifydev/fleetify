@@ -75,7 +75,21 @@ const POLL_MAX_ITERATIONS = 300; // 10 minutes
 
 export function useProviderHealth({ tiles }: { tiles: ProviderTile[] }): UseProviderHealth {
   const [ollama, setOllama] = useState<OllamaHealth>({ kind: "scanning" });
-  const [providers, setProviders] = useState<Record<string, ProviderHealth>>({});
+  // Seed synchronously from the initial tile list so the very first
+  // paint shows "Testing…" for keyed tiles instead of falling through
+  // to the consumer's `?? { kind: "no_key" }` default (which would
+  // render a misleading "Add key" pill until fetchHealth resolves a
+  // few ms later). On cache hit, runScan replaces every entry with
+  // its final state — so the transient "Testing…" is at most one
+  // sub-frame render.
+  const [providers, setProviders] = useState<Record<string, ProviderHealth>>(() => {
+    const init: Record<string, ProviderHealth> = {};
+    for (const t of tiles) {
+      if (t.spec.kind !== "api") continue;
+      init[t.spec.id] = t.has_key ? { kind: "testing" } : { kind: "no_key" };
+    }
+    return init;
+  });
   const cancelRef = useRef<{ cancelled: boolean }>({ cancelled: false });
 
   // Stable signature of the tile set used by the scan. Identity-stable
@@ -94,52 +108,43 @@ export function useProviderHealth({ tiles }: { tiles: ProviderTile[] }): UseProv
 
   const runScan = useCallback(async () => {
     const currentTiles = tilesRef.current;
-    setOllama({ kind: "scanning" });
-    setProviders((prev) => {
-      const next: Record<string, ProviderHealth> = { ...prev };
-      for (const t of currentTiles) {
-        if (t.spec.kind !== "api") continue;
-        next[t.spec.id] = t.has_key ? { kind: "testing" } : { kind: "no_key" };
-      }
-      return next;
-    });
-
-    // 1. Ollama scan.
-    let scanResult: Awaited<ReturnType<typeof apiScanProviders>> | null = null;
-    try {
-      scanResult = await apiScanProviders();
-    } catch (e) {
-      setOllama({ kind: "error", message: e instanceof Error ? e.message : "scan failed" });
-    }
-    if (scanResult) {
-      if (scanResult.ollama.running) {
-        setOllama({ kind: "running", models: scanResult.ollama.models });
-      } else {
-        setOllama({ kind: "missing" });
-      }
-    }
-
-    // 2. Per-provider health — cache-first, fan-out fallback.
     const apiTiles = currentTiles.filter((t) => t.spec.kind === "api");
-    let usedCache = false;
+    setOllama({ kind: "scanning" });
+
+    // Pull the prewarmed health snapshot FIRST. Boot's
+    // `warm_providers_at_boot` populates `HttpHealthCache` and the
+    // backend exposes it at `/api/providers/health`, so a cache hit
+    // resolves in a few ms and we can paint final pills without
+    // flashing every tile through "Testing…" on each Settings open.
+    let cached: Record<string, ProviderHealthSnapshot> | null = null;
     try {
       const health = await providersApi.fetchHealth();
       if (health.ok && Object.keys(health.providers).length > 0) {
-        usedCache = true;
-        setProviders((prev) => {
-          const next = { ...prev };
-          for (const t of apiTiles) {
-            next[t.spec.id] = snapToHealth(health.providers[t.spec.id], t.has_key);
-          }
-          return next;
-        });
+        cached = health.providers;
       }
     } catch {
-      // fetchHealth failed — fall through to local fan-out below.
+      // Falls through to the cold-cache branch below.
     }
 
-    if (!usedCache) {
-      // Fan-out fallback: used on cold start (cache empty) or if fetchHealth threw.
+    if (cached) {
+      setProviders((prev) => {
+        const next = { ...prev };
+        for (const t of apiTiles) {
+          next[t.spec.id] = snapToHealth(cached![t.spec.id], t.has_key);
+        }
+        return next;
+      });
+    } else {
+      // Cold cache (boot warm-up hasn't completed yet, or the call
+      // threw). Show "Testing…" while we fan-out manually — same
+      // behaviour as before this commit, just gated on a cache miss.
+      setProviders((prev) => {
+        const next: Record<string, ProviderHealth> = { ...prev };
+        for (const t of apiTiles) {
+          next[t.spec.id] = t.has_key ? { kind: "testing" } : { kind: "no_key" };
+        }
+        return next;
+      });
       const keyedTiles = apiTiles.filter((t) => t.has_key);
       await Promise.all(
         keyedTiles.map(async (t) => {
@@ -160,6 +165,21 @@ export function useProviderHealth({ tiles }: { tiles: ProviderTile[] }): UseProv
           }
         }),
       );
+    }
+
+    // Ollama scan — independent path, no cache.
+    let scanResult: Awaited<ReturnType<typeof apiScanProviders>> | null = null;
+    try {
+      scanResult = await apiScanProviders();
+    } catch (e) {
+      setOllama({ kind: "error", message: e instanceof Error ? e.message : "scan failed" });
+    }
+    if (scanResult) {
+      if (scanResult.ollama.running) {
+        setOllama({ kind: "running", models: scanResult.ollama.models });
+      } else {
+        setOllama({ kind: "missing" });
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tilesSig]);

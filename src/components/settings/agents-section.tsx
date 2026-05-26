@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
-import type { ProviderSpec } from "@/lib/providers-api";
 import { AgentCard, type AgentScanEntry } from "./agents/agent-card";
 
 const sectionHeader: React.CSSProperties = {
@@ -102,22 +101,22 @@ export function AgentsSection() {
     );
   }
 
-  const cliAgents: ProviderSpec[] = tiles
-    .filter((t) => t.spec.kind === "cli")
-    .map((t) => t.spec);
+  const cliTiles = tiles.filter((t) => t.spec.kind === "cli");
 
   return (
     <>
       <div style={sectionHeader}>CLI Agents</div>
-      {cliAgents.map((spec) => (
+      {cliTiles.map((t) => (
         <AgentCard
-          key={spec.id}
-          spec={spec}
-          scan={scan[spec.id]}
+          key={t.spec.id}
+          spec={t.spec}
+          enabled={t.connected}
+          isDefault={t.is_default}
+          scan={scan[t.spec.id]}
           onChanged={() => refreshScan(true)}
-          installing={installing.has(spec.id)}
-          installError={installError[spec.id]}
-          onInstall={() => handleInstall(spec.id)}
+          installing={installing.has(t.spec.id)}
+          installError={installError[t.spec.id]}
+          onInstall={() => handleInstall(t.spec.id)}
         />
       ))}
       <div

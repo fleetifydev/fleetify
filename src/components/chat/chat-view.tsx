@@ -215,6 +215,14 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     composer.claudeSessionId,
   ]);
   const activeSession = realActiveSession ?? composerVirtualSession;
+  // Staff Agent row lookup — needed by the Fleet hub's ChatInput so
+  // the model picker reflects the user's current Staff tool/model
+  // pair instead of the hardcoded "claude" / undefined that ignored
+  // any switch the user made.
+  const staffSession = useMemo(
+    () => sessions.find((s) => s.id === staffSessionId),
+    [sessions, staffSessionId],
+  );
   const isLocalOnlyActive = activeSession?.local_only === true;
 
   // Routing pin for the active session — drives the small chip next to
@@ -1892,8 +1900,20 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                   : "Talk to Fleetify…  @ to target a specific agent"
                 : "Send a message…"
           }
-          model={isControlCenter ? undefined : (activeSession?.model_name ?? undefined)}
-          tool={isControlCenter ? "claude" : (activeSession?.tool ?? "claude")}
+          // Fleet hub picker reads the Staff Agent row so the user's
+          // last switch is what shows up; non-hub paths keep using
+          // `activeSession` (real session in session mode, the
+          // composerVirtualSession in compose mode).
+          model={
+            isControlCenter
+              ? (staffSession?.model_name ?? undefined)
+              : (activeSession?.model_name ?? undefined)
+          }
+          tool={
+            isControlCenter
+              ? (staffSession?.tool ?? "claude")
+              : (activeSession?.tool ?? "claude")
+          }
           // Real context-fill + cumulative session stats — both
           // derived from the in-store messages array. The arc
           // shows the LATEST assistant turn's input fill (so the
@@ -1956,7 +1976,16 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
           // message yet AND the agent isn't streaming.
           hideBranchStrip={!isControlCenter && !!activeSession && !hasRealMessage && !isStreaming}
           sessionTitle={isControlCenter ? undefined : (activeSession?.title ?? null)}
-          onModelChange={activeSessionId ? (m) => handleModelChange(activeSessionId, m) : undefined}
+          // `effectiveSessionId` is the session the chat-input is
+          // actually bound to: the real session in session mode, the
+          // Staff Agent row in Control Center, or null in compose
+          // mode. Routing same-provider model changes through this
+          // means the Fleet hub picker now mutates the Staff row
+          // instead of dropping the pick on the floor; chat history
+          // stays on the same session id so no context is lost.
+          // Compose mode keeps its undefined handler — chat-input's
+          // own fallback writes the pick into `composer.modelName`.
+          onModelChange={effectiveSessionId ? (m) => handleModelChange(effectiveSessionId, m) : undefined}
           autoMode={isControlCenter ? fleetAutoMode : undefined}
           onToggleAutoMode={isControlCenter ? toggleFleetAutoMode : undefined}
           controlCenter={isControlCenter}

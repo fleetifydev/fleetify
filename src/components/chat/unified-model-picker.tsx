@@ -182,7 +182,11 @@ export function UnifiedModelPicker({
                 outline: "none",
                 cursor: "pointer",
                 borderRadius: 5,
-                color: "var(--c-fg, #e6e6e6)",
+                // `--c-fg` is never defined in globals.css — the literal
+                // fallback `#e6e6e6` made provider names invisible on
+                // the light-theme white popover. Route through `--c-high`
+                // which IS themed (dark text in light, light text in dark).
+                color: "var(--c-high)",
                 fontFamily: "var(--font-sans)",
                 fontSize: 12.5,
                 fontWeight: isActiveProvider ? 600 : 500,
@@ -203,7 +207,7 @@ export function UnifiedModelPicker({
                     width: 5,
                     height: 5,
                     borderRadius: "50%",
-                    background: "var(--c-fg, #e6e6e6)",
+                    background: "var(--c-high)",
                     flexShrink: 0,
                   }}
                 />

@@ -197,12 +197,16 @@ export function buildPickerGroups(
   }
 
   // 2. HTTP / local_http providers — only connected ones, short brand labels.
+  //    `tile.connected` is the master enable bit (Settings → Models tile
+  //    toggle writes through it). We no longer also accept `has_key` as
+  //    a fallback — a user who saved a key but explicitly disabled the
+  //    tile expects it hidden from the picker.
   //    Perplexity gets special handling: native Sonar entries stay here, the
   //    Agent marketplace entries are pulled out into per-brand groups below.
   const directBrandIds = new Set<string>();
   for (const t of tiles) {
     if (t.spec.kind !== "api" && t.spec.kind !== "local_http") continue;
-    if (!t.connected && !t.has_key) continue;
+    if (!t.connected) continue;
 
     if (t.spec.id === "perplexity") {
       // Split: native Sonar stays here, marketplace entries are deferred.
@@ -232,7 +236,7 @@ export function buildPickerGroups(
 
   // 3. Perplexity Agent marketplace — brand-split into Claude / GPT / Gemini / Grok rows.
   const perplexityTile = tiles.find(
-    (t) => t.spec.id === "perplexity" && (t.connected || t.has_key),
+    (t) => t.spec.id === "perplexity" && t.connected,
   );
   if (perplexityTile) {
     for (const { prefix, subId, label, directProviderId } of PERPLEXITY_BRAND_PREFIXES) {

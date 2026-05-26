@@ -4199,16 +4199,31 @@ export function ChatInput({
             effort={effort as UMEffort}
             groups={buildPickerGroups(
               providerTiles,
-              providerTiles.filter((t) => t.spec.kind === "cli").map((t) => t.spec.id),
+              providerTiles
+                .filter((t) => t.spec.kind === "cli" && t.connected)
+                .map((t) => t.spec.id),
             )}
             onPickModel={(groupId, modelId) => {
               const dispatchTool = resolveDispatchTool(groupId);
-              if (dispatchTool !== tool && sessionId) {
-                const tid = dispatchTool as import("@/types/session").AgentTool;
-                apiUpdateSession(sessionId, { tool: tid, model_name: modelId }).catch(() => {});
-                useAppStore.getState().updateSession(sessionId, { tool: tid, model_name: modelId });
+              const tid = dispatchTool as import("@/types/session").AgentTool;
+              if (sessionId) {
+                // Active session: change tool + model (cross-provider) or
+                // just model (same-provider). `onModelChange` covers the
+                // same-provider path via the parent's handleModelChange.
+                if (dispatchTool !== tool) {
+                  apiUpdateSession(sessionId, { tool: tid, model_name: modelId }).catch(() => {});
+                  useAppStore.getState().updateSession(sessionId, { tool: tid, model_name: modelId });
+                } else {
+                  onModelChange?.(modelId);
+                }
               } else {
-                onModelChange?.(modelId);
+                // Composer / Control Center — no session row exists yet.
+                // Write the pick into the open composer so `commitComposer`
+                // creates the new session with the right (tool, model)
+                // pair. Without this branch, picks vanished into the
+                // void because `onModelChange` is undefined when
+                // `activeSessionId` is null.
+                useAppStore.getState().setComposerField({ tool: tid, modelName: modelId });
               }
             }}
             onPickEffort={(e) => setEffort(e)}

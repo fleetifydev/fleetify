@@ -13,6 +13,20 @@ use crate::routers::providers::{HealthSnapshot, HttpHealthCache};
 
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(8);
 
+/// Some providers (notably Gemini's OpenAI-compat endpoint at
+/// `generativelanguage.googleapis.com/v1beta/openai`) reject bad keys
+/// with HTTP 400 + a Google-RPC error envelope instead of the usual
+/// 401/403. Returns true when the response body matches one of the
+/// well-known key-rejection shapes so callers can map the failure to
+/// `AUTH` rather than the generic `NETWORK` bucket. Substring-based
+/// rather than JSON-parsed: cheap, robust across whitespace/order,
+/// and impossible to misread when the upstream tweaks the envelope.
+pub fn is_key_rejection_body(body: &str) -> bool {
+    body.contains("API_KEY_INVALID")
+        || body.contains("API key not valid")
+        || body.contains("UNAUTHENTICATED")
+}
+
 /// Fan-out probe of every API-kind provider in the catalog. Writes the
 /// resulting snapshot to `cache` (replacing any previous content).
 pub async fn warm_all(cache: &HttpHealthCache) {
@@ -91,6 +105,21 @@ async fn probe_one(provider_id: &str) -> HealthSnapshot {
             code: "NOT_FOUND".into(),
             message: Some(r.status().to_string()),
         },
+        Ok(r) if r.status() == reqwest::StatusCode::BAD_REQUEST => {
+            let status = r.status();
+            let body = r.text().await.unwrap_or_default();
+            if is_key_rejection_body(&body) {
+                HealthSnapshot::Failed {
+                    code: "AUTH".into(),
+                    message: Some("API key rejected".into()),
+                }
+            } else {
+                HealthSnapshot::Failed {
+                    code: "HTTP".into(),
+                    message: Some(format!("{status}")),
+                }
+            }
+        }
         Ok(r) => HealthSnapshot::Failed {
             code: "HTTP".into(),
             message: Some(format!("{}", r.status())),
@@ -103,5 +132,43 @@ async fn probe_one(provider_id: &str) -> HealthSnapshot {
             code: "NETWORK".into(),
             message: Some(e.to_string()),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_key_rejection_body_matches_gemini_envelope() {
+        // Real response from `GET v1beta/openai/models` with a bogus key.
+        let body = r#"{
+          "error": {
+            "code": 400,
+            "message": "API key not valid. Please pass a valid API key.",
+            "status": "INVALID_ARGUMENT",
+            "details": [{"reason": "API_KEY_INVALID"}]
+          }
+        }"#;
+        assert!(is_key_rejection_body(body));
+    }
+
+    #[test]
+    fn is_key_rejection_body_matches_unauthenticated_envelope() {
+        let body = r#"{"error":{"status":"UNAUTHENTICATED","message":"…"}}"#;
+        assert!(is_key_rejection_body(body));
+    }
+
+    #[test]
+    fn is_key_rejection_body_ignores_unrelated_400() {
+        // A 400 about a malformed path / missing field shouldn't be
+        // mistaken for an auth failure.
+        let body = r#"{"error":{"code":400,"message":"Required parameter is missing","status":"INVALID_ARGUMENT","details":[{"reason":"MISSING_REQUIRED_FIELD"}]}}"#;
+        assert!(!is_key_rejection_body(body));
+    }
+
+    #[test]
+    fn is_key_rejection_body_handles_empty_body() {
+        assert!(!is_key_rejection_body(""));
     }
 }

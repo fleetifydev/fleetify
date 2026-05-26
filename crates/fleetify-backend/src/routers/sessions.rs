@@ -175,6 +175,29 @@ async fn create_session(
         .sm
         .create_session(&st.auth.pool, st.app_cfg.as_ref(), &data, Some(&user.id))
         .await?;
+    // Seed the routing pin from the caller-provided (tool, model) so the
+    // first turn's `resolve_routing_for_turn` Branch 1 returns the user's
+    // choice without ever running the decision router. Mirrors the PATCH
+    // path's pin refresh — without this seed, the first message's
+    // auto-routing decision would override the user's onboarding/composer
+    // pick (e.g. user picks Codex+gpt-5.2 in the composer, first turn
+    // routes to Claude because the decision router has no reason to favour
+    // the user's manual model when no pin exists yet). `model_name`
+    // arrives as `Option<String>` from `SessionCreate`; when None, we
+    // leave the pin's model column NULL so a subsequent picker pick can
+    // initialise it cleanly.
+    if let Some(model) = s.model_name.as_deref() {
+        let _ = sqlx::query(
+            "UPDATE sessions \
+             SET pinned_agent = ?, pinned_model = ?, routing_decision_id = NULL \
+             WHERE id = ?",
+        )
+        .bind(&s.tool)
+        .bind(model)
+        .bind(&s.id)
+        .execute(&st.auth.pool)
+        .await;
+    }
     // Cloud telemetry — record the session start.
     let sid_owned = s.id.clone();
     let tool_owned = s.tool.clone();
@@ -238,6 +261,35 @@ async fn update_session(
     set!("tool", p.tool.clone());
     set!("claude_session_id", p.claude_session_id.clone());
     set!("use_worktree", p.use_worktree);
+    // Manual picker selection wins over any prior routing decision.
+    // `pinned_agent` / `pinned_model` are sticky across the session's
+    // lifetime (Branch 1 of `resolve_routing_for_turn`), so without
+    // this refresh the very first auto-routed turn would lock the
+    // session to (Claude, claude-sonnet-4-6) forever — every later
+    // picker switch would log "decision picked a different agent than
+    // session.tool; keeping bridge identity, applying model override
+    // only", which for Codex / Antigravity (TOML-only model config)
+    // is unrecoverable: the bridge ignores the override and stalls
+    // because the staff turn never actually dispatches to the model
+    // the user selected. Refreshing the pin to mirror the latest
+    // tool / model_name turns the user's pick into the next turn's
+    // Branch-1 hit, no warning, no override mismatch.
+    if p.tool.is_some() || p.model_name.is_some() {
+        let refreshed_session = sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = ?")
+            .bind(&id)
+            .fetch_one(&st.auth.pool)
+            .await?;
+        sqlx::query(
+            "UPDATE sessions \
+             SET pinned_agent = ?, pinned_model = ?, routing_decision_id = NULL \
+             WHERE id = ?",
+        )
+        .bind(&refreshed_session.tool)
+        .bind(refreshed_session.model_name.as_deref())
+        .bind(&id)
+        .execute(&st.auth.pool)
+        .await?;
+    }
     // ── Empty→non-empty project_path upgrades trigger worktree carve ──
     // A session created without a folder (the "scratch" path) becomes a
     // real workspace the first time the user binds it to a directory.

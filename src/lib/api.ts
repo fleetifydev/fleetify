@@ -203,6 +203,7 @@ export interface ProviderScan {
   claude_cli:      { installed: boolean; authenticated: boolean; path: string | null };
   gemini_cli:      { installed: boolean; authenticated: boolean; path: string | null };
   codex_cli:       { installed: boolean; authenticated: boolean; path: string | null };
+  kimi_cli:        { installed: boolean; authenticated: boolean; path: string | null };
   agy_cli:         { installed: boolean; authenticated: boolean; path: string | null };
   /** Python interpreter + `google-antigravity` package + GEMINI_API_KEY
    *  state. Driving the SDK from Fleetify needs all three; this surface

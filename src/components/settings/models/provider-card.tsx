@@ -17,6 +17,7 @@ import {
 } from "@/lib/providers-api";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { ConnectionStatusPill } from "@/components/settings/shared/connection-status-pill";
+import { Toggle } from "@/components/settings/general/_primitives";
 import type { ProviderHealth } from "@/hooks/use-provider-health";
 
 const inputStyle: React.CSSProperties = {
@@ -59,6 +60,26 @@ const primaryBtn: React.CSSProperties = {
   color: "var(--card)",
 };
 
+function DefaultBadge() {
+  return (
+    <span
+      style={{
+        fontSize: 9.5,
+        fontWeight: 700,
+        letterSpacing: "0.08em",
+        textTransform: "uppercase",
+        padding: "2px 6px",
+        borderRadius: 4,
+        background: "rgba(74,222,128,0.16)",
+        color: "rgb(74,222,128)",
+        border: "1px solid rgba(74,222,128,0.30)",
+      }}
+    >
+      Default
+    </span>
+  );
+}
+
 const dangerBtn: React.CSSProperties = {
   fontFamily: "inherit",
   cursor: "pointer",
@@ -81,7 +102,7 @@ export function ProviderCard({
   health: ProviderHealth;
   onHealthChange: () => void;
 }) {
-  const { setKey, deleteKey, setEnabledModels } = useProvidersConfig();
+  const { setKey, deleteKey, setEnabled, setDefault, setEnabledModels } = useProvidersConfig();
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draftKey, setDraftKey] = useState("");
@@ -184,43 +205,77 @@ export function ProviderCard({
       }}
     >
       {/* ── header row (always visible, click to expand) ── */}
-      <button
-        onClick={onToggleExpand}
+      <div
         style={{
           display: "flex",
           alignItems: "center",
           gap: 12,
           padding: "12px 14px",
           width: "100%",
-          background: "transparent",
-          border: "none",
-          textAlign: "left",
-          cursor: "pointer",
           color: "var(--c-high)",
-          fontFamily: "inherit",
+          // Dim the header when the user has explicitly disabled the
+          // provider — the status pill + name still read, but the
+          // muted opacity signals "not in the picker right now."
+          opacity: tile.connected ? 1 : 0.55,
+          transition: "opacity 0.15s",
         }}
       >
-        <ProviderLogo tool={tile.spec.id} size={20} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 500 }}>{tile.spec.display_name}</div>
-          <div style={{ fontSize: 11.5, color: "var(--c-low)", marginTop: 2 }}>
-            {tile.spec.default_models.length} models · {tile.spec.default_base_url}
-          </div>
-        </div>
-        <ConnectionStatusPill status={status} label={statusLabel} />
-        <span
+        <button
+          onClick={onToggleExpand}
           style={{
-            marginLeft: 6,
-            transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
-            transition: "transform 0.15s",
-            display: "inline-block",
-            color: "var(--c-dim)",
-            fontSize: 12,
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            flex: 1,
+            minWidth: 0,
+            background: "transparent",
+            border: "none",
+            textAlign: "left",
+            cursor: "pointer",
+            color: "inherit",
+            fontFamily: "inherit",
+            padding: 0,
           }}
         >
-          ▸
-        </span>
-      </button>
+          <ProviderLogo tool={tile.spec.id} size={20} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontSize: 13, fontWeight: 500 }}>{tile.spec.display_name}</span>
+              {tile.is_default && <DefaultBadge />}
+            </div>
+            <div style={{ fontSize: 11.5, color: "var(--c-low)", marginTop: 2 }}>
+              {tile.spec.default_models.length} models · {tile.spec.default_base_url}
+            </div>
+          </div>
+          <ConnectionStatusPill status={status} label={statusLabel} />
+          <span
+            style={{
+              marginLeft: 6,
+              transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
+              transition: "transform 0.15s",
+              display: "inline-block",
+              color: "var(--c-dim)",
+              fontSize: 12,
+            }}
+          >
+            ▸
+          </span>
+        </button>
+        {/* Master enable/disable. Stops propagation so flipping the
+            toggle doesn't also expand/collapse the card. Always
+            interactive (opacity reset to 1) so a disabled tile can be
+            re-enabled without expanding. */}
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{ opacity: 1, flexShrink: 0 }}
+          title={tile.connected ? "Enabled — uncheck to hide from picker" : "Disabled — toggle on to enable in Fleet"}
+        >
+          <Toggle
+            on={tile.connected}
+            onChange={() => { void setEnabled(tile.spec.id, !tile.connected); }}
+          />
+        </div>
+      </div>
 
       {expanded && (
         <div style={{ padding: "0 14px 14px 14px", borderTop: "1px solid var(--c-brd)" }}>
@@ -339,6 +394,51 @@ export function ProviderCard({
                     <X size={11} /> Disconnect
                   </button>
                 </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Fleet default — "Make default" button (or read-only
+              indicator when already default). Hidden when the tile
+              is disabled, since picking a disabled provider as the
+              default would set the user up for an immediate "no key"
+              error on their next message. ── */}
+          {tile.connected && (
+            <div
+              style={{
+                padding: "10px 0 2px 0",
+                borderTop: "1px solid var(--c-brd)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+              }}
+            >
+              <div style={{ fontSize: 12, color: "var(--c-low)" }}>
+                {tile.is_default
+                  ? "This provider is your Fleet default — new chats open with it."
+                  : "Use this provider as Fleet's default for new chats."}
+              </div>
+              {tile.is_default ? (
+                <span
+                  style={{
+                    ...ghostBtn,
+                    cursor: "default",
+                    opacity: 0.7,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  ✓ Default
+                </span>
+              ) : (
+                <button
+                  onClick={() => { void setDefault(tile.spec.id); }}
+                  style={ghostBtn}
+                >
+                  Make default
+                </button>
               )}
             </div>
           )}

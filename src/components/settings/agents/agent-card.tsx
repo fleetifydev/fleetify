@@ -14,7 +14,9 @@ import { useState, useEffect } from "react";
 import { Check, Copy, Terminal, Loader2, KeyRound, ExternalLink } from "lucide-react";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { providers as providersApi, type ProviderSpec } from "@/lib/providers-api";
+import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { ConnectionStatusPill } from "@/components/settings/shared/connection-status-pill";
+import { Toggle } from "@/components/settings/general/_primitives";
 import { AntigravitySdkSetupRow } from "./antigravity-sdk-setup";
 import { checkPythonRuntime } from "@/lib/api";
 
@@ -26,6 +28,26 @@ export interface AgentScanEntry {
   path: string | null;
   install_hint: string;
   login_hint: string;
+}
+
+function DefaultBadge() {
+  return (
+    <span
+      style={{
+        fontSize: 9.5,
+        fontWeight: 700,
+        letterSpacing: "0.08em",
+        textTransform: "uppercase",
+        padding: "2px 6px",
+        borderRadius: 4,
+        background: "rgba(74,222,128,0.16)",
+        color: "rgb(74,222,128)",
+        border: "1px solid rgba(74,222,128,0.30)",
+      }}
+    >
+      Default
+    </span>
+  );
 }
 
 const ghostBtn: React.CSSProperties = {
@@ -79,6 +101,8 @@ async function copyToClipboard(text: string): Promise<boolean> {
 
 export function AgentCard({
   spec,
+  enabled,
+  isDefault,
   scan,
   onChanged,
   installing = false,
@@ -86,12 +110,22 @@ export function AgentCard({
   onInstall,
 }: {
   spec: ProviderSpec;
+  /** Master enable flag — the user-visible Toggle in the header writes
+   *  through `providers.setEnabled(spec.id, …)` and the chat composer's
+   *  picker skips disabled agents. Defaults to true on first paint when
+   *  the parent doesn't pass an explicit value. */
+  enabled: boolean;
+  /** True when this CLI agent is the current Fleet default — header
+   *  shows a "DEFAULT" badge and the per-tile "Make default" affordance
+   *  switches to a read-only indicator. */
+  isDefault: boolean;
   scan: AgentScanEntry | undefined;
   onChanged: () => void;
   installing?: boolean;
   installError?: string;
   onInstall?: () => void;
 }) {
+  const { setEnabled, setDefault } = useProvidersConfig();
   const [expanded, setExpanded] = useState(false);
   const [copiedInstall, setCopiedInstall] = useState(false);
   const [copiedLogin, setCopiedLogin] = useState(false);
@@ -193,43 +227,73 @@ export function AgentCard({
         transition: "border-color 0.15s",
       }}
     >
-      <button
-        onClick={() => setExpanded((v) => !v)}
+      <div
         style={{
           display: "flex",
           alignItems: "center",
           gap: 12,
           padding: "12px 14px",
           width: "100%",
-          background: "transparent",
-          border: "none",
-          textAlign: "left",
-          cursor: "pointer",
           color: "var(--c-high)",
-          fontFamily: "inherit",
+          // Dim the header when the user has explicitly disabled the
+          // agent — picker hides it but install/login affordances stay
+          // reachable so the user can still set it up.
+          opacity: enabled ? 1 : 0.55,
+          transition: "opacity 0.15s",
         }}
       >
-        <ProviderLogo tool={spec.id} size={20} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 500 }}>{spec.display_name}</div>
-          <div style={{ fontSize: 11.5, color: "var(--c-low)", marginTop: 2 }}>
-            CLI agent
-          </div>
-        </div>
-        <ConnectionStatusPill status={status} label={statusLabel} />
-        <span
+        <button
+          onClick={() => setExpanded((v) => !v)}
           style={{
-            marginLeft: 6,
-            transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
-            transition: "transform 0.15s",
-            display: "inline-block",
-            color: "var(--c-dim)",
-            fontSize: 12,
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            flex: 1,
+            minWidth: 0,
+            background: "transparent",
+            border: "none",
+            textAlign: "left",
+            cursor: "pointer",
+            color: "inherit",
+            fontFamily: "inherit",
+            padding: 0,
           }}
         >
-          ▸
-        </span>
-      </button>
+          <ProviderLogo tool={spec.id} size={20} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontSize: 13, fontWeight: 500 }}>{spec.display_name}</span>
+              {isDefault && <DefaultBadge />}
+            </div>
+            <div style={{ fontSize: 11.5, color: "var(--c-low)", marginTop: 2 }}>
+              CLI agent
+            </div>
+          </div>
+          <ConnectionStatusPill status={status} label={statusLabel} />
+          <span
+            style={{
+              marginLeft: 6,
+              transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
+              transition: "transform 0.15s",
+              display: "inline-block",
+              color: "var(--c-dim)",
+              fontSize: 12,
+            }}
+          >
+            ▸
+          </span>
+        </button>
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{ opacity: 1, flexShrink: 0 }}
+          title={enabled ? "Enabled — uncheck to hide from picker" : "Disabled — toggle on to enable in Fleet"}
+        >
+          <Toggle
+            on={enabled}
+            onChange={() => { void setEnabled(spec.id, !enabled); }}
+          />
+        </div>
+      </div>
 
       {expanded && (
         <div
@@ -453,6 +517,47 @@ export function AgentCard({
                   style={{ ...ghostBtn, fontSize: 11 }}
                 >
                   <KeyRound size={10} /> Replace key
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* ── Fleet default — "Make default" button (or read-only
+              indicator when already default). Hidden when the agent
+              is disabled or not installed-and-authed; picking an
+              unready agent as the default would seed new chats with
+              a tool that immediately errors. ── */}
+          {enabled && installed && authenticated && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+                paddingTop: 4,
+              }}
+            >
+              <div style={{ fontSize: 11.5, color: "var(--c-low)" }}>
+                {isDefault
+                  ? "This agent is your Fleet default — new chats open with it."
+                  : "Use this agent as Fleet's default for new chats."}
+              </div>
+              {isDefault ? (
+                <span
+                  style={{
+                    ...ghostBtn,
+                    cursor: "default",
+                    opacity: 0.7,
+                  }}
+                >
+                  ✓ Default
+                </span>
+              ) : (
+                <button
+                  onClick={() => { void setDefault(spec.id); }}
+                  style={ghostBtn}
+                >
+                  Make default
                 </button>
               )}
             </div>

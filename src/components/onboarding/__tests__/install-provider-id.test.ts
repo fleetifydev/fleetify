@@ -33,11 +33,14 @@ describe("OnboardingChat install IPC", () => {
     expect(onboardingSrc).toMatch(/p\.autoInstall\s*===\s*true/);
   });
 
-  it("marks only npm-installed CLIs as autoInstall", () => {
-    // Inspect the PROVIDERS literal at the top of the file. The
-    // regex pulls out every row's `id: "…"` + whether `autoInstall:
-    // true` appears in the same row literal. Rows are separated by
-    // `},` so we split on that.
+  it("does not autoInstall any provider — every CLI waits for an explicit Install click", () => {
+    // Earlier iterations auto-fired `npm install -g …` for Claude /
+    // Codex / Gemini / Kimi during the verify loop. Users reported it
+    // as surprising ("why is something downloading?"), so the contract
+    // now requires every row — including the npm-installed CLIs — to
+    // wait for an explicit Install button click. The verify-loop gate
+    // (`p.autoInstall === true`) is preserved so a future first-run
+    // experience can opt a row back in without re-plumbing.
     const block = onboardingSrc.match(/const PROVIDERS:\s*ProviderDef\[\]\s*=\s*\[([\s\S]*?)\];/);
     expect(block).not.toBeNull();
     const rows = block![1].split(/},\s*/);
@@ -47,13 +50,8 @@ describe("OnboardingChat install IPC", () => {
       if (!idMatch) continue;
       autoInstallById.set(idMatch[1], /autoInstall:\s*true/.test(row));
     }
-    // npm-installed providers should auto-install.
-    for (const id of ["claude", "codex", "gemini"]) {
-      expect(autoInstallById.get(id), `${id} should autoInstall`).toBe(true);
-    }
-    // Shell / pip / OAuth-only flows should not.
-    for (const id of ["agy", "antigravity-sdk", "ollama", "anthropic", "openai", "googleai", "groq"]) {
-      expect(autoInstallById.get(id) ?? false, `${id} should NOT autoInstall`).toBe(false);
+    for (const [id, opted] of autoInstallById) {
+      expect(opted, `${id} must not opt in to autoInstall`).toBe(false);
     }
   });
 

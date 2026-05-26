@@ -407,6 +407,14 @@ async fn check_codex_cli() -> Value {
     json!({ "installed": true, "authenticated": authed, "path": p })
 }
 
+async fn check_kimi_cli() -> Value {
+    let Some(p) = cli_path("kimi").await else {
+        return json!({ "installed": false, "authenticated": false, "path": null });
+    };
+    let authed = home().join(".kimi/auth.json").exists() || std::env::var("KIMI_API_KEY").is_ok();
+    json!({ "installed": true, "authenticated": authed, "path": p })
+}
+
 async fn check_agy_cli() -> Value {
     let Some(p) = cli_path("agy").await else {
         return json!({ "installed": false, "authenticated": false, "path": null });
@@ -531,10 +539,11 @@ async fn scan_providers() -> Json<Value> {
     // backend's AppState), so we fall back to the localhost default
     // here. The new `providers_ollama_probe` IPC honours the user's
     // configured URL for the Settings surface.
-    let (claude, gemini, codex, agy, agy_sdk, ollama) = tokio::join!(
+    let (claude, gemini, codex, kimi, agy, agy_sdk, ollama) = tokio::join!(
         check_claude_cli(),
         check_gemini_cli(),
         check_codex_cli(),
+        check_kimi_cli(),
         check_agy_cli(),
         check_antigravity_sdk_cli(),
         check_ollama(None),
@@ -543,6 +552,7 @@ async fn scan_providers() -> Json<Value> {
         "claude_cli": claude,
         "gemini_cli": gemini,
         "codex_cli": codex,
+        "kimi_cli": kimi,
         "agy_cli": agy,
         "antigravity_sdk": agy_sdk,
         "ollama": ollama,

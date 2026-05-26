@@ -368,7 +368,9 @@ export function SessionToolbar({
 
   const { tiles: providerTiles } = useProvidersConfig();
   const effort: UMEffort = session?.effort ?? "high";
-  const enabledAgentIds = providerTiles.filter((t) => t.spec.kind === "cli").map((t) => t.spec.id);
+  const enabledAgentIds = providerTiles
+    .filter((t) => t.spec.kind === "cli" && t.connected)
+    .map((t) => t.spec.id);
   const groups: PickerGroup[] = buildPickerGroups(providerTiles, enabledAgentIds);
 
   return (

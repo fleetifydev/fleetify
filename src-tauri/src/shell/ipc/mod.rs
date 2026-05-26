@@ -212,9 +212,22 @@ pub async fn window_close(app: tauri::AppHandle) -> serde_json::Value {
 }
 
 #[tauri::command]
-pub async fn window_set_size(app: tauri::AppHandle, width: f64, height: f64) -> serde_json::Value {
+pub async fn window_set_size(
+    app: tauri::AppHandle,
+    width: f64,
+    height: f64,
+    center: Option<bool>,
+) -> serde_json::Value {
     if let Some(w) = main_window(&app) {
         let _ = w.set_size(tauri::LogicalSize::new(width, height));
+        // Each screen mode has its own size (760×740 onboarding vs
+        // 1500×960 main). Without recentering, shrinking from main to
+        // onboarding leaves the smaller window pinned to the previous
+        // top-left, so onboarding appears anchored to the left edge
+        // instead of centered like the cold-start window was.
+        if center.unwrap_or(false) {
+            let _ = w.center();
+        }
     }
     serde_json::json!({ "ok": true })
 }
@@ -412,9 +425,22 @@ pub async fn fs_get_project_root() -> String {
 pub async fn git_get_context(folder: String) -> serde_json::Value {
     git::get_context(&PathBuf::from(folder)).await
 }
+/// gh CLI status probe. Reads from the integrations cache primed by
+/// `warm_at_boot`; falls back to a live probe (three subprocesses) when
+/// the cache is cold, then stores the fresh snapshot so subsequent
+/// reads from Settings → Integrations return without the spinner.
+/// Passing `refresh: true` skips the cache and re-probes — used by the
+/// post-auth refresh path in the renderer.
 #[tauri::command]
-pub async fn git_has_gh_cli() -> serde_json::Value {
-    git::has_gh_cli().await
+pub async fn git_has_gh_cli(refresh: Option<bool>) -> serde_json::Value {
+    if !refresh.unwrap_or(false) {
+        if let Some(cached) = crate::shell::integrations_cache::get_gh_cli() {
+            return cached;
+        }
+    }
+    let fresh = git::has_gh_cli().await;
+    crate::shell::integrations_cache::set_gh_cli(fresh.clone());
+    fresh
 }
 #[tauri::command]
 pub async fn git_has_git() -> serde_json::Value {
@@ -795,6 +821,11 @@ pub async fn github_begin_oauth(app: tauri::AppHandle) -> serde_json::Value {
 }
 
 #[tauri::command]
+pub async fn github_cancel_oauth() -> serde_json::Value {
+    github_link::cancel_oauth().await
+}
+
+#[tauri::command]
 pub async fn github_refresh_link(app: tauri::AppHandle) -> serde_json::Value {
     github_link::refresh_link(app).await
 }
@@ -1092,6 +1123,12 @@ pub async fn gh_auth_login_capture(app: tauri::AppHandle) -> serde_json::Value {
             "error": error,
         }),
     );
+
+    // Auth state changed — drop the cached gh-cli snapshot so the next
+    // `git_has_gh_cli` re-probes and reflects the new authed/login pair.
+    if ok {
+        crate::shell::integrations_cache::invalidate_gh_cli();
+    }
 
     if ok {
         serde_json::json!({ "ok": true, "login": login })
@@ -1926,6 +1963,12 @@ pub struct ProviderTilePayload {
     pub connected: bool,
     pub has_key: bool,
     pub enabled_models: Vec<String>,
+    /// True when this tile is the current Fleet default — chat
+    /// composer's `openComposer` pre-seeds `tool` and `model_name`
+    /// from the matching `defaultProvider` / `defaultModel` keys in
+    /// `fleet.config.json`. The renderer surfaces a "DEFAULT" badge
+    /// and the per-tile "Make default" action gates off this bit.
+    pub is_default: bool,
 }
 
 #[tauri::command]
@@ -1938,6 +1981,15 @@ pub async fn providers_list_catalog(app: tauri::AppHandle) -> serde_json::Value 
     };
     let cfg = config::load_config_from(&dir);
     let providers_cfg = config::providers_from(&cfg);
+    // `defaultProvider` lives at the top level of fleet.config.json
+    // (alongside `defaultModel` / `theme` / `apiKeys`) — kept there
+    // so the renderer's `app-store.openComposer` can keep reading
+    // it without a struct migration. The catalog tile builder just
+    // includes the boolean per row.
+    let default_provider_id = cfg
+        .get("defaultProvider")
+        .and_then(|v| v.as_str())
+        .map(String::from);
 
     // has_key lookup is best-effort: skip it when the user isn't signed in
     // so we don't surface a confusing NO_USER on every Settings render.
@@ -1947,11 +1999,6 @@ pub async fn providers_list_catalog(app: tauri::AppHandle) -> serde_json::Value 
     let tiles: Vec<ProviderTilePayload> = fleetify_backend::providers::CATALOG
         .iter()
         .map(|spec| {
-            let connected = providers_cfg
-                .connected
-                .get(spec.id)
-                .copied()
-                .unwrap_or(false);
             let has_key = match (uid.as_deref(), spec.id) {
                 (Some(u), id) => {
                     matches!(
@@ -1961,16 +2008,37 @@ pub async fn providers_list_catalog(app: tauri::AppHandle) -> serde_json::Value 
                 }
                 _ => false,
             };
+            // `tile.connected` is the master "enabled in Fleet" bit. The
+            // user can toggle it independently via providers_set_enabled
+            // — that writes an explicit override into `connected[id]`.
+            // When no override exists we fall back to a sensible auto
+            // default per provider kind: API → only enabled when a key
+            // is saved; CLI / LocalHttp → enabled by default (their
+            // install/auth state is surfaced by separate scans, not by
+            // this bit). Disconnect / delete-key still flips the entry
+            // to `false` so existing flows are unaffected.
+            let auto_default = match spec.kind {
+                fleetify_backend::providers::ProviderKind::Api => has_key,
+                fleetify_backend::providers::ProviderKind::Cli
+                | fleetify_backend::providers::ProviderKind::LocalHttp => true,
+            };
+            let connected = providers_cfg
+                .connected
+                .get(spec.id)
+                .copied()
+                .unwrap_or(auto_default);
             let enabled_models = providers_cfg
                 .enabled_models
                 .get(spec.id)
                 .cloned()
                 .unwrap_or_default();
+            let is_default = default_provider_id.as_deref() == Some(spec.id);
             ProviderTilePayload {
                 spec,
                 connected,
                 has_key,
                 enabled_models,
+                is_default,
             }
         })
         .collect();
@@ -2045,6 +2113,90 @@ pub async fn providers_delete_key(app: tauri::AppHandle, id: String) -> serde_js
     crate::shell::providers_setup::reload_backend(&app).await;
     fleetify_backend::services::telemetry::emitters::emit_provider_disconnected(&id).await;
     serde_json::json!({ "ok": true })
+}
+
+/// Flip a provider's "enabled in Fleet" bit independently of the
+/// keychain entry. Writes an explicit override to
+/// `ProvidersConfig.connected[id]` so the user can hide a provider
+/// from the chat composer's picker without deleting the saved key
+/// (or surface a CLI agent that's installed but they hadn't yet
+/// opted in). Emits a connect/disconnect telemetry event so the
+/// boot warm-up and Settings → Models pill cache stay in sync.
+#[tauri::command]
+pub async fn providers_set_enabled(
+    app: tauri::AppHandle,
+    id: String,
+    enabled: bool,
+) -> serde_json::Value {
+    if fleetify_backend::providers::find_provider(&id).is_none() {
+        return serde_json::json!({ "ok": false, "code": "UNKNOWN_PROVIDER", "error": format!("unknown provider {id}") });
+    }
+    if let Ok(dir) = app.path().app_data_dir() {
+        let mut cfg = config::load_config_from(&dir);
+        let mut providers = config::providers_from(&cfg);
+        providers.connected.insert(id.clone(), enabled);
+        config::providers_set(&mut cfg, &providers);
+        if let Err(e) = config::save_config_to(&dir, &cfg) {
+            return serde_json::json!({ "ok": false, "code": "CONFIG", "error": e.to_string() });
+        }
+    } else {
+        return serde_json::json!({ "ok": false, "code": "CONFIG", "error": "no app data dir" });
+    }
+    crate::shell::providers_setup::reload_backend(&app).await;
+    if enabled {
+        fleetify_backend::services::telemetry::emitters::emit_provider_connected(&id).await;
+    } else {
+        fleetify_backend::services::telemetry::emitters::emit_provider_disconnected(&id).await;
+    }
+    serde_json::json!({ "ok": true })
+}
+
+/// Pick the Fleet default provider. Writes both the top-level
+/// `defaultProvider` (provider id) AND `defaultModel` (best model
+/// from the catalog) into `fleet.config.json` — the renderer's
+/// `app-store.openComposer` reads both when seeding a new chat, so
+/// keeping the model paired with the provider here prevents the
+/// classic mismatch (pick Gemini, composer still uses
+/// `claude-sonnet-4-6`). For CLI agents the catalog ships an empty
+/// `default_models` (models live inside each binary), so we only
+/// write the provider id and let the composer's CLI baseline fill
+/// in the model name.
+#[tauri::command]
+pub async fn providers_set_default(app: tauri::AppHandle, id: String) -> serde_json::Value {
+    let Some(spec) = fleetify_backend::providers::find_provider(&id) else {
+        return serde_json::json!({ "ok": false, "code": "UNKNOWN_PROVIDER", "error": format!("unknown provider {id}") });
+    };
+    let default_model: Option<String> = spec.default_models.first().map(|m| m.id.to_string());
+
+    let Ok(dir) = app.path().app_data_dir() else {
+        return serde_json::json!({ "ok": false, "code": "CONFIG", "error": "no app data dir" });
+    };
+    let mut cfg = config::load_config_from(&dir);
+    match &mut cfg {
+        serde_json::Value::Object(map) => {
+            map.insert(
+                "defaultProvider".into(),
+                serde_json::Value::String(id.clone()),
+            );
+            if let Some(model) = default_model.clone() {
+                map.insert("defaultModel".into(), serde_json::Value::String(model));
+            }
+        }
+        _ => {
+            cfg = serde_json::json!({
+                "defaultProvider": id,
+                "defaultModel": default_model,
+            });
+        }
+    }
+    if let Err(e) = config::save_config_to(&dir, &cfg) {
+        return serde_json::json!({ "ok": false, "code": "CONFIG", "error": e.to_string() });
+    }
+    // No backend reload needed — `defaultProvider` is consumed
+    // renderer-side only (the embedded backend dispatches by
+    // `session.tool`, which is seeded from this default at session
+    // create time).
+    serde_json::json!({ "ok": true, "default_model": default_model })
 }
 
 /// Probe the provider's `/models` endpoint with the supplied draft key.
@@ -2123,6 +2275,18 @@ pub async fn providers_test_connection(id: String, key: String) -> serde_json::V
                 serde_json::json!({ "ok": false, "code": "AUTH", "error": format!("HTTP {status}"), "latency_ms": elapsed_ms })
             } else if status.as_u16() == 404 {
                 serde_json::json!({ "ok": false, "code": "NOT_FOUND", "error": format!("HTTP {status} at {url}"), "latency_ms": elapsed_ms })
+            } else if status.as_u16() == 400 {
+                // Gemini's OpenAI-compat /models rejects bad keys with
+                // HTTP 400 + an API_KEY_INVALID error envelope instead
+                // of 401/403. Inspect the body before falling back to
+                // the generic NETWORK bucket so the onboarding pill
+                // actually flags the key as rejected.
+                let body = resp.text().await.unwrap_or_default();
+                if fleetify_backend::services::providers_health::is_key_rejection_body(&body) {
+                    serde_json::json!({ "ok": false, "code": "AUTH", "error": "API key rejected by the provider", "latency_ms": elapsed_ms })
+                } else {
+                    serde_json::json!({ "ok": false, "code": "NETWORK", "error": format!("HTTP {status}"), "latency_ms": elapsed_ms })
+                }
             } else {
                 serde_json::json!({ "ok": false, "code": "NETWORK", "error": format!("HTTP {status}"), "latency_ms": elapsed_ms })
             }

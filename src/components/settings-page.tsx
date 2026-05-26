@@ -11,15 +11,23 @@
  * are quiet uppercase letter-spaced labels.
  *
  * Sections live as discrete components so this file stays scannable
- * even as the catalog grows (Account, General, Appearance, Models,
- * MCPs, plus stubs for the rest).
+ * even as the catalog grows (Account, General, Models, MCPs, plus
+ * stubs for the rest). Dark/light theme switching lives on the
+ * sidebar's user row; the Settings → Appearance picker (which
+ * exposed a dozen color themes) is currently dormant but preserved
+ * as commented-out code below so it can be brought back.
  */
 import { useState, useEffect, useCallback } from "react";
 import {
-  Settings, Palette, Wand2, Cpu, Plug, Cable, Route,
+  Settings, Cpu, Plug, Cable, Route,
   FileCode, Webhook, FileText, FolderOpen, Loader2, Bug,
   Check, User, ArrowUpRight, HelpCircle, Sun, ArrowLeft,
   Copy, MessageCircle,
+  // Palette — kept here (commented) because the Appearance / Themes
+  // section below is preserved as dormant code. Uncomment along with
+  // the NAV row, AppearanceSection, ThemeCard and the render guard
+  // below to bring the multi-theme picker back.
+  // Palette,
   // Volume2 / playCompletionBeep / useToggle / Toggle all retired with the
   // legacy single-toggle GeneralSection; the Notifications card under
   // settings/general/ owns those primitives now.
@@ -32,20 +40,23 @@ import { isWindowsPlatform } from "@/lib/utils";
 import { copyText } from "@/lib/clipboard";
 import { useAppStore } from "@/stores/app-store";
 import { useThemeStore } from "@/stores/theme-store";
-import { THEMES } from "@/lib/themes";
-import type { ColorTheme } from "@/stores/theme-store";
+// Dormant — the Settings → Appearance picker is commented out below but
+// kept in source so we can resurrect the multi-theme catalog without
+// reconstructing it from git history. Uncomment alongside the matching
+// blocks below.
+// import { THEMES } from "@/lib/themes";
+// import type { ColorTheme } from "@/stores/theme-store";
 import { MCPSection } from "./settings/mcp-section";
 import { IntegrationsSection } from "./settings/integrations-section";
 import { RoutersSection } from "./settings/routers-section";
-import { ModelsSection } from "./settings/models-section";
-import { AgentsSection as AgentsSectionV2 } from "./settings/agents-section";
+import { ProvidersSection } from "./settings/providers-section";
 import { GeneralSection as GeneralSectionV2 } from "./settings/general/general-section";
 import { WindowsTitleBar } from "./layout/windows-title-bar";
 import { openDocs } from "./layout/sidebar";
 import { FeedbackModal } from "./feedback-modal";
 
 interface SettingsProps {
-  /** Tab to land on (e.g. "Account" / "Appearance"). Defaults to General. */
+  /** Tab to land on (e.g. "Account" / "Models"). Defaults to General. */
   initialTab?: string;
   /** Called when the user closes Settings (X button, Esc key, Sign-out). */
   onClose: () => void;
@@ -54,9 +65,12 @@ interface SettingsProps {
 const NAV: { id: string; icon: React.FC<{ size?: number; style?: React.CSSProperties }> }[] = [
   { id: "Account",      icon: User       },
   { id: "General",      icon: Settings   },
-  { id: "Appearance",   icon: Palette    },
-  { id: "Agents",       icon: Wand2      },
-  { id: "Models",       icon: Cpu        },
+  // Dormant — the Appearance tab (multi-theme picker) is preserved
+  // as commented-out code throughout this file. The sidebar's user-
+  // row toggle owns dark/light switching now. Uncomment the matching
+  // blocks below to bring the tab back.
+  // { id: "Appearance",   icon: Palette    },
+  { id: "Providers",    icon: Cpu        },
   { id: "Plugins",      icon: Plug       },
   { id: "Integrations", icon: Cable      },
   { id: "Routers",      icon: Route      },
@@ -185,85 +199,13 @@ function GhostButton({ children, onClick }: { children: React.ReactNode; onClick
   );
 }
 
-/* ── FleetConfig hook — load once, expose patch helper ────────── */
-function useFleetConfig() {
-  const [cfg, setCfg] = useState<FleetConfig | null>(null);
-  const [loaded, setLoaded] = useState(false);
-  useEffect(() => {
-    let mounted = true;
-    window.electronAPI?.getConfig?.()
-      .then(c => { if (mounted) { setCfg(c ?? { onboardingComplete: false, apiKeys: {} }); setLoaded(true); } })
-      .catch(() => { if (mounted) { setCfg({ onboardingComplete: false, apiKeys: {} }); setLoaded(true); } });
-    return () => { mounted = false; };
-  }, []);
-
-  const patch = useCallback(async (next: Partial<FleetConfig>) => {
-    const base: FleetConfig = { onboardingComplete: false, apiKeys: {}, ...(cfg ?? {}) };
-    const merged: FleetConfig = {
-      ...base,
-      ...next,
-      apiKeys: { ...(base.apiKeys ?? {}), ...(next.apiKeys ?? {}) },
-    };
-    setCfg(merged);
-    try { await window.electronAPI?.setConfig?.(merged); } catch { /* noop */ }
-  }, [cfg]);
-
-  return { cfg, loaded, patch };
-}
-
-/* ── Select — themed dropdown matching the input chrome ───────── */
-function Select<T extends string>({
-  value, options, onChange, width = 160,
-}: {
-  value: T;
-  options: { value: T; label: string }[];
-  onChange: (v: T) => void;
-  width?: number;
-}) {
-  return (
-    <div style={{ position: "relative", width }}>
-      <select
-        value={value}
-        onChange={e => onChange(e.target.value as T)}
-        style={{
-          width: "100%", boxSizing: "border-box",
-          appearance: "none",
-          background: "var(--c-srf)",
-          border: "1px solid var(--c-brd)",
-          borderRadius: 7, padding: "6px 26px 6px 10px",
-          fontSize: 12.5, color: "var(--c-high)",
-          fontFamily: "inherit", outline: "none", cursor: "pointer",
-          transition: "border-color 0.12s",
-        }}
-        onFocus={e => (e.currentTarget.style.borderColor = "var(--c-brd2)")}
-        onBlur={e => (e.currentTarget.style.borderColor = "var(--c-brd)")}
-      >
-        {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-      </select>
-      <span style={{
-        position: "absolute", right: 8, top: "50%",
-        transform: "translateY(-50%) rotate(45deg)",
-        width: 6, height: 6,
-        borderRight: "1.5px solid var(--c-low)",
-        borderBottom: "1.5px solid var(--c-low)",
-        pointerEvents: "none",
-      }} />
-    </div>
-  );
-}
-
-/* ── useConfigField — one-liner read/write against FleetConfig ── */
-function useConfigField<K extends keyof FleetConfig>(
-  key: K,
-  fallback: NonNullable<FleetConfig[K]>,
-): [NonNullable<FleetConfig[K]>, (v: NonNullable<FleetConfig[K]>) => void, boolean] {
-  const { cfg, loaded, patch } = useFleetConfig();
-  const value = (cfg?.[key] ?? fallback) as NonNullable<FleetConfig[K]>;
-  const setValue = (v: NonNullable<FleetConfig[K]>) => {
-    void patch({ [key]: v } as unknown as Partial<FleetConfig>);
-  };
-  return [value, setValue, loaded];
-}
+/* `useFleetConfig`, `Select`, and `useConfigField` helpers used to
+   live here for the legacy Agents section's default-provider
+   dropdown. All three were sole consumers — removed alongside that
+   section when the Providers merge landed. ProvidersSection's
+   FleetDefaultCard
+   replaces them with a catalog-driven dropdown wired to
+   `providers.setDefault`. */
 
 /* ══════════════════════════════════════════════════════════════
    Section: Account
@@ -650,103 +592,117 @@ function ValueText({ children }: { children: React.ReactNode }) {
 ══════════════════════════════════════════════════════════════ */
 
 /* ══════════════════════════════════════════════════════════════
-   Section: Appearance
+   Section: Appearance — DORMANT
+   ──────────────────────────────────────────────────────────────
+   The multi-theme picker (Dark Themes + Light Themes grids) is
+   preserved here as a commented-out block. It is no longer mounted
+   from the NAV array or the render switch above. The sidebar user
+   row owns dark/light toggling; this catalog stays around in case
+   we want to bring the full picker back later.
+
+   To re-activate:
+     1. Uncomment the `Palette` lucide import.
+     2. Uncomment the `THEMES` + `ColorTheme` imports.
+     3. Uncomment the `{ id: "Appearance", icon: Palette }` NAV row.
+     4. Uncomment the `<AppearanceSection />` render guard.
+     5. Uncomment the `ThemeCard` + `AppearanceSection` functions
+        below.
 ══════════════════════════════════════════════════════════════ */
-function ThemeCard({
-  themeId, active, onClick,
-}: {
-  themeId: string;
-  active: boolean;
-  onClick: () => void;
-}) {
-  const [hovered, setHovered] = useState(false);
-  const t = THEMES.find(x => x.id === themeId)!;
-  const p = t.preview;
-  return (
-    <button
-      onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        background: "none", border: "none", padding: 0, cursor: "pointer",
-        textAlign: "left", borderRadius: 10,
-        outline: active
-          ? "2px solid var(--c-high)"
-          : hovered ? "1px solid var(--c-brd2)" : "1px solid var(--c-brd)",
-        outlineOffset: active ? 1 : 0,
-        transition: "outline 0.12s",
-      }}
-    >
-      <div style={{ padding: "9px 9px 8px" }}>
-        <div style={{
-          width: "100%", height: 76, borderRadius: 7,
-          border: `1px solid ${p.border}`,
-          display: "flex", overflow: "hidden", marginBottom: 8,
-        }}>
-          <div style={{
-            width: 26, background: p.sidebar, flexShrink: 0,
-            padding: "6px 4px", display: "flex", flexDirection: "column", gap: 3,
-          }}>
-            {[0.7, 0.45, 0.45, 0.25].map((op, i) => (
-              <div key={i} style={{ height: 2.5, borderRadius: 2, background: p.text, opacity: op }} />
-            ))}
-          </div>
-          <div style={{ flex: 1, background: p.card, padding: "6px 8px", display: "flex", flexDirection: "column", gap: 4 }}>
-            <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
-              <div style={{ width: 6, height: 6, borderRadius: "50%", background: p.accent }} />
-              <div style={{ flex: 1, height: 2.5, borderRadius: 2, background: p.text, opacity: 0.5 }} />
-            </div>
-            <div style={{ height: 2.5, borderRadius: 2, background: p.text, opacity: 0.28, width: "75%" }} />
-            <div style={{ height: 2.5, borderRadius: 2, background: p.text, opacity: 0.28, width: "50%" }} />
-            <div style={{ marginTop: 1, padding: "3px 5px", borderRadius: 3, background: p.border }}>
-              <div style={{ height: 2, borderRadius: 2, background: p.text, opacity: 0.35 }} />
-            </div>
-          </div>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          <span style={{
-            fontSize: 12.5,
-            fontWeight: active ? 600 : 500,
-            color: active ? "var(--c-high)" : "var(--c-med)",
-          }}>
-            {t.name}
-          </span>
-          {active && <Check size={11} style={{ color: "var(--c-high)", flexShrink: 0 }} />}
-        </div>
-        <div style={{ fontSize: 11, color: "var(--c-dim)", marginTop: 2 }}>
-          {t.description}
-        </div>
-      </div>
-    </button>
-  );
-}
-
-function AppearanceSection() {
-  const { colorTheme, setColorTheme } = useThemeStore();
-  const dark  = THEMES.filter(t => t.type === "dark");
-  const light = THEMES.filter(t => t.type === "light");
-
-  const Grid = ({ themes }: { themes: typeof THEMES }) => (
-    <div style={{
-      display: "grid",
-      gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))",
-      gap: 9, marginBottom: 22,
-    }}>
-      {themes.map(t => (
-        <ThemeCard key={t.id} themeId={t.id} active={colorTheme === t.id}
-          onClick={() => setColorTheme(t.id as ColorTheme)} />
-      ))}
-    </div>
-  );
-  return (
-    <>
-      <SectionHeader>Dark Themes</SectionHeader>
-      <Grid themes={dark} />
-      <SectionHeader>Light Themes</SectionHeader>
-      <Grid themes={light} />
-    </>
-  );
-}
+// function ThemeCard({
+//   themeId, active, onClick,
+// }: {
+//   themeId: string;
+//   active: boolean;
+//   onClick: () => void;
+// }) {
+//   const [hovered, setHovered] = useState(false);
+//   const t = THEMES.find(x => x.id === themeId)!;
+//   const p = t.preview;
+//   return (
+//     <button
+//       onClick={onClick}
+//       onMouseEnter={() => setHovered(true)}
+//       onMouseLeave={() => setHovered(false)}
+//       style={{
+//         background: "none", border: "none", padding: 0, cursor: "pointer",
+//         textAlign: "left", borderRadius: 10,
+//         outline: active
+//           ? "2px solid var(--c-high)"
+//           : hovered ? "1px solid var(--c-brd2)" : "1px solid var(--c-brd)",
+//         outlineOffset: active ? 1 : 0,
+//         transition: "outline 0.12s",
+//       }}
+//     >
+//       <div style={{ padding: "9px 9px 8px" }}>
+//         <div style={{
+//           width: "100%", height: 76, borderRadius: 7,
+//           border: `1px solid ${p.border}`,
+//           display: "flex", overflow: "hidden", marginBottom: 8,
+//         }}>
+//           <div style={{
+//             width: 26, background: p.sidebar, flexShrink: 0,
+//             padding: "6px 4px", display: "flex", flexDirection: "column", gap: 3,
+//           }}>
+//             {[0.7, 0.45, 0.45, 0.25].map((op, i) => (
+//               <div key={i} style={{ height: 2.5, borderRadius: 2, background: p.text, opacity: op }} />
+//             ))}
+//           </div>
+//           <div style={{ flex: 1, background: p.card, padding: "6px 8px", display: "flex", flexDirection: "column", gap: 4 }}>
+//             <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
+//               <div style={{ width: 6, height: 6, borderRadius: "50%", background: p.accent }} />
+//               <div style={{ flex: 1, height: 2.5, borderRadius: 2, background: p.text, opacity: 0.5 }} />
+//             </div>
+//             <div style={{ height: 2.5, borderRadius: 2, background: p.text, opacity: 0.28, width: "75%" }} />
+//             <div style={{ height: 2.5, borderRadius: 2, background: p.text, opacity: 0.28, width: "50%" }} />
+//             <div style={{ marginTop: 1, padding: "3px 5px", borderRadius: 3, background: p.border }}>
+//               <div style={{ height: 2, borderRadius: 2, background: p.text, opacity: 0.35 }} />
+//             </div>
+//           </div>
+//         </div>
+//         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+//           <span style={{
+//             fontSize: 12.5,
+//             fontWeight: active ? 600 : 500,
+//             color: active ? "var(--c-high)" : "var(--c-med)",
+//           }}>
+//             {t.name}
+//           </span>
+//           {active && <Check size={11} style={{ color: "var(--c-high)", flexShrink: 0 }} />}
+//         </div>
+//         <div style={{ fontSize: 11, color: "var(--c-dim)", marginTop: 2 }}>
+//           {t.description}
+//         </div>
+//       </div>
+//     </button>
+//   );
+// }
+//
+// function AppearanceSection() {
+//   const { colorTheme, setColorTheme } = useThemeStore();
+//   const dark  = THEMES.filter(t => t.type === "dark");
+//   const light = THEMES.filter(t => t.type === "light");
+//
+//   const Grid = ({ themes }: { themes: typeof THEMES }) => (
+//     <div style={{
+//       display: "grid",
+//       gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))",
+//       gap: 9, marginBottom: 22,
+//     }}>
+//       {themes.map(t => (
+//         <ThemeCard key={t.id} themeId={t.id} active={colorTheme === t.id}
+//           onClick={() => setColorTheme(t.id as ColorTheme)} />
+//       ))}
+//     </div>
+//   );
+//   return (
+//     <>
+//       <SectionHeader>Dark Themes</SectionHeader>
+//       <Grid themes={dark} />
+//       <SectionHeader>Light Themes</SectionHeader>
+//       <Grid themes={light} />
+//     </>
+//   );
+// }
 
 /* ══════════════════════════════════════════════════════════════
    Section: Models
@@ -758,61 +714,13 @@ function AppearanceSection() {
 // covers every shape they used to handle (cloud HTTP + local Ollama +
 // per-model toggles + masked keychain previews).
 
-/* ══════════════════════════════════════════════════════════════
-   Section: Agents — defaults that apply when creating new sessions
-══════════════════════════════════════════════════════════════ */
-function AgentsSection() {
-  const [provider, setProvider] = useConfigField("defaultProvider", "claude");
-
-  return (
-    <>
-      <SectionHeader>Default agent</SectionHeader>
-      <Card>
-        <Row
-          title="Default provider"
-          desc="CLI used when you create a new agent without explicitly picking one in the chip strip."
-          last
-        >
-          <Select
-            value={provider}
-            onChange={setProvider}
-            options={[
-              { value: "claude",          label: "Claude Code"     },
-              { value: "codex",           label: "Codex"           },
-              { value: "cursor",          label: "Cursor"          },
-              { value: "gemini",          label: "Gemini CLI"      },
-              { value: "kimi",            label: "Kimi"            },
-              { value: "agy",             label: "Antigravity CLI" },
-              { value: "antigravity-sdk", label: "Antigravity SDK" },
-              { value: "ollama",          label: "Ollama"          },
-            ]}
-            width={170}
-          />
-        </Row>
-      </Card>
-
-      {/* Registry-driven CLI agent grid — detection + install/login hints. */}
-      <AgentsSectionV2 />
-
-      <SectionHeader>Per-session controls</SectionHeader>
-      <Card>
-        <Row
-          title="Permission mode"
-          desc="Each agent's mode (default / acceptEdits / plan) lives on the session and is changed from the chip strip above the chat input."
-        >
-          <ValueText>Per session</ValueText>
-        </Row>
-        <Row
-          title="Budget limit"
-          desc="Each agent has its own spending cap. Set it from the session's chip strip — Fleet pauses the run when the cap is hit."
-          last
-        >
-          <ValueText>Per session</ValueText>
-        </Row>
-      </Card>
-    </>
-  );
-}
+/* Legacy `AgentsSection` (hard-coded default-provider Select + the
+   informational "Per-session controls" Card) deleted when Agents +
+   Models merged into the single Providers page. The default picker
+   moved into ProvidersSection's FleetDefaultCard — driven by the
+   catalog and `providers.setDefault(id)` so the model auto-matches.
+   The per-session-controls rows were informational only and didn't
+   carry weight outside the old Agents tab. */
 
 /* ══════════════════════════════════════════════════════════════
    Section: Plugins — hand off to the Marketplace surface
@@ -966,10 +874,27 @@ function SettingsAccountFooter({ onClickAccount }: { onClickAccount?: () => void
 /* ══════════════════════════════════════════════════════════════
    Settings page — full-viewport surface (sidebar + content)
 ══════════════════════════════════════════════════════════════ */
+// Back-compat: callers used to pass initialTab="Agents" or "Models"
+// before those two sections merged into a single "Providers" page.
+// Coalesce both legacy values onto the new id so deep links keep
+// working; the sub-tab carries the user back to the half they used
+// to land on.
+function normalizeInitialTab(raw: string): { active: string; subTab?: "agents" | "models" } {
+  if (raw === "Agents") return { active: "Providers", subTab: "agents" };
+  if (raw === "Models") return { active: "Providers", subTab: "models" };
+  return { active: raw };
+}
+
 export function SettingsPage({ initialTab = "General", onClose }: SettingsProps) {
-  const [active, setActive] = useState(initialTab);
+  const initialResolved = normalizeInitialTab(initialTab);
+  const [active, setActive] = useState(initialResolved.active);
+  const [providersInitialSubTab, setProvidersInitialSubTab] = useState(initialResolved.subTab);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
-  useEffect(() => { setActive(initialTab); }, [initialTab]);
+  useEffect(() => {
+    const next = normalizeInitialTab(initialTab);
+    setActive(next.active);
+    setProvidersInitialSubTab(next.subTab);
+  }, [initialTab]);
 
   // Esc closes the page — same shortcut users learn from the rest of
   // the app's overlays. Owned at the page level so any focused input
@@ -1149,9 +1074,9 @@ export function SettingsPage({ initialTab = "General", onClose }: SettingsProps)
 
             {active === "Account"      && <AccountSection />}
             {active === "General"      && <GeneralSectionV2 />}
-            {active === "Appearance"   && <AppearanceSection />}
-            {active === "Agents"       && <AgentsSection />}
-            {active === "Models"       && <ModelsSection />}
+            {/* Dormant — see "Section: Appearance — DORMANT" block above. */}
+            {/* {active === "Appearance"   && <AppearanceSection />} */}
+            {active === "Providers"    && <ProvidersSection initialSubTab={providersInitialSubTab} />}
             {active === "Plugins"      && <PluginsSection onClose={onClose} />}
             {active === "Rules"        && <RulesSection />}
             {active === "Integrations" && <IntegrationsSection />}

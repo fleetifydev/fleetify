@@ -130,6 +130,7 @@ pub fn run() {
             shell::ipc::git_unwatch_head,
             shell::ipc::github_get_link,
             shell::ipc::github_begin_oauth,
+            shell::ipc::github_cancel_oauth,
             shell::ipc::github_refresh_link,
             shell::ipc::github_disconnect,
             shell::ipc::github_open_installation,
@@ -144,6 +145,8 @@ pub fn run() {
             shell::ipc::providers_set_key,
             shell::ipc::providers_get_key_preview,
             shell::ipc::providers_delete_key,
+            shell::ipc::providers_set_enabled,
+            shell::ipc::providers_set_default,
             shell::ipc::providers_test_connection,
             shell::ipc::providers_ollama_probe,
             shell::ipc::providers_set_enabled_models,
@@ -198,7 +201,16 @@ pub fn run() {
                 WebviewUrl::External(webview_url().parse().expect("valid webview url")),
             )
             .title("Fleetify")
-            .inner_size(1500.0, 960.0)
+            // Cold-start at the ONBOARDING size (760×740) rather than
+            // the MAIN size (1500×960). Reveal-when-ready paints the
+            // first React frame straight into this small window, so
+            // new users (splash → welcome → onboarding-chat) never see
+            // a giant white frame that then shrinks. Returning users
+            // who land on main get a small-to-large grow on first
+            // paint instead, which reads as an expand rather than the
+            // current jarring shrink. Both sizes are kept in sync with
+            // ONBOARDING_SIZE / MAIN_SIZE in src/App.tsx.
+            .inner_size(760.0, 740.0)
             // Open on the current monitor's centre on first launch.
             // Without this Tauri falls back to the OS WM's default
             // placement (Windows lands somewhere top-left-ish, looks
@@ -273,6 +285,15 @@ pub fn run() {
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 }
                 crate::shell::providers_setup::warm_providers_at_boot(&handle).await;
+            });
+
+            // Prime the integrations cache in parallel — only needs the
+            // `gh` binary, not the backend, so it can race ahead of the
+            // backend-bind wait above. Settings → Integrations reads
+            // through this cache so the GitHub tile paints with the
+            // final state instead of flashing "Loading…".
+            tauri::async_runtime::spawn(async {
+                crate::shell::integrations_cache::prime_gh_cli().await;
             });
 
             // Reveal-when-ready: poll the webview URL until it

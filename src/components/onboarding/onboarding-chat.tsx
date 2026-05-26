@@ -64,7 +64,7 @@ interface ProviderDef {
   kind: "cli" | "api";
   scanKey?: keyof Pick<
     ProviderScan,
-    "claude_cli" | "gemini_cli" | "codex_cli" | "agy_cli" | "antigravity_sdk"
+    "claude_cli" | "gemini_cli" | "codex_cli" | "kimi_cli" | "agy_cli" | "antigravity_sdk"
   >;
   /** Optional env-var bucket on `scan.env_keys`. Only set when the
    *  scan probe actually checks for this provider's key — the four
@@ -99,15 +99,24 @@ interface ProviderDef {
 // drop out because neither is in the catalog today — users still get
 // Claude via the Claude Code CLI row at the top.
 const PROVIDERS: ProviderDef[] = [
-  { id: "claude",         label: "Claude Code",       logo: "claude", kind: "cli", scanKey: "claude_cli", autoInstall: true, hint: "Anthropic CLI" },
-  { id: "codex",          label: "Codex CLI",         logo: "codex",  kind: "cli", scanKey: "codex_cli",  autoInstall: true, hint: "OpenAI CLI" },
+  // No CLI row opts in to `autoInstall` — users found the unattended
+  // `npm install -g …` mid-onboarding surprising, so every install
+  // now waits for an explicit Install button click. The verify-loop
+  // gate (`p.autoInstall === true`) is preserved in case a future
+  // first-run experience wants to opt a tile back in.
+  { id: "claude",         label: "Claude Code",       logo: "claude", kind: "cli", scanKey: "claude_cli", hint: "Anthropic CLI" },
+  { id: "codex",          label: "Codex CLI",         logo: "codex",  kind: "cli", scanKey: "codex_cli",  hint: "OpenAI CLI" },
   // Antigravity sits next to its predecessor Gemini CLI — Google sunsets
   // the latter for individual AI Pro/Ultra users on 2026-06-18, so
   // surfacing both side-by-side gives migrating users a one-tap path.
-  { id: "gemini",         label: "Gemini CLI",        logo: "gemini", kind: "cli", scanKey: "gemini_cli", autoInstall: true, hint: "Google CLI" },
-  // No autoInstall — the agy installer runs a remote shell script
+  { id: "gemini",         label: "Gemini CLI",        logo: "gemini", kind: "cli", scanKey: "gemini_cli", hint: "Google CLI" },
+  // Kimi Code ships as `@moonshot-ai/kimi-code` (npm). Auth state is
+  // read from `~/.kimi/auth.json` or `KIMI_API_KEY`
+  // (KIMI_CLI_INDICATORS in the catalog).
+  { id: "kimi",           label: "Kimi Code",         logo: "kimi",   kind: "cli", scanKey: "kimi_cli",   hint: "Moonshot CLI" },
+  // Antigravity CLI installer runs a remote shell script
   // (`iex (irm https://antigravity.google/cli/install.ps1)` on Windows,
-  // `curl … | bash` elsewhere) which we don't fire without an explicit click.
+  // `curl … | bash` elsewhere). Same explicit-click contract as above.
   { id: "agy",            label: "Antigravity CLI",   logo: "agy",    kind: "cli", scanKey: "agy_cli",                       hint: "Google's terminal agent (OAuth)" },
   // SDK pairs a pip install with a GEMINI_API_KEY entry. The renderer
   // handles the two-stage flow inline.
@@ -289,15 +298,13 @@ export function OnboardingChat({ user, onDone }: Props) {
       );
     } else if (readyProviders.length === 1) {
       // Exactly one ready provider — auto-set as default + skip the
-      // question. Save to config so first launch picks it up.
+      // question. `providers.setDefault` writes both `defaultProvider`
+      // AND a matching `defaultModel` so the chat composer doesn't
+      // open with a mismatched (provider, model) pair on first launch.
       const only = readyProviders[0]!;
       setSelections((s) => ({ ...s, defaultProvider: only }));
       try {
-        const cfg = (await window.electronAPI?.getConfig?.()) ?? {
-          onboardingComplete: false,
-          apiKeys: {},
-        };
-        await window.electronAPI?.setConfig?.({ ...cfg, defaultProvider: only.id });
+        await providersApi.setDefault(only.id);
       } catch { /* best-effort */ }
 
       await pushAssistant(githubIntroCopy(getCurrentExistingGithub()), "github");
@@ -321,11 +328,12 @@ export function OnboardingChat({ user, onDone }: Props) {
     pushUser(provider.label);
     setSelections((s) => ({ ...s, defaultProvider: provider }));
     try {
-      const cfg = (await window.electronAPI?.getConfig?.()) ?? {
-        onboardingComplete: false,
-        apiKeys: {},
-      };
-      await window.electronAPI?.setConfig?.({ ...cfg, defaultProvider: provider.id });
+      // `providers.setDefault` writes both `defaultProvider` AND a
+      // matching `defaultModel` (best entry from the catalog) into
+      // fleet.config.json. The chat composer's `openComposer` reads
+      // both, so picking Gemini here no longer leaves the composer
+      // seeded with `claude-sonnet-4-6`.
+      await providersApi.setDefault(provider.id);
     } catch { /* best-effort */ }
 
     await pushAssistant(
@@ -2724,12 +2732,22 @@ function GithubWidget({
         onResult({ method: "oauth", username: login });
         return;
       }
-      setError(r?.error || "GitHub OAuth didn't complete.");
+      // ABORTED = user pressed Cancel; not an error worth surfacing.
+      if (r && !r.ok && r.code !== "ABORTED") {
+        setError(r.error || "GitHub OAuth didn't complete.");
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't reach GitHub.");
     } finally {
       setPending(null);
     }
+  };
+
+  // Best-effort abort of the in-flight Fleetify OAuth attempt. Resolves
+  // the awaiting `beginOAuth` with `code: "ABORTED"` → pickOAuth's
+  // finally clause clears `pending` and the Connect button re-enables.
+  const cancelOAuth = async () => {
+    try { await window.electronAPI?.github?.cancelOAuth?.(); } catch { /* best effort */ }
   };
 
   // Choice-row button — single-line, icon-left, title centered. Two
@@ -2915,6 +2933,56 @@ function GithubWidget({
           variant="black"
         />
       </div>
+
+      {pending === "oauth" && (
+        <div
+          style={{
+            margin: "0 12px 11px",
+            padding: "11px 12px",
+            borderRadius: 8,
+            background: "rgba(255,255,255,0.03)",
+            border: "1px solid rgba(255,255,255,0.08)",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+          }}
+        >
+          <Loader2
+            size={13}
+            style={{
+              animation: "spin 1s linear infinite",
+              color: "var(--m-text-2)",
+              flexShrink: 0,
+            }}
+          />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 12.5, color: "var(--c-high)", lineHeight: 1.3 }}>
+              Waiting for GitHub authorization…
+            </div>
+            <div style={{ fontSize: 11, color: "var(--m-text-3)", marginTop: 2 }}>
+              Complete the flow in your browser, or cancel to try again.
+            </div>
+          </div>
+          <button
+            onClick={cancelOAuth}
+            style={{
+              height: 24,
+              padding: "0 9px",
+              fontSize: 11,
+              fontWeight: 500,
+              borderRadius: 5,
+              background: "transparent",
+              border: "1px solid rgba(255,255,255,0.12)",
+              color: "var(--m-text-2)",
+              cursor: "pointer",
+              fontFamily: "inherit",
+              flexShrink: 0,
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
 
       {pending === "cli" && (
         <div

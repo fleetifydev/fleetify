@@ -264,16 +264,40 @@ pub async fn resolve_routing_for_turn(
     // earlier routed turn keeps its (agent, model) even if the user
     // toggles auto-routing OFF mid-session. Unit-tested by
     // `pin_survives_routing_disabled` below.
+    //
+    // Self-heal guard: when the user manually flips `session.tool`
+    // through the picker, `update_session` refreshes the pin to match
+    // (see routers/sessions.rs). Rows that predate that fix — or any
+    // path that bypasses the PATCH (legacy data, direct SQL, future
+    // bug) — can leave the pin's `agent` pointing at a DIFFERENT
+    // bridge family than `session.tool`. Returning that stale pin
+    // makes chat.rs build the bridge from session.tool but apply a
+    // model from a different agent family (e.g. claude-sonnet-4-6 on
+    // the Codex bridge), which Codex / Antigravity CLI silently
+    // refuse (TOML-only model config). Treat any agent-mismatched pin
+    // as missing so we fall through to Branch 2 (routing off ⇒ honor
+    // manual_tool/manual_model) or Branch 3 (route fresh) and pin the
+    // correct identity on the way out.
     if let (Some(agent_str), Some(model)) = (pin.agent.as_deref(), pin.model.as_deref()) {
         let agent = str_to_agent_kind(agent_str).unwrap_or(AgentKind::Claude);
-        return RoutingResolution {
-            agent,
-            model: model.to_string(),
-            decision_id: pin.decision_id,
-            freshly_routed: false,
-            base_url_override: None,
-            extra_headers: http::HeaderMap::new(),
-        };
+        let manual_kind = str_to_agent_kind(manual_tool);
+        if Some(agent) == manual_kind {
+            return RoutingResolution {
+                agent,
+                model: model.to_string(),
+                decision_id: pin.decision_id,
+                freshly_routed: false,
+                base_url_override: None,
+                extra_headers: http::HeaderMap::new(),
+            };
+        }
+        tracing::warn!(
+            target: "fleet-backend",
+            session_id = %session_id,
+            pinned_agent = agent_str,
+            session_tool = manual_tool,
+            "routing: pin agent disagrees with session.tool — ignoring stale pin and re-resolving"
+        );
     }
 
     // Branch 2: orchestrator master toggle off AND no pin → pass through
@@ -716,20 +740,23 @@ mod tests {
     }
 
     /// Regression: pinned session keeps its (agent, model) even when the
-    /// master routing toggle is OFF. The pin check MUST run before the
-    /// `routing.enabled()` check in `resolve_routing_for_turn`, otherwise
-    /// toggling routing OFF mid-session would silently swap the user's
-    /// agent/model to the manual fields (`session.tool` / `model_name`).
+    /// master routing toggle is OFF — provided the pin's agent still
+    /// agrees with `session.tool`. The pin check MUST run before the
+    /// `routing.enabled()` check in `resolve_routing_for_turn`,
+    /// otherwise toggling routing OFF mid-session would silently swap
+    /// the user's model to whatever was in `manual_model`.
     #[tokio::test]
     async fn pin_survives_routing_disabled() {
         use crate::services::routing::traits::{TaskFlow, WorkspaceHints};
         let pool = init_pool("sqlite::memory:").await.unwrap();
-        // Seed a session with manual fields set to ONE thing and the
-        // routed pin set to ANOTHER, so we can tell which branch fired.
+        // Pin the session to claude-haiku-4-5; manual model is a
+        // different claude tier so we can tell which branch fired.
+        // Agent kind agrees (both claude) so the self-heal in Branch
+        // 1 does NOT skip the pin.
         sqlx::query(
             "INSERT INTO sessions (id, title, project_path, group_path, tool, model_name, command, status, \
              permission_mode, session_mode, pinned, order_idx, created_at, budget_used) \
-             VALUES ('s-pin','t','/p','','claude','claude-haiku-4-5','','idle','default','new',0,0,'2026-01-01',0.0)",
+             VALUES ('s-pin','t','/p','','claude','claude-sonnet-4-6','','idle','default','new',0,0,'2026-01-01',0.0)",
         )
         .execute(&pool)
         .await
@@ -739,8 +766,8 @@ mod tests {
             "d-pin",
             "chat",
             Some("s-pin"),
-            "openai",
-            "gpt-4o",
+            "claude",
+            "claude-haiku-4-5",
             "builtin",
             "rat",
             5,
@@ -751,8 +778,7 @@ mod tests {
         )
         .await
         .unwrap();
-        // Pin to a DIFFERENT (agent, model) than the manual fields.
-        pin_session(&pool, "s-pin", "openai", "gpt-4o", "d-pin")
+        pin_session(&pool, "s-pin", "claude", "claude-haiku-4-5", "d-pin")
             .await
             .unwrap();
 
@@ -775,16 +801,90 @@ mod tests {
             &pool,
             &orch,
             "s-pin",
-            "claude",                 // manual tool — must be IGNORED
-            Some("claude-haiku-4-5"), // manual model — must be IGNORED
+            "claude",                  // manual tool — agrees with pin's agent
+            Some("claude-sonnet-4-6"), // manual model — must be IGNORED in favour of pin's model
             task,
         )
         .await;
-        // Pin wins, NOT the manual fields. This proves Branch 1 ran
+        // Pin's model wins over manual_model, proving Branch 1 ran
         // before the `routing.enabled()` check.
-        assert_eq!(res.agent, AgentKind::OpenAI);
-        assert_eq!(res.model, "gpt-4o");
+        assert_eq!(res.agent, AgentKind::Claude);
+        assert_eq!(res.model, "claude-haiku-4-5");
         assert_eq!(res.decision_id.as_deref(), Some("d-pin"));
+        assert!(!res.freshly_routed);
+    }
+
+    /// Self-heal: when the pin's `agent` disagrees with `session.tool`
+    /// (e.g. user picked Codex in the picker after the session was
+    /// previously routed to Claude), Branch 1 must SKIP the stale pin
+    /// and fall through so we don't dispatch a Claude-family model on
+    /// the Codex bridge — the exact mismatch that triggered the
+    /// "decision picked a different agent than session.tool" warning
+    /// and Codex's "model_override not supported" stall.
+    #[tokio::test]
+    async fn pin_agent_mismatch_falls_through_to_manual() {
+        use crate::services::routing::traits::{TaskFlow, WorkspaceHints};
+        let pool = init_pool("sqlite::memory:").await.unwrap();
+        // session.tool says Codex (the user's latest picker pick);
+        // pin still has Claude from the first routed turn before the
+        // user switched agents.
+        sqlx::query(
+            "INSERT INTO sessions (id, title, project_path, group_path, tool, model_name, command, status, \
+             permission_mode, session_mode, pinned, order_idx, created_at, budget_used) \
+             VALUES ('s-stale','t','/p','','codex','gpt-5.2','','idle','default','new',0,0,'2026-01-01',0.0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        insert_routing_decision(
+            &pool,
+            "d-old",
+            "chat",
+            Some("s-stale"),
+            "claude",
+            "claude-sonnet-4-6",
+            "builtin",
+            "rat",
+            5,
+            false,
+            None,
+            "[]",
+            1_700_000_100,
+        )
+        .await
+        .unwrap();
+        pin_session(&pool, "s-stale", "claude", "claude-sonnet-4-6", "d-old")
+            .await
+            .unwrap();
+
+        // Routing disabled so Branch 2 (manual fallback) is the
+        // expected destination after the self-heal skips Branch 1.
+        let orch = RoutingOrchestrator::with_empty_defaults(false);
+        let task = RoutingTask {
+            flow: TaskFlow::Chat {
+                session_id: "s-stale".into(),
+            },
+            user_prompt: "hi".into(),
+            conversation_history: None,
+            workspace_context: WorkspaceHints::default(),
+            user_hint: None,
+            allowed_agents: vec![AgentKind::Codex],
+            budget_remaining: None,
+        };
+        let res = resolve_routing_for_turn(
+            &pool,
+            &orch,
+            "s-stale",
+            "codex",          // session.tool — disagrees with pin's agent
+            Some("gpt-5.2"),  // session.model_name
+            task,
+        )
+        .await;
+        // Self-heal must skip the stale (Claude, claude-sonnet-4-6)
+        // pin and return the session's manual (Codex, gpt-5.2).
+        assert_eq!(res.agent, AgentKind::Codex);
+        assert_eq!(res.model, "gpt-5.2");
+        assert!(res.decision_id.is_none());
         assert!(!res.freshly_routed);
     }
 }
