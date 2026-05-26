@@ -1012,7 +1012,12 @@ function ScanWidget({
               [p.id]: { status: "running", detail: "Installing…" },
             }));
             try {
-              const installRes = await window.electronAPI.installProvider(p.scanKey!);
+              // Backend `shell_install_provider` routes on the kebab id
+              // ("agy", "antigravity-sdk", "claude"…), not the snake-case
+              // scanKey ("agy_cli", "antigravity_sdk", "claude_cli") used
+              // by the scan probe. scanKey gates *whether* we install
+              // (this row owns an installable binary); id selects *what*.
+              const installRes = await window.electronAPI.installProvider(p.id);
               if (cancelled) return;
               if (installRes?.success) {
                 // Re-scan so resolveProvider sees the fresh installed
@@ -1232,8 +1237,11 @@ function ScanWidget({
     // detection (the poll handles that); we just want its error if
     // npm itself fails.
     try {
-      console.log("[fleet] installProvider →", p.scanKey);
-      const result = await window.electronAPI.installProvider(p.scanKey);
+      // Backend matches on the kebab provider id (see auto-install
+      // branch above); scanKey is the renderer's own snake_case probe
+      // bucket and the backend doesn't recognise it.
+      console.log("[fleet] installProvider →", p.id);
+      const result = await window.electronAPI.installProvider(p.id);
       console.log("[fleet] installProvider result:", result);
       if (resolved) return; // poll already won
       if (!result?.success) {
