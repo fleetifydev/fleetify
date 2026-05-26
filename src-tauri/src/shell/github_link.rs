@@ -22,6 +22,7 @@
 //! `<app_data>/device-id`.
 
 use std::collections::HashMap;
+use std::error::Error as _;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -135,14 +136,24 @@ fn fail(code: &str, error: &str) -> Value {
     json!({ "ok": false, "code": code, "error": error })
 }
 
+// Log target used by every span in this module. Filter the live log
+// stream with `RUST_LOG=github-link=debug` (or `=trace` for poll
+// iteration noise) to scope output to the OAuth bridge only.
+const LOG_TARGET: &str = "github-link";
+
 // ── beginOAuth ───────────────────────────────────────────────────
 pub async fn begin_oauth(app: AppHandle) -> Value {
     let poll_interval = Duration::from_millis(2000);
     let max_duration = Duration::from_secs(5 * 60);
 
+    let issuer = api_base();
+    tracing::info!(target: LOG_TARGET, %issuer, "begin_oauth: entry");
+
     let Some(uid) = auth::get_user_id().await else {
+        tracing::warn!(target: LOG_TARGET, "begin_oauth: NO_USER (auth::get_user_id() = None)");
         return fail("NO_USER", "Fleetify sign-in required.");
     };
+    tracing::debug!(target: LOG_TARGET, uid = %uid, "begin_oauth: resolved Fleetify user id");
 
     // 1. /begin
     let bearer = match auth::get_access_token(false).await {
@@ -150,12 +161,23 @@ pub async fn begin_oauth(app: AppHandle) -> Value {
         None => None,
     };
     let Some(bearer) = bearer else {
+        tracing::warn!(target: LOG_TARGET, "begin_oauth: NO_TOKEN (auth::get_access_token() returned no usable token)");
         return fail("NO_TOKEN", "No Fleetify access token.");
     };
+    // bearer length is safe to log — token itself never is.
+    tracing::debug!(target: LOG_TARGET, bearer_len = bearer.len(), "begin_oauth: bearer acquired");
 
     let device_id = get_device_id(&app);
+    let begin_url = format!("{}/api/integrations/github/link/begin", issuer);
+    tracing::info!(
+        target: LOG_TARGET,
+        url = %begin_url,
+        device_id = %device_id,
+        "begin_oauth: POST /begin"
+    );
+
     let begin: Value = match reqwest::Client::new()
-        .post(format!("{}/api/integrations/github/link/begin", api_base()))
+        .post(&begin_url)
         .bearer_auth(&bearer)
         .json(&json!({ "device_id": device_id }))
         .send()
@@ -163,7 +185,13 @@ pub async fn begin_oauth(app: AppHandle) -> Value {
     {
         Ok(r) => {
             let status = r.status();
-            let body: Value = r.json().await.unwrap_or_else(|_| json!({}));
+            // Capture body as text first so we can log it on failure
+            // regardless of whether it was actually JSON. Many gateways
+            // return HTML or plain text on 502/504 and the prior code
+            // would silently coerce that to `{}` and surface the
+            // generic "Begin failed." message with no clue why.
+            let body_text = r.text().await.unwrap_or_default();
+            let body: Value = serde_json::from_str(&body_text).unwrap_or_else(|_| json!({}));
             if !status.is_success() {
                 let code = body
                     .get("code")
@@ -175,11 +203,42 @@ pub async fn begin_oauth(app: AppHandle) -> Value {
                     .and_then(|v| v.as_str())
                     .unwrap_or("Begin failed.")
                     .to_string();
+                // Truncate large HTML error pages so the log line stays
+                // grep-able. Full body is still in the renderer's
+                // network panel if the user wants the rest.
+                let body_preview: String = body_text.chars().take(512).collect();
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    status = status.as_u16(),
+                    code = %code,
+                    message = %msg,
+                    body_preview = %body_preview,
+                    "begin_oauth: /begin returned non-2xx"
+                );
                 return fail(&code, &msg);
             }
+            tracing::info!(
+                target: LOG_TARGET,
+                status = status.as_u16(),
+                "begin_oauth: /begin returned 2xx"
+            );
             body
         }
-        Err(e) => return fail("BEGIN_FAILED", &e.to_string()),
+        Err(e) => {
+            // Source chain teases out the underlying transport error
+            // (DNS failure, connection refused, TLS handshake, etc.) —
+            // reqwest's top-level Display often just says "error sending
+            // request" without the actual cause.
+            let source = e.source().map(|s| s.to_string()).unwrap_or_default();
+            tracing::error!(
+                target: LOG_TARGET,
+                url = %begin_url,
+                error = %e,
+                source = %source,
+                "begin_oauth: /begin transport error"
+            );
+            return fail("BEGIN_FAILED", &e.to_string());
+        }
     };
 
     let authorize_url = begin
@@ -193,23 +252,39 @@ pub async fn begin_oauth(app: AppHandle) -> Value {
         .unwrap_or("")
         .to_string();
     if authorize_url.is_empty() || state.is_empty() {
+        tracing::warn!(
+            target: LOG_TARGET,
+            authorize_url_present = !authorize_url.is_empty(),
+            state_present = !state.is_empty(),
+            body_keys = ?begin.as_object().map(|o| o.keys().collect::<Vec<_>>()),
+            "begin_oauth: BAD_BEGIN (server returned 2xx but missing authorize_url/state)"
+        );
         return fail("BAD_BEGIN", "Server didn't return authorize_url/state.");
     }
+    tracing::info!(
+        target: LOG_TARGET,
+        state_len = state.len(),
+        "begin_oauth: authorize_url + state received, opening browser"
+    );
 
     // 2. Open browser (clipboard fallback). We surface the URL via a
     //    broadcast event so the dialog can show a copy-link toast.
     let open_ok = ::open::that(&authorize_url).is_ok();
     if !open_ok {
+        tracing::warn!(target: LOG_TARGET, "begin_oauth: browser launch failed, falling back to clipboard");
         let clip_ok = arboard::Clipboard::new()
             .and_then(|mut c| c.set_text(authorize_url.clone()))
             .is_ok();
         if !clip_ok {
+            tracing::error!(target: LOG_TARGET, "begin_oauth: clipboard fallback also failed");
             return fail(
                 "BROWSER_OPEN_FAILED",
                 "Couldn't launch a browser and couldn't copy the URL either.",
             );
         }
         broadcast_browser_fallback(&app, &authorize_url);
+    } else {
+        tracing::debug!(target: LOG_TARGET, "begin_oauth: browser launched");
     }
 
     // 3. Poll loop with per-attempt supersede.
@@ -217,6 +292,7 @@ pub async fn begin_oauth(app: AppHandle) -> Value {
     {
         let mut map = inflight().lock().unwrap();
         if let Some(prior) = map.insert(uid.clone(), attempt.clone()) {
+            tracing::info!(target: LOG_TARGET, "begin_oauth: superseding earlier in-flight attempt for this user");
             prior.abort();
         }
     }
@@ -227,12 +303,22 @@ pub async fn begin_oauth(app: AppHandle) -> Value {
         .timeout(poll_timeout)
         .build()
         .unwrap_or_default();
+    let poll_url_template = format!("{}/api/integrations/github/link/poll", issuer);
+    tracing::info!(
+        target: LOG_TARGET,
+        poll_url = %poll_url_template,
+        max_duration_s = max_duration.as_secs(),
+        "begin_oauth: entering poll loop"
+    );
 
+    let mut poll_n: u32 = 0;
     let result = loop {
         if attempt.is_aborted() {
+            tracing::info!(target: LOG_TARGET, polls = poll_n, "begin_oauth: aborted by supersede or caller");
             break fail("ABORTED", "Connect was cancelled.");
         }
         if started.elapsed() >= max_duration {
+            tracing::warn!(target: LOG_TARGET, polls = poll_n, "begin_oauth: TIMEOUT (5min cap exceeded)");
             break fail("TIMEOUT", "Authorization timed out. Try again.");
         }
 
@@ -240,20 +326,26 @@ pub async fn begin_oauth(app: AppHandle) -> Value {
         tokio::select! {
             _ = tokio::time::sleep(poll_interval) => {}
             _ = attempt.bell.notified() => {
+                tracing::info!(target: LOG_TARGET, polls = poll_n, "begin_oauth: aborted mid-sleep");
                 break fail("ABORTED", "Connect was cancelled.");
             }
         }
+
+        poll_n += 1;
 
         // Fresh bearer in case the access token rolled mid-flow.
         let fresh = auth::get_access_token(false)
             .await
             .and_then(|v| v.get("token").and_then(|t| t.as_str()).map(String::from));
-        let Some(fresh) = fresh else { continue };
+        let Some(fresh) = fresh else {
+            tracing::debug!(target: LOG_TARGET, poll = poll_n, "begin_oauth: poll skipped — no fresh bearer this tick");
+            continue;
+        };
 
         let r = client
             .get(format!(
-                "{}/api/integrations/github/link/poll?state={}",
-                api_base(),
+                "{}?state={}",
+                poll_url_template,
                 urlencoding_minimal(&state),
             ))
             .bearer_auth(&fresh)
@@ -261,39 +353,63 @@ pub async fn begin_oauth(app: AppHandle) -> Value {
             .await;
         let r = match r {
             Ok(r) => r,
-            Err(_) => continue,
+            Err(e) => {
+                tracing::debug!(target: LOG_TARGET, poll = poll_n, error = %e, "begin_oauth: poll transport error (will retry)");
+                continue;
+            }
         };
         let status = r.status().as_u16();
+        tracing::trace!(target: LOG_TARGET, poll = poll_n, status, "begin_oauth: poll response");
         if status == 202 {
             continue;
         }
         if status == 410 {
+            tracing::warn!(target: LOG_TARGET, poll = poll_n, "begin_oauth: poll returned 410 EXPIRED");
             break fail("EXPIRED", "Link request expired.");
         }
         if status == 403 {
+            tracing::warn!(target: LOG_TARGET, poll = poll_n, "begin_oauth: poll returned 403 FORBIDDEN (state/user mismatch)");
             break fail("FORBIDDEN", "State/user mismatch.");
         }
         if !(200..=299).contains(&status) {
+            tracing::debug!(target: LOG_TARGET, poll = poll_n, status, "begin_oauth: poll non-2xx, retrying");
             continue;
         }
         let body: Value = r.json().await.unwrap_or_else(|_| json!({}));
-        match body.get("status").and_then(|v| v.as_str()).unwrap_or("") {
+        let status_field = body.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        match status_field {
             "pending" => continue,
-            "expired" => break fail("EXPIRED", "Link request expired."),
+            "expired" => {
+                tracing::warn!(target: LOG_TARGET, poll = poll_n, "begin_oauth: body.status == expired");
+                break fail("EXPIRED", "Link request expired.");
+            }
             "complete" => {
                 let payload = match body.get("payload") {
                     Some(p) => p.clone(),
-                    None => continue,
+                    None => {
+                        tracing::debug!(target: LOG_TARGET, poll = poll_n, "begin_oauth: complete without payload, retrying");
+                        continue;
+                    }
                 };
                 let mut link = payload;
                 link["connected_at"] = Value::String(chrono::Utc::now().to_rfc3339());
                 if let Err(e) = write_link(&link).await {
+                    tracing::error!(target: LOG_TARGET, error = %e, "begin_oauth: KEYCHAIN write failed");
                     break fail("KEYCHAIN", &e.to_string());
                 }
                 broadcast_link_changed(&app, Some(&link));
+                tracing::info!(
+                    target: LOG_TARGET,
+                    polls = poll_n,
+                    elapsed_s = started.elapsed().as_secs(),
+                    "begin_oauth: completed successfully"
+                );
                 break json!({ "ok": true, "link": link });
             }
-            _ => continue,
+            other => {
+                tracing::debug!(target: LOG_TARGET, poll = poll_n, status = %other, "begin_oauth: unknown body.status, retrying");
+                continue;
+            }
         }
     };
 
@@ -307,6 +423,38 @@ pub async fn begin_oauth(app: AppHandle) -> Value {
         }
     }
     result
+}
+
+// ── cancelOAuth ──────────────────────────────────────────────────
+// Best-effort abort of the in-flight `begin_oauth` for the current
+// Fleetify user. The in-progress poll loop wakes via `Attempt::abort`
+// → it breaks out with `fail("ABORTED", ...)` on its next tick, the
+// awaiting renderer promise settles, and the Connect buttons re-enable.
+//
+// Idempotent: if no attempt is in flight (user already finished, browser
+// fallback timed out, second click), this is a no-op and still returns
+// ok. The renderer should always be safe to call this on cleanup paths
+// without checking whether an OAuth is actually running.
+pub async fn cancel_oauth() -> Value {
+    let Some(uid) = auth::get_user_id().await else {
+        // No signed-in user → no attempt could exist; treat as cancelled.
+        tracing::debug!(target: LOG_TARGET, "cancel_oauth: no user, no-op");
+        return json!({ "ok": true });
+    };
+    let attempt = {
+        let map = inflight().lock().unwrap();
+        map.get(&uid).cloned()
+    };
+    match attempt {
+        Some(a) => {
+            a.abort();
+            tracing::info!(target: LOG_TARGET, "cancel_oauth: aborted in-flight attempt");
+        }
+        None => {
+            tracing::debug!(target: LOG_TARGET, "cancel_oauth: no in-flight attempt for user");
+        }
+    }
+    json!({ "ok": true })
 }
 
 /// Refresh the GitHub access_token using the link's refresh_token.

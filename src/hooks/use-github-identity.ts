@@ -46,7 +46,19 @@ export interface UseGitHubIdentity {
   identity: GitHubIdentity;
   loading: boolean;
   ghCli: GhCliState;
-  beginOAuth: () => Promise<{ ok: boolean; error?: string }>;
+  /**
+   * Kick off the Fleetify-broker OAuth flow. Resolves when either the
+   * server reports the link as complete, the user gives up (TIMEOUT,
+   * 5min cap), or the renderer calls `cancelOAuth` (resolves with
+   * `code === "ABORTED"`). The latter is a normal cancellation — UI
+   * code should treat it as silent state-reset, not an error to surface.
+   */
+  beginOAuth: () => Promise<{ ok: boolean; code?: string; error?: string }>;
+  /**
+   * Best-effort abort of an in-flight `beginOAuth`. Idempotent: safe to
+   * call on cleanup paths even when no OAuth is running.
+   */
+  cancelOAuth: () => Promise<void>;
   beginCliAuth: () => Promise<{ ok: boolean; error?: string }>;
   cancelCliAuth: () => Promise<void>;
   disconnect: () => Promise<void>;
@@ -212,7 +224,13 @@ export function useGitHubIdentity(): UseGitHubIdentity {
       });
       return { ok: true };
     }
-    return { ok: false, error: r.error };
+    // Pass `code` through so callers can branch on ABORTED (user pressed
+    // Cancel) vs real errors (BEGIN_FAILED, TIMEOUT, NO_TOKEN, …).
+    return { ok: false, code: r.code, error: r.error };
+  }, []);
+
+  const cancelOAuth = useCallback(async () => {
+    try { await github.cancelOAuth(); } catch { /* best effort */ }
   }, []);
 
   const beginCliAuth = useCallback(async () => {
@@ -273,7 +291,7 @@ export function useGitHubIdentity(): UseGitHubIdentity {
   return {
     enabled, setEnabled,
     method, identity, loading, ghCli,
-    beginOAuth, beginCliAuth, cancelCliAuth,
+    beginOAuth, cancelOAuth, beginCliAuth, cancelCliAuth,
     disconnect, onCliAuthEvent, refresh,
   };
 }

@@ -17,6 +17,7 @@ function makeHook(over: Partial<ReturnType<Hook>> = {}): ReturnType<Hook> {
     loading: false,
     ghCli: { kind: "needs-auth" },
     beginOAuth: vi.fn(async () => ({ ok: true })),
+    cancelOAuth: vi.fn(async () => {}),
     beginCliAuth: vi.fn(async () => ({ ok: true })),
     cancelCliAuth: vi.fn(async () => {}),
     disconnect: vi.fn(async () => {}),

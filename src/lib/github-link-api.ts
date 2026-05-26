@@ -32,6 +32,7 @@ type BrowserFallbackListener = (payload: { url: string }) => void;
 interface GitHubAPI {
   getLink: () => Promise<{ ok: boolean; link: GitHubLinkPayload | null; error?: string }>;
   beginOAuth: () => Promise<LinkResult>;
+  cancelOAuth: () => Promise<{ ok: boolean }>;
   disconnect: () => Promise<{ ok: boolean; error?: string }>;
   refreshLink: () => Promise<LinkResult>;
   openInstallation: () => Promise<{ ok: boolean; error?: string }>;
@@ -46,6 +47,7 @@ function api(): GitHubAPI {
   return w.electronAPI?.github ?? {
     getLink:          async () => ({ ok: false, link: null, error: "electron unavailable" }),
     beginOAuth:       async () => ({ ok: false, code: "ELECTRON_UNAVAILABLE", error: "electron unavailable" }),
+    cancelOAuth:      async () => ({ ok: true }),
     disconnect:       async () => ({ ok: false, error: "electron unavailable" }),
     refreshLink:      async () => ({ ok: false, code: "ELECTRON_UNAVAILABLE", error: "electron unavailable" }),
     openInstallation: async () => ({ ok: false, error: "electron unavailable" }),
@@ -59,6 +61,7 @@ function api(): GitHubAPI {
 export const github = {
   getLink:            () => api().getLink(),
   beginOAuth:         () => api().beginOAuth(),
+  cancelOAuth:        () => api().cancelOAuth(),
   disconnect:         () => api().disconnect(),
   refreshLink:        () => api().refreshLink(),
   openInstallation:   () => api().openInstallation(),

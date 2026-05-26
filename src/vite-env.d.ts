@@ -312,6 +312,10 @@ interface Window {
         | { ok: true; link: GitHubLinkPayload }
         | { ok: false; code: string; error: string }
       >;
+      /** Best-effort abort of an in-flight `beginOAuth`. Idempotent —
+       *  the backend treats "no attempt in flight" as ok. Resolves the
+       *  awaiting beginOAuth promise with code === "ABORTED". */
+      cancelOAuth: () => Promise<{ ok: boolean }>;
       disconnect: () => Promise<{ ok: boolean; error?: string }>;
       refreshLink: () => Promise<
         | { ok: true; link: GitHubLinkPayload }

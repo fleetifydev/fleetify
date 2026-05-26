@@ -35,7 +35,10 @@ export function GitHubIntegrationTile() {
     setPending("oauth");
     const r = await gh.beginOAuth();
     setPending(null);
-    if (!r.ok) setError(r.error ?? "OAuth failed.");
+    // ABORTED is the renderer pressing Cancel — silent state-reset, not
+    // an error worth surfacing. Anything else (BEGIN_FAILED, TIMEOUT,
+    // NO_TOKEN, BAD_BEGIN, KEYCHAIN, …) still bubbles up.
+    if (!r.ok && r.code !== "ABORTED") setError(r.error ?? "OAuth failed.");
   };
 
   const pickCli = async () => {
@@ -75,7 +78,8 @@ export function GitHubIntegrationTile() {
   };
 
   const cancelPending = async () => {
-    if (pending === "cli") await gh.cancelCliAuth();
+    if (pending === "cli")   await gh.cancelCliAuth();
+    if (pending === "oauth") await gh.cancelOAuth();
     try { eventCleanupRef.current?.(); } catch { /* idempotent */ }
     eventCleanupRef.current = null;
     setPending(null);
@@ -96,12 +100,13 @@ export function GitHubIntegrationTile() {
     <div style={tileStyle}>
       <div style={headerRow}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
-          {gh.identity?.source === "oauth" && gh.identity.avatarUrl ? (
-            <img src={gh.identity.avatarUrl} alt="" width={28} height={28}
-              style={{ borderRadius: 999, flexShrink: 0 }} />
-          ) : (
-            <Github size={22} style={{ color: "var(--c-fg)", flexShrink: 0 }} />
-          )}
+          {/* Always render the GitHub mark — same visual whether the
+              user connected via OAuth (we have an avatarUrl) or the
+              gh CLI (we don't). Keeps the tile consistent with every
+              other integration row, which doesn't surface per-source
+              avatars. The login/source distinction already lives in
+              the text underneath ("via Fleetify OAuth" vs "via gh CLI"). */}
+          <Github size={22} style={{ color: "var(--c-fg)", flexShrink: 0 }} />
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ fontSize: 13.5, fontWeight: 500, color: "var(--c-high)" }}>
@@ -151,6 +156,36 @@ export function GitHubIntegrationTile() {
             badge={gh.ghCli.kind === "missing" ? "Not Installed" : undefined}
             variant="black"
           />
+        </div>
+      )}
+
+      {pending === "oauth" && (
+        <div style={deviceCodePanel}>
+          <div style={{
+            display: "flex", alignItems: "center", gap: 10,
+            justifyContent: "space-between",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
+              <Loader2 size={13} style={{
+                animation: "spin 1s linear infinite",
+                color: "var(--c-dim)", flexShrink: 0,
+              }} />
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, color: "var(--c-high)", lineHeight: 1.3 }}>
+                  Waiting for GitHub authorization…
+                </div>
+                <div style={{ fontSize: 11, color: "var(--c-dim)", marginTop: 2 }}>
+                  Complete the flow in your browser, or cancel to try again.
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={cancelPending}
+              style={{ ...miniBtn, flexShrink: 0 }}
+            >
+              Cancel
+            </button>
+          </div>
         </div>
       )}
 
