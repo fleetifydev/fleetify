@@ -77,15 +77,95 @@ pub async fn shell_open_external(url: String) -> serde_json::Value {
 
 #[tauri::command]
 pub async fn shell_show_item_in_folder(path: String) -> serde_json::Value {
-    // Open the parent dir in the system file browser (Finder/Explorer).
-    let p = std::path::Path::new(&path);
-    let target = p
-        .parent()
-        .map(|x| x.to_path_buf())
-        .unwrap_or_else(|| p.to_path_buf());
-    match ::open::that(&target) {
-        Ok(_) => serde_json::json!({ "ok": true }),
-        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+    // Reveal the item in the OS file manager with the file *selected* —
+    // matches Electron's `shell.showItemInFolder` semantics every caller
+    // here was written against. The previous implementation called
+    // `open::that(parent_dir)` which only opened the folder; the user
+    // then had to scroll/search to find the freshly-written file (and
+    // for the diagnostics zip in a tmp dir, that meant scanning hundreds
+    // of unrelated entries).
+    //
+    // Per-OS handlers:
+    //   * Windows: `explorer.exe /select,<path>` — Explorer pops with
+    //     the item highlighted. Path must be canonical; UNC + spaces
+    //     are handled by Command's automatic argv quoting (NOT a shell).
+    //   * macOS:   `open -R <path>` — Finder reveals the item.
+    //   * Linux:   `dbus-send` to `org.freedesktop.FileManager1.ShowItems`
+    //     which Nautilus/Nemo/Dolphin/Caja all implement. Falls back to
+    //     `xdg-open <parent>` (no selection) when the D-Bus service is
+    //     unavailable — better than failing entirely on a minimal WM.
+    let p = std::path::PathBuf::from(&path);
+    if !p.exists() {
+        return serde_json::json!({
+            "ok": false,
+            "error": format!("path does not exist: {}", p.display())
+        });
+    }
+    let result = reveal_in_file_manager(&p);
+    match result {
+        Ok(()) => serde_json::json!({ "ok": true }),
+        Err(e) => serde_json::json!({ "ok": false, "error": e }),
+    }
+}
+
+fn reveal_in_file_manager(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        // explorer.exe returns a non-zero exit code (1) even on a
+        // successful /select,<path> reveal — quirky but documented.
+        // Treat spawn success as the success signal; ignore status.
+        let arg = format!("/select,{}", path.display());
+        std::process::Command::new("explorer.exe")
+            .arg(arg)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("explorer /select: {e}"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("open -R: {e}"))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // FileManager1 is the freedesktop standard; every mainstream
+        // Linux file manager (Nautilus / Nemo / Dolphin / Caja / Thunar
+        // ≥4.18) registers it. The `array:string` payload is a list of
+        // file URIs to select within their parent dirs.
+        let uri = format!("file://{}", path.display());
+        let dbus = std::process::Command::new("dbus-send")
+            .args([
+                "--session",
+                "--print-reply",
+                "--dest=org.freedesktop.FileManager1",
+                "/org/freedesktop/FileManager1",
+                "org.freedesktop.FileManager1.ShowItems",
+                &format!("array:string:{uri}"),
+                "string:",
+            ])
+            .status();
+        match dbus {
+            Ok(s) if s.success() => Ok(()),
+            _ => {
+                // Fall back to opening the parent dir — better than
+                // erroring out on a box without a FileManager1
+                // implementation (sway+thunar<4.18, headless CI, etc.).
+                let parent = path.parent().unwrap_or(path);
+                ::open::that(parent)
+                    .map(|_| ())
+                    .map_err(|e| format!("dbus-send unavailable and xdg-open fallback failed: {e}"))
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        ::open::that(path.parent().unwrap_or(path))
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -1286,17 +1366,15 @@ pub async fn shell_install_ollama() -> serde_json::Value {
 /// Antigravity SDK tile before offering Setup.
 #[tauri::command]
 pub async fn shell_check_python_runtime() -> serde_json::Value {
-    // Match the bridge + shell_install_provider resolution chain so the
-    // renderer sees the same Python those flows will use.
-    let python: Option<String> = match std::env::var("FLEETIFY_EMBEDDED_PYTHON") {
-        Ok(p) if std::path::Path::new(&p).exists() => Some(p),
-        _ => ["python3", "python", "py"]
-            .iter()
-            .find_map(|name| which::which(name).ok().map(|p| p.display().to_string())),
-    };
-    let Some(py) = python else {
+    // Share the locator with `bridges::antigravity_sdk::resolve_python`
+    // so the renderer's probe and the bridge's spawn agree on the same
+    // interpreter — across PATH lookup, Windows Store reparse-shim
+    // filtering, and platform-specific install-prefix fallbacks
+    // (Homebrew, pyenv, %LOCALAPPDATA%\Programs\Python, etc.).
+    let Some(py_path) = fleetify_backend::services::python_runtime::locate_python() else {
         return serde_json::json!({ "installed": false, "version": null, "path": null });
     };
+    let py = py_path.display().to_string();
     // 3s timeout — `--version` is instant on every healthy Python; a
     // hang here usually means Windows Store python launcher, which we
     // treat as not-installed for our purposes (it never resolves a
@@ -1404,6 +1482,8 @@ pub fn app_log(
 
 #[tauri::command]
 pub async fn logs_export(app: tauri::AppHandle) -> serde_json::Value {
+    use tauri_plugin_dialog::DialogExt;
+
     let Some(log_dir) = logging::logs_dir() else {
         return serde_json::json!({
             "ok": false,
@@ -1411,11 +1491,54 @@ pub async fn logs_export(app: tauri::AppHandle) -> serde_json::Value {
         });
     };
 
+    // Default the dialog to ~/Downloads with a stamped filename. The user
+    // can navigate elsewhere — the dialog also remembers their last
+    // location for next time. Falls back to no preset dir if neither
+    // USERPROFILE nor HOME resolves a Downloads folder (uncommon — Tauri
+    // dialog still opens at the OS default in that case).
     let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
-    let out_path = std::env::temp_dir().join(format!("fleetify-diagnostics-{stamp}.zip"));
+    let suggested_name = format!("fleetify-diagnostics-{stamp}.zip");
+    let default_dir = default_downloads_dir();
+
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<tauri_plugin_dialog::FilePath>>();
+    {
+        let mut builder = app
+            .dialog()
+            .file()
+            .set_title("Save diagnostics bundle")
+            .set_file_name(&suggested_name)
+            .add_filter("Zip archive", &["zip"]);
+        if let Some(dir) = default_dir.as_ref() {
+            builder = builder.set_directory(dir);
+        }
+        builder.save_file(move |fp| {
+            let _ = tx.send(fp);
+        });
+    }
+
+    let chosen: PathBuf = match rx.await {
+        Ok(Some(fp)) => match fp.into_path() {
+            Ok(p) => p,
+            Err(e) => {
+                return serde_json::json!({
+                    "ok": false,
+                    "error": format!("invalid save target: {e}")
+                })
+            }
+        },
+        // Two cancel paths: the user closed the dialog (`Ok(None)`) or
+        // the channel dropped before a callback fired (shouldn't happen,
+        // but treat it the same — no error toast for either).
+        _ => {
+            return serde_json::json!({
+                "ok": false,
+                "cancelled": true,
+            })
+        }
+    };
 
     let log_dir_owned = log_dir.to_path_buf();
-    let out_path_clone = out_path.clone();
+    let out_path_clone = chosen.clone();
     let version = app
         .config()
         .version
@@ -1433,12 +1556,20 @@ pub async fn logs_export(app: tauri::AppHandle) -> serde_json::Value {
     match result {
         Ok(Ok(bytes)) => serde_json::json!({
             "ok": true,
-            "path": out_path.to_string_lossy(),
+            "path": chosen.to_string_lossy(),
             "bytes": bytes,
         }),
         Ok(Err(e)) => serde_json::json!({ "ok": false, "error": e }),
         Err(e) => serde_json::json!({ "ok": false, "error": format!("join: {e}") }),
     }
+}
+
+fn default_downloads_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)?;
+    let downloads = home.join("Downloads");
+    downloads.is_dir().then_some(downloads)
 }
 
 /// `window.fleetify.sendFeedback({ comment, email?, attachments? })`.

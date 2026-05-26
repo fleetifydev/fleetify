@@ -224,12 +224,15 @@ interface Window {
       message: string,
       fields?: Record<string, unknown> | null,
     ) => Promise<{ ok: boolean }>;
-    /** Bundle the on-disk log files + system info into a single zip
-     *  under the OS temp dir. Renderer reads `path` and either opens
-     *  a Save dialog or reveals it in the file manager. */
+    /** Bundle the on-disk log files + system info into a single zip.
+     *  Opens a Save As dialog (default location ~/Downloads with a
+     *  timestamped suggested filename); the renderer reveals the result
+     *  with selection via `showItemInFolder`. Returns `cancelled: true`
+     *  when the user closes the dialog so the UI can stay quiet rather
+     *  than flashing an error toast. */
     logsExport: () => Promise<
       | { ok: true; path: string; bytes: number }
-      | { ok: false; error: string }
+      | { ok: false; cancelled?: boolean; error?: string }
     >;
     /** Reveal the log directory in Explorer / Finder / xdg-open. */
     logsOpenFolder: () => Promise<

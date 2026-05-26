@@ -296,11 +296,16 @@ function DiagnosticsSection() {
     try {
       const r = await window.electronAPI?.logsExport?.();
       if (!r) { setError("Logging IPC unavailable."); return; }
-      if (!r.ok) { setError(r.error || "Export failed."); return; }
+      if (!r.ok) {
+        // The save dialog closed without a pick — keep the UI quiet so
+        // a user who hits Escape doesn't see a red "Export failed" toast.
+        if (r.cancelled) return;
+        setError(r.error || "Export failed.");
+        return;
+      }
       const mb = (r.bytes / (1024 * 1024)).toFixed(2);
-      setStatus(`Saved diagnostics bundle (${mb} MB)`);
-      // Reveal the zip in OS file manager so the user can grab it
-      // without having to memorise the temp dir path.
+      setStatus(`Saved diagnostics bundle (${mb} MB) — ${r.path}`);
+      // Reveal the zip in OS file manager with the file selected.
       try { await window.electronAPI?.showItemInFolder?.(r.path); } catch { /* best effort */ }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Export failed.");
@@ -358,7 +363,7 @@ function DiagnosticsSection() {
         <DiagButton
           icon={exporting ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <FileText size={14} />}
           label={exporting ? "Bundling…" : "Export logs"}
-          hint="Save a .zip of recent logs + system info"
+          hint="Pick a location and save a .zip of recent logs + system info"
           onClick={onExport}
           disabled={exporting}
         />

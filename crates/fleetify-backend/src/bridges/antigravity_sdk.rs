@@ -139,26 +139,12 @@ impl AntigravitySdkBridge {
     }
 
     /// Resolve the Python interpreter we'll spawn the sidecar with.
-    /// Phase 1: system Python only. `FLEETIFY_EMBEDDED_PYTHON` is a
-    /// manual override (power users, CI runners, and the slot a future
-    /// lazy-fetch toggle would write to); after that, PATH is the only
-    /// source of truth.
+    /// Delegates to `services::python_runtime::locate_python` so the SDK
+    /// spawn and the Settings/onboarding probe (`shell_check_python_runtime`)
+    /// agree on the same interpreter — otherwise the user could see
+    /// "Python detected" in the UI but the bridge still fails to spawn.
     fn resolve_python() -> Option<PathBuf> {
-        if let Ok(p) = std::env::var("FLEETIFY_EMBEDDED_PYTHON") {
-            let pb = PathBuf::from(&p);
-            if pb.exists() {
-                return Some(pb);
-            }
-        }
-        // tokio Command resolves PATH itself, but we want to also
-        // verify the binary *exists* before spawning so we can give
-        // the user a cleaner error than tokio's generic IoError.
-        for name in ["python3", "python"] {
-            if let Ok(p) = which::which(name) {
-                return Some(p);
-            }
-        }
-        None
+        crate::services::python_runtime::locate_python()
     }
 
     /// Path to the JSON-stream sidecar script. Mirrors how the MCP
