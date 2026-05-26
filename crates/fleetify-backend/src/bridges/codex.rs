@@ -233,6 +233,7 @@ impl CodexBridge {
                 "Codex CLI not found ({e}). Install: `npm install -g @openai/codex` or see https://developers.openai.com/codex/cli"
             )
         })?;
+        tracing::info!(target: "codex", session_id = %self.session_id, pid = ?proc.id(), "codex: subprocess spawned");
 
         let stdin = proc
             .stdin
@@ -292,6 +293,7 @@ impl CodexBridge {
             .await;
 
         // V2 handshake: initialize → initialized notification → thread/start.
+        tracing::info!(target: "codex", session_id = %self.session_id, "codex: initialize START");
         tokio::time::timeout(
             std::time::Duration::from_secs(INIT_TIMEOUT_SECS),
             client.initialize("fleet", "0.1.0", Some("Fleet"), None),
@@ -302,7 +304,9 @@ impl CodexBridge {
                 "Codex initialize timed out after {INIT_TIMEOUT_SECS}s. Try again, or run `codex app-server --listen stdio://` manually to debug."
             )
         })??;
+        tracing::info!(target: "codex", session_id = %self.session_id, "codex: initialize OK");
         client.send_initialized().await?;
+        tracing::info!(target: "codex", session_id = %self.session_id, "codex: initialized notification sent, thread/start START");
 
         let thread_id = tokio::time::timeout(
             std::time::Duration::from_secs(INIT_TIMEOUT_SECS),
@@ -310,6 +314,7 @@ impl CodexBridge {
         )
         .await
         .map_err(|_| anyhow!("Codex thread/start timed out after {INIT_TIMEOUT_SECS}s."))??;
+        tracing::info!(target: "codex", session_id = %self.session_id, thread_id = %thread_id, "codex: thread/start OK — bridge READY");
 
         let model_label = self
             .model_name
@@ -492,13 +497,16 @@ impl CodexBridge {
             let turn_done = Arc::new(tokio::sync::Notify::new());
             let turn_done_completed = turn_done.clone();
             let acc_completed = usage_acc.clone();
+            let sid_for_complete_log = session_id.clone();
             client
                 .on_notification(
                     "turn/completed",
                     Arc::new(move |params: Value| {
                         let notify = turn_done_completed.clone();
                         let acc = acc_completed.clone();
+                        let sid_log = sid_for_complete_log.clone();
                         Box::pin(async move {
+                            tracing::info!(target: "codex", session_id = %sid_log, "codex: turn/completed received");
                             accumulate_usage(&acc, &params).await;
                             notify.notify_one();
                         })
@@ -574,14 +582,27 @@ impl CodexBridge {
                 .await;
 
             // Send the prompt as a single text input item.
+            tracing::info!(target: "codex", session_id = %session_id, "codex: turn/start START");
             let input_items = json!([{ "type": "text", "text": msg_owned }]);
             let turn_res = client.turn_start(&thread_id, input_items, None).await;
+            tracing::info!(target: "codex", session_id = %session_id, turn_start_ok = turn_res.is_ok(), "codex: turn/start returned — waiting for turn/completed");
 
-            // Wait for turn/completed, abort, or a generous ceiling.
+            // Wait for turn/completed, abort, or a 90s ceiling. The old
+            // 5-minute ceiling left back-to-back sends frozen for the
+            // entire ceiling when Codex's app-server hung mid-turn,
+            // since the queued send couldn't drain until the in-flight
+            // turn's run_send_flow returned. 90s is generous for the
+            // model's actual response time but short enough that a
+            // truly hung app-server doesn't lock the session out for
+            // five whole minutes.
             tokio::select! {
                 _ = turn_done.notified() => {}
-                _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {
-                    tracing::warn!(target: "codex", "turn/completed never fired within 300s — emitting Status:done anyway");
+                _ = tokio::time::sleep(std::time::Duration::from_secs(90)) => {
+                    tracing::warn!(
+                        target: "codex",
+                        session_id = %session_id,
+                        "codex: turn/completed never fired within 90s — emitting Status:done so the session unlocks"
+                    );
                 }
                 _ = wait_aborted(aborted.clone()) => {}
             }

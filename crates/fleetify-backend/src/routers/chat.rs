@@ -4,7 +4,7 @@
 //! interactive permission, system-prompt assembly, non-Claude bridges and
 //! app-owned /compact are Phase 2/3 (explicit deferral, not silent).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -96,6 +96,15 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
     let mut subscribed: HashSet<String> = HashSet::new();
     let bridges: Arc<Mutex<HashMap<String, AnyBridge>>> = Arc::new(Mutex::new(HashMap::new()));
     let streaming: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+    // Per-session FIFO of "send" payloads that arrived while the
+    // session's `run_send_flow` was still in flight. The spawned task
+    // drains this queue before releasing the session's `streaming`
+    // slot, so a fast burst of user sends processes in order instead
+    // of bouncing off the streaming guard with an `already_running`
+    // error frame. Empty entries are pruned on drain to keep the
+    // map from leaking entries for long-lived sessions.
+    let pending_sends: Arc<Mutex<HashMap<String, VecDeque<String>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     // Per-session permission round-trips. The bridges Codex/Gemini
     // route their CLI/protocol approval hooks through a closure built
     // off this PermissionSession; the `permission_response` WS arm
@@ -352,8 +361,37 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
                     continue;
                 }
                 if streaming.lock().await.contains(&sid) {
-                    continue; // already streaming this session
+                    // Already streaming — queue the send and let the
+                    // in-flight task drain it once the current
+                    // run_send_flow returns. (Detailed flow notes
+                    // are below at the loop site.)
+                    let qlen = {
+                        let mut guard = pending_sends.lock().await;
+                        let q = guard.entry(sid.clone()).or_default();
+                        q.push_back(user_text);
+                        q.len()
+                    };
+                    tracing::info!(
+                        target: "fleet-backend",
+                        session_id = %sid,
+                        queue_len = qlen,
+                        "send: queued (session still streaming)"
+                    );
+                    send_json(
+                        &sink,
+                        json!({
+                            "type": "queued",
+                            "session_id": sid,
+                        }),
+                    )
+                    .await;
+                    continue;
                 }
+                tracing::info!(
+                    target: "fleet-backend",
+                    session_id = %sid,
+                    "send: starting new spawn (streaming set was empty)"
+                );
                 let Some(session) = owned_session(&st, &sid, &user_id).await else {
                     continue;
                 };
@@ -379,16 +417,91 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
                 let bridges2 = bridges.clone();
                 let streaming2 = streaming.clone();
                 let perm_session2 = perm_session.clone();
+                let pending2 = pending_sends.clone();
+                let user_id2 = user_id.clone();
                 tokio::spawn(async move {
-                    run_send_flow(
-                        st2,
-                        sink2,
-                        bridges2.clone(),
-                        session,
-                        user_text,
-                        perm_session2,
-                    )
-                    .await;
+                    // Run the first turn, then drain queued sends in
+                    // order. `streaming` stays in the set the whole
+                    // time so a third concurrent "send" still hits the
+                    // queue branch. We re-fetch the session row each
+                    // iteration in case a mid-stream PATCH bumped
+                    // tool/model/permission_mode.
+                    let mut current_session = session;
+                    let mut current_text = user_text;
+                    let mut turn = 0u32;
+                    loop {
+                        turn += 1;
+                        tracing::info!(
+                            target: "fleet-backend",
+                            session_id = %sid,
+                            turn = turn,
+                            tool = %current_session.tool,
+                            model = ?current_session.model_name,
+                            "queue: run_send_flow START"
+                        );
+                        run_send_flow(
+                            st2.clone(),
+                            sink2.clone(),
+                            bridges2.clone(),
+                            current_session,
+                            current_text,
+                            perm_session2.clone(),
+                        )
+                        .await;
+                        tracing::info!(
+                            target: "fleet-backend",
+                            session_id = %sid,
+                            turn = turn,
+                            "queue: run_send_flow END (returned)"
+                        );
+                        let next = {
+                            let mut guard = pending2.lock().await;
+                            let popped = guard
+                                .get_mut(&sid)
+                                .and_then(|q| q.pop_front());
+                            // Prune empty entries so the map doesn't
+                            // accumulate per-session shells.
+                            if let Some(q) = guard.get(&sid) {
+                                if q.is_empty() {
+                                    guard.remove(&sid);
+                                }
+                            }
+                            popped
+                        };
+                        match next {
+                            Some(next_text) => {
+                                tracing::info!(
+                                    target: "fleet-backend",
+                                    session_id = %sid,
+                                    next_turn = turn + 1,
+                                    "queue: popped queued send — re-fetching session"
+                                );
+                                match owned_session(&st2, &sid, &user_id2).await {
+                                    Some(s) => {
+                                        current_session = s;
+                                        current_text = next_text;
+                                    }
+                                    None => {
+                                        tracing::warn!(
+                                            target: "fleet-backend",
+                                            session_id = %sid,
+                                            "queue: owned_session returned None — aborting drain"
+                                        );
+                                        break;
+                                    }
+                                }
+                            }
+                            None => {
+                                tracing::info!(
+                                    target: "fleet-backend",
+                                    session_id = %sid,
+                                    total_turns = turn,
+                                    "queue: empty — releasing streaming slot"
+                                );
+                                break;
+                            }
+                        }
+                    }
                     streaming2.lock().await.remove(&sid);
                     bridges2.lock().await.remove(&sid);
                 });
@@ -1140,6 +1253,19 @@ async fn run_send_flow(
                     model_name = Some(model.clone());
                 }
             }
+            // Bridges that keep a persistent daemon alive across turns
+            // (Codex app-server, Antigravity SDK) never naturally close
+            // their `rx` channel — the JSON-RPC client holds notification
+            // handler closures that each retain a `tx.clone()`, and those
+            // handlers stay registered until the daemon shuts down (i.e.
+            // until the bridge instance drops, which can't happen until
+            // run_send_flow returns, which is itself waiting on `rx`).
+            // Without this explicit `break`, the loop hangs forever and
+            // the per-session queue can't drain — back-to-back sends
+            // accumulate but never get processed. Status:done is always
+            // the bridge's final event in the per-turn protocol, so
+            // breaking on it is safe across every bridge.
+            BridgeEvent::Status { status } if status == "done" => break,
             _ => {}
         }
 
