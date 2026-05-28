@@ -81,28 +81,38 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
     rightPanelOpen, toggleRightPanel, _removedIds, pruneRemovedIds, mainView,
   } = useAppStore();
 
-  // ── Cinematic reveal: sidebar slides in after chat content appears ──
-  const [overlayVisible, setOverlayVisible] = useState(introReveal);
-  const [sidebarIn, setSidebarIn] = useState(!introReveal);
-  const [revealDone, setRevealDone] = useState(!introReveal);
-
+  // ── Reveal once data is ready ──
+  // The first-entry overlay (it masks the hard cut from the onboarding
+  // screen) used to lift on fixed timers — overlay 200ms → sidebar
+  // 820ms → done 1900ms — which made the hub feel like it was "waiting"
+  // before it was usable. Instead we lift it the moment the sessions
+  // query settles, so the full hub appears as soon as its data is
+  // loaded, with no artificial delay. `revealSafety` is a pure backstop:
+  // if the backend is unusually slow (or the fetch never yields data),
+  // reveal anyway after a few seconds so the overlay can't strand the
+  // user on a blank screen.
+  const { data: sessionsData, isError: sessionsError } = useQuery({
+    queryKey: ["sessions"],
+    queryFn: fetchSessions,
+    refetchInterval: () =>
+      (typeof document !== "undefined" && document.visibilityState === "visible") ? 5000 : false,
+    refetchIntervalInBackground: false,
+  });
+  const [revealSafety, setRevealSafety] = useState(false);
   useEffect(() => {
     if (!introReveal) return;
-    // Step 1: fade out overlay → chat content appears (200ms)
-    const t1 = setTimeout(() => setOverlayVisible(false), 200);
-    // Step 2: slide sidebar in (820ms — after content is visible)
-    const t2 = setTimeout(() => setSidebarIn(true), 820);
-    // Step 3: mark reveal done after sidebar animation finishes (~1800ms)
-    const t3 = setTimeout(() => setRevealDone(true), 1900);
-    return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
+    const t = setTimeout(() => setRevealSafety(true), 4000);
+    return () => clearTimeout(t);
   }, [introReveal]);
+  const dataReady = sessionsData !== undefined || sessionsError || revealSafety;
+  // Gates the first-launch tour — fire it once the hub is actually on screen.
+  const revealDone = !introReveal || dataReady;
 
   // Legacy modal flag — kept for the rare path that still opens it
   // explicitly (advanced "/new" command, plugin templates). The
   // sidebar + button and ⌘N now jump straight to a draft session.
   const [showNewAgent, setShowNewAgent] = useState(false);
   const beginDraft = useAppStore(s => s.beginDraft);
-  const createWelcomeSession = useAppStore(s => s.createWelcomeSession);
 
   useEffect(() => {
     const handler = () => { void beginDraft(); };
@@ -110,14 +120,13 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
     return () => window.removeEventListener("fleet:new-agent", handler);
   }, [beginDraft]);
 
-  // ── First-launch experience ──
-  // Order matters here, per the user's spec ("önce welcome mesajı,
-  // sonra platform turu"): we create the welcome chat FIRST, let the
-  // assistant's intro type itself out so the user has something
-  // tangible to read, and ONLY THEN launch the spotlight tour. Tour
-  // and welcome message can't start at the same time — that left the
-  // user staring at an empty hub with a floating dialog and no
-  // context for what they were looking at.
+  // ── First-launch tour ──
+  // The typed "Welcome to Fleet…" message and its "wait for the greeting
+  // to finish typing, THEN start the tour" sequencing are gone — the user
+  // lands directly in a usable Fleet hub with no animated intro text. The
+  // guided tour still fires once per machine, right after the hub is
+  // revealed (revealDone — i.e. once sessions have loaded), gated on the
+  // same tour-done flag the tour itself sets on finish/skip.
   const [tourActive, setTourActive] = useState(false);
   const tourBootstrapped = useRef(false);
   useEffect(() => {
@@ -131,30 +140,13 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
     if (done) return;
     tourBootstrapped.current = true;
 
-    let userName: string | null = null;
-    try {
-      const raw = localStorage.getItem("fleet:user");
-      if (raw) userName = (JSON.parse(raw) as { name?: string }).name ?? null;
-    } catch { /* ignore */ }
-
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    (async () => {
-      const result = await createWelcomeSession(userName);
-      if (cancelled) return;
-      // Wait for the typed-out greeting to land + a beat to read it.
-      // If the API call failed (no backend, auth blip), fall back to
-      // a fixed 1.5s delay so the tour still fires — better to teach
-      // the user the UI than to leave them in limbo.
-      const waitMs = result ? result.durationMs + 1400 : 1500;
-      timer = setTimeout(() => { if (!cancelled) setTourActive(true); }, waitMs);
-    })();
-
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [revealDone, createWelcomeSession]);
+    // A short beat after the reveal so the sidebar / chat-input the tour
+    // spotlights have laid out before the first step measures them. The
+    // tour also polls for its own targets, so this only needs to clear
+    // the reveal's opacity fade.
+    const timer = setTimeout(() => setTourActive(true), 450);
+    return () => clearTimeout(timer);
+  }, [revealDone]);
 
   // ── Visibility-driven reconnect ──
   // When the user re-focuses Fleet (Electron window blur → focus,
@@ -200,14 +192,6 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
     // on the next macro task so any UI subscribers mount first.
     void import("@/services/routines-runtime").then(m => m.init());
   }, []);
-
-  const { data: sessionsData } = useQuery({
-    queryKey: ["sessions"],
-    queryFn: fetchSessions,
-    refetchInterval: () =>
-      (typeof document !== "undefined" && document.visibilityState === "visible") ? 5000 : false,
-    refetchIntervalInBackground: false,
-  });
 
   useEffect(() => {
     // The backend can briefly return non-array payloads during a 5xx — guard
@@ -331,14 +315,15 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
   // out as wide as their monitor allows.
   const onRightDrag = useDrag(useCallback((dx: number) => {
     setRightWidth(w => {
-      const sidebar = sidebarIn && !sidebarCollapsed ? leftWidth : 0;
+      const sidebar = !sidebarCollapsed ? leftWidth : 0;
       const max = Math.max(RIGHT_MIN, window.innerWidth - sidebar - CHAT_MIN - 24 /* gutters */);
       return Math.min(max, Math.max(RIGHT_MIN, w - dx));
     });
-  }, [leftWidth, sidebarIn, sidebarCollapsed]), setRightDragging);
+  }, [leftWidth, sidebarCollapsed]), setRightDragging);
 
-  // Effective sidebar width — 0 when collapsed or during reveal
-  const sidebarWidth = sidebarIn && !sidebarCollapsed ? leftWidth : 0;
+  // Effective sidebar width — 0 only when collapsed. The hub (sidebar +
+  // content) is revealed together once the data is ready; no slide-in.
+  const sidebarWidth = !sidebarCollapsed ? leftWidth : 0;
 
   return (
     <div style={{
@@ -378,22 +363,24 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
         transition: "padding 0.2s ease",
       }}>
 
-      {/* ── Reveal overlay: covers the hard-cut from SetupScreen ── */}
+      {/* ── Reveal overlay: masks the hard-cut from SetupScreen until
+          the sessions data is ready, then fades to unveil the hub. ── */}
       {introReveal && (
         <div style={{
           position: "fixed", inset: 0, zIndex: 9000,
           background: "var(--background)",
-          opacity: overlayVisible ? 1 : 0,
+          opacity: dataReady ? 0 : 1,
           transition: "opacity 0.55s ease",
           pointerEvents: "none",
         }} />
       )}
 
-      {/* Left sidebar — fully inset card on all four sides, slides in
-          during intro reveal. Top + bottom margins replicate what the
-          outer shell padding used to provide, since that padding is
-          now zero (so the chat can flush against the window edge and
-          align with the macOS traffic lights). */}
+      {/* Left sidebar — fully inset card on all four sides. Top + bottom
+          margins replicate what the outer shell padding used to provide,
+          since that padding is now zero (so the chat can flush against
+          the window edge and align with the macOS traffic lights). It is
+          unveiled together with the content when the reveal overlay
+          lifts — no separate slide-in. */}
       <div style={{
         width: sidebarWidth,
         flexShrink: 0,
@@ -403,11 +390,7 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
         border: sidebarCollapsed ? "none" : "1px solid var(--c-brd)",
         marginTop: sidebarCollapsed ? 0 : 8,
         marginBottom: sidebarCollapsed ? 0 : 8,
-        transition: leftDragging
-          ? "none"
-          : !revealDone && sidebarIn
-            ? "width 0.9s cubic-bezier(0.22, 1, 0.36, 1)"
-            : "width 0.2s ease",
+        transition: leftDragging ? "none" : "width 0.2s ease",
         position: "relative",
       }}>
         {!sidebarCollapsed && <Sidebar />}
@@ -431,7 +414,7 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
         flex: 1, overflow: "hidden",
         display: "flex", flexDirection: "column",
         background: "var(--card)",
-        opacity: introReveal && overlayVisible ? 0 : 1,
+        opacity: introReveal && !dataReady ? 0 : 1,
         transition: introReveal ? "opacity 0.5s ease 0.15s" : "none",
       }}>
         {mainView === "marketplace" ? (
