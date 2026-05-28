@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { Search, Github } from "lucide-react";
 import { listReposResolved, type GhRepo } from "@/lib/api";
+import { normalizeCloneUrl } from "@/lib/git-url";
 
 /* ─── GitSourceTab — the "Git" source picker tab ───────────────────────
    Two independent capabilities:
@@ -57,7 +58,7 @@ export function GitSourceTab({
     window.dispatchEvent(new CustomEvent("fleet:open-settings", { detail: { tab: "Integrations" } }));
 
   const submitUrl = () => {
-    const u = url.trim();
+    const u = normalizeCloneUrl(url);
     if (!u || cloning) return;
     onClone(u);
   };
@@ -70,11 +71,11 @@ export function GitSourceTab({
   return (
     <div style={{ display: "flex", flexDirection: "column" }}>
       {/* ── Clone by URL — TOP, always available ── */}
-      <div style={{ padding: "9px 10px", borderBottom: "1px solid var(--c-brd)", display: "flex", flexDirection: "column", gap: 6 }}>
-        <div style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: 0.6, textTransform: "uppercase", color: "var(--c-dim)" }}>
+      <div style={{ padding: "9px 10px", borderBottom: "1px solid var(--c-brd)", display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 6 }}>
+        <div style={{ alignSelf: "flex-start", textAlign: "left", fontSize: 9.5, fontWeight: 600, letterSpacing: 0.6, textTransform: "uppercase", color: "var(--c-dim)" }}>
           Clone from URL
         </div>
-        <div style={{ display: "flex", alignItems: "stretch", background: "var(--c-srf2)", border: "1px solid var(--c-brd)", borderRadius: 6, overflow: "hidden" }}>
+        <div style={{ alignSelf: "stretch", display: "flex", alignItems: "stretch", background: "var(--c-srf2)", border: "1px solid var(--c-brd)", borderRadius: 6, overflow: "hidden" }}>
           <span style={{ display: "inline-flex", alignItems: "center", paddingLeft: 9, paddingRight: 7, color: "var(--c-dim)", flexShrink: 0 }}>
             <Github size={11} />
           </span>
@@ -82,7 +83,7 @@ export function GitSourceTab({
             value={url}
             onChange={e => setUrl(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); submitUrl(); } }}
-            placeholder="github.com/owner/repo"
+            placeholder="owner/repo or https://github.com/owner/repo"
             disabled={cloning}
             spellCheck={false}
             style={{ flex: 1, minWidth: 0, padding: "6px 0", background: "transparent", border: "none", color: "var(--c-fg)", fontFamily: "var(--font-mono)", fontSize: 11, outline: "none", opacity: cloning ? 0.6 : 1 }}
@@ -96,7 +97,7 @@ export function GitSourceTab({
           </button>
         </div>
         {cloneError && (
-          <span style={{ fontSize: 10.5, color: "#ef4444", fontFamily: "var(--font-mono)", wordBreak: "break-word" }}>{cloneError}</span>
+          <span style={{ alignSelf: "stretch", fontSize: 10.5, color: "#ef4444", fontFamily: "var(--font-mono)", wordBreak: "break-word" }}>{cloneError}</span>
         )}
       </div>
 

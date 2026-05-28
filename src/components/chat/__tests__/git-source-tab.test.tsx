@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 
 const { listReposResolvedMock } = vi.hoisted(() => ({
   listReposResolvedMock: vi.fn(),
@@ -38,5 +38,25 @@ describe("GitSourceTab", () => {
     render(<GitSourceTab onPick={() => {}} cloning={false} onClone={() => {}} />);
     await waitFor(() => expect(screen.getByText("me/app")).toBeInTheDocument());
     expect(screen.getByPlaceholderText(/Filter repositories/i)).toBeInTheDocument();
+  });
+
+  it("expands owner/repo shorthand to a full github URL before invoking onClone", async () => {
+    listReposResolvedMock.mockResolvedValue({ connected: false });
+    const onClone = vi.fn();
+    render(<GitSourceTab onPick={() => {}} cloning={false} onClone={onClone} />);
+    const input = await screen.findByPlaceholderText(/owner\/repo/i);
+    fireEvent.change(input, { target: { value: "agentscope-ai/QwenPaw" } });
+    fireEvent.click(screen.getByRole("button", { name: /Clone/i }));
+    expect(onClone).toHaveBeenCalledWith("https://github.com/agentscope-ai/QwenPaw");
+  });
+
+  it("passes a full https github URL through unchanged on submit", async () => {
+    listReposResolvedMock.mockResolvedValue({ connected: false });
+    const onClone = vi.fn();
+    render(<GitSourceTab onPick={() => {}} cloning={false} onClone={onClone} />);
+    const input = await screen.findByPlaceholderText(/owner\/repo/i);
+    fireEvent.change(input, { target: { value: "https://github.com/agentscope-ai/QwenPaw.git" } });
+    fireEvent.click(screen.getByRole("button", { name: /Clone/i }));
+    expect(onClone).toHaveBeenCalledWith("https://github.com/agentscope-ai/QwenPaw.git");
   });
 });
