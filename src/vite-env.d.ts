@@ -12,6 +12,15 @@ interface FileContent {
   error?: string;
 }
 
+interface GitHubRepoEntry {
+  nameWithOwner: string;
+  description: string | null;
+  url: string;
+  sshUrl: string;
+  isPrivate: boolean;
+  updatedAt: string;
+}
+
 interface GitHubLinkPayload {
   access_token: string;
   refresh_token: string;
@@ -336,6 +345,11 @@ interface Window {
         | { ok: false; code: string; error: string }
       >;
       openInstallation: () => Promise<{ ok: boolean; error?: string }>;
+      /** Resolve the user's repos: gh-first → OAuth fallback → not connected. */
+      listRepos: () => Promise<
+        | { ok: true; source: "gh" | "oauth"; repos: GitHubRepoEntry[] }
+        | { ok: false; code: "NOT_CONNECTED" | "GH_AUTH" | "ERROR"; error?: string }
+      >;
       onLinkChanged: (cb: (payload: { link: GitHubLinkPayload | null }) => void) => () => void;
       offLinkChanged: (cb: (payload: { link: GitHubLinkPayload | null }) => void) => void;
       onBrowserFallback: (cb: (payload: { url: string }) => void) => () => void;

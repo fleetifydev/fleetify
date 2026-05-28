@@ -28,10 +28,11 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import {
   FolderOpen, Monitor, Lock, History, Plus, Check, ChevronDown,
   GitBranch, Search as SearchIcon,
-  Search, Github, Server, Box,
+  Github, Server, Box,
 } from "lucide-react";
 import { ProviderLogo } from "@/components/ui/provider-logo";
-import { updateSession as apiUpdateSession, cloneRepository, listUserRepos, fetchClaudeSessions, fetchClaudeHistory, type ClaudeSession, type GhRepo } from "@/lib/api";
+import { updateSession as apiUpdateSession, cloneRepository, fetchClaudeSessions, fetchClaudeHistory, type ClaudeSession } from "@/lib/api";
+import { GitSourceTab } from "./git-source-tab";
 import { useAppStore } from "@/stores/app-store";
 import { useChatStore } from "@/stores/chat-store";
 import type { ChatMessage } from "@/types/chat";
@@ -233,18 +234,12 @@ export function SessionToolbar({
   // the user types a git URL, hits Clone, we fetch backend, on success
   // the popover closes and the new path PATCHes through the existing
   // project_path flow (which auto-creates the worktree).
-  const [cloneUrl,    setCloneUrl]    = useState("");
   const [cloning,     setCloning]     = useState(false);
   const [cloneError,  setCloneError]  = useState<string | null>(null);
-  // Source tab — Local (browse), Git (user's GitHub repos + URL),
+  // Source tab — Local (browse), Git (repo list + clone-by-URL),
   // Remote (SSH host management), Container (running Docker containers).
+  // The Git tab's repo-list state lives inside <GitSourceTab/>.
   const [sourceTab,   setSourceTab]   = useState<"local" | "git" | "remote" | "container">("local");
-  // GitHub repo list state — lazy-loaded the first time the user
-  // switches to the Git tab so we don't hit gh on every toolbar mount.
-  const [ghRepos,        setGhRepos]        = useState<GhRepo[] | null>(null);
-  const [ghReposLoading, setGhReposLoading] = useState(false);
-  const [ghReposError,   setGhReposError]   = useState<string | null>(null);
-  const [repoFilter,     setRepoFilter]     = useState("");
   const wrapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -326,34 +321,20 @@ export function SessionToolbar({
     }
   }, [patch]);
 
-  const submitClone = useCallback(async (overrideUrl?: string) => {
-    const url = (overrideUrl ?? cloneUrl).trim();
-    if (!url || cloning) return;
+  const submitClone = useCallback(async (url: string) => {
+    const u = url.trim();
+    if (!u || cloning) return;
     setCloning(true); setCloneError(null);
     try {
-      const r = await cloneRepository(url);
+      const r = await cloneRepository(u);
       await patch({ project_path: r.path });
-      setCloneUrl("");
       setOpenMenu(null);
     } catch (e) {
       setCloneError(e instanceof Error ? e.message : "Clone failed");
     } finally {
       setCloning(false);
     }
-  }, [cloneUrl, cloning, patch]);
-
-  // Lazy-load the user's GitHub repos the first time the Git tab is
-  // opened. Cache lives for the lifetime of the toolbar instance —
-  // re-fetched when the user re-mounts the toolbar (new session).
-  useEffect(() => {
-    if (openMenu !== "source" || sourceTab !== "git") return;
-    if (ghRepos !== null || ghReposLoading) return;
-    setGhReposLoading(true); setGhReposError(null);
-    listUserRepos()
-      .then(rs => setGhRepos(rs))
-      .catch((e: Error) => setGhReposError(e.message || "Failed to load repos"))
-      .finally(() => setGhReposLoading(false));
-  }, [openMenu, sourceTab, ghRepos, ghReposLoading]);
+  }, [cloning, patch]);
 
   const pickPerm = useCallback((id: string) => {
     patch({ permission_mode: id });
@@ -498,166 +479,12 @@ export function SessionToolbar({
                   2. Scroll list (repos)
                   3. URL fallback (label + input + button)             */}
             {sourceTab === "git" && (
-              <div style={{ display: "flex", flexDirection: "column" }}>
-                {/* Filter row — search icon inside a borderless input
-                    so it reads as part of the popover chrome rather
-                    than a separate form field. */}
-                <div style={{
-                  display: "flex", alignItems: "center", gap: 7,
-                  padding: "7px 10px",
-                  borderBottom: "1px solid var(--c-brd)",
-                }}>
-                  <Search size={11} style={{ color: "var(--c-dim)", flexShrink: 0 }} />
-                  <input
-                    value={repoFilter}
-                    onChange={e => setRepoFilter(e.target.value)}
-                    onClick={e => e.stopPropagation()}
-                    placeholder="Filter repositories…"
-                    spellCheck={false}
-                    autoFocus
-                    style={{
-                      flex: 1, minWidth: 0,
-                      padding: 0,
-                      background: "transparent",
-                      border: "none",
-                      color: "var(--c-fg)",
-                      fontFamily: "var(--font-sans)",
-                      fontSize: 11.5,
-                      outline: "none",
-                    }}
-                  />
-                </div>
-
-                {/* Repo list — scrollable. Tight rows, single-line
-                    name, single-line description ellipsized. Trail
-                    timestamp lives on the right at --c-dim so the
-                    eye can scan recency. */}
-                <div style={{
-                  maxHeight: 260,
-                  overflowY: "auto",
-                  padding: "4px 4px",
-                  display: "flex", flexDirection: "column",
-                }}>
-                  {ghReposLoading && (
-                    <div style={{ padding: "18px 12px", textAlign: "center", fontSize: 11.5, color: "var(--c-dim)" }}>
-                      Loading repositories…
-                    </div>
-                  )}
-                  {ghReposError && (
-                    <div style={{ padding: 10, fontSize: 11, color: "#ef4444", fontFamily: "var(--font-mono)", wordBreak: "break-word" }}>
-                      {ghReposError}
-                    </div>
-                  )}
-                  {ghRepos && ghRepos
-                    .filter(r => !repoFilter.trim() || r.nameWithOwner.toLowerCase().includes(repoFilter.toLowerCase()))
-                    .map(r => (
-                      <RepoRow
-                        key={r.nameWithOwner}
-                        repo={r}
-                        disabled={cloning}
-                        onClick={() => void submitClone(r.url)}
-                      />
-                    ))}
-                  {ghRepos && ghRepos.length === 0 && !ghReposLoading && !ghReposError && (
-                    <div style={{ padding: "18px 12px", textAlign: "center", fontSize: 11.5, color: "var(--c-dim)" }}>
-                      No repositories found.
-                    </div>
-                  )}
-                </div>
-
-                {/* URL fallback — paint as a single unified input
-                    pill: a compact row with a leading link icon, the
-                    URL field, and the action button "stuck" to the
-                    right edge with a subtle 1px divider. Reads as one
-                    object instead of three separate controls. */}
-                <div style={{
-                  borderTop: "1px solid var(--c-brd)",
-                  padding: "9px 10px 10px",
-                  display: "flex", flexDirection: "column", gap: 6,
-                }}>
-                  <div style={{
-                    display: "flex", alignItems: "center", justifyContent: "space-between",
-                    fontSize: 9.5, fontWeight: 600,
-                    letterSpacing: 0.6, textTransform: "uppercase",
-                    color: "var(--c-dim)",
-                  }}>
-                    <span>Paste a URL</span>
-                    <span style={{ textTransform: "none", letterSpacing: 0, fontWeight: 400, fontSize: 10 }}>
-                      Public or private
-                    </span>
-                  </div>
-                  <div
-                    style={{
-                      display: "flex", alignItems: "stretch",
-                      background: "var(--c-srf2)",
-                      border: "1px solid var(--c-brd)",
-                      borderRadius: 6,
-                      overflow: "hidden",
-                      transition: "border-color 0.12s",
-                    }}
-                    onFocusCapture={e => {
-                      (e.currentTarget as HTMLDivElement).style.borderColor = "var(--c-brd2)";
-                    }}
-                    onBlurCapture={e => {
-                      (e.currentTarget as HTMLDivElement).style.borderColor = "var(--c-brd)";
-                    }}
-                  >
-                    <span style={{
-                      display: "inline-flex", alignItems: "center", justifyContent: "center",
-                      paddingLeft: 9, paddingRight: 7,
-                      color: "var(--c-dim)",
-                      flexShrink: 0,
-                    }}>
-                      <Github size={11} />
-                    </span>
-                    <input
-                      value={cloneUrl}
-                      onChange={e => { setCloneUrl(e.target.value); setCloneError(null); }}
-                      onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); void submitClone(); } }}
-                      placeholder="github.com/owner/repo"
-                      disabled={cloning}
-                      spellCheck={false}
-                      style={{
-                        flex: 1, minWidth: 0,
-                        padding: "6px 0",
-                        background: "transparent",
-                        border: "none",
-                        color: "var(--c-fg)",
-                        fontFamily: "var(--font-mono)",
-                        fontSize: 11,
-                        outline: "none",
-                        opacity: cloning ? 0.6 : 1,
-                      }}
-                    />
-                    <button
-                      onClick={() => void submitClone()}
-                      disabled={!cloneUrl.trim() || cloning}
-                      style={{
-                        padding: "0 12px",
-                        fontSize: 11, fontWeight: 600,
-                        fontFamily: "var(--font-sans)",
-                        color: cloneUrl.trim() && !cloning ? "var(--card, #0a0a0a)" : "var(--c-dim)",
-                        background: cloneUrl.trim() && !cloning ? "var(--c-fg)" : "transparent",
-                        border: "none",
-                        borderLeft: "1px solid var(--c-brd)",
-                        cursor: cloneUrl.trim() && !cloning ? "pointer" : "default",
-                        outline: "none",
-                        flexShrink: 0,
-                        transition: "background 0.12s, color 0.12s",
-                      }}
-                    >
-                      {cloning ? "…" : "Clone"}
-                    </button>
-                  </div>
-                  {cloneError && (
-                    <span style={{
-                      fontSize: 10.5, color: "#ef4444",
-                      fontFamily: "var(--font-mono)",
-                      wordBreak: "break-word",
-                    }}>{cloneError}</span>
-                  )}
-                </div>
-              </div>
+              <GitSourceTab
+                cloning={cloning}
+                cloneError={cloneError}
+                onPick={(url) => void submitClone(url)}
+                onClone={(url) => void submitClone(url)}
+              />
             )}
 
             {/* ── Remote tab — SSH host management.
@@ -1366,76 +1193,6 @@ function SourceTab({
           borderRadius: 1,
         }} />
       )}
-    </button>
-  );
-}
-
-/* ─── RepoRow — single repo entry in the Git tab list.
-     One-line layout: status dot · name · description · time.
-     Description ellipsizes hard so the row never grows the menu
-     wider than its set width. ─── */
-function RepoRow({
-  repo, disabled, onClick,
-}: {
-  repo: GhRepo;
-  disabled: boolean;
-  onClick: () => void;
-}) {
-  const stamp = formatRelative(repo.updatedAt);
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      onMouseDown={e => e.preventDefault()}
-      style={{
-        display: "grid",
-        gridTemplateColumns: "10px minmax(0, 1fr) auto",
-        alignItems: "center",
-        columnGap: 8,
-        padding: "5px 8px",
-        background: "transparent",
-        border: "none", outline: "none",
-        cursor: disabled ? "default" : "pointer",
-        borderRadius: 4,
-        textAlign: "left",
-        opacity: disabled ? 0.5 : 1,
-        fontFamily: "var(--font-sans)",
-        color: "var(--c-fg)",
-        width: "100%",
-      }}
-      onMouseEnter={e => { if (!disabled) (e.currentTarget as HTMLButtonElement).style.background = "var(--c-srf, rgba(255,255,255,0.06))"; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
-      title={repo.description || repo.nameWithOwner}
-    >
-      <span style={{
-        width: 6, height: 6, borderRadius: "50%",
-        background: repo.isPrivate ? "var(--c-dim)" : "rgba(120,180,140,0.95)",
-        justifySelf: "center",
-      }} />
-      <span style={{
-        minWidth: 0,
-        display: "flex", alignItems: "baseline", gap: 7,
-        overflow: "hidden",
-      }}>
-        <span style={{
-          fontSize: 11.75, fontWeight: 500,
-          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-          flexShrink: 0,
-          maxWidth: "60%",
-        }}>{repo.nameWithOwner}</span>
-        {repo.description && (
-          <span style={{
-            fontSize: 10.75, color: "var(--c-dim)",
-            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-            minWidth: 0, flex: 1,
-          }}>{repo.description}</span>
-        )}
-      </span>
-      <span style={{
-        fontSize: 10, color: "var(--c-dim)",
-        flexShrink: 0,
-        fontVariantNumeric: "tabular-nums",
-      }}>{stamp}</span>
     </button>
   );
 }

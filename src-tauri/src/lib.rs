@@ -136,6 +136,7 @@ pub fn run() {
             shell::ipc::github_refresh_link,
             shell::ipc::github_disconnect,
             shell::ipc::github_open_installation,
+            shell::ipc::github_list_repos,
             shell::ipc::routers_list_routers,
             shell::ipc::routers_connect,
             shell::ipc::routers_disconnect,

@@ -68,9 +68,68 @@ pub async fn git_cmd(
     }
 }
 
-/// Clone `url` into `~/.fleetify/clones/<repo>/` or fetch if already
-/// present. Returns `(absolute_path, current_branch)`. Faithful with
-/// `clone_or_pull`.
+/// Map a git URL to a stable, collision-free relative directory key
+/// `<host>/<owner>/<repo>`. Falls back to the safe leaf name (via
+/// `repo_name_from_url`) when host/owner can't be parsed, so the result
+/// is never empty and never escapes the clones root.
+///
+/// Without this, `repo_name_from_url`'s bare-leaf key collides whenever
+/// two different repos share a leaf name (`team-a/api` vs `team-b/api`),
+/// which — now that clones are reused across sessions — would silently
+/// attach the second session to the first's unrelated clone.
+pub fn clone_dir_key(url: &str) -> String {
+    let raw = url.trim().trim_end_matches('/');
+    let raw = raw.strip_suffix(".git").unwrap_or(raw);
+
+    // Normalise the three common forms to "<host>/<path>":
+    //   https://host/owner/repo  ·  ssh://git@host/owner/repo
+    //   git@host:owner/repo  (scp-like)
+    let host_and_path: Option<(String, String)> = if let Some(rest) = raw
+        .strip_prefix("https://")
+        .or_else(|| raw.strip_prefix("http://"))
+        .or_else(|| raw.strip_prefix("ssh://"))
+    {
+        let rest = rest.rsplit('@').next().unwrap_or(rest); // drop user@
+        let mut it = rest.splitn(2, '/');
+        match (it.next(), it.next()) {
+            (Some(h), Some(p)) if !h.is_empty() && !p.is_empty() => {
+                Some((h.to_string(), p.to_string()))
+            }
+            _ => None,
+        }
+    } else if let Some(rest) = raw.split_once('@').map(|(_, r)| r) {
+        // scp-like: git@host:owner/repo
+        rest.split_once(':').and_then(|(h, p)| {
+            if h.is_empty() || p.is_empty() {
+                None
+            } else {
+                Some((h.to_string(), p.trim_start_matches('/').to_string()))
+            }
+        })
+    } else {
+        None
+    };
+
+    match host_and_path {
+        Some((host, path)) => {
+            let safe_host = repo_name_re().replace_all(&host, "-");
+            let safe_path: Vec<String> = path
+                .split('/')
+                .filter(|s| !s.is_empty())
+                .map(|seg| repo_name_re().replace_all(seg, "-").to_string())
+                .collect();
+            if safe_path.is_empty() {
+                repo_name_from_url(url)
+            } else {
+                format!("{}/{}", safe_host.trim_matches('-'), safe_path.join("/"))
+            }
+        }
+        None => repo_name_from_url(url),
+    }
+}
+
+/// Clone `url` into `~/.fleetify/clones/<host>/<owner>/<repo>/` or fetch
+/// if already present. Returns `(absolute_path, current_branch)`.
 pub async fn clone_or_pull(
     url: &str,
     branch: Option<&str>,
@@ -79,10 +138,12 @@ pub async fn clone_or_pull(
     if url.is_empty() {
         return Err(CloneError::Failed("Empty URL".into()));
     }
-    let repo = repo_name_from_url(url);
+    let key = clone_dir_key(url);
     let root = clones_root();
-    let _ = std::fs::create_dir_all(&root);
-    let path = root.join(&repo);
+    let path = root.join(&key);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
 
     if path.exists() {
         // Verify it's a real git repo (not a half-checked-out left-over).
@@ -190,5 +251,42 @@ mod tests {
             repo_name_from_url("https://example.com/weird name!"),
             "weird-name"
         );
+    }
+
+    #[test]
+    fn clone_dir_key_disambiguates_same_leaf_across_owners() {
+        // The whole point: two different repos that share a leaf name must
+        // NOT collide into one clone dir.
+        let a = clone_dir_key("https://github.com/team-a/api.git");
+        let b = clone_dir_key("https://github.com/team-b/api.git");
+        assert_ne!(a, b);
+        assert_eq!(a, "github.com/team-a/api");
+        assert_eq!(b, "github.com/team-b/api");
+    }
+
+    #[test]
+    fn clone_dir_key_handles_https_ssh_scp_and_no_dotgit() {
+        assert_eq!(
+            clone_dir_key("https://github.com/anthropics/sdk.git"),
+            "github.com/anthropics/sdk"
+        );
+        assert_eq!(
+            clone_dir_key("git@github.com:user/My.Repo.git"),
+            "github.com/user/My.Repo"
+        );
+        assert_eq!(
+            clone_dir_key("https://gitlab.com/group/sub/proj"),
+            "gitlab.com/group/sub/proj"
+        );
+        // Trailing slash, no .git.
+        assert_eq!(clone_dir_key("https://github.com/o/r/"), "github.com/o/r");
+    }
+
+    #[test]
+    fn clone_dir_key_falls_back_to_leaf_when_unparseable() {
+        // No host/owner discernible → fall back to the safe leaf name so we
+        // never produce an empty or path-traversing key.
+        assert_eq!(clone_dir_key("weird-name"), "weird-name");
+        assert_eq!(clone_dir_key("/"), "repo");
     }
 }

@@ -574,6 +574,134 @@ pub async fn open_installation() -> Value {
     }
 }
 
+/// Parse `gh repo list --json …` output into a sorted (newest-first)
+/// JSON array. Returns an empty array on any parse failure.
+fn parse_gh_repos(stdout: &str) -> Value {
+    let mut repos: Vec<Value> = serde_json::from_str(stdout).unwrap_or_default();
+    repos.sort_by(|a, b| {
+        let av = a.get("updatedAt").and_then(|x| x.as_str()).unwrap_or("");
+        let bv = b.get("updatedAt").and_then(|x| x.as_str()).unwrap_or("");
+        bv.cmp(av)
+    });
+    Value::Array(repos)
+}
+
+/// List repos accessible to the OAuth GitHub App installation, mapped to
+/// the renderer's `GhRepo` shape. Refreshes the token once on 401.
+async fn oauth_list_repos(app: &AppHandle) -> Value {
+    let Some(link) = get_link().await else {
+        return json!({ "ok": false, "code": "NOT_CONNECTED" });
+    };
+    let token = link
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let inst = link
+        .get("installation_id")
+        .and_then(|v| {
+            v.as_i64()
+                .map(|n| n.to_string())
+                .or_else(|| v.as_str().map(String::from))
+        })
+        .unwrap_or_default();
+    if token.is_empty() || inst.is_empty() {
+        return json!({ "ok": false, "code": "NOT_CONNECTED" });
+    }
+
+    async fn fetch(token: &str, inst: &str) -> Result<reqwest::Response, reqwest::Error> {
+        reqwest::Client::new()
+            .get(format!(
+                "https://api.github.com/user/installations/{inst}/repositories?per_page=100"
+            ))
+            .bearer_auth(token)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "Fleetify")
+            .send()
+            .await
+    }
+
+    let mut resp = match fetch(&token, &inst).await {
+        Ok(r) => r,
+        Err(e) => return json!({ "ok": false, "code": "ERROR", "error": e.to_string() }),
+    };
+
+    // One refresh-and-retry on 401 (token rolled mid-session).
+    if resp.status().as_u16() == 401 {
+        let refreshed = refresh_link(app.clone()).await;
+        if refreshed.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+            let new_tok = get_link()
+                .await
+                .and_then(|l| {
+                    l.get("access_token")
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                })
+                .unwrap_or_default();
+            match fetch(&new_tok, &inst).await {
+                Ok(r) => resp = r,
+                Err(e) => return json!({ "ok": false, "code": "ERROR", "error": e.to_string() }),
+            }
+        } else {
+            return json!({ "ok": false, "code": "NOT_CONNECTED" });
+        }
+    }
+
+    if !resp.status().is_success() {
+        return json!({ "ok": false, "code": "ERROR", "error": format!("github {}", resp.status()) });
+    }
+    let body: Value = resp.json().await.unwrap_or_else(|_| json!({}));
+    let mut repos: Vec<Value> = body
+        .get("repositories")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|r| {
+                    json!({
+                        "nameWithOwner": r.get("full_name").and_then(|v| v.as_str()).unwrap_or(""),
+                        "description":   r.get("description").cloned().unwrap_or(Value::Null),
+                        "url":           r.get("html_url").and_then(|v| v.as_str()).unwrap_or(""),
+                        "sshUrl":        r.get("ssh_url").and_then(|v| v.as_str()).unwrap_or(""),
+                        "isPrivate":     r.get("private").and_then(|v| v.as_bool()).unwrap_or(false),
+                        "updatedAt":     r.get("updated_at").and_then(|v| v.as_str()).unwrap_or(""),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    repos.sort_by(|a, b| {
+        let av = a.get("updatedAt").and_then(|x| x.as_str()).unwrap_or("");
+        let bv = b.get("updatedAt").and_then(|x| x.as_str()).unwrap_or("");
+        bv.cmp(av)
+    });
+    json!({ "ok": true, "source": "oauth", "repos": Value::Array(repos) })
+}
+
+/// Resolve the user's repo list. gh-first (the `gh` binary also picks up
+/// the OAuth token via `GH_TOKEN`), OAuth REST fallback when gh is absent
+/// or unauthed, else `NOT_CONNECTED`.
+pub async fn list_repos(app: AppHandle) -> Value {
+    let has_gh = crate::shell::git::resolve_gh().is_some();
+    let has_oauth = get_link().await.is_some();
+
+    if has_gh {
+        let (rc, out, _err) = crate::shell::git::gh_repo_list().await;
+        if rc == 0 {
+            return json!({ "ok": true, "source": "gh", "repos": parse_gh_repos(&out) });
+        }
+        if has_oauth {
+            return oauth_list_repos(&app).await;
+        }
+        return json!({ "ok": false, "code": "NOT_CONNECTED" });
+    }
+
+    if has_oauth {
+        return oauth_list_repos(&app).await;
+    }
+    json!({ "ok": false, "code": "NOT_CONNECTED" })
+}
+
 // Tiny percent-encoder for the poll state param. Faithful with
 // encodeURIComponent's safe set (A–Z, a–z, 0–9, `-._~`). Avoids pulling
 // the full `urlencoding` crate.
@@ -608,5 +736,23 @@ mod tests {
         let id = random_hex16();
         assert_eq!(id.len(), 32);
         assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn parse_gh_repos_sorts_by_updated_desc() {
+        let raw = r#"[
+            {"nameWithOwner":"o/old","description":null,"url":"u1","sshUrl":"s1","isPrivate":false,"updatedAt":"2024-01-01T00:00:00Z"},
+            {"nameWithOwner":"o/new","description":"x","url":"u2","sshUrl":"s2","isPrivate":true,"updatedAt":"2026-01-01T00:00:00Z"}
+        ]"#;
+        let out = parse_gh_repos(raw);
+        let arr = out.as_array().expect("array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["nameWithOwner"], "o/new"); // newest first
+        assert_eq!(arr[1]["nameWithOwner"], "o/old");
+    }
+
+    #[test]
+    fn parse_gh_repos_tolerates_garbage() {
+        assert_eq!(parse_gh_repos("not json").as_array().unwrap().len(), 0);
     }
 }

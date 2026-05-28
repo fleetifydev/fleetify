@@ -279,6 +279,9 @@
         disconnect:       function () { return invoke("github_disconnect"); },
         refreshLink:      function () { return invoke("github_refresh_link"); },
         openInstallation: function () { return invoke("github_open_installation"); },
+        // Resolve the user's repo list: gh-first, OAuth fallback, else
+        // { ok:false, code:"NOT_CONNECTED" }. Used by the Git source tab.
+        listRepos:        function () { return invoke("github_list_repos"); },
         onLinkChanged: function (cb) {
           var unsub = null;
           Promise.resolve(window.__TAURI__.event.listen("github-link-changed", function (e) {

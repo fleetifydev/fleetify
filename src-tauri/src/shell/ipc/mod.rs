@@ -890,6 +890,11 @@ pub async fn github_open_installation() -> serde_json::Value {
     github_link::open_installation().await
 }
 
+#[tauri::command]
+pub async fn github_list_repos(app: tauri::AppHandle) -> serde_json::Value {
+    github_link::list_repos(app).await
+}
+
 // ── .git/HEAD watcher (renderer branch strip) ────────────────────
 #[tauri::command]
 pub async fn git_watch_head(

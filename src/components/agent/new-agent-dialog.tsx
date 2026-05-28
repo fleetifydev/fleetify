@@ -175,6 +175,23 @@ function timeAgo(iso: string) {
   return h < 24 ? `${h}h ago` : `${Math.floor(h / 24)}d ago`;
 }
 
+/** True when starting an *off-worktree* session would collide with an
+ *  existing session already occupying the same folder's working tree.
+ *  Off-worktree sessions work in `project_path` directly, so only one can
+ *  own a folder at a time (mirrors the local-folder rule, and applies to
+ *  reused clones too). `worktree_path` is null/empty for off-worktree
+ *  sessions; on-worktree sessions are isolated and never conflict. */
+export function hasOffWorktreeConflict(
+  path: string,
+  useWorktree: boolean,
+  sessions: { project_path: string; worktree_path: string | null }[],
+): boolean {
+  if (useWorktree) return false;
+  const p = path.trim();
+  if (!p) return false;
+  return sessions.some(s => (s.project_path ?? "").trim() === p && !s.worktree_path);
+}
+
 export function NewAgentView({ onClose }: Props) {
   const { addSession, setActiveSession, sessions, staffSessionId } = useAppStore();
   const [provider,  setProvider]  = useState("claude");
@@ -396,7 +413,10 @@ export function NewAgentView({ onClose }: Props) {
     } catch (e) { console.error(e); } finally { setLoading(false); }
   };
 
-  const canLaunch = !!path.trim() && (mode !== "resume" || !!resumeId);
+  // Block a 2nd off-worktree session on a folder already owned by a live
+  // off-worktree session — one-click "Enable isolated workspace" clears it.
+  const offWorktreeConflict = hasOffWorktreeConflict(path, useWorktree, agentSessions);
+  const canLaunch = !!path.trim() && (mode !== "resume" || !!resumeId) && !offWorktreeConflict;
   const curProv   = PROVIDERS.find(p => p.id === provider)!;
   const curModel  = curProv.models.find(m => m.id === modelId) ?? curProv.models[0]!;
   const permList  = provider === "gemini" ? PERMS.filter(p => p.id !== "default") : PERMS;
@@ -724,6 +744,35 @@ export function NewAgentView({ onClose }: Props) {
                 onChange={setUseWorktree}
                 folderInGit={pathIsGit}
               />
+
+              {offWorktreeConflict && (
+                <div style={{
+                  display: "flex", flexDirection: "column", gap: 7,
+                  padding: "10px 12px", borderRadius: 7,
+                  border: "1px solid rgba(220,140,60,.3)",
+                  background: "rgba(220,140,60,.08)",
+                }}>
+                  <div style={{ fontSize: 12, fontWeight: 500, color: "var(--foreground)", lineHeight: 1.4 }}>
+                    A session is already active in this folder
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--c-low)", lineHeight: 1.5 }}>
+                    Only one session can share a folder's working directory at a time.
+                    Enable an isolated workspace to run this one in parallel.
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setUseWorktree(true)}
+                    style={{
+                      alignSelf: "flex-start", marginTop: 1, height: 26, padding: "0 11px",
+                      borderRadius: 6, border: "1px solid var(--c-brd2)",
+                      background: "var(--c-srf)", color: "var(--foreground)",
+                      fontSize: 11, fontWeight: 600, fontFamily: "inherit", cursor: "pointer",
+                    }}
+                  >
+                    Enable isolated workspace
+                  </button>
+                </div>
+              )}
 
             </div>
 

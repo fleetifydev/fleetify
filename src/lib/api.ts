@@ -560,6 +560,29 @@ export async function listUserRepos(limit = 100): Promise<GhRepo[]> {
   return res.json();
 }
 
+/** Resolver result for the Git source tab: which credential served the
+ *  list, or that GitHub isn't connected at all. Backed by the shell IPC
+ *  `github.listRepos` (gh-first → OAuth → NOT_CONNECTED). Enumerating a
+ *  user's repos needs GitHub auth; cloning by URL does not — so this
+ *  gates only the browse list, never the URL input. */
+export type ReposResult =
+  | { connected: true; source: "gh" | "oauth"; repos: GhRepo[] }
+  | { connected: false; error?: string };
+
+export async function listReposResolved(): Promise<ReposResult> {
+  const gh = (window as unknown as {
+    electronAPI?: { github?: { listRepos?: () => Promise<
+      | { ok: true; source: "gh" | "oauth"; repos: GhRepo[] }
+      | { ok: false; code: string; error?: string }
+    > } };
+  }).electronAPI?.github?.listRepos;
+  if (!gh) return { connected: false };
+  const r = await gh();
+  if (r.ok) return { connected: true, source: r.source, repos: r.repos };
+  if (r.code === "NOT_CONNECTED") return { connected: false };
+  return { connected: false, error: r.error || r.code };
+}
+
 /** Clone (or fetch) a git URL under ~/.fleetify/clones/<repo>/.
  *  Used by the toolbar's source picker — once the clone lands, the
  *  caller PATCHes session.project_path to the returned absolute path
