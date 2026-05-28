@@ -33,6 +33,7 @@ import { LogoMark } from "@/components/brand/logo-mark";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { apiScanProviders, checkPythonRuntime, type ProviderScan, type AuthUser } from "@/lib/api";
 import { providers as providersApi } from "@/lib/providers-api";
+import { optIn, optOut } from "@/lib/posthog";
 
 interface Props {
   user: AuthUser | null;
@@ -45,7 +46,8 @@ type WidgetKind =
   | "providers"
   | "scan"
   | "main-agent"
-  | "github";
+  | "github"
+  | "telemetry-consent";
 
 interface ChatMsg {
   id: string;
@@ -407,9 +409,35 @@ export function OnboardingChat({ user, onDone }: Props) {
       );
     }
 
-    // Onboarding ends here. Default folder is no longer collected on
-    // this screen — the user picks one per-session from the chat
-    // input chip strip when they need it.
+    // One more step before we hand them the "Enter Fleet" button —
+    // ask whether to opt into PostHog product analytics. Default off so
+    // anyone who clicks past stays opted out; the consent widget's
+    // callback (`handleTelemetryConsent`) flips the SDK + backend gate
+    // only on an explicit "Sure, help out".
+    await pushAssistant(
+      `One last thing, ${firstName} — would you help us improve Fleetify? We'd send anonymous behavioural data only (which screens, which providers, how long onboarding takes). Never message content, API keys, or file paths. You can change this any time in **Settings → Privacy**.`,
+      "telemetry-consent",
+    );
+  };
+
+  // Telemetry consent → flips both the JS SDK opt state and the
+  // backend's runtime gate via the Tauri command, then drops the
+  // "Enter Fleet" button. Even on "Not now" we still complete
+  // onboarding — this is consent, not a blocker.
+  const handleTelemetryConsent = async (enabled: boolean) => {
+    resolveLastWidget();
+    pushUser(enabled ? "Sure, help out" : "Not now");
+    // Flip the SDK first so a yes starts capturing immediately,
+    // a no suppresses any pending autocapture before the IPC lands.
+    if (enabled) optIn(); else optOut();
+    try {
+      await window.electronAPI?.telemetrySetPosthogEnabled?.(enabled);
+    } catch { /* best-effort — the SDK flip above is the user-visible part */ }
+    await pushAssistant(
+      enabled
+        ? "Thanks — that helps us see what to improve. You can switch it off any time."
+        : "No problem. You can opt in later from **Settings → Privacy** if you change your mind.",
+    );
     await pushAssistant(
       `That's the lot, ${firstName}. Hit **Enter Fleet** whenever you're ready.`,
     );
@@ -532,6 +560,7 @@ export function OnboardingChat({ user, onDone }: Props) {
             onProvidersConfirm={handleProvidersConfirm}
             onMainAgentPick={handleMainAgentPick}
             onGithubResult={handleGithubResult}
+            onTelemetryConsent={handleTelemetryConsent}
             onKeySaved={(id) => inlineSavedRef.current.add(id)}
             onScanContinue={() => scanContinueResolverRef.current?.()}
           />
@@ -605,6 +634,7 @@ function Bubble({
   onProvidersConfirm,
   onMainAgentPick,
   onGithubResult,
+  onTelemetryConsent,
   onKeySaved,
   onScanContinue,
 }: {
@@ -628,6 +658,7 @@ function Bubble({
       | { method: "oauth"; username?: string }
       | { skipped: true },
   ) => void;
+  onTelemetryConsent: (enabled: boolean) => void;
   /** Threaded through to ScanWidget so OnboardingChat can stash the
    *  ids the user saved inline and feed them into the readout
    *  builder (env probe lags a keychain write by definition). */
@@ -721,6 +752,72 @@ function Bubble({
       {msg.resolved && msg.widget === "github" && (
         <GithubResolved username={githubUsername} skipped={Boolean(githubSkipped)} />
       )}
+      {!msg.typing && !msg.resolved && msg.widget === "telemetry-consent" && (
+        <TelemetryConsentWidget onChoice={onTelemetryConsent} />
+      )}
+    </div>
+  );
+}
+
+/* ── TelemetryConsentWidget — two-button consent for PostHog ──
+   Default-off opt-in for product analytics. Either choice resolves
+   the widget and advances onboarding — refusal is not a blocker.    */
+function TelemetryConsentWidget({
+  onChoice,
+}: {
+  onChoice: (enabled: boolean) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const pick = (enabled: boolean) => {
+    if (busy) return;
+    setBusy(true);
+    onChoice(enabled);
+  };
+  return (
+    <div
+      style={{
+        display: "flex",
+        gap: 8,
+        marginTop: 10,
+        flexWrap: "wrap",
+      }}
+    >
+      <button
+        onClick={() => pick(true)}
+        disabled={busy}
+        style={{
+          padding: "9px 16px",
+          borderRadius: 8,
+          background: "#fff",
+          color: "#000",
+          border: "1px solid rgba(255,255,255,0.9)",
+          cursor: busy ? "default" : "pointer",
+          fontSize: 13,
+          fontWeight: 600,
+          opacity: busy ? 0.6 : 1,
+          transition: "all 0.2s ease",
+        }}
+      >
+        Sure, help out
+      </button>
+      <button
+        onClick={() => pick(false)}
+        disabled={busy}
+        style={{
+          padding: "9px 16px",
+          borderRadius: 8,
+          background: "var(--secondary)",
+          color: "var(--c-high)",
+          border: "1px solid rgba(255,255,255,0.08)",
+          cursor: busy ? "default" : "pointer",
+          fontSize: 13,
+          fontWeight: 500,
+          opacity: busy ? 0.6 : 1,
+          transition: "all 0.2s ease",
+        }}
+      >
+        Not now
+      </button>
     </div>
   );
 }

@@ -1,16 +1,20 @@
 /**
  * Privacy card — Settings → General.
  *
- * Two rows:
- *   - Anonymous usage analytics (opt-out; default ON).
+ * Three rows:
+ *   - Anonymous usage analytics (Fleetify cloud, opt-out; default ON).
  *   - Crash reports (opt-out; default ON).
+ *   - Product analytics (PostHog, opt-IN; default OFF).
  *
- * Both flip the corresponding FleetConfig fields. The actual
- * telemetry/crash-report pipelines read those flags directly — this
- * card just persists the user's preference.
+ * The first two read/write the flat `telemetryEnabled` /
+ * `crashReportsEnabled` fields on FleetConfig. The third uses the
+ * dedicated `telemetryGetConfig` / `telemetrySetPosthogEnabled`
+ * commands so the toggle and the backend's live runtime gate stay in
+ * lockstep without an extra round-trip through `fleet.config.json`.
  */
 import { useEffect, useState } from "react";
 import { CardShell, Row, Toggle } from "./_primitives";
+import { optIn, optOut } from "@/lib/posthog";
 
 interface PrivacyCfg {
   telemetryEnabled?: boolean;
@@ -20,6 +24,8 @@ interface PrivacyCfg {
 type ElectronShim = {
   getConfig?: () => Promise<PrivacyCfg | null>;
   setConfig?: (cfg: PrivacyCfg) => Promise<unknown>;
+  telemetryGetConfig?: () => Promise<{ distinct_id: string; posthog_enabled: boolean }>;
+  telemetrySetPosthogEnabled?: (enabled: boolean) => Promise<unknown>;
 };
 function electron(): ElectronShim {
   return (window as unknown as { electronAPI?: ElectronShim }).electronAPI ?? {};
@@ -27,13 +33,27 @@ function electron(): ElectronShim {
 
 export function PrivacyCard() {
   const [cfg, setCfg] = useState<PrivacyCfg>({});
+  const [posthogEnabled, setPosthogEnabled] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     let mounted = true;
-    electron().getConfig?.()
-      .then(c => { if (mounted) { setCfg(c ?? {}); setLoaded(true); } })
-      .catch(() => { if (mounted) setLoaded(true); });
+    // Two independent reads — the flat FleetConfig (telemetryEnabled +
+    // crashReportsEnabled) and the backend-owned posthog flag. Either
+    // failing leaves its half at its default; the card still renders.
+    Promise.allSettled([
+      electron().getConfig?.() ?? Promise.resolve(null),
+      electron().telemetryGetConfig?.() ?? Promise.resolve(null),
+    ]).then(([cfgRes, telemRes]) => {
+      if (!mounted) return;
+      if (cfgRes.status === "fulfilled" && cfgRes.value) {
+        setCfg(cfgRes.value as PrivacyCfg);
+      }
+      if (telemRes.status === "fulfilled" && telemRes.value) {
+        setPosthogEnabled((telemRes.value as { posthog_enabled: boolean }).posthog_enabled);
+      }
+      setLoaded(true);
+    });
     return () => { mounted = false; };
   }, []);
 
@@ -41,6 +61,14 @@ export function PrivacyCard() {
     const merged = { ...cfg, ...next };
     setCfg(merged);
     try { await electron().setConfig?.(merged); } catch { /* best effort */ }
+  };
+
+  const togglePosthog = async (next: boolean) => {
+    setPosthogEnabled(next);
+    // Flip the SDK client-side FIRST so a live opt-out stops new sends
+    // immediately even if the backend round-trip is slow.
+    if (next) optIn(); else optOut();
+    try { await electron().telemetrySetPosthogEnabled?.(next); } catch { /* best effort */ }
   };
 
   if (!loaded) {
@@ -56,8 +84,13 @@ export function PrivacyCard() {
            desc="Helps us prioritize features. Never includes prompt content, API keys, or file paths.">
         <Toggle on={telemetry} onChange={() => void patch({ telemetryEnabled: !telemetry })} />
       </Row>
-      <Row title="Crash reports" desc="Send stack traces when Fleetify crashes." last>
+      <Row title="Crash reports" desc="Send stack traces when Fleetify crashes.">
         <Toggle on={crashReports} onChange={() => void patch({ crashReportsEnabled: !crashReports })} />
+      </Row>
+      <Row title="Product analytics (PostHog)"
+           desc="Anonymous behavioural data so we can see which features matter (e.g. is onboarding too long?). Same privacy floor — no message content, keys, or file paths. Off by default."
+           last>
+        <Toggle on={posthogEnabled} onChange={() => void togglePosthog(!posthogEnabled)} />
       </Row>
     </CardShell>
   );

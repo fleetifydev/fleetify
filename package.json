@@ -42,6 +42,7 @@
     "clsx": "^2.1.1",
     "codemirror": "^6.0.2",
     "lucide-react": "^0.460.0",
+    "posthog-js": "^1.376.3",
     "react": "^19.0.0",
     "react-diff-viewer-continued": "^4.0.0",
     "react-dom": "^19.0.0",

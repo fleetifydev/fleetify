@@ -123,6 +123,20 @@ interface Window {
     }) => Promise<{ path?: string; written?: string[]; error?: string }>;
     getConfig: () => Promise<FleetConfig | null>;
     setConfig: (config: FleetConfig) => Promise<boolean>;
+    /** Read backend-owned telemetry config: stable per-machine
+     *  distinct_id (= device.json device_id) and persisted PostHog
+     *  opt-in flag. Called once at boot to bootstrap posthog-js with
+     *  the same id the Rust sink uses. */
+    telemetryGetConfig?: () => Promise<{
+      distinct_id: string;
+      posthog_enabled: boolean;
+    }>;
+    /** Flip the persisted PostHog opt-in AND the backend's live
+     *  runtime gate. Used by the onboarding consent step and the
+     *  Privacy settings toggle. */
+    telemetrySetPosthogEnabled?: (
+      enabled: boolean
+    ) => Promise<{ ok: boolean }>;
     openFolderDialog: () => Promise<string | null>;
     setWindowSize: (
       width: number,

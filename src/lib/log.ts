@@ -144,6 +144,25 @@ export const log = {
  *   • `beforeunload`           — last-ditch flush so the final batch
  *                                lands before the window dies.
  */
+// Lazy import keeps the posthog SDK chunk out of the cold-start path
+// even before `initPostHog` runs. `capture()` itself is a no-op until
+// the SDK has been initialised by `App.tsx`.
+async function capturePostHogFrontendError(
+  source: "uncaught" | "unhandled-rejection",
+  message: string,
+  fields: Record<string, unknown>,
+): Promise<void> {
+  try {
+    const { capture, isReady } = await import("./posthog");
+    if (!isReady()) return;
+    capture("frontend_error", { source, message, ...fields });
+  } catch {
+    // Don't let analytics tip the renderer over — if the dynamic
+    // import itself fails, the original `log.error` call above
+    // already captured the trail.
+  }
+}
+
 export function installGlobalErrorCapture(): void {
   if (typeof window === "undefined") return;
   window.addEventListener("error", (ev) => {
@@ -151,6 +170,12 @@ export function installGlobalErrorCapture(): void {
     const message = err instanceof Error ? err.message : String(ev.message || "Uncaught error");
     log.error("renderer.uncaught", message, {
       filename: ev.filename || null,
+      line: ev.lineno ?? null,
+      col: ev.colno ?? null,
+      stack: err instanceof Error ? err.stack : null,
+    });
+    void capturePostHogFrontendError("uncaught", message, {
+      filename: ev.filename ?? null,
       line: ev.lineno ?? null,
       col: ev.colno ?? null,
       stack: err instanceof Error ? err.stack : null,
@@ -164,6 +189,9 @@ export function installGlobalErrorCapture(): void {
         ? reason
         : "Unhandled promise rejection";
     log.error("renderer.unhandled-rejection", message, {
+      stack: reason instanceof Error ? reason.stack : null,
+    });
+    void capturePostHogFrontendError("unhandled-rejection", message, {
       stack: reason instanceof Error ? reason.stack : null,
     });
   });

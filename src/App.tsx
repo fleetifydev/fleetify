@@ -6,6 +6,7 @@ import { WelcomeScreen } from "@/components/onboarding/welcome-screen";
 import { SetupScreen } from "@/components/onboarding/setup-screen";
 import { useAppStore } from "@/stores/app-store";
 import { clearToken, type AuthUser } from "@/lib/api";
+import { identifyUser, initPostHog } from "@/lib/posthog";
 
 // Heavy routes that are rarely the first surface a user sees — pulled
 // out of the initial bundle so cold-start ships fewer KB of JS and the
@@ -107,6 +108,22 @@ export function App() {
   useEffect(() => {
     if (!window.fleetify) { setScreen("splash"); return; }
 
+    // Bootstrap PostHog as soon as we know the backend is wired —
+    // before the auth gate so the anonymous funnel (welcome → sign-in)
+    // is also captured under the same device_id. SDK is no-op while
+    // opt-out: `posthog_enabled = false` (the default) → SDK loads but
+    // suppresses sends; consent flips it via `telemetrySetPosthogEnabled`.
+    void window.electronAPI?.telemetryGetConfig?.()
+      .then((cfg) => initPostHog({
+        distinctId: cfg.distinct_id,
+        enabled: cfg.posthog_enabled,
+      }))
+      .catch((err) => {
+        // Don't tip over the renderer if the IPC bridge is slow / down —
+        // PostHog stays uninitialised and all `capture(…)` calls no-op.
+        console.warn("[posthog] bootstrap failed:", err);
+      });
+
     window.fleetify.getState().then((state) => {
       // FLEETIFY_NOAUTH=1: shell stubs a "John Doe" identity and tags
       // the payload with `noAuth: true`. Treat the welcome/sign-in
@@ -162,6 +179,11 @@ export function App() {
     localStorage.setItem("fleet:user", JSON.stringify(user));
     setAuthedUser(user);
     window.electronAPI?.setConfig({ onboardingComplete: true, apiKeys: {}, userName: user.name });
+    // PostHog identity merge — frontend was emitting under the anonymous
+    // device_id; calling identify(user_id) fires $identify with
+    // $anon_distinct_id set, so PostHog server-side merges the two
+    // persons. No-op when SDK isn't initialised (opt-out or no key).
+    identifyUser(user.id, { is_new: isNew, name: user.name, email: user.email });
     // Fresh registrations land in the chat-style onboarding.
     // Returning users skip straight to main once they've completed it.
     if (isNew) {
