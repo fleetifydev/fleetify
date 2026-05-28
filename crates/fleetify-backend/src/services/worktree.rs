@@ -149,11 +149,7 @@ async fn resolve_base(project_path: &str) -> Result<String, WorktreeError> {
     if rc_h != 0 {
         return Err(WorktreeError(format!("could not resolve HEAD: {err}")));
     }
-    Ok(if head.is_empty() {
-        "HEAD".into()
-    } else {
-        head
-    })
+    Ok(if head.is_empty() { "HEAD".into() } else { head })
 }
 
 // ── .gitignore packs (parity, stable order) ────────────────────────
@@ -487,7 +483,10 @@ mod tests {
     fn is_under_detects_managed_clone_paths() {
         let root = Path::new("/home/u/.fleetify/clones");
         assert!(is_under("/home/u/.fleetify/clones/github.com/o/r", root));
-        assert!(is_under("/home/u/.fleetify/clones/github.com/o/r/sub", root));
+        assert!(is_under(
+            "/home/u/.fleetify/clones/github.com/o/r/sub",
+            root
+        ));
         // A user-picked folder that merely shares a name prefix is NOT under.
         assert!(!is_under("/home/u/projects/clones-app", root));
         assert!(!is_under("/home/u/work/api", root));

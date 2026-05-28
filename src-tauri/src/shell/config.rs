@@ -334,8 +334,10 @@ mod tests {
             ..Default::default()
         };
         routing_set(&mut cfg, &r);
-        let mut p = ProvidersConfig::default();
-        p.enabled_agents = vec!["claude".into()];
+        let p = ProvidersConfig {
+            enabled_agents: vec!["claude".into()],
+            ..Default::default()
+        };
         providers_set(&mut cfg, &p);
         let t = TelemetryConfig {
             posthog_enabled: true,
