@@ -113,6 +113,27 @@ function main() {
       process.env.FLEETIFY_DASHBOARD_URL ?? 'http://localhost:3000',
     FLEETIFY_RESOURCE: backendUrl,
     FLEETIFY_AUDIENCE: backendUrl,
+    // PostHog product analytics (off by default; set in your shell to
+    // exercise the integration locally).
+    //
+    //   POSTHOG_API_KEY    — embedded into the Rust backend at compile
+    //                        time via `option_env!`. Changing it after a
+    //                        prior build requires `cargo clean -p
+    //                        fleetify-backend` to force a rebuild.
+    //   VITE_POSTHOG_KEY   — read by the renderer at runtime via
+    //                        `import.meta.env`. Should match POSTHOG_API_KEY
+    //                        so backend + frontend events flow into one
+    //                        PostHog project.
+    //   POSTHOG_HOST       — defaults to US cloud. Override with
+    //                        `https://eu.i.posthog.com` for EU residency.
+    //
+    // Even with keys set, the runtime gate stays closed until the user
+    // opts in via onboarding consent or Settings → Privacy — so a stray
+    // POSTHOG_API_KEY in your shell won't actually emit events.
+    POSTHOG_API_KEY: process.env.POSTHOG_API_KEY ?? '',
+    POSTHOG_HOST: process.env.POSTHOG_HOST ?? 'https://us.i.posthog.com',
+    VITE_POSTHOG_KEY: process.env.VITE_POSTHOG_KEY ?? '',
+    VITE_POSTHOG_HOST: process.env.VITE_POSTHOG_HOST ?? 'https://us.i.posthog.com',
   };
 
   console.log(`[dev:tauri:wt] booting (source: ${source}, slot: ${slot})`);

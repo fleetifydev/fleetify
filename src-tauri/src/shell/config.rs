@@ -142,6 +142,42 @@ pub fn providers_set(cfg: &mut Value, providers: &ProvidersConfig) {
     }
 }
 
+/// PostHog product-analytics opt-in. Default `posthog_enabled` is `false` —
+/// flipped only by explicit user consent in the onboarding step or in
+/// Settings → Privacy. `posthog_enabled_at` records the first opt-in
+/// timestamp (Unix ms) so funnels can distinguish fresh consenters from
+/// users who've been enabled for ages.
+///
+/// Lives at `fleet.config.json::telemetry` (parallel to `routing` /
+/// `providers`). The Fleetify cloud telemetry path is independent and
+/// remains gated by `FLEETIFY_NOAUTH` + the existing privacy-card
+/// `telemetryEnabled` flag; this struct only controls the PostHog sink.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct TelemetryConfig {
+    #[serde(default)]
+    pub posthog_enabled: bool,
+    #[serde(default)]
+    pub posthog_enabled_at: Option<i64>,
+}
+
+pub fn telemetry_from(cfg: &Value) -> TelemetryConfig {
+    cfg.get("telemetry")
+        .and_then(|v| serde_json::from_value::<TelemetryConfig>(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+pub fn telemetry_set(cfg: &mut Value, telem: &TelemetryConfig) {
+    let val = serde_json::to_value(telem).unwrap_or_else(|_| json!({}));
+    match cfg {
+        Value::Object(map) => {
+            map.insert("telemetry".into(), val);
+        }
+        _ => {
+            *cfg = json!({ "telemetry": val });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,6 +294,62 @@ mod tests {
         let p = providers_from(&cfg);
         assert!(p.connected.is_empty());
         assert!(p.enabled_models.is_empty());
+    }
+
+    #[test]
+    fn telemetry_section_round_trip() {
+        let mut cfg = json!({});
+        let t = TelemetryConfig {
+            posthog_enabled: true,
+            posthog_enabled_at: Some(1_700_000_000_000),
+        };
+        telemetry_set(&mut cfg, &t);
+        let back = telemetry_from(&cfg);
+        assert!(back.posthog_enabled);
+        assert_eq!(back.posthog_enabled_at, Some(1_700_000_000_000));
+    }
+
+    #[test]
+    fn telemetry_section_defaults_when_missing() {
+        let cfg = json!({ "theme": "dark" });
+        let t = telemetry_from(&cfg);
+        assert!(!t.posthog_enabled);
+        assert!(t.posthog_enabled_at.is_none());
+    }
+
+    #[test]
+    fn telemetry_section_defaults_when_corrupt() {
+        let cfg = json!({ "telemetry": "not an object" });
+        let t = telemetry_from(&cfg);
+        assert!(!t.posthog_enabled);
+    }
+
+    #[test]
+    fn telemetry_and_other_sections_coexist() {
+        // The three top-level sections (routing, providers, telemetry)
+        // must round-trip independently from the same Value.
+        let mut cfg = json!({});
+        let r = RoutingConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        routing_set(&mut cfg, &r);
+        let mut p = ProvidersConfig::default();
+        p.enabled_agents = vec!["claude".into()];
+        providers_set(&mut cfg, &p);
+        let t = TelemetryConfig {
+            posthog_enabled: true,
+            posthog_enabled_at: Some(42),
+        };
+        telemetry_set(&mut cfg, &t);
+
+        assert!(routing_from(&cfg).enabled);
+        assert_eq!(
+            providers_from(&cfg).enabled_agents,
+            vec!["claude".to_string()]
+        );
+        assert!(telemetry_from(&cfg).posthog_enabled);
+        assert_eq!(telemetry_from(&cfg).posthog_enabled_at, Some(42));
     }
 
     #[test]

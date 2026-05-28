@@ -81,6 +81,8 @@ pub fn run() {
             shell::ipc::auth_get_state,
             shell::ipc::config_get,
             shell::ipc::config_set,
+            shell::ipc::telemetry_get_config,
+            shell::ipc::telemetry_set_posthog_enabled,
             shell::ipc::shell_open_external,
             shell::ipc::shell_show_item_in_folder,
             shell::ipc::clipboard_write,
@@ -285,6 +287,20 @@ pub fn run() {
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 }
                 crate::shell::providers_setup::warm_providers_at_boot(&handle).await;
+
+                // Restore the persisted PostHog opt-in. The backend's
+                // posthog::init already ran inside serve(), so the
+                // outbox + worker are wired; we just need to flip the
+                // runtime gate to match what the user previously
+                // consented to. Fresh installs land on default-off
+                // because telemetry_from returns Default on missing.
+                if let Ok(dir) = handle.path().app_data_dir() {
+                    let cfg = crate::shell::config::load_config_from(&dir);
+                    let telem = crate::shell::config::telemetry_from(&cfg);
+                    if telem.posthog_enabled {
+                        fleetify_backend::services::telemetry::posthog::set_enabled(true);
+                    }
+                }
             });
 
             // Prime the integrations cache in parallel — only needs the

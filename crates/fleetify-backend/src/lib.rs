@@ -343,6 +343,14 @@ pub async fn serve_with_routing_setup(
         tracing::warn!("telemetry: outbox init failed: {e} (telemetry disabled)");
     } else {
         tokio::spawn(services::telemetry::run_heartbeat_loop());
+        // PostHog sink: independent from the Fleetify cloud outbox.
+        // No-op if POSTHOG_API_KEY was unset at build time. The runtime
+        // gate (telemetry.posthog_enabled in fleet.config.json) is
+        // controlled by the Tauri shell via the
+        // `telemetry_set_posthog_enabled` command and starts closed.
+        if let Err(e) = services::telemetry::posthog::init().await {
+            tracing::warn!("telemetry: posthog init failed: {e} (posthog sink disabled)");
+        }
     }
 
     // Fleet built-in MCP servers (fleet_memory / fleet_dispatch /

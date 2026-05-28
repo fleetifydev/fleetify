@@ -24,6 +24,7 @@ pub mod device_id;
 pub mod emitters;
 pub mod heartbeat;
 pub mod outbox;
+pub mod posthog;
 pub mod ws_client;
 
 pub use device_id::{get_or_create, DeviceInfo};

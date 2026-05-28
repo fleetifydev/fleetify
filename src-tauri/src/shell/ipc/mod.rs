@@ -66,6 +66,55 @@ pub async fn config_set(app: tauri::AppHandle, config: serde_json::Value) -> ser
     serde_json::json!({ "ok": true })
 }
 
+// ── PostHog telemetry config ──────────────────────────────────────
+// Renderer fetches `{ distinct_id, posthog_enabled }` at boot to
+// initialise posthog-js with the same device_id the Rust backend uses,
+// so frontend + backend events flow to one PostHog person. Setter both
+// persists the flag AND flips the backend's runtime gate live so the
+// worker stops / starts without a restart.
+
+#[tauri::command]
+pub async fn telemetry_get_config(app: tauri::AppHandle) -> serde_json::Value {
+    let posthog_enabled = match app.path().app_data_dir() {
+        Ok(dir) => config::telemetry_from(&config::load_config_from(&dir)).posthog_enabled,
+        Err(_) => false,
+    };
+    let device = fleetify_backend::services::telemetry::device_id::get_or_create();
+    serde_json::json!({
+        "distinct_id": device.device_id,
+        "posthog_enabled": posthog_enabled,
+    })
+}
+
+#[tauri::command]
+pub async fn telemetry_set_posthog_enabled(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> serde_json::Value {
+    if let Ok(dir) = app.path().app_data_dir() {
+        let mut cfg = config::load_config_from(&dir);
+        let mut telem = config::telemetry_from(&cfg);
+        let was_enabled = telem.posthog_enabled;
+        telem.posthog_enabled = enabled;
+        // Stamp the first opt-in time so funnels can split "fresh"
+        // consenters from long-standing users. Clearing the flag does
+        // NOT wipe the timestamp — useful for support if the user
+        // toggles off then back on.
+        if enabled && !was_enabled {
+            telem.posthog_enabled_at = Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0),
+            );
+        }
+        config::telemetry_set(&mut cfg, &telem);
+        let _ = config::save_config_to(&dir, &cfg);
+    }
+    fleetify_backend::services::telemetry::posthog::set_enabled(enabled);
+    serde_json::json!({ "ok": true })
+}
+
 // ── shell ─────────────────────────────────────────────────────────
 #[tauri::command]
 pub async fn shell_open_external(url: String) -> serde_json::Value {

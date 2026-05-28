@@ -62,6 +62,9 @@ async fn enqueue_payload(payload: Value) -> Result<()> {
     }
     let event_id = uuid::Uuid::new_v4().to_string();
     outbox::enqueue(&event_id, &payload).await?;
+    // Fan out to the PostHog sink. No-op when the runtime gate is
+    // closed or POSTHOG_API_KEY was unset at build time.
+    super::posthog::enqueue_if_enabled(&payload).await;
     tracing::info!(
         target: "fleetify.telemetry.emit",
         "telemetry: enqueued kind={} id={} session={}",
