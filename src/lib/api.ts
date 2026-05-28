@@ -603,6 +603,25 @@ export async function cloneRepository(
   return res.json();
 }
 
+/** Verify that a git URL is reachable as a remote, without cloning.
+ *  Backed by `git ls-remote` with `GIT_TERMINAL_PROMPT=0`. Resolves with
+ *  `{ ok: true }` when reachable; throws an `Error` whose message carries
+ *  git's stderr when the remote is unreachable / unauthorised / wrong
+ *  URL. Auth flows through the system credential helper exactly like
+ *  `cloneRepository`. */
+export async function checkRepoAccessible(url: string): Promise<{ ok: true }> {
+  const res = await apiFetch(`${API_BASE}/git/check`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(detail || `Check failed: ${res.statusText}`);
+  }
+  return res.json();
+}
+
 /** Account-wide rollup powering the new-session welcome canvas.
  *  See backend/app/routers/sessions.py::overview_stats for shape. */
 export interface AccountStats {

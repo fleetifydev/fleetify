@@ -126,6 +126,13 @@ pub async fn serve_with_routing_setup(
     static_dir: Option<PathBuf>,
     routing_setup: services::routing::setup::RoutingSetup,
 ) -> anyhow::Result<ServerHandle> {
+    // Load `.env` from the workspace root (if present) into the process
+    // environment. Existing env vars are NOT overridden — a real shell-set
+    // value wins over the file. No-op when `.env` is absent, which is the
+    // production case. Powers single-source dev config for POSTHOG_API_KEY
+    // and similar without forcing a wrapper shell script.
+    let _ = dotenvy::dotenv();
+
     // Lifespan parity: one-shot ~/.fleet → ~/.fleetify migration.
     services::migration::migrate_fleet_to_fleetify();
 

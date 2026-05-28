@@ -210,6 +210,41 @@ pub async fn clone_or_pull(
     Ok((path.to_string_lossy().into_owned(), current_branch))
 }
 
+/// Verify that `url` resolves to a reachable git remote — without actually
+/// cloning. Runs `git ls-remote <url>` with a 20s timeout and
+/// `GIT_TERMINAL_PROMPT=0` so a missing credential helper fails fast
+/// instead of hanging the request. Auth (when present) still flows
+/// through the system git credential helper, so private repos work
+/// exactly like `git clone` does.
+pub async fn check_accessible(url: &str) -> Result<(), CloneError> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err(CloneError::Failed("Empty URL".into()));
+    }
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.args(["ls-remote", url]);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let output = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await;
+    match output {
+        Err(_) => Err(CloneError::Failed("git ls-remote timed out".into())),
+        Ok(Err(e)) => Err(CloneError::Failed(format!("git launch failed: {e}"))),
+        Ok(Ok(o)) => {
+            if o.status.success() {
+                Ok(())
+            } else {
+                let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                Err(CloneError::Failed(if err.is_empty() {
+                    format!("git ls-remote exited {}", o.status.code().unwrap_or(-1))
+                } else {
+                    err
+                }))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,5 +323,20 @@ mod tests {
         // never produce an empty or path-traversing key.
         assert_eq!(clone_dir_key("weird-name"), "weird-name");
         assert_eq!(clone_dir_key("/"), "repo");
+    }
+
+    #[tokio::test]
+    async fn check_accessible_rejects_empty_url() {
+        let result = check_accessible("").await;
+        assert!(result.is_err(), "expected empty URL to be rejected");
+    }
+
+    #[tokio::test]
+    async fn check_accessible_rejects_whitespace_only_url() {
+        let result = check_accessible("   ").await;
+        assert!(
+            result.is_err(),
+            "expected whitespace-only URL to be rejected"
+        );
     }
 }

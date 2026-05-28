@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { updateSession as apiUpdateSession, cloneRepository, fetchClaudeSessions, fetchClaudeHistory, type ClaudeSession } from "@/lib/api";
+import { extractOwnerRepo } from "@/lib/git-url";
 import { GitSourceTab } from "./git-source-tab";
 import { useAppStore } from "@/stores/app-store";
 import { useChatStore } from "@/stores/chat-store";
@@ -106,6 +107,7 @@ export function SessionToolbar({
   // message commits it via commitDraft → commitComposer.
   const session = useAppStore(s => s.sessions.find(x => x.id === sessionId));
   const composerOpen = useAppStore(s => s.composer.open);
+  const pendingCloneUrl = useAppStore(s => s.composer.pendingCloneUrl);
   const isDraft = composerOpen || session?.local_only === true;
   const [openMenu, setOpenMenu] = useState<MenuId>(null);
 
@@ -230,12 +232,6 @@ export function SessionToolbar({
       if (cliHistoryTimer.current) clearTimeout(cliHistoryTimer.current);
     };
   }, [projectPath, tool]);
-  // Clone-from-URL inline state. Lives in the folder picker popover:
-  // the user types a git URL, hits Clone, we fetch backend, on success
-  // the popover closes and the new path PATCHes through the existing
-  // project_path flow (which auto-creates the worktree).
-  const [cloning,     setCloning]     = useState(false);
-  const [cloneError,  setCloneError]  = useState<string | null>(null);
   // Source tab — Local (browse), Git (repo list + clone-by-URL),
   // Remote (SSH host management), Container (running Docker containers).
   // The Git tab's repo-list state lives inside <GitSourceTab/>.
@@ -321,20 +317,29 @@ export function SessionToolbar({
     }
   }, [patch]);
 
-  const submitClone = useCallback(async (url: string) => {
+  // Repo picker handler. Two paths:
+  //   • draft mode (composer is open) → stash the URL in
+  //     pendingCloneUrl + clear projectPath. The actual `git clone`
+  //     is deferred until commitComposer runs on first chat send.
+  //   • committed session → fall back to the legacy immediate-clone
+  //     flow (the session already has a real backend row + worktree,
+  //     so changing repo mid-session needs an immediate path swap).
+  const pickRepo = useCallback(async (url: string) => {
     const u = url.trim();
-    if (!u || cloning) return;
-    setCloning(true); setCloneError(null);
+    if (!u) return;
+    if (isDraft) {
+      setDraftField({ pending_clone_url: u, project_path: "" });
+      setOpenMenu(null);
+      return;
+    }
     try {
       const r = await cloneRepository(u);
       await patch({ project_path: r.path });
       setOpenMenu(null);
     } catch (e) {
-      setCloneError(e instanceof Error ? e.message : "Clone failed");
-    } finally {
-      setCloning(false);
+      console.error("toolbar pickRepo clone failed:", e);
     }
-  }, [cloning, patch]);
+  }, [isDraft, setDraftField, patch]);
 
   const pickPerm = useCallback((id: string) => {
     patch({ permission_mode: id });
@@ -479,12 +484,7 @@ export function SessionToolbar({
                   2. Scroll list (repos)
                   3. URL fallback (label + input + button)             */}
             {sourceTab === "git" && (
-              <GitSourceTab
-                cloning={cloning}
-                cloneError={cloneError}
-                onPick={(url) => void submitClone(url)}
-                onClone={(url) => void submitClone(url)}
-              />
+              <GitSourceTab onPick={(url) => void pickRepo(url)} />
             )}
 
             {/* ── Remote tab — SSH host management.
@@ -531,7 +531,9 @@ export function SessionToolbar({
       {(() => {
         const isContainerPath = !!(projectPath && projectPath.startsWith("docker://"));
         const isRemotePath    = !!(projectPath && projectPath.startsWith("ssh://"));
-        const inGitMode       = sourceTab === "git";
+        const isClonePath     = !!(projectPath && projectPath.includes("/.fleetify/clones/"));
+        const hasPendingClone = !!pendingCloneUrl;
+        const inGitMode       = sourceTab === "git" || hasPendingClone || isClonePath;
         const inRemoteMode    = sourceTab === "remote";
         const inContainerMode = sourceTab === "container";
         const isPickerMode    = inGitMode || inRemoteMode || inContainerMode;
@@ -546,9 +548,18 @@ export function SessionToolbar({
           : inRemoteMode ? "Pick remote folder"
           : inContainerMode ? "Pick container path"
           : "Pick folder";
-        // Strip the scheme prefix so the chip shows just the
-        // workspace name (last path segment), not a wall of URL.
+        // Display preference:
+        //   1. pendingCloneUrl set → owner/repo derived from the URL
+        //      the user just picked (clone deferred until commit).
+        //   2. projectPath under ~/.fleetify/clones/ → owner/repo from
+        //      the clone-key path layout (host/owner/repo).
+        //   3. container/remote URL → last path segment after stripping
+        //      the scheme prefix.
+        //   4. plain folder → leaf name (existing behaviour).
         const display = (() => {
+          if (hasPendingClone) {
+            return extractOwnerRepo(pendingCloneUrl!) ?? "Repository";
+          }
           if (!projectPath) return null;
           if (isContainerPath) {
             const tail = projectPath.replace(/^docker:\/\/[^/]+/, "").replace(/\/+$/, "");
@@ -558,11 +569,15 @@ export function SessionToolbar({
             const tail = projectPath.replace(/^ssh:\/\/[^/]+/, "").replace(/\/+$/, "");
             return tail.split("/").filter(Boolean).pop() ?? "Remote";
           }
+          if (isClonePath) {
+            return extractOwnerRepo(projectPath) ?? folderName;
+          }
           return folderName;
         })();
         const label = display ?? placeholder;
+        const hasSelection = !!(projectPath || hasPendingClone);
         const onClick = () => {
-          if (folderName || isRemotePath || isContainerPath) {
+          if (hasSelection) {
             if (isPickerMode || isRemotePath || isContainerPath) {
               setOpenMenu("source");
             } else {
@@ -579,7 +594,7 @@ export function SessionToolbar({
         return (
           <Chip onClick={onClick}>
             <Icon size={11} style={{ color: "var(--c-dim, #9a9a9a)" }} />
-            <span style={{ color: projectPath ? "var(--c-fg, #e6e6e6)" : "var(--c-dim, #9a9a9a)" }}>
+            <span style={{ color: hasSelection ? "var(--c-fg, #e6e6e6)" : "var(--c-dim, #9a9a9a)" }}>
               {label}
             </span>
           </Chip>

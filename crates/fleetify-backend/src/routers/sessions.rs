@@ -56,6 +56,7 @@ pub fn router() -> Router<AppState> {
         .route("/codex-sessions", get(list_codex_sessions))
         .route("/git/repos", get(list_user_repos))
         .route("/git/clone", post(clone_repository))
+        .route("/git/check", post(check_repo_accessible))
 }
 
 async fn owned(st: &AppState, id: &str, user_id: &str) -> Result<Session, ApiError> {
@@ -1192,6 +1193,20 @@ async fn clone_repository(
             "path": path,
             "branch": branch,
         }))),
+        Err(crate::services::clone::CloneError::Failed(msg)) => Err(ApiError::BadRequest(msg)),
+    }
+}
+
+#[derive(Deserialize)]
+struct CheckBody {
+    url: String,
+}
+async fn check_repo_accessible(
+    AuthUser(_u): AuthUser,
+    Json(b): Json<CheckBody>,
+) -> Result<Json<Value>, ApiError> {
+    match crate::services::clone::check_accessible(&b.url).await {
+        Ok(()) => Ok(Json(json!({ "ok": true }))),
         Err(crate::services::clone::CloneError::Failed(msg)) => Err(ApiError::BadRequest(msg)),
     }
 }

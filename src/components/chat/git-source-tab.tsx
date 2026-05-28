@@ -1,17 +1,20 @@
 import { useEffect, useState, useCallback } from "react";
 import { Search, Github } from "lucide-react";
-import { listReposResolved, type GhRepo } from "@/lib/api";
+import { listReposResolved, checkRepoAccessible, type GhRepo } from "@/lib/api";
 import { normalizeCloneUrl } from "@/lib/git-url";
 
 /* ─── GitSourceTab — the "Git" source picker tab ───────────────────────
    Two independent capabilities:
-     1. Clone by URL (TOP, always available) — `git clone` works for any
-        public repo with no GitHub connection; private repos use the
-        system git credential helper.
+     1. Use by URL (TOP, always available) — paste any git URL or
+        `owner/repo` shorthand; the tab `git ls-remote`-checks that it
+        resolves before handing the URL to the parent. The actual
+        `git clone` is deferred to session-commit time (so the user
+        doesn't pay the clone cost while still tweaking the composer).
      2. Browse my repos (gated) — enumerating the user's repos needs a
         GitHub connection, resolved gh-first → OAuth → not-connected.
-   Both row-click and URL submit converge on the same clone path via the
-   `onPick` / `onClone` callbacks. ─────────────────────────────────────*/
+   Both row-click and URL submit converge on a single `onPick(url)`
+   callback; the parent stashes the URL in the composer's
+   `pendingCloneUrl` and the actual clone runs at `commitComposer`. ──*/
 
 type State =
   | { kind: "loading" }
@@ -20,16 +23,22 @@ type State =
   | { kind: "error"; message: string };
 
 export function GitSourceTab({
-  onPick, cloning, onClone, cloneError,
+  onPick,
+  checkUrl = checkRepoAccessible,
 }: {
-  onPick: (url: string) => void;     // repo row click
-  cloning: boolean;
-  onClone: (url: string) => void;    // URL paste submit
-  cloneError?: string | null;        // surfaced by the owner's clone handler
+  /** Called with a normalized URL once the picker has decided the
+   *  remote is reachable (URL paste) or trusts the source (repo-list
+   *  row). The parent stashes the URL — no immediate clone. */
+  onPick: (url: string) => void;
+  /** Override for tests: the accessibility-check function. Defaults to
+   *  the live IPC. */
+  checkUrl?: (url: string) => Promise<{ ok: true }>;
 }) {
   const [state, setState] = useState<State>({ kind: "loading" });
   const [filter, setFilter] = useState("");
   const [url, setUrl] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [checkError, setCheckError] = useState<string | null>(null);
 
   const load = useCallback(() => {
     setState({ kind: "loading" });
@@ -57,10 +66,20 @@ export function GitSourceTab({
   const openIntegrations = () =>
     window.dispatchEvent(new CustomEvent("fleet:open-settings", { detail: { tab: "Integrations" } }));
 
-  const submitUrl = () => {
+  const submitUrl = async () => {
     const u = normalizeCloneUrl(url);
-    if (!u || cloning) return;
-    onClone(u);
+    if (!u || checking) return;
+    setChecking(true);
+    setCheckError(null);
+    try {
+      await checkUrl(u);
+      onPick(u);
+      setUrl("");
+    } catch (e) {
+      setCheckError(e instanceof Error ? e.message : "Couldn't reach this repository.");
+    } finally {
+      setChecking(false);
+    }
   };
 
   const repos = state.kind === "list" ? state.repos : [];
@@ -70,7 +89,7 @@ export function GitSourceTab({
 
   return (
     <div style={{ display: "flex", flexDirection: "column" }}>
-      {/* ── Clone by URL — TOP, always available ── */}
+      {/* ── Use by URL — TOP, always available ── */}
       <div style={{ padding: "9px 10px", borderBottom: "1px solid var(--c-brd)", display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 6 }}>
         <div style={{ alignSelf: "flex-start", textAlign: "left", fontSize: 9.5, fontWeight: 600, letterSpacing: 0.6, textTransform: "uppercase", color: "var(--c-dim)" }}>
           Clone from URL
@@ -81,23 +100,23 @@ export function GitSourceTab({
           </span>
           <input
             value={url}
-            onChange={e => setUrl(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); submitUrl(); } }}
+            onChange={e => { setUrl(e.target.value); if (checkError) setCheckError(null); }}
+            onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); void submitUrl(); } }}
             placeholder="owner/repo or https://github.com/owner/repo"
-            disabled={cloning}
+            disabled={checking}
             spellCheck={false}
-            style={{ flex: 1, minWidth: 0, padding: "6px 0", background: "transparent", border: "none", color: "var(--c-fg)", fontFamily: "var(--font-mono)", fontSize: 11, outline: "none", opacity: cloning ? 0.6 : 1 }}
+            style={{ flex: 1, minWidth: 0, padding: "6px 0", background: "transparent", border: "none", color: "var(--c-fg)", fontFamily: "var(--font-mono)", fontSize: 11, outline: "none", opacity: checking ? 0.6 : 1 }}
           />
           <button
-            onClick={submitUrl}
-            disabled={!url.trim() || cloning}
-            style={{ padding: "0 12px", fontSize: 11, fontWeight: 600, fontFamily: "var(--font-sans)", color: url.trim() && !cloning ? "var(--card, #0a0a0a)" : "var(--c-dim)", background: url.trim() && !cloning ? "var(--c-fg)" : "transparent", border: "none", borderLeft: "1px solid var(--c-brd)", cursor: url.trim() && !cloning ? "pointer" : "default", outline: "none", flexShrink: 0, transition: "background 0.12s, color 0.12s" }}
+            onClick={() => void submitUrl()}
+            disabled={!url.trim() || checking}
+            style={{ padding: "0 12px", fontSize: 11, fontWeight: 600, fontFamily: "var(--font-sans)", color: url.trim() && !checking ? "var(--card, #0a0a0a)" : "var(--c-dim)", background: url.trim() && !checking ? "var(--c-fg)" : "transparent", border: "none", borderLeft: "1px solid var(--c-brd)", cursor: url.trim() && !checking ? "pointer" : "default", outline: "none", flexShrink: 0, transition: "background 0.12s, color 0.12s" }}
           >
-            {cloning ? "…" : "Clone"}
+            {checking ? "Checking…" : "Use"}
           </button>
         </div>
-        {cloneError && (
-          <span style={{ alignSelf: "stretch", fontSize: 10.5, color: "#ef4444", fontFamily: "var(--font-mono)", wordBreak: "break-word" }}>{cloneError}</span>
+        {checkError && (
+          <span style={{ alignSelf: "stretch", fontSize: 10.5, color: "#ef4444", fontFamily: "var(--font-mono)", wordBreak: "break-word" }}>{checkError}</span>
         )}
       </div>
 
@@ -106,7 +125,7 @@ export function GitSourceTab({
         <div style={{ padding: "20px 14px", textAlign: "center", display: "flex", flexDirection: "column", gap: 8, alignItems: "center" }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: "var(--c-fg)" }}>GitHub not connected</div>
           <div style={{ fontSize: 11, color: "var(--c-dim)", lineHeight: 1.5, maxWidth: 240 }}>
-            Connect GitHub to browse your repositories. You can still clone any public repo by URL above.
+            Connect GitHub to browse your repositories. You can still use any public repo by URL above.
           </div>
           <button
             onClick={openIntegrations}
@@ -137,12 +156,11 @@ export function GitSourceTab({
             {state.kind === "list" && shown.map(r => (
               <button
                 key={r.nameWithOwner}
-                disabled={cloning}
                 onMouseDown={e => e.preventDefault()}
                 onClick={() => onPick(r.url)}
                 title={r.description || r.nameWithOwner}
-                style={{ display: "grid", gridTemplateColumns: "10px minmax(0,1fr) auto", alignItems: "center", columnGap: 8, padding: "5px 8px", background: "transparent", border: "none", outline: "none", borderRadius: 4, textAlign: "left", cursor: cloning ? "default" : "pointer", opacity: cloning ? 0.5 : 1, fontFamily: "var(--font-sans)", color: "var(--c-fg)", width: "100%" }}
-                onMouseEnter={e => { if (!cloning) (e.currentTarget as HTMLButtonElement).style.background = "var(--c-srf, rgba(255,255,255,0.06))"; }}
+                style={{ display: "grid", gridTemplateColumns: "10px minmax(0,1fr) auto", alignItems: "center", columnGap: 8, padding: "5px 8px", background: "transparent", border: "none", outline: "none", borderRadius: 4, textAlign: "left", cursor: "pointer", fontFamily: "var(--font-sans)", color: "var(--c-fg)", width: "100%" }}
+                onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = "var(--c-srf, rgba(255,255,255,0.06))"; }}
                 onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
               >
                 <span style={{ width: 6, height: 6, borderRadius: "50%", background: r.isPrivate ? "var(--c-dim)" : "rgba(120,180,140,0.95)", justifySelf: "center" }} />

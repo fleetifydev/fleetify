@@ -61,6 +61,12 @@ export interface Session {
    *  (WS subscribe, /detail polling, history fetch, infinite scroll)
    *  must early-out when `local_only` is true. */
   local_only?: boolean;
+  /** Renderer-only: a git URL the user picked via the Git source
+   *  picker but hasn't cloned yet. `commitComposer` clones it and
+   *  drops this field before the session lands in the backend; never
+   *  shipped over the wire. Co-exists with `project_path`: the chip
+   *  prefers this URL while the clone is deferred. */
+  pending_clone_url?: string | null;
 }
 
 export interface Group {

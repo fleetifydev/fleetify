@@ -243,20 +243,22 @@ choice; neither leaks prompt content, API keys, or file paths.
 - **Code:** backend module at `crates/fleetify-backend/src/services/telemetry/posthog/`; frontend wrapper at `src/lib/posthog.ts`.
 - **Fan-out:** the existing `services/telemetry/emitters.rs::enqueue_payload` writes to both the Fleetify cloud outbox AND the PostHog outbox (the latter via `posthog::enqueue_if_enabled`, gated on a runtime `AtomicBool`).
 - **distinct_id:** the persisted `device_id` from `device.json` is reused on both sides. Frontend `posthog.identify(user_id)` after OAuth merges the anonymous person into the authenticated one via `$anon_distinct_id`.
-- **Build-time keys:** `POSTHOG_API_KEY` (Rust, `option_env!`) and `VITE_POSTHOG_KEY` (Vite, `import.meta.env`). Unset → entire module compiles to no-op stubs. `POSTHOG_HOST` / `VITE_POSTHOG_HOST` default to `https://us.i.posthog.com`.
+- **Env keys:** `POSTHOG_API_KEY` (Rust, runtime `std::env::var`) and `VITE_POSTHOG_KEY` (Vite, `import.meta.env`). Unset → backend `init` short-circuits and the renderer wrapper no-ops. `POSTHOG_HOST` / `VITE_POSTHOG_HOST` default to `https://us.i.posthog.com`.
 - **Runtime gate:** `telemetry_set_posthog_enabled` Tauri command persists the flag in `fleet.config.json::telemetry.posthog_enabled` AND flips the backend's `ENABLED` atomic live. Live opt-out stops new sends within ~10 s; renderer's `optOut()` stops autocapture immediately.
 
 ### Local dev
 
-`POSTHOG_API_KEY` / `VITE_POSTHOG_KEY` are left unset by default in `scripts/dev-tauri-wt.mjs` — local dev sessions emit zero PostHog events even with the gate flipped on. To actually exercise the integration, set them in your shell before running `npm run dev:tauri:wt`:
+Single source of truth is a `.env` file in the workspace root (gitignored — `.env.example` is the committed template). `dotenvy::dotenv()` runs at the top of `serve_with_routing_setup` so the Rust backend picks up the keys via `std::env::var`; Vite reads the same `.env` natively for the renderer.
 
-```bash
-export POSTHOG_API_KEY=phc_yourtestprojectkey
-export VITE_POSTHOG_KEY=phc_yourtestprojectkey
-npm run dev:tauri:wt
+```
+# .env (gitignored)
+POSTHOG_API_KEY=phc_yourtestprojectkey
+VITE_POSTHOG_KEY=phc_yourtestprojectkey
+POSTHOG_HOST=https://us.i.posthog.com
+VITE_POSTHOG_HOST=https://us.i.posthog.com
 ```
 
-After changing `POSTHOG_API_KEY`, run `cargo clean -p fleetify-backend` to force a rebuild — `option_env!` is evaluated at compile time and bakes the value into the binary.
+Then just run `npm run dev:tauri:wt` — no shell env juggling, no `cargo clean` needed because the keys are read at runtime now (was `option_env!` baked-at-compile, dropped in favour of runtime resolution). Shell-set env vars still win over `.env` so CI / production injection paths are unchanged.
 
 ### Full event list
 

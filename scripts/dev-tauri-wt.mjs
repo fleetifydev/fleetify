@@ -113,27 +113,24 @@ function main() {
       process.env.FLEETIFY_DASHBOARD_URL ?? 'http://localhost:3000',
     FLEETIFY_RESOURCE: backendUrl,
     FLEETIFY_AUDIENCE: backendUrl,
-    // PostHog product analytics (off by default; set in your shell to
-    // exercise the integration locally).
+    // PostHog product analytics keys (POSTHOG_API_KEY / VITE_POSTHOG_KEY,
+    // optional POSTHOG_HOST / VITE_POSTHOG_HOST) flow in naturally via
+    // the `...process.env` spread above. The Rust backend additionally
+    // calls `dotenvy::dotenv()` at startup, so a workspace-root `.env`
+    // (gitignored; see `.env.example` for the template) feeds straight
+    // in without any wrapper shell-export step. Defaults live in code:
+    // backend defaults POSTHOG_HOST to `https://us.i.posthog.com`, the
+    // renderer's `src/lib/posthog.ts` does the same for VITE_POSTHOG_HOST.
     //
-    //   POSTHOG_API_KEY    — embedded into the Rust backend at compile
-    //                        time via `option_env!`. Changing it after a
-    //                        prior build requires `cargo clean -p
-    //                        fleetify-backend` to force a rebuild.
-    //   VITE_POSTHOG_KEY   — read by the renderer at runtime via
-    //                        `import.meta.env`. Should match POSTHOG_API_KEY
-    //                        so backend + frontend events flow into one
-    //                        PostHog project.
-    //   POSTHOG_HOST       — defaults to US cloud. Override with
-    //                        `https://eu.i.posthog.com` for EU residency.
+    // NOTE: do NOT add explicit `POSTHOG_API_KEY: process.env... ?? ''`
+    // lines here — `dotenvy` by design refuses to override existing env
+    // vars (including empty strings), so any explicit injection from
+    // this script would shadow the `.env` value the user actually wants
+    // and silently disable the backend sink. Pull this through the
+    // spread or via the shell.
     //
     // Even with keys set, the runtime gate stays closed until the user
-    // opts in via onboarding consent or Settings → Privacy — so a stray
-    // POSTHOG_API_KEY in your shell won't actually emit events.
-    POSTHOG_API_KEY: process.env.POSTHOG_API_KEY ?? '',
-    POSTHOG_HOST: process.env.POSTHOG_HOST ?? 'https://us.i.posthog.com',
-    VITE_POSTHOG_KEY: process.env.VITE_POSTHOG_KEY ?? '',
-    VITE_POSTHOG_HOST: process.env.VITE_POSTHOG_HOST ?? 'https://us.i.posthog.com',
+    // opts in via onboarding consent or Settings → Privacy.
   };
 
   console.log(`[dev:tauri:wt] booting (source: ${source}, slot: ${slot})`);

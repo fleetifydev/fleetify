@@ -45,6 +45,11 @@ glob = "0.3"
 # `windows-native` keeps the credential in the Windows Credential Manager
 # (Tauri shell uses the same feature set).
 keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
+# Loads `.env` (workspace root) into the process environment at server
+# startup so single-source dev config (POSTHOG_API_KEY, POSTHOG_HOST, …)
+# works without a wrapper shell script. No-op when `.env` is absent —
+# real production builds inject env via the shell as before.
+dotenvy = "0.15"
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

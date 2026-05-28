@@ -18,6 +18,16 @@ export default defineConfig({
     environment: "happy-dom",
     globals: false,
     setupFiles: ["./src/__tests__/setup.ts"],
+    // Pin PostHog env to empty for the whole renderer suite so tests are
+    // deterministic regardless of a contributor's local `.env` (which
+    // Vite would otherwise load). The posthog wrapper reads
+    // `VITE_POSTHOG_KEY` at module load; forcing it empty keeps the
+    // "no key → no-op" assertions valid even on a machine that has real
+    // PostHog credentials configured for `npm run dev:tauri:wt`.
+    env: {
+      VITE_POSTHOG_KEY: "",
+      VITE_POSTHOG_HOST: "",
+    },
   },
   resolve: {
     alias: {

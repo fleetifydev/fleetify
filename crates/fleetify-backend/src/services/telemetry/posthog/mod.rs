@@ -7,8 +7,10 @@
 //!     interferes with the Fleetify outbox.
 //!
 //! Three-tier gating, fail-closed:
-//!   1. Compile-time: `POSTHOG_API_KEY` env var present at build. Unset
-//!      → `init` is a no-op, `enqueue_if_enabled` short-circuits.
+//!   1. Environment: `POSTHOG_API_KEY` present in the process env when
+//!      `init()` runs (loaded from `.env` by `dotenvy` at the top of
+//!      `serve_with_routing_setup`, or set in the shell). Unset →
+//!      `init` is a no-op, `enqueue_if_enabled` short-circuits.
 //!   2. Runtime: `ENABLED` AtomicBool. Tauri shell flips it via the
 //!      `telemetry_set_posthog_enabled` command after user consent.
 //!   3. Live opt-out: the worker also re-checks `is_enabled()` each
@@ -35,17 +37,23 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 static CLIENT: OnceLock<client::Client> = OnceLock::new();
 static DISTINCT_ID: OnceLock<String> = OnceLock::new();
 
-/// Build-time PostHog project key (write-only / public, safe to embed
-/// in shipped binaries). `None` → entire module is a no-op.
-pub fn project_key() -> Option<&'static str> {
-    option_env!("POSTHOG_API_KEY")
+/// PostHog project key (write-only / public, safe to embed in shipped
+/// binaries) read from `POSTHOG_API_KEY` in the process environment at
+/// call time. `None` → entire module is a no-op. `dotenvy` populates
+/// the env from `.env` at server startup, so a single workspace-root
+/// `.env` covers dev without a wrapper shell script.
+pub fn project_key() -> Option<String> {
+    std::env::var("POSTHOG_API_KEY")
+        .ok()
+        .filter(|s| !s.is_empty())
 }
 
-/// PostHog host. Defaults to US cloud; override at build time with
+/// PostHog host. Defaults to US cloud; override at runtime with
 /// `POSTHOG_HOST=https://eu.i.posthog.com` (or a self-hosted URL).
 pub fn host() -> String {
-    option_env!("POSTHOG_HOST")
-        .map(String::from)
+    std::env::var("POSTHOG_HOST")
+        .ok()
+        .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "https://us.i.posthog.com".to_string())
 }
 
@@ -78,17 +86,17 @@ pub(crate) fn client_handle() -> Option<&'static client::Client> {
 }
 
 /// Initialise the outbox + spawn the worker. No-op when
-/// `POSTHOG_API_KEY` is unset at build time.
+/// `POSTHOG_API_KEY` is unset in the process env at this call.
 pub async fn init() -> anyhow::Result<()> {
     let Some(key) = project_key() else {
         tracing::info!(
             target: "fleetify.posthog",
-            "POSTHOG_API_KEY not set at build; posthog sink disabled"
+            "POSTHOG_API_KEY not set in env; posthog sink disabled"
         );
         return Ok(());
     };
     outbox::init().await?;
-    let client = client::Client::new(key, &host())?;
+    let client = client::Client::new(&key, &host())?;
     let _ = CLIENT.set(client);
     tokio::spawn(worker::run_worker_loop());
     tracing::info!(

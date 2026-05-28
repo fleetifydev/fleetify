@@ -10,7 +10,7 @@ import { useChatStore, typeOutAssistantMessage } from "@/stores/chat-store";
  *  commitComposer — by design, they're transient compose-mode UX and
  *  disappear the moment the surface flips to the real session. */
 export const COMPOSER_CHAT_KEY = "__composer__";
-import { createSession as apiCreateSession } from "@/lib/api";
+import { createSession as apiCreateSession, cloneRepository } from "@/lib/api";
 import { folderName } from "@/lib/utils";
 
 
@@ -71,6 +71,14 @@ export interface ComposerState {
   /** Pre-seeded `--resume` target if the user picked one from History
    *  before sending the first message. */
   claudeSessionId: string | null;
+  /** A git URL the user has selected via the Git source picker but
+   *  HASN'T cloned yet. Set when the user picks from the repo list or
+   *  pastes + validates a URL; cleared once commitComposer clones it
+   *  and writes the resolved path into projectPath. The deferred
+   *  clone lets the user keep tweaking the composer (model, perms,
+   *  branch, …) without paying the clone cost up front — the actual
+   *  `git clone` runs at the moment they fire their first message. */
+  pendingCloneUrl: string | null;
 }
 
 /** @deprecated kept only so external imports (tests, callers that
@@ -329,6 +337,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     useWorktree: true,
     title: "New chat",
     claudeSessionId: null,
+    pendingCloneUrl: null,
   },
 
   setSessions: (sessions) => set({ sessions }),
@@ -753,6 +762,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         useWorktree: true,
         title: "New chat",
         claudeSessionId: null,
+        pendingCloneUrl: null,
       },
       activeSessionId: null,   // chat-view + composer.open == compose surface
       mainView: "fleet",
@@ -791,15 +801,30 @@ export const useAppStore = create<AppState>((set, get) => ({
     const c = state.composer;
     if (!c.open) return null;
     try {
+      // If the user picked a git URL via the source picker but hasn't
+      // cloned it yet, run the clone now (this is the moment the
+      // session goes from "draft" to "real backend row"). The resolved
+      // absolute path becomes the session's project_path and the
+      // pending URL gets cleared. A clone failure aborts the commit so
+      // the user can pick a different repo / fix the URL — the
+      // composer stays open and the chat input shows the thrown error.
+      let resolvedProjectPath = c.projectPath;
+      if (c.pendingCloneUrl) {
+        const cloneResult = await cloneRepository(c.pendingCloneUrl);
+        resolvedProjectPath = cloneResult.path;
+        set((s) => ({
+          composer: { ...s.composer, projectPath: cloneResult.path, pendingCloneUrl: null },
+        }));
+      }
       // Coerce the "New chat" placeholder back to the folder basename
       // (or "Session" as a last-resort label) — matches the pre-Phase-7
       // contract where commitDraft normalised "New chat" the same way.
       const customTitle = c.title && c.title !== "New chat"
         ? c.title
-        : (c.projectPath ? (folderName(c.projectPath) || "Session") : "New chat");
+        : (resolvedProjectPath ? (folderName(resolvedProjectPath) || "Session") : "New chat");
       const session = await apiCreateSession({
         title: customTitle,
-        project_path: c.projectPath,
+        project_path: resolvedProjectPath,
         tool: c.tool,
         permission_mode: c.permissionMode,
         model_name: c.modelName ?? undefined,
@@ -852,6 +877,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (patch.use_worktree !== undefined) c.useWorktree = patch.use_worktree;
     if (patch.title !== undefined) c.title = patch.title;
     if (patch.claude_session_id !== undefined) c.claudeSessionId = patch.claude_session_id ?? null;
+    if (patch.pending_clone_url !== undefined) c.pendingCloneUrl = patch.pending_clone_url ?? null;
     get().setComposerField(c);
   },
   commitDraft: async () => get().commitComposer(),

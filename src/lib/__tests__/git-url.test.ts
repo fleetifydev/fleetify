@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeCloneUrl } from "../git-url";
+import { normalizeCloneUrl, extractOwnerRepo } from "../git-url";
 
 describe("normalizeCloneUrl", () => {
   it("expands owner/repo shorthand to a github.com https URL", () => {
@@ -58,5 +58,67 @@ describe("normalizeCloneUrl", () => {
 
   it("does not treat owner/repo/sub as a shorthand (too many segments)", () => {
     expect(normalizeCloneUrl("a/b/c")).toBe("a/b/c");
+  });
+});
+
+describe("extractOwnerRepo", () => {
+  it("strips scheme + host from an https github URL", () => {
+    expect(extractOwnerRepo("https://github.com/agentscope-ai/QwenPaw"))
+      .toBe("agentscope-ai/QwenPaw");
+  });
+
+  it("strips the trailing .git suffix", () => {
+    expect(extractOwnerRepo("https://github.com/agentscope-ai/QwenPaw.git"))
+      .toBe("agentscope-ai/QwenPaw");
+  });
+
+  it("handles bare host/owner/repo input (no scheme)", () => {
+    expect(extractOwnerRepo("github.com/agentscope-ai/QwenPaw"))
+      .toBe("agentscope-ai/QwenPaw");
+  });
+
+  it("returns owner/repo shorthand verbatim", () => {
+    expect(extractOwnerRepo("agentscope-ai/QwenPaw"))
+      .toBe("agentscope-ai/QwenPaw");
+  });
+
+  it("extracts owner/repo from a scp-style SSH target", () => {
+    expect(extractOwnerRepo("git@github.com:agentscope-ai/QwenPaw.git"))
+      .toBe("agentscope-ai/QwenPaw");
+  });
+
+  it("extracts owner/repo from a ssh:// scheme URL with a user prefix", () => {
+    expect(extractOwnerRepo("ssh://git@github.com/agentscope-ai/QwenPaw.git"))
+      .toBe("agentscope-ai/QwenPaw");
+  });
+
+  it("extracts owner/repo from a posix .fleetify clone path", () => {
+    expect(extractOwnerRepo("/home/u/.fleetify/clones/github.com/agentscope-ai/QwenPaw"))
+      .toBe("agentscope-ai/QwenPaw");
+  });
+
+  it("extracts owner/repo from a windows .fleetify clone path", () => {
+    expect(extractOwnerRepo("C:\\Users\\me\\.fleetify\\clones\\github.com\\agentscope-ai\\QwenPaw"))
+      .toBe("agentscope-ai/QwenPaw");
+  });
+
+  it("strips a trailing slash on a clone path", () => {
+    expect(extractOwnerRepo("/home/u/.fleetify/clones/github.com/agentscope-ai/QwenPaw/"))
+      .toBe("agentscope-ai/QwenPaw");
+  });
+
+  it("returns null for unrelated folder paths", () => {
+    expect(extractOwnerRepo("/home/u/projects/foo")).toBeNull();
+    expect(extractOwnerRepo("/tmp")).toBeNull();
+  });
+
+  it("returns null for empty / whitespace input", () => {
+    expect(extractOwnerRepo("")).toBeNull();
+    expect(extractOwnerRepo("   ")).toBeNull();
+  });
+
+  it("returns null when no two-segment identifier can be recovered", () => {
+    expect(extractOwnerRepo("notavalidthing")).toBeNull();
+    expect(extractOwnerRepo("github.com")).toBeNull();
   });
 });
