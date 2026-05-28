@@ -91,6 +91,7 @@ pub fn agent_kind_to_str(a: crate::services::routing::traits::AgentKind) -> &'st
         AgentKind::Gemini => "gemini",
         AgentKind::Codex => "codex",
         AgentKind::Kimi => "kimi",
+        AgentKind::GitHubCopilot => "github-copilot",
     }
 }
 
@@ -412,6 +413,7 @@ pub fn provider_kind_for(agent: AgentKind) -> ProviderKind {
         AgentKind::OpenAI | AgentKind::Codex => ProviderKind::OpenAI,
         AgentKind::Gemini => ProviderKind::Google,
         AgentKind::Kimi => ProviderKind::OpenAICompatible,
+        AgentKind::GitHubCopilot => ProviderKind::OpenAICompatible,
     }
 }
 

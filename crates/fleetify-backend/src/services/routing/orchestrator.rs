@@ -393,6 +393,7 @@ fn fallback_default(task: &RoutingTask) -> RouterDecision {
             AgentKind::Gemini => "gemini-3.1-pro-preview".into(),
             AgentKind::Codex => "gpt-5-codex".into(),
             AgentKind::Kimi => "kimi-k2-instruct".into(),
+            AgentKind::GitHubCopilot => "auto".into(),
         },
         rationale: "fallback default — built-in errored unexpectedly".into(),
         source: DecisionSource::BuiltIn,

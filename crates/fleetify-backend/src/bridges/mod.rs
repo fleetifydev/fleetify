@@ -11,6 +11,7 @@ pub mod claude;
 pub mod codex;
 pub mod codex_client;
 pub mod gemini;
+pub mod github_copilot;
 pub mod kimi;
 pub mod openai;
 pub mod openai_compat;
@@ -85,6 +86,9 @@ pub enum AnyBridge {
     /// tool use via `permission_mode = "acceptEdits"` (Chat-mode tools)
     /// or `"bypassPermissions"` (Autonomous tools).
     Agentic(Arc<agentic_runner::AgenticBridgeRunner>),
+    /// GitHub Copilot CLI — ACP bridge (mirrors Gemini). Spawns
+    /// `copilot --acp --stdio` and drives the shared AcpClient.
+    GitHubCopilot(Arc<github_copilot::GitHubCopilotBridge>),
 }
 
 impl AnyBridge {
@@ -104,6 +108,7 @@ impl AnyBridge {
             AnyBridge::Antigravity(b) => b.send_message(msg, ctx).await,
             AnyBridge::AntigravitySdk(b) => b.send_message(msg, ctx).await,
             AnyBridge::Agentic(b) => b.send_message(msg, ctx).await,
+            AnyBridge::GitHubCopilot(b) => b.send_message(msg, ctx).await,
         }
     }
     pub async fn abort(&self) {
@@ -118,6 +123,7 @@ impl AnyBridge {
             AnyBridge::Antigravity(b) => b.abort().await,
             AnyBridge::AntigravitySdk(b) => b.abort().await,
             AnyBridge::Agentic(b) => b.abort().await,
+            AnyBridge::GitHubCopilot(b) => b.abort().await,
         }
     }
     /// claude_session_id (if the agent emitted one in `init`). For
@@ -125,6 +131,10 @@ impl AnyBridge {
     pub fn claude_session_id(&self) -> Option<String> {
         match self {
             AnyBridge::Claude(b) => b.claude_session_id.clone(),
+            AnyBridge::GitHubCopilot(b) => {
+                // ACP session id surfaces as `claude_session_id` for renderer parity.
+                b.acp_session_id.try_lock().ok().and_then(|g| g.clone())
+            }
             _ => None,
         }
     }
@@ -346,5 +356,25 @@ mod tests {
         assert_eq!(v["provider"], "antigravity");
         assert_eq!(v["url"], "https://accounts.google.com/o/oauth2/auth?foo=1");
         assert_eq!(v["opened_in_browser"], false);
+    }
+}
+
+#[cfg(test)]
+mod any_bridge_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn any_bridge_github_copilot_variant_exists() {
+        let bridge = Arc::new(github_copilot::GitHubCopilotBridge::new(
+            "test-session",
+            "/tmp/test-project",
+            "default",
+            None,
+            None,
+            None,
+        ));
+        let any = AnyBridge::GitHubCopilot(bridge);
+        assert!(any.claude_session_id().is_none());
     }
 }

@@ -857,6 +857,7 @@ mod tests {
                 ("codex", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "codex"),
                 ("gemini", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "gemini"),
                 ("kimi", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "kimi"),
+                ("github-copilot", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "copilot"),
                 ("agy", ScanProbe::AgyCli) => {}
                 ("antigravity-sdk", ScanProbe::PythonModule { module }) => {
                     assert_eq!(module, "google.antigravity");

@@ -63,6 +63,7 @@ fn agent_key(a: AgentKind) -> &'static str {
         AgentKind::Gemini => "gemini",
         AgentKind::Codex => "codex",
         AgentKind::Kimi => "kimi",
+        AgentKind::GitHubCopilot => "github-copilot",
     }
 }
 

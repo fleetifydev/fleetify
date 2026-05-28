@@ -109,6 +109,9 @@ fn provider_prefix(a: AgentKind) -> &'static str {
         // Returning the openai-compat prefix means the router will at
         // least round-trip with a sane provider family for telemetry.
         AgentKind::Kimi => "openai",
+        // GitHub Copilot is not a routing target (locally-run).
+        // Returning the openai-compat prefix for telemetry.
+        AgentKind::GitHubCopilot => "openai",
     }
 }
 

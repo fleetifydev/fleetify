@@ -835,6 +835,79 @@ const ANTIGRAVITY_SDK_INDICATORS: &[AuthIndicator] = &[
 // which the LocalHttp probe answers separately).
 const OLLAMA_CLI_INDICATORS: &[AuthIndicator] = &[];
 
+// ─── GitHub Copilot CLI ──────────────────────────────────────────────────
+
+const GITHUB_COPILOT_INDICATORS: &[AuthIndicator] = &[
+    // OAuth + app state file (created on first `copilot` run; may be empty
+    // when token lives in the OS keychain, but its presence still signals
+    // the CLI has been used).
+    AuthIndicator::HomeDir {
+        path: ".copilot/config.json",
+    },
+    // Headless / CI auth — precedence per GitHub docs.
+    AuthIndicator::EnvVar {
+        name: "COPILOT_GITHUB_TOKEN",
+    },
+    AuthIndicator::EnvVar { name: "GH_TOKEN" },
+    AuthIndicator::EnvVar {
+        name: "GITHUB_TOKEN",
+    },
+];
+
+const GITHUB_COPILOT_MODELS: &[ModelSpec] = &[
+    ModelSpec {
+        id: "auto",
+        label: "Auto (Copilot picks)",
+        context_window: None,
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "gpt-5.3-codex",
+        label: "GPT-5.3 Codex",
+        context_window: None,
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "gpt-5.2",
+        label: "GPT-5.2",
+        context_window: None,
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "claude-sonnet-4.6",
+        label: "Claude Sonnet 4.6",
+        context_window: None,
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "claude-haiku-4.5",
+        label: "Claude Haiku 4.5",
+        context_window: None,
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+];
+
+const GITHUB_COPILOT_INSTALL_HINTS: InstallHints = InstallHints {
+    windows: "winget install GitHub.Copilot",
+    macos: "brew install copilot-cli",
+    linux: "curl -fsSL https://gh.io/copilot-install | bash",
+};
+
 // ─── Catalog ─────────────────────────────────────────────────────────────
 
 pub static CATALOG: &[ProviderSpec] = &[
@@ -1057,6 +1130,20 @@ pub static CATALOG: &[ProviderSpec] = &[
         install_hints: None,
         login_hint: "kimi login",
     },
+    ProviderSpec {
+        id: "github-copilot",
+        display_name: "GitHub Copilot CLI",
+        kind: ProviderKind::Cli,
+        default_base_url: "",
+        auth: AuthSpec::None,
+        default_models: GITHUB_COPILOT_MODELS,
+        extras: ProviderExtras::DEFAULT,
+        bin: "copilot",
+        auth_indicators: GITHUB_COPILOT_INDICATORS,
+        install_hint: "npm install -g @github/copilot",
+        install_hints: Some(GITHUB_COPILOT_INSTALL_HINTS),
+        login_hint: "copilot login",
+    },
     // Antigravity ships a Go binary outside npm (curl/irm installer), so
     // `install_hint` stays empty and the per-OS `install_hints` carry the
     // real commands. The shell IPC layer branches on this when wiring the
@@ -1161,13 +1248,13 @@ mod tests {
             .iter()
             .filter(|p| matches!(p.kind, ProviderKind::Cli))
             .count();
-        // 7 cloud HTTP providers + 1 local (ollama) + 6 CLI agents
-        // (Claude, Codex, Gemini, Kimi, Antigravity CLI, Antigravity SDK).
+        // 7 cloud HTTP providers + 1 local (ollama) + 7 CLI agents
+        // (Claude, Codex, Gemini, Kimi, GitHub Copilot, Antigravity CLI, Antigravity SDK).
         // If you intentionally added/removed a provider, update these
         // constants together with the catalog.
         assert_eq!(api, 7, "expected 7 Api providers, got {api}");
         assert_eq!(local, 1, "expected 1 LocalHttp provider, got {local}");
-        assert_eq!(cli, 6, "expected 6 Cli agents, got {cli}");
+        assert_eq!(cli, 7, "expected 7 Cli agents, got {cli}");
     }
 
     #[test]

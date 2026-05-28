@@ -66,6 +66,9 @@ fn weave_provider(a: AgentKind) -> &'static str {
         AgentKind::Gemini => "google",
         // Weave's openai-compat endpoint handles Moonshot.
         AgentKind::Kimi => "openai",
+        // GitHub Copilot CLI is not a Weave routing target (locally-run CLI
+        // agent). Returning the openai-compat provider tag for telemetry only.
+        AgentKind::GitHubCopilot => "openai",
     }
 }
 

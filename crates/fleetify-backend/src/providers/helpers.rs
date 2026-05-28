@@ -85,4 +85,17 @@ mod tests {
         assert!(cli.iter().all(|p| p.id != "openai"));
         assert!(cli.iter().all(|p| p.id != "ollama"));
     }
+
+    #[test]
+    fn find_agent_returns_github_copilot() {
+        use super::super::catalog::AuthSpec;
+        let spec =
+            super::find_agent("github-copilot").expect("github-copilot should be registered");
+        assert_eq!(spec.id, "github-copilot");
+        assert_eq!(spec.bin, "copilot");
+        assert_eq!(spec.kind, super::ProviderKind::Cli);
+        assert!(matches!(spec.auth, AuthSpec::None));
+        // OAuth file + 3 env vars = 4 indicators
+        assert_eq!(spec.auth_indicators.len(), 4);
+    }
 }

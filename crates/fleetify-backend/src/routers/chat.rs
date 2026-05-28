@@ -966,6 +966,16 @@ async fn run_send_flow(
             }
             AnyBridge::Codex(Arc::new(b))
         }
+        "github-copilot" => AnyBridge::GitHubCopilot(Arc::new(
+            crate::bridges::github_copilot::GitHubCopilotBridge::new(
+                sid.clone(),
+                agent_cwd.clone(),
+                session.permission_mode.clone(),
+                session.model_name.clone(),
+                session.effort.clone(),
+                None, // mcp_config: not yet wired for github-copilot sessions
+            ),
+        )),
         other => {
             send_json(
                 &sink,
@@ -1022,6 +1032,7 @@ async fn run_send_flow(
             "openai" => vec![crate::services::routing::traits::AgentKind::OpenAI],
             "gemini" => vec![crate::services::routing::traits::AgentKind::Gemini],
             "codex" => vec![crate::services::routing::traits::AgentKind::Codex],
+            "github-copilot" => vec![crate::services::routing::traits::AgentKind::GitHubCopilot],
             _ => vec![crate::services::routing::traits::AgentKind::Claude],
         },
         budget_remaining: None,
@@ -1040,7 +1051,7 @@ async fn run_send_flow(
     // via BridgeContext but cannot swap the bridge identity mid-turn.
     // Full bridge-swap is deferred (see task notes).
     let bridge_tool_str = match session.tool.as_str() {
-        "claude" | "openai" | "gemini" | "codex" => session.tool.as_str(),
+        "claude" | "openai" | "gemini" | "codex" | "github-copilot" => session.tool.as_str(),
         _ => "claude",
     };
     let resolution_tool_str =
@@ -1078,6 +1089,12 @@ async fn run_send_flow(
         // Kimi is OpenAI-compatible on the wire — proxies that fan out
         // by provider family put it on the OpenAI-compat endpoint.
         crate::services::routing::traits::AgentKind::Kimi => {
+            crate::services::routing::traits::ProviderKind::OpenAICompatible
+        }
+        // GitHub Copilot CLI is an ACP-based CLI agent (handled in-process by
+        // GitHubCopilotBridge); routing-layer ProviderKind has no dedicated
+        // Cli variant, so it shares the OpenAICompatible bucket with Kimi.
+        crate::services::routing::traits::AgentKind::GitHubCopilot => {
             crate::services::routing::traits::ProviderKind::OpenAICompatible
         }
     };
@@ -2121,6 +2138,16 @@ async fn run_dispatched_task(
             false, // dispatched tasks always land on non-staff agents
             target.agent_template.clone(),
         ))),
+        "github-copilot" => AnyBridge::GitHubCopilot(std::sync::Arc::new(
+            crate::bridges::github_copilot::GitHubCopilotBridge::new(
+                target_id.clone(),
+                target_cwd.clone(),
+                target.permission_mode.clone(),
+                target.model_name.clone(),
+                target.effort.clone(),
+                None, // mcp_config: not yet wired for github-copilot sessions
+            ),
+        )),
         "agy" => AnyBridge::Antigravity(std::sync::Arc::new(
             crate::bridges::antigravity::AntigravityBridge::new(
                 target_id.clone(),

@@ -11,6 +11,8 @@ pub enum AgentKind {
     Gemini,
     Codex,
     Kimi,
+    #[serde(rename = "github-copilot")]
+    GitHubCopilot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -201,5 +203,16 @@ mod tests {
             "TaskFlow should use tagged serde format, got: {}",
             s
         );
+    }
+
+    #[test]
+    fn agent_kind_github_copilot_serializes_with_hyphen() {
+        let kind = super::AgentKind::GitHubCopilot;
+        let json = serde_json::to_string(&kind).unwrap();
+        // Catalog uses "github-copilot" (hyphenated). The serde rename must
+        // emit the same string for round-tripping with session.tool.
+        assert_eq!(json, "\"github-copilot\"");
+        let back: super::AgentKind = serde_json::from_str("\"github-copilot\"").unwrap();
+        assert_eq!(back, super::AgentKind::GitHubCopilot);
     }
 }
