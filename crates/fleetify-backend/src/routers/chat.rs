@@ -456,9 +456,7 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
                         );
                         let next = {
                             let mut guard = pending2.lock().await;
-                            let popped = guard
-                                .get_mut(&sid)
-                                .and_then(|q| q.pop_front());
+                            let popped = guard.get_mut(&sid).and_then(|q| q.pop_front());
                             // Prune empty entries so the map doesn't
                             // accumulate per-session shells.
                             if let Some(q) = guard.get(&sid) {
@@ -1158,6 +1156,36 @@ async fn run_send_flow(
     let persist_throttle = std::time::Duration::from_millis(800);
 
     while let Some(ev) = rx.recv().await {
+        // Intercept AuthRequired before serialization: try to open the URL
+        // in the OS default browser and flip opened_in_browser to true on
+        // success so the renderer's info card knows the browser was launched.
+        let ev = if let BridgeEvent::AuthRequired {
+            provider,
+            url,
+            opened_in_browser: _,
+        } = &ev
+        {
+            let opened = match ::open::that(url) {
+                Ok(_) => true,
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %provider,
+                        url = %url,
+                        error = %e,
+                        "open browser for auth URL failed; renderer falls back to clickable link"
+                    );
+                    false
+                }
+            };
+            BridgeEvent::AuthRequired {
+                provider: provider.clone(),
+                url: url.clone(),
+                opened_in_browser: opened,
+            }
+        } else {
+            ev
+        };
+
         // Forward with session_id injected (renderer demuxes on it).
         let mut payload = ev.to_json();
         if let Value::Object(ref mut m) = payload {
@@ -2276,6 +2304,37 @@ async fn run_dispatched_task(
                 // that session's chat — dispatching to a visible
                 // agent updates its own bubble in real time, just
                 // like a user-initiated send.
+
+                // Same AuthRequired intercept as the main per-session
+                // forwarder: open the browser and flip opened_in_browser
+                // so the renderer's info card reflects the actual outcome.
+                let ev = if let BridgeEvent::AuthRequired {
+                    provider,
+                    url,
+                    opened_in_browser: _,
+                } = &ev
+                {
+                    let opened = match ::open::that(url) {
+                        Ok(_) => true,
+                        Err(e) => {
+                            tracing::warn!(
+                                provider = %provider,
+                                url = %url,
+                                error = %e,
+                                "open browser for auth URL failed; renderer falls back to clickable link"
+                            );
+                            false
+                        }
+                    };
+                    BridgeEvent::AuthRequired {
+                        provider: provider.clone(),
+                        url: url.clone(),
+                        opened_in_browser: opened,
+                    }
+                } else {
+                    ev
+                };
+
                 let mut payload = ev.to_json();
                 if let Value::Object(ref mut m) = payload {
                     m.insert("session_id".into(), json!(target_id));

@@ -1030,6 +1030,31 @@ export function pushChatError(sessionId: string, message: string): void {
 }
 
 /**
+ * Push an auth-required system message into the session's transcript.
+ * Used when the bridge emits BridgeEvent::AuthRequired (e.g. agy's
+ * OAuth has expired). The renderer's AuthRequiredCard component
+ * looks for ContentBlock.type === "auth_required" and renders the
+ * info card with provider + url + opened_in_browser.
+ */
+export function pushChatAuthRequired(
+  sessionId: string,
+  args: { provider: string; url: string; openedInBrowser: boolean },
+): void {
+  if (!sessionId) return;
+  useChatStore.getState().addMessage(sessionId, {
+    id: `auth-required-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    role: "system",
+    content: [{
+      type: "auth_required",
+      provider: args.provider,
+      url: args.url,
+      opened_in_browser: args.openedInBrowser,
+    }],
+    timestamp: new Date().toISOString(),
+  });
+}
+
+/**
  * Type out an existing assistant message char-by-char so it reads
  * like the agent is composing it live. Drops the full text into
  * `content[0].text` one character at a time, on a setInterval,

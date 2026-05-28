@@ -8,6 +8,7 @@ import {
   InitDoneCard, InfoCard,
 } from "./staff-message-cards";
 import { CitationCard } from "./citation-card";
+import { AuthRequiredCard } from "./auth-required-card";
 import { ChevronRight, Copy, Check, ArrowRightLeft, CheckCircle2, AlertCircle, Terminal, FileText, Globe, Search, Cpu, CheckSquare, FolderSearch, Pencil, Wrench, Brain, MoveHorizontal, Trash2, FolderOpen, Download, Code2, BarChart2, BookOpen, Image, CornerDownLeft, Send, Bookmark, BookmarkCheck, RotateCcw, X } from "lucide-react";
 import { createSessionMemory } from "@/lib/api";
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
@@ -2951,6 +2952,10 @@ function MessageContentInner({ message, msgRef }: { message: ChatMessage; msgRef
     // Artifact produced by a dispatched agent
     const artifactBlock = message.content.find(b => b.type === "artifact") as ArtifactBlock | undefined;
     if (artifactBlock) return <ArtifactCard block={artifactBlock} />;
+
+    // OAuth / bridge auth-required info card — amber, non-blocking.
+    const authBlock = message.content.find(b => b.type === "auth_required") as import("@/types/chat").AuthRequiredBlock | undefined;
+    if (authBlock) return <AuthRequiredCard block={authBlock} />;
 
     // Legacy text-based system messages. Errors get a more prominent
     // card so failures in Create PR / branch ops / WS / agent runs

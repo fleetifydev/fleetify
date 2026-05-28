@@ -805,7 +805,7 @@ export function SessionToolbar({
                 }}
                 onPickEffort={(e) => patch({ effort: e })}
                 onClose={() => setOpenMenu(null)}
-                anchor="bottom"
+                anchor="top"
               />
             )}
           </Chip>

@@ -207,6 +207,24 @@ pub enum BridgeEvent {
         tool_name: String,
         input: Value,
     },
+    /// The bridge needs the user to complete an external sign-in
+    /// flow before it can produce a reply. The shell intercepts
+    /// this event to open `url` in the OS browser (flipping
+    /// `opened_in_browser` to true on success), then forwards it
+    /// to the renderer which renders an info card. The bridge
+    /// itself always emits `opened_in_browser: false`.
+    AuthRequired {
+        /// Logical provider id for routing (`"antigravity"` for now;
+        /// future bridges can reuse this variant).
+        provider: String,
+        /// The exact URL the user should visit. Forwarded verbatim
+        /// to the renderer so the "Open sign-in" fallback button
+        /// can use it when shell-open failed.
+        url: String,
+        /// Set true by the shell layer after a successful OS-browser
+        /// open. Bridge always emits false.
+        opened_in_browser: bool,
+    },
 }
 
 impl BridgeEvent {
@@ -291,6 +309,42 @@ impl BridgeEvent {
                 "tool_name": tool_name,
                 "input": input,
             }),
+            BridgeEvent::AuthRequired {
+                provider,
+                url,
+                opened_in_browser,
+            } => json!({
+                "type": "auth_required",
+                "provider": provider,
+                "url": url,
+                "opened_in_browser": opened_in_browser,
+            }),
         }
+    }
+}
+
+impl serde::Serialize for BridgeEvent {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.to_json().serialize(serializer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auth_required_serializes_with_snake_case_tag() {
+        let ev = BridgeEvent::AuthRequired {
+            provider: "antigravity".into(),
+            url: "https://accounts.google.com/o/oauth2/auth?foo=1".into(),
+            opened_in_browser: false,
+        };
+        let s = serde_json::to_string(&ev).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["type"], "auth_required");
+        assert_eq!(v["provider"], "antigravity");
+        assert_eq!(v["url"], "https://accounts.google.com/o/oauth2/auth?foo=1");
+        assert_eq!(v["opened_in_browser"], false);
     }
 }

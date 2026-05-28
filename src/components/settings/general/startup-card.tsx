@@ -13,7 +13,7 @@
  * documented intent in `vite-env.d.ts`.
  */
 import { useEffect, useState } from "react";
-import { Folder } from "lucide-react";
+import { Folder, X } from "lucide-react";
 import { CardShell, Row, Toggle } from "./_primitives";
 
 interface FleetCfgShim {
@@ -34,6 +34,7 @@ function electron(): ElectronShim {
 export function StartupCard() {
   const [cfg, setCfg] = useState<FleetCfgShim>({});
   const [loaded, setLoaded] = useState(false);
+  const [folderHover, setFolderHover] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -79,20 +80,52 @@ export function StartupCard() {
       <Row title="Default workspace folder"
            desc="New agents start here unless overridden."
            last>
-        <button
-          onClick={pickFolder}
+        <div
+          onMouseEnter={() => setFolderHover(true)}
+          onMouseLeave={() => setFolderHover(false)}
           style={{
-            display: "inline-flex", alignItems: "center", gap: 6,
-            padding: "6px 10px", borderRadius: 6,
-            background: "var(--c-srf)", border: "1px solid var(--c-brd)",
-            color: "var(--c-high)", fontSize: 12, fontFamily: "inherit",
-            cursor: "pointer", maxWidth: 260,
-            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            display: "inline-flex", alignItems: "stretch",
+            borderRadius: 6, border: "1px solid var(--c-brd)",
+            background: "var(--c-srf)", maxWidth: 260,
+            overflow: "hidden",
           }}
         >
-          <Folder size={11} />
-          {defaultFolder || "Choose folder…"}
-        </button>
+          <button
+            onClick={pickFolder}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 6,
+              padding: "6px 10px",
+              background: "transparent", border: "none",
+              color: "var(--c-high)", fontSize: 12, fontFamily: "inherit",
+              cursor: "pointer",
+              minWidth: 0, flex: 1,
+            }}
+          >
+            <Folder size={11} />
+            <span style={{
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            }}>
+              {defaultFolder || "Choose folder…"}
+            </span>
+          </button>
+          {defaultFolder && folderHover && (
+            <button
+              aria-label="Clear default folder"
+              title="Clear default folder"
+              onClick={() => void patch({ defaultFolder: "" })}
+              style={{
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+                padding: "0 7px", background: "transparent", border: "none",
+                borderLeft: "1px solid var(--c-brd)",
+                color: "var(--c-dim)", cursor: "pointer", fontFamily: "inherit",
+              }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = "var(--c-high)"; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = "var(--c-dim)"; }}
+            >
+              <X size={10} />
+            </button>
+          )}
+        </div>
       </Row>
     </CardShell>
   );

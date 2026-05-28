@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 use tokio::process::Command;
 use tokio::sync::RwLock;
 
+use crate::providers::catalog::ExpiryUnit;
 use crate::routers::AppState;
 
 /// In-memory cache of the most recent CLI agent scan. Backend warms it
@@ -209,6 +210,9 @@ pub async fn scan_all_agents() -> HashMap<String, Value> {
             spec.auth_indicators.iter().any(|ind| match ind {
                 AuthIndicator::HomeDir { path } => home().join(path).exists(),
                 AuthIndicator::EnvVar { name } => std::env::var(name).is_ok(),
+                AuthIndicator::JsonExpiry { path, field, unit } => {
+                    check_json_expiry(&home().join(path), field, *unit)
+                }
             })
         } else {
             false
@@ -269,6 +273,35 @@ fn agy_installed_via_marker(home: &std::path::Path) -> bool {
         .join("antigravity-cli")
         .join("installation_id")
         .exists()
+}
+
+/// True iff `path` is a readable JSON file containing `field` as a
+/// number whose value (interpreted as `unit` since the Unix epoch)
+/// is strictly greater than the current wall-clock time. All other
+/// outcomes (missing file, invalid JSON, missing field, non-numeric
+/// value, time-in-the-past, system clock unset) evaluate to false.
+///
+/// Used by `AuthIndicator::JsonExpiry` to detect expired OAuth
+/// tokens without spawning the provider's CLI.
+pub(crate) fn check_json_expiry(path: &std::path::Path, field: &str, unit: ExpiryUnit) -> bool {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return false;
+    };
+    let Some(n) = value.get(field).and_then(|v| v.as_i64()) else {
+        return false;
+    };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let expiry_ms = match unit {
+        ExpiryUnit::Millis => n,
+        ExpiryUnit::Seconds => n.saturating_mul(1000),
+    };
+    expiry_ms > now_ms
 }
 
 /// Shape of the python_module_installed probe result.
@@ -944,5 +977,55 @@ mod tests {
             result.path.is_some(),
             "python is still installed, only the module is missing"
         );
+    }
+
+    #[test]
+    fn check_json_expiry_missing_file_returns_false() {
+        let p = std::env::temp_dir().join("fleet-test-missing.json");
+        // Make sure it doesn't exist from a prior run
+        std::fs::remove_file(&p).ok();
+        assert!(!check_json_expiry(&p, "expiry_date", ExpiryUnit::Millis));
+    }
+
+    #[test]
+    fn check_json_expiry_invalid_json_returns_false() {
+        let p = std::env::temp_dir().join("fleet-test-bad-json.json");
+        std::fs::write(&p, "{ not json").unwrap();
+        assert!(!check_json_expiry(&p, "expiry_date", ExpiryUnit::Millis));
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn check_json_expiry_missing_field_returns_false() {
+        let p = std::env::temp_dir().join("fleet-test-missing-field.json");
+        std::fs::write(&p, r#"{"foo": 1}"#).unwrap();
+        assert!(!check_json_expiry(&p, "expiry_date", ExpiryUnit::Millis));
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn check_json_expiry_past_value_returns_false() {
+        let p = std::env::temp_dir().join("fleet-test-past.json");
+        std::fs::write(&p, r#"{"expiry_date": 1000}"#).unwrap();
+        assert!(!check_json_expiry(&p, "expiry_date", ExpiryUnit::Millis));
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn check_json_expiry_future_value_returns_true() {
+        let p = std::env::temp_dir().join("fleet-test-future.json");
+        // Year ~33658 in millis = absurdly future, won't expire during the test
+        std::fs::write(&p, r#"{"expiry_date": 1000000000000000}"#).unwrap();
+        assert!(check_json_expiry(&p, "expiry_date", ExpiryUnit::Millis));
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn check_json_expiry_unit_seconds_converts_correctly() {
+        let p = std::env::temp_dir().join("fleet-test-seconds.json");
+        // 1_000_000_000_000 seconds = year ~33658
+        std::fs::write(&p, r#"{"expiry_date": 1000000000000}"#).unwrap();
+        assert!(check_json_expiry(&p, "expiry_date", ExpiryUnit::Seconds));
+        std::fs::remove_file(&p).ok();
     }
 }

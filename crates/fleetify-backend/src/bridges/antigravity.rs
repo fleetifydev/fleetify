@@ -320,6 +320,21 @@ impl AntigravityBridge {
         std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
     }
 
+    /// Scan text for agy's auth-required banner. agy prints
+    ///   "Authentication required. Please visit the URL to log in:"
+    ///   "  https://accounts.google.com/o/oauth2/auth?..."
+    /// on its own — surrounding lines are decoration. We grab the first
+    /// `https://accounts.google.com/o/oauth2/...` line and return it
+    /// verbatim. Other google.com URLs (docs, telemetry) are ignored —
+    /// the OAuth auth endpoint is the only one that means "user must
+    /// sign in".
+    pub(crate) fn extract_oauth_url(text: &str) -> Option<String> {
+        text.lines()
+            .map(str::trim)
+            .find(|l| l.starts_with("https://accounts.google.com/o/oauth2/"))
+            .map(String::from)
+    }
+
     pub async fn send_message(
         &self,
         message: &str,
@@ -566,12 +581,21 @@ impl AntigravityBridge {
                 transcript_text
             };
 
+            // Detect OAuth banner only when no reply was recovered —
+            // scan stdout first (where agy prints the URL), then stderr.
+            let auth_url = if reply.is_none() {
+                Self::extract_oauth_url(&out).or_else(|| Self::extract_oauth_url(&err))
+            } else {
+                None
+            };
+
             tracing::info!(
                 session_id = %session_id_out,
                 conv = ?conv_id,
                 pre_size = pre_transcript_size,
                 stdout_len,
                 transcript_len,
+                auth_required = auth_url.is_some(),
                 "antigravity bridge resolved reply"
             );
 
@@ -585,6 +609,14 @@ impl AntigravityBridge {
                     send_ok = send_res.is_ok(),
                     "antigravity bridge emitted MessageDelta"
                 );
+            } else if let Some(url) = auth_url {
+                let _ = tx
+                    .send(BridgeEvent::AuthRequired {
+                        provider: "antigravity".into(),
+                        url,
+                        opened_in_browser: false,
+                    })
+                    .await;
             } else if aborted.load(std::sync::atomic::Ordering::SeqCst) {
                 let _ = tx
                     .send(BridgeEvent::Error {
@@ -629,5 +661,40 @@ impl AntigravityBridge {
         });
 
         Ok(rx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AntigravityBridge;
+
+    #[test]
+    fn extract_oauth_url_finds_the_google_accounts_link() {
+        let stdout = concat!(
+            "Authentication required. Please visit the URL to log in:\n",
+            "  https://accounts.google.com/o/oauth2/auth?access_type=offline&client_id=abc&scope=openid\n",
+            "Waiting for authentication (timeout 30s)...\n",
+        );
+        let got = AntigravityBridge::extract_oauth_url(stdout);
+        assert_eq!(
+            got.as_deref(),
+            Some("https://accounts.google.com/o/oauth2/auth?access_type=offline&client_id=abc&scope=openid"),
+        );
+    }
+
+    #[test]
+    fn extract_oauth_url_returns_none_when_no_link_present() {
+        assert_eq!(AntigravityBridge::extract_oauth_url(""), None);
+        assert_eq!(
+            AntigravityBridge::extract_oauth_url("just regular agy output"),
+            None,
+        );
+    }
+
+    #[test]
+    fn extract_oauth_url_ignores_other_google_urls() {
+        // Only the OAuth auth endpoint counts.
+        let s = "Visit https://google.com/search?q=foo for help.";
+        assert_eq!(AntigravityBridge::extract_oauth_url(s), None);
     }
 }

@@ -875,8 +875,8 @@ mod tests {
             &pool,
             &orch,
             "s-stale",
-            "codex",          // session.tool — disagrees with pin's agent
-            Some("gpt-5.2"),  // session.model_name
+            "codex",         // session.tool — disagrees with pin's agent
+            Some("gpt-5.2"), // session.model_name
             task,
         )
         .await;

@@ -126,6 +126,21 @@ export interface CitationBlock {
   }>;
 }
 
+/**
+ * Surfaces when a bridge needs the user to complete external
+ * sign-in before producing a reply. Backend opens the OS browser
+ * to `url` and flips `opened_in_browser` to true on success; the
+ * renderer's auth-required info card uses that flag to decide
+ * whether to show "Open sign-in" as the primary CTA or as a
+ * de-emphasised "Re-open sign-in" link.
+ */
+export interface AuthRequiredBlock {
+  type: "auth_required";
+  provider: string;
+  url: string;
+  opened_in_browser: boolean;
+}
+
 export type ContentBlock =
   | TextBlock
   | ThinkingBlock
@@ -138,7 +153,8 @@ export type ContentBlock =
   | DispatchPendingBlock
   | ArtifactBlock
   | ResourceCardBlock
-  | CitationBlock;
+  | CitationBlock
+  | AuthRequiredBlock;
 
 export interface ChatMessage {
   id: string;
@@ -253,6 +269,13 @@ export interface WSStatus {
 export interface WSError {
   type: "error";
   error: string;
+}
+
+export interface WSAuthRequired {
+  type: "auth_required";
+  provider: string;
+  url: string;
+  opened_in_browser: boolean;
 }
 
 export interface WSDispatchAck {
@@ -484,4 +507,5 @@ export type WSServerMessage =
   | WSCompactionStatus
   | WSCompactionDone
   | WSCitation
-  | WSSearchResult;
+  | WSSearchResult
+  | WSAuthRequired;

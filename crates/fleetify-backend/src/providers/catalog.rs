@@ -104,6 +104,13 @@ pub struct ProviderExtras {
 /// newtype variants wrapping a primitive (the renderer reads the catalog
 /// as JSON, so this needs to serialize cleanly).
 #[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpiryUnit {
+    Millis,
+    Seconds,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AuthIndicator {
     /// Path relative to the user's home dir (`~`). Existence ⇒ authed.
@@ -111,6 +118,16 @@ pub enum AuthIndicator {
     /// Environment variable presence ⇒ authed. Used for headless / CI
     /// flows that skip the interactive `login` browser dance.
     EnvVar { name: &'static str },
+    /// Read a JSON file under `$HOME/<path>`, look up `field` as a
+    /// number, and treat the indicator as satisfied only when that
+    /// number — interpreted as `unit` since the Unix epoch — is in
+    /// the future. Missing file, invalid JSON, missing field, or
+    /// non-numeric value all evaluate to `false`.
+    JsonExpiry {
+        path: &'static str,
+        field: &'static str,
+        unit: ExpiryUnit,
+    },
 }
 
 /// Per-OS install command set. Resolved at scan time by
@@ -781,21 +798,24 @@ const KIMI_CLI_INDICATORS: &[AuthIndicator] = &[
     },
 ];
 
-// Antigravity CLI nests its own runtime data under `~/.gemini/` (shares the
-// auth tree with Gemini CLI), so `installation_id` is the agy-specific
-// "I've been here" marker. `oauth_creds.json` covers users who only ever
-// authed through the Antigravity onboarding (no prior Gemini CLI install).
-const AGY_CLI_INDICATORS: &[AuthIndicator] = &[
-    AuthIndicator::HomeDir {
-        path: ".gemini/antigravity-cli/installation_id",
-    },
-    AuthIndicator::HomeDir {
-        path: ".gemini/oauth_creds.json",
-    },
-    AuthIndicator::EnvVar {
-        name: "GOOGLE_API_KEY",
-    },
-];
+// Antigravity CLI's auth state lives in `~/.gemini/oauth_creds.json`.
+// The file's `expiry_date` (Unix millis) is the only on-disk signal
+// we can read without spawning agy — agy's CLI has no `auth status`
+// subcommand (verified against agy 1.0.x). Past-expiry means the
+// next dispatch will print "Authentication required. Please visit
+// the URL...", which the bridge now turns into an in-chat info card
+// and a browser-open. We want the Settings → Providers pill to
+// agree with that reality, so we evaluate the same expiry here.
+//
+// `installation_id` is intentionally NOT an auth indicator — it's
+// agy's "I've been here" install marker. Install detection lives
+// in `ScanProbe::AgyCli` (see scan_probe_for), which already
+// checks the marker file. Mixing install with login was a bug.
+const AGY_CLI_INDICATORS: &[AuthIndicator] = &[AuthIndicator::JsonExpiry {
+    path: ".gemini/oauth_creds.json",
+    field: "expiry_date",
+    unit: ExpiryUnit::Millis,
+}];
 
 // Antigravity SDK auth detection. The bridge reads `GEMINI_API_KEY` from
 // the keychain at dispatch time (service: `Fleetify-Provider-antigravity-sdk`)
@@ -1757,6 +1777,33 @@ mod tests {
         assert_eq!(
             p.display_name, "Antigravity CLI",
             "tile must say 'Antigravity CLI' so users can distinguish from the SDK sibling"
+        );
+    }
+
+    #[test]
+    fn auth_indicator_json_expiry_serde() {
+        let v = AuthIndicator::JsonExpiry {
+            path: ".gemini/oauth_creds.json",
+            field: "expiry_date",
+            unit: ExpiryUnit::Millis,
+        };
+        let s = serde_json::to_string(&v).unwrap();
+        let j: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(j["kind"], "json_expiry");
+        assert_eq!(j["path"], ".gemini/oauth_creds.json");
+        assert_eq!(j["field"], "expiry_date");
+        assert_eq!(j["unit"], "millis");
+    }
+
+    #[test]
+    fn expiry_unit_serializes_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&ExpiryUnit::Millis).unwrap(),
+            "\"millis\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ExpiryUnit::Seconds).unwrap(),
+            "\"seconds\""
         );
     }
 }

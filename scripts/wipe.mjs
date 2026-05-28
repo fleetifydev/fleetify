@@ -11,8 +11,12 @@
  *   3. WebView2 user data          — `<localappdata>/com.fleetify.app/`
  *                                    holds the WebView's localStorage,
  *                                    IndexedDB, cookies, cache.
- *   4. OS keychain entries         — `Fleetify` (OIDC refresh token) +
- *                                    `Fleetify-GitHub` (PAT/OAuth payload).
+ *   4. OS keychain entries         — every entry whose service name
+ *                                    starts with `Fleetify` — covers
+ *                                    `Fleetify` (OIDC refresh token),
+ *                                    `Fleetify-GitHub` (PAT/OAuth),
+ *                                    and `Fleetify-Provider-<id>`
+ *                                    (each API provider's saved key).
  *
  * Idempotent: missing paths are skipped silently. Logs every action so
  * you can audit what was touched.
@@ -26,6 +30,12 @@ import { spawnSync } from "node:child_process";
 import { homedir, platform } from "node:os";
 import path from "node:path";
 import process from "node:process";
+
+import {
+  isFleetifyKeychainTarget,
+  parseMacKeychainDump,
+  parseSecretToolDump,
+} from "./wipe/keychain-filter.mjs";
 
 const ARGS = new Set(process.argv.slice(2));
 const KEEP_KEYCHAIN = ARGS.has("--keep-keychain");
@@ -103,7 +113,9 @@ async function wipeDir(label, dir) {
 // We list and prune every entry whose target starts with `Fleetify`
 // or `Fleetify-GitHub`.
 function wipeKeychainWindows() {
-  // `cmdkey /list` prints "Target: <name>" lines. Filter and delete.
+  // `cmdkey /list` prints "Target: <name>" lines. Filter via the
+  // shared predicate so the same rule governs every OS — keeps
+  // Fleetify-Provider-* + future Fleetify-* namespaces consistent.
   const list = spawnSync("cmdkey", ["/list"], { encoding: "utf8" });
   if (list.status !== 0) {
     console.log("  ✗ keychain               FAILED     cmdkey /list returned", list.status);
@@ -115,13 +127,7 @@ function wipeKeychainWindows() {
     const m = line.match(/Target:\s*(.+?)\s*$/i);
     if (!m) continue;
     const target = m[1];
-    // The `keyring` crate sometimes prefixes targets with
-    // "LegacyGeneric:target=" on Windows. Strip that so the literal
-    // service name we wrote (Fleetify, Fleetify-GitHub) shows up.
-    const bare = target.replace(/^LegacyGeneric:target=/i, "");
-    if (bare.startsWith("Fleetify-GitHub") || bare.startsWith("Fleetify/") || bare === "Fleetify" || bare.startsWith("Fleetify ")) {
-      targets.push(target);
-    }
+    if (isFleetifyKeychainTarget(target)) targets.push(target);
   }
   if (targets.length === 0) {
     console.log("  · keychain               skip       no Fleetify* entries found");
@@ -139,28 +145,53 @@ function wipeKeychainWindows() {
 }
 
 function wipeKeychainMac() {
-  // `security delete-generic-password -s <service>` removes by
-  // service name. Run for each known service; errors when the entry
-  // doesn't exist are expected and silent.
-  for (const service of ["Fleetify", "Fleetify-GitHub"]) {
+  // Discover services first via `security dump-keychain` (attributes
+  // only, no secret reveals; doesn't prompt for the keychain pw on
+  // current macOS). Filter through the shared predicate, then delete.
+  const dump = spawnSync("security", ["dump-keychain"], { encoding: "utf8" });
+  if (dump.status !== 0) {
+    console.log("  ✗ keychain               FAILED     security dump-keychain returned", dump.status);
+    if (dump.stderr) console.log(`    ${dump.stderr.trim()}`);
+    return;
+  }
+  const services = parseMacKeychainDump(dump.stdout);
+  if (services.length === 0) {
+    console.log("  · keychain               skip       no Fleetify* services found");
+    return;
+  }
+  for (const service of services) {
     const r = spawnSync("security", ["delete-generic-password", "-s", service], { encoding: "utf8" });
     if (r.status === 0) {
       console.log(`  ✓ keychain               removed    service=${service}`);
     } else {
-      console.log(`  · keychain               skip       service=${service} (not found)`);
+      console.log(`  ✗ keychain               FAILED     service=${service}`);
+      if (r.stderr) console.log(`    ${r.stderr.trim()}`);
     }
   }
 }
 
 function wipeKeychainLinux() {
-  // libsecret-tool: `secret-tool clear service <name>`. Schema-less
-  // attribute match works for entries the `keyring` crate writes.
-  for (const service of ["Fleetify", "Fleetify-GitHub"]) {
+  // `secret-tool search --all` lists every secret with attributes;
+  // we never look at the secret value, only `attribute.service`.
+  const dump = spawnSync("secret-tool", ["search", "--all"], { encoding: "utf8" });
+  if (dump.status !== 0) {
+    // Missing secret-tool is the common fresh-install case — log,
+    // don't error.
+    console.log("  · keychain               skip       secret-tool unavailable (status", dump.status, ")");
+    return;
+  }
+  const services = parseSecretToolDump(dump.stdout);
+  if (services.length === 0) {
+    console.log("  · keychain               skip       no Fleetify* services found");
+    return;
+  }
+  for (const service of services) {
     const r = spawnSync("secret-tool", ["clear", "service", service], { encoding: "utf8" });
     if (r.status === 0) {
       console.log(`  ✓ keychain               cleared    service=${service}`);
     } else {
-      console.log(`  · keychain               skip       service=${service} (not found or secret-tool missing)`);
+      console.log(`  ✗ keychain               FAILED     service=${service}`);
+      if (r.stderr) console.log(`    ${r.stderr.trim()}`);
     }
   }
 }

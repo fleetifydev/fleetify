@@ -1,5 +1,5 @@
 import { createSessionsWebSocket } from "@/lib/api";
-import { useChatStore } from "@/stores/chat-store";
+import { useChatStore, pushChatAuthRequired } from "@/stores/chat-store";
 import { useAppStore } from "@/stores/app-store";
 import type { WSServerMessage, ImageBlock } from "@/types/chat";
 import type { Attachment } from "@/components/chat/chat-input";
@@ -1474,6 +1474,16 @@ class WSManager {
         }
         break;
       }
+      case "auth_required": {
+        this.flushDelta(sessionId); // commit any buffered text first
+        pushChatAuthRequired(sessionId, {
+          provider: String(data.provider ?? ""),
+          url: String(data.url ?? ""),
+          openedInBrowser: Boolean(data.opened_in_browser),
+        });
+        break;
+      }
+
       case "error": {
         this.flushDelta(sessionId); // Commit any buffered text before clearing
         const current = store.sessions[sessionId];
