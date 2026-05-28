@@ -351,6 +351,22 @@ pub async fn serve_with_routing_setup(
         if let Err(e) = services::telemetry::posthog::init().await {
             tracing::warn!("telemetry: posthog init failed: {e} (posthog sink disabled)");
         }
+        // Backend lifecycle bookend. Fires AFTER posthog::init so the
+        // worker is live to pick it up. No-op when the runtime gate
+        // is closed — but if the user has opted in (set via the Tauri
+        // shell after this returns), it becomes the very first event
+        // of the session.
+        let version = env!("CARGO_PKG_VERSION");
+        let platform = if cfg!(target_os = "macos") {
+            "darwin"
+        } else if cfg!(windows) {
+            "win32"
+        } else if cfg!(target_os = "linux") {
+            "linux"
+        } else {
+            "unknown"
+        };
+        services::telemetry::emitters::emit_app_started(version, platform).await;
     }
 
     // Fleet built-in MCP servers (fleet_memory / fleet_dispatch /

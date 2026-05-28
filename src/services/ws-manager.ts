@@ -1610,6 +1610,20 @@ class WSManager {
     const store = useChatStore.getState();
     store.ensureSession(sessionId);
 
+    // PostHog signal — captures intent (not the message body). The
+    // backend's `session_start` / `cost` events already cover the
+    // provider / model / tokens dimensions via the PostHog fan-out
+    // from PR 1; this one adds the renderer-side latency / attachments
+    // dimensions that the backend doesn't see.
+    void import("@/lib/posthog").then(({ capture }) => {
+      capture("message_sent", {
+        session_id_short: sessionId.slice(0, 8),
+        text_length: text.length,
+        has_attachments: (attachments?.length ?? 0) > 0,
+        attachment_count: attachments?.length ?? 0,
+      });
+    });
+
     // Build content blocks — images first, then text
     const imageBlocks: ImageBlock[] = (attachments ?? []).map(a => ({
       type: "image" as const,
@@ -1678,6 +1692,12 @@ class WSManager {
       this._sendOrQueue(payload);
     } catch (err) {
       useChatStore.getState().clearStreaming(sessionId);
+      void import("@/lib/posthog").then(({ capture }) => {
+        capture("message_error", {
+          session_id_short: sessionId.slice(0, 8),
+          error_message: err instanceof Error ? err.message : String(err),
+        });
+      });
       throw err;
     }
   }

@@ -6,7 +6,7 @@ import { WelcomeScreen } from "@/components/onboarding/welcome-screen";
 import { SetupScreen } from "@/components/onboarding/setup-screen";
 import { useAppStore } from "@/stores/app-store";
 import { clearToken, type AuthUser } from "@/lib/api";
-import { identifyUser, initPostHog } from "@/lib/posthog";
+import { identifyUser, initPostHog, pageview } from "@/lib/posthog";
 
 // Heavy routes that are rarely the first surface a user sees — pulled
 // out of the initial bundle so cold-start ships fewer KB of JS and the
@@ -72,6 +72,14 @@ export function App() {
   // prop alone drives visibility so toggling stays instant.
   const [cmdPaletteEverOpened, setCmdPaletteEverOpened] = useState(false);
   useEffect(() => { if (cmdPalette) setCmdPaletteEverOpened(true); }, [cmdPalette]);
+
+  // Track screen transitions as $pageview. Fleetify is a state-machine
+  // app with no router, so autocapture can't synthesise these on its
+  // own — manual emit keeps PostHog's Persons + funnel timelines
+  // coherent across splash → welcome → setup → onboarding-chat → main.
+  useEffect(() => {
+    pageview(`/${screen}`, screen);
+  }, [screen]);
 
   // Size the window to match the active screen mode. Onboarding screens
   // share one small size; entering main grows + recenters once.

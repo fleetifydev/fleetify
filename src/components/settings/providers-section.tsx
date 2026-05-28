@@ -68,7 +68,12 @@ export function ProvidersSection({ initialSubTab }: { initialSubTab?: ProvidersT
       <FleetDefaultCard
         defaultTile={defaultTile}
         eligible={eligible}
-        onPick={(id) => { void setDefault(id); }}
+        onPick={(id) => {
+          void setDefault(id);
+          void import("@/lib/posthog").then(({ capture }) => {
+            capture("default_provider_set", { provider_id: id });
+          });
+        }}
       />
 
       <TabBar tab={tab} onChange={setTab} />

@@ -227,6 +227,41 @@ Pre-1.0 this still triggers only a minor bump (we're 0.x — semver lets us brea
 - **Don't disable CI gates to make a PR green.** Fix the underlying issue, or split the fix into a separate prerequisite PR.
 - **Don't commit `docs/superpowers/` or `.claude/` contents.** Both are in `.gitignore`; they're local working state, not shipped artifacts.
 
+## Telemetry & analytics
+
+Fleetify ships two independent telemetry channels. Both default to user
+choice; neither leaks prompt content, API keys, or file paths.
+
+| Channel | Vendor | Default | Toggle | Outbox |
+|---|---|---|---|---|
+| Anonymous usage analytics | Fleetify cloud (`fleetify.dev`, WebSocket) | **ON** | Settings → Privacy → "Anonymous usage analytics" | `~/.fleetify/telemetry-outbox.sqlite` |
+| Crash reports | Fleetify cloud | **ON** | Settings → Privacy → "Crash reports" | (same outbox) |
+| Product analytics | PostHog Cloud (US, HTTP `/batch`) | **OFF** | Settings → Privacy → "Product analytics (PostHog)" | `~/.fleetify/posthog-outbox.sqlite` |
+
+### PostHog integration
+
+- **Code:** backend module at `crates/fleetify-backend/src/services/telemetry/posthog/`; frontend wrapper at `src/lib/posthog.ts`.
+- **Fan-out:** the existing `services/telemetry/emitters.rs::enqueue_payload` writes to both the Fleetify cloud outbox AND the PostHog outbox (the latter via `posthog::enqueue_if_enabled`, gated on a runtime `AtomicBool`).
+- **distinct_id:** the persisted `device_id` from `device.json` is reused on both sides. Frontend `posthog.identify(user_id)` after OAuth merges the anonymous person into the authenticated one via `$anon_distinct_id`.
+- **Build-time keys:** `POSTHOG_API_KEY` (Rust, `option_env!`) and `VITE_POSTHOG_KEY` (Vite, `import.meta.env`). Unset → entire module compiles to no-op stubs. `POSTHOG_HOST` / `VITE_POSTHOG_HOST` default to `https://us.i.posthog.com`.
+- **Runtime gate:** `telemetry_set_posthog_enabled` Tauri command persists the flag in `fleet.config.json::telemetry.posthog_enabled` AND flips the backend's `ENABLED` atomic live. Live opt-out stops new sends within ~10 s; renderer's `optOut()` stops autocapture immediately.
+
+### Local dev
+
+`POSTHOG_API_KEY` / `VITE_POSTHOG_KEY` are left unset by default in `scripts/dev-tauri-wt.mjs` — local dev sessions emit zero PostHog events even with the gate flipped on. To actually exercise the integration, set them in your shell before running `npm run dev:tauri:wt`:
+
+```bash
+export POSTHOG_API_KEY=phc_yourtestprojectkey
+export VITE_POSTHOG_KEY=phc_yourtestprojectkey
+npm run dev:tauri:wt
+```
+
+After changing `POSTHOG_API_KEY`, run `cargo clean -p fleetify-backend` to force a rebuild — `option_env!` is evaluated at compile time and bakes the value into the binary.
+
+### Full event list
+
+`docs/ANALYTICS.md` lists every event we emit, every property we drop, and the exact opt-out steps. Keep it in sync with the mapper (`crates/fleetify-backend/src/services/telemetry/posthog/mapper.rs`) and the `capture(...)` callers in `src/`.
+
 ## graphify
 
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.

@@ -414,15 +414,15 @@ pub async fn emit_router_health_change(
     Ok(())
 }
 
-// ─── Provider / agent telemetry (local-only, like the routing block) ───
+// ─── Provider / agent telemetry ───
 //
 // Wire surface: `emit_provider_test_connection` / `emit_provider_connected` /
-// `emit_provider_disconnected` / `emit_agent_detected`. Same NACK-avoidance
-// pattern as `emit_routing_decision` — the cloud telemetry ingest doesn't
-// know these `kind`s yet, so we route via `tracing` (always available, no
-// outbox retry loop) and let analytics queries hit the local log instead.
-// Switching to outbox enqueue is a one-line flip per emit_* when the cloud
-// schema picks up the new kinds.
+// `emit_provider_disconnected` / `emit_agent_detected`. The Fleetify cloud
+// telemetry ingest doesn't recognise these `kind`s yet, so we route via
+// `tracing` (always available, no outbox retry loop) AND fan out directly
+// to the PostHog sink — bypassing `enqueue_payload` / the Fleetify outbox
+// because PostHog has no schema-side rejection, so it's safe to enqueue
+// without risking a NACK loop on the cloud side.
 
 /// Settings → Models "Test Connection" result. Captures latency + the
 /// failure-mode bucket so we can spot patterns like "DeepSeek auth fails
@@ -441,6 +441,15 @@ pub async fn emit_provider_test_connection(
         latency_ms = ?latency_ms,
         "provider test connection"
     );
+    super::posthog::enqueue_if_enabled(&json!({
+        "kind": "provider_test_connection",
+        "provider": provider_id,
+        "ok": ok,
+        "code": code,
+        "latency_ms": latency_ms,
+        "occurred_at": iso_utc(Utc::now()),
+    }))
+    .await;
 }
 
 /// User saved a key for a provider in Settings → Models. Fires AFTER
@@ -451,6 +460,12 @@ pub async fn emit_provider_connected(provider_id: &str) {
         provider = %provider_id,
         "provider connected"
     );
+    super::posthog::enqueue_if_enabled(&json!({
+        "kind": "provider_connected",
+        "provider": provider_id,
+        "occurred_at": iso_utc(Utc::now()),
+    }))
+    .await;
 }
 
 /// User clicked Disconnect on a provider tile. Mirrors the connected
@@ -461,6 +476,12 @@ pub async fn emit_provider_disconnected(provider_id: &str) {
         provider = %provider_id,
         "provider disconnected"
     );
+    super::posthog::enqueue_if_enabled(&json!({
+        "kind": "provider_disconnected",
+        "provider": provider_id,
+        "occurred_at": iso_utc(Utc::now()),
+    }))
+    .await;
 }
 
 /// `/api/agents/scan` observation. Lets us see how often "installed
@@ -474,6 +495,34 @@ pub async fn emit_agent_detected(agent_id: &str, installed: bool, authenticated:
         authenticated = authenticated,
         "agent detected"
     );
+    super::posthog::enqueue_if_enabled(&json!({
+        "kind": "agent_detected",
+        "agent": agent_id,
+        "installed": installed,
+        "authenticated": authenticated,
+        "occurred_at": iso_utc(Utc::now()),
+    }))
+    .await;
+}
+
+/// Backend lifecycle. Fired once at server boot AFTER posthog::init so
+/// the very first event in a session captures version + OS. Routed
+/// directly to PostHog (the Fleetify cloud schema doesn't know this
+/// kind) so it doesn't NACK in the existing outbox.
+pub async fn emit_app_started(version: &str, platform: &str) {
+    tracing::info!(
+        target: "fleetify.lifecycle",
+        version = version,
+        platform = platform,
+        "app started"
+    );
+    super::posthog::enqueue_if_enabled(&json!({
+        "kind": "app_started",
+        "version": version,
+        "platform": platform,
+        "occurred_at": iso_utc(Utc::now()),
+    }))
+    .await;
 }
 
 #[cfg(test)]

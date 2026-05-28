@@ -80,6 +80,38 @@ pub fn to_posthog_event(distinct_id: &str, fleetify: &Value) -> Option<Value> {
             }
             ("agent_activity", p)
         }
+        "provider_connected" => (
+            "provider_connected",
+            json!({ "provider": fleetify.get("provider") }),
+        ),
+        "provider_disconnected" => (
+            "provider_disconnected",
+            json!({ "provider": fleetify.get("provider") }),
+        ),
+        "provider_test_connection" => (
+            "provider_tested",
+            json!({
+                "provider": fleetify.get("provider"),
+                "ok": fleetify.get("ok"),
+                "code": fleetify.get("code"),
+                "latency_ms": fleetify.get("latency_ms"),
+            }),
+        ),
+        "agent_detected" => (
+            "agent_detected",
+            json!({
+                "agent": fleetify.get("agent"),
+                "installed": fleetify.get("installed"),
+                "authenticated": fleetify.get("authenticated"),
+            }),
+        ),
+        "app_started" => (
+            "app_started",
+            json!({
+                "version": fleetify.get("version"),
+                "platform": fleetify.get("platform"),
+            }),
+        ),
         "device_heartbeat" => return None,
         _ => return None,
     };
@@ -205,6 +237,67 @@ mod tests {
         assert_eq!(event["properties"]["provider"], "openai");
         assert!(event["properties"]["session_id_hash"].is_string());
         assert!(!event.to_string().contains("abc-123"));
+    }
+
+    #[test]
+    fn provider_connected_maps_with_provider_only() {
+        let p = json!({
+            "kind": "provider_connected",
+            "provider": "openai",
+            "occurred_at": "2026-05-27T12:00:00Z",
+        });
+        let event = to_posthog_event("device-1", &p).unwrap();
+        assert_eq!(event["event"], "provider_connected");
+        assert_eq!(event["properties"]["provider"], "openai");
+        assert_eq!(event["timestamp"], "2026-05-27T12:00:00Z");
+    }
+
+    #[test]
+    fn provider_test_connection_carries_outcome_fields() {
+        let p = json!({
+            "kind": "provider_test_connection",
+            "provider": "deepseek",
+            "ok": false,
+            "code": "401",
+            "latency_ms": 1234,
+            "occurred_at": "2026-05-27T12:00:00Z",
+        });
+        let event = to_posthog_event("device-1", &p).unwrap();
+        assert_eq!(event["event"], "provider_tested");
+        assert_eq!(event["properties"]["provider"], "deepseek");
+        assert_eq!(event["properties"]["ok"], false);
+        assert_eq!(event["properties"]["code"], "401");
+        assert_eq!(event["properties"]["latency_ms"], 1234);
+    }
+
+    #[test]
+    fn app_started_carries_version_and_platform() {
+        let p = json!({
+            "kind": "app_started",
+            "version": "0.1.0",
+            "platform": "darwin",
+            "occurred_at": "2026-05-27T12:00:00Z",
+        });
+        let event = to_posthog_event("device-1", &p).unwrap();
+        assert_eq!(event["event"], "app_started");
+        assert_eq!(event["properties"]["version"], "0.1.0");
+        assert_eq!(event["properties"]["platform"], "darwin");
+    }
+
+    #[test]
+    fn agent_detected_carries_install_and_auth_flags() {
+        let p = json!({
+            "kind": "agent_detected",
+            "agent": "claude",
+            "installed": true,
+            "authenticated": false,
+            "occurred_at": "2026-05-27T12:00:00Z",
+        });
+        let event = to_posthog_event("device-1", &p).unwrap();
+        assert_eq!(event["event"], "agent_detected");
+        assert_eq!(event["properties"]["agent"], "claude");
+        assert_eq!(event["properties"]["installed"], true);
+        assert_eq!(event["properties"]["authenticated"], false);
     }
 
     #[test]

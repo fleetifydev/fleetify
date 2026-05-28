@@ -33,7 +33,7 @@ import { LogoMark } from "@/components/brand/logo-mark";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { apiScanProviders, checkPythonRuntime, type ProviderScan, type AuthUser } from "@/lib/api";
 import { providers as providersApi } from "@/lib/providers-api";
-import { optIn, optOut } from "@/lib/posthog";
+import { capture, optIn, optOut } from "@/lib/posthog";
 
 interface Props {
   user: AuthUser | null;
@@ -441,6 +441,7 @@ export function OnboardingChat({ user, onDone }: Props) {
     await pushAssistant(
       `That's the lot, ${firstName}. Hit **Enter Fleet** whenever you're ready.`,
     );
+    capture("onboarding_completed", { telemetry_opt_in: enabled });
     setDone(true);
   };
 
@@ -448,6 +449,7 @@ export function OnboardingChat({ user, onDone }: Props) {
   useEffect(() => {
     if (startedRef.current) return;
     startedRef.current = true;
+    capture("onboarding_started");
 
     // Pre-fetch the provider scan in parallel with the assistant
     // typing so the picker can show "Installed" / "Not installed"
