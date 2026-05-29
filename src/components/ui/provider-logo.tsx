@@ -1,4 +1,63 @@
-/* ── Official AI Provider Logos (from Simple Icons) ── */
+/* ── Official AI Provider Logos ── */
+
+// CLI-agent brand marks bundled as SVG files (lobehub / homarr-labs) and
+// rendered via <img> — that isolates each file's internal gradient/mask
+// ids (so the same icon can render twice with no id collision) and paints
+// their real brand colours on any theme. `ProviderLogo` routes the agent
+// tool ids to these; the inline components below stay for other surfaces.
+import claudeIcon from "./agent-icons/claude.svg";
+import codexIcon from "./agent-icons/codex.svg";
+import geminiIcon from "./agent-icons/gemini.svg";
+import opencodeIcon from "./agent-icons/opencode.svg";
+import kimiIcon from "./agent-icons/kimi.svg";
+import antigravityIcon from "./agent-icons/antigravity.svg";
+// Model-provider marks. Colour marks go through <ImgIcon>; the ones that
+// only ship as a single-colour "for dark background" variant (Grok,
+// Ollama, OpenAI) go through <MaskIcon> so they adapt to the theme.
+import perplexityIcon from "./agent-icons/perplexity.svg";
+import openaiIcon from "./agent-icons/openai.png";
+import deepseekIcon from "./agent-icons/deepseek.svg";
+import grokIcon from "./agent-icons/grok.svg";
+import nvidiaIcon from "./agent-icons/nvidia.svg";
+import ollamaIcon from "./agent-icons/ollama.svg";
+
+/** Render a bundled brand SVG as an <img>. objectFit keeps a non-square
+ *  mark (e.g. OpenCode's 4:5) from stretching into the square slot. */
+function ImgIcon({ src, size, label }: { src: string; size: number; label: string }) {
+  return (
+    <img
+      src={src}
+      width={size}
+      height={size}
+      alt={label}
+      draggable={false}
+      style={{ objectFit: "contain", display: "block", flexShrink: 0 }}
+    />
+  );
+}
+
+/** Render a MONOCHROME mark as a CSS mask painted with currentColor, so a
+ *  "for dark background" white-only asset adapts to light/dark instead of
+ *  vanishing on one of them. Masks on the alpha channel, so the asset's own
+ *  colour is irrelevant — works for both SVG and PNG sources. */
+function MaskIcon({ src, size, label }: { src: string; size: number; label: string }) {
+  const mask = `url(${src}) center / contain no-repeat`;
+  return (
+    <span
+      role="img"
+      aria-label={label}
+      style={{
+        display: "inline-block",
+        width: size,
+        height: size,
+        flexShrink: 0,
+        backgroundColor: "currentColor",
+        WebkitMask: mask,
+        mask,
+      }}
+    />
+  );
+}
 
 export function ClaudeLogo({ size = 18 }: { size?: number }) {
   return (
@@ -212,28 +271,49 @@ export function GroqLogo({ size = 18 }: { size?: number }) {
   );
 }
 
+/* ── GitHub Copilot: official mark. The source SVG paints it solid white
+ *  (the "dark background" variant); we drop that fill so the path inherits
+ *  currentColor and adapts to light/dark themes, with the eyes as evenodd
+ *  cut-outs. ── */
+export function GitHubCopilotLogo({ size = 18 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 2.5 24 19"
+      fill="currentColor"
+      fillRule="evenodd"
+      role="img"
+      aria-label="GitHub Copilot"
+    >
+      <path d="M19.245 5.364c1.322 1.36 1.877 3.216 2.11 5.817.622 0 1.2.135 1.592.654l.73.964c.21.278.323.61.323.955v2.62c0 .339-.173.669-.453.868C20.239 19.602 16.157 21.5 12 21.5c-4.6 0-9.205-2.583-11.547-4.258-.28-.2-.452-.53-.453-.868v-2.62c0-.345.113-.679.321-.956l.73-.963c.392-.517.974-.654 1.593-.654l.029-.297c.25-2.446.81-4.213 2.082-5.52 2.461-2.54 5.71-2.851 7.146-2.864h.198c1.436.013 4.685.323 7.146 2.864zm-7.244 4.328c-.284 0-.613.016-.962.05-.123.447-.305.85-.57 1.108-1.05 1.023-2.316 1.18-2.994 1.18-.638 0-1.306-.13-1.851-.464-.516.165-1.012.403-1.044.996a65.882 65.882 0 00-.063 2.884l-.002.48c-.002.563-.005 1.126-.013 1.69.002.326.204.63.51.765 2.482 1.102 4.83 1.657 6.99 1.657 2.156 0 4.504-.555 6.985-1.657a.854.854 0 00.51-.766c.03-1.682.006-3.372-.076-5.053-.031-.596-.528-.83-1.046-.996-.546.333-1.212.464-1.85.464-.677 0-1.942-.157-2.993-1.18-.266-.258-.447-.661-.57-1.108-.32-.032-.64-.049-.96-.05zm-2.525 4.013c.539 0 .976.426.976.95v1.753c0 .525-.437.95-.976.95a.964.964 0 01-.976-.95v-1.752c0-.525.437-.951.976-.951zm5 0c.539 0 .976.426.976.95v1.753c0 .525-.437.95-.976.95a.964.964 0 01-.976-.95v-1.752c0-.525.437-.951.976-.951zM7.635 5.087c-1.05.102-1.935.438-2.385.906-.975 1.037-.765 3.668-.21 4.224.405.394 1.17.657 1.995.657h.09c.649-.013 1.785-.176 2.73-1.11.435-.41.705-1.433.675-2.47-.03-.834-.27-1.52-.63-1.813-.39-.336-1.275-.482-2.265-.394zm6.465.394c-.36.292-.6.98-.63 1.813-.03 1.037.24 2.06.675 2.47.968.957 2.136 1.104 2.776 1.11h.044c.825 0 1.59-.263 1.995-.657.555-.556.765-3.187-.21-4.224-.45-.468-1.335-.804-2.385-.906-.99-.088-1.875.058-2.265.394zM12 7.615c-.24 0-.525.015-.84.044.03.16.045.336.06.526l-.001.159a2.94 2.94 0 01-.014.25c.225-.022.425-.027.612-.028h.366c.187 0 .387.006.612.028-.015-.146-.015-.277-.015-.409.015-.19.03-.365.06-.526a9.29 9.29 0 00-.84-.044z" />
+    </svg>
+  );
+}
+
 /* ── Get logo by tool name ── */
 export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number }) {
   switch (tool) {
-    case "claude":     return <ClaudeLogo size={size} />;
-    case "anthropic":  return <ClaudeLogo size={size} />;
-    case "codex":      return <CodexLogo size={size} />;
+    case "claude":     return <ImgIcon src={claudeIcon} size={size} label="Claude Code" />;
+    case "anthropic":  return <ImgIcon src={claudeIcon} size={size} label="Claude Code" />;
+    case "codex":      return <ImgIcon src={codexIcon} size={size} label="Codex" />;
     case "cursor":     return <CursorLogo size={size} />;
-    case "gemini":     return <GeminiLogo size={size} />;
-    case "ollama":     return <OllamaLogo size={size} />;
-    case "kimi":       return <KimiLogo size={size} />;
-    case "kimi-api":   return <KimiLogo size={size} />;
-    case "openai":     return <OpenAILogo size={size} />;
+    case "gemini":     return <ImgIcon src={geminiIcon} size={size} label="Gemini" />;
+    case "ollama":     return <MaskIcon src={ollamaIcon} size={size} label="Ollama" />;
+    case "kimi":       return <ImgIcon src={kimiIcon} size={size} label="Kimi" />;
+    case "kimi-api":   return <ImgIcon src={kimiIcon} size={size} label="Kimi" />;
+    case "openai":     return <MaskIcon src={openaiIcon} size={size} label="OpenAI" />;
     case "groq":       return <GroqLogo size={size} />;
-    case "deepseek":   return <DeepSeekLogo size={size} />;
-    case "grok":       return <GrokLogo size={size} />;
-    case "nvidia-nim": return <NvidiaLogo size={size} />;
-    case "perplexity": return <PerplexityLogo size={size} />;
-    case "gemini-api": return <GeminiLogo size={size} />;
-    case "agy":            return <AgyLogo size={size} />;
-    case "antigravity":    return <AgyLogo size={size} />;
-    case "antigravity-sdk":return <AgyLogo size={size} />;
-    case "opencode":   return <OpenCodeLogo size={size} />;
+    case "deepseek":   return <ImgIcon src={deepseekIcon} size={size} label="DeepSeek" />;
+    case "grok":       return <MaskIcon src={grokIcon} size={size} label="Grok" />;
+    case "nvidia-nim": return <ImgIcon src={nvidiaIcon} size={size} label="NVIDIA" />;
+    case "perplexity": return <ImgIcon src={perplexityIcon} size={size} label="Perplexity" />;
+    case "gemini-api": return <ImgIcon src={geminiIcon} size={size} label="Gemini" />;
+    case "agy":            return <ImgIcon src={antigravityIcon} size={size} label="Antigravity" />;
+    case "antigravity":    return <ImgIcon src={antigravityIcon} size={size} label="Antigravity" />;
+    case "antigravity-sdk":return <ImgIcon src={antigravityIcon} size={size} label="Antigravity" />;
+    case "github-copilot": return <GitHubCopilotLogo size={size} />;
+    case "opencode":   return <ImgIcon src={opencodeIcon} size={size} label="OpenCode" />;
     case "aider":      return <AiderLogo size={size} />;
     default:           return <CustomAgentLogo size={size} />;
   }
@@ -244,7 +324,7 @@ export function providerName(tool: string): string {
     claude: "Claude", codex: "Codex", cursor: "Cursor", gemini: "Gemini",
     ollama: "Ollama", kimi: "Kimi", agy: "Antigravity CLI",
     "antigravity-sdk": "Antigravity SDK",
-    opencode: "OpenCode", aider: "Aider",
+    opencode: "OpenCode", "github-copilot": "GitHub Copilot", aider: "Aider",
   };
   return names[tool] ?? "Custom";
 }
