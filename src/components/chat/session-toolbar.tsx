@@ -36,6 +36,7 @@ import { extractOwnerRepo } from "@/lib/git-url";
 import { GitSourceTab } from "./git-source-tab";
 import { useAppStore } from "@/stores/app-store";
 import { useChatStore } from "@/stores/chat-store";
+import { wsManager } from "@/services/ws-manager";
 import type { ChatMessage } from "@/types/chat";
 import type { Session } from "@/types/session";
 import { RemoteSshPanel } from "./remote-ssh-panel";
@@ -357,7 +358,24 @@ export function SessionToolbar({
   const enabledAgentIds = providerTiles
     .filter((t) => t.spec.kind === "cli" && t.connected)
     .map((t) => t.spec.id);
-  const groups: PickerGroup[] = buildPickerGroups(providerTiles, enabledAgentIds);
+  // OpenCode sources its model list from the live ACP session (catalog
+  // default_models is empty). The bridge pushes them via
+  // `available_models_update`; surface them in the picker for this session.
+  const sessionDynModels = useChatStore((s) => s.dynamicModels[sessionId]);
+  const dynamicCliModels = sessionDynModels
+    ? {
+        opencode: sessionDynModels.models.map((m) => ({
+          id: m.id,
+          label: m.label,
+          supports_effort: false,
+        })),
+      }
+    : undefined;
+  const groups: PickerGroup[] = buildPickerGroups(
+    providerTiles,
+    enabledAgentIds,
+    dynamicCliModels,
+  );
 
   return (
     <div
@@ -644,8 +662,20 @@ export function SessionToolbar({
                   const updates: Record<string, unknown> = { model_name: modelId };
                   if (next !== tool) updates.tool = next;
                   patch(updates);
+                  // OpenCode sources models at runtime — switch the live ACP
+                  // session too (the patch alone only affects the next cold
+                  // start). Skipped for drafts (no live bridge yet).
+                  if (next === "opencode" && !isDraft) {
+                    wsManager.switchModel(sessionId, modelId);
+                  }
                 }}
-                onPickEffort={(e) => patch({ effort: e })}
+                onPickEffort={(e) => {
+                  patch({ effort: e });
+                  // OpenCode applies effort live via set_config_option.
+                  if (tool === "opencode" && !isDraft) {
+                    wsManager.switchConfig(sessionId, "effort", e);
+                  }
+                }}
                 onClose={() => setOpenMenu(null)}
                 // Open UPWARD, matching every other toolbar menu (perms /
                 // source / history) and the chat-input's Routing-adjacent

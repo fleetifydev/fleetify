@@ -798,6 +798,19 @@ const KIMI_CLI_INDICATORS: &[AuthIndicator] = &[
     },
 ];
 
+// OpenCode stores provider credentials at `~/.local/share/opencode/auth.json`
+// (XDG-style, even on Windows under `%USERPROFILE%`). NB: free `opencode/*`
+// models work with zero credentials, so a missing auth.json only means "no
+// paid provider linked", not "agent unusable" — the pill is advisory.
+const OPENCODE_CLI_INDICATORS: &[AuthIndicator] = &[
+    AuthIndicator::HomeDir {
+        path: ".local/share/opencode/auth.json",
+    },
+    AuthIndicator::EnvVar {
+        name: "OPENCODE_API_KEY",
+    },
+];
+
 // Antigravity CLI's auth state lives in `~/.gemini/oauth_creds.json`.
 // The file's `expiry_date` (Unix millis) is the only on-disk signal
 // we can read without spawning agy — agy's CLI has no `auth status`
@@ -1130,6 +1143,23 @@ pub static CATALOG: &[ProviderSpec] = &[
         install_hints: None,
         login_hint: "kimi login",
     },
+    // OpenCode — driven over ACP (`opencode acp`). Models are sourced live
+    // from the ACP session (no curated catalog list), so `default_models` is
+    // empty like the other CLI agents.
+    ProviderSpec {
+        id: "opencode",
+        display_name: "OpenCode",
+        kind: ProviderKind::Cli,
+        default_base_url: "",
+        auth: AuthSpec::None,
+        default_models: &[],
+        extras: ProviderExtras::DEFAULT,
+        bin: "opencode",
+        auth_indicators: OPENCODE_CLI_INDICATORS,
+        install_hint: "npm install -g opencode-ai",
+        install_hints: None,
+        login_hint: "opencode auth login",
+    },
     ProviderSpec {
         id: "github-copilot",
         display_name: "GitHub Copilot CLI",
@@ -1249,12 +1279,12 @@ mod tests {
             .filter(|p| matches!(p.kind, ProviderKind::Cli))
             .count();
         // 7 cloud HTTP providers + 1 local (ollama) + 7 CLI agents
-        // (Claude, Codex, Gemini, Kimi, GitHub Copilot, Antigravity CLI, Antigravity SDK).
-        // If you intentionally added/removed a provider, update these
-        // constants together with the catalog.
+        // (Claude, Codex, Gemini, Kimi, OpenCode, GitHub Copilot,
+        // Antigravity CLI, Antigravity SDK). If you intentionally added/
+        // removed a provider, update these constants together with the catalog.
         assert_eq!(api, 7, "expected 7 Api providers, got {api}");
         assert_eq!(local, 1, "expected 1 LocalHttp provider, got {local}");
-        assert_eq!(cli, 7, "expected 7 Cli agents, got {cli}");
+        assert_eq!(cli, 8, "expected 8 Cli agents, got {cli}");
     }
 
     #[test]

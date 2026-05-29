@@ -3467,10 +3467,22 @@ export function ChatInput({
     })),
     [tool],
   );
+  // OpenCode advertises its slash commands at runtime over ACP
+  // (`available_commands_update`); ws-manager stores them per session. Merge
+  // them in as plain insert-the-text commands (body: null) so the CLI
+  // receives `/<name>` as prompt text.
+  const dynCmds = useChatStore((s) => (sessionId ? s.dynamicCommands[sessionId] : undefined));
+  const openCodeCmds = useMemo<Array<{ cmd: string; desc: string; body: null }>>(
+    () =>
+      tool === "opencode" && dynCmds
+        ? dynCmds.map((c) => ({ cmd: `/${c.name}`, desc: c.description, body: null }))
+        : [],
+    [tool, dynCmds],
+  );
   const slashAll = (() => {
     const seen = new Set<string>();
     const out: Array<{ cmd: string; desc: string; body: string | null; args?: string[]; intent?: string; providerCmd?: string }> = [];
-    for (const c of [...pluginCmds, ...builtinCmds]) {
+    for (const c of [...pluginCmds, ...builtinCmds, ...openCodeCmds]) {
       if (seen.has(c.cmd)) continue;
       seen.add(c.cmd); out.push(c);
     }

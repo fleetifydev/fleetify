@@ -220,6 +220,97 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
                 }
             }
 
+            // Live model switch for agents that source models at runtime
+            // (OpenCode). The renderer ALSO PATCHes session.model_name so a
+            // future cold start picks the same model; this arm flips the
+            // already-running session via the bridge and echoes the refreshed
+            // list back. If no live bridge exists yet, the PATCH alone covers
+            // it (next turn cold-starts with the chosen model).
+            "model_switch" => {
+                let sid = v
+                    .get("session_id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let model = v
+                    .get("model")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let bridge = if sid.is_empty() || model.is_empty() {
+                    None
+                } else {
+                    bridges.lock().await.get(&sid).cloned()
+                };
+                if let Some(b) = bridge {
+                    match b.set_model(&model).await {
+                        Ok(models) => {
+                            send_json(
+                                &sink,
+                                json!({
+                                    "type": "available_models_update",
+                                    "session_id": sid,
+                                    "models": models,
+                                    "current_model": model,
+                                }),
+                            )
+                            .await;
+                        }
+                        Err(e) => {
+                            send_json(
+                                &sink,
+                                json!({
+                                    "type": "error",
+                                    "session_id": sid,
+                                    "error": format!("Model switch failed: {e}"),
+                                }),
+                            )
+                            .await;
+                        }
+                    }
+                }
+            }
+
+            // Live session config option (effort, mode, …) for runtime-config
+            // agents (OpenCode). The renderer also PATCHes the session field;
+            // this flips the running session. Fire-and-forget on success;
+            // surfaces an error frame on failure.
+            "config_switch" => {
+                let sid = v
+                    .get("session_id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let config_id = v
+                    .get("config_id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let value = v
+                    .get("value")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let bridge = if sid.is_empty() || config_id.is_empty() {
+                    None
+                } else {
+                    bridges.lock().await.get(&sid).cloned()
+                };
+                if let Some(b) = bridge {
+                    if let Err(e) = b.set_config(&config_id, &value).await {
+                        send_json(
+                            &sink,
+                            json!({
+                                "type": "error",
+                                "session_id": sid,
+                                "error": format!("Config switch failed: {e}"),
+                            }),
+                        )
+                        .await;
+                    }
+                }
+            }
+
             "auth_code" => {
                 // The user pasted the OOB OAuth code from the provider's
                 // sign-in page. Route it to the live bridge for that
@@ -986,6 +1077,37 @@ async fn run_send_flow(
                 ));
             }
             AnyBridge::Codex(Arc::new(b))
+        }
+        "opencode" => {
+            let is_staff = session.title == "Staff Agent";
+            let mut b = crate::bridges::opencode::OpenCodeBridge::new(
+                sid.clone(),
+                agent_cwd.clone(),
+                session.permission_mode.clone(),
+                session.model_name.clone(),
+                session.effort.clone(),
+                is_staff,
+                session.agent_template.clone(),
+            );
+            // Resume the prior OpenCode ACP session if we persisted one
+            // (our Init event stamped it into session.claude_session_id).
+            b.resume_session_id = session.claude_session_id.clone();
+            // OpenCode surfaces tool approvals over ACP `session/request_permission`
+            // in every mode except the bypass modes — wire the dialog whenever
+            // the user-facing mode could ask (mirrors the Codex gate).
+            if !is_staff
+                && !matches!(
+                    session.permission_mode.as_str(),
+                    "bypassPermissions" | "dontAsk"
+                )
+            {
+                b = b.with_permission_handler(build_permission_handler(
+                    &permission_session,
+                    &sink,
+                    &sid,
+                ));
+            }
+            AnyBridge::OpenCode(Arc::new(b))
         }
         "github-copilot" => AnyBridge::GitHubCopilot(Arc::new(
             crate::bridges::github_copilot::GitHubCopilotBridge::new(
@@ -2159,6 +2281,19 @@ async fn run_dispatched_task(
             false, // dispatched tasks always land on non-staff agents
             target.agent_template.clone(),
         ))),
+        "opencode" => {
+            let mut b = crate::bridges::opencode::OpenCodeBridge::new(
+                target_id.clone(),
+                target_cwd.clone(),
+                target.permission_mode.clone(),
+                target.model_name.clone(),
+                target.effort.clone(),
+                false, // dispatched tasks always land on non-staff agents
+                target.agent_template.clone(),
+            );
+            b.resume_session_id = target.claude_session_id.clone();
+            AnyBridge::OpenCode(std::sync::Arc::new(b))
+        }
         "github-copilot" => AnyBridge::GitHubCopilot(std::sync::Arc::new(
             crate::bridges::github_copilot::GitHubCopilotBridge::new(
                 target_id.clone(),

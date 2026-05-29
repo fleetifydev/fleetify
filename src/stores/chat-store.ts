@@ -206,6 +206,14 @@ interface ChatState {
   sessions: Record<string, SessionChatState>;
   /** Per-target dispatch live previews — see DispatchPreview. */
   dispatchPreviews: Record<string, DispatchPreview>;
+  /** Per-session live model catalogs for agents that source their model
+   *  list at runtime (OpenCode), keyed by session id. Populated by the
+   *  ws-manager's `available_models_update` handler; consumed by the
+   *  composer's model picker. Empty for static-catalog agents. */
+  dynamicModels: Record<string, { models: { id: string; label: string }[]; current: string }>;
+  /** Per-session runtime slash commands advertised by the agent (OpenCode),
+   *  keyed by session id. Merged into the composer's slash menu. */
+  dynamicCommands: Record<string, { name: string; description: string }[]>;
 
   ensureSession: (sessionId: string) => void;
   getSession: (sessionId: string) => SessionChatState;
@@ -229,6 +237,17 @@ interface ChatState {
     patch: Partial<Omit<DispatchPreview, "startedAt" | "updatedAt">>,
   ) => void;
   clearDispatchPreview: (targetId: string) => void;
+  /** Replace a session's live model catalog (OpenCode). */
+  setDynamicModels: (
+    sessionId: string,
+    models: { id: string; label: string }[],
+    current: string,
+  ) => void;
+  /** Replace a session's runtime slash command list (OpenCode). */
+  setDynamicCommands: (
+    sessionId: string,
+    commands: { name: string; description: string }[],
+  ) => void;
 
   setMessages: (sessionId: string, messages: ChatMessage[]) => void;
   addMessage: (sessionId: string, message: ChatMessage) => void;
@@ -401,6 +420,8 @@ const patch = (
 export const useChatStore = create<ChatState>((set, get) => ({
   sessions: {},
   dispatchPreviews: {},
+  dynamicModels: {},
+  dynamicCommands: {},
 
   ensureSession: (sessionId) =>
     set((state) =>
@@ -460,6 +481,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
       delete next[targetId];
       return { dispatchPreviews: next };
     }),
+
+  setDynamicModels: (sessionId, models, current) =>
+    set((state) => ({
+      dynamicModels: {
+        ...state.dynamicModels,
+        [sessionId]: { models, current },
+      },
+    })),
+
+  setDynamicCommands: (sessionId, commands) =>
+    set((state) => ({
+      dynamicCommands: {
+        ...state.dynamicCommands,
+        [sessionId]: commands,
+      },
+    })),
 
   setMessages: (sessionId, messages) =>
     set((state) => {

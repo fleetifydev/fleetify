@@ -486,6 +486,20 @@ export interface WSCompactionDone {
   error?: string | null;
 }
 
+/** Live model catalog for an agent that sources its models at runtime
+ *  (OpenCode over ACP) rather than from the static provider catalog. */
+export interface WSAvailableModels {
+  type: "available_models_update";
+  models: Array<{ id: string; label: string }>;
+  current_model: string;
+}
+
+/** Runtime slash commands advertised by an agent (OpenCode over ACP). */
+export interface WSSlashCommands {
+  type: "slash_commands_update";
+  commands: Array<{ name: string; description: string }>;
+}
+
 export type WSServerMessage =
   | WSInitMessage
   | WSMessageDelta
@@ -516,4 +530,6 @@ export type WSServerMessage =
   | WSCompactionDone
   | WSCitation
   | WSSearchResult
+  | WSAvailableModels
+  | WSSlashCommands
   | WSAuthRequired;

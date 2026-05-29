@@ -16,6 +16,7 @@ pub mod kimi;
 pub mod openai;
 pub mod openai_compat;
 pub mod openai_compat_tools;
+pub mod opencode;
 pub mod permission;
 pub mod perplexity;
 
@@ -69,6 +70,10 @@ pub enum AnyBridge {
     /// wired but the actual ACP spawn is deferred until Moonshot
     /// publishes a stable protocol spec).
     Kimi(Arc<kimi::KimiBridge>),
+    /// OpenCode CLI over ACP (`opencode acp`). Shares the `AcpClient` with
+    /// the Gemini bridge; skips the ACP `authenticate` step and supports
+    /// runtime model switching via `session/set_config_option`.
+    OpenCode(Arc<opencode::OpenCodeBridge>),
     /// Antigravity (`agy`) CLI — Google's terminal coding agent.
     /// Headless `-p` mode with `--conversation <uuid>` resume; no
     /// streaming until upstream adds a `stream-json` mode.
@@ -105,6 +110,7 @@ impl AnyBridge {
             AnyBridge::OpenAICompat(b) => b.send_message(msg, ctx).await,
             AnyBridge::Perplexity(b) => b.send_message(msg, ctx).await,
             AnyBridge::Kimi(b) => b.send_message(msg, ctx).await,
+            AnyBridge::OpenCode(b) => b.send_message(msg, ctx).await,
             AnyBridge::Antigravity(b) => b.send_message(msg, ctx).await,
             AnyBridge::AntigravitySdk(b) => b.send_message(msg, ctx).await,
             AnyBridge::Agentic(b) => b.send_message(msg, ctx).await,
@@ -120,6 +126,7 @@ impl AnyBridge {
             AnyBridge::OpenAICompat(b) => b.abort().await,
             AnyBridge::Perplexity(b) => b.abort().await,
             AnyBridge::Kimi(b) => b.abort().await,
+            AnyBridge::OpenCode(b) => b.abort().await,
             AnyBridge::Antigravity(b) => b.abort().await,
             AnyBridge::AntigravitySdk(b) => b.abort().await,
             AnyBridge::Agentic(b) => b.abort().await,
@@ -145,6 +152,36 @@ impl AnyBridge {
                 b.acp_session_id.try_lock().ok().and_then(|g| g.clone())
             }
             _ => None,
+        }
+    }
+
+    /// Switch the live session's model, returning the refreshed model list as
+    /// a `[{id, label}]` array. Only OpenCode supports mid-session switching
+    /// today (its ACP `session/set_config_option`); other bridges error so
+    /// the caller can surface a clear message.
+    pub async fn set_model(&self, model_id: &str) -> anyhow::Result<Value> {
+        match self {
+            AnyBridge::OpenCode(b) => {
+                let models = b.set_model(model_id).await?;
+                Ok(opencode::models_to_json(&models))
+            }
+            _ => Err(anyhow::anyhow!(
+                "mid-session model switching is not supported for this agent"
+            )),
+        }
+    }
+
+    /// Set an arbitrary live-session config option (e.g. `effort`, `mode`).
+    /// OpenCode-only today; returns the refreshed model list as `[{id,label}]`.
+    pub async fn set_config(&self, config_id: &str, value: &str) -> anyhow::Result<Value> {
+        match self {
+            AnyBridge::OpenCode(b) => {
+                let models = b.set_config(config_id, value).await?;
+                Ok(opencode::models_to_json(&models))
+            }
+            _ => Err(anyhow::anyhow!(
+                "live config switching is not supported for this agent"
+            )),
         }
     }
 }
@@ -225,6 +262,21 @@ pub enum BridgeEvent {
         call_id: String,
         tool_name: String,
         input: Value,
+    },
+    /// Live, per-session model catalog surfaced by an agent that sources its
+    /// models at runtime rather than from the static provider catalog
+    /// (OpenCode). `models` is an array of `{id, label}`; `current` is the
+    /// active model id. The renderer renders these in the composer's model
+    /// picker and round-trips a `model_switch` command to change them.
+    AvailableModels {
+        models: Value,
+        current: String,
+    },
+    /// Slash commands the agent advertises at runtime (OpenCode's
+    /// `available_commands_update`). `commands` is an array of
+    /// `{name, description}`; the composer merges them into its slash menu.
+    SlashCommands {
+        commands: Value,
     },
     /// The bridge needs the user to complete an external sign-in
     /// flow before it can produce a reply. The shell intercepts
@@ -327,6 +379,15 @@ impl BridgeEvent {
                 "id": call_id,
                 "tool_name": tool_name,
                 "input": input,
+            }),
+            BridgeEvent::AvailableModels { models, current } => json!({
+                "type": "available_models_update",
+                "models": models,
+                "current_model": current,
+            }),
+            BridgeEvent::SlashCommands { commands } => json!({
+                "type": "slash_commands_update",
+                "commands": commands,
             }),
             BridgeEvent::AuthRequired {
                 provider,

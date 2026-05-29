@@ -594,6 +594,37 @@ class WSManager {
         this.touch(sessionId);
         if ("claude_session_id" in data) store.setSdkReady(sessionId, true);
         break;
+      // Live model catalog from a runtime-sourced agent (OpenCode). Store
+      // it per-session so the composer's model picker can render + switch.
+      case "available_models_update": {
+        const models = Array.isArray(data.models)
+          ? (data.models as Array<{ id?: unknown; label?: unknown }>)
+              .filter((m) => typeof m.id === "string")
+              .map((m) => ({
+                id: String(m.id),
+                label: typeof m.label === "string" ? m.label : String(m.id),
+              }))
+          : [];
+        const current =
+          typeof data.current_model === "string" ? data.current_model : "";
+        store.setDynamicModels(sessionId, models, current);
+        break;
+      }
+      // Runtime slash commands advertised by the agent (OpenCode). Stored
+      // per-session so the composer's slash menu can merge them in.
+      case "slash_commands_update": {
+        const commands = Array.isArray(data.commands)
+          ? (data.commands as Array<{ name?: unknown; description?: unknown }>)
+              .filter((c) => typeof c.name === "string")
+              .map((c) => ({
+                name: String(c.name),
+                description:
+                  typeof c.description === "string" ? c.description : "",
+              }))
+          : [];
+        store.setDynamicCommands(sessionId, commands);
+        break;
+      }
       // ── Sub-agent lifecycle ────────────────────────────────────
       // The bridge emits these three events 1:1 with the SDK's
       // TaskStartedMessage / TaskProgressMessage / TaskNotificationMessage.
@@ -1862,6 +1893,24 @@ class WSManager {
       id, approved, always,
       tool_name: toolName ?? "",
     });
+  }
+
+  /** Switch the live model for a runtime-sourced agent (OpenCode). The
+   *  backend applies it via the bridge and echoes an
+   *  `available_models_update`. The caller also PATCHes session.model_name
+   *  so a future cold start picks the same model. No-op-safe if the session
+   *  has no live bridge yet. */
+  switchModel(sessionId: string, modelId: string) {
+    this.touch(sessionId);
+    this._sendOrQueue({ type: "model_switch", session_id: sessionId, model: modelId });
+  }
+
+  /** Set a live session config option (e.g. effort, mode) on a runtime-config
+   *  agent (OpenCode). Fire-and-forget; the caller also PATCHes the session
+   *  field for the next cold start. */
+  switchConfig(sessionId: string, configId: string, value: string) {
+    this.touch(sessionId);
+    this._sendOrQueue({ type: "config_switch", session_id: sessionId, config_id: configId, value });
   }
 
   /** Send the out-of-band OAuth code the user pasted from a provider's

@@ -154,6 +154,11 @@ function modelFromSpec(m: {
 export function buildPickerGroups(
   tiles: ProviderTile[],
   enabledAgentIds: string[],
+  /** Per-agent model lists sourced at runtime from the live session rather
+   *  than the static catalog (OpenCode, whose models come back over ACP).
+   *  Keyed by catalog agent id. When present + non-empty, these take
+   *  precedence over catalog `default_models` and the CLI_MODELS fallback. */
+  dynamicCliModels?: Record<string, PickerModel[]>,
 ): PickerGroup[] {
   const out: PickerGroup[] = [];
 
@@ -166,7 +171,13 @@ export function buildPickerGroups(
     if (!enabledAgentIds.includes(t.spec.id)) continue;
     const catalogModels = t.spec.default_models.map(modelFromSpec);
     const fallbackModels = CLI_MODELS[t.spec.id] ?? [];
-    const models = catalogModels.length > 0 ? catalogModels : fallbackModels;
+    const dynamic = dynamicCliModels?.[t.spec.id] ?? [];
+    const models =
+      dynamic.length > 0
+        ? dynamic
+        : catalogModels.length > 0
+          ? catalogModels
+          : fallbackModels;
     out.push({
       id: t.spec.id,
       label: t.spec.display_name,
