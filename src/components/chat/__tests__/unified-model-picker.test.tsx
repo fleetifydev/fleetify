@@ -139,6 +139,38 @@ describe("UnifiedModelPicker", () => {
     expect(dividers.length).toBe(2);
   });
 
+  it("keeps all CLI agents in one block — no divider splits opencode / github-copilot / agy off", () => {
+    // Mirrors buildPickerGroups' output order: every `kind: cli` agent is
+    // emitted contiguously, THEN the HTTP rail. The only divider should
+    // fall between the CLI block and OpenAI — not between the four classic
+    // CLIs and the newer ones (the bug this guards against).
+    const cliGroups: PickerGroup[] = [
+      { id: "claude", label: "Claude Code", models: [{ id: "claude-opus-4-7", label: "Opus 4.7", supports_effort: true }] },
+      { id: "codex", label: "Codex CLI", models: [{ id: "gpt-5.5", label: "GPT-5.5", supports_effort: true }] },
+      { id: "gemini", label: "Gemini CLI", models: [{ id: "gemini-3.1-pro-preview", label: "3.1 Pro", supports_effort: true }] },
+      { id: "kimi", label: "Kimi Code CLI", models: [{ id: "kimi-k2.6", label: "Kimi K2.6", supports_effort: false }] },
+      { id: "opencode", label: "OpenCode", models: [{ id: "oc-1", label: "OC", supports_effort: false }] },
+      { id: "github-copilot", label: "GitHub Copilot CLI", models: [{ id: "gh-1", label: "GH", supports_effort: false }] },
+      { id: "agy", label: "Antigravity CLI", models: [{ id: "agy-default", label: "Auto", supports_effort: false }] },
+      { id: "openai", label: "OpenAI", models: [{ id: "gpt-4.1", label: "GPT-4.1", supports_effort: false }] },
+    ];
+    const { container } = render(
+      <UnifiedModelPicker
+        tool="claude"
+        model="claude-opus-4-7"
+        effort="high"
+        groups={cliGroups}
+        onPickModel={vi.fn()}
+        onPickEffort={vi.fn()}
+        onClose={vi.fn()}
+        anchor="bottom"
+      />,
+    );
+    // 7 CLI agents + 1 HTTP provider → exactly ONE divider (CLI | HTTP).
+    const dividers = container.querySelectorAll('[data-rail-divider="true"]');
+    expect(dividers.length).toBe(1);
+  });
+
   it("checkmarks the active model row", () => {
     harness({ tool: "claude", model: "claude-opus-4-7" });
     const row = screen.getByRole("option", { name: /Opus 4.7/ });

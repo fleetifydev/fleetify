@@ -360,7 +360,23 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
   );
 }
 
-const CLI_IDS = new Set(["claude", "codex", "gemini", "kimi"]);
+// Every CLI-agent group id (catalog `kind: cli`). Drives the rail's
+// category grouping: all CLI agents share one block, so the divider only
+// falls between CLI and the HTTP/API rail — NOT between, say, Kimi and
+// GitHub Copilot. Must stay in sync with the CLI ProviderSpecs in the
+// backend catalog (claude, codex, gemini, kimi, opencode, github-copilot,
+// agy, antigravity-sdk); a missing id here mis-buckets that agent as HTTP
+// and splits it off below the divider.
+const CLI_IDS = new Set([
+  "claude",
+  "codex",
+  "gemini",
+  "kimi",
+  "opencode",
+  "github-copilot",
+  "agy",
+  "antigravity-sdk",
+]);
 function isCliId(id: string): boolean {
   return CLI_IDS.has(id);
 }
