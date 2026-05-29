@@ -491,11 +491,11 @@ async fn handle_inbound_notification(method: String, msg: Value, handlers: Arc<M
         .unwrap_or(Value::Object(Default::default()));
     let h = handlers.lock().await.notifications.get(&method).cloned();
     if let Some(h) = h {
-        tokio::spawn(async move { h(params).await });
-    } else {
-        // Codex emits dozens of items; silently ignore unregistered ones
-        // exactly like the Python (no log spam).
+        // Await directly instead of spawning — spawning concurrent tasks caused
+        // delta tokens to arrive out-of-order, producing garbled streamed text.
+        h(params).await;
     }
+    // Codex emits dozens of notification types; silently ignore unregistered ones.
 }
 
 #[cfg(test)]

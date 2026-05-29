@@ -17,7 +17,7 @@ dotenvy = "0.15"
 [dependencies]
 fleetify-core.workspace = true
 fleetify-backend.workspace = true
-tauri = { version = "2", features = ["image-png"] }
+tauri = { version = "2", features = ["macos-private-api", "image-png"] }
 tauri-plugin-dialog = "2"
 tokio.workspace = true
 tracing.workspace = true

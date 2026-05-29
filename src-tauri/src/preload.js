@@ -2,6 +2,21 @@
 // `window.fleetify` (auth) → Tauri commands/events. `window.electronAPI`
 // stays a boot-safe no-op Proxy until Phase 1c wires its ~51 channels.
 // __TAURI__ is referenced lazily (withGlobalTauri injects it).
+
+// Enable window dragging for elements with .drag-region class.
+// Calls our custom Rust command which calls window.start_dragging() directly.
+document.addEventListener("mousedown", function (e) {
+  if (e.button !== 0) return;
+  var el = e.target && typeof e.target.closest === "function"
+    ? e.target.closest(".drag-region")
+    : null;
+  if (!el) return;
+  var c = window.__TAURI__ && window.__TAURI__.core;
+  if (c && c.invoke) {
+    c.invoke("window_start_dragging");
+  }
+});
+
 (function () {
   function core() { return window.__TAURI__ && window.__TAURI__.core; }
   function ev() { return window.__TAURI__ && window.__TAURI__.event; }

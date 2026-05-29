@@ -1,6 +1,9 @@
 import React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 import type { Components } from "react-markdown";
 import type { ChatMessage, ContentBlock, ArtifactBlock, ResourceCardBlock } from "@/types/chat";
 import {
@@ -962,7 +965,7 @@ function MarkdownBodyInner({ text }: { text: string }) {
 
   return (
     <div style={{ color: "var(--foreground)" }}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>{stripInternalTokens(text)}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={components}>{stripInternalTokens(text)}</ReactMarkdown>
     </div>
   );
 }

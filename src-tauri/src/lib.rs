@@ -9,6 +9,10 @@ use std::path::PathBuf;
 
 use tauri::webview::WebviewWindowBuilder;
 use tauri::{Manager, WebviewUrl};
+#[cfg(target_os = "macos")]
+use tauri::TitleBarStyle;
+#[cfg(target_os = "macos")]
+use tauri::LogicalPosition;
 
 /// Boot shim reconstructing `window.electronAPI` / `window.fleetify`.
 const PRELOAD: &str = include_str!("preload.js");
@@ -86,6 +90,7 @@ pub fn run() {
             shell::ipc::shell_open_external,
             shell::ipc::shell_show_item_in_folder,
             shell::ipc::clipboard_write,
+            shell::ipc::window_start_dragging,
             shell::ipc::window_minimize,
             shell::ipc::window_maximize,
             shell::ipc::window_close,
@@ -198,7 +203,7 @@ pub fn run() {
             // hit on Windows. Trade-off: from t=0 to URL-ready (~3-7s
             // depending on Vite cold-start) the user sees nothing on
             // screen. That's the price of "no visible loading state".
-            let main_window = WebviewWindowBuilder::new(
+            let builder = WebviewWindowBuilder::new(
                 app,
                 "main",
                 WebviewUrl::External(webview_url().parse().expect("valid webview url")),
@@ -219,14 +224,23 @@ pub fn run() {
             // placement (Windows lands somewhere top-left-ish, looks
             // misaligned on wide displays).
             .center()
-            // Hide the OS titlebar — the renderer ships its own custom
-            // title strip (min/max/close handled via the window_*
-            // IPC commands). Without this, Tauri's native frame stacks
-            // on top of the renderer's strip and we get two bars.
-            .decorations(false)
             .visible(false)
-            .initialization_script(PRELOAD)
-            .build()?;
+            .initialization_script(PRELOAD);
+
+            // macOS: keep native traffic lights (close/min/max) with
+            // overlay style — hides the title bar background but leaves
+            // the buttons. Other platforms: remove decorations entirely
+            // (renderer ships its own Windows title bar strip).
+            #[cfg(target_os = "macos")]
+            let builder = builder
+                .title_bar_style(TitleBarStyle::Overlay)
+                .hidden_title(true)
+                .traffic_light_position(LogicalPosition::new(14.0_f64, 24.0_f64));
+
+            #[cfg(not(target_os = "macos"))]
+            let builder = builder.decorations(false);
+
+            let main_window = builder.build()?;
 
             // Embedded backend (no child process, no health-poll).
             // Port is FLEETIFY_BACKEND_PORT (default 8765) so a second

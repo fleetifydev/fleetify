@@ -173,8 +173,12 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
 
   const [leftWidth, setLeftWidth] = useState(LEFT_DEFAULT);
   const [rightWidth, setRightWidth] = useState(RIGHT_DEFAULT);
-  const [leftDragging, setLeftDragging] = useState(false);
-  const [rightDragging, setRightDragging] = useState(false);
+  // Only the setters are consumed: useDrag reports drag start/end through
+  // them. The boolean values used to gate the panel width transitions, but
+  // this PR makes those transitions `none` (snap, no animation), so the
+  // values are no longer read — keep the setters, drop the value bindings.
+  const [, setLeftDragging] = useState(false);
+  const [, setRightDragging] = useState(false);
 
   // Pause polling when the window isn't focused. React Query supports
   // a function for refetchInterval — return false to skip the tick.
@@ -360,7 +364,7 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
            Inset spacing for the sidebar / right-panel cards is moved
            to those cards' own marginTop instead. */
         padding: sidebarCollapsed ? "0 8px 0 0" : "0 8px 0 8px",
-        transition: "padding 0.2s ease",
+        transition: "none",
       }}>
 
       {/* ── Reveal overlay: masks the hard-cut from SetupScreen until
@@ -369,8 +373,10 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
         <div style={{
           position: "fixed", inset: 0, zIndex: 9000,
           background: "var(--background)",
+          // main: reveal driven by `dataReady` (overlayVisible was removed).
+          // #43: no transitions (snap reveal for the native/FPS feel).
           opacity: dataReady ? 0 : 1,
-          transition: "opacity 0.55s ease",
+          transition: "none",
           pointerEvents: "none",
         }} />
       )}
@@ -390,7 +396,8 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
         border: sidebarCollapsed ? "none" : "1px solid var(--c-brd)",
         marginTop: sidebarCollapsed ? 0 : 8,
         marginBottom: sidebarCollapsed ? 0 : 8,
-        transition: leftDragging ? "none" : "width 0.2s ease",
+        // #43: sidebar width no longer animates (native/FPS feel).
+        transition: "none",
         position: "relative",
       }}>
         {!sidebarCollapsed && <Sidebar />}
@@ -414,8 +421,9 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
         flex: 1, overflow: "hidden",
         display: "flex", flexDirection: "column",
         background: "var(--card)",
+        // main: gate on `dataReady`; #43: no fade transition.
         opacity: introReveal && !dataReady ? 0 : 1,
-        transition: introReveal ? "opacity 0.5s ease 0.15s" : "none",
+        transition: "none",
       }}>
         {mainView === "marketplace" ? (
           <Suspense fallback={<div style={{ flex: 1, background: "var(--card)" }} />}>
@@ -456,9 +464,7 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
         // by setMainView, and animating that close drags the page-load
         // for a quarter second — feels laggy when the user just wants
         // to jump to the other surface. Snap instantly there.
-        transition: rightDragging || mainView !== "fleet"
-          ? "none"
-          : "width 0.25s cubic-bezier(0.4, 0, 0.2, 1)",
+        transition: "none",
         position: "relative",
       }}>
         {/* Right resize handle — sits on the LEFT inner edge of the card.

@@ -41,7 +41,7 @@ function AccountFooter() {
         padding: "4px 9px", border: "none", cursor: "pointer",
         textAlign: "left", fontSize: 12.5, fontWeight: 400,
         borderRadius: 5, background: "none", color: "var(--c-med)",
-        transition: "background 0.08s, color 0.08s",
+        transition: "none",
       }}
       onMouseEnter={e => { e.currentTarget.style.background = "var(--c-srf)"; e.currentTarget.style.color = "var(--c-high)"; }}
       onMouseLeave={e => { e.currentTarget.style.background = "none";       e.currentTarget.style.color = "var(--c-med)"; }}
@@ -150,7 +150,7 @@ function CtxMenu({ x, y, menuRef, session, onClose, onPin, onFork, onStop, onRes
         padding: "5px 8px", background: "none", border: "none",
         borderRadius: 6, cursor: "pointer", fontSize: 12, textAlign: "left",
         color: danger ? "#f87171" : "var(--c-med)",
-        transition: "background 0.08s, color 0.08s",
+        transition: "none",
         fontFamily: "inherit",
       }}
       onMouseEnter={e => {
@@ -446,7 +446,7 @@ function AgentRowImpl({ session, isActive, stats, onClick, onPin, onFork, onStop
       onDragEnd={onDragEnd}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      style={{ position: "relative", opacity: isDragging ? 0.4 : 1, transition: "opacity 0.15s" }}
+      style={{ position: "relative", opacity: isDragging ? 0.4 : 1, transition: "none" }}
     >
       {isDropTarget && (
         <div style={{
@@ -462,7 +462,7 @@ function AgentRowImpl({ session, isActive, stats, onClick, onPin, onFork, onStop
           display: "flex", alignItems: "center", gap: 8,
           width: "100%", padding: "4px 9px",
           borderRadius: 5, border: "none", cursor: "pointer", textAlign: "left",
-          transition: "background 0.08s",
+          transition: "none",
           background: bgColor,
         }}
       >
@@ -627,12 +627,12 @@ function SideRow({ icon, label, onClick, badge, active, count, tourKey }: {
       fontWeight: active ? 500 : 400,
       borderRadius: 5, background: baseBg,
       color: baseColor,
-      transition: "background 0.08s, color 0.08s",
+      transition: "none",
     }}
       onMouseEnter={e => { if (!active) { e.currentTarget.style.background = "var(--c-srf)"; e.currentTarget.style.color = "var(--c-high)"; } }}
       onMouseLeave={e => { if (!active) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--c-med)"; } }}
     >
-      <span style={{ flexShrink: 0, display: "flex", color: iconColor, transition: "color 0.08s" }}>{icon}</span>
+      <span style={{ flexShrink: 0, display: "flex", color: iconColor, transition: "none" }}>{icon}</span>
       <span style={{ flex: 1 }}>{label}</span>
       {count != null && count > 0 && (
         <span style={{
@@ -694,7 +694,7 @@ function CollapsedRail({ showLogo }: { showLogo: boolean }) {
         display: "flex", alignItems: "center", justifyContent: "center",
         background: active ? "var(--c-srf2)" : "none",
         color: active ? "var(--c-high)" : "var(--c-dim)",
-        border: "none", cursor: "pointer", transition: "background 0.12s, color 0.12s",
+        border: "none", cursor: "pointer", transition: "none",
       }}
       onMouseEnter={e => { if (!active) { e.currentTarget.style.background = "var(--c-srf)"; e.currentTarget.style.color = "var(--c-med)"; } }}
       onMouseLeave={e => { if (!active) { e.currentTarget.style.background = "none"; e.currentTarget.style.color = "var(--c-dim)"; } }}
@@ -1187,7 +1187,7 @@ export function Sidebar() {
                         padding: "4px 9px",
                         borderRadius: 5,
                         background: dropPinZone ? "var(--c-srf)" : "transparent",
-                        transition: "background 0.12s",
+                        transition: "none",
                       }}
                     >
                       <Pin size={11} style={{ color: dropPinZone ? "var(--c-med)" : "var(--c-ghost)", flexShrink: 0 }} />

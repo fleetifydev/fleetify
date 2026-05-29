@@ -233,6 +233,14 @@ fn main_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
 }
 
 #[tauri::command]
+pub async fn window_start_dragging(app: tauri::AppHandle) -> serde_json::Value {
+    if let Some(w) = main_window(&app) {
+        let _ = w.start_dragging();
+    }
+    serde_json::json!({ "ok": true })
+}
+
+#[tauri::command]
 pub async fn window_minimize(app: tauri::AppHandle) -> serde_json::Value {
     if let Some(w) = main_window(&app) {
         let _ = w.minimize();
