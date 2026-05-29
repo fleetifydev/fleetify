@@ -76,6 +76,30 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
     { id: "claude-opus-4-6-thinking",    label: "Claude Opus 4.6 (Thinking)",   ctx: "200K", supports_effort: false },
     { id: "gpt-oss-120b-medium",         label: "GPT-OSS 120B (Medium)",        ctx: "128K", supports_effort: false },
   ],
+  // OpenCode + Cursor source their model list LIVE from the ACP session
+  // (catalog default_models is empty), surfaced via `available_models_update`
+  // → dynamicCliModels, which overrides these entries once a session
+  // cold-starts. Until then (a draft, or the picker viewed from another
+  // agent's session) the rail would be blank, so these curated fallbacks keep
+  // the picker usable. The ids are the EXACT modelIds the ACP session reports
+  // (OpenCode's `opencode/*` zen free models; Cursor's bracketed ids) so a
+  // pick made before cold start still matches + applies via set_config_option.
+  opencode: [
+    { id: "opencode/big-pickle",             label: "Big Pickle",        supports_effort: false },
+    { id: "opencode/deepseek-v4-flash-free", label: "DeepSeek V4 Flash", supports_effort: false },
+    { id: "opencode/mimo-v2.5-free",         label: "MiMo V2.5",         supports_effort: false },
+    { id: "opencode/nemotron-3-super-free",  label: "Nemotron 3 Super",  supports_effort: false },
+  ],
+  cursor: [
+    { id: "default[]",                                                            label: "Auto",              supports_effort: false },
+    { id: "composer-2.5[fast=true]",                                              label: "Composer 2.5",      supports_effort: false },
+    { id: "claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]",   label: "Claude Opus 4.8",   ctx: "300K", supports_effort: false },
+    { id: "claude-sonnet-4-5[thinking=true,context=200k]",                        label: "Claude Sonnet 4.5", ctx: "200K", supports_effort: false },
+    { id: "gpt-5.5[context=272k,reasoning=medium,fast=false]",                    label: "GPT-5.5",           ctx: "272K", supports_effort: false },
+    { id: "gpt-5.2[reasoning=medium,fast=false]",                                 label: "GPT-5.2",           supports_effort: false },
+    { id: "gpt-5.3-codex[reasoning=medium,fast=false]",                           label: "GPT-5.3 Codex",     supports_effort: false },
+    { id: "gemini-3.1-pro[]",                                                     label: "Gemini 3.1 Pro",    supports_effort: false },
+  ],
 };
 
 /** Display names for the five CLI agents — matches each CLI ProviderSpec's
@@ -87,6 +111,8 @@ const CLI_FALLBACK_LABELS: Record<string, string> = {
   codex:             "Codex CLI",
   gemini:            "Gemini CLI",
   kimi:              "Kimi Code CLI",
+  opencode:          "OpenCode",
+  cursor:            "Cursor CLI",
   agy:               "Antigravity CLI",
   "antigravity-sdk": "Antigravity SDK",
 };

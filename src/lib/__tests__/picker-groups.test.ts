@@ -139,6 +139,34 @@ describe("buildPickerGroups", () => {
     expect(kimi?.models.some((m) => m.id.startsWith("kimi-") || m.id.startsWith("moonshot"))).toBe(true);
   });
 
+  // Regression: OpenCode + Cursor are live-model ACP agents (empty catalog
+  // default_models). Before a session cold-starts (or when the picker is
+  // viewed from another agent's session) there's no live list, so their rail
+  // was blank. They must fall back to a curated CLI_MODELS list like the
+  // other CLI agents.
+  it("gives OpenCode and Cursor a fallback model list so their rail isn't blank", () => {
+    const tiles = [
+      baseTile("opencode", "OpenCode", "cli"),
+      baseTile("cursor", "Cursor CLI", "cli"),
+    ];
+    const groups = buildPickerGroups(tiles, ["opencode", "cursor"]);
+    const oc = groups.find((g) => g.id === "opencode");
+    expect(oc?.models.length).toBeGreaterThan(0);
+    expect(oc?.models.some((m) => m.id.startsWith("opencode/"))).toBe(true);
+    const cu = groups.find((g) => g.id === "cursor");
+    expect(cu?.models.length).toBeGreaterThan(0);
+    expect(cu?.models.some((m) => m.label === "Auto")).toBe(true);
+  });
+
+  it("lets the live ACP model list override the OpenCode/Cursor fallback", () => {
+    const tiles = [baseTile("cursor", "Cursor CLI", "cli")];
+    const live = [
+      { id: "gpt-5.2[reasoning=medium,fast=false]", label: "GPT-5.2", supports_effort: false },
+    ];
+    const groups = buildPickerGroups(tiles, ["cursor"], { cursor: live });
+    expect(groups.find((g) => g.id === "cursor")?.models).toEqual(live);
+  });
+
   // Regression: when providerTiles is empty (cold-start race or transient
   // IPC failure), buildPickerGroups must still return all CLI agent rails
   // populated from CLI_MODELS so the picker isn't a blank popover.
