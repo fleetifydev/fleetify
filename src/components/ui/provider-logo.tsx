@@ -1,5 +1,7 @@
 /* ── Official AI Provider Logos ── */
 
+import { useThemeStore } from "@/stores/theme-store";
+
 // CLI-agent brand marks bundled as SVG files (lobehub / homarr-labs) and
 // rendered via <img> — that isolates each file's internal gradient/mask
 // ids (so the same icon can render twice with no id collision) and paints
@@ -9,15 +11,18 @@ import claudeIcon from "./agent-icons/claude.svg";
 import codexIcon from "./agent-icons/codex.svg";
 import geminiIcon from "./agent-icons/gemini.svg";
 import opencodeIcon from "./agent-icons/opencode.svg";
+import opencodeLightIcon from "./agent-icons/opencode-light.svg";
 import kimiIcon from "./agent-icons/kimi.svg";
 import antigravityIcon from "./agent-icons/antigravity.svg";
 // Model-provider marks. Colour marks go through <ImgIcon>; the ones that
-// only ship as a single-colour "for dark background" variant (Grok,
-// Ollama, OpenAI) go through <MaskIcon> so they adapt to the theme.
+// only ship as a single-colour "for dark background" variant (Ollama,
+// OpenAI) go through <MaskIcon> so they adapt to the theme. Grok + OpenCode
+// ship a distinct per-theme asset each, so they go through <ThemedImgIcon>.
 import perplexityIcon from "./agent-icons/perplexity.svg";
 import openaiIcon from "./agent-icons/openai.png";
 import deepseekIcon from "./agent-icons/deepseek.svg";
 import grokIcon from "./agent-icons/grok.svg";
+import grokDarkIcon from "./agent-icons/grok-dark.png";
 import nvidiaIcon from "./agent-icons/nvidia.svg";
 import ollamaIcon from "./agent-icons/ollama.svg";
 
@@ -34,6 +39,26 @@ function ImgIcon({ src, size, label }: { src: string; size: number; label: strin
       style={{ objectFit: "contain", display: "block", flexShrink: 0 }}
     />
   );
+}
+
+/** Render a brand mark that ships a distinct asset per theme — the
+ *  vendor's light-background variant on the light theme, the dark-
+ *  background variant on the dark theme. Used for marks where a single
+ *  recoloured asset reads poorly (Grok's white PNG, OpenCode's two-tone
+ *  square). Reactively follows `useThemeStore`. */
+function ThemedImgIcon({
+  light,
+  dark,
+  size,
+  label,
+}: {
+  light: string;
+  dark: string;
+  size: number;
+  label: string;
+}) {
+  const theme = useThemeStore((s) => s.theme);
+  return <ImgIcon src={theme === "dark" ? dark : light} size={size} label={label} />;
 }
 
 /** Render a MONOCHROME mark as a CSS mask painted with currentColor, so a
@@ -305,7 +330,7 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
     case "openai":     return <MaskIcon src={openaiIcon} size={size} label="OpenAI" />;
     case "groq":       return <GroqLogo size={size} />;
     case "deepseek":   return <ImgIcon src={deepseekIcon} size={size} label="DeepSeek" />;
-    case "grok":       return <MaskIcon src={grokIcon} size={size} label="Grok" />;
+    case "grok":       return <ThemedImgIcon light={grokIcon} dark={grokDarkIcon} size={size} label="Grok" />;
     case "nvidia-nim": return <ImgIcon src={nvidiaIcon} size={size} label="NVIDIA" />;
     case "perplexity": return <ImgIcon src={perplexityIcon} size={size} label="Perplexity" />;
     case "gemini-api": return <ImgIcon src={geminiIcon} size={size} label="Gemini" />;
@@ -313,7 +338,7 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
     case "antigravity":    return <ImgIcon src={antigravityIcon} size={size} label="Antigravity" />;
     case "antigravity-sdk":return <ImgIcon src={antigravityIcon} size={size} label="Antigravity" />;
     case "github-copilot": return <GitHubCopilotLogo size={size} />;
-    case "opencode":   return <ImgIcon src={opencodeIcon} size={size} label="OpenCode" />;
+    case "opencode":   return <ThemedImgIcon light={opencodeLightIcon} dark={opencodeIcon} size={size} label="OpenCode" />;
     case "aider":      return <AiderLogo size={size} />;
     default:           return <CustomAgentLogo size={size} />;
   }

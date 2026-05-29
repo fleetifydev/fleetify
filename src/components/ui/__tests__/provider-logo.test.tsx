@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render } from "@testing-library/react";
 import { ProviderLogo } from "../provider-logo";
+import { useThemeStore } from "@/stores/theme-store";
 
 describe("ProviderLogo — agent brand icons", () => {
   it.each([
@@ -52,7 +53,6 @@ describe("ProviderLogo — model-provider brand icons", () => {
 
   it.each([
     ["openai", "OpenAI"],
-    ["grok", "Grok"],
     ["ollama", "Ollama"],
   ])("renders %s as a currentColor mask so it adapts to the theme", (tool, label) => {
     const { getByRole } = render(<ProviderLogo tool={tool} size={20} />);
@@ -61,5 +61,29 @@ describe("ProviderLogo — model-provider brand icons", () => {
     // not an <img>, so they're visible on both light and dark themes.
     expect(el.tagName).toBe("SPAN");
     expect(el.style.backgroundColor.toLowerCase()).toContain("current");
+  });
+
+  it.each([
+    ["grok", "Grok"],
+    ["opencode", "OpenCode"],
+  ])("swaps %s between a light and dark asset by theme", (tool, label) => {
+    const { setTheme } = useThemeStore.getState();
+
+    setTheme("light");
+    const { getByRole, rerender } = render(<ProviderLogo tool={tool} size={20} />);
+    const lightEl = getByRole("img", { name: label }) as HTMLImageElement;
+    expect(lightEl.tagName).toBe("IMG");
+    const lightSrc = lightEl.getAttribute("src");
+    expect(lightSrc).toBeTruthy();
+
+    setTheme("dark");
+    rerender(<ProviderLogo tool={tool} size={20} />);
+    const darkEl = getByRole("img", { name: label }) as HTMLImageElement;
+    const darkSrc = darkEl.getAttribute("src");
+    expect(darkSrc).toBeTruthy();
+    // The two themes resolve to different bundled assets.
+    expect(darkSrc).not.toBe(lightSrc);
+
+    setTheme("dark"); // restore default
   });
 });
