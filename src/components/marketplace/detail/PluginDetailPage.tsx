@@ -56,12 +56,17 @@ export function PluginDetailPage({ source_id, plugin_path, onBack }: Props) {
     );
   }
 
-  if (error || !detail) {
+  // `detail.manifest` is typed as required, but the backend can return a
+  // detail body without it (a plugin whose manifest failed to parse, or a
+  // marketplace folder with no manifest of its own). The rest of this view
+  // dereferences `m` unconditionally, so treat a missing manifest as
+  // "can't display" here instead of crashing on `m.homepage` below.
+  if (error || !detail || !detail.manifest) {
     return (
       <Wrapper>
         <BackBar onBack={onBack} />
         <div style={{ color: "#f87171", marginTop: 16, fontSize: 12.5, padding: "0 24px" }}>
-          {error || "Plugin not found"}
+          {error || (detail ? "This plugin's manifest could not be loaded." : "Plugin not found")}
         </div>
       </Wrapper>
     );
