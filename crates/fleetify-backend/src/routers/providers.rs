@@ -4,10 +4,10 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -113,6 +113,7 @@ pub fn router() -> Router<AppState> {
         .route("/providers/catalog", get(providers_catalog))
         .route("/providers/health", get(http_health))
         .route("/agents/scan", get(scan_agents_cached))
+        .route("/agents/{id}/models", get(list_agent_models))
 }
 
 /// Static catalog that drives Settings → Models tiles, Settings → Agents
@@ -147,6 +148,132 @@ pub fn resolve_install_hint(spec: &crate::providers::ProviderSpec) -> &'static s
             }
         })
         .unwrap_or(spec.install_hint)
+}
+
+// ── Dynamic per-agent model discovery ──────────────────────────────────
+// OpenCode and Cursor source their model catalog at runtime, not from the
+// static `ProviderSpec::default_models`. This endpoint surfaces that catalog
+// to the composer's model picker BEFORE a chat session has cold-started, so
+// the picker isn't limited to the curated CLI_MODELS fallback. Strategy is
+// per-agent (mirrors `scan_probe_for`): OpenCode via the cheap `opencode
+// models` CLI (no auth; ids already match the ACP session); Cursor via a
+// short ACP `session/new` probe (the only source whose ids match what the
+// bridge applies via `set_config_option`). Results are TTL-cached so opening
+// the picker repeatedly doesn't re-spawn the agent.
+
+#[derive(Deserialize)]
+struct ModelsQuery {
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
+    refresh: Option<u8>,
+}
+
+type ModelList = Vec<(String, String)>; // (id, label)
+const AGENT_MODELS_TTL: Duration = Duration::from_secs(120);
+static AGENT_MODELS_CACHE: OnceLock<RwLock<HashMap<String, (Instant, ModelList)>>> =
+    OnceLock::new();
+
+fn agent_models_cache() -> &'static RwLock<HashMap<String, (Instant, ModelList)>> {
+    AGENT_MODELS_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// `GET /agents/{id}/models` — discovered model catalog for a live-model CLI
+/// agent (currently `opencode` + `cursor`). Always 200 with
+/// `{ id, models: [{id,label}] }`; an empty list means discovery failed (agent
+/// not installed, not logged in, or unsupported id) and the renderer keeps its
+/// static fallback. `?refresh=1` bypasses the TTL cache.
+async fn list_agent_models(Path(id): Path<String>, Query(q): Query<ModelsQuery>) -> Json<Value> {
+    let cwd = q.cwd.unwrap_or_default();
+    let refresh = q.refresh.unwrap_or(0) == 1;
+
+    if !refresh {
+        if let Some((at, models)) = agent_models_cache().read().await.get(&id).cloned() {
+            if at.elapsed() < AGENT_MODELS_TTL {
+                return Json(models_json(&id, &models));
+            }
+        }
+    }
+
+    let models = discover_agent_models(&id, &cwd).await;
+    // Only cache non-empty results: a transient failure (logged out, agent
+    // mid-update) shouldn't pin an empty list for the whole TTL window.
+    if !models.is_empty() {
+        agent_models_cache()
+            .write()
+            .await
+            .insert(id.clone(), (Instant::now(), models.clone()));
+    }
+    Json(models_json(&id, &models))
+}
+
+fn models_json(id: &str, models: &ModelList) -> Value {
+    json!({
+        "id": id,
+        "models": models
+            .iter()
+            .map(|(i, l)| json!({ "id": i, "label": l }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+async fn discover_agent_models(id: &str, cwd: &str) -> ModelList {
+    match id {
+        "opencode" => discover_opencode_models().await,
+        "cursor" => crate::bridges::cursor::list_models(cwd)
+            .await
+            .map(|ms| ms.into_iter().map(|m| (m.id, m.name)).collect())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// `opencode models` prints one model id per line (e.g. `opencode/big-pickle`,
+/// `antigravity-manager/claude-sonnet-4-6`). The ids match what the ACP
+/// session reports, so they're usable verbatim; the label is derived from the
+/// segment after the last `/`.
+async fn discover_opencode_models() -> ModelList {
+    let bin = cli_path("opencode")
+        .await
+        .unwrap_or_else(|| "opencode".to_string());
+    // npm ships a `.cmd`/`.ps1` shim on Windows; `cmd /C` runs it (CreateProcess
+    // can't exec a `.cmd` directly).
+    let lower = bin.to_ascii_lowercase();
+    let mut cmd = if cfg!(windows) && (lower.ends_with(".cmd") || lower.ends_with(".bat")) {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(&bin).arg("models");
+        c
+    } else {
+        let mut c = Command::new(&bin);
+        c.arg("models");
+        c
+    };
+    let out = match tokio::time::timeout(Duration::from_secs(15), cmd.output()).await {
+        Ok(Ok(o)) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && l.contains('/'))
+        .map(|id| (id.to_string(), prettify_model_label(id)))
+        .collect()
+}
+
+/// Turn a slash/dash model id into a title-cased label for the picker
+/// (`opencode/deepseek-v4-flash-free` → `Deepseek V4 Flash Free`).
+fn prettify_model_label(id: &str) -> String {
+    let tail = id.rsplit('/').next().unwrap_or(id);
+    tail.split('-')
+        .map(|w| {
+            let mut chars = w.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Per-provider scan strategy. `scan_all_agents` picks one based on
@@ -900,6 +1027,24 @@ mod tests {
             matches!(probe, ScanProbe::CursorCli),
             "cursor must use CursorCli probe (binary is off-PATH on Windows)"
         );
+    }
+
+    #[test]
+    fn prettify_model_label_title_cases_the_tail_segment() {
+        assert_eq!(prettify_model_label("opencode/big-pickle"), "Big Pickle");
+        assert_eq!(
+            prettify_model_label("opencode/deepseek-v4-flash-free"),
+            "Deepseek V4 Flash Free"
+        );
+        // No slash → whole id is title-cased.
+        assert_eq!(prettify_model_label("composer-2.5"), "Composer 2.5");
+    }
+
+    #[tokio::test]
+    async fn discover_agent_models_returns_empty_for_unknown_agent() {
+        assert!(discover_agent_models("totally-unknown", "")
+            .await
+            .is_empty());
     }
 
     #[test]

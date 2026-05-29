@@ -31,7 +31,7 @@ import {
   Github, Server, Box,
 } from "lucide-react";
 import { ProviderLogo } from "@/components/ui/provider-logo";
-import { updateSession as apiUpdateSession, cloneRepository, fetchClaudeSessions, fetchClaudeHistory, type ClaudeSession } from "@/lib/api";
+import { updateSession as apiUpdateSession, cloneRepository, fetchClaudeSessions, fetchClaudeHistory, fetchAgentModels, type ClaudeSession } from "@/lib/api";
 import { extractOwnerRepo } from "@/lib/git-url";
 import { GitSourceTab } from "./git-source-tab";
 import { useAppStore } from "@/stores/app-store";
@@ -48,6 +48,7 @@ import {
   resolveDispatchTool,
   CLI_MODEL_LABELS,
   type PickerGroup,
+  type PickerModel,
 } from "@/lib/picker-groups";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
 
@@ -359,19 +360,44 @@ export function SessionToolbar({
     .filter((t) => t.spec.kind === "cli" && t.connected)
     .map((t) => t.spec.id);
   // OpenCode and Cursor source their model list from the live ACP session
-  // (catalog default_models is empty). The bridge pushes them via
-  // `available_models_update`; surface them in the picker for this session,
-  // keyed by the session's own tool so the right CLI rail picks them up.
+  // (catalog default_models is empty). Two sources feed the picker rail:
+  //   1. The ACTIVE session's live list — pushed by the bridge via
+  //      `available_models_update` once it cold-starts (freshest, only for
+  //      the running agent), keyed by the session's own tool.
+  //   2. A discovered FULL catalog for every live-model agent, fetched lazily
+  //      from the backend (`opencode models` / a Cursor ACP probe) when the
+  //      model menu opens — so the rail shows the complete real list even
+  //      before any session of that agent has cold-started.
+  // Both override the static CLI_MODELS fallback in buildPickerGroups.
   const sessionDynModels = useChatStore((s) => s.dynamicModels[sessionId]);
-  const dynamicCliModels = sessionDynModels
-    ? {
-        [tool]: sessionDynModels.models.map((m) => ({
-          id: m.id,
-          label: m.label,
-          supports_effort: false,
-        })),
-      }
-    : undefined;
+  const [discoveredModels, setDiscoveredModels] = useState<Record<string, PickerModel[]>>({});
+  useEffect(() => {
+    if (openMenu !== "model") return; // discover lazily, only when the picker opens
+    let cancelled = false;
+    for (const agentId of ["opencode", "cursor"]) {
+      void fetchAgentModels(agentId, projectPath ?? "").then((models) => {
+        if (cancelled || models.length === 0) return; // empty → keep static fallback
+        setDiscoveredModels((prev) => ({
+          ...prev,
+          [agentId]: models.map((m) => ({ id: m.id, label: m.label, supports_effort: false })),
+        }));
+      });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [openMenu, projectPath]);
+  const dynamicCliModels: Record<string, PickerModel[]> | undefined = (() => {
+    const merged: Record<string, PickerModel[]> = { ...discoveredModels };
+    if (sessionDynModels && sessionDynModels.models.length > 0) {
+      merged[tool] = sessionDynModels.models.map((m) => ({
+        id: m.id,
+        label: m.label,
+        supports_effort: false,
+      }));
+    }
+    return Object.keys(merged).length > 0 ? merged : undefined;
+  })();
   const groups: PickerGroup[] = buildPickerGroups(
     providerTiles,
     enabledAgentIds,

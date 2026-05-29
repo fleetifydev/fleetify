@@ -130,6 +130,29 @@ export async function listModels(): Promise<{ providers: CatalogProvider[] }> {
   return res.json();
 }
 
+/** Discovered model catalog for a live-model CLI agent (`opencode` / `cursor`),
+ *  sourced at runtime by the backend (OpenCode via `opencode models`, Cursor
+ *  via a short ACP `session/new` probe). Returns the full real list with ids
+ *  that match what the bridge applies. An empty array is the documented
+ *  "discovery unavailable" signal (agent not installed / not logged in) — the
+ *  caller then keeps its static CLI_MODELS fallback, so this is intentionally
+ *  non-fatal and never throws. */
+export async function fetchAgentModels(
+  agentId: string,
+  cwd?: string,
+): Promise<{ id: string; label: string }[]> {
+  const qs = cwd ? `?cwd=${encodeURIComponent(cwd)}` : "";
+  try {
+    const res = await apiFetch(`${API_BASE}/agents/${encodeURIComponent(agentId)}/models${qs}`);
+    if (!res.ok) return [];
+    const data = (await res.json()) as { models?: { id: string; label: string }[] };
+    return Array.isArray(data.models) ? data.models : [];
+  } catch {
+    // Backend unreachable / transient — fall back to the static list.
+    return [];
+  }
+}
+
 /** Hosts auto-discovered from the user's ~/.ssh/config. The label is
  *  the Host alias (so the UI can show "my-prod" instead of an IP). */
 export interface SshKnownHost {

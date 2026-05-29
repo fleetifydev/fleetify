@@ -72,6 +72,74 @@ pub fn resolve_cursor_bin() -> Option<String> {
     None
 }
 
+/// Discover Cursor's model catalog WITHOUT starting a chat turn: spawn
+/// `cursor-agent acp`, run the ACP handshake (no `authenticate`), open a
+/// throwaway session, read its `availableModels`, and shut down. Used by the
+/// `/agents/{id}/models` discovery endpoint to populate the picker before any
+/// chat session has cold-started. The returned `ModelInfo.id` is the exact ACP
+/// `modelId` the live session uses, so a model picked from this list applies
+/// cleanly via `set_config_option` (unlike `cursor-agent models`, whose
+/// simplified ids don't match the ACP `value`s). Requires the user to be
+/// logged in — errors otherwise, which the caller treats as "no dynamic list"
+/// and falls back to the static picker entries.
+pub async fn list_models(project_path: &str) -> Result<Vec<ModelInfo>> {
+    let bin = resolve_cursor_bin().ok_or_else(|| anyhow!("cursor-agent not found"))?;
+    let cwd_raw = if project_path.is_empty() {
+        std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_else(|_| ".".to_string())
+    } else {
+        project_path.to_string()
+    };
+    let cwd = fleetify_core::strip_verbatim_prefix(std::path::Path::new(&cwd_raw))
+        .to_string_lossy()
+        .into_owned();
+
+    let mut cmd = if cfg!(windows) && bin.to_ascii_lowercase().ends_with(".cmd") {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(&bin).arg("acp");
+        c
+    } else {
+        let mut c = Command::new(&bin);
+        c.arg("acp");
+        c
+    };
+    cmd.current_dir(&cwd)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let mut proc = cmd
+        .spawn()
+        .map_err(|e| anyhow!("cursor-agent not found ({e})"))?;
+    let stdin = proc.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
+    let stdout = proc.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
+    if let Some(stderr) = proc.stderr.take() {
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut r = BufReader::new(stderr).lines();
+            while let Ok(Some(_)) = r.next_line().await {}
+        });
+    }
+
+    let client = Arc::new(AcpClient::new());
+    client.attach(stdout, stdin).await?;
+    let caps = json!({ "fs": { "readTextFile": false, "writeTextFile": false } });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(INIT_TIMEOUT_SECS),
+        client.initialize(caps),
+    )
+    .await
+    .map_err(|_| anyhow!("cursor-agent timed out during model discovery"))??;
+    let resp = client
+        .call("session/new", json!({ "cwd": cwd, "mcpServers": [] }))
+        .await?;
+    let (_current, models) = parse_session_models(&resp);
+    client.shutdown().await;
+    // `proc` drops here → the transient ACP server is killed.
+    Ok(models)
+}
+
 /// One selectable model surfaced by Cursor's session config.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelInfo {
