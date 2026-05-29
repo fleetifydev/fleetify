@@ -17,7 +17,7 @@ const TIER_TO_MODEL: Record<string, Record<string, string>> = {
   claude: {
     fastest: "claude-haiku-4-5-20251001",
     balanced: "claude-sonnet-4-6",
-    most_capable: "claude-opus-4-7",
+    most_capable: "claude-opus-4-8",
   },
   codex: {
     fastest: "gpt-5.2",
@@ -50,7 +50,7 @@ const AGENT_TEMPLATES = [
     name: "Reverse Engineer",
     description: "Login endpoint discovery, JS bundle analysis, proxy support",
     provider: "claude",
-    model: "claude-opus-4-7",
+    model: "claude-opus-4-8",
     systemPromptHint: "You are a web reverse-engineering specialist with proxied fetch + JS analysis tools.",
     // Maps to backend BuiltinTemplate id — unlocks the fleet_reveng MCP
     // server (fetch_url / discover_assets / find_endpoints / save_asset).
@@ -72,7 +72,7 @@ const AGENT_TEMPLATES = [
     name: "Code Reviewer",
     description: "Reviews code for bugs, style, security",
     provider: "claude",
-    model: "claude-opus-4-7",
+    model: "claude-opus-4-8",
     systemPromptHint: "You are an expert code reviewer. Analyze code for bugs, security vulnerabilities, and improvement opportunities.",
   },
   {
@@ -81,7 +81,7 @@ const AGENT_TEMPLATES = [
     name: "Researcher",
     description: "Deep research, report generation",
     provider: "claude",
-    model: "claude-opus-4-7",
+    model: "claude-opus-4-8",
     systemPromptHint: "You are a research specialist. Conduct thorough research and produce structured, cited reports.",
   },
   {
@@ -135,7 +135,7 @@ type TemplateId = typeof AGENT_TEMPLATES[number]["id"];
 
 const PROVIDERS = [
   { id: "claude", name: "Claude", icon: ClaudeLogo, models: [
-    { id: "claude-opus-4-7",          label: "Opus 4.7",   desc: "Most capable" },
+    { id: "claude-opus-4-8",          label: "Opus 4.8",   desc: "Most capable" },
     { id: "claude-sonnet-4-6",         label: "Sonnet 4.6", desc: "Balanced", default: true },
     { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5",  desc: "Fastest" },
   ]},

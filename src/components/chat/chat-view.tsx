@@ -1101,6 +1101,9 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     const sid = activeSessionId;
     const provider = activeSession.tool || "claude";
     const modelLabelMap: Record<string, string> = {
+      "claude-opus-4-8": "Opus 4.8",
+      // Kept for sessions created before the Opus 4.8 default so their
+      // model chip still renders the right label.
       "claude-opus-4-7": "Opus 4.7",
       "claude-sonnet-4-6": "Sonnet 4.6",
       "claude-haiku-4-5-20251001": "Haiku 4.5",
@@ -1953,7 +1956,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
               : 0;
             const m = (activeSession?.model_name ?? "").toLowerCase();
             // 1M for Gemini Pro / models tagged 1M, 200K everywhere
-            // else. Claude Opus 4.7's 1M variant gets the wide cap.
+            // else. Claude Opus 4.8's 1M variant gets the wide cap.
             const max = m.includes("gemini") || m.includes("1m") ? 1_000_000 : 200_000;
             return {
               contextPercent: lastInputView / max,

@@ -44,7 +44,7 @@ import { buildPickerGroups, resolveDispatchTool } from "@/lib/picker-groups";
 interface ModelOption { id: string; label: string; ctx: string }
 
 const CLAUDE_MODELS: ModelOption[] = [
-  { id: "claude-opus-4-7",           label: "Opus 4.7",   ctx: "200K" },
+  { id: "claude-opus-4-8",           label: "Opus 4.8",   ctx: "200K" },
   { id: "claude-sonnet-4-6",         label: "Sonnet 4.6", ctx: "200K" },
   { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5",  ctx: "200K" },
 ];
@@ -125,7 +125,7 @@ function fmtModel(id: string | null | undefined, tool?: string | null): string {
   }
   // Fallback: best-effort label inference from the id substring.
   const m = id.toLowerCase();
-  if (m.includes("opus"))    return "Opus 4.7";
+  if (m.includes("opus"))    return "Opus 4.8";
   if (m.includes("sonnet"))  return "Sonnet 4.6";
   if (m.includes("haiku"))   return "Haiku 4.5";
   if (m.includes("3.1-pro")) return "3.1 Pro";
