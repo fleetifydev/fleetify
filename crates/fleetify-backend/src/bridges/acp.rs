@@ -52,6 +52,14 @@ struct Handlers {
     fs_read: Option<RequestHandler>,
     fs_write: Option<RequestHandler>,
     session_update: Option<NotificationHandler>,
+    /// Handlers for arbitrary inbound *requests* keyed by method name —
+    /// used for agent-specific extension methods (e.g. Cursor's blocking
+    /// `cursor/ask_question` / `cursor/create_plan`). Consulted only after
+    /// the built-in `session/request_permission` + `fs/*` arms miss.
+    generic: HashMap<String, RequestHandler>,
+    /// Same, for arbitrary inbound *notifications* (e.g. Cursor's
+    /// `cursor/update_todos`). Consulted after `session/update` misses.
+    generic_notify: HashMap<String, NotificationHandler>,
 }
 
 /// Pipe writer abstraction — any `AsyncWrite + Unpin + Send`.
@@ -144,6 +152,25 @@ impl AcpClient {
     }
     pub async fn on_session_update(&self, h: NotificationHandler) {
         self.handlers.lock().await.session_update = Some(h);
+    }
+    /// Register a handler for an arbitrary inbound request method (e.g. an
+    /// agent extension like `cursor/ask_question`). The handler's `Ok` value
+    /// is written back as the JSON-RPC `result`; `Err` becomes a `-32000`.
+    pub async fn on_request(&self, method: &str, h: RequestHandler) {
+        self.handlers
+            .lock()
+            .await
+            .generic
+            .insert(method.to_string(), h);
+    }
+    /// Register a handler for an arbitrary inbound notification method (e.g.
+    /// `cursor/update_todos`). Fire-and-forget; errors are not propagated.
+    pub async fn on_notification(&self, method: &str, h: NotificationHandler) {
+        self.handlers
+            .lock()
+            .await
+            .generic_notify
+            .insert(method.to_string(), h);
     }
 
     /// Send a JSON-RPC request and await the response.
@@ -366,7 +393,7 @@ async fn handle_inbound_request(
             "session/request_permission" => guard.permission.clone(),
             "fs/read_text_file" => guard.fs_read.clone(),
             "fs/write_text_file" => guard.fs_write.clone(),
-            _ => None,
+            other => guard.generic.get(other).cloned(),
         }
     };
     let Some(handler) = h else {
@@ -405,6 +432,15 @@ async fn handle_inbound_notification(method: String, msg: Value, handlers: Arc<M
             });
             return;
         }
+    }
+    // Agent-specific extension notifications (e.g. Cursor's
+    // `cursor/update_todos` / `cursor/task` / `cursor/generate_image`).
+    let generic = handlers.lock().await.generic_notify.get(&method).cloned();
+    if let Some(h) = generic {
+        tokio::spawn(async move {
+            h(params).await;
+        });
+        return;
     }
     tracing::debug!(target: "acp", "notification_unhandled method={method}");
 }
@@ -526,6 +562,54 @@ mod tests {
         let resp: Value = serde_json::from_str(line.trim()).unwrap();
         assert_eq!(resp["id"], 42);
         assert_eq!(resp["result"]["outcome"]["outcome"], "selected");
+        client.shutdown().await;
+    }
+
+    /// A generic inbound request (an agent extension method like
+    /// `cursor/create_plan`) registered via `on_request` is dispatched to
+    /// that handler and its result is written back as the JSON-RPC response.
+    #[tokio::test]
+    async fn generic_inbound_request_invokes_registered_handler() {
+        let (client_to_agent_r, client_to_agent_w) = duplex(4096);
+        let (mut agent_to_client_w, agent_to_client_r) = duplex(4096);
+        let client = Arc::new(AcpClient::new());
+        client
+            .attach(agent_to_client_r, client_to_agent_w)
+            .await
+            .unwrap();
+
+        client
+            .on_request(
+                "cursor/create_plan",
+                Arc::new(|_params: Value| {
+                    Box::pin(async move { Ok(json!({ "outcome": { "outcome": "accepted" } })) })
+                }),
+            )
+            .await;
+
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "cursor/create_plan",
+            "params": { "plan": "1. do the thing" }
+        });
+        let mut req_bytes = serde_json::to_vec(&request).unwrap();
+        req_bytes.push(b'\n');
+        agent_to_client_w.write_all(&req_bytes).await.unwrap();
+        agent_to_client_w.flush().await.unwrap();
+
+        let mut reader = BufReader::new(client_to_agent_r);
+        let mut line = String::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            reader.read_line(&mut line),
+        )
+        .await
+        .expect("timed out waiting for response")
+        .unwrap();
+        let resp: Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(resp["id"], 7);
+        assert_eq!(resp["result"]["outcome"]["outcome"], "accepted");
         client.shutdown().await;
     }
 }

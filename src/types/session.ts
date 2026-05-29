@@ -12,6 +12,7 @@ export type AgentTool =
   | "codex"
   | "aider"
   | "opencode"
+  | "cursor"
   | "custom"
   // ── Cloud HTTP providers from the registry (Settings → Models) ──
   // These map to the same `session.tool` column the CLI agents use;

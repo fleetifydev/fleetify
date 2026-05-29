@@ -116,6 +116,14 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
     let permission_sessions: Arc<
         Mutex<HashMap<String, Arc<crate::bridges::permission::PermissionSession>>>,
     > = Arc::new(Mutex::new(HashMap::new()));
+    // Per-session round-trips for an agent's *blocking* inbound ACP extension
+    // requests (Cursor's `cursor/ask_question` + `cursor/create_plan`). Same
+    // lifecycle as `permission_sessions`: the `cursor_*_response` WS arms
+    // resolve a pending oneshot; `fail_all_pending` on disconnect unblocks any
+    // handler still parked on a receiver.
+    let interactive_sessions: Arc<
+        Mutex<HashMap<String, Arc<crate::bridges::interactive::InteractiveRequestSession>>>,
+    > = Arc::new(Mutex::new(HashMap::new()));
     // Per-session live fanout tasks. Each subscribed session id gets a
     // forwarder spawned that pulls broadcast::Value events from
     // SessionManager and writes them to this WS's sink. Cancelled on
@@ -411,6 +419,57 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
                 }
             }
 
+            // Renderer's answer to a Cursor blocking extension request
+            // (ask_question / create_plan). Payload:
+            //   { type, session_id, id, outcome }
+            // where `outcome` is the ACP outcome object, e.g.
+            //   {outcome:"answered", answers:[...]} | {outcome:"skipped"}
+            //   {outcome:"accepted"} | {outcome:"rejected", reason} | {outcome:"cancelled"}
+            // We resolve the matching InteractiveRequestSession oneshot with the
+            // full ACP `result` (`{outcome: <outcome>}`), which the bridge's
+            // on_request handler returns to Cursor.
+            "cursor_question_response" | "cursor_plan_response" => {
+                let sid = v
+                    .get("session_id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let req_id = v
+                    .get("id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let outcome = v
+                    .get("outcome")
+                    .cloned()
+                    .unwrap_or_else(|| json!({ "outcome": "cancelled" }));
+                if sid.is_empty() || req_id.is_empty() {
+                    tracing::warn!(
+                        target: "cursor.interactive",
+                        "cursor response missing session_id or id — ignored"
+                    );
+                    continue;
+                }
+                let session_opt = interactive_sessions.lock().await.get(&sid).cloned();
+                if let Some(is) = session_opt {
+                    let resolved = is.resolve(&req_id, json!({ "outcome": outcome })).await;
+                    tracing::info!(
+                        target: "cursor.interactive",
+                        session = %sid,
+                        req_id = %req_id,
+                        resolved,
+                        "cursor_response.resolved"
+                    );
+                } else {
+                    tracing::warn!(
+                        target: "cursor.interactive",
+                        session = %sid,
+                        req_id = %req_id,
+                        "cursor response for unknown session — dropped"
+                    );
+                }
+            }
+
             "send" => {
                 let Some(sid) = v
                     .get("session_id")
@@ -522,6 +581,15 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
                         })
                         .clone()
                 };
+                // Same for the Cursor extension-request round-trip.
+                let interactive_session = {
+                    let mut map = interactive_sessions.lock().await;
+                    map.entry(sid.clone())
+                        .or_insert_with(|| {
+                            Arc::new(crate::bridges::interactive::InteractiveRequestSession::new())
+                        })
+                        .clone()
+                };
 
                 streaming.lock().await.insert(sid.clone());
                 let st2 = st.clone();
@@ -529,6 +597,7 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
                 let bridges2 = bridges.clone();
                 let streaming2 = streaming.clone();
                 let perm_session2 = perm_session.clone();
+                let interactive_session2 = interactive_session.clone();
                 let pending2 = pending_sends.clone();
                 let user_id2 = user_id.clone();
                 tokio::spawn(async move {
@@ -558,6 +627,7 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
                             current_session,
                             current_text,
                             perm_session2.clone(),
+                            interactive_session2.clone(),
                         )
                         .await;
                         tracing::info!(
@@ -646,6 +716,14 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
         }
         sids
     };
+    // Same for Cursor extension-request round-trips: cancel any parked
+    // ask_question / create_plan so the bridge handler unblocks.
+    {
+        let mut map = interactive_sessions.lock().await;
+        for (_, is) in map.drain() {
+            is.fail_all_pending().await;
+        }
+    }
     // Drop the loopback registry entries too — without this, a stale
     // closure (whose captured sink points at a now-closed WS) would
     // keep accepting calls from fleet-permission-mcp and silently
@@ -699,6 +777,50 @@ fn build_permission_handler(
     })
 }
 
+/// Build the ACP inbound-request handler for Cursor's blocking
+/// `cursor/ask_question`. Mirrors `build_permission_handler`: ships a
+/// `cursor_ask_question` payload (Cursor's question fields + `id` +
+/// `session_id`) to the renderer and awaits the matching
+/// `cursor_question_response` WS arm's resolution.
+fn build_cursor_question_handler(
+    interactive_session: &Arc<crate::bridges::interactive::InteractiveRequestSession>,
+    sink: &Sink,
+    session_id: &str,
+) -> crate::bridges::acp::RequestHandler {
+    let sink = sink.clone();
+    let sid = session_id.to_string();
+    interactive_session.make_handler("cursor_ask_question", move |mut payload| {
+        if let Value::Object(ref mut m) = payload {
+            m.insert("session_id".into(), Value::String(sid.clone()));
+        }
+        let sink = sink.clone();
+        Box::pin(async move {
+            send_json(&sink, payload).await;
+        })
+    })
+}
+
+/// Build the ACP inbound-request handler for Cursor's blocking
+/// `cursor/create_plan`. Ships a `cursor_create_plan` payload and awaits the
+/// `cursor_plan_response` WS arm's resolution.
+fn build_cursor_plan_handler(
+    interactive_session: &Arc<crate::bridges::interactive::InteractiveRequestSession>,
+    sink: &Sink,
+    session_id: &str,
+) -> crate::bridges::acp::RequestHandler {
+    let sink = sink.clone();
+    let sid = session_id.to_string();
+    interactive_session.make_handler("cursor_create_plan", move |mut payload| {
+        if let Value::Object(ref mut m) = payload {
+            m.insert("session_id".into(), Value::String(sid.clone()));
+        }
+        let sink = sink.clone();
+        Box::pin(async move {
+            send_json(&sink, payload).await;
+        })
+    })
+}
+
 async fn run_send_flow(
     st: AppState,
     sink: Sink,
@@ -706,6 +828,7 @@ async fn run_send_flow(
     session: Session,
     user_text: String,
     permission_session: Arc<crate::bridges::permission::PermissionSession>,
+    interactive_session: Arc<crate::bridges::interactive::InteractiveRequestSession>,
 ) {
     let sid = session.id.clone();
 
@@ -1108,6 +1231,48 @@ async fn run_send_flow(
                 ));
             }
             AnyBridge::OpenCode(Arc::new(b))
+        }
+        "cursor" => {
+            let is_staff = session.title == "Staff Agent";
+            let mut b = crate::bridges::cursor::CursorBridge::new(
+                sid.clone(),
+                agent_cwd.clone(),
+                session.permission_mode.clone(),
+                session.model_name.clone(),
+                session.effort.clone(),
+                is_staff,
+                session.agent_template.clone(),
+            );
+            // Resume the prior Cursor ACP session if we persisted one (our Init
+            // event stamped it into session.claude_session_id).
+            b.resume_session_id = session.claude_session_id.clone();
+            // Cursor routes tool approvals over ACP `session/request_permission`
+            // in every mode except the bypass modes — wire the dialog whenever
+            // the user-facing mode could ask (mirrors the OpenCode gate).
+            if !is_staff
+                && !matches!(
+                    session.permission_mode.as_str(),
+                    "bypassPermissions" | "dontAsk"
+                )
+            {
+                b = b.with_permission_handler(build_permission_handler(
+                    &permission_session,
+                    &sink,
+                    &sid,
+                ));
+                // Cursor's blocking extension methods (ask_question / create_plan)
+                // surface to the renderer through the same per-session round-trip
+                // infrastructure as permissions (see interactive_session).
+                b = b.with_cursor_request_handlers(
+                    Some(build_cursor_question_handler(
+                        &interactive_session,
+                        &sink,
+                        &sid,
+                    )),
+                    Some(build_cursor_plan_handler(&interactive_session, &sink, &sid)),
+                );
+            }
+            AnyBridge::Cursor(Arc::new(b))
         }
         "github-copilot" => AnyBridge::GitHubCopilot(Arc::new(
             crate::bridges::github_copilot::GitHubCopilotBridge::new(
@@ -2293,6 +2458,19 @@ async fn run_dispatched_task(
             );
             b.resume_session_id = target.claude_session_id.clone();
             AnyBridge::OpenCode(std::sync::Arc::new(b))
+        }
+        "cursor" => {
+            let mut b = crate::bridges::cursor::CursorBridge::new(
+                target_id.clone(),
+                target_cwd.clone(),
+                target.permission_mode.clone(),
+                target.model_name.clone(),
+                target.effort.clone(),
+                false, // dispatched tasks always land on non-staff agents
+                target.agent_template.clone(),
+            );
+            b.resume_session_id = target.claude_session_id.clone();
+            AnyBridge::Cursor(std::sync::Arc::new(b))
         }
         "github-copilot" => AnyBridge::GitHubCopilot(std::sync::Arc::new(
             crate::bridges::github_copilot::GitHubCopilotBridge::new(

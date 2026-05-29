@@ -1349,6 +1349,31 @@ class WSManager {
         useAppStore.getState().updateSession(sessionId, { status: "waiting" });
         break;
       }
+      case "cursor_ask_question": {
+        // Cursor's blocking `cursor/ask_question` — surface a multiple-choice
+        // card; `sendQuestionResponse` round-trips the chosen option ids.
+        store.setCursorQuestion(sessionId, {
+          id: data.id,
+          title: data.title,
+          questions: data.questions,
+        });
+        useAppStore.getState().updateSession(sessionId, { status: "waiting" });
+        break;
+      }
+      case "cursor_create_plan": {
+        // Cursor's blocking `cursor/create_plan` — surface a plan-approval
+        // card; `sendPlanResponse` round-trips accepted/rejected.
+        store.setCursorPlan(sessionId, {
+          id: data.id,
+          name: data.name,
+          overview: data.overview,
+          plan: data.plan,
+          todos: data.todos,
+          phases: data.phases,
+        });
+        useAppStore.getState().updateSession(sessionId, { status: "waiting" });
+        break;
+      }
       case "permission_request": {
         // Agentic loop (HTTP-provider sessions running through
         // `drive_agentic_loop`) is asking the user. Reuse the same
@@ -1892,6 +1917,42 @@ class WSManager {
       session_id: sessionId,
       id, approved, always,
       tool_name: toolName ?? "",
+    });
+  }
+
+  /** Answer Cursor's blocking `cursor/ask_question`. `outcome` is the ACP
+   *  outcome object, e.g. `{outcome:"answered", answers:[{questionId,
+   *  selectedOptionIds}]}` or `{outcome:"skipped"}`. Clears the card and
+   *  unblocks the agent's parked request. */
+  async sendQuestionResponse(
+    sessionId: string,
+    id: string,
+    outcome: Record<string, unknown>,
+  ) {
+    useChatStore.getState().setCursorQuestion(sessionId, null);
+    useAppStore.getState().updateSession(sessionId, { status: "running" });
+    this._sendOrQueue({
+      type: "cursor_question_response",
+      session_id: sessionId,
+      id,
+      outcome,
+    });
+  }
+
+  /** Answer Cursor's blocking `cursor/create_plan`. `outcome` is e.g.
+   *  `{outcome:"accepted"}` or `{outcome:"rejected", reason}`. */
+  async sendPlanResponse(
+    sessionId: string,
+    id: string,
+    outcome: Record<string, unknown>,
+  ) {
+    useChatStore.getState().setCursorPlan(sessionId, null);
+    useAppStore.getState().updateSession(sessionId, { status: "running" });
+    this._sendOrQueue({
+      type: "cursor_plan_response",
+      session_id: sessionId,
+      id,
+      outcome,
     });
   }
 

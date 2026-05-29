@@ -15,6 +15,45 @@ export interface PermissionRequest {
   requestedAt?: number;
 }
 
+/* ── Cursor blocking extension requests ──────────────────────────────────
+ * Cursor's `cursor/ask_question` + `cursor/create_plan` ACP methods block
+ * the agent until the user answers. The backend ships them as
+ * `cursor_ask_question` / `cursor_create_plan` WS events (keyed by `id`),
+ * the renderer shows a card, and `wsManager.sendQuestionResponse` /
+ * `sendPlanResponse` round-trips the outcome back. Mirrors PermissionRequest.
+ */
+export interface CursorQuestionItem {
+  id: string;
+  prompt: string;
+  options: { id: string; label: string }[];
+  allowMultiple?: boolean;
+}
+export interface CursorQuestion {
+  /** req_id the WS response must echo back. */
+  id: string;
+  title?: string;
+  questions: CursorQuestionItem[];
+}
+export interface CursorPlanTodo {
+  id: string;
+  content: string;
+  status: string;
+}
+export interface CursorPlanPhase {
+  name: string;
+  todos: CursorPlanTodo[];
+}
+export interface CursorPlan {
+  /** req_id the WS response must echo back. */
+  id: string;
+  name?: string;
+  overview?: string;
+  /** Markdown plan body. */
+  plan: string;
+  todos: CursorPlanTodo[];
+  phases: CursorPlanPhase[];
+}
+
 export interface ProcessEvent {
   id: string;
   tool_id: string;
@@ -138,6 +177,9 @@ export interface SessionChatState {
   activeToolCalls: Record<string, { name: string; input: Record<string, unknown> }>;
   contentSoFar: ContentBlock[];
   permissionRequest: PermissionRequest | null;
+  /** Pending Cursor blocking extension requests (one of each at most). */
+  cursorQuestion: CursorQuestion | null;
+  cursorPlan: CursorPlan | null;
   processLog: ProcessEvent[];
   /** Map of dispatched sub-agents keyed by task_id. Backed by the
    *  Claude Agent SDK's TaskStartedMessage / TaskProgressMessage /
@@ -164,6 +206,8 @@ const emptySession = (): SessionChatState => ({
   activeToolCalls: {},
   contentSoFar: [],
   permissionRequest: null,
+  cursorQuestion: null,
+  cursorPlan: null,
   processLog: [],
   subagentTasks: {},
   selectedSubagentTaskId: null,
@@ -283,6 +327,8 @@ interface ChatState {
   clearStreaming: (sessionId: string) => void;
   clearAll: (sessionId: string) => void;
   setPermissionRequest: (sessionId: string, req: PermissionRequest | null) => void;
+  setCursorQuestion: (sessionId: string, q: CursorQuestion | null) => void;
+  setCursorPlan: (sessionId: string, p: CursorPlan | null) => void;
 
   /** Start the inline compaction pill — fired by ws-manager on the
    *  backend's `compaction_status` (state="starting") event. Sets the
@@ -708,6 +754,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
           : null,
       })),
     ),
+
+  setCursorQuestion: (sessionId, q) =>
+    set((state) => patch(state, sessionId, () => ({ cursorQuestion: q }))),
+
+  setCursorPlan: (sessionId, p) =>
+    set((state) => patch(state, sessionId, () => ({ cursorPlan: p }))),
 
   startCompactionPill: (sessionId, { provider, command }) =>
     set((state) =>

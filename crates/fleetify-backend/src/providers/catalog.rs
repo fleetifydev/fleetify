@@ -128,6 +128,16 @@ pub enum AuthIndicator {
         field: &'static str,
         unit: ExpiryUnit,
     },
+    /// Read a JSON file under `$HOME/<path>` and treat the indicator as
+    /// satisfied when `field` is present and non-null. Used for CLI agents
+    /// that record login state as a config field rather than a separate
+    /// credentials file (Cursor writes an `authInfo` object into
+    /// `~/.cursor/cli-config.json` only while logged in — the file itself
+    /// persists logged-out, so a plain `HomeDir` check would false-positive).
+    JsonFieldPresent {
+        path: &'static str,
+        field: &'static str,
+    },
 }
 
 /// Per-OS install command set. Resolved at scan time by
@@ -811,6 +821,22 @@ const OPENCODE_CLI_INDICATORS: &[AuthIndicator] = &[
     },
 ];
 
+// Cursor CLI records login state as an `authInfo` object inside
+// `~/.cursor/cli-config.json` (email/userId/authId). The object is present
+// only while logged in and is removed by `cursor-agent logout` (verified
+// against Cursor Agent 2026.05.28) — but the config file itself persists when
+// logged out, so we check the field, not the file. `CURSOR_API_KEY` covers
+// headless / CI auth that skips the interactive browser login.
+const CURSOR_CLI_INDICATORS: &[AuthIndicator] = &[
+    AuthIndicator::JsonFieldPresent {
+        path: ".cursor/cli-config.json",
+        field: "authInfo",
+    },
+    AuthIndicator::EnvVar {
+        name: "CURSOR_API_KEY",
+    },
+];
+
 // Antigravity CLI's auth state lives in `~/.gemini/oauth_creds.json`.
 // The file's `expiry_date` (Unix millis) is the only on-disk signal
 // we can read without spawning agy — agy's CLI has no `auth status`
@@ -1174,6 +1200,29 @@ pub static CATALOG: &[ProviderSpec] = &[
         install_hints: Some(GITHUB_COPILOT_INSTALL_HINTS),
         login_hint: "copilot login",
     },
+    // Cursor — driven over ACP (`cursor-agent acp`). Models are sourced live
+    // from the ACP session (same as OpenCode), so `default_models` is empty.
+    // The installer ships a shell script (no npm) and writes the binary
+    // off-PATH on Windows, so install uses per-OS `install_hints` and detection
+    // uses the custom `ScanProbe::CursorCli` (see routers/providers.rs).
+    ProviderSpec {
+        id: "cursor",
+        display_name: "Cursor CLI",
+        kind: ProviderKind::Cli,
+        default_base_url: "",
+        auth: AuthSpec::None,
+        default_models: &[],
+        extras: ProviderExtras::DEFAULT,
+        bin: "cursor-agent",
+        auth_indicators: CURSOR_CLI_INDICATORS,
+        install_hint: "",
+        install_hints: Some(InstallHints {
+            windows: "irm 'https://cursor.com/install?win32=true' | iex",
+            macos: "curl https://cursor.com/install -fsS | bash",
+            linux: "curl https://cursor.com/install -fsS | bash",
+        }),
+        login_hint: "cursor-agent login",
+    },
     // Antigravity ships a Go binary outside npm (curl/irm installer), so
     // `install_hint` stays empty and the per-OS `install_hints` carry the
     // real commands. The shell IPC layer branches on this when wiring the
@@ -1278,13 +1327,32 @@ mod tests {
             .iter()
             .filter(|p| matches!(p.kind, ProviderKind::Cli))
             .count();
-        // 7 cloud HTTP providers + 1 local (ollama) + 7 CLI agents
-        // (Claude, Codex, Gemini, Kimi, OpenCode, GitHub Copilot,
+        // 7 cloud HTTP providers + 1 local (ollama) + 9 CLI agents
+        // (Claude, Codex, Gemini, Kimi, OpenCode, GitHub Copilot, Cursor,
         // Antigravity CLI, Antigravity SDK). If you intentionally added/
         // removed a provider, update these constants together with the catalog.
         assert_eq!(api, 7, "expected 7 Api providers, got {api}");
         assert_eq!(local, 1, "expected 1 LocalHttp provider, got {local}");
-        assert_eq!(cli, 8, "expected 8 Cli agents, got {cli}");
+        assert_eq!(cli, 9, "expected 9 Cli agents, got {cli}");
+    }
+
+    #[test]
+    fn cursor_is_registered_cli_agent() {
+        let c = CATALOG
+            .iter()
+            .find(|p| p.id == "cursor")
+            .expect("cursor in catalog");
+        assert!(matches!(c.kind, ProviderKind::Cli));
+        assert!(matches!(c.auth, AuthSpec::None));
+        assert_eq!(c.bin, "cursor-agent");
+        // Models are sourced live from the ACP session (like OpenCode).
+        assert!(c.default_models.is_empty());
+        // Login state is the `authInfo` field, not a file/env existence check.
+        assert!(c.auth_indicators.iter().any(
+            |i| matches!(i, AuthIndicator::JsonFieldPresent { field, .. } if *field == "authInfo")
+        ));
+        // Shell-installer agent: per-OS hints, empty universal hint.
+        assert!(c.install_hint.is_empty() && c.install_hints.is_some());
     }
 
     #[test]

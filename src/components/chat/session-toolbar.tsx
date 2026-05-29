@@ -358,13 +358,14 @@ export function SessionToolbar({
   const enabledAgentIds = providerTiles
     .filter((t) => t.spec.kind === "cli" && t.connected)
     .map((t) => t.spec.id);
-  // OpenCode sources its model list from the live ACP session (catalog
-  // default_models is empty). The bridge pushes them via
-  // `available_models_update`; surface them in the picker for this session.
+  // OpenCode and Cursor source their model list from the live ACP session
+  // (catalog default_models is empty). The bridge pushes them via
+  // `available_models_update`; surface them in the picker for this session,
+  // keyed by the session's own tool so the right CLI rail picks them up.
   const sessionDynModels = useChatStore((s) => s.dynamicModels[sessionId]);
   const dynamicCliModels = sessionDynModels
     ? {
-        opencode: sessionDynModels.models.map((m) => ({
+        [tool]: sessionDynModels.models.map((m) => ({
           id: m.id,
           label: m.label,
           supports_effort: false,
@@ -662,17 +663,17 @@ export function SessionToolbar({
                   const updates: Record<string, unknown> = { model_name: modelId };
                   if (next !== tool) updates.tool = next;
                   patch(updates);
-                  // OpenCode sources models at runtime — switch the live ACP
-                  // session too (the patch alone only affects the next cold
-                  // start). Skipped for drafts (no live bridge yet).
-                  if (next === "opencode" && !isDraft) {
+                  // OpenCode + Cursor source models at runtime — switch the
+                  // live ACP session too (the patch alone only affects the next
+                  // cold start). Skipped for drafts (no live bridge yet).
+                  if ((next === "opencode" || next === "cursor") && !isDraft) {
                     wsManager.switchModel(sessionId, modelId);
                   }
                 }}
                 onPickEffort={(e) => {
                   patch({ effort: e });
-                  // OpenCode applies effort live via set_config_option.
-                  if (tool === "opencode" && !isDraft) {
+                  // OpenCode + Cursor apply effort live via set_config_option.
+                  if ((tool === "opencode" || tool === "cursor") && !isDraft) {
                     wsManager.switchConfig(sessionId, "effort", e);
                   }
                 }}

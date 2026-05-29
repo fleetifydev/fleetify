@@ -33,6 +33,15 @@ describe("ProviderLogo — agent brand icons", () => {
     expect(svg.getAttribute("fill")).toBe("currentColor");
   });
 
+  it("renders the Cursor mark inline so it adapts to the theme", () => {
+    const { getByLabelText } = render(<ProviderLogo tool="cursor" size={20} />);
+    const svg = getByLabelText("Cursor");
+    expect(svg.tagName.toLowerCase()).toBe("svg");
+    // The hexagon mark's path is painted with currentColor so it reads on
+    // both light and dark themes (the source ships a fixed-colour variant).
+    expect(svg.querySelector("path")?.getAttribute("fill")).toBe("currentColor");
+  });
+
   it("falls back to a generic icon for unknown tools", () => {
     const { container } = render(<ProviderLogo tool="totally-unknown" size={20} />);
     expect(container.querySelector("svg")).toBeTruthy();

@@ -6,6 +6,8 @@ import { ChatInput, type Attachment } from "./chat-input";
 import { MessageContent, StreamingMessage } from "./message-content";
 import { CompactionPill } from "./compaction-pill";
 import { PermissionDialog } from "./permission-dialog";
+import { CursorQuestionCard } from "./cursor-question-card";
+import { CursorPlanCard } from "./cursor-plan-card";
 import { SessionToolbar } from "./session-toolbar";
 import { fetchMessages, fetchClaudeHistory, createSession, clearSessionMessages, updateSession as apiUpdateSession, stopSession, restartSession, analyzeFleetResponse } from "@/lib/api";
 import { isWindowsPlatform, folderName, truncateMid } from "@/lib/utils";
@@ -150,7 +152,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   // migrated to the new session.
   const chatStoreKey = composerOpen ? COMPOSER_CHAT_KEY : effectiveSessionId;
   const sessionState = useChatStore(selectSession(chatStoreKey));
-  const { messages, streamingText, streamingThinking, isStreaming, permissionRequest, compactionPill } = sessionState;
+  const { messages, streamingText, streamingThinking, isStreaming, permissionRequest, cursorQuestion, cursorPlan, compactionPill } = sessionState;
   // True while the inline compaction status owns the feedback surface.
   // Lets us hide the streaming "Thinking…" UI for /compact since the
   // flow never runs an agent turn — it's app-owned summarisation.
@@ -1886,9 +1888,13 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
           onStop={handleStop}
           disabled={isStreaming}
           streaming={isStreaming}
-          locked={!!permissionRequest}
+          locked={!!permissionRequest || !!cursorQuestion || !!cursorPlan}
           placeholder={
-            permissionRequest
+            cursorQuestion
+              ? "Answer above to continue…"
+              : cursorPlan
+                ? "Review the plan above to continue…"
+                : permissionRequest
               ? permissionRequest.tool_name === "AskUserQuestion"
                 ? "Respond above to continue…"
                 : permissionRequest.tool_name === "ExitPlanMode" || permissionRequest.tool_name === "EnterPlanMode"
@@ -1998,6 +2004,20 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                   onAllow={(id, toolName) => wsManager.sendPermissionResponse(effectiveSessionId, id, true, false, toolName)}
                   onAllowAlways={(id, toolName) => wsManager.sendPermissionResponse(effectiveSessionId, id, true, true, toolName)}
                   onDeny={(id, toolName) => wsManager.sendPermissionResponse(effectiveSessionId, id, false, false, toolName)}
+                />
+              ) : null}
+              {cursorQuestion && effectiveSessionId ? (
+                <CursorQuestionCard
+                  question={cursorQuestion}
+                  onAnswer={(id, outcome) => wsManager.sendQuestionResponse(effectiveSessionId, id, outcome)}
+                  onSkip={(id) => wsManager.sendQuestionResponse(effectiveSessionId, id, { outcome: "skipped" })}
+                />
+              ) : null}
+              {cursorPlan && effectiveSessionId ? (
+                <CursorPlanCard
+                  plan={cursorPlan}
+                  onAccept={(id) => wsManager.sendPlanResponse(effectiveSessionId, id, { outcome: "accepted" })}
+                  onReject={(id) => wsManager.sendPlanResponse(effectiveSessionId, id, { outcome: "rejected" })}
                 />
               ) : null}
               {/* Fleet decision card — surfaces what the co-pilot

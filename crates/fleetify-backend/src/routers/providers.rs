@@ -163,6 +163,12 @@ enum ScanProbe {
     /// Resolve any usable Python, then run `python -c "import <module>"`
     /// against it. Both must succeed for `installed` to be true.
     PythonModule { module: &'static str },
+    /// Cursor CLI: PATH lookup (`cursor-agent`/`agent`) OR the off-PATH
+    /// install location the installer writes to without updating PATH
+    /// (`%LOCALAPPDATA%\cursor-agent\cursor-agent.cmd` on Windows;
+    /// `~/.local/bin/{cursor-agent,agent}` on Unix). Shares the bridge's
+    /// `resolve_cursor_bin` so detection and spawn agree.
+    CursorCli,
 }
 
 /// Map a catalog id to the probe strategy used by `scan_all_agents`.
@@ -174,6 +180,7 @@ fn scan_probe_for(id: &'static str, bin: &'static str) -> ScanProbe {
         "antigravity-sdk" => ScanProbe::PythonModule {
             module: "google.antigravity",
         },
+        "cursor" => ScanProbe::CursorCli,
         _ => ScanProbe::BinOnly { bin },
     }
 }
@@ -204,6 +211,7 @@ pub async fn scan_all_agents() -> HashMap<String, Value> {
                     None
                 }
             }
+            ScanProbe::CursorCli => crate::bridges::cursor::resolve_cursor_bin(),
         };
         let installed = path.is_some();
         let authenticated = if installed {
@@ -212,6 +220,13 @@ pub async fn scan_all_agents() -> HashMap<String, Value> {
                 AuthIndicator::EnvVar { name } => std::env::var(name).is_ok(),
                 AuthIndicator::JsonExpiry { path, field, unit } => {
                     check_json_expiry(&home().join(path), field, *unit)
+                }
+                AuthIndicator::JsonFieldPresent { path, field } => {
+                    std::fs::read_to_string(home().join(path))
+                        .ok()
+                        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                        .and_then(|v| v.get(*field).cloned())
+                        .is_some_and(|f| !f.is_null())
                 }
             })
         } else {
@@ -863,6 +878,7 @@ mod tests {
                 ("antigravity-sdk", ScanProbe::PythonModule { module }) => {
                     assert_eq!(module, "google.antigravity");
                 }
+                ("cursor", ScanProbe::CursorCli) => {}
                 (other, _) => panic!("unmapped CLI id in scan_probe_for: {other}"),
             }
         }
@@ -874,6 +890,15 @@ mod tests {
         assert!(
             matches!(probe, ScanProbe::AgyCli),
             "agy must use AgyCli probe so installation_id fallback works"
+        );
+    }
+
+    #[tokio::test]
+    async fn scan_probe_for_cursor_uses_cursor_cli_variant() {
+        let probe = scan_probe_for("cursor", "cursor-agent");
+        assert!(
+            matches!(probe, ScanProbe::CursorCli),
+            "cursor must use CursorCli probe (binary is off-PATH on Windows)"
         );
     }
 

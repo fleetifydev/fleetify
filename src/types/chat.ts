@@ -500,6 +500,38 @@ export interface WSSlashCommands {
   commands: Array<{ name: string; description: string }>;
 }
 
+/** Cursor's blocking `cursor/ask_question` extension request. The renderer
+ *  shows a multiple-choice card and round-trips a `cursor_question_response`
+ *  carrying the chosen option ids; the bridge unblocks the agent with it. */
+export interface WSCursorAskQuestion {
+  type: "cursor_ask_question";
+  id: string;
+  session_id: string;
+  title?: string;
+  questions: Array<{
+    id: string;
+    prompt: string;
+    options: Array<{ id: string; label: string }>;
+    allowMultiple?: boolean;
+  }>;
+}
+
+/** Cursor's blocking `cursor/create_plan` extension request. The renderer
+ *  shows a plan-approval card and round-trips a `cursor_plan_response`. */
+export interface WSCursorCreatePlan {
+  type: "cursor_create_plan";
+  id: string;
+  session_id: string;
+  name?: string;
+  overview?: string;
+  plan: string;
+  todos: Array<{ id: string; content: string; status: string }>;
+  phases: Array<{
+    name: string;
+    todos: Array<{ id: string; content: string; status: string }>;
+  }>;
+}
+
 export type WSServerMessage =
   | WSInitMessage
   | WSMessageDelta
@@ -532,4 +564,6 @@ export type WSServerMessage =
   | WSSearchResult
   | WSAvailableModels
   | WSSlashCommands
+  | WSCursorAskQuestion
+  | WSCursorCreatePlan
   | WSAuthRequired;
