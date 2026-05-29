@@ -220,6 +220,27 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
                 }
             }
 
+            "auth_code" => {
+                // The user pasted the OOB OAuth code from the provider's
+                // sign-in page. Route it to the live bridge for that
+                // session — the Antigravity CLI bridge writes it into the
+                // agy process that's blocking on its "paste the code"
+                // prompt. No-op for any other bridge / unknown session.
+                let sid = v.get("session_id").and_then(|x| x.as_str()).unwrap_or("");
+                let code = v.get("code").and_then(|x| x.as_str()).unwrap_or("");
+                if !sid.is_empty() && !code.is_empty() {
+                    if let Some(b) = bridges.lock().await.get(sid).cloned() {
+                        b.send_auth_code(code).await;
+                    } else {
+                        tracing::warn!(
+                            target: "chat",
+                            session = %sid,
+                            "auth_code for a session with no live bridge — ignored"
+                        );
+                    }
+                }
+            }
+
             "permission_response" => {
                 // Renderer's permission dialog wired up. Payload shape
                 // (parity with the Electron build):

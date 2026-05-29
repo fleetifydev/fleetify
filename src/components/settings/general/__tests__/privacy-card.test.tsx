@@ -32,7 +32,7 @@ describe("PrivacyCard", () => {
     });
     expect(screen.getByText(/Crash reports/i)).toBeInTheDocument();
     expect(
-      screen.getByText(/Product analytics \(PostHog\)/i),
+      screen.getByText(/Product analytics/i),
     ).toBeInTheDocument();
   });
 
@@ -40,7 +40,7 @@ describe("PrivacyCard", () => {
     render(<PrivacyCard />);
     await waitFor(() => {
       expect(
-        screen.getByText(/Product analytics \(PostHog\)/i),
+        screen.getByText(/Product analytics/i),
       ).toBeInTheDocument();
     });
     // Description should explicitly mention what's NOT sent.
@@ -55,7 +55,7 @@ describe("PrivacyCard", () => {
     render(<PrivacyCard />);
     await waitFor(() => {
       expect(
-        screen.getByText(/Product analytics \(PostHog\)/i),
+        screen.getByText(/Product analytics/i),
       ).toBeInTheDocument();
     });
     const electronAPI = (window as unknown as {

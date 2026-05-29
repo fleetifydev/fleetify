@@ -87,7 +87,7 @@ export function PrivacyCard() {
       <Row title="Crash reports" desc="Send stack traces when Fleetify crashes.">
         <Toggle on={crashReports} onChange={() => void patch({ crashReportsEnabled: !crashReports })} />
       </Row>
-      <Row title="Product analytics (PostHog)"
+      <Row title="Product analytics"
            desc="Anonymous behavioural data so we can see which features matter (e.g. is onboarding too long?). Same privacy floor — no message content, keys, or file paths. Off by default."
            last>
         <Toggle on={posthogEnabled} onChange={() => void togglePosthog(!posthogEnabled)} />

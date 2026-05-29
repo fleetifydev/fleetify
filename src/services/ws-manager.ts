@@ -1,5 +1,5 @@
 import { createSessionsWebSocket } from "@/lib/api";
-import { useChatStore, pushChatAuthRequired } from "@/stores/chat-store";
+import { useChatStore, pushChatAuthRequired, markAuthSignedIn } from "@/stores/chat-store";
 import { useAppStore } from "@/stores/app-store";
 import type { WSServerMessage, ImageBlock } from "@/types/chat";
 import type { Attachment } from "@/components/chat/chat-input";
@@ -159,6 +159,9 @@ class WSManager {
       // per vsync tick. Every store subscriber rendered twice per delta;
       // halving that is a measurable win during a long stream.
       useChatStore.getState().appendStreamAndContent(sessionId, text);
+      // A reply landing confirms any in-progress sign-in succeeded —
+      // flip its card to the "Signed in" state (no-op when there's none).
+      markAuthSignedIn(sessionId);
     }
   }
 
@@ -1859,6 +1862,13 @@ class WSManager {
       id, approved, always,
       tool_name: toolName ?? "",
     });
+  }
+
+  /** Send the out-of-band OAuth code the user pasted from a provider's
+   *  sign-in page back to the live bridge, which feeds it to the agent's
+   *  stdin (e.g. the Antigravity CLI's "paste the code here" prompt). */
+  async sendAuthCode(sessionId: string, code: string) {
+    this._sendOrQueue({ type: "auth_code", session_id: sessionId, code });
   }
 
   async abort(sessionId: string) {

@@ -647,7 +647,11 @@ export function SessionToolbar({
                 }}
                 onPickEffort={(e) => patch({ effort: e })}
                 onClose={() => setOpenMenu(null)}
-                anchor="top"
+                // Open UPWARD, matching every other toolbar menu (perms /
+                // source / history) and the chat-input's Routing-adjacent
+                // model picker. The toolbar sits just above the chat input,
+                // so a downward popover gets clipped under it.
+                anchor="bottom"
               />
             )}
           </Chip>

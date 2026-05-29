@@ -139,6 +139,14 @@ export interface AuthRequiredBlock {
   provider: string;
   url: string;
   opened_in_browser: boolean;
+  /** Session this sign-in belongs to. Stamped by `pushChatAuthRequired`
+   *  so the card can route a pasted OOB auth code back to the right live
+   *  bridge via `wsManager.sendAuthCode`. */
+  session_id?: string;
+  /** Flipped true once the sign-in completes — set by `markAuthSignedIn`
+   *  when the bridge delivers a reply for this session. The card then
+   *  swaps its "Signing in…" / "Code sent" state for a success line. */
+  signed_in?: boolean;
 }
 
 export type ContentBlock =

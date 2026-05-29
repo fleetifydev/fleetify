@@ -126,6 +126,15 @@ impl AnyBridge {
             AnyBridge::GitHubCopilot(b) => b.abort().await,
         }
     }
+    /// Feed an out-of-band auth code into a bridge that's mid-sign-in.
+    /// Only the Antigravity CLI bridge currently needs this — its `-p`
+    /// OAuth flow blocks on stdin for the code the user pastes from the
+    /// Google sign-in page. Every other bridge no-ops.
+    pub async fn send_auth_code(&self, code: &str) {
+        if let AnyBridge::Antigravity(b) = self {
+            b.send_auth_code(code).await;
+        }
+    }
     /// claude_session_id (if the agent emitted one in `init`). For
     /// non-Claude bridges this is `None` — no resumable session.
     pub fn claude_session_id(&self) -> Option<String> {

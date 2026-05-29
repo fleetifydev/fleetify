@@ -243,10 +243,33 @@ export function NewAgentView({ onClose }: Props) {
   // and the backend's first turn calls `resolve_routing_for_turn` (Task 16).
   const showAgentPicker = !routingMasterEnabled || overrideAgent;
 
+  // Seed the Folder field on open. Priority:
+  //   1. Default workspace folder from Settings → General — an explicit
+  //      user choice, so it wins over the auto-derived defaults below.
+  //   2. Most-recent agent session's folder (the useState seed above).
+  //   3. The app's project root.
+  // Runs once on open (before the input is focused), so it never clobbers
+  // anything the user has typed.
   useEffect(() => {
-    if (path) return;
-    const w = window as Window & { electronAPI?: { getProjectRoot?: () => Promise<string> } };
-    w.electronAPI?.getProjectRoot?.().then(p => { if (p) setPath(p); }).catch(() => {});
+    let cancelled = false;
+    const w = window as Window & {
+      electronAPI?: {
+        getConfig?: () => Promise<{ defaultFolder?: string } | null>;
+        getProjectRoot?: () => Promise<string>;
+      };
+    };
+    (async () => {
+      try {
+        const def = (await w.electronAPI?.getConfig?.())?.defaultFolder?.trim();
+        if (def) { if (!cancelled) setPath(def); return; }
+      } catch { /* fall through to the auto-derived default */ }
+      try {
+        const root = await w.electronAPI?.getProjectRoot?.();
+        // Only fill when still empty so the recent-session seed stands.
+        if (root && !cancelled) setPath(prev => prev || root);
+      } catch { /* best effort */ }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {

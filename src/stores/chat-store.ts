@@ -1049,9 +1049,48 @@ export function pushChatAuthRequired(
       provider: args.provider,
       url: args.url,
       opened_in_browser: args.openedInBrowser,
+      session_id: sessionId,
     }],
     timestamp: new Date().toISOString(),
   });
+}
+
+/**
+ * Mark any pending sign-in card in a session as completed. Called when
+ * the bridge delivers a reply (a sign-in that produced an answer must
+ * have succeeded), so the AuthRequiredCard can flip from its in-progress
+ * "Signing in…" / "Code sent…" state to a "Signed in" success line.
+ *
+ * Cheap no-op for the common case: returns without a state update unless
+ * the session actually has an auth_required block that isn't signed in
+ * yet, so it's safe to call on every reply.
+ */
+export function markAuthSignedIn(sessionId: string): void {
+  if (!sessionId) return;
+  const state = useChatStore.getState();
+  const messages = state.sessions[sessionId]?.messages;
+  if (!messages?.length) return;
+  // Only the MOST RECENT sign-in card corresponds to this reply. Flip
+  // just that one (if it's still pending) so an earlier failed-sign-in
+  // card in the same session isn't wrongly marked succeeded.
+  let lastIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]!.content.some(c => c.type === "auth_required")) {
+      lastIdx = i;
+      break;
+    }
+  }
+  if (lastIdx === -1) return;
+  const msg = messages[lastIdx]!;
+  if (!msg.content.some(c => c.type === "auth_required" && !c.signed_in)) return;
+  const next = messages.slice();
+  next[lastIdx] = {
+    ...msg,
+    content: msg.content.map(c =>
+      c.type === "auth_required" && !c.signed_in ? { ...c, signed_in: true } : c,
+    ),
+  };
+  state.setMessages(sessionId, next);
 }
 
 /**
@@ -1062,17 +1101,28 @@ export function pushChatAuthRequired(
  * lands and clears it). Caller must have already added the empty
  * placeholder message via addMessage.
  *
+ * Re-calling for the same (sessionId, messageId) cancels the prior
+ * in-flight run and restarts from the first character, so a re-type
+ * (e.g. the composer welcome after the folder changes) never runs two
+ * intervals into the same message and garbles it.
+ *
  * @param sessionId  chat session that owns the message
  * @param messageId  id of the placeholder assistant message
  * @param fullText   final text to land character by character
  * @param speedMs    delay between characters (default 18ms)
  */
+const typewriterIntervals = new Map<string, ReturnType<typeof setInterval>>();
+
 export function typeOutAssistantMessage(
   sessionId: string,
   messageId: string,
   fullText: string,
   speedMs = 18,
 ) {
+  const key = `${sessionId}::${messageId}`;
+  const inflight = typewriterIntervals.get(key);
+  if (inflight) clearInterval(inflight);
+
   let i = 0;
   const interval = setInterval(() => {
     const state = useChatStore.getState();
@@ -1081,7 +1131,7 @@ export function typeOutAssistantMessage(
     // If the placeholder is gone (removed by the auto-intro path
     // or by clearAllForSession), the interval has nothing to update
     // and should self-cancel rather than keep ticking.
-    if (idx === -1) { clearInterval(interval); return; }
+    if (idx === -1) { clearInterval(interval); typewriterIntervals.delete(key); return; }
 
     i += 1;
     const partial = fullText.slice(0, i);
@@ -1092,6 +1142,7 @@ export function typeOutAssistantMessage(
     };
     state.setMessages(sessionId, next);
 
-    if (i >= fullText.length) clearInterval(interval);
+    if (i >= fullText.length) { clearInterval(interval); typewriterIntervals.delete(key); }
   }, speedMs);
+  typewriterIntervals.set(key, interval);
 }

@@ -13,6 +13,35 @@ export const COMPOSER_CHAT_KEY = "__composer__";
 import { createSession as apiCreateSession, cloneRepository } from "@/lib/api";
 import { folderName } from "@/lib/utils";
 
+/** Compose-mode welcome line. Names the picked project so the greeting
+ *  reflects the current folder; falls back to the "pick a folder" nudge
+ *  when none is selected yet. Shared by `openComposer` (initial type) and
+ *  `setComposerField` (re-typed whenever the folder changes). */
+function composerWelcomeText(projectPath: string): string {
+  return projectPath
+    ? `I'll take a look at ${folderName(projectPath) || "the project"} before you send your first task.`
+    : "Pick a folder above and I'll take a look at the project before you send your first task.";
+}
+
+/** (Re)play the compose-mode welcome typewriter for the current folder.
+ *  Ensures the placeholder message exists, then types from the first
+ *  character — `typeOutAssistantMessage` cancels any in-flight run, so
+ *  rapid folder changes don't stack intervals onto the same line. */
+function retypeComposerWelcome(projectPath: string): void {
+  const welcomeId = `welcome-${COMPOSER_CHAT_KEY}`;
+  const cs = useChatStore.getState();
+  const exists = (cs.sessions[COMPOSER_CHAT_KEY]?.messages ?? []).some(m => m.id === welcomeId);
+  if (!exists) {
+    cs.addMessage(COMPOSER_CHAT_KEY, {
+      id: welcomeId,
+      role: "assistant",
+      content: [{ type: "text", text: "" }],
+      timestamp: new Date().toISOString(),
+    });
+  }
+  typeOutAssistantMessage(COMPOSER_CHAT_KEY, welcomeId, composerWelcomeText(projectPath), 14);
+}
+
 
 // View ids for the chat-side panel picker. Matches the Claude Code-
 // style dropdown the user pinned: Preview, Diff, Terminal, Files,
@@ -747,15 +776,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   openComposer: async () => {
     let defaultModel = "claude-sonnet-4-6";
     let defaultProvider: Session["tool"] = "claude";
+    // Pre-select the user's default workspace folder (Settings → General)
+    // so a new chat starts in it instead of showing the empty "Pick
+    // folder" state. Empty string keeps the picker prompt when unset.
+    let defaultFolder = "";
     try {
       const cfg = await window.electronAPI?.getConfig?.();
       if (cfg?.defaultModel) defaultModel = cfg.defaultModel;
       if (cfg?.defaultProvider) defaultProvider = cfg.defaultProvider as Session["tool"];
+      if (cfg?.defaultFolder) defaultFolder = cfg.defaultFolder;
     } catch { /* keep fallbacks */ }
     set({
       composer: {
         open: true,
-        projectPath: "",
+        projectPath: defaultFolder,
         tool: defaultProvider,
         modelName: defaultModel,
         permissionMode: "default",
@@ -782,19 +816,21 @@ export const useAppStore = create<AppState>((set, get) => ({
       content: [{ type: "text", text: "" }],
       timestamp: new Date().toISOString(),
     });
-    typeOutAssistantMessage(
-      COMPOSER_CHAT_KEY,
-      welcomeId,
-      "Pick a folder above and I'll take a look at the project before you send your first task.",
-      14,
-    );
+    // When a default folder is already selected, the "pick a folder"
+    // nudge would be wrong — name the project we'll look at instead.
+    typeOutAssistantMessage(COMPOSER_CHAT_KEY, welcomeId, composerWelcomeText(defaultFolder), 14);
   },
 
-  setComposerField: (patch) =>
-    set((state) => {
-      if (!state.composer.open) return {};
-      return { composer: { ...state.composer, ...patch } };
-    }),
+  setComposerField: (patch) => {
+    const prev = get().composer;
+    if (!prev.open) return;
+    const folderChanged =
+      patch.projectPath !== undefined && patch.projectPath !== prev.projectPath;
+    set({ composer: { ...prev, ...patch } });
+    // Re-type the welcome so it names the newly-picked folder (or reverts
+    // to the "pick a folder" nudge when the folder is cleared).
+    if (folderChanged) retypeComposerWelcome(patch.projectPath ?? "");
+  },
 
   commitComposer: async () => {
     const state = get();

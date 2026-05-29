@@ -101,6 +101,42 @@ describe("NewAgentDialog — createSession payload wiring", () => {
   });
 });
 
+describe("NewAgentDialog — default workspace folder seeding", () => {
+  it("pre-fills the Folder field from the configured default workspace folder", async () => {
+    const original = window.electronAPI;
+    Object.defineProperty(window, "electronAPI", {
+      configurable: true,
+      value: { ...original, getConfig: async () => ({ defaultFolder: "/work/default-ws" }) },
+    });
+
+    const { NewAgentDialog } = await loadDialog();
+    const { findByPlaceholderText } = render(<NewAgentDialog onClose={() => {}} />);
+    const input = (await findByPlaceholderText(/\/Users\/you\/projects/)) as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe("/work/default-ws"));
+
+    Object.defineProperty(window, "electronAPI", { configurable: true, value: original });
+  });
+
+  it("falls back to getProjectRoot when no default workspace folder is set", async () => {
+    const original = window.electronAPI;
+    Object.defineProperty(window, "electronAPI", {
+      configurable: true,
+      value: {
+        ...original,
+        getConfig: async () => ({}),
+        getProjectRoot: async () => "/work/project-root",
+      },
+    });
+
+    const { NewAgentDialog } = await loadDialog();
+    const { findByPlaceholderText } = render(<NewAgentDialog onClose={() => {}} />);
+    const input = (await findByPlaceholderText(/\/Users\/you\/projects/)) as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe("/work/project-root"));
+
+    Object.defineProperty(window, "electronAPI", { configurable: true, value: original });
+  });
+});
+
 describe("NewAgentDialog — use_worktree wiring + folderInGit", () => {
   it("shows 'will initialize' hint when folder isn't a git repo", async () => {
     // Override the electronAPI mock just for this test.

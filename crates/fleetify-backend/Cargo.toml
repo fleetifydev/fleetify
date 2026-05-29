@@ -50,6 +50,12 @@ keyring = { version = "3", features = ["windows-native", "apple-native", "linux-
 # works without a wrapper shell script. No-op when `.env` is absent —
 # real production builds inject env via the shell as before.
 dotenvy = "0.15"
+# Pseudo-terminal (ConPTY on Windows, openpty on Unix) for the
+# Antigravity CLI bridge: agy writes its interactive OAuth banner +
+# sign-in URL straight to the console (CONOUT$), bypassing redirected
+# stdout/stderr pipes — the only way to capture it AND feed the pasted
+# code back is to give agy a real terminal that we own.
+portable-pty = "0.8"
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
