@@ -3,14 +3,25 @@
 // stays a boot-safe no-op Proxy until Phase 1c wires its ~51 channels.
 // __TAURI__ is referenced lazily (withGlobalTauri injects it).
 
-// Enable window dragging for elements with .drag-region class.
-// Calls our custom Rust command which calls window.start_dragging() directly.
+// Enable window dragging for elements with the .drag-region class by
+// invoking our custom Rust command (which calls window.start_dragging()).
+//
+// `.no-drag` opts a subtree back out: the title-bar buttons (sidebar
+// toggle / search / sort / minimise / maximise / close) live INSIDE the
+// drag-region but must stay clickable. WebView2 ignores the
+// `-webkit-app-region` CSS that .drag-region/.no-drag would normally
+// drive, so we emulate its nearest-ancestor-wins semantics here: walk to
+// the closest element carrying EITHER class and only drag when that
+// nearest region is a .drag-region. Without the .no-drag guard,
+// start_dragging() fires on a button's own mousedown and the OS
+// move-loop swallows the click — which left every title-bar button dead
+// on Windows.
 document.addEventListener("mousedown", function (e) {
   if (e.button !== 0) return;
-  var el = e.target && typeof e.target.closest === "function"
-    ? e.target.closest(".drag-region")
-    : null;
-  if (!el) return;
+  var t = e.target;
+  if (!t || typeof t.closest !== "function") return;
+  var region = t.closest(".no-drag, .drag-region");
+  if (!region || !region.classList.contains("drag-region")) return;
   var c = window.__TAURI__ && window.__TAURI__.core;
   if (c && c.invoke) {
     c.invoke("window_start_dragging");
