@@ -669,15 +669,24 @@ export function SessionToolbar({
           low: "Low", medium: "Med", high: "High", extra_high: "X-Hi", max: "Max",
         };
         return (
-          <Chip
-            active={openMenu === "model"}
-            chevron
-            onClick={() => setOpenMenu(openMenu === "model" ? null : "model")}
-          >
-            <ProviderLogo tool={dispatchTool} size={12} />
-            <span>{modelLabel}</span>
-            <span style={{ color: "var(--c-dim)", fontSize: 10 }}>·</span>
-            <span style={{ color: "var(--c-low)", fontSize: 10.5 }}>{effortShort[effort]}</span>
+          // The picker MUST NOT be a child of the Chip <button>: a
+          // <button> nested inside a <button> is invalid HTML, so the
+          // webview delivers the inner row's click unreliably AND any
+          // click that does land bubbles up to the Chip's onClick,
+          // toggling the menu shut before the selection registers. Render
+          // the Chip and the popover as siblings inside a relative
+          // wrapper so the absolute popover still anchors to the chip.
+          <span style={{ position: "relative", display: "inline-flex" }}>
+            <Chip
+              active={openMenu === "model"}
+              chevron
+              onClick={() => setOpenMenu(openMenu === "model" ? null : "model")}
+            >
+              <ProviderLogo tool={dispatchTool} size={12} />
+              <span>{modelLabel}</span>
+              <span style={{ color: "var(--c-dim)", fontSize: 10 }}>·</span>
+              <span style={{ color: "var(--c-low)", fontSize: 10.5 }}>{effortShort[effort]}</span>
+            </Chip>
             {openMenu === "model" && (
               <UnifiedModelPicker
                 tool={tool}
@@ -711,7 +720,7 @@ export function SessionToolbar({
                 anchor="bottom"
               />
             )}
-          </Chip>
+          </span>
         );
       })()}
 

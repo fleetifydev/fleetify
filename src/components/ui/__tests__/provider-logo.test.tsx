@@ -13,9 +13,6 @@ describe("ProviderLogo — agent brand icons", () => {
     ["kimi", "Kimi"],
     ["kimi-api", "Kimi"],
     ["opencode", "OpenCode"],
-    ["agy", "Antigravity"],
-    ["antigravity", "Antigravity"],
-    ["antigravity-sdk", "Antigravity"],
   ])("renders a bundled <img> brand icon for %s", (tool, label) => {
     const { getByAltText } = render(<ProviderLogo tool={tool} size={20} />);
     const img = getByAltText(label) as HTMLImageElement;
@@ -61,7 +58,6 @@ describe("ProviderLogo — model-provider brand icons", () => {
   });
 
   it.each([
-    ["openai", "OpenAI"],
     ["ollama", "Ollama"],
   ])("renders %s as a currentColor mask so it adapts to the theme", (tool, label) => {
     const { getByRole } = render(<ProviderLogo tool={tool} size={20} />);
@@ -70,6 +66,21 @@ describe("ProviderLogo — model-provider brand icons", () => {
     // not an <img>, so they're visible on both light and dark themes.
     expect(el.tagName).toBe("SPAN");
     expect(el.style.backgroundColor.toLowerCase()).toContain("current");
+  });
+
+  it.each([
+    ["openai", "OpenAI"],
+    ["agy", "Antigravity CLI"],
+    ["antigravity", "Antigravity CLI"],
+    ["antigravity-sdk", "Antigravity CLI"],
+  ])("renders %s as a self-coloured inline SVG, crisp at the picker's small size", (tool, label) => {
+    const { getByRole } = render(<ProviderLogo tool={tool} size={12} />);
+    const el = getByRole("img", { name: label });
+    // OpenAI's bundled mark is a thin white-glyph PNG and Antigravity's is a
+    // 22-blur masked SVG; both wash out when an <img>/mask rasterises them at
+    // the model picker's ~12px size. They render as crisp self-coloured
+    // inline <svg> vectors instead, so they stay visible in the rail.
+    expect(el.tagName.toLowerCase()).toBe("svg");
   });
 
   it.each([
