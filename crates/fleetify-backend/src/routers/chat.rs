@@ -934,6 +934,32 @@ async fn run_send_flow(
     // bridge match below builds the right bridge. A pinned (non-auto) session
     // keeps its single-agent candidate set and is left untouched.
     let is_auto = session.model_name.as_deref() == Some("auto") || session.tool == "auto";
+    // For Auto, build the candidate pool from the user's ACTIVE providers so
+    // Not Diamond only ever picks a model Fleet can execute (no "no API key for
+    // provider X" when ND routes to something unconnected). CLI authed-state
+    // comes from the agent scan cache (fresh scan if cold); API keys from the
+    // process key cache. The Anthropic-API route is gated off until that
+    // adapter exists (Phase 2).
+    let auto_routes: Vec<crate::services::routing::auto_pool::AutoRoute> = if is_auto {
+        let scan = match st.agent_scan_cache.get().await {
+            Some(s) => s,
+            None => {
+                let s = crate::routers::providers::scan_all_agents().await;
+                st.agent_scan_cache.set(s.clone()).await;
+                s
+            }
+        };
+        let cli_authed = |id: &str| {
+            scan.get(id)
+                .and_then(|v| v.get("authenticated"))
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false)
+        };
+        let has_key = |id: &str| crate::providers::keys::get_key(id).is_some();
+        crate::services::routing::auto_pool::select_routes(&cli_authed, &has_key, false)
+    } else {
+        Vec::new()
+    };
     let route_task = crate::services::routing::traits::RoutingTask {
         flow: crate::services::routing::traits::TaskFlow::Chat {
             session_id: sid.clone(),
@@ -943,11 +969,7 @@ async fn run_send_flow(
         workspace_context: crate::services::routing::traits::WorkspaceHints::default(),
         user_hint: None,
         allowed_agents: if is_auto {
-            vec![
-                crate::services::routing::traits::AgentKind::Claude,
-                crate::services::routing::traits::AgentKind::OpenAI,
-                crate::services::routing::traits::AgentKind::Gemini,
-            ]
+            auto_routes.iter().map(|r| r.agent).collect()
         } else {
             match session.tool.as_str() {
                 "claude" => vec![crate::services::routing::traits::AgentKind::Claude],
@@ -966,7 +988,12 @@ async fn run_send_flow(
     // .env), NOT the user's Settings → Routers orchestrator. A non-auto
     // (manual / pinned) session keeps the user's orchestrator path.
     let resolution = if is_auto {
-        crate::services::routing::persist::fleet_auto_resolve(&st.auth.pool, &route_task).await
+        crate::services::routing::persist::fleet_auto_resolve(
+            &st.auth.pool,
+            &route_task,
+            &auto_routes,
+        )
+        .await
     } else {
         crate::services::routing::persist::resolve_routing_for_turn(
             &st.auth.pool,
@@ -983,8 +1010,12 @@ async fn run_send_flow(
     // back to a safe default — never feed a bridge the "auto" sentinel.
     let mut session = session;
     if is_auto {
-        session.tool =
-            crate::services::routing::persist::agent_kind_to_str(resolution.agent).to_string();
+        // tool_override carries the chosen execution path (claude / codex /
+        // openai / gemini / gemini-api / anthropic); fall back to the agent's
+        // default tool string defensively.
+        session.tool = resolution.tool_override.clone().unwrap_or_else(|| {
+            crate::services::routing::persist::agent_kind_to_str(resolution.agent).to_string()
+        });
         session.model_name = if resolution.model.is_empty() || resolution.model == "auto" {
             Some("claude-sonnet-4-6".to_string())
         } else {

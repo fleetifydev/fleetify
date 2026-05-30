@@ -2,6 +2,7 @@
 //! Spec: docs/superpowers/specs/2026-05-22-provider-router-design.md
 
 pub mod agent_selector;
+pub mod auto_pool;
 pub mod capability_matrix;
 pub mod decision;
 pub mod intent;

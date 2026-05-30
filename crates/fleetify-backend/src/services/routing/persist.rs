@@ -228,6 +228,12 @@ pub struct RoutingResolution {
     /// Headers attached by the proxy gateway. Empty when `base_url_override`
     /// is `None`.
     pub extra_headers: http::HeaderMap,
+    /// For **Auto**: the `session.tool` the bridge must dispatch — the
+    /// execution route resolved from the user's active providers (e.g.
+    /// `codex` / `gemini-api` / `anthropic`), which can differ from `agent`'s
+    /// default tool string. `None` on the manual / dispatch paths (the caller
+    /// derives the tool from `agent`).
+    pub tool_override: Option<String>,
 }
 
 /// Per-turn routing decision. Three branches, evaluated in this order:
@@ -290,6 +296,7 @@ pub async fn resolve_routing_for_turn(
                 freshly_routed: false,
                 base_url_override: None,
                 extra_headers: http::HeaderMap::new(),
+                tool_override: None,
             };
         }
         tracing::warn!(
@@ -313,6 +320,7 @@ pub async fn resolve_routing_for_turn(
             freshly_routed: false,
             base_url_override: None,
             extra_headers: http::HeaderMap::new(),
+            tool_override: None,
         };
     }
 
@@ -400,6 +408,7 @@ pub async fn resolve_routing_for_turn(
         freshly_routed: true,
         base_url_override: None,
         extra_headers: http::HeaderMap::new(),
+        tool_override: None,
     }
 }
 
@@ -428,24 +437,33 @@ pub async fn resolve_routing_for_turn(
 /// Diamond's `tradeoff: "cost"` optimisation has room to trade down on simple
 /// turns and up on hard ones. Every id MUST stay BOTH Not Diamond-recognised
 /// AND Fleetify-dispatchable — the routed id is dispatched verbatim.
-pub async fn fleet_auto_resolve(pool: &SqlitePool, task: &RoutingTask) -> RoutingResolution {
+pub async fn fleet_auto_resolve(
+    pool: &SqlitePool,
+    task: &RoutingTask,
+    routes: &[crate::services::routing::auto_pool::AutoRoute],
+) -> RoutingResolution {
+    use crate::services::routing::auto_pool;
     use crate::services::routing::decision::notdiamond::NotDiamondRouter;
-    use crate::services::routing::traits::AgentCandidate;
 
-    let candidates = vec![
-        AgentCandidate {
+    // No active provider for Auto → nothing to route among. Hand back a safe
+    // default so the bridge surfaces a clear provider error (not the "auto"
+    // sentinel).
+    if routes.is_empty() {
+        tracing::warn!(
+            target: "fleet-backend",
+            "auto: no active provider in the candidate pool — defaulting to claude"
+        );
+        return RoutingResolution {
             agent: AgentKind::Claude,
-            tiers: vec!["claude-haiku-4-5".into(), "claude-sonnet-4-6".into()],
-        },
-        AgentCandidate {
-            agent: AgentKind::OpenAI,
-            tiers: vec!["gpt-4o-mini".into(), "gpt-4o".into()],
-        },
-        AgentCandidate {
-            agent: AgentKind::Gemini,
-            tiers: vec!["gemini-2.5-flash".into(), "gemini-2.5-pro".into()],
-        },
-    ];
+            model: "claude-sonnet-4-6".to_string(),
+            decision_id: None,
+            freshly_routed: false,
+            base_url_override: None,
+            extra_headers: http::HeaderMap::new(),
+            tool_override: Some("claude".to_string()),
+        };
+    }
+    let candidates = auto_pool::candidates(routes);
 
     let started = std::time::Instant::now();
     let env_key = std::env::var("NOTDIAMOND_API_KEY")
@@ -481,10 +499,19 @@ pub async fn fleet_auto_resolve(pool: &SqlitePool, task: &RoutingTask) -> Routin
     };
     let latency_ms = started.elapsed().as_millis() as i64;
 
+    // Map Not Diamond's family pick to the execution route we resolved for it,
+    // and its catalog id to the bridge-dispatch id (dot→dash for the newest
+    // Claudes). execution_tool defaults to the family's tool string if the
+    // family is (defensively) absent from `routes`.
+    let execution_tool = auto_pool::execution_tool_for(routes, decision.agent)
+        .unwrap_or_else(|| agent_kind_to_str(decision.agent).to_string());
+    let dispatch_model = auto_pool::nd_model_to_dispatch(decision.agent, &decision.model);
+
     // Persist a routing_decisions row for cost/telemetry attribution. No pin:
     // Auto re-routes every turn (the chat handler leaves tool/model="auto").
+    // `agent` records the execution tool that actually ran (codex / anthropic /
+    // gemini-api), which can differ from the Not Diamond family.
     let decision_id = uuid::Uuid::new_v4().to_string();
-    let agent_str = agent_kind_to_str(decision.agent);
     let source_str = decision_source_to_str(decision.source.clone());
     let candidates_json = serde_json::to_string(
         &decision
@@ -504,8 +531,8 @@ pub async fn fleet_auto_resolve(pool: &SqlitePool, task: &RoutingTask) -> Routin
         &decision_id,
         task_flow_str,
         task_ref,
-        agent_str,
-        &decision.model,
+        &execution_tool,
+        &dispatch_model,
         source_str,
         &decision.rationale,
         latency_ms,
@@ -531,7 +558,7 @@ pub async fn fleet_auto_resolve(pool: &SqlitePool, task: &RoutingTask) -> Routin
         task_ref,
         source_str,
         decision.agent,
-        &decision.model,
+        &dispatch_model,
         &decision.rationale,
         latency_ms as u64,
         fallback_used,
@@ -543,11 +570,12 @@ pub async fn fleet_auto_resolve(pool: &SqlitePool, task: &RoutingTask) -> Routin
 
     RoutingResolution {
         agent: decision.agent,
-        model: decision.model,
+        model: dispatch_model,
         decision_id: Some(decision_id),
         freshly_routed: true,
         base_url_override: None,
         extra_headers: http::HeaderMap::new(),
+        tool_override: Some(execution_tool),
     }
 }
 
@@ -635,6 +663,7 @@ pub async fn resolve_routing_for_dispatch(
             freshly_routed: false,
             base_url_override: None,
             extra_headers: http::HeaderMap::new(),
+            tool_override: None,
         };
     }
     let agent = target_agent.unwrap();
@@ -721,6 +750,7 @@ pub async fn resolve_routing_for_dispatch(
         freshly_routed: true,
         base_url_override,
         extra_headers,
+        tool_override: None,
     }
 }
 
