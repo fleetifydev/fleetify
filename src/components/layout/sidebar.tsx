@@ -1,4 +1,5 @@
 import { useCallback, useState, useRef, useEffect, useMemo, memo } from "react";
+import { ReactLenis } from "lenis/react";
 import {
   Plus, Search, Settings, HelpCircle, Library, MessageCircle,
   LayoutGrid, Store, Repeat,
@@ -1099,7 +1100,8 @@ export function Sidebar() {
       )}
 
       {/* ══ FULL SCROLL AREA — nav + sessions flow together ══ */}
-      <div className="scroll-subtle" style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "0 6px" }}>
+      <ReactLenis className="scroll-subtle" style={{ flex: 1, overflow: "hidden", minHeight: 0, overscrollBehavior: "none" }} options={{ lerp: 0.09, smoothWheel: true, wheelMultiplier: 0.9, easing: (t: number) => 1 - Math.pow(1 - t, 4) }}>
+        <div style={{ padding: "0 6px" }}>
 
         {/* ── Primary nav stack ──
             One unified vertical list: action + 3 main views + utilities.
@@ -1234,7 +1236,8 @@ export function Sidebar() {
               </>
             )}
         </div>
-      </div>
+        </div>
+      </ReactLenis>
 
       {/* ══ FOOTER GROUP ══
           Settings / Get Help / Account stack tightly at the bottom — one
