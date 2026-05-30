@@ -687,15 +687,18 @@ function CopyButton({ text }: { text: string }) {
   }, [text]);
   return (
     <button onClick={copy} style={{
-      display: "flex", alignItems: "center", gap: 3,
-      padding: "2px 7px", borderRadius: 4,
-      background: "var(--c-srf)", border: "1px solid var(--c-brd)",
-      color: "var(--c-dim)", fontSize: 11, cursor: "pointer",
+      display: "flex", alignItems: "center", gap: 4,
+      padding: "2px 6px", borderRadius: 4,
+      background: "none", border: "none",
+      color: copied ? "var(--c-med)" : "var(--c-ghost)",
+      fontSize: 11, cursor: "pointer",
+      fontFamily: "var(--font-sans)",
+      transition: "color 0.1s",
     }}
       onMouseEnter={e => { e.currentTarget.style.color = "var(--c-med)"; }}
-      onMouseLeave={e => { e.currentTarget.style.color = "var(--c-dim)"; }}
+      onMouseLeave={e => { e.currentTarget.style.color = copied ? "var(--c-med)" : "var(--c-ghost)"; }}
     >
-      {copied ? <Check size={10} /> : <Copy size={10} />}
+      {copied ? <Check size={11} /> : <Copy size={11} />}
       {copied ? "Copied" : "Copy"}
     </button>
   );
