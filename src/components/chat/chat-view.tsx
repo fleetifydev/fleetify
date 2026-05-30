@@ -62,6 +62,13 @@ const MessageList = memo(function MessageList({
   );
 });
 
+const SEND_CAPTIONS = [
+  "Taking a look...", "On it.", "Let me check.", "Reading context...",
+  "Getting to work.", "Analyzing...", "Working on it.", "Give me a moment.",
+  "Looking into that.", "Processing your request.", "On it right away.",
+  "Let me think about that.", "Diving in.", "Checking things out.",
+];
+
 export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   /** When set, this ChatView instance is rendering inside a split-
    *  pane grid and is bound to THIS sessionId rather than the global
@@ -283,6 +290,9 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   const scrollToUserMsg = useRef(false);
   const pinnedToExchange = useRef(false);
   const sendLock = useRef(false);
+
+  const [sendCaption, setSendCaption] = useState<string | null>(null);
+  const sendCaptionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [chatCtxMenu, setChatCtxMenu] = useState<{ x: number; y: number; text: string } | null>(null);
   const chatCtxMenuRef = useRef<HTMLDivElement>(null);
@@ -647,11 +657,15 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   }, [effectiveSessionId, isLocalOnlyActive]);
 
   const sendViaWs = useCallback(async (text: string, sessionId: string, attachments?: Attachment[]) => {
-    scrollToUserMsg.current = true;
-    pinnedToExchange.current = true;
+    // Scroll to top so the conversation restarts from the beginning.
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
     sendLock.current = true;
     setTimeout(() => { sendLock.current = false; }, 600);
     setScrollSpacer(typeof window !== "undefined" ? window.innerHeight : 900);
+    // Rotating send caption — pick a random phrase, show for 4 s.
+    if (sendCaptionTimerRef.current) clearTimeout(sendCaptionTimerRef.current);
+    setSendCaption(SEND_CAPTIONS[Math.floor(Math.random() * SEND_CAPTIONS.length)] ?? null);
+    sendCaptionTimerRef.current = setTimeout(() => setSendCaption(null), 4000);
     try {
       await wsManager.send(sessionId, text, attachments);
     } catch (err) {
@@ -1948,6 +1962,19 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
           pointerEvents: "none",
           background: "linear-gradient(to top, var(--card) 0%, color-mix(in srgb, var(--card) 60%, transparent) 50%, transparent 100%)",
         }} />
+
+        {/* ── Rotating send caption ── */}
+        {sendCaption && (
+          <div style={{
+            flexShrink: 0, padding: "0 32px 8px",
+            fontSize: 11.5, color: "var(--c-ghost)",
+            fontFamily: "var(--font-sans)", letterSpacing: "-0.01em",
+            fontStyle: "italic",
+            animation: "fade-in 0.2s ease both",
+          }}>
+            {sendCaption}
+          </div>
+        )}
 
         <ChatInput
           // ── Per-session input state ──
