@@ -710,8 +710,8 @@ function CodeBlock({ language, children }: { language: string; children: string 
     <div style={{ margin: "12px 0", borderRadius: 9, overflow: "hidden", border: "1px solid var(--c-brd)" }}>
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "5px 12px", background: "var(--c-srf)",
-        borderBottom: "1px solid var(--c-brd)",
+        padding: "7px 14px 0",
+        background: "var(--code-bg)",
       }}>
         <span style={{ fontSize: 11, color: "var(--c-dim)", fontFamily: "var(--font-mono)", textTransform: "lowercase" }}>
           {language || "code"}
