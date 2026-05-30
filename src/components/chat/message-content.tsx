@@ -1375,59 +1375,52 @@ function ThoughtsChip({ bursts, liveText, isLive = false, forceOpen }: {
   const burstCount = bursts.length + (liveOn ? 1 : 0);
   const timeLabel = totalMs > 0 ? fmtDuration(totalMs) : null;
 
-  const allText = [...bursts.map(b => b.text), ...(liveOn && liveText ? [liveText] : [])].join("\n\n");
-
   return (
-    <div style={{
-      margin: "8px 0",
-      borderRadius: 9, overflow: "hidden",
-      border: "1px solid var(--c-brd)",
-      background: "var(--code-bg)",
-      fontFamily: "var(--font-mono)",
-    }}>
+    <div style={{ margin: "6px 0" }}>
       <button
         type="button"
         onClick={() => setExpanded(v => !v)}
         style={{
-          display: "flex", alignItems: "center", gap: 7,
-          width: "100%", padding: "8px 12px",
-          background: "none", border: "none", cursor: "pointer",
-          fontSize: 10.5, color: "var(--c-dim)",
-          userSelect: "none", textAlign: "left",
+          display: "inline-flex", alignItems: "center", gap: 5,
+          padding: "2px 0", background: "none", border: "none",
+          cursor: "pointer", fontSize: 11.5, color: "var(--c-ghost)",
+          fontFamily: "var(--font-sans)", letterSpacing: "-0.01em",
+          userSelect: "none",
         }}
       >
         {liveOn ? (
           <span style={{
-            display: "inline-block", width: 6, height: 6, borderRadius: "50%",
+            display: "inline-block", width: 5, height: 5, borderRadius: "50%",
             background: "var(--c-dim)", flexShrink: 0,
             animation: "thinking-cursor 1.2s ease-in-out infinite",
           }}/>
         ) : (
           <span style={{
-            display: "inline-block", flexShrink: 0,
+            display: "inline-block", flexShrink: 0, fontSize: 8,
             transform: open ? "rotate(90deg)" : "rotate(0deg)",
             transition: "transform 0.15s ease",
-            fontSize: 9, color: "var(--c-ghost)",
-          }}>▸</span>
+            color: "var(--c-ghost)",
+          }}>▶</span>
         )}
-        <span style={{ flex: 1 }}>
+        <span>
           {liveOn ? "thinking" : "Thought"}
-          {timeLabel ? ` · ${timeLabel}` : null}
-          {burstCount > 1 ? ` · ${burstCount}` : null}
+          {timeLabel ? <span style={{ color: "var(--c-ghost)", opacity: 0.6 }}> · {timeLabel}</span> : null}
+          {burstCount > 1 ? <span style={{ color: "var(--c-ghost)", opacity: 0.6 }}> · {burstCount}</span> : null}
         </span>
-        {!liveOn && <CopyIconOnly text={allText} />}
       </button>
 
       <div style={{
         display: "grid",
         gridTemplateRows: open ? "1fr" : "0fr",
-        transition: "grid-template-rows 0.22s ease",
+        transition: "grid-template-rows 0.2s ease",
       }}>
         <div style={{ overflow: "hidden" }}>
           <div
             ref={scrollRef}
             style={{
-              padding: "2px 16px 14px",
+              marginTop: 6,
+              paddingLeft: 12,
+              borderLeft: "2px solid var(--c-brd)",
               maxHeight: liveOn ? 220 : undefined,
               overflowY: liveOn ? "auto" : undefined,
             }}
@@ -1435,7 +1428,7 @@ function ThoughtsChip({ bursts, liveText, isLive = false, forceOpen }: {
             {bursts.map((b, i) => (
               <p key={i} style={{
                 fontSize: 12.5, color: "var(--c-dim)",
-                lineHeight: 1.65, margin: i === 0 ? 0 : "10px 0 0",
+                lineHeight: 1.65, margin: i === 0 ? 0 : "8px 0 0",
                 whiteSpace: "pre-wrap", fontStyle: "italic",
               }}>
                 {b.text}
@@ -1445,7 +1438,7 @@ function ThoughtsChip({ bursts, liveText, isLive = false, forceOpen }: {
               <p style={{
                 fontSize: 12.5, color: "var(--c-dim)",
                 lineHeight: 1.65,
-                margin: bursts.length === 0 ? 0 : "10px 0 0",
+                margin: bursts.length === 0 ? 0 : "8px 0 0",
                 whiteSpace: "pre-wrap", fontStyle: "italic",
               }}>
                 {liveText}
