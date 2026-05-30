@@ -956,7 +956,14 @@ async fn run_send_flow(
                 .unwrap_or(false)
         };
         let has_key = |id: &str| crate::providers::keys::get_key(id).is_some();
-        crate::services::routing::auto_pool::select_routes(&cli_authed, &has_key, false)
+        // anthropic_api_available: the "anthropic" Api provider (Anthropic's
+        // OpenAI-compatible endpoint) now has a bridge, so Auto may route
+        // Claude → Anthropic API when Claude Code is off and a key is connected.
+        crate::services::routing::auto_pool::select_routes(
+            &cli_authed,
+            &has_key,
+            has_key("anthropic"),
+        )
     } else {
         Vec::new()
     };
@@ -1079,8 +1086,8 @@ async fn run_send_flow(
         // provider-agnostic. The legacy `OpenAIBridge` (bridges/openai.rs)
         // is no longer dispatched; it stays in the tree for its existing
         // mockito-based unit test and will be retired in a follow-up.
-        "openai" | "deepseek" | "grok" | "nvidia-nim" | "kimi-api" | "gemini-api" | "ollama"
-        | "openrouter" => {
+        "openai" | "anthropic" | "deepseek" | "grok" | "nvidia-nim" | "kimi-api" | "gemini-api"
+        | "ollama" | "openrouter" => {
             let pid = session.tool.as_str();
             let Some(spec) = crate::providers::find_provider(pid) else {
                 send_json(
@@ -2461,8 +2468,8 @@ async fn run_dispatched_task(
             }
             AnyBridge::Claude(std::sync::Arc::new(b))
         }
-        "openai" | "deepseek" | "grok" | "nvidia-nim" | "kimi-api" | "gemini-api" | "ollama"
-        | "openrouter" => {
+        "openai" | "anthropic" | "deepseek" | "grok" | "nvidia-nim" | "kimi-api" | "gemini-api"
+        | "ollama" | "openrouter" => {
             let pid = target.tool.as_str();
             let Some(spec) = crate::providers::find_provider(pid) else {
                 let _ = sm.update_status(&pool, &target_id, "idle").await;

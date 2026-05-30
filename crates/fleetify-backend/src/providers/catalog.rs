@@ -259,6 +259,41 @@ const OPENAI_MODELS: &[ModelSpec] = &[
     },
 ];
 
+// Anthropic's OpenAI-compatible endpoint (https://api.anthropic.com/v1) accepts
+// Claude model names in DASH form (per the platform.claude.com OpenAI-SDK
+// compatibility docs). These are the same ids the Claude CLI dispatches and
+// that `auto_pool::nd_model_to_dispatch` produces, so Auto's Anthropic-API
+// fallback runs the exact model it routed.
+const ANTHROPIC_API_MODELS: &[ModelSpec] = &[
+    ModelSpec {
+        id: "claude-opus-4-8",
+        label: "Claude Opus 4.8",
+        context_window: Some("200K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "claude-sonnet-4-6",
+        label: "Claude Sonnet 4.6",
+        context_window: Some("1M"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "claude-haiku-4-5",
+        label: "Claude Haiku 4.5",
+        context_window: Some("200K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+];
+
 // Verified against api-docs.deepseek.com/quick_start/pricing (2026-05-25).
 // Exactly two models in the "Model Details" table.
 // deepseek-v3.1 and deepseek-r1 are NOT present — deprecated/stale.
@@ -1052,6 +1087,31 @@ pub static CATALOG: &[ProviderSpec] = &[
         login_hint: "",
     },
     ProviderSpec {
+        // Anthropic's OpenAI-compatible endpoint — reuses OpenAICompatToolAdapter
+        // (Bearer auth, /v1/chat/completions, streaming + tools). DISTINCT from
+        // the "claude" CLI agent: this is the direct Claude API, used when Claude
+        // Code isn't connected (incl. Auto's Anthropic-API fallback route).
+        // Compat-layer caveats: no prompt caching / extended-thinking output /
+        // strict tool schemas (native Messages API would be needed for those).
+        id: "anthropic",
+        display_name: "Anthropic (Claude API)",
+        kind: ProviderKind::Api,
+        default_base_url: "https://api.anthropic.com/v1",
+        auth: AuthSpec::Bearer {
+            env_hint: Some("ANTHROPIC_API_KEY"),
+        },
+        default_models: ANTHROPIC_API_MODELS,
+        extras: ProviderExtras {
+            supports_streaming: true,
+            ..ProviderExtras::DEFAULT
+        },
+        bin: "",
+        auth_indicators: &[],
+        install_hint: "",
+        install_hints: None,
+        login_hint: "",
+    },
+    ProviderSpec {
         id: "deepseek",
         display_name: "DeepSeek",
         kind: ProviderKind::Api,
@@ -1433,11 +1493,12 @@ mod tests {
             .iter()
             .filter(|p| matches!(p.kind, ProviderKind::Cli))
             .count();
-        // 8 cloud HTTP providers (incl. OpenRouter) + 1 local (ollama) + 9
-        // CLI agents (Claude, Codex, Gemini, Kimi, OpenCode, GitHub Copilot,
-        // Cursor, Antigravity CLI, Antigravity SDK). If you intentionally
-        // added/removed a provider, update these constants with the catalog.
-        assert_eq!(api, 8, "expected 8 Api providers, got {api}");
+        // 9 cloud HTTP providers (OpenAI, Anthropic, DeepSeek, Grok, NVIDIA NIM,
+        // Kimi, Gemini API, Perplexity, OpenRouter) + 1 local (ollama) + 9 CLI
+        // agents (Claude, Codex, Gemini, Kimi, OpenCode, GitHub Copilot, Cursor,
+        // Antigravity CLI, Antigravity SDK). If you intentionally added/removed a
+        // provider, update these constants with the catalog.
+        assert_eq!(api, 9, "expected 9 Api providers, got {api}");
         assert_eq!(local, 1, "expected 1 LocalHttp provider, got {local}");
         assert_eq!(cli, 9, "expected 9 Cli agents, got {cli}");
     }
@@ -1995,6 +2056,10 @@ mod tests {
             "gpt-5",
             "gpt-5-mini",
             "gpt-4.1",
+            // ── Anthropic Claude API (platform.claude.com OpenAI-compat 2026-05-30) ──
+            "claude-opus-4-8",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5",
             // ── DeepSeek (api-docs.deepseek.com 2026-05-25) ────────────────
             "deepseek-v4-pro",
             "deepseek-v4-flash",
