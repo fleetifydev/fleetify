@@ -712,6 +712,13 @@ export function SessionToolbar({
           effort={effort}
           groups={groups}
           onPickModel={(groupId, modelId) => {
+            if (groupId === "auto") {
+              // Auto is Fleet-owned: the backend routes via Fleet's own Not
+              // Diamond key (.env), independent of the user's Settings →
+              // Routers config. Just pin the routing sentinel.
+              void patch({ tool: "auto", model_name: "auto" });
+              return;
+            }
             const next = resolveDispatchTool(groupId);
             const updates: Record<string, unknown> = { model_name: modelId };
             if (next !== tool) updates.tool = next;

@@ -282,6 +282,30 @@ export function PerplexityLogo({ size = 18 }: { size?: number }) {
 }
 
 /* ── Groq: simple coral G in Groq's brand color ── */
+/* ── Auto: the routing sentinel — a sparkle mark for "Fleet picks the
+ *  best model per message". Gradient-filled so it reads as a distinct,
+ *  first-class option at the top of the picker rail. ── */
+export function AutoLogo({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" role="img" aria-label="Auto">
+      <defs>
+        <linearGradient id="auto-grad" x1="0" y1="0" x2="24" y2="24" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#5B9DFF" />
+          <stop offset="100%" stopColor="#A06BFF" />
+        </linearGradient>
+      </defs>
+      <path
+        d="M13 2.5c.5 3.2 1.8 4.5 5 5-3.2.5-4.5 1.8-5 5-.5-3.2-1.8-4.5-5-5 3.2-.5 4.5-1.8 5-5Z"
+        fill="url(#auto-grad)"
+      />
+      <path
+        d="M6 13c.3 1.8 1 2.5 2.8 2.8C7 16.1 6.3 16.8 6 18.6c-.3-1.8-1-2.5-2.8-2.8C5 15.5 5.7 14.8 6 13Z"
+        fill="url(#auto-grad)"
+      />
+    </svg>
+  );
+}
+
 export function GroqLogo({ size = 18 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" role="img">
@@ -355,6 +379,7 @@ function OpenRouterLogo({ size = 18 }: { size?: number }) {
 /* ── Get logo by tool name ── */
 export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number }) {
   switch (tool) {
+    case "auto":       return <AutoLogo size={size} />;
     case "claude":     return <ImgIcon src={claudeIcon} size={size} label="Claude Code" />;
     case "anthropic":  return <ImgIcon src={claudeIcon} size={size} label="Claude Code" />;
     case "codex":      return <ThemedImgIcon light={codexLightIcon} dark={codexDarkIcon} size={size} label="Codex" />;

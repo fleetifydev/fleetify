@@ -230,24 +230,23 @@ describe("buildPickerGroups", () => {
 
 describe("resolveModelChip", () => {
   // Regression: a model can live under a DIFFERENT provider's group than the
-  // session's `tool` — e.g. GitHub Copilot surfaces an "auto" ("Auto (Copilot
-  // picks)") model. The chip face must resolve identically regardless of the
+  // session's `tool` — e.g. GitHub Copilot surfaces a model the chip resolves
+  // to the Copilot face. The chip must resolve identically regardless of the
   // tool so the session-toolbar chip and the chat-composer chip never disagree.
-  // (Before this helper the composer showed "Claude + auto" while the toolbar
-  // showed "Copilot + Auto (Copilot picks)" for the same session.)
+  // (Uses a non-"auto" id since "auto" is now the routing sentinel.)
   it("resolves a cross-group model to the same face regardless of the tool", () => {
     const tiles = [
       baseTile("claude", "Claude Code", "cli"),
       baseTile("github-copilot", "GitHub Copilot", "cli"),
     ];
     const groups = buildPickerGroups(tiles, ["claude", "github-copilot"], {
-      "github-copilot": [{ id: "auto", label: "Auto (Copilot picks)", supports_effort: false }],
+      "github-copilot": [{ id: "copilot-gpt-5", label: "GPT-5 (Copilot)", supports_effort: false }],
     });
-    const fromComposer = resolveModelChip(groups, "claude", "auto");
-    const fromToolbar = resolveModelChip(groups, "github-copilot", "auto");
+    const fromComposer = resolveModelChip(groups, "claude", "copilot-gpt-5");
+    const fromToolbar = resolveModelChip(groups, "github-copilot", "copilot-gpt-5");
     expect(fromComposer).toEqual(fromToolbar);
     expect(fromComposer.dispatchTool).toBe("github-copilot");
-    expect(fromComposer.label).toBe("Auto (Copilot picks)");
+    expect(fromComposer.label).toBe("GPT-5 (Copilot)");
   });
 
   it("falls back to the tool's own group when the model is in no other group", () => {
@@ -270,5 +269,14 @@ describe("resolveModelChip", () => {
     expect(resolveModelChip([], "claude", "totally-unknown-xyz").label).toBe("totally-unknown-xyz"); // raw id
     expect(resolveModelChip([], "claude", null).label).toBe("Model"); // final fallback
     expect(resolveModelChip([], "claude", null).dispatchTool).toBe("claude");
+  });
+
+  it("surfaces an 'Auto' group first and resolves the auto sentinel neutrally", () => {
+    const groups = buildPickerGroups([baseTile("claude", "Claude Code", "cli")], ["claude"]);
+    expect(groups[0]?.id).toBe("auto");
+    expect(groups[0]?.label).toBe("Auto");
+    // The sentinel resolves to a neutral face, never attributed to a provider.
+    expect(resolveModelChip(groups, "auto", "auto")).toEqual({ dispatchTool: "auto", label: "Auto" });
+    expect(resolveModelChip([], "claude", "auto").label).toBe("Auto"); // sentinel wins over tool
   });
 });

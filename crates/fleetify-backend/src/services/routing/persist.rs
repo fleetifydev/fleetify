@@ -403,6 +403,181 @@ pub async fn resolve_routing_for_turn(
     }
 }
 
+/// Resolve an **Auto** chat turn via Fleet's OWN Not Diamond key
+/// (`NOTDIAMOND_API_KEY` from the environment / `.env`), independent of any
+/// Not Diamond a user connects in Settings → Routers. This is the engine
+/// behind the picker's first-class "Auto" entry — it does NOT consult the
+/// user's [`RoutingOrchestrator`] at all.
+///
+/// Routing runs EVERY turn: the chat handler leaves an Auto session's
+/// `tool`/`model_name` as the literal `"auto"` sentinel and never pins it, so
+/// this is re-invoked per message. We therefore do NOT pin the session here —
+/// we only insert a `routing_decisions` row for cost/telemetry attribution
+/// and return the `(agent, model)` the bridge should swap to for this turn.
+///
+/// Resolution order:
+///   1. `NOTDIAMOND_API_KEY` set → Fleet's Not Diamond picks among the
+///      cross-provider candidate set below. Not Diamond echoes back one of
+///      the exact `(provider, model)` pairs we send, so the chosen model is
+///      guaranteed dispatchable by the matching bridge.
+///   2. Key unset, or the Not Diamond call errors (network / quota / auth) →
+///      the offline built-in router picks from the same candidates. It never
+///      errs given a non-empty candidate set, so Auto always resolves.
+///
+/// The candidate set is a deliberate cost↔quality spread per provider so Not
+/// Diamond's `tradeoff: "cost"` optimisation has room to trade down on simple
+/// turns and up on hard ones. Every id MUST stay BOTH Not Diamond-recognised
+/// AND Fleetify-dispatchable — the routed id is dispatched verbatim.
+pub async fn fleet_auto_resolve(pool: &SqlitePool, task: &RoutingTask) -> RoutingResolution {
+    use crate::services::routing::decision::notdiamond::NotDiamondRouter;
+    use crate::services::routing::traits::AgentCandidate;
+
+    let candidates = vec![
+        AgentCandidate {
+            agent: AgentKind::Claude,
+            tiers: vec!["claude-haiku-4-5".into(), "claude-sonnet-4-6".into()],
+        },
+        AgentCandidate {
+            agent: AgentKind::OpenAI,
+            tiers: vec!["gpt-4o-mini".into(), "gpt-4o".into()],
+        },
+        AgentCandidate {
+            agent: AgentKind::Gemini,
+            tiers: vec!["gemini-2.5-flash".into(), "gemini-2.5-pro".into()],
+        },
+    ];
+
+    let started = std::time::Instant::now();
+    let env_key = std::env::var("NOTDIAMOND_API_KEY")
+        .ok()
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty());
+
+    let (decision, fallback_used) = match &env_key {
+        Some(key) => {
+            use crate::services::routing::traits::DecisionRouter;
+            match NotDiamondRouter::new(key.clone())
+                .recommend(task, &candidates)
+                .await
+            {
+                Ok(d) => (d, false),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "fleet-backend",
+                        error = %e,
+                        "auto: Fleet Not Diamond call failed — falling back to built-in router"
+                    );
+                    (builtin_auto_pick(task, &candidates).await, true)
+                }
+            }
+        }
+        None => {
+            tracing::debug!(
+                target: "fleet-backend",
+                "auto: NOTDIAMOND_API_KEY unset — using offline built-in router"
+            );
+            (builtin_auto_pick(task, &candidates).await, true)
+        }
+    };
+    let latency_ms = started.elapsed().as_millis() as i64;
+
+    // Persist a routing_decisions row for cost/telemetry attribution. No pin:
+    // Auto re-routes every turn (the chat handler leaves tool/model="auto").
+    let decision_id = uuid::Uuid::new_v4().to_string();
+    let agent_str = agent_kind_to_str(decision.agent);
+    let source_str = decision_source_to_str(decision.source.clone());
+    let candidates_json = serde_json::to_string(
+        &decision
+            .fallback_chain
+            .iter()
+            .map(|(a, m)| serde_json::json!({ "agent": agent_kind_to_str(*a), "model": m }))
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_else(|_| "[]".into());
+    let now = chrono::Utc::now();
+    let (task_flow_str, task_ref) = match &task.flow {
+        TaskFlow::Chat { session_id } => ("chat", Some(session_id.as_str())),
+        TaskFlow::Dispatch { task_id } => ("dispatch", Some(task_id.as_str())),
+    };
+    if let Err(e) = insert_routing_decision(
+        pool,
+        &decision_id,
+        task_flow_str,
+        task_ref,
+        agent_str,
+        &decision.model,
+        source_str,
+        &decision.rationale,
+        latency_ms,
+        fallback_used,
+        None,
+        &candidates_json,
+        now.timestamp(),
+    )
+    .await
+    {
+        tracing::warn!(
+            target: "fleet-backend",
+            error = %e,
+            "auto: failed to persist routing_decisions row"
+        );
+    }
+
+    // Telemetry emit — fire-and-forget (mirrors resolve_routing_for_turn). The
+    // outbox swallows errors when not initialised (NOAUTH mode).
+    let _ = crate::services::telemetry::emit_routing_decision(
+        &decision_id,
+        &task.flow,
+        task_ref,
+        source_str,
+        decision.agent,
+        &decision.model,
+        &decision.rationale,
+        latency_ms as u64,
+        fallback_used,
+        None,
+        &decision.fallback_chain,
+        now,
+    )
+    .await;
+
+    RoutingResolution {
+        agent: decision.agent,
+        model: decision.model,
+        decision_id: Some(decision_id),
+        freshly_routed: true,
+        base_url_override: None,
+        extra_headers: http::HeaderMap::new(),
+    }
+}
+
+/// Built-in router pick for the Auto fallback path (no key / Not Diamond
+/// error). Never errs given the non-empty cross-provider candidate set, but
+/// if that contract is somehow violated we synthesise a safe Claude/Sonnet
+/// default so Auto always resolves to *something* dispatchable.
+async fn builtin_auto_pick(
+    task: &RoutingTask,
+    candidates: &[crate::services::routing::traits::AgentCandidate],
+) -> crate::services::routing::traits::RouterDecision {
+    use crate::services::routing::capability_matrix::CapabilityMatrix;
+    use crate::services::routing::decision::builtin::BuiltInRouter;
+    use crate::services::routing::traits::{DecisionRouter, RouterDecision};
+
+    let builtin = BuiltInRouter::new(CapabilityMatrix {
+        agents: std::collections::HashMap::new(),
+    });
+    builtin
+        .recommend(task, candidates)
+        .await
+        .unwrap_or_else(|_| RouterDecision {
+            agent: AgentKind::Claude,
+            model: "claude-sonnet-4-6".to_string(),
+            rationale: "auto: hard default (built-in router unexpectedly errored)".to_string(),
+            source: DecisionSource::BuiltIn,
+            fallback_chain: vec![],
+        })
+}
+
 /// Map an `AgentKind` to its outbound `ProviderKind` for proxy gateway
 /// lookups. Codex shares OpenAI's wire format, so it lands on the OpenAI
 /// proxy entry. Exposed at the module level so the dispatch helper and

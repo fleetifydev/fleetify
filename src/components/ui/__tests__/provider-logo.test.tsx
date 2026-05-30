@@ -39,6 +39,11 @@ describe("ProviderLogo — agent brand icons", () => {
     expect(svg.querySelector("path")?.getAttribute("fill")).toBe("currentColor");
   });
 
+  it("renders the Auto routing sentinel as an inline sparkle svg", () => {
+    const { getByLabelText } = render(<ProviderLogo tool="auto" size={18} />);
+    expect(getByLabelText("Auto").tagName.toLowerCase()).toBe("svg");
+  });
+
   it("falls back to a generic icon for unknown tools", () => {
     const { container } = render(<ProviderLogo tool="totally-unknown" size={20} />);
     expect(container.querySelector("svg")).toBeTruthy();

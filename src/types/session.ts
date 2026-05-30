@@ -7,6 +7,12 @@ export type SessionStatus =
   | "stopped";
 
 export type AgentTool =
+  // ── "Auto" routing sentinel ──
+  // Not a real agent. When a session's tool/model is "auto", the dispatch
+  // layer routes to the best (provider, model) per turn via the router
+  // (Not Diamond, or the offline built-in router as fallback). The renderer
+  // surfaces it as a neutral "Auto" chip — never dispatched as a literal agent.
+  | "auto"
   | "claude"
   | "gemini"
   | "codex"

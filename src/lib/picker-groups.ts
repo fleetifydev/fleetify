@@ -194,6 +194,12 @@ export function buildPickerGroups(
 ): PickerGroup[] {
   const out: PickerGroup[] = [];
 
+  // "Auto" — always the FIRST rail entry. A pseudo-provider: selecting it
+  // doesn't pin a model; it routes to the best (provider, model) per message
+  // (Not Diamond, or the built-in router as fallback). It carries no model
+  // list — the picker special-cases it as a one-click selection.
+  out.push({ id: "auto", label: "Auto", subtitle: "Best model per message", models: [] });
+
   // 1. CLI agents — filtered by enabledAgentIds, use display_name verbatim.
   //    CLI ProviderSpecs declare default_models: &[] because models live inside
   //    each CLI binary, not the registry. Fall back to CLI_MODELS when empty.
@@ -332,6 +338,10 @@ export function resolveModelChip(
   tool: string,
   model: string | null,
 ): { dispatchTool: string; label: string } {
+  // "Auto" routing sentinel — neutral face, never attributed to a provider.
+  if (model === "auto" || tool === "auto") {
+    return { dispatchTool: "auto", label: "Auto" };
+  }
   const activeGroup =
     groups.find((g) => g.models.some((m) => m.id === model)) ??
     groups.find((g) => g.id === tool);

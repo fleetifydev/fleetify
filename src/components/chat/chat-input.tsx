@@ -4247,6 +4247,18 @@ export function ChatInput({
             effort={effort as UMEffort}
             groups={pickerGroups}
             onPickModel={(groupId, modelId) => {
+              if (groupId === "auto") {
+                // Auto is Fleet-owned: the backend routes via Fleet's own Not
+                // Diamond key (.env), independent of the user's Settings →
+                // Routers config. Just pin the routing sentinel.
+                if (sessionId) {
+                  apiUpdateSession(sessionId, { tool: "auto", model_name: "auto" }).catch(() => {});
+                  useAppStore.getState().updateSession(sessionId, { tool: "auto", model_name: "auto" });
+                } else {
+                  useAppStore.getState().setComposerField({ tool: "auto", modelName: "auto" });
+                }
+                return;
+              }
               const dispatchTool = resolveDispatchTool(groupId);
               const tid = dispatchTool as import("@/types/session").AgentTool;
               if (sessionId) {

@@ -179,15 +179,19 @@ export function UnifiedModelPicker({
           }
           const g = row.group;
           const isHovered = g.id === activeGroupId;
-          const isActiveProvider =
-            resolveDispatchTool(g.id) === tool &&
-            g.models.some((m) => m.id === model);
+          // The "auto" row is a one-click action (no model sub-list): it's
+          // active whenever the session is in Auto mode, and clicking it
+          // selects Auto directly instead of just switching the column.
+          const isAuto = g.id === "auto";
+          const isActiveProvider = isAuto
+            ? model === "auto" || tool === "auto"
+            : resolveDispatchTool(g.id) === tool && g.models.some((m) => m.id === model);
           return (
             <button
               key={g.id}
               onMouseEnter={() => setActiveGroupId(g.id)}
               onFocus={() => setActiveGroupId(g.id)}
-              onClick={() => setActiveGroupId(g.id)}
+              onClick={() => (isAuto ? onPickModel("auto", "auto") : setActiveGroupId(g.id))}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -329,6 +333,12 @@ export function UnifiedModelPicker({
           {visibleGroup?.searchable && shownModels.length === 0 && (
             <div style={{ padding: "8px 10px", fontSize: 11.5, color: "var(--c-dim, #7a7a7a)" }}>
               No models match “{modelQuery.trim()}”.
+            </div>
+          )}
+          {visibleGroup?.id === "auto" && (
+            <div style={{ padding: "10px 12px", fontSize: 12, color: "var(--c-low)", lineHeight: 1.5 }}>
+              Fleetify routes each message to the best model automatically (Not
+              Diamond). Pick a provider on the left to choose a model yourself.
             </div>
           )}
         </div>

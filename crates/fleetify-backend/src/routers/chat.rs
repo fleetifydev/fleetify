@@ -926,6 +926,72 @@ async fn run_send_flow(
     // session's isolated `.fleetify-worktrees/<id>/` rather than
     // bleeding into the source repo. Falls back to `project_path` for
     // in-place sessions (use_worktree=false).
+    // ── Provider routing, resolved BEFORE the bridge is built ──
+    // For an "Auto" session (tool/model == "auto") we must dispatch to the
+    // ROUTED provider's bridge, not a literal "auto" bridge. So resolve routing
+    // here, widen the candidate set to the cross-provider agents Not Diamond
+    // supports, then swap session.tool/model to the routed pair so the existing
+    // bridge match below builds the right bridge. A pinned (non-auto) session
+    // keeps its single-agent candidate set and is left untouched.
+    let is_auto = session.model_name.as_deref() == Some("auto") || session.tool == "auto";
+    let route_task = crate::services::routing::traits::RoutingTask {
+        flow: crate::services::routing::traits::TaskFlow::Chat {
+            session_id: sid.clone(),
+        },
+        user_prompt: text.clone(),
+        conversation_history: None,
+        workspace_context: crate::services::routing::traits::WorkspaceHints::default(),
+        user_hint: None,
+        allowed_agents: if is_auto {
+            vec![
+                crate::services::routing::traits::AgentKind::Claude,
+                crate::services::routing::traits::AgentKind::OpenAI,
+                crate::services::routing::traits::AgentKind::Gemini,
+            ]
+        } else {
+            match session.tool.as_str() {
+                "claude" => vec![crate::services::routing::traits::AgentKind::Claude],
+                "openai" => vec![crate::services::routing::traits::AgentKind::OpenAI],
+                "gemini" => vec![crate::services::routing::traits::AgentKind::Gemini],
+                "codex" => vec![crate::services::routing::traits::AgentKind::Codex],
+                "github-copilot" => {
+                    vec![crate::services::routing::traits::AgentKind::GitHubCopilot]
+                }
+                _ => vec![crate::services::routing::traits::AgentKind::Claude],
+            }
+        },
+        budget_remaining: None,
+    };
+    // Auto routes via Fleet's OWN Not Diamond key (NOTDIAMOND_API_KEY from
+    // .env), NOT the user's Settings → Routers orchestrator. A non-auto
+    // (manual / pinned) session keeps the user's orchestrator path.
+    let resolution = if is_auto {
+        crate::services::routing::persist::fleet_auto_resolve(&st.auth.pool, &route_task).await
+    } else {
+        crate::services::routing::persist::resolve_routing_for_turn(
+            &st.auth.pool,
+            &st.routing,
+            &sid,
+            &session.tool,
+            session.model_name.as_deref(),
+            route_task,
+        )
+        .await
+    };
+    // Auto bridge-swap: rebind `session` to the routed (agent, model). If the
+    // master toggle is off so routing didn't pick (model stays "auto"), fall
+    // back to a safe default — never feed a bridge the "auto" sentinel.
+    let mut session = session;
+    if is_auto {
+        session.tool =
+            crate::services::routing::persist::agent_kind_to_str(resolution.agent).to_string();
+        session.model_name = if resolution.model.is_empty() || resolution.model == "auto" {
+            Some("claude-sonnet-4-6".to_string())
+        } else {
+            Some(resolution.model.clone())
+        };
+    }
+
     let agent_cwd = session
         .worktree_path
         .clone()
@@ -1321,40 +1387,11 @@ async fn run_send_flow(
         text.clone()
     };
 
-    // ── Provider routing per turn (Task 16) ──
-    // Three branches:
-    //   * session already has a pin    → reuse it, no routing call
-    //   * orchestrator disabled        → manual fallback to session.tool/model
-    //   * enabled and no prior pin     → route(), persist decision, pin session
-    // The resolution drives BridgeContext.model_override + the routing
-    // decision id we pass to the cost emitter at the end of the turn.
-    let route_task = crate::services::routing::traits::RoutingTask {
-        flow: crate::services::routing::traits::TaskFlow::Chat {
-            session_id: sid.clone(),
-        },
-        user_prompt: text.clone(),
-        conversation_history: None,
-        workspace_context: crate::services::routing::traits::WorkspaceHints::default(),
-        user_hint: None,
-        allowed_agents: match session.tool.as_str() {
-            "claude" => vec![crate::services::routing::traits::AgentKind::Claude],
-            "openai" => vec![crate::services::routing::traits::AgentKind::OpenAI],
-            "gemini" => vec![crate::services::routing::traits::AgentKind::Gemini],
-            "codex" => vec![crate::services::routing::traits::AgentKind::Codex],
-            "github-copilot" => vec![crate::services::routing::traits::AgentKind::GitHubCopilot],
-            _ => vec![crate::services::routing::traits::AgentKind::Claude],
-        },
-        budget_remaining: None,
-    };
-    let resolution = crate::services::routing::persist::resolve_routing_for_turn(
-        &st.auth.pool,
-        &st.routing,
-        &sid,
-        &session.tool,
-        session.model_name.as_deref(),
-        route_task,
-    )
-    .await;
+    // ── Provider routing per turn ──
+    // Resolved ABOVE (before the bridge was built) into `resolution`, so an
+    // Auto session dispatches to the routed provider's bridge. `resolution`
+    // drives BridgeContext.model_override + the cost-emitter decision id below.
+    //
     // If routing picked a DIFFERENT agent than the bridge we already
     // constructed from session.tool, warn — we can override the model
     // via BridgeContext but cannot swap the bridge identity mid-turn.

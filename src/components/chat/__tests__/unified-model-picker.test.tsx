@@ -176,4 +176,11 @@ describe("UnifiedModelPicker", () => {
     const row = screen.getByRole("option", { name: /Opus 4.7/ });
     expect(row.getAttribute("aria-selected")).toBe("true");
   });
+
+  it("selecting the Auto rail row picks the auto sentinel in one click", () => {
+    const autoGroups: PickerGroup[] = [{ id: "auto", label: "Auto", models: [] }, ...groups];
+    const { onPickModel } = harness({ groups: autoGroups });
+    fireEvent.click(screen.getByText("Auto"));
+    expect(onPickModel).toHaveBeenCalledWith("auto", "auto");
+  });
 });
