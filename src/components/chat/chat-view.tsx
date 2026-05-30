@@ -62,6 +62,13 @@ const MessageList = memo(function MessageList({
   );
 });
 
+const SEND_CAPTIONS = [
+  "Taking a look...", "On it.", "Let me check.", "Reading context...",
+  "Getting to work.", "Analyzing...", "Working on it.", "Give me a moment.",
+  "Looking into that.", "Processing your request.", "On it right away.",
+  "Let me think about that.", "Diving in.", "Checking things out.",
+];
+
 export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   /** When set, this ChatView instance is rendering inside a split-
    *  pane grid and is bound to THIS sessionId rather than the global
@@ -283,6 +290,9 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   const scrollToUserMsg = useRef(false);
   const pinnedToExchange = useRef(false);
   const sendLock = useRef(false);
+
+  const [sendCaption, setSendCaption] = useState<string | null>(null);
+  const sendCaptionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [chatCtxMenu, setChatCtxMenu] = useState<{ x: number; y: number; text: string } | null>(null);
   const chatCtxMenuRef = useRef<HTMLDivElement>(null);
@@ -652,6 +662,10 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     sendLock.current = true;
     setTimeout(() => { sendLock.current = false; }, 600);
     setScrollSpacer(typeof window !== "undefined" ? window.innerHeight : 900);
+    // Rotating send caption — pick a random phrase, show for 4 s.
+    if (sendCaptionTimerRef.current) clearTimeout(sendCaptionTimerRef.current);
+    setSendCaption(SEND_CAPTIONS[Math.floor(Math.random() * SEND_CAPTIONS.length)] ?? null);
+    sendCaptionTimerRef.current = setTimeout(() => setSendCaption(null), 4000);
     try {
       await wsManager.send(sessionId, text, attachments);
     } catch (err) {
@@ -1949,6 +1963,19 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
           background: "linear-gradient(to top, var(--card) 0%, color-mix(in srgb, var(--card) 60%, transparent) 50%, transparent 100%)",
         }} />
 
+        {/* ── Rotating send caption ── */}
+        {sendCaption && (
+          <div style={{
+            flexShrink: 0, padding: "0 32px 8px",
+            fontSize: 11.5, color: "var(--c-ghost)",
+            fontFamily: "var(--font-sans)", letterSpacing: "-0.01em",
+            fontStyle: "italic",
+            animation: "fade-in 0.2s ease both",
+          }}>
+            {sendCaption}
+          </div>
+        )}
+
         <ChatInput
           // ── Per-session input state ──
           // ChatInput holds its own `value` state. Without `key`, React
@@ -2835,14 +2862,12 @@ function PanelViewMenu({
           style={{
             position: "absolute", top: "calc(100% + 5px)", right: 0,
             minWidth: 198, zIndex: 1000,
-            background: "#1a1a1a",
-            border: "1px solid rgba(255,255,255,0.07)",
-            borderRadius: 9,
+            background: "var(--popover)",
+            border: "1px solid var(--c-brd2)",
+            borderRadius: 10,
             padding: 4,
-            boxShadow:
-              "0 12px 28px rgba(0,0,0,0.55), " +
-              "0 2px 6px rgba(0,0,0,0.35)",
-            fontFamily: "-apple-system,BlinkMacSystemFont,'Inter',system-ui,sans-serif",
+            boxShadow: "0 8px 24px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.10), 0 0 0 0.5px rgba(0,0,0,0.06)",
+            fontFamily: "inherit",
             animation: "fleetMenuIn 0.12s cubic-bezier(0.4, 0, 0.2, 1)",
           }}
         >
@@ -2857,40 +2882,36 @@ function PanelViewMenu({
                 onMouseDown={(e) => e.preventDefault()}
                 style={{
                   display: "flex", alignItems: "center", gap: 8,
-                  width: "100%", padding: "4px 8px",
+                  width: "100%", padding: "5px 8px",
                   background: "transparent",
-                  border: "none", outline: "none", borderRadius: 5,
-                  color: "#e3e3e3",
+                  border: "none", outline: "none", borderRadius: 6,
+                  color: "var(--c-med)",
                   cursor: "pointer", textAlign: "left",
-                  transition: "background 0.08s, color 0.08s",
                   fontSize: 12, fontWeight: 500, letterSpacing: "-0.005em",
                   fontFamily: "inherit", lineHeight: 1.3,
                 }}
                 onMouseEnter={(e) => {
-                  (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.05)";
-                  (e.currentTarget as HTMLElement).style.color = "#ffffff";
+                  (e.currentTarget as HTMLElement).style.background = "var(--c-srf)";
+                  (e.currentTarget as HTMLElement).style.color = "var(--c-high)";
                 }}
                 onMouseLeave={(e) => {
                   (e.currentTarget as HTMLElement).style.background = "transparent";
-                  (e.currentTarget as HTMLElement).style.color = "#e3e3e3";
+                  (e.currentTarget as HTMLElement).style.color = "var(--c-med)";
                 }}
               >
                 <span style={{
                   width: 13, height: 13,
                   display: "flex", alignItems: "center", justifyContent: "center",
-                  color: active ? "#ffffff" : "#a8a8a8",
+                  color: active ? "var(--c-high)" : "var(--c-ghost)",
                   flexShrink: 0,
                 }}>
                   <Icon size={12} strokeWidth={1.7} />
                 </span>
                 <span style={{ flex: 1, minWidth: 0 }}>{label}</span>
-                {/* Check + shortcut sit in a fixed right-side cluster
-                    so columns line up across rows. Check sits BEFORE
-                    the shortcut, matching Claude Code Desktop. */}
                 <span style={{
                   width: 10, marginRight: shortcut ? 6 : 0,
                   display: "inline-flex", alignItems: "center", justifyContent: "center",
-                  color: active ? "#d4d4d4" : "transparent",
+                  color: active ? "var(--c-med)" : "transparent",
                   flexShrink: 0,
                 }}>
                   <Check size={10} strokeWidth={2.5} />
@@ -2898,9 +2919,9 @@ function PanelViewMenu({
                 {shortcut && (
                   <span style={{
                     display: "inline-flex", alignItems: "center", gap: 0,
-                    color: "#7a7a7a",
+                    color: "var(--c-ghost)",
                     fontSize: 11,
-                    fontFamily: "-apple-system,BlinkMacSystemFont,system-ui,sans-serif",
+                    fontFamily: "inherit",
                     flexShrink: 0,
                     fontVariantNumeric: "tabular-nums",
                   }}>

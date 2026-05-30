@@ -4506,10 +4506,10 @@ export function ChatInput({
             // animated stroke is the SVG overlay rendered as the
             // last child below.
             border: `1px solid ${
-              enhancing ? "rgba(var(--fg-rgb), 0.18)"
+              enhancing ? "var(--c-brd2)"
               : dragging ? "rgba(var(--fg-rgb),0.28)"
-              : focused ? "rgba(var(--fg-rgb),0.22)"
-              : "rgba(var(--fg-rgb),0.10)"
+              : focused ? "var(--c-brd2)"
+              : "var(--c-brd)"
             }`,
             background: "var(--chat-input-bg)",
             transition: "border-color 0.18s, opacity 0.15s, box-shadow 0.18s",

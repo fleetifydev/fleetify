@@ -28,14 +28,15 @@ import { folderName } from "@/lib/utils";
    fall back to its plain-text rendering — no flicker. After load, the
    shared highlighter is cached for the rest of the session. */
 function useShikiHTML(code: string, lang: string): string | null {
+  const isDark = document.documentElement.classList.contains("dark");
   const [html, setHtml] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    highlightToHtml(code, lang).then(out => {
+    highlightToHtml(code, lang, isDark).then(out => {
       if (!cancelled) setHtml(out);
     });
     return () => { cancelled = true; };
-  }, [code, lang]);
+  }, [code, lang, isDark]);
   return html;
 }
 
@@ -677,52 +678,31 @@ function CopyIconOnly({ text }: { text: string }) {
   );
 }
 
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = useCallback(() => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
-    });
-  }, [text]);
-  return (
-    <button onClick={copy} style={{
-      display: "flex", alignItems: "center", gap: 3,
-      padding: "2px 7px", borderRadius: 4,
-      background: "var(--c-srf)", border: "1px solid var(--c-brd)",
-      color: "var(--c-dim)", fontSize: 11, cursor: "pointer",
-    }}
-      onMouseEnter={e => { e.currentTarget.style.color = "var(--c-med)"; }}
-      onMouseLeave={e => { e.currentTarget.style.color = "var(--c-dim)"; }}
-    >
-      {copied ? <Check size={10} /> : <Copy size={10} />}
-      {copied ? "Copied" : "Copy"}
-    </button>
-  );
-}
-
 /* ── Code block ── */
 function CodeBlock({ language, children }: { language: string; children: string }) {
+  const highlighted = useShikiHTML(children, language || "text");
+  const inner = highlighted ? stripShikiWrapper(highlighted) : null;
+
   return (
-    <div style={{ margin: "12px 0", borderRadius: 9, overflow: "hidden", border: "1px solid var(--c-brd)" }}>
+    <div style={{ margin: "12px 0", borderRadius: 9, overflow: "hidden", border: "1px solid var(--c-brd)", background: "var(--code-bg)", fontFamily: "var(--font-mono)" }}>
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "5px 12px", background: "var(--c-srf)",
-        borderBottom: "1px solid var(--c-brd)",
+        padding: "8px 12px 2px",
+        fontSize: 10.5, color: "var(--c-dim)",
       }}>
-        <span style={{ fontSize: 11, color: "var(--c-dim)", fontFamily: "var(--font-mono)", textTransform: "lowercase" }}>
-          {language || "code"}
-        </span>
-        <CopyButton text={children} />
+        <span>{language || "code"}</span>
+        <CopyIconOnly text={children} />
       </div>
       <pre style={{
-        margin: 0, padding: "14px 16px",
-        background: "var(--code-bg)",
-        fontSize: 12.5, lineHeight: 1.7,
-        fontFamily: "var(--font-mono)", color: "var(--c-high)",
+        margin: 0, padding: "4px 12px 12px",
+        fontSize: 12.5, lineHeight: 1.6,
+        color: "var(--c-high)",
         overflowX: "auto", whiteSpace: "pre",
       }}>
-        <code>{children}</code>
+        {inner
+          ? <code dangerouslySetInnerHTML={{ __html: inner }} />
+          : <code>{children}</code>
+        }
       </pre>
     </div>
   );
@@ -1396,89 +1376,83 @@ function ThoughtsChip({ bursts, liveText, isLive = false, forceOpen }: {
   const timeLabel = totalMs > 0 ? fmtDuration(totalMs) : null;
 
   return (
-    <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-start" }}>
+    <div style={{ margin: "6px 0" }}>
       <button
         type="button"
         onClick={() => setExpanded(v => !v)}
         style={{
-          display: "inline-flex", alignItems: "center", gap: 6,
-          padding: "1px 4px",
-          margin: 0,
-          background: "transparent",
-          border: "none",
-          cursor: "pointer",
-          fontSize: 11,
-          fontFamily: "var(--font-mono)",
-          color: "var(--c-ghost)",
-          lineHeight: 1.4,
+          display: "inline-flex", alignItems: "center", gap: 5,
+          padding: "2px 0", background: "none", border: "none",
+          cursor: "pointer", fontSize: 11.5, color: "var(--c-ghost)",
+          fontFamily: "var(--font-sans)", letterSpacing: "-0.01em",
           userSelect: "none",
         }}
       >
         {liveOn ? (
           <span style={{
-            display: "inline-block", width: 6, height: 6, borderRadius: "50%",
-            background: "var(--c-dim)",
+            display: "inline-block", width: 5, height: 5, borderRadius: "50%",
+            background: "var(--c-dim)", flexShrink: 0,
             animation: "thinking-cursor 1.2s ease-in-out infinite",
           }}/>
         ) : (
           <span style={{
-            display: "inline-block",
+            display: "inline-block", flexShrink: 0, fontSize: 8,
             transform: open ? "rotate(90deg)" : "rotate(0deg)",
-            transition: "transform 120ms ease",
-            fontSize: 9,
+            transition: "transform 0.15s ease",
             color: "var(--c-ghost)",
-          }}>▸</span>
+          }}>▶</span>
         )}
         <span>
           {liveOn ? "thinking" : "Thought"}
-          {timeLabel ? ` ${timeLabel}` : null}
-          {burstCount > 1 ? ` · ${burstCount}` : null}
+          {timeLabel ? <span style={{ color: "var(--c-ghost)", opacity: 0.6 }}> · {timeLabel}</span> : null}
+          {burstCount > 1 ? <span style={{ color: "var(--c-ghost)", opacity: 0.6 }}> · {burstCount}</span> : null}
         </span>
       </button>
-      {open && (
-        <div
-          ref={scrollRef}
-          style={{
-            margin: "4px 0 0 4px",
-            paddingLeft: 10,
-            borderLeft: "2px solid var(--c-brd)",
-            maxWidth: 720,
-            maxHeight: liveOn ? 220 : "none",
-            overflowY: liveOn ? "auto" : "visible",
-          }}
-        >
-          {bursts.map((b, i) => (
-            <p key={i} style={{
-              fontSize: 12.5,
-              color: "var(--c-dim)",
-              lineHeight: 1.6,
-              margin: i === 0 ? 0 : "10px 0 0 0",
-              whiteSpace: "pre-wrap",
-              fontStyle: "italic",
-            }}>
-              {b.text}
-            </p>
-          ))}
-          {liveOn && (
-            <p style={{
-              fontSize: 12.5,
-              color: "var(--c-dim)",
-              lineHeight: 1.6,
-              margin: bursts.length === 0 ? 0 : "10px 0 0 0",
-              whiteSpace: "pre-wrap",
-              fontStyle: "italic",
-            }}>
-              {liveText}
-              <span style={{
-                display: "inline-block", width: 1.5, height: 11,
-                background: "var(--c-dim)", marginLeft: 2,
-                verticalAlign: "text-bottom",
-                animation: "thinking-cursor 0.9s ease-in-out infinite",
-              }}/>
-            </p>
-          )}
+
+      <div style={{
+        display: "grid",
+        gridTemplateRows: open ? "1fr" : "0fr",
+        transition: "grid-template-rows 0.2s ease",
+      }}>
+        <div style={{ overflow: "hidden" }}>
+          <div
+            ref={scrollRef}
+            style={{
+              marginTop: 6,
+              paddingLeft: 12,
+              borderLeft: "2px solid var(--c-brd)",
+              maxHeight: liveOn ? 220 : undefined,
+              overflowY: liveOn ? "auto" : undefined,
+            }}
+          >
+            {bursts.map((b, i) => (
+              <p key={i} style={{
+                fontSize: 12.5, color: "var(--c-dim)",
+                lineHeight: 1.65, margin: i === 0 ? 0 : "8px 0 0",
+                whiteSpace: "pre-wrap", fontStyle: "italic",
+              }}>
+                {b.text}
+              </p>
+            ))}
+            {liveOn && (
+              <p style={{
+                fontSize: 12.5, color: "var(--c-dim)",
+                lineHeight: 1.65,
+                margin: bursts.length === 0 ? 0 : "8px 0 0",
+                whiteSpace: "pre-wrap", fontStyle: "italic",
+              }}>
+                {liveText}
+                <span style={{
+                  display: "inline-block", width: 1.5, height: 11,
+                  background: "var(--c-dim)", marginLeft: 2,
+                  verticalAlign: "text-bottom",
+                  animation: "thinking-cursor 0.9s ease-in-out infinite",
+                }}/>
+              </p>
+            )}
+          </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
