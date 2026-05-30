@@ -1375,90 +1375,91 @@ function ThoughtsChip({ bursts, liveText, isLive = false, forceOpen }: {
   const burstCount = bursts.length + (liveOn ? 1 : 0);
   const timeLabel = totalMs > 0 ? fmtDuration(totalMs) : null;
 
+  const allText = [...bursts.map(b => b.text), ...(liveOn && liveText ? [liveText] : [])].join("\n\n");
+
   return (
-    <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-start" }}>
+    <div style={{
+      margin: "8px 0",
+      borderRadius: 9, overflow: "hidden",
+      border: "1px solid var(--c-brd)",
+      background: "var(--code-bg)",
+      fontFamily: "var(--font-mono)",
+    }}>
       <button
         type="button"
         onClick={() => setExpanded(v => !v)}
         style={{
-          display: "inline-flex", alignItems: "center", gap: 6,
-          padding: "1px 4px",
-          margin: 0,
-          background: "transparent",
-          border: "none",
-          cursor: "pointer",
-          fontSize: 11,
-          fontFamily: "var(--font-mono)",
-          color: "var(--c-ghost)",
-          lineHeight: 1.4,
-          userSelect: "none",
+          display: "flex", alignItems: "center", gap: 7,
+          width: "100%", padding: "8px 12px",
+          background: "none", border: "none", cursor: "pointer",
+          fontSize: 10.5, color: "var(--c-dim)",
+          userSelect: "none", textAlign: "left",
         }}
       >
         {liveOn ? (
           <span style={{
             display: "inline-block", width: 6, height: 6, borderRadius: "50%",
-            background: "var(--c-dim)",
+            background: "var(--c-dim)", flexShrink: 0,
             animation: "thinking-cursor 1.2s ease-in-out infinite",
           }}/>
         ) : (
           <span style={{
-            display: "inline-block",
+            display: "inline-block", flexShrink: 0,
             transform: open ? "rotate(90deg)" : "rotate(0deg)",
-            transition: "transform 120ms ease",
-            fontSize: 9,
-            color: "var(--c-ghost)",
+            transition: "transform 0.15s ease",
+            fontSize: 9, color: "var(--c-ghost)",
           }}>▸</span>
         )}
-        <span>
+        <span style={{ flex: 1 }}>
           {liveOn ? "thinking" : "Thought"}
-          {timeLabel ? ` ${timeLabel}` : null}
+          {timeLabel ? ` · ${timeLabel}` : null}
           {burstCount > 1 ? ` · ${burstCount}` : null}
         </span>
+        {!liveOn && <CopyIconOnly text={allText} />}
       </button>
-      {open && (
-        <div
-          ref={scrollRef}
-          style={{
-            margin: "4px 0 0 4px",
-            paddingLeft: 10,
-            borderLeft: "2px solid var(--c-brd)",
-            maxWidth: 720,
-            maxHeight: liveOn ? 220 : "none",
-            overflowY: liveOn ? "auto" : "visible",
-          }}
-        >
-          {bursts.map((b, i) => (
-            <p key={i} style={{
-              fontSize: 12.5,
-              color: "var(--c-dim)",
-              lineHeight: 1.6,
-              margin: i === 0 ? 0 : "10px 0 0 0",
-              whiteSpace: "pre-wrap",
-              fontStyle: "italic",
-            }}>
-              {b.text}
-            </p>
-          ))}
-          {liveOn && (
-            <p style={{
-              fontSize: 12.5,
-              color: "var(--c-dim)",
-              lineHeight: 1.6,
-              margin: bursts.length === 0 ? 0 : "10px 0 0 0",
-              whiteSpace: "pre-wrap",
-              fontStyle: "italic",
-            }}>
-              {liveText}
-              <span style={{
-                display: "inline-block", width: 1.5, height: 11,
-                background: "var(--c-dim)", marginLeft: 2,
-                verticalAlign: "text-bottom",
-                animation: "thinking-cursor 0.9s ease-in-out infinite",
-              }}/>
-            </p>
-          )}
+
+      <div style={{
+        display: "grid",
+        gridTemplateRows: open ? "1fr" : "0fr",
+        transition: "grid-template-rows 0.22s ease",
+      }}>
+        <div style={{ overflow: "hidden" }}>
+          <div
+            ref={scrollRef}
+            style={{
+              padding: "2px 16px 14px",
+              maxHeight: liveOn ? 220 : undefined,
+              overflowY: liveOn ? "auto" : undefined,
+            }}
+          >
+            {bursts.map((b, i) => (
+              <p key={i} style={{
+                fontSize: 12.5, color: "var(--c-dim)",
+                lineHeight: 1.65, margin: i === 0 ? 0 : "10px 0 0",
+                whiteSpace: "pre-wrap", fontStyle: "italic",
+              }}>
+                {b.text}
+              </p>
+            ))}
+            {liveOn && (
+              <p style={{
+                fontSize: 12.5, color: "var(--c-dim)",
+                lineHeight: 1.65,
+                margin: bursts.length === 0 ? 0 : "10px 0 0",
+                whiteSpace: "pre-wrap", fontStyle: "italic",
+              }}>
+                {liveText}
+                <span style={{
+                  display: "inline-block", width: 1.5, height: 11,
+                  background: "var(--c-dim)", marginLeft: 2,
+                  verticalAlign: "text-bottom",
+                  animation: "thinking-cursor 0.9s ease-in-out infinite",
+                }}/>
+              </p>
+            )}
+          </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
