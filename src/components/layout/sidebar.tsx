@@ -1139,7 +1139,6 @@ export function Sidebar() {
           active={mainView === "marketplace"}
           onClick={() => { setMainView("marketplace"); setActiveSession(null); }}
         />
-
         {/* Subtle gap before sessions */}
         <div style={{ height: 6 }} />
 
