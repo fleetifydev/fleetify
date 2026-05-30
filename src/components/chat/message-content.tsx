@@ -703,6 +703,9 @@ function CopyButton({ text }: { text: string }) {
 
 /* ── Code block ── */
 function CodeBlock({ language, children }: { language: string; children: string }) {
+  const highlighted = useShikiHTML(children, language || "text");
+  const inner = highlighted ? stripShikiWrapper(highlighted) : null;
+
   return (
     <div style={{ margin: "12px 0", borderRadius: 9, overflow: "hidden", border: "1px solid var(--c-brd)" }}>
       <div style={{
@@ -722,7 +725,10 @@ function CodeBlock({ language, children }: { language: string; children: string 
         fontFamily: "var(--font-mono)", color: "var(--c-high)",
         overflowX: "auto", whiteSpace: "pre",
       }}>
-        <code>{children}</code>
+        {inner
+          ? <code dangerouslySetInnerHTML={{ __html: inner }} />
+          : <code>{children}</code>
+        }
       </pre>
     </div>
   );
