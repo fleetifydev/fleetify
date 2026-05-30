@@ -203,4 +203,27 @@ describe("buildPickerGroups", () => {
     expect(sdk?.models.some((m) => m.id.startsWith("gemini-"))).toBe(true);
     expect(sdk?.models.some((m) => m.id.startsWith("claude-"))).toBe(true);
   });
+
+  // OpenRouter-style: a live HTTP catalog supplied via dynamicModels overrides
+  // the provider's curated default_models, and a large list is flagged
+  // `searchable` so the picker renders a search box.
+  it("lets dynamic models override an API provider's catalog and flags large lists searchable", () => {
+    const tiles = [baseTile("openrouter", "OpenRouter", "api", ["anthropic/claude-sonnet-4"])];
+    const live = Array.from({ length: 30 }, (_, i) => ({
+      id: `vendor/model-${i}`,
+      label: `Model ${i}`,
+      supports_effort: false,
+    }));
+    const groups = buildPickerGroups(tiles, [], { openrouter: live });
+    const or = groups.find((g) => g.id === "openrouter");
+    expect(or?.models).toEqual(live); // dynamic list replaces the single fallback
+    expect(or?.searchable).toBe(true); // 30 > 20 → searchable
+    expect(or?.label).toBe("OpenRouter"); // BRAND_SHORT short label
+  });
+
+  it("does not flag a small API catalog as searchable", () => {
+    const tiles = [baseTile("openai", "OpenAI", "api", ["gpt-5"])];
+    const groups = buildPickerGroups(tiles, []);
+    expect(groups.find((g) => g.id === "openai")?.searchable).toBe(false);
+  });
 });

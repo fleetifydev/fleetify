@@ -318,6 +318,34 @@ export function GitHubCopilotLogo({ size = 18 }: { size?: number }) {
   );
 }
 
+// OpenRouter ships no crisp small-size brand asset, so we draw a self-coloured
+// inline mark: one input fanning out to several model nodes — the "one API,
+// many models" router motif. currentColor keeps it legible on either theme.
+function OpenRouterLogo({ size = 18 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.7}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-label="OpenRouter"
+    >
+      <path d="M6.4 12h3.6" />
+      <path d="M10 12c3.2 0 3.4-7 7.6-7" />
+      <path d="M10 12h7.6" />
+      <path d="M10 12c3.2 0 3.4 7 7.6 7" />
+      <circle cx="4.5" cy="12" r="1.9" fill="currentColor" stroke="none" />
+      <circle cx="19.5" cy="5" r="1.9" fill="currentColor" stroke="none" />
+      <circle cx="19.5" cy="12" r="1.9" fill="currentColor" stroke="none" />
+      <circle cx="19.5" cy="19" r="1.9" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 /* ── Get logo by tool name ── */
 export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number }) {
   switch (tool) {
@@ -336,6 +364,7 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
     case "nvidia-nim": return <ImgIcon src={nvidiaIcon} size={size} label="NVIDIA" />;
     case "perplexity": return <ImgIcon src={perplexityIcon} size={size} label="Perplexity" />;
     case "gemini-api": return <ImgIcon src={geminiIcon} size={size} label="Gemini" />;
+    case "openrouter": return <OpenRouterLogo size={size} />;
     case "agy":            return <AgyLogo size={size} />;
     case "antigravity":    return <AgyLogo size={size} />;
     case "antigravity-sdk":return <AgyLogo size={size} />;
@@ -352,6 +381,7 @@ export function providerName(tool: string): string {
     ollama: "Ollama", kimi: "Kimi", agy: "Antigravity CLI",
     "antigravity-sdk": "Antigravity SDK",
     opencode: "OpenCode", "github-copilot": "GitHub Copilot", aider: "Aider",
+    openrouter: "OpenRouter",
   };
   return names[tool] ?? "Custom";
 }

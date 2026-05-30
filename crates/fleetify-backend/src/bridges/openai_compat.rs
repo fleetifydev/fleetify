@@ -1,7 +1,7 @@
-//! Generic OpenAI-compatible HTTP bridge. Drives the seven cloud
-//! providers that speak the `/chat/completions` SSE wire (OpenAI,
-//! DeepSeek, Grok / xAI, NVIDIA NIM, Kimi-API / Moonshot, Gemini API
-//! OpenAI-compat shim, and Ollama's `/v1/chat/completions` route).
+//! Generic OpenAI-compatible HTTP bridge. Drives the cloud providers
+//! that speak the `/chat/completions` SSE wire (OpenAI, DeepSeek,
+//! Grok / xAI, NVIDIA NIM, Kimi-API / Moonshot, Gemini API OpenAI-compat
+//! shim, OpenRouter, and Ollama's `/v1/chat/completions` route).
 //!
 //! Per-provider quirks live in `ProviderSpec` (base URL, env var hint,
 //! default model list) — this bridge stays provider-agnostic. Perplexity

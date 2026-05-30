@@ -18,6 +18,14 @@ chat dispatch, and Settings tile all pick it up automatically.
 | Kimi (Moonshot) | `kimi-api` | `https://api.moonshot.ai/v1` | <https://platform.moonshot.ai/> |
 | Gemini API | `gemini-api` | `https://generativelanguage.googleapis.com/v1beta/openai` | <https://aistudio.google.com/apikey> |
 | Perplexity | `perplexity` | `https://api.perplexity.ai` | <https://www.perplexity.ai/settings/api> |
+| OpenRouter | `openrouter` | `https://openrouter.ai/api/v1` | <https://openrouter.ai/keys> |
+
+OpenRouter is an OpenAI-compatible aggregator: its full catalog (hundreds of
+models) is discovered live from `GET /api/v1/models` (proxied by the backend at
+`GET /providers/openrouter/models`, TTL-cached) and surfaced in the composer's
+model picker with a search box — the static catalog ships only a small curated
+fallback list, so OpenRouter is exempt from the doc-pinned `no_stale_model_ids`
+check that fixed-catalog providers must satisfy.
 
 ### Local
 

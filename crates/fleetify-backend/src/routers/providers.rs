@@ -114,6 +114,7 @@ pub fn router() -> Router<AppState> {
         .route("/providers/health", get(http_health))
         .route("/agents/scan", get(scan_agents_cached))
         .route("/agents/{id}/models", get(list_agent_models))
+        .route("/providers/{id}/models", get(list_provider_models))
 }
 
 /// Static catalog that drives Settings → Models tiles, Settings → Agents
@@ -274,6 +275,143 @@ fn prettify_model_label(id: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+// ── Dynamic HTTP-provider model discovery ──────────────────────────────
+// OpenRouter exposes hundreds of models behind one OpenAI-compatible
+// endpoint — far too many to curate statically. This endpoint fetches the
+// live list from the provider's public `/models` route so the composer's
+// picker (with its search box) can browse the full catalog. TTL is longer
+// than the per-agent cache: the OpenRouter catalog changes slowly and the
+// payload is large.
+
+#[derive(Clone)]
+struct ProviderModel {
+    id: String,
+    label: String,
+    ctx: Option<String>,
+}
+type ProviderModelList = Vec<ProviderModel>;
+
+const PROVIDER_MODELS_TTL: Duration = Duration::from_secs(600);
+static PROVIDER_MODELS_CACHE: OnceLock<RwLock<HashMap<String, (Instant, ProviderModelList)>>> =
+    OnceLock::new();
+
+fn provider_models_cache() -> &'static RwLock<HashMap<String, (Instant, ProviderModelList)>> {
+    PROVIDER_MODELS_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// `GET /providers/{id}/models` — live model catalog for HTTP providers that
+/// expose a discovery endpoint (currently `openrouter`). Always 200 with
+/// `{ id, models: [{id,label,ctx?}] }`; an empty list means discovery failed
+/// or the provider has no live catalog, and the renderer keeps its static
+/// fallback. `?refresh=1` bypasses the TTL cache.
+async fn list_provider_models(Path(id): Path<String>, Query(q): Query<ModelsQuery>) -> Json<Value> {
+    let refresh = q.refresh.unwrap_or(0) == 1;
+    if !refresh {
+        if let Some((at, models)) = provider_models_cache().read().await.get(&id).cloned() {
+            if at.elapsed() < PROVIDER_MODELS_TTL {
+                return Json(provider_models_json(&id, &models));
+            }
+        }
+    }
+    let models = discover_provider_models(&id).await;
+    if !models.is_empty() {
+        provider_models_cache()
+            .write()
+            .await
+            .insert(id.clone(), (Instant::now(), models.clone()));
+    }
+    Json(provider_models_json(&id, &models))
+}
+
+fn provider_models_json(id: &str, models: &ProviderModelList) -> Value {
+    json!({
+        "id": id,
+        "models": models
+            .iter()
+            .map(|m| match &m.ctx {
+                Some(ctx) => json!({ "id": m.id, "label": m.label, "ctx": ctx }),
+                None => json!({ "id": m.id, "label": m.label }),
+            })
+            .collect::<Vec<_>>(),
+    })
+}
+
+async fn discover_provider_models(id: &str) -> ProviderModelList {
+    match id {
+        "openrouter" => discover_openrouter_models().await,
+        _ => Vec::new(),
+    }
+}
+
+/// Fetch OpenRouter's public `GET /api/v1/models`. No auth is required for the
+/// catalog, but we attach the user's key when present so any account-specific
+/// availability is reflected. Network / parse failures degrade to an empty
+/// list, so the picker falls back to the curated catalog entries.
+async fn discover_openrouter_models() -> ProviderModelList {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let mut req = client.get("https://openrouter.ai/api/v1/models");
+    if let Some(key) = crate::providers::keys::get_key("openrouter") {
+        req = req.bearer_auth(key);
+    }
+    let body: Value = match req.send().await {
+        Ok(r) if r.status().is_success() => match r.json().await {
+            Ok(v) => v,
+            Err(_) => return Vec::new(),
+        },
+        _ => return Vec::new(),
+    };
+    parse_openrouter_models(&body)
+}
+
+/// Pure parser for the OpenRouter `/models` payload — testable without HTTP.
+/// Maps `data: [{ id, name, context_length }]` to the picker shape, sorted by
+/// id for a stable rail order.
+fn parse_openrouter_models(body: &Value) -> ProviderModelList {
+    let Some(arr) = body.get("data").and_then(|d| d.as_array()) else {
+        return Vec::new();
+    };
+    let mut out: ProviderModelList = arr
+        .iter()
+        .filter_map(|m| {
+            let id = m.get("id").and_then(|x| x.as_str())?.to_string();
+            let label = m
+                .get("name")
+                .and_then(|x| x.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| id.clone());
+            let ctx = m
+                .get("context_length")
+                .and_then(|x| x.as_u64())
+                .map(humanize_context);
+            Some(ProviderModel { id, label, ctx })
+        })
+        .collect();
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
+}
+
+/// `128000 → "128K"`, `1_000_000 → "1M"`, `200000 → "200K"`. Display-only.
+fn humanize_context(n: u64) -> String {
+    if n >= 1_000_000 {
+        let m = n as f64 / 1_000_000.0;
+        if (m - m.round()).abs() < 0.05 {
+            format!("{}M", m.round() as u64)
+        } else {
+            format!("{m:.1}M")
+        }
+    } else if n >= 1_000 {
+        format!("{}K", n / 1_000)
+    } else {
+        n.to_string()
+    }
 }
 
 /// Per-provider scan strategy. `scan_all_agents` picks one based on
@@ -1199,5 +1337,66 @@ mod tests {
         std::fs::write(&p, r#"{"expiry_date": 1000000000000}"#).unwrap();
         assert!(check_json_expiry(&p, "expiry_date", ExpiryUnit::Seconds));
         std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn humanize_context_formats_common_windows() {
+        assert_eq!(humanize_context(128_000), "128K");
+        assert_eq!(humanize_context(200_000), "200K");
+        assert_eq!(humanize_context(1_000_000), "1M");
+        assert_eq!(humanize_context(2_000_000), "2M");
+        assert_eq!(humanize_context(1_050_000), "1.1M");
+        assert_eq!(humanize_context(512), "512");
+    }
+
+    #[test]
+    fn parse_openrouter_models_maps_and_sorts() {
+        let body = json!({
+            "data": [
+                { "id": "openai/gpt-4o", "name": "OpenAI: GPT-4o", "context_length": 128000 },
+                { "id": "anthropic/claude-sonnet-4", "name": "Anthropic: Claude Sonnet 4", "context_length": 200000 },
+                { "id": "no-context/model", "name": "No Context" }
+            ]
+        });
+        let out = parse_openrouter_models(&body);
+        assert_eq!(out.len(), 3);
+        // Sorted by id: anthropic < no-context < openai.
+        assert_eq!(out[0].id, "anthropic/claude-sonnet-4");
+        assert_eq!(out[0].label, "Anthropic: Claude Sonnet 4");
+        assert_eq!(out[0].ctx.as_deref(), Some("200K"));
+        assert_eq!(out[2].id, "openai/gpt-4o");
+        assert_eq!(out[2].ctx.as_deref(), Some("128K"));
+        // Missing context_length → ctx is None.
+        assert_eq!(out[1].id, "no-context/model");
+        assert_eq!(out[1].ctx, None);
+    }
+
+    #[test]
+    fn parse_openrouter_models_handles_missing_or_bad_payload() {
+        assert!(parse_openrouter_models(&json!({})).is_empty());
+        assert!(parse_openrouter_models(&json!({ "data": "nope" })).is_empty());
+        // An entry without an id is skipped.
+        assert!(parse_openrouter_models(&json!({ "data": [{ "name": "x" }] })).is_empty());
+    }
+
+    #[test]
+    fn provider_models_json_omits_ctx_when_absent() {
+        let models = vec![
+            ProviderModel {
+                id: "a/b".into(),
+                label: "B".into(),
+                ctx: Some("128K".into()),
+            },
+            ProviderModel {
+                id: "c/d".into(),
+                label: "D".into(),
+                ctx: None,
+            },
+        ];
+        let v = provider_models_json("openrouter", &models);
+        assert_eq!(v["id"], "openrouter");
+        assert_eq!(v["models"][0]["ctx"], "128K");
+        assert!(v["models"][1].get("ctx").is_none());
+        assert_eq!(v["models"][1]["label"], "D");
     }
 }

@@ -134,6 +134,7 @@ const PROVIDERS: ProviderDef[] = [
   { id: "kimi-api",       label: "Kimi (Moonshot)",   logo: "kimi",   kind: "api",                                            hint: "API key" },
   { id: "perplexity",     label: "Perplexity",        logo: "perplexity", kind: "api",                                        hint: "API key" },
   { id: "nvidia-nim",     label: "NVIDIA NIM",        logo: "nvidia-nim", kind: "api",                                        hint: "API key" },
+  { id: "openrouter",     label: "OpenRouter",        logo: "openrouter", kind: "api",                                        hint: "API key — 100s of models" },
 ];
 
 const TYPE_BASE_MS = 12;

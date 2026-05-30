@@ -25,6 +25,7 @@ export type AgentTool =
   | "kimi-api"
   | "gemini-api"
   | "perplexity"
+  | "openrouter"
   | "ollama"
   | "kimi";
 

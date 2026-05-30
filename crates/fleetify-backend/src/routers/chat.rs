@@ -982,7 +982,8 @@ async fn run_send_flow(
         // provider-agnostic. The legacy `OpenAIBridge` (bridges/openai.rs)
         // is no longer dispatched; it stays in the tree for its existing
         // mockito-based unit test and will be retired in a follow-up.
-        "openai" | "deepseek" | "grok" | "nvidia-nim" | "kimi-api" | "gemini-api" | "ollama" => {
+        "openai" | "deepseek" | "grok" | "nvidia-nim" | "kimi-api" | "gemini-api" | "ollama"
+        | "openrouter" => {
             let pid = session.tool.as_str();
             let Some(spec) = crate::providers::find_provider(pid) else {
                 send_json(
@@ -2392,7 +2393,8 @@ async fn run_dispatched_task(
             }
             AnyBridge::Claude(std::sync::Arc::new(b))
         }
-        "openai" | "deepseek" | "grok" | "nvidia-nim" | "kimi-api" | "gemini-api" | "ollama" => {
+        "openai" | "deepseek" | "grok" | "nvidia-nim" | "kimi-api" | "gemini-api" | "ollama"
+        | "openrouter" => {
             let pid = target.tool.as_str();
             let Some(spec) = crate::providers::find_provider(pid) else {
                 let _ = sm.update_status(&pool, &target_id, "idle").await;

@@ -153,6 +153,30 @@ export async function fetchAgentModels(
   }
 }
 
+/** Discovered model catalog for an HTTP provider that exposes a live
+ *  `/models` endpoint (currently `openrouter`, whose hundreds of models can't
+ *  be curated statically). The backend fetches the provider's public catalog
+ *  and normalizes it to `{id, label, ctx?}`. An empty array is the documented
+ *  "discovery unavailable" signal (offline / upstream error) — the caller then
+ *  keeps the provider's curated fallback, so this is non-fatal and never
+ *  throws. */
+export async function fetchProviderModels(
+  providerId: string,
+): Promise<{ id: string; label: string; ctx?: string }[]> {
+  try {
+    const res = await apiFetch(
+      `${API_BASE}/providers/${encodeURIComponent(providerId)}/models`,
+    );
+    if (!res.ok) return [];
+    const data = (await res.json()) as {
+      models?: { id: string; label: string; ctx?: string }[];
+    };
+    return Array.isArray(data.models) ? data.models : [];
+  } catch {
+    return [];
+  }
+}
+
 /** Hosts auto-discovered from the user's ~/.ssh/config. The label is
  *  the Host alias (so the UI can show "my-prod" instead of an IP). */
 export interface SshKnownHost {

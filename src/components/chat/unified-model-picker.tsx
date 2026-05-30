@@ -63,6 +63,9 @@ export function UnifiedModelPicker({
 
   const [activeGroupId, setActiveGroupId] = useState(initialGroupId);
   const visibleGroup = groups.find((g) => g.id === activeGroupId) ?? groups[0];
+  // Search query for the Models column — only surfaced for `searchable`
+  // groups (e.g. OpenRouter's large live catalog). Reset on rail change.
+  const [modelQuery, setModelQuery] = useState("");
 
   const rootRef = useRef<HTMLDivElement | null>(null);
 
@@ -90,6 +93,21 @@ export function UnifiedModelPicker({
     return undefined;
   }, [groups, model]);
   const effortEnabled = activeModel?.supports_effort ?? false;
+
+  // Clear the filter whenever the active provider rail changes so switching
+  // from OpenRouter back to a curated provider doesn't carry a stale query.
+  useEffect(() => {
+    setModelQuery("");
+  }, [activeGroupId]);
+
+  const shownModels = useMemo(() => {
+    const all = visibleGroup?.models ?? [];
+    const q = modelQuery.trim().toLowerCase();
+    if (!visibleGroup?.searchable || !q) return all;
+    return all.filter(
+      (m) => m.label.toLowerCase().includes(q) || m.id.toLowerCase().includes(q),
+    );
+  }, [visibleGroup, modelQuery]);
 
   const railRows = useMemo(() => {
     const rows: Array<{ kind: "divider" } | { kind: "row"; group: PickerGroup }> = [];
@@ -225,61 +243,95 @@ export function UnifiedModelPicker({
           padding: 4,
           width: 240,
           height: 320,
-          overflowY: "auto",
           borderRight: "1px solid var(--c-brd, rgba(255,255,255,0.08))",
         }}
       >
         <SectionHeader>Models</SectionHeader>
-        {visibleGroup?.models.map((m) => {
-          const active = model === m.id;
-          return (
-            <button
-              key={m.id}
-              role="option"
-              aria-selected={active}
-              aria-label={m.label}
-              onClick={() => onPickModel(visibleGroup.id, m.id)}
-              onMouseDown={(e) => e.preventDefault()}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                width: "100%",
-                padding: "6px 10px",
-                background: active ? "var(--c-srf, rgba(255,255,255,0.10))" : "transparent",
-                border: "none",
-                cursor: "pointer",
-                textAlign: "left",
-                outline: "none",
-                borderRadius: 5,
-              }}
-              onMouseEnter={(e) => {
-                if (!active) e.currentTarget.style.background = "var(--c-srf, rgba(255,255,255,0.06))";
-              }}
-              onMouseLeave={(e) => {
-                if (!active) e.currentTarget.style.background = "transparent";
-              }}
-            >
-              <span
+        {visibleGroup?.searchable && (
+          <input
+            autoFocus
+            value={modelQuery}
+            onChange={(e) => setModelQuery(e.target.value)}
+            onKeyDown={(e) => {
+              // Let Escape bubble to the menu's close handler; keep every
+              // other key local so typing a query never trips app shortcuts.
+              if (e.key !== "Escape") e.stopPropagation();
+            }}
+            placeholder="Search models…"
+            aria-label="Search models"
+            style={{
+              margin: "0 6px 6px",
+              padding: "5px 8px",
+              fontSize: 12,
+              color: "var(--c-high)",
+              background: "var(--c-srf, rgba(255,255,255,0.06))",
+              border: "1px solid var(--c-brd, rgba(255,255,255,0.10))",
+              borderRadius: 6,
+              outline: "none",
+              fontFamily: "var(--font-sans)",
+            }}
+          />
+        )}
+        <div style={{ flex: 1, overflowY: "auto" }}>
+          {shownModels.map((m) => {
+            const active = model === m.id;
+            return (
+              <button
+                key={m.id}
+                role="option"
+                aria-selected={active}
+                aria-label={m.label}
+                onClick={() => visibleGroup && onPickModel(visibleGroup.id, m.id)}
+                onMouseDown={(e) => e.preventDefault()}
                 style={{
-                  fontSize: 12.5,
-                  color: active ? "var(--c-high, #ffffff)" : "var(--c-low, #c0c0c0)",
-                  fontWeight: active ? 500 : 400,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  width: "100%",
+                  padding: "6px 10px",
+                  background: active ? "var(--c-srf, rgba(255,255,255,0.10))" : "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                  textAlign: "left",
+                  outline: "none",
+                  borderRadius: 5,
+                }}
+                onMouseEnter={(e) => {
+                  if (!active) e.currentTarget.style.background = "var(--c-srf, rgba(255,255,255,0.06))";
+                }}
+                onMouseLeave={(e) => {
+                  if (!active) e.currentTarget.style.background = "transparent";
                 }}
               >
-                {m.label}
-              </span>
-              <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                {m.ctx && (
-                  <span style={{ fontSize: 10, color: "var(--c-ghost, #6a6a6a)", fontFamily: "var(--font-mono)" }}>
-                    {m.ctx}
-                  </span>
-                )}
-                {active && <Check size={10} style={{ color: "var(--c-dim, #9a9a9a)" }} />}
-              </span>
-            </button>
-          );
-        })}
+                <span
+                  style={{
+                    fontSize: 12.5,
+                    color: active ? "var(--c-high, #ffffff)" : "var(--c-low, #c0c0c0)",
+                    fontWeight: active ? 500 : 400,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {m.label}
+                </span>
+                <span style={{ display: "flex", alignItems: "center", gap: 7, flexShrink: 0 }}>
+                  {m.ctx && (
+                    <span style={{ fontSize: 10, color: "var(--c-ghost, #6a6a6a)", fontFamily: "var(--font-mono)" }}>
+                      {m.ctx}
+                    </span>
+                  )}
+                  {active && <Check size={10} style={{ color: "var(--c-dim, #9a9a9a)" }} />}
+                </span>
+              </button>
+            );
+          })}
+          {visibleGroup?.searchable && shownModels.length === 0 && (
+            <div style={{ padding: "8px 10px", fontSize: 11.5, color: "var(--c-dim, #7a7a7a)" }}>
+              No models match “{modelQuery.trim()}”.
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Effort column */}

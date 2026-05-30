@@ -31,7 +31,7 @@ import {
   Github, Server, Box,
 } from "lucide-react";
 import { ProviderLogo } from "@/components/ui/provider-logo";
-import { updateSession as apiUpdateSession, cloneRepository, fetchClaudeSessions, fetchClaudeHistory, fetchAgentModels, type ClaudeSession } from "@/lib/api";
+import { updateSession as apiUpdateSession, cloneRepository, fetchClaudeSessions, fetchClaudeHistory, fetchAgentModels, fetchProviderModels, type ClaudeSession } from "@/lib/api";
 import { extractOwnerRepo } from "@/lib/git-url";
 import { GitSourceTab } from "./git-source-tab";
 import { useAppStore } from "@/stores/app-store";
@@ -370,6 +370,12 @@ export function SessionToolbar({
   //      before any session of that agent has cold-started.
   // Both override the static CLI_MODELS fallback in buildPickerGroups.
   const sessionDynModels = useChatStore((s) => s.dynamicModels[sessionId]);
+  // OpenRouter is a connected HTTP provider whose live catalog (hundreds of
+  // models) is discovered on demand. Only worth fetching when it's actually
+  // enabled — the picker rail won't render otherwise.
+  const openrouterConnected = providerTiles.some(
+    (t) => t.spec.id === "openrouter" && t.connected,
+  );
   const [discoveredModels, setDiscoveredModels] = useState<Record<string, PickerModel[]>>({});
   useEffect(() => {
     if (openMenu !== "model") return; // discover lazily, only when the picker opens
@@ -383,11 +389,26 @@ export function SessionToolbar({
         }));
       });
     }
+    // OpenRouter's full catalog comes from the backend's live `/models` proxy.
+    if (openrouterConnected) {
+      void fetchProviderModels("openrouter").then((models) => {
+        if (cancelled || models.length === 0) return; // empty → keep curated fallback
+        setDiscoveredModels((prev) => ({
+          ...prev,
+          openrouter: models.map((m) => ({
+            id: m.id,
+            label: m.label,
+            ctx: m.ctx,
+            supports_effort: false,
+          })),
+        }));
+      });
+    }
     return () => {
       cancelled = true;
     };
-  }, [openMenu, projectPath]);
-  const dynamicCliModels: Record<string, PickerModel[]> | undefined = (() => {
+  }, [openMenu, projectPath, openrouterConnected]);
+  const dynamicModels: Record<string, PickerModel[]> | undefined = (() => {
     const merged: Record<string, PickerModel[]> = { ...discoveredModels };
     if (sessionDynModels && sessionDynModels.models.length > 0) {
       merged[tool] = sessionDynModels.models.map((m) => ({
@@ -401,7 +422,7 @@ export function SessionToolbar({
   const groups: PickerGroup[] = buildPickerGroups(
     providerTiles,
     enabledAgentIds,
-    dynamicCliModels,
+    dynamicModels,
   );
 
   return (

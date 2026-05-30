@@ -16,6 +16,10 @@ export interface PickerGroup {
    *  the same brand also exists. */
   subtitle?: string;
   models: PickerModel[];
+  /** When true, the picker renders a search box above the model list — set
+   *  for providers whose catalog is large (e.g. OpenRouter's live list) so
+   *  users can filter instead of scrolling hundreds of rows. */
+  searchable?: boolean;
 }
 
 /** Hardcoded model lists for the CLI agents whose backends bake models
@@ -139,6 +143,7 @@ const BRAND_SHORT: Record<string, string> = {
   "kimi-api": "Kimi",
   "gemini-api": "Gemini",
   perplexity: "Perplexity",
+  openrouter: "OpenRouter",
   ollama: "Ollama",
 };
 
@@ -180,11 +185,12 @@ function modelFromSpec(m: {
 export function buildPickerGroups(
   tiles: ProviderTile[],
   enabledAgentIds: string[],
-  /** Per-agent model lists sourced at runtime from the live session rather
-   *  than the static catalog (OpenCode, whose models come back over ACP).
-   *  Keyed by catalog agent id. When present + non-empty, these take
-   *  precedence over catalog `default_models` and the CLI_MODELS fallback. */
-  dynamicCliModels?: Record<string, PickerModel[]>,
+  /** Model lists sourced at runtime rather than from the static catalog,
+   *  keyed by catalog provider id. Covers BOTH live-model CLI agents
+   *  (OpenCode / Cursor over ACP) and HTTP providers with a discovery
+   *  endpoint (OpenRouter's `/models`). When present + non-empty for an id,
+   *  these take precedence over catalog `default_models` / CLI_MODELS. */
+  dynamicModels?: Record<string, PickerModel[]>,
 ): PickerGroup[] {
   const out: PickerGroup[] = [];
 
@@ -197,7 +203,7 @@ export function buildPickerGroups(
     if (!enabledAgentIds.includes(t.spec.id)) continue;
     const catalogModels = t.spec.default_models.map(modelFromSpec);
     const fallbackModels = CLI_MODELS[t.spec.id] ?? [];
-    const dynamic = dynamicCliModels?.[t.spec.id] ?? [];
+    const dynamic = dynamicModels?.[t.spec.id] ?? [];
     const models =
       dynamic.length > 0
         ? dynamic
@@ -261,12 +267,19 @@ export function buildPickerGroups(
       continue;
     }
 
-    const models = t.spec.default_models.map(modelFromSpec);
+    // Live discovery (OpenRouter) overrides the curated fallback when it has
+    // resolved; otherwise show the catalog's default_models.
+    const dynamic = dynamicModels?.[t.spec.id] ?? [];
+    const models =
+      dynamic.length > 0 ? dynamic : t.spec.default_models.map(modelFromSpec);
     if (models.length === 0) continue;
     out.push({
       id: t.spec.id,
       label: BRAND_SHORT[t.spec.id] ?? t.spec.display_name,
       models,
+      // Large live catalogs (OpenRouter) get a search box instead of an
+      // unscrollable wall of rows.
+      searchable: models.length > 20,
     });
     directBrandIds.add(t.spec.id);
   }

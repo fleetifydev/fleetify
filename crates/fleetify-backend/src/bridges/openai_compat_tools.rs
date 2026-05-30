@@ -3,7 +3,8 @@
 //! Wires the shared `agentic::drive_agentic_loop` to every provider in the
 //! catalog that speaks the `/chat/completions` SSE wire with the standard
 //! tool-use shape: **openai, deepseek, grok, nvidia-nim, kimi-api,
-//! gemini-api** (the OpenAI-compat shim, not the native Gemini API).
+//! gemini-api** (the OpenAI-compat shim, not the native Gemini API), and
+//! **openrouter** (the OpenAI-compatible model aggregator).
 //! Perplexity is intentionally out of scope here because it also emits
 //! `citations` events the renderer wants to surface separately — it gets
 //! its own adapter in the sibling file.

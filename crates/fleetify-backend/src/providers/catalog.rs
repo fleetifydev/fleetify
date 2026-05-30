@@ -947,6 +947,87 @@ const GITHUB_COPILOT_INSTALL_HINTS: InstallHints = InstallHints {
     linux: "curl -fsSL https://gh.io/copilot-install | bash",
 };
 
+// OpenRouter aggregates hundreds of models behind one OpenAI-compatible
+// endpoint. This curated set is only a FALLBACK — shown in Settings → Models
+// and in the picker before the live discovery (`GET /api/v1/models`, surfaced
+// via `routers::providers::list_provider_models`) resolves the full catalog.
+// Slugs follow OpenRouter's `vendor/model` convention; the live list is the
+// source of truth, so any staleness here is purely cosmetic.
+const OPENROUTER_MODELS: &[ModelSpec] = &[
+    ModelSpec {
+        id: "anthropic/claude-sonnet-4",
+        label: "Claude Sonnet 4",
+        context_window: Some("200K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "anthropic/claude-opus-4",
+        label: "Claude Opus 4",
+        context_window: Some("200K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "openai/gpt-4o",
+        label: "GPT-4o",
+        context_window: Some("128K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "openai/o1",
+        label: "o1",
+        context_window: Some("200K"),
+        note: Some("Reasoning"),
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "google/gemini-2.5-pro",
+        label: "Gemini 2.5 Pro",
+        context_window: Some("1M"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "google/gemini-2.5-flash",
+        label: "Gemini 2.5 Flash",
+        context_window: Some("1M"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "deepseek/deepseek-r1",
+        label: "DeepSeek R1",
+        context_window: Some("128K"),
+        note: Some("Reasoning"),
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "meta-llama/llama-3.3-70b-instruct",
+        label: "Llama 3.3 70B",
+        context_window: Some("128K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+];
+
 // ─── Catalog ─────────────────────────────────────────────────────────────
 
 pub static CATALOG: &[ProviderSpec] = &[
@@ -1080,6 +1161,31 @@ pub static CATALOG: &[ProviderSpec] = &[
             search_results: true,
             supports_streaming: true,
             dynamic_models: false,
+        },
+        bin: "",
+        auth_indicators: &[],
+        install_hint: "",
+        install_hints: None,
+        login_hint: "",
+    },
+    ProviderSpec {
+        id: "openrouter",
+        display_name: "OpenRouter",
+        kind: ProviderKind::Api,
+        // OpenAI-compatible aggregator. The "/v1" suffix means the shared
+        // `openai_compat` bridge's URL builder appends "/chat/completions"
+        // directly (no extra "/v1" injected), giving the correct
+        // https://openrouter.ai/api/v1/chat/completions.
+        default_base_url: "https://openrouter.ai/api/v1",
+        auth: AuthSpec::Bearer {
+            env_hint: Some("OPENROUTER_API_KEY"),
+        },
+        // Curated fallback only — the live picker discovers the full
+        // catalog via routers::providers::list_provider_models.
+        default_models: OPENROUTER_MODELS,
+        extras: ProviderExtras {
+            supports_streaming: true,
+            ..ProviderExtras::DEFAULT
         },
         bin: "",
         auth_indicators: &[],
@@ -1327,11 +1433,11 @@ mod tests {
             .iter()
             .filter(|p| matches!(p.kind, ProviderKind::Cli))
             .count();
-        // 7 cloud HTTP providers + 1 local (ollama) + 9 CLI agents
-        // (Claude, Codex, Gemini, Kimi, OpenCode, GitHub Copilot, Cursor,
-        // Antigravity CLI, Antigravity SDK). If you intentionally added/
-        // removed a provider, update these constants together with the catalog.
-        assert_eq!(api, 7, "expected 7 Api providers, got {api}");
+        // 8 cloud HTTP providers (incl. OpenRouter) + 1 local (ollama) + 9
+        // CLI agents (Claude, Codex, Gemini, Kimi, OpenCode, GitHub Copilot,
+        // Cursor, Antigravity CLI, Antigravity SDK). If you intentionally
+        // added/removed a provider, update these constants with the catalog.
+        assert_eq!(api, 8, "expected 8 Api providers, got {api}");
         assert_eq!(local, 1, "expected 1 LocalHttp provider, got {local}");
         assert_eq!(cli, 9, "expected 9 Cli agents, got {cli}");
     }
@@ -1942,6 +2048,11 @@ mod tests {
         let catalog_ids: Vec<&str> = CATALOG
             .iter()
             .filter(|s| matches!(s.kind, ProviderKind::Api))
+            // OpenRouter is a live aggregator: its real catalog is discovered at
+            // runtime (routers::providers::list_provider_models) and the static
+            // default_models are only a loose pre-discovery fallback — so they're
+            // intentionally exempt from this doc-pinned known-good check.
+            .filter(|s| s.id != "openrouter")
             .flat_map(|s| s.default_models.iter().map(|m| m.id))
             .collect();
         for id in catalog_ids {
