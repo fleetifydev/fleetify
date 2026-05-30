@@ -96,6 +96,47 @@ pub fn find_claude_project_dir(path: &str) -> Option<PathBuf> {
     None
 }
 
+/// True when `claude --resume <claude_session_id>` has a real transcript to
+/// resume for `cwd`. Claude stores transcripts at
+/// `~/.claude/projects/<encoded-cwd>/<session_id>.jsonl`, encoding the cwd by
+/// replacing every non-alphanumeric character with `-` (e.g. `C:\Users\loseu`
+/// → `C--Users-loseu`).
+///
+/// We check that modern encoding first, then fall back to
+/// [`find_claude_project_dir`] (which additionally honours
+/// `sessions-index.json` and the legacy `/`/`_` encodings) so a scheme
+/// difference never produces a false "missing". The bias is deliberate: a
+/// false "missing" would needlessly downgrade a healthy `--resume` to
+/// `--continue`, whereas a false "present" merely lets the original
+/// `--resume` fail exactly as it does today. So we report "missing" only when
+/// no candidate directory holds the transcript at all — the orphaned-id case
+/// (cwd changed, `~/.claude` cleared, or the id was persisted before its
+/// transcript was durably written).
+pub fn resume_conversation_exists(cwd: &str, claude_session_id: &str) -> bool {
+    if claude_session_id.is_empty() {
+        return false;
+    }
+    let projects_root = home().join(".claude").join("projects");
+    let file = format!("{claude_session_id}.jsonl");
+
+    // Modern Claude encoding: every non-alphanumeric char → '-'.
+    let encoded: String = cwd
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    if projects_root.join(&encoded).join(&file).is_file() {
+        return true;
+    }
+
+    // Fallback: Fleet's existing resolver (index + legacy encodings).
+    if let Some(dir) = find_claude_project_dir(cwd) {
+        if dir.join(&file).is_file() {
+            return true;
+        }
+    }
+    false
+}
+
 /// One row in the resume-picker list — a Claude Code session's id,
 /// modification timestamp, and a short user-prompt preview.
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -530,6 +571,34 @@ mod tests {
         std::env::set_var("USERPROFILE", tmp.path());
         let rows = scan_sessions("/some/project");
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn resume_conversation_exists_detects_present_and_orphaned() {
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
+        std::env::set_var("USERPROFILE", tmp.path());
+
+        // Windows-style cwd encoded via the modern non-alphanumeric→'-'
+        // rule: C:\Users\me → C--Users-me.
+        let cwd = "C:\\Users\\me";
+        let dir = tmp
+            .path()
+            .join(".claude")
+            .join("projects")
+            .join("C--Users-me");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("good-sid.jsonl"), "{}").unwrap();
+
+        // Present transcript → resumable (healthy --resume preserved).
+        assert!(resume_conversation_exists(cwd, "good-sid"));
+        // Orphaned id (file absent) → not resumable → caller self-heals.
+        assert!(!resume_conversation_exists(cwd, "ghost-sid"));
+        // Empty id → not resumable.
+        assert!(!resume_conversation_exists(cwd, ""));
     }
 
     #[test]

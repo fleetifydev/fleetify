@@ -52,6 +52,23 @@ fn s(v: &Value, k: &str) -> Option<String> {
     v.get(k).and_then(|x| x.as_str()).map(String::from)
 }
 
+/// Self-heal an orphaned resume target in a built `claude` argv: replace the
+/// `--resume <id>` pair with a single `--continue`. `--continue` resumes the
+/// most-recent conversation in the working directory (preserving context),
+/// where `--resume <id>` would hard-fail with "No conversation found" when
+/// the transcript is gone. No-op (returned unchanged) when the argv has no
+/// `--resume`.
+fn swap_resume_for_continue(mut cmd: Vec<String>) -> Vec<String> {
+    if let Some(i) = cmd.iter().position(|a| a == "--resume") {
+        cmd.remove(i); // drop "--resume"
+        if i < cmd.len() {
+            cmd.remove(i); // drop its <id> value
+        }
+        cmd.insert(i, "--continue".to_string());
+    }
+    cmd
+}
+
 /// Parse one stream-json event → normalized events (1:1 with `_parse_event`).
 pub fn parse_event(event: &Value, st: &mut ParseState) -> Vec<BridgeEvent> {
     let mut out = Vec::new();
@@ -615,6 +632,29 @@ impl ClaudeBridge {
             None => None,
         };
         let mut cmd = self.build_command(message, mcp_cfg_path.as_deref());
+        // Self-heal an orphaned `--resume` target. If the stored Claude
+        // conversation no longer exists on disk (cwd changed, `~/.claude`
+        // cleared, or the id was persisted before its transcript was durably
+        // written), `claude --resume <id>` hard-fails with "No conversation
+        // found with session ID" and the turn produces nothing — and because
+        // the turn fails, no fresh id replaces the stale one, so the session
+        // stays wedged forever. Detect the missing transcript up front and
+        // swap `--resume <id>` for `--continue`, which resumes the most-recent
+        // conversation in this cwd (keeping context) instead of erroring. The
+        // healed turn emits a valid session id via its init event, which
+        // chat.rs persists over the stale one.
+        if let Some(id) = self.claude_session_id.as_deref() {
+            if !crate::services::claude_history::resume_conversation_exists(&self.project_path, id)
+            {
+                tracing::warn!(
+                    target: "fleetify::bridges::claude",
+                    session = %self.session_id,
+                    stale_claude_session_id = %id,
+                    "claude resume target missing on disk — self-healing with --continue (context preserved)"
+                );
+                cmd = swap_resume_for_continue(cmd);
+            }
+        }
         // Apply ctx.model_override by injecting `--model <m>` into the
         // argv. We append (rather than replace any pre-existing
         // `--model` produced by build_command) — claude CLI accepts a
@@ -948,6 +988,40 @@ mod tests {
             .windows(2)
             .any(|w| w == ["--permission-mode", "acceptEdits"]));
         assert_eq!(c.last().unwrap(), "hi");
+    }
+
+    #[test]
+    fn swap_resume_for_continue_replaces_resume_pair() {
+        let cmd = vec![
+            "claude".to_string(),
+            "--resume".to_string(),
+            "ghost-id".to_string(),
+            "--model".to_string(),
+            "claude-opus-4-8".to_string(),
+            "hi".to_string(),
+        ];
+        let healed = swap_resume_for_continue(cmd);
+        // --resume and its orphaned id are gone; --continue took their place.
+        assert!(!healed.iter().any(|a| a == "--resume"));
+        assert!(!healed.iter().any(|a| a == "ghost-id"));
+        assert!(healed.iter().any(|a| a == "--continue"));
+        // Surrounding args + order preserved.
+        assert_eq!(healed.first().unwrap(), "claude");
+        assert_eq!(healed.last().unwrap(), "hi");
+        assert!(healed
+            .windows(2)
+            .any(|w| w == ["--model", "claude-opus-4-8"]));
+    }
+
+    #[test]
+    fn swap_resume_for_continue_noop_without_resume() {
+        let cmd = vec![
+            "claude".to_string(),
+            "--continue".to_string(),
+            "hi".to_string(),
+        ];
+        let out = swap_resume_for_continue(cmd.clone());
+        assert_eq!(out, cmd);
     }
 
     #[test]
