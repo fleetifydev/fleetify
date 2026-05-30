@@ -15,7 +15,7 @@ import { FleetDecisionCard } from "./fleet-decision-card";
 import { useFleetStore, AUTO_CHAIN_CAP } from "@/stores/fleet-store";
 import { useSessionRouting } from "@/hooks/use-session-routing";
 import { LogoMark } from "@/components/brand/logo-mark";
-import { PanelLeft, PanelRight, Trash2, X, Check, GitCompareArrows, ListTodo, Terminal as TerminalIcon, Keyboard, Play, FolderOpen, Layers, Monitor, Github, Server, Box, ArrowRight, Copy, GitBranch } from "lucide-react";
+import { PanelLeft, PanelRight, Trash2, X, Check, GitCompareArrows, ListTodo, Terminal as TerminalIcon, Keyboard, Play, FolderOpen, Layers, Monitor, Github, Server, Box, ArrowRight, Copy, GitBranch, Sparkles, HelpCircle, Globe, Scissors } from "lucide-react";
 import type { ContentBlock, ChatMessage } from "@/types/chat";
 import type { Session } from "@/types/session";
 import type { WorkspaceView } from "@/stores/app-store";
@@ -284,7 +284,22 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   const pinnedToExchange = useRef(false);
   const sendLock = useRef(false);
 
+  const [chatCtxMenu, setChatCtxMenu] = useState<{ x: number; y: number; text: string } | null>(null);
+  const chatCtxMenuRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => { staffIdRef.current = staffSessionId; }, [staffSessionId]);
+
+  useEffect(() => {
+    if (!chatCtxMenu) return;
+    const onDown = (e: MouseEvent) => {
+      if (chatCtxMenuRef.current && !chatCtxMenuRef.current.contains(e.target as Node))
+        setChatCtxMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setChatCtxMenu(null); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
+  }, [chatCtxMenu]);
 
   // ── Prune the per-session ref Sets when sessions go away ──
   // Without this, autoIntroFiredRef / autoIntroTitleParsedRef /
@@ -1881,7 +1896,19 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
          * even though we never actually want horizontal scrolling here.
          * Force-clip it so the bar appears only when the user genuinely
          * overflows vertically. */}
-        <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "none" }}>
+        <div
+          ref={scrollRef}
+          style={{ flex: 1, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "none" }}
+          onContextMenu={(e) => {
+            const sel = window.getSelection()?.toString().trim() ?? "";
+            if (!sel) return;
+            e.preventDefault();
+            const winH = window.innerHeight;
+            const menuH = 180;
+            const y = e.clientY + menuH > winH - 12 ? e.clientY - menuH : e.clientY;
+            setChatCtxMenu({ x: e.clientX, y, text: sel });
+          }}
+        >
           {isControlCenter && messages.length === 0 && !isStreaming ? (
             <FleetChatEmptyState
               agents={agentSessions}
@@ -2137,6 +2164,75 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
           })() : undefined}
         />
       </div>
+      {chatCtxMenu && (
+        <ChatContextMenu
+          menuRef={chatCtxMenuRef}
+          x={chatCtxMenu.x}
+          y={chatCtxMenu.y}
+          text={chatCtxMenu.text}
+          onClose={() => setChatCtxMenu(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function ChatContextMenu({ menuRef, x, y, text, onClose }: {
+  menuRef: React.RefObject<HTMLDivElement | null>;
+  x: number; y: number; text: string;
+  onClose: () => void;
+}) {
+  const dispatch = (prompt: string) => {
+    window.dispatchEvent(new CustomEvent("fleet:focus-input", { detail: { text: prompt } }));
+    onClose();
+  };
+
+  const Row = ({ icon: Icon, label, onClick }: { icon: React.ElementType; label: string; onClick: () => void }) => (
+    <button
+      onClick={onClick}
+      style={{
+        display: "flex", alignItems: "center", gap: 8, width: "100%",
+        padding: "5px 8px", background: "none", border: "none",
+        borderRadius: 6, cursor: "pointer", fontSize: 12, textAlign: "left",
+        color: "var(--c-med)", fontFamily: "inherit",
+      }}
+      onMouseEnter={e => { e.currentTarget.style.background = "var(--c-srf)"; e.currentTarget.style.color = "var(--c-high)"; }}
+      onMouseLeave={e => { e.currentTarget.style.background = "none"; e.currentTarget.style.color = "var(--c-med)"; }}
+    >
+      <Icon size={11} style={{ color: "var(--c-ghost)", flexShrink: 0 }} />
+      <span>{label}</span>
+    </button>
+  );
+
+  const Sep = () => <div style={{ height: 1, background: "var(--c-brd)", margin: "3px 0" }} />;
+
+  const preview = text.length > 60 ? text.slice(0, 60) + "…" : text;
+
+  return (
+    <div ref={menuRef} style={{
+      position: "fixed", left: x, top: y,
+      zIndex: 9999, minWidth: 200,
+      borderRadius: 10, padding: "4px",
+      background: "var(--popover)",
+      border: "1px solid var(--c-brd2)",
+      boxShadow: "0 8px 24px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.10), 0 0 0 0.5px rgba(0,0,0,0.06)",
+    }}>
+      <div style={{ padding: "5px 8px 6px", borderBottom: "1px solid var(--c-brd)", marginBottom: 3 }}>
+        <div style={{ fontSize: 11, fontWeight: 500, color: "var(--c-ghost)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          "{preview}"
+        </div>
+      </div>
+      <Row icon={Copy} label="Copy" onClick={() => { void navigator.clipboard.writeText(text); onClose(); }} />
+      <Sep />
+      <Row icon={Sparkles} label="Explain this" onClick={() => dispatch(`Explain the following:\n\n> ${text}`)} />
+      <Row icon={HelpCircle} label="Ask about this" onClick={() => dispatch(`> ${text}\n\n`)} />
+      <Row icon={Scissors} label="Summarize" onClick={() => dispatch(`Summarize the following in one sentence:\n\n> ${text}`)} />
+      <Sep />
+      <Row icon={Globe} label="Search online" onClick={() => {
+        const url = `https://www.google.com/search?q=${encodeURIComponent(text)}`;
+        (window as unknown as { electronAPI?: { openExternal?: (u: string) => void } }).electronAPI?.openExternal?.(url);
+        onClose();
+      }} />
     </div>
   );
 }
