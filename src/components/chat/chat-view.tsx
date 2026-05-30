@@ -657,8 +657,8 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   }, [effectiveSessionId, isLocalOnlyActive]);
 
   const sendViaWs = useCallback(async (text: string, sessionId: string, attachments?: Attachment[]) => {
-    // Scroll to top so the conversation restarts from the beginning.
-    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+    scrollToUserMsg.current = true;
+    pinnedToExchange.current = true;
     sendLock.current = true;
     setTimeout(() => { sendLock.current = false; }, 600);
     setScrollSpacer(typeof window !== "undefined" ? window.innerHeight : 900);
