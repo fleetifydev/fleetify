@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildPickerGroups, resolveDispatchTool } from "../picker-groups";
+import { buildPickerGroups, resolveDispatchTool, resolveModelChip } from "../picker-groups";
 import type { ProviderTile } from "@/lib/providers-api";
 
 const baseTile = (
@@ -225,5 +225,50 @@ describe("buildPickerGroups", () => {
     const tiles = [baseTile("openai", "OpenAI", "api", ["gpt-5"])];
     const groups = buildPickerGroups(tiles, []);
     expect(groups.find((g) => g.id === "openai")?.searchable).toBe(false);
+  });
+});
+
+describe("resolveModelChip", () => {
+  // Regression: a model can live under a DIFFERENT provider's group than the
+  // session's `tool` — e.g. GitHub Copilot surfaces an "auto" ("Auto (Copilot
+  // picks)") model. The chip face must resolve identically regardless of the
+  // tool so the session-toolbar chip and the chat-composer chip never disagree.
+  // (Before this helper the composer showed "Claude + auto" while the toolbar
+  // showed "Copilot + Auto (Copilot picks)" for the same session.)
+  it("resolves a cross-group model to the same face regardless of the tool", () => {
+    const tiles = [
+      baseTile("claude", "Claude Code", "cli"),
+      baseTile("github-copilot", "GitHub Copilot", "cli"),
+    ];
+    const groups = buildPickerGroups(tiles, ["claude", "github-copilot"], {
+      "github-copilot": [{ id: "auto", label: "Auto (Copilot picks)", supports_effort: false }],
+    });
+    const fromComposer = resolveModelChip(groups, "claude", "auto");
+    const fromToolbar = resolveModelChip(groups, "github-copilot", "auto");
+    expect(fromComposer).toEqual(fromToolbar);
+    expect(fromComposer.dispatchTool).toBe("github-copilot");
+    expect(fromComposer.label).toBe("Auto (Copilot picks)");
+  });
+
+  it("falls back to the tool's own group when the model is in no other group", () => {
+    const groups = buildPickerGroups([baseTile("claude", "Claude Code", "cli")], ["claude"]);
+    const chip = resolveModelChip(groups, "claude", "claude-opus-4-8");
+    expect(chip.dispatchTool).toBe("claude");
+    expect(chip.label).toBe("Opus 4.8");
+  });
+
+  it("maps a perplexity brand-split group back to the 'perplexity' dispatch tool", () => {
+    const groups = buildPickerGroups(
+      [baseTile("perplexity", "Perplexity", "api", ["openai/gpt-5.5"])],
+      [],
+    );
+    expect(resolveModelChip(groups, "perplexity", "openai/gpt-5.5").dispatchTool).toBe("perplexity");
+  });
+
+  it("falls through label resolution: CLI table → raw id → 'Model'", () => {
+    expect(resolveModelChip([], "claude", "claude-opus-4-8").label).toBe("Opus 4.8"); // CLI table
+    expect(resolveModelChip([], "claude", "totally-unknown-xyz").label).toBe("totally-unknown-xyz"); // raw id
+    expect(resolveModelChip([], "claude", null).label).toBe("Model"); // final fallback
+    expect(resolveModelChip([], "claude", null).dispatchTool).toBe("claude");
   });
 });

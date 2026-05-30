@@ -37,7 +37,7 @@ import { RoutingChip } from "@/components/settings/routers/routing-chip";
 import { commandsForContext, type SlashCmdDef } from "@/lib/slash-commands";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { UnifiedModelPicker, type Effort as UMEffort } from "./unified-model-picker";
-import { buildPickerGroups, resolveDispatchTool } from "@/lib/picker-groups";
+import { buildPickerGroups, resolveDispatchTool, resolveModelChip } from "@/lib/picker-groups";
 
 /* ─────────────────── constants ─────────────────── */
 
@@ -3147,9 +3147,32 @@ export function ChatInput({
     rationale: string | null;
     attachments: Attachment[];
   } | null>(null);
-  // Provider tiles flow from the registry; the UnifiedModelPicker builds
-  // its own groups via buildPickerGroups (called inline in the JSX).
+  // Provider tiles flow from the registry. We build the picker groups ONCE
+  // here (the same way SessionToolbar does — providerTiles + connected CLI
+  // agents + the live session models from the store) and reuse them for both
+  // the model chip face and the dropdown, so the composer chip resolves the
+  // current model to the exact same provider icon + label as the toolbar chip.
   const { tiles: providerTiles } = useProvidersConfig();
+  const sessionDynModels = useChatStore((s) => (sessionId ? s.dynamicModels[sessionId] : undefined));
+  const pickerGroups = useMemo(() => {
+    const enabledAgentIds = providerTiles
+      .filter((t) => t.spec.kind === "cli" && t.connected)
+      .map((t) => t.spec.id);
+    // Live models (OpenCode / Cursor / GitHub Copilot) arrive over the bridge
+    // keyed under the session's own tool — mirror SessionToolbar's merge so
+    // the same model id resolves to the same group in both places.
+    const dyn =
+      sessionDynModels && sessionDynModels.models.length > 0
+        ? {
+            [tool ?? "claude"]: sessionDynModels.models.map((m) => ({
+              id: m.id,
+              label: m.label,
+              supports_effort: false,
+            })),
+          }
+        : undefined;
+    return buildPickerGroups(providerTiles, enabledAgentIds, dyn);
+  }, [providerTiles, sessionDynModels, tool]);
 
   const fleetMode = useFleetStore(s => sessionId ? s.getSession(sessionId).mode : "manual");
   const fleetPaused = useFleetStore(s => sessionId ? s.getSession(sessionId).status === "paused" : false);
@@ -4030,7 +4053,16 @@ export function ChatInput({
   const hasText    = value.trim().length > 0;
   const canSend    = (hasText || attachments.length > 0) && !disabled && !streaming && !locked;
   const btnActive  = !locked && (streaming || canSend);
-  const modelLabel = fmtModel(model, tool);
+  // Resolve the chip face (provider icon + label) via the shared resolver
+  // against the SAME groups the dropdown uses — identical logic to the
+  // SessionToolbar chip, so the two never disagree. `fmtModel` remains the
+  // last-resort label for ids not present in any group (rare cold-start).
+  const { dispatchTool: chipDispatchTool, label: chipLabel } = resolveModelChip(
+    pickerGroups,
+    tool ?? "claude",
+    model ?? null,
+  );
+  const modelLabel = model && chipLabel === model ? fmtModel(model, tool) : chipLabel;
 
   return (
     <div style={{ flexShrink: 0, padding: "0 16px 16px" }} ref={wrapperRef}>
@@ -4213,12 +4245,7 @@ export function ChatInput({
             tool={tool ?? "claude"}
             model={model ?? null}
             effort={effort as UMEffort}
-            groups={buildPickerGroups(
-              providerTiles,
-              providerTiles
-                .filter((t) => t.spec.kind === "cli" && t.connected)
-                .map((t) => t.spec.id),
-            )}
+            groups={pickerGroups}
             onPickModel={(groupId, modelId) => {
               const dispatchTool = resolveDispatchTool(groupId);
               const tid = dispatchTool as import("@/types/session").AgentTool;
@@ -5102,9 +5129,10 @@ export function ChatInput({
               onMouseLeave={e => { if (openDrop !== "model") { e.currentTarget.style.background = "none"; } }}
               onMouseDown={e => e.preventDefault()}
             >
-              {/* Provider logo lead — flips when the user picks a
-                  model from a different provider in the dropdown. */}
-              <ProviderLogo tool={tool ?? "claude"} size={11} />
+              {/* Provider logo lead — resolved from the model's group (same
+                  as the toolbar chip), so it flips to the right provider even
+                  when the model lives under another agent's catalog. */}
+              <ProviderLogo tool={chipDispatchTool} size={11} />
               <span style={{ color: "var(--c-high)", fontWeight: 500 }}>{modelLabel}</span>
               <span style={{ color: "var(--c-dim)", fontSize: 10 }}>·</span>
               <span style={{ color: "var(--c-low)", fontSize: 10.5 }}>{EFFORT_SHORT[effort]}</span>

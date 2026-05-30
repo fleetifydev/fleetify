@@ -312,3 +312,34 @@ export function buildPickerGroups(
 export function resolveDispatchTool(groupId: string): string {
   return groupId.startsWith("perplexity:") ? "perplexity" : groupId;
 }
+
+/** Resolve the model-chip face (provider logo `tool` + display label) for a
+ *  (tool, model) pair against the picker groups. This is the SINGLE source of
+ *  truth shared by the session-toolbar chip AND the chat-composer chip so the
+ *  two never disagree (they previously diverged: the toolbar resolved via
+ *  groups while the composer used the raw `tool` + a static label table, so a
+ *  model that lives in another provider's group — e.g. "auto" surfacing under
+ *  GitHub Copilot — showed two different provider icons + labels).
+ *
+ *  Resolution: match by model id first (a model can live in another provider's
+ *  group via a brand-split or a connected agent's catalog), then fall back to
+ *  the tool's own group. Label order: the matched group model's label > the
+ *  hardcoded CLI label table (cold-start race before tiles load) > the raw id
+ *  > "Model". Pass the SAME `groups` (built from the same providerTiles +
+ *  dynamic models) at both call sites to guarantee identical faces. */
+export function resolveModelChip(
+  groups: PickerGroup[],
+  tool: string,
+  model: string | null,
+): { dispatchTool: string; label: string } {
+  const activeGroup =
+    groups.find((g) => g.models.some((m) => m.id === model)) ??
+    groups.find((g) => g.id === tool);
+  const activeModel = activeGroup?.models.find((m) => m.id === model);
+  const label =
+    activeModel?.label ??
+    (model ? CLI_MODEL_LABELS[model] : undefined) ??
+    model ??
+    "Model";
+  return { dispatchTool: resolveDispatchTool(activeGroup?.id ?? tool), label };
+}

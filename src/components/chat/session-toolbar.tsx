@@ -46,7 +46,7 @@ import { UnifiedModelPicker, type Effort as UMEffort } from "./unified-model-pic
 import {
   buildPickerGroups,
   resolveDispatchTool,
-  CLI_MODEL_LABELS,
+  resolveModelChip,
   type PickerGroup,
   type PickerModel,
 } from "@/lib/picker-groups";
@@ -676,21 +676,10 @@ export function SessionToolbar({
             current model name + effort. Opens UnifiedModelPicker
             (three-column: providers | models | effort). ── */}
       {(() => {
-        const activeGroup =
-          groups.find((g) => g.models.some((m) => m.id === model)) ??
-          groups.find((g) => g.id === tool);
-        const activeModel = activeGroup?.models.find((m) => m.id === model);
-        // Resolution order for the chip face: matching group model > the
-        // hardcoded CLI label table (covers cold-start races where groups
-        // hasn't fetched yet) > the raw id > the literal "Model" string.
-        // The CLI fallback prevents the chip from showing
-        // `claude-sonnet-4-6` when providerTiles is briefly empty.
-        const modelLabel =
-          activeModel?.label
-          ?? (model ? CLI_MODEL_LABELS[model] : undefined)
-          ?? model
-          ?? "Model";
-        const dispatchTool = resolveDispatchTool(activeGroup?.id ?? tool);
+        // Shared resolver — keeps this chip byte-for-byte identical to the
+        // chat composer's model chip (chat-input.tsx uses the same
+        // resolveModelChip + the same groups), so the two can never disagree.
+        const { dispatchTool, label: modelLabel } = resolveModelChip(groups, tool, model);
         const effortShort: Record<UMEffort, string> = {
           low: "Low", medium: "Med", high: "High", extra_high: "X-Hi", max: "Max",
         };
