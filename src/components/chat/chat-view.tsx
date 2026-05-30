@@ -10,12 +10,12 @@ import { CursorQuestionCard } from "./cursor-question-card";
 import { CursorPlanCard } from "./cursor-plan-card";
 import { SessionToolbar } from "./session-toolbar";
 import { fetchMessages, fetchClaudeHistory, createSession, clearSessionMessages, updateSession as apiUpdateSession, stopSession, restartSession, analyzeFleetResponse } from "@/lib/api";
-import { isWindowsPlatform, folderName, truncateMid } from "@/lib/utils";
+import { isWindowsPlatform, folderName } from "@/lib/utils";
 import { FleetDecisionCard } from "./fleet-decision-card";
 import { useFleetStore, AUTO_CHAIN_CAP } from "@/stores/fleet-store";
 import { useSessionRouting } from "@/hooks/use-session-routing";
 import { LogoMark } from "@/components/brand/logo-mark";
-import { PanelLeft, PanelRight, Trash2, X, Check, GitCompareArrows, ListTodo, Terminal as TerminalIcon, Keyboard, Folder, Play, FolderOpen, Layers, Monitor, Github, Server, Box, ArrowRight, Pencil } from "lucide-react";
+import { PanelLeft, PanelRight, Trash2, X, Check, GitCompareArrows, ListTodo, Terminal as TerminalIcon, Keyboard, Play, FolderOpen, Layers, Monitor, Github, Server, Box, ArrowRight, Copy, GitBranch } from "lucide-react";
 import type { ContentBlock, ChatMessage } from "@/types/chat";
 import type { Session } from "@/types/session";
 import type { WorkspaceView } from "@/stores/app-store";
@@ -236,6 +236,12 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   );
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Per-session scroll position memory — saved from actual DOM scrollTop.
+  const sessionScrollPositions = useRef<Map<string, number>>(new Map());
+  // Flag + value set on session switch, consumed by messages effect after
+  // content renders — avoids the race where we scroll before DOM is ready.
+  const shouldRestorePosition = useRef(false);
+  const positionToRestore = useRef(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const latestUserMsgRef = useRef<HTMLDivElement>(null);
   const staffIdRef = useRef(staffSessionId);
@@ -317,9 +323,6 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   // the main-process update kept "not taking effect". We leave
   // the IPC handler in main.cjs in case some future surface needs
   // it, but this hook no longer calls it.
-  useEffect(() => {
-    return; // intentional no-op — see comment above
-  }, []);
   useEffect(() => { effectiveSessionIdRef.current = effectiveSessionId; }, [effectiveSessionId]);
 
   // Detect manual scroll so we can unpin and resume auto-scroll
@@ -331,6 +334,13 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
       const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
       userScrolledUp.current = distFromBottom > 80;
       if (distFromBottom < 80) pinnedToExchange.current = false;
+
+      // Continuously save actual DOM scrollTop per session so restore
+      // is reliable regardless of animation state.
+      const curSid = effectiveSessionIdRef.current;
+      if (curSid && el.scrollTop > 0) {
+        sessionScrollPositions.current.set(curSid, el.scrollTop);
+      }
 
       // ── Infinite scroll: load older history when near top ──
       // Trigger when scrollTop drops below 200px AND we believe
@@ -400,12 +410,18 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // When a new message arrives: pin to user message (fresh exchange feel)
+  // When messages change: decide what to do with scroll position.
+  // Priority order:
+  //  1. User just sent a message → pin to their message
+  //  2. Session switch with saved position → restore it (after content renders)
+  //  3. Not scrolled up, not pinned → auto-scroll to bottom (streaming / new msgs)
+  //  4. User scrolled up → do nothing (respect their reading position)
   useEffect(() => {
     if (scrollToUserMsg.current) {
+      // User just sent — jump to their message, resume auto-scroll
       scrollToUserMsg.current = false;
       userScrolledUp.current = false;
-      // Single rAF for layout flush — then instant jump (no smooth, no lag)
+      shouldRestorePosition.current = false;
       requestAnimationFrame(() => {
         const el = latestUserMsgRef.current;
         const container = scrollRef.current;
@@ -415,8 +431,19 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
         const targetScrollTop = container.scrollTop + (elRect.top - containerRect.top) - 20;
         container.scrollTop = Math.max(0, targetScrollTop);
       });
+    } else if (shouldRestorePosition.current && messages.length > 0) {
+      // Returning to a visited session — restore exact DOM position.
+      // One rAF ensures the new content has committed to DOM before we set scrollTop.
+      shouldRestorePosition.current = false;
+      const pos = positionToRestore.current;
+      requestAnimationFrame(() => {
+        const el = scrollRef.current;
+        if (el) el.scrollTop = pos;
+      });
     } else if (!userScrolledUp.current && !pinnedToExchange.current) {
-      bottomRef.current?.scrollIntoView({ block: "end" });
+      // New/unvisited session — pin to bottom (latest messages).
+      const el = scrollRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
     }
   }, [messages]);
 
@@ -440,9 +467,26 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     }
   }, [streamingText, isStreaming]);
 
-  // Reset scroll tracking when switching sessions — state itself persists.
+  // Reset scroll tracking on session switch.
+  // Position is saved continuously in onScroll (DOM scrollTop — reliable).
+  // We set shouldRestorePosition so the messages effect handles the actual
+  // restore AFTER content has rendered, avoiding the race where we scroll
+  // before Lenis knows the new content height.
   useEffect(() => {
-    userScrolledUp.current = false;
+    const sid = effectiveSessionId;
+    const savedPos = sid ? sessionScrollPositions.current.get(sid) : undefined;
+
+    if (savedPos !== undefined && savedPos > 0) {
+      // Returning to a visited session — flag the messages effect to restore.
+      shouldRestorePosition.current = true;
+      positionToRestore.current = savedPos;
+      userScrolledUp.current = true; // prevent premature auto-bottom
+    } else {
+      // New or unvisited session — scroll to bottom once messages load.
+      shouldRestorePosition.current = false;
+      userScrolledUp.current = false;
+    }
+
     pinnedToExchange.current = false;
     scrollToUserMsg.current = false;
     sendLock.current = false;
@@ -1675,7 +1719,9 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
               <>
                 <SessionBreadcrumb
                   projectPath={activeSession.project_path || null}
+                  worktreePath={activeSession.worktree_path || null}
                   title={activeSession.title || "Untitled session"}
+                  branch={activeSession.worktree_branch || null}
                   onRename={(next) => {
                     // Compose mode → write to composer; real session →
                     // optimistic store update + backend PATCH. Both
@@ -1699,7 +1745,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                     chip is purely informational; it never blocks a turn
                     and is fetched once via useSessionRouting on mount.
                     Hidden entirely when the session has no pin yet. */}
-                <SessionRoutingChip routing={sessionRouting} />
+                {/* SessionRoutingChip removed — too noisy above chat */}
               </>
             )}
             {/* Fleet hub: header reads as empty wordmark space — the
@@ -1835,7 +1881,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
          * even though we never actually want horizontal scrolling here.
          * Force-clip it so the bar appears only when the user genuinely
          * overflows vertically. */}
-        <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
+        <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "none" }}>
           {isControlCenter && messages.length === 0 && !isStreaming ? (
             <FleetChatEmptyState
               agents={agentSessions}
@@ -2158,21 +2204,25 @@ function SessionRoutingChip({
    keep the header from blowing out. */
 function SessionBreadcrumb({
   projectPath,
+  worktreePath,
   title,
+  branch,
   onRename,
   readonly = false,
 }: {
   projectPath: string | null;
+  worktreePath?: string | null;
   title: string;
+  branch?: string | null;
   onRename: (next: string) => void;
-  /** Fleet hub passes `readonly: true` to lock the breadcrumb to a
-   *  fixed "Fleet" label — no hover pencil, no inline edit. */
   readonly?: boolean;
 }) {
   const [hover, setHover] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Refocus + select-all when we enter edit mode so the user can
   // type immediately. Re-sync the draft from the prop too — covers
@@ -2194,41 +2244,123 @@ function SessionBreadcrumb({
     setEditing(false);
   };
 
-  // Middle-truncate the full path so the header stays a single line.
-  // Tooltip carries the full text for users who need to read the
-  // whole thing.
-  const pathDisplay = projectPath ? truncateMid(projectPath, 48) : null;
+  useEffect(() => {
+    if (!dropdownOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false);
+        setHover(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [dropdownOpen]);
+
+  if (readonly) return (
+    <span style={{ fontSize: 13, fontWeight: 600, color: "var(--c-high)", padding: "4px 6px", fontFamily: "var(--font-sans)", letterSpacing: "-0.02em" }}>
+      Fleet
+    </span>
+  );
+
+  const folderBasename = projectPath ? folderName(projectPath) : null;
+  const branchShort = branch ? branch.replace(/^[^/]+\//, "") : null;
+  const leftLabel = branchShort || folderBasename;
 
   return (
     <div
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      title={projectPath ? `${projectPath} / ${title}` : title}
       style={{
-        display: "inline-flex", alignItems: "center", gap: 7,
-        padding: "4px 8px", borderRadius: 6, flexShrink: 1, minWidth: 0,
+        display: "inline-flex", alignItems: "center", gap: 6,
+        padding: "4px 6px", borderRadius: 6, flexShrink: 1, minWidth: 0,
         color: "var(--c-high)",
         transition: "background 0.12s",
         background: hover ? "var(--c-srf)" : "none",
       }}
     >
-      {/* Fleet hub (readonly + no projectPath) skips the folder
-          icon — its identity is the "Fleet" wordmark, not a path. */}
-      {!readonly && (
-        <Folder size={13} strokeWidth={1.75} style={{ color: "var(--c-low)", flexShrink: 0 }} />
+      {leftLabel && (
+        <div ref={dropdownRef} style={{ position: "relative", flexShrink: 0 }}>
+          <button
+            onClick={() => setDropdownOpen(v => !v)}
+            style={{
+              display: "inline-flex", alignItems: "center",
+              fontSize: 13, fontWeight: 500, color: "var(--c-high)",
+              fontFamily: "var(--font-sans)", letterSpacing: "-0.015em",
+              background: "none", border: "none", padding: 0, margin: 0,
+              cursor: "pointer", outline: "none",
+            }}
+          >
+            {leftLabel}
+          </button>
+          {dropdownOpen && (
+            <div style={{
+              position: "absolute", top: "calc(100% + 4px)", left: 0,
+              zIndex: 9999, minWidth: 180,
+              borderRadius: 10, padding: "4px",
+              background: "var(--popover)",
+              border: "1px solid var(--c-brd2)",
+              boxShadow: "0 8px 24px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.10), 0 0 0 0.5px rgba(0,0,0,0.06)",
+            }}>
+              {([
+                {
+                  icon: FolderOpen,
+                  label: "Show in Finder",
+                  action: () => {
+                    const target = worktreePath || projectPath!;
+                    (window as unknown as { electronAPI?: { showItemInFolder?: (p: string) => void } }).electronAPI?.showItemInFolder?.(target);
+                    setDropdownOpen(false);
+                    setHover(false);
+                  },
+                },
+                {
+                  icon: Copy,
+                  label: "Copy path",
+                  action: () => {
+                    void navigator.clipboard.writeText(projectPath!);
+                    setDropdownOpen(false);
+                    setHover(false);
+                  },
+                },
+                ...(branch ? [{
+                  icon: GitBranch,
+                  label: "Copy branch name",
+                  action: () => {
+                    void navigator.clipboard.writeText(branch);
+                    setDropdownOpen(false);
+                    setHover(false);
+                  },
+                }] : []),
+              ] as { icon: React.ElementType; label: string; action: () => void }[]).map(({ icon: Icon, label, action }) => (
+                <button
+                  key={label}
+                  onClick={action}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 8,
+                    width: "100%", textAlign: "left",
+                    padding: "5px 8px", borderRadius: 6,
+                    fontSize: 12, color: "var(--c-med)",
+                    background: "none", border: "none", cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                  onMouseEnter={e => {
+                    e.currentTarget.style.background = "var(--c-srf)";
+                    e.currentTarget.style.color = "var(--c-high)";
+                  }}
+                  onMouseLeave={e => {
+                    e.currentTarget.style.background = "none";
+                    e.currentTarget.style.color = "var(--c-med)";
+                  }}
+                >
+                  <Icon size={11} style={{ color: "var(--c-ghost)", flexShrink: 0 }} />
+                  <span>{label}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       )}
-      {pathDisplay && (
-        <>
-          <span style={{
-            fontSize: 13.5, fontWeight: 500, color: "var(--c-high)",
-            whiteSpace: "nowrap", flexShrink: 1, minWidth: 0,
-            overflow: "hidden", textOverflow: "ellipsis",
-            fontFamily: "var(--font-mono)",
-          }}>
-            {pathDisplay}
-          </span>
-          <span style={{ color: "var(--c-dim)", fontSize: 13, flexShrink: 0 }}>/</span>
-        </>
+      {leftLabel && (
+        <span style={{ color: "var(--c-ghost)", fontSize: 12, flexShrink: 0, fontFamily: "var(--font-sans)" }}>/</span>
       )}
       {editing ? (
         <input
@@ -2242,10 +2374,9 @@ function SessionBreadcrumb({
           onBlur={commit}
           spellCheck={false}
           style={{
-            // Match the surrounding title <span> visuals so the
-            // transition feels in-place rather than modal.
-            fontSize: 13.5, fontWeight: 400,
+            fontSize: 13, fontWeight: 400,
             color: "var(--c-high)",
+            fontFamily: "var(--font-sans)", letterSpacing: "-0.01em",
             background: "rgba(255,255,255,0.05)",
             border: "1px solid rgba(255,255,255,0.14)",
             borderRadius: 4,
@@ -2253,40 +2384,27 @@ function SessionBreadcrumb({
             outline: "none",
             minWidth: 120,
             maxWidth: 320,
-            fontFamily: "inherit",
           }}
         />
       ) : (
-        <span style={{
-          fontSize: 13.5, fontWeight: 400, color: "var(--c-med)",
-          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-          minWidth: 0,
-        }}>
+        <span
+          onClick={readonly ? undefined : () => setEditing(true)}
+          title={readonly ? undefined : "Rename session"}
+          style={{
+            fontSize: 13, fontWeight: 400, color: "var(--c-med)",
+            fontFamily: "var(--font-sans)", letterSpacing: "-0.01em",
+            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+            minWidth: 0,
+            cursor: readonly ? "default" : "text",
+            borderRadius: 4,
+            padding: "1px 4px",
+            margin: "0 -4px",
+            background: hover && !readonly ? "rgba(var(--fg-rgb), 0.06)" : "transparent",
+            transition: "background 0.1s",
+          }}
+        >
           {title}
         </span>
-      )}
-      {!editing && !readonly && (
-        <button
-          type="button"
-          onClick={() => setEditing(true)}
-          title="Rename session"
-          aria-label="Rename session"
-          style={{
-            display: "inline-flex", alignItems: "center", justifyContent: "center",
-            width: 20, height: 20, borderRadius: 4,
-            background: "transparent", border: "none",
-            color: "var(--c-low)", cursor: "pointer",
-            // Pencil only appears on hover; hidden otherwise so the
-            // header stays calm in steady state.
-            opacity: hover ? 1 : 0,
-            transition: "opacity 0.12s, background 0.12s",
-            flexShrink: 0,
-          }}
-          onMouseEnter={ev => { ev.currentTarget.style.background = "rgba(var(--fg-rgb), 0.10)"; }}
-          onMouseLeave={ev => { ev.currentTarget.style.background = "transparent"; }}
-        >
-          <Pencil size={11} strokeWidth={1.85} />
-        </button>
       )}
     </div>
   );

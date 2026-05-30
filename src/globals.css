@@ -8,10 +8,16 @@
 :root {
   --fg-rgb: 0, 0, 0;       /* black in light */
   --bg-rgb: 255, 255, 255; /* white in light */
+  /* Text selection: muted indigo — visible on white, not eye-straining */
+  --selection-bg: rgba(90, 105, 210, 0.18);
+  --selection-fg: inherit;
 }
 .dark {
   --fg-rgb: 255, 255, 255; /* white in dark */
   --bg-rgb: 0, 0, 0;       /* black in dark */
+  /* Text selection: lifted periwinkle — visible on near-black, soft */
+  --selection-bg: rgba(160, 170, 255, 0.25);
+  --selection-fg: inherit;
 }
 
 /* ─── Semantic color scale — proper contrast in light AND dark ─── */
@@ -702,7 +708,7 @@ body {
 .scroll-subtle:hover { scrollbar-color: var(--c-brd2) transparent; }
 .scroll-subtle::-webkit-scrollbar-thumb { background: transparent; }
 .scroll-subtle:hover::-webkit-scrollbar-thumb { background: var(--c-brd2); }
-::selection { background: var(--c-brd2); }
+::selection { background: var(--selection-bg); color: var(--selection-fg); }
 
 /* ─── Electron drag ─── */
 .drag-region { -webkit-app-region: drag; app-region: drag; }

@@ -242,6 +242,19 @@ pub fn run() {
 
             let main_window = builder.build()?;
 
+            // macOS: set the dock icon programmatically so the transparent
+            // PNG is shown as-is (floating bars) without macOS adding its
+            // adaptive rounded-rect background — that background is only
+            // applied to .icns bundle icons, not to runtime-set NSImages.
+            #[cfg(target_os = "macos")]
+            {
+                let icon = tauri::image::Image::from_bytes(include_bytes!(
+                    "../icons/icon.png"
+                ))
+                .expect("dock icon bytes valid");
+                main_window.set_icon(icon).ok();
+            }
+
             // Embedded backend (no child process, no health-poll).
             // Port is FLEETIFY_BACKEND_PORT (default 8765) so a second
             // instance launched via `npm run dev:tauri:wt -- <slot>`
