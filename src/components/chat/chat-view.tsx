@@ -2835,14 +2835,12 @@ function PanelViewMenu({
           style={{
             position: "absolute", top: "calc(100% + 5px)", right: 0,
             minWidth: 198, zIndex: 1000,
-            background: "#1a1a1a",
-            border: "1px solid rgba(255,255,255,0.07)",
-            borderRadius: 9,
+            background: "var(--popover)",
+            border: "1px solid var(--c-brd2)",
+            borderRadius: 10,
             padding: 4,
-            boxShadow:
-              "0 12px 28px rgba(0,0,0,0.55), " +
-              "0 2px 6px rgba(0,0,0,0.35)",
-            fontFamily: "-apple-system,BlinkMacSystemFont,'Inter',system-ui,sans-serif",
+            boxShadow: "0 8px 24px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.10), 0 0 0 0.5px rgba(0,0,0,0.06)",
+            fontFamily: "inherit",
             animation: "fleetMenuIn 0.12s cubic-bezier(0.4, 0, 0.2, 1)",
           }}
         >
@@ -2857,40 +2855,36 @@ function PanelViewMenu({
                 onMouseDown={(e) => e.preventDefault()}
                 style={{
                   display: "flex", alignItems: "center", gap: 8,
-                  width: "100%", padding: "4px 8px",
+                  width: "100%", padding: "5px 8px",
                   background: "transparent",
-                  border: "none", outline: "none", borderRadius: 5,
-                  color: "#e3e3e3",
+                  border: "none", outline: "none", borderRadius: 6,
+                  color: "var(--c-med)",
                   cursor: "pointer", textAlign: "left",
-                  transition: "background 0.08s, color 0.08s",
                   fontSize: 12, fontWeight: 500, letterSpacing: "-0.005em",
                   fontFamily: "inherit", lineHeight: 1.3,
                 }}
                 onMouseEnter={(e) => {
-                  (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.05)";
-                  (e.currentTarget as HTMLElement).style.color = "#ffffff";
+                  (e.currentTarget as HTMLElement).style.background = "var(--c-srf)";
+                  (e.currentTarget as HTMLElement).style.color = "var(--c-high)";
                 }}
                 onMouseLeave={(e) => {
                   (e.currentTarget as HTMLElement).style.background = "transparent";
-                  (e.currentTarget as HTMLElement).style.color = "#e3e3e3";
+                  (e.currentTarget as HTMLElement).style.color = "var(--c-med)";
                 }}
               >
                 <span style={{
                   width: 13, height: 13,
                   display: "flex", alignItems: "center", justifyContent: "center",
-                  color: active ? "#ffffff" : "#a8a8a8",
+                  color: active ? "var(--c-high)" : "var(--c-ghost)",
                   flexShrink: 0,
                 }}>
                   <Icon size={12} strokeWidth={1.7} />
                 </span>
                 <span style={{ flex: 1, minWidth: 0 }}>{label}</span>
-                {/* Check + shortcut sit in a fixed right-side cluster
-                    so columns line up across rows. Check sits BEFORE
-                    the shortcut, matching Claude Code Desktop. */}
                 <span style={{
                   width: 10, marginRight: shortcut ? 6 : 0,
                   display: "inline-flex", alignItems: "center", justifyContent: "center",
-                  color: active ? "#d4d4d4" : "transparent",
+                  color: active ? "var(--c-med)" : "transparent",
                   flexShrink: 0,
                 }}>
                   <Check size={10} strokeWidth={2.5} />
@@ -2898,9 +2892,9 @@ function PanelViewMenu({
                 {shortcut && (
                   <span style={{
                     display: "inline-flex", alignItems: "center", gap: 0,
-                    color: "#7a7a7a",
+                    color: "var(--c-ghost)",
                     fontSize: 11,
-                    fontFamily: "-apple-system,BlinkMacSystemFont,system-ui,sans-serif",
+                    fontFamily: "inherit",
                     flexShrink: 0,
                     fontVariantNumeric: "tabular-nums",
                   }}>

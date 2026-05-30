@@ -64,7 +64,7 @@ export function getHighlighter(): Promise<Highlighter> {
   highlighterPromise = (async () => {
     const { createHighlighter } = await import("shiki");
     return createHighlighter({
-      themes: ["github-dark"],
+      themes: ["github-dark", "github-light"],
       langs: [
         "shell",
         "typescript", "tsx",
@@ -86,13 +86,13 @@ export function getHighlighter(): Promise<Highlighter> {
 
 /** Highlight a snippet → HTML string. Returns null on failure so the
  *  caller can fall back to the plain text it already has. */
-export async function highlightToHtml(code: string, lang: string): Promise<string | null> {
+export async function highlightToHtml(code: string, lang: string, isDark = true): Promise<string | null> {
   try {
     const hl = await getHighlighter();
     const safeLang = hl.getLoadedLanguages().includes(lang as never) ? lang : "text";
     return hl.codeToHtml(code, {
       lang: safeLang,
-      theme: "github-dark",
+      theme: isDark ? "github-dark" : "github-light",
     });
   } catch {
     return null;
@@ -103,8 +103,8 @@ export async function highlightToHtml(code: string, lang: string): Promise<strin
  *  `<span class="line">…</span>` Shiki emits. Lets a caller render
  *  each line into its own layout row (e.g. a diff with gutter +
  *  marker) while keeping Shiki's IDE-quality token colouring. */
-export async function highlightLines(code: string, lang: string): Promise<string[] | null> {
-  const html = await highlightToHtml(code, lang);
+export async function highlightLines(code: string, lang: string, isDark = true): Promise<string[] | null> {
+  const html = await highlightToHtml(code, lang, isDark);
   if (!html) return null;
   // Strip the outer <pre><code> wrapper, then pluck each line span.
   const inner = html

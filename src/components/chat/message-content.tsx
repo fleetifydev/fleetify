@@ -28,14 +28,15 @@ import { folderName } from "@/lib/utils";
    fall back to its plain-text rendering — no flicker. After load, the
    shared highlighter is cached for the rest of the session. */
 function useShikiHTML(code: string, lang: string): string | null {
+  const isDark = document.documentElement.classList.contains("dark");
   const [html, setHtml] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    highlightToHtml(code, lang).then(out => {
+    highlightToHtml(code, lang, isDark).then(out => {
       if (!cancelled) setHtml(out);
     });
     return () => { cancelled = true; };
-  }, [code, lang]);
+  }, [code, lang, isDark]);
   return html;
 }
 
@@ -673,33 +674,6 @@ function CopyIconOnly({ text }: { text: string }) {
       onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = copied ? "var(--c-high)" : "var(--c-ghost)"; }}
     >
       {copied ? <Check size={12} /> : <Copy size={12} />}
-    </button>
-  );
-}
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = useCallback(() => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
-    });
-  }, [text]);
-  return (
-    <button onClick={copy} style={{
-      display: "flex", alignItems: "center", gap: 4,
-      padding: "2px 6px", borderRadius: 4,
-      background: "none", border: "none",
-      color: copied ? "var(--c-med)" : "var(--c-ghost)",
-      fontSize: 11, cursor: "pointer",
-      fontFamily: "var(--font-sans)",
-      transition: "color 0.1s",
-    }}
-      onMouseEnter={e => { e.currentTarget.style.color = "var(--c-med)"; }}
-      onMouseLeave={e => { e.currentTarget.style.color = copied ? "var(--c-med)" : "var(--c-ghost)"; }}
-    >
-      {copied ? <Check size={11} /> : <Copy size={11} />}
-      {copied ? "Copied" : "Copy"}
     </button>
   );
 }
