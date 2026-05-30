@@ -413,6 +413,11 @@ export function SessionToolbar({
         // chips ran into each other visually.
         rowGap: 6, columnGap: 6,
         padding: "0 0 8px",
+        // position:relative makes this row the containing block for the
+        // model picker popover rendered below, so the picker's `left:0`
+        // anchors to the toolbar's LEFT edge (left of the pick-folder chip)
+        // and opens upward — not next to the model chip on the right.
+        position: "relative",
         // overflow MUST stay visible so chip dropdowns aren't clipped.
         // Setting overflow-x: auto silently flips overflow-y to auto
         // too (CSS spec quirk), which was hiding every popover.
@@ -669,60 +674,58 @@ export function SessionToolbar({
           low: "Low", medium: "Med", high: "High", extra_high: "X-Hi", max: "Max",
         };
         return (
-          // The picker MUST NOT be a child of the Chip <button>: a
-          // <button> nested inside a <button> is invalid HTML, so the
-          // webview delivers the inner row's click unreliably AND any
-          // click that does land bubbles up to the Chip's onClick,
-          // toggling the menu shut before the selection registers. Render
-          // the Chip and the popover as siblings inside a relative
-          // wrapper so the absolute popover still anchors to the chip.
-          <span style={{ position: "relative", display: "inline-flex" }}>
-            <Chip
-              active={openMenu === "model"}
-              chevron
-              onClick={() => setOpenMenu(openMenu === "model" ? null : "model")}
-            >
-              <ProviderLogo tool={dispatchTool} size={12} />
-              <span>{modelLabel}</span>
-              <span style={{ color: "var(--c-dim)", fontSize: 10 }}>·</span>
-              <span style={{ color: "var(--c-low)", fontSize: 10.5 }}>{effortShort[effort]}</span>
-            </Chip>
-            {openMenu === "model" && (
-              <UnifiedModelPicker
-                tool={tool}
-                model={model}
-                effort={effort}
-                groups={groups}
-                onPickModel={(groupId, modelId) => {
-                  const next = resolveDispatchTool(groupId);
-                  const updates: Record<string, unknown> = { model_name: modelId };
-                  if (next !== tool) updates.tool = next;
-                  patch(updates);
-                  // OpenCode + Cursor source models at runtime — switch the
-                  // live ACP session too (the patch alone only affects the next
-                  // cold start). Skipped for drafts (no live bridge yet).
-                  if ((next === "opencode" || next === "cursor") && !isDraft) {
-                    wsManager.switchModel(sessionId, modelId);
-                  }
-                }}
-                onPickEffort={(e) => {
-                  patch({ effort: e });
-                  // OpenCode + Cursor apply effort live via set_config_option.
-                  if ((tool === "opencode" || tool === "cursor") && !isDraft) {
-                    wsManager.switchConfig(sessionId, "effort", e);
-                  }
-                }}
-                onClose={() => setOpenMenu(null)}
-                // Open UPWARD, matching every other toolbar menu (perms /
-                // source / history) and the chat-input's Routing-adjacent
-                // model picker. The toolbar sits just above the chat input,
-                // so a downward popover gets clipped under it.
-                anchor="bottom"
-              />
-            )}
-          </span>
+          <Chip
+            active={openMenu === "model"}
+            chevron
+            onClick={() => setOpenMenu(openMenu === "model" ? null : "model")}
+          >
+            <ProviderLogo tool={dispatchTool} size={12} />
+            <span>{modelLabel}</span>
+            <span style={{ color: "var(--c-dim)", fontSize: 10 }}>·</span>
+            <span style={{ color: "var(--c-low)", fontSize: 10.5 }}>{effortShort[effort]}</span>
+          </Chip>
         );
       })()}
+
+      {/* Model picker popover — rendered at the TOOLBAR-ROOT level (a direct
+          child of the position:relative chip row), NOT inside the model
+          Chip, for two reasons: (1) a <button> can't legally contain the
+          picker's <button> rows, and the old nesting let row clicks bubble
+          to the Chip's onClick and close the menu mid-select; (2) with the
+          picker's built-in `left:0` it now anchors to the toolbar's LEFT
+          edge (left of the pick-folder chip) and opens upward — matching the
+          chat composer's far-left placement. */}
+      {openMenu === "model" && (
+        <UnifiedModelPicker
+          tool={tool}
+          model={model}
+          effort={effort}
+          groups={groups}
+          onPickModel={(groupId, modelId) => {
+            const next = resolveDispatchTool(groupId);
+            const updates: Record<string, unknown> = { model_name: modelId };
+            if (next !== tool) updates.tool = next;
+            patch(updates);
+            // OpenCode + Cursor source models at runtime — switch the
+            // live ACP session too (the patch alone only affects the next
+            // cold start). Skipped for drafts (no live bridge yet).
+            if ((next === "opencode" || next === "cursor") && !isDraft) {
+              wsManager.switchModel(sessionId, modelId);
+            }
+          }}
+          onPickEffort={(e) => {
+            patch({ effort: e });
+            // OpenCode + Cursor apply effort live via set_config_option.
+            if ((tool === "opencode" || tool === "cursor") && !isDraft) {
+              wsManager.switchConfig(sessionId, "effort", e);
+            }
+          }}
+          onClose={() => setOpenMenu(null)}
+          // Open UPWARD (above the toolbar / "Local" area), matching the
+          // other toolbar menus and the chat composer's picker.
+          anchor="bottom"
+        />
+      )}
 
       {/* ── Permission ── */}
       <Chip

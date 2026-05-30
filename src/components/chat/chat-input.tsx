@@ -4201,10 +4201,52 @@ export function ChatInput({
           </div>
         )}
 
-        {/* The model/effort picker now renders co-located with its trigger
-            button in the bottom toolbar cluster (see <UnifiedModelPicker>
-            inside the position:relative wrapper below) so the popover
-            anchors to the button instead of the top-left of the box. */}
+        {/* Model + Effort dropdown — the shared three-column
+            UnifiedModelPicker. Rendered HERE as a child of the compose
+            wrapper (the maxWidth:900, position:relative box) — NOT next to
+            the model button — so it opens far-LEFT and ABOVE the textarea,
+            using the same `left:0; bottom:calc(100%+6px)` anchor as the
+            @mention / slash popups above. Picking a cross-provider model
+            PATCHes the session's tool so the toolbar logo flips to match. */}
+        {openDrop === "model" && (
+          <UnifiedModelPicker
+            tool={tool ?? "claude"}
+            model={model ?? null}
+            effort={effort as UMEffort}
+            groups={buildPickerGroups(
+              providerTiles,
+              providerTiles
+                .filter((t) => t.spec.kind === "cli" && t.connected)
+                .map((t) => t.spec.id),
+            )}
+            onPickModel={(groupId, modelId) => {
+              const dispatchTool = resolveDispatchTool(groupId);
+              const tid = dispatchTool as import("@/types/session").AgentTool;
+              if (sessionId) {
+                // Active session: change tool + model (cross-provider) or
+                // just model (same-provider). `onModelChange` covers the
+                // same-provider path via the parent's handleModelChange.
+                if (dispatchTool !== tool) {
+                  apiUpdateSession(sessionId, { tool: tid, model_name: modelId }).catch(() => {});
+                  useAppStore.getState().updateSession(sessionId, { tool: tid, model_name: modelId });
+                } else {
+                  onModelChange?.(modelId);
+                }
+              } else {
+                // Composer / Control Center — no session row exists yet.
+                // Write the pick into the open composer so `commitComposer`
+                // creates the new session with the right (tool, model)
+                // pair. Without this branch, picks vanished into the
+                // void because `onModelChange` is undefined when
+                // `activeSessionId` is null.
+                useAppStore.getState().setComposerField({ tool: tid, modelName: modelId });
+              }
+            }}
+            onPickEffort={(e) => setEffort(e)}
+            onClose={() => setOpenDrop(null)}
+            anchor="bottom"
+          />
+        )}
 
 
         {/* Hidden file input */}
@@ -5043,12 +5085,6 @@ export function ChatInput({
                 "below the composer" status bar is replaced by this
                 tighter placement so the toolbar doesn't get crowded. */}
             <RoutingChip />
-            {/* The model button + its picker share a position:relative
-                wrapper so the absolute popover anchors to THIS button
-                (bottom-right cluster) instead of the top-left of the whole
-                compose box. Without the wrapper the picker mounted detached
-                and looked like the button did nothing. */}
-            <div style={{ position: "relative" }}>
             <button
               onClick={() => setOpenDrop(d => d === "model" ? null : "model")}
               style={{
@@ -5078,46 +5114,6 @@ export function ChatInput({
                 transition: "transform 0.15s",
               }} />
             </button>
-            {openDrop === "model" && (
-              <UnifiedModelPicker
-                tool={tool ?? "claude"}
-                model={model ?? null}
-                effort={effort as UMEffort}
-                groups={buildPickerGroups(
-                  providerTiles,
-                  providerTiles
-                    .filter((t) => t.spec.kind === "cli" && t.connected)
-                    .map((t) => t.spec.id),
-                )}
-                onPickModel={(groupId, modelId) => {
-                  const dispatchTool = resolveDispatchTool(groupId);
-                  const tid = dispatchTool as import("@/types/session").AgentTool;
-                  if (sessionId) {
-                    // Active session: change tool + model (cross-provider) or
-                    // just model (same-provider). `onModelChange` covers the
-                    // same-provider path via the parent's handleModelChange.
-                    if (dispatchTool !== tool) {
-                      apiUpdateSession(sessionId, { tool: tid, model_name: modelId }).catch(() => {});
-                      useAppStore.getState().updateSession(sessionId, { tool: tid, model_name: modelId });
-                    } else {
-                      onModelChange?.(modelId);
-                    }
-                  } else {
-                    // Composer / Control Center — no session row exists yet.
-                    // Write the pick into the open composer so `commitComposer`
-                    // creates the new session with the right (tool, model)
-                    // pair. Without this branch, picks vanished into the
-                    // void because `onModelChange` is undefined when
-                    // `activeSessionId` is null.
-                    useAppStore.getState().setComposerField({ tool: tid, modelName: modelId });
-                  }
-                }}
-                onPickEffort={(e) => setEffort(e)}
-                onClose={() => setOpenDrop(null)}
-                anchor="bottom"
-              />
-            )}
-            </div>
 
             {/* MCP status — small connected/total badge with a
                 click-to-expand popover. Sits LEFT of the context
