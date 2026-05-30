@@ -434,6 +434,10 @@ enum ScanProbe {
     /// `~/.local/bin/{cursor-agent,agent}` on Unix). Shares the bridge's
     /// `resolve_cursor_bin` so detection and spawn agree.
     CursorCli,
+    /// GitHub Copilot CLI: PATH lookup OR the off-PATH npm-global / Homebrew /
+    /// winget install dirs a GUI process's minimal PATH frequently misses.
+    /// Shares the bridge's `resolve_copilot_bin` so detection and spawn agree.
+    GitHubCopilotCli,
 }
 
 /// Map a catalog id to the probe strategy used by `scan_all_agents`.
@@ -446,6 +450,7 @@ fn scan_probe_for(id: &'static str, bin: &'static str) -> ScanProbe {
             module: "google.antigravity",
         },
         "cursor" => ScanProbe::CursorCli,
+        "github-copilot" => ScanProbe::GitHubCopilotCli,
         _ => ScanProbe::BinOnly { bin },
     }
 }
@@ -477,6 +482,7 @@ pub async fn scan_all_agents() -> HashMap<String, Value> {
                 }
             }
             ScanProbe::CursorCli => crate::bridges::cursor::resolve_cursor_bin(),
+            ScanProbe::GitHubCopilotCli => crate::bridges::github_copilot::resolve_copilot_bin(),
         };
         let installed = path.is_some();
         let authenticated = if installed {
@@ -1138,7 +1144,7 @@ mod tests {
                 ("gemini", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "gemini"),
                 ("kimi", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "kimi"),
                 ("opencode", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "opencode"),
-                ("github-copilot", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "copilot"),
+                ("github-copilot", ScanProbe::GitHubCopilotCli) => {}
                 ("agy", ScanProbe::AgyCli) => {}
                 ("antigravity-sdk", ScanProbe::PythonModule { module }) => {
                     assert_eq!(module, "google.antigravity");

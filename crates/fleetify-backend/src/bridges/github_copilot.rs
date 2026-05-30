@@ -21,6 +21,57 @@ use super::BridgeEvent;
 
 const INIT_TIMEOUT_SECS: u64 = 30;
 
+/// Resolve the standalone GitHub Copilot CLI binary (`copilot`, installed via
+/// `npm install -g @github/copilot`). Tries PATH first — the `which` crate
+/// honours Windows PATHEXT, so it finds the `.cmd`/`.ps1` shims npm writes —
+/// then the common install dirs a GUI-launched process's minimal PATH
+/// frequently misses (npm global bin, Homebrew, `~/.local/bin`, and the winget
+/// shim dir). Returns an absolute path, or `None` when not installed. Shared by
+/// the bridge spawn and `routers::providers` scan detection so they agree
+/// (mirrors `cursor::resolve_cursor_bin`).
+pub fn resolve_copilot_bin() -> Option<String> {
+    // 1. PATH (PATHEXT-aware on Windows via the `which` crate).
+    if let Ok(p) = which::which("copilot") {
+        return Some(p.to_string_lossy().into_owned());
+    }
+    // 2. Off-PATH install locations a GUI process's minimal PATH often lacks.
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    #[cfg(windows)]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let npm = std::path::Path::new(&appdata).join("npm");
+            for f in ["copilot.cmd", "copilot.ps1", "copilot.exe", "copilot"] {
+                candidates.push(npm.join(f));
+            }
+        }
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            candidates.push(
+                std::path::Path::new(&local)
+                    .join("Microsoft")
+                    .join("WinGet")
+                    .join("Links")
+                    .join("copilot.exe"),
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        for base in ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin"] {
+            candidates.push(std::path::Path::new(base).join("copilot"));
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            let h = std::path::Path::new(&home);
+            candidates.push(h.join(".local").join("bin").join("copilot"));
+            candidates.push(h.join(".npm-global").join("bin").join("copilot"));
+            candidates.push(h.join("node_modules").join(".bin").join("copilot"));
+        }
+    }
+    candidates
+        .into_iter()
+        .find(|p| p.is_file())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CopilotPermArgs {
     AllowAll,
@@ -157,9 +208,7 @@ impl GitHubCopilotBridge {
     /// Build the `copilot --acp --stdio …` Command. Pure — no I/O, no
     /// spawn. Caller adds stdio piping + cwd + env.
     pub(crate) fn build_command(&self) -> Command {
-        let bin = which::which("copilot")
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "copilot".to_string());
+        let bin = resolve_copilot_bin().unwrap_or_else(|| "copilot".to_string());
 
         let mut cmd = Command::new(&bin);
         cmd.arg("--acp").arg("--stdio");
@@ -267,11 +316,10 @@ impl GitHubCopilotBridge {
 
         let mut proc = cmd.spawn().map_err(|e| {
             anyhow!(
-                "GitHub Copilot CLI not found ({e}). Install: \
-                 winget install GitHub.Copilot (Windows), \
-                 brew install gh (macOS/Linux) then gh extension install github/gh-copilot, \
-                 or npm install -g @github/copilot-cli. \
-                 Then run: copilot login"
+                "GitHub Copilot CLI (`copilot`) not found ({e}). Install with \
+                 `npm install -g @github/copilot`, then run `copilot login`. \
+                 If it's already installed, make sure its bin dir is on PATH \
+                 (npm global bin / Homebrew / ~/.local/bin)."
             )
         })?;
 
