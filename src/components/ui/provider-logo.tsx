@@ -7,8 +7,12 @@ import { useThemeStore } from "@/stores/theme-store";
 // ids (so the same icon can render twice with no id collision) and paints
 // their real brand colours on any theme. `ProviderLogo` routes the agent
 // tool ids to these; the inline components below stay for other surfaces.
+// Claude: the official lobehub colour mark (@lobehub/icons claude-color.svg) —
+// a clean single-colour (#D97757) SVG, rendered via <ImgIcon>. Codex: the
+// official lobehub OpenAI PNG, distinct light/dark assets via ThemedImgIcon.
 import claudeIcon from "./agent-icons/claude.svg";
-import codexIcon from "./agent-icons/codex.svg";
+import codexLightIcon from "./agent-icons/codex-light.png";
+import codexDarkIcon from "./agent-icons/codex-dark.png";
 import geminiIcon from "./agent-icons/gemini.svg";
 import opencodeIcon from "./agent-icons/opencode.svg";
 import opencodeLightIcon from "./agent-icons/opencode-light.svg";
@@ -16,11 +20,13 @@ import kimiIcon from "./agent-icons/kimi.svg";
 // Model-provider marks. Colour marks go through <ImgIcon>; Ollama ships
 // only a single-colour "for dark background" variant, so it goes through
 // <MaskIcon> to adapt to the theme. Grok + OpenCode ship a distinct
-// per-theme asset each, so they go through <ThemedImgIcon>. OpenAI and
-// Antigravity render via the self-coloured inline components below
-// (OpenAILogo / AgyLogo): their bundled assets (a thin white-glyph PNG and
-// a 22-blur masked SVG) wash out at the picker's ~12px size, so the crisp
-// inline vectors keep them visible.
+// per-theme asset each, so they go through <ThemedImgIcon>. OpenAI renders
+// via the self-coloured inline OpenAILogo (its thin white-glyph PNG washed
+// out at small sizes). Antigravity ships the official lobehub colour mark
+// (antigravity.svg == @lobehub/icons-static-svg antigravity-color.svg) —
+// used at normal/large sizes, but its 22-blur mask collapses at the picker's
+// ~12px, so the crisp inline AgyLogo is used below the size threshold.
+import antigravityColorIcon from "./agent-icons/antigravity.svg";
 import perplexityIcon from "./agent-icons/perplexity.svg";
 import deepseekIcon from "./agent-icons/deepseek.svg";
 import grokIcon from "./agent-icons/grok.svg";
@@ -351,7 +357,7 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
   switch (tool) {
     case "claude":     return <ImgIcon src={claudeIcon} size={size} label="Claude Code" />;
     case "anthropic":  return <ImgIcon src={claudeIcon} size={size} label="Claude Code" />;
-    case "codex":      return <ImgIcon src={codexIcon} size={size} label="Codex" />;
+    case "codex":      return <ThemedImgIcon light={codexLightIcon} dark={codexDarkIcon} size={size} label="Codex" />;
     case "cursor":     return <CursorLogo size={size} />;
     case "gemini":     return <ImgIcon src={geminiIcon} size={size} label="Gemini" />;
     case "ollama":     return <MaskIcon src={ollamaIcon} size={size} label="Ollama" />;
@@ -365,9 +371,15 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
     case "perplexity": return <ImgIcon src={perplexityIcon} size={size} label="Perplexity" />;
     case "gemini-api": return <ImgIcon src={geminiIcon} size={size} label="Gemini" />;
     case "openrouter": return <OpenRouterLogo size={size} />;
-    case "agy":            return <AgyLogo size={size} />;
-    case "antigravity":    return <AgyLogo size={size} />;
-    case "antigravity-sdk":return <AgyLogo size={size} />;
+    case "agy":
+    case "antigravity":
+    case "antigravity-sdk":
+      // Official lobehub colour mark at normal/large sizes (Settings cards,
+      // agent cards); the crisp inline AgyLogo below ~16px, where the SVG's
+      // blur mask washes out (the model-picker rail + toolbar chips).
+      return size >= 16
+        ? <ImgIcon src={antigravityColorIcon} size={size} label="Antigravity" />
+        : <AgyLogo size={size} />;
     case "github-copilot": return <GitHubCopilotLogo size={size} />;
     case "opencode":   return <ThemedImgIcon light={opencodeLightIcon} dark={opencodeIcon} size={size} label="OpenCode" />;
     case "aider":      return <AiderLogo size={size} />;

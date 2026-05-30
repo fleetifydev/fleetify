@@ -91,6 +91,12 @@ interface FleetConfig {
   githubUsername?: string;
   /** Default model for new agent sessions. Persisted from Settings → Models. */
   defaultModel?: string;
+  /** Sessions Default — the provider a brand-new manual session opens with.
+   *  Distinct from `defaultProvider` (the Fleet default): when set it takes
+   *  precedence in `openComposer`. Settings → Providers → "Sessions Default". */
+  sessionDefaultProvider?: string;
+  /** Sessions Default model — paired with `sessionDefaultProvider`. */
+  sessionDefaultModel?: string;
   /** Master toggle for OS-level notifications (completion, errors,
    *  budget warnings). When false, all per-event notification toggles are
    *  ignored. Default true. */

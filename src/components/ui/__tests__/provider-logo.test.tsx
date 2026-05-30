@@ -17,7 +17,7 @@ describe("ProviderLogo — agent brand icons", () => {
     const { getByAltText } = render(<ProviderLogo tool={tool} size={20} />);
     const img = getByAltText(label) as HTMLImageElement;
     expect(img.tagName).toBe("IMG");
-    // The .svg import resolves to a bundled asset URL through the vite pipeline.
+    // The bundled asset import resolves to a URL through the vite pipeline.
     expect(img.getAttribute("src")).toBeTruthy();
   });
 
@@ -81,6 +81,19 @@ describe("ProviderLogo — model-provider brand icons", () => {
     // the model picker's ~12px size. They render as crisp self-coloured
     // inline <svg> vectors instead, so they stay visible in the rail.
     expect(el.tagName.toLowerCase()).toBe("svg");
+  });
+
+  it.each([
+    ["agy"],
+    ["antigravity"],
+    ["antigravity-sdk"],
+  ])("renders %s as the official bundled colour <img> at Settings sizes (>=16px)", (tool) => {
+    const { getByAltText } = render(<ProviderLogo tool={tool} size={20} />);
+    const img = getByAltText("Antigravity") as HTMLImageElement;
+    // The lobehub colour mark renders crisply at larger sizes (Settings + agent
+    // cards); only the ~12px picker falls back to the inline AgyLogo above.
+    expect(img.tagName).toBe("IMG");
+    expect(img.getAttribute("src")).toBeTruthy();
   });
 
   it.each([

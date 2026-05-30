@@ -2,37 +2,54 @@
  * Settings → Providers — merges the legacy Agents and Models sections
  * behind a single page with internal tabs.
  *
- * Layout:
+ * Layout — one quiet "Sessions Default" card above the tabs:
  *   ┌───────────────────────────────────────────────────────────┐
- *   │ FLEET DEFAULT                                             │
- *   │ <ProviderLogo>  <display_name>           [Change ▾]       │
- *   │                                                           │
- *   │ Defaults open new chats with this provider/model pair.    │
- *   │ Any tile — CLI agent OR API provider — can be the         │
- *   │ default. Toggling a tile off in the lists below removes   │
- *   │ it from the picker (and from this dropdown).              │
+ *   │ ◍  Sessions Default              [Provider ▾] [Model ▾]    │
+ *   │    Pre-selected when you start a new session.              │
  *   ├──────────────────────────────────────────────────────────┤
  *   │ [Agents]  [Models]                                        │
  *   ├──────────────────────────────────────────────────────────┤
  *   │ <tab content — existing AgentsSection / ModelsSection>    │
  *   └───────────────────────────────────────────────────────────┘
  *
- * The "Change" dropdown lists every catalog provider where the user
- * has explicitly enabled the tile (`tile.connected === true`). That
- * gating matches the chat composer's picker filter so the default
- * dropdown only offers providers that would actually dispatch — no
- * "pick provider X, get an immediate auth error on next message"
- * footgun. Writes through `providers.setDefault(id)` (the IPC that
- * also seeds `defaultModel` from the spec's first default model),
- * so the chat composer's `openComposer` opens new chats with a
- * coherent (provider, model) pair regardless of which kind was
- * picked here.
+ * The card is a `DefaultPairRow` (small provider logo + label/caption, then a
+ * provider dropdown + a model dropdown). The provider dropdown lists every
+ * enabled tile (`tile.connected === true`) — matching the chat composer's
+ * picker filter so a default can always dispatch — and the model dropdown
+ * lists that provider's models (the same list the chat picker builds, with
+ * CLI fallbacks).
+ *
+ * It writes `sessionDefaultProvider` / `sessionDefaultModel`. `openComposer`
+ * prefers that pair (then the Fleet `defaultProvider`/`defaultModel` set via
+ * the per-tile "Set as default" buttons, then a hardcoded baseline), so new
+ * sessions open with a coherent (provider, model) pair. The per-tile default
+ * still lives on the Agents/Models cards below; this card is the explicit
+ * new-session override.
  */
-import { useState } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { ProviderLogo } from "@/components/ui/provider-logo";
+import { buildPickerGroups, type PickerModel } from "@/lib/picker-groups";
 import { AgentsSection } from "./agents-section";
 import { ModelsSection } from "./models-section";
+
+/** Narrowed view of the persisted config for the Sessions Default picker, so a
+ *  read-merge-write preserves every other key without importing the full
+ *  FleetConfig shape (mirrors notifications-card / privacy-card). */
+type DefaultsCfg = {
+  sessionDefaultProvider?: string;
+  sessionDefaultModel?: string;
+};
+function cfgApi() {
+  return (
+    window as unknown as {
+      electronAPI?: {
+        getConfig?: () => Promise<(DefaultsCfg & Record<string, unknown>) | null>;
+        setConfig?: (cfg: Record<string, unknown>) => Promise<unknown>;
+      };
+    }
+  ).electronAPI;
+}
 
 type ProvidersTab = "agents" | "models";
 
@@ -55,26 +72,91 @@ export function ProvidersSection({ initialSubTab }: { initialSubTab?: ProvidersT
     setTabState(v);
     writeTab(v);
   };
-  const { tiles, setDefault } = useProvidersConfig();
+  const { tiles } = useProvidersConfig();
 
-  const defaultTile = tiles.find((t) => t.is_default);
-  // Default dropdown options: every enabled tile, regardless of kind.
-  // Matches the user spec — CLI agents AND API providers AND Ollama
-  // are all eligible defaults.
+  // Provider dropdown options: every enabled tile, regardless of kind
+  // (CLI agents, API providers, and Ollama are all eligible).
   const eligible = tiles.filter((t) => t.connected);
+
+  // Per-provider model list (with the CLI fallbacks the chat picker uses) so
+  // the model dropdowns offer exactly what a session could dispatch.
+  const groups = useMemo(
+    () =>
+      buildPickerGroups(
+        tiles,
+        tiles.filter((t) => t.spec.kind === "cli" && t.connected).map((t) => t.spec.id),
+      ),
+    [tiles],
+  );
+  const modelsForProvider = useCallback(
+    (id: string): PickerModel[] => groups.find((g) => g.id === id)?.models ?? [],
+    [groups],
+  );
+
+  // The Sessions Default pair, read once and written through
+  // getConfig→merge→setConfig so every other config key is preserved.
+  const [cfg, setCfg] = useState<DefaultsCfg>({});
+  useEffect(() => {
+    let cancelled = false;
+    cfgApi()
+      ?.getConfig?.()
+      .then((c) => {
+        if (cancelled || !c) return;
+        setCfg({
+          sessionDefaultProvider: c.sessionDefaultProvider,
+          sessionDefaultModel: c.sessionDefaultModel,
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const writeCfg = useCallback(async (patch: DefaultsCfg) => {
+    setCfg((prev) => ({ ...prev, ...patch })); // optimistic
+    try {
+      const cur = (await cfgApi()?.getConfig?.()) ?? {};
+      await cfgApi()?.setConfig?.({ ...cur, ...patch });
+    } catch {
+      /* best effort — the optimistic update keeps the UI responsive */
+    }
+  }, []);
+
+  const sessProvider = cfg.sessionDefaultProvider ?? "";
+  const sessModel = cfg.sessionDefaultModel ?? "";
 
   return (
     <>
-      <FleetDefaultCard
-        defaultTile={defaultTile}
-        eligible={eligible}
-        onPick={(id) => {
-          void setDefault(id);
-          void import("@/lib/posthog").then(({ capture }) => {
-            capture("default_provider_set", { provider_id: id });
-          });
+      {/* Sessions Default — the provider + model a new session opens with.
+          A small logo + label/caption on the left, the dropdowns on the right. */}
+      <div
+        style={{
+          borderRadius: 10,
+          border: "1px solid var(--c-brd)",
+          background: "var(--card)",
+          overflow: "hidden",
+          marginBottom: 18,
         }}
-      />
+      >
+        <DefaultPairRow
+          label="Sessions Default"
+          caption="Pre-selected when you start a new session."
+          providerId={sessProvider}
+          modelId={sessModel}
+          eligible={eligible}
+          modelsForProvider={modelsForProvider}
+          onPickProvider={(id) => {
+            void writeCfg({ sessionDefaultProvider: id, sessionDefaultModel: modelsForProvider(id)[0]?.id });
+            void import("@/lib/posthog").then(({ capture }) => {
+              capture("session_default_set", { provider_id: id });
+            });
+          }}
+          onPickModel={(mid) => {
+            void writeCfg({ sessionDefaultModel: mid });
+          }}
+          emptyHint="Enable a tile below to pick a session default."
+        />
+      </div>
 
       <TabBar tab={tab} onChange={setTab} />
 
@@ -83,78 +165,56 @@ export function ProvidersSection({ initialSubTab }: { initialSubTab?: ProvidersT
   );
 }
 
-// ── Fleet default card — current pick + picker dropdown ──────────
+// ── Default pair row — provider + model dropdowns for one named default ──
+// Rendered twice (Sessions Default over Fleet Default) inside a single card.
+// A small provider logo + the label/caption on the left, the two dropdowns on
+// the right — kept deliberately plain so the two rows read as one tidy block.
 
-function FleetDefaultCard({
-  defaultTile,
+function DefaultPairRow({
+  label,
+  caption,
+  providerId,
+  modelId,
   eligible,
-  onPick,
+  modelsForProvider,
+  onPickProvider,
+  onPickModel,
+  emptyHint,
 }: {
-  defaultTile: ReturnType<typeof useProvidersConfig>["tiles"][number] | undefined;
+  label: string;
+  caption: string;
+  providerId: string;
+  modelId: string;
   eligible: ReturnType<typeof useProvidersConfig>["tiles"];
-  onPick: (id: string) => void;
+  modelsForProvider: (id: string) => PickerModel[];
+  onPickProvider: (id: string) => void;
+  onPickModel: (id: string) => void;
+  emptyHint: string;
 }) {
-  const fallbackId = defaultTile?.spec.id ?? eligible[0]?.spec.id ?? "";
+  const models = providerId ? modelsForProvider(providerId) : [];
   return (
-    <div
-      style={{
-        borderRadius: 10,
-        border: "1px solid var(--c-brd)",
-        background: "var(--card)",
-        overflow: "hidden",
-        marginBottom: 18,
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 16px" }}>
-        <ProviderLogo tool={fallbackId || "claude"} size={26} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div
-            style={{
-              fontSize: 10.5,
-              fontWeight: 600,
-              letterSpacing: "0.10em",
-              color: "var(--c-dim)",
-              textTransform: "uppercase",
-              marginBottom: 3,
-            }}
-          >
-            Fleet Default
-          </div>
-          <div style={{ fontSize: 14, fontWeight: 500, color: "var(--c-high)" }}>
-            {defaultTile?.spec.display_name ?? (
-              <span style={{ color: "var(--c-low)" }}>Not set — pick one to the right</span>
-            )}
-          </div>
-        </div>
-        {eligible.length > 0 ? (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "13px 16px" }}>
+      <ProviderLogo tool={providerId || "claude"} size={20} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--c-high)" }}>{label}</div>
+        <div style={{ fontSize: 11.5, color: "var(--c-dim)", marginTop: 1 }}>{caption}</div>
+      </div>
+      {eligible.length > 0 ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
           <DefaultSelect
-            value={defaultTile?.spec.id ?? ""}
+            value={providerId}
             options={eligible.map((t) => ({
               value: t.spec.id,
               label: t.spec.display_name,
               kind: t.spec.kind,
             }))}
-            onChange={onPick}
+            onChange={onPickProvider}
           />
-        ) : (
-          <span style={{ fontSize: 12, color: "var(--c-low)" }}>
-            Enable a tile below to set a default.
-          </span>
-        )}
-      </div>
-      <div
-        style={{
-          padding: "10px 16px 12px 16px",
-          borderTop: "1px solid var(--c-brd)",
-          fontSize: 12,
-          color: "var(--c-low)",
-          lineHeight: 1.55,
-        }}
-      >
-        New chats open with this provider and its top-ranked model. Any
-        tile below — CLI agent or API provider — can be the default;
-        toggling a tile off removes it from the picker and from this list.
-      </div>
+          <ModelSelect value={modelId} options={models} onChange={onPickModel} />
+        </div>
+      ) : (
+        <span style={{ fontSize: 12, color: "var(--c-low)" }}>{emptyHint}</span>
+      )}
     </div>
   );
 }
@@ -221,6 +281,68 @@ function DefaultSelect({
             ))}
           </optgroup>
         )}
+      </select>
+      <span
+        style={{
+          position: "absolute",
+          right: 10,
+          top: "50%",
+          transform: "translateY(-65%) rotate(45deg)",
+          width: 6,
+          height: 6,
+          borderRight: "1.5px solid var(--c-low)",
+          borderBottom: "1.5px solid var(--c-low)",
+          pointerEvents: "none",
+        }}
+      />
+    </div>
+  );
+}
+
+// ── Model dropdown — the selected provider's models as a flat list ──
+
+function ModelSelect({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: PickerModel[];
+  onChange: (id: string) => void;
+}) {
+  const disabled = options.length === 0;
+  return (
+    <div style={{ position: "relative", minWidth: 170 }}>
+      <select
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        style={{
+          width: "100%",
+          boxSizing: "border-box",
+          appearance: "none",
+          background: "var(--c-srf)",
+          border: "1px solid var(--c-brd)",
+          borderRadius: 7,
+          padding: "7px 28px 7px 12px",
+          fontSize: 12.5,
+          color: "var(--c-high)",
+          fontFamily: "inherit",
+          outline: "none",
+          cursor: disabled ? "default" : "pointer",
+          opacity: disabled ? 0.5 : 1,
+          transition: "border-color 0.12s",
+        }}
+        onFocus={(e) => (e.currentTarget.style.borderColor = "var(--c-brd2)")}
+        onBlur={(e) => (e.currentTarget.style.borderColor = "var(--c-brd)")}
+      >
+        {disabled && <option value="">No models</option>}
+        {!disabled && value === "" && <option value="">Pick a model…</option>}
+        {options.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.label}
+          </option>
+        ))}
       </select>
       <span
         style={{

@@ -11,6 +11,8 @@ import { useChatStore, typeOutAssistantMessage } from "@/stores/chat-store";
  *  disappear the moment the surface flips to the real session. */
 export const COMPOSER_CHAT_KEY = "__composer__";
 import { createSession as apiCreateSession, cloneRepository } from "@/lib/api";
+import { providers } from "@/lib/providers-api";
+import { buildPickerGroups } from "@/lib/picker-groups";
 import { folderName } from "@/lib/utils";
 
 /** Compose-mode welcome line. Names the picked project so the greeting
@@ -782,10 +784,45 @@ export const useAppStore = create<AppState>((set, get) => ({
     let defaultFolder = "";
     try {
       const cfg = await window.electronAPI?.getConfig?.();
-      if (cfg?.defaultModel) defaultModel = cfg.defaultModel;
-      if (cfg?.defaultProvider) defaultProvider = cfg.defaultProvider as Session["tool"];
+      // Resolve the (provider, model) pair as a unit so they stay coherent.
+      // "Sessions Default" (Settings → Providers) wins for new manual
+      // sessions; it falls back to the Fleet default, then the hardcoded
+      // baseline. Reading them as a pair avoids mixing one section's provider
+      // with the other's (mismatched) model.
+      if (cfg?.sessionDefaultProvider) {
+        defaultProvider = cfg.sessionDefaultProvider as Session["tool"];
+        if (cfg.sessionDefaultModel) defaultModel = cfg.sessionDefaultModel;
+      } else if (cfg?.defaultProvider) {
+        defaultProvider = cfg.defaultProvider as Session["tool"];
+        if (cfg.defaultModel) defaultModel = cfg.defaultModel;
+      }
       if (cfg?.defaultFolder) defaultFolder = cfg.defaultFolder;
     } catch { /* keep fallbacks */ }
+    // Guarantee the (provider, model) maps to a CONNECTED provider — otherwise a
+    // fresh session opens on a tile the user can't dispatch (e.g. the hardcoded
+    // "claude" fallback when Claude isn't set up). If the resolved provider
+    // isn't connected, switch to the Fleet-default-or-first connected tile; then
+    // make sure the model belongs to it (the picker's list, CLI fallbacks
+    // included), else take that provider's first model.
+    try {
+      const tiles = (await providers.listCatalog()).tiles ?? [];
+      const connected = tiles.filter((t) => t.connected);
+      if (connected.length > 0) {
+        if (!connected.some((t) => t.spec.id === defaultProvider)) {
+          const pick = connected.find((t) => t.is_default) ?? connected[0];
+          if (pick) defaultProvider = pick.spec.id as Session["tool"];
+        }
+        const groups = buildPickerGroups(
+          tiles,
+          tiles.filter((t) => t.spec.kind === "cli" && t.connected).map((t) => t.spec.id),
+        );
+        const provModels = groups.find((g) => g.id === defaultProvider)?.models ?? [];
+        const firstModel = provModels[0];
+        if (firstModel && !provModels.some((m) => m.id === defaultModel)) {
+          defaultModel = firstModel.id;
+        }
+      }
+    } catch { /* keep cfg / hardcoded fallbacks */ }
     set({
       composer: {
         open: true,

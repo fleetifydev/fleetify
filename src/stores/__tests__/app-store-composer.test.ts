@@ -74,3 +74,47 @@ describe("openComposer — default workspace folder seeding", () => {
     expect(welcomeText()).toContain("Pick a folder above");
   });
 });
+
+describe("openComposer — provider/model default precedence", () => {
+  it("prefers the Sessions Default pair over the Fleet default", async () => {
+    Object.defineProperty(window, "electronAPI", {
+      configurable: true,
+      value: {
+        getConfig: async () => ({
+          defaultProvider: "claude",
+          defaultModel: "claude-opus-4-8",
+          sessionDefaultProvider: "openai",
+          sessionDefaultModel: "gpt-5.5",
+        }),
+      },
+    });
+    await useAppStore.getState().openComposer();
+    const c = useAppStore.getState().composer;
+    expect(c.tool).toBe("openai");
+    expect(c.modelName).toBe("gpt-5.5");
+  });
+
+  it("falls back to the Fleet default when no Sessions Default is set", async () => {
+    Object.defineProperty(window, "electronAPI", {
+      configurable: true,
+      value: {
+        getConfig: async () => ({ defaultProvider: "gemini", defaultModel: "gemini-3.1-pro-preview" }),
+      },
+    });
+    await useAppStore.getState().openComposer();
+    const c = useAppStore.getState().composer;
+    expect(c.tool).toBe("gemini");
+    expect(c.modelName).toBe("gemini-3.1-pro-preview");
+  });
+
+  it("uses the hardcoded baseline when neither default is configured", async () => {
+    Object.defineProperty(window, "electronAPI", {
+      configurable: true,
+      value: { getConfig: async () => ({}) },
+    });
+    await useAppStore.getState().openComposer();
+    const c = useAppStore.getState().composer;
+    expect(c.tool).toBe("claude");
+    expect(c.modelName).toBe("claude-sonnet-4-6");
+  });
+});

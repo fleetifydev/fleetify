@@ -11,9 +11,10 @@ import { CursorPlanCard } from "./cursor-plan-card";
 import { SessionToolbar } from "./session-toolbar";
 import { fetchMessages, fetchClaudeHistory, createSession, clearSessionMessages, updateSession as apiUpdateSession, stopSession, restartSession, analyzeFleetResponse } from "@/lib/api";
 import { isWindowsPlatform, folderName } from "@/lib/utils";
+import { useProvidersConfig } from "@/hooks/use-providers-config";
+import { buildPickerGroups } from "@/lib/picker-groups";
 import { FleetDecisionCard } from "./fleet-decision-card";
 import { useFleetStore, AUTO_CHAIN_CAP } from "@/stores/fleet-store";
-import { useSessionRouting } from "@/hooks/use-session-routing";
 import { LogoMark } from "@/components/brand/logo-mark";
 import { PanelLeft, PanelRight, Trash2, X, Check, GitCompareArrows, ListTodo, Terminal as TerminalIcon, Keyboard, Play, FolderOpen, Layers, Monitor, Github, Server, Box, ArrowRight, Copy, GitBranch, Sparkles, HelpCircle, Globe, Scissors } from "lucide-react";
 import type { ContentBlock, ChatMessage } from "@/types/chat";
@@ -232,15 +233,26 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     () => sessions.find((s) => s.id === staffSessionId),
     [sessions, staffSessionId],
   );
-  const isLocalOnlyActive = activeSession?.local_only === true;
 
-  // Routing pin for the active session — drives the small chip next to
-  // the breadcrumb that shows whether this turn is auto-routed or a
-  // manual pin. Composer mode and the Fleet hub don't have a real session
-  // id yet, so the hook resolves to null and the chip renders nothing.
-  const sessionRouting = useSessionRouting(
-    !composerOpen && activeSessionId ? activeSessionId : null,
-  );
+  // Connected-provider default for the model chip's FALLBACK. On first open
+  // (no staff session yet) — or any session/composer that hasn't set a tool —
+  // show a provider + model the user can actually dispatch: the Fleet default
+  // tile if it's connected, else the first connected tile + its first model,
+  // instead of a hardcoded "claude" that may not be set up.
+  const { tiles: providerTiles } = useProvidersConfig();
+  const startupDefault = useMemo(() => {
+    const pick =
+      providerTiles.find((t) => t.is_default && t.connected) ??
+      providerTiles.find((t) => t.connected);
+    const tool = (pick?.spec.id ?? "claude") as import("@/types/session").AgentTool;
+    const groups = buildPickerGroups(
+      providerTiles,
+      providerTiles.filter((t) => t.spec.kind === "cli" && t.connected).map((t) => t.spec.id),
+    );
+    const model = groups.find((g) => g.id === tool)?.models[0]?.id;
+    return { tool, model };
+  }, [providerTiles]);
+  const isLocalOnlyActive = activeSession?.local_only === true;
 
   const scrollRef = useRef<HTMLDivElement>(null);
   // Per-session scroll position memory — saved from actual DOM scrollTop.
@@ -814,12 +826,15 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
       try {
         const session = await createSession({
           title: "Staff Agent", project_path: "",
-          tool: "claude", permission_mode: "bypassPermissions",
-          // Pin the staff model so emit_session_start carries a real
-          // value into the telemetry pipeline instead of `null`. The
-          // staff coordinator is read-only routing; sonnet is more
-          // than enough and matches what the rest of the UI lists.
-          model_name: "claude-sonnet-4-6",
+          // Seed the Fleet hub session with the user's connected default
+          // (provider + model) so the model chip is a real, PERSISTED
+          // selection from first open — not just a render-time fallback.
+          // `startupDefault` resolves the Fleet-default-or-first-connected
+          // tile; it falls back to claude-sonnet when nothing's connected,
+          // which also keeps emit_session_start carrying a real value.
+          tool: startupDefault.tool,
+          permission_mode: "bypassPermissions",
+          model_name: startupDefault.model ?? "claude-sonnet-4-6",
         });
         addSession(session);
         setStaffSessionId(session.id);
@@ -940,7 +955,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     } catch (err) {
       console.error("Fleet send failed:", err);
     }
-  }, [addSession, setStaffSessionId]);
+  }, [addSession, setStaffSessionId, startupDefault]);
 
   const handleAgentSend = useCallback(async (text: string, attachments?: Attachment[]) => {
     if (text.trim() === "/new") { void beginDraft(); return; }
@@ -2015,13 +2030,13 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
           // composerVirtualSession in compose mode).
           model={
             isControlCenter
-              ? (staffSession?.model_name ?? undefined)
-              : (activeSession?.model_name ?? undefined)
+              ? (staffSession?.model_name ?? startupDefault.model)
+              : (activeSession?.model_name ?? startupDefault.model)
           }
           tool={
             isControlCenter
-              ? (staffSession?.tool ?? "claude")
-              : (activeSession?.tool ?? "claude")
+              ? (staffSession?.tool ?? startupDefault.tool)
+              : (activeSession?.tool ?? startupDefault.tool)
           }
           // Real context-fill + cumulative session stats — both
           // derived from the in-store messages array. The arc
@@ -2267,47 +2282,6 @@ function ChatContextMenu({ menuRef, x, y, text, onClose }: {
 /* ══════════════════════════════════════
    FLEET — control-center surface (dashboard or empty welcome)
 ══════════════════════════════════════ */
-
-/* ── SessionRoutingChip ───────────────────────────────────────────
-   Small chip rendered next to the breadcrumb. Surfaces the result of
-   the provider-router pin for the active session:
-     • source === "pinned" → "Manual · <model>"
-     • anything else       → "Auto-routed → <model>"
-   Hover tooltip carries the full rationale string from the decision
-   row. Returns null when there's no pin (fresh session, composer mode,
-   Fleet hub) so the header doesn't flash an empty button. */
-function SessionRoutingChip({
-  routing,
-}: {
-  routing: import("@/hooks/use-session-routing").SessionRoutingInfo | null;
-}) {
-  if (!routing) return null;
-  const isManual = routing.source === "pinned";
-  const label = isManual
-    ? `Manual · ${routing.model}`
-    : `Auto-routed → ${routing.model}`;
-  return (
-    <button
-      type="button"
-      title={routing.rationale || (isManual ? "Manually pinned" : "Auto-routed")}
-      style={{
-        fontSize: 11,
-        padding: "2px 7px",
-        borderRadius: 4,
-        background: "var(--c-srf2)",
-        color: "var(--c-dim)",
-        border: "1px solid var(--c-brd)",
-        cursor: "help",
-        fontFamily: "inherit",
-        marginLeft: 4,
-        whiteSpace: "nowrap",
-        flexShrink: 0,
-      }}
-    >
-      {label}
-    </button>
-  );
-}
 
 /* ── SessionBreadcrumb ────────────────────────────────────────────
    Top-left of the chat header:
