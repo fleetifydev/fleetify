@@ -710,22 +710,19 @@ function CodeBlock({ language, children }: { language: string; children: string 
   const inner = highlighted ? stripShikiWrapper(highlighted) : null;
 
   return (
-    <div style={{ margin: "12px 0", borderRadius: 9, overflow: "hidden", border: "1px solid var(--c-brd)" }}>
+    <div style={{ margin: "12px 0", borderRadius: 9, overflow: "hidden", border: "1px solid var(--c-brd)", background: "var(--code-bg)", fontFamily: "var(--font-mono)" }}>
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "7px 14px 0",
-        background: "var(--code-bg)",
+        padding: "8px 12px 2px",
+        fontSize: 10.5, color: "var(--c-dim)",
       }}>
-        <span style={{ fontSize: 11, color: "var(--c-dim)", fontFamily: "var(--font-mono)", textTransform: "lowercase" }}>
-          {language || "code"}
-        </span>
-        <CopyButton text={children} />
+        <span>{language || "code"}</span>
+        <CopyIconOnly text={children} />
       </div>
       <pre style={{
-        margin: 0, padding: "14px 16px",
-        background: "var(--code-bg)",
-        fontSize: 12.5, lineHeight: 1.7,
-        fontFamily: "var(--font-mono)", color: "var(--c-high)",
+        margin: 0, padding: "4px 12px 12px",
+        fontSize: 12.5, lineHeight: 1.6,
+        color: "var(--c-high)",
         overflowX: "auto", whiteSpace: "pre",
       }}>
         {inner
