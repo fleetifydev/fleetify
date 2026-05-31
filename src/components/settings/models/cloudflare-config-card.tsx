@@ -1,19 +1,20 @@
 /**
  * Settings → Models card for Cloudflare Workers AI. Unlike a plain cloud
- * provider, connecting needs (a) a broad API token AND (b) an account id.
- * Flow: "Open Cloudflare" deep-links to a token-template page with
- * permissions pre-filled → user creates + copies the token → pastes it →
- * we verify + discover the account(s) via the backend, then store the token
- * in the keychain and the account id in config.
+ * provider, connecting needs (a) a Workers AI API token AND (b) an account id.
+ * Flow: "Open Cloudflare" deep-links to the Workers AI dashboard page → user
+ * creates + copies the token AND copies their Account ID → pastes both → we
+ * verify the pair against the Workers AI catalog via the backend, then store
+ * the token in the keychain and the account id in config.
+ *
+ * Why the account id is typed by hand: the token this card mints is scoped to
+ * Workers AI only, which can't list accounts (`GET /accounts` returns []), so
+ * it can't be auto-discovered. Cloudflare's own REST API quickstart copies the
+ * Account ID by hand for the same reason.
  */
 import { useState } from "react";
 import { Eye, EyeOff, X, Loader2, ExternalLink } from "lucide-react";
 import { ProviderLogo } from "@/components/ui/provider-logo";
-import {
-  providers as providersApi,
-  type ProviderTile,
-  type CloudflareAccount,
-} from "@/lib/providers-api";
+import { providers as providersApi, type ProviderTile } from "@/lib/providers-api";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { ConnectionStatusPill } from "@/components/settings/shared/connection-status-pill";
 import { Toggle } from "@/components/settings/general/_primitives";
@@ -113,10 +114,10 @@ export function CloudflareConfigCard({
   const [expanded, setExpanded] = useState(!tile.has_key);
   const [editing, setEditing] = useState(false);
   const [token, setToken] = useState("");
+  const [accountId, setAccountId] = useState("");
   const [revealed, setRevealed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [accounts, setAccounts] = useState<CloudflareAccount[] | null>(null);
 
   const status = tile.connected
     ? ("connected" as const)
@@ -127,11 +128,11 @@ export function CloudflareConfigCard({
       ? "Disabled"
       : "Not connected";
 
-  const persist = async (tok: string, accountId: string) => {
+  const persist = async (tok: string, acct: string) => {
     await setKey(tile.spec.id, tok);
-    await setCloudflareAccountId(accountId);
+    await setCloudflareAccountId(acct);
     setToken("");
-    setAccounts(null);
+    setAccountId("");
     setEditing(false);
     onHealthChange();
   };
@@ -142,7 +143,7 @@ export function CloudflareConfigCard({
     // the next backend reload uses to disable dispatch for this provider.
     await setCloudflareAccountId("");
     setToken("");
-    setAccounts(null);
+    setAccountId("");
     setEditing(false);
     setError(null);
     onHealthChange();
@@ -150,27 +151,17 @@ export function CloudflareConfigCard({
 
   const onVerify = async () => {
     const t = token.trim();
-    if (!t) return;
+    const acct = accountId.trim();
+    if (!t || !acct) return;
     setBusy(true);
     setError(null);
-    const r = await providersApi.cloudflareVerify(t);
+    const r = await providersApi.cloudflareVerify(t, acct);
     setBusy(false);
     if (!r.valid) {
-      setError(r.error ?? "Token is not valid or active.");
+      setError(r.error ?? "Couldn't verify the token for this account.");
       return;
     }
-    if (r.accounts.length === 0) {
-      setError(
-        "Token has no account access — check Workers AI permissions / billing.",
-      );
-      return;
-    }
-    const only = r.accounts.length === 1 ? r.accounts[0] : undefined;
-    if (only) {
-      await persist(t, only.id);
-      return;
-    }
-    setAccounts(r.accounts);
+    await persist(t, acct);
   };
 
   return (
@@ -271,6 +262,7 @@ export function CloudflareConfigCard({
                       setEditing(true);
                       setError(null);
                       setToken("");
+                      setAccountId("");
                     }}
                     style={ghostBtn}
                   >
@@ -298,8 +290,8 @@ export function CloudflareConfigCard({
                 }}
               >
                 1. Open Workers AI, then <strong>Use REST API → Create a
-                Workers AI API Token</strong> → Create → Copy. 2. Paste it below
-                — we&apos;ll detect your account automatically.
+                Workers AI API Token</strong> → Create → Copy. 2. On the same
+                page, copy your <strong>Account ID</strong>. 3. Paste both below.
               </div>
               <button
                 onClick={() => openExternal(workersAiTokenUrl())}
@@ -309,83 +301,67 @@ export function CloudflareConfigCard({
                 <ExternalLink size={12} /> Open Cloudflare Workers AI
               </button>
 
-              {accounts ? (
-                <div>
-                  <div
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ position: "relative" }}>
+                  <input
+                    type={revealed ? "text" : "password"}
+                    value={token}
+                    placeholder="Paste your Cloudflare API token"
+                    onChange={(e) => setToken(e.target.value)}
+                    style={inputStyle}
+                  />
+                  <button
+                    onClick={() => setRevealed((v) => !v)}
+                    title={revealed ? "Hide" : "Reveal"}
                     style={{
-                      fontSize: 12,
-                      fontWeight: 500,
-                      color: "var(--c-high)",
-                      marginBottom: 6,
+                      position: "absolute",
+                      right: 6,
+                      top: "50%",
+                      transform: "translateY(-50%)",
+                      width: 24,
+                      height: 24,
+                      borderRadius: 5,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      background: "transparent",
+                      border: "none",
+                      cursor: "pointer",
+                      color: "var(--c-dim)",
                     }}
                   >
-                    Choose an account
-                  </div>
-                  {accounts.map((a) => (
-                    <button
-                      key={a.id}
-                      onClick={() => void persist(token.trim(), a.id)}
-                      style={{
-                        ...ghostBtn,
-                        width: "100%",
-                        justifyContent: "space-between",
-                        marginBottom: 6,
-                      }}
-                    >
-                      <span>{a.name}</span>
-                      <span style={{ color: "var(--c-dim)", fontFamily: "monospace" }}>
-                        {a.id}
-                      </span>
-                    </button>
-                  ))}
+                    {revealed ? <EyeOff size={13} /> : <Eye size={13} />}
+                  </button>
                 </div>
-              ) : (
+                <input
+                  type="text"
+                  value={accountId}
+                  placeholder="Account ID (32-char hex, from the same page)"
+                  onChange={(e) => setAccountId(e.target.value)}
+                  spellCheck={false}
+                  autoComplete="off"
+                  style={{ ...inputStyle, paddingRight: 10 }}
+                />
                 <div style={{ display: "flex", gap: 6 }}>
-                  <div style={{ flex: 1, position: "relative" }}>
-                    <input
-                      type={revealed ? "text" : "password"}
-                      value={token}
-                      placeholder="Paste your Cloudflare API token"
-                      onChange={(e) => setToken(e.target.value)}
-                      style={inputStyle}
-                    />
-                    <button
-                      onClick={() => setRevealed((v) => !v)}
-                      title={revealed ? "Hide" : "Reveal"}
-                      style={{
-                        position: "absolute",
-                        right: 6,
-                        top: "50%",
-                        transform: "translateY(-50%)",
-                        width: 24,
-                        height: 24,
-                        borderRadius: 5,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        background: "transparent",
-                        border: "none",
-                        cursor: "pointer",
-                        color: "var(--c-dim)",
-                      }}
-                    >
-                      {revealed ? <EyeOff size={13} /> : <Eye size={13} />}
-                    </button>
-                  </div>
                   <button
                     onClick={() => void onVerify()}
-                    disabled={!token.trim() || busy}
-                    style={{ ...primaryBtn, opacity: !token.trim() || busy ? 0.5 : 1 }}
+                    disabled={!token.trim() || !accountId.trim() || busy}
+                    style={{
+                      ...primaryBtn,
+                      opacity:
+                        !token.trim() || !accountId.trim() || busy ? 0.5 : 1,
+                    }}
                   >
-                    {busy ? <Loader2 size={12} className="spin" /> : null} Verify &amp; Connect
+                    {busy ? <Loader2 size={12} className="spin" /> : null} Verify
+                    &amp; Connect
                   </button>
                   {tile.connected && editing && (
                     <button
                       onClick={() => {
                         setEditing(false);
                         setToken("");
+                        setAccountId("");
                         setError(null);
-                        setAccounts(null);
                       }}
                       style={ghostBtn}
                     >
@@ -393,7 +369,7 @@ export function CloudflareConfigCard({
                     </button>
                   )}
                 </div>
-              )}
+              </div>
 
               {error && (
                 <div

@@ -145,14 +145,8 @@ export type ProvidersOllamaProbeResult =
 
 export type ProvidersMutationResult = { ok: boolean; error?: string };
 
-export interface CloudflareAccount {
-  id: string;
-  name: string;
-}
-
 export type CloudflareVerifyResult = {
   valid: boolean;
-  accounts: CloudflareAccount[];
   error?: string | null;
 };
 
@@ -244,24 +238,29 @@ export const providers = {
   setOllamaBaseUrl: (baseUrl: string) => api().setOllamaBaseUrl(baseUrl),
   setCloudflareAccountId: (accountId: string) => api().setCloudflareAccountId(accountId),
   /**
-   * Verify a Cloudflare API token and discover accounts. Calls the backend
-   * `/api/providers/cloudflare/verify` via `apiFetch`, consistent with the
-   * other `/api/providers/*` calls (fetchHealth, apiScanProviders). apiFetch
-   * attaches the Fleet session bearer when present — harmless here (the
-   * user-supplied Cloudflare token rides in the JSON body) and keeps the
-   * call working if `/api` ever gains a blanket auth layer.
+   * Verify a Cloudflare API token + account id for Workers AI access. Calls
+   * the backend `/api/providers/cloudflare/verify` via `apiFetch`, consistent
+   * with the other `/api/providers/*` calls (fetchHealth, apiScanProviders).
+   * The account id can't be auto-discovered — a Workers-AI-scoped token can't
+   * list accounts — so the user-supplied id rides in the JSON body alongside
+   * the token. apiFetch attaches the Fleet session bearer when present
+   * (harmless here) and keeps the call working if `/api` ever gains a blanket
+   * auth layer.
    */
-  cloudflareVerify: async (token: string): Promise<CloudflareVerifyResult> => {
+  cloudflareVerify: async (
+    token: string,
+    accountId: string,
+  ): Promise<CloudflareVerifyResult> => {
     try {
       const res = await apiFetch("/api/providers/cloudflare/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token }),
+        body: JSON.stringify({ token, account_id: accountId }),
       });
-      if (!res.ok) return { valid: false, accounts: [], error: `http ${res.status}` };
+      if (!res.ok) return { valid: false, error: `http ${res.status}` };
       return (await res.json()) as CloudflareVerifyResult;
     } catch (e) {
-      return { valid: false, accounts: [], error: String(e) };
+      return { valid: false, error: String(e) };
     }
   },
   onChanged: (cb: (payload: unknown) => void) => {

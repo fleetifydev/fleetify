@@ -818,24 +818,39 @@ async fn check_antigravity_sdk_cli() -> Value {
     json!({ "installed": true, "authenticated": authed, "path": py })
 }
 
-/// Result of verifying a Cloudflare API token and listing its accounts.
+/// Result of verifying a Cloudflare Workers AI token against an account.
 pub(crate) struct CfVerify {
     pub valid: bool,
-    pub accounts: Vec<Value>,
     pub error: Option<String>,
 }
 
-/// Verify a Cloudflare token (`/user/tokens/verify`) and, if active, list
-/// its accounts (`/accounts`). `base` is the API root
-/// (`https://api.cloudflare.com` in prod; a wiremock URI in tests) so the
-/// network calls are injectable.
-pub(crate) async fn cf_verify_and_accounts(base: &str, token: &str) -> CfVerify {
+/// Verify a Cloudflare token can run Workers AI on a specific account.
+///
+/// The token this card mints is scoped to *Workers AI only*, which means it
+/// lacks the account-listing permission: `GET /accounts` returns an empty
+/// list, so the account can't be auto-discovered. Instead the user copies
+/// their Account ID by hand (Cloudflare's own REST API quickstart does the
+/// same) and we validate the pair against the native Workers AI model catalog
+/// (`GET /accounts/{id}/ai/models/search`). A 200/`success` means the token
+/// has Workers AI read on that account; a wrong id or a token missing the
+/// permission both 403 with code 10000 ("Authentication error"). No inference
+/// is run, so verifying is free.
+///
+/// `base` is the API root (`https://api.cloudflare.com` in prod; a wiremock
+/// URI in tests) so the network calls are injectable.
+pub(crate) async fn cf_verify_workers_ai(base: &str, token: &str, account_id: &str) -> CfVerify {
     let token = token.trim();
+    let account_id = account_id.trim();
     if token.is_empty() {
         return CfVerify {
             valid: false,
-            accounts: vec![],
             error: Some("empty token".into()),
+        };
+    }
+    if account_id.is_empty() {
+        return CfVerify {
+            valid: false,
+            error: Some("Account ID is required.".into()),
         };
     }
     let client = match reqwest::Client::builder()
@@ -846,13 +861,13 @@ pub(crate) async fn cf_verify_and_accounts(base: &str, token: &str) -> CfVerify 
         Err(e) => {
             return CfVerify {
                 valid: false,
-                accounts: vec![],
                 error: Some(e.to_string()),
             }
         }
     };
     let base = base.trim_end_matches('/');
-    // 1) verify
+    // 1) Is the token itself active? Surfaces a clear "bad token" message,
+    //    distinct from the "bad account / missing permission" case below.
     let active = match client
         .get(format!("{base}/client/v4/user/tokens/verify"))
         .bearer_auth(token)
@@ -869,7 +884,6 @@ pub(crate) async fn cf_verify_and_accounts(base: &str, token: &str) -> CfVerify 
         Err(e) => {
             return CfVerify {
                 valid: false,
-                accounts: vec![],
                 error: Some(format!("verify failed: {e}")),
             }
         }
@@ -877,59 +891,62 @@ pub(crate) async fn cf_verify_and_accounts(base: &str, token: &str) -> CfVerify 
     if !active {
         return CfVerify {
             valid: false,
-            accounts: vec![],
-            error: Some("token not active".into()),
+            error: Some("Token is not valid or active.".into()),
         };
     }
-    // 2) accounts
-    let accounts = match client
-        .get(format!("{base}/client/v4/accounts"))
+    // 2) Can the token read Workers AI on this account? Listing the model
+    //    catalog is cheap (no inference). A non-success response means a wrong
+    //    Account ID or a token without the Workers AI permission.
+    match client
+        .get(format!(
+            "{base}/client/v4/accounts/{account_id}/ai/models/search?per_page=1"
+        ))
         .bearer_auth(token)
         .send()
         .await
     {
         Ok(r) => {
+            let http_ok = r.status().is_success();
             let v: Value = r.json().await.unwrap_or_else(|_| json!({}));
-            v.get("result")
-                .and_then(|a| a.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| {
-                            let id = x.get("id").and_then(|i| i.as_str())?;
-                            let name = x.get("name").and_then(|n| n.as_str()).unwrap_or(id);
-                            Some(json!({ "id": id, "name": name }))
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
-        }
-        Err(e) => {
-            return CfVerify {
-                valid: true,
-                accounts: vec![],
-                error: Some(format!("accounts failed: {e}")),
+            let success = http_ok && v.get("success").and_then(|s| s.as_bool()).unwrap_or(false);
+            if success {
+                CfVerify {
+                    valid: true,
+                    error: None,
+                }
+            } else {
+                CfVerify {
+                    valid: false,
+                    error: Some(
+                        "Token can't access Workers AI on this account — check the \
+                         Account ID and that the token has Workers AI permissions."
+                            .into(),
+                    ),
+                }
             }
         }
-    };
-    CfVerify {
-        valid: true,
-        accounts,
-        error: None,
+        Err(e) => CfVerify {
+            valid: false,
+            error: Some(format!("Workers AI check failed: {e}")),
+        },
     }
 }
 
 #[derive(serde::Deserialize)]
 struct CloudflareVerifyBody {
     token: String,
+    #[serde(default)]
+    account_id: String,
 }
 
-/// `POST /providers/cloudflare/verify` — body `{ "token": "…" }`. Local-only
-/// (renderer hits 127.0.0.1); the token is verified, never persisted here
-/// (the renderer stores it via `providers_set_key` after picking an account).
-/// Returns `{ valid, accounts: [{id,name}], error? }`.
+/// `POST /providers/cloudflare/verify` — body `{ "token": "…", "account_id":
+/// "…" }`. Local-only (renderer hits 127.0.0.1); the token is verified against
+/// the Workers AI catalog for the given account, never persisted here (the
+/// renderer stores it via `providers_set_key` + `set_cloudflare_account_id`
+/// after a successful verify). Returns `{ valid, error? }`.
 async fn cloudflare_verify(Json(body): Json<CloudflareVerifyBody>) -> Json<Value> {
-    let r = cf_verify_and_accounts("https://api.cloudflare.com", &body.token).await;
-    Json(json!({ "valid": r.valid, "accounts": r.accounts, "error": r.error }))
+    let r = cf_verify_workers_ai("https://api.cloudflare.com", &body.token, &body.account_id).await;
+    Json(json!({ "valid": r.valid, "error": r.error }))
 }
 
 /// Probe an Ollama daemon. Base URL is parameterized so callers can
@@ -1504,7 +1521,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cf_verify_active_token_with_one_account() {
+    async fn cf_verify_workers_ai_active_token_and_account_is_valid() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
         let server = MockServer::start().await;
@@ -1515,23 +1532,25 @@ mod tests {
             })))
             .mount(&server)
             .await;
+        // Native Workers AI model catalog — 200/success proves the token has
+        // Workers AI read on this account (no inference is run). Workers AI
+        // tokens can't list accounts, so the account id is supplied by hand
+        // and validated here instead of via `GET /accounts`.
         Mock::given(method("GET"))
-            .and(path("/client/v4/accounts"))
+            .and(path("/client/v4/accounts/acc_123/ai/models/search"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "result": [ { "id": "acc_123", "name": "My Account" } ], "success": true
+                "result": [ { "id": "m1", "name": "@cf/meta/llama" } ], "success": true
             })))
             .mount(&server)
             .await;
 
-        let out = super::cf_verify_and_accounts(&server.uri(), "tok").await;
+        let out = super::cf_verify_workers_ai(&server.uri(), "tok", "acc_123").await;
         assert!(out.valid);
-        assert_eq!(out.accounts.len(), 1);
-        assert_eq!(out.accounts[0]["id"], "acc_123");
-        assert_eq!(out.accounts[0]["name"], "My Account");
+        assert!(out.error.is_none());
     }
 
     #[tokio::test]
-    async fn cf_verify_inactive_token_is_invalid() {
+    async fn cf_verify_workers_ai_inactive_token_is_invalid() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
         let server = MockServer::start().await;
@@ -1542,9 +1561,43 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let out = super::cf_verify_and_accounts(&server.uri(), "tok").await;
+        let out = super::cf_verify_workers_ai(&server.uri(), "tok", "acc_123").await;
         assert!(!out.valid);
-        assert!(out.accounts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cf_verify_workers_ai_token_without_account_access_is_invalid() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/client/v4/user/tokens/verify"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": { "status": "active" }, "success": true
+            })))
+            .mount(&server)
+            .await;
+        // A wrong account id (or a token missing the Workers AI permission)
+        // both 403 with code 10000 "Authentication error".
+        Mock::given(method("GET"))
+            .and(path("/client/v4/accounts/acc_123/ai/models/search"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+                "result": null, "success": false,
+                "errors": [ { "code": 10000, "message": "Authentication error" } ]
+            })))
+            .mount(&server)
+            .await;
+        let out = super::cf_verify_workers_ai(&server.uri(), "tok", "acc_123").await;
+        assert!(!out.valid);
+        assert!(out.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn cf_verify_workers_ai_requires_account_id() {
+        // A blank account id is rejected before any network call is made.
+        let out = super::cf_verify_workers_ai("http://127.0.0.1:1", "tok", "   ").await;
+        assert!(!out.valid);
+        assert!(out.error.is_some());
     }
 
     #[test]

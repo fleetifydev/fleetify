@@ -58,7 +58,7 @@ vi.mock("@/lib/providers-api", async () => {
   };
 });
 
-const { openExternal, setKey, deleteKey, setEnabled, setCloudflareAccountId, cloudflareVerify } =
+const { openExternal, setKey, deleteKey, setCloudflareAccountId, cloudflareVerify } =
   mocks;
 
 // Stub window.electronAPI.openExternal before each test
@@ -67,6 +67,17 @@ beforeEach(() => {
   // @ts-expect-error — stubbing the electronAPI on the happy-dom window
   window.electronAPI = { openExternal };
 });
+
+// Workers AI tokens can't list accounts, so connecting takes a token AND a
+// hand-entered Account ID. Fill both inputs.
+function fillConnectForm(token: string, accountId: string) {
+  fireEvent.change(screen.getByPlaceholderText(/paste your cloudflare/i), {
+    target: { value: token },
+  });
+  fireEvent.change(screen.getByPlaceholderText(/account id/i), {
+    target: { value: accountId },
+  });
+}
 
 describe("CloudflareConfigCard", () => {
   it("opens Cloudflare's official Workers AI token page on Connect", () => {
@@ -79,67 +90,46 @@ describe("CloudflareConfigCard", () => {
     expect(url).toContain("dash.cloudflare.com/?to=/:account/ai/workers-ai");
   });
 
-  it("verifies a pasted token, stores token + single account", async () => {
-    cloudflareVerify.mockResolvedValue({
-      valid: true,
-      accounts: [{ id: "acc_1", name: "Acme" }],
-    });
+  it("verifies a pasted token + account id and stores both", async () => {
+    cloudflareVerify.mockResolvedValue({ valid: true });
     render(<CloudflareConfigCard tile={tile} onHealthChange={() => {}} />);
-    fireEvent.change(
-      screen.getByPlaceholderText(/paste your cloudflare/i),
-      { target: { value: "tok-xyz" } },
-    );
+    fillConnectForm("tok-xyz", "acc-123");
     fireEvent.click(screen.getByRole("button", { name: /verify & connect/i }));
     await waitFor(() =>
-      expect(setKey).toHaveBeenCalledWith("cloudflare-workers-ai", "tok-xyz"),
+      expect(cloudflareVerify).toHaveBeenCalledWith("tok-xyz", "acc-123"),
     );
-    expect(setCloudflareAccountId).toHaveBeenCalledWith("acc_1");
+    expect(setKey).toHaveBeenCalledWith("cloudflare-workers-ai", "tok-xyz");
+    expect(setCloudflareAccountId).toHaveBeenCalledWith("acc-123");
   });
 
-  it("shows an error and stores nothing for an invalid token", async () => {
+  it("shows the error and stores nothing when verify fails", async () => {
     cloudflareVerify.mockResolvedValue({
       valid: false,
-      accounts: [],
-      error: "token not active",
+      error:
+        "Token can't access Workers AI on this account — check the Account ID.",
     });
     render(<CloudflareConfigCard tile={tile} onHealthChange={() => {}} />);
-    fireEvent.change(
-      screen.getByPlaceholderText(/paste your cloudflare/i),
-      { target: { value: "bad" } },
-    );
+    fillConnectForm("tok", "wrong-acct");
     fireEvent.click(screen.getByRole("button", { name: /verify & connect/i }));
     await waitFor(() =>
-      expect(screen.getByText(/token not active/i)).toBeInTheDocument(),
+      expect(screen.getByText(/can't access workers ai/i)).toBeInTheDocument(),
     );
     expect(setKey).not.toHaveBeenCalled();
     expect(setCloudflareAccountId).not.toHaveBeenCalled();
   });
 
-  it("shows an account picker for >1 account and persists the chosen one", async () => {
-    cloudflareVerify.mockResolvedValue({
-      valid: true,
-      accounts: [
-        { id: "acc_a", name: "Acme" },
-        { id: "acc_b", name: "Beta Co" },
-      ],
-    });
+  it("keeps Verify disabled until both token and account id are present", () => {
     render(<CloudflareConfigCard tile={tile} onHealthChange={() => {}} />);
-    fireEvent.change(
-      screen.getByPlaceholderText(/paste your cloudflare/i),
-      { target: { value: "tok-multi" } },
-    );
-    fireEvent.click(screen.getByRole("button", { name: /verify & connect/i }));
-    // Picker appears; nothing persisted until a choice is made.
-    await waitFor(() =>
-      expect(screen.getByText(/choose an account/i)).toBeInTheDocument(),
-    );
-    expect(setKey).not.toHaveBeenCalled();
-    // Choose the second account.
-    fireEvent.click(screen.getByRole("button", { name: /beta co/i }));
-    await waitFor(() =>
-      expect(setKey).toHaveBeenCalledWith("cloudflare-workers-ai", "tok-multi"),
-    );
-    expect(setCloudflareAccountId).toHaveBeenCalledWith("acc_b");
+    const verify = screen.getByRole("button", { name: /verify & connect/i });
+    expect(verify).toBeDisabled();
+    fireEvent.change(screen.getByPlaceholderText(/paste your cloudflare/i), {
+      target: { value: "tok-only" },
+    });
+    expect(verify).toBeDisabled(); // account id still missing
+    fireEvent.change(screen.getByPlaceholderText(/account id/i), {
+      target: { value: "acc-1" },
+    });
+    expect(verify).not.toBeDisabled();
   });
 
   it("shows a saved view with Disconnect for a connected tile", async () => {
