@@ -43,6 +43,7 @@ export interface ProvidersConfigState {
   setDefault: (id: string) => Promise<void>;
   setEnabledModels: (id: string, models: string[]) => Promise<void>;
   setOllamaBaseUrl: (baseUrl: string) => Promise<void>;
+  setCloudflareAccountId: (accountId: string) => Promise<void>;
   /** Test does NOT mutate the store — caller renders the result inline
    *  in the Settings tile (status pill). */
   testConnection: (id: string, key: string) => Promise<ProvidersTestResult>;
@@ -95,6 +96,10 @@ const useStore = create<InternalState>((set, get) => ({
     await providers.setOllamaBaseUrl(baseUrl);
     await get().refresh();
   },
+  setCloudflareAccountId: async (accountId: string) => {
+    await providers.setCloudflareAccountId(accountId);
+    await get().refresh();
+  },
   testConnection: (id: string, key: string) => providers.testConnection(id, key),
 }));
 
@@ -108,6 +113,7 @@ export function useProvidersConfig(): ProvidersConfigState {
   const setDefault = useStore((s) => s.setDefault);
   const setEnabledModels = useStore((s) => s.setEnabledModels);
   const setOllamaBaseUrl = useStore((s) => s.setOllamaBaseUrl);
+  const setCloudflareAccountId = useStore((s) => s.setCloudflareAccountId);
   const testConnection = useStore((s) => s.testConnection);
 
   useEffect(() => {
@@ -134,6 +140,7 @@ export function useProvidersConfig(): ProvidersConfigState {
     setDefault,
     setEnabledModels,
     setOllamaBaseUrl,
+    setCloudflareAccountId,
     testConnection,
   };
 }

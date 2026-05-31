@@ -36,10 +36,37 @@ pub fn len() -> usize {
     PROVIDER_KEYS.read().map(|g| g.len()).unwrap_or(0)
 }
 
+/// Cloudflare Workers AI account id, pushed from the Tauri shell over the
+/// same `/api/internal/providers/reload` path as the API keys (see
+/// `providers_setup::reload_backend`). The chat dispatch layer substitutes
+/// it into the account-scoped Workers AI base URL. Held here — not read from
+/// a config file — so it works identically in dev and the packaged app
+/// (where no `FLEETIFY_HOME` is set). `None` ⇒ not connected.
+static CLOUDFLARE_ACCOUNT_ID: LazyLock<RwLock<Option<String>>> =
+    LazyLock::new(|| RwLock::new(None));
+
+/// Replace the cached Cloudflare account id. Empty / whitespace-only input
+/// normalizes to `None` (treated as "not connected") so a cleared config
+/// disables dispatch on the next reload.
+pub fn set_cloudflare_account_id(id: Option<String>) {
+    let normalized = id.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    if let Ok(mut g) = CLOUDFLARE_ACCOUNT_ID.write() {
+        *g = normalized;
+    }
+}
+
+/// The current Cloudflare account id, or `None` when not connected.
+pub fn get_cloudflare_account_id() -> Option<String> {
+    CLOUDFLARE_ACCOUNT_ID.read().ok().and_then(|g| g.clone())
+}
+
 #[cfg(test)]
 pub fn _reset_for_tests() {
     if let Ok(mut g) = PROVIDER_KEYS.write() {
         g.clear();
+    }
+    if let Ok(mut g) = CLOUDFLARE_ACCOUNT_ID.write() {
+        *g = None;
     }
 }
 
@@ -71,5 +98,20 @@ mod tests {
         // openai is gone — set replaces, doesn't merge.
         assert!(get_key("openai").is_none());
         assert_eq!(get_key("deepseek").as_deref(), Some("k2"));
+    }
+
+    #[test]
+    fn cloudflare_account_id_round_trip() {
+        _reset_for_tests();
+        assert!(get_cloudflare_account_id().is_none());
+        set_cloudflare_account_id(Some("acc_1".into()));
+        assert_eq!(get_cloudflare_account_id().as_deref(), Some("acc_1"));
+        // Whitespace / empty normalizes to None (disconnected).
+        set_cloudflare_account_id(Some("   ".into()));
+        assert!(get_cloudflare_account_id().is_none());
+        // Explicit clear.
+        set_cloudflare_account_id(Some("acc_2".into()));
+        set_cloudflare_account_id(None);
+        assert!(get_cloudflare_account_id().is_none());
     }
 }

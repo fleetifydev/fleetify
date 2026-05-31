@@ -87,6 +87,29 @@ mod tests {
     }
 
     #[test]
+    fn cloudflare_workers_ai_is_registered_as_api_provider() {
+        use super::super::catalog::{AuthSpec, ProviderKind};
+        let spec = super::find_provider("cloudflare-workers-ai")
+            .expect("cloudflare-workers-ai should be registered");
+        assert_eq!(spec.kind, ProviderKind::Api);
+        assert!(matches!(spec.auth, AuthSpec::Bearer { .. }));
+        // Base URL is an account-scoped template resolved at dispatch.
+        assert!(
+            spec.default_base_url.contains("{account_id}")
+                && spec.default_base_url.ends_with("/ai/v1"),
+            "got {}",
+            spec.default_base_url
+        );
+        // Curated models are all Workers AI `@cf/...` ids.
+        assert!(!spec.default_models.is_empty());
+        assert!(spec.default_models.iter().all(|m| m.id.starts_with("@cf/")));
+        // Shows up in the API-provider list (Settings → Models), not agents.
+        assert!(super::list_api_providers()
+            .iter()
+            .any(|p| p.id == "cloudflare-workers-ai"));
+    }
+
+    #[test]
     fn find_agent_returns_github_copilot() {
         use super::super::catalog::AuthSpec;
         let spec =

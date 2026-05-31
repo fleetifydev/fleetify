@@ -66,7 +66,17 @@ async fn probe_one(provider_id: &str) -> HealthSnapshot {
         };
     };
     let base = spec.default_base_url.trim_end_matches('/');
-    let url = format!("{}/models", base);
+    // Workers AI's OpenAI-compat surface exposes no `/models`, and its base
+    // URL is account-templated (`…/accounts/{account_id}/ai/v1`) — probing
+    // `{base}/models` would fire an authenticated request at a malformed URL
+    // (literal `{account_id}`). Probe the account-independent token-verify
+    // endpoint instead: a genuine health signal (active token → 200/Ok;
+    // revoked → 401/AUTH) with no template substitution needed.
+    let url = if provider_id == "cloudflare-workers-ai" {
+        "https://api.cloudflare.com/client/v4/user/tokens/verify".to_string()
+    } else {
+        format!("{}/models", base)
+    };
     let client = match reqwest::Client::builder().timeout(HEALTH_TIMEOUT).build() {
         Ok(c) => c,
         Err(e) => {

@@ -145,6 +145,17 @@ export type ProvidersOllamaProbeResult =
 
 export type ProvidersMutationResult = { ok: boolean; error?: string };
 
+export interface CloudflareAccount {
+  id: string;
+  name: string;
+}
+
+export type CloudflareVerifyResult = {
+  valid: boolean;
+  accounts: CloudflareAccount[];
+  error?: string | null;
+};
+
 interface ProvidersAPI {
   listCatalog: () => Promise<ProvidersListResult>;
   fetchHealth: () => Promise<ProvidersHealthResult>;
@@ -157,6 +168,7 @@ interface ProvidersAPI {
   ollamaProbe: (baseUrl?: string | null) => Promise<ProvidersOllamaProbeResult>;
   setEnabledModels: (id: string, models: string[]) => Promise<ProvidersMutationResult>;
   setOllamaBaseUrl: (baseUrl: string) => Promise<ProvidersMutationResult>;
+  setCloudflareAccountId: (accountId: string) => Promise<ProvidersMutationResult>;
   onChanged?: (cb: (payload: unknown) => void) => () => void;
 }
 
@@ -195,6 +207,7 @@ function api(): ProvidersAPI {
       }),
       setEnabledModels: async () => ({ ok: false, error: "electron unavailable" }),
       setOllamaBaseUrl: async () => ({ ok: false, error: "electron unavailable" }),
+      setCloudflareAccountId: async () => ({ ok: false, error: "electron unavailable" }),
     }
   );
 }
@@ -229,6 +242,28 @@ export const providers = {
   ollamaProbe: (baseUrl?: string | null) => api().ollamaProbe(baseUrl ?? null),
   setEnabledModels: (id: string, models: string[]) => api().setEnabledModels(id, models),
   setOllamaBaseUrl: (baseUrl: string) => api().setOllamaBaseUrl(baseUrl),
+  setCloudflareAccountId: (accountId: string) => api().setCloudflareAccountId(accountId),
+  /**
+   * Verify a Cloudflare API token and discover accounts. Calls the backend
+   * `/api/providers/cloudflare/verify` via `apiFetch`, consistent with the
+   * other `/api/providers/*` calls (fetchHealth, apiScanProviders). apiFetch
+   * attaches the Fleet session bearer when present — harmless here (the
+   * user-supplied Cloudflare token rides in the JSON body) and keeps the
+   * call working if `/api` ever gains a blanket auth layer.
+   */
+  cloudflareVerify: async (token: string): Promise<CloudflareVerifyResult> => {
+    try {
+      const res = await apiFetch("/api/providers/cloudflare/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+      if (!res.ok) return { valid: false, accounts: [], error: `http ${res.status}` };
+      return (await res.json()) as CloudflareVerifyResult;
+    } catch (e) {
+      return { valid: false, accounts: [], error: String(e) };
+    }
+  },
   onChanged: (cb: (payload: unknown) => void) => {
     const fn = api().onChanged;
     return fn ? fn(cb) : () => {};

@@ -8,7 +8,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use axum::extract::{Path, Query, State};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -115,6 +115,7 @@ pub fn router() -> Router<AppState> {
         .route("/agents/scan", get(scan_agents_cached))
         .route("/agents/{id}/models", get(list_agent_models))
         .route("/providers/{id}/models", get(list_provider_models))
+        .route("/providers/cloudflare/verify", post(cloudflare_verify))
 }
 
 /// Static catalog that drives Settings → Models tiles, Settings → Agents
@@ -817,6 +818,120 @@ async fn check_antigravity_sdk_cli() -> Value {
     json!({ "installed": true, "authenticated": authed, "path": py })
 }
 
+/// Result of verifying a Cloudflare API token and listing its accounts.
+pub(crate) struct CfVerify {
+    pub valid: bool,
+    pub accounts: Vec<Value>,
+    pub error: Option<String>,
+}
+
+/// Verify a Cloudflare token (`/user/tokens/verify`) and, if active, list
+/// its accounts (`/accounts`). `base` is the API root
+/// (`https://api.cloudflare.com` in prod; a wiremock URI in tests) so the
+/// network calls are injectable.
+pub(crate) async fn cf_verify_and_accounts(base: &str, token: &str) -> CfVerify {
+    let token = token.trim();
+    if token.is_empty() {
+        return CfVerify {
+            valid: false,
+            accounts: vec![],
+            error: Some("empty token".into()),
+        };
+    }
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return CfVerify {
+                valid: false,
+                accounts: vec![],
+                error: Some(e.to_string()),
+            }
+        }
+    };
+    let base = base.trim_end_matches('/');
+    // 1) verify
+    let active = match client
+        .get(format!("{base}/client/v4/user/tokens/verify"))
+        .bearer_auth(token)
+        .send()
+        .await
+    {
+        Ok(r) => {
+            let v: Value = r.json().await.unwrap_or_else(|_| json!({}));
+            v.get("result")
+                .and_then(|x| x.get("status"))
+                .and_then(|s| s.as_str())
+                == Some("active")
+        }
+        Err(e) => {
+            return CfVerify {
+                valid: false,
+                accounts: vec![],
+                error: Some(format!("verify failed: {e}")),
+            }
+        }
+    };
+    if !active {
+        return CfVerify {
+            valid: false,
+            accounts: vec![],
+            error: Some("token not active".into()),
+        };
+    }
+    // 2) accounts
+    let accounts = match client
+        .get(format!("{base}/client/v4/accounts"))
+        .bearer_auth(token)
+        .send()
+        .await
+    {
+        Ok(r) => {
+            let v: Value = r.json().await.unwrap_or_else(|_| json!({}));
+            v.get("result")
+                .and_then(|a| a.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| {
+                            let id = x.get("id").and_then(|i| i.as_str())?;
+                            let name = x.get("name").and_then(|n| n.as_str()).unwrap_or(id);
+                            Some(json!({ "id": id, "name": name }))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        }
+        Err(e) => {
+            return CfVerify {
+                valid: true,
+                accounts: vec![],
+                error: Some(format!("accounts failed: {e}")),
+            }
+        }
+    };
+    CfVerify {
+        valid: true,
+        accounts,
+        error: None,
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct CloudflareVerifyBody {
+    token: String,
+}
+
+/// `POST /providers/cloudflare/verify` — body `{ "token": "…" }`. Local-only
+/// (renderer hits 127.0.0.1); the token is verified, never persisted here
+/// (the renderer stores it via `providers_set_key` after picking an account).
+/// Returns `{ valid, accounts: [{id,name}], error? }`.
+async fn cloudflare_verify(Json(body): Json<CloudflareVerifyBody>) -> Json<Value> {
+    let r = cf_verify_and_accounts("https://api.cloudflare.com", &body.token).await;
+    Json(json!({ "valid": r.valid, "accounts": r.accounts, "error": r.error }))
+}
+
 /// Probe an Ollama daemon. Base URL is parameterized so callers can
 /// point at a LAN box (`http://192.168.1.50:11434`) when the user has
 /// configured `ProvidersConfig.ollama_base_url`. Defaults to localhost
@@ -1386,6 +1501,50 @@ mod tests {
         assert!(parse_openrouter_models(&json!({ "data": "nope" })).is_empty());
         // An entry without an id is skipped.
         assert!(parse_openrouter_models(&json!({ "data": [{ "name": "x" }] })).is_empty());
+    }
+
+    #[tokio::test]
+    async fn cf_verify_active_token_with_one_account() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/client/v4/user/tokens/verify"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": { "id": "t1", "status": "active" }, "success": true
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/client/v4/accounts"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": [ { "id": "acc_123", "name": "My Account" } ], "success": true
+            })))
+            .mount(&server)
+            .await;
+
+        let out = super::cf_verify_and_accounts(&server.uri(), "tok").await;
+        assert!(out.valid);
+        assert_eq!(out.accounts.len(), 1);
+        assert_eq!(out.accounts[0]["id"], "acc_123");
+        assert_eq!(out.accounts[0]["name"], "My Account");
+    }
+
+    #[tokio::test]
+    async fn cf_verify_inactive_token_is_invalid() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/client/v4/user/tokens/verify"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": { "status": "disabled" }, "success": true
+            })))
+            .mount(&server)
+            .await;
+        let out = super::cf_verify_and_accounts(&server.uri(), "tok").await;
+        assert!(!out.valid);
+        assert!(out.accounts.is_empty());
     }
 
     #[test]

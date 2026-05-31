@@ -76,6 +76,12 @@ async fn providers_reload(
                 "providers reload: cache hydrated"
             );
         }
+        // Cloudflare Workers AI account id (non-secret) rides the same reload
+        // as the keys. Present-but-null ⇒ clear (disconnected); an absent
+        // field leaves the cached value untouched.
+        if let Some(cf) = v.get("cloudflare_account_id") {
+            crate::providers::keys::set_cloudflare_account_id(cf.as_str().map(String::from));
+        }
     }
     Ok(Json(
         json!({ "ok": true, "cached_keys": crate::providers::keys::len() }),

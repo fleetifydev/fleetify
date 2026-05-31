@@ -118,6 +118,13 @@ pub struct ProvidersConfig {
     /// user's first picks here; Settings reads + edits.
     #[serde(default)]
     pub enabled_agents: Vec<String>,
+    /// Cloudflare account id for the `cloudflare-workers-ai` provider.
+    /// Substituted into the account-scoped Workers AI base URL at dispatch
+    /// (backend `cloudflare_base_url_from_cfg`). `None` ⇒ not connected; the
+    /// renderer shows the "Connect" card. Not a secret (the token lives in
+    /// the OS keychain), so it round-trips in `fleet.config.json`.
+    #[serde(default)]
+    pub cloudflare_account_id: Option<String>,
 }
 
 /// Read the `"providers"` section from a config Value. Defaults when
@@ -352,6 +359,23 @@ mod tests {
         );
         assert!(telemetry_from(&cfg).posthog_enabled);
         assert_eq!(telemetry_from(&cfg).posthog_enabled_at, Some(42));
+    }
+
+    #[test]
+    fn providers_round_trip_cloudflare_account_id() {
+        let mut cfg = json!({});
+        let p = ProvidersConfig {
+            cloudflare_account_id: Some("acc_123".into()),
+            ..ProvidersConfig::default()
+        };
+        providers_set(&mut cfg, &p);
+        let back = providers_from(&cfg);
+        assert_eq!(back.cloudflare_account_id.as_deref(), Some("acc_123"));
+    }
+
+    #[test]
+    fn providers_default_cloudflare_account_id_is_none() {
+        assert!(ProvidersConfig::default().cloudflare_account_id.is_none());
     }
 
     #[test]

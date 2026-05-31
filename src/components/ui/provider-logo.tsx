@@ -33,6 +33,7 @@ import grokIcon from "./agent-icons/grok.svg";
 import grokDarkIcon from "./agent-icons/grok-dark.png";
 import nvidiaIcon from "./agent-icons/nvidia.svg";
 import ollamaIcon from "./agent-icons/ollama.svg";
+import cloudflareIcon from "./agent-icons/cloudflare.svg";
 
 /** Render a bundled brand SVG as an <img>. objectFit keeps a non-square
  *  mark (e.g. OpenCode's 4:5) from stretching into the square slot. */
@@ -386,6 +387,7 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
     case "cursor":     return <CursorLogo size={size} />;
     case "gemini":     return <ImgIcon src={geminiIcon} size={size} label="Gemini" />;
     case "ollama":     return <MaskIcon src={ollamaIcon} size={size} label="Ollama" />;
+    case "cloudflare-workers-ai": return <ImgIcon src={cloudflareIcon} size={size} label="Cloudflare Workers AI" />;
     case "kimi":       return <ImgIcon src={kimiIcon} size={size} label="Kimi" />;
     case "kimi-api":   return <ImgIcon src={kimiIcon} size={size} label="Kimi" />;
     case "openai":     return <OpenAILogo size={size} />;

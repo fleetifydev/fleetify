@@ -2313,7 +2313,15 @@ pub async fn providers_test_connection(id: String, key: String) -> serde_json::V
             return serde_json::json!({ "ok": false, "code": "NETWORK", "error": e.to_string() })
         }
     };
-    let url = format!("{}/models", spec.default_base_url.trim_end_matches('/'));
+    // Workers AI has no OpenAI-compat `/models` and an account-templated base
+    // URL; probe the account-independent token-verify endpoint instead so the
+    // Test/health path doesn't fire an authenticated request at a malformed
+    // URL (mirrors providers_health::probe_one).
+    let url = if id == "cloudflare-workers-ai" {
+        "https://api.cloudflare.com/client/v4/user/tokens/verify".to_string()
+    } else {
+        format!("{}/models", spec.default_base_url.trim_end_matches('/'))
+    };
     let started = std::time::Instant::now();
     let result = client
         .get(&url)
@@ -2462,6 +2470,30 @@ pub async fn providers_set_ollama_base_url(
     let mut providers = config::providers_from(&cfg);
     let trimmed = base_url.trim().to_string();
     providers.ollama_base_url = if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    };
+    config::providers_set(&mut cfg, &providers);
+    if let Err(e) = config::save_config_to(&dir, &cfg) {
+        return serde_json::json!({ "ok": false, "code": "CONFIG", "error": e.to_string() });
+    }
+    crate::shell::providers_setup::reload_backend(&app).await;
+    serde_json::json!({ "ok": true })
+}
+
+#[tauri::command]
+pub async fn providers_set_cloudflare_account_id(
+    app: tauri::AppHandle,
+    account_id: String,
+) -> serde_json::Value {
+    let Ok(dir) = app.path().app_data_dir() else {
+        return serde_json::json!({ "ok": false, "error": "no app data dir" });
+    };
+    let mut cfg = config::load_config_from(&dir);
+    let mut providers = config::providers_from(&cfg);
+    let trimmed = account_id.trim().to_string();
+    providers.cloudflare_account_id = if trimmed.is_empty() {
         None
     } else {
         Some(trimmed)

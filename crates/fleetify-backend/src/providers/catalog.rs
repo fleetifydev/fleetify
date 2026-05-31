@@ -157,8 +157,10 @@ pub struct ProviderSpec {
     pub display_name: &'static str,
     pub kind: ProviderKind,
     /// Default API endpoint. Overridable per-install for `LocalHttp`
-    /// (Ollama remote) via `ProvidersConfig::ollama_base_url`; static for
-    /// every cloud provider.
+    /// (Ollama remote) via `ProvidersConfig::ollama_base_url`. For most
+    /// cloud providers this is a static URL; for Cloudflare Workers AI it
+    /// is a template (`{account_id}` substituted at dispatch via
+    /// `cloudflare_base_url_from_cfg` in `routers/chat.rs`).
     pub default_base_url: &'static str,
     pub auth: AuthSpec,
     /// Curated model list shown in the chat composer's picker. Each entry
@@ -1063,6 +1065,50 @@ const OPENROUTER_MODELS: &[ModelSpec] = &[
     },
 ];
 
+// Curated Workers AI text-generation models. Ids verified against
+// developers.cloudflare.com/workers-ai/models/ (Workers AI uses the
+// `@cf/<vendor>/<model>` id form on both /ai/run and the OpenAI-compat
+// /ai/v1 endpoint). Embeddings/image models are intentionally excluded
+// from the chat picker.
+const CLOUDFLARE_WORKERS_AI_MODELS: &[ModelSpec] = &[
+    ModelSpec {
+        id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        label: "Llama 3.3 70B (fast)",
+        context_window: Some("24K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "@cf/meta/llama-3.1-8b-instruct",
+        label: "Llama 3.1 8B",
+        context_window: Some("8K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "@cf/openai/gpt-oss-120b",
+        label: "GPT-OSS 120B",
+        context_window: Some("128K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "@cf/openai/gpt-oss-20b",
+        label: "GPT-OSS 20B",
+        context_window: Some("128K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+];
+
 // ─── Catalog ─────────────────────────────────────────────────────────────
 
 pub static CATALOG: &[ProviderSpec] = &[
@@ -1243,6 +1289,33 @@ pub static CATALOG: &[ProviderSpec] = &[
         // Curated fallback only — the live picker discovers the full
         // catalog via routers::providers::list_provider_models.
         default_models: OPENROUTER_MODELS,
+        extras: ProviderExtras {
+            supports_streaming: true,
+            ..ProviderExtras::DEFAULT
+        },
+        bin: "",
+        auth_indicators: &[],
+        install_hint: "",
+        install_hints: None,
+        login_hint: "",
+    },
+    ProviderSpec {
+        // Cloudflare Workers AI via its OpenAI-compatible endpoint
+        // (`/accounts/{account_id}/ai/v1`). The base URL is a TEMPLATE —
+        // `{account_id}` is substituted at dispatch from
+        // `ProvidersConfig.cloudflare_account_id` (see routers/chat.rs
+        // `cloudflare_base_url_from_cfg`, added in a later task), mirroring
+        // the Ollama base-URL override. Auth is a guided broad API token
+        // (Workers AI + AI Gateway + Workers Scripts), stored in the OS
+        // keychain.
+        id: "cloudflare-workers-ai",
+        display_name: "Cloudflare Workers AI",
+        kind: ProviderKind::Api,
+        default_base_url: "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
+        auth: AuthSpec::Bearer {
+            env_hint: Some("CLOUDFLARE_API_TOKEN"),
+        },
+        default_models: CLOUDFLARE_WORKERS_AI_MODELS,
         extras: ProviderExtras {
             supports_streaming: true,
             ..ProviderExtras::DEFAULT
@@ -1493,12 +1566,13 @@ mod tests {
             .iter()
             .filter(|p| matches!(p.kind, ProviderKind::Cli))
             .count();
-        // 9 cloud HTTP providers (OpenAI, Anthropic, DeepSeek, Grok, NVIDIA NIM,
-        // Kimi, Gemini API, Perplexity, OpenRouter) + 1 local (ollama) + 9 CLI
-        // agents (Claude, Codex, Gemini, Kimi, OpenCode, GitHub Copilot, Cursor,
-        // Antigravity CLI, Antigravity SDK). If you intentionally added/removed a
-        // provider, update these constants with the catalog.
-        assert_eq!(api, 9, "expected 9 Api providers, got {api}");
+        // 10 cloud HTTP providers (OpenAI, Anthropic, DeepSeek, Grok, NVIDIA NIM,
+        // Kimi, Gemini API, Perplexity, OpenRouter, Cloudflare Workers AI) + 1
+        // local (ollama) + 9 CLI agents (Claude, Codex, Gemini, Kimi, OpenCode,
+        // GitHub Copilot, Cursor, Antigravity CLI, Antigravity SDK). If you
+        // intentionally added/removed a provider, update these constants with
+        // the catalog.
+        assert_eq!(api, 10, "expected 10 Api providers, got {api}");
         assert_eq!(local, 1, "expected 1 LocalHttp provider, got {local}");
         assert_eq!(cli, 9, "expected 9 Cli agents, got {cli}");
     }
@@ -2109,6 +2183,11 @@ mod tests {
             "google/gemini-3-flash-preview",
             "xai/grok-4.3",
             "xai/grok-4.20-reasoning",
+            // ── Cloudflare Workers AI (developers.cloudflare.com/workers-ai/models/ 2026-05-31) ──
+            "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+            "@cf/meta/llama-3.1-8b-instruct",
+            "@cf/openai/gpt-oss-120b",
+            "@cf/openai/gpt-oss-20b",
         ];
         let catalog_ids: Vec<&str> = CATALOG
             .iter()

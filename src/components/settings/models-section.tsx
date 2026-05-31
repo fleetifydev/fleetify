@@ -19,6 +19,7 @@ import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { useProviderHealth } from "@/hooks/use-provider-health";
 import { ProviderCard } from "./models/provider-card";
 import { OllamaConfigCard } from "./models/ollama-config-card";
+import { CloudflareConfigCard } from "./models/cloudflare-config-card";
 
 const sectionHeader: React.CSSProperties = {
   fontSize: 10.5,
@@ -47,7 +48,10 @@ export function ModelsSection() {
     );
   }
 
-  const apiTiles = tiles.filter((t) => t.spec.kind === "api");
+  const cfTile = tiles.find((t) => t.spec.id === "cloudflare-workers-ai");
+  const apiTiles = tiles.filter(
+    (t) => t.spec.kind === "api" && t.spec.id !== "cloudflare-workers-ai",
+  );
   const localTiles = tiles.filter((t) => t.spec.kind === "local_http");
 
   return (
@@ -61,6 +65,10 @@ export function ModelsSection() {
           onHealthChange={health.refresh}
         />
       ))}
+
+      {cfTile && (
+        <CloudflareConfigCard tile={cfTile} onHealthChange={health.refresh} />
+      )}
 
       <div style={{ ...sectionHeader, marginTop: 22 }}>Local Models</div>
       {localTiles.map((t) => (

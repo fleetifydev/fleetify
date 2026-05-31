@@ -32,6 +32,23 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/ws/sessions", get(ws_entry))
 }
 
+/// Build the account-scoped Workers AI OpenAI-compat base URL.
+fn cloudflare_base_url_for_account(account_id: &str) -> String {
+    format!("https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1")
+}
+
+/// Resolve the Workers AI base URL from the Cloudflare account id the Tauri
+/// shell pushed into the backend cache (`providers_setup::reload_backend` →
+/// `/api/internal/providers/reload`, the same path the API keys ride).
+/// Returns `None` when not connected, so callers surface a "connect
+/// Cloudflare" error instead of firing a request at an unsubstituted
+/// `{account_id}`. Sourced from the cache (not a config file) so it behaves
+/// identically in dev and the packaged app, where `FLEETIFY_HOME` is unset.
+fn cloudflare_base_url() -> Option<String> {
+    crate::providers::keys::get_cloudflare_account_id()
+        .map(|id| cloudflare_base_url_for_account(&id))
+}
+
 #[derive(Deserialize)]
 struct TokenQ {
     #[serde(default)]
@@ -1089,8 +1106,16 @@ async fn run_send_flow(
         // provider-agnostic. The legacy `OpenAIBridge` (bridges/openai.rs)
         // is no longer dispatched; it stays in the tree for its existing
         // mockito-based unit test and will be retired in a follow-up.
-        "openai" | "anthropic" | "deepseek" | "grok" | "nvidia-nim" | "kimi-api" | "gemini-api"
-        | "ollama" | "openrouter" => {
+        "openai"
+        | "anthropic"
+        | "deepseek"
+        | "grok"
+        | "nvidia-nim"
+        | "kimi-api"
+        | "gemini-api"
+        | "ollama"
+        | "openrouter"
+        | "cloudflare-workers-ai" => {
             let pid = session.tool.as_str();
             let Some(spec) = crate::providers::find_provider(pid) else {
                 send_json(
@@ -1152,11 +1177,29 @@ async fn run_send_flow(
                         return;
                     }
                 };
+                let mut tool_ctx = crate::bridges::BridgeContext::default();
+                if pid == "cloudflare-workers-ai" {
+                    match cloudflare_base_url() {
+                        Some(u) => tool_ctx.base_url_override = Some(u),
+                        None => {
+                            send_json(
+                                &sink,
+                                json!({
+                                    "type":"error","session_id":sid,
+                                    "error":"Cloudflare not connected — add your account in Settings → Models"
+                                }),
+                            )
+                            .await;
+                            let _ = st.sm.update_status(&st.auth.pool, &sid, "idle").await;
+                            return;
+                        }
+                    }
+                }
                 let adapter =
                     match crate::bridges::openai_compat_tools::OpenAICompatToolAdapter::from_spec(
                         spec,
                         model.clone(),
-                        &crate::bridges::BridgeContext::default(),
+                        &tool_ctx,
                     ) {
                         Ok(a) => a,
                         Err(e) => {
@@ -1210,6 +1253,23 @@ async fn run_send_flow(
                             .and_then(|u| u.as_str())
                         {
                             b.base_url = url.to_string();
+                        }
+                    }
+                }
+                if pid == "cloudflare-workers-ai" {
+                    match cloudflare_base_url() {
+                        Some(u) => b.base_url = u,
+                        None => {
+                            send_json(
+                                &sink,
+                                json!({
+                                    "type":"error","session_id":sid,
+                                    "error":"Cloudflare not connected — add your account in Settings → Models"
+                                }),
+                            )
+                            .await;
+                            let _ = st.sm.update_status(&st.auth.pool, &sid, "idle").await;
+                            return;
                         }
                     }
                 }
@@ -2471,8 +2531,16 @@ async fn run_dispatched_task(
             }
             AnyBridge::Claude(std::sync::Arc::new(b))
         }
-        "openai" | "anthropic" | "deepseek" | "grok" | "nvidia-nim" | "kimi-api" | "gemini-api"
-        | "ollama" | "openrouter" => {
+        "openai"
+        | "anthropic"
+        | "deepseek"
+        | "grok"
+        | "nvidia-nim"
+        | "kimi-api"
+        | "gemini-api"
+        | "ollama"
+        | "openrouter"
+        | "cloudflare-workers-ai" => {
             let pid = target.tool.as_str();
             let Some(spec) = crate::providers::find_provider(pid) else {
                 let _ = sm.update_status(&pool, &target_id, "idle").await;
@@ -2484,13 +2552,21 @@ async fn run_dispatched_task(
                     .map(|m| m.id.to_string())
                     .unwrap_or_default()
             });
-            AnyBridge::OpenAICompat(std::sync::Arc::new(
-                crate::bridges::openai_compat::OpenAICompatBridge::from_spec(
-                    spec,
-                    target_id.clone(),
-                    model,
-                ),
-            ))
+            let mut b = crate::bridges::openai_compat::OpenAICompatBridge::from_spec(
+                spec,
+                target_id.clone(),
+                model,
+            );
+            if pid == "cloudflare-workers-ai" {
+                match cloudflare_base_url() {
+                    Some(u) => b.base_url = u,
+                    None => {
+                        let _ = sm.update_status(&pool, &target_id, "idle").await;
+                        return;
+                    }
+                }
+            }
+            AnyBridge::OpenAICompat(std::sync::Arc::new(b))
         }
         "perplexity" => {
             let model = target
@@ -3281,5 +3357,18 @@ mod tests {
         insert_minimal_session(&pool, "tgt-empty", "Frontend Agent").await;
         let block = inject_agent_context(&pool, "tgt-empty", 5).await;
         assert_eq!(block, "[No messages found for agent tgt-empty]");
+    }
+}
+
+#[cfg(test)]
+mod cloudflare_tests {
+    use super::cloudflare_base_url_for_account;
+
+    #[test]
+    fn builds_account_scoped_base_url() {
+        assert_eq!(
+            cloudflare_base_url_for_account("abc123"),
+            "https://api.cloudflare.com/client/v4/accounts/abc123/ai/v1"
+        );
     }
 }

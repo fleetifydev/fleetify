@@ -8,11 +8,11 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use tauri::webview::WebviewWindowBuilder;
-use tauri::{Manager, WebviewUrl};
-#[cfg(target_os = "macos")]
-use tauri::TitleBarStyle;
 #[cfg(target_os = "macos")]
 use tauri::LogicalPosition;
+#[cfg(target_os = "macos")]
+use tauri::TitleBarStyle;
+use tauri::{Manager, WebviewUrl};
 
 /// Boot shim reconstructing `window.electronAPI` / `window.fleetify`.
 const PRELOAD: &str = include_str!("preload.js");
@@ -159,6 +159,7 @@ pub fn run() {
             shell::ipc::providers_ollama_probe,
             shell::ipc::providers_set_enabled_models,
             shell::ipc::providers_set_ollama_base_url,
+            shell::ipc::providers_set_cloudflare_account_id,
             shell::ipc::git_generate_commit_message,
             shell::ipc::git_generate_pr_summary,
             shell::ipc::git_review_diff,
@@ -248,10 +249,8 @@ pub fn run() {
             // applied to .icns bundle icons, not to runtime-set NSImages.
             #[cfg(target_os = "macos")]
             {
-                let icon = tauri::image::Image::from_bytes(include_bytes!(
-                    "../icons/icon.png"
-                ))
-                .expect("dock icon bytes valid");
+                let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
+                    .expect("dock icon bytes valid");
                 main_window.set_icon(icon).ok();
             }
 

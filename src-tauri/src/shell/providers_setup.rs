@@ -34,9 +34,11 @@ pub async fn reload_backend(app: &tauri::AppHandle) {
     // Skip silently when the user isn't signed in (the cache stays
     // empty, bridges fall back to env-var hints from the catalog).
     let mut keys: HashMap<String, String> = HashMap::new();
+    let mut cloudflare_account_id: Option<String> = None;
     if let Ok(dir) = app.path().app_data_dir() {
         let cfg = config::load_config_from(&dir);
         let providers_cfg = config::providers_from(&cfg);
+        cloudflare_account_id = providers_cfg.cloudflare_account_id.clone();
         if let Some(uid) = auth::get_user_id().await {
             for (provider_id, connected) in providers_cfg.connected.iter() {
                 if !connected {
@@ -67,7 +69,7 @@ pub async fn reload_backend(app: &tauri::AppHandle) {
     }
 
     let url = format!("http://127.0.0.1:{port}/api/internal/providers/reload");
-    let payload = json!({ "keys": keys });
+    let payload = json!({ "keys": keys, "cloudflare_account_id": cloudflare_account_id });
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()

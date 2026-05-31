@@ -275,6 +275,7 @@ document.addEventListener("mousedown", function (e) {
         setOllamaBaseUrl: function (baseUrl) {
           return invoke("providers_set_ollama_base_url", { baseUrl: String(baseUrl || "") });
         },
+        setCloudflareAccountId: function (accountId) { return invoke("providers_set_cloudflare_account_id", { accountId: String(accountId || "") }); },
         // Fires when any providers_* mutation lands. Renderer's
         // useProvidersConfig store listens so cross-tab edits (e.g.
         // Settings → Models change while the chat composer is open)
