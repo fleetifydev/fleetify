@@ -132,7 +132,7 @@ export function XtermShell({ cwd, shell }: Props) {
         if (!res || !res.ok) {
           const err = (res as { error?: string } | undefined)?.error ?? "unknown error";
           term.write(`\x1b[31m[error] ptySpawn failed: ${err}\x1b[0m\r\n`);
-          term.write("\x1b[2mTip: rebuild node-pty for your Electron version (npx electron-rebuild -f -w node-pty) and hard-restart Electron.\x1b[0m\r\n");
+          term.write("\x1b[2mTip: hard-restart the app. If the issue persists, check that the Tauri pty_spawn command is registered.\x1b[0m\r\n");
           return;
         }
         ptyId = res.id;

@@ -1511,7 +1511,7 @@ pub async fn pty_spawn(
     env: Option<HashMap<String, String>>,
 ) -> serde_json::Value {
     match pty::spawn(app, shell, cwd, env) {
-        Ok(id) => serde_json::json!({ "id": id }),
+        Ok(id) => serde_json::json!({ "ok": true, "id": id }),
         Err(e) => serde_json::json!({ "error": e }),
     }
 }
