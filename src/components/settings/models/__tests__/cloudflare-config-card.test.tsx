@@ -69,14 +69,14 @@ beforeEach(() => {
 });
 
 describe("CloudflareConfigCard", () => {
-  it("opens the token-template URL with pre-filled permissions on Connect", () => {
+  it("opens Cloudflare's official Workers AI token page on Connect", () => {
     render(<CloudflareConfigCard tile={tile} onHealthChange={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: /open cloudflare/i }));
     expect(openExternal).toHaveBeenCalledTimes(1);
     const url = openExternal.mock.calls[0][0] as string;
-    expect(url).toContain("dash.cloudflare.com/profile/api-tokens");
-    expect(url).toContain("permissionGroupKeys=");
-    expect(decodeURIComponent(url)).toContain("workers_ai");
+    // First-party Workers AI page → "Use REST API → Create a Workers AI API
+    // Token" (the only path that grants Workers AI permissions).
+    expect(url).toContain("dash.cloudflare.com/?to=/:account/ai/workers-ai");
   });
 
   it("verifies a pasted token, stores token + single account", async () => {

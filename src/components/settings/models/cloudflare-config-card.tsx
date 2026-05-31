@@ -18,21 +18,18 @@ import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { ConnectionStatusPill } from "@/components/settings/shared/connection-status-pill";
 import { Toggle } from "@/components/settings/general/_primitives";
 
-// Pre-filled token-template permissions (covers Workers AI + AI Gateway +
-// Workers Scripts for phases 1-3). Slugs follow Cloudflare's snake_case
-// convention — verify via GET /user/tokens/permission_groups.
-const PERMISSION_GROUPS = [
-  { key: "workers_ai", type: "read" },
-  { key: "workers_ai", type: "edit" },
-  { key: "ai_gateway", type: "read" },
-  { key: "ai_gateway", type: "edit" },
-  { key: "workers_scripts", type: "edit" },
-  { key: "account_settings", type: "read" },
-];
-
-function templateUrl(): string {
-  const keys = encodeURIComponent(JSON.stringify(PERMISSION_GROUPS));
-  return `https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=${keys}&accountId=*&zoneId=all&name=${encodeURIComponent("Fleetify Cloudflare")}`;
+// Cloudflare's deep-link to the Workers AI dashboard page. From there the
+// user picks "Use REST API" → "Create a Workers AI API Token" — Cloudflare's
+// own template, which grants the required Workers AI Read + Edit permissions.
+//
+// We deliberately do NOT build a custom `permissionGroupKeys` template URL:
+// Cloudflare's template short-key system has no key for Workers AI, so a
+// guessed key (`workers_ai`) is silently dropped, leaving a token that
+// verifies + lists accounts but is 401'd ("Authentication error", code 10000)
+// by the `/ai/v1` endpoint. The first-party template is the only reliable
+// way to mint a token with Workers AI permissions.
+function workersAiTokenUrl(): string {
+  return "https://dash.cloudflare.com/?to=/:account/ai/workers-ai";
 }
 
 function openExternal(url: string) {
@@ -300,15 +297,16 @@ export function CloudflareConfigCard({
                   lineHeight: 1.55,
                 }}
               >
-                1. Open Cloudflare and create the pre-filled token. 2. Copy it. 3.
-                Paste it below — we&apos;ll detect your account automatically.
+                1. Open Workers AI, then <strong>Use REST API → Create a
+                Workers AI API Token</strong> → Create → Copy. 2. Paste it below
+                — we&apos;ll detect your account automatically.
               </div>
               <button
-                onClick={() => openExternal(templateUrl())}
+                onClick={() => openExternal(workersAiTokenUrl())}
                 style={{ ...ghostBtn, marginBottom: 12 }}
-                aria-label="Open Cloudflare token page"
+                aria-label="Open Cloudflare Workers AI"
               >
-                <ExternalLink size={12} /> Open Cloudflare (create token)
+                <ExternalLink size={12} /> Open Cloudflare Workers AI
               </button>
 
               {accounts ? (
