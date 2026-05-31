@@ -380,7 +380,7 @@ export function SessionToolbar({
   useEffect(() => {
     if (openMenu !== "model") return; // discover lazily, only when the picker opens
     let cancelled = false;
-    for (const agentId of ["opencode", "cursor"]) {
+    for (const agentId of ["opencode", "cursor", "github-copilot"]) {
       void fetchAgentModels(agentId, projectPath ?? "").then((models) => {
         if (cancelled || models.length === 0) return; // empty → keep static fallback
         setDiscoveredModels((prev) => ({

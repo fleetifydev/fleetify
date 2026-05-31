@@ -105,6 +105,7 @@ pub fn str_to_agent_kind(s: &str) -> Option<crate::services::routing::traits::Ag
         "gemini" => Some(AgentKind::Gemini),
         "codex" => Some(AgentKind::Codex),
         "kimi" => Some(AgentKind::Kimi),
+        "github-copilot" => Some(AgentKind::GitHubCopilot),
         _ => None,
     }
 }

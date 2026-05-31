@@ -933,7 +933,10 @@ async fn run_send_flow(
     // supports, then swap session.tool/model to the routed pair so the existing
     // bridge match below builds the right bridge. A pinned (non-auto) session
     // keeps its single-agent candidate set and is left untouched.
-    let is_auto = session.model_name.as_deref() == Some("auto") || session.tool == "auto";
+    // Fleet's cross-provider Auto is keyed on the TOOL sentinel only. A manual
+    // agent can legitimately have model_name == "auto" (e.g. GitHub Copilot's
+    // native `auto` model), which must NOT trigger Fleet's Not Diamond routing.
+    let is_auto = session.tool == "auto";
     // For Auto, build the candidate pool from the user's ACTIVE providers so
     // Not Diamond only ever picks a model Fleet can execute (no "no API key for
     // provider X" when ND routes to something unconnected). CLI authed-state

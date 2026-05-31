@@ -13,7 +13,7 @@ import {
   ScanEye, Plug, RefreshCw, FolderTree,
 } from "lucide-react";
 import { truncateMid, folderName } from "@/lib/utils";
-import { searchProjectFiles, apiFetch, type FileSearchEntry, updateSession as apiUpdateSession, fetchSessionDetail, enhancePrompt } from "@/lib/api";
+import { searchProjectFiles, apiFetch, type FileSearchEntry, updateSession as apiUpdateSession, fetchSessionDetail, enhancePrompt, fetchAgentModels } from "@/lib/api";
 import { useFleetStore, type FleetMode } from "@/stores/fleet-store";
 import { LogoMark } from "@/components/brand/logo-mark";
 import { wsManager } from "@/services/ws-manager";
@@ -37,7 +37,7 @@ import { RoutingChip } from "@/components/settings/routers/routing-chip";
 import { commandsForContext, type SlashCmdDef } from "@/lib/slash-commands";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { UnifiedModelPicker, type Effort as UMEffort } from "./unified-model-picker";
-import { buildPickerGroups, resolveDispatchTool, resolveModelChip } from "@/lib/picker-groups";
+import { buildPickerGroups, resolveDispatchTool, resolveModelChip, type PickerModel } from "@/lib/picker-groups";
 
 /* ─────────────────── constants ─────────────────── */
 
@@ -3154,25 +3154,29 @@ export function ChatInput({
   // current model to the exact same provider icon + label as the toolbar chip.
   const { tiles: providerTiles } = useProvidersConfig();
   const sessionDynModels = useChatStore((s) => (sessionId ? s.dynamicModels[sessionId] : undefined));
+  // Live CLI-agent model catalogs (OpenCode / Cursor / GitHub Copilot) fetched
+  // over HTTP when the picker opens (see effect below). Mirrors SessionToolbar
+  // so the composer shows the real per-plan models immediately, not only after
+  // the first message's bridge `available_models_update`.
+  const [discoveredModels, setDiscoveredModels] = useState<Record<string, PickerModel[]>>({});
   const pickerGroups = useMemo(() => {
     const enabledAgentIds = providerTiles
       .filter((t) => t.spec.kind === "cli" && t.connected)
       .map((t) => t.spec.id);
-    // Live models (OpenCode / Cursor / GitHub Copilot) arrive over the bridge
-    // keyed under the session's own tool — mirror SessionToolbar's merge so
-    // the same model id resolves to the same group in both places.
-    const dyn =
-      sessionDynModels && sessionDynModels.models.length > 0
-        ? {
-            [tool ?? "claude"]: sessionDynModels.models.map((m) => ({
-              id: m.id,
-              label: m.label,
-              supports_effort: false,
-            })),
-          }
-        : undefined;
+    // Merge the HTTP-discovered catalog (keyed by agent id) with the live bridge
+    // models (keyed under the session's own tool) — same precedence as
+    // SessionToolbar, so a model id resolves to the same group in both places.
+    const merged: Record<string, PickerModel[]> = { ...discoveredModels };
+    if (sessionDynModels && sessionDynModels.models.length > 0) {
+      merged[tool ?? "claude"] = sessionDynModels.models.map((m) => ({
+        id: m.id,
+        label: m.label,
+        supports_effort: false,
+      }));
+    }
+    const dyn = Object.keys(merged).length > 0 ? merged : undefined;
     return buildPickerGroups(providerTiles, enabledAgentIds, dyn);
-  }, [providerTiles, sessionDynModels, tool]);
+  }, [providerTiles, sessionDynModels, tool, discoveredModels]);
 
   const fleetMode = useFleetStore(s => sessionId ? s.getSession(sessionId).mode : "manual");
   const fleetPaused = useFleetStore(s => sessionId ? s.getSession(sessionId).status === "paused" : false);
@@ -3196,6 +3200,28 @@ export function ChatInput({
   const [pickedMentions, setPickedMentions] = useState<Set<string>>(() => new Set());
 
   const [openDrop, setOpenDrop] = useState<"model" | "fleet-mode" | null>(null);
+
+  // Discover live CLI-agent model catalogs when the model picker opens — same
+  // lazy fetch SessionToolbar runs. Without this the composer picker only sees
+  // models after the first message (the bridge `available_models_update`), so a
+  // fresh session showed the static catalog (e.g. wrong GitHub Copilot models).
+  // Empty results keep the static fallback; the backend caches per agent (TTL).
+  useEffect(() => {
+    if (openDrop !== "model") return;
+    let cancelled = false;
+    for (const agentId of ["opencode", "cursor", "github-copilot"]) {
+      void fetchAgentModels(agentId, projectPath ?? "").then((models) => {
+        if (cancelled || models.length === 0) return; // empty → keep static fallback
+        setDiscoveredModels((prev) => ({
+          ...prev,
+          [agentId]: models.map((m) => ({ id: m.id, label: m.label, supports_effort: false })),
+        }));
+      });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [openDrop, projectPath]);
 
   // Controlled-or-local effort
   const [effortLocal, setEffortLocal] = useState<Effort>("high");

@@ -277,6 +277,8 @@ describe("resolveModelChip", () => {
     expect(groups[0]?.label).toBe("Auto");
     // The sentinel resolves to a neutral face, never attributed to a provider.
     expect(resolveModelChip(groups, "auto", "auto")).toEqual({ dispatchTool: "auto", label: "Auto" });
-    expect(resolveModelChip([], "claude", "auto").label).toBe("Auto"); // sentinel wins over tool
+    // model === "auto" under a REAL tool (e.g. GitHub Copilot's native `auto`)
+    // is NOT Fleet's cross-provider Auto — only tool === "auto" is the sentinel.
+    expect(resolveModelChip(groups, "github-copilot", "auto").dispatchTool).toBe("github-copilot");
   });
 });

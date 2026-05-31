@@ -225,6 +225,9 @@ async fn discover_agent_models(id: &str, cwd: &str) -> ModelList {
             .await
             .map(|ms| ms.into_iter().map(|m| (m.id, m.name)).collect())
             .unwrap_or_default(),
+        "github-copilot" => crate::bridges::github_copilot::list_models(cwd)
+            .await
+            .unwrap_or_default(),
         _ => Vec::new(),
     }
 }

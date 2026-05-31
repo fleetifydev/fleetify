@@ -45,13 +45,35 @@ pub fn resolve_copilot_bin() -> Option<String> {
             }
         }
         if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            candidates.push(
-                std::path::Path::new(&local)
-                    .join("Microsoft")
-                    .join("WinGet")
-                    .join("Links")
-                    .join("copilot.exe"),
-            );
+            let winget = std::path::Path::new(&local)
+                .join("Microsoft")
+                .join("WinGet");
+            // winget's shim dir (present only when it links the package).
+            candidates.push(winget.join("Links").join("copilot.exe"));
+            // `winget install GitHub.Copilot` drops the real exe under
+            // WinGet\Packages\GitHub.Copilot_<hash>\copilot.exe and does NOT
+            // always create a Links shim (verified on a live install), so scan
+            // the package dir directly. The `<hash>` suffix varies, hence the
+            // prefix match + a one-level descent (winget sometimes nests by
+            // version).
+            if let Ok(entries) = std::fs::read_dir(winget.join("Packages")) {
+                for entry in entries.flatten() {
+                    if !entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("GitHub.Copilot")
+                    {
+                        continue;
+                    }
+                    let dir = entry.path();
+                    candidates.push(dir.join("copilot.exe"));
+                    if let Ok(sub) = std::fs::read_dir(&dir) {
+                        for s in sub.flatten() {
+                            candidates.push(s.path().join("copilot.exe"));
+                        }
+                    }
+                }
+            }
         }
     }
     #[cfg(not(windows))]
@@ -169,6 +191,132 @@ fn extract_tool_output(content: Option<&Value>) -> String {
         .join("\n")
 }
 
+/// One selectable Copilot model: `(modelId, displayName)`. Includes the native
+/// `auto` ("Let Copilot pick the best model").
+type CopilotModel = (String, String);
+
+/// Discover the user's available Copilot models WITHOUT starting a chat turn:
+/// spawn `copilot --acp --stdio`, run the ACP handshake, open a throwaway
+/// session, read its plan-specific `models.availableModels`, then shut down.
+/// Used by the `/agents/{id}/models` discovery endpoint to populate the model
+/// picker. Requires `copilot login`; on any error the caller falls back to the
+/// static catalog list.
+pub async fn list_models(project_path: &str) -> Result<Vec<CopilotModel>> {
+    let bin = resolve_copilot_bin().ok_or_else(|| anyhow!("copilot CLI not found"))?;
+    let cwd_raw = if project_path.is_empty() {
+        std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_else(|_| ".".to_string())
+    } else {
+        project_path.to_string()
+    };
+    let cwd = fleetify_core::strip_verbatim_prefix(std::path::Path::new(&cwd_raw))
+        .to_string_lossy()
+        .into_owned();
+
+    // npm ships a `.cmd` shim on Windows; run it via `cmd /C`. winget's `.exe`
+    // and Unix binaries spawn directly.
+    let mut cmd = if cfg!(windows) && bin.to_ascii_lowercase().ends_with(".cmd") {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(&bin);
+        c
+    } else {
+        Command::new(&bin)
+    };
+    cmd.arg("--acp")
+        .arg("--stdio")
+        .arg(format!("--add-dir={}", cwd))
+        .arg("--log-level=warning")
+        .current_dir(&cwd)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let mut proc = cmd
+        .spawn()
+        .map_err(|e| anyhow!("copilot CLI not found ({e})"))?;
+    let stdin = proc.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
+    let stdout = proc.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
+    if let Some(stderr) = proc.stderr.take() {
+        tokio::spawn(async move {
+            let mut r = BufReader::new(stderr).lines();
+            while let Ok(Some(_)) = r.next_line().await {}
+        });
+    }
+
+    let client = Arc::new(AcpClient::new());
+    client.attach(stdout, stdin).await?;
+    let caps = serde_json::json!({ "fs": { "readTextFile": false, "writeTextFile": false } });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(INIT_TIMEOUT_SECS),
+        client.initialize(caps),
+    )
+    .await
+    .map_err(|_| anyhow!("copilot timed out during model discovery"))??;
+    let resp = client
+        .call(
+            "session/new",
+            serde_json::json!({ "cwd": cwd, "mcpServers": [] }),
+        )
+        .await?;
+    let models = parse_copilot_models(&resp);
+    client.shutdown().await;
+    // `proc` drops here → the transient ACP server is killed.
+    Ok(models)
+}
+
+/// Extract `(modelId, name)` pairs from a Copilot ACP `session/new` result.
+/// Prefers the dedicated `models.availableModels` field; falls back to the
+/// `configOptions` entry whose `id == "model"`. Empty when neither is present.
+fn parse_copilot_models(result: &Value) -> Vec<CopilotModel> {
+    if let Some(arr) = result
+        .get("models")
+        .and_then(|m| m.get("availableModels"))
+        .and_then(|v| v.as_array())
+    {
+        let list: Vec<CopilotModel> = arr
+            .iter()
+            .filter_map(|m| {
+                let id = m.get("modelId").and_then(|v| v.as_str())?;
+                let name = m.get("name").and_then(|v| v.as_str()).unwrap_or(id);
+                Some((id.to_string(), name.to_string()))
+            })
+            .collect();
+        if !list.is_empty() {
+            return list;
+        }
+    }
+    if let Some(opts) = result.get("configOptions").and_then(|v| v.as_array()) {
+        for opt in opts {
+            if opt.get("id").and_then(|v| v.as_str()) == Some("model") {
+                if let Some(arr) = opt.get("options").and_then(|v| v.as_array()) {
+                    return arr
+                        .iter()
+                        .filter_map(|m| {
+                            let id = m.get("value").and_then(|v| v.as_str())?;
+                            let name = m.get("name").and_then(|v| v.as_str()).unwrap_or(id);
+                            Some((id.to_string(), name.to_string()))
+                        })
+                        .collect();
+                }
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// Serialize discovered Copilot models into the `[{id,label}]` array shape the
+/// renderer's `available_models_update` handler expects (mirror of Cursor's
+/// `models_to_json`). `CopilotModel` is `(modelId, name)`.
+fn copilot_models_to_json(models: &[CopilotModel]) -> Value {
+    Value::Array(
+        models
+            .iter()
+            .map(|(id, name)| serde_json::json!({ "id": id, "label": name }))
+            .collect(),
+    )
+}
+
 pub struct GitHubCopilotBridge {
     pub session_id: String,
     pub project_path: String,
@@ -243,7 +391,11 @@ impl GitHubCopilotBridge {
         }
 
         cmd.arg("--no-ask-user");
-        cmd.arg("--no-banner");
+        // NOTE: do NOT pass `--no-banner` — the current Copilot CLI (v1.0.56+)
+        // has no such flag and exits with "unknown option '--no-banner'",
+        // which closes the ACP stream ("ACP initialize failed"). The banner is
+        // off by default in this version (only `--banner` enables it), so
+        // there's nothing to suppress.
         cmd.arg("--log-level=warning");
 
         cmd
@@ -375,15 +527,41 @@ impl GitHubCopilotBridge {
         .map_err(|_| anyhow!("ACP initialize timed out after {INIT_TIMEOUT_SECS}s"))?
         .map_err(|e| anyhow!("ACP initialize failed: {e}"))?;
 
-        // Session: new on first turn, load on subsequent.
+        // Session: new on first turn, load on subsequent. The session/new
+        // result carries Copilot's live model catalog (`models.availableModels`),
+        // which we forward to the picker; session/load returns no model block, so
+        // a resumed turn re-derives the list from the set_config_option response
+        // below.
         let existing = self.acp_session_id.lock().await.clone();
         let mcp = self.translate_mcp_config();
+        let mut session_models: Vec<CopilotModel> = Vec::new();
+        let mut current_model = self.model_name.clone().unwrap_or_default();
         let session_id = match existing {
             None => {
-                let id = acp
-                    .session_new(&cwd, mcp)
+                // Use the raw call (not the `session_new` helper) so we can read
+                // the `models` block and surface it to the renderer's picker.
+                let result = acp
+                    .call(
+                        "session/new",
+                        serde_json::json!({ "cwd": cwd, "mcpServers": mcp }),
+                    )
                     .await
                     .map_err(|e| anyhow!("session/new failed: {e}"))?;
+                session_models = parse_copilot_models(&result);
+                if current_model.is_empty() {
+                    if let Some(c) = result
+                        .get("models")
+                        .and_then(|m| m.get("currentModelId"))
+                        .and_then(|v| v.as_str())
+                    {
+                        current_model = c.to_string();
+                    }
+                }
+                let id = result
+                    .get("sessionId")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow!("session/new: missing sessionId"))?
+                    .to_string();
                 *self.acp_session_id.lock().await = Some(id.clone());
                 id
             }
@@ -395,6 +573,33 @@ impl GitHubCopilotBridge {
             }
         };
 
+        // Apply the picked model to the session. `--model` at spawn only takes
+        // effect on a FRESH session/new; a resumed session/load keeps its
+        // previous model, so the picked model wouldn't stick (the session would
+        // stay on whatever it was first created with). Set it explicitly each
+        // turn via set_config_option (configId "model"). Best-effort: an invalid
+        // id just leaves the current model — never fail the turn over it. The
+        // response echoes the updated `configOptions[model].options`, which
+        // re-populates the model list for a resumed turn (session/load gave none).
+        if let Some(model) = self.model_name.as_deref().filter(|m| !m.is_empty()) {
+            if let Ok(resp) = acp
+                .call(
+                    "session/set_config_option",
+                    serde_json::json!({
+                        "sessionId": session_id,
+                        "configId": "model",
+                        "value": model,
+                    }),
+                )
+                .await
+            {
+                let updated = parse_copilot_models(&resp);
+                if !updated.is_empty() {
+                    session_models = updated;
+                }
+            }
+        }
+
         // Emit Init event so the renderer sees a session id.
         let _ = tx
             .send(BridgeEvent::Init {
@@ -404,6 +609,20 @@ impl GitHubCopilotBridge {
                 tools_count: 0,
             })
             .await;
+
+        // Surface Copilot's live model list so the composer picker renders the
+        // real per-plan models (Auto / GPT-5 mini / Claude Haiku 4.5 / …) instead
+        // of the static catalog, and round-trips a model switch. Skip when empty
+        // (a resumed turn with no model pick) — the renderer keeps whatever the
+        // first turn already cached for the session.
+        if !session_models.is_empty() {
+            let _ = tx
+                .send(BridgeEvent::AvailableModels {
+                    models: copilot_models_to_json(&session_models),
+                    current: current_model,
+                })
+                .await;
+        }
 
         Ok((acp, session_id))
     }
@@ -511,6 +730,22 @@ mod tests {
         assert_eq!(map_for_copilot("nonsense"), CopilotPermArgs::Ask);
     }
 
+    #[test]
+    fn copilot_models_to_json_emits_id_label_array() {
+        let models = vec![
+            ("auto".to_string(), "Auto".to_string()),
+            ("gpt-5-mini".to_string(), "GPT-5 mini".to_string()),
+        ];
+        assert_eq!(
+            copilot_models_to_json(&models),
+            serde_json::json!([
+                { "id": "auto", "label": "Auto" },
+                { "id": "gpt-5-mini", "label": "GPT-5 mini" }
+            ])
+        );
+        assert_eq!(copilot_models_to_json(&[]), serde_json::json!([]));
+    }
+
     fn dummy_bridge(mode: &str, model: Option<&str>, effort: Option<&str>) -> GitHubCopilotBridge {
         GitHubCopilotBridge::new(
             "s1",
@@ -537,7 +772,9 @@ mod tests {
         assert!(args.iter().any(|a| a == "--acp"));
         assert!(args.iter().any(|a| a == "--stdio"));
         assert!(args.iter().any(|a| a == "--no-ask-user"));
-        assert!(args.iter().any(|a| a == "--no-banner"));
+        // `--no-banner` is NOT a valid flag in the current Copilot CLI — it
+        // must not be passed (it closes the ACP stream).
+        assert!(!args.iter().any(|a| a == "--no-banner"));
         assert!(args.iter().any(|a| a.starts_with("--add-dir=")));
         // Ask mode: no allow-all-tools.
         assert!(!args.iter().any(|a| a == "--allow-all-tools"));
@@ -770,6 +1007,60 @@ mod tests {
         assert!(
             saw_error,
             "expected an Error BridgeEvent when copilot is missing"
+        );
+    }
+
+    // Live probe (manual): exercises the real `list_models` against an
+    // installed + logged-in Copilot CLI. Run with:
+    //   cargo test -p fleetify-backend --lib list_models_live_probe -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "live: needs `copilot login`"]
+    async fn list_models_live_probe() {
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_else(|_| ".".to_string());
+        let result = super::list_models(&home).await;
+        eprintln!("=== list_models result: {result:?} ===");
+    }
+
+    // Live root-cause regression for the picker showing the *static* catalog:
+    // before the AvailableModels-emit fix, cold_start surfaced no live model
+    // list to the composer picker. Drives a real turn and asserts the bridge
+    // emits an AvailableModels event carrying Copilot's per-plan models.
+    //   cargo test -p fleetify-backend --lib cold_start_emits_available_models_live -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "live: needs `copilot login`"]
+    async fn cold_start_emits_available_models_live() {
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_else(|_| ".".to_string());
+        let bridge = GitHubCopilotBridge::new("probe-session", home, "default", None, None, None);
+        let ctx = super::super::BridgeContext::default();
+        let mut rx = bridge
+            .send_message("hi", ctx)
+            .await
+            .expect("rx should be returned");
+        let mut available: Option<Value> = None;
+        while let Some(ev) = rx.recv().await {
+            match &ev {
+                BridgeEvent::AvailableModels { models, current } => {
+                    eprintln!("=== AvailableModels: current={current:?} models={models} ===");
+                    available = Some(models.clone());
+                    bridge.abort().await;
+                    break;
+                }
+                BridgeEvent::Status { status } if status == "done" => break,
+                _ => {}
+            }
+        }
+        let models = available.expect("cold_start must emit an AvailableModels event");
+        let arr = models.as_array().expect("models must be a JSON array");
+        assert!(!arr.is_empty(), "model list must be non-empty");
+        assert!(
+            arr.iter()
+                .all(|m| m.get("id").and_then(|v| v.as_str()).is_some()
+                    && m.get("label").and_then(|v| v.as_str()).is_some()),
+            "every model must carry string id + label"
         );
     }
 }

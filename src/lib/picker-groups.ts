@@ -338,8 +338,10 @@ export function resolveModelChip(
   tool: string,
   model: string | null,
 ): { dispatchTool: string; label: string } {
-  // "Auto" routing sentinel — neutral face, never attributed to a provider.
-  if (model === "auto" || tool === "auto") {
+  // Fleet's cross-provider "Auto" routing sentinel — keyed on the TOOL only.
+  // A manual agent may legitimately have model === "auto" (e.g. GitHub
+  // Copilot's native `auto` model); that is NOT Fleet's Auto.
+  if (tool === "auto") {
     return { dispatchTool: "auto", label: "Auto" };
   }
   const activeGroup =
