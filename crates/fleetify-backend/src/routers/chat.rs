@@ -1324,6 +1324,25 @@ async fn run_send_flow(
                 is_staff,
                 session.agent_template.clone(),
             );
+            // Parity with the Claude block: staff gets the orchestrator
+            // prompt (live roster + [[DISPATCH]] protocol), non-staff
+            // inherits its template prompt. ACP has no system-prompt slot,
+            // so GeminiBridge prepends this onto the turn. Without it a
+            // Gemini staff session can't see the fleet or dispatch at all.
+            if is_staff {
+                b.system_prompt = Some(
+                    crate::services::staff_prompt::build(
+                        &st.auth.pool,
+                        &sid,
+                        session.user_id.as_deref(),
+                    )
+                    .await,
+                );
+            } else if let Some(tpl) =
+                crate::services::builtin_templates::get(session.agent_template.as_deref())
+            {
+                b.system_prompt = Some(tpl.system_prompt.to_string());
+            }
             // Wire the live permission dialog only when the user opted
             // into a mode that asks. ACP's `default` is the one mode
             // that routes through `on_permission_request`; bypass /
@@ -2585,14 +2604,24 @@ async fn run_dispatched_task(
             false,
             target.agent_template.clone(),
         ))),
-        "gemini" => AnyBridge::Gemini(std::sync::Arc::new(GeminiBridge::new(
-            target_id.clone(),
-            target_cwd.clone(),
-            target.permission_mode.clone(),
-            target.model_name.clone(),
-            false, // dispatched tasks always land on non-staff agents
-            target.agent_template.clone(),
-        ))),
+        "gemini" => {
+            let mut b = GeminiBridge::new(
+                target_id.clone(),
+                target_cwd.clone(),
+                target.permission_mode.clone(),
+                target.model_name.clone(),
+                false, // dispatched tasks always land on non-staff agents
+                target.agent_template.clone(),
+            );
+            // Mirror the Claude dispatch arm: a dispatched Gemini agent
+            // inherits its template's system prompt (e.g. reverse_engineering).
+            if let Some(tpl) =
+                crate::services::builtin_templates::get(target.agent_template.as_deref())
+            {
+                b.system_prompt = Some(tpl.system_prompt.to_string());
+            }
+            AnyBridge::Gemini(std::sync::Arc::new(b))
+        }
         "codex" => AnyBridge::Codex(std::sync::Arc::new(CodexBridge::new(
             target_id.clone(),
             target_cwd.clone(),
@@ -2986,6 +3015,18 @@ async fn run_dispatched_task(
                             model_name = Some(model.clone());
                         }
                     }
+                    // Terminal event of the per-turn protocol. Daemon/ACP
+                    // bridges (Gemini, Codex, OpenCode, Cursor, Antigravity)
+                    // never close their `rx` on their own — the JSON-RPC
+                    // client keeps a notification handler that retains a
+                    // `tx.clone()` for the life of the bridge. Without this
+                    // break the dispatched run ignores the agent's completion
+                    // and spins until DISPATCH_TIMEOUT, so the staff
+                    // "Dispatching…" card hangs ~12 min and then resolves as a
+                    // FALSE failure even though the agent already finished and
+                    // produced its answer. Mirrors the identical guard in
+                    // `run_send_flow` (the primary chat loop).
+                    BridgeEvent::Status { status } if status == "done" => break,
                     _ => {}
                 }
 

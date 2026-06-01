@@ -4,10 +4,16 @@
 //! drives the ACP handshake + session_new, then forwards `session/update`
 //! notifications as `BridgeEvent`s the renderer already understands.
 //!
-//! Phase 2 cut: no MCP server attachment (empty list), no system_prompt
-//! splice, no image inputs. The chat handler keys off `claude_session_id`
-//! returned in `Init` to resume turns within the same bridge instance.
-//! MCP wiring + system_prompt splice are next-phase increments.
+//! MCP servers (user registry + fleet built-ins) are attached over ACP
+//! `session/new` via [`ensure_stdio_env`]`(to_acp_servers(..))` — gemini's
+//! `zMcpServerStdio` schema makes `env` REQUIRED, so the backfill stops an
+//! env-less user entry from `-32602`'ing the whole session (which would take
+//! every MCP, built-ins included, down with it). The staff orchestrator /
+//! agent-template system prompt rides in as a leading text block on the turn
+//! (see [`compose_prompt_content`]) because ACP `session/new` has no
+//! system-prompt slot. Not yet wired: image inputs, cross-turn session resume
+//! (each turn spawns a fresh `gemini --acp`). The chat handler keys off
+//! `claude_session_id` returned in `Init`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -32,6 +38,52 @@ fn approval_mode_to_acp(mode: &str) -> &'static str {
         "bypassPermissions" | "dangerouslySkipPermissions" | "dontAsk" => "yolo",
         "plan" => "plan",
         _ => "default",
+    }
+}
+
+/// Normalize an ACP `mcpServers` array so every **stdio** entry (one with a
+/// `command`) carries an `env` field. gemini-cli's ACP `zMcpServerStdio`
+/// schema makes `env` REQUIRED — an env-less stdio entry matches none of the
+/// `zMcpServer` union variants, so the whole `session/new` is rejected with
+/// `-32602 Invalid params` and ALL MCP servers (the fleet built-ins
+/// included) silently fail to mount. Backfilling `env: []` keeps one
+/// user-added env-less stdio MCP from sinking the rest. http/sse entries (no
+/// `command`) pass through untouched. Mirrors the same helper in the
+/// opencode/cursor ACP bridges (where the `-32602` was first verified live).
+fn ensure_stdio_env(servers: Value) -> Value {
+    let Value::Array(arr) = servers else {
+        return servers;
+    };
+    Value::Array(
+        arr.into_iter()
+            .map(|mut entry| {
+                if let Value::Object(ref mut m) = entry {
+                    if m.contains_key("command") && !m.contains_key("env") {
+                        m.insert("env".to_string(), Value::Array(Vec::new()));
+                    }
+                }
+                entry
+            })
+            .collect(),
+    )
+}
+
+/// Compose the ACP `session/prompt` content for one turn. gemini-cli's ACP
+/// `session/new` (`zNewSessionRequest`) carries only `cwd` + `mcpServers` —
+/// there is no system-prompt slot — so when a system prompt is present (the
+/// staff orchestrator prompt with its live agent roster + `[[DISPATCH:id|
+/// task]]` protocol, or an agent template) we prepend it as a leading text
+/// block ahead of the user's text. This is *additive*: it layers our
+/// instructions on top of gemini's built-in tool-use prompt, unlike
+/// `GEMINI_SYSTEM_MD` which would replace it wholesale. An absent or empty
+/// prompt yields a single user-text block.
+fn compose_prompt_content(system_prompt: Option<&str>, msg: &str) -> Value {
+    match system_prompt {
+        Some(sp) if !sp.is_empty() => json!([
+            { "type": "text", "text": sp },
+            { "type": "text", "text": msg },
+        ]),
+        _ => json!([{ "type": "text", "text": msg }]),
     }
 }
 
@@ -225,6 +277,13 @@ pub struct GeminiBridge {
     pub project_path: String,
     pub permission_mode: String,
     pub model_name: Option<String>,
+    /// Staff orchestrator prompt (live roster + `[[DISPATCH]]` protocol) or
+    /// an agent-template prompt, set by the chat router exactly as it does
+    /// for `ClaudeBridge`. ACP has no system-prompt slot, so this rides in
+    /// as a leading text block on the first turn (see `compose_prompt_content`).
+    /// Without it, a staff Gemini session can neither see the fleet roster
+    /// nor emit dispatch tokens — the gap this field closes.
+    pub system_prompt: Option<String>,
     /// Same gating semantics as ClaudeBridge::is_staff — `fleet_dispatch`
     /// is suppressed on staff sessions so they use the text-protocol
     /// dispatch path instead.
@@ -256,6 +315,7 @@ impl GeminiBridge {
             project_path: project_path.into(),
             permission_mode: permission_mode.into(),
             model_name,
+            system_prompt: None,
             is_staff,
             agent_template,
             permission_handler: None,
@@ -482,7 +542,7 @@ impl GeminiBridge {
             self.is_staff,
             self.agent_template.as_deref(),
         );
-        let mcp_servers = crate::services::mcp_dispatch::to_acp_servers(&mcp_map);
+        let mcp_servers = ensure_stdio_env(crate::services::mcp_dispatch::to_acp_servers(&mcp_map));
         tracing::info!(
             target: "gemini",
             session_id = %self.session_id,
@@ -554,6 +614,9 @@ impl GeminiBridge {
         let state_mu = self.state.clone();
         let aborted = self.aborted.clone();
         let msg_owned = msg.to_string();
+        // Staff/template prompt (when set) is prepended to the turn — ACP has
+        // no system-prompt slot. Cloned out so the spawned task owns it.
+        let system_prompt = self.system_prompt.clone();
         let needs_cold_start = state_mu.lock().await.is_none();
         let cold_starter = if needs_cold_start {
             Some(self.cold_start_fut(ctx.base_url_override.clone()))
@@ -641,8 +704,9 @@ impl GeminiBridge {
                 .await;
 
             // Send the prompt. The chat handler buffers the user message;
-            // here we just wrap it in an ACP text block.
-            let content = json!([{ "type": "text", "text": msg_owned }]);
+            // here we wrap it in ACP text block(s), prepending the staff/
+            // template system prompt as a leading block when one is set.
+            let content = compose_prompt_content(system_prompt.as_deref(), &msg_owned);
             let prompt_res = client.session_prompt(&acp_sid, content).await;
 
             // Fold any usage surfaced on the session_prompt response.
@@ -709,6 +773,7 @@ impl GeminiBridge {
         let project_path = self.project_path.clone();
         let permission_mode = self.permission_mode.clone();
         let model_name = self.model_name.clone();
+        let system_prompt = self.system_prompt.clone();
         let is_staff = self.is_staff;
         let agent_template = self.agent_template.clone();
         let state = self.state.clone();
@@ -719,6 +784,7 @@ impl GeminiBridge {
                 project_path,
                 permission_mode,
                 model_name,
+                system_prompt,
                 is_staff,
                 agent_template,
                 aborted: Arc::new(AtomicBool::new(false)),
@@ -1014,5 +1080,53 @@ mod tests {
         assert_eq!(v["output_tokens"], 7);
         assert_eq!(v["cache_read_tokens"], 0);
         assert_eq!(v["cache_write_tokens"], 0);
+    }
+
+    #[test]
+    fn ensure_stdio_env_backfills_only_envless_stdio() {
+        // gemini-cli's ACP `zMcpServerStdio` REQUIRES an `env` array; an
+        // env-less stdio entry fails all union variants → the whole
+        // `session/new` is rejected with -32602, taking every MCP down.
+        // ensure_stdio_env backfills `env: []` so a user-added stdio MCP
+        // without env can't sink the fleet built-ins alongside it.
+        let input = json!([
+            { "name": "a", "command": "node", "args": ["x"] }, // stdio, no env → add []
+            { "name": "b", "command": "node", "args": [], "env": [{"name":"K","value":"v"}] }, // keep
+            { "name": "c", "type": "http", "url": "http://x", "headers": [] }, // http → untouched
+        ]);
+        let out = ensure_stdio_env(input);
+        let arr = out.as_array().unwrap();
+        assert_eq!(arr[0]["env"], json!([])); // injected
+        assert_eq!(arr[1]["env"], json!([{"name":"K","value":"v"}])); // preserved
+        assert!(arr[2].get("env").is_none()); // http untouched
+                                              // Non-array passes through unchanged.
+        assert_eq!(ensure_stdio_env(json!({})), json!({}));
+    }
+
+    #[test]
+    fn compose_prompt_content_prepends_system_prompt() {
+        // ACP `session/new` has no system-prompt slot, so a present
+        // system prompt (staff orchestrator roster + [[DISPATCH]] protocol,
+        // or an agent template) rides in as a leading text block ahead of
+        // the user's turn.
+        let c = compose_prompt_content(Some("You ARE Fleet"), "list agents");
+        let arr = c.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["type"], "text");
+        assert_eq!(arr[0]["text"], "You ARE Fleet");
+        assert_eq!(arr[1]["type"], "text");
+        assert_eq!(arr[1]["text"], "list agents");
+    }
+
+    #[test]
+    fn compose_prompt_content_passthrough_without_system_prompt() {
+        // None and empty both collapse to a single user-text block —
+        // no empty leading block that would confuse the model.
+        for sp in [None, Some("")] {
+            let c = compose_prompt_content(sp, "hello");
+            let arr = c.as_array().unwrap();
+            assert_eq!(arr.len(), 1, "system_prompt={sp:?} must yield one block");
+            assert_eq!(arr[0]["text"], "hello");
+        }
     }
 }
