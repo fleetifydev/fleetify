@@ -1065,12 +1065,19 @@ const OPENROUTER_MODELS: &[ModelSpec] = &[
     },
 ];
 
-// Curated Workers AI text-generation models. Ids verified against
-// developers.cloudflare.com/workers-ai/models/ (Workers AI uses the
-// `@cf/<vendor>/<model>` id form on both /ai/run and the OpenAI-compat
-// /ai/v1 endpoint). Embeddings/image models are intentionally excluded
-// from the chat picker.
+// Workers AI text-generation models. Every id below was verified live (2026-06)
+// against the account-scoped OpenAI-compat endpoint
+// (`/accounts/{id}/ai/v1/chat/completions`) — all returned 200. Sourced from
+// the catalog at developers.cloudflare.com/workers-ai/models/ (task = Text
+// Generation), ordered flagship → reasoning/coding → small.
+//
+// Deliberately excluded: `@cf/meta/llama-guard-3-8b` (a safety classifier, not
+// a chat model) and `@cf/meta/llama-3.2-11b-vision-instruct` (403s until the
+// user accepts a separate Meta license). Embeddings / image / audio models
+// never belonged in a chat picker. Workers AI uses the `@cf/<vendor>/<model>`
+// id form on both /ai/run and the OpenAI-compat /ai/v1 endpoint.
 const CLOUDFLARE_WORKERS_AI_MODELS: &[ModelSpec] = &[
+    // ── Flagship instruct models ──
     ModelSpec {
         id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
         label: "Llama 3.3 70B (fast)",
@@ -1081,9 +1088,9 @@ const CLOUDFLARE_WORKERS_AI_MODELS: &[ModelSpec] = &[
         supports_effort: false,
     },
     ModelSpec {
-        id: "@cf/meta/llama-3.1-8b-instruct",
-        label: "Llama 3.1 8B",
-        context_window: Some("8K"),
+        id: "@cf/meta/llama-4-scout-17b-16e-instruct",
+        label: "Llama 4 Scout 17B",
+        context_window: Some("128K"),
         note: None,
         group: None,
         endpoint: None,
@@ -1101,6 +1108,134 @@ const CLOUDFLARE_WORKERS_AI_MODELS: &[ModelSpec] = &[
     ModelSpec {
         id: "@cf/openai/gpt-oss-20b",
         label: "GPT-OSS 20B",
+        context_window: Some("128K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "@cf/qwen/qwen3-30b-a3b-fp8",
+        label: "Qwen3 30B A3B",
+        context_window: Some("32K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "@cf/mistralai/mistral-small-3.1-24b-instruct",
+        label: "Mistral Small 3.1 24B",
+        context_window: Some("128K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "@cf/nvidia/nemotron-3-120b-a12b",
+        label: "Nemotron 3 120B",
+        context_window: Some("256K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "@cf/moonshotai/kimi-k2.6",
+        label: "Kimi K2.6",
+        context_window: Some("256K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "@cf/zai-org/glm-4.7-flash",
+        label: "GLM 4.7 Flash",
+        context_window: Some("128K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "@cf/google/gemma-4-26b-a4b-it",
+        label: "Gemma 4 26B",
+        context_window: Some("256K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "@cf/ibm-granite/granite-4.0-h-micro",
+        label: "Granite 4.0 Micro",
+        context_window: Some("128K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    // ── Reasoning / coding specialists ──
+    ModelSpec {
+        id: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+        label: "DeepSeek R1 Distill 32B",
+        context_window: Some("80K"),
+        note: Some("Reasoning"),
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "@cf/qwen/qwq-32b",
+        label: "QwQ 32B",
+        context_window: Some("24K"),
+        note: Some("Reasoning"),
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "@cf/qwen/qwen2.5-coder-32b-instruct",
+        label: "Qwen2.5 Coder 32B",
+        context_window: Some("32K"),
+        note: Some("Coding"),
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    // ── Fast / small general-purpose ──
+    ModelSpec {
+        id: "@cf/meta/llama-3.2-3b-instruct",
+        label: "Llama 3.2 3B",
+        context_window: Some("80K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "@cf/meta/llama-3.2-1b-instruct",
+        label: "Llama 3.2 1B",
+        context_window: Some("60K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "@cf/meta/llama-3.1-8b-instruct-fp8",
+        label: "Llama 3.1 8B",
+        context_window: Some("32K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "@cf/aisingapore/gemma-sea-lion-v4-27b-it",
+        label: "Gemma SEA-LION v4 27B",
         context_window: Some("128K"),
         note: None,
         group: None,
@@ -2183,11 +2318,25 @@ mod tests {
             "google/gemini-3-flash-preview",
             "xai/grok-4.3",
             "xai/grok-4.20-reasoning",
-            // ── Cloudflare Workers AI (developers.cloudflare.com/workers-ai/models/ 2026-05-31) ──
+            // ── Cloudflare Workers AI (verified live against /ai/v1, 2026-06-01) ──
             "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-            "@cf/meta/llama-3.1-8b-instruct",
+            "@cf/meta/llama-4-scout-17b-16e-instruct",
             "@cf/openai/gpt-oss-120b",
             "@cf/openai/gpt-oss-20b",
+            "@cf/qwen/qwen3-30b-a3b-fp8",
+            "@cf/mistralai/mistral-small-3.1-24b-instruct",
+            "@cf/nvidia/nemotron-3-120b-a12b",
+            "@cf/moonshotai/kimi-k2.6",
+            "@cf/zai-org/glm-4.7-flash",
+            "@cf/google/gemma-4-26b-a4b-it",
+            "@cf/ibm-granite/granite-4.0-h-micro",
+            "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+            "@cf/qwen/qwq-32b",
+            "@cf/qwen/qwen2.5-coder-32b-instruct",
+            "@cf/meta/llama-3.2-3b-instruct",
+            "@cf/meta/llama-3.2-1b-instruct",
+            "@cf/meta/llama-3.1-8b-instruct-fp8",
+            "@cf/aisingapore/gemma-sea-lion-v4-27b-it",
         ];
         let catalog_ids: Vec<&str> = CATALOG
             .iter()

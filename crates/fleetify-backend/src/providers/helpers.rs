@@ -110,6 +110,33 @@ mod tests {
     }
 
     #[test]
+    fn cloudflare_catalog_lists_current_workers_ai_models() {
+        let spec = super::find_provider("cloudflare-workers-ai").expect("registered");
+        let ids: Vec<&str> = spec.default_models.iter().map(|m| m.id).collect();
+        // The refreshed catalog covers the current Workers AI text-generation
+        // line-up (every id verified live against /ai/v1), not just the
+        // original four. Spot-check flagships across vendors.
+        for id in [
+            "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+            "@cf/meta/llama-4-scout-17b-16e-instruct",
+            "@cf/qwen/qwen3-30b-a3b-fp8",
+            "@cf/mistralai/mistral-small-3.1-24b-instruct",
+            "@cf/openai/gpt-oss-120b",
+        ] {
+            assert!(ids.contains(&id), "Cloudflare catalog missing {id}");
+        }
+        assert!(
+            ids.len() >= 18,
+            "expected the full Workers AI line-up, got {}",
+            ids.len()
+        );
+        // Excluded on purpose: the safety classifier is not a chat model, and
+        // the vision model 403s until the user accepts a separate license.
+        assert!(!ids.contains(&"@cf/meta/llama-guard-3-8b"));
+        assert!(!ids.contains(&"@cf/meta/llama-3.2-11b-vision-instruct"));
+    }
+
+    #[test]
     fn find_agent_returns_github_copilot() {
         use super::super::catalog::AuthSpec;
         let spec =

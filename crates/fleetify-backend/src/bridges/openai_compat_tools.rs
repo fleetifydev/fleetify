@@ -69,7 +69,29 @@ pub struct OpenAICompatToolAdapter {
     pub base_url: String,
     pub api_key: String,
     pub extra_headers: http::HeaderMap,
+    /// Stream the `/chat/completions` response (the default). Forced off for
+    /// providers in `BROKEN_STREAMING_TOOL_CALLS`, whose streaming tool calls
+    /// are mis-serialised — see `streams_tool_calls`.
+    streaming: bool,
     http: reqwest::Client,
+}
+
+/// Providers whose OpenAI-compatible endpoint mis-serialises tool calls into
+/// `delta.content` as *text* when streaming (instead of `tool_calls` deltas),
+/// which leaks raw `{"type":"function",...}` JSON into the chat. Their
+/// NON-streaming responses return correct native `tool_calls`, so the adapter
+/// drops to a single-shot request for them.
+///
+/// Verified 2026-06 against Cloudflare's
+/// `@cf/meta/llama-3.3-70b-instruct-fp8-fast`: `stream:false` →
+/// `message.tool_calls`; `stream:true` → the same call streamed as
+/// `delta.content` text.
+const BROKEN_STREAMING_TOOL_CALLS: &[&str] = &["cloudflare-workers-ai"];
+
+/// Whether `provider_id` streams tool calls correctly. Most do; the few listed
+/// in `BROKEN_STREAMING_TOOL_CALLS` need a non-streaming request instead.
+fn streams_tool_calls(provider_id: &str) -> bool {
+    !BROKEN_STREAMING_TOOL_CALLS.contains(&provider_id)
 }
 
 impl OpenAICompatToolAdapter {
@@ -102,6 +124,7 @@ impl OpenAICompatToolAdapter {
                 .unwrap_or_else(|| spec.default_base_url.to_string()),
             api_key,
             extra_headers: ctx.extra_headers.clone(),
+            streaming: streams_tool_calls(spec.id),
             http: reqwest::Client::new(),
         })
     }
@@ -120,6 +143,7 @@ impl OpenAICompatToolAdapter {
             base_url,
             api_key,
             extra_headers: http::HeaderMap::new(),
+            streaming: true,
             http: reqwest::Client::new(),
         }
     }
@@ -157,14 +181,18 @@ impl ToolAdapter for OpenAICompatToolAdapter {
         catalog: &[Tool],
         sink: &mpsc::Sender<TurnEvent>,
     ) -> Result<TurnOutcome> {
-        let body = json!({
+        let mut body = json!({
             "model": self.model,
             "messages": history.messages,
             "tools": render_tools(catalog),
             "tool_choice": "auto",
-            "stream": true,
-            "stream_options": {"include_usage": true},
+            "stream": self.streaming,
         });
+        // `stream_options.include_usage` is only meaningful when streaming, and
+        // some compat providers reject it otherwise.
+        if self.streaming {
+            body["stream_options"] = json!({"include_usage": true});
+        }
 
         let mut req = self
             .http
@@ -189,7 +217,11 @@ impl ToolAdapter for OpenAICompatToolAdapter {
             ));
         }
 
-        parse_sse_stream(resp, sink).await
+        if self.streaming {
+            parse_sse_stream(resp, sink).await
+        } else {
+            parse_json_response(resp, sink).await
+        }
     }
 
     fn append_assistant(&self, history: &mut AdapterHistory, outcome: &TurnOutcome) {
@@ -432,6 +464,82 @@ async fn handle_sse_block(
     Ok(())
 }
 
+/// Parse a NON-streaming `/chat/completions` response. Used for providers in
+/// `BROKEN_STREAMING_TOOL_CALLS` whose streamed tool calls leak as text. The
+/// outcome mirrors `parse_sse_stream`: assistant text is emitted as a single
+/// `TextDelta` (so the renderer still shows it) and `tool_calls` are read
+/// straight off `choices[0].message`.
+async fn parse_json_response(
+    resp: reqwest::Response,
+    sink: &mpsc::Sender<TurnEvent>,
+) -> Result<TurnOutcome> {
+    let v: Value = resp
+        .json()
+        .await
+        .map_err(|e| anyhow!("non-streaming response was not JSON: {e}"))?;
+
+    let message = v
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .and_then(|a| a.first())
+        .and_then(|c| c.get("message"));
+
+    let mut text = String::new();
+    if let Some(t) = message
+        .and_then(|m| m.get("content"))
+        .and_then(|x| x.as_str())
+    {
+        if !t.is_empty() {
+            text.push_str(t);
+            let _ = sink.send(TurnEvent::TextDelta { text: t.into() }).await;
+        }
+    }
+
+    let mut tool_calls = Vec::new();
+    if let Some(calls) = message
+        .and_then(|m| m.get("tool_calls"))
+        .and_then(|c| c.as_array())
+    {
+        for (i, c) in calls.iter().enumerate() {
+            let f = c.get("function");
+            let name = f
+                .and_then(|f| f.get("name"))
+                .and_then(|x| x.as_str())
+                .ok_or_else(|| anyhow!("tool_call missing function.name"))?
+                .to_string();
+            // Synthesize an id if the provider omitted one — the agentic loop
+            // only needs it to be internally consistent (we rebuild the
+            // assistant message ourselves), not to match the provider's id.
+            let id = c
+                .get("id")
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .unwrap_or_else(|| format!("call_{i}"));
+            let args_str = f
+                .and_then(|f| f.get("arguments"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("{}");
+            let input: Value = serde_json::from_str(args_str).map_err(|e| {
+                anyhow!("tool_call {name} (id={id}) had invalid JSON arguments `{args_str}`: {e}")
+            })?;
+            tool_calls.push(ToolCall { id, name, input });
+        }
+    }
+
+    let usage = v.get("usage").and_then(|u| {
+        let g = |k: &str| u.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+        let (i, o) = (g("prompt_tokens"), g("completion_tokens"));
+        (i + o > 0).then_some((i, o))
+    });
+
+    Ok(TurnOutcome {
+        text,
+        tool_calls,
+        usage,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,7 +547,7 @@ mod tests {
     use crate::agentic::events::AdapterHistory;
     use crate::agentic::executor::ToolResult;
     use serde_json::json;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{body_partial_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn adapter_for(server: &MockServer) -> OpenAICompatToolAdapter {
@@ -805,5 +913,97 @@ mod tests {
         assert!(saw_tool_start, "expected ToolStart for read_file");
         assert!(saw_tool_end, "expected ToolEnd with file contents");
         assert!(saw_final_text, "expected final text describing the file");
+    }
+
+    // ─── non-streaming path (Cloudflare tool-call workaround) ─────────────
+
+    #[test]
+    fn cloudflare_does_not_stream_tool_calls() {
+        // Cloudflare's Workers AI compat endpoint serialises tool calls into
+        // `delta.content` as text when streaming; everyone else streams fine.
+        assert!(!streams_tool_calls("cloudflare-workers-ai"));
+        assert!(streams_tool_calls("openai"));
+        assert!(streams_tool_calls("deepseek"));
+        assert!(streams_tool_calls("grok"));
+    }
+
+    #[tokio::test]
+    async fn non_streaming_turn_parses_tool_calls_from_json_body() {
+        let server = MockServer::start().await;
+        let resp = json!({
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "run_command", "arguments": "{\"command\":\"ls\"}"}
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+        });
+        Mock::given(method("POST"))
+            // The whole point: a non-streaming adapter must send stream:false,
+            // because Cloudflare's *streaming* tool calls are broken.
+            .and(body_partial_json(json!({"stream": false})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(resp))
+            .mount(&server)
+            .await;
+
+        let mut adapter = adapter_for(&server);
+        adapter.streaming = false;
+        let history = adapter.init_history("sys", "list files");
+        let (tx, _rx) = mpsc::channel(8);
+        let outcome = adapter
+            .execute_turn(&history, &catalog_v1(), &tx)
+            .await
+            .unwrap();
+        assert_eq!(outcome.text, "");
+        assert_eq!(outcome.tool_calls.len(), 1);
+        assert_eq!(outcome.tool_calls[0].id, "call_1");
+        assert_eq!(outcome.tool_calls[0].name, "run_command");
+        assert_eq!(outcome.tool_calls[0].input["command"], "ls");
+        assert_eq!(outcome.usage, Some((10, 5)));
+    }
+
+    #[tokio::test]
+    async fn non_streaming_turn_emits_content_as_text_delta() {
+        let server = MockServer::start().await;
+        let resp = json!({
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "Hello world"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2}
+        });
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(resp))
+            .mount(&server)
+            .await;
+
+        let mut adapter = adapter_for(&server);
+        adapter.streaming = false;
+        let history = adapter.init_history("sys", "hi");
+        let (tx, mut rx) = mpsc::channel(8);
+        let outcome = adapter
+            .execute_turn(&history, &catalog_v1(), &tx)
+            .await
+            .unwrap();
+        drop(tx);
+        let mut texts = Vec::new();
+        while let Some(e) = rx.recv().await {
+            if let TurnEvent::TextDelta { text } = e {
+                texts.push(text);
+            }
+        }
+        assert_eq!(texts.join(""), "Hello world");
+        assert_eq!(outcome.text, "Hello world");
+        assert!(outcome.tool_calls.is_empty());
+        assert_eq!(outcome.usage, Some((3, 2)));
     }
 }
