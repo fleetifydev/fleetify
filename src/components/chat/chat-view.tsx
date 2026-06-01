@@ -10,6 +10,7 @@ import { CursorQuestionCard } from "./cursor-question-card";
 import { CursorPlanCard } from "./cursor-plan-card";
 import { SessionToolbar } from "./session-toolbar";
 import { fetchMessages, fetchClaudeHistory, createSession, clearSessionMessages, updateSession as apiUpdateSession, stopSession, restartSession, analyzeFleetResponse } from "@/lib/api";
+import { registerConfigPatch } from "@/lib/session-config-sync";
 import { isWindowsPlatform, folderName } from "@/lib/utils";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { buildPickerGroups } from "@/lib/picker-groups";
@@ -700,7 +701,9 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
 
   const handleModelChange = useCallback((sessionId: string, modelId: string) => {
     updateSession(sessionId, { model_name: modelId });
-    apiUpdateSession(sessionId, { model_name: modelId }).catch(() => {});
+    // Track the PATCH so the next WS send waits for it to commit — otherwise
+    // the message dispatches with the previous model (cross-channel race).
+    registerConfigPatch(sessionId, apiUpdateSession(sessionId, { model_name: modelId }));
   }, [updateSession]);
 
   const handleClearChat = useCallback(async () => {

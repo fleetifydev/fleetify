@@ -1,4 +1,5 @@
 import { createSessionsWebSocket } from "@/lib/api";
+import { awaitConfigPatch } from "@/lib/session-config-sync";
 import { useChatStore, pushChatAuthRequired, markAuthSignedIn } from "@/stores/chat-store";
 import { useAppStore } from "@/stores/app-store";
 import type { WSServerMessage, ImageBlock } from "@/types/chat";
@@ -1727,6 +1728,13 @@ class WSManager {
     // drop this one. resetContent + setIsStreaming move INSIDE the
     // gate so streaming bookkeeping flips only when we're actually
     // about to dispatch.
+    //
+    // Also hold the wire write until any in-flight model/tool PATCH commits:
+    // the PATCH rides HTTP while this send rides WS, and the backend reads the
+    // session's model at send time — without this, a just-picked model can
+    // dispatch as the previous one. The optimistic bubble already rendered, so
+    // there's no perceived delay. See session-config-sync.
+    await awaitConfigPatch(sessionId);
     await this.waitForStreamingClear(sessionId);
     store.resetContent(sessionId);
     store.setIsStreaming(sessionId, true);
@@ -1880,6 +1888,11 @@ class WSManager {
     // `streaming` set, so handleStaffSend / auto-mode would orphan
     // the optimistic user bubble. Defer the wire write until the
     // previous turn's bridge releases the session.
+    //
+    // Also wait for any in-flight model/tool PATCH (HTTP) to commit before
+    // this WS dispatch, so the staff/fleet send uses the model the user just
+    // picked. See session-config-sync.
+    await awaitConfigPatch(sessionId);
     await this.waitForStreamingClear(sessionId);
     store.resetContent(sessionId);
     store.setIsStreaming(sessionId, true);

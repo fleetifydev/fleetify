@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { truncateMid, folderName } from "@/lib/utils";
 import { searchProjectFiles, apiFetch, type FileSearchEntry, updateSession as apiUpdateSession, fetchSessionDetail, enhancePrompt, fetchAgentModels } from "@/lib/api";
+import { registerConfigPatch } from "@/lib/session-config-sync";
 import { useFleetStore, type FleetMode } from "@/stores/fleet-store";
 import { LogoMark } from "@/components/brand/logo-mark";
 import { wsManager } from "@/services/ws-manager";
@@ -4278,7 +4279,7 @@ export function ChatInput({
                 // Diamond key (.env), independent of the user's Settings →
                 // Routers config. Just pin the routing sentinel.
                 if (sessionId) {
-                  apiUpdateSession(sessionId, { tool: "auto", model_name: "auto" }).catch(() => {});
+                  registerConfigPatch(sessionId, apiUpdateSession(sessionId, { tool: "auto", model_name: "auto" }));
                   useAppStore.getState().updateSession(sessionId, { tool: "auto", model_name: "auto" });
                 } else {
                   useAppStore.getState().setComposerField({ tool: "auto", modelName: "auto" });
@@ -4292,7 +4293,7 @@ export function ChatInput({
                 // just model (same-provider). `onModelChange` covers the
                 // same-provider path via the parent's handleModelChange.
                 if (dispatchTool !== tool) {
-                  apiUpdateSession(sessionId, { tool: tid, model_name: modelId }).catch(() => {});
+                  registerConfigPatch(sessionId, apiUpdateSession(sessionId, { tool: tid, model_name: modelId }));
                   useAppStore.getState().updateSession(sessionId, { tool: tid, model_name: modelId });
                 } else {
                   onModelChange?.(modelId);

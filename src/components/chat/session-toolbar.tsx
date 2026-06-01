@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { updateSession as apiUpdateSession, cloneRepository, fetchClaudeSessions, fetchClaudeHistory, fetchAgentModels, fetchProviderModels, type ClaudeSession } from "@/lib/api";
+import { registerConfigPatch } from "@/lib/session-config-sync";
 import { extractOwnerRepo } from "@/lib/git-url";
 import { GitSourceTab } from "./git-source-tab";
 import { useAppStore } from "@/stores/app-store";
@@ -286,7 +287,11 @@ export function SessionToolbar({
       return;
     }
     updateSessionLocal(sessionId, updates as Partial<Session>);
-    try { await apiUpdateSession(sessionId, updates); }
+    // Track the PATCH so a WS send waits for it to commit (model/tool changes
+    // otherwise race the send over a different channel — see session-config-sync).
+    const p = apiUpdateSession(sessionId, updates);
+    registerConfigPatch(sessionId, p);
+    try { await p; }
     catch (e) { console.error("toolbar patch failed:", e); }
   }, [isDraft, setDraftField, sessionId, updateSessionLocal]);
 
