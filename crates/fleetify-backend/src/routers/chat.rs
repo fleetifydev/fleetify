@@ -1304,16 +1304,33 @@ async fn run_send_flow(
                 session.agent_template.clone(),
             ),
         )),
-        "antigravity-sdk" => AnyBridge::AntigravitySdk(Arc::new(
-            crate::bridges::antigravity_sdk::AntigravitySdkBridge::new(
-                sid.clone(),
-                agent_cwd.clone(),
-                session.permission_mode.clone(),
-                session.model_name.clone(),
-                session.title == "Staff Agent",
-                session.agent_template.clone(),
-            ),
-        )),
+        "antigravity-sdk" => {
+            let is_staff = session.title == "Staff Agent";
+            let system_prompt = if is_staff {
+                Some(
+                    crate::services::staff_prompt::build(
+                        &st.auth.pool,
+                        &sid,
+                        session.user_id.as_deref(),
+                    )
+                    .await,
+                )
+            } else {
+                crate::services::builtin_templates::get(session.agent_template.as_deref())
+                    .map(|tpl| tpl.system_prompt.to_string())
+            };
+            AnyBridge::AntigravitySdk(Arc::new(
+                crate::bridges::antigravity_sdk::AntigravitySdkBridge::new(
+                    sid.clone(),
+                    agent_cwd.clone(),
+                    session.permission_mode.clone(),
+                    session.model_name.clone(),
+                    is_staff,
+                    session.agent_template.clone(),
+                    system_prompt,
+                ),
+            ))
+        }
         "gemini" => {
             let is_staff = session.title == "Staff Agent";
             let mut b = GeminiBridge::new(
@@ -1468,7 +1485,13 @@ async fn run_send_flow(
                 session.permission_mode.clone(),
                 session.model_name.clone(),
                 session.effort.clone(),
-                None, // mcp_config: not yet wired for github-copilot sessions
+                Some(serde_json::json!({
+                    "mcpServers": crate::services::mcp_dispatch::build_merged_map(
+                        &sid,
+                        session.title == "Staff Agent",
+                        session.agent_template.as_deref(),
+                    )
+                })),
             ),
         )),
         other => {
@@ -2664,7 +2687,13 @@ async fn run_dispatched_task(
                 target.permission_mode.clone(),
                 target.model_name.clone(),
                 target.effort.clone(),
-                None, // mcp_config: not yet wired for github-copilot sessions
+                Some(serde_json::json!({
+                    "mcpServers": crate::services::mcp_dispatch::build_merged_map(
+                        &target_id,
+                        false,
+                        target.agent_template.as_deref(),
+                    )
+                })),
             ),
         )),
         "agy" => AnyBridge::Antigravity(std::sync::Arc::new(
@@ -2677,16 +2706,22 @@ async fn run_dispatched_task(
                 target.agent_template.clone(),
             ),
         )),
-        "antigravity-sdk" => AnyBridge::AntigravitySdk(std::sync::Arc::new(
-            crate::bridges::antigravity_sdk::AntigravitySdkBridge::new(
-                target_id.clone(),
-                target_cwd.clone(),
-                target.permission_mode.clone(),
-                target.model_name.clone(),
-                false, // dispatched tasks always land on non-staff agents
-                target.agent_template.clone(),
-            ),
-        )),
+        "antigravity-sdk" => {
+            let system_prompt =
+                crate::services::builtin_templates::get(target.agent_template.as_deref())
+                    .map(|tpl| tpl.system_prompt.to_string());
+            AnyBridge::AntigravitySdk(std::sync::Arc::new(
+                crate::bridges::antigravity_sdk::AntigravitySdkBridge::new(
+                    target_id.clone(),
+                    target_cwd.clone(),
+                    target.permission_mode.clone(),
+                    target.model_name.clone(),
+                    false, // dispatched tasks always land on non-staff agents
+                    target.agent_template.clone(),
+                    system_prompt,
+                ),
+            ))
+        }
         other => {
             let _ = sm.update_status(&pool, &target_id, "idle").await;
             let summary = format!("Cannot dispatch: agent uses unsupported tool `{other}`.");

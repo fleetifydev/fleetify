@@ -50,11 +50,12 @@ use std::sync::{Arc, OnceLock};
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, PtySize};
 use regex::Regex;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use tokio::sync::{mpsc, Mutex};
 
 use super::BridgeEvent;
 use fleetify_core::user_home;
+use std::path::PathBuf;
 
 pub struct AntigravityBridge {
     pub session_id: String,
@@ -68,6 +69,10 @@ pub struct AntigravityBridge {
     pub agent_cwd: String,
     pub model: String,
     permission_mode: String,
+    /// Staff/template gating for `build_merged_map` (which fleet MCPs this
+    /// session sees), identical to the other bridges.
+    is_staff: bool,
+    agent_template: Option<String>,
     /// Captured after the first turn from `cache/last_conversations.json`.
     /// Used as `--conversation <uuid>` on every subsequent turn so the
     /// conversation continues instead of starting fresh.
@@ -111,14 +116,23 @@ const POST_CODE_GRACE_SECS: u64 = 25;
 /// Absolute backstop for a single agy turn (matches `--print-timeout`).
 const TURN_HARD_CAP_SECS: u64 = 600;
 
+/// What `install_fleet_mcp` changed in the global config, so turn-end cleanup
+/// restores the file to its prior state: `added` keys (new) are removed, and
+/// `restored` keys (pre-existing values we overwrote) are put back — so the
+/// user's own agy MCP entries survive even when a name collides.
+struct McpInstall {
+    added: Vec<String>,
+    restored: Vec<(String, Value)>,
+}
+
 impl AntigravityBridge {
     pub fn new(
         session_id: impl Into<String>,
         agent_cwd: impl Into<String>,
         permission_mode: String,
         model_name: Option<String>,
-        _is_staff: bool,
-        _agent_template: Option<String>,
+        is_staff: bool,
+        agent_template: Option<String>,
     ) -> Self {
         Self {
             session_id: session_id.into(),
@@ -131,6 +145,8 @@ impl AntigravityBridge {
             // persists server-side via setUserSettings).
             model: model_name.unwrap_or_else(|| "agy-default".into()),
             permission_mode,
+            is_staff,
+            agent_template,
             conversation_id: Arc::new(Mutex::new(None)),
             pty_writer: Arc::new(Mutex::new(None)),
             pty_killer: Arc::new(Mutex::new(None)),
@@ -242,6 +258,104 @@ impl AntigravityBridge {
             } else {
                 tracing::info!(workspace = %path, "added workspace to agy trustedWorkspaces");
             }
+        }
+    }
+
+    /// The global MCP config `agy -p` actually reads (verified empirically:
+    /// it is NOT the workspace `.agents/` path nor `~/.gemini/antigravity-cli/`).
+    fn fleet_mcp_config_path() -> PathBuf {
+        user_home()
+            .join(".gemini")
+            .join("config")
+            .join("mcp_config.json")
+    }
+
+    /// Merge this session's fleet + registry MCPs into the global
+    /// `~/.gemini/config/mcp_config.json`, preserving the user's own entries.
+    /// Returns the keys we added so `uninstall_fleet_mcp` removes exactly
+    /// those. Best-effort: on error we log and return None (agy still runs).
+    ///
+    /// NOTE: this file is global, so concurrent agy sessions share it — the
+    /// last writer's per-session `FLEETIFY_SESSION_ID` wins for fleet MCPs.
+    /// Acceptable for v1 (single-session agy is the common case).
+    fn install_fleet_mcp(
+        session_id: &str,
+        is_staff: bool,
+        agent_template: Option<&str>,
+    ) -> Option<McpInstall> {
+        let merged =
+            crate::services::mcp_dispatch::build_merged_map(session_id, is_staff, agent_template);
+        if merged.is_empty() {
+            return None;
+        }
+        let ours = crate::services::mcp_dispatch::to_antigravity_cli_json(&merged);
+        let ours_servers = ours.get("mcpServers").and_then(|v| v.as_object())?.clone();
+
+        let path = Self::fleet_mcp_config_path();
+        let mut servers: Map<String, Value> = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .and_then(|v| v.get("mcpServers").and_then(|m| m.as_object()).cloned())
+            .unwrap_or_default();
+
+        // Track every change so uninstall can restore the file exactly: keys
+        // we newly add get removed; keys we overwrite get their original value
+        // restored. Keeps the user's own agy entries intact on name collision.
+        let mut added = Vec::new();
+        let mut restored = Vec::new();
+        for (name, cfg) in ours_servers {
+            match servers.get(&name) {
+                Some(orig) => restored.push((name.clone(), orig.clone())),
+                None => added.push(name.clone()),
+            }
+            servers.insert(name, cfg);
+        }
+
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::warn!("agy MCP: mkdir {:?} failed: {e}", parent);
+                return None;
+            }
+        }
+        let Ok(serialized) = serde_json::to_string_pretty(&serde_json::json!({
+            "mcpServers": Value::Object(servers)
+        })) else {
+            tracing::warn!("agy MCP: serialize config failed");
+            return None;
+        };
+        match std::fs::write(&path, serialized) {
+            Ok(()) => {
+                tracing::info!(added = ?added, restored = restored.len(),
+                    "agy MCP: wrote ~/.gemini/config/mcp_config.json");
+                Some(McpInstall { added, restored })
+            }
+            Err(e) => {
+                tracing::warn!("agy MCP: write {:?} failed: {e}", path);
+                None
+            }
+        }
+    }
+
+    /// Remove the keys `install_fleet_mcp` added, preserving everything else.
+    /// Best-effort; runs after the turn's agy process has exited.
+    fn uninstall_fleet_mcp(install: McpInstall) {
+        let path = Self::fleet_mcp_config_path();
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let Ok(mut doc) = serde_json::from_str::<Value>(&raw) else {
+            return;
+        };
+        if let Some(servers) = doc.get_mut("mcpServers").and_then(|m| m.as_object_mut()) {
+            for k in &install.added {
+                servers.remove(k);
+            }
+            for (k, v) in &install.restored {
+                servers.insert(k.clone(), v.clone());
+            }
+        }
+        if let Ok(s) = serde_json::to_string_pretty(&doc) {
+            let _ = std::fs::write(&path, s);
         }
     }
 
@@ -577,6 +691,15 @@ impl AntigravityBridge {
         // Use the normalized form so agy's later CWD compare matches.
         Self::ensure_trusted_workspace(&normalized_cwd);
 
+        // Write this session's fleet + registry MCPs to the global config agy
+        // reads at spawn. Per-session FLEETIFY_SESSION_ID rides in each fleet
+        // entry's env (agy passes config env to the MCP child).
+        let mcp_install = Self::install_fleet_mcp(
+            &self.session_id,
+            self.is_staff,
+            self.agent_template.as_deref(),
+        );
+
         // We do NOT try to steer the model from here — see the long
         // comment above `abort()` for the exhaustive list of surfaces
         // we tested (`--model`/`-m`/etc CLI flags, `ANTIGRAVITY_MODEL`
@@ -693,6 +816,9 @@ impl AntigravityBridge {
                             ),
                         })
                         .await;
+                    if let Some(install) = mcp_install {
+                        Self::uninstall_fleet_mcp(install);
+                    }
                     let _ = tx
                         .send(BridgeEvent::Status {
                             status: "done".into(),
@@ -706,6 +832,9 @@ impl AntigravityBridge {
                             error: format!("antigravity pty setup task panicked: {e}"),
                         })
                         .await;
+                    if let Some(install) = mcp_install {
+                        Self::uninstall_fleet_mcp(install);
+                    }
                     let _ = tx
                         .send(BridgeEvent::Status {
                             status: "done".into(),
@@ -1024,6 +1153,12 @@ impl AntigravityBridge {
                 let _ = tx.send(BridgeEvent::Error { error: msg }).await;
             }
 
+            // Remove our injected MCP keys now the turn's agy process has
+            // exited (it already read the file at spawn).
+            if let Some(install) = mcp_install {
+                Self::uninstall_fleet_mcp(install);
+            }
+
             let _ = tx
                 .send(BridgeEvent::Status {
                     status: "done".into(),
@@ -1038,6 +1173,69 @@ impl AntigravityBridge {
 #[cfg(test)]
 mod tests {
     use super::AntigravityBridge;
+
+    #[test]
+    fn install_then_uninstall_round_trips_global_config() {
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
+        std::env::set_var("USERPROFILE", tmp.path());
+
+        let install = super::AntigravityBridge::install_fleet_mcp("sess-1", false, None).unwrap();
+        let path = super::AntigravityBridge::fleet_mcp_config_path();
+        assert!(path.exists(), "global config should be written");
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(doc["mcpServers"]["fleet_memory"]["command"].is_string());
+        assert_eq!(
+            doc["mcpServers"]["fleet_memory"]["env"]["FLEETIFY_SESSION_ID"],
+            "sess-1"
+        );
+
+        super::AntigravityBridge::uninstall_fleet_mcp(install);
+        let doc2: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(
+            doc2["mcpServers"].as_object().unwrap().is_empty(),
+            "our keys should be removed on cleanup"
+        );
+    }
+
+    #[test]
+    fn install_preserves_user_keys_and_restores_on_uninstall() {
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
+        std::env::set_var("USERPROFILE", tmp.path());
+
+        // Pre-seed a user-owned entry in the global agy config.
+        let path = super::AntigravityBridge::fleet_mcp_config_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"mcpServers":{"user_tool":{"command":"my-tool"}}}"#,
+        )
+        .unwrap();
+
+        let install = super::AntigravityBridge::install_fleet_mcp("sess-1", false, None).unwrap();
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            doc["mcpServers"]["fleet_memory"]["env"]["FLEETIFY_SESSION_ID"],
+            "sess-1"
+        );
+        assert_eq!(doc["mcpServers"]["user_tool"]["command"], "my-tool");
+
+        super::AntigravityBridge::uninstall_fleet_mcp(install);
+        let doc2: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(doc2["mcpServers"].get("fleet_memory").is_none());
+        assert_eq!(doc2["mcpServers"]["user_tool"]["command"], "my-tool");
+    }
 
     #[test]
     fn extract_oauth_url_finds_the_google_accounts_link() {

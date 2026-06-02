@@ -38,6 +38,11 @@ Stdin: ONE JSON object terminated by `\n`. Shape:
                                                 #     (older callers sending
                                                 #     "default" / "") falls
                                                 #     through to "chat".
+        "system_instructions": str | null,      # optional — LocalAgentConfig system prompt
+        "mcp_servers": [                         # optional — transport-tagged servers
+            {"name": str, "transport": "stdio", "command": str, "args": [str]} |
+            {"name": str, "transport": "sse"|"http", "url": str, "headers": {str: str}}
+        ] | null,
     }
 
 Stdout: NEWLINE-DELIMITED JSON events. One event per line. Examples:
@@ -238,6 +243,65 @@ def _apply_autonomy_mode(kwargs: dict[str, Any], mode: str) -> None:
     ]
 
 
+def _patch_mcp_stdio_env() -> None:
+    """Re-inject FLEETIFY_* into stdio MCP child environments.
+
+    The SDK launches stdio MCP servers via `mcp.client.stdio` with
+    `StdioServerParameters(command, args)` (env=None), so the MCP SDK uses
+    `get_default_environment()`, which scrubs to a safe allowlist and DROPS
+    FLEETIFY_* (verified empirically). McpStdioServer has no `env` field, so
+    we patch the default-env function to re-add the trio (read from THIS
+    process's env, set by the Rust bridge). Without this, fleet MCPs connect
+    but have no session id -> memory/dispatch route to the wrong/no session.
+    """
+    try:
+        import mcp.client.stdio as _mcp_stdio
+    except Exception as exc:  # noqa: BLE001
+        _emit({"type": "error", "message": (
+            f"warning: MCP stdio module unavailable ({exc}); "
+            "fleet MCP session routing may not work")})
+        return
+    orig = getattr(_mcp_stdio, "get_default_environment", None)
+    if orig is None:
+        _emit({"type": "error", "message": (
+            "warning: mcp.client.stdio.get_default_environment missing on this "
+            "MCP SDK version; fleet MCP session routing may not work")})
+        return
+
+    def _fleet_default_env():
+        e = dict(orig())
+        for k in ("FLEETIFY_SESSION_ID", "FLEETIFY_BACKEND_URL", "FLEETIFY_INTERNAL_SECRET"):
+            v = os.environ.get(k)
+            if v:
+                e[k] = v
+        return e
+
+    _mcp_stdio.get_default_environment = _fleet_default_env
+
+
+def _make_mcp_server(spec: dict[str, Any]) -> Any:
+    """Build the matching SDK MCP server type from a transport-tagged spec."""
+    transport = spec.get("transport")
+    name = spec.get("name")
+    if transport == "stdio":
+        return ag_types.McpStdioServer(
+            name=name,
+            command=spec["command"],
+            args=list(spec.get("args") or []),
+        )
+    if transport == "sse":
+        kwargs = {"name": name, "url": spec["url"]}
+        if spec.get("headers"):
+            kwargs["headers"] = spec["headers"]
+        return ag_types.McpSseServer(**kwargs)
+    if transport == "http":
+        kwargs = {"name": name, "url": spec["url"]}
+        if spec.get("headers"):
+            kwargs["headers"] = spec["headers"]
+        return ag_types.McpStreamableHttpServer(**kwargs)
+    raise ValueError(f"unknown MCP transport {transport!r} for server {name!r}")
+
+
 def _build_config(req: dict[str, Any]) -> LocalAgentConfig:
     """Translate the inbound JSON request into a `LocalAgentConfig`.
 
@@ -265,6 +329,22 @@ def _build_config(req: dict[str, Any]) -> LocalAgentConfig:
     if req.get("app_data_dir"):
         kwargs["app_data_dir"] = req["app_data_dir"]
 
+    sys_instr = req.get("system_instructions")
+    if sys_instr:
+        kwargs["system_instructions"] = sys_instr
+
+    mcp_specs = req.get("mcp_servers")
+    if mcp_specs:
+        servers = []
+        for spec in mcp_specs:
+            try:
+                servers.append(_make_mcp_server(spec))
+            except Exception as exc:  # noqa: BLE001 — one bad server must not sink the turn
+                _emit({"type": "error",
+                       "message": f"skipping MCP server {spec.get('name')!r}: {exc}"})
+        if servers:
+            kwargs["mcp_servers"] = servers
+
     _apply_autonomy_mode(kwargs, str(req.get("mode") or "chat"))
 
     return LocalAgentConfig(**kwargs)
@@ -276,6 +356,7 @@ async def _run_turn(req: dict[str, Any]) -> None:
     Rust bridge can render them as an error bubble instead of treating
     the process exit as a silent failure.
     """
+    _patch_mcp_stdio_env()
     try:
         config = _build_config(req)
     except Exception as exc:  # noqa: BLE001 — surface ANY config error

@@ -75,6 +75,10 @@ pub struct AntigravitySdkBridge {
     /// subsequent turns can resume the same `Conversation`. SDK
     /// equivalent of the agy CLI bridge's per-cwd cache lookup.
     conversation_id: Arc<Mutex<Option<String>>>,
+    is_staff: bool,
+    agent_template: Option<String>,
+    /// System prompt → the SDK's `LocalAgentConfig(system_instructions=)`.
+    system_prompt: Option<String>,
     /// In-flight Python subprocess. `abort()` writes to `aborted` and
     /// kills the child; the spawn loop polls both.
     child: Arc<Mutex<Option<Child>>>,
@@ -112,8 +116,9 @@ impl AntigravitySdkBridge {
         agent_cwd: impl Into<String>,
         permission_mode: String,
         model_name: Option<String>,
-        _is_staff: bool,
-        _agent_template: Option<String>,
+        is_staff: bool,
+        agent_template: Option<String>,
+        system_prompt: Option<String>,
     ) -> Self {
         Self {
             session_id: session_id.into(),
@@ -124,6 +129,9 @@ impl AntigravitySdkBridge {
             // explicit from the picker.
             model: model_name.unwrap_or_else(|| "gemini-3.5-flash".into()),
             autonomy_mode: autonomy_mode_from_permission(&permission_mode).to_string(),
+            is_staff,
+            agent_template,
+            system_prompt,
             conversation_id: Arc::new(Mutex::new(None)),
             child: Arc::new(Mutex::new(None)),
             aborted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -281,6 +289,17 @@ impl AntigravitySdkBridge {
         }
         let api_key = api_key.unwrap();
 
+        // Merge fleet builtins + user registry for THIS session, then
+        // render to the SDK's transport-tagged server list. Computed here
+        // (sync registry read) and moved into the spawn task below.
+        let mcp_map = crate::services::mcp_dispatch::build_merged_map(
+            &self.session_id,
+            self.is_staff,
+            self.agent_template.as_deref(),
+        );
+        let mcp_servers = crate::services::mcp_dispatch::to_sdk_mcp_servers(&mcp_map);
+        let system_instructions = self.system_prompt.clone();
+
         let session_id_out = self.session_id.clone();
         let model_out = self.model.clone();
         let agent_cwd = self.agent_cwd.clone();
@@ -319,6 +338,8 @@ impl AntigravitySdkBridge {
                 "conversation_id": cached_conv_id,
                 "workspaces": [agent_cwd.clone()],
                 "mode": autonomy_mode,
+                "mcp_servers": mcp_servers,
+                "system_instructions": system_instructions,
             });
 
             let mut command = tokio::process::Command::new(&python_path);
@@ -334,9 +355,19 @@ impl AntigravitySdkBridge {
                 // in the sidecar isn't held back by Python's default
                 // line-buffered tty heuristics when stdout is a pipe.
                 .env("PYTHONUNBUFFERED", "1")
+                .env("FLEETIFY_SESSION_ID", &session_id_out)
+                .env(
+                    "FLEETIFY_BACKEND_URL",
+                    std::env::var("FLEETIFY_BACKEND_URL")
+                        .unwrap_or_else(|_| "http://127.0.0.1:8765".into()),
+                )
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
+
+            if let Ok(secret) = std::env::var("FLEETIFY_INTERNAL_SECRET") {
+                command.env("FLEETIFY_INTERNAL_SECRET", secret);
+            }
 
             let mut child = match command.spawn() {
                 Ok(c) => c,
@@ -656,6 +687,7 @@ mod tests {
             None,
             false,
             None,
+            None,
         );
         assert_eq!(b.autonomy_mode, "autonomous");
 
@@ -665,6 +697,7 @@ mod tests {
             "default".into(),
             Some("gemini-3.5-flash".into()),
             false,
+            None,
             None,
         );
         assert_eq!(b.autonomy_mode, "chat");

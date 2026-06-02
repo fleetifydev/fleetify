@@ -310,6 +310,104 @@ fn dict_to_name_value_array(v: &Value) -> Value {
     Value::Array(arr)
 }
 
+/// Emit the Antigravity **SDK** `mcp_servers` list from a merged map. Each
+/// entry is transport-tagged so the Python sidecar can build the matching
+/// SDK type: `stdio` → `McpStdioServer(name, command, args)`, `sse` →
+/// `McpSseServer(name, url, headers)`, `http`/`streamable_http` →
+/// `McpStreamableHttpServer(name, url, headers)`.
+///
+/// `env` is deliberately omitted for stdio: `McpStdioServer` has no `env`
+/// field and the SDK launches stdio children with a scrubbed environment.
+/// Fleet env (`FLEETIFY_*`) is delivered out-of-band via the sidecar
+/// process environment + the `get_default_environment` monkeypatch.
+pub fn to_sdk_mcp_servers(map: &BTreeMap<String, Value>) -> Value {
+    let mut arr: Vec<Value> = Vec::new();
+    for (name, cfg) in map {
+        let Some(obj) = cfg.as_object() else {
+            continue;
+        };
+        let kind = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let mut entry = Map::new();
+        entry.insert("name".into(), Value::String(name.clone()));
+        match kind {
+            "stdio" => {
+                entry.insert("transport".into(), Value::String("stdio".into()));
+                if let Some(c) = obj.get("command") {
+                    entry.insert("command".into(), c.clone());
+                }
+                entry.insert(
+                    "args".into(),
+                    obj.get("args").cloned().unwrap_or_else(|| json!([])),
+                );
+            }
+            "sse" | "http" | "streamable_http" => {
+                // `sse` keeps its own tag; both HTTP variants map to the
+                // SDK's `McpStreamableHttpServer` ("http").
+                let transport = if kind == "sse" { "sse" } else { "http" };
+                entry.insert("transport".into(), Value::String(transport.into()));
+                if let Some(u) = obj.get("url") {
+                    entry.insert("url".into(), u.clone());
+                }
+                if let Some(h) = obj.get("headers") {
+                    entry.insert("headers".into(), h.clone());
+                }
+            }
+            _ => {
+                tracing::warn!(target: "mcp_dispatch", name=%name, kind=%kind,
+                    "skipping MCP entry with unknown type for SDK list");
+                continue;
+            }
+        }
+        arr.push(Value::Object(entry));
+    }
+    Value::Array(arr)
+}
+
+/// Emit the agy CLI `mcp_config.json` document (`{"mcpServers": {...}}`)
+/// from a merged map. stdio entries keep `command`/`args`/`env` (agy reads
+/// env from the config and passes it to the spawned MCP child). Remote
+/// entries (`http`/`sse`/`streamable_http`) are rewritten to agy's schema:
+/// `url` → `serverUrl` (agy rejects `url`/`httpUrl` for remote servers),
+/// `headers` kept. Internal `type`/`builtin` markers are dropped.
+pub fn to_antigravity_cli_json(map: &BTreeMap<String, Value>) -> Value {
+    let mut servers = Map::new();
+    for (name, cfg) in map {
+        let Some(obj) = cfg.as_object() else {
+            continue;
+        };
+        let kind = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let mut entry = Map::new();
+        match kind {
+            "stdio" => {
+                if let Some(c) = obj.get("command") {
+                    entry.insert("command".into(), c.clone());
+                }
+                if let Some(a) = obj.get("args") {
+                    entry.insert("args".into(), a.clone());
+                }
+                if let Some(e) = obj.get("env") {
+                    entry.insert("env".into(), e.clone());
+                }
+            }
+            "http" | "sse" | "streamable_http" => {
+                if let Some(u) = obj.get("url") {
+                    entry.insert("serverUrl".into(), u.clone());
+                }
+                if let Some(h) = obj.get("headers") {
+                    entry.insert("headers".into(), h.clone());
+                }
+            }
+            _ => {
+                tracing::warn!(target: "mcp_dispatch", name=%name, kind=%kind,
+                    "skipping MCP entry with unknown type for agy config");
+                continue;
+            }
+        }
+        servers.insert(name.clone(), Value::Object(entry));
+    }
+    json!({ "mcpServers": Value::Object(servers) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -585,6 +683,75 @@ mod tests {
         assert_eq!(arr[0]["url"], "https://x");
         // No `headers` field present in input → no `headers` field in output.
         assert!(arr[0].get("headers").is_none());
+    }
+
+    #[test]
+    fn antigravity_cli_json_keeps_stdio_env_and_renames_remote_url() {
+        let mut map = BTreeMap::new();
+        map.insert(
+            "fleet_memory".to_string(),
+            json!({
+                "type": "stdio",
+                "command": "/path/to/fleet-memory-mcp",
+                "args": [],
+                "env": {"FLEETIFY_SESSION_ID": "sess-1"},
+                "builtin": true,
+            }),
+        );
+        map.insert(
+            "github".to_string(),
+            json!({"type": "http", "url": "https://api.example/mcp", "headers": {"Authorization": "Bearer t"}}),
+        );
+        let doc = to_antigravity_cli_json(&map);
+        let servers = doc["mcpServers"].as_object().unwrap();
+
+        let mem = &servers["fleet_memory"];
+        assert_eq!(mem["command"], "/path/to/fleet-memory-mcp");
+        assert_eq!(mem["env"]["FLEETIFY_SESSION_ID"], "sess-1");
+        assert!(mem.get("type").is_none());
+        assert!(mem.get("builtin").is_none());
+
+        let gh = &servers["github"];
+        assert_eq!(gh["serverUrl"], "https://api.example/mcp");
+        assert_eq!(gh["headers"]["Authorization"], "Bearer t");
+        assert!(gh.get("url").is_none());
+        assert!(gh.get("type").is_none());
+    }
+
+    #[test]
+    fn sdk_servers_tags_transport_and_omits_env_for_stdio() {
+        let mut map = BTreeMap::new();
+        map.insert(
+            "fleet_memory".to_string(),
+            json!({
+                "type": "stdio",
+                "command": "/path/to/fleet-memory-mcp",
+                "args": [],
+                "env": {"FLEETIFY_SESSION_ID": "sess-1"},
+                "builtin": true,
+            }),
+        );
+        map.insert(
+            "github".to_string(),
+            json!({"type": "http", "url": "https://api.example/mcp", "headers": {"Authorization": "Bearer t"}}),
+        );
+        let arr = to_sdk_mcp_servers(&map);
+        let arr = arr.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+
+        let mem = arr.iter().find(|e| e["name"] == "fleet_memory").unwrap();
+        assert_eq!(mem["transport"], "stdio");
+        assert_eq!(mem["command"], "/path/to/fleet-memory-mcp");
+        assert_eq!(mem["args"], json!([]));
+        assert!(mem.get("env").is_none());
+        assert!(mem.get("type").is_none());
+        assert!(mem.get("builtin").is_none());
+
+        let gh = arr.iter().find(|e| e["name"] == "github").unwrap();
+        assert_eq!(gh["transport"], "http");
+        assert_eq!(gh["url"], "https://api.example/mcp");
+        assert_eq!(gh["headers"]["Authorization"], "Bearer t");
+        assert!(gh.get("type").is_none());
     }
 
     #[test]
