@@ -375,12 +375,6 @@ export function SessionToolbar({
   //      before any session of that agent has cold-started.
   // Both override the static CLI_MODELS fallback in buildPickerGroups.
   const sessionDynModels = useChatStore((s) => s.dynamicModels[sessionId]);
-  // OpenRouter is a connected HTTP provider whose live catalog (hundreds of
-  // models) is discovered on demand. Only worth fetching when it's actually
-  // enabled — the picker rail won't render otherwise.
-  const openrouterConnected = providerTiles.some(
-    (t) => t.spec.id === "openrouter" && t.connected,
-  );
   const [discoveredModels, setDiscoveredModels] = useState<Record<string, PickerModel[]>>({});
   useEffect(() => {
     if (openMenu !== "model") return; // discover lazily, only when the picker opens
@@ -394,13 +388,17 @@ export function SessionToolbar({
         }));
       });
     }
-    // OpenRouter's full catalog comes from the backend's live `/models` proxy.
-    if (openrouterConnected) {
-      void fetchProviderModels("openrouter").then((models) => {
+    // HTTP providers whose full catalog (hundreds of models) is discovered from
+    // the backend's live `/providers/{id}/models` proxy — OpenRouter and
+    // Cloudflare Workers AI. Only fetch the ones actually connected; the picker
+    // rail auto-gets a search box once a group exceeds 20 entries.
+    for (const pid of ["openrouter", "cloudflare-workers-ai"]) {
+      if (!providerTiles.some((t) => t.spec.id === pid && t.connected)) continue;
+      void fetchProviderModels(pid).then((models) => {
         if (cancelled || models.length === 0) return; // empty → keep curated fallback
         setDiscoveredModels((prev) => ({
           ...prev,
-          openrouter: models.map((m) => ({
+          [pid]: models.map((m) => ({
             id: m.id,
             label: m.label,
             ctx: m.ctx,
@@ -412,7 +410,7 @@ export function SessionToolbar({
     return () => {
       cancelled = true;
     };
-  }, [openMenu, projectPath, openrouterConnected]);
+  }, [openMenu, projectPath, providerTiles]);
   const dynamicModels: Record<string, PickerModel[]> | undefined = (() => {
     const merged: Record<string, PickerModel[]> = { ...discoveredModels };
     if (sessionDynModels && sessionDynModels.models.length > 0) {

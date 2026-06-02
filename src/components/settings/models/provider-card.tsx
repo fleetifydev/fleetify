@@ -7,7 +7,7 @@
  * Status pill in the header reflects the persisted state so the user
  * doesn't need to expand every tile to see what's connected.
  */
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Eye, EyeOff, X, Loader2 } from "lucide-react";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import {
@@ -16,7 +16,7 @@ import {
   type ProvidersTestResult,
 } from "@/lib/providers-api";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
-import { fetchProviderModels } from "@/lib/api";
+import { ModelPickerChecklist, useEffectiveModels } from "./model-picker-checklist";
 import { ConnectionStatusPill } from "@/components/settings/shared/connection-status-pill";
 import { Toggle } from "@/components/settings/general/_primitives";
 import type { ProviderHealth } from "@/hooks/use-provider-health";
@@ -103,7 +103,7 @@ export function ProviderCard({
   health: ProviderHealth;
   onHealthChange: () => void;
 }) {
-  const { setKey, deleteKey, setEnabled, setDefault, setEnabledModels } = useProvidersConfig();
+  const { setKey, deleteKey, setEnabled, setDefault } = useProvidersConfig();
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draftKey, setDraftKey] = useState("");
@@ -113,12 +113,6 @@ export function ProviderCard({
   const [testResult, setTestResult] = useState<ProvidersTestResult | null>(null);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
-  // Live discovered model count for providers whose real catalog is fetched
-  // at runtime (OpenRouter). null until resolved → fall back to the static count.
-  const [liveModelCount, setLiveModelCount] = useState<number | null>(null);
-
-  const allModelIds = tile.spec.default_models.map((m) => m.id);
-  const enabled = tile.enabled_models.length > 0 ? tile.enabled_models : allModelIds;
 
   // Pill drives off the parent hook's launch-time test result. We never
   // fall back to tile.connected here — `health` is the single source of
@@ -142,22 +136,11 @@ export function ProviderCard({
       ? "Testing…"
       : "Not connected";
 
-  // OpenRouter ships only a small curated fallback in the static catalog but
-  // exposes its full catalog (hundreds of models) via live discovery. When
-  // connected, show that real count instead of the misleading static length.
-  // OpenRouter is the only provider with a discovery endpoint today (matches
-  // the backend's `discover_provider_models`).
-  useEffect(() => {
-    if (tile.spec.id !== "openrouter" || status !== "connected") return;
-    let cancelled = false;
-    void fetchProviderModels(tile.spec.id).then((models) => {
-      if (!cancelled && models.length > 0) setLiveModelCount(models.length);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [tile.spec.id, status]);
-  const modelCount = liveModelCount ?? tile.spec.default_models.length;
+  // Effective catalog — the live discovered list (OpenRouter / Cloudflare)
+  // when connected, else the static curated list — drives the header count
+  // and the checkbox checklist below.
+  const effectiveModels = useEffectiveModels(tile, status === "connected");
+  const modelCount = effectiveModels.length;
 
   // Lazy-load masked key preview when the user expands the card (avoids
   // an N×N IPC storm on initial Settings page render).
@@ -203,16 +186,6 @@ export function ProviderCard({
     setTesting(false);
   };
 
-  const onToggleModel = async (modelId: string) => {
-    const next = new Set(enabled);
-    if (next.has(modelId)) next.delete(modelId);
-    else next.add(modelId);
-    // Persist the explicit list. If user re-checks every model, we
-    // still write the full list rather than `[]` — keeps backend logic
-    // simpler ("empty array means all defaults" is one rule, but
-    // explicit lists round-trip more predictably).
-    await setEnabledModels(tile.spec.id, Array.from(next));
-  };
 
   return (
     <div
@@ -464,99 +437,8 @@ export function ProviderCard({
             </div>
           )}
 
-          {/* ── Model checkbox list ── */}
-          {tile.spec.default_models.length > 0 && (
-            <div style={{ padding: "12px 0 4px 0", borderTop: "1px solid var(--c-brd)" }}>
-              <div style={{ fontSize: 12, fontWeight: 500, color: "var(--c-high)", marginBottom: 8 }}>
-                Available models in picker
-              </div>
-              {(() => {
-                // Bucket models by `group`. Undefined groups render as a
-                // single unlabelled bucket so non-Perplexity providers
-                // keep their original flat grid.
-                const buckets = new Map<string, typeof tile.spec.default_models>();
-                for (const m of tile.spec.default_models) {
-                  const key = m.group ?? "";
-                  if (!buckets.has(key)) buckets.set(key, [] as typeof tile.spec.default_models);
-                  buckets.get(key)!.push(m);
-                }
-                const entries = Array.from(buckets.entries());
-                return entries.map(([groupName, models]) => (
-                  <div key={groupName || "__flat"} style={{ marginBottom: 12 }}>
-                    {groupName && (
-                      <div
-                        style={{
-                          fontSize: 11,
-                          fontWeight: 600,
-                          letterSpacing: "0.06em",
-                          color: "var(--c-dim)",
-                          textTransform: "uppercase",
-                          margin: "6px 0",
-                        }}
-                      >
-                        {groupName}
-                      </div>
-                    )}
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 6 }}>
-                      {models.map((m) => {
-                        const checked = enabled.includes(m.id);
-                        return (
-                          <label
-                            key={m.id}
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 8,
-                              padding: "6px 8px",
-                              borderRadius: 6,
-                              cursor: "pointer",
-                              fontSize: 12,
-                              color: "var(--c-high)",
-                              background: checked ? "var(--c-srf)" : "transparent",
-                            }}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => onToggleModel(m.id)}
-                              style={{ cursor: "pointer" }}
-                            />
-                            <span
-                              style={{
-                                flex: 1,
-                                minWidth: 0,
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
-                              }}
-                            >
-                              {m.label}
-                            </span>
-                            {m.context_window && (
-                              <span style={{ fontSize: 10, color: "var(--c-dim)" }}>{m.context_window}</span>
-                            )}
-                            {m.note && (
-                              <span
-                                style={{
-                                  fontSize: 9.5,
-                                  fontWeight: 600,
-                                  letterSpacing: "0.04em",
-                                  color: "var(--c-dim)",
-                                  textTransform: "uppercase",
-                                }}
-                              >
-                                {m.note}
-                              </span>
-                            )}
-                          </label>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ));
-              })()}
-            </div>
-          )}
+          {/* ── Model checklist (live catalog + search for discovery providers) ── */}
+          <ModelPickerChecklist tile={tile} models={effectiveModels} />
 
           {/* ── env-hint footer (small) ── */}
           {tile.spec.auth.kind === "bearer" && tile.spec.auth.env_hint && (

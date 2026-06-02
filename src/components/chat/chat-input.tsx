@@ -3219,17 +3219,18 @@ export function ChatInput({
         }));
       });
     }
-    // OpenRouter's full catalog (hundreds of models) comes from the backend's
-    // live `/providers/openrouter/models` proxy — the same lazy fetch
-    // SessionToolbar runs. Without this the composer picker only saw OpenRouter's
-    // small curated fallback (~8) instead of the full live list. Only worth
-    // fetching when the provider is actually connected.
-    if (providerTiles.some((t) => t.spec.id === "openrouter" && t.connected)) {
-      void fetchProviderModels("openrouter").then((models) => {
+    // HTTP providers whose full catalog (hundreds of models) is discovered from
+    // the backend's live `/providers/{id}/models` proxy — OpenRouter and
+    // Cloudflare Workers AI — same lazy fetch SessionToolbar runs. Without this
+    // the composer picker only saw the small curated fallback. Only fetch the
+    // ones actually connected; the rail auto-gets a search box past 20 entries.
+    for (const pid of ["openrouter", "cloudflare-workers-ai"]) {
+      if (!providerTiles.some((t) => t.spec.id === pid && t.connected)) continue;
+      void fetchProviderModels(pid).then((models) => {
         if (cancelled || models.length === 0) return; // empty → keep curated fallback
         setDiscoveredModels((prev) => ({
           ...prev,
-          openrouter: models.map((m) => ({
+          [pid]: models.map((m) => ({
             id: m.id,
             label: m.label,
             ctx: m.ctx,

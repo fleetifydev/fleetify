@@ -16,6 +16,7 @@ import { Eye, EyeOff, X, Loader2, ExternalLink } from "lucide-react";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { providers as providersApi, type ProviderTile } from "@/lib/providers-api";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
+import { ModelPickerChecklist, useEffectiveModels } from "./model-picker-checklist";
 import { ConnectionStatusPill } from "@/components/settings/shared/connection-status-pill";
 import { Toggle } from "@/components/settings/general/_primitives";
 
@@ -128,6 +129,10 @@ export function CloudflareConfigCard({
       ? "Disabled"
       : "Not connected";
 
+  // Effective catalog — Cloudflare's full live Workers AI list when connected,
+  // else the static curated list. Drives the header count + the checklist.
+  const effectiveModels = useEffectiveModels(tile, tile.connected);
+
   const persist = async (tok: string, acct: string) => {
     await setKey(tile.spec.id, tok);
     await setCloudflareAccountId(acct);
@@ -167,7 +172,7 @@ export function CloudflareConfigCard({
   return (
     <div
       style={{
-        border: `1px solid ${tile.connected ? "rgba(74,222,128,0.30)" : "var(--c-brd)"}`,
+        border: "1px solid var(--c-brd)",
         borderRadius: 10,
         marginBottom: 10,
         overflow: "hidden",
@@ -194,7 +199,7 @@ export function CloudflareConfigCard({
         >
           <div style={{ fontSize: 13, fontWeight: 500 }}>{tile.spec.display_name}</div>
           <div style={{ fontSize: 11.5, color: "var(--c-low)", marginTop: 2 }}>
-            {tile.spec.default_models.length} models · serverless GPU inference
+            {effectiveModels.length} models · serverless GPU inference
           </div>
         </button>
         <ConnectionStatusPill status={status} label={statusLabel} />
@@ -274,10 +279,11 @@ export function CloudflareConfigCard({
                 </div>
               </div>
               <div style={{ fontSize: 11, color: "var(--c-dim)", marginTop: 8 }}>
-                {tile.spec.default_models.length} models available in the composer
-                picker. Selecting one runs inference straight on your Cloudflare
-                account — no Worker is deployed.
+                {effectiveModels.length} models available in the composer picker.
+                Selecting one runs inference straight on your Cloudflare account —
+                no Worker is deployed.
               </div>
+              <ModelPickerChecklist tile={tile} models={effectiveModels} />
             </div>
           ) : (
             <>

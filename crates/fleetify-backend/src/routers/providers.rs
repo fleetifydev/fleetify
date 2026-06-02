@@ -345,6 +345,7 @@ fn provider_models_json(id: &str, models: &ProviderModelList) -> Value {
 async fn discover_provider_models(id: &str) -> ProviderModelList {
     match id {
         "openrouter" => discover_openrouter_models().await,
+        "cloudflare-workers-ai" => discover_cloudflare_models().await,
         _ => Vec::new(),
     }
 }
@@ -400,6 +401,84 @@ fn parse_openrouter_models(body: &Value) -> ProviderModelList {
         .collect();
     out.sort_by(|a, b| a.id.cmp(&b.id));
     out
+}
+
+/// Fetch Cloudflare Workers AI's live model catalog via
+/// `GET /accounts/{id}/ai/models/search`, keeping only Text Generation (chat)
+/// models. Requires the stored account id + token; either missing (or any
+/// network/parse failure) degrades to an empty list so the picker falls back
+/// to the curated catalog. Mirrors `discover_openrouter_models`, but
+/// Cloudflare's catalog is account-scoped so it needs auth (OpenRouter's is
+/// public).
+async fn discover_cloudflare_models() -> ProviderModelList {
+    let Some(account_id) = crate::providers::keys::get_cloudflare_account_id() else {
+        return Vec::new();
+    };
+    let Some(token) = crate::providers::keys::get_key("cloudflare-workers-ai") else {
+        return Vec::new();
+    };
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    // The catalog is small (<100 models). Page through 100 at a time and stop
+    // at the first short page; cap pages defensively so a malformed
+    // result_info can't loop us.
+    let mut out: ProviderModelList = Vec::new();
+    for page in 1..=4u32 {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/models/search?per_page=100&page={page}"
+        );
+        let body: Value = match client.get(&url).bearer_auth(&token).send().await {
+            Ok(r) if r.status().is_success() => match r.json().await {
+                Ok(v) => v,
+                Err(_) => break,
+            },
+            _ => break,
+        };
+        let raw_len = body
+            .get("result")
+            .and_then(|d| d.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        out.extend(parse_cloudflare_models(&body));
+        if raw_len < 100 {
+            break; // last page
+        }
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out.dedup_by(|a, b| a.id == b.id);
+    out
+}
+
+/// Pure parser for the Cloudflare `/ai/models/search` payload — testable
+/// without HTTP. Keeps only `task.name == "Text Generation"` entries, mapping
+/// `result[].name` (the `@cf/...` id) to the picker shape. Label is the id's
+/// last path segment for a compact rail entry.
+fn parse_cloudflare_models(body: &Value) -> ProviderModelList {
+    let Some(arr) = body.get("result").and_then(|d| d.as_array()) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter(|m| {
+            m.get("task")
+                .and_then(|t| t.get("name"))
+                .and_then(|n| n.as_str())
+                == Some("Text Generation")
+        })
+        .filter_map(|m| {
+            let id = m.get("name").and_then(|x| x.as_str())?.to_string();
+            let label = id.rsplit('/').next().unwrap_or(&id).to_string();
+            Some(ProviderModel {
+                id,
+                label,
+                ctx: None,
+            })
+        })
+        .collect()
 }
 
 /// `128000 → "128K"`, `1_000_000 → "1M"`, `200000 → "200K"`. Display-only.
@@ -1619,5 +1698,28 @@ mod tests {
         assert_eq!(v["models"][0]["ctx"], "128K");
         assert!(v["models"][1].get("ctx").is_none());
         assert_eq!(v["models"][1]["label"], "D");
+    }
+
+    #[test]
+    fn parse_cloudflare_models_keeps_only_text_generation() {
+        let body = serde_json::json!({
+            "success": true,
+            "result": [
+                { "name": "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "task": { "name": "Text Generation" } },
+                { "name": "@cf/baai/bge-base-en-v1.5", "task": { "name": "Text Embeddings" } },
+                { "name": "@cf/openai/gpt-oss-120b", "task": { "name": "Text Generation" } },
+                { "name": "@cf/black-forest-labs/flux-1-schnell", "task": { "name": "Text-to-Image" } },
+            ],
+        });
+        let out = parse_cloudflare_models(&body);
+        let ids: Vec<&str> = out.iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&"@cf/meta/llama-3.3-70b-instruct-fp8-fast"));
+        assert!(ids.contains(&"@cf/openai/gpt-oss-120b"));
+        // Non-text tasks (embeddings, image) are filtered out.
+        assert_eq!(out.len(), 2);
+        // Label is the id's last path segment.
+        let m = out.iter().find(|m| m.id.ends_with("gpt-oss-120b")).unwrap();
+        assert_eq!(m.label, "gpt-oss-120b");
+        assert!(m.ctx.is_none());
     }
 }
