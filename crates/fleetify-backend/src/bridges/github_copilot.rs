@@ -265,6 +265,31 @@ pub async fn list_models(project_path: &str) -> Result<Vec<CopilotModel>> {
     Ok(models)
 }
 
+/// Backfill an empty `env` array on every **stdio** entry (one with a
+/// `command`) that lacks it. Copilot's ACP `McpServerStdio` schema makes
+/// `env` a REQUIRED array — an entry that omits it (or, before the
+/// `to_acp_servers` switch, supplied it as an object) makes the whole
+/// `session/new` fail with `-32602 Invalid params`. Mirrors the identical
+/// helper in the gemini/opencode/cursor ACP bridges. http/sse entries (no
+/// `command`) pass through untouched.
+fn ensure_stdio_env(servers: Value) -> Value {
+    let Value::Array(arr) = servers else {
+        return servers;
+    };
+    Value::Array(
+        arr.into_iter()
+            .map(|mut entry| {
+                if let Value::Object(ref mut m) = entry {
+                    if m.contains_key("command") && !m.contains_key("env") {
+                        m.insert("env".to_string(), Value::Array(Vec::new()));
+                    }
+                }
+                entry
+            })
+            .collect(),
+    )
+}
+
 /// Extract `(modelId, name)` pairs from a Copilot ACP `session/new` result.
 /// Prefers the dedicated `models.availableModels` field; falls back to the
 /// `configOptions` entry whose `id == "model"`. Empty when neither is present.
@@ -402,8 +427,18 @@ impl GitHubCopilotBridge {
     }
 
     /// Translate Fleetify's MCP config (`{mcpServers: {name: {...}}}`) into
-    /// the ACP `session/new.mcpServers` array shape. Returns `Value::Array`
-    /// for direct passthrough into the JSON-RPC payload.
+    /// the ACP `session/new.mcpServers` array shape.
+    ///
+    /// Delegates to the shared [`mcp_dispatch::to_acp_servers`] so the wire
+    /// shape is identical to what the gemini/opencode/cursor ACP bridges
+    /// send: `env`/`headers` objects become `[{name,value}]` arrays, http/sse
+    /// entries are typed via their `url`, and the internal `builtin` marker is
+    /// stripped. The previous bespoke mapping emitted `env` as a JSON *object*,
+    /// which Copilot's ACP `McpServerStdio` schema rejects with `-32602 Invalid
+    /// params` ("env: expected array, received object") — that broke every
+    /// dispatch to a Copilot agent once #76 began feeding real fleet MCPs
+    /// (whose `env` is an object) through here. `ensure_stdio_env` then
+    /// backfills the required `env` array on any stdio entry still lacking one.
     fn translate_mcp_config(&self) -> Value {
         let Some(cfg) = self.mcp_config.as_ref() else {
             return Value::Array(Vec::new());
@@ -411,18 +446,11 @@ impl GitHubCopilotBridge {
         let Some(servers) = cfg.get("mcpServers").and_then(|m| m.as_object()) else {
             return Value::Array(Vec::new());
         };
-        let arr: Vec<Value> = servers
+        let map: std::collections::BTreeMap<String, Value> = servers
             .iter()
-            .map(|(name, server_cfg)| {
-                serde_json::json!({
-                    "name": name,
-                    "command": server_cfg.get("command").cloned().unwrap_or(Value::Null),
-                    "args": server_cfg.get("args").cloned().unwrap_or_else(|| serde_json::json!([])),
-                    "env": server_cfg.get("env").cloned().unwrap_or_else(|| serde_json::json!({})),
-                })
-            })
+            .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        Value::Array(arr)
+        ensure_stdio_env(crate::services::mcp_dispatch::to_acp_servers(&map))
     }
 
     /// Clone-able view used by the spawned send task. Only Arc + small
@@ -746,6 +774,63 @@ mod tests {
         assert_eq!(copilot_models_to_json(&[]), serde_json::json!([]));
     }
 
+    #[test]
+    fn translate_mcp_config_emits_env_as_array_for_copilot_acp() {
+        // Copilot's ACP `McpServerStdio` schema requires `env` to be an
+        // array of {name,value}; an object yields `-32602 Invalid params`
+        // (verified live against copilot 1.0.57: zod "env: expected array,
+        // received object"). This is the dispatch-to-Copilot regression —
+        // #76 began feeding real fleet MCPs (env is an object) into the old
+        // bespoke translator. The shared `to_acp_servers` emits the right
+        // shape (env object → [{name,value}] array, `builtin` stripped).
+        let cfg = serde_json::json!({
+            "mcpServers": {
+                "fleet_memory": {
+                    "type": "stdio",
+                    "command": "/path/fleet-memory-mcp",
+                    "args": [],
+                    "env": { "FLEETIFY_SESSION_ID": "sess-1" },
+                    "builtin": true
+                }
+            }
+        });
+        let b = GitHubCopilotBridge::new("s", "/tmp", "default", None, None, Some(cfg));
+        let out = b.translate_mcp_config();
+        let arr = out.as_array().expect("mcpServers must be an array");
+        assert_eq!(arr.len(), 1);
+        let e = &arr[0];
+        assert_eq!(e["name"], "fleet_memory");
+        assert_eq!(e["command"], "/path/fleet-memory-mcp");
+        let env = e["env"]
+            .as_array()
+            .expect("env MUST be an array of {name,value} — copilot -32602s on an object");
+        assert_eq!(env[0]["name"], "FLEETIFY_SESSION_ID");
+        assert_eq!(env[0]["value"], "sess-1");
+        // Internal `builtin` marker must never reach the ACP wire.
+        assert!(e.get("builtin").is_none());
+    }
+
+    #[test]
+    fn translate_mcp_config_none_is_empty_array() {
+        let b = GitHubCopilotBridge::new("s", "/tmp", "default", None, None, None);
+        assert_eq!(b.translate_mcp_config(), serde_json::json!([]));
+    }
+
+    #[test]
+    fn ensure_stdio_env_backfills_only_envless_stdio() {
+        let input = json!([
+            { "name": "a", "command": "node", "args": ["x"] }, // stdio, no env → add []
+            { "name": "b", "command": "node", "args": [], "env": [{"name":"K","value":"v"}] }, // keep
+            { "name": "c", "type": "http", "url": "http://x", "headers": [] }, // http → untouched
+        ]);
+        let out = ensure_stdio_env(input);
+        let arr = out.as_array().unwrap();
+        assert_eq!(arr[0]["env"], json!([])); // injected
+        assert_eq!(arr[1]["env"], json!([{"name":"K","value":"v"}])); // preserved
+        assert!(arr[2].get("env").is_none()); // http untouched
+        assert_eq!(ensure_stdio_env(json!({})), json!({})); // non-array passthrough
+    }
+
     fn dummy_bridge(mode: &str, model: Option<&str>, effort: Option<&str>) -> GitHubCopilotBridge {
         GitHubCopilotBridge::new(
             "s1",
@@ -960,7 +1045,10 @@ mod tests {
         assert_eq!(arr[0]["name"], "github");
         assert_eq!(arr[0]["command"], "github-mcp");
         assert_eq!(arr[0]["args"][0], "--token");
-        assert_eq!(arr[0]["env"]["GITHUB_TOKEN"], "secret");
+        // env: source object → ACP `[{name,value}]` array (Copilot rejects an
+        // object with -32602). See `translate_mcp_config_emits_env_as_array_*`.
+        assert_eq!(arr[0]["env"][0]["name"], "GITHUB_TOKEN");
+        assert_eq!(arr[0]["env"][0]["value"], "secret");
     }
 
     #[test]
@@ -973,8 +1061,11 @@ mod tests {
         }));
         let result = b.translate_mcp_config();
         let arr = result.as_array().unwrap();
-        assert_eq!(arr[0]["args"], json!([]));
-        assert_eq!(arr[0]["env"], json!({}));
+        assert_eq!(arr[0]["command"], "barebones-mcp");
+        // env is backfilled to an empty ARRAY (not object) so the stdio entry
+        // satisfies Copilot's `McpServerStdio` schema even when the source
+        // registry entry omitted `env`.
+        assert_eq!(arr[0]["env"], json!([]));
     }
 
     #[tokio::test]
