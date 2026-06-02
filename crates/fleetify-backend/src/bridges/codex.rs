@@ -98,6 +98,30 @@ fn is_tool_kind(kind: &str) -> bool {
     )
 }
 
+/// Pull a human-readable message out of a codex `error` notification or the
+/// `turn.error` carried on a failed `turn/completed`. Both nest the API error
+/// under `error.message`, which is itself usually a JSON-encoded error blob —
+/// so unwrap the innermost `error.message` / `message` when present, else
+/// return the raw string. `None` when there's no error (e.g. a successful turn,
+/// where `turn.error` is absent or null). Without surfacing this, a failed turn
+/// (e.g. an unsupported model) produced a silent empty reply.
+fn extract_codex_error(obj: &Value) -> Option<String> {
+    let raw = obj.get("error")?.get("message").and_then(|v| v.as_str())?;
+    if let Ok(inner) = serde_json::from_str::<Value>(raw) {
+        if let Some(m) = inner
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|v| v.as_str())
+        {
+            return Some(m.to_string());
+        }
+        if let Some(m) = inner.get("message").and_then(|v| v.as_str()) {
+            return Some(m.to_string());
+        }
+    }
+    Some(raw.to_string())
+}
+
 struct State {
     client: Arc<CodexClient>,
     _proc: Child,
@@ -438,6 +462,30 @@ impl CodexBridge {
 
             let usage_acc = Arc::new(Mutex::new(UsageAcc::default()));
 
+            // Surface codex-reported errors (e.g. an unsupported model) so a
+            // failed turn shows the real reason instead of an empty reply.
+            // `error_emitted` dedups the dedicated `error` notification against
+            // the `turn.error` on a failed `turn/completed`.
+            let error_emitted = Arc::new(AtomicBool::new(false));
+            let tx_err = bridge_tx.clone();
+            let err_flag = error_emitted.clone();
+            client
+                .on_notification(
+                    "error",
+                    Arc::new(move |params: Value| {
+                        let tx = tx_err.clone();
+                        let flag = err_flag.clone();
+                        Box::pin(async move {
+                            if let Some(msg) = extract_codex_error(&params) {
+                                if !flag.swap(true, Ordering::SeqCst) {
+                                    let _ = tx.send(BridgeEvent::Error { error: msg }).await;
+                                }
+                            }
+                        })
+                    }),
+                )
+                .await;
+
             // ── Notification handlers (registered before turn/start) ──
             let tx_msg = bridge_tx.clone();
             client
@@ -498,6 +546,8 @@ impl CodexBridge {
             let turn_done_completed = turn_done.clone();
             let acc_completed = usage_acc.clone();
             let sid_for_complete_log = session_id.clone();
+            let tx_turn_err = bridge_tx.clone();
+            let err_flag_turn = error_emitted.clone();
             client
                 .on_notification(
                     "turn/completed",
@@ -505,8 +555,17 @@ impl CodexBridge {
                         let notify = turn_done_completed.clone();
                         let acc = acc_completed.clone();
                         let sid_log = sid_for_complete_log.clone();
+                        let tx = tx_turn_err.clone();
+                        let flag = err_flag_turn.clone();
                         Box::pin(async move {
                             tracing::info!(target: "codex", session_id = %sid_log, "codex: turn/completed received");
+                            // A failed turn carries `turn.error`; surface it if
+                            // the dedicated `error` notification didn't already.
+                            if let Some(msg) = params.get("turn").and_then(extract_codex_error) {
+                                if !flag.swap(true, Ordering::SeqCst) {
+                                    let _ = tx.send(BridgeEvent::Error { error: msg }).await;
+                                }
+                            }
                             accumulate_usage(&acc, &params).await;
                             notify.notify_one();
                         })
@@ -960,6 +1019,31 @@ fn item_to_tool_end(params: &Value) -> Option<(String, String, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extract_codex_error_unwraps_api_error_and_handles_none() {
+        // codex `error` notification: `error.message` is a JSON-encoded API
+        // error — unwrap the innermost human message (verified live: codex
+        // 0.135.0 rejects an unsupported model this way).
+        let p = json!({
+            "error": {
+                "message": "{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-5.2' model is not supported when using Codex with a ChatGPT account.\"}}",
+                "codexErrorInfo": "other"
+            }
+        });
+        assert_eq!(
+            extract_codex_error(&p).as_deref(),
+            Some("The 'gpt-5.2' model is not supported when using Codex with a ChatGPT account.")
+        );
+        // A plain (non-JSON) message passes through unchanged.
+        assert_eq!(
+            extract_codex_error(&json!({ "error": { "message": "boom" } })).as_deref(),
+            Some("boom")
+        );
+        // No error → None (successful turn: `turn.error` absent or null).
+        assert_eq!(extract_codex_error(&json!({ "turn": {} })), None);
+        assert_eq!(extract_codex_error(&json!({ "error": null })), None);
+    }
 
     #[test]
     fn send_message_accepts_bridge_context() {
