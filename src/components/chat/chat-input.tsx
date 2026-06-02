@@ -13,7 +13,7 @@ import {
   ScanEye, Plug, RefreshCw, FolderTree,
 } from "lucide-react";
 import { truncateMid, folderName } from "@/lib/utils";
-import { searchProjectFiles, apiFetch, type FileSearchEntry, updateSession as apiUpdateSession, fetchSessionDetail, enhancePrompt, fetchAgentModels } from "@/lib/api";
+import { searchProjectFiles, apiFetch, type FileSearchEntry, updateSession as apiUpdateSession, fetchSessionDetail, enhancePrompt, fetchAgentModels, fetchProviderModels } from "@/lib/api";
 import { registerConfigPatch } from "@/lib/session-config-sync";
 import { useFleetStore, type FleetMode } from "@/stores/fleet-store";
 import { LogoMark } from "@/components/brand/logo-mark";
@@ -3219,10 +3219,29 @@ export function ChatInput({
         }));
       });
     }
+    // OpenRouter's full catalog (hundreds of models) comes from the backend's
+    // live `/providers/openrouter/models` proxy — the same lazy fetch
+    // SessionToolbar runs. Without this the composer picker only saw OpenRouter's
+    // small curated fallback (~8) instead of the full live list. Only worth
+    // fetching when the provider is actually connected.
+    if (providerTiles.some((t) => t.spec.id === "openrouter" && t.connected)) {
+      void fetchProviderModels("openrouter").then((models) => {
+        if (cancelled || models.length === 0) return; // empty → keep curated fallback
+        setDiscoveredModels((prev) => ({
+          ...prev,
+          openrouter: models.map((m) => ({
+            id: m.id,
+            label: m.label,
+            ctx: m.ctx,
+            supports_effort: false,
+          })),
+        }));
+      });
+    }
     return () => {
       cancelled = true;
     };
-  }, [openDrop, projectPath]);
+  }, [openDrop, projectPath, providerTiles]);
 
   // Controlled-or-local effort
   const [effortLocal, setEffortLocal] = useState<Effort>("high");

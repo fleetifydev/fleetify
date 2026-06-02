@@ -7,7 +7,7 @@
  * Status pill in the header reflects the persisted state so the user
  * doesn't need to expand every tile to see what's connected.
  */
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Eye, EyeOff, X, Loader2 } from "lucide-react";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import {
@@ -16,6 +16,7 @@ import {
   type ProvidersTestResult,
 } from "@/lib/providers-api";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
+import { fetchProviderModels } from "@/lib/api";
 import { ConnectionStatusPill } from "@/components/settings/shared/connection-status-pill";
 import { Toggle } from "@/components/settings/general/_primitives";
 import type { ProviderHealth } from "@/hooks/use-provider-health";
@@ -112,6 +113,9 @@ export function ProviderCard({
   const [testResult, setTestResult] = useState<ProvidersTestResult | null>(null);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Live discovered model count for providers whose real catalog is fetched
+  // at runtime (OpenRouter). null until resolved → fall back to the static count.
+  const [liveModelCount, setLiveModelCount] = useState<number | null>(null);
 
   const allModelIds = tile.spec.default_models.map((m) => m.id);
   const enabled = tile.enabled_models.length > 0 ? tile.enabled_models : allModelIds;
@@ -137,6 +141,23 @@ export function ProviderCard({
       : health.kind === "testing"
       ? "Testing…"
       : "Not connected";
+
+  // OpenRouter ships only a small curated fallback in the static catalog but
+  // exposes its full catalog (hundreds of models) via live discovery. When
+  // connected, show that real count instead of the misleading static length.
+  // OpenRouter is the only provider with a discovery endpoint today (matches
+  // the backend's `discover_provider_models`).
+  useEffect(() => {
+    if (tile.spec.id !== "openrouter" || status !== "connected") return;
+    let cancelled = false;
+    void fetchProviderModels(tile.spec.id).then((models) => {
+      if (!cancelled && models.length > 0) setLiveModelCount(models.length);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [tile.spec.id, status]);
+  const modelCount = liveModelCount ?? tile.spec.default_models.length;
 
   // Lazy-load masked key preview when the user expands the card (avoids
   // an N×N IPC storm on initial Settings page render).
@@ -244,7 +265,7 @@ export function ProviderCard({
               {tile.is_default && <DefaultBadge />}
             </div>
             <div style={{ fontSize: 11.5, color: "var(--c-low)", marginTop: 2 }}>
-              {tile.spec.default_models.length} models · {tile.spec.default_base_url}
+              {modelCount} models · {tile.spec.default_base_url}
             </div>
           </div>
           <ConnectionStatusPill status={status} label={statusLabel} />
