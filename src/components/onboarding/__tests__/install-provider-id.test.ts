@@ -88,28 +88,32 @@ describe("OnboardingChat install IPC", () => {
     expect(onboardingSrc).not.toMatch(/for\s*\(\s*const\s+p\s+of\s+providers\s*\)/);
   });
 
-  it("uses backend catalog ids (no anthropic/groq, gemini-api not googleai)", () => {
-    // providers.setKey returns "unknown provider <id>" for anything
-    // not in `providers::CATALOG`. The previous list shipped
-    // "anthropic" / "googleai" / "groq" which the catalog doesn't
-    // carry; the saves failed and the screenshots reported the
-    // error inline. The list must match the catalog now.
+  it("lists every backend catalog provider id (full 20) and keeps gemini-api naming", () => {
+    // providers.setKey/setDefault reject ids not in `providers::CATALOG`.
+    // Onboarding must now offer the FULL catalog so the selection drives
+    // the enabled set. Anthropic + Cloudflare + the three new CLIs join
+    // the list; only the legacy mis-ids stay banned.
     const block = onboardingSrc.match(/const PROVIDERS:\s*ProviderDef\[\]\s*=\s*\[([\s\S]*?)\];/);
     expect(block).not.toBeNull();
     const ids = Array.from(block![1].matchAll(/id:\s*"([^"]+)"/g)).map((m) => m[1]);
-    // Removed: anthropic (no catalog entry) + groq (catalog has
-    // "grok" for xAI, different vendor).
-    expect(ids).not.toContain("anthropic");
+
+    // Legacy mis-ids that are NOT in the catalog must never appear.
     expect(ids).not.toContain("groq");
-    // Renamed: googleai → gemini-api so providers.setKey hits the
-    // real catalog entry.
     expect(ids).not.toContain("googleai");
     expect(ids).toContain("gemini-api");
-    // Catalog API providers added so the user reaches them inside
-    // onboarding instead of bouncing into Settings.
-    for (const id of ["deepseek", "grok", "kimi-api", "perplexity", "nvidia-nim"]) {
+
+    // The full catalog (20 ids).
+    const catalog = [
+      "claude", "codex", "gemini", "kimi", "opencode", "github-copilot",
+      "cursor", "agy", "antigravity-sdk",
+      "openai", "anthropic", "deepseek", "grok", "nvidia-nim", "kimi-api",
+      "gemini-api", "perplexity", "openrouter", "cloudflare-workers-ai",
+      "ollama",
+    ];
+    for (const id of catalog) {
       expect(ids, `expected catalog provider "${id}" in onboarding list`).toContain(id);
     }
+    expect(ids.length).toBe(catalog.length);
   });
 
   it("renders a Continue button gated on at least one ready provider", () => {
@@ -184,5 +188,35 @@ describe("OnboardingChat install IPC", () => {
     // The saved view's Edit affordance has to remain an underlined
     // text button (per the user spec) so it visibly invites a click.
     expect(onboardingSrc).toMatch(/textDecoration:\s*"underline"/);
+  });
+
+  it("persists the selection as the enabled set via setConnectedBulk", () => {
+    // Selecting providers in onboarding must now drive Settings → Providers.
+    // handleProvidersConfirm builds the connected map from the catalog +
+    // calls setConnectedBulk so non-selected providers are forced OFF.
+    expect(onboardingSrc).toMatch(/buildSelectionPersist\(/);
+    expect(onboardingSrc).toMatch(/providersApi[\s\n]*\.[\s\n]*setConnectedBulk\(/);
+  });
+
+  it("shows a 'Set up in Settings' hint for probe-less CLI agents", () => {
+    // opencode / cursor / github-copilot have no scanKey; resolveProvider
+    // and getInstallInfo must point the user to Settings rather than show
+    // a bare "Manual setup" / empty label.
+    expect(onboardingSrc).toMatch(/detail:\s*"Set up in Settings"/);
+    expect(onboardingSrc).toMatch(/p\.kind\s*===\s*"cli"[\s\S]{0,120}label:\s*"Set up in Settings"/);
+  });
+
+  it("fleet step persists an explicit (provider, model) via setDefault", () => {
+    // handleMainAgentPick now takes a modelId and passes it to setDefault
+    // so first launch opens on the chosen model, not Auto.
+    expect(onboardingSrc).toMatch(/handleMainAgentPick\s*=\s*async\s*\(\s*provider:[^)]*modelId/);
+    expect(onboardingSrc).toMatch(/setDefault\(\s*provider\.id\s*,\s*modelId/);
+  });
+
+  it("fleet step renders a model sub-list from catalog tiles", () => {
+    // MainAgentWidget resolves models via modelsForTile and renders ModelRow.
+    expect(onboardingSrc).toMatch(/modelsForTile\(/);
+    expect(onboardingSrc).toMatch(/<ModelRow\b/);
+    expect(onboardingSrc).toMatch(/function ModelRow\b/);
   });
 });

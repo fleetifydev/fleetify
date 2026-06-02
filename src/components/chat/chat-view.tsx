@@ -13,7 +13,7 @@ import { fetchMessages, fetchClaudeHistory, createSession, clearSessionMessages,
 import { registerConfigPatch } from "@/lib/session-config-sync";
 import { isWindowsPlatform, folderName } from "@/lib/utils";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
-import { buildPickerGroups } from "@/lib/picker-groups";
+import { resolveStartupDefault } from "@/lib/picker-groups";
 import { FleetDecisionCard } from "./fleet-decision-card";
 import { useFleetStore, AUTO_CHAIN_CAP } from "@/stores/fleet-store";
 import { LogoMark } from "@/components/brand/logo-mark";
@@ -241,18 +241,28 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   // tile if it's connected, else the first connected tile + its first model,
   // instead of a hardcoded "claude" that may not be set up.
   const { tiles: providerTiles } = useProvidersConfig();
+  // Persisted Fleet default model (fleet.config.json::defaultModel), written
+  // by onboarding's fleet-model step. Loaded once on mount; the staff session
+  // is created on the user's first send (well after this resolves), so the
+  // seed below always sees it.
+  const [persistedDefaultModel, setPersistedDefaultModel] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void window.electronAPI?.getConfig?.().then((cfg) => {
+      if (!cancelled) {
+        setPersistedDefaultModel(
+          ((cfg as { defaultModel?: string } | undefined)?.defaultModel) ?? null,
+        );
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const startupDefault = useMemo(() => {
-    const pick =
-      providerTiles.find((t) => t.is_default && t.connected) ??
-      providerTiles.find((t) => t.connected);
-    const tool = (pick?.spec.id ?? "claude") as import("@/types/session").AgentTool;
-    const groups = buildPickerGroups(
-      providerTiles,
-      providerTiles.filter((t) => t.spec.kind === "cli" && t.connected).map((t) => t.spec.id),
-    );
-    const model = groups.find((g) => g.id === tool)?.models[0]?.id;
-    return { tool, model };
-  }, [providerTiles]);
+    const { tool, model } = resolveStartupDefault(providerTiles, persistedDefaultModel);
+    return { tool: tool as import("@/types/session").AgentTool, model };
+  }, [providerTiles, persistedDefaultModel]);
   const isLocalOnlyActive = activeSession?.local_only === true;
 
   const scrollRef = useRef<HTMLDivElement>(null);

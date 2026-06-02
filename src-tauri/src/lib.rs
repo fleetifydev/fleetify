@@ -155,6 +155,7 @@ pub fn run() {
             shell::ipc::providers_delete_key,
             shell::ipc::providers_set_enabled,
             shell::ipc::providers_set_default,
+            shell::ipc::providers_set_connected_bulk,
             shell::ipc::providers_test_connection,
             shell::ipc::providers_ollama_probe,
             shell::ipc::providers_set_enabled_models,

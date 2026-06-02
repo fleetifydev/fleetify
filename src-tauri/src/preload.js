@@ -252,8 +252,17 @@ document.addEventListener("mousedown", function (e) {
             enabled: !!enabled,
           });
         },
-        setDefault:       function (id) {
-          return invoke("providers_set_default", { id: String(id || "") });
+        setDefault:       function (id, model) {
+          return invoke("providers_set_default", {
+            id: String(id || ""),
+            model: model == null ? null : String(model),
+          });
+        },
+        setConnectedBulk: function (connected, enabledAgents) {
+          return invoke("providers_set_connected_bulk", {
+            connected: connected || {},
+            enabledAgents: Array.isArray(enabledAgents) ? enabledAgents.map(String) : null,
+          });
         },
         testConnection:   function (id, key) {
           return invoke("providers_test_connection", {

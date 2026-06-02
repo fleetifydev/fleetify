@@ -157,7 +157,11 @@ interface ProvidersAPI {
   getKeyPreview: (id: string) => Promise<ProvidersKeyPreviewResult>;
   deleteKey: (id: string) => Promise<ProvidersDeleteResult>;
   setEnabled: (id: string, enabled: boolean) => Promise<ProvidersMutationResult>;
-  setDefault: (id: string) => Promise<ProvidersMutationResult & { default_model?: string | null }>;
+  setDefault: (id: string, model?: string | null) => Promise<ProvidersMutationResult & { default_model?: string | null }>;
+  setConnectedBulk: (
+    connected: Record<string, boolean>,
+    enabledAgents?: string[] | null,
+  ) => Promise<ProvidersMutationResult>;
   testConnection: (id: string, key: string) => Promise<ProvidersTestResult>;
   ollamaProbe: (baseUrl?: string | null) => Promise<ProvidersOllamaProbeResult>;
   setEnabledModels: (id: string, models: string[]) => Promise<ProvidersMutationResult>;
@@ -186,7 +190,8 @@ function api(): ProvidersAPI {
       getKeyPreview: async () => ({ ok: true, preview: null }),
       deleteKey: async () => ({ ok: false }),
       setEnabled: async () => ({ ok: false, error: "electron unavailable" }),
-      setDefault: async () => ({ ok: false, error: "electron unavailable" }),
+      setDefault: async (_id: string, _model?: string | null) => ({ ok: false, error: "electron unavailable" }),
+      setConnectedBulk: async () => ({ ok: false, error: "electron unavailable" }),
       testConnection: async () => ({
         ok: false,
         code: "NETWORK",
@@ -231,7 +236,9 @@ export const providers = {
   getKeyPreview: (id: string) => api().getKeyPreview(id),
   deleteKey: (id: string) => api().deleteKey(id),
   setEnabled: (id: string, enabled: boolean) => api().setEnabled(id, enabled),
-  setDefault: (id: string) => api().setDefault(id),
+  setDefault: (id: string, model?: string | null) => api().setDefault(id, model ?? null),
+  setConnectedBulk: (connected: Record<string, boolean>, enabledAgents?: string[] | null) =>
+    api().setConnectedBulk(connected, enabledAgents ?? null),
   testConnection: (id: string, key: string) => api().testConnection(id, key),
   ollamaProbe: (baseUrl?: string | null) => api().ollamaProbe(baseUrl ?? null),
   setEnabledModels: (id: string, models: string[]) => api().setEnabledModels(id, models),

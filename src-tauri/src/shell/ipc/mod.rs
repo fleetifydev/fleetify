@@ -2213,6 +2213,46 @@ pub async fn providers_set_enabled(
     serde_json::json!({ "ok": true })
 }
 
+/// Bulk-write provider enabled state in a single config save + one
+/// backend reload. Onboarding calls this once after the user confirms
+/// their selection so we don't fan out one `providers_set_enabled` per
+/// provider (each of which reloads the backend). `connected` is a full
+/// id→bool map applied verbatim onto `ProvidersConfig.connected`.
+/// `enabled_agents`, when `Some`, REPLACES the CLI-agent shortlist
+/// (Settings → Agents' "Active" section + the New Agent dialog) so the
+/// Agents page agrees with the toggles. We validate every id up front
+/// and reject the whole batch on the first unknown one, so a typo never
+/// writes a half-applied map.
+#[tauri::command]
+pub async fn providers_set_connected_bulk(
+    app: tauri::AppHandle,
+    connected: std::collections::HashMap<String, bool>,
+    enabled_agents: Option<Vec<String>>,
+) -> serde_json::Value {
+    for id in connected.keys() {
+        if fleetify_backend::providers::find_provider(id).is_none() {
+            return serde_json::json!({ "ok": false, "code": "UNKNOWN_PROVIDER", "error": format!("unknown provider {id}") });
+        }
+    }
+    let Ok(dir) = app.path().app_data_dir() else {
+        return serde_json::json!({ "ok": false, "code": "CONFIG", "error": "no app data dir" });
+    };
+    let mut cfg = config::load_config_from(&dir);
+    let mut providers = config::providers_from(&cfg);
+    for (id, on) in &connected {
+        providers.connected.insert(id.clone(), *on);
+    }
+    if let Some(agents) = enabled_agents {
+        providers.enabled_agents = agents;
+    }
+    config::providers_set(&mut cfg, &providers);
+    if let Err(e) = config::save_config_to(&dir, &cfg) {
+        return serde_json::json!({ "ok": false, "code": "CONFIG", "error": e.to_string() });
+    }
+    crate::shell::providers_setup::reload_backend(&app).await;
+    serde_json::json!({ "ok": true })
+}
+
 /// Pick the Fleet default provider. Writes both the top-level
 /// `defaultProvider` (provider id) AND `defaultModel` (best model
 /// from the catalog) into `fleet.config.json` — the renderer's
@@ -2224,11 +2264,22 @@ pub async fn providers_set_enabled(
 /// write the provider id and let the composer's CLI baseline fill
 /// in the model name.
 #[tauri::command]
-pub async fn providers_set_default(app: tauri::AppHandle, id: String) -> serde_json::Value {
+pub async fn providers_set_default(
+    app: tauri::AppHandle,
+    id: String,
+    model: Option<String>,
+) -> serde_json::Value {
     let Some(spec) = fleetify_backend::providers::find_provider(&id) else {
         return serde_json::json!({ "ok": false, "code": "UNKNOWN_PROVIDER", "error": format!("unknown provider {id}") });
     };
-    let default_model: Option<String> = spec.default_models.first().map(|m| m.id.to_string());
+    // An explicit model from the caller (onboarding's model step) wins.
+    // Falling back to the catalog's first model keeps every existing
+    // caller — Settings → Models / Agents "Make default" — unchanged
+    // (they pass no model; CLI agents ship an empty default_models → None).
+    let default_model: Option<String> = model
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty())
+        .or_else(|| spec.default_models.first().map(|m| m.id.to_string()));
 
     let Ok(dir) = app.path().app_data_dir() else {
         return serde_json::json!({ "ok": false, "code": "CONFIG", "error": "no app data dir" });

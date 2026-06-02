@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { buildPickerGroups, resolveDispatchTool, resolveModelChip } from "../picker-groups";
-import type { ProviderTile } from "@/lib/providers-api";
+import { buildPickerGroups, resolveDispatchTool, resolveModelChip, modelsForTile, resolveStartupDefault } from "../picker-groups";
+import type { ProviderTile, ProviderSpec } from "@/lib/providers-api";
 
 const baseTile = (
   id: string,
@@ -280,5 +280,102 @@ describe("resolveModelChip", () => {
     // model === "auto" under a REAL tool (e.g. GitHub Copilot's native `auto`)
     // is NOT Fleet's cross-provider Auto — only tool === "auto" is the sentinel.
     expect(resolveModelChip(groups, "github-copilot", "auto").dispatchTool).toBe("github-copilot");
+  });
+});
+
+function tile(
+  id: string,
+  kind: ProviderSpec["kind"],
+  models: { id: string; label: string }[],
+  over: Partial<ProviderTile> = {},
+): ProviderTile {
+  return {
+    spec: {
+      id,
+      display_name: id,
+      kind,
+      default_base_url: "",
+      auth: { kind: "none" },
+      default_models: models.map((m) => ({ ...m, supports_effort: false })),
+      extras: {},
+      bin: "",
+      auth_indicators: [],
+      install_hint: "",
+      login_hint: "",
+    } as ProviderSpec,
+    connected: true,
+    has_key: false,
+    enabled_models: [],
+    is_default: false,
+    ...over,
+  };
+}
+
+describe("modelsForTile", () => {
+  it("returns the catalog default_models when present", () => {
+    const t = tile("openai", "api", [{ id: "gpt-5.5", label: "GPT-5.5" }]);
+    expect(modelsForTile(t).map((m) => m.id)).toEqual(["gpt-5.5"]);
+  });
+
+  it("falls back to CLI_MODELS for a CLI tile with no catalog models", () => {
+    const t = tile("claude", "cli", []);
+    expect(modelsForTile(t).map((m) => m.id)).toContain("claude-opus-4-8");
+  });
+
+  it("prefers dynamic models over catalog/CLI fallback", () => {
+    const t = tile("claude", "cli", []);
+    const dyn = [{ id: "live-1", label: "Live", supports_effort: false }];
+    expect(modelsForTile(t, dyn).map((m) => m.id)).toEqual(["live-1"]);
+  });
+
+  it("returns [] when nothing resolves (e.g. ollama, no static list)", () => {
+    expect(modelsForTile(tile("ollama", "local_http", []))).toEqual([]);
+  });
+});
+
+describe("resolveStartupDefault", () => {
+  it("honors the persisted default model when valid for the default provider", () => {
+    const tiles = [tile("claude", "cli", [], { is_default: true })];
+    const r = resolveStartupDefault(tiles, "claude-sonnet-4-6");
+    expect(r).toEqual({ tool: "claude", model: "claude-sonnet-4-6" });
+  });
+
+  it("falls back to the provider's first model when the persisted model is invalid", () => {
+    const tiles = [tile("claude", "cli", [], { is_default: true })];
+    const r = resolveStartupDefault(tiles, "not-a-real-model");
+    expect(r.tool).toBe("claude");
+    expect(r.model).toBe("claude-opus-4-8");
+  });
+
+  it("falls back to the first connected tile and claude when none is default", () => {
+    const tiles = [tile("openai", "api", [{ id: "gpt-5.5", label: "GPT-5.5" }])];
+    const r = resolveStartupDefault(tiles, null);
+    expect(r).toEqual({ tool: "openai", model: "gpt-5.5" });
+  });
+
+  it("defaults the tool to claude when no tile is connected", () => {
+    const tiles = [tile("openai", "api", [{ id: "gpt-5.5", label: "GPT-5.5" }], { connected: false })];
+    const r = resolveStartupDefault(tiles, null);
+    expect(r.tool).toBe("claude");
+  });
+
+  it("validates a Perplexity Agent-marketplace model across split groups", () => {
+    // buildPickerGroups splits Perplexity into a native "perplexity" (Sonar)
+    // group + "perplexity:<brand>" marketplace groups. A persisted
+    // marketplace model must still validate against tool "perplexity".
+    const tiles = [
+      tile(
+        "perplexity",
+        "api",
+        [
+          { id: "sonar", label: "Sonar" },
+          { id: "anthropic/claude-opus-4-7", label: "Claude Opus (via Perplexity)" },
+        ],
+        { is_default: true },
+      ),
+    ];
+    const r = resolveStartupDefault(tiles, "anthropic/claude-opus-4-7");
+    expect(r.tool).toBe("perplexity");
+    expect(r.model).toBe("anthropic/claude-opus-4-7");
   });
 });

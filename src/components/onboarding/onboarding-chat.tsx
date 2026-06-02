@@ -17,7 +17,7 @@
  *     everything for you" — sequential per-provider rows with
  *     spinners that resolve to ✓ / ⚠ / ✗ status pills.
  */
-import { useEffect, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -33,6 +33,10 @@ import { LogoMark } from "@/components/brand/logo-mark";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { apiScanProviders, checkPythonRuntime, type ProviderScan, type AuthUser } from "@/lib/api";
 import { providers as providersApi } from "@/lib/providers-api";
+import type { ProviderTile } from "@/lib/providers-api";
+import { modelsForTile } from "@/lib/picker-groups";
+import type { PickerModel } from "@/lib/picker-groups";
+import { buildSelectionPersist } from "@/components/onboarding/provider-selection";
 import { capture, optIn, optOut } from "@/lib/posthog";
 
 interface Props {
@@ -91,15 +95,16 @@ interface ProviderDef {
 
 // IDs MUST match the backend `providers::CATALOG` (see
 // crates/fleetify-backend/src/providers/catalog.rs). `providers.setKey`
-// validates against the catalog and returns `unknown provider <id>` for
-// anything missing — the previous list shipped "anthropic" / "googleai"
-// / "groq" which the catalog doesn't carry and the save failed silently.
+// and `providers.setConnectedBulk` validate against the catalog and
+// return `unknown provider <id>` for anything missing.
 //
-// Aligned set: 4 CLI agents + the SDK + Ollama + every API provider
-// in the catalog (DeepSeek, Grok-xAI, Kimi API, Perplexity, NVIDIA NIM,
-// plus OpenAI and the renamed `gemini-api`). Anthropic and Groq-Inc
-// drop out because neither is in the catalog today — users still get
-// Claude via the Claude Code CLI row at the top.
+// This list is EXHAUSTIVE against the catalog (20 entries): 8 CLI agents
+// + the Antigravity SDK + Ollama + every API provider. A mount-time drift
+// guard (see useEffect below) warns if the catalog ever gains an id this
+// list lacks. The extra per-row fields (scanKey / envKey / autoInstall)
+// are onboarding-only verify metadata; providers with no probe (opencode,
+// cursor, github-copilot, anthropic, cloudflare-workers-ai) simply omit
+// them and are finished in Settings.
 const PROVIDERS: ProviderDef[] = [
   // No CLI row opts in to `autoInstall` — users found the unattended
   // `npm install -g …` mid-onboarding surprising, so every install
@@ -120,11 +125,20 @@ const PROVIDERS: ProviderDef[] = [
   // (`iex (irm https://antigravity.google/cli/install.ps1)` on Windows,
   // `curl … | bash` elsewhere). Same explicit-click contract as above.
   { id: "agy",            label: "Antigravity CLI",   logo: "agy",    kind: "cli", scanKey: "agy_cli",                       hint: "Google's terminal agent (OAuth)" },
+  // OpenCode / Cursor / GitHub Copilot — CLI agents with no onboarding
+  // scan probe (no scanKey). Listed + enabled on selection; their
+  // install/auth is finished from Settings → Agents.
+  { id: "opencode",       label: "OpenCode",          logo: "opencode", kind: "cli",                                          hint: "CLI agent" },
+  { id: "cursor",         label: "Cursor CLI",        logo: "cursor", kind: "cli",                                            hint: "CLI agent" },
+  { id: "github-copilot", label: "GitHub Copilot",    logo: "github-copilot", kind: "cli",                                   hint: "CLI agent" },
   // SDK pairs a pip install with a GEMINI_API_KEY entry. The renderer
   // handles the two-stage flow inline.
   { id: "antigravity-sdk",label: "Antigravity SDK",   logo: "agy",    kind: "api", envKey: "gemini", scanKey: "antigravity_sdk", hint: "Python SDK + Gemini key" },
   { id: "ollama",         label: "Ollama",            logo: "ollama", kind: "cli", ollama: true,                              hint: "Local models" },
   { id: "openai",         label: "OpenAI",            logo: "openai", kind: "api", envKey: "openai",                          hint: "API key" },
+  // Anthropic API (Claude over the HTTP API — distinct from the Claude
+  // Code CLI row above). No env-var probe; key entered inline.
+  { id: "anthropic",      label: "Anthropic",         logo: "claude", kind: "api",                                            hint: "API key (Claude API)" },
   // Backend catalog id is "gemini-api" (the OpenAI-compat endpoint
   // at /v1beta/openai); the label is just "Gemini" so the row
   // matches the brand the user knows it by.
@@ -135,6 +149,9 @@ const PROVIDERS: ProviderDef[] = [
   { id: "perplexity",     label: "Perplexity",        logo: "perplexity", kind: "api",                                        hint: "API key" },
   { id: "nvidia-nim",     label: "NVIDIA NIM",        logo: "nvidia-nim", kind: "api",                                        hint: "API key" },
   { id: "openrouter",     label: "OpenRouter",        logo: "openrouter", kind: "api",                                        hint: "API key — 100s of models" },
+  // Cloudflare Workers AI — needs an account id too (finished in
+  // Settings); onboarding takes the token inline like other API rows.
+  { id: "cloudflare-workers-ai", label: "Cloudflare Workers AI", logo: "cloudflare-workers-ai", kind: "api",                  hint: "API key + account id" },
 ];
 
 const TYPE_BASE_MS = 12;
@@ -165,6 +182,9 @@ interface Selections {
    *  the same three-state Python required → Setup → Done affordance
    *  as Settings → Agents. null = probed, nothing found. */
   pythonRuntime?: PythonRuntimeResult | null;
+  /** Backend catalog tiles, fetched once on mount. Drives the fleet-model
+   *  step's model lists and the CLI-agent split for enabled_agents. */
+  tiles?: ProviderTile[];
 }
 
 export function OnboardingChat({ user, onDone }: Props) {
@@ -254,6 +274,28 @@ export function OnboardingChat({ user, onDone }: Props) {
     pushUser(humanList(providers.map((p) => p.label)));
     setSelections((s) => ({ ...s, providers }));
 
+    // Persist the selection as the enabled set: selected → connected,
+    // every other catalog provider → disabled (force-off). Also seed the
+    // CLI-agent shortlist. One IPC call → one backend reload.
+    try {
+      let tiles = selectionsRef.current.tiles;
+      if (!tiles) {
+        const res = await providersApi.listCatalog();
+        tiles = res.ok ? res.tiles : [];
+        setSelections((s) => ({ ...s, tiles }));
+      }
+      const allIds = tiles.length > 0 ? tiles.map((t) => t.spec.id) : PROVIDERS.map((p) => p.id);
+      const cliAgentIds = tiles.filter((t) => t.spec.kind === "cli").map((t) => t.spec.id);
+      const { connected, enabledAgents } = buildSelectionPersist(
+        allIds,
+        providers.map((p) => p.id),
+        cliAgentIds,
+      );
+      await providersApi.setConnectedBulk(connected, enabledAgents);
+    } catch {
+      /* best-effort — the user can fix enablement in Settings */
+    }
+
     // Pre-fetch the scan and Python runtime in parallel with the
     // assistant typing so the verification panel has data the moment
     // it mounts. Python runtime is needed by the Antigravity SDK row.
@@ -306,8 +348,10 @@ export function OnboardingChat({ user, onDone }: Props) {
       // open with a mismatched (provider, model) pair on first launch.
       const only = readyProviders[0]!;
       setSelections((s) => ({ ...s, defaultProvider: only }));
+      const onlyTile = selectionsRef.current.tiles?.find((t) => t.spec.id === only.id);
+      const onlyModel = onlyTile ? modelsForTile(onlyTile)[0]?.id : undefined;
       try {
-        await providersApi.setDefault(only.id);
+        await providersApi.setDefault(only.id, onlyModel ?? null);
       } catch { /* best-effort */ }
 
       await pushAssistant(githubIntroCopy(getCurrentExistingGithub()), "github");
@@ -326,21 +370,21 @@ export function OnboardingChat({ user, onDone }: Props) {
     return selectionsRef.current.existingGithub;
   };
 
-  const handleMainAgentPick = async (provider: ProviderDef) => {
+  const handleMainAgentPick = async (provider: ProviderDef, modelId?: string) => {
     resolveLastWidget();
-    pushUser(provider.label);
+    pushUser(modelId ? `${provider.label} · ${modelId}` : provider.label);
     setSelections((s) => ({ ...s, defaultProvider: provider }));
     try {
-      // `providers.setDefault` writes both `defaultProvider` AND a
-      // matching `defaultModel` (best entry from the catalog) into
-      // fleet.config.json. The chat composer's `openComposer` reads
-      // both, so picking Gemini here no longer leaves the composer
-      // seeded with `claude-sonnet-4-6`.
-      await providersApi.setDefault(provider.id);
+      // Persist the explicit (provider, model). modelId is undefined only
+      // for providers with no static model list (e.g. Ollama) — then the
+      // backend keeps its catalog-first fallback.
+      await providersApi.setDefault(provider.id, modelId ?? null);
     } catch { /* best-effort */ }
 
     await pushAssistant(
-      `Locked in — **${provider.label}** drives by default.`,
+      modelId
+        ? `Locked in — **${provider.label}** on **${modelId}** drives by default.`
+        : `Locked in — **${provider.label}** drives by default.`,
     );
     await pushAssistant(githubIntroCopy(getCurrentExistingGithub()), "github");
   };
@@ -462,6 +506,19 @@ export function OnboardingChat({ user, onDone }: Props) {
       .then((s) => setSelections((prev) => ({ ...prev, scan: s })))
       .catch(() => { /* badges stay hidden — non-blocking */ });
 
+    // Drift guard: warn if the backend catalog has a provider this
+    // hardcoded list is missing, so the "list every provider" contract
+    // can't silently rot when the catalog grows.
+    void providersApi.listCatalog().then((res) => {
+      if (!res.ok) return;
+      setSelections((prev) => ({ ...prev, tiles: res.tiles }));
+      const known = new Set(PROVIDERS.map((p) => p.id));
+      const missing = res.tiles.map((t) => t.spec.id).filter((id) => !known.has(id));
+      if (missing.length > 0) {
+        console.warn("[fleet] onboarding PROVIDERS missing catalog ids:", missing);
+      }
+    });
+
     // Probe gh CLI for an existing GitHub login so we can surface a
     // one-tap "Use @<login>" path on the GitHub step instead of
     // making the user generate + paste a fresh token. Falls back to
@@ -556,6 +613,7 @@ export function OnboardingChat({ user, onDone }: Props) {
             scan={selections.scan}
             chosenProviders={selections.providers}
             readyProviders={selections.readyProviders}
+            tiles={selections.tiles}
             githubUsername={selections.githubUsername}
             githubSkipped={selections.githubSkipped}
             existingGithub={selections.existingGithub}
@@ -630,6 +688,7 @@ function Bubble({
   scan,
   chosenProviders,
   readyProviders,
+  tiles,
   githubUsername,
   githubSkipped,
   existingGithub,
@@ -648,13 +707,15 @@ function Bubble({
    *  step. Filters the main-agent picker so the user can only pick
    *  something they can actually chat with. */
   readyProviders?: ProviderDef[];
+  /** Catalog tiles — forwarded to MainAgentWidget to source per-provider model lists. */
+  tiles?: ProviderTile[];
   githubUsername?: string;
   githubSkipped?: boolean;
   existingGithub?: { username: string } | null;
   /** Forwarded to ScanWidget for the Antigravity SDK row. */
   pythonRuntime?: PythonRuntimeResult | null;
   onProvidersConfirm: (providers: ProviderDef[]) => void;
-  onMainAgentPick: (provider: ProviderDef) => void;
+  onMainAgentPick: (provider: ProviderDef, modelId?: string) => void;
   onGithubResult: (
     result:
       | { method: "cli"; username?: string }
@@ -739,6 +800,7 @@ function Bubble({
       {!msg.typing && !msg.resolved && msg.widget === "main-agent" && chosenProviders && (
         <MainAgentWidget
           providers={readyProviders ?? chosenProviders}
+          tiles={tiles}
           onPick={onMainAgentPick}
         />
       )}
@@ -1116,6 +1178,9 @@ function getInstallInfo(p: ProviderDef, scan: ProviderScan): { ready: boolean; l
   if (p.kind === "api") {
     return { ready: false, label: "Add key" };
   }
+  // Probe-less CLI rows (opencode / cursor / github-copilot): no install
+  // probe, but show a hint so the row isn't a bare dot in the picker.
+  if (p.kind === "cli") return { ready: false, label: "Set up in Settings" };
   return { ready: false, label: "" };
 }
 
@@ -2516,7 +2581,10 @@ function resolveProvider(p: ProviderDef, scan: ProviderScan | null): ProviderSta
       ? { status: "ok", detail: "Key found" }
       : { status: "warn", detail: "Add key in Settings" };
   }
-  return { status: "warn", detail: "Manual setup" };
+  // CLI agents with no onboarding scan probe (opencode / cursor /
+  // github-copilot) and any other probe-less row: not verifiable here,
+  // but selecting them still enabled them — point the user to Settings.
+  return { status: "warn", detail: "Set up in Settings" };
 }
 
 function buildScanReadout(
@@ -2573,30 +2641,104 @@ function humanList(items: string[]): string {
 /* ── Main-agent widget — single-select radio list ────────── */
 function MainAgentWidget({
   providers,
+  tiles,
   onPick,
 }: {
   providers: ProviderDef[];
-  onPick: (p: ProviderDef) => void;
+  /** Catalog tiles — source the per-provider model list (see modelsForTile). */
+  tiles?: ProviderTile[];
+  onPick: (p: ProviderDef, modelId?: string) => void;
 }) {
+  // Two stages: pick a provider, then pick a model. A provider whose model
+  // list is empty (e.g. Ollama, models fetched live) or has exactly one
+  // entry skips straight to onPick — no needless second click.
+  const [picked, setPicked] = useState<ProviderDef | null>(null);
+
+  const modelsFor = (p: ProviderDef): PickerModel[] => {
+    const tile = tiles?.find((t) => t.spec.id === p.id);
+    return tile ? modelsForTile(tile) : [];
+  };
+
+  const choose = (p: ProviderDef) => {
+    const models = modelsFor(p);
+    if (models.length <= 1) {
+      onPick(p, models[0]?.id);
+      return;
+    }
+    setPicked(p);
+  };
+
+  const panelStyle: CSSProperties = {
+    marginTop: 12,
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.08)",
+    background: "rgba(255,255,255,0.02)",
+    boxShadow: "0 1px 0 rgba(255,255,255,0.025) inset, 0 6px 20px rgba(0,0,0,0.28)",
+    overflow: "hidden",
+    padding: 4,
+    display: "flex",
+    flexDirection: "column",
+  };
+
+  if (picked) {
+    const models = modelsFor(picked);
+    return (
+      <div style={panelStyle}>
+        <button
+          onClick={() => setPicked(null)}
+          style={{
+            display: "flex", alignItems: "center", gap: 8, padding: "0 10px", height: 30,
+            margin: "1px 0", borderRadius: 5, background: "transparent", border: "none",
+            color: "var(--m-text-3)", cursor: "pointer", textAlign: "left", fontSize: 11.5,
+          }}
+        >
+          ← {picked.label} · choose a model
+        </button>
+        {models.map((m) => (
+          <ModelRow key={m.id} label={m.label} sub={m.ctx} onPick={() => onPick(picked, m.id)} />
+        ))}
+      </div>
+    );
+  }
+
   return (
-    <div
-      style={{
-        marginTop: 12,
-        borderRadius: 10,
-        border: "1px solid rgba(255,255,255,0.08)",
-        background: "rgba(255,255,255,0.02)",
-        boxShadow:
-          "0 1px 0 rgba(255,255,255,0.025) inset, 0 6px 20px rgba(0,0,0,0.28)",
-        overflow: "hidden",
-        padding: 4,
-        display: "flex",
-        flexDirection: "column",
-      }}
-    >
+    <div style={panelStyle}>
       {providers.map((p) => (
-        <MainAgentRow key={p.id} provider={p} onPick={() => onPick(p)} />
+        <MainAgentRow key={p.id} provider={p} onPick={() => choose(p)} />
       ))}
     </div>
+  );
+}
+
+function ModelRow({
+  label,
+  sub,
+  onPick,
+}: {
+  label: string;
+  sub?: string;
+  onPick: () => void;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      onClick={onPick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: "flex", alignItems: "center", gap: 10, padding: "0 10px", height: 34,
+        margin: "1px 0", borderRadius: 5, background: hover ? "var(--secondary)" : "transparent",
+        border: "none", color: "var(--m-text)", cursor: "pointer", textAlign: "left",
+        transition: "background 0.12s ease",
+      }}
+    >
+      <span style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1, color: "var(--c-high)", flex: 1 }}>
+        {label}
+      </span>
+      {sub && (
+        <span style={{ fontSize: 10.5, color: "var(--m-text-3)", flexShrink: 0 }}>{sub}</span>
+      )}
+    </button>
   );
 }
 

@@ -313,6 +313,53 @@ export function buildPickerGroups(
   return out;
 }
 
+/** Model list for a SINGLE tile, independent of `connected` — used by the
+ *  onboarding fleet-model step (which needs models for a provider before
+ *  the picker's connected filter applies). Resolution mirrors
+ *  buildPickerGroups: dynamic models > catalog default_models > CLI_MODELS
+ *  fallback. Returns [] when nothing resolves (e.g. Ollama, whose models
+ *  are fetched live). */
+export function modelsForTile(tile: ProviderTile, dynamic?: PickerModel[]): PickerModel[] {
+  if (dynamic && dynamic.length > 0) return dynamic;
+  const catalog = tile.spec.default_models.map(modelFromSpec);
+  if (catalog.length > 0) return catalog;
+  return CLI_MODELS[tile.spec.id] ?? [];
+}
+
+/** Resolve the (tool, model) pair to seed the Fleet hub on first launch.
+ *  `tool` = the connected default tile, else the first connected tile,
+ *  else "claude". `model` = the persisted `defaultModel` when it is a
+ *  valid model id for that tool's group, otherwise the group's first
+ *  model. This is what stops the hub from defaulting to "Auto" after
+ *  onboarding pinned a real model. */
+export function resolveStartupDefault(
+  tiles: ProviderTile[],
+  persistedDefaultModel?: string | null,
+): { tool: string; model: string | undefined } {
+  const pick =
+    tiles.find((t) => t.is_default && t.connected) ?? tiles.find((t) => t.connected);
+  const tool = pick?.spec.id ?? "claude";
+  const groups = buildPickerGroups(
+    tiles,
+    tiles.filter((t) => t.spec.kind === "cli" && t.connected).map((t) => t.spec.id),
+  );
+  // Gather models across ALL groups that dispatch to this tool. Perplexity
+  // splits its catalog into "perplexity" (Sonar) + "perplexity:<brand>"
+  // marketplace groups that all dispatch-resolve to "perplexity"; without
+  // flattening them a persisted marketplace model (e.g. "anthropic/...")
+  // wouldn't validate and the hub would silently fall back to Sonar. For
+  // every non-split provider, resolveDispatchTool(g.id) === g.id, so this
+  // is exactly the single-group behavior as before.
+  const groupModels = groups
+    .filter((g) => resolveDispatchTool(g.id) === tool)
+    .flatMap((g) => g.models);
+  const persisted =
+    persistedDefaultModel && groupModels.some((m) => m.id === persistedDefaultModel)
+      ? persistedDefaultModel
+      : undefined;
+  return { tool, model: persisted ?? groupModels[0]?.id };
+}
+
 /** Strip the `perplexity:brand` sub-id back to the catalog provider id
  *  the dispatch layer expects. Native ids pass through unchanged. */
 export function resolveDispatchTool(groupId: string): string {
