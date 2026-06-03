@@ -726,10 +726,13 @@ export function SessionToolbar({
             const updates: Record<string, unknown> = { model_name: modelId };
             if (next !== tool) updates.tool = next;
             patch(updates);
-            // OpenCode + Cursor source models at runtime — switch the
-            // live ACP session too (the patch alone only affects the next
+            // OpenCode, Cursor, and Hermes source models at runtime — switch
+            // the live ACP session too (the patch alone only affects the next
             // cold start). Skipped for drafts (no live bridge yet).
-            if ((next === "opencode" || next === "cursor") && !isDraft) {
+            if (
+              (next === "opencode" || next === "cursor" || next === "hermes") &&
+              !isDraft
+            ) {
               wsManager.switchModel(sessionId, modelId);
             }
           }}

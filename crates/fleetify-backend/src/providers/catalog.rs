@@ -858,6 +858,19 @@ const OPENCODE_CLI_INDICATORS: &[AuthIndicator] = &[
     },
 ];
 
+/// Hermes stores its configured provider/model in `~/.hermes/config.yaml`
+/// (api-key + `hermes model` setups) or `~/.hermes/auth.json` (OAuth
+/// providers: Nous Portal, Codex, Qwen, MiniMax…). Either present ⇒ a
+/// provider is configured and ACP `session/new`/`prompt` will work.
+const HERMES_CLI_INDICATORS: &[AuthIndicator] = &[
+    AuthIndicator::HomeDir {
+        path: ".hermes/config.yaml",
+    },
+    AuthIndicator::HomeDir {
+        path: ".hermes/auth.json",
+    },
+];
+
 // Cursor CLI records login state as an `authInfo` object inside
 // `~/.cursor/cli-config.json` (email/userId/authId). The object is present
 // only while logged in and is removed by `cursor-agent logout` (verified
@@ -1597,6 +1610,28 @@ pub static CATALOG: &[ProviderSpec] = &[
         }),
         login_hint: "cursor-agent login",
     },
+    // Hermes Agent — Nous Research's self-improving agent, driven over ACP
+    // (`hermes acp`). A meta-provider: the model is whatever the user
+    // configured inside Hermes (`hermes model`), so no key is stored and the
+    // model list is sourced live from the ACP session (like OpenCode/Cursor).
+    ProviderSpec {
+        id: "hermes",
+        display_name: "Hermes Agent",
+        kind: ProviderKind::Cli,
+        default_base_url: "",
+        auth: AuthSpec::None,
+        default_models: &[],
+        extras: ProviderExtras::DEFAULT,
+        bin: "hermes",
+        auth_indicators: HERMES_CLI_INDICATORS,
+        install_hint: "pip install \"hermes-agent[acp]\"",
+        install_hints: Some(InstallHints {
+            windows: "iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)",
+            macos: "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash",
+            linux: "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash",
+        }),
+        login_hint: "hermes model",
+    },
     // Antigravity ships a Go binary outside npm (curl/irm installer), so
     // `install_hint` stays empty and the per-OS `install_hints` carry the
     // real commands. The shell IPC layer branches on this when wiring the
@@ -1703,13 +1738,13 @@ mod tests {
             .count();
         // 10 cloud HTTP providers (OpenAI, Anthropic, DeepSeek, Grok, NVIDIA NIM,
         // Kimi, Gemini API, Perplexity, OpenRouter, Cloudflare Workers AI) + 1
-        // local (ollama) + 9 CLI agents (Claude, Codex, Gemini, Kimi, OpenCode,
-        // GitHub Copilot, Cursor, Antigravity CLI, Antigravity SDK). If you
+        // local (ollama) + 10 CLI agents (Claude, Codex, Gemini, Kimi, OpenCode,
+        // GitHub Copilot, Cursor, Antigravity CLI, Antigravity SDK, Hermes). If you
         // intentionally added/removed a provider, update these constants with
         // the catalog.
         assert_eq!(api, 10, "expected 10 Api providers, got {api}");
         assert_eq!(local, 1, "expected 1 LocalHttp provider, got {local}");
-        assert_eq!(cli, 9, "expected 9 Cli agents, got {cli}");
+        assert_eq!(cli, 10, "expected 10 Cli agents, got {cli}");
     }
 
     #[test]

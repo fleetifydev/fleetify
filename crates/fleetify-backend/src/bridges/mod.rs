@@ -13,6 +13,7 @@ pub mod codex_client;
 pub mod cursor;
 pub mod gemini;
 pub mod github_copilot;
+pub mod hermes;
 pub mod interactive;
 pub mod kimi;
 pub mod openai;
@@ -76,6 +77,10 @@ pub enum AnyBridge {
     /// the Gemini bridge; skips the ACP `authenticate` step and supports
     /// runtime model switching via `session/set_config_option`.
     OpenCode(Arc<opencode::OpenCodeBridge>),
+    /// Hermes Agent over ACP (`hermes acp`). Forked from the OpenCode bridge;
+    /// switches models via `session/set_model` and modes via `session/set_mode`,
+    /// and prepends a system prompt as a leading text block.
+    Hermes(Arc<hermes::HermesBridge>),
     /// Cursor CLI over ACP (`cursor-agent acp`). Forked from the OpenCode
     /// bridge — same live model/config switching + session resume; additionally
     /// answers Cursor's blocking `cursor/ask_question` / `cursor/create_plan`
@@ -118,6 +123,7 @@ impl AnyBridge {
             AnyBridge::Perplexity(b) => b.send_message(msg, ctx).await,
             AnyBridge::Kimi(b) => b.send_message(msg, ctx).await,
             AnyBridge::OpenCode(b) => b.send_message(msg, ctx).await,
+            AnyBridge::Hermes(b) => b.send_message(msg, ctx).await,
             AnyBridge::Cursor(b) => b.send_message(msg, ctx).await,
             AnyBridge::Antigravity(b) => b.send_message(msg, ctx).await,
             AnyBridge::AntigravitySdk(b) => b.send_message(msg, ctx).await,
@@ -135,6 +141,7 @@ impl AnyBridge {
             AnyBridge::Perplexity(b) => b.abort().await,
             AnyBridge::Kimi(b) => b.abort().await,
             AnyBridge::OpenCode(b) => b.abort().await,
+            AnyBridge::Hermes(b) => b.abort().await,
             AnyBridge::Cursor(b) => b.abort().await,
             AnyBridge::Antigravity(b) => b.abort().await,
             AnyBridge::AntigravitySdk(b) => b.abort().await,
@@ -178,6 +185,10 @@ impl AnyBridge {
                 let models = b.set_model(model_id).await?;
                 Ok(cursor::models_to_json(&models))
             }
+            AnyBridge::Hermes(b) => {
+                let models = b.set_model(model_id).await?;
+                Ok(hermes::models_to_json(&models))
+            }
             _ => Err(anyhow::anyhow!(
                 "mid-session model switching is not supported for this agent"
             )),
@@ -195,6 +206,10 @@ impl AnyBridge {
             AnyBridge::Cursor(b) => {
                 let models = b.set_config(config_id, value).await?;
                 Ok(cursor::models_to_json(&models))
+            }
+            AnyBridge::Hermes(b) => {
+                let models = b.set_config(config_id, value).await?;
+                Ok(hermes::models_to_json(&models))
             }
             _ => Err(anyhow::anyhow!(
                 "live config switching is not supported for this agent"

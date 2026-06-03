@@ -1436,6 +1436,50 @@ async fn run_send_flow(
             }
             AnyBridge::OpenCode(Arc::new(b))
         }
+        "hermes" => {
+            let is_staff = session.title == "Staff Agent";
+            let mut b = crate::bridges::hermes::HermesBridge::new(
+                sid.clone(),
+                agent_cwd.clone(),
+                session.permission_mode.clone(),
+                session.model_name.clone(),
+                session.effort.clone(),
+                is_staff,
+                session.agent_template.clone(),
+            );
+            // Resume the prior Hermes ACP session if we persisted one.
+            b.resume_session_id = session.claude_session_id.clone();
+            // Staff gets the orchestrator prompt; non-staff inherits its
+            // template prompt. Hermes prepends it as a leading ACP text block.
+            if is_staff {
+                b.system_prompt = Some(
+                    crate::services::staff_prompt::build(
+                        &st.auth.pool,
+                        &sid,
+                        session.user_id.as_deref(),
+                    )
+                    .await,
+                );
+            } else if let Some(tpl) =
+                crate::services::builtin_templates::get(session.agent_template.as_deref())
+            {
+                b.system_prompt = Some(tpl.system_prompt.to_string());
+            }
+            // Wire the live permission dialog except in bypass modes.
+            if !is_staff
+                && !matches!(
+                    session.permission_mode.as_str(),
+                    "bypassPermissions" | "dontAsk"
+                )
+            {
+                b = b.with_permission_handler(build_permission_handler(
+                    &permission_session,
+                    &sink,
+                    &sid,
+                ));
+            }
+            AnyBridge::Hermes(Arc::new(b))
+        }
         "cursor" => {
             let is_staff = session.title == "Staff Agent";
             let mut b = crate::bridges::cursor::CursorBridge::new(
@@ -2666,6 +2710,25 @@ async fn run_dispatched_task(
             );
             b.resume_session_id = target.claude_session_id.clone();
             AnyBridge::OpenCode(std::sync::Arc::new(b))
+        }
+        "hermes" => {
+            let mut b = crate::bridges::hermes::HermesBridge::new(
+                target_id.clone(),
+                target_cwd.clone(),
+                target.permission_mode.clone(),
+                target.model_name.clone(),
+                target.effort.clone(),
+                false, // dispatched tasks always land on non-staff agents
+                target.agent_template.clone(),
+            );
+            b.resume_session_id = target.claude_session_id.clone();
+            // A dispatched Hermes agent inherits its template's system prompt.
+            if let Some(tpl) =
+                crate::services::builtin_templates::get(target.agent_template.as_deref())
+            {
+                b.system_prompt = Some(tpl.system_prompt.to_string());
+            }
+            AnyBridge::Hermes(std::sync::Arc::new(b))
         }
         "cursor" => {
             let mut b = crate::bridges::cursor::CursorBridge::new(

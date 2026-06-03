@@ -104,6 +104,15 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
     { id: "gpt-5.3-codex[reasoning=medium,fast=false]",                           label: "GPT-5.3 Codex",     supports_effort: false },
     { id: "gemini-3.1-pro[]",                                                     label: "Gemini 3.1 Pro",    supports_effort: false },
   ],
+  // Hermes sources its model list LIVE from the ACP session (catalog
+  // default_models is empty), surfaced via `available_models_update`. Until a
+  // session cold-starts, show a single placeholder so the rail isn't blank —
+  // the real model is whatever the user configured via `hermes model`. (This
+  // placeholder id is never in Hermes's real available list, so picking it
+  // pre-session is a no-op until live models arrive.)
+  hermes: [
+    { id: "default", label: "Hermes (configured model)", supports_effort: false },
+  ],
 };
 
 /** Display names for the five CLI agents — matches each CLI ProviderSpec's
@@ -119,6 +128,7 @@ const CLI_FALLBACK_LABELS: Record<string, string> = {
   cursor:            "Cursor CLI",
   agy:               "Antigravity CLI",
   "antigravity-sdk": "Antigravity SDK",
+  hermes:            "Hermes Agent",
 };
 
 /** Flat lookup of every CLI model id → its friendly label, derived from
