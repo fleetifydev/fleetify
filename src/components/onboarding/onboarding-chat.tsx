@@ -370,20 +370,24 @@ export function OnboardingChat({ user, onDone }: Props) {
     return selectionsRef.current.existingGithub;
   };
 
-  const handleMainAgentPick = async (provider: ProviderDef, modelId?: string) => {
+  const handleMainAgentPick = async (provider: ProviderDef, modelId?: string, modelLabel?: string) => {
     resolveLastWidget();
-    pushUser(modelId ? `${provider.label} · ${modelId}` : provider.label);
+    // Show the model's friendly label (e.g. "Opus 4.8"), not its raw id
+    // ("claude-opus-4-8"); fall back to the id only when no label was passed.
+    const modelText = modelLabel ?? modelId;
+    pushUser(modelText ? `${provider.label} · ${modelText}` : provider.label);
     setSelections((s) => ({ ...s, defaultProvider: provider }));
     try {
-      // Persist the explicit (provider, model). modelId is undefined only
-      // for providers with no static model list (e.g. Ollama) — then the
-      // backend keeps its catalog-first fallback.
+      // Persist the explicit (provider, model) — modelId (the real id) is what
+      // the backend stores. modelId is undefined only for providers with no
+      // static model list (e.g. Ollama) — then the backend keeps its
+      // catalog-first fallback.
       await providersApi.setDefault(provider.id, modelId ?? null);
     } catch { /* best-effort */ }
 
     await pushAssistant(
-      modelId
-        ? `Locked in — **${provider.label}** on **${modelId}** drives by default.`
+      modelText
+        ? `Locked in — **${provider.label}** on **${modelText}** drives by default.`
         : `Locked in — **${provider.label}** drives by default.`,
     );
     await pushAssistant(githubIntroCopy(getCurrentExistingGithub()), "github");
@@ -715,7 +719,7 @@ function Bubble({
   /** Forwarded to ScanWidget for the Antigravity SDK row. */
   pythonRuntime?: PythonRuntimeResult | null;
   onProvidersConfirm: (providers: ProviderDef[]) => void;
-  onMainAgentPick: (provider: ProviderDef, modelId?: string) => void;
+  onMainAgentPick: (provider: ProviderDef, modelId?: string, modelLabel?: string) => void;
   onGithubResult: (
     result:
       | { method: "cli"; username?: string }
@@ -2647,7 +2651,7 @@ function MainAgentWidget({
   providers: ProviderDef[];
   /** Catalog tiles — source the per-provider model list (see modelsForTile). */
   tiles?: ProviderTile[];
-  onPick: (p: ProviderDef, modelId?: string) => void;
+  onPick: (p: ProviderDef, modelId?: string, modelLabel?: string) => void;
 }) {
   // Two stages: pick a provider, then pick a model. A provider whose model
   // list is empty (e.g. Ollama, models fetched live) or has exactly one
@@ -2662,7 +2666,7 @@ function MainAgentWidget({
   const choose = (p: ProviderDef) => {
     const models = modelsFor(p);
     if (models.length <= 1) {
-      onPick(p, models[0]?.id);
+      onPick(p, models[0]?.id, models[0]?.label);
       return;
     }
     setPicked(p);
@@ -2692,10 +2696,12 @@ function MainAgentWidget({
             color: "var(--m-text-3)", cursor: "pointer", textAlign: "left", fontSize: 11.5,
           }}
         >
-          ← {picked.label} · choose a model
+          <span aria-hidden>←</span>
+          <ProviderLogo tool={picked.logo} size={13} />
+          <span>{picked.label} · choose a model</span>
         </button>
         {models.map((m) => (
-          <ModelRow key={m.id} label={m.label} sub={m.ctx} onPick={() => onPick(picked, m.id)} />
+          <ModelRow key={m.id} label={m.label} sub={m.ctx} onPick={() => onPick(picked, m.id, m.label)} />
         ))}
       </div>
     );
