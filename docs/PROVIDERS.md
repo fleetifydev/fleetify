@@ -1,59 +1,97 @@
 # Providers
 
-Fleetify's chat composer + Settings → Models page is driven by a single
-static catalog in `crates/fleetify-backend/src/providers/catalog.rs`.
-Adding a new provider is a one-file append; the renderer, IPC layer,
-chat dispatch, and Settings tile all pick it up automatically.
+What's wired into Fleetify today, and what each provider is for. Everything here
+is driven by the single static catalog in
+`crates/fleetify-backend/src/providers/catalog.rs` — see
+[`PROVIDER_ARCHITECTURE.md`](PROVIDER_ARCHITECTURE.md) for *how* it all connects,
+and [`AGENTS.md`](AGENTS.md) for the CLI-agent details.
 
-## Supported providers
+The catalog currently ships **21 providers**: **10 CLI agents**, **10 cloud HTTP
+APIs**, and **1 local HTTP** (Ollama).
 
-### Cloud HTTP
+---
+
+## CLI agents (`kind: cli`)
+
+Local subprocess agents that run against your machine. Auth is **out-of-band**
+(each agent's own `login`); Fleetify only *detects* the logged-in state and never
+holds the credential. Surface in Settings → Agents via `/api/agents/scan`.
+
+| Agent | Catalog id | Binary | What it is | Install / Login |
+|---|---|---|---|---|
+| Claude Code | `claude` | `claude` | Anthropic's agentic CLI; Fleetify's default agent. | `npm i -g @anthropic-ai/claude-code` · `claude login` |
+| Codex CLI | `codex` | `codex` | OpenAI's coding agent (ChatGPT/Codex models). | `npm i -g @openai/codex` · `codex login` |
+| Gemini CLI | `gemini` | `gemini` | Google's terminal agent (Gemini models, OAuth). | `npm i -g @google/gemini-cli` · `gemini` |
+| Kimi Code CLI | `kimi` | `kimi` | Moonshot's coding agent. | `npm i -g @moonshot-ai/kimi-code` · `kimi login` |
+| OpenCode | `opencode` | `opencode` | Open-source multi-model agent; free `opencode/*` models work with no key. **ACP.** | `npm i -g opencode-ai` · `opencode auth login` |
+| Cursor CLI | `cursor` | `cursor-agent` | Cursor's terminal agent. **ACP.** | shell installer · `cursor-agent login` |
+| GitHub Copilot CLI | `github-copilot` | `copilot` | GitHub Copilot subscription (GPT-5.x, Claude, Gemini). **ACP.** | `npm i -g @github/copilot` · `copilot login` |
+| Hermes Agent | `hermes` | `hermes` | Nous Research's agent; **fans one agent across every provider you've authenticated** (Copilot, Anthropic, OpenRouter, Nous, …). **ACP.** | `pip install "hermes-agent[acp]"` · `hermes model` |
+| Antigravity CLI | `agy` | `agy` | Google's Antigravity terminal agent (OAuth, print-mode). | shell installer · `agy` |
+| Antigravity SDK | `antigravity-sdk` | `python3` | Python SDK wrapping `google.antigravity`; uses a `GEMINI_API_KEY`. | `pip install` · set `GEMINI_API_KEY` |
+
+> Hermes is unusual: a single agent that dispatches to whatever model provider its
+> own `hermes model` config has authenticated. The picker shows a **provider
+> dropdown** (Copilot / Anthropic / …) above the models — see
+> [`MODEL_DISCOVERY.md`](MODEL_DISCOVERY.md).
+
+---
+
+## Cloud HTTP APIs (`kind: api`)
+
+OpenAI-compatible endpoints; you supply an API key (stored in the OS keychain).
+HTTP providers run through the **agentic tool-use loop** (`AgenticBridgeRunner`)
+so they get real tool calls, not just chat — see [`AGENT_BRIDGES.md`](AGENT_BRIDGES.md).
 
 | Provider | Catalog id | Base URL | Get a key |
-| --- | --- | --- | --- |
+|---|---|---|---|
 | OpenAI | `openai` | `https://api.openai.com/v1` | <https://platform.openai.com/api-keys> |
+| Anthropic (Claude API) | `anthropic` | `https://api.anthropic.com/v1` | <https://console.anthropic.com/settings/keys> |
 | DeepSeek | `deepseek` | `https://api.deepseek.com` | <https://platform.deepseek.com/api_keys> |
 | Grok (xAI) | `grok` | `https://api.x.ai/v1` | <https://console.x.ai/> |
-| NVIDIA NIM | `nvidia-nim` | `https://integrate.api.nvidia.com` | <https://build.nvidia.com/> (free tier with daily request cap) |
+| NVIDIA NIM | `nvidia-nim` | `https://integrate.api.nvidia.com` | <https://build.nvidia.com/> (free tier, daily cap) |
 | Kimi (Moonshot) | `kimi-api` | `https://api.moonshot.ai/v1` | <https://platform.moonshot.ai/> |
 | Gemini API | `gemini-api` | `https://generativelanguage.googleapis.com/v1beta/openai` | <https://aistudio.google.com/apikey> |
 | Perplexity | `perplexity` | `https://api.perplexity.ai` | <https://www.perplexity.ai/settings/api> |
 | OpenRouter | `openrouter` | `https://openrouter.ai/api/v1` | <https://openrouter.ai/keys> |
+| Cloudflare Workers AI | `cloudflare-workers-ai` | `https://api.cloudflare.com/.../accounts/{account_id}/ai/v1` | <https://dash.cloudflare.com/profile/api-tokens> (+ account id) |
 
-OpenRouter is an OpenAI-compatible aggregator: its full catalog (hundreds of
-models) is discovered live from `GET /api/v1/models` (proxied by the backend at
-`GET /providers/openrouter/models`, TTL-cached) and surfaced in the composer's
-model picker with a search box — the static catalog ships only a small curated
-fallback list, so OpenRouter is exempt from the doc-pinned `no_stale_model_ids`
-check that fixed-catalog providers must satisfy.
+- **OpenRouter** is an aggregator: its full catalog (hundreds of models) is
+  discovered live from `GET /api/v1/models` (proxied at
+  `GET /providers/openrouter/models`, TTL-cached) and shown with a search box; the
+  static catalog ships only a small curated fallback.
+- **Cloudflare Workers AI** uses a base-URL template with `{account_id}`,
+  substituted at dispatch from the saved account id.
 
-### Local
+---
+
+## Local HTTP (`kind: local_http`)
 
 | Provider | Catalog id | Default URL | Notes |
-| --- | --- | --- | --- |
-| Ollama | `ollama` | `http://localhost:11434` | Auto-detects models via `/api/tags`. Settings → Models lets you point at a LAN URL like `http://192.168.1.50:11434` to drive a remote rig. |
+|---|---|---|---|
+| Ollama | `ollama` | `http://localhost:11434` | No auth. Auto-detects models via `/api/tags`; point Settings → Models at a LAN URL (e.g. `http://192.168.1.50:11434`) to drive a remote rig. |
+
+---
 
 ## How keys are stored
 
-The user's API key is written to the OS keychain under
-`Fleetify-Provider-<id>` (account = the user's OIDC `sub`). The
-`fleet.config.json` file on disk only carries non-secret state:
+API keys live in the **OS keychain** under `Fleetify-Provider-<id>` (account =
+the user's OIDC `sub`). `fleet.config.json` carries only non-secret state:
 
 ```json
 {
   "providers": {
     "connected": { "openai": true, "perplexity": true },
-    "enabled_models": { "openai": ["o3", "gpt-4o"] },
+    "enabled_models": { "openai": ["gpt-5.5"] },
     "ollama_base_url": "http://192.168.1.50:11434",
-    "enabled_agents": ["claude", "codex"]
+    "enabled_agents": ["claude", "codex", "hermes"]
   }
 }
 ```
 
-The legacy `cfg.apiKeys` JSON block from older installs is migrated
-silently into the keychain at boot. The block is only stripped when
-every key writes succeed — partial failures (e.g. Linux without
-secret-service) leave the JSON intact for next-boot retry.
+Legacy `cfg.apiKeys` JSON from older installs is migrated into the keychain at
+boot (stripped only when every write succeeds, so a Linux box without
+secret-service retries next boot).
 
 ## How keys reach the bridge
 
@@ -67,30 +105,27 @@ Settings → Models
                                                       └─ bridge spawn reads here
 ```
 
-The cache is process-wide (`providers::keys::PROVIDER_KEYS`) so a key
-change in Settings is visible to the very next chat turn — no restart.
+The cache (`providers::keys::PROVIDER_KEYS`) is process-wide, so a key change in
+Settings is visible to the very next chat turn — no restart. A bridge that finds
+no cached key falls back to the spec's `auth.env_hint` env var.
 
 ## Perplexity citations
 
-Perplexity's Sonar models emit `citations` + `search_results` arrays
-alongside the streamed text. The `PerplexityBridge` parses them out as
-`BridgeEvent::Citation` / `BridgeEvent::SearchResult` events; the
-renderer buffers them in `ws-manager.ts` and pushes a single
-`CitationBlock` onto `contentSoFar` right before the message is
-finalized. Output: a `<CitationCard>` footer with favicon + title +
-hostname + snippet for each source.
+Sonar models emit `citations` + `search_results` arrays alongside the streamed
+text. `PerplexityBridge` parses them into `BridgeEvent::Citation` /
+`BridgeEvent::SearchResult`; the renderer buffers them and renders a
+`<CitationCard>` footer (favicon + title + hostname + snippet) per source.
 
 ## Test Connection
 
-Settings → Models' Test button calls `providers_test_connection`, which
-hits `<base>/models` with the draft key (4s timeout). Result codes:
+Settings → Models' Test button calls `providers_test_connection`, hitting
+`<base>/models` with the draft key (4s timeout):
 
 | Code | Meaning |
-| --- | --- |
+|---|---|
 | `AUTH` | 401/403 — key wrong or revoked. |
-| `NETWORK` | Couldn't reach the host or 5xx response. |
-| `TIMEOUT` | Took longer than 4 seconds. |
-| `NOT_FOUND` | 404 at `<base>/models` (Perplexity has no models endpoint — its connectivity ping is deferred to a future 1-token completion fallback). |
+| `NETWORK` | Couldn't reach the host or 5xx. |
+| `TIMEOUT` | Took longer than 4 s. |
+| `NOT_FOUND` | 404 at `<base>/models` (Perplexity has no models endpoint). |
 
-Test is optional — Save without testing if you want to commit a key
-that the test currently can't probe.
+Test is optional — you can Save without testing.

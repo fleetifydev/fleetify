@@ -1,68 +1,73 @@
 # Agents (CLI)
 
-Fleetify ships four CLI agents that run as subprocesses against your
-local environment. They're discovered via `providers::list_cli_agents()`
-and surface in Settings → Agents as cards driven by the
-`/api/agents/scan` endpoint.
+Fleetify ships **ten CLI agents** — local subprocesses that run against your
+machine. They're discovered via `providers::list_cli_agents()` and surface in
+Settings → Agents as cards driven by `/api/agents/scan`.
 
-## The four agents
+> See [`PROVIDER_ARCHITECTURE.md`](PROVIDER_ARCHITECTURE.md) for how agents plug
+> into the system, [`AGENT_BRIDGES.md`](AGENT_BRIDGES.md) for the transport per
+> agent, and [`PROVIDERS.md`](PROVIDERS.md) for the full provider list.
 
-| Agent | Catalog id | Binary | Install | Login |
-| --- | --- | --- | --- | --- |
-| Claude Code | `claude` | `claude` | `npm install -g @anthropic-ai/claude-code` | `claude login` |
-| Codex CLI | `codex` | `codex` | `npm install -g @openai/codex` | `codex login` |
-| Gemini CLI | `gemini` | `gemini` | `npm install -g @google/gemini-cli` | `gemini` (first run prompts browser auth) |
-| Kimi Code CLI | `kimi` | `kimi` | `npm install -g @moonshot-ai/kimi-code` | `kimi login` |
+## The ten agents
 
-> **Note:** Kimi's bridge is wired (registry, Settings tile, chat
-> dispatch) but the actual ACP protocol implementation is deferred
-> until Moonshot publishes a stable spec. Selecting Kimi in chat today
-> returns a clear "not yet implemented" error rather than spawning a
-> broken session.
+| Agent | Catalog id | Binary | Transport | Install / Login |
+|---|---|---|---|---|
+| Claude Code | `claude` | `claude` | subprocess `--output-format stream-json` | `npm i -g @anthropic-ai/claude-code` · `claude login` |
+| Codex CLI | `codex` | `codex` | `codex app-server` (JSON-RPC/stdio) | `npm i -g @openai/codex` · `codex login` |
+| Gemini CLI | `gemini` | `gemini` | ACP (`gemini --acp`) | `npm i -g @google/gemini-cli` · `gemini` |
+| Kimi Code CLI | `kimi` | `kimi` | (bridge present) | `npm i -g @moonshot-ai/kimi-code` · `kimi login` |
+| OpenCode | `opencode` | `opencode` | ACP (`opencode acp`) | `npm i -g opencode-ai` · `opencode auth login` |
+| Cursor CLI | `cursor` | `cursor-agent` | ACP (`cursor-agent acp`) + `cursor/*` extensions | shell installer · `cursor-agent login` |
+| GitHub Copilot CLI | `github-copilot` | `copilot` | ACP (`copilot --acp`) | `npm i -g @github/copilot` · `copilot login` |
+| Hermes Agent | `hermes` | `hermes` | ACP (`hermes acp`), multi-provider | `pip install "hermes-agent[acp]"` · `hermes model` |
+| Antigravity CLI | `agy` | `agy` | PTY `agy -p` (print mode) | shell installer · `agy` |
+| Antigravity SDK | `antigravity-sdk` | `python3` | Python sidecar (NDJSON) | `pip install` · set `GEMINI_API_KEY` |
+
+ACP agents share `bridges/acp.rs`'s `AcpClient` (JSON-RPC 2.0 over stdio); the
+others use their own transport (see [`AGENT_BRIDGES.md`](AGENT_BRIDGES.md)). An
+agent that isn't yet configured (or whose CLI lacks a feature) surfaces a clear
+error rather than spawning a broken session — e.g. Hermes returns *"No LLM
+provider configured. Run `hermes model`…"* until a provider is set up.
 
 ## Detection
 
-Each agent declares its `auth_indicators` in the catalog. The scan
-endpoint reports `installed=true` when the binary is on `PATH`, and
-`authenticated=true` when the first matching indicator fires.
+Each agent declares its `auth_indicators` in the catalog. The scan endpoint
+reports `installed=true` when the binary is found (PATH, or known off-PATH install
+dirs for Cursor/Copilot/Hermes — see the `ScanProbe` strategies), and
+`authenticated=true` when the first matching indicator fires:
 
 ```rust
 const CLAUDE_INDICATORS: &[AuthIndicator] = &[
     AuthIndicator::HomeDir { path: ".claude/projects" },
     AuthIndicator::HomeDir { path: ".claude/sessions" },
     AuthIndicator::HomeDir { path: ".claude/history.jsonl" },
-    AuthIndicator::HomeDir { path: ".config/anthropic/credentials.json" },
     AuthIndicator::EnvVar { name: "ANTHROPIC_API_KEY" },
 ];
 ```
 
-When you run `<bin> login` in a terminal and the indicator file
-appears, the Settings tile flips from "Login required" → "Detected"
-within a Settings refresh cycle (auto-rescanned on tile expand or
-manual Refresh button click).
+OAuth agents (Gemini, Antigravity CLI) use `JsonExpiry` indicators so an expired
+token reads as "not authenticated" without launching the agent. When you run
+`<bin> login` and the indicator appears, the Settings tile flips to "Detected" on
+the next scan (tile expand or the Refresh button).
 
 ## Why install commands aren't auto-run
 
-Settings copies the install / login commands to the clipboard — it
-NEVER spawns them on your behalf. Reasons:
-
-1. **Shell-injection blast radius.** Auto-running an install hint from
-   our config means we're effectively `exec`-ing user-visible strings.
-   Even if the catalog is `'static`, the principle's worth keeping
-   clean.
-2. **Transparency.** You see the exact command before it runs.
-3. **Cross-platform.** Each OS opens terminals differently and the
-   subprocess output doesn't always make it back to the GUI — it's
-   easier to let the user own that terminal.
+Settings copies install / login commands to the clipboard — it **never** spawns
+them for you. Reasons: shell-injection blast radius (we'd be `exec`-ing
+user-visible strings), transparency (you see the exact command), and
+cross-platform terminal differences (subprocess output doesn't always reach the
+GUI).
 
 ## Adding a new CLI agent
 
 1. Append a `ProviderSpec` with `kind: ProviderKind::Cli` to `CATALOG`
-   in `crates/fleetify-backend/src/providers/catalog.rs` — populate
-   `bin`, `auth_indicators`, `install_hint`, `login_hint`.
-2. Add a bridge module under `crates/fleetify-backend/src/bridges/`
-   that implements `send_message` + `abort`.
-3. Add an `AnyBridge` variant + dispatch arm in
-   `crates/fleetify-backend/src/routers/chat.rs`.
-4. Settings → Agents picks up the new tile automatically; no renderer
-   change needed unless the bridge surfaces novel events.
+   (`crates/fleetify-backend/src/providers/catalog.rs`) — `bin`,
+   `auth_indicators`, `install_hint`(`s`), `login_hint`.
+2. Add a bridge under `crates/fleetify-backend/src/bridges/`. If it speaks ACP,
+   reuse `bridges/acp.rs::AcpClient` (mirror `opencode.rs` / `hermes.rs`);
+   otherwise implement the transport.
+3. Add an `AnyBridge` variant + a dispatch arm in `routers/chat.rs`.
+4. Add a `ScanProbe` arm in `routers/providers.rs` if the agent installs off-PATH.
+5. Onboarding parity: add the id to the hardcoded list in
+   `src/components/onboarding/onboarding-chat.tsx` and a `ProviderLogo` case in
+   `src/components/ui/provider-logo.tsx`.
