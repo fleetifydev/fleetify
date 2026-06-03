@@ -181,7 +181,7 @@ fn agent_models_cache() -> &'static RwLock<HashMap<String, (Instant, ModelList)>
 }
 
 /// `GET /agents/{id}/models` — discovered model catalog for a live-model CLI
-/// agent (currently `opencode` + `cursor`). Always 200 with
+/// agent (`opencode`, `cursor`, `github-copilot`, `hermes`). Always 200 with
 /// `{ id, models: [{id,label}] }`; an empty list means discovery failed (agent
 /// not installed, not logged in, or unsupported id) and the renderer keeps its
 /// static fallback. `?refresh=1` bypasses the TTL cache.
@@ -229,7 +229,44 @@ async fn discover_agent_models(id: &str, cwd: &str) -> ModelList {
         "github-copilot" => crate::bridges::github_copilot::list_models(cwd)
             .await
             .unwrap_or_default(),
+        "hermes" => {
+            // Prefer the full multi-provider catalog (every authenticated
+            // provider) so the picker can offer a provider selector; fall back
+            // to a live `session/new` probe (current provider only) when the
+            // inventory read is unavailable (older Hermes, venv python missing).
+            tracing::debug!(target: "hermes.discover", "discover hermes: provider inventory…");
+            let mut ms = crate::bridges::hermes::list_provider_models(cwd)
+                .await
+                .unwrap_or_default();
+            tracing::debug!(target: "hermes.discover", "discover hermes: inventory → {} models", ms.len());
+            if ms.is_empty() {
+                tracing::debug!(target: "hermes.discover", "discover hermes: fallback session probe…");
+                ms = crate::bridges::hermes::list_models(cwd)
+                    .await
+                    .unwrap_or_default();
+                tracing::debug!(target: "hermes.discover", "discover hermes: session probe → {} models", ms.len());
+            }
+            ms.into_iter().map(|m| (m.id, m.name)).collect()
+        }
         _ => Vec::new(),
+    }
+}
+
+/// Pre-warm the Hermes model cache at startup so the picker shows its real
+/// per-provider catalog on first open instead of flashing the static
+/// "Hermes (configured model)" placeholder while discovery runs (~1-2s cold).
+/// Best-effort: an empty result just leaves the cache unset and the lazy
+/// on-open fetch retries. Self-gates — returns fast when Hermes isn't installed
+/// (no venv python / binary), so it's safe to always call at boot.
+pub async fn prewarm_hermes_models() {
+    let models = discover_agent_models("hermes", "").await;
+    if !models.is_empty() {
+        let n = models.len();
+        agent_models_cache()
+            .write()
+            .await
+            .insert("hermes".to_string(), (Instant::now(), models));
+        tracing::debug!(target: "hermes.discover", "prewarmed {n} hermes models at startup");
     }
 }
 

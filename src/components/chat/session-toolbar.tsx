@@ -379,7 +379,7 @@ export function SessionToolbar({
   useEffect(() => {
     if (openMenu !== "model") return; // discover lazily, only when the picker opens
     let cancelled = false;
-    for (const agentId of ["opencode", "cursor", "github-copilot"]) {
+    for (const agentId of ["opencode", "cursor", "github-copilot", "hermes"]) {
       void fetchAgentModels(agentId, projectPath ?? "").then((models) => {
         if (cancelled || models.length === 0) return; // empty → keep static fallback
         setDiscoveredModels((prev) => ({
@@ -414,11 +414,16 @@ export function SessionToolbar({
   const dynamicModels: Record<string, PickerModel[]> | undefined = (() => {
     const merged: Record<string, PickerModel[]> = { ...discoveredModels };
     if (sessionDynModels && sessionDynModels.models.length > 0) {
-      merged[tool] = sessionDynModels.models.map((m) => ({
-        id: m.id,
-        label: m.label,
-        supports_effort: false,
-      }));
+      // Union the live session list (current provider, freshest) with the
+      // discovered catalog rather than replacing it: for Hermes the catalog
+      // spans every authenticated provider while the live list is only the
+      // active provider's subset — replacing would collapse the chip-row.
+      const base = merged[tool] ?? [];
+      const seen = new Set(base.map((m) => m.id));
+      const live = sessionDynModels.models
+        .filter((m) => !seen.has(m.id))
+        .map((m) => ({ id: m.id, label: m.label, supports_effort: false }));
+      merged[tool] = [...base, ...live];
     }
     return Object.keys(merged).length > 0 ? merged : undefined;
   })();

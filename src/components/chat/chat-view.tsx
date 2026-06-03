@@ -837,17 +837,24 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
       if (creatingStaffRef.current) return;
       creatingStaffRef.current = true;
       try {
+        // Seed the staff session with the user's hub model pick when they made
+        // one before the staff session existed: onPickModel writes Control-
+        // Center picks into the composer while `effectiveSessionId` is null, and
+        // `composer.modelName` stays null until an explicit pick — so a non-null
+        // value distinguishes a real hub pick from the connected default.
+        // Without this the pick reflected in the chip but the agent still
+        // spun up on `startupDefault`. Falls back to the connected default
+        // (then claude-sonnet) so emit_session_start always carries a real value.
+        const picked = useAppStore.getState().composer;
+        const seedTool = picked.modelName != null ? picked.tool : startupDefault.tool;
+        const seedModel =
+          (picked.modelName != null ? picked.modelName : startupDefault.model) ??
+          "claude-sonnet-4-6";
         const session = await createSession({
           title: "Staff Agent", project_path: "",
-          // Seed the Fleet hub session with the user's connected default
-          // (provider + model) so the model chip is a real, PERSISTED
-          // selection from first open — not just a render-time fallback.
-          // `startupDefault` resolves the Fleet-default-or-first-connected
-          // tile; it falls back to claude-sonnet when nothing's connected,
-          // which also keeps emit_session_start carrying a real value.
-          tool: startupDefault.tool,
+          tool: seedTool,
           permission_mode: "bypassPermissions",
-          model_name: startupDefault.model ?? "claude-sonnet-4-6",
+          model_name: seedModel,
         });
         addSession(session);
         setStaffSessionId(session.id);
@@ -2041,15 +2048,26 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
           // last switch is what shows up; non-hub paths keep using
           // `activeSession` (real session in session mode, the
           // composerVirtualSession in compose mode).
+          // While the composer is open (new Fleet task / draft) the picker must
+          // reflect the COMPOSER's pick: chat-input writes picks to the composer
+          // field (setComposerField) when there's no session id. Reading
+          // staffSession here instead left compose-mode picks with no visual
+          // feedback — the pick still applied on commit, but the rail + chip
+          // never updated, so it read as "can't select a model". Outside
+          // compose: the Staff row in the hub, the active session elsewhere.
           model={
-            isControlCenter
-              ? (staffSession?.model_name ?? startupDefault.model)
-              : (activeSession?.model_name ?? startupDefault.model)
+            !effectiveSessionId
+              ? (composer.modelName ?? startupDefault.model)
+              : isControlCenter
+                ? (staffSession?.model_name ?? startupDefault.model)
+                : (activeSession?.model_name ?? startupDefault.model)
           }
           tool={
-            isControlCenter
-              ? (staffSession?.tool ?? startupDefault.tool)
-              : (activeSession?.tool ?? startupDefault.tool)
+            !effectiveSessionId
+              ? (composer.tool ?? startupDefault.tool)
+              : isControlCenter
+                ? (staffSession?.tool ?? startupDefault.tool)
+                : (activeSession?.tool ?? startupDefault.tool)
           }
           // Real context-fill + cumulative session stats — both
           // derived from the in-store messages array. The arc

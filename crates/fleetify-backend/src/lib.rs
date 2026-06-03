@@ -335,6 +335,10 @@ pub async fn serve_with_routing_setup(
         let snapshot = routers::providers::scan_all_agents().await;
         agent_scan_cache.set(snapshot).await;
         tracing::debug!("agent_scan_cache: warmed at startup");
+        // Pre-warm Hermes' multi-provider model catalog so the model picker
+        // shows real providers + models on first open instead of flashing the
+        // static "Hermes (configured model)" placeholder while discovery runs.
+        routers::providers::prewarm_hermes_models().await;
     });
 
     // Telemetry pipeline — outbox init + heartbeat loop. Best-effort:

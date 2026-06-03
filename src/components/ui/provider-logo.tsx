@@ -377,6 +377,27 @@ function OpenRouterLogo({ size = 18 }: { size?: number }) {
   );
 }
 
+/* ── Hermes (Nous Research): winged-messenger motif — a central staff with a
+ *  crowning node and two swept wings, evoking Hermes' winged helm. Original
+ *  geometric mark (not a copy of a specific brand asset), gradient-filled like
+ *  the other agent marks so it reads at the picker's small sizes. ── */
+export function HermesLogo({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" role="img" aria-label="Hermes Agent">
+      <defs>
+        <linearGradient id="hermes-grad" x1="2" y1="4" x2="22" y2="20" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#9A86FF" />
+          <stop offset="100%" stopColor="#4E5BE6" />
+        </linearGradient>
+      </defs>
+      <path d="M12 6.5 L12 19" stroke="url(#hermes-grad)" strokeWidth="1.8" strokeLinecap="round" />
+      <circle cx="12" cy="5" r="1.7" fill="url(#hermes-grad)" />
+      <path d="M11.4 9.2 C8.5 7.7 5.6 8 3.2 10.4 C6.2 10.2 8.8 10.8 11.4 12.3 Z" fill="url(#hermes-grad)" />
+      <path d="M12.6 9.2 C15.5 7.7 18.4 8 20.8 10.4 C17.8 10.2 15.2 10.8 12.6 12.3 Z" fill="url(#hermes-grad)" />
+    </svg>
+  );
+}
+
 /* ── Get logo by tool name ── */
 export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number }) {
   switch (tool) {
@@ -409,6 +430,7 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
         : <AgyLogo size={size} />;
     case "github-copilot": return <GitHubCopilotLogo size={size} />;
     case "opencode":   return <ThemedImgIcon light={opencodeLightIcon} dark={opencodeIcon} size={size} label="OpenCode" />;
+    case "hermes":     return <HermesLogo size={size} />;
     case "aider":      return <AiderLogo size={size} />;
     default:           return <CustomAgentLogo size={size} />;
   }
@@ -420,7 +442,7 @@ export function providerName(tool: string): string {
     ollama: "Ollama", kimi: "Kimi", agy: "Antigravity CLI",
     "antigravity-sdk": "Antigravity SDK",
     opencode: "OpenCode", "github-copilot": "GitHub Copilot", aider: "Aider",
-    openrouter: "OpenRouter",
+    openrouter: "OpenRouter", hermes: "Hermes Agent",
   };
   return names[tool] ?? "Custom";
 }

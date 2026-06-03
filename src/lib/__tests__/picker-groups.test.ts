@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildPickerGroups, resolveDispatchTool, resolveModelChip, modelsForTile, resolveStartupDefault } from "../picker-groups";
+import { buildPickerGroups, resolveDispatchTool, resolveModelChip, modelsForTile, resolveStartupDefault, hermesProviders } from "../picker-groups";
 import type { ProviderTile, ProviderSpec } from "@/lib/providers-api";
 
 const baseTile = (
@@ -42,6 +42,52 @@ describe("buildPickerGroups", () => {
     const cliIds = groups.filter((g) => g.id !== "ollama").map((g) => g.id);
     expect(cliIds).toContain("claude");
     expect(cliIds).not.toContain("kimi");
+  });
+
+  it("groups Hermes dynamic models by provider into a chip-row", () => {
+    const tiles = [baseTile("hermes", "Hermes Agent", "cli")];
+    const dyn = {
+      hermes: [
+        { id: "copilot:claude-opus-4.8", label: "claude-opus-4.8", supports_effort: false },
+        { id: "copilot:gpt-5.5", label: "gpt-5.5", supports_effort: false },
+        { id: "anthropic:claude-opus-4-6", label: "claude-opus-4-6", supports_effort: false },
+      ],
+    };
+    const hermes = buildPickerGroups(tiles, ["hermes"], dyn).find((g) => g.id === "hermes");
+    expect(hermes?.providers).toEqual([
+      { id: "copilot", label: "Copilot" },
+      { id: "anthropic", label: "Anthropic" },
+    ]);
+    // All models stay in the flat list; the picker filters by the active chip.
+    expect(hermes?.models).toHaveLength(3);
+  });
+
+  it("omits the Hermes provider chip-row when only one provider is present", () => {
+    const tiles = [baseTile("hermes", "Hermes Agent", "cli")];
+    const dyn = {
+      hermes: [
+        { id: "copilot:claude-opus-4.8", label: "claude-opus-4.8", supports_effort: false },
+        { id: "copilot:gpt-5.5", label: "gpt-5.5", supports_effort: false },
+      ],
+    };
+    const hermes = buildPickerGroups(tiles, ["hermes"], dyn).find((g) => g.id === "hermes");
+    expect(hermes?.providers).toBeUndefined();
+    expect(hermes?.models).toHaveLength(2);
+  });
+
+  it("hermesProviders: distinct providers in first-seen order, friendly labels, skips unprefixed", () => {
+    const provs = hermesProviders([
+      { id: "copilot:claude-opus-4.8", label: "claude-opus-4.8", supports_effort: false },
+      { id: "openrouter:anthropic/claude-opus-4.7", label: "claude-opus-4.7", supports_effort: false },
+      { id: "copilot:gpt-5.5", label: "gpt-5.5", supports_effort: false }, // dup provider
+      { id: "default", label: "Hermes (configured model)", supports_effort: false }, // unprefixed → skipped
+      { id: "some-vendor:m1", label: "m1", supports_effort: false }, // fallback capitalization
+    ]);
+    expect(provs).toEqual([
+      { id: "copilot", label: "Copilot" },
+      { id: "openrouter", label: "OpenRouter" },
+      { id: "some-vendor", label: "Some-vendor" },
+    ]);
   });
 
   it("drops HTTP providers that are neither connected nor have a key", () => {

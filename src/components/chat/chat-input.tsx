@@ -3169,11 +3169,17 @@ export function ChatInput({
     // SessionToolbar, so a model id resolves to the same group in both places.
     const merged: Record<string, PickerModel[]> = { ...discoveredModels };
     if (sessionDynModels && sessionDynModels.models.length > 0) {
-      merged[tool ?? "claude"] = sessionDynModels.models.map((m) => ({
-        id: m.id,
-        label: m.label,
-        supports_effort: false,
-      }));
+      // Union live session models with the discovered catalog rather than
+      // replacing it — for Hermes the catalog spans every authenticated
+      // provider while the live list is only the active provider's subset, and
+      // replacing would collapse the provider chip-row to one provider.
+      const key = tool ?? "claude";
+      const base = merged[key] ?? [];
+      const seen = new Set(base.map((m) => m.id));
+      const live = sessionDynModels.models
+        .filter((m) => !seen.has(m.id))
+        .map((m) => ({ id: m.id, label: m.label, supports_effort: false }));
+      merged[key] = [...base, ...live];
     }
     const dyn = Object.keys(merged).length > 0 ? merged : undefined;
     return buildPickerGroups(providerTiles, enabledAgentIds, dyn);
@@ -3210,7 +3216,7 @@ export function ChatInput({
   useEffect(() => {
     if (openDrop !== "model") return;
     let cancelled = false;
-    for (const agentId of ["opencode", "cursor", "github-copilot"]) {
+    for (const agentId of ["opencode", "cursor", "github-copilot", "hermes"]) {
       void fetchAgentModels(agentId, projectPath ?? "").then((models) => {
         if (cancelled || models.length === 0) return; // empty → keep static fallback
         setDiscoveredModels((prev) => ({

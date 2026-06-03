@@ -10,7 +10,7 @@
  * `supports_effort` is false. The catalog ships the flag per-entry.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check } from "lucide-react";
+import { Check, ChevronDown } from "lucide-react";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import type { PickerGroup, PickerModel } from "@/lib/picker-groups";
 import { resolveDispatchTool } from "@/lib/picker-groups";
@@ -66,6 +66,11 @@ export function UnifiedModelPicker({
   // Search query for the Models column — only surfaced for `searchable`
   // groups (e.g. OpenRouter's large live catalog). Reset on rail change.
   const [modelQuery, setModelQuery] = useState("");
+  // Selected provider for groups that carry a provider dropdown (Hermes).
+  // null when the active group has no providers.
+  const [activeProvider, setActiveProvider] = useState<string | null>(null);
+  // Whether the provider dropdown (above the models) is open.
+  const [providerMenuOpen, setProviderMenuOpen] = useState(false);
 
   const rootRef = useRef<HTMLDivElement | null>(null);
 
@@ -98,16 +103,49 @@ export function UnifiedModelPicker({
   // from OpenRouter back to a curated provider doesn't carry a stale query.
   useEffect(() => {
     setModelQuery("");
+    setProviderMenuOpen(false);
   }, [activeGroupId]);
 
+  // Default the provider chip selection (Hermes) to the active model's provider
+  // when it belongs to this group, else the first provider. Keyed on a stable
+  // provider-id string so it re-runs on rail / model / provider-set changes —
+  // not on every render (visibleGroup is a fresh ref each time).
+  const providerKey = (visibleGroup?.providers ?? []).map((p) => p.id).join(",");
+  useEffect(() => {
+    const provs = visibleGroup?.providers;
+    const first = provs?.[0];
+    if (!provs || !first) {
+      setActiveProvider(null);
+      return;
+    }
+    let next = first.id;
+    if (model) {
+      const i = model.indexOf(":");
+      if (i > 0) {
+        const slug = model.slice(0, i);
+        if (provs.some((p) => p.id === slug)) next = slug;
+      }
+    }
+    setActiveProvider(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeGroupId, model, providerKey]);
+
   const shownModels = useMemo(() => {
-    const all = visibleGroup?.models ?? [];
+    let all = visibleGroup?.models ?? [];
+    // Provider chip filter (Hermes): narrow to the selected provider's models
+    // (ids are `provider:model`).
+    if (visibleGroup?.providers && visibleGroup.providers.length > 0 && activeProvider) {
+      all = all.filter((m) => {
+        const i = m.id.indexOf(":");
+        return i > 0 && m.id.slice(0, i) === activeProvider;
+      });
+    }
     const q = modelQuery.trim().toLowerCase();
     if (!visibleGroup?.searchable || !q) return all;
     return all.filter(
       (m) => m.label.toLowerCase().includes(q) || m.id.toLowerCase().includes(q),
     );
-  }, [visibleGroup, modelQuery]);
+  }, [visibleGroup, modelQuery, activeProvider]);
 
   const railRows = useMemo(() => {
     const rows: Array<{ kind: "divider" } | { kind: "row"; group: PickerGroup }> = [];
@@ -251,6 +289,110 @@ export function UnifiedModelPicker({
         }}
       >
         <SectionHeader>Models</SectionHeader>
+        {visibleGroup?.providers && visibleGroup.providers.length > 0 && (
+          <div style={{ position: "relative", padding: "0 6px 6px" }}>
+            <button
+              aria-haspopup="listbox"
+              aria-expanded={providerMenuOpen}
+              onClick={() => setProviderMenuOpen((o) => !o)}
+              onMouseDown={(e) => e.preventDefault()}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 6,
+                width: "100%",
+                padding: "5px 9px",
+                background: "var(--c-srf, rgba(255,255,255,0.06))",
+                border: "1px solid var(--c-brd, rgba(255,255,255,0.12))",
+                borderRadius: 6,
+                color: "var(--c-high)",
+                fontFamily: "var(--font-sans)",
+                fontSize: 11.5,
+                fontWeight: 500,
+                cursor: "pointer",
+                outline: "none",
+              }}
+            >
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {visibleGroup.providers.find((p) => p.id === activeProvider)?.label ??
+                  visibleGroup.providers[0]?.label ??
+                  "Provider"}
+              </span>
+              <ChevronDown
+                size={13}
+                style={{
+                  flexShrink: 0,
+                  opacity: 0.6,
+                  transform: providerMenuOpen ? "rotate(180deg)" : "none",
+                  transition: "transform 0.12s ease",
+                }}
+              />
+            </button>
+            {providerMenuOpen && (
+              <div
+                role="listbox"
+                aria-label="Provider"
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 2px)",
+                  left: 6,
+                  right: 6,
+                  zIndex: 5,
+                  background: "var(--popover, #1a1a1a)",
+                  border: "1px solid var(--c-brd, rgba(255,255,255,0.14))",
+                  borderRadius: 6,
+                  boxShadow: "0 10px 24px rgba(0,0,0,0.45)",
+                  overflow: "hidden auto",
+                  maxHeight: 220,
+                }}
+              >
+                {visibleGroup.providers.map((p) => {
+                  const isActive = activeProvider === p.id;
+                  return (
+                    <button
+                      key={p.id}
+                      role="option"
+                      aria-selected={isActive}
+                      onClick={() => {
+                        setActiveProvider(p.id);
+                        setProviderMenuOpen(false);
+                      }}
+                      onMouseDown={(e) => e.preventDefault()}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        width: "100%",
+                        padding: "6px 9px",
+                        background: isActive ? "var(--c-srf, rgba(255,255,255,0.10))" : "transparent",
+                        border: "none",
+                        color: isActive ? "var(--c-high)" : "var(--c-low)",
+                        fontFamily: "var(--font-sans)",
+                        fontSize: 11.5,
+                        fontWeight: isActive ? 600 : 400,
+                        cursor: "pointer",
+                        textAlign: "left",
+                        outline: "none",
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!isActive) e.currentTarget.style.background = "var(--c-srf, rgba(255,255,255,0.06))";
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!isActive) e.currentTarget.style.background = "transparent";
+                      }}
+                    >
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {p.label}
+                      </span>
+                      {isActive && <Check size={10} style={{ color: "var(--c-dim, #9a9a9a)", flexShrink: 0 }} />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
         {visibleGroup?.searchable && (
           <input
             autoFocus

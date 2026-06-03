@@ -333,6 +333,43 @@ async fn read_loop(
     }
 }
 
+/// Format a JSON-RPC `error` object into a human-readable string.
+///
+/// ACP agents routinely keep the top-level `message` generic ("Internal
+/// error") and put the *actionable* explanation in `error.data.details`
+/// (Hermes: "No LLM provider configured. Run `hermes model`…") or directly in
+/// `error.data` as a string. Surfacing that detail turns an opaque
+/// "ACP error -32603: Internal error" into something the user can act on, for
+/// every ACP bridge (Gemini / OpenCode / Cursor / GitHub Copilot / Hermes).
+fn format_acp_error(err: &Value) -> String {
+    let code = err.get("code").and_then(|v| v.as_i64()).unwrap_or(0);
+    let message = err
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    // Prefer `data.details` (object form), fall back to `data` as a bare
+    // string. Drop it when empty or identical to `message` (no value added).
+    let detail = err
+        .get("data")
+        .and_then(|data| {
+            data.get("details")
+                .and_then(|v| v.as_str())
+                .or_else(|| data.as_str())
+        })
+        .map(str::trim)
+        .filter(|d| !d.is_empty() && *d != message);
+    let base = if message.is_empty() {
+        format!("ACP error {code}")
+    } else {
+        format!("ACP error {code}: {message}")
+    };
+    match detail {
+        Some(d) => format!("{base} — {d}"),
+        None => base,
+    }
+}
+
 async fn dispatch(
     msg: Value,
     pending: &Arc<Mutex<PendingMap>>,
@@ -348,13 +385,7 @@ async fn dispatch(
         if has_result_or_error {
             if let Some(tx) = pending.lock().await.remove(&req_id) {
                 if let Some(err) = msg.get("error") {
-                    let code = err.get("code").and_then(|v| v.as_i64()).unwrap_or(0);
-                    let m = err
-                        .get("message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let _ = tx.send(Err(anyhow!("ACP error {code}: {m}")));
+                    let _ = tx.send(Err(anyhow!("{}", format_acp_error(err))));
                 } else {
                     let r = msg.get("result").cloned().unwrap_or(Value::Null);
                     let _ = tx.send(Ok(r));
@@ -611,5 +642,51 @@ mod tests {
         assert_eq!(resp["id"], 7);
         assert_eq!(resp["result"]["outcome"]["outcome"], "accepted");
         client.shutdown().await;
+    }
+
+    #[test]
+    fn format_acp_error_surfaces_data_details() {
+        // Hermes' real shape: generic message, actionable text in data.details.
+        let err = json!({
+            "code": -32603,
+            "message": "Internal error",
+            "data": { "details": "No LLM provider configured. Run `hermes model` to select a provider." }
+        });
+        let s = format_acp_error(&err);
+        assert!(s.contains("-32603"), "keeps the code: {s}");
+        assert!(s.contains("Internal error"), "keeps the message: {s}");
+        assert!(
+            s.contains("No LLM provider configured. Run `hermes model` to select a provider."),
+            "surfaces the actionable detail: {s}"
+        );
+    }
+
+    #[test]
+    fn format_acp_error_falls_back_to_string_data() {
+        // Some agents put a bare string in `data` instead of `data.details`.
+        let s = format_acp_error(
+            &json!({ "code": -32000, "message": "boom", "data": "extra context" }),
+        );
+        assert_eq!(s, "ACP error -32000: boom — extra context");
+    }
+
+    #[test]
+    fn format_acp_error_without_detail_is_code_and_message() {
+        let s = format_acp_error(&json!({ "code": -32601, "message": "Method not found" }));
+        assert_eq!(s, "ACP error -32601: Method not found");
+    }
+
+    #[test]
+    fn format_acp_error_skips_detail_that_duplicates_message() {
+        // No double-printing when details just echoes the message.
+        let s =
+            format_acp_error(&json!({ "code": 1, "message": "dup", "data": { "details": "dup" } }));
+        assert_eq!(s, "ACP error 1: dup");
+    }
+
+    #[test]
+    fn format_acp_error_handles_empty_message_with_detail() {
+        let s = format_acp_error(&json!({ "code": -32603, "data": { "details": "why it broke" } }));
+        assert_eq!(s, "ACP error -32603 — why it broke");
     }
 }

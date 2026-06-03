@@ -860,13 +860,16 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setComposerField: (patch) => {
     const prev = get().composer;
-    if (!prev.open) return;
     const folderChanged =
       patch.projectPath !== undefined && patch.projectPath !== prev.projectPath;
+    // Field writes are allowed even while the composer is closed: the Fleet hub
+    // model/tool picker writes here when there's no session yet (composer not
+    // "open"), and an early `if (!prev.open) return` silently dropped those
+    // picks — the chip never updated, so it read as "can't select a model".
     set({ composer: { ...prev, ...patch } });
-    // Re-type the welcome so it names the newly-picked folder (or reverts
-    // to the "pick a folder" nudge when the folder is cleared).
-    if (folderChanged) retypeComposerWelcome(patch.projectPath ?? "");
+    // The welcome typewriter is a draft-surface affordance — only re-type it
+    // when the composer is actually open AND the folder changed.
+    if (prev.open && folderChanged) retypeComposerWelcome(patch.projectPath ?? "");
   },
 
   commitComposer: async () => {

@@ -20,6 +20,12 @@ export interface PickerGroup {
    *  for providers whose catalog is large (e.g. OpenRouter's live list) so
    *  users can filter instead of scrolling hundreds of rows. */
   searchable?: boolean;
+  /** Optional per-provider grouping. When present (and length > 1), the picker
+   *  renders a provider chip-row above the models and filters the list to the
+   *  selected provider. Used by Hermes, whose model ids are `provider:model`
+   *  (e.g. `copilot:claude-opus-4.8`) so one agent fans out across the
+   *  providers its `hermes model` config has authenticated. */
+  providers?: Array<{ id: string; label: string }>;
 }
 
 /** Hardcoded model lists for the CLI agents whose backends bake models
@@ -105,11 +111,14 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
     { id: "gemini-3.1-pro[]",                                                     label: "Gemini 3.1 Pro",    supports_effort: false },
   ],
   // Hermes sources its model list LIVE from the ACP session (catalog
-  // default_models is empty), surfaced via `available_models_update`. Until a
-  // session cold-starts, show a single placeholder so the rail isn't blank —
-  // the real model is whatever the user configured via `hermes model`. (This
-  // placeholder id is never in Hermes's real available list, so picking it
-  // pre-session is a no-op until live models arrive.)
+  // default_models is empty): both the lazy toolbar/composer probe
+  // (`/agents/hermes/models`, a transient `session/new`) and the running
+  // session's `available_models_update` override these entries with Hermes'
+  // real per-provider list (ids in `provider:model` form). Until one of those
+  // resolves, show a single placeholder so the rail isn't blank — the real
+  // model is whatever `hermes model` configured. (This placeholder id is never
+  // in Hermes's real available list, so picking it pre-discovery is a no-op
+  // until live models arrive.)
   hermes: [
     { id: "default", label: "Hermes (configured model)", supports_effort: false },
   ],
@@ -192,6 +201,47 @@ function modelFromSpec(m: {
   };
 }
 
+/** Friendly labels for Hermes' provider slugs (the `provider:` prefix on its
+ *  model ids). Falls back to a capitalized slug for anything unlisted. */
+const HERMES_PROVIDER_LABELS: Record<string, string> = {
+  copilot: "Copilot",
+  anthropic: "Anthropic",
+  openrouter: "OpenRouter",
+  nous: "Nous",
+  "nous-api": "Nous",
+  "openai-codex": "Codex",
+  gemini: "Gemini",
+  zai: "Z.AI",
+  "kimi-coding": "Kimi",
+  minimax: "MiniMax",
+  nvidia: "NVIDIA",
+  ollama: "Ollama",
+  "ollama-cloud": "Ollama",
+  lmstudio: "LM Studio",
+};
+
+/** Extract Hermes' distinct providers from its `provider:model` model ids, in
+ *  first-seen order, for the picker's provider chip-row. Unprefixed ids (e.g.
+ *  the `"default"` cold-start placeholder) are skipped. */
+export function hermesProviders(
+  models: PickerModel[],
+): Array<{ id: string; label: string }> {
+  const seen = new Set<string>();
+  const out: Array<{ id: string; label: string }> = [];
+  for (const m of models) {
+    const i = m.id.indexOf(":");
+    if (i <= 0) continue;
+    const slug = m.id.slice(0, i);
+    if (seen.has(slug)) continue;
+    seen.add(slug);
+    out.push({
+      id: slug,
+      label: HERMES_PROVIDER_LABELS[slug] ?? slug.charAt(0).toUpperCase() + slug.slice(1),
+    });
+  }
+  return out;
+}
+
 export function buildPickerGroups(
   tiles: ProviderTile[],
   enabledAgentIds: string[],
@@ -226,11 +276,20 @@ export function buildPickerGroups(
         : catalogModels.length > 0
           ? catalogModels
           : fallbackModels;
-    out.push({
+    const group: PickerGroup = {
       id: t.spec.id,
       label: t.spec.display_name,
       models,
-    });
+    };
+    // Hermes fans one agent out across multiple authenticated providers; its
+    // model ids are `provider:model`. Surface the providers so the picker shows
+    // a chip-row above the models. Only when >1 (a single provider needs no
+    // selector — the flat list is clearer).
+    if (t.spec.id === "hermes") {
+      const provs = hermesProviders(models);
+      if (provs.length > 1) group.providers = provs;
+    }
+    out.push(group);
     emittedCliIds.add(t.spec.id);
   }
 

@@ -98,13 +98,13 @@ interface ProviderDef {
 // and `providers.setConnectedBulk` validate against the catalog and
 // return `unknown provider <id>` for anything missing.
 //
-// This list is EXHAUSTIVE against the catalog (20 entries): 8 CLI agents
+// This list is EXHAUSTIVE against the catalog (21 entries): 9 CLI agents
 // + the Antigravity SDK + Ollama + every API provider. A mount-time drift
 // guard (see useEffect below) warns if the catalog ever gains an id this
 // list lacks. The extra per-row fields (scanKey / envKey / autoInstall)
 // are onboarding-only verify metadata; providers with no probe (opencode,
-// cursor, github-copilot, anthropic, cloudflare-workers-ai) simply omit
-// them and are finished in Settings.
+// cursor, github-copilot, hermes, anthropic, cloudflare-workers-ai) simply
+// omit them and are finished in Settings.
 const PROVIDERS: ProviderDef[] = [
   // No CLI row opts in to `autoInstall` — users found the unattended
   // `npm install -g …` mid-onboarding surprising, so every install
@@ -131,6 +131,10 @@ const PROVIDERS: ProviderDef[] = [
   { id: "opencode",       label: "OpenCode",          logo: "opencode", kind: "cli",                                          hint: "CLI agent" },
   { id: "cursor",         label: "Cursor CLI",        logo: "cursor", kind: "cli",                                            hint: "CLI agent" },
   { id: "github-copilot", label: "GitHub Copilot",    logo: "github-copilot", kind: "cli",                                   hint: "CLI agent" },
+  // Hermes Agent — one CLI that fans out across whichever providers the user's
+  // `hermes model` config has authenticated (Copilot, Anthropic, ...). No
+  // onboarding scan probe; install/auth is finished from Settings → Agents.
+  { id: "hermes",         label: "Hermes Agent",      logo: "hermes", kind: "cli",                                            hint: "CLI agent (multi-provider)" },
   // SDK pairs a pip install with a GEMINI_API_KEY entry. The renderer
   // handles the two-stage flow inline.
   { id: "antigravity-sdk",label: "Antigravity SDK",   logo: "agy",    kind: "api", envKey: "gemini", scanKey: "antigravity_sdk", hint: "Python SDK + Gemini key" },

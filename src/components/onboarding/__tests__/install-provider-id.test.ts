@@ -88,7 +88,7 @@ describe("OnboardingChat install IPC", () => {
     expect(onboardingSrc).not.toMatch(/for\s*\(\s*const\s+p\s+of\s+providers\s*\)/);
   });
 
-  it("lists every backend catalog provider id (full 20) and keeps gemini-api naming", () => {
+  it("lists every backend catalog provider id (full 21) and keeps gemini-api naming", () => {
     // providers.setKey/setDefault reject ids not in `providers::CATALOG`.
     // Onboarding must now offer the FULL catalog so the selection drives
     // the enabled set. Anthropic + Cloudflare + the three new CLIs join
@@ -102,10 +102,10 @@ describe("OnboardingChat install IPC", () => {
     expect(ids).not.toContain("googleai");
     expect(ids).toContain("gemini-api");
 
-    // The full catalog (20 ids).
+    // The full catalog (21 ids).
     const catalog = [
       "claude", "codex", "gemini", "kimi", "opencode", "github-copilot",
-      "cursor", "agy", "antigravity-sdk",
+      "cursor", "hermes", "agy", "antigravity-sdk",
       "openai", "anthropic", "deepseek", "grok", "nvidia-nim", "kimi-api",
       "gemini-api", "perplexity", "openrouter", "cloudflare-workers-ai",
       "ollama",

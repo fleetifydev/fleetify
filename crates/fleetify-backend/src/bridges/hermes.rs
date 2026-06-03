@@ -39,6 +39,169 @@ pub fn models_to_json(models: &[ModelInfo]) -> Value {
     )
 }
 
+/// Discover the models Hermes offers WITHOUT starting a full chat — backs the
+/// toolbar's `GET /agents/hermes/models` so the picker shows Hermes' real
+/// per-provider list before any session has cold-started (parity with the
+/// Cursor probe). Hermes only reports its model list in the `session/new`
+/// result (`_build_model_state` → curated models for the active provider), so
+/// we spawn a transient `hermes acp`, run the handshake, read the list out of a
+/// throwaway `session/new`, then drop the process. Both calls are timeout-
+/// bounded because Hermes' boot is heavy (loads skills + model caches).
+///
+/// Returns `Err` when Hermes isn't installed; an `Ok(vec![])` when Hermes has
+/// no working provider (its `session/new` fails with "No LLM provider
+/// configured"). The caller maps both to an empty list → the renderer keeps its
+/// static `"Hermes (configured model)"` fallback.
+pub async fn list_models(project_path: &str) -> Result<Vec<ModelInfo>> {
+    let bin = resolve_hermes_bin().ok_or_else(|| anyhow!("hermes not found"))?;
+    let cwd_raw = if project_path.is_empty() {
+        std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_else(|_| ".".to_string())
+    } else {
+        project_path.to_string()
+    };
+    let cwd = fleetify_core::strip_verbatim_prefix(std::path::Path::new(&cwd_raw))
+        .to_string_lossy()
+        .into_owned();
+
+    let mut cmd = Command::new(&bin);
+    cmd.args(hermes_acp_args())
+        .current_dir(&cwd)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let mut proc = cmd.spawn().map_err(|e| anyhow!("hermes not found ({e})"))?;
+    let stdin = proc.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
+    let stdout = proc.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
+    if let Some(stderr) = proc.stderr.take() {
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut r = BufReader::new(stderr).lines();
+            while let Ok(Some(_)) = r.next_line().await {}
+        });
+    }
+
+    let client = Arc::new(AcpClient::new());
+    client.attach(stdout, stdin).await?;
+    // Discovery runs no tools, so advertise no fs capability.
+    let caps = json!({ "fs": { "readTextFile": false, "writeTextFile": false } });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(INIT_TIMEOUT_SECS),
+        client.initialize(caps),
+    )
+    .await
+    .map_err(|_| anyhow!("hermes timed out during model discovery"))??;
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_secs(INIT_TIMEOUT_SECS),
+        client.call("session/new", json!({ "cwd": cwd, "mcpServers": [] })),
+    )
+    .await
+    .map_err(|_| anyhow!("hermes timed out creating discovery session"))??;
+    let (_current, models) = parse_session_models(&resp);
+    client.shutdown().await;
+    // `proc` drops here → the transient ACP server is killed.
+    Ok(models)
+}
+
+/// Discover the models for **every authenticated provider** Hermes can use
+/// (not just the currently-selected one), so the picker can offer a provider
+/// selector. Unlike [`list_models`] (a live `session/new` probe that only
+/// reports the active provider's catalog), this reads Hermes' own picker
+/// inventory — `hermes_cli.inventory.build_models_payload` — via the venv
+/// Python, the same source the `hermes model` picker and dashboard
+/// `/api/model/options` use. Returns one [`ModelInfo`] per (provider, model)
+/// with the id encoded as `provider:model` (e.g. `copilot:claude-opus-4.8`) —
+/// exactly the form `session/set_model` resolves back into a provider switch.
+///
+/// Couples to a Hermes internal function (no stable CLI exists); on any failure
+/// it returns `Err`, and the caller falls back to [`list_models`].
+pub async fn list_provider_models(project_path: &str) -> Result<Vec<ModelInfo>> {
+    let py = resolve_hermes_python().ok_or_else(|| anyhow!("hermes venv python not found"))?;
+    let cwd_raw = if project_path.is_empty() {
+        std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_else(|_| ".".to_string())
+    } else {
+        project_path.to_string()
+    };
+    let cwd = fleetify_core::strip_verbatim_prefix(std::path::Path::new(&cwd_raw))
+        .to_string_lossy()
+        .into_owned();
+
+    // Emit `[{id, name}]` for authenticated providers only, ids `provider:model`.
+    // (Python must sit at column 0 — it's passed verbatim to `python -c`.)
+    const SCRIPT: &str = r#"import json
+from hermes_cli.inventory import load_picker_context, build_models_payload
+ctx = load_picker_context()
+p = build_models_payload(ctx, include_unconfigured=False, picker_hints=True, max_models=50)
+out = []
+for r in p.get("providers", []):
+    if not r.get("authenticated"):
+        continue
+    slug = r.get("slug")
+    if not slug:
+        continue
+    for m in (r.get("models") or []):
+        if isinstance(m, str) and m:
+            out.append({"id": slug + ":" + m, "name": m})
+print(json.dumps(out))
+"#;
+    tracing::debug!(target: "hermes.discover", "list_provider_models: spawning {py:?}");
+    let spawn = Command::new(&py)
+        .arg("-c")
+        .arg(SCRIPT)
+        .current_dir(&cwd)
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let output = match tokio::time::timeout(std::time::Duration::from_secs(20), spawn).await {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => {
+            tracing::warn!(target: "hermes.discover", "list_provider_models: spawn error: {e}");
+            return Err(e.into());
+        }
+        Err(_) => {
+            tracing::warn!(target: "hermes.discover", "list_provider_models: TIMED OUT after 20s");
+            return Err(anyhow!("hermes model inventory timed out"));
+        }
+    };
+    tracing::debug!(
+        target: "hermes.discover",
+        "list_provider_models: python exited status={:?} stdout={}B",
+        output.status.code(),
+        output.stdout.len()
+    );
+    if !output.status.success() {
+        return Err(anyhow!(
+            "hermes model inventory failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .last()
+                .unwrap_or("non-zero exit")
+        ));
+    }
+    let parsed: Value = serde_json::from_slice(&output.stdout)?;
+    let arr = parsed
+        .as_array()
+        .ok_or_else(|| anyhow!("hermes model inventory: expected a JSON array"))?;
+    let models: Vec<ModelInfo> = arr
+        .iter()
+        .filter_map(|m| {
+            let id = m.get("id").and_then(|v| v.as_str())?.to_string();
+            let name = m
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&id)
+                .to_string();
+            Some(ModelInfo { id, name })
+        })
+        .collect();
+    tracing::debug!(target: "hermes.discover", "list_provider_models: parsed {} models", models.len());
+    Ok(models)
+}
+
 /// Normalize an ACP `mcpServers` array so every **stdio** entry (one with a
 /// `command`) carries an `env` field. OpenCode rejects stdio MCP entries that
 /// omit `env` with `-32602 Invalid params` (verified against `opencode acp
@@ -118,6 +281,23 @@ pub fn resolve_hermes_bin() -> Option<String> {
         .into_iter()
         .find(|p| p.exists())
         .map(|p| p.to_string_lossy().to_string())
+}
+
+/// Resolve the Python interpreter that ships **inside Hermes' venv** — the
+/// one with `hermes_cli` importable. Derived from the resolved `hermes`
+/// binary (its sibling `python(.exe)` in the same Scripts/bin dir). We
+/// deliberately do NOT fall back to a PATH python: a system interpreter
+/// almost certainly lacks `hermes_cli`, so `None` (→ caller degrades) is the
+/// honest answer when the venv python isn't found.
+fn resolve_hermes_python() -> Option<std::path::PathBuf> {
+    let bin = resolve_hermes_bin()?;
+    let dir = std::path::Path::new(&bin).parent()?;
+    let names: &[&str] = if cfg!(windows) {
+        &["python.exe"]
+    } else {
+        &["python3", "python"]
+    };
+    names.iter().map(|n| dir.join(n)).find(|p| p.exists())
 }
 
 /// ACP launch args. `HERMES_ACP_ARGS` (space-separated) overrides the default
