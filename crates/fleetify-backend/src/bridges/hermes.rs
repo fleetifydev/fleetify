@@ -117,7 +117,7 @@ pub async fn list_models(project_path: &str) -> Result<Vec<ModelInfo>> {
 ///
 /// Couples to a Hermes internal function (no stable CLI exists); on any failure
 /// it returns `Err`, and the caller falls back to [`list_models`].
-pub async fn list_provider_models(project_path: &str) -> Result<Vec<ModelInfo>> {
+pub async fn list_provider_models(project_path: &str) -> Result<(Vec<ModelInfo>, Option<String>)> {
     let py = resolve_hermes_python().ok_or_else(|| anyhow!("hermes venv python not found"))?;
     let cwd_raw = if project_path.is_empty() {
         std::env::var("USERPROFILE")
@@ -130,8 +130,12 @@ pub async fn list_provider_models(project_path: &str) -> Result<Vec<ModelInfo>> 
         .to_string_lossy()
         .into_owned();
 
-    // Emit `[{id, name}]` for authenticated providers only, ids `provider:model`.
-    // (Python must sit at column 0 — it's passed verbatim to `python -c`.)
+    // Emit `{models: [{id, name}], current}` for authenticated providers only,
+    // ids `provider:model`. `current` is the configured provider+model
+    // (`ctx.current_provider`/`ctx.current_model`, surfaced as `p["provider"]` /
+    // `p["model"]`) encoded the same way — but ONLY when it's actually in the
+    // emitted list, so the renderer never heals a session to a model the picker
+    // can't show. (Python must sit at column 0 — passed verbatim to `python -c`.)
     const SCRIPT: &str = r#"import json
 from hermes_cli.inventory import load_picker_context, build_models_payload
 ctx = load_picker_context()
@@ -146,7 +150,14 @@ for r in p.get("providers", []):
     for m in (r.get("models") or []):
         if isinstance(m, str) and m:
             out.append({"id": slug + ":" + m, "name": m})
-print(json.dumps(out))
+ids = {o["id"] for o in out}
+current = None
+cp, cm = p.get("provider"), p.get("model")
+if cp and cm:
+    cand = str(cp) + ":" + str(cm)
+    if cand in ids:
+        current = cand
+print(json.dumps({"models": out, "current": current}))
 "#;
     tracing::debug!(target: "hermes.discover", "list_provider_models: spawning {py:?}");
     let spawn = Command::new(&py)
@@ -184,8 +195,9 @@ print(json.dumps(out))
     }
     let parsed: Value = serde_json::from_slice(&output.stdout)?;
     let arr = parsed
-        .as_array()
-        .ok_or_else(|| anyhow!("hermes model inventory: expected a JSON array"))?;
+        .get("models")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow!("hermes model inventory: expected a `models` array"))?;
     let models: Vec<ModelInfo> = arr
         .iter()
         .filter_map(|m| {
@@ -198,8 +210,17 @@ print(json.dumps(out))
             Some(ModelInfo { id, name })
         })
         .collect();
-    tracing::debug!(target: "hermes.discover", "list_provider_models: parsed {} models", models.len());
-    Ok(models)
+    let current = parsed
+        .get("current")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    tracing::debug!(
+        target: "hermes.discover",
+        "list_provider_models: parsed {} models, current={current:?}",
+        models.len()
+    );
+    Ok((models, current))
 }
 
 /// Normalize an ACP `mcpServers` array so every **stdio** entry (one with a

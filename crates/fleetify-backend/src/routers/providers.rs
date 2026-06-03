@@ -172,11 +172,15 @@ struct ModelsQuery {
 }
 
 type ModelList = Vec<(String, String)>; // (id, label)
+/// Cache value: (fetched_at, models, current). `current` is the agent's
+/// configured/active model id (Hermes only today) — surfaced so the renderer
+/// can resolve & self-heal the `"default"` placeholder; `None` for agents that
+/// don't report one.
+type CachedModels = (Instant, ModelList, Option<String>);
 const AGENT_MODELS_TTL: Duration = Duration::from_secs(120);
-static AGENT_MODELS_CACHE: OnceLock<RwLock<HashMap<String, (Instant, ModelList)>>> =
-    OnceLock::new();
+static AGENT_MODELS_CACHE: OnceLock<RwLock<HashMap<String, CachedModels>>> = OnceLock::new();
 
-fn agent_models_cache() -> &'static RwLock<HashMap<String, (Instant, ModelList)>> {
+fn agent_models_cache() -> &'static RwLock<HashMap<String, CachedModels>> {
     AGENT_MODELS_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
@@ -190,28 +194,29 @@ async fn list_agent_models(Path(id): Path<String>, Query(q): Query<ModelsQuery>)
     let refresh = q.refresh.unwrap_or(0) == 1;
 
     if !refresh {
-        if let Some((at, models)) = agent_models_cache().read().await.get(&id).cloned() {
+        if let Some((at, models, current)) = agent_models_cache().read().await.get(&id).cloned() {
             if at.elapsed() < AGENT_MODELS_TTL {
-                return Json(models_json(&id, &models));
+                return Json(models_json(&id, &models, &current));
             }
         }
     }
 
-    let models = discover_agent_models(&id, &cwd).await;
+    let (models, current) = discover_agent_models(&id, &cwd).await;
     // Only cache non-empty results: a transient failure (logged out, agent
     // mid-update) shouldn't pin an empty list for the whole TTL window.
     if !models.is_empty() {
-        agent_models_cache()
-            .write()
-            .await
-            .insert(id.clone(), (Instant::now(), models.clone()));
+        agent_models_cache().write().await.insert(
+            id.clone(),
+            (Instant::now(), models.clone(), current.clone()),
+        );
     }
-    Json(models_json(&id, &models))
+    Json(models_json(&id, &models, &current))
 }
 
-fn models_json(id: &str, models: &ModelList) -> Value {
+fn models_json(id: &str, models: &ModelList, current: &Option<String>) -> Value {
     json!({
         "id": id,
+        "current": current,
         "models": models
             .iter()
             .map(|(i, l)| json!({ "id": i, "label": l }))
@@ -219,26 +224,37 @@ fn models_json(id: &str, models: &ModelList) -> Value {
     })
 }
 
-async fn discover_agent_models(id: &str, cwd: &str) -> ModelList {
+/// Returns `(models, current)`. `current` is the agent's configured/active model
+/// id and is only populated for Hermes (from its inventory) — see
+/// [`crate::bridges::hermes::list_provider_models`].
+async fn discover_agent_models(id: &str, cwd: &str) -> (ModelList, Option<String>) {
     match id {
-        "opencode" => discover_opencode_models().await,
-        "cursor" => crate::bridges::cursor::list_models(cwd)
-            .await
-            .map(|ms| ms.into_iter().map(|m| (m.id, m.name)).collect())
-            .unwrap_or_default(),
-        "github-copilot" => crate::bridges::github_copilot::list_models(cwd)
-            .await
-            .unwrap_or_default(),
+        "opencode" => (discover_opencode_models().await, None),
+        "cursor" => (
+            crate::bridges::cursor::list_models(cwd)
+                .await
+                .map(|ms| ms.into_iter().map(|m| (m.id, m.name)).collect())
+                .unwrap_or_default(),
+            None,
+        ),
+        "github-copilot" => (
+            crate::bridges::github_copilot::list_models(cwd)
+                .await
+                .unwrap_or_default(),
+            None,
+        ),
         "hermes" => {
             // Prefer the full multi-provider catalog (every authenticated
             // provider) so the picker can offer a provider selector; fall back
             // to a live `session/new` probe (current provider only) when the
             // inventory read is unavailable (older Hermes, venv python missing).
+            // The inventory also reports the configured model as `current`, used
+            // to heal sessions persisted with the `"default"` placeholder.
             tracing::debug!(target: "hermes.discover", "discover hermes: provider inventory…");
-            let mut ms = crate::bridges::hermes::list_provider_models(cwd)
+            let (mut ms, current) = crate::bridges::hermes::list_provider_models(cwd)
                 .await
                 .unwrap_or_default();
-            tracing::debug!(target: "hermes.discover", "discover hermes: inventory → {} models", ms.len());
+            tracing::debug!(target: "hermes.discover", "discover hermes: inventory → {} models, current={current:?}", ms.len());
             if ms.is_empty() {
                 tracing::debug!(target: "hermes.discover", "discover hermes: fallback session probe…");
                 ms = crate::bridges::hermes::list_models(cwd)
@@ -246,9 +262,9 @@ async fn discover_agent_models(id: &str, cwd: &str) -> ModelList {
                     .unwrap_or_default();
                 tracing::debug!(target: "hermes.discover", "discover hermes: session probe → {} models", ms.len());
             }
-            ms.into_iter().map(|m| (m.id, m.name)).collect()
+            (ms.into_iter().map(|m| (m.id, m.name)).collect(), current)
         }
-        _ => Vec::new(),
+        _ => (Vec::new(), None),
     }
 }
 
@@ -259,13 +275,13 @@ async fn discover_agent_models(id: &str, cwd: &str) -> ModelList {
 /// on-open fetch retries. Self-gates — returns fast when Hermes isn't installed
 /// (no venv python / binary), so it's safe to always call at boot.
 pub async fn prewarm_hermes_models() {
-    let models = discover_agent_models("hermes", "").await;
+    let (models, current) = discover_agent_models("hermes", "").await;
     if !models.is_empty() {
         let n = models.len();
         agent_models_cache()
             .write()
             .await
-            .insert("hermes".to_string(), (Instant::now(), models));
+            .insert("hermes".to_string(), (Instant::now(), models, current));
         tracing::debug!(target: "hermes.discover", "prewarmed {n} hermes models at startup");
     }
 }

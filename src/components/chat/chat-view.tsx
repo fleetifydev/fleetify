@@ -9,11 +9,11 @@ import { PermissionDialog } from "./permission-dialog";
 import { CursorQuestionCard } from "./cursor-question-card";
 import { CursorPlanCard } from "./cursor-plan-card";
 import { SessionToolbar } from "./session-toolbar";
-import { fetchMessages, fetchClaudeHistory, createSession, clearSessionMessages, updateSession as apiUpdateSession, stopSession, restartSession, analyzeFleetResponse } from "@/lib/api";
+import { fetchMessages, fetchClaudeHistory, createSession, clearSessionMessages, updateSession as apiUpdateSession, stopSession, restartSession, analyzeFleetResponse, fetchAgentModels } from "@/lib/api";
 import { registerConfigPatch } from "@/lib/session-config-sync";
 import { isWindowsPlatform, folderName } from "@/lib/utils";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
-import { resolveStartupDefault } from "@/lib/picker-groups";
+import { resolveStartupDefault, hermesHealModel, HERMES_DEFAULT_SENTINEL } from "@/lib/picker-groups";
 import { FleetDecisionCard } from "./fleet-decision-card";
 import { useFleetStore, AUTO_CHAIN_CAP } from "@/stores/fleet-store";
 import { LogoMark } from "@/components/brand/logo-mark";
@@ -715,6 +715,35 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     // the message dispatches with the previous model (cross-channel race).
     registerConfigPatch(sessionId, apiUpdateSession(sessionId, { model_name: modelId }));
   }, [updateSession]);
+
+  // Heal Hermes sessions persisted with the "default" placeholder. Hermes seeds
+  // "default" (a sentinel meaning "use whatever `hermes model` is configured")
+  // as a session's model_name when the session is created before discovery; the
+  // chip then reads the unhelpful "Hermes (configured model)" forever — even
+  // across restarts (resolveModelChip maps "default" to that static label). Once
+  // discovery reports Hermes' real configured model, rewrite model_name to it so
+  // the actual model shows AND survives the next launch. `hermesHealModel` only
+  // fires on "default", so an explicit pick is never overwritten.
+  const healTarget = sessions.find((s) => s.id === effectiveSessionId);
+  // AgentTool intentionally omits some agent ids (e.g. "hermes") — the backend
+  // keys off the bare string — so compare as a plain string.
+  const healTool: string | undefined = healTarget?.tool;
+  const healModel = healTarget?.model_name;
+  useEffect(() => {
+    const sid = effectiveSessionId;
+    if (!sid || healTool !== "hermes" || healModel !== HERMES_DEFAULT_SENTINEL) return;
+    let cancelled = false;
+    void fetchAgentModels("hermes", "").then(({ current }) => {
+      if (cancelled) return;
+      const healed = hermesHealModel("hermes", HERMES_DEFAULT_SENTINEL, current);
+      if (!healed) return;
+      updateSession(sid, { model_name: healed });
+      registerConfigPatch(sid, apiUpdateSession(sid, { model_name: healed }));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [effectiveSessionId, healTool, healModel, updateSession]);
 
   const handleClearChat = useCallback(async () => {
     if (!effectiveSessionId) return;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildPickerGroups, resolveDispatchTool, resolveModelChip, modelsForTile, resolveStartupDefault, hermesProviders } from "../picker-groups";
+import { buildPickerGroups, resolveDispatchTool, resolveModelChip, modelsForTile, resolveStartupDefault, hermesProviders, hermesHealModel } from "../picker-groups";
 import type { ProviderTile, ProviderSpec } from "@/lib/providers-api";
 
 const baseTile = (
@@ -326,6 +326,42 @@ describe("resolveModelChip", () => {
     // model === "auto" under a REAL tool (e.g. GitHub Copilot's native `auto`)
     // is NOT Fleet's cross-provider Auto — only tool === "auto" is the sentinel.
     expect(resolveModelChip(groups, "github-copilot", "auto").dispatchTool).toBe("github-copilot");
+  });
+
+  it("derives a friendly label from a 'provider:model' id not yet in any group", () => {
+    // Before the picker's lazy discovery runs, Hermes' group holds only the
+    // cold-start placeholder, so a persisted `copilot:claude-opus-4.8` (a real
+    // pick or a healed default) must resolve to the bare model name — NOT the
+    // raw `copilot:…` id and NOT the "Hermes (configured model)" placeholder.
+    const groups = buildPickerGroups([baseTile("hermes", "Hermes Agent", "cli")], ["hermes"]);
+    expect(resolveModelChip(groups, "hermes", "copilot:claude-opus-4.8").label).toBe("claude-opus-4.8");
+  });
+
+  it("keeps the placeholder label for the bare Hermes 'default' sentinel", () => {
+    // The sentinel itself still reads as the placeholder; the self-heal rewrites
+    // the persisted model_name (away from "default"), it does not relabel "default".
+    const groups = buildPickerGroups([baseTile("hermes", "Hermes Agent", "cli")], ["hermes"]);
+    expect(resolveModelChip(groups, "hermes", "default").label).toBe("Hermes (configured model)");
+  });
+});
+
+describe("hermesHealModel", () => {
+  it("heals the Hermes 'default' sentinel to the discovered configured model", () => {
+    expect(hermesHealModel("hermes", "default", "copilot:claude-opus-4.8")).toBe("copilot:claude-opus-4.8");
+  });
+
+  it("never overwrites an explicit real pick", () => {
+    expect(hermesHealModel("hermes", "copilot:gpt-5-mini", "copilot:claude-opus-4.8")).toBeNull();
+  });
+
+  it("is a no-op without a usable current model", () => {
+    expect(hermesHealModel("hermes", "default", null)).toBeNull();
+    expect(hermesHealModel("hermes", "default", "default")).toBeNull();
+    expect(hermesHealModel("hermes", "default", "")).toBeNull();
+  });
+
+  it("only applies to the hermes tool", () => {
+    expect(hermesHealModel("claude", "default", "copilot:claude-opus-4.8")).toBeNull();
   });
 });
 

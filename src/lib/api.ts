@@ -130,26 +130,35 @@ export async function listModels(): Promise<{ providers: CatalogProvider[] }> {
   return res.json();
 }
 
-/** Discovered model catalog for a live-model CLI agent (`opencode` / `cursor`),
- *  sourced at runtime by the backend (OpenCode via `opencode models`, Cursor
- *  via a short ACP `session/new` probe). Returns the full real list with ids
- *  that match what the bridge applies. An empty array is the documented
- *  "discovery unavailable" signal (agent not installed / not logged in) — the
- *  caller then keeps its static CLI_MODELS fallback, so this is intentionally
- *  non-fatal and never throws. */
+/** Discovered model catalog for a live-model CLI agent (`opencode` / `cursor` /
+ *  `github-copilot` / `hermes`), sourced at runtime by the backend (OpenCode via
+ *  `opencode models`, Cursor via a short ACP `session/new` probe, Hermes via its
+ *  inventory). Returns the full real list with ids that match what the bridge
+ *  applies, plus `current` — the agent's configured/active model id (Hermes
+ *  only; `null` otherwise), used to resolve & self-heal the `"default"`
+ *  placeholder. An empty `models` array is the documented "discovery
+ *  unavailable" signal (agent not installed / not logged in) — the caller then
+ *  keeps its static CLI_MODELS fallback, so this is intentionally non-fatal and
+ *  never throws. */
 export async function fetchAgentModels(
   agentId: string,
   cwd?: string,
-): Promise<{ id: string; label: string }[]> {
+): Promise<{ models: { id: string; label: string }[]; current: string | null }> {
   const qs = cwd ? `?cwd=${encodeURIComponent(cwd)}` : "";
   try {
     const res = await apiFetch(`${API_BASE}/agents/${encodeURIComponent(agentId)}/models${qs}`);
-    if (!res.ok) return [];
-    const data = (await res.json()) as { models?: { id: string; label: string }[] };
-    return Array.isArray(data.models) ? data.models : [];
+    if (!res.ok) return { models: [], current: null };
+    const data = (await res.json()) as {
+      models?: { id: string; label: string }[];
+      current?: string | null;
+    };
+    return {
+      models: Array.isArray(data.models) ? data.models : [],
+      current: typeof data.current === "string" ? data.current : null,
+    };
   } catch {
     // Backend unreachable / transient — fall back to the static list.
-    return [];
+    return { models: [], current: null };
   }
 }
 

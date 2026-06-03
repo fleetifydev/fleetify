@@ -3217,7 +3217,7 @@ export function ChatInput({
     if (openDrop !== "model") return;
     let cancelled = false;
     for (const agentId of ["opencode", "cursor", "github-copilot", "hermes"]) {
-      void fetchAgentModels(agentId, projectPath ?? "").then((models) => {
+      void fetchAgentModels(agentId, projectPath ?? "").then(({ models }) => {
         if (cancelled || models.length === 0) return; // empty → keep static fallback
         setDiscoveredModels((prev) => ({
           ...prev,

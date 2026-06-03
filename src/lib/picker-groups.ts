@@ -467,7 +467,39 @@ export function resolveModelChip(
   const label =
     activeModel?.label ??
     (model ? CLI_MODEL_LABELS[model] : undefined) ??
+    // Hermes ids are `provider:model` (e.g. `copilot:claude-opus-4.8`). Before
+    // the picker's lazy discovery populates the group, a persisted Hermes pick
+    // (or a healed default) matches no group, so show the bare model name
+    // instead of the raw `copilot:…` id. Tool-scoped so it never mangles other
+    // colon-bearing ids (e.g. Ollama's `llama3:8b`).
+    (model && tool === "hermes" && model.includes(":")
+      ? model.slice(model.indexOf(":") + 1)
+      : undefined) ??
     model ??
     "Model";
   return { dispatchTool: resolveDispatchTool(activeGroup?.id ?? tool), label };
+}
+
+/** Hermes' cold-start placeholder model id — a sentinel meaning "use whatever
+ *  model `hermes model` is configured for", NOT a real model. The bridge skips
+ *  `session/set_model` for it (see `bridges/hermes.rs::select_model_to_apply`).
+ *  It must never remain the *displayed* or *persisted* model once Hermes' real
+ *  configured model is known, otherwise the chip reads the unhelpful "Hermes
+ *  (configured model)" forever — even across restarts. */
+export const HERMES_DEFAULT_SENTINEL = "default";
+
+/** Decide whether a session still carrying the Hermes `"default"` sentinel
+ *  should be rewritten to the discovered configured model. Returns the real
+ *  `provider:model` id to persist, or `null` when no heal is warranted: not a
+ *  Hermes session, the model is already a real pick, or no usable `current`
+ *  was discovered. Pure so the self-heal decision is unit-testable. */
+export function hermesHealModel(
+  tool: string,
+  modelName: string | null,
+  current: string | null | undefined,
+): string | null {
+  if (tool !== "hermes") return null;
+  if (modelName !== HERMES_DEFAULT_SENTINEL) return null;
+  if (!current || current === HERMES_DEFAULT_SENTINEL) return null;
+  return current;
 }
