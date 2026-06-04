@@ -95,9 +95,13 @@ export function MarketplacePage() {
   // the page-level toggle (and traffic-light inset) there. macOS keeps it.
   const isWindows = isWindowsPlatform();
 
+  // Opening the Marketplace force-refreshes the catalog from GitHub
+  // (bypassing the backend disk-cache TTL) so newly-published or updated
+  // plugins are visible immediately — the cache stays as a fast-paint /
+  // offline fallback, not a staleness window.
   useEffect(() => {
     refreshAll();
-    refreshCatalog();
+    refreshCatalog({ refresh: true });
   }, [refreshAll, refreshCatalog]);
 
   const setState = (next: QueryState) => {

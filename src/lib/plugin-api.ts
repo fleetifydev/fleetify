@@ -64,6 +64,10 @@ export const refreshSource = (id: string): Promise<void> =>
 
 export const listCatalog = (params: {
   q?: string; tag?: string; source?: string; featured?: boolean;
+  // `refresh=true` tells the backend to bypass its disk-cache TTL and
+  // re-fetch every source from GitHub. Sent when the user opens the
+  // Marketplace so freshly-published / updated plugins appear at once.
+  refresh?: boolean;
 } = {}): Promise<CatalogPlugin[]> => {
   const u = new URLSearchParams();
   Object.entries(params).forEach(([k, v]) => {

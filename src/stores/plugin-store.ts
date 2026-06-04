@@ -18,7 +18,7 @@ interface State {
   refreshAll: () => Promise<void>;
   refreshInstalls: () => Promise<void>;
   refreshSources: () => Promise<void>;
-  refreshCatalog: (params?: { q?: string; tag?: string; source?: string; featured?: boolean }) => Promise<void>;
+  refreshCatalog: (params?: { q?: string; tag?: string; source?: string; featured?: boolean; refresh?: boolean }) => Promise<void>;
 
   install: (body: api.InstallRequest) => Promise<{ install_id: string; plugin_name: string; version: string }>;
   uninstall: (id: string) => Promise<void>;

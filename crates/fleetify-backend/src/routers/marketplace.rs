@@ -3,13 +3,14 @@
 //! of every plugin across every enabled source) stays an honest stub
 //! until the git-clone + manifest-walk pipeline lands.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
 use crate::auth::AuthUser;
 use crate::routers::{ApiError, AppState};
+use crate::services::plugins::types::PluginManifest;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -266,11 +267,25 @@ async fn refresh_source(
         }))),
     }
 }
+/// Catalog query. The renderer ships `q`/`tag`/`source`/`featured` too,
+/// but those filter the cards client-side — only `refresh` reaches the
+/// backend. `refresh=true` (sent when the user *opens* the Marketplace)
+/// bypasses the disk-cache TTL and re-fetches every source from GitHub so
+/// newly-published / updated plugins show up immediately. Omitted (e.g.
+/// the in-session source toggles) serves the cache for a snappy redraw.
+#[derive(serde::Deserialize, Default)]
+struct CatalogQuery {
+    #[serde(default)]
+    refresh: Option<bool>,
+}
+
 async fn catalog_plugins(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
+    Query(q): Query<CatalogQuery>,
 ) -> Result<Json<Value>, ApiError> {
     use crate::services::plugins::marketplace_fetch;
+    let force = q.refresh.unwrap_or(false);
     // Same fresh-user seed as the sources endpoint — if the renderer
     // hits /plugins before /sources, we still get the official rows.
     let _ = ensure_official_source(&st.auth.pool, &user.id).await;
@@ -293,7 +308,7 @@ async fn catalog_plugins(
     let futs: Vec<_> = rows
         .into_iter()
         .map(|(sid, sname, repo, is_official)| async move {
-            let entries = marketplace_fetch::load_source(&sid, &repo, false)
+            let entries = marketplace_fetch::load_source(&sid, &repo, force)
                 .await
                 .unwrap_or_default();
             (sid, sname, is_official, entries)
@@ -330,20 +345,53 @@ async fn catalog_plugins(
     Ok(Json(Value::Array(out)))
 }
 
+/// The renderer's `PluginDetail` envelope (mirror of the TS interface in
+/// `src/types/plugin.ts`). The detail endpoint MUST return this shape:
+/// the manifest sits **nested** under `manifest`, alongside the source
+/// context + repo docs. Returning the bare manifest (as this handler
+/// historically did) left the client's `detail.manifest` undefined, which
+/// surfaced as "This plugin's manifest could not be loaded."
+#[derive(serde::Serialize)]
+struct PluginDetailResponse {
+    source_id: String,
+    source_name: String,
+    source_is_official: bool,
+    path: String,
+    manifest: PluginManifest,
+    readme_md: Option<String>,
+    changelog_md: Option<String>,
+    repo_url: String,
+}
+
+/// The renderer encodes an empty plugin path — a single-plugin repo whose
+/// manifest lives at the repo root — as the sentinel `_root`, since an
+/// empty trailing URL segment can't round-trip. Map it back before we
+/// match it against the entries (whose root path is `""`).
+fn decode_plugin_path(raw: &str) -> &str {
+    if raw == "_root" {
+        ""
+    } else {
+        raw
+    }
+}
+
 async fn catalog_plugin_detail(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
     Path((source_id, plugin_path)): Path<(String, String)>,
-) -> Result<Json<Value>, ApiError> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT repo_url FROM marketplace_sources WHERE id = ? AND user_id = ?")
-            .bind(&source_id)
-            .bind(&user.id)
-            .fetch_optional(&st.auth.pool)
-            .await?;
-    let Some((repo_url,)) = row else {
+) -> Result<Json<PluginDetailResponse>, ApiError> {
+    let row: Option<(String, String, i64)> = sqlx::query_as(
+        "SELECT repo_url, name, is_official FROM marketplace_sources \
+         WHERE id = ? AND user_id = ?",
+    )
+    .bind(&source_id)
+    .bind(&user.id)
+    .fetch_optional(&st.auth.pool)
+    .await?;
+    let Some((repo_url, source_name, is_official)) = row else {
         return Err(ApiError::NotFound(format!("source {source_id} not found")));
     };
+    let plugin_path = decode_plugin_path(&plugin_path).to_string();
     if plugin_path.contains("..") || plugin_path.starts_with('/') {
         return Err(ApiError::BadRequest("invalid plugin_path".into()));
     }
@@ -362,5 +410,96 @@ async fn catalog_plugin_detail(
     let manifest = entry
         .manifest
         .ok_or_else(|| ApiError::Internal("plugin manifest unavailable".into()))?;
-    Ok(Json(serde_json::to_value(manifest).unwrap_or(Value::Null)))
+
+    // README / CHANGELOG sit beside the manifest inside the plugin dir.
+    // Best-effort: a 404 just leaves the field null and the renderer falls
+    // back to the manifest description / "no changelog published".
+    let doc_path = |file: &str| {
+        if plugin_path.is_empty() {
+            file.to_string()
+        } else {
+            format!("{plugin_path}/{file}")
+        }
+    };
+    let readme_md = marketplace_fetch::fetch_raw_text(&repo_url, &doc_path("README.md")).await;
+    let changelog_md =
+        marketplace_fetch::fetch_raw_text(&repo_url, &doc_path("CHANGELOG.md")).await;
+
+    Ok(Json(PluginDetailResponse {
+        source_id,
+        source_name,
+        source_is_official: is_official != 0,
+        path: plugin_path,
+        manifest,
+        readme_md,
+        changelog_md,
+        repo_url,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::plugins::types::Declares;
+
+    fn sample_manifest() -> PluginManifest {
+        PluginManifest {
+            name: "diff-summarizer".into(),
+            display_name: Some("Diff Summarizer".into()),
+            version: "0.1.0".into(),
+            description: "Summarises diffs.".into(),
+            author: None,
+            min_fleetify_version: None,
+            providers: vec!["claude".into()],
+            tags: vec!["productivity".into()],
+            provides: vec!["skills".into()],
+            icon: None,
+            requires_secrets: vec![],
+            declares: Declares::default(),
+            homepage: None,
+            license: None,
+        }
+    }
+
+    #[test]
+    fn decode_plugin_path_maps_root_sentinel() {
+        assert_eq!(decode_plugin_path("_root"), "");
+        assert_eq!(
+            decode_plugin_path("plugins/diff-summarizer"),
+            "plugins/diff-summarizer"
+        );
+        assert_eq!(decode_plugin_path("foo"), "foo");
+    }
+
+    #[test]
+    fn detail_response_nests_manifest_under_envelope() {
+        // Regression guard for "This plugin's manifest could not be
+        // loaded.": the client reads `detail.manifest`, so the manifest
+        // MUST be nested, never flattened to the top level.
+        let resp = PluginDetailResponse {
+            source_id: "s1".into(),
+            source_name: "Fleetify Official".into(),
+            source_is_official: true,
+            path: "plugins/diff-summarizer".into(),
+            manifest: sample_manifest(),
+            readme_md: Some("# Diff Summarizer".into()),
+            changelog_md: None,
+            repo_url: "https://github.com/fleetifydev/marketplace".into(),
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+
+        // The whole point: a nested manifest object, not a bare manifest.
+        assert_eq!(v["manifest"]["name"], "diff-summarizer");
+        assert_eq!(v["manifest"]["version"], "0.1.0");
+        // Top-level manifest fields must NOT leak (proves it isn't bare).
+        assert!(v.get("version").is_none());
+        // Envelope context the detail page renders.
+        assert_eq!(v["source_id"], "s1");
+        assert_eq!(v["source_name"], "Fleetify Official");
+        assert_eq!(v["source_is_official"], true);
+        assert_eq!(v["path"], "plugins/diff-summarizer");
+        assert_eq!(v["repo_url"], "https://github.com/fleetifydev/marketplace");
+        assert_eq!(v["readme_md"], "# Diff Summarizer");
+        assert!(v["changelog_md"].is_null());
+    }
 }

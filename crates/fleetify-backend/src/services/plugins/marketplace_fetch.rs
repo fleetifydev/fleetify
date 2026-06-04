@@ -110,6 +110,29 @@ async fn http_get_json(url: &str) -> Result<Option<Value>> {
     Ok(Some(body))
 }
 
+/// Best-effort fetch of a UTF-8 text asset (README.md / CHANGELOG.md)
+/// from a source repo. Returns `None` on any failure — a missing or
+/// unreadable doc must never fail the detail endpoint, it just means the
+/// renderer falls back to the manifest description / "no changelog".
+pub async fn fetch_raw_text(repo_url: &str, path: &str) -> Option<String> {
+    let url = gh_raw_url(repo_url, path).ok()?;
+    tracing::info!(target: "fleetify.marketplace", "→ GET (text) {url}");
+    let client = reqwest::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .user_agent("Fleet-Marketplace/0.1")
+        .build()
+        .ok()?;
+    let r = client.get(&url).send().await.ok()?;
+    if !r.status().is_success() {
+        return None;
+    }
+    let body = r.text().await.ok()?;
+    if body.trim().is_empty() {
+        return None;
+    }
+    Some(body)
+}
+
 fn now_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
