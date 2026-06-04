@@ -107,15 +107,14 @@ pub async fn install_from_git(
         InstallError::Manifest(e.to_string())
     })?;
 
-    // 4. Compute canonical install path. The `name` field is regex-
-    //    validated as kebab-case so it's path-safe by construction.
+    // 4. Compute the install path. `name` is kebab-validated in
+    //    parse_plugin (`^[a-z0-9][a-z0-9-]*$` — no `/`, `\`, `.`, `:`), so
+    //    the join is always a direct child of `plugins`. Defense-in-depth:
+    //    confirm that, but WITHOUT fs::canonicalize — on Windows canonicalize
+    //    returns a `\\?\` verbatim-prefixed path the plain joined path lacks,
+    //    so a `starts_with` against it rejected EVERY valid install.
     let install_path = plugins.join(&m.name);
-    // Belt-and-braces traversal check — `name` shouldn't contain `/`
-    // or `..` (validated in parse_plugin) but verify the resolved path
-    // still lives under `plugins`.
-    let canonical_parent = std::fs::canonicalize(&plugins).unwrap_or(plugins.clone());
-    let canonical_install = install_path.clone();
-    if !canonical_install.starts_with(&canonical_parent) {
+    if !name_stays_in_dir(&plugins, &m.name) {
         let _ = std::fs::remove_dir_all(&tmp);
         return Err(InstallError::PathEscape(
             install_path.to_string_lossy().into_owned(),
@@ -329,6 +328,16 @@ fn plugin_subdir(clone: &std::path::Path, plugin_path: &str) -> Result<PathBuf, 
     Ok(clone.join(trimmed))
 }
 
+/// True iff joining `name` onto `parent` yields a direct child of `parent`
+/// — i.e. `name` introduced no path separator or `..`. The kebab-case name
+/// validation in `parse_plugin` already guarantees this; this is the
+/// defense-in-depth confirmation, deliberately avoiding `fs::canonicalize`
+/// (whose Windows `\\?\` verbatim prefix made the old `starts_with` check
+/// reject every install).
+fn name_stays_in_dir(parent: &std::path::Path, name: &str) -> bool {
+    parent.join(name).parent() == Some(parent)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,6 +378,20 @@ mod tests {
             plugin_subdir(base, "/abs"),
             Err(InstallError::PathEscape(_))
         ));
+    }
+
+    #[test]
+    fn name_stays_in_dir_accepts_kebab_rejects_separators() {
+        let base = std::path::Path::new("/home/me/.fleetify/plugins");
+        // Kebab-validated names install as a direct child — must pass.
+        // (The old fs::canonicalize + starts_with check rejected these on
+        // Windows because canonicalize prepends a `\\?\` verbatim prefix.)
+        assert!(name_stays_in_dir(base, "neon"));
+        assert!(name_stays_in_dir(base, "diff-summarizer"));
+        // A separator or `..` would escape the plugins dir — must fail
+        // (parse_plugin's name validation blocks these upstream too).
+        assert!(!name_stays_in_dir(base, "a/b"));
+        assert!(!name_stays_in_dir(base, "../escape"));
     }
 
     #[test]
