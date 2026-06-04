@@ -120,6 +120,22 @@ export async function sshListDir(t: SshTarget & { path?: string }): Promise<{ pa
 // ── Model catalog ──────────────────────────────────────────────
 export interface CatalogModel { id: string; label: string; ctx?: string; note?: string }
 export interface CatalogProvider { id: string; label: string; models: CatalogModel[] }
+
+/** A model entry from the backend's discovery endpoints
+ *  (`/agents/{id}/models`, `/providers/{id}/models`). `id`/`label` are always
+ *  present; the richer fields are filled in when the backend resolved the
+ *  lineup from the remote catalog (live ACP/CLI probes and the OpenRouter/
+ *  Cloudflare proxies only know id+label+ctx, so the rest stay undefined and
+ *  the renderer defaults them). */
+export interface DiscoveredModel {
+  id: string;
+  label: string;
+  ctx?: string;
+  supports_effort?: boolean;
+  group?: string;
+  note?: string;
+  endpoint?: string;
+}
 export async function listModels(): Promise<{ providers: CatalogProvider[] }> {
   const res = await apiFetch(`${API_BASE}/models`);
   if (!res.ok) {
@@ -143,13 +159,13 @@ export async function listModels(): Promise<{ providers: CatalogProvider[] }> {
 export async function fetchAgentModels(
   agentId: string,
   cwd?: string,
-): Promise<{ models: { id: string; label: string }[]; current: string | null }> {
+): Promise<{ models: DiscoveredModel[]; current: string | null }> {
   const qs = cwd ? `?cwd=${encodeURIComponent(cwd)}` : "";
   try {
     const res = await apiFetch(`${API_BASE}/agents/${encodeURIComponent(agentId)}/models${qs}`);
     if (!res.ok) return { models: [], current: null };
     const data = (await res.json()) as {
-      models?: { id: string; label: string }[];
+      models?: DiscoveredModel[];
       current?: string | null;
     };
     return {
@@ -171,15 +187,13 @@ export async function fetchAgentModels(
  *  throws. */
 export async function fetchProviderModels(
   providerId: string,
-): Promise<{ id: string; label: string; ctx?: string }[]> {
+): Promise<DiscoveredModel[]> {
   try {
     const res = await apiFetch(
       `${API_BASE}/providers/${encodeURIComponent(providerId)}/models`,
     );
     if (!res.ok) return [];
-    const data = (await res.json()) as {
-      models?: { id: string; label: string; ctx?: string }[];
-    };
+    const data = (await res.json()) as { models?: DiscoveredModel[] };
     return Array.isArray(data.models) ? data.models : [];
   } catch {
     return [];

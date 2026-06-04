@@ -3216,22 +3216,28 @@ export function ChatInput({
   useEffect(() => {
     if (openDrop !== "model") return;
     let cancelled = false;
-    for (const agentId of ["opencode", "cursor", "github-copilot", "hermes"]) {
+    // Every CLI agent: live ACP/CLI probe for opencode/cursor/github-copilot/
+    // hermes; the baked-lineup agents (claude/codex/gemini/kimi/agy) resolve
+    // server-side from the remote catalog. Empty → keep the CLI_MODELS fallback.
+    for (const agentId of ["opencode", "cursor", "github-copilot", "hermes", "claude", "codex", "gemini", "kimi", "agy"]) {
       void fetchAgentModels(agentId, projectPath ?? "").then(({ models }) => {
         if (cancelled || models.length === 0) return; // empty → keep static fallback
         setDiscoveredModels((prev) => ({
           ...prev,
-          [agentId]: models.map((m) => ({ id: m.id, label: m.label, supports_effort: false })),
+          [agentId]: models.map((m) => ({
+            id: m.id,
+            label: m.label,
+            ctx: m.ctx,
+            note: m.note,
+            supports_effort: m.supports_effort ?? false,
+          })),
         }));
       });
     }
-    // HTTP providers whose full catalog (hundreds of models) is discovered from
-    // the backend's live `/providers/{id}/models` proxy — OpenRouter and
-    // Cloudflare Workers AI — same lazy fetch SessionToolbar runs. Without this
-    // the composer picker only saw the small curated fallback. Only fetch the
-    // ones actually connected; the rail auto-gets a search box past 20 entries.
-    for (const pid of ["openrouter", "cloudflare-workers-ai"]) {
-      if (!providerTiles.some((t) => t.spec.id === pid && t.connected)) continue;
+    // Every connected HTTP provider: openrouter/cloudflare proxy their live
+    // `/models`; the rest resolve from the remote catalog (the backend merges
+    // the chain). Empty → keep the curated fallback; rail gets a search box >20.
+    for (const pid of providerTiles.filter((t) => t.spec.kind === "api" && t.connected).map((t) => t.spec.id)) {
       void fetchProviderModels(pid).then((models) => {
         if (cancelled || models.length === 0) return; // empty → keep curated fallback
         setDiscoveredModels((prev) => ({
@@ -3240,7 +3246,8 @@ export function ChatInput({
             id: m.id,
             label: m.label,
             ctx: m.ctx,
-            supports_effort: false,
+            note: m.note,
+            supports_effort: m.supports_effort ?? false,
           })),
         }));
       });

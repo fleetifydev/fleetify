@@ -209,8 +209,14 @@ async fn list_agent_models(Path(id): Path<String>, Query(q): Query<ModelsQuery>)
             id.clone(),
             (Instant::now(), models.clone(), current.clone()),
         );
+        return Json(models_json(&id, &models, &current));
     }
-    Json(models_json(&id, &models, &current))
+    // No live ACP/CLI discovery — either the agent is offline, or it's a
+    // baked-lineup agent with no probe (claude/codex/gemini/kimi/agy). Fall
+    // back to the remote catalog so the picker sources the real lineup instead
+    // of the renderer's last-ditch CLI_MODELS. Rich shape (ctx + effort).
+    let remote = fetch_remote_catalog(&id).await;
+    Json(provider_models_json(&id, &remote))
 }
 
 fn models_json(id: &str, models: &ModelList, current: &Option<String>) -> Value {
@@ -347,8 +353,35 @@ struct ProviderModel {
     id: String,
     label: String,
     ctx: Option<String>,
+    /// Reasoning-effort lever flag. `None` for live-discovery sources that
+    /// don't report it (OpenRouter / Cloudflare) — the renderer then defaults
+    /// it false; `Some(_)` when the remote catalog supplies it.
+    supports_effort: Option<bool>,
+    /// Picker sub-group (Perplexity "Sonar API" / "Agent API"). Catalog-only.
+    group: Option<String>,
+    /// Small badge next to the model ("Reasoning", "Research", …). Catalog-only.
+    note: Option<String>,
+    /// Per-model endpoint override (Perplexity Agent → `/v1/agent`). Catalog-only.
+    endpoint: Option<String>,
 }
 type ProviderModelList = Vec<ProviderModel>;
+
+impl ProviderModel {
+    /// Live-discovery constructor: id + label (+ optional ctx), no catalog
+    /// metadata. Used by the OpenRouter / Cloudflare parsers whose upstream
+    /// payloads carry neither effort flags nor picker groups.
+    fn basic(id: String, label: String, ctx: Option<String>) -> Self {
+        Self {
+            id,
+            label,
+            ctx,
+            supports_effort: None,
+            group: None,
+            note: None,
+            endpoint: None,
+        }
+    }
+}
 
 const PROVIDER_MODELS_TTL: Duration = Duration::from_secs(600);
 static PROVIDER_MODELS_CACHE: OnceLock<RwLock<HashMap<String, (Instant, ProviderModelList)>>> =
@@ -385,22 +418,198 @@ async fn list_provider_models(Path(id): Path<String>, Query(q): Query<ModelsQuer
 fn provider_models_json(id: &str, models: &ProviderModelList) -> Value {
     json!({
         "id": id,
-        "models": models
-            .iter()
-            .map(|m| match &m.ctx {
-                Some(ctx) => json!({ "id": m.id, "label": m.label, "ctx": ctx }),
-                None => json!({ "id": m.id, "label": m.label }),
-            })
-            .collect::<Vec<_>>(),
+        "models": models.iter().map(provider_model_json).collect::<Vec<_>>(),
     })
 }
 
+/// One model entry. Required `id`/`label`; every other field is omitted when
+/// absent so live-discovery sources (which only know id/label/ctx) and the
+/// richer remote catalog share one wire shape and the renderer reads whatever
+/// is present (unknown-field tolerant on both sides).
+fn provider_model_json(m: &ProviderModel) -> Value {
+    let mut o = serde_json::Map::new();
+    o.insert("id".into(), json!(m.id));
+    o.insert("label".into(), json!(m.label));
+    if let Some(ctx) = &m.ctx {
+        o.insert("ctx".into(), json!(ctx));
+    }
+    if let Some(se) = m.supports_effort {
+        o.insert("supports_effort".into(), json!(se));
+    }
+    if let Some(g) = &m.group {
+        o.insert("group".into(), json!(g));
+    }
+    if let Some(n) = &m.note {
+        o.insert("note".into(), json!(n));
+    }
+    if let Some(e) = &m.endpoint {
+        o.insert("endpoint".into(), json!(e));
+    }
+    Value::Object(o)
+}
+
 async fn discover_provider_models(id: &str) -> ProviderModelList {
-    match id {
+    // 1. Provider with a live `/models` endpoint we proxy directly.
+    let live = match id {
         "openrouter" => discover_openrouter_models().await,
         "cloudflare-workers-ai" => discover_cloudflare_models().await,
         _ => Vec::new(),
+    };
+    if !live.is_empty() {
+        return live;
     }
+    // 2. Key-less remote catalog (fleetify.dev/api → jsDelivr origin). Covers
+    //    every fixed-lineup HTTP provider (openai/anthropic/…) plus a degraded
+    //    openrouter/cloudflare when their live call failed. Empty on miss → the
+    //    renderer keeps the baked `default_models` fallback (chain layer 5).
+    fetch_remote_catalog(id).await
+}
+
+// ── Remote model catalog (fleetify.dev/api → jsDelivr) ──────────────────────
+// The key-less baseline layer of the model-resolution chain (see
+// docs/MODEL_DISCOVERY.md). Both the per-provider HTTP endpoint and the
+// per-agent endpoint fall through to this when their live source is empty, so
+// binary-embedded providers/agents (openai/anthropic/claude/codex/…) source
+// their lineup from the published catalog instead of the baked `CATALOG`.
+
+const REMOTE_CATALOG_TTL: Duration = Duration::from_secs(600);
+/// Negative-cache window: a miss (API + CDN both unreachable / empty) is cached
+/// briefly so a picker open doesn't re-fan the slow fetch every time, while
+/// still recovering quickly once the catalog comes online.
+const REMOTE_CATALOG_MISS_TTL: Duration = Duration::from_secs(60);
+static REMOTE_CATALOG_CACHE: OnceLock<RwLock<HashMap<String, (Instant, ProviderModelList)>>> =
+    OnceLock::new();
+
+fn remote_catalog_cache() -> &'static RwLock<HashMap<String, (Instant, ProviderModelList)>> {
+    REMOTE_CATALOG_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Base URL of the Fleetify model-catalog serving API. Overridable so dev/CI
+/// can point at a local mock or staging; defaults to prod.
+fn models_api_base() -> String {
+    std::env::var("FLEETIFY_MODELS_API")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "https://fleetify.dev/api".to_string())
+}
+
+/// jsDelivr ref (tag/branch) for the direct-CDN fallback. Pin a release tag in
+/// prod; defaults to `main`.
+fn models_cdn_tag() -> String {
+    std::env::var("FLEETIFY_MODELS_TAG")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "main".to_string())
+}
+
+/// Fetch a provider/agent's curated models from the remote catalog, TTL-cached.
+/// Tries the serving API first, then the jsDelivr origin directly; any failure
+/// degrades to an empty list (cached briefly) so callers fall to the baked
+/// catalog. Never blocks long — short per-request timeout.
+async fn fetch_remote_catalog(id: &str) -> ProviderModelList {
+    if let Some((at, models)) = remote_catalog_cache().read().await.get(id).cloned() {
+        let ttl = if models.is_empty() {
+            REMOTE_CATALOG_MISS_TTL
+        } else {
+            REMOTE_CATALOG_TTL
+        };
+        if at.elapsed() < ttl {
+            return models;
+        }
+    }
+    let models = fetch_remote_catalog_uncached(id).await;
+    // Cache even an empty result (negative cache) to bound the fetch fan-out.
+    remote_catalog_cache()
+        .write()
+        .await
+        .insert(id.to_string(), (Instant::now(), models.clone()));
+    models
+}
+
+async fn fetch_remote_catalog_uncached(id: &str) -> ProviderModelList {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    // 1. Serving API: `…/providers/{id}/models`.
+    let api_url = format!(
+        "{}/providers/{}/models",
+        models_api_base().trim_end_matches('/'),
+        id
+    );
+    if let Some(models) = try_fetch_catalog(&client, &api_url).await {
+        return models;
+    }
+    // 2. jsDelivr origin: the catalog's built per-provider file. Lets the app
+    //    consume the catalog before the serving API is deployed.
+    let cdn_url = format!(
+        "https://cdn.jsdelivr.net/gh/fleetifydev/models@{}/dist/providers/{}.json",
+        models_cdn_tag(),
+        id
+    );
+    try_fetch_catalog(&client, &cdn_url)
+        .await
+        .unwrap_or_default()
+}
+
+/// GET one catalog URL and parse it. `None` on any network/parse failure OR an
+/// empty model list, so the caller can try the next source in the chain.
+async fn try_fetch_catalog(client: &reqwest::Client, url: &str) -> Option<ProviderModelList> {
+    let body: Value = match client.get(url).send().await {
+        Ok(r) if r.status().is_success() => r.json().await.ok()?,
+        _ => return None,
+    };
+    let models = parse_remote_catalog(&body);
+    if models.is_empty() {
+        None
+    } else {
+        Some(models)
+    }
+}
+
+/// Pure parser for the catalog payload — testable without HTTP. Accepts both
+/// the serving-API shape (`{ models: [...] }`) and the jsDelivr per-provider
+/// file (`{ provider: { models: [...] } }`). Maps each entry's numeric
+/// `context` to a humanized ctx string and carries the picker metadata.
+fn parse_remote_catalog(body: &Value) -> ProviderModelList {
+    let Some(arr) = body
+        .get("models")
+        .or_else(|| body.get("provider").and_then(|p| p.get("models")))
+        .and_then(|m| m.as_array())
+    else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|m| {
+            let id = m.get("id").and_then(|x| x.as_str())?.to_string();
+            let label = m
+                .get("label")
+                .and_then(|x| x.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| id.clone());
+            let str_field = |k: &str| {
+                m.get(k)
+                    .and_then(|x| x.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            };
+            Some(ProviderModel {
+                id,
+                label,
+                ctx: m
+                    .get("context")
+                    .and_then(|x| x.as_u64())
+                    .map(humanize_context),
+                supports_effort: m.get("supports_effort").and_then(|x| x.as_bool()),
+                group: str_field("group"),
+                note: str_field("note"),
+                endpoint: str_field("endpoint"),
+            })
+        })
+        .collect()
 }
 
 /// Fetch OpenRouter's public `GET /api/v1/models`. No auth is required for the
@@ -449,7 +658,7 @@ fn parse_openrouter_models(body: &Value) -> ProviderModelList {
                 .get("context_length")
                 .and_then(|x| x.as_u64())
                 .map(humanize_context);
-            Some(ProviderModel { id, label, ctx })
+            Some(ProviderModel::basic(id, label, ctx))
         })
         .collect();
     out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -525,11 +734,7 @@ fn parse_cloudflare_models(body: &Value) -> ProviderModelList {
         .filter_map(|m| {
             let id = m.get("name").and_then(|x| x.as_str())?.to_string();
             let label = id.rsplit('/').next().unwrap_or(&id).to_string();
-            Some(ProviderModel {
-                id,
-                label,
-                ctx: None,
-            })
+            Some(ProviderModel::basic(id, label, None))
         })
         .collect()
 }
@@ -1469,9 +1674,11 @@ mod tests {
 
     #[tokio::test]
     async fn discover_agent_models_returns_empty_for_unknown_agent() {
-        assert!(discover_agent_models("totally-unknown", "")
-            .await
-            .is_empty());
+        // discover_agent_models now returns (models, current); an unknown agent
+        // yields no models and no configured-model id.
+        let (models, current) = discover_agent_models("totally-unknown", "").await;
+        assert!(models.is_empty());
+        assert!(current.is_none());
     }
 
     #[test]
@@ -1668,6 +1875,80 @@ mod tests {
         assert!(parse_openrouter_models(&json!({ "data": [{ "name": "x" }] })).is_empty());
     }
 
+    #[test]
+    fn parse_remote_catalog_api_shape() {
+        // Serving-API shape: top-level `models`.
+        let body = json!({
+            "provider": { "id": "openai" },
+            "models": [
+                { "id": "gpt-5.5", "label": "GPT-5.5", "context": 1_050_000, "supports_effort": true },
+                { "id": "gpt-4.1", "label": "GPT-4.1", "context": 1_000_000, "supports_effort": false }
+            ]
+        });
+        let out = parse_remote_catalog(&body);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].id, "gpt-5.5");
+        assert_eq!(out[0].ctx.as_deref(), Some("1.1M"));
+        assert_eq!(out[0].supports_effort, Some(true));
+        assert_eq!(out[1].supports_effort, Some(false));
+    }
+
+    #[test]
+    fn parse_remote_catalog_jsdelivr_shape() {
+        // jsDelivr per-provider file: `provider.models`.
+        let body = json!({
+            "schemaVersion": 1, "commit": "abc",
+            "provider": {
+                "id": "claude", "name": "Claude Code", "kind": "cli",
+                "models": [
+                    { "id": "claude-opus-4-8", "label": "Opus 4.8", "context": 1_000_000, "supports_effort": true }
+                ]
+            }
+        });
+        let out = parse_remote_catalog(&body);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "claude-opus-4-8");
+        assert_eq!(out[0].label, "Opus 4.8");
+        assert_eq!(out[0].ctx.as_deref(), Some("1M"));
+        assert_eq!(out[0].supports_effort, Some(true));
+    }
+
+    #[test]
+    fn parse_remote_catalog_carries_group_and_endpoint() {
+        // Perplexity Agent entries carry the picker group + endpoint override.
+        let body = json!({ "models": [
+            {
+                "id": "anthropic/claude-opus-4-7", "label": "Claude Opus 4.7",
+                "context": 1_000_000, "supports_effort": true,
+                "group": "Agent API", "note": null, "endpoint": "/v1/agent"
+            }
+        ]});
+        let out = parse_remote_catalog(&body);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].group.as_deref(), Some("Agent API"));
+        assert_eq!(out[0].endpoint.as_deref(), Some("/v1/agent"));
+        // Explicit JSON null collapses to None (omitted from the wire shape).
+        assert_eq!(out[0].note, None);
+    }
+
+    #[test]
+    fn parse_remote_catalog_handles_missing_or_bad_payload() {
+        assert!(parse_remote_catalog(&json!({})).is_empty());
+        assert!(parse_remote_catalog(&json!({ "models": "nope" })).is_empty());
+        // An entry without an id is skipped.
+        assert!(parse_remote_catalog(&json!({ "models": [{ "label": "x" }] })).is_empty());
+    }
+
+    #[test]
+    fn models_api_base_defaults_to_prod() {
+        // Only assert the default when the override isn't set in this process,
+        // to avoid clobbering a CI-provided value (env is process-global).
+        if std::env::var("FLEETIFY_MODELS_API").is_err() {
+            assert_eq!(models_api_base(), "https://fleetify.dev/api");
+        }
+        assert!(!models_cdn_tag().is_empty());
+    }
+
     #[tokio::test]
     async fn cf_verify_workers_ai_active_token_and_account_is_valid() {
         use wiremock::matchers::{method, path};
@@ -1749,23 +2030,31 @@ mod tests {
     }
 
     #[test]
-    fn provider_models_json_omits_ctx_when_absent() {
+    fn provider_models_json_emits_present_omits_absent() {
         let models = vec![
             ProviderModel {
                 id: "a/b".into(),
                 label: "B".into(),
                 ctx: Some("128K".into()),
+                supports_effort: Some(true),
+                group: Some("Agent API".into()),
+                note: Some("Reasoning".into()),
+                endpoint: Some("/v1/agent".into()),
             },
-            ProviderModel {
-                id: "c/d".into(),
-                label: "D".into(),
-                ctx: None,
-            },
+            ProviderModel::basic("c/d".into(), "D".into(), None),
         ];
         let v = provider_models_json("openrouter", &models);
         assert_eq!(v["id"], "openrouter");
+        // Present fields are serialized.
         assert_eq!(v["models"][0]["ctx"], "128K");
+        assert_eq!(v["models"][0]["supports_effort"], true);
+        assert_eq!(v["models"][0]["group"], "Agent API");
+        assert_eq!(v["models"][0]["note"], "Reasoning");
+        assert_eq!(v["models"][0]["endpoint"], "/v1/agent");
+        // Absent optionals are omitted from the wire shape (not null).
         assert!(v["models"][1].get("ctx").is_none());
+        assert!(v["models"][1].get("supports_effort").is_none());
+        assert!(v["models"][1].get("group").is_none());
         assert_eq!(v["models"][1]["label"], "D");
     }
 
