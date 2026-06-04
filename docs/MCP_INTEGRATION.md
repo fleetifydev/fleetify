@@ -87,7 +87,7 @@ format-specific emitter:
 
 | Emitter | Output shape | Consumed by |
 |---|---|---|
-| `to_acp_servers(map)` | ACP `mcpServers` **array**; `headers`/`env` dicts → `[{name,value}]`; strips the internal `builtin` marker | Gemini, GitHub Copilot, OpenCode, Cursor, **Hermes** (all ACP bridges) |
+| `to_acp_servers(map)` | ACP `mcpServers` **array**; `headers`/`env` dicts → `[{name,value}]`; strips the internal `builtin` marker | Gemini, GitHub Copilot, OpenCode, Cursor, Hermes, **Kimi** (all ACP bridges) |
 | `to_codex_cli_args(map)` | flat `-c mcp_servers.<n>.<key>=<toml>` CLI args | Codex (`codex app-server`) |
 | `to_antigravity_cli_json(map)` | `{ "mcpServers": { … } }`; `url` → `serverUrl` for remote | Antigravity CLI (`agy`), written to a config file |
 | `to_sdk_mcp_servers(map)` | transport-tagged list; **omits `env` for stdio** (delivered out-of-band) | Antigravity SDK (Python) |
@@ -105,15 +105,27 @@ format-specific emitter:
 | Bridge | Mechanism |
 |---|---|
 | **Claude** (`bridges/claude.rs`) | `build_merged_map` → JSON → `claude -p --mcp-config <path>`. Adds `fleet_permission` + `--permission-prompt-tool` when a permission handler is set and mode is `default`. |
-| **ACP** — Gemini / GitHub Copilot / OpenCode / Cursor / **Hermes** | `build_merged_map` → `to_acp_servers` → `ensure_stdio_env` → sent in the ACP `session/new` request's `mcpServers`. |
+| **ACP** — Gemini / GitHub Copilot / OpenCode / Cursor / Hermes / **Kimi** | `build_merged_map` → `to_acp_servers` → `ensure_stdio_env` → sent in the ACP `session/new` request's `mcpServers`. |
 | **Codex** (`bridges/codex.rs`) | `build_merged_map` → `to_codex_cli_args` → `-c mcp_servers.…` flags on `codex app-server`. |
 | **Antigravity CLI** (`bridges/antigravity.rs`) | `build_merged_map` → `to_antigravity_cli_json` → writes `~/.gemini/config/mcp_config.json`; cleans up its own keys after the turn (preserves user entries). |
 | **Antigravity SDK** (`bridges/antigravity_sdk.rs`) | `build_merged_map` → `to_sdk_mcp_servers` → Python SDK `mcp_servers` list. |
-| **HTTP-only** — OpenAI/DeepSeek/Grok/… , Perplexity, Kimi, Ollama | No MCP path (REST chat only). |
+| **HTTP-only** — OpenAI/DeepSeek/Grok/… , Perplexity, Kimi-API, Ollama | No MCP path (REST chat only). |
 
 Hermes specifically mounts the merged map over ACP and relies on
 `ensure_stdio_env` for the `fleet_*` stdio entries — see
 [`PROVIDER_ARCHITECTURE.md`](PROVIDER_ARCHITECTURE.md) and `bridges/hermes.rs`.
+
+**Kimi (Moonshot) Code CLI** (`bridges/kimi.rs`) mounts MCP the same ACP way —
+the merged map rides in the `session/new` `mcpServers` array. Two Kimi-specific
+notes: the bridge spawns plain **`kimi acp`** with *no* model/approval flags (the
+ACP `acp` subcommand exposes none — model comes from Kimi's own config, tool
+permissions route through ACP `session/request_permission`), and Kimi
+authenticates **out-of-band** — run `kimi` once and send `/login` before a
+session works; the bridge only calls ACP `authenticate` when `initialize`
+advertises an `authMethods` entry, otherwise it goes straight to `session/new`,
+and a "not logged in" error surfaces verbatim. **Do not confuse it with
+"Kimi-API"** in the HTTP-only row above — that is Moonshot's OpenAI-compatible
+REST endpoint (`bridges/openai_compat.rs`), a different provider with no MCP path.
 
 ---
 
@@ -170,5 +182,5 @@ POST   /api/mcp/servers/{name}/auth/signout  clear stored secret
 | OAuth token store | `crates/fleetify-backend/src/services/mcp_secrets.rs` |
 | HTTP endpoints | `crates/fleetify-backend/src/routers/mcp.rs` |
 | Built-in sidecars | `crates/{memory,dispatch,reveng,permission}-mcp/` |
-| Per-bridge mounting | `crates/fleetify-backend/src/bridges/{claude,gemini,codex,antigravity,antigravity_sdk,opencode,cursor,hermes,github_copilot}.rs` |
+| Per-bridge mounting | `crates/fleetify-backend/src/bridges/{claude,gemini,codex,antigravity,antigravity_sdk,opencode,cursor,hermes,github_copilot,kimi}.rs` |
 | Sidecar drift guard | `scripts/release/discover-sidecars.mjs` |

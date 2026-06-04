@@ -1286,14 +1286,45 @@ async fn run_send_flow(
                 model,
             )))
         }
-        "kimi" => AnyBridge::Kimi(Arc::new(crate::bridges::kimi::KimiBridge::new(
-            sid.clone(),
-            agent_cwd.clone(),
-            session.permission_mode.clone(),
-            session.model_name.clone(),
-            session.title == "Staff Agent",
-            session.agent_template.clone(),
-        ))),
+        "kimi" => {
+            let is_staff = session.title == "Staff Agent";
+            let mut b = crate::bridges::kimi::KimiBridge::new(
+                sid.clone(),
+                agent_cwd.clone(),
+                session.permission_mode.clone(),
+                session.model_name.clone(),
+                is_staff,
+                session.agent_template.clone(),
+            );
+            // ACP has no system-prompt slot — staff gets the orchestrator
+            // prompt (roster + [[DISPATCH]] protocol), non-staff inherits its
+            // template prompt; KimiBridge prepends it onto the turn. Parity
+            // with the Gemini block.
+            if is_staff {
+                b.system_prompt = Some(
+                    crate::services::staff_prompt::build(
+                        &st.auth.pool,
+                        &sid,
+                        session.user_id.as_deref(),
+                    )
+                    .await,
+                );
+            } else if let Some(tpl) =
+                crate::services::builtin_templates::get(session.agent_template.as_deref())
+            {
+                b.system_prompt = Some(tpl.system_prompt.to_string());
+            }
+            // Live permission dialog only in `default` mode (the one mode ACP
+            // routes through on_permission_request); staff sessions skip it.
+            if !is_staff && session.permission_mode == "default" {
+                b = b.with_permission_handler(build_permission_handler(
+                    &permission_session,
+                    &sink,
+                    &sid,
+                ));
+            }
+            AnyBridge::Kimi(Arc::new(b))
+        }
         "agy" => {
             let is_staff = session.title == "Staff Agent";
             // agy `-p` has no system-prompt flag, so the staff dispatch protocol
@@ -2684,14 +2715,24 @@ async fn run_dispatched_task(
                 crate::bridges::perplexity::PerplexityBridge::new(target_id.clone(), model),
             ))
         }
-        "kimi" => AnyBridge::Kimi(std::sync::Arc::new(crate::bridges::kimi::KimiBridge::new(
-            target_id.clone(),
-            target_cwd.clone(),
-            target.permission_mode.clone(),
-            target.model_name.clone(),
-            false,
-            target.agent_template.clone(),
-        ))),
+        "kimi" => {
+            let mut b = crate::bridges::kimi::KimiBridge::new(
+                target_id.clone(),
+                target_cwd.clone(),
+                target.permission_mode.clone(),
+                target.model_name.clone(),
+                false, // dispatched tasks always land on non-staff agents
+                target.agent_template.clone(),
+            );
+            // A dispatched Kimi agent inherits its template's system prompt
+            // (e.g. reverse_engineering). Mirror the Gemini dispatch arm.
+            if let Some(tpl) =
+                crate::services::builtin_templates::get(target.agent_template.as_deref())
+            {
+                b.system_prompt = Some(tpl.system_prompt.to_string());
+            }
+            AnyBridge::Kimi(std::sync::Arc::new(b))
+        }
         "gemini" => {
             let mut b = GeminiBridge::new(
                 target_id.clone(),

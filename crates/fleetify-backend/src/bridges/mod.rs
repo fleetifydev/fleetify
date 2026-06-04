@@ -69,9 +69,10 @@ pub enum AnyBridge {
     /// see those as new `BridgeEvent`s, the renderer parks them under
     /// the assistant bubble.
     Perplexity(Arc<perplexity::PerplexityBridge>),
-    /// Kimi Code CLI (placeholder — the registry / dispatch surface is
-    /// wired but the actual ACP spawn is deferred until Moonshot
-    /// publishes a stable protocol spec).
+    /// Kimi (Moonshot) Code CLI over ACP (`kimi acp`). Shares the
+    /// `AcpClient` with the other ACP bridges; spawns plain `kimi acp`
+    /// (no model/approval flags), authenticates out-of-band (`kimi` →
+    /// `/login`), and attaches MCP over `session/new`.
     Kimi(Arc<kimi::KimiBridge>),
     /// OpenCode CLI over ACP (`opencode acp`). Shares the `AcpClient` with
     /// the Gemini bridge; skips the ACP `authenticate` step and supports
