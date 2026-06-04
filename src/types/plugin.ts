@@ -1,6 +1,19 @@
 // Plugin foundation — shared TypeScript types mirroring backend Pydantic models.
 
-export type Provider = "claude" | "codex" | "gemini";
+/** Every CLI agent a plugin can target. The first nine materialize
+ *  components to an on-disk home; `antigravity-sdk` is MCP-only (no home).
+ *  Mirrors the backend `KNOWN_PROVIDERS`. */
+export type Provider =
+  | "claude"
+  | "codex"
+  | "gemini"
+  | "kimi"
+  | "opencode"
+  | "github-copilot"
+  | "cursor"
+  | "hermes"
+  | "agy"
+  | "antigravity-sdk";
 export type ScopeType = "user" | "project" | "agent";
 
 export interface Author { name: string; url?: string; }
@@ -11,33 +24,14 @@ export interface SecretRequirement {
   url?: string;
 }
 
-/** Per-provider declares for Claude + Gemini, both of which ship
- *  reusable slash commands under ``.<provider>/commands/``. Codex has
- *  its own shape (see :type:`CodexProviderDeclares`) because Codex never
- *  had a commands concept — it loads reusable instruction blocks from
- *  ``~/.codex/prompts/`` instead. */
+/** Per-provider component counts. `commands` only applies to agents with
+ *  a /command surface (Claude / Gemini / OpenCode); Codex materializes the
+ *  same markdown into `~/.codex/prompts/`. Providers without a command
+ *  surface simply carry `commands: 0`. */
 export interface ProviderDeclares {
   skills: number;
   commands: number;
   hooks: number;
-}
-
-/** Codex-only declares — ``prompts`` replaces ``commands``. The Codex
- *  CLI auto-discovers ``.md`` files in ``~/.codex/prompts/`` and surfaces
- *  them as ``/prompts:<name>``; the marketplace materializer copies a
- *  plugin's ``.codex/prompts/`` directory into that location. There is
- *  intentionally NO ``commands`` field — pydantic's ``extra="forbid"``
- *  on the backend will reject a manifest that tries to set it. */
-export interface CodexProviderDeclares {
-  skills: number;
-  prompts: number;
-  hooks: number;
-}
-
-export interface ProvidersDeclares {
-  claude: ProviderDeclares;
-  gemini: ProviderDeclares;
-  codex: CodexProviderDeclares;
 }
 
 export interface Declares {
@@ -46,10 +40,12 @@ export interface Declares {
   workflows: number;
   /** Fleetify-native prompt count — sources at `<plugin>/.fleetify/prompts/*.md`,
    *  materializes to `~/.fleetify/prompts/` (user scope) or
-   *  `<project>/.fleetify/prompts/` (project scope). Replaces the
-   *  legacy `providers.codex.prompts` field, which is now deprecated. */
+   *  `<project>/.fleetify/prompts/` (project scope). */
   prompts: number;
-  providers: ProvidersDeclares;
+  /** Per-provider counts keyed by provider id (`claude`, `kimi`,
+   *  `github-copilot`, …). A map (not a fixed struct) so new providers are
+   *  additive. Mirrors the backend `BTreeMap<String, ProviderDeclares>`. */
+  providers: Record<string, ProviderDeclares>;
 }
 
 /** Content-type categories surfaced to the marketplace UI as filter
@@ -106,20 +102,14 @@ export const PROVIDES_LABEL_EN: Record<Provides, string> = {
  *  via the manifest validator, so this only matters at the seams. */
 export function deriveProvides(d: Declares): Provides[] {
   const out: Provides[] = [];
+  const pv = Object.values(d.providers ?? {});
   if (d.mcp_servers > 0) out.push("mcp");
-  if (d.providers.claude.skills > 0
-      || d.providers.gemini.skills > 0
-      || d.providers.codex.skills > 0) out.push("skills");
-  // ``commands`` is now strictly /-commands authored for agent CLIs
-  // (Claude, Gemini). Codex's ``prompts`` field used to feed into this
-  // bucket — it's been moved up to ``Declares.prompts`` and rendered
-  // as its own chip below.
-  if (d.providers.claude.commands > 0
-      || d.providers.gemini.commands > 0) out.push("commands");
+  if (pv.some((p) => p.skills > 0)) out.push("skills");
+  // ``commands`` = /-commands authored for an agent CLI's command surface
+  // (Claude / Gemini / OpenCode), counted across every provider.
+  if (pv.some((p) => p.commands > 0)) out.push("commands");
   if (d.prompts > 0) out.push("prompts");
-  if (d.providers.claude.hooks > 0
-      || d.providers.gemini.hooks > 0
-      || d.providers.codex.hooks > 0) out.push("hooks");
+  if (pv.some((p) => p.hooks > 0)) out.push("hooks");
   if (d.templates > 0) out.push("subagents");
   if (d.workflows > 0) out.push("workflows");
   return out;
@@ -138,15 +128,11 @@ export function manifestProvides(m: PluginManifest): Provides[] {
  *  Provider-aware: sums skills+hooks across all three providers, sums
  *  commands across Claude+Gemini only, sums prompts on Codex only. */
 export function totalDeclaredComponents(d: Declares): number {
-  const claude = d.providers.claude.skills + d.providers.claude.commands + d.providers.claude.hooks;
-  const gemini = d.providers.gemini.skills + d.providers.gemini.commands + d.providers.gemini.hooks;
-  // Codex used to contribute its ``prompts`` count here; the field
-  // moved up to ``d.prompts`` as a Fleetify-native cross-cutting
-  // count. ``providers.codex.prompts`` lingers on the schema for
-  // backward-compat but no longer materializes, so we don't double-
-  // count it here either.
-  const codex  = d.providers.codex.skills + d.providers.codex.hooks;
-  return d.mcp_servers + d.templates + d.workflows + d.prompts + claude + gemini + codex;
+  const perProvider = Object.values(d.providers ?? {}).reduce(
+    (sum, p) => sum + p.skills + p.commands + p.hooks,
+    0,
+  );
+  return d.mcp_servers + d.templates + d.workflows + d.prompts + perProvider;
 }
 
 /** Resolve the user-facing label for a plugin manifest. Every UI

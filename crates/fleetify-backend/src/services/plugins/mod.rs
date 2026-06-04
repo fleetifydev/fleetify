@@ -24,5 +24,7 @@ pub mod installer;
 pub mod manifest;
 pub mod marketplace_fetch;
 pub mod materializers;
+pub mod mcp_materialize;
+pub mod providers;
 pub mod state;
 pub mod types;

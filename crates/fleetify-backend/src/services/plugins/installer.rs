@@ -27,7 +27,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use super::manifest;
+use super::{manifest, mcp_materialize, providers};
 
 #[derive(Debug, thiserror::Error)]
 pub enum InstallError {
@@ -149,9 +149,21 @@ pub async fn install_from_git(repo_url: &str) -> Result<InstallResult, InstallEr
         }
     }
 
+    // Materialize MCP servers into the shared registry — the per-bridge
+    // emitters fan them out to every agent at spawn, so this one write
+    // covers all MCP-capable providers. NOTE: install-time secrets aren't
+    // threaded through this low-level helper yet, so `${secret:KEY}` stays
+    // literal in the registry until the router wires the secret map in.
+    let mcp_res =
+        mcp_materialize::materialize_mcp(&install_path, &std::collections::BTreeMap::new());
+
     let mut manifest_value = serde_json::to_value(&m).unwrap_or(Value::Null);
     if let Some(obj) = manifest_value.as_object_mut() {
         obj.insert("materialization".into(), Value::Object(materialization));
+        obj.insert(
+            "mcp".into(),
+            serde_json::to_value(&mcp_res).unwrap_or(Value::Null),
+        );
     }
     Ok(InstallResult {
         install_id: m.name.clone(),
@@ -180,35 +192,38 @@ pub fn uninstall(install_id: &str) -> Result<(), InstallError> {
     // entries the user installed alongside this plugin.
     if let Ok(m) = super::manifest::parse_plugin(&dir) {
         for provider in &m.providers {
-            // Rebuild the materializer's `paths` list from on-disk shape
-            // by walking each provider home for `<install_id>__` prefix.
+            // Walk each provider's config home for the `<plugin>-` prefix
+            // and remove the artifacts this plugin materialized.
             unmaterialize_by_prefix(provider, install_id);
         }
     }
+    // Drop this plugin's MCP servers from the shared registry (re-reads the
+    // still-on-disk mcp.json to know which names it owns).
+    mcp_materialize::unmaterialize_mcp(&dir);
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
 
-/// Remove every materialized artifact whose filename starts with
-/// `<install_id>__` under `<home>/.<provider>/{skills,commands,prompts}/`.
-/// Used by `uninstall` to reverse a prior `materialize`.
+/// Remove every materialized artifact whose name starts with the plugin's
+/// `<plugin>-` prefix under the provider's config-home component dirs.
+/// Uses the provider registry for the (per-OS, non-naive) home + subpaths.
 fn unmaterialize_by_prefix(provider: &str, install_id: &str) {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .ok()
-        .map(|h| PathBuf::from(h).join(format!(".{provider}")));
-    let Some(home) = home else {
-        return;
+    let Some(home) = providers::provider_home(provider) else {
+        return; // antigravity-sdk / no home → nothing to clean
     };
-    let needle = format!("{install_id}__");
-    for subdir in ["skills", "commands", "prompts"] {
+    let prefix = providers::cleanup_prefix(install_id);
+    // `plugins` covers OpenCode's `.ts` hook modules; `hooks` covers
+    // Copilot `.json` + Hermes hook dirs.
+    for subdir in [
+        "skills", "commands", "prompts", "agents", "hooks", "plugins",
+    ] {
         let d = home.join(subdir);
         let Ok(rd) = std::fs::read_dir(&d) else {
             continue;
         };
         for ent in rd.flatten() {
             let name = ent.file_name().to_string_lossy().to_string();
-            if !name.starts_with(&needle) {
+            if !name.starts_with(&prefix) {
                 continue;
             }
             let p = ent.path();

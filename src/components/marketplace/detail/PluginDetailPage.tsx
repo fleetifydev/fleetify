@@ -297,30 +297,30 @@ function ComponentsBody({ declares }: { declares: PluginDetail["manifest"]["decl
     .map(k => ({ kind: COMPONENT_LABEL[k], count: declares[k] }))
     .filter(r => r.count > 0);
 
-  // Per-provider kinds aren't uniform — Codex declares ``prompts`` where
-  // Claude+Gemini declare ``commands``. The flat iteration the old code
-  // used (a single ["skills","commands","hooks"] tuple for all three)
-  // produced ``undefined`` rows for codex.prompts and crashed the
-  // component count badge. Branch per provider so each row reads from
-  // the field that actually exists on its declares shape.
-  const claudeKinds = ["skills", "commands", "hooks"] as const;
-  const geminiKinds = ["skills", "commands", "hooks"] as const;
-  const codexKinds = ["skills", "prompts", "hooks"] as const;
-
-  const claudeRows = claudeKinds.map(k => ({
-    kind: `Claude ${COMPONENT_LABEL[k]?.toLowerCase() ?? k}`,
-    count: declares.providers.claude[k],
-  }));
-  const geminiRows = geminiKinds.map(k => ({
-    kind: `Gemini ${COMPONENT_LABEL[k]?.toLowerCase() ?? k}`,
-    count: declares.providers.gemini[k],
-  }));
-  const codexRows = codexKinds.map(k => ({
-    kind: `Codex ${COMPONENT_LABEL[k]?.toLowerCase() ?? k}`,
-    count: declares.providers.codex[k],
-  }));
-  const providerRows = [...claudeRows, ...geminiRows, ...codexRows]
-    .filter(r => r.count > 0);
+  // Per-provider rows: iterate the providers map so every agent the plugin
+  // targets (claude … agy) gets a breakdown. Each provider declares
+  // skills/commands/hooks uniformly; only non-zero rows render.
+  const PROVIDER_LABEL: Record<string, string> = {
+    claude: "Claude",
+    codex: "Codex",
+    gemini: "Gemini",
+    kimi: "Kimi",
+    opencode: "OpenCode",
+    "github-copilot": "GitHub Copilot",
+    cursor: "Cursor",
+    hermes: "Hermes",
+    agy: "Antigravity CLI",
+    "antigravity-sdk": "Antigravity SDK",
+  };
+  const providerKinds = ["skills", "commands", "hooks"] as const;
+  const providerRows = Object.entries(declares.providers ?? {})
+    .flatMap(([prov, counts]) =>
+      providerKinds.map((k) => ({
+        kind: `${PROVIDER_LABEL[prov] ?? prov} ${COMPONENT_LABEL[k]?.toLowerCase() ?? k}`,
+        count: counts[k],
+      })),
+    )
+    .filter((r) => r.count > 0);
 
   const rows = [...rootRows, ...providerRows];
   if (rows.length === 0) {

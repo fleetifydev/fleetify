@@ -97,12 +97,12 @@ const NAV: SectionDef[] = [
  *  match the marketplace's filter chips one-to-one. */
 function countForSection(inst: PluginInstall, section: SectionId): number {
   const d = inst.manifest.declares;
-  const p = d.providers;
+  const pv = Object.values(d.providers ?? {});
   switch (section) {
     case "Prompts":   return d.prompts ?? 0;
-    case "Skills":    return p.claude.skills + p.gemini.skills + p.codex.skills;
-    case "Commands":  return p.claude.commands + p.gemini.commands;
-    case "Hooks":     return p.claude.hooks + p.gemini.hooks + p.codex.hooks;
+    case "Skills":    return pv.reduce((s, p) => s + p.skills, 0);
+    case "Commands":  return pv.reduce((s, p) => s + p.commands, 0);
+    case "Hooks":     return pv.reduce((s, p) => s + p.hooks, 0);
     case "Workflows": return d.workflows;
     case "Templates": return d.templates;
     case "MCP":       return d.mcp_servers;

@@ -6,9 +6,26 @@
 //! exactly so the marketplace's filter chips render the same chips
 //! whether the listing was indexed by the cloud or the local backend.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
-pub const KNOWN_PROVIDERS: &[&str] = &["claude", "codex", "gemini"];
+/// Every provider id a manifest's `providers` array may name. The first
+/// nine are CLI agents whose components materialize to an on-disk home
+/// (see `plugins::providers`); `antigravity-sdk` is MCP-only (no home),
+/// valid in `providers` so MCP-only plugins can target it.
+pub const KNOWN_PROVIDERS: &[&str] = &[
+    "claude",
+    "codex",
+    "gemini",
+    "kimi",
+    "opencode",
+    "github-copilot",
+    "cursor",
+    "hermes",
+    "agy",
+    "antigravity-sdk",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Author {
@@ -36,30 +53,6 @@ pub struct ProviderDeclares {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CodexProviderDeclares {
-    #[serde(default)]
-    pub skills: u32,
-    /// DEPRECATED — kept so older manifests that emit
-    /// `providers.codex.prompts: 0` round-trip. The codex materializer
-    /// and `derive_provides` ignore this value; prompts moved up to
-    /// `Declares.prompts` (Fleetify-native).
-    #[serde(default)]
-    pub prompts: u32,
-    #[serde(default)]
-    pub hooks: u32,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProvidersDeclares {
-    #[serde(default)]
-    pub claude: ProviderDeclares,
-    #[serde(default)]
-    pub gemini: ProviderDeclares,
-    #[serde(default)]
-    pub codex: CodexProviderDeclares,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Declares {
     #[serde(default)]
     pub mcp_servers: u32,
@@ -71,8 +64,13 @@ pub struct Declares {
     /// `~/.fleetify/prompts/` (or `<project>/.fleetify/prompts/`).
     #[serde(default)]
     pub prompts: u32,
+    /// Per-provider component counts, keyed by provider id (`claude`,
+    /// `kimi`, `github-copilot`, …). A map (not a fixed struct) so new
+    /// providers are additive — an unknown key just carries its counts.
+    /// A legacy `codex.prompts` key deserializes harmlessly (unknown
+    /// field on `ProviderDeclares` is ignored).
     #[serde(default)]
-    pub providers: ProvidersDeclares,
+    pub providers: BTreeMap<String, ProviderDeclares>,
 }
 
 /// Canonical "provides" values surfaced as marketplace filter chips.
@@ -94,19 +92,20 @@ pub fn derive_provides(declares: &Declares) -> Vec<String> {
         out.push("mcp".into());
     }
     let p = &declares.providers;
-    if p.claude.skills > 0 || p.gemini.skills > 0 || p.codex.skills > 0 {
+    if p.values().any(|d| d.skills > 0) {
         out.push("skills".into());
     }
-    // `commands` strictly slash-command authoring for the agent CLIs
-    // that have a /command surface (Claude, Gemini). Codex's deprecated
-    // `prompts` field is intentionally NOT consulted here.
-    if p.claude.commands > 0 || p.gemini.commands > 0 {
+    // `commands` = slash-command authoring for the agent CLIs that have a
+    // /command surface (Claude / Gemini / OpenCode). Counted across every
+    // provider in the map; providers without a command surface simply
+    // never carry a non-zero `commands`.
+    if p.values().any(|d| d.commands > 0) {
         out.push("commands".into());
     }
     if declares.prompts > 0 {
         out.push("prompts".into());
     }
-    if p.claude.hooks > 0 || p.gemini.hooks > 0 || p.codex.hooks > 0 {
+    if p.values().any(|d| d.hooks > 0) {
         out.push("hooks".into());
     }
     if declares.templates > 0 {
@@ -286,10 +285,28 @@ mod tests {
         assert!(derive_provides(&d).is_empty());
 
         d.mcp_servers = 1;
-        d.providers.claude.skills = 2;
-        d.providers.gemini.commands = 1;
+        d.providers.insert(
+            "claude".into(),
+            ProviderDeclares {
+                skills: 2,
+                ..Default::default()
+            },
+        );
+        d.providers.insert(
+            "gemini".into(),
+            ProviderDeclares {
+                commands: 1,
+                ..Default::default()
+            },
+        );
         d.prompts = 5;
-        d.providers.codex.hooks = 1;
+        d.providers.insert(
+            "kimi".into(),
+            ProviderDeclares {
+                hooks: 1,
+                ..Default::default()
+            },
+        );
         d.templates = 3;
         d.workflows = 1;
         let p = derive_provides(&d);
@@ -306,9 +323,10 @@ mod tests {
             ]
         );
 
-        // codex.prompts on its own does NOT surface anything (deprecated).
+        // A provider entry with all-zero counts surfaces nothing.
         let mut d2 = Declares::default();
-        d2.providers.codex.prompts = 5;
+        d2.providers
+            .insert("codex".into(), ProviderDeclares::default());
         assert!(derive_provides(&d2).is_empty());
     }
 
@@ -330,7 +348,10 @@ mod tests {
         assert!(is_valid_semver(&m.version));
         assert_eq!(m.providers, vec!["claude".to_string()]);
         assert_eq!(m.declares.mcp_servers, 1);
-        assert_eq!(m.declares.providers.claude.skills, 2);
+        assert_eq!(
+            m.declares.providers.get("claude").map(|d| d.skills),
+            Some(2)
+        );
         // Round-trip back to JSON keeps the same structure.
         let back = serde_json::to_string(&m).unwrap();
         assert!(back.contains("\"name\":\"my-plugin\""));

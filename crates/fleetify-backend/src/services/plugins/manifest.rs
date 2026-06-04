@@ -19,8 +19,9 @@ use super::types::{
 pub const PLUGIN_PATH: &str = ".fleetify-plugin/plugin.json";
 pub const MARKETPLACE_PATH: &str = "marketplace.json";
 
-/// Provider directory names that must be checked when present.
-pub const PROVIDERS: &[&str] = &["claude", "gemini", "codex"];
+/// Provider directory names that must be checked when present. Aliased to
+/// the materializer's component-provider registry so the two never drift.
+pub const PROVIDERS: &[&str] = super::providers::COMPONENT_PROVIDERS;
 
 /// Root-level directory names from the legacy layout that must NOT
 /// appear in a current plugin (rejecting them at parse time keeps

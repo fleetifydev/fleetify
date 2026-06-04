@@ -57,27 +57,21 @@ const COMPONENT_LABELS = {
 } as const;
 
 function aggregateCounts(d: PluginManifest["declares"]) {
-  // Provider-scoped components are summed across providers for the install
-  // dialog summary; the detail page is where we break them out per provider.
-  //
-  // Codex is asymmetric — its declares carry ``prompts`` (the Codex CLI
-  // auto-loads them from ~/.codex/prompts/) rather than ``commands``. We
-  // sum the two field families independently so the summary surfaces them
-  // as separate rows ("3 slash commands" + "1 Codex prompt") instead of
-  // silently producing NaN by adding ``codex.commands`` (the old shape
-  // the type system no longer recognises).
-  const provSkills = d.providers.claude.skills + d.providers.gemini.skills + d.providers.codex.skills;
-  const provCommands = d.providers.claude.commands + d.providers.gemini.commands;
-  const provPrompts = d.providers.codex.prompts;
-  const provHooks = d.providers.claude.hooks + d.providers.gemini.hooks + d.providers.codex.hooks;
+  // Provider-scoped components are summed across EVERY provider in the map
+  // for the install summary; the detail page breaks them out per provider.
+  // `prompts` is the Fleetify-native cross-cutting count (Codex's on-disk
+  // prompts are materialized from its `commands` slot).
+  const pv = Object.values(d.providers ?? {});
+  const sum = (f: (p: { skills: number; commands: number; hooks: number }) => number) =>
+    pv.reduce((s, p) => s + f(p), 0);
   return {
     mcp_servers: d.mcp_servers,
     templates: d.templates,
     workflows: d.workflows,
-    skills: provSkills,
-    commands: provCommands,
-    prompts: provPrompts,
-    hooks: provHooks,
+    skills: sum((p) => p.skills),
+    commands: sum((p) => p.commands),
+    prompts: d.prompts,
+    hooks: sum((p) => p.hooks),
   };
 }
 
