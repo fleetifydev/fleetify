@@ -117,6 +117,42 @@ pub async fn serve(addr: SocketAddr, static_dir: Option<PathBuf>) -> anyhow::Res
     .await
 }
 
+/// Whether this instance should isolate its sessions DB under FLEETIFY_HOME:
+/// true for worktree instances (FLEETIFY_HOME explicitly set) and no-auth dev
+/// runs (`FLEETIFY_NOAUTH=1`, debug-only). Keeps the NOAUTH "John Doe" stub
+/// fleet out of the real-auth prod DB.
+fn db_should_isolate() -> bool {
+    std::env::var("FLEETIFY_HOME")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+        || auth::is_no_auth()
+}
+
+/// Resolve the file-backed sessions DB path. Delegates the policy to
+/// [`resolve_db_path_in`] so it's unit-testable without touching the process
+/// environment.
+fn resolve_db_path(configured: &str) -> PathBuf {
+    resolve_db_path_in(
+        configured,
+        fleetify_core::fleetify_home(),
+        db_should_isolate(),
+    )
+}
+
+/// Pure resolution: an absolute configured path is used verbatim; a relative
+/// one is placed under `home` when `isolate`, else kept relative (prod's
+/// historical CWD-relative layout).
+fn resolve_db_path_in(configured: &str, home: PathBuf, isolate: bool) -> PathBuf {
+    let p = std::path::Path::new(configured);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else if isolate {
+        home.join(p)
+    } else {
+        p.to_path_buf()
+    }
+}
+
 /// Bind `addr` and start serving, hydrating the routing orchestrator with
 /// the supplied `routing_setup`. The Tauri shell composes the setup from
 /// `fleet.config.json` + the per-user keychain before invoking this so
@@ -137,10 +173,17 @@ pub async fn serve_with_routing_setup(
     services::migration::migrate_fleet_to_fleetify();
 
     let cfg = config::AppConfig::load(None)?;
-    // App: file-backed `fleet.db`; tests set FLEET_DB_URL=sqlite::memory:.
-    let db_url = std::env::var("FLEET_DB_URL")
-        .unwrap_or_else(|_| format!("sqlite://{}?mode=rwc", cfg.database.path));
-    let pool = db::init_pool(&db_url).await?;
+    // Sessions DB. Tests pin FLEET_DB_URL=sqlite::memory:. Otherwise resolve a
+    // file path: a relative path is placed under FLEETIFY_HOME for worktree /
+    // no-auth dev instances so they DON'T share the prod DB. Sharing previously
+    // mixed the real user's fleet with the NOAUTH "John Doe" stub user, which
+    // broke cross-session dispatch — a dispatch target owned by one identity is
+    // invisible to a caller scoped to the other. Prod (no FLEETIFY_HOME, real
+    // auth) keeps the historical CWD-relative path untouched.
+    let pool = match std::env::var("FLEET_DB_URL") {
+        Ok(url) => db::init_pool(&url).await?,
+        Err(_) => db::init_pool_at(&resolve_db_path(&cfg.database.path)).await?,
+    };
     reset_stale_session_state(&pool).await;
     normalize_legacy_verbatim_project_paths(&pool).await;
     // One-shot rewrite of `sessions.model_name` rows whose pinned id was
@@ -404,4 +447,42 @@ pub async fn serve_with_routing_setup(
         local_addr,
         shutdown_tx: Some(shutdown_tx),
     })
+}
+
+#[cfg(test)]
+mod db_path_tests {
+    use super::resolve_db_path_in;
+    use std::path::PathBuf;
+
+    #[test]
+    fn relative_path_isolated_under_home() {
+        let got = resolve_db_path_in("fleet.db", PathBuf::from("/home/.fleetify-wt-07"), true);
+        assert_eq!(got, PathBuf::from("/home/.fleetify-wt-07").join("fleet.db"));
+    }
+
+    #[test]
+    fn relative_path_kept_relative_when_not_isolated() {
+        // Prod: no FLEETIFY_HOME / no NOAUTH -> historical CWD-relative path.
+        assert_eq!(
+            resolve_db_path_in("fleet.db", PathBuf::from("/home/.fleetify"), false),
+            PathBuf::from("fleet.db")
+        );
+    }
+
+    #[test]
+    fn absolute_path_used_verbatim_regardless_of_isolation() {
+        let abs = if cfg!(windows) {
+            r"C:\data\fleet.db"
+        } else {
+            "/data/fleet.db"
+        };
+        assert_eq!(
+            resolve_db_path_in(abs, PathBuf::from("/home/.fleetify"), true),
+            PathBuf::from(abs)
+        );
+        assert_eq!(
+            resolve_db_path_in(abs, PathBuf::from("/home/.fleetify"), false),
+            PathBuf::from(abs)
+        );
+    }
 }

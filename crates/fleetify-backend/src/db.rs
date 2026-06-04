@@ -2,6 +2,7 @@
 //! `foreign_keys=ON` for the plugin_enablements ON DELETE CASCADE) plus
 //! the faithful schema applied via `migrations/0001_init.sql`.
 
+use std::path::Path;
 use std::str::FromStr;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
@@ -19,8 +20,27 @@ pub async fn init_pool(url: &str) -> anyhow::Result<SqlitePool> {
         .create_if_missing(true)
         .foreign_keys(true)
         .journal_mode(SqliteJournalMode::Wal);
+    finish_pool(opts, url.contains(":memory:")).await
+}
 
-    let is_mem = url.contains(":memory:");
+/// Open the file-backed pool from a filesystem path. Prefer this over
+/// [`init_pool`] for the app DB: building a `sqlite://` URL from an absolute
+/// Windows path (`C:\Users\…`) is fragile — the `:` after the drive letter
+/// confuses the URL parser — whereas `SqliteConnectOptions::filename` takes the
+/// path verbatim. Creates the parent dir so a fresh FLEETIFY_HOME works.
+pub async fn init_pool_at(path: &Path) -> anyhow::Result<SqlitePool> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let opts = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal);
+    finish_pool(opts, false).await
+}
+
+async fn finish_pool(opts: SqliteConnectOptions, is_mem: bool) -> anyhow::Result<SqlitePool> {
     let pool = SqlitePoolOptions::new()
         .max_connections(if is_mem { 1 } else { 5 })
         .connect_with(opts)
