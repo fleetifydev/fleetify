@@ -73,6 +73,13 @@ pub struct AntigravityBridge {
     /// session sees), identical to the other bridges.
     is_staff: bool,
     agent_template: Option<String>,
+    /// Staff dispatch protocol (the `[[DISPATCH:...]]` instructions from
+    /// `services::staff_prompt::build`) or a template's system prompt. agy
+    /// `-p` exposes NO system-prompt flag — the message is its only input —
+    /// so when set we prepend this to the `-p` text. Without it the Fleet
+    /// (staff) agy agent never learns how to delegate and fabricates a
+    /// "recipient not found" failure instead of emitting a dispatch token.
+    pub system_prompt: Option<String>,
     /// Captured after the first turn from `cache/last_conversations.json`.
     /// Used as `--conversation <uuid>` on every subsequent turn so the
     /// conversation continues instead of starting fresh.
@@ -147,6 +154,7 @@ impl AntigravityBridge {
             permission_mode,
             is_staff,
             agent_template,
+            system_prompt: None,
             conversation_id: Arc::new(Mutex::new(None)),
             pty_writer: Arc::new(Mutex::new(None)),
             pty_killer: Arc::new(Mutex::new(None)),
@@ -623,10 +631,20 @@ impl AntigravityBridge {
         // Build argv. `--print-timeout 10m` matches Fleetify's existing
         // long-running-turn tolerance (claude/gemini both use generous
         // server-side limits); the default 5m clips long agentic tasks.
+        // agy `-p` has no system-prompt flag, so a staff session's dispatch
+        // protocol (or a template's system prompt), set by chat.rs from
+        // `staff_prompt::build`, rides in the message itself — agy's only input
+        // channel. Prepend it so the Fleet agent learns to emit
+        // `[[DISPATCH:id|task]]` tokens instead of fabricating "recipient not
+        // found". Non-staff, non-template sessions leave it None (no change).
+        let effective_message = match self.system_prompt.as_deref() {
+            Some(sp) if !sp.is_empty() => format!("{sp}\n\n---\n\n{message}"),
+            _ => message.to_string(),
+        };
         let mut argv: Vec<String> = vec![
             "agy".into(),
             "-p".into(),
-            message.to_string(),
+            effective_message,
             "--print-timeout".into(),
             "10m".into(),
         ];

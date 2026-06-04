@@ -1294,16 +1294,37 @@ async fn run_send_flow(
             session.title == "Staff Agent",
             session.agent_template.clone(),
         ))),
-        "agy" => AnyBridge::Antigravity(Arc::new(
-            crate::bridges::antigravity::AntigravityBridge::new(
+        "agy" => {
+            let is_staff = session.title == "Staff Agent";
+            // agy `-p` has no system-prompt flag, so the staff dispatch protocol
+            // (or a template prompt) is carried in the message by the bridge —
+            // parity with the antigravity-sdk arm below. Without this the Fleet
+            // (staff) agy agent never learns the `[[DISPATCH:...]]` protocol and
+            // fabricates "recipient not found" instead of delegating.
+            let system_prompt = if is_staff {
+                Some(
+                    crate::services::staff_prompt::build(
+                        &st.auth.pool,
+                        &sid,
+                        session.user_id.as_deref(),
+                    )
+                    .await,
+                )
+            } else {
+                crate::services::builtin_templates::get(session.agent_template.as_deref())
+                    .map(|tpl| tpl.system_prompt.to_string())
+            };
+            let mut b = crate::bridges::antigravity::AntigravityBridge::new(
                 sid.clone(),
                 agent_cwd.clone(),
                 session.permission_mode.clone(),
                 session.model_name.clone(),
-                session.title == "Staff Agent",
+                is_staff,
                 session.agent_template.clone(),
-            ),
-        )),
+            );
+            b.system_prompt = system_prompt;
+            AnyBridge::Antigravity(Arc::new(b))
+        }
         "antigravity-sdk" => {
             let is_staff = session.title == "Staff Agent";
             let system_prompt = if is_staff {
