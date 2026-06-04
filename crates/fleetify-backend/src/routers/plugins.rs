@@ -6,13 +6,14 @@
 //! still rides on `services::plugins::materializers` and lands as
 //! follow-up wiring once install/uninstall write DB rows.
 
-use axum::extract::Path;
+use axum::extract::{Path, State};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::routers::AppState;
+use crate::auth::AuthUser;
+use crate::routers::{ApiError, AppState};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -33,10 +34,26 @@ fn deferred(name: &str) -> Value {
     })
 }
 
-#[derive(serde::Deserialize, Default)]
-struct InstallBody {
+#[derive(Deserialize)]
+struct ScopeReq {
+    scope_type: String,
     #[serde(default)]
-    repo_url: String,
+    scope_id: Option<String>,
+}
+
+/// Marketplace install request from the renderer's InstallDialog. The
+/// plugin is addressed by `(source_id, plugin_path)` — the source row
+/// holds the clone URL, the path locates the plugin within it — NOT a raw
+/// repo URL. `scope` is the first enablement to apply; `secrets` resolve
+/// `${secret:KEY}` placeholders in the plugin's mcp.json.
+#[derive(Deserialize)]
+struct InstallBody {
+    source_id: String,
+    #[serde(default)]
+    plugin_path: String,
+    scope: ScopeReq,
+    #[serde(default)]
+    secrets: std::collections::BTreeMap<String, String>,
 }
 
 async fn list_installed() -> Json<Value> {
@@ -51,12 +68,10 @@ async fn list_installed() -> Json<Value> {
     // renderer's `PluginInstall` TS type reads `inst.manifest.declares.*`.
     // Flattening crashed the Library page on every entry.
     use crate::services::plugins::{manifest, state};
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".into());
-    let plugins_dir = std::path::PathBuf::from(home)
-        .join(".fleetify")
-        .join("plugins");
+    // Resolve the plugins dir via the same FLEETIFY_HOME-aware helper the
+    // installer writes through — a hardcoded ~/.fleetify here would hide
+    // every install made by a dev:tauri:wt / FLEETIFY_HOME instance.
+    let plugins_dir = fleetify_core::fleetify_home().join("plugins");
     let Ok(rd) = std::fs::read_dir(&plugins_dir) else {
         return Json(Value::Array(Vec::new()));
     };
@@ -138,11 +153,66 @@ async fn list_installed() -> Json<Value> {
 async fn install_unsupported() -> Json<Value> {
     Json(deferred("install"))
 }
-async fn install(Json(b): Json<InstallBody>) -> Json<Value> {
-    if b.repo_url.trim().is_empty() {
-        return Json(json!({ "ok": false, "error": "repo_url is required" }));
+async fn install(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Json(b): Json<InstallBody>,
+) -> Result<Json<Value>, ApiError> {
+    use crate::services::plugins::{installer, state};
+
+    // Resolve the source's clone URL, scoped to the caller — the same
+    // lookup the marketplace detail endpoint uses.
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT repo_url FROM marketplace_sources WHERE id = ? AND user_id = ?")
+            .bind(&b.source_id)
+            .bind(&user.id)
+            .fetch_optional(&st.auth.pool)
+            .await?;
+    let Some((repo_url,)) = row else {
+        return Err(ApiError::NotFound(format!(
+            "source {} not found",
+            b.source_id
+        )));
+    };
+
+    // Clone + place + materialize the specific plugin. Errors surface as
+    // real HTTP codes so the renderer's install dialog shows them — the
+    // old handler returned 200-with-`ok:false`, which the client read as a
+    // silent success and closed the modal without installing anything.
+    let result = installer::install_from_git(&repo_url, b.plugin_path.trim(), &b.secrets)
+        .await
+        .map_err(|e| match e {
+            installer::InstallError::AlreadyInstalled(name) => ApiError::Conflict(json!({
+                "error": format!("{name} is already installed"),
+                "plugin": name,
+            })),
+            other => ApiError::Internal(other.to_string()),
+        })?;
+
+    // Record the chosen scope so the plugin lands enabled for it right
+    // away (master_enabled defaults true). A persist hiccup is non-fatal —
+    // the plugin is already on disk — so we log and still report success.
+    let scope_id = b.scope.scope_id.as_deref().filter(|s| !s.is_empty());
+    if let Err(e) = state::upsert_scope(&result.install_id, &b.scope.scope_type, scope_id, true) {
+        tracing::warn!(
+            target: "plugins",
+            "install scope persist failed for {}: {e}",
+            result.install_id
+        );
     }
-    Json(crate::services::plugins::installer::install_and_envelope(b.repo_url.trim()).await)
+
+    let version = result
+        .manifest
+        .get("version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok(Json(json!({
+        "install_id": result.install_id,
+        "plugin_name": result.install_id,
+        "version": version,
+        "install_path": result.install_path,
+    })))
 }
 async fn uninstall(Path(id): Path<String>) -> Json<Value> {
     match crate::services::plugins::installer::uninstall(&id) {
@@ -210,5 +280,53 @@ async fn set_scope(Path(install_id): Path<String>, Json(b): Json<ScopeBody>) -> 
             "enabled": b.enabled,
         })),
         Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_body_parses_marketplace_payload() {
+        // The exact shape the renderer's InstallDialog POSTs. The old
+        // handler read `{ repo_url }` and silently no-op'd on this body
+        // (repo_url defaulted empty → "repo_url is required" at HTTP 200).
+        let v = json!({
+            "source_id": "s1",
+            "plugin_path": "plugins/diff-summarizer",
+            "scope": { "scope_type": "user", "scope_id": null },
+            "secrets": { "GITHUB_TOKEN": "x" }
+        });
+        let b: InstallBody = serde_json::from_value(v).unwrap();
+        assert_eq!(b.source_id, "s1");
+        assert_eq!(b.plugin_path, "plugins/diff-summarizer");
+        assert_eq!(b.scope.scope_type, "user");
+        assert_eq!(b.scope.scope_id, None);
+        assert_eq!(b.secrets.get("GITHUB_TOKEN").map(String::as_str), Some("x"));
+    }
+
+    #[test]
+    fn install_body_defaults_optional_fields() {
+        // Project scope, no secrets, omitted plugin_path (root repo).
+        let v = json!({
+            "source_id": "s2",
+            "scope": { "scope_type": "project", "scope_id": "/home/me/proj" }
+        });
+        let b: InstallBody = serde_json::from_value(v).unwrap();
+        assert_eq!(b.plugin_path, "");
+        assert!(b.secrets.is_empty());
+        assert_eq!(b.scope.scope_id.as_deref(), Some("/home/me/proj"));
+    }
+
+    #[test]
+    fn install_body_requires_source_and_scope() {
+        // Missing source_id or scope is a hard parse error — the contract
+        // the renderer must satisfy, not a silently-defaulted field.
+        assert!(serde_json::from_value::<InstallBody>(json!({
+            "scope": { "scope_type": "user" }
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<InstallBody>(json!({ "source_id": "s1" })).is_err());
     }
 }

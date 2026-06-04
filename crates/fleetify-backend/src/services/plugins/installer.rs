@@ -1,31 +1,30 @@
 //! Plugin installer — git-clone + manifest-parse + canonical
-//! placement under `<HOME>/.fleetify/plugins/<name>/`. Phase-4 minimum
+//! placement under `<FLEETIFY_HOME>/plugins/<name>/`. Phase-4 minimum
 //! viable subset of `services/plugins/installer.py`.
 //!
 //! What this covers:
-//! - `install_from_git(repo_url, version?)`: clones the repo to a
-//!   temp dir, parses `.fleetify-plugin/plugin.json`, validates name +
-//!   semver + provider whitelist, rejects legacy root dirs, computes
-//!   the canonical install path, and `mv`s the temp clone into place.
-//!   Refuses overwrites — caller must uninstall first.
-//! - `uninstall(install_id)`: rm -rf the install dir. Idempotent.
+//! - `install_from_git(repo_url, plugin_path, secrets)`: clones the repo
+//!   to a temp dir, locates the plugin at `plugin_path` (empty = repo
+//!   root), parses `.fleetify-plugin/plugin.json`, validates name +
+//!   semver + provider whitelist, rejects legacy root dirs, computes the
+//!   canonical install path, places the plugin's subtree, materializes
+//!   per-provider components + MCP servers (resolving `${secret:KEY}`).
+//!   Refuses overwrites — caller must uninstall first. The marketplace
+//!   router resolves `source_id` → `repo_url` before calling this.
+//! - `uninstall(install_id)`: rm -rf the install dir + unmaterialize.
+//!   Idempotent.
 //!
 //! Deferred to follow-up commits:
-//! - DB rows in plugin_installs / plugin_enablements (the lifecycle
-//!   table the renderer reads scope from).
-//! - Materializers (writing into ~/.claude/, ~/.gemini/, ~/.codex/
-//!   for the per-provider components).
+//! - DB rows in plugin_installs / plugin_enablements (scope currently
+//!   lives in `plugin_state.json` via `super::state`).
 //! - Version pinning by tag / SHA (currently always tracks the
 //!   default branch HEAD).
-//! - Marketplace source integration (the renderer's "Install from
-//!   source X" flow needs the source row to know which clone URL to
-//!   use; this lower-level helper takes the URL directly).
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use super::{manifest, mcp_materialize, providers};
 
@@ -54,11 +53,17 @@ fn plugins_dir() -> PathBuf {
     fleetify_core::fleetify_home().join("plugins")
 }
 
-/// Clone `repo_url` and place the result at
-/// `<HOME>/.fleetify/plugins/<manifest.name>/`. `install_id` matches
-/// the on-disk dir name so subsequent endpoints can address the
-/// install by name.
-pub async fn install_from_git(repo_url: &str) -> Result<InstallResult, InstallError> {
+/// Clone `repo_url`, locate the plugin at `plugin_path` within the clone
+/// (empty = the repo root, for a single-plugin repo), and place it at
+/// `<FLEETIFY_HOME>/plugins/<manifest.name>/`. `install_id` matches the
+/// on-disk dir name so subsequent endpoints can address the install by
+/// name. `secrets` are forwarded to MCP materialization to resolve any
+/// `${secret:KEY}` placeholders in the plugin's `mcp.json`.
+pub async fn install_from_git(
+    repo_url: &str,
+    plugin_path: &str,
+    secrets: &std::collections::BTreeMap<String, String>,
+) -> Result<InstallResult, InstallError> {
     // 1. Clone to a temp dir under the plugins parent.
     let plugins = plugins_dir();
     std::fs::create_dir_all(&plugins)?;
@@ -85,13 +90,24 @@ pub async fn install_from_git(repo_url: &str) -> Result<InstallResult, InstallEr
         )));
     }
 
-    // 2. Parse the manifest.
-    let m = manifest::parse_plugin(&tmp).map_err(|e| {
+    // 2. Resolve the plugin root within the clone. A marketplace plugin
+    //    lives in a subdir (`plugin_path`); a single-plugin repo carries
+    //    its manifest at the clone root (`plugin_path` empty).
+    let plugin_root = match plugin_subdir(&tmp, plugin_path) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(e);
+        }
+    };
+
+    // 3. Parse the manifest from the plugin root.
+    let m = manifest::parse_plugin(&plugin_root).map_err(|e| {
         let _ = std::fs::remove_dir_all(&tmp);
         InstallError::Manifest(e.to_string())
     })?;
 
-    // 3. Compute canonical install path. The `name` field is regex-
+    // 4. Compute canonical install path. The `name` field is regex-
     //    validated as kebab-case so it's path-safe by construction.
     let install_path = plugins.join(&m.name);
     // Belt-and-braces traversal check — `name` shouldn't contain `/`
@@ -110,19 +126,29 @@ pub async fn install_from_git(repo_url: &str) -> Result<InstallResult, InstallEr
         return Err(InstallError::AlreadyInstalled(m.name.clone()));
     }
 
-    // 4. Atomic-ish move: rename tmp → install_path. fs::rename across
-    //    filesystems can fail on Linux; fall back to a recursive copy.
-    if let Err(e) = std::fs::rename(&tmp, &install_path) {
-        if e.kind() == std::io::ErrorKind::PermissionDenied
-            || e.raw_os_error() == Some(18 /* EXDEV */)
-        {
-            // Cross-device rename — fall back to recursive copy + tmp cleanup.
-            copy_dir_recursive(&tmp, &install_path)?;
-            let _ = std::fs::remove_dir_all(&tmp);
-        } else {
-            let _ = std::fs::remove_dir_all(&tmp);
-            return Err(e.into());
+    // 5. Place the plugin dir. A root install renames the whole clone
+    //    (fast path). A subdir install copies just the plugin's subtree
+    //    so the clone's `.git` and sibling plugins stay out of the
+    //    install dir, then drops the clone.
+    if plugin_path.is_empty() {
+        // Atomic-ish move: rename tmp → install_path. fs::rename across
+        // filesystems can fail on Linux; fall back to a recursive copy.
+        if let Err(e) = std::fs::rename(&tmp, &install_path) {
+            if e.kind() == std::io::ErrorKind::PermissionDenied
+                || e.raw_os_error() == Some(18 /* EXDEV */)
+            {
+                // Cross-device rename — fall back to recursive copy + cleanup.
+                copy_dir_recursive(&tmp, &install_path)?;
+                let _ = std::fs::remove_dir_all(&tmp);
+            } else {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Err(e.into());
+            }
         }
+    } else {
+        let copy_res = copy_dir_recursive(&plugin_root, &install_path);
+        let _ = std::fs::remove_dir_all(&tmp);
+        copy_res?;
     }
 
     // Materialize per-provider components into ~/.claude/, ~/.gemini/,
@@ -151,11 +177,10 @@ pub async fn install_from_git(repo_url: &str) -> Result<InstallResult, InstallEr
 
     // Materialize MCP servers into the shared registry — the per-bridge
     // emitters fan them out to every agent at spawn, so this one write
-    // covers all MCP-capable providers. NOTE: install-time secrets aren't
-    // threaded through this low-level helper yet, so `${secret:KEY}` stays
-    // literal in the registry until the router wires the secret map in.
-    let mcp_res =
-        mcp_materialize::materialize_mcp(&install_path, &std::collections::BTreeMap::new());
+    // covers all MCP-capable providers. Install-time `secrets` resolve
+    // `${secret:KEY}` placeholders in the plugin's mcp.json; a key the
+    // user didn't supply stays literal (never blanked).
+    let mcp_res = mcp_materialize::materialize_mcp(&install_path, secrets);
 
     let mut manifest_value = serde_json::to_value(&m).unwrap_or(Value::Null);
     if let Some(obj) = manifest_value.as_object_mut() {
@@ -289,19 +314,19 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
     Ok(())
 }
 
-/// Convenience for the renderer's install button: wraps
-/// install_from_git and returns the result as the JSON envelope the
-/// router serialises.
-pub async fn install_and_envelope(repo_url: &str) -> Value {
-    match install_from_git(repo_url).await {
-        Ok(r) => json!({
-            "ok": true,
-            "install_id": r.install_id,
-            "install_path": r.install_path,
-            "manifest": r.manifest,
-        }),
-        Err(e) => json!({ "ok": false, "error": e.to_string() }),
+/// Resolve a plugin's directory inside a freshly-cloned repo. An empty
+/// `plugin_path` is the repo root (single-plugin repo); otherwise it's a
+/// subdir within a marketplace source. Rejects traversal / absolute paths
+/// so a hostile catalog entry can't point the install outside the clone.
+fn plugin_subdir(clone: &std::path::Path, plugin_path: &str) -> Result<PathBuf, InstallError> {
+    let trimmed = plugin_path.trim_matches('/');
+    if trimmed.is_empty() {
+        return Ok(clone.to_path_buf());
     }
+    if trimmed.contains("..") || plugin_path.starts_with('/') || plugin_path.starts_with('\\') {
+        return Err(InstallError::PathEscape(plugin_path.into()));
+    }
+    Ok(clone.join(trimmed))
 }
 
 #[cfg(test)]
@@ -318,6 +343,32 @@ mod tests {
         assert!(matches!(r, Err(InstallError::PathEscape(_))));
         let r = uninstall("");
         assert!(matches!(r, Err(InstallError::PathEscape(_))));
+    }
+
+    #[test]
+    fn plugin_subdir_resolves_and_rejects_traversal() {
+        let base = std::path::Path::new("/clone");
+        // Empty path = repo root (single-plugin repo).
+        assert_eq!(plugin_subdir(base, "").unwrap(), base.to_path_buf());
+        assert_eq!(plugin_subdir(base, "/").unwrap(), base.to_path_buf());
+        // A marketplace subdir joins under the clone.
+        assert_eq!(
+            plugin_subdir(base, "plugins/diff-summarizer").unwrap(),
+            base.join("plugins/diff-summarizer")
+        );
+        // Traversal / absolute paths are refused before any disk touch.
+        assert!(matches!(
+            plugin_subdir(base, "../escape"),
+            Err(InstallError::PathEscape(_))
+        ));
+        assert!(matches!(
+            plugin_subdir(base, "a/../../b"),
+            Err(InstallError::PathEscape(_))
+        ));
+        assert!(matches!(
+            plugin_subdir(base, "/abs"),
+            Err(InstallError::PathEscape(_))
+        ));
     }
 
     #[test]
