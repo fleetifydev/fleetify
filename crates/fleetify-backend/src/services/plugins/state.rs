@@ -54,6 +54,15 @@ pub struct PluginState {
     pub master_enabled: bool,
     #[serde(default)]
     pub scopes: Vec<ScopeEntry>,
+    /// Marketplace provenance recorded at install time so the Installed
+    /// tab can route back to the plugin's detail page (and a future
+    /// update can re-fetch from the right source). `None` for installs
+    /// made before provenance tracking — the renderer falls back to a
+    /// local-only detail view in that case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_path: Option<String>,
 }
 
 // Manual Default so master_enabled mirrors the serde `default_true` —
@@ -64,6 +73,8 @@ impl Default for PluginState {
         Self {
             master_enabled: true,
             scopes: Vec::new(),
+            source_id: None,
+            plugin_path: None,
         }
     }
 }
@@ -97,6 +108,20 @@ pub fn set_master_enabled(install_id: &str, enabled: bool) -> std::io::Result<()
     let mut doc = load();
     let entry = doc.plugins.entry(install_id.to_string()).or_default();
     entry.master_enabled = enabled;
+    save(&doc)
+}
+
+/// Record the marketplace source + subpath an install came from. An empty
+/// `plugin_path` (single-plugin repo / root manifest) is stored as `None`.
+pub fn set_origin(install_id: &str, source_id: &str, plugin_path: &str) -> std::io::Result<()> {
+    let mut doc = load();
+    let entry = doc.plugins.entry(install_id.to_string()).or_default();
+    entry.source_id = Some(source_id.to_string());
+    entry.plugin_path = if plugin_path.is_empty() {
+        None
+    } else {
+        Some(plugin_path.to_string())
+    };
     save(&doc)
 }
 
@@ -204,6 +229,25 @@ mod tests {
             let s = get("never-installed");
             assert!(s.master_enabled); // default true
             assert!(s.scopes.is_empty());
+            assert!(s.source_id.is_none());
+            assert!(s.plugin_path.is_none());
+        });
+    }
+
+    #[test]
+    fn set_origin_persists_source_and_subpath() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), || {
+            set_origin("neon", "src-1", "neon").unwrap();
+            let s = get("neon");
+            assert_eq!(s.source_id.as_deref(), Some("src-1"));
+            assert_eq!(s.plugin_path.as_deref(), Some("neon"));
+            // Setting origin must not disturb existing scope/enable state.
+            assert!(s.master_enabled);
+            // Empty subpath (root-manifest repo) stores as None.
+            set_origin("rootplug", "src-2", "").unwrap();
+            assert!(get("rootplug").plugin_path.is_none());
+            assert_eq!(get("rootplug").source_id.as_deref(), Some("src-2"));
         });
     }
 }

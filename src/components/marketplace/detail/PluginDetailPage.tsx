@@ -28,6 +28,24 @@ interface Props {
 
 type SubTab = "overview" | "components" | "scopes" | "settings" | "changelog";
 
+/** Synthesize a PluginDetail from a local install when no marketplace
+ *  source is usable (Installed-tab open with no/legacy provenance, or a
+ *  source that's been removed / is offline). The manifest + scopes drive
+ *  the Components / Scopes / Settings / Uninstall tabs; marketplace-only
+ *  fields (readme, changelog, repo) are absent and degrade gracefully. */
+function localDetailFromInstall(install: PluginInstall, plugin_path: string): PluginDetail {
+  return {
+    source_id: install.source_id ?? "",
+    source_name: "Installed",
+    source_is_official: false,
+    path: install.plugin_path || plugin_path,
+    manifest: install.manifest,
+    readme_md: null,
+    changelog_md: null,
+    repo_url: "",
+  };
+}
+
 export function PluginDetailPage({ source_id, plugin_path, onBack }: Props) {
   const installs = usePluginStore(s => s.installs);
   const [detail, setDetail] = useState<PluginDetail | null>(null);
@@ -40,10 +58,34 @@ export function PluginDetailPage({ source_id, plugin_path, onBack }: Props) {
   useEffect(() => {
     setLoading(true);
     setError(null);
+    // An installed plugin opened from the Installed tab may carry no
+    // usable marketplace source_id (installs predating provenance, or a
+    // source that was removed). Render those from the local install record
+    // instead of fetching — and fall back to it if a marketplace fetch
+    // fails for any other reason (offline, deleted source).
+    const local = installs.find(
+      i => i.plugin_path === plugin_path
+        || i.plugin_name === plugin_path
+        || i.manifest?.name === plugin_path,
+    );
+    const noSource = !source_id || source_id === "undefined";
+    if (noSource) {
+      if (local) setDetail(localDetailFromInstall(local, plugin_path));
+      else setError("Plugin not found");
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
     getPluginDetail(source_id, plugin_path)
-      .then(d => { setDetail(d); setLoading(false); })
-      .catch(e => { setError(String(e?.message || e)); setLoading(false); });
-  }, [source_id, plugin_path]);
+      .then(d => { if (!cancelled) { setDetail(d); setLoading(false); } })
+      .catch(e => {
+        if (cancelled) return;
+        if (local) setDetail(localDetailFromInstall(local, plugin_path));
+        else setError(String(e?.message || e));
+        setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [source_id, plugin_path, installs]);
 
   if (loading) {
     return (

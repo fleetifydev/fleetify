@@ -137,6 +137,10 @@ async fn list_installed() -> Json<Value> {
                     "last_updated_at": last_updated_at.as_ref().map(|t| t.to_rfc3339()),
                     "manifest": manifest_v,
                     "enablements": enablements,
+                    // Marketplace provenance (None for pre-provenance installs)
+                    // so the Installed tab can route to the plugin's detail.
+                    "source_id": ps.source_id,
+                    "plugin_path": ps.plugin_path,
                 }));
             }
             Err(e) => {
@@ -197,6 +201,15 @@ async fn install(
         tracing::warn!(
             target: "plugins",
             "install scope persist failed for {}: {e}",
+            result.install_id
+        );
+    }
+    // Record where it came from so the Installed tab can route back to the
+    // plugin's marketplace detail (and a future update can re-fetch it).
+    if let Err(e) = state::set_origin(&result.install_id, &b.source_id, b.plugin_path.trim()) {
+        tracing::warn!(
+            target: "plugins",
+            "install origin persist failed for {}: {e}",
             result.install_id
         );
     }

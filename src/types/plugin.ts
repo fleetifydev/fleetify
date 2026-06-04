@@ -196,7 +196,13 @@ export interface PluginInstall {
   id: string;
   plugin_name: string;
   version: string;
+  /** Marketplace source this was installed from. May be null at runtime
+   *  for installs made before provenance tracking — the Installed tab then
+   *  renders a local-only detail (see PluginDetailPage's fallback). */
   source_id: string;
+  /** Subpath within the source repo (e.g. "neon"). Null for a
+   *  single-plugin/root-manifest repo, or pre-provenance installs. */
+  plugin_path?: string | null;
   commit_sha: string;
   install_path: string;
   auto_update: boolean;

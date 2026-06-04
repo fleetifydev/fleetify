@@ -100,7 +100,7 @@ function InstalledRow({
     <div
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      onClick={() => onOpenDetail(install.source_id, install.plugin_name)}
+      onClick={() => onOpenDetail(install.source_id, install.plugin_path || install.plugin_name)}
       style={{
         display: "flex", alignItems: "center", gap: 14,
         width: "100%",
@@ -183,7 +183,7 @@ function InstalledRow({
       />
 
       <button
-        onClick={(e) => { e.stopPropagation(); onOpenDetail(install.source_id, install.plugin_name); }}
+        onClick={(e) => { e.stopPropagation(); onOpenDetail(install.source_id, install.plugin_path || install.plugin_name); }}
         title="Open detail"
         style={iconBtn}
       ><SettingsIcon size={12} /></button>
@@ -372,14 +372,12 @@ function AddScopeButton({ onClick }: { onClick: () => void }) {
 }
 
 function readSubpath(install: PluginInstall): string {
-  // PluginInstall doesn't carry the original plugin_path subpath
-  // directly — it's persisted inside .installed.json on disk. For
-  // add-scope from the Installed tab we don't actually need it
-  // (backend bypasses the clone path), so an empty string is the
-  // safe default. Plugin name matches an existing row → backend
-  // detects existing install + routes to _add_scope_to_existing.
-  void install;
-  return "";
+  // The original plugin_path subpath now rides on the install record
+  // (persisted in plugin_state.json at install time). Add-scope doesn't
+  // strictly need it (the backend matches the existing install by name),
+  // but using it keeps the dialog's plugin_path accurate. Empty string
+  // is the safe default for pre-provenance installs.
+  return install.plugin_path || "";
 }
 
 function MasterEnableToggle({
