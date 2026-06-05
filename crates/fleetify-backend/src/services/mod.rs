@@ -16,6 +16,7 @@ pub mod mcp_dispatch;
 pub mod mcp_prober;
 pub mod mcp_registry;
 pub mod mcp_secrets;
+pub mod mcp_status;
 pub mod meta_cost;
 pub mod migration;
 pub mod plugins;

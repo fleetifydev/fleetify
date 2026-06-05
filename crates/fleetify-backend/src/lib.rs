@@ -384,6 +384,15 @@ pub async fn serve_with_routing_setup(
         routers::providers::prewarm_hermes_models().await;
     });
 
+    // Warm MCP server statuses at boot so Settings → Tools & MCPs and the
+    // composer show real connection state on first open instead of "Unknown"
+    // until the user clicks Test connection. Best-effort: a failed probe just
+    // caches a failed/auth_needed status the UI surfaces honestly.
+    tokio::spawn(async {
+        crate::services::mcp_status::warm_all().await;
+        tracing::debug!("mcp_status_cache: warmed at startup");
+    });
+
     // Telemetry pipeline — outbox init + heartbeat loop. Best-effort:
     // a failed outbox init logs and continues so a busted home dir
     // doesn't kill the backend; emit_* sites will see "telemetry outbox

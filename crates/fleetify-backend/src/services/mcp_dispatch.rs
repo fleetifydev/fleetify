@@ -158,33 +158,55 @@ fn splice_oauth(
 
     if matches!(kind.as_str(), "http" | "sse") {
         if let Some(secret) = secret {
-            if let Some(tok) = &secret.access_token {
-                let token_type = secret
-                    .extra
-                    .get("token_type")
-                    .and_then(|v| v.as_str())
-                    .map(|s| {
-                        if s.eq_ignore_ascii_case("bearer") {
-                            "Bearer".to_string()
-                        } else {
-                            s.to_string()
-                        }
-                    })
-                    .unwrap_or_else(|| "Bearer".to_string());
-                let mut headers = spliced
-                    .get("headers")
-                    .and_then(|h| h.as_object())
-                    .cloned()
-                    .unwrap_or_default();
-                headers.insert(
-                    "Authorization".into(),
-                    Value::String(format!("{token_type} {tok}")),
-                );
-                spliced.insert("headers".into(), Value::Object(headers));
-            }
+            inject_bearer(&mut spliced, secret);
         }
     }
     Ok(Value::Object(spliced))
+}
+
+/// Inject `Authorization: <type> <token>` into a config object's
+/// `headers` from a stored secret. Shared by the spawn splice and the
+/// probe splice so behaviour is identical.
+fn inject_bearer(spliced: &mut Map<String, Value>, secret: &mcp_secrets::McpSecret) {
+    let Some(tok) = &secret.access_token else {
+        return;
+    };
+    let token_type = secret
+        .extra
+        .get("token_type")
+        .and_then(|v| v.as_str())
+        .map(|s| {
+            if s.eq_ignore_ascii_case("bearer") {
+                "Bearer".to_string()
+            } else {
+                s.to_string()
+            }
+        })
+        .unwrap_or_else(|| "Bearer".to_string());
+    let mut headers = spliced
+        .get("headers")
+        .and_then(|h| h.as_object())
+        .cloned()
+        .unwrap_or_default();
+    headers.insert(
+        "Authorization".into(),
+        Value::String(format!("{token_type} {tok}")),
+    );
+    spliced.insert("headers".into(), Value::Object(headers));
+}
+
+/// Splice the stored OAuth bearer into an ALREADY-LOADED server config
+/// (http/sse only) for probing. The caller passes the config it already
+/// holds so we don't re-read the registry from disk.
+pub fn splice_for_probe(name: &str, cfg: &Value) -> Value {
+    let mut obj = cfg.as_object().cloned().unwrap_or_default();
+    let kind = obj.get("type").and_then(|v| v.as_str()).unwrap_or("stdio");
+    if matches!(kind, "http" | "sse") {
+        if let Some(secret) = mcp_secrets::get(name) {
+            inject_bearer(&mut obj, &secret);
+        }
+    }
+    Value::Object(obj)
 }
 
 /// Emit Codex `-c mcp_servers.<n>.<key>=<toml>` args from a merged map.
@@ -775,5 +797,26 @@ mod tests {
         // Other fields pass through unchanged.
         assert_eq!(arr[0]["type"], "stdio");
         assert_eq!(arr[0]["command"], "/path/to/fleet-memory-mcp");
+    }
+
+    #[test]
+    fn splice_for_probe_injects_bearer_when_secret_present() {
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
+        std::env::set_var("USERPROFILE", tmp.path());
+        mcp_secrets::set(
+            "remote",
+            &mcp_secrets::McpSecret {
+                access_token: Some("tok123".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let cfg = json!({"type":"http","url":"https://x/mcp"});
+        let spliced = splice_for_probe("remote", &cfg);
+        assert_eq!(spliced["headers"]["Authorization"], "Bearer tok123");
     }
 }

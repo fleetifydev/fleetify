@@ -1,8 +1,8 @@
 //! `/api/mcp/*` — list/add/update/delete MCP servers backed by
-//! services::mcp_registry. Probe + OAuth flow stay Phase-4-deferred
-//! (the full MCPProber requires actually starting MCP servers and
-//! parsing their list-tools output). Faithful row shape keeps the
-//! Settings/MCP page wired without 404s.
+//! services::mcp_registry, plus the probe + OAuth flow. Per-server status
+//! is served from the boot-warmed `mcp_status` cache so the Settings page
+//! and composer show real connection state on first open without firing a
+//! probe fan-out on every mount.
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -13,7 +13,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::routers::AppState;
-use crate::services::mcp_registry;
+use crate::services::mcp_prober::McpStatus;
+use crate::services::{mcp_registry, mcp_status};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -31,20 +32,29 @@ pub fn router() -> Router<AppState> {
         .route("/mcp/servers/{name}/auth/signout", post(auth_signout))
 }
 
-fn row(name: &str, config: &Value) -> Value {
+/// The "never probed" status object (grey "Unknown" in the UI), used when
+/// the cache has no entry yet for a server (just added, or the boot warm
+/// hasn't reached it).
+fn unknown_status(name: &str) -> Value {
     json!({
         "name": name,
-        "config": config,
-        "status": {
-            "name": name,
-            "status": "unknown",
-            "tool_count": 0,
-            "tools": [],
-            "error": null,
-            "auth_hint": null,
-            "probed_at": null
-        }
+        "status": serde_json::to_value(McpStatus::Unknown).unwrap(),
+        "tool_count": 0,
+        "tools": [],
+        "error": null,
+        "auth_hint": null,
+        "probed_at": null
     })
+}
+
+/// One `{ name, config, status }` row. `status` comes from the boot-warmed
+/// status cache so the renderer paints real state without firing its own
+/// probe; absent entries fall back to "unknown".
+fn row(name: &str, config: &Value) -> Value {
+    let status = mcp_status::cached(name)
+        .map(|r| serde_json::to_value(r).unwrap_or_else(|_| unknown_status(name)))
+        .unwrap_or_else(|| unknown_status(name));
+    json!({ "name": name, "config": config, "status": status })
 }
 
 async fn list_servers(State(_): State<AppState>) -> Json<Value> {
@@ -78,50 +88,42 @@ struct UpdateBody {
 
 async fn update_server(Path(name): Path<String>, Json(b): Json<UpdateBody>) -> impl IntoResponse {
     match mcp_registry::update(&name, b.config.clone()) {
-        Ok(_) => Json(row(&name, &b.config)).into_response(),
+        // Evict the cached status: the config just changed, so the old probe
+        // result no longer describes it. The row falls back to "unknown"
+        // until the next probe/warm — the honest "re-probe me" signal.
+        Ok(_) => {
+            mcp_status::forget(&name);
+            Json(row(&name, &b.config)).into_response()
+        }
         Err(e) => (StatusCode::NOT_FOUND, Json(json!({ "detail": e }))).into_response(),
     }
 }
 
 async fn delete_server(Path(name): Path<String>) -> impl IntoResponse {
     match mcp_registry::remove(&name) {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Ok(_) => {
+            mcp_status::forget(&name);
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(e) => (StatusCode::NOT_FOUND, Json(json!({ "detail": e }))).into_response(),
     }
 }
 
 async fn probe_server(Path(name): Path<String>) -> Json<Value> {
-    let Some(config) = mcp_registry::get(&name) else {
-        return Json(json!({
-            "name": name,
-            "status": "error",
-            "tool_count": 0,
-            "tools": [],
-            "error": format!("no MCP server named {name:?} in registry"),
-            "probed_at": chrono::Utc::now().to_rfc3339(),
-        }));
-    };
-    let r = crate::services::mcp_prober::probe(&name, &config).await;
+    let r = mcp_status::probe_and_cache(&name).await;
     Json(serde_json::to_value(r).unwrap_or(Value::Null))
 }
 
 async fn probe_all() -> Json<Value> {
-    // Probe every registered MCP server in parallel; return a
-    // `{ <name>: ProbeResult }` map for the renderer's Settings page.
     let names: Vec<String> = mcp_registry::list_all().into_keys().collect();
-    let futs: Vec<_> = names
-        .into_iter()
-        .filter_map(|n| {
-            mcp_registry::get(&n).map(|cfg| async move {
-                let r = crate::services::mcp_prober::probe(&n, &cfg).await;
-                (n, r)
-            })
-        })
-        .collect();
+    let futs = names.into_iter().map(|n| async move {
+        let r = mcp_status::probe_and_cache(&n).await;
+        (n, serde_json::to_value(r).unwrap_or(Value::Null))
+    });
     let results = futures_util::future::join_all(futs).await;
     let mut out = serde_json::Map::new();
-    for (n, r) in results {
-        out.insert(n, serde_json::to_value(r).unwrap_or(Value::Null));
+    for (n, v) in results {
+        out.insert(n, v);
     }
     Json(Value::Object(out))
 }

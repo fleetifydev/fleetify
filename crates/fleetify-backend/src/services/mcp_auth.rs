@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 
+use super::mcp_registry;
 use super::mcp_secrets::{self, McpSecret};
 
 const STATE_TTL: Duration = Duration::from_secs(600); // 10 minutes
@@ -210,6 +211,113 @@ pub fn signout(server_name: &str) {
     mcp_secrets::delete(server_name);
 }
 
+/// Refresh an MCP server's access token using its stored refresh_token
+/// and the `oauth.token_url` + `oauth.client_id` from its registry
+/// config. Returns Ok(false) when there is nothing to refresh (no
+/// secret, no refresh_token, or no oauth config).
+pub async fn refresh(server_name: &str) -> Result<bool> {
+    let Some(cfg) = mcp_registry::get(server_name) else {
+        return Ok(false);
+    };
+    let Some(secret) = mcp_secrets::get(server_name) else {
+        return Ok(false);
+    };
+    let Some(refresh_token) = secret.refresh_token.clone() else {
+        return Ok(false);
+    };
+    let oauth = match cfg.get("oauth") {
+        Some(o) => o,
+        None => return Ok(false),
+    };
+    let token_url = oauth
+        .get("token_url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("oauth.token_url missing"))?
+        .to_string();
+    let client_id = oauth
+        .get("client_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("oauth.client_id missing"))?
+        .to_string();
+
+    let r = reqwest::Client::new()
+        .post(&token_url)
+        .form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", &refresh_token),
+            ("client_id", &client_id),
+        ])
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|e| anyhow!("refresh POST failed: {e}"))?;
+    if !r.status().is_success() {
+        return Err(anyhow!("refresh returned {}", r.status().as_u16()));
+    }
+    let body: Value = r.json().await.map_err(|e| anyhow!("refresh decode: {e}"))?;
+    let access = body
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("refresh response missing access_token"))?
+        .to_string();
+    let new_refresh = body
+        .get("refresh_token")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .or(secret.refresh_token);
+    let expires_at = body
+        .get("expires_in")
+        .and_then(|v| v.as_i64())
+        .map(|s| chrono::Utc::now().timestamp() + s);
+    let mut extra = secret.extra.clone();
+    if let Some(obj) = body.as_object() {
+        for (k, v) in obj {
+            if !matches!(
+                k.as_str(),
+                "access_token" | "refresh_token" | "expires_in" | "expires_at"
+            ) {
+                extra.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    mcp_secrets::set(
+        server_name,
+        &McpSecret {
+            access_token: Some(access),
+            refresh_token: new_refresh,
+            expires_at,
+            extra,
+        },
+    )
+    .map_err(|e| anyhow!(e))?;
+    Ok(true)
+}
+
+/// Refresh the stored token when it is within 60s of its `expires_at`.
+/// A token with no `expires_at` is left as-is (we have no expiry metadata,
+/// so we don't refresh on every probe; a genuinely expired one surfaces as
+/// auth_needed on the probe itself). Best-effort: a refresh failure is
+/// logged and swallowed — the probe then reports the honest auth state.
+pub async fn ensure_fresh(server_name: &str) {
+    let Some(secret) = mcp_secrets::get(server_name) else {
+        return;
+    };
+    let near = match secret.expires_at {
+        Some(exp) => exp - chrono::Utc::now().timestamp() < 60,
+        None => false,
+    };
+    if near {
+        if let Err(e) = refresh(server_name).await {
+            tracing::warn!(
+                target: "mcp_auth",
+                server = %server_name,
+                error = %e,
+                "pre-probe token refresh failed; probe will surface auth state"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,5 +367,54 @@ mod tests {
             .await
             .unwrap_err();
         assert!(e.to_string().contains("unknown or expired state"));
+    }
+
+    // `home_lock` is a std Mutex shared with the sync HOME-scoped tests, so it
+    // can't be swapped for an async mutex. The guard must span the async
+    // `refresh` call (which reads HOME-derived file paths); these tests are
+    // serialized by this very lock + `--test-threads=1`, so there is no real
+    // deadlock risk from holding it across the awaits.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn refresh_swaps_access_token_using_refresh_grant() {
+        use wiremock::matchers::{body_string_contains, method};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::remove_var("FLEETIFY_HOME");
+        std::env::set_var("HOME", tmp.path());
+        std::env::set_var("USERPROFILE", tmp.path());
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_string_contains("grant_type=refresh_token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600
+            })))
+            .mount(&server)
+            .await;
+
+        super::mcp_registry::add("svc", serde_json::json!({
+            "type": "http", "url": "https://x/mcp",
+            "oauth": { "authorize_url": "https://x/auth", "token_url": format!("{}/token", server.uri()), "client_id": "cid" }
+        })).unwrap();
+        super::mcp_secrets::set(
+            "svc",
+            &McpSecret {
+                access_token: Some("old".into()),
+                refresh_token: Some("r".into()),
+                expires_at: Some(0),
+                extra: Default::default(),
+            },
+        )
+        .unwrap();
+
+        let refreshed = refresh("svc").await.unwrap();
+        assert!(refreshed);
+        let got = super::mcp_secrets::get("svc").unwrap();
+        assert_eq!(got.access_token.as_deref(), Some("new-access"));
+        assert!(got.expires_at.unwrap() > chrono::Utc::now().timestamp());
     }
 }

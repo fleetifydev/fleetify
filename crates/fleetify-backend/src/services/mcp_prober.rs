@@ -22,6 +22,14 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 const INIT_TIMEOUT: Duration = Duration::from_secs(15);
 const TOOLS_LIST_TIMEOUT: Duration = Duration::from_secs(10);
+const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Shared HTTP client so repeated probes reuse the connection pool and
+/// TLS session cache (the Tier-2 background loop re-probes on an interval).
+fn http_client() -> &'static reqwest::Client {
+    static C: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    C.get_or_init(reqwest::Client::new)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDescriptor {
@@ -32,10 +40,25 @@ pub struct ToolDescriptor {
     pub input_schema: Option<Value>,
 }
 
+/// Canonical MCP status — serializes to exactly the tokens the
+/// renderer's status pill (`mcp-card.tsx`) and composer dot
+/// (`chat-input.tsx`) consume. Single source of truth: the backend
+/// emits these; the store passes them straight through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpStatus {
+    Connected,  // "connected"
+    AuthNeeded, // "auth_needed"
+    Failed,     // "failed"
+    Checking,   // "checking"
+    Unknown,    // "unknown"
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProbeResult {
     pub name: String,
-    pub status: String, // "ok" | "error" | "unsupported"
+    /// Canonical status token consumed by the renderer's status pill.
+    pub status: McpStatus,
     pub tool_count: usize,
     pub tools: Vec<ToolDescriptor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -49,6 +72,202 @@ fn now_rfc() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+/// Decide status for a NON-2xx HTTP probe response. 401/403 (or any
+/// response carrying a `WWW-Authenticate` challenge) means the server
+/// is reachable but unauthenticated → AuthNeeded (yellow). Everything
+/// else is a hard failure (red). The `www_authenticate` header value,
+/// when present, becomes the auth_hint (and is the Tier-3 discovery
+/// entry point).
+pub(crate) fn classify_http(
+    status: u16,
+    www_authenticate: Option<&str>,
+) -> (McpStatus, Option<String>) {
+    if status == 401 || status == 403 || www_authenticate.is_some() {
+        return (
+            McpStatus::AuthNeeded,
+            www_authenticate.map(|s| s.to_string()),
+        );
+    }
+    (McpStatus::Failed, None)
+}
+
+/// Probe an http/sse MCP server over Streamable HTTP: POST a JSON-RPC
+/// `initialize`, then `tools/list`. `config` is expected to already
+/// carry any `Authorization` header (spliced by the caller). Auth
+/// failures surface as AuthNeeded; network/other failures as Failed.
+async fn probe_http(name: &str, config: &Value) -> ProbeResult {
+    let fail = |msg: String, status: McpStatus, hint: Option<String>| ProbeResult {
+        name: name.into(),
+        status,
+        tool_count: 0,
+        tools: Vec::new(),
+        error: if matches!(status, McpStatus::Failed) {
+            Some(msg)
+        } else {
+            None
+        },
+        auth_hint: hint,
+        probed_at: now_rfc(),
+    };
+
+    let url = match config.get("url").and_then(|v| v.as_str()) {
+        Some(u) if !u.is_empty() => u.to_string(),
+        _ => return fail("http/sse MCP missing `url`".into(), McpStatus::Failed, None),
+    };
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static("application/json, text/event-stream"),
+    );
+    if let Some(obj) = config.get("headers").and_then(|h| h.as_object()) {
+        for (k, v) in obj {
+            let hname = match reqwest::header::HeaderName::from_bytes(k.as_bytes()) {
+                Ok(n) => n,
+                Err(_) => {
+                    return fail(
+                        format!("invalid header name in config: {k:?}"),
+                        McpStatus::Failed,
+                        None,
+                    )
+                }
+            };
+            let hval = match v
+                .as_str()
+                .and_then(|s| s.parse::<reqwest::header::HeaderValue>().ok())
+            {
+                Some(val) => val,
+                None => {
+                    return fail(
+                        format!("invalid header value for {k:?}"),
+                        McpStatus::Failed,
+                        None,
+                    )
+                }
+            };
+            headers.insert(hname, hval);
+        }
+    }
+    let client = http_client();
+    let init = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": "2024-11-05", "capabilities": {},
+                    "clientInfo": { "name": "fleetify-prober", "version": "0.1.0" } }
+    });
+    let resp = match client
+        .post(&url)
+        .headers(headers.clone())
+        .json(&init)
+        .timeout(HTTP_TIMEOUT)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return fail(format!("connect failed: {e}"), McpStatus::Failed, None),
+    };
+    if !resp.status().is_success() {
+        let code = resp.status().as_u16();
+        let www = resp
+            .headers()
+            .get("WWW-Authenticate")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+        let (st, hint) = classify_http(code, www.as_deref());
+        return fail(format!("initialize returned HTTP {code}"), st, hint);
+    }
+    let body = match resp.text().await {
+        Ok(b) => b,
+        Err(e) => {
+            return fail(
+                format!("initialize: body read failed: {e}"),
+                McpStatus::Failed,
+                None,
+            )
+        }
+    };
+    let init_val = match parse_jsonrpc_body(&body) {
+        Some(v) => v,
+        None => {
+            return fail(
+                "initialize: unparseable response".into(),
+                McpStatus::Failed,
+                None,
+            )
+        }
+    };
+    if init_val.get("error").is_some() {
+        return fail(
+            format!(
+                "initialize error: {}",
+                init_val["error"]["message"].as_str().unwrap_or("?")
+            ),
+            McpStatus::Failed,
+            None,
+        );
+    }
+    // tools/list (best-effort: connected even if it fails, with 0 tools)
+    let list = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} });
+    let tools: Vec<ToolDescriptor> = match client
+        .post(&url)
+        .headers(headers)
+        .json(&list)
+        .timeout(HTTP_TIMEOUT)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => {
+            let b = r.text().await.unwrap_or_default();
+            parse_jsonrpc_body(&b)
+                .and_then(|v| {
+                    v.get("result")
+                        .and_then(|x| x.get("tools"))
+                        .and_then(|t| t.as_array())
+                        .cloned()
+                })
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|t| {
+                    let o = t.as_object()?;
+                    Some(ToolDescriptor {
+                        name: o.get("name").and_then(|v| v.as_str())?.to_string(),
+                        description: o
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        input_schema: o.get("inputSchema").cloned(),
+                    })
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    ProbeResult {
+        name: name.into(),
+        status: McpStatus::Connected,
+        tool_count: tools.len(),
+        tools,
+        error: None,
+        auth_hint: None,
+        probed_at: now_rfc(),
+    }
+}
+
+/// Extract the first JSON object from either a plain JSON body or an
+/// SSE frame (`data: {...}`). MCP Streamable HTTP may answer either.
+fn parse_jsonrpc_body(body: &str) -> Option<Value> {
+    if let Ok(v) = serde_json::from_str::<Value>(body.trim()) {
+        return Some(v);
+    }
+    for line in body.lines() {
+        if let Some(rest) = line.trim().strip_prefix("data:") {
+            if let Ok(v) = serde_json::from_str::<Value>(rest.trim()) {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
 /// Probe one MCP server config. `name` is the registry key (used for
 /// log breadcrumbs + return envelope). `config` is the JSON value the
 /// user supplied via /api/mcp/servers — same shape Claude / Gemini /
@@ -60,18 +279,10 @@ pub async fn probe(name: &str, config: &Value) -> ProbeResult {
         .unwrap_or("stdio");
     match kind {
         "stdio" => probe_stdio(name, config).await,
-        "http" | "sse" => ProbeResult {
-            name: name.into(),
-            status: "unsupported".into(),
-            tool_count: 0,
-            tools: Vec::new(),
-            error: Some("http / sse MCP probe not implemented yet (Phase 4 follow-up)".to_string()),
-            auth_hint: None,
-            probed_at: now_rfc(),
-        },
+        "http" | "sse" => probe_http(name, config).await,
         other => ProbeResult {
             name: name.into(),
-            status: "error".into(),
+            status: McpStatus::Failed,
             tool_count: 0,
             tools: Vec::new(),
             error: Some(format!("unknown MCP type: {other}")),
@@ -86,7 +297,7 @@ async fn probe_stdio(name: &str, config: &Value) -> ProbeResult {
     if command.is_empty() {
         return ProbeResult {
             name: name.into(),
-            status: "error".into(),
+            status: McpStatus::Failed,
             tool_count: 0,
             tools: Vec::new(),
             error: Some("stdio MCP missing `command`".into()),
@@ -126,7 +337,7 @@ async fn probe_stdio(name: &str, config: &Value) -> ProbeResult {
         Err(e) => {
             return ProbeResult {
                 name: name.into(),
-                status: "error".into(),
+                status: McpStatus::Failed,
                 tool_count: 0,
                 tools: Vec::new(),
                 error: Some(format!("spawn failed: {e}")),
@@ -142,7 +353,7 @@ async fn probe_stdio(name: &str, config: &Value) -> ProbeResult {
             let _ = child.kill().await;
             return ProbeResult {
                 name: name.into(),
-                status: "error".into(),
+                status: McpStatus::Failed,
                 tool_count: 0,
                 tools: Vec::new(),
                 error: Some("no stdin pipe on MCP subprocess".into()),
@@ -157,7 +368,7 @@ async fn probe_stdio(name: &str, config: &Value) -> ProbeResult {
             let _ = child.kill().await;
             return ProbeResult {
                 name: name.into(),
-                status: "error".into(),
+                status: McpStatus::Failed,
                 tool_count: 0,
                 tools: Vec::new(),
                 error: Some("no stdout pipe on MCP subprocess".into()),
@@ -172,7 +383,7 @@ async fn probe_stdio(name: &str, config: &Value) -> ProbeResult {
     match result {
         Ok(tools) => ProbeResult {
             name: name.into(),
-            status: "ok".into(),
+            status: McpStatus::Connected,
             tool_count: tools.len(),
             tools,
             error: None,
@@ -181,7 +392,7 @@ async fn probe_stdio(name: &str, config: &Value) -> ProbeResult {
         },
         Err(e) => ProbeResult {
             name: name.into(),
-            status: "error".into(),
+            status: McpStatus::Failed,
             tool_count: 0,
             tools: Vec::new(),
             error: Some(e.to_string()),
@@ -322,28 +533,134 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn probe_missing_command_returns_error_envelope() {
+    async fn probe_missing_command_returns_failed() {
         let r = probe("badname", &json!({ "type": "stdio" })).await;
-        assert_eq!(r.status, "error");
+        assert_eq!(r.status, McpStatus::Failed);
         assert_eq!(r.tool_count, 0);
         assert!(r.error.unwrap().contains("missing `command`"));
     }
 
     #[tokio::test]
-    async fn probe_http_kind_reports_unsupported() {
-        let r = probe(
-            "remote",
-            &json!({ "type": "http", "url": "https://example.com/mcp" }),
-        )
-        .await;
-        assert_eq!(r.status, "unsupported");
-        assert!(r.error.unwrap().contains("not implemented"));
+    async fn probe_unknown_kind_reports_failed() {
+        let r = probe("weird", &json!({ "type": "smtp" })).await;
+        assert_eq!(r.status, McpStatus::Failed);
+        assert!(r.error.unwrap().contains("unknown MCP type"));
+    }
+
+    // --- classify_http unit tests ---
+
+    #[test]
+    fn classify_http_401_is_auth_needed() {
+        let (st, hint) = classify_http(
+            401,
+            Some("Bearer resource_metadata=\"https://srv/.well-known/oauth-protected-resource\""),
+        );
+        assert_eq!(st, McpStatus::AuthNeeded);
+        assert!(hint.unwrap().contains("oauth-protected-resource"));
+    }
+
+    #[test]
+    fn classify_http_403_is_auth_needed() {
+        let (st, _) = classify_http(403, None);
+        assert_eq!(st, McpStatus::AuthNeeded);
+    }
+
+    #[test]
+    fn classify_http_500_is_failed() {
+        let (st, _) = classify_http(500, None);
+        assert_eq!(st, McpStatus::Failed);
+    }
+
+    // --- probe_http wiremock integration tests ---
+
+    #[tokio::test]
+    async fn probe_http_connected_lists_tools() {
+        use wiremock::matchers::{body_partial_json, method};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method":"initialize"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{}}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method":"tools/list"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"foo","description":"d"}]}
+            })))
+            .mount(&server)
+            .await;
+        let r = probe("remote", &json!({ "type":"http", "url": server.uri() })).await;
+        assert_eq!(r.status, McpStatus::Connected);
+        assert_eq!(r.tool_count, 1);
+        assert_eq!(r.tools[0].name, "foo");
     }
 
     #[tokio::test]
-    async fn probe_unknown_kind_reports_error() {
-        let r = probe("weird", &json!({ "type": "smtp" })).await;
-        assert_eq!(r.status, "error");
-        assert!(r.error.unwrap().contains("unknown MCP type"));
+    async fn probe_http_401_is_auth_needed() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(401).insert_header(
+                "WWW-Authenticate",
+                "Bearer resource_metadata=\"https://x/.well-known/oauth-protected-resource\"",
+            ))
+            .mount(&server)
+            .await;
+        let r = probe("remote", &json!({ "type":"http", "url": server.uri() })).await;
+        assert_eq!(r.status, McpStatus::AuthNeeded);
+        assert!(r.auth_hint.unwrap().contains("oauth-protected-resource"));
+    }
+
+    #[tokio::test]
+    async fn probe_http_500_is_failed() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let r = probe("remote", &json!({ "type":"http", "url": server.uri() })).await;
+        assert_eq!(r.status, McpStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn probe_http_403_without_challenge_has_no_hint() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        let r = probe("remote", &json!({ "type":"http", "url": server.uri() })).await;
+        assert_eq!(r.status, McpStatus::AuthNeeded);
+        assert!(r.auth_hint.is_none());
+    }
+
+    #[test]
+    fn parse_jsonrpc_body_reads_sse_data_frame() {
+        let body = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{}}\n\n";
+        let v = parse_jsonrpc_body(body).unwrap();
+        assert_eq!(v["id"], 7);
+    }
+
+    #[tokio::test]
+    async fn probe_http_invalid_config_header_is_failed() {
+        let r = probe(
+            "remote",
+            &json!({
+                "type": "http",
+                "url": "http://127.0.0.1:1/mcp",
+                "headers": { "X-Bad": "bad\nvalue" }
+            }),
+        )
+        .await;
+        assert_eq!(r.status, McpStatus::Failed);
+        assert!(r.error.unwrap().contains("header"));
     }
 }

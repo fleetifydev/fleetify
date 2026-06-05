@@ -590,26 +590,31 @@ function MCPStatusButton() {
                 const color = st === "connected" ? "#22c55e"
                   : st === "auth_needed" ? "#eab308"
                   : st === "failed" ? "#ef4444"
-                  : "#3b82f6";
+                  : st === "checking" ? "#3b82f6"
+                  : "var(--c-low)";
+                const label = st === "connected" ? "Connected"
+                  : st === "auth_needed" ? "Auth needed"
+                  : st === "failed" ? "Failed"
+                  : st === "checking" ? "Checking…"
+                  : "Unknown";
+                // Raw error / auth challenge stays available on hover, not
+                // dumped into the row.
+                const detail = st === "failed" ? (s.status?.error ?? "")
+                  : st === "auth_needed" ? (s.status?.auth_hint ?? "")
+                  : "";
                 return (
-                  <div key={s.name} style={{
-                    display: "flex", alignItems: "center", gap: 6,
-                    padding: "5px 0",
+                  <div key={s.name} title={detail || undefined} style={{
+                    display: "flex", alignItems: "center", gap: 8,
+                    padding: "6px 0",
                     borderBottom: "1px solid var(--border)",
                   }}>
                     <span style={{ width: 6, height: 6, borderRadius: "50%", background: color, flexShrink: 0 }} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 11, fontWeight: 500, color: "var(--foreground)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {s.name}
-                      </div>
-                      <div style={{ fontSize: 10, color: "var(--muted-foreground)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {st === "failed" && s.status?.error
-                          ? s.status.error
-                          : st === "auth_needed"
-                            ? (s.status?.auth_hint ?? "needs authentication")
-                            : `${s.status?.tool_count ?? 0} tools`}
-                      </div>
-                    </div>
+                    <span style={{ flex: 1, minWidth: 0, fontSize: 11.5, fontWeight: 500, color: "var(--foreground)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {s.name}
+                    </span>
+                    <span style={{ flexShrink: 0, fontSize: 10.5, fontWeight: 500, color }}>
+                      {label}
+                    </span>
                   </div>
                 );
               })}
