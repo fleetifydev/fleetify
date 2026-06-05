@@ -2,6 +2,7 @@
 // sources, and the in-flight catalog query result.
 import { create } from "zustand";
 import * as api from "@/lib/plugin-api";
+import { useMCPStore } from "@/stores/mcp-store";
 import type {
   CatalogPlugin, MarketplaceSource, PluginInstall, ScopeType,
 } from "@/types/plugin";
@@ -78,6 +79,12 @@ export const usePluginStore = create<State>((set, get) => ({
   install: async (body) => {
     const result = await api.installPlugin(body);
     await get().refreshInstalls();
+    // A freshly installed plugin may contribute MCP servers. Refresh the MCP
+    // list and probe so they show real status immediately, without the user
+    // having to open Settings → Tools & MCPs and click Test connection.
+    const mcp = useMCPStore.getState();
+    await mcp.fetchAll();
+    void mcp.refresh();
     return result;
   },
 

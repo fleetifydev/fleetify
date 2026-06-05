@@ -5,6 +5,15 @@ import { openConfig, getConfigPath, startAuth, signOut, type MCPServerRow } from
 import { MCPCard } from "./mcp-card";
 import { MCPEditDialog } from "./mcp-edit-dialog";
 
+/** Open a URL in the OS default browser. In the Tauri webview `window.open`
+ *  is swallowed, so route through the preload `openExternal` bridge (same as
+ *  auth-required-card.tsx); fall back to window.open in a plain web dev view. */
+function openExternal(url: string): void {
+  const w = window as unknown as { electronAPI?: { openExternal?: (u: string) => unknown } };
+  if (w.electronAPI?.openExternal) void w.electronAPI.openExternal(url);
+  else window.open(url, "_blank", "noopener,noreferrer");
+}
+
 export function MCPSection() {
   const {
     servers, loading, refreshing, error,
@@ -53,10 +62,10 @@ export function MCPSection() {
       alert(e instanceof Error ? e.message : String(e));
       return;
     }
-    // Open the authorization URL in a new tab. The backend callback
-    // endpoint stores the tokens; we poll /servers until the status
-    // flips off of auth_needed.
-    window.open(url, "_blank", "noopener,noreferrer");
+    // Open the authorization URL in the OS browser (window.open is swallowed
+    // in the Tauri webview). The backend callback stores the tokens; we poll
+    // /servers until the status flips off of auth_needed.
+    openExternal(url);
     setAuthInFlight(prev => new Set(prev).add(name));
 
     // Poll for up to 3 minutes with a 2s cadence. The mask also lifts

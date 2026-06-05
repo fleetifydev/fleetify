@@ -147,7 +147,7 @@ async fn auth_start(Path(name): Path<String>) -> Json<Value> {
             "error": format!("no MCP server named {name:?}")
         }));
     };
-    match crate::services::mcp_auth::start(&name, &cfg) {
+    match crate::services::mcp_auth::start(&name, &cfg).await {
         Ok(url) => Json(json!({ "ok": true, "authorize_url": url })),
         Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
     }

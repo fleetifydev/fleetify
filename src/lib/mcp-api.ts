@@ -109,7 +109,14 @@ export async function startAuth(name: string): Promise<string> {
   const res = await apiFetch(`/api/mcp/servers/${encodeURIComponent(name)}/auth/start`, {
     method: "POST",
   });
-  const data = await handle<{ authorize_url: string }>(res);
+  // The backend returns HTTP 200 with { ok:false, error } when it can't start
+  // (no oauth block, discovery/registration failed). handle() only throws on
+  // non-2xx, so surface that error here instead of returning undefined (which
+  // would leave the UI stuck opening nothing and polling forever).
+  const data = await handle<{ ok?: boolean; authorize_url?: string; error?: string }>(res);
+  if (!data.authorize_url) {
+    throw new Error(data.error || "Could not start authentication for this server");
+  }
   return data.authorize_url;
 }
 

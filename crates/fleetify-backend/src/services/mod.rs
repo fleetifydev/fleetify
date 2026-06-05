@@ -13,6 +13,7 @@ pub mod haiku_breaker;
 pub mod haiku_client;
 pub mod mcp_auth;
 pub mod mcp_dispatch;
+pub mod mcp_oauth_discovery;
 pub mod mcp_prober;
 pub mod mcp_registry;
 pub mod mcp_secrets;
