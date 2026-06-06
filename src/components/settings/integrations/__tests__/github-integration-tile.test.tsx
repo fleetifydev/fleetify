@@ -14,15 +14,18 @@ function makeHook(over: Partial<ReturnType<Hook>> = {}): ReturnType<Hook> {
     setEnabled: vi.fn(),
     method: null,
     identity: null,
+    installations: [],
     loading: false,
     ghCli: { kind: "needs-auth" },
     beginOAuth: vi.fn(async () => ({ ok: true })),
+    addInstallation: vi.fn(async () => ({ ok: true })),
     cancelOAuth: vi.fn(async () => {}),
     beginCliAuth: vi.fn(async () => ({ ok: true })),
     cancelCliAuth: vi.fn(async () => {}),
     disconnect: vi.fn(async () => {}),
     onCliAuthEvent: vi.fn(() => () => {}),
     refresh: vi.fn(async () => {}),
+    refreshInstallations: vi.fn(async () => {}),
     ...over,
   } as ReturnType<Hook>;
 }
@@ -87,5 +90,31 @@ describe("GitHubIntegrationTile", () => {
     render(<GitHubIntegrationTile />);
     fireEvent.click(screen.getByRole("button", { name: /Connect with GitHub/i }));
     expect(beginOAuth).toHaveBeenCalled();
+  });
+
+  it("lists installed orgs and an Add organization button when OAuth-connected", () => {
+    hookMock.mockReturnValue(makeHook({
+      method: "oauth",
+      identity: { source: "oauth", login: "octocat", avatarUrl: "", connectedAt: "2026-05-13T09:00:00.000Z" },
+      installations: [
+        { installation_id: 1, account_login: "octocat", account_id: 1, account_type: "User", account_avatar_url: "", repository_selection: "all" },
+        { installation_id: 2, account_login: "acme", account_id: 2, account_type: "Organization", account_avatar_url: "", repository_selection: "all" },
+      ],
+    }));
+    render(<GitHubIntegrationTile />);
+    expect(screen.getByText("acme")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Add organization/i })).toBeInTheDocument();
+  });
+
+  it("clicking Add organization calls addInstallation", () => {
+    const addInstallation = vi.fn(async () => ({ ok: true }));
+    hookMock.mockReturnValue(makeHook({
+      method: "oauth",
+      identity: { source: "oauth", login: "octocat", avatarUrl: "", connectedAt: "2026-05-13T09:00:00.000Z" },
+      addInstallation,
+    }));
+    render(<GitHubIntegrationTile />);
+    fireEvent.click(screen.getByRole("button", { name: /Add organization/i }));
+    expect(addInstallation).toHaveBeenCalled();
   });
 });

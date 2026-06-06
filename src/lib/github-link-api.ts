@@ -10,6 +10,18 @@
  * renderer code MUST NOT pass it around — REST calls happen in main.
  */
 
+/** One installed account/org the user can reach through the GitHub App. */
+export interface GitHubInstallation {
+  installation_id: number;
+  account_login: string;
+  account_id: number;
+  /** "User" | "Organization" (open string for forward-compat). */
+  account_type: string;
+  account_avatar_url: string;
+  /** "all" | "selected". */
+  repository_selection: string;
+}
+
 export interface GitHubLinkPayload {
   access_token: string;
   refresh_token: string;
@@ -18,7 +30,11 @@ export interface GitHubLinkPayload {
   github_login: string;
   github_user_id: number;
   github_avatar_url: string;
+  /** Primary installation (back-compat). `0` when installed nowhere. */
   installation_id: number;
+  /** Every account/org the user can access. Optional for links written
+   *  before multi-installation support; callers default to `[]`. */
+  installations?: GitHubInstallation[];
   connected_at: string;
 }
 
@@ -26,12 +42,19 @@ type LinkResult =
   | { ok: true; link: GitHubLinkPayload }
   | { ok: false; code: string; error: string };
 
+type InstallationsResult = { ok: boolean; installations: GitHubInstallation[] };
+
 type LinkListener = (payload: { link: GitHubLinkPayload | null }) => void;
 type BrowserFallbackListener = (payload: { url: string }) => void;
 
 interface GitHubAPI {
   getLink: () => Promise<{ ok: boolean; link: GitHubLinkPayload | null; error?: string }>;
   beginOAuth: () => Promise<LinkResult>;
+  /** Add another installation (org/account) — opens the install picker
+   *  and resolves when the poll completes with the updated link. */
+  addInstallation: () => Promise<LinkResult>;
+  /** Server-synced list of installed accounts/orgs. */
+  listInstallations: () => Promise<InstallationsResult>;
   cancelOAuth: () => Promise<{ ok: boolean }>;
   disconnect: () => Promise<{ ok: boolean; error?: string }>;
   refreshLink: () => Promise<LinkResult>;
@@ -47,6 +70,8 @@ function api(): GitHubAPI {
   return w.electronAPI?.github ?? {
     getLink:          async () => ({ ok: false, link: null, error: "electron unavailable" }),
     beginOAuth:       async () => ({ ok: false, code: "ELECTRON_UNAVAILABLE", error: "electron unavailable" }),
+    addInstallation:  async () => ({ ok: false, code: "ELECTRON_UNAVAILABLE", error: "electron unavailable" }),
+    listInstallations: async () => ({ ok: false, installations: [] }),
     cancelOAuth:      async () => ({ ok: true }),
     disconnect:       async () => ({ ok: false, error: "electron unavailable" }),
     refreshLink:      async () => ({ ok: false, code: "ELECTRON_UNAVAILABLE", error: "electron unavailable" }),
@@ -61,6 +86,8 @@ function api(): GitHubAPI {
 export const github = {
   getLink:            () => api().getLink(),
   beginOAuth:         () => api().beginOAuth(),
+  addInstallation:    () => api().addInstallation(),
+  listInstallations:  () => api().listInstallations(),
   cancelOAuth:        () => api().cancelOAuth(),
   disconnect:         () => api().disconnect(),
   refreshLink:        () => api().refreshLink(),

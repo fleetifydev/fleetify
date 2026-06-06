@@ -11,7 +11,7 @@
  * the previous identity instantly.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { github, type GitHubLinkPayload } from "@/lib/github-link-api";
+import { github, type GitHubInstallation, type GitHubLinkPayload } from "@/lib/github-link-api";
 
 const KEY_ENABLED = "fleet:settings:github-enabled";
 const KEY_METHOD = "fleet:github-auth-method";
@@ -44,6 +44,8 @@ export interface UseGitHubIdentity {
   setEnabled: (v: boolean) => void;
   method: AuthMethod;
   identity: GitHubIdentity;
+  /** Installed accounts/orgs (oauth only; [] for cli / disconnected). */
+  installations: GitHubInstallation[];
   loading: boolean;
   ghCli: GhCliState;
   /**
@@ -55,6 +57,12 @@ export interface UseGitHubIdentity {
    */
   beginOAuth: () => Promise<{ ok: boolean; code?: string; error?: string }>;
   /**
+   * Add another installation (org/account). Opens the App install picker
+   * and resolves when the poll completes with the updated link (which now
+   * includes the new installation).
+   */
+  addInstallation: () => Promise<{ ok: boolean; code?: string; error?: string }>;
+  /**
    * Best-effort abort of an in-flight `beginOAuth`. Idempotent: safe to
    * call on cleanup paths even when no OAuth is running.
    */
@@ -64,6 +72,9 @@ export interface UseGitHubIdentity {
   disconnect: () => Promise<void>;
   onCliAuthEvent: (cb: (ev: GhAuthEvent) => void) => () => void;
   refresh: () => Promise<void>;
+  /** Re-pull the installed accounts/orgs from the server and update
+   *  state. Best-effort — no-ops when not linked via OAuth. */
+  refreshInstallations: () => Promise<void>;
 }
 
 function readEnabled(): boolean {
@@ -114,6 +125,7 @@ export function useGitHubIdentity(): UseGitHubIdentity {
   const [enabled, setEnabledState] = useState<boolean>(() => readEnabled());
   const [method, setMethodState] = useState<AuthMethod>(() => readMethod());
   const [identity, setIdentity] = useState<GitHubIdentity>(null);
+  const [installations, setInstallations] = useState<GitHubInstallation[]>([]);
   const [loading, setLoading] = useState(true);
   const [ghCli, setGhCli] = useState<GhCliState>({ kind: "probing" });
   const oauthLinkRef = useRef<GitHubLinkPayload | null>(null);
@@ -153,8 +165,10 @@ export function useGitHubIdentity(): UseGitHubIdentity {
           avatarUrl: r.link.github_avatar_url,
           connectedAt: r.link.connected_at,
         });
+        setInstallations(r.link.installations ?? []);
       } else {
         setIdentity(null);
+        setInstallations([]);
       }
     } else if (m === "cli") {
       const r = await electron().hasGhCli?.();
@@ -163,8 +177,10 @@ export function useGitHubIdentity(): UseGitHubIdentity {
       } else {
         setIdentity(null);
       }
+      setInstallations([]);
     } else {
       setIdentity(null);
+      setInstallations([]);
     }
   }, []);
 
@@ -198,8 +214,10 @@ export function useGitHubIdentity(): UseGitHubIdentity {
           avatarUrl: link.github_avatar_url,
           connectedAt: link.connected_at,
         });
+        setInstallations(link.installations ?? []);
       } else {
         setIdentity(null);
+        setInstallations([]);
       }
     });
     return () => off();
@@ -210,24 +228,40 @@ export function useGitHubIdentity(): UseGitHubIdentity {
     setEnabledState(v);
   }, []);
 
+  // Apply a completed OAuth link to local state (identity + installs).
+  // Shared by beginOAuth (connect / instant relink) and addInstallation.
+  const applyOauthLink = useCallback((link: GitHubLinkPayload) => {
+    writeMethod("oauth");
+    oauthLinkRef.current = link;
+    setMethodState("oauth");
+    setIdentity({
+      source: "oauth",
+      login: link.github_login,
+      avatarUrl: link.github_avatar_url,
+      connectedAt: link.connected_at,
+    });
+    setInstallations(link.installations ?? []);
+  }, []);
+
   const beginOAuth = useCallback(async () => {
     const r = await github.beginOAuth();
     if (r.ok) {
-      writeMethod("oauth");
-      oauthLinkRef.current = r.link;
-      setMethodState("oauth");
-      setIdentity({
-        source: "oauth",
-        login: r.link.github_login,
-        avatarUrl: r.link.github_avatar_url,
-        connectedAt: r.link.connected_at,
-      });
+      applyOauthLink(r.link);
       return { ok: true };
     }
     // Pass `code` through so callers can branch on ABORTED (user pressed
     // Cancel) vs real errors (BEGIN_FAILED, TIMEOUT, NO_TOKEN, …).
     return { ok: false, code: r.code, error: r.error };
-  }, []);
+  }, [applyOauthLink]);
+
+  const addInstallation = useCallback(async () => {
+    const r = await github.addInstallation();
+    if (r.ok) {
+      applyOauthLink(r.link);
+      return { ok: true };
+    }
+    return { ok: false, code: r.code, error: r.error };
+  }, [applyOauthLink]);
 
   const cancelOAuth = useCallback(async () => {
     try { await github.cancelOAuth(); } catch { /* best effort */ }
@@ -274,6 +308,7 @@ export function useGitHubIdentity(): UseGitHubIdentity {
     writeMethod(null);
     setMethodState(null);
     setIdentity(null);
+    setInstallations([]);
   }, []);
 
   const onCliAuthEvent = useCallback(
@@ -288,10 +323,15 @@ export function useGitHubIdentity(): UseGitHubIdentity {
     await resolve();
   }, [resolve]);
 
+  const refreshInstallations = useCallback(async () => {
+    const r = await github.listInstallations();
+    if (r.ok) setInstallations(r.installations);
+  }, []);
+
   return {
     enabled, setEnabled,
-    method, identity, loading, ghCli,
-    beginOAuth, cancelOAuth, beginCliAuth, cancelCliAuth,
-    disconnect, onCliAuthEvent, refresh,
+    method, identity, installations, loading, ghCli,
+    beginOAuth, addInstallation, cancelOAuth, beginCliAuth, cancelCliAuth,
+    disconnect, onCliAuthEvent, refresh, refreshInstallations,
   };
 }

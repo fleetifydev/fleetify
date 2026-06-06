@@ -9,8 +9,9 @@
  * we'd need to share it across two surfaces with different chrome.
  */
 import { useEffect, useRef, useState } from "react";
-import { Github, Terminal, Loader2, ExternalLink, Copy } from "lucide-react";
+import { Github, Terminal, Loader2, ExternalLink, Copy, Plus } from "lucide-react";
 import { useGitHubIdentity, type GhAuthEvent } from "@/hooks/use-github-identity";
+import type { GitHubInstallation } from "@/lib/github-link-api";
 import { ConnectionStatusPill } from "@/components/settings/shared/connection-status-pill";
 import { copyText } from "@/lib/clipboard";
 
@@ -30,6 +31,15 @@ export function GitHubIntegrationTile() {
     };
   }, []);
 
+  // Once connected via OAuth, pull the authoritative installed-orgs list
+  // from the server so the tile reflects external installs/uninstalls and
+  // links written before multi-installation support.
+  const ghSource = gh.identity?.source;
+  const ghRefreshInstallations = gh.refreshInstallations;
+  useEffect(() => {
+    if (ghSource === "oauth") void ghRefreshInstallations();
+  }, [ghSource, ghRefreshInstallations]);
+
   const pickOAuth = async () => {
     setError(null);
     setPending("oauth");
@@ -39,6 +49,24 @@ export function GitHubIntegrationTile() {
     // an error worth surfacing. Anything else (BEGIN_FAILED, TIMEOUT,
     // NO_TOKEN, BAD_BEGIN, KEYCHAIN, …) still bubbles up.
     if (!r.ok && r.code !== "ABORTED") setError(r.error ?? "OAuth failed.");
+  };
+
+  // "Add organization" — opens the App install picker (mode=install),
+  // reuses the same Waiting panel, and updates the list on completion.
+  const pickAddInstallation = async () => {
+    setError(null);
+    setPending("oauth");
+    const r = await gh.addInstallation();
+    setPending(null);
+    if (!r.ok && r.code !== "ABORTED") setError(r.error ?? "Couldn't add organization.");
+  };
+
+  const openManage = (inst: GitHubInstallation) => {
+    const url =
+      inst.account_type === "Organization"
+        ? `https://github.com/organizations/${inst.account_login}/settings/installations/${inst.installation_id}`
+        : `https://github.com/settings/installations/${inst.installation_id}`;
+    try { window.electronAPI?.openExternal?.(url); } catch { /* best effort */ }
   };
 
   const pickCli = async () => {
@@ -221,6 +249,34 @@ export function GitHubIntegrationTile() {
         </div>
       )}
 
+      {gh.enabled && gh.identity?.source === "oauth" && (
+        <div style={{ marginTop: 14 }}>
+          <div style={installHeaderRow}>
+            <span style={{ fontSize: 11, color: "var(--c-dim)", textTransform: "uppercase", letterSpacing: 0.6 }}>
+              Installed on{gh.installations.length > 0 ? ` · ${gh.installations.length}` : ""}
+            </span>
+            <button onClick={pickAddInstallation} disabled={pending !== null} style={miniBtn}>
+              <Plus size={12} /> Add organization
+            </button>
+          </div>
+          {gh.installations.length === 0 ? (
+            <div style={{ fontSize: 12, color: "var(--c-low)", marginTop: 8 }}>
+              No organizations yet. Add one to grant Fleetify access to its repos.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+              {gh.installations.map((inst) => (
+                <InstallationRow
+                  key={inst.installation_id}
+                  inst={inst}
+                  onManage={() => openManage(inst)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {gh.enabled && gh.identity && (
         <div style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "flex-end" }}>
           <button
@@ -279,6 +335,57 @@ const ghostBtn: React.CSSProperties = {
   color: "var(--c-high)", cursor: "pointer", fontSize: 12,
   fontFamily: "inherit",
 };
+const installHeaderRow: React.CSSProperties = {
+  display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+};
+const installRow: React.CSSProperties = {
+  display: "flex", alignItems: "center", gap: 9,
+  padding: "7px 10px", borderRadius: 8,
+  background: "var(--c-srf)", border: "1px solid var(--c-brd)",
+};
+const installBadge: React.CSSProperties = {
+  fontSize: 10, fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase",
+  padding: "2px 6px", borderRadius: 4,
+  background: "var(--c-srf2)", color: "var(--c-dim)", flexShrink: 0,
+};
+const manageBtn: React.CSSProperties = {
+  display: "inline-flex", alignItems: "center", justifyContent: "center",
+  width: 24, height: 24, borderRadius: 5,
+  background: "transparent", border: "1px solid var(--c-brd)",
+  color: "var(--c-low)", cursor: "pointer", flexShrink: 0,
+};
+
+// ── InstallationRow — one installed account/org ──
+function InstallationRow({
+  inst, onManage,
+}: { inst: GitHubInstallation; onManage: () => void }) {
+  const isOrg = inst.account_type === "Organization";
+  return (
+    <div style={installRow}>
+      {inst.account_avatar_url ? (
+        <img
+          src={inst.account_avatar_url}
+          alt=""
+          width={20}
+          height={20}
+          style={{ borderRadius: isOrg ? 4 : "50%", flexShrink: 0 }}
+        />
+      ) : (
+        <Github size={16} style={{ color: "var(--c-dim)", flexShrink: 0 }} />
+      )}
+      <span style={{
+        fontSize: 12.5, color: "var(--c-high)", flex: 1, minWidth: 0,
+        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+      }}>
+        {inst.account_login || "(unknown)"}
+      </span>
+      <span style={installBadge}>{isOrg ? "Org" : "Personal"}</span>
+      <button onClick={onManage} style={manageBtn} title="Manage on GitHub" aria-label="Manage on GitHub">
+        <ExternalLink size={11} />
+      </button>
+    </div>
+  );
+}
 
 // ── Switch — local copy of the Settings page Toggle, kept here so the
 //    tile doesn't have to thread the same primitive through props ──

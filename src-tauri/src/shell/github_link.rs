@@ -161,12 +161,12 @@ fn fail(code: &str, error: &str) -> Value {
 const LOG_TARGET: &str = "github-link";
 
 // ── beginOAuth ───────────────────────────────────────────────────
-pub async fn begin_oauth(app: AppHandle) -> Value {
+pub async fn begin_oauth(app: AppHandle, mode: &str) -> Value {
     let poll_interval = Duration::from_millis(2000);
     let max_duration = Duration::from_secs(5 * 60);
 
     let issuer = api_base();
-    tracing::info!(target: LOG_TARGET, %issuer, "begin_oauth: entry");
+    tracing::info!(target: LOG_TARGET, %issuer, %mode, "begin_oauth: entry");
 
     let Some(uid) = auth::get_user_id().await else {
         tracing::warn!(target: LOG_TARGET, "begin_oauth: NO_USER (auth::get_user_id() = None)");
@@ -198,7 +198,7 @@ pub async fn begin_oauth(app: AppHandle) -> Value {
     let begin: Value = match reqwest::Client::new()
         .post(&begin_url)
         .bearer_auth(&bearer)
-        .json(&json!({ "device_id": device_id }))
+        .json(&json!({ "device_id": device_id, "mode": mode }))
         .send()
         .await
     {
@@ -259,6 +259,27 @@ pub async fn begin_oauth(app: AppHandle) -> Value {
             return fail("BEGIN_FAILED", &e.to_string());
         }
     };
+
+    // Instant relink: the server already had a durable link for this
+    // Fleetify user and short-circuited — apply it and skip the browser
+    // + poll entirely (no "Waiting", no extra tab). Only the `connect`
+    // mode short-circuits; `install` always returns an authorize_url.
+    if begin.get("status").and_then(|v| v.as_str()) == Some("linked") {
+        if let Some(payload) = begin.get("payload") {
+            let mut link = payload.clone();
+            link["connected_at"] = Value::String(chrono::Utc::now().to_rfc3339());
+            if let Err(e) = write_link(&link).await {
+                tracing::error!(target: LOG_TARGET, error = %e, "begin_oauth: KEYCHAIN write failed (instant relink)");
+                return fail("KEYCHAIN", &e.to_string());
+            }
+            broadcast_link_changed(&app, Some(&link));
+            tracing::info!(
+                target: LOG_TARGET,
+                "begin_oauth: instant relink (status=linked) — skipped browser"
+            );
+            return json!({ "ok": true, "link": link });
+        }
+    }
 
     let authorize_url = begin
         .get("authorize_url")
@@ -605,26 +626,59 @@ fn parse_gh_repos(stdout: &str) -> Value {
     Value::Array(repos)
 }
 
-/// List repos accessible to the OAuth GitHub App installation, mapped to
-/// the renderer's `GhRepo` shape. Refreshes the token once on 401.
+/// Map a GitHub `/repositories` element to the renderer's `GhRepo` shape.
+fn map_gh_repo(r: &Value) -> Value {
+    json!({
+        "nameWithOwner": r.get("full_name").and_then(|v| v.as_str()).unwrap_or(""),
+        "description":   r.get("description").cloned().unwrap_or(Value::Null),
+        "url":           r.get("html_url").and_then(|v| v.as_str()).unwrap_or(""),
+        "sshUrl":        r.get("ssh_url").and_then(|v| v.as_str()).unwrap_or(""),
+        "isPrivate":     r.get("private").and_then(|v| v.as_bool()).unwrap_or(false),
+        "updatedAt":     r.get("updated_at").and_then(|v| v.as_str()).unwrap_or(""),
+    })
+}
+
+/// Installation ids the link can list repos for: every entry in
+/// `installations[]`, falling back to the legacy single `installation_id`.
+fn link_installation_ids(link: &Value) -> Vec<String> {
+    let to_id = |v: &Value| -> Option<String> {
+        v.as_i64()
+            .map(|n| n.to_string())
+            .or_else(|| v.as_str().map(String::from))
+            .filter(|s| !s.is_empty() && s != "0")
+    };
+    let mut ids: Vec<String> = link
+        .get("installations")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|i| i.get("installation_id").and_then(to_id))
+                .collect()
+        })
+        .unwrap_or_default();
+    if ids.is_empty() {
+        if let Some(single) = link.get("installation_id").and_then(to_id) {
+            ids.push(single);
+        }
+    }
+    ids
+}
+
+/// List repos across ALL of the link's installations (personal account +
+/// every org), mapped to the renderer's `GhRepo` shape, deduped by
+/// nameWithOwner and sorted newest-first. Refreshes the token once on a
+/// 401 from any installation.
 async fn oauth_list_repos(app: &AppHandle) -> Value {
     let Some(link) = get_link().await else {
         return json!({ "ok": false, "code": "NOT_CONNECTED" });
     };
-    let token = link
+    let mut token = link
         .get("access_token")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let inst = link
-        .get("installation_id")
-        .and_then(|v| {
-            v.as_i64()
-                .map(|n| n.to_string())
-                .or_else(|| v.as_str().map(String::from))
-        })
-        .unwrap_or_default();
-    if token.is_empty() || inst.is_empty() {
+    let inst_ids = link_installation_ids(&link);
+    if token.is_empty() || inst_ids.is_empty() {
         return json!({ "ok": false, "code": "NOT_CONNECTED" });
     }
 
@@ -641,60 +695,124 @@ async fn oauth_list_repos(app: &AppHandle) -> Value {
             .await
     }
 
-    let mut resp = match fetch(&token, &inst).await {
-        Ok(r) => r,
-        Err(e) => return json!({ "ok": false, "code": "ERROR", "error": e.to_string() }),
-    };
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut repos: Vec<Value> = Vec::new();
+    let mut refreshed = false;
 
-    // One refresh-and-retry on 401 (token rolled mid-session).
-    if resp.status().as_u16() == 401 {
-        let refreshed = refresh_link(app.clone()).await;
-        if refreshed.get("ok").and_then(|v| v.as_bool()) == Some(true) {
-            let new_tok = get_link()
-                .await
-                .and_then(|l| {
-                    l.get("access_token")
-                        .and_then(|v| v.as_str())
-                        .map(String::from)
-                })
-                .unwrap_or_default();
-            match fetch(&new_tok, &inst).await {
-                Ok(r) => resp = r,
-                Err(e) => return json!({ "ok": false, "code": "ERROR", "error": e.to_string() }),
+    for inst in &inst_ids {
+        // Up to two attempts: original token, then one refresh-and-retry
+        // if GitHub 401s mid-session (token rolled). A non-2xx or
+        // transport error on a single installation is skipped, not fatal —
+        // the other installations still contribute their repos.
+        for attempt in 0..2u8 {
+            let resp = match fetch(&token, inst).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::debug!(target: LOG_TARGET, inst = %inst, error = %e, "oauth_list_repos: transport error, skipping installation");
+                    break;
+                }
+            };
+            if resp.status().as_u16() == 401 && !refreshed && attempt == 0 {
+                let r = refresh_link(app.clone()).await;
+                if r.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                    token = get_link()
+                        .await
+                        .and_then(|l| {
+                            l.get("access_token")
+                                .and_then(|v| v.as_str())
+                                .map(String::from)
+                        })
+                        .unwrap_or_default();
+                    refreshed = true;
+                    continue; // retry this installation with the fresh token
+                }
+                return json!({ "ok": false, "code": "NOT_CONNECTED" });
             }
-        } else {
-            return json!({ "ok": false, "code": "NOT_CONNECTED" });
+            if !resp.status().is_success() {
+                tracing::debug!(target: LOG_TARGET, inst = %inst, status = resp.status().as_u16(), "oauth_list_repos: non-2xx, skipping installation");
+                break;
+            }
+            let body: Value = resp.json().await.unwrap_or_else(|_| json!({}));
+            if let Some(arr) = body.get("repositories").and_then(|v| v.as_array()) {
+                for r in arr {
+                    let mapped = map_gh_repo(r);
+                    let key = mapped
+                        .get("nameWithOwner")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if !key.is_empty() && seen.insert(key) {
+                        repos.push(mapped);
+                    }
+                }
+            }
+            break; // installation done
         }
     }
 
-    if !resp.status().is_success() {
-        return json!({ "ok": false, "code": "ERROR", "error": format!("github {}", resp.status()) });
-    }
-    let body: Value = resp.json().await.unwrap_or_else(|_| json!({}));
-    let mut repos: Vec<Value> = body
-        .get("repositories")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .map(|r| {
-                    json!({
-                        "nameWithOwner": r.get("full_name").and_then(|v| v.as_str()).unwrap_or(""),
-                        "description":   r.get("description").cloned().unwrap_or(Value::Null),
-                        "url":           r.get("html_url").and_then(|v| v.as_str()).unwrap_or(""),
-                        "sshUrl":        r.get("ssh_url").and_then(|v| v.as_str()).unwrap_or(""),
-                        "isPrivate":     r.get("private").and_then(|v| v.as_bool()).unwrap_or(false),
-                        "updatedAt":     r.get("updated_at").and_then(|v| v.as_str()).unwrap_or(""),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
     repos.sort_by(|a, b| {
         let av = a.get("updatedAt").and_then(|x| x.as_str()).unwrap_or("");
         let bv = b.get("updatedAt").and_then(|x| x.as_str()).unwrap_or("");
         bv.cmp(av)
     });
     json!({ "ok": true, "source": "oauth", "repos": Value::Array(repos) })
+}
+
+/// Pull the authoritative installation list from the Fleetify cloud
+/// (`/link/installations?sync=1`), update the cached keychain link's
+/// `installations` so `getLink` agrees, and return them. Best-effort:
+/// on any failure (no sign-in, transport, non-2xx) returns whatever the
+/// keychain link already carries.
+pub async fn list_installations(app: AppHandle) -> Value {
+    let cached: Vec<Value> = get_link()
+        .await
+        .and_then(|l| l.get("installations").and_then(|v| v.as_array().cloned()))
+        .unwrap_or_default();
+
+    let bearer = auth::get_access_token(false)
+        .await
+        .and_then(|v| v.get("token").and_then(|t| t.as_str()).map(String::from));
+    let Some(bearer) = bearer else {
+        return json!({ "ok": true, "installations": Value::Array(cached) });
+    };
+
+    let url = format!(
+        "{}/api/integrations/github/link/installations?sync=1",
+        api_base()
+    );
+    let fresh = match reqwest::Client::new()
+        .get(&url)
+        .bearer_auth(&bearer)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r
+            .json::<Value>()
+            .await
+            .ok()
+            .and_then(|b| b.get("installations").and_then(|v| v.as_array().cloned())),
+        Ok(r) => {
+            tracing::debug!(target: LOG_TARGET, status = r.status().as_u16(), "list_installations: non-2xx, using cached");
+            None
+        }
+        Err(e) => {
+            tracing::debug!(target: LOG_TARGET, error = %e, "list_installations: transport error, using cached");
+            None
+        }
+    };
+    let Some(fresh) = fresh else {
+        return json!({ "ok": true, "installations": Value::Array(cached) });
+    };
+
+    // Keep the keychain link's installations in sync so getLink agrees,
+    // and broadcast so any open tile re-renders.
+    if let Some(mut link) = get_link().await {
+        link["installations"] = Value::Array(fresh.clone());
+        if write_link(&link).await.is_ok() {
+            broadcast_link_changed(&app, Some(&link));
+        }
+    }
+    json!({ "ok": true, "installations": Value::Array(fresh) })
 }
 
 /// Resolve the user's repo list. gh-first (the `gh` binary also picks up

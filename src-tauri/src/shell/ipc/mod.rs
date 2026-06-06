@@ -873,8 +873,11 @@ pub async fn github_get_link() -> serde_json::Value {
 }
 
 #[tauri::command]
-pub async fn github_begin_oauth(app: tauri::AppHandle) -> serde_json::Value {
-    let r = github_link::begin_oauth(app).await;
+pub async fn github_begin_oauth(app: tauri::AppHandle, mode: Option<String>) -> serde_json::Value {
+    // "connect" (default) → link identity / instant relink.
+    // "install" → add another org/account via the install picker.
+    let mode = mode.unwrap_or_else(|| "connect".to_string());
+    let r = github_link::begin_oauth(app, &mode).await;
     // Refresh the backend clone token now that a link may exist.
     github_link::push_clone_token().await;
     r
@@ -908,6 +911,11 @@ pub async fn github_open_installation() -> serde_json::Value {
 #[tauri::command]
 pub async fn github_list_repos(app: tauri::AppHandle) -> serde_json::Value {
     github_link::list_repos(app).await
+}
+
+#[tauri::command]
+pub async fn github_list_installations(app: tauri::AppHandle) -> serde_json::Value {
+    github_link::list_installations(app).await
 }
 
 // ── .git/HEAD watcher (renderer branch strip) ────────────────────

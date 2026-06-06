@@ -331,7 +331,10 @@ document.addEventListener("mousedown", function (e) {
       // the original `electron/github-link.cjs` surface.
       github: {
         getLink:          function () { return invoke("github_get_link"); },
-        beginOAuth:       function () { return invoke("github_begin_oauth"); },
+        beginOAuth:       function (mode) { return invoke("github_begin_oauth", { mode: mode || "connect" }); },
+        // Add another installation (org/account) — always opens the App
+        // install picker, even when already linked.
+        addInstallation:  function () { return invoke("github_begin_oauth", { mode: "install" }); },
         // Best-effort abort of the in-flight beginOAuth for this Fleetify
         // user. Resolves the awaiting beginOAuth promise with
         // { ok: false, code: "ABORTED" } so the Connect button re-enables
@@ -344,6 +347,9 @@ document.addEventListener("mousedown", function (e) {
         // Resolve the user's repo list: gh-first, OAuth fallback, else
         // { ok:false, code:"NOT_CONNECTED" }. Used by the Git source tab.
         listRepos:        function () { return invoke("github_list_repos"); },
+        // Server-synced list of installed accounts/orgs for the
+        // Integrations UI. Best-effort: falls back to the cached link.
+        listInstallations: function () { return invoke("github_list_installations"); },
         onLinkChanged: function (cb) {
           var unsub = null;
           Promise.resolve(window.__TAURI__.event.listen("github-link-changed", function (e) {
