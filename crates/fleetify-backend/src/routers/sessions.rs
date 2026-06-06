@@ -120,6 +120,7 @@ async fn create_session(
 ) -> Result<Json<Session>, ApiError> {
     let raw = data.project_path.trim().to_string();
     let is_staff = data.title.trim() == "Staff Agent";
+    let is_studio = crate::studio::registry::find_studio_tool(&data.tool).is_some();
 
     // Staff session is unique per user. Returning the existing row keeps
     // the renderer's lazy "create on first send" path idempotent across
@@ -167,10 +168,13 @@ async fn create_session(
             )));
         }
         data.project_path = resolved.to_string_lossy().to_string();
-    } else if is_staff {
+    } else if is_staff || is_studio {
         data.project_path = dirs_home();
     } else {
         return Err(ApiError::BadRequest("project_path is required".into()));
+    }
+    if is_studio {
+        data.use_worktree = false;
     }
     let s = st
         .sm

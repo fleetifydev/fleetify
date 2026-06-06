@@ -51,7 +51,8 @@ pub fn app(state: AppState, static_dir: Option<PathBuf>) -> Router {
         .merge(auth_router::router())
         .merge(fleet::router())
         .merge(workspace::router())
-        .merge(prompt::router());
+        .merge(prompt::router())
+        .merge(crate::studio::router());
 
     // Loopback-gated internal endpoints (no JWT auth — the
     // X-Fleet-Internal header is the only authenticator). Kept off

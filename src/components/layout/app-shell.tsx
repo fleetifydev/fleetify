@@ -6,6 +6,9 @@ import { RightPanelWrapper } from "./right-panel-wrapper";
 import { NewAgentView } from "@/components/agent/new-agent-dialog";
 import { FirstLaunchTour } from "@/components/onboarding/first-launch-tour";
 import { WindowsTitleBar } from "./windows-title-bar";
+import { StudioHub } from "@/components/studio/StudioHub";
+import { StudioSession } from "@/components/studio/StudioSession";
+import { isStudioTool } from "@/lib/studio-tools";
 // MarketplacePage and WorkflowsPage are lazy-loaded — they're
 // rarely the first surface a user lands on (chat is), and pulling
 // them out of the initial bundle measurably speeds up cold start.
@@ -78,7 +81,7 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
   const {
     setSessions, updateSession, staffSessionId, setStaffSessionId,
     sidebarCollapsed, sessions, setActiveSession,
-    rightPanelOpen, toggleRightPanel, _removedIds, pruneRemovedIds, mainView,
+    rightPanelOpen, toggleRightPanel, _removedIds, pruneRemovedIds, mainView, appMode, activeSessionId,
   } = useAppStore();
 
   // ── Reveal once data is ready ──
@@ -329,6 +332,10 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
   // content) is revealed together once the data is ready; no slide-in.
   const sidebarWidth = !sidebarCollapsed ? leftWidth : 0;
 
+  const activeStudio = appMode === "studio" && activeSessionId
+    ? sessions.find(s => s.id === activeSessionId && isStudioTool(s.tool))
+    : undefined;
+
   return (
     <div style={{
       display: "flex",
@@ -425,7 +432,9 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
         opacity: introReveal && !dataReady ? 0 : 1,
         transition: "none",
       }}>
-        {mainView === "marketplace" ? (
+        {appMode === "studio" ? (
+          activeStudio ? <StudioSession sessionId={activeStudio.id} /> : <StudioHub />
+        ) : mainView === "marketplace" ? (
           <Suspense fallback={<div style={{ flex: 1, background: "var(--card)" }} />}>
             <MarketplacePage />
           </Suspense>
@@ -444,6 +453,7 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
           the two flank the chat as a symmetrical pair: rounded
           corners, 1px border, 8px bottom margin. Collapsed state
           drops the chrome to zero so the chat reclaims the width. */}
+      {appMode !== "studio" && (
       <div style={{
         width: rightPanelOpen ? rightWidth : 0,
         flexShrink: 0,
@@ -486,6 +496,7 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
           onClose={toggleRightPanel}
         />
       </div>
+      )}
 
       {/* New Agent modal — rendered as overlay, not replacing content */}
       {showNewAgent && <NewAgentView onClose={() => setShowNewAgent(false)} />}

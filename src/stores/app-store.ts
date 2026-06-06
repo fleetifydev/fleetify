@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { Session } from "@/types/session";
 import { wsManager } from "@/services/ws-manager";
 import { useChatStore, typeOutAssistantMessage } from "@/stores/chat-store";
+import { isStudioTool } from "@/lib/studio-tools";
 
 /** Sentinel chat-store key used for compose-time messages (welcome
  *  typewriter, "pick a folder" warnings, etc.). The composer doesn't
@@ -66,6 +67,11 @@ export type WorkspaceView =
   // incrementally. Will be removed once each panel is rebuilt.
   | "editor";
 export type MainView = "fleet" | "workflows" | "marketplace";
+
+/** Top-level app mode. "workspace" is the existing agent/chat experience;
+ *  "studio" is the media-generation surface (Higgsfield, etc.). Persisted to
+ *  localStorage so the choice survives restarts. */
+export type AppMode = "workspace" | "studio";
 
 /** Composer state — a NOT-YET-PERSISTED setup screen for a new session.
  *  Lives entirely in renderer state, OUTSIDE `sessions[]` (it isn't a
@@ -208,6 +214,7 @@ interface AppState {
    *  pinned (FileView shows an empty state). */
   openFilePath: string | null;
   mainView: MainView;
+  appMode: AppMode;
   newAgentDialogOpen: boolean;
   fleetAutoMode: boolean;
   _removedIds: Set<string>;
@@ -262,6 +269,7 @@ interface AppState {
   openFile: (path: string) => void;
   setRightPanelTab: (tab: RightPanelTab) => void;
   setMainView: (view: MainView) => void;
+  setAppMode: (mode: AppMode) => void;
   setNewAgentDialogOpen: (open: boolean) => void;
   /** Open the compose surface — pure client-side, no DB write, no
    *  Session entry in `sessions[]`. Sets `composer.open = true` and
@@ -360,6 +368,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   openWorkspaceViews: [],
   openFilePath: null,
   mainView: "fleet",
+  appMode: localStorage.getItem("fleet:appMode") === "studio" ? "studio" : "workspace",
   newAgentDialogOpen: false,
   fleetAutoMode: localStorage.getItem("fleet:autoMode") === "true",
   composer: {
@@ -770,6 +779,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       rightPanelOpen: view === "fleet" ? state.rightPanelOpen : false,
       composer: { ...state.composer, open: false },
     }));
+  },
+  setAppMode: (mode) => {
+    try { localStorage.setItem("fleet:appMode", mode); } catch { /* noop */ }
+    set((s) => {
+      const cur = s.sessions.find(x => x.id === s.activeSessionId);
+      const mismatch = !!cur && (mode === "studio") !== isStudioTool(cur.tool);
+      return mismatch ? { appMode: mode, activeSessionId: null } : { appMode: mode };
+    });
   },
   setNewAgentDialogOpen: (open) => set({ newAgentDialogOpen: open }),
   // ── Composer state (new) ──

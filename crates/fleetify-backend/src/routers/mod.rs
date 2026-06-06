@@ -87,6 +87,7 @@ impl FromRef<AppState> for AuthState {
 }
 
 /// Router error → HTTP, mirroring the Python `HTTPException` codes.
+#[derive(Debug)]
 pub enum ApiError {
     NotFound(String),
     Forbidden(String),

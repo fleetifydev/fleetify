@@ -15,6 +15,7 @@ pub mod providers;
 pub mod routers;
 pub mod services;
 pub mod session_manager;
+pub mod studio;
 #[cfg(test)]
 pub mod test_support;
 

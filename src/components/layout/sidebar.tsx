@@ -6,16 +6,17 @@ import {
   Pin, PinOff, Type, GitFork, Archive,
   SlidersHorizontal, X, Check,
   User, Sun, Square, RotateCcw, RefreshCw, PanelLeft, PanelLeftClose,
-  Download,
+  Download, Sparkles,
 } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { useThemeStore } from "@/stores/theme-store";
 import { useChatStore } from "@/stores/chat-store";
 import { useShallow } from "zustand/react/shallow";
-import { forkSession, fetchBulkStats, stopSession, restartSession, resetSession, archiveSession } from "@/lib/api";
+import { forkSession, fetchBulkStats, stopSession, restartSession, resetSession, archiveSession, createSession } from "@/lib/api";
 import { exportChat } from "@/lib/export-chat";
 import { isWindowsPlatform, folderName } from "@/lib/utils";
+import { isStudioTool } from "@/lib/studio-tools";
 import type { Session } from "@/types/session";
 import { FeedbackModal } from "@/components/feedback-modal";
 
@@ -779,6 +780,8 @@ export function Sidebar() {
   const setMainView = useAppStore(s => s.setMainView);
   const toggleSidebar = useAppStore(s => s.toggleSidebar);
   const splitPaneIds = useAppStore(s => s.splitPaneIds);
+  const appMode = useAppStore(s => s.appMode);
+  const setAppMode = useAppStore(s => s.setAppMode);
   // Sessions that were spawned by a routine — filtered out of the
   // sidebar so background routine work doesn't pollute the user's
   // agent list. Re-reads on every routine-runtime notify (run added,
@@ -858,6 +861,14 @@ export function Sidebar() {
     window.dispatchEvent(new Event("fleet:new-agent"));
   }, []);
 
+  const handleNewStudio = useCallback(async () => {
+    try {
+      const s = await createSession({ title: "Generation", project_path: "", tool: "higgsfield", permission_mode: "default", use_worktree: false });
+      addSession(s);
+      setActiveSession(s.id);
+    } catch (e) { console.error("new studio session failed", e); }
+  }, [addSession, setActiveSession]);
+
   const handlePin = useCallback(async (session: Session) => {
     const p = !session.pinned;
     await fetch(`/api/sessions/${session.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pinned: p }) });
@@ -912,6 +923,7 @@ export function Sidebar() {
     s.id !== staffSessionId
     && !s.local_only
     && !spawnedSet.has(s.id)
+    && !isStudioTool(s.tool)
   );
   const filtered  = searchVal ? allAgents.filter(s => s.title.toLowerCase().includes(searchVal.toLowerCase())) : allAgents;
   const sorted = [...filtered].sort((a, b) => {
@@ -1110,6 +1122,36 @@ export function Sidebar() {
             onto the same surface a selected session uses, so mode and
             session selection feel like the same primitive. */}
 
+        {/* ── Workspace / Studio mode toggle ──
+            Top-level surface switch. Workspace = agent/chat experience;
+            Studio = media-generation surface. */}
+        <div style={{ display: "flex", gap: 4, padding: "0 3px 6px" }}>
+          {(["workspace", "studio"] as const).map((m) => {
+            const active = appMode === m;
+            return (
+              <button
+                key={m}
+                onClick={() => setAppMode(m)}
+                style={{
+                  flex: 1, padding: "4px 0", fontSize: 11.5,
+                  fontWeight: active ? 600 : 500,
+                  borderRadius: 5,
+                  border: `1px solid ${active ? "var(--c-brd)" : "transparent"}`,
+                  background: active ? "var(--c-srf2)" : "transparent",
+                  color: active ? "var(--c-high)" : "var(--c-med)",
+                  cursor: "pointer", transition: "none",
+                }}
+                onMouseEnter={(e) => { if (!active) e.currentTarget.style.color = "var(--c-high)"; }}
+                onMouseLeave={(e) => { if (!active) e.currentTarget.style.color = "var(--c-med)"; }}
+              >
+                {m === "workspace" ? "Workspace" : "Studio"}
+              </button>
+            );
+          })}
+        </div>
+
+        {appMode === "workspace" && (
+          <>
         {/* Action — visually slightly emphasized via icon color, not
             a different shape, so it sits in the same column as the others. */}
         <SideRow
@@ -1235,6 +1277,17 @@ export function Sidebar() {
               </>
             )}
         </div>
+          </>
+        )}
+        {appMode === "studio" && (
+          <>
+            <SideRow icon={<Plus size={13} strokeWidth={2.2} />} label="New generation" onClick={() => void handleNewStudio()} />
+            <div style={{ height: 6 }} />
+            {sessions.filter(s => isStudioTool(s.tool) && !s.local_only && !s.archived_at).map(s => (
+              <SideRow key={s.id} icon={<Sparkles size={13} />} label={s.title || "Generation"} active={activeSessionId === s.id} onClick={() => setActiveSession(s.id)} />
+            ))}
+          </>
+        )}
         </div>
       </ReactLenis>
 
