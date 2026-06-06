@@ -80,10 +80,10 @@ interface GitAPI {
   preflightCheck(folder: string): Promise<PreflightResult>;
   applyPreflightFix(folder: string, action: PreflightAction, data?: PreflightIssue["data"]): Promise<ApplyPreflightFixResult>;
   createPR(folder: string, opts: { title: string; body?: string; base?: string; draft?: boolean; featureBranch?: string; tool?: string; method?: "gh" | "cli" | "oauth" | "link" }): Promise<CreatePRResult>;
-  getPRStatus(folder: string, prNumber?: number | null): Promise<PRStatusResult>;
+  getPRStatus(folder: string, prNumber?: number | null, authMethod?: string, authStored?: string): Promise<PRStatusResult>;
   /** Bulk PR snapshot for the branch picker — one `gh pr list` call
    *  drives the per-branch PR badges instead of N `gh pr view`s. */
-  listPRs?(folder: string, limit?: number): Promise<{
+  listPRs?(folder: string, limit?: number, authMethod?: string, authStored?: string): Promise<{
     ok: boolean;
     prs?: Array<{
       number: number;
@@ -94,15 +94,29 @@ interface GitAPI {
     }>;
     error?: string;
   }>;
-  mergePR(folder: string, prNumber: number | null, method: "squash" | "merge" | "rebase"): Promise<MergeResult>;
+  mergePR(folder: string, prNumber: number | null, method: "squash" | "merge" | "rebase", authMethod?: string, authStored?: string): Promise<MergeResult>;
   /** `gh pr ready <number>` — converts a draft PR to "ready for
    *  review". Used by the Merge button so one click un-drafts +
    *  squash-merges in sequence. */
-  markPRReady?(folder: string, prNumber: number): Promise<{ ok: boolean; error?: string }>;
+  markPRReady?(folder: string, prNumber: number, authMethod?: string, authStored?: string): Promise<{ ok: boolean; error?: string }>;
   openPR(folder: string): Promise<{ ok: boolean; error?: string }>;
   syncMain(folder: string, baseBranch?: string): Promise<SyncMainResult>;
   carveNextRound(folder: string, branch: string, baseBranch?: string): Promise<CarveNextRoundResult>;
   setBaseBranch?(folder: string, branch: string): Promise<{ ok: boolean; base?: string; error?: string }>;
+}
+
+/** The user's chosen GitHub auth method, persisted by onboarding / the
+ *  auth-choice dialog under localStorage["fleet:github-auth-method"].
+ *  "skip"/absent → undefined (let the backend probe). Forwarded to the PR
+ *  IPCs so list/status/ready/merge use the SAME backend (OAuth-REST or gh)
+ *  the user signed in with — see git_host::resolve_auth_method. */
+function storedAuthMethod(): "oauth" | "cli" | undefined {
+  try {
+    const v = localStorage.getItem("fleet:github-auth-method");
+    return v === "oauth" || v === "cli" ? v : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 const FAIL = (error: string) => ({ ok: false as const, error });
@@ -172,13 +186,13 @@ export const git = {
   applyPreflightFix: (folder: string, action: PreflightAction, data?: PreflightIssue["data"]) =>
                        api().applyPreflightFix(folder, action, data),
   createPR:       (folder: string, opts: { title: string; body?: string; base?: string; draft?: boolean; featureBranch?: string; tool?: string; method?: "gh" | "cli" | "oauth" | "link" }) => api().createPR(folder, opts),
-  prStatus:       (folder: string, prNumber?: number | null) => api().getPRStatus(folder, prNumber),
+  prStatus:       (folder: string, prNumber?: number | null) => api().getPRStatus(folder, prNumber, undefined, storedAuthMethod()),
   prList:         (folder: string, limit?: number) =>
-                    api().listPRs?.(folder, limit) ?? Promise.resolve({ ok: false, error: "electron unavailable" }),
+                    api().listPRs?.(folder, limit, undefined, storedAuthMethod()) ?? Promise.resolve({ ok: false, error: "electron unavailable" }),
   mergePR:        (folder: string, prNumber: number | null, method: "squash" | "merge" | "rebase" = "squash") =>
-                    api().mergePR(folder, prNumber, method),
+                    api().mergePR(folder, prNumber, method, undefined, storedAuthMethod()),
   markPRReady:    (folder: string, prNumber: number) =>
-                    api().markPRReady?.(folder, prNumber)
+                    api().markPRReady?.(folder, prNumber, undefined, storedAuthMethod())
                     ?? Promise.resolve({ ok: false, error: "electron unavailable" }),
   openPR:         (folder: string) => api().openPR(folder),
   /** Post-merge cleanup: switch the source repo to `baseBranch`

@@ -198,6 +198,16 @@ pub async fn has_git() -> Value {
 ///
 /// Returns `None` when gh isn't found anywhere we know to look — callers
 /// surface a friendly install hint instead of spawning a 127 exit.
+/// True when the gh CLI is installed AND authenticated. Used by the host
+/// router (`git_host`) to decide whether the gh backend is usable.
+pub async fn gh_is_ready(folder: &Path) -> bool {
+    if resolve_gh().is_none() {
+        return false;
+    }
+    let (rc, _, _) = run("gh", &["auth", "status"], folder, Duration::from_secs(5)).await;
+    rc == 0
+}
+
 pub fn resolve_gh() -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
 
@@ -845,7 +855,19 @@ async fn ensure_repo_for_link(
         )
         .await;
         if let Some(fb) = feature_branch {
-            let baseline_msg = with_fleetify_trailer("Fleetify baseline");
+            // Baseline on main carries ONLY the .gitignore so the PR diff is the
+            // real work, not gitignore noise. The feature branch (carved next)
+            // captures everything else; the dirty-commit step below writes a
+            // conventional AI message. Parity with create_pr_via_gh. The
+            // `--allow-empty` covers a repo with no .gitignore to stage.
+            let _ = run(
+                "git",
+                &["add", ".gitignore"],
+                folder,
+                Duration::from_secs(10),
+            )
+            .await;
+            let baseline_msg = with_fleetify_trailer("chore: initialize repository");
             let (rc, _, err) = run(
                 "git",
                 &["commit", "--allow-empty", "-m", &baseline_msg],
@@ -872,29 +894,26 @@ async fn ensure_repo_for_link(
                     "error": err.trim()
                 }));
             }
-            let _ = run("git", &["add", "-A"], folder, Duration::from_secs(120)).await;
-            let init_msg = with_fleetify_trailer("Initial commit");
-            let (rc, _, err) = run(
+            // Work files stay UNCOMMITTED on the feature branch → committed with
+            // a conventional AI message by the dirty-commit step below (no more
+            // static "Initial commit" / `--allow-empty` churn).
+        } else {
+            // No feature branch: stage the .gitignore as a chore baseline on the
+            // current (main) branch; the dirty-commit step commits the rest with
+            // a conventional message.
+            let _ = run(
                 "git",
-                &["commit", "--allow-empty", "-m", &init_msg],
+                &["add", ".gitignore"],
                 folder,
-                Duration::from_secs(60),
+                Duration::from_secs(10),
             )
             .await;
-            if rc != 0 {
-                return Some(json!({
-                    "ok": false, "code": "INITIAL_COMMIT_FAILED",
-                    "error": err.trim()
-                }));
-            }
-        } else {
-            let _ = run("git", &["add", "-A"], folder, Duration::from_secs(120)).await;
-            let init_msg = with_fleetify_trailer("Initial commit");
+            let baseline_msg = with_fleetify_trailer("chore: initialize repository");
             let (rc, _, err) = run(
                 "git",
-                &["commit", "--allow-empty", "-m", &init_msg],
+                &["commit", "--allow-empty", "-m", &baseline_msg],
                 folder,
-                Duration::from_secs(60),
+                Duration::from_secs(30),
             )
             .await;
             if rc != 0 {
@@ -2146,7 +2165,7 @@ pub async fn preflight_check(folder: &Path) -> Value {
     json!({ "ok": issues.is_empty(), "issues": issues })
 }
 
-async fn current_branch_str(folder: &Path) -> Option<String> {
+pub(crate) async fn current_branch_str(folder: &Path) -> Option<String> {
     let (rc, out, _) = git(&["rev-parse", "--abbrev-ref", "HEAD"], folder).await;
     let v = out.trim().to_string();
     if rc != 0 || v.is_empty() || v == "HEAD" {
@@ -2279,6 +2298,48 @@ mod tests {
         assert_eq!(
             current_branch_str(tmp.path()).await.as_deref(),
             Some("fleet/x-y")
+        );
+    }
+
+    #[tokio::test]
+    async fn link_bootstrap_puts_gitignore_on_main_as_chore() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        // Skip if an ancestor repo would mask our fresh-init state.
+        if fleetify_backend::services::worktree::is_git_repo(&tmp.path().to_string_lossy()).await {
+            return;
+        }
+        let res = ensure_repo_for_link(
+            tmp.path(),
+            "My Feature",
+            Some("main"),
+            Some("fleet/x-ab12"),
+            None,
+        )
+        .await;
+        assert!(res.is_none(), "bootstrap should succeed: {res:?}");
+        // .gitignore is committed on MAIN with a conventional `chore:` subject.
+        let (_, subj, _) = git(
+            &["log", "main", "-1", "--format=%s", "--", ".gitignore"],
+            tmp.path(),
+        )
+        .await;
+        assert!(
+            subj.to_lowercase().contains("chore"),
+            "gitignore commit on main must be conventional: {subj:?}"
+        );
+        // .gitignore lives on main's tree (not only the feature branch).
+        let (_, tree_main, _) = git(&["ls-tree", "--name-only", "main"], tmp.path()).await;
+        assert!(
+            tree_main.contains(".gitignore"),
+            ".gitignore must be on main: {tree_main:?}"
+        );
+        // The session ended on the carved feature branch.
+        assert_eq!(
+            current_branch_str(tmp.path()).await.as_deref(),
+            Some("fleet/x-ab12")
         );
     }
 

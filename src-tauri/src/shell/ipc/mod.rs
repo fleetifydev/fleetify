@@ -577,23 +577,54 @@ pub async fn git_create_pr(
     )
     .await
 }
+// PR list/status/ready/merge route through `git_host`, which picks the gh or
+// REST backend from the user's auth method. `auth_method` is the renderer's
+// explicit choice ("gh"|"oauth"); `auth_stored` is the remembered choice. Both
+// optional — absent → probe-based routing (OAuth link over gh). Renderer wires
+// them in Plan B; existing callers keep working as None.
 #[tauri::command]
-pub async fn git_get_pr_status(folder: String, pr_number: Option<u64>) -> serde_json::Value {
-    git::get_pr_status(&PathBuf::from(folder), pr_number).await
+pub async fn git_get_pr_status(
+    folder: String,
+    pr_number: Option<u64>,
+    auth_method: Option<String>,
+    auth_stored: Option<String>,
+) -> serde_json::Value {
+    crate::shell::git_host::host_get_pr_status(
+        &PathBuf::from(folder),
+        auth_method.as_deref(),
+        auth_stored.as_deref(),
+        pr_number,
+    )
+    .await
 }
 
 #[tauri::command]
-pub async fn git_list_prs(folder: String, limit: Option<u32>) -> serde_json::Value {
-    git::list_prs(&PathBuf::from(folder), limit.unwrap_or(50)).await
+pub async fn git_list_prs(
+    folder: String,
+    limit: Option<u32>,
+    auth_method: Option<String>,
+    auth_stored: Option<String>,
+) -> serde_json::Value {
+    crate::shell::git_host::host_list_prs(
+        &PathBuf::from(folder),
+        auth_method.as_deref(),
+        auth_stored.as_deref(),
+        limit.unwrap_or(50),
+    )
+    .await
 }
 #[tauri::command]
 pub async fn git_merge_pr(
     folder: String,
     pr_number: u64,
     method: Option<String>,
+    auth_method: Option<String>,
+    auth_stored: Option<String>,
 ) -> serde_json::Value {
-    git::merge_pr(
+    crate::shell::git_host::host_merge_pr(
         &PathBuf::from(folder),
+        auth_method.as_deref(),
+        auth_stored.as_deref(),
         pr_number,
         method.as_deref().unwrap_or("merge"),
     )
@@ -601,8 +632,19 @@ pub async fn git_merge_pr(
 }
 
 #[tauri::command]
-pub async fn git_pr_ready(folder: String, pr_number: u64) -> serde_json::Value {
-    git::pr_ready(&PathBuf::from(folder), pr_number).await
+pub async fn git_pr_ready(
+    folder: String,
+    pr_number: u64,
+    auth_method: Option<String>,
+    auth_stored: Option<String>,
+) -> serde_json::Value {
+    crate::shell::git_host::host_pr_ready(
+        &PathBuf::from(folder),
+        auth_method.as_deref(),
+        auth_stored.as_deref(),
+        pr_number,
+    )
+    .await
 }
 #[tauri::command]
 pub async fn git_sync_main(folder: String, base_branch: String) -> serde_json::Value {

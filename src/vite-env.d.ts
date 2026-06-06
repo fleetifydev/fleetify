@@ -303,7 +303,7 @@ interface Window {
     /** `gh pr list --json number,state,headRefName,...` — drives the
      *  per-branch PR badge in BranchPickerMenu without paying for one
      *  `gh pr view` per row. */
-    listPRs: (folder: string, limit?: number | null) => Promise<{
+    listPRs: (folder: string, limit?: number | null, authMethod?: string | null, authStored?: string | null) => Promise<{
       ok: boolean;
       prs?: Array<{
         number: number;

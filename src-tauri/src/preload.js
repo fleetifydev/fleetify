@@ -431,29 +431,37 @@ document.addEventListener("mousedown", function (e) {
           method: o.method || null,
         });
       },
-      getPRStatus: function (folder, prNumber) {
+      getPRStatus: function (folder, prNumber, authMethod, authStored) {
         return invoke("git_get_pr_status", {
           folder: String(folder || ""),
           prNumber: prNumber == null ? null : Number(prNumber),
+          authMethod: authMethod || null,
+          authStored: authStored || null,
         });
       },
-      listPRs: function (folder, limit) {
+      listPRs: function (folder, limit, authMethod, authStored) {
         return invoke("git_list_prs", {
           folder: String(folder || ""),
           limit: limit == null ? null : Number(limit),
+          authMethod: authMethod || null,
+          authStored: authStored || null,
         });
       },
-      mergePR: function (folder, prNumber, method) {
+      mergePR: function (folder, prNumber, method, authMethod, authStored) {
         return invoke("git_merge_pr", {
           folder: String(folder || ""),
           prNumber: Number(prNumber),
           method: method || "merge",
+          authMethod: authMethod || null,
+          authStored: authStored || null,
         });
       },
-      markPRReady: function (folder, prNumber) {
+      markPRReady: function (folder, prNumber, authMethod, authStored) {
         return invoke("git_pr_ready", {
           folder: String(folder || ""),
           prNumber: Number(prNumber),
+          authMethod: authMethod || null,
+          authStored: authStored || null,
         });
       },
       syncMain: function (folder, baseBranch) {

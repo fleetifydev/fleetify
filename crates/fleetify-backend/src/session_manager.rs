@@ -180,68 +180,48 @@ impl SessionManager {
             return;
         }
         use crate::services::worktree;
-        // Strict "does THIS folder own a .git?" — see worktree::has_own_git.
-        // We deliberately avoid `is_git_repo` here because that returns
-        // true for folders nested inside ancestor repos (e.g. a fresh
-        // subfolder under `$HOME` when `$HOME` is its own repo). The
-        // user picked THIS folder as their workspace; if it doesn't
-        // have its own .git, treat it as a fresh repo regardless of
-        // whatever ancestor lives further up the tree.
-        let folder_owns_git = worktree::has_own_git(&session.project_path);
-        if !folder_owns_git && !session.use_worktree {
-            tracing::info!(
-                session_id=%session.id,
-                project=%session.project_path,
-                "session.git_setup.deferred (no .git, worktree off — will materialise at Create PR)"
-            );
-            return;
-        }
         let label = if session.title.trim().is_empty() {
             "session".to_string()
         } else {
             session.title.clone()
         };
-        if session.use_worktree {
-            match worktree::ensure_worktree(&session.project_path, &session.id, Some(&label), None)
-                .await
-            {
-                Ok((path, branch)) => {
-                    let _ = sqlx::query(
-                        "UPDATE sessions SET worktree_path = ?, worktree_branch = ? \
-                         WHERE id = ?",
-                    )
-                    .bind(&path)
-                    .bind(&branch)
-                    .bind(&session.id)
-                    .execute(pool)
-                    .await;
-                    tracing::info!(session_id=%session.id, %path, %branch,
-                        "session.worktree.attached");
-                }
-                Err(e) => tracing::info!(session_id=%session.id, reason=%e.0,
-                    "session.git_setup.skipped"),
-            }
-        } else {
-            match worktree::ensure_session_branch(
-                &session.project_path,
-                &session.id,
-                Some(&label),
-                None,
-            )
+        // Worktree OFF: record the planned branch NAME only — never carve a real
+        // branch at session-create (spec §5.1 C3). Works in every git state (no
+        // .git, git + main, already on a branch, …); the Create-PR dispatcher
+        // materialises git + carves `worktree_branch` when the user opens a PR.
+        // The name is deterministic from (label, session id), so the displayed
+        // name always matches what Create PR will carve.
+        if !session.use_worktree {
+            let branch = worktree::compute_branch_name(Some(&label), &session.id);
+            let _ = sqlx::query("UPDATE sessions SET worktree_branch = ? WHERE id = ?")
+                .bind(&branch)
+                .bind(&session.id)
+                .execute(pool)
+                .await;
+            tracing::info!(session_id=%session.id, %branch,
+                "session.branch.name_recorded (no carve)");
+            return;
+        }
+        // Worktree ON: eager init + carve so multi-session work in the same
+        // folder is parallel from the first send. The user explicitly opted in.
+        match worktree::ensure_worktree(&session.project_path, &session.id, Some(&label), None)
             .await
-            {
-                Ok(branch) => {
-                    let _ = sqlx::query("UPDATE sessions SET worktree_branch = ? WHERE id = ?")
-                        .bind(&branch)
-                        .bind(&session.id)
-                        .execute(pool)
-                        .await;
-                    tracing::info!(session_id=%session.id, %branch,
-                        "session.branch.attached");
-                }
-                Err(e) => tracing::info!(session_id=%session.id, reason=%e.0,
-                    "session.git_setup.skipped"),
+        {
+            Ok((path, branch)) => {
+                let _ = sqlx::query(
+                    "UPDATE sessions SET worktree_path = ?, worktree_branch = ? \
+                     WHERE id = ?",
+                )
+                .bind(&path)
+                .bind(&branch)
+                .bind(&session.id)
+                .execute(pool)
+                .await;
+                tracing::info!(session_id=%session.id, %path, %branch,
+                    "session.worktree.attached");
             }
+            Err(e) => tracing::info!(session_id=%session.id, reason=%e.0,
+                "session.git_setup.skipped"),
         }
     }
 
