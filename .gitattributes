@@ -1,0 +1,9 @@
+# SQLx embeds these migrations at compile time (`sqlx::migrate!`) and records a
+# checksum of each file's raw bytes in the `_sqlx_migrations` table. On Windows,
+# `core.autocrlf=true` smudges LF blobs to CRLF on checkout, so a DB that
+# recorded an LF checksum (e.g. a migration first applied straight after being
+# authored) refuses to boot once the file is re-checked-out as CRLF:
+#   "migration N was previously applied but has been modified".
+# Pin migration SQL to LF so the on-disk bytes — and therefore the checksum —
+# are stable across platforms and checkouts.
+crates/fleetify-backend/migrations/*.sql text eol=lf
