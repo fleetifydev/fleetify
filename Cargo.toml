@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   "crates/dispatch-mcp",
+  "crates/fleet-wipe",
   "crates/fleetify-core",
   "crates/fleetify-backend",
   "crates/memory-mcp",

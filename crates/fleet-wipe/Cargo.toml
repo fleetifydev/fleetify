@@ -1,0 +1,19 @@
+[package]
+name = "fleet-wipe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Linux: the app stores credentials in the KERNEL keyring (keyring crate's
+# linux-keyutils backend), NOT the Secret Service — so `secret-tool` can't see
+# them. We enumerate the kernel keyring directly and invalidate Fleetify keys.
+[target.'cfg(target_os = "linux")'.dependencies]
+linux-keyutils = "0.2"
+
+# macOS (Keychain) / Windows (Credential Manager): delete the fixed login
+# entry via the same `keyring` crate the app uses, as a belt-and-suspenders to
+# wipe.mjs's `security` / `cmdkey` enumeration. Feature set mirrors src-tauri
+# so the backend resolves identically.
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }

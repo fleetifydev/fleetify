@@ -1151,6 +1151,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fleet-wipe"
+version = "0.1.0"
+dependencies = [
+ "keyring",
+ "linux-keyutils",
+]
+
+[[package]]
 name = "fleetify-app"
 version = "0.1.0"
 dependencies = [

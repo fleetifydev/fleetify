@@ -6,17 +6,26 @@
  *   1. `~/.fleetify/`              — backend SQLite, telemetry outbox,
  *                                    device.json, plugin_state.json,
  *                                    installed plugins.
- *   2. Tauri config dir            — `<appdata>/com.fleetify.app/`
- *                                    holds `fleet.config.json`.
- *   3. WebView2 user data          — `<localappdata>/com.fleetify.app/`
- *                                    holds the WebView's localStorage,
- *                                    IndexedDB, cookies, cache.
- *   4. OS keychain entries         — every entry whose service name
- *                                    starts with `Fleetify` — covers
- *                                    `Fleetify` (OIDC refresh token),
- *                                    `Fleetify-GitHub` (PAT/OAuth),
- *                                    and `Fleetify-Provider-<id>`
- *                                    (each API provider's saved key).
+ *   2. App config + webview data   — `fleet.config.json` PLUS the webview's
+ *                                    localStorage / IndexedDB / cookies. These
+ *                                    sit in different dirs per OS:
+ *                                      win:   %APPDATA%/com.fleetify.app +
+ *                                             %LOCALAPPDATA%/com.fleetify.app
+ *                                      mac:   ~/Library/Application Support +
+ *                                             ~/Library/WebKit +
+ *                                             ~/Library/HTTP Storages (+ caches)
+ *                                      linux: ~/.local/share/com.fleetify.app
+ *                                             (the WebKitGTK *data* dir — NOT
+ *                                             ~/.cache, which is just cache).
+ *   3. OS credential store         — every entry whose service is `Fleetify`
+ *                                    or `Fleetify-*` (OIDC refresh token,
+ *                                    `Fleetify-GitHub`, `Fleetify-Provider-<id>`,
+ *                                    `Fleetify-Router-<id>`). Backend differs by
+ *                                    OS: macOS Keychain (`security`), Windows
+ *                                    Credential Manager (`cmdkey`), and on Linux
+ *                                    the KERNEL keyring (linux-keyutils) cleared
+ *                                    via the `fleet-wipe` helper — secret-tool
+ *                                    targets the Secret Service, the wrong store.
  *
  * Idempotent: missing paths are skipped silently. Logs every action so
  * you can audit what was touched.
@@ -65,20 +74,49 @@ if (plat === "win32") {
     },
   );
 } else if (plat === "darwin") {
+  // macOS (WKWebView). Application Support holds fleet.config.json, but the
+  // webview's cookies / localStorage / IndexedDB live under ~/Library/WebKit
+  // and ~/Library/HTTP Storages — NOT in ~/Library/Caches. Clearing only the
+  // cache left the session (and cookies) intact, so the app stayed signed in.
   targets.push(
     {
-      label: "Tauri config",
+      label: "Tauri config + data",
       path: path.join(home, "Library", "Application Support", "com.fleetify.app"),
+    },
+    {
+      label: "WebKit website data",
+      path: path.join(home, "Library", "WebKit", "com.fleetify.app"),
+    },
+    {
+      label: "HTTP storages (cookies)",
+      path: path.join(home, "Library", "HTTP Storages", "com.fleetify.app"),
     },
     {
       label: "WebView (WebKit) cache",
       path: path.join(home, "Library", "Caches", "com.fleetify.app"),
     },
+    {
+      label: "Saved app state",
+      path: path.join(home, "Library", "Saved Application State", "com.fleetify.app.savedState"),
+    },
+    {
+      label: "Preferences plist",
+      path: path.join(home, "Library", "Preferences", "com.fleetify.app.plist"),
+    },
   );
 } else {
+  // Linux (WebKitGTK). The webview's PERSISTENT state — localStorage, cookies,
+  // IndexedDB, HSTS — AND the app's own fleet.config.json live in the XDG
+  // *data* dir (~/.local/share/<id>), NOT the cache dir. The old script only
+  // cleared ~/.config + ~/.cache (usually absent), so the real data survived
+  // and the app reopened on the previous account. Clear the data dir first.
   targets.push(
     {
-      label: "Tauri config",
+      label: "WebView + app data",
+      path: path.join(home, ".local", "share", "com.fleetify.app"),
+    },
+    {
+      label: "Tauri config (legacy)",
       path: path.join(home, ".config", "com.fleetify.app"),
     },
     {
@@ -196,6 +234,32 @@ function wipeKeychainLinux() {
   }
 }
 
+// Linux kernel keyring (linux-keyutils) — the store the app's `keyring` crate
+// ACTUALLY uses on Linux (verified: `/proc/keys` holds
+// `keyring-rs:refresh_token@Fleetify`). secret-tool / the Secret Service never
+// see these keys, which is why a wipe left the user signed in. We shell out to
+// the `fleet-wipe` Rust helper — it links the same backend the app does and
+// invalidates every `keyring-rs:*@Fleetify*` key (the OIDC refresh token plus
+// provider / github / router keys).
+function wipeKeychainLinuxKernel() {
+  const run = spawnSync("cargo", ["run", "-q", "-p", "fleet-wipe"], { encoding: "utf8" });
+  if (run.error) {
+    console.log("  ✗ keychain (kernel)      FAILED     could not run fleet-wipe via cargo");
+    console.log(`    ${run.error.message}`);
+    console.log("    The OIDC refresh token may persist — install Rust/cargo, then re-run `npm run wipe`.");
+    return;
+  }
+  for (const line of (run.stdout || "").split(/\r?\n/)) {
+    if (line.trim()) console.log(`    ${line.trimEnd()}`);
+  }
+  if (run.status === 0) {
+    console.log("  ✓ keychain (kernel)      cleared    via fleet-wipe (linux-keyutils)");
+  } else {
+    console.log("  ✗ keychain (kernel)      FAILED     fleet-wipe exited", run.status);
+    if (run.stderr) console.log(`    ${run.stderr.trim()}`);
+  }
+}
+
 // ── Main ───────────────────────────────────────────────────────────
 console.log("Fleetify wipe — clearing every persisted piece of state.\n");
 
@@ -205,10 +269,17 @@ for (const t of targets) {
 
 if (KEEP_KEYCHAIN) {
   console.log("  · keychain               skip       --keep-keychain passed");
+} else if (plat === "win32") {
+  wipeKeychainWindows();
+} else if (plat === "darwin") {
+  wipeKeychainMac();
 } else {
-  if (plat === "win32") wipeKeychainWindows();
-  else if (plat === "darwin") wipeKeychainMac();
-  else wipeKeychainLinux();
+  // Linux: the app's keyring backend is the KERNEL keyring (linux-keyutils),
+  // which secret-tool can't reach — clear it via the fleet-wipe helper. Still
+  // run secret-tool too (harmless) in case an older build wrote to the Secret
+  // Service.
+  wipeKeychainLinuxKernel();
+  wipeKeychainLinux();
 }
 
 console.log("\nDone. Launch the app again to start from scratch.");
