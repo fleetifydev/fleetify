@@ -1365,13 +1365,32 @@ async fn check_ollama(base_url: Option<&str>) -> Value {
     json!({ "running": true, "models": models, "base_url": base })
 }
 
+/// Build a `{installed, authenticated, path}` value for a CLI agent the
+/// legacy `/providers/scan` shape didn't originally carry (OpenCode, Cursor,
+/// GitHub Copilot, Hermes). `path` is resolved by the caller — the
+/// shell-installer agents land off a GUI process's PATH, so they come in via
+/// their bridge's `resolve_*_bin` rather than a bare lookup. Auth reuses the
+/// catalog's `auth_indicators` (via `indicators_authenticated`) so the
+/// onboarding probe agrees exactly with the Settings → Agents scan.
+fn cli_agent_scan(id: &str, path: Option<String>) -> Value {
+    let Some(p) = path else {
+        return json!({ "installed": false, "authenticated": false, "path": null });
+    };
+    let authed = crate::providers::list_cli_agents()
+        .into_iter()
+        .find(|s| s.id == id)
+        .map(|spec| indicators_authenticated(&home(), spec.auth_indicators))
+        .unwrap_or(false);
+    json!({ "installed": true, "authenticated": authed, "path": p })
+}
+
 async fn scan_providers() -> Json<Value> {
     // The legacy scan endpoint doesn't have access to ProvidersConfig
     // (it lives in the Tauri shell's fleet.config.json, not the
     // backend's AppState), so we fall back to the localhost default
     // here. The new `providers_ollama_probe` IPC honours the user's
     // configured URL for the Settings surface.
-    let (claude, gemini, codex, kimi, agy, agy_sdk, ollama) = tokio::join!(
+    let (claude, gemini, codex, kimi, agy, agy_sdk, ollama, opencode_path) = tokio::join!(
         check_claude_cli(),
         check_gemini_cli(),
         check_codex_cli(),
@@ -1379,7 +1398,19 @@ async fn scan_providers() -> Json<Value> {
         check_agy_cli(),
         check_antigravity_sdk_cli(),
         check_ollama(None),
+        cli_path("opencode"),
     );
+    // OpenCode / Cursor / GitHub Copilot / Hermes — previously probe-less in
+    // onboarding ("Set up in Settings"). Resolve through the same bridge
+    // helpers dispatch + the Settings scan use so off-PATH installs are
+    // detected and the Install button's completion poll agrees with reality.
+    let opencode = cli_agent_scan("opencode", opencode_path);
+    let cursor = cli_agent_scan("cursor", crate::bridges::cursor::resolve_cursor_bin());
+    let github_copilot = cli_agent_scan(
+        "github-copilot",
+        crate::bridges::github_copilot::resolve_copilot_bin(),
+    );
+    let hermes = cli_agent_scan("hermes", crate::bridges::hermes::resolve_hermes_bin());
     Json(json!({
         "claude_cli": claude,
         "gemini_cli": gemini,
@@ -1387,6 +1418,10 @@ async fn scan_providers() -> Json<Value> {
         "kimi_cli": kimi,
         "agy_cli": agy,
         "antigravity_sdk": agy_sdk,
+        "opencode_cli": opencode,
+        "cursor_cli": cursor,
+        "github_copilot_cli": github_copilot,
+        "hermes_cli": hermes,
         "ollama": ollama,
         "env_keys": {
             "anthropic": std::env::var("ANTHROPIC_API_KEY").is_ok(),
@@ -1643,6 +1678,52 @@ mod tests {
         for spec in crate::providers::list_cli_agents() {
             assert!(snapshot.contains_key(spec.id), "missing {}", spec.id);
         }
+    }
+
+    #[test]
+    fn cli_agent_scan_reports_not_installed_without_path() {
+        let v = cli_agent_scan("opencode", None);
+        assert_eq!(v["installed"], serde_json::json!(false));
+        assert_eq!(v["authenticated"], serde_json::json!(false));
+        assert!(v["path"].is_null());
+    }
+
+    #[test]
+    fn cli_agent_scan_marks_installed_with_path() {
+        let v = cli_agent_scan("opencode", Some("/usr/bin/opencode".to_string()));
+        assert_eq!(v["installed"], serde_json::json!(true));
+        assert_eq!(v["path"], serde_json::json!("/usr/bin/opencode"));
+        // `authenticated` depends on the host's opencode auth file / env var,
+        // so assert the shape (a bool), not a fixed value.
+        assert!(v["authenticated"].is_boolean());
+    }
+
+    #[tokio::test]
+    async fn scan_providers_exposes_new_cli_buckets() {
+        let Json(v) = scan_providers().await;
+        // The four CLI agents that were probe-less in onboarding now carry a
+        // {installed, authenticated} bucket so the picker can show an Install
+        // button + completion state instead of "Set up in Settings".
+        for key in [
+            "opencode_cli",
+            "cursor_cli",
+            "github_copilot_cli",
+            "hermes_cli",
+        ] {
+            let bucket = v.get(key).unwrap_or_else(|| panic!("missing bucket {key}"));
+            assert!(
+                bucket.get("installed").is_some_and(|b| b.is_boolean()),
+                "{key}.installed must be a bool"
+            );
+            assert!(
+                bucket.get("authenticated").is_some_and(|b| b.is_boolean()),
+                "{key}.authenticated must be a bool"
+            );
+        }
+        // Legacy buckets remain intact.
+        assert!(v.get("claude_cli").is_some());
+        assert!(v.get("ollama").is_some());
+        assert!(v.get("env_keys").is_some());
     }
 
     #[tokio::test]

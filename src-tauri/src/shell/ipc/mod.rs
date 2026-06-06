@@ -1309,7 +1309,34 @@ const NPM_PROVIDER_PKG: &[(&str, &str)] = &[
     ("codex", "@openai/codex"),
     ("gemini", "@google/gemini-cli"),
     ("kimi", "@moonshot-ai/kimi-code"),
+    // OpenCode and GitHub Copilot both ship cross-platform npm packages —
+    // `npm install -g` is the documented all-OS install for each.
+    ("opencode", "opencode-ai"),
+    ("github-copilot", "@github/copilot"),
 ];
+
+/// Map a spawned shell-installer's `Output` into the renderer's
+/// `{success, ...}` envelope. Shared by the script-based CLI installers
+/// (Cursor, Hermes) that ship outside npm.
+fn shell_installer_result(
+    res: std::io::Result<std::process::Output>,
+    label: &str,
+) -> serde_json::Value {
+    match res {
+        Ok(o) if o.status.success() => serde_json::json!({
+            "success": true,
+            "out": String::from_utf8_lossy(&o.stdout).trim().to_string()
+        }),
+        Ok(o) => serde_json::json!({
+            "success": false,
+            "error": String::from_utf8_lossy(&o.stderr).trim().to_string()
+        }),
+        Err(e) => serde_json::json!({
+            "success": false,
+            "error": format!("{label} installer spawn failed: {e}")
+        }),
+    }
+}
 
 #[tauri::command]
 pub async fn shell_install_provider(tool_key: String) -> serde_json::Value {
@@ -1401,6 +1428,56 @@ pub async fn shell_install_provider(tool_key: String) -> serde_json::Value {
                 "error": format!("antigravity installer spawn failed: {e}")
             }),
         };
+    }
+    // Cursor CLI ships a shell installer (no npm). Windows runs the
+    // PowerShell one-liner with the win32 flag; macOS/Linux run the
+    // curl|bash script. Commands mirror the catalog's cursor `install_hints`
+    // so the Install button and the Settings-displayed command agree.
+    if tool_key == "cursor" {
+        let res = if cfg!(windows) {
+            tokio::process::Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    "irm 'https://cursor.com/install?win32=true' | iex",
+                ])
+                .output()
+                .await
+        } else {
+            tokio::process::Command::new("sh")
+                .args(["-c", "curl https://cursor.com/install -fsS | bash"])
+                .output()
+                .await
+        };
+        return shell_installer_result(res, "cursor");
+    }
+    // Hermes Agent installs via the official scripts at
+    // hermes-agent.nousresearch.com (irm|iex on Windows, curl|bash on
+    // Unix). Mirrors the catalog's hermes `install_hints`.
+    if tool_key == "hermes" {
+        let res = if cfg!(windows) {
+            tokio::process::Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    "iex (irm https://hermes-agent.nousresearch.com/install.ps1)",
+                ])
+                .output()
+                .await
+        } else {
+            tokio::process::Command::new("sh")
+                .args([
+                    "-c",
+                    "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
+                ])
+                .output()
+                .await
+        };
+        return shell_installer_result(res, "hermes");
     }
     let pkg = NPM_PROVIDER_PKG
         .iter()

@@ -991,12 +991,6 @@ const GITHUB_COPILOT_MODELS: &[ModelSpec] = &[
     },
 ];
 
-const GITHUB_COPILOT_INSTALL_HINTS: InstallHints = InstallHints {
-    windows: "winget install GitHub.Copilot",
-    macos: "brew install copilot-cli",
-    linux: "curl -fsSL https://gh.io/copilot-install | bash",
-};
-
 // OpenRouter aggregates hundreds of models behind one OpenAI-compatible
 // endpoint. This curated set is only a FALLBACK — shown in Settings → Models
 // and in the picker before the live discovery (`GET /api/v1/models`, surfaced
@@ -1583,8 +1577,12 @@ pub static CATALOG: &[ProviderSpec] = &[
         extras: ProviderExtras::DEFAULT,
         bin: "copilot",
         auth_indicators: GITHUB_COPILOT_INDICATORS,
+        // `@github/copilot` ships on npm and installs the same way on every
+        // OS — the cross-platform `npm install -g` is what the onboarding /
+        // Settings Install button runs (see shell_install_provider), so we
+        // leave `install_hints` None and let the single hint apply everywhere.
         install_hint: "npm install -g @github/copilot",
-        install_hints: Some(GITHUB_COPILOT_INSTALL_HINTS),
+        install_hints: None,
         login_hint: "copilot login",
     },
     // Cursor — driven over ACP (`cursor-agent acp`). Models are sourced live
@@ -1624,11 +1622,15 @@ pub static CATALOG: &[ProviderSpec] = &[
         extras: ProviderExtras::DEFAULT,
         bin: "hermes",
         auth_indicators: HERMES_CLI_INDICATORS,
-        install_hint: "pip install \"hermes-agent[acp]\"",
+        // Official installers per hermes-agent.nousresearch.com/docs (the
+        // short branded URLs redirect to the current scripts). `curl|bash`
+        // on Unix, `irm|iex` on Windows — same per-OS shape the Install
+        // button runs in shell_install_provider.
+        install_hint: "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
         install_hints: Some(InstallHints {
-            windows: "iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)",
-            macos: "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash",
-            linux: "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash",
+            windows: "iex (irm https://hermes-agent.nousresearch.com/install.ps1)",
+            macos: "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
+            linux: "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
         }),
         login_hint: "hermes model",
     },

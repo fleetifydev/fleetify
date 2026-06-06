@@ -198,12 +198,28 @@ describe("OnboardingChat install IPC", () => {
     expect(onboardingSrc).toMatch(/providersApi[\s\n]*\.[\s\n]*setConnectedBulk\(/);
   });
 
-  it("shows a 'Set up in Settings' hint for probe-less CLI agents", () => {
-    // opencode / cursor / github-copilot have no scanKey; resolveProvider
-    // and getInstallInfo must point the user to Settings rather than show
-    // a bare "Manual setup" / empty label.
-    expect(onboardingSrc).toMatch(/detail:\s*"Set up in Settings"/);
-    expect(onboardingSrc).toMatch(/p\.kind\s*===\s*"cli"[\s\S]{0,120}label:\s*"Set up in Settings"/);
+  it("gives OpenCode / Cursor / GitHub Copilot / Hermes an install+detect scanKey", () => {
+    // These four used to be probe-less ("Set up in Settings"). They now carry
+    // a scanKey, so getInstallInfo / resolveProvider report Installed / Not
+    // installed and the row renders an Install button (handleInstall →
+    // installProvider) that runs the OS-appropriate installer and polls the
+    // scan until the binary lands — same flow as the other CLI agents.
+    const block = onboardingSrc.match(/const PROVIDERS:\s*ProviderDef\[\]\s*=\s*\[([\s\S]*?)\];/);
+    expect(block).not.toBeNull();
+    const rows = block![1].split(/},\s*/);
+    const scanKeyById = new Map<string, string | null>();
+    for (const row of rows) {
+      const idMatch = row.match(/id:\s*"([^"]+)"/);
+      if (!idMatch) continue;
+      const skMatch = row.match(/scanKey:\s*"([^"]+)"/);
+      scanKeyById.set(idMatch[1], skMatch ? skMatch[1] : null);
+    }
+    expect(scanKeyById.get("opencode")).toBe("opencode_cli");
+    expect(scanKeyById.get("cursor")).toBe("cursor_cli");
+    expect(scanKeyById.get("github-copilot")).toBe("github_copilot_cli");
+    expect(scanKeyById.get("hermes")).toBe("hermes_cli");
+    // The Install / Sign-in buttons are wired only when a row has a scanKey.
+    expect(onboardingSrc).toMatch(/onInstall=\{!frozen && p\.scanKey \? \(\) => handleInstall\(p\)/);
   });
 
   it("fleet step persists an explicit (provider, model) via setDefault", () => {

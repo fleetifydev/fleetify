@@ -280,6 +280,14 @@ export interface ProviderScan {
    *  rolls them into the same `installed`/`authenticated` pair the other
    *  CLI agents report so the Settings → Agents card renders identically. */
   antigravity_sdk: { installed: boolean; authenticated: boolean; path: string | null };
+  // CLI agents installed via npm (`opencode-ai`, `@github/copilot`) or a shell
+  // script (Cursor, Hermes). Detected so onboarding shows Installed / Not
+  // installed + an Install button instead of "Set up in Settings". Cursor /
+  // Copilot / Hermes resolve off-PATH via their backend bridge helpers.
+  opencode_cli:       { installed: boolean; authenticated: boolean; path: string | null };
+  cursor_cli:         { installed: boolean; authenticated: boolean; path: string | null };
+  github_copilot_cli: { installed: boolean; authenticated: boolean; path: string | null };
+  hermes_cli:         { installed: boolean; authenticated: boolean; path: string | null };
   ollama: { running: boolean; models: string[] };
   env_keys: { anthropic: boolean; openai: boolean; gemini: boolean; groq: boolean };
 }
