@@ -348,6 +348,7 @@ pub async fn serve_with_routing_setup(
         internal_secret: internal_secret.clone(),
         routing,
         permission_registry: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        ask_registry: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         agent_scan_cache: routers::providers::AgentScanCache::default(),
         http_health_cache: routers::providers::HttpHealthCache::default(),
     };

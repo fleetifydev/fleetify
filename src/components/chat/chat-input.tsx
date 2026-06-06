@@ -5,7 +5,7 @@ import {
   FolderOpen, Mic, X, FileText,
   Plus, Loader2, Copy,
   CornerDownLeft,
-  GitMerge, AlertCircle, CheckCircle2, Circle,
+  GitMerge,
   CircleSlash,
   ExternalLink,
   AlignLeft,
@@ -461,7 +461,7 @@ function ContextArcPopover({
                 label="Output"
                 value={outputTotal}
                 fill={outputTotal / sessionMax}
-                color="#4ade80"
+                color="rgb(64,180,120)"
               />
               <CompactUsageRow
                 label="Cache"
@@ -1274,7 +1274,7 @@ function fleetModeMeta(mode: FleetMode): { label: string; color: string; hint: s
     case "manual":      return { label: "Manual",      color: "var(--c-dim)",            hint: "Fleet off" };
     case "refine-only": return { label: "Refine only", color: "rgba(148,163,184,0.95)",  hint: "rewrite on send" };
     case "copilot":     return { label: "Co-pilot",    color: "rgba(96,165,250,0.95)",   hint: "refine + decision card" };
-    case "auto":        return { label: "Auto",        color: "rgba(74,222,128,0.95)",   hint: "refine + auto-continue" };
+    case "auto":        return { label: "Auto",        color: "rgba(64,180,120,0.95)",   hint: "refine + auto-continue" };
   }
 }
 
@@ -2786,7 +2786,6 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
               <PillTrigger onClick={() => setBranchMenuMode("working")}>
                 <BranchPill text={ctxR.branch} tone="med" />
               </PillTrigger>
-              {pr && <PRStateBadge pr={pr} />}
             </>
           )}
           {branchMenuMode && folder && (
@@ -2832,9 +2831,13 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
           <span
             title="This session runs in an isolated git worktree under .fleetify-worktrees/"
             style={{
+              // Slightly smaller than the action buttons — informational
+              // chip, so it sits a tick more recessed than Open / Merge.
+              height: 23, padding: "0 8px",
               display: "inline-flex", alignItems: "center", gap: 4,
-              padding: "1px 7px", borderRadius: 5,
+              borderRadius: 6,
               background: "rgba(var(--fg-rgb), 0.05)",
+              border: "1px solid var(--c-brd)",
               color: "var(--c-low)",
               fontSize: 10.5,
               fontWeight: 500,
@@ -2854,15 +2857,17 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
             fall back to ctxR for the property reads. */}
         {hasDiff && (!pr || pr.state === "OPEN") && (
           <span style={{
+            height: 23, padding: "0 8px",
             display: "inline-flex", alignItems: "center", gap: 5,
-            padding: "1px 6px", borderRadius: 5,
-            background: "rgba(var(--fg-rgb), 0.06)",
-            fontFamily: "var(--font-mono)", fontSize: 11,
+            borderRadius: 6,
+            background: "rgba(var(--fg-rgb), 0.05)",
+            border: "1px solid var(--c-brd)",
+            fontFamily: "var(--font-mono)", fontSize: 10.5,
             flexShrink: 0,
             fontVariantNumeric: "tabular-nums",
           }}>
-            <span style={{ color: "#4ade80" }}>+{ctxR.plus}</span>
-            <span style={{ color: "#f87171" }}>−{ctxR.minus}</span>
+            <span style={{ color: "rgb(64,180,120)" }}>+{ctxR.plus}</span>
+            <span style={{ color: "rgb(216,110,118)" }}>−{ctxR.minus}</span>
           </span>
         )}
 
@@ -2873,28 +2878,29 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
             title={`Review with ${tool || "agent"}`}
             aria-label="Review changes"
             style={{
-              padding: "3px 9px",
-              background: "transparent",
-              border: "1px solid transparent",
+              // A tick smaller than Open / Merge — a secondary affordance.
+              height: 23, padding: "0 9px",
+              background: "rgba(var(--fg-rgb),0.05)",
+              border: "1px solid var(--c-brd)",
               borderRadius: 6,
               color: "var(--c-med)",
               cursor: "pointer",
-              fontSize: 12, fontWeight: 500,
+              fontSize: 11, fontWeight: 500,
               fontFamily: "inherit",
               display: "inline-flex", alignItems: "center", gap: 5,
               flexShrink: 0,
-              transition: "color 0.1s, background 0.1s",
+              transition: "color 0.12s, background 0.12s",
             }}
             onMouseEnter={e => {
               e.currentTarget.style.color = "var(--c-high)";
-              e.currentTarget.style.background = "rgba(var(--fg-rgb), 0.05)";
+              e.currentTarget.style.background = "rgba(var(--fg-rgb), 0.09)";
             }}
             onMouseLeave={e => {
               e.currentTarget.style.color = "var(--c-med)";
-              e.currentTarget.style.background = "transparent";
+              e.currentTarget.style.background = "rgba(var(--fg-rgb),0.05)";
             }}
           >
-            <ScanEye size={11} strokeWidth={1.85} />
+            <ScanEye size={10} strokeWidth={1.85} />
             Review
           </button>
         )}
@@ -3032,20 +3038,21 @@ function ActionBtn({
       disabled={disabled}
       title={title}
       style={{
-        padding: "4px 10px", borderRadius: 5, flexShrink: 0,
-        background: primary ? "#f5f5f5" : "rgba(255,255,255,0.07)",
-        border: primary ? "none" : "1px solid rgba(255,255,255,0.12)",
-        color: primary ? "#0a0a0a" : "#f0f0f0",
+        // Equal sizing with the Review button — one consistent pill scale.
+        height: 26, padding: "0 11px", borderRadius: 6, flexShrink: 0,
+        // Monochrome + harmonious. Primary (Merge / Sync) is the SAME pill
+        // family as Open / Review — just a touch more filled + brighter
+        // text so it reads as the lead action by WEIGHT, not by colour (no
+        // green "go" stamp, no bright-white stamp).
+        background: primary ? "rgba(var(--fg-rgb),0.10)" : "rgba(var(--fg-rgb),0.05)",
+        border: "1px solid var(--c-brd)",
+        color: primary ? "var(--c-high)" : "var(--c-med)",
         cursor: disabled ? "default" : "pointer",
         fontSize: 11.5, fontWeight: primary ? 600 : 500,
-        transition: "background 0.12s, opacity 0.12s",
-        opacity: disabled ? 0.6 : 1,
+        transition: "background 0.12s, color 0.12s, opacity 0.12s",
+        opacity: disabled ? 0.5 : 1,
         display: "inline-flex", alignItems: "center", gap: 5,
         fontFamily: "inherit",
-        // Kill the browser's default focus ring (the yellow/orange
-        // halo the user complained about — Electron's default focus
-        // outline lingered on the button after click). The hover
-        // background is the affordance now.
         outline: "none",
       }}
       // Suppress focus ring on click but keep keyboard a11y by only
@@ -3053,63 +3060,16 @@ function ActionBtn({
       onMouseDown={e => e.preventDefault()}
       onMouseEnter={e => {
         if (disabled) return;
-        if (primary) e.currentTarget.style.opacity = "0.82";
-        else e.currentTarget.style.background = "rgba(255,255,255,0.13)";
+        e.currentTarget.style.background = primary ? "rgba(var(--fg-rgb),0.15)" : "rgba(var(--fg-rgb),0.09)";
+        if (!primary) e.currentTarget.style.color = "var(--c-high)";
       }}
       onMouseLeave={e => {
-        if (primary) e.currentTarget.style.opacity = "1";
-        else e.currentTarget.style.background = "rgba(255,255,255,0.07)";
+        e.currentTarget.style.background = primary ? "rgba(var(--fg-rgb),0.10)" : "rgba(var(--fg-rgb),0.05)";
+        if (!primary) e.currentTarget.style.color = "var(--c-med)";
       }}
     >
       {children}
     </button>
-  );
-}
-
-/** Tiny PR state pill that sits inline next to the branch name when a
- *  PR exists. Communicates checks/conflicts/draft status at a glance. */
-function PRStateBadge({ pr }: { pr: PRStatus }) {
-  let icon: React.ReactNode = null;
-  let label = "";
-  let color = "var(--c-low)";
-  let bg = "rgba(var(--fg-rgb),0.05)";
-
-  if (pr.state === "MERGED") {
-    icon = <Check size={10} />; label = "merged"; color = "#a78bfa";
-    bg = "rgba(167,139,250,0.10)";
-  } else if (pr.state === "CLOSED") {
-    icon = <X size={10} />; label = "closed"; color = "#f87171";
-    bg = "rgba(248,113,113,0.10)";
-  } else if (pr.isDraft) {
-    icon = <Circle size={10} />; label = "draft";
-  } else if (pr.checks.failing > 0) {
-    icon = <AlertCircle size={10} />; label = `${pr.checks.failing} failing`;
-    color = "#f87171"; bg = "rgba(248,113,113,0.10)";
-  } else if (pr.checks.pending > 0) {
-    icon = <Loader2 size={10} style={{ animation: "spin 1.4s linear infinite" }} />;
-    label = `${pr.checks.pending} pending`;
-    color = "#fbbf24"; bg = "rgba(251,191,36,0.10)";
-  } else if (pr.mergeable === "CONFLICTING") {
-    icon = <AlertCircle size={10} />; label = "conflicts";
-    color = "#fb923c"; bg = "rgba(251,146,60,0.10)";
-  } else if (pr.checks.passing > 0) {
-    icon = <CheckCircle2 size={10} />; label = `${pr.checks.passing} passing`;
-    color = "#4ade80"; bg = "rgba(74,222,128,0.10)";
-  } else {
-    icon = <CheckCircle2 size={10} />; label = "ready";
-    color = "#4ade80"; bg = "rgba(74,222,128,0.10)";
-  }
-
-  return (
-    <span style={{
-      display: "inline-flex", alignItems: "center", gap: 4,
-      padding: "2px 6px", borderRadius: 4,
-      background: bg, color,
-      fontSize: 10.5, fontWeight: 500,
-      flexShrink: 0,
-    }}>
-      {icon} {label}
-    </span>
   );
 }
 
@@ -3120,7 +3080,7 @@ function prIconColor(pr: PRStatus | null): string {
   if (pr.checks.failing > 0) return "#f87171";
   if (pr.mergeable === "CONFLICTING") return "#fb923c";
   if (pr.checks.pending > 0) return "#fbbf24";
-  return "#4ade80";
+  return "rgb(64,180,120)";
 }
 
 /* ─────────────────── main component ─────────────────── */

@@ -34,6 +34,9 @@ pub struct Session {
     pub compact_summary: Option<String>,
     pub compact_at: Option<String>,
     pub compacted_message_count: Option<i64>,
+    /// Which provider/agent account this session uses. NULL ⇒ the synthetic
+    /// System account (real HOME for CLI / legacy keychain key for HTTP).
+    pub account_id: Option<String>,
 }
 
 /// POST /api/sessions body. Defaults mirror `SessionCreate` in Python.
@@ -60,6 +63,8 @@ pub struct SessionCreate {
     pub use_worktree: bool,
     #[serde(default)]
     pub agent_template: Option<String>,
+    #[serde(default)]
+    pub account_id: Option<String>,
 }
 
 /// PATCH /api/sessions/{id} body. All optional (partial update).
@@ -79,6 +84,7 @@ pub struct SessionUpdate {
     pub tool: Option<String>,
     pub claude_session_id: Option<String>,
     pub use_worktree: Option<bool>,
+    pub account_id: Option<String>,
 }
 
 /// `groups` row. Mirrors `Group` in Python.

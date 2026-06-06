@@ -126,6 +126,18 @@ pub fn resolve_builtin_path(basename: &str) -> String {
     basename.to_string()
 }
 
+/// True only when the builtin MCP binary actually resolves to a real
+/// file (next to the running exe or on PATH) — i.e. `resolve_builtin_path`
+/// found it rather than returning the bare-name fallback. Callers that
+/// MUST have the server running (e.g. `--permission-prompt-tool`, which
+/// hard-fails the whole turn when its tool is missing) gate on this so a
+/// dev build that hasn't compiled the sidecar binaries degrades gracefully
+/// instead of erroring out every turn.
+pub fn builtin_resolves(basename: &str) -> bool {
+    let resolved = resolve_builtin_path(basename);
+    resolved != basename && std::path::Path::new(&resolved).exists()
+}
+
 /// One-shot migration: strip any `"builtin": true` rows from a
 /// pre-existing `~/.fleetify/mcp_servers.json`. Older builds
 /// auto-seeded the 3 Fleet MCPs into the user registry, which

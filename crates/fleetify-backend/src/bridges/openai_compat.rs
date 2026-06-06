@@ -49,12 +49,13 @@ impl OpenAICompatBridge {
         spec: &'static crate::providers::ProviderSpec,
         session_id: impl Into<String>,
         model: impl Into<String>,
+        account_id: Option<&str>,
     ) -> Self {
         let env_hint = match spec.auth {
             crate::providers::AuthSpec::Bearer { env_hint } => env_hint,
             _ => None,
         };
-        let api_key = crate::providers::keys::get_key(spec.id)
+        let api_key = crate::providers::keys::get_key_for(spec.id, account_id)
             .or_else(|| env_hint.and_then(|n| std::env::var(n).ok()));
         Self {
             provider_id: spec.id,

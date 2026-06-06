@@ -180,7 +180,7 @@ export function OllamaConfigCard({
   return (
     <div
       style={{
-        border: `1px solid ${health.kind === "running" ? "rgba(74,222,128,0.30)" : "var(--c-brd)"}`,
+        border: `1px solid ${health.kind === "running" ? "rgba(64,180,120,0.30)" : "var(--c-brd)"}`,
         borderRadius: 10,
         marginBottom: 10,
         overflow: "hidden",

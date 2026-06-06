@@ -19,18 +19,19 @@ import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { ModelPickerChecklist, useEffectiveModels } from "./model-picker-checklist";
 import { ConnectionStatusPill } from "@/components/settings/shared/connection-status-pill";
 import { Toggle } from "@/components/settings/general/_primitives";
+import { AccountsManager } from "@/components/settings/shared/accounts-manager";
+import "@/components/settings/settings-ui.css";
 import type { ProviderHealth } from "@/hooks/use-provider-health";
 
 const inputStyle: React.CSSProperties = {
   width: "100%",
   boxSizing: "border-box",
-  background: "var(--c-srf)",
+  background: "var(--card, #0c0c0c)",
   border: "1px solid var(--c-brd)",
-  borderRadius: 7,
-  padding: "7px 32px 7px 10px",
+  borderRadius: 8,
+  padding: "7px 32px 7px 11px",
   fontSize: 12.5,
   color: "var(--c-high)",
-  fontFamily: "var(--font-mono, ui-monospace, monospace)",
   outline: "none",
   transition: "border-color 0.12s",
 };
@@ -40,12 +41,12 @@ const ghostBtn: React.CSSProperties = {
   cursor: "pointer",
   outline: "none",
   padding: "6px 12px",
-  borderRadius: 7,
+  borderRadius: 8,
   fontSize: 12,
   fontWeight: 500,
-  background: "transparent",
+  background: "var(--c-srf)",
   border: "1px solid var(--c-brd)",
-  color: "var(--c-high)",
+  color: "var(--c-med)",
 };
 
 const primaryBtn: React.CSSProperties = {
@@ -53,7 +54,7 @@ const primaryBtn: React.CSSProperties = {
   cursor: "pointer",
   outline: "none",
   padding: "6px 14px",
-  borderRadius: 7,
+  borderRadius: 8,
   fontSize: 12,
   fontWeight: 600,
   background: "var(--c-high)",
@@ -62,23 +63,7 @@ const primaryBtn: React.CSSProperties = {
 };
 
 function DefaultBadge() {
-  return (
-    <span
-      style={{
-        fontSize: 9.5,
-        fontWeight: 700,
-        letterSpacing: "0.08em",
-        textTransform: "uppercase",
-        padding: "2px 6px",
-        borderRadius: 4,
-        background: "rgba(74,222,128,0.16)",
-        color: "rgb(74,222,128)",
-        border: "1px solid rgba(74,222,128,0.30)",
-      }}
-    >
-      Default
-    </span>
-  );
+  return <span className="s-tag">Default</span>;
 }
 
 const dangerBtn: React.CSSProperties = {
@@ -446,6 +431,11 @@ export function ProviderCard({
               Falls back to <code>{tile.spec.auth.env_hint}</code> env var when no key is saved.
             </div>
           )}
+
+          {/* ── Multiple accounts: labeled API keys beyond the System key above.
+               The key row above manages the System (default) account; add more
+               here to switch keys per session. ── */}
+          <AccountsManager providerId={tile.spec.id} kind="http" onChanged={onHealthChange} />
         </div>
       )}
     </div>

@@ -27,40 +27,15 @@ export function ConnectionStatusPill({
   status: ConnectionStatus;
   label?: string;
 }) {
-  const palette: Record<
-    ConnectionStatus,
-    { fg: string; bg: string; dot: string; text: string }
-  > = {
-    activated: {
-      fg: "rgb(74,222,128)",
-      bg: "rgba(74,222,128,0.15)",
-      dot: "rgb(74,222,128)",
-      text: label ?? "Activated",
-    },
-    connected: {
-      fg: "rgb(74,222,128)",
-      bg: "rgba(74,222,128,0.10)",
-      dot: "rgb(74,222,128)",
-      text: label ?? "Connected",
-    },
-    needs_setup: {
-      fg: "var(--c-dim)",
-      bg: "var(--c-srf)",
-      dot: "var(--c-dim)",
-      text: label ?? "Not connected",
-    },
-    error: {
-      fg: "rgb(248,113,113)",
-      bg: "rgba(248,113,113,0.10)",
-      dot: "rgb(248,113,113)",
-      text: label ?? "Error",
-    },
-    testing: {
-      fg: "rgb(250,204,21)",
-      bg: "rgba(250,204,21,0.10)",
-      dot: "rgb(250,204,21)",
-      text: label ?? "Testing…",
-    },
+  // Refined status — a single small status dot carries the colour; the text
+  // stays neutral (no green-on-green "monitoring dashboard" look). `pulse` adds
+  // a soft animated ring while a probe is in flight.
+  const palette: Record<ConnectionStatus, { dot: string; text: string; pulse?: boolean }> = {
+    activated: { dot: "rgb(64,180,120)", text: label ?? "Activated" },
+    connected: { dot: "rgb(64,180,120)", text: label ?? "Connected" },
+    needs_setup: { dot: "var(--c-ghost)", text: label ?? "Not connected" },
+    error: { dot: "rgb(248,113,113)", text: label ?? "Error" },
+    testing: { dot: "rgb(234,179,8)", text: label ?? "Testing…", pulse: true },
   };
   const c = palette[status];
   return (
@@ -68,24 +43,21 @@ export function ConnectionStatusPill({
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: 6,
-        padding: "3px 8px",
-        borderRadius: 999,
-        fontSize: 11,
-        fontWeight: 600,
-        letterSpacing: "0.02em",
-        color: c.fg,
-        background: c.bg,
+        gap: 7,
+        fontSize: 12,
+        fontWeight: 500,
+        color: "var(--c-med)",
         whiteSpace: "nowrap",
       }}
     >
       <span
         style={{
-          width: 6,
-          height: 6,
+          width: 7,
+          height: 7,
           borderRadius: "50%",
           background: c.dot,
           flexShrink: 0,
+          animation: c.pulse ? "thinking-wave 1.4s ease-in-out infinite" : undefined,
         }}
       />
       {c.text}

@@ -66,7 +66,7 @@ export function MasterToggle({ enabled, onChange }: Props) {
           border: "1px solid var(--c-brd)",
           cursor: "pointer",
           flexShrink: 0,
-          background: enabled ? "rgb(74,222,128)" : "var(--c-srf)",
+          background: enabled ? "rgb(64,180,120)" : "var(--c-srf)",
           transition: "background 0.18s, border-color 0.18s",
           outline: "none",
         }}

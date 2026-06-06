@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { MoreHorizontal, Trash2, Pencil, RefreshCw, LogIn, LogOut } from "lucide-react";
 import type { MCPServerRow } from "@/lib/mcp-api";
+import "@/components/settings/settings-ui.css";
 
 interface Props {
   row: MCPServerRow;
@@ -14,47 +15,45 @@ interface Props {
 
 function StatusPill({ row }: { row: MCPServerRow }) {
   const s = row.status.status;
-  const base: React.CSSProperties = {
-    display: "flex", alignItems: "center", gap: 6,
-    padding: "3px 9px", borderRadius: 12,
-    fontSize: 11.5, fontWeight: 500,
-  };
   if (s === "checking") {
     return (
-      <span style={{ ...base, background: "var(--c-srf2)", color: "var(--c-dim)" }}>
-        <span style={{
-          width: 6, height: 6, borderRadius: 3,
-          background: "var(--c-dim)",
-          animation: "thinking-wave 1.4s ease-in-out infinite",
-        }} />
+      <span className="s-pill">
+        <span
+          className="s-pill-dot"
+          style={{ animation: "thinking-wave 1.4s ease-in-out infinite" }}
+        />
         Checking…
       </span>
     );
   }
   if (s === "connected") {
     return (
-      <span style={{ ...base, background: "rgba(34,197,94,0.12)", color: "#22c55e" }}>
-        ● Connected{row.status.tool_count ? ` · ${row.status.tool_count} tools` : ""}
+      <span className="s-pill ok">
+        <span className="s-pill-dot" />
+        Connected{row.status.tool_count ? ` · ${row.status.tool_count} tools` : ""}
       </span>
     );
   }
   if (s === "auth_needed") {
     return (
-      <span style={{ ...base, background: "rgba(234,179,8,0.12)", color: "#eab308" }}>
-        ⚠ Auth needed
+      <span className="s-pill warn">
+        <span className="s-pill-dot" />
+        Auth needed
       </span>
     );
   }
   if (s === "failed") {
     return (
-      <span title={row.status.error ?? ""} style={{ ...base, background: "rgba(239,68,68,0.12)", color: "#ef4444" }}>
-        ✕ Failed
+      <span title={row.status.error ?? ""} className="s-pill err">
+        <span className="s-pill-dot" />
+        Failed
       </span>
     );
   }
   return (
-    <span style={{ ...base, background: "var(--c-srf2)", color: "var(--c-dim)" }}>
-      ○ Unknown
+    <span className="s-pill">
+      <span className="s-pill-dot" />
+      Unknown
     </span>
   );
 }

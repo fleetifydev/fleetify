@@ -296,7 +296,7 @@ function Switch({
         width: 36, height: 21, borderRadius: 999, padding: 0, position: "relative",
         border: "1px solid var(--c-brd)",
         cursor: "pointer", flexShrink: 0,
-        background: on ? "rgb(74,222,128)" : "var(--c-srf)",
+        background: on ? "rgb(64,180,120)" : "var(--c-srf)",
         transition: "background 0.18s",
         outline: "none",
       }}

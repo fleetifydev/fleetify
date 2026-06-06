@@ -106,6 +106,14 @@ pub struct AntigravityBridge {
     /// watchdog (which kills a hung agy) stands down.
     code_submitted: Arc<std::sync::atomic::AtomicBool>,
     aborted: Arc<std::sync::atomic::AtomicBool>,
+    /// Multi-account isolation. Unlike the other CLI bridges, agy reads/writes
+    /// several files on disk BEFORE and AFTER the spawn (trust list, MCP
+    /// config, conversation cache, transcript) via `user_home()` — not just
+    /// through the child's env. So the selected account's HOME is stored here
+    /// and consulted by [`Self::agy_home`] in every one of those helpers, keeping
+    /// the in-process disk I/O in lock-step with the PTY child's HOME override.
+    /// `None` ⇒ the System account (real HOME). Set at the top of `send_message`.
+    home_override: std::sync::Mutex<Option<std::path::PathBuf>>,
 }
 
 /// How long to keep the sign-in card up (agy alive) waiting for the user
@@ -167,7 +175,20 @@ impl AntigravityBridge {
             pty_killer: Arc::new(Mutex::new(None)),
             code_submitted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             aborted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            home_override: std::sync::Mutex::new(None),
         }
+    }
+
+    /// The HOME base agy's on-disk state lives under for the active account:
+    /// the per-account override when set, else the real user home. Every
+    /// in-process `~/.gemini/...` path derives from this so the System and
+    /// per-account flows stay isolated.
+    fn agy_home(&self) -> std::path::PathBuf {
+        self.home_override
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .unwrap_or_else(user_home)
     }
 
     /// Feed the OOB OAuth code (that the user pasted from the Google
@@ -227,8 +248,8 @@ impl AntigravityBridge {
     /// and write it back. Idempotent — fast no-op on every subsequent
     /// spawn. Failures are logged + swallowed (agy still might work,
     /// e.g. if the user already trusted it via the TUI).
-    fn ensure_trusted_workspace(path: &str) {
-        let settings_path = user_home()
+    fn ensure_trusted_workspace(home: &std::path::Path, path: &str) {
+        let settings_path = home
             .join(".gemini")
             .join("antigravity-cli")
             .join("settings.json");
@@ -278,11 +299,8 @@ impl AntigravityBridge {
 
     /// The global MCP config `agy -p` actually reads (verified empirically:
     /// it is NOT the workspace `.agents/` path nor `~/.gemini/antigravity-cli/`).
-    fn fleet_mcp_config_path() -> PathBuf {
-        user_home()
-            .join(".gemini")
-            .join("config")
-            .join("mcp_config.json")
+    fn fleet_mcp_config_path(home: &std::path::Path) -> PathBuf {
+        home.join(".gemini").join("config").join("mcp_config.json")
     }
 
     /// Merge this session's fleet + registry MCPs into the global
@@ -294,6 +312,7 @@ impl AntigravityBridge {
     /// last writer's per-session `FLEETIFY_SESSION_ID` wins for fleet MCPs.
     /// Acceptable for v1 (single-session agy is the common case).
     fn install_fleet_mcp(
+        home: &std::path::Path,
         session_id: &str,
         is_staff: bool,
         agent_template: Option<&str>,
@@ -306,7 +325,7 @@ impl AntigravityBridge {
         let ours = crate::services::mcp_dispatch::to_antigravity_cli_json(&merged);
         let ours_servers = ours.get("mcpServers").and_then(|v| v.as_object())?.clone();
 
-        let path = Self::fleet_mcp_config_path();
+        let path = Self::fleet_mcp_config_path(home);
         let mut servers: Map<String, Value> = std::fs::read_to_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<Value>(&s).ok())
@@ -353,8 +372,8 @@ impl AntigravityBridge {
 
     /// Remove the keys `install_fleet_mcp` added, preserving everything else.
     /// Best-effort; runs after the turn's agy process has exited.
-    fn uninstall_fleet_mcp(install: McpInstall) {
-        let path = Self::fleet_mcp_config_path();
+    fn uninstall_fleet_mcp(home: &std::path::Path, install: McpInstall) {
+        let path = Self::fleet_mcp_config_path(home);
         let Ok(raw) = std::fs::read_to_string(&path) else {
             return;
         };
@@ -412,8 +431,8 @@ impl AntigravityBridge {
     /// Read agy's per-cwd "most recent conversation" cache and return the
     /// UUID assigned to our `agent_cwd`. `None` when the file is missing
     /// (first ever agy launch on this machine) or doesn't list our path.
-    fn read_cached_conversation_id(agent_cwd: &str) -> Option<String> {
-        let path = user_home()
+    fn read_cached_conversation_id(home: &std::path::Path, agent_cwd: &str) -> Option<String> {
+        let path = home
             .join(".gemini")
             .join("antigravity-cli")
             .join("cache")
@@ -457,8 +476,12 @@ impl AntigravityBridge {
     /// becomes dead code that simply returns `None` and the bridge keeps
     /// using stdout. Keeping the read path here makes the bridge robust
     /// to a partial fix as well.
-    fn read_transcript_response_since(conv_id: &str, pre_byte_offset: u64) -> Option<String> {
-        let path = user_home()
+    fn read_transcript_response_since(
+        home: &std::path::Path,
+        conv_id: &str,
+        pre_byte_offset: u64,
+    ) -> Option<String> {
+        let path = home
             .join(".gemini")
             .join("antigravity-cli")
             .join("brain")
@@ -502,8 +525,8 @@ impl AntigravityBridge {
 
     /// Current byte length of the conversation's transcript on disk, or 0
     /// when the file doesn't exist yet (first turn of a new conv).
-    fn transcript_size(conv_id: &str) -> u64 {
-        let path = user_home()
+    fn transcript_size(home: &std::path::Path, conv_id: &str) -> u64 {
+        let path = home
             .join(".gemini")
             .join("antigravity-cli")
             .join("brain")
@@ -631,9 +654,17 @@ impl AntigravityBridge {
     pub async fn send_message(
         &self,
         message: &str,
-        _ctx: super::BridgeContext,
+        ctx: super::BridgeContext,
     ) -> anyhow::Result<mpsc::Receiver<BridgeEvent>> {
         let (tx, rx) = mpsc::channel::<BridgeEvent>(8);
+
+        // Multi-account: record the selected account's HOME so every in-process
+        // disk helper (trust list, MCP config, conversation cache, transcript)
+        // and the PTY child below all resolve against the same isolated home.
+        if let Ok(mut g) = self.home_override.lock() {
+            *g = ctx.home_override.clone();
+        }
+        let agy_home = self.agy_home();
 
         // Build argv. `--print-timeout 10m` matches Fleetify's existing
         // long-running-turn tolerance (claude/gemini both use generous
@@ -671,7 +702,8 @@ impl AntigravityBridge {
             match from_instance {
                 Some(id) => Some(id),
                 None => {
-                    let from_cache = Self::read_cached_conversation_id(&normalized_cwd_pre);
+                    let from_cache =
+                        Self::read_cached_conversation_id(&agy_home, &normalized_cwd_pre);
                     if let Some(id) = &from_cache {
                         // Persist it back into the bridge so the
                         // transcript-tail read after spawn looks at the
@@ -711,12 +743,13 @@ impl AntigravityBridge {
         // treatment — exit=0, empty stdout, no transcript file written.
         // Idempotent: re-trusting a known path is a no-op write skip.
         // Use the normalized form so agy's later CWD compare matches.
-        Self::ensure_trusted_workspace(&normalized_cwd);
+        Self::ensure_trusted_workspace(&agy_home, &normalized_cwd);
 
         // Write this session's fleet + registry MCPs to the global config agy
         // reads at spawn. Per-session FLEETIFY_SESSION_ID rides in each fleet
         // entry's env (agy passes config env to the MCP child).
         let mcp_install = Self::install_fleet_mcp(
+            &agy_home,
             &self.session_id,
             self.is_staff,
             self.agent_template.as_deref(),
@@ -760,8 +793,15 @@ impl AntigravityBridge {
         // don't want to re-emit the entire history on every turn.
         let pre_transcript_size = cached_conv_id
             .as_deref()
-            .map(Self::transcript_size)
+            .map(|id| Self::transcript_size(&agy_home, id))
             .unwrap_or(0);
+        // Move the resolved account HOME into the turn task for its post-turn
+        // conversation-cache + transcript reads and MCP-config cleanup.
+        let agy_home_task = agy_home.clone();
+        // Env bundle for the PTY child (empty for the System account). agy is a
+        // HOME-isolation agent, so `account_env` already carries HOME/XDG; the
+        // `home_override` field drives the in-process disk reads.
+        let pty_env: Vec<(String, String)> = ctx.account_env.clone();
 
         tokio::spawn(async move {
             // Init first so the renderer leaves the pending state and
@@ -793,6 +833,7 @@ impl AntigravityBridge {
             let spawn_exe = exe.clone();
             let spawn_args = args.clone();
             let spawn_cwd = agent_cwd.clone();
+            let spawn_env = pty_env.clone();
             let setup = tokio::task::spawn_blocking(move || {
                 let pty = native_pty_system();
                 let pair = pty
@@ -808,6 +849,11 @@ impl AntigravityBridge {
                     cmd.arg(a);
                 }
                 cmd.cwd(&spawn_cwd);
+                // Multi-account isolation: point agy's HOME (+XDG/Windows) at the
+                // selected account dir so it reads that account's OAuth creds.
+                for (k, v) in &spawn_env {
+                    cmd.env(k, v);
+                }
                 let child = pair
                     .slave
                     .spawn_command(cmd)
@@ -839,7 +885,7 @@ impl AntigravityBridge {
                         })
                         .await;
                     if let Some(install) = mcp_install {
-                        Self::uninstall_fleet_mcp(install);
+                        Self::uninstall_fleet_mcp(&agy_home_task, install);
                     }
                     let _ = tx
                         .send(BridgeEvent::Status {
@@ -855,7 +901,7 @@ impl AntigravityBridge {
                         })
                         .await;
                     if let Some(install) = mcp_install {
-                        Self::uninstall_fleet_mcp(install);
+                        Self::uninstall_fleet_mcp(&agy_home_task, install);
                     }
                     let _ = tx
                         .send(BridgeEvent::Status {
@@ -1023,7 +1069,7 @@ impl AntigravityBridge {
             let conv_id = {
                 let mut conv = conv_handle.lock().await;
                 if conv.is_none() {
-                    *conv = Self::read_cached_conversation_id(&agent_cwd);
+                    *conv = Self::read_cached_conversation_id(&agy_home_task, &agent_cwd);
                     if let Some(id) = &*conv {
                         tracing::info!(
                             session_id = %session_id_out,
@@ -1038,9 +1084,9 @@ impl AntigravityBridge {
             // On-disk transcript tail for THIS turn (bytes appended after
             // `pre_transcript_size` only, so we never re-surface history).
             // Canonical for normal turns.
-            let transcript_text = conv_id
-                .as_deref()
-                .and_then(|id| Self::read_transcript_response_since(id, pre_transcript_size));
+            let transcript_text = conv_id.as_deref().and_then(|id| {
+                Self::read_transcript_response_since(&agy_home_task, id, pre_transcript_size)
+            });
             let transcript_reply = transcript_text
                 .as_deref()
                 .map(str::trim)
@@ -1178,7 +1224,7 @@ impl AntigravityBridge {
             // Remove our injected MCP keys now the turn's agy process has
             // exited (it already read the file at spawn).
             if let Some(install) = mcp_install {
-                Self::uninstall_fleet_mcp(install);
+                Self::uninstall_fleet_mcp(&agy_home_task, install);
             }
 
             let _ = tx
@@ -1223,8 +1269,10 @@ mod tests {
         std::env::set_var("HOME", tmp.path());
         std::env::set_var("USERPROFILE", tmp.path());
 
-        let install = super::AntigravityBridge::install_fleet_mcp("sess-1", false, None).unwrap();
-        let path = super::AntigravityBridge::fleet_mcp_config_path();
+        let home = fleetify_core::user_home();
+        let install =
+            super::AntigravityBridge::install_fleet_mcp(&home, "sess-1", false, None).unwrap();
+        let path = super::AntigravityBridge::fleet_mcp_config_path(&home);
         assert!(path.exists(), "global config should be written");
         let doc: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -1234,7 +1282,7 @@ mod tests {
             "sess-1"
         );
 
-        super::AntigravityBridge::uninstall_fleet_mcp(install);
+        super::AntigravityBridge::uninstall_fleet_mcp(&home, install);
         let doc2: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(
@@ -1253,7 +1301,8 @@ mod tests {
         std::env::set_var("USERPROFILE", tmp.path());
 
         // Pre-seed a user-owned entry in the global agy config.
-        let path = super::AntigravityBridge::fleet_mcp_config_path();
+        let home = fleetify_core::user_home();
+        let path = super::AntigravityBridge::fleet_mcp_config_path(&home);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
@@ -1261,7 +1310,8 @@ mod tests {
         )
         .unwrap();
 
-        let install = super::AntigravityBridge::install_fleet_mcp("sess-1", false, None).unwrap();
+        let install =
+            super::AntigravityBridge::install_fleet_mcp(&home, "sess-1", false, None).unwrap();
         let doc: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(
@@ -1270,7 +1320,7 @@ mod tests {
         );
         assert_eq!(doc["mcpServers"]["user_tool"]["command"], "my-tool");
 
-        super::AntigravityBridge::uninstall_fleet_mcp(install);
+        super::AntigravityBridge::uninstall_fleet_mcp(&home, install);
         let doc2: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(doc2["mcpServers"].get("fleet_memory").is_none());

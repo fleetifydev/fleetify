@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback, useState, useMemo, memo } from "react";
+import Lenis from "lenis";
 import { useAppStore, COMPOSER_CHAT_KEY } from "@/stores/app-store";
 import { useChatStore, selectSession, typeOutAssistantMessage } from "@/stores/chat-store";
 import { wsManager, compactionOptimisticId } from "@/services/ws-manager";
@@ -7,6 +8,7 @@ import { MessageContent, StreamingMessage } from "./message-content";
 import { CompactionPill } from "./compaction-pill";
 import { PermissionDialog } from "./permission-dialog";
 import { CursorQuestionCard } from "./cursor-question-card";
+import { AskQuestionCard } from "./ask-question-card";
 import { CursorPlanCard } from "./cursor-plan-card";
 import { SessionToolbar } from "./session-toolbar";
 import { fetchMessages, fetchClaudeHistory, createSession, clearSessionMessages, updateSession as apiUpdateSession, stopSession, restartSession, analyzeFleetResponse, fetchAgentModels } from "@/lib/api";
@@ -63,13 +65,6 @@ const MessageList = memo(function MessageList({
     </>
   );
 });
-
-const SEND_CAPTIONS = [
-  "Taking a look...", "On it.", "Let me check.", "Reading context...",
-  "Getting to work.", "Analyzing...", "Working on it.", "Give me a moment.",
-  "Looking into that.", "Processing your request.", "On it right away.",
-  "Let me think about that.", "Diving in.", "Checking things out.",
-];
 
 export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   /** When set, this ChatView instance is rendering inside a split-
@@ -161,7 +156,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   // migrated to the new session.
   const chatStoreKey = composerOpen ? COMPOSER_CHAT_KEY : effectiveSessionId;
   const sessionState = useChatStore(selectSession(chatStoreKey));
-  const { messages, streamingText, streamingThinking, isStreaming, permissionRequest, cursorQuestion, cursorPlan, compactionPill } = sessionState;
+  const { messages, streamingText, streamingThinking, isStreaming, permissionRequest, cursorQuestion, cursorPlan, askQuestion, compactionPill } = sessionState;
   // True while the inline compaction status owns the feedback surface.
   // Lets us hide the streaming "Thinking…" UI for /compact since the
   // flow never runs an agent turn — it's app-owned summarisation.
@@ -319,9 +314,12 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   const scrollToUserMsg = useRef(false);
   const pinnedToExchange = useRef(false);
   const sendLock = useRef(false);
+  // rAF handle for the smooth streaming auto-follow loop.
+  const followRaf = useRef<number | null>(null);
+  // Lenis smooth-wheel instance + its stable content element.
+  const contentRef = useRef<HTMLDivElement>(null);
+  const lenisRef = useRef<Lenis | null>(null);
 
-  const [sendCaption, setSendCaption] = useState<string | null>(null);
-  const sendCaptionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [chatCtxMenu, setChatCtxMenu] = useState<{ x: number; y: number; text: string } | null>(null);
   const chatCtxMenuRef = useRef<HTMLDivElement>(null);
@@ -513,13 +511,71 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     }
   }, [isStreaming, scrollSpacer]);
 
-  // Direct scrollTop avoids layout-sync from scrollIntoView on every streamed token
+  // Smooth streaming auto-follow. Instead of hard-jumping scrollTop to the
+  // bottom on every streamed token (which reads as a stuttery snap), run a
+  // gentle rAF loop while streaming that EASES scrollTop toward the bottom —
+  // ~16% of the remaining distance per frame, snapping the last few pixels.
+  // New text glides into view. Stays subtle (no library); respects the pin
+  // (user's message held at top after send) and the user scrolling up to
+  // read — in both cases it simply doesn't follow.
   useEffect(() => {
-    if (isStreaming && !pinnedToExchange.current) {
-      const el = scrollRef.current;
-      if (el) el.scrollTop = el.scrollHeight;
+    if (!isStreaming) {
+      if (followRaf.current != null) { cancelAnimationFrame(followRaf.current); followRaf.current = null; }
+      return;
     }
-  }, [streamingText, isStreaming]);
+    const tick = () => {
+      const el = scrollRef.current;
+      if (el && !userScrolledUp.current && !pinnedToExchange.current) {
+        const target = el.scrollHeight - el.clientHeight;
+        const diff = target - el.scrollTop;
+        if (diff > 0.5) el.scrollTop = diff < 8 ? target : el.scrollTop + diff * 0.16;
+      }
+      followRaf.current = requestAnimationFrame(tick);
+    };
+    followRaf.current = requestAnimationFrame(tick);
+    return () => {
+      if (followRaf.current != null) { cancelAnimationFrame(followRaf.current); followRaf.current = null; }
+    };
+  }, [isStreaming]);
+
+  // Smooth wheel/trackpad scrolling for the chat (subtle). Lenis eases the
+  // wheel input on the messages container; it syncs from native scroll
+  // events, so the existing pin / restore / infinite-up / streaming-follow
+  // logic (which sets scrollTop directly) keeps working untouched. The
+  // `prevent` heuristic lets nested scrollables (code blocks, diffs, tool
+  // outputs) scroll natively instead of hijacking their wheel for the chat.
+  useEffect(() => {
+    const wrapper = scrollRef.current;
+    const content = contentRef.current;
+    if (!wrapper || !content) return;
+    const lenis = new Lenis({
+      wrapper,
+      content,
+      smoothWheel: true,
+      lerp: 0.1,            // subtle — snappy, not floaty
+      wheelMultiplier: 1,
+      prevent: (node) => {
+        // Walk up from the wheel target: if any element between it and the
+        // chat wrapper is itself a scrollable that can move, let the browser
+        // scroll THAT natively (don't smooth-scroll the whole chat).
+        let el: HTMLElement | null = node as HTMLElement;
+        while (el && el !== wrapper) {
+          const oy = getComputedStyle(el).overflowY;
+          if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight + 1) {
+            return true;
+          }
+          el = el.parentElement;
+        }
+        return false;
+      },
+    });
+    lenisRef.current = lenis;
+    let raf = requestAnimationFrame(function loop(time: number) {
+      lenis.raf(time);
+      raf = requestAnimationFrame(loop);
+    });
+    return () => { cancelAnimationFrame(raf); lenis.destroy(); lenisRef.current = null; };
+  }, []);
 
   // Reset scroll tracking on session switch.
   // Position is saved continuously in onScroll (DOM scrollTop — reliable).
@@ -691,10 +747,6 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     sendLock.current = true;
     setTimeout(() => { sendLock.current = false; }, 600);
     setScrollSpacer(typeof window !== "undefined" ? window.innerHeight : 900);
-    // Rotating send caption — pick a random phrase, show for 4 s.
-    if (sendCaptionTimerRef.current) clearTimeout(sendCaptionTimerRef.current);
-    setSendCaption(SEND_CAPTIONS[Math.floor(Math.random() * SEND_CAPTIONS.length)] ?? null);
-    sendCaptionTimerRef.current = setTimeout(() => setSendCaption(null), 4000);
     try {
       await wsManager.send(sessionId, text, attachments);
     } catch (err) {
@@ -1059,7 +1111,14 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     // continue the dispatch with that id.
     let composedSessionId: string | null = null;
     if (composerOpen && !activeSessionId) {
-      if (!composer.projectPath) {
+      // Read the composer FRESH from the store, not the closure — the user may
+      // have just picked a repo / folder, and the captured `composer` can be a
+      // render behind. A picked-but-not-yet-cloned git repo sets
+      // `pendingCloneUrl` (the clone runs in commitComposer and becomes the
+      // project_path), so treat that as "folder is coming" and don't trip the
+      // "pick a folder" warning.
+      const liveComposer = useAppStore.getState().composer;
+      if (!liveComposer.projectPath && !liveComposer.pendingCloneUrl) {
         surfaceFolderWarning(COMPOSER_CHAT_KEY, text);
         return;
       }
@@ -1993,6 +2052,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
             setChatCtxMenu({ x: e.clientX, y, text: sel });
           }}
         >
+          <div ref={contentRef}>
           {isControlCenter && messages.length === 0 && !isStreaming ? (
             <FleetChatEmptyState
               agents={agentSessions}
@@ -2015,6 +2075,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
               <div style={{ height: scrollSpacer }} />
             </div>
           )}
+          </div>
         </div>
 
         {/* ── Messages → chat-input transition strip ──
@@ -2033,19 +2094,6 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
           background: "linear-gradient(to top, var(--card) 0%, color-mix(in srgb, var(--card) 60%, transparent) 50%, transparent 100%)",
         }} />
 
-        {/* ── Rotating send caption ── */}
-        {sendCaption && (
-          <div style={{
-            flexShrink: 0, padding: "0 32px 8px",
-            fontSize: 11.5, color: "var(--c-ghost)",
-            fontFamily: "var(--font-sans)", letterSpacing: "-0.01em",
-            fontStyle: "italic",
-            animation: "fade-in 0.2s ease both",
-          }}>
-            {sendCaption}
-          </div>
-        )}
-
         <ChatInput
           // ── Per-session input state ──
           // ChatInput holds its own `value` state. Without `key`, React
@@ -2061,9 +2109,11 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
           onStop={handleStop}
           disabled={isStreaming}
           streaming={isStreaming}
-          locked={!!permissionRequest || !!cursorQuestion || !!cursorPlan}
+          locked={!!permissionRequest || !!cursorQuestion || !!cursorPlan || !!askQuestion}
           placeholder={
-            cursorQuestion
+            askQuestion
+              ? "Answer above to continue…"
+              : cursorQuestion
               ? "Answer above to continue…"
               : cursorPlan
                 ? "Review the plan above to continue…"
@@ -2209,6 +2259,13 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                   question={cursorQuestion}
                   onAnswer={(id, outcome) => wsManager.sendQuestionResponse(effectiveSessionId, id, outcome)}
                   onSkip={(id) => wsManager.sendQuestionResponse(effectiveSessionId, id, { outcome: "skipped" })}
+                />
+              ) : null}
+              {askQuestion && effectiveSessionId ? (
+                <AskQuestionCard
+                  question={askQuestion}
+                  onAnswer={(id, answers) => wsManager.sendAskQuestionResponse(effectiveSessionId, id, true, answers)}
+                  onSkip={(id) => wsManager.sendAskQuestionResponse(effectiveSessionId, id, false, [])}
                 />
               ) : null}
               {cursorPlan && effectiveSessionId ? (

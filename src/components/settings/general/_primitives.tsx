@@ -50,15 +50,16 @@ export function Toggle({ on, onChange }: { on: boolean; onChange: () => void }) 
       role="switch" aria-checked={on}
       style={{
         width: 36, height: 21, borderRadius: 999, padding: 0, position: "relative",
-        border: "1px solid var(--c-brd)", cursor: "pointer", flexShrink: 0,
-        background: on ? "rgb(74,222,128)" : "var(--c-srf)",
+        border: `1px solid ${on ? "transparent" : "var(--c-brd)"}`, cursor: "pointer", flexShrink: 0,
+        background: on ? "rgb(64,180,120)" : "var(--c-srf2)",
         transition: "background 0.18s", outline: "none",
       }}>
       <span style={{
         position: "absolute", top: 2, left: on ? 17 : 2,
         width: 15, height: 15, borderRadius: "50%",
-        background: "#fff", boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
-        transition: "left 0.18s cubic-bezier(0.4,0,0.2,1)",
+        background: on ? "#fff" : "var(--c-ghost)",
+        boxShadow: on ? "0 1px 2px rgba(0,0,0,0.2)" : "none",
+        transition: "left 0.18s cubic-bezier(0.4,0,0.2,1), background 0.18s",
       }} />
     </button>
   );

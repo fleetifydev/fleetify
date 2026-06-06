@@ -321,13 +321,22 @@ export async function createSession(data: {
    *  Worktree chip toggles this; setting false makes the agent run
    *  directly inside project_path. */
   use_worktree?: boolean;
+  /** Which provider/agent account this session uses. Omitted ⇒ the System
+   *  account (real HOME for CLI / default labeled key for HTTP). */
+  account_id?: string;
 }) {
   const res = await apiFetch(`${API_BASE}/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
-  if (!res.ok) throw new Error("Failed to create session");
+  if (!res.ok) {
+    // Bubble up the backend's real message (e.g. "Project path does not exist
+    // or is not a directory") so the UI can show *why* instead of a generic
+    // failure that ends up swallowed as "nothing happened".
+    const detail = await res.text().catch(() => "");
+    throw new Error(detail?.trim() || `Failed to create session (${res.status})`);
+  }
   return res.json();
 }
 
@@ -374,6 +383,7 @@ export async function updateSession(
     permission_mode?: string;
     tool?: string;
     effort?: string;
+    account_id?: string | null;
     sandbox?: string | null;
     tool_overrides?: string | null;
   },

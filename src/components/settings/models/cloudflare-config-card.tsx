@@ -258,7 +258,7 @@ export function CloudflareConfigCard({
                     minWidth: 0,
                   }}
                 >
-                  <span style={{ color: "rgb(74,222,128)" }}>✓</span>
+                  <span style={{ color: "rgb(64,180,120)" }}>✓</span>
                   <span>API token saved in your OS keychain.</span>
                 </div>
                 <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>

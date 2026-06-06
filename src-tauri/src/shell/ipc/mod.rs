@@ -874,7 +874,10 @@ pub async fn github_get_link() -> serde_json::Value {
 
 #[tauri::command]
 pub async fn github_begin_oauth(app: tauri::AppHandle) -> serde_json::Value {
-    github_link::begin_oauth(app).await
+    let r = github_link::begin_oauth(app).await;
+    // Refresh the backend clone token now that a link may exist.
+    github_link::push_clone_token().await;
+    r
 }
 
 #[tauri::command]
@@ -884,12 +887,16 @@ pub async fn github_cancel_oauth() -> serde_json::Value {
 
 #[tauri::command]
 pub async fn github_refresh_link(app: tauri::AppHandle) -> serde_json::Value {
-    github_link::refresh_link(app).await
+    let r = github_link::refresh_link(app).await;
+    github_link::push_clone_token().await;
+    r
 }
 
 #[tauri::command]
 pub async fn github_disconnect(app: tauri::AppHandle) -> serde_json::Value {
     github_link::disconnect(app).await;
+    // Clear the backend clone token — no link anymore.
+    github_link::push_clone_token().await;
     serde_json::json!({ "ok": true })
 }
 
@@ -2180,6 +2187,133 @@ pub async fn providers_delete_key(app: tauri::AppHandle, id: String) -> serde_js
     crate::shell::providers_setup::reload_backend(&app).await;
     fleetify_backend::services::telemetry::emitters::emit_provider_disconnected(&id).await;
     serde_json::json!({ "ok": true })
+}
+
+// ── Multi-account: per-account keychain keys (HTTP) + PTY login (CLI) ──────
+
+/// Store an API key for a specific HTTP provider *account* (keychain account
+/// field = the account id, vs. the OIDC sub used for the System key). Then
+/// reloads the backend so the labeled key is live on the next chat turn.
+#[tauri::command]
+pub async fn providers_set_account_key(
+    app: tauri::AppHandle,
+    id: String,
+    account_id: String,
+    key: String,
+) -> serde_json::Value {
+    if fleetify_backend::providers::find_provider(&id).is_none() {
+        return serde_json::json!({ "ok": false, "code": "UNKNOWN_PROVIDER" });
+    }
+    if let Err(e) = crate::shell::providers_link::store_secret(&id, &account_id, &key) {
+        return serde_json::json!({ "ok": false, "code": "KEYCHAIN", "error": e });
+    }
+    crate::shell::providers_setup::reload_backend(&app).await;
+    serde_json::json!({ "ok": true })
+}
+
+/// Read a masked preview of an HTTP account's stored key (or null when none).
+#[tauri::command]
+pub async fn providers_get_account_key_preview(
+    id: String,
+    account_id: String,
+) -> serde_json::Value {
+    match crate::shell::providers_link::read_secret(&id, &account_id) {
+        Ok(Some(secret)) => serde_json::json!({ "ok": true, "preview": mask_secret(&secret) }),
+        Ok(None) => serde_json::json!({ "ok": true, "preview": null }),
+        Err(e) => serde_json::json!({ "ok": false, "code": "KEYCHAIN", "error": e }),
+    }
+}
+
+/// Delete an HTTP account's keychain key (called after the account row is
+/// removed via the REST `DELETE /accounts` endpoint), then reload.
+#[tauri::command]
+pub async fn providers_delete_account_key(
+    app: tauri::AppHandle,
+    id: String,
+    account_id: String,
+) -> serde_json::Value {
+    let _ = crate::shell::providers_link::delete_secret(&id, &account_id);
+    crate::shell::providers_setup::reload_backend(&app).await;
+    serde_json::json!({ "ok": true })
+}
+
+/// Launch a CLI agent's own login flow inside a PTY whose HOME (+XDG/Windows
+/// equivalents) point at the account's isolated dir, so the agent writes its
+/// credentials into that account's home. Returns a `pty_id` the renderer binds
+/// to a terminal view (the user completes the OAuth / device-code flow there);
+/// on exit the renderer refreshes the agent scan so the account flips to
+/// "Detected". CLI agents only — HTTP providers use `providers_set_account_key`.
+#[tauri::command]
+pub async fn providers_open_account_login(
+    app: tauri::AppHandle,
+    id: String,
+    account_id: String,
+) -> serde_json::Value {
+    let Some(spec) = fleetify_backend::providers::find_agent(&id) else {
+        return serde_json::json!({ "ok": false, "code": "NOT_CLI_AGENT", "error": format!("{id} is not a CLI agent") });
+    };
+    // The login command comes straight from the catalog's login_hint
+    // (e.g. "claude login", "opencode auth login"). Empty ⇒ interactive bin.
+    let tokens: Vec<String> = if spec.login_hint.trim().is_empty() {
+        vec![spec.bin.to_string()]
+    } else {
+        spec.login_hint
+            .split_whitespace()
+            .map(String::from)
+            .collect()
+    };
+    if tokens.is_empty() {
+        return serde_json::json!({ "ok": false, "code": "NO_LOGIN", "error": "no login command for this agent" });
+    }
+    // Resolve the binary to an absolute path, sharing the bridges' per-agent
+    // resolvers so off-PATH installs (cursor/hermes/copilot) are found.
+    let program = match spec.id {
+        "cursor" => fleetify_backend::bridges::cursor::resolve_cursor_bin(),
+        "hermes" => fleetify_backend::bridges::hermes::resolve_hermes_bin(),
+        "github-copilot" => fleetify_backend::bridges::github_copilot::resolve_copilot_bin(),
+        _ => which::which(&tokens[0])
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned()),
+    }
+    .unwrap_or_else(|| tokens[0].clone());
+    let args: Vec<String> = tokens[1..].to_vec();
+
+    // Resolve the account's config dir. A discovered account (`dir:.claude-2`)
+    // points at the existing `~/.claude-2`; a managed account gets a dir under
+    // ~/.fleetify/accounts/. Create it so the login flow has somewhere to write.
+    let home = match account_id.strip_prefix("dir:") {
+        Some(name) => fleetify_core::user_home().join(name),
+        None => fleetify_backend::services::accounts::account_home_dir(&id, &account_id),
+    };
+    if let Err(e) = std::fs::create_dir_all(&home) {
+        return serde_json::json!({ "ok": false, "code": "MKDIR", "error": e.to_string() });
+    }
+    // Config-dir agents (claude/codex) isolate via their native env var
+    // (CLAUDE_CONFIG_DIR / CODEX_HOME) pointed at this dir; others get the full
+    // HOME/XDG bundle. Matches services::accounts::resolve_env at dispatch.
+    let mut env: HashMap<String, String> =
+        match fleetify_backend::services::accounts::config_dir_spec(&id) {
+            Some((env_var, _)) => {
+                std::iter::once((env_var.to_string(), home.to_string_lossy().into_owned()))
+                    .collect()
+            }
+            None => fleetify_backend::services::accounts::account_env(&home)
+                .into_iter()
+                .collect(),
+        };
+    // Force a sane TERM so the agent's prompts render predictably under ConPTY.
+    env.insert("TERM".into(), "xterm-256color".into());
+
+    match pty::spawn_argv(
+        app,
+        program,
+        args,
+        Some(home.to_string_lossy().into_owned()),
+        Some(env),
+    ) {
+        Ok(pty_id) => serde_json::json!({ "ok": true, "pty_id": pty_id }),
+        Err(e) => serde_json::json!({ "ok": false, "code": "SPAWN", "error": e }),
+    }
 }
 
 /// Flip a provider's "enabled in Fleet" bit independently of the

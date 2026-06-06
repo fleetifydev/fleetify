@@ -834,7 +834,6 @@ fn scan_probe_for(id: &'static str, bin: &'static str) -> ScanProbe {
 /// Shared scanner used by both the HTTP endpoint and the startup
 /// warm-up. Returns a JSON-serializable map keyed by provider id.
 pub async fn scan_all_agents() -> HashMap<String, Value> {
-    use crate::providers::AuthIndicator;
     let mut out = HashMap::new();
     for spec in crate::providers::list_cli_agents() {
         let probe = scan_probe_for(spec.id, spec.bin);
@@ -862,24 +861,7 @@ pub async fn scan_all_agents() -> HashMap<String, Value> {
             ScanProbe::GitHubCopilotCli => crate::bridges::github_copilot::resolve_copilot_bin(),
         };
         let installed = path.is_some();
-        let authenticated = if installed {
-            spec.auth_indicators.iter().any(|ind| match ind {
-                AuthIndicator::HomeDir { path } => home().join(path).exists(),
-                AuthIndicator::EnvVar { name } => std::env::var(name).is_ok(),
-                AuthIndicator::JsonExpiry { path, field, unit } => {
-                    check_json_expiry(&home().join(path), field, *unit)
-                }
-                AuthIndicator::JsonFieldPresent { path, field } => {
-                    std::fs::read_to_string(home().join(path))
-                        .ok()
-                        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-                        .and_then(|v| v.get(*field).cloned())
-                        .is_some_and(|f| !f.is_null())
-                }
-            })
-        } else {
-            false
-        };
+        let authenticated = installed && indicators_authenticated(&home(), spec.auth_indicators);
         crate::services::telemetry::emitters::emit_agent_detected(
             spec.id,
             installed,
@@ -965,6 +947,29 @@ pub(crate) fn check_json_expiry(path: &std::path::Path, field: &str, unit: Expir
         ExpiryUnit::Seconds => n.saturating_mul(1000),
     };
     expiry_ms > now_ms
+}
+
+/// Evaluate a CLI agent's auth indicators against an arbitrary home base.
+/// Shared by the Settings → Agents scan (real HOME) and the per-account
+/// detector (`services::accounts`), which points `home` at an isolated
+/// account dir. Any single indicator firing ⇒ authenticated.
+pub(crate) fn indicators_authenticated(
+    home: &std::path::Path,
+    inds: &[crate::providers::AuthIndicator],
+) -> bool {
+    use crate::providers::AuthIndicator;
+    inds.iter().any(|ind| match ind {
+        AuthIndicator::HomeDir { path } => home.join(path).exists(),
+        AuthIndicator::EnvVar { name } => std::env::var(name).is_ok(),
+        AuthIndicator::JsonExpiry { path, field, unit } => {
+            check_json_expiry(&home.join(path), field, *unit)
+        }
+        AuthIndicator::JsonFieldPresent { path, field } => std::fs::read_to_string(home.join(path))
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .and_then(|v| v.get(*field).cloned())
+            .is_some_and(|f| !f.is_null()),
+    })
 }
 
 /// Shape of the python_module_installed probe result.
@@ -1555,6 +1560,7 @@ mod tests {
             permission_registry: Arc::new(
                 tokio::sync::Mutex::new(std::collections::HashMap::new()),
             ),
+            ask_registry: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             agent_scan_cache: AgentScanCache::default(),
             http_health_cache: HttpHealthCache::default(),
         };

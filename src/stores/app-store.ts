@@ -943,6 +943,28 @@ export const useAppStore = create<AppState>((set, get) => ({
       return session.id;
     } catch (err) {
       console.error("commitComposer failed:", err);
+      // Surface the failure to the user instead of silently no-oping — a
+      // swallowed clone error / invalid-folder 400 is exactly the "I send a
+      // message and nothing happens" symptom. Echo a clear error bubble into
+      // the composer chat (same surface as the folder warning).
+      const msg = err instanceof Error ? err.message : String(err);
+      try {
+        useChatStore.getState().addMessage(COMPOSER_CHAT_KEY, {
+          id: `commit-error-${Date.now()}`,
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text:
+                `I couldn't start the session.\n\n**${msg}**\n\n` +
+                "Check the folder path / repo and try again, or pick a different source.",
+            },
+          ],
+          timestamp: new Date().toISOString(),
+        });
+      } catch {
+        /* noop */
+      }
       return null;
     }
   },

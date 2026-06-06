@@ -12,6 +12,7 @@ import {
 } from "./staff-message-cards";
 import { CitationCard } from "./citation-card";
 import { AuthRequiredCard } from "./auth-required-card";
+import { LogoMark } from "@/components/brand/logo-mark";
 import { ChevronRight, Copy, Check, ArrowRightLeft, CheckCircle2, AlertCircle, Terminal, FileText, Globe, Search, Cpu, CheckSquare, FolderSearch, Pencil, Wrench, Brain, MoveHorizontal, Trash2, FolderOpen, Download, Code2, BarChart2, BookOpen, Image, CornerDownLeft, Send, Bookmark, BookmarkCheck, RotateCcw, X } from "lucide-react";
 import { createSessionMemory } from "@/lib/api";
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
@@ -237,6 +238,42 @@ function basename(p: string): string {
   return parts[parts.length - 1] || p;
 }
 
+/** Collapse Fleetify's machine-path noise inside ANY string (a shell command,
+ *  a summary, a path) to its repo-relative form: everything up to and including
+ *  `…/.fleetify-worktrees/<uuid>/` or `…/clones/<host>/<owner>/<repo>/` is
+ *  dropped, so `find /Users/x/.fleetify-wt-97/clones/github.com/o/r/.fleetify-
+ *  worktrees/<uuid>/app/models …` reads as `find app/models …`. */
+export function shortenFleetPath(text: string): string {
+  return text
+    .replace(/\S*\/\.fleetify-worktrees\/[0-9a-f-]{8,}\//gi, "")
+    .replace(/\S*\/clones\/[^/\s]+\/[^/\s]+\/[^/\s]+\//gi, "");
+}
+
+/** Turn a long absolute path into a clean, human-scannable one: strip the
+ *  Fleetify worktree UUID segment and the `…/clones/<host>/<owner>/<repo>/`
+ *  prefix so a cloned-repo file shows as `app/config.py` instead of a
+ *  60-char machine path, then keep only the last few segments. Returns the
+ *  directory part (dimmed) and the file name (highlighted) separately. */
+function prettyFilePath(full: string): { dir: string; name: string } {
+  let p = full.replace(/\\/g, "/");
+  // Drop a `.fleetify-worktrees/<uuid>/` segment (pure noise to the reader).
+  p = p.replace(/\/\.fleetify-worktrees\/[0-9a-f-]{8,}\//i, "/");
+  // Collapse a clone path down to the repo-relative part.
+  const clone = p.match(/\/clones\/[^/]+\/[^/]+\/[^/]+\/(.+)$/);
+  if (clone?.[1]) p = clone[1];
+  const segs = p.split("/").filter(Boolean);
+  const name = segs.pop() ?? p;
+  // Keep at most the last 2 dirs; prefix "…/" when we trimmed deeper.
+  let dirSegs = segs;
+  let truncated = false;
+  if (segs.length > 2) {
+    dirSegs = segs.slice(-2);
+    truncated = true;
+  }
+  const dir = dirSegs.length ? `${truncated ? "…/" : ""}${dirSegs.join("/")}/` : "";
+  return { dir, name };
+}
+
 /** Single-tool summary line: a Claude-Desktop-style phrase that
  *  describes the action in one short sentence. The row body is what
  *  the user scans; details live behind the chevron. Examples:
@@ -252,7 +289,7 @@ export function rowSummary(toolName: string, input: Record<string, unknown>): st
   // Bash family — describeShellCommand already returns a past-tense
   // verb phrase, so just prefix the right action word.
   if ("command" in input) {
-    const cleaned = stripShellWrapper(String(input.command));
+    const cleaned = shortenFleetPath(stripShellWrapper(String(input.command)));
     const described = describeShellCommand(cleaned);
     if (described) return `Ran ${described.charAt(0).toLowerCase() + described.slice(1)}`;
     const firstLine = (cleaned.split("\n")[0] ?? "").slice(0, 90);
@@ -440,16 +477,22 @@ function DiffView({ fpath, oldText, newText }: {
         display: "flex", alignItems: "center", justifyContent: "space-between",
         gap: 8,
       }}>
-        <span style={{
-          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-          flex: 1, minWidth: 0,
-        }}>
-          <span style={{ color: "var(--c-med)", fontWeight: 500 }}>{filename}</span>
-          <span style={{ marginLeft: 10 }}>{fpath}</span>
+        <span
+          onClick={(e) => { e.stopPropagation(); useAppStore.getState().openFile(fpath); }}
+          style={{
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            flex: 1, minWidth: 0, cursor: "pointer",
+          }}
+          title={`Open ${fpath} in the editor`}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.textDecoration = "underline"; }}
+          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.textDecoration = "none"; }}
+        >
+          <span style={{ color: "var(--c-high)", fontWeight: 500 }}>{filename}</span>
+          <span style={{ marginLeft: 10, color: "var(--c-dim)" }}>{prettyFilePath(fpath).dir}</span>
         </span>
         <span style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 10 }}>
           {newLines.length > 0 && (
-            <span style={{ color: "rgb(74,222,128)" }}>+{newLines.length}</span>
+            <span style={{ color: "rgb(64,180,120)" }}>+{newLines.length}</span>
           )}
           {oldLines.length > 0 && (
             <span style={{ color: "rgb(248,113,113)" }}>−{oldLines.length}</span>
@@ -527,6 +570,58 @@ function DiffView({ fpath, oldText, newText }: {
   );
 }
 
+/** Lazily read + preview a file's content inside a Read tool card when the
+ *  agent didn't surface the read output itself (e.g. Claude Code, which shows
+ *  "Read main.py" but doesn't echo the file body in its stream). Fetches via
+ *  the backend `/api/fs/file` endpoint and renders a Shiki-highlighted preview
+ *  matching the card style. Silent (renders nothing) if the file can't be read. */
+function ReadFilePreview({ filePath }: { filePath: string }) {
+  const [content, setContent] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/fs/file?path=${encodeURIComponent(filePath)}`)
+      .then((r) => r.json())
+      .then((j: { content?: string; error?: string }) => {
+        if (cancelled) return;
+        if (typeof j.content === "string") setContent(j.content);
+        else setFailed(true);
+      })
+      .catch(() => { if (!cancelled) setFailed(true); });
+    return () => { cancelled = true; };
+  }, [filePath]);
+
+  const MAX = 8000;
+  const truncated = (content?.length ?? 0) > MAX;
+  const shown = content ? (truncated ? content.slice(0, MAX) : content) : "";
+  const html = useShikiHTML(shown, langFromPath(filePath) || "text");
+
+  if (failed) return null;
+  if (content == null) {
+    return (
+      <div style={{ padding: "0 12px 10px", fontSize: 11.5, color: "var(--c-dim)", fontFamily: "var(--font-mono)" }}>
+        Loading…
+      </div>
+    );
+  }
+  return (
+    <pre style={{
+      margin: 0, padding: "2px 12px 10px",
+      fontSize: 12, lineHeight: 1.55, color: "var(--c-high)",
+      fontFamily: "var(--font-mono)",
+      overflowX: "auto", whiteSpace: "pre",
+      maxHeight: 340, overflowY: "auto",
+    }}>
+      {html
+        ? <code dangerouslySetInnerHTML={{ __html: stripShikiWrapper(html) }} />
+        : <code>{shown}</code>}
+      {truncated && (
+        <div style={{ color: "var(--c-dim)", marginTop: 8, fontSize: 11 }}>… truncated</div>
+      )}
+    </pre>
+  );
+}
+
 function renderToolDetail(
   toolName: string,
   input: Record<string, unknown>,
@@ -548,7 +643,12 @@ function renderToolDetail(
     // at a bare `$ command` until the tool ends.
     const liveOut = (output ?? "").trim() ||
       (typeof input._output === "string" ? input._output.trim() : "");
-    return <BashView command={stripShellWrapper(String(input.command))} output={liveOut} />;
+    return (
+      <BashView
+        command={shortenFleetPath(stripShellWrapper(String(input.command)))}
+        output={shortenFleetPath(liveOut)}
+      />
+    );
   }
   // Edit / Write: file header + unified-style diff. Old lines render
   // with a red gutter + red-tinted background; new lines green +
@@ -573,7 +673,7 @@ function renderToolDetail(
   // Grep / Glob / MCP tools surface stdout the same way Bash does.
   // Without this the user expanded a tool row and saw only the query;
   // the actual result was invisible even though the bridge captured it.
-  const outputBlock = (output ?? "").trim();
+  const outputBlock = shortenFleetPath((output ?? "").trim());
   const outputPanel = outputBlock ? (
     <pre style={{
       margin: "0",
@@ -589,17 +689,39 @@ function renderToolDetail(
     <>{head}{outputPanel}</>
   );
   if ("file_path" in input) {
-    return withOutput(padBox(
-      <span style={{ fontSize: 11.5, fontFamily: "var(--font-mono)", color: "var(--c-med)" }}>
-        {String(input.file_path)}
-      </span>
-    ));
+    const pp = prettyFilePath(String(input.file_path));
+    const fullPath = String(input.file_path);
+    const pathHead = padBox(
+      <span
+        onClick={(e) => { e.stopPropagation(); useAppStore.getState().openFile(fullPath); }}
+        style={{ fontSize: 12, fontFamily: "var(--font-mono)", cursor: "pointer" }}
+        title={`Open ${fullPath} in the editor`}
+        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.textDecoration = "underline"; }}
+        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.textDecoration = "none"; }}
+      >
+        <span style={{ color: "var(--c-dim)" }}>{pp.dir}</span>
+        <span style={{ color: "var(--c-high)", fontWeight: 500 }}>{pp.name}</span>
+      </span>,
+    );
+    // When the agent captured the read output, show it. Otherwise — for a
+    // Read — fetch the file ourselves and preview it, so expanding the card
+    // shows the actual file content instead of just the path.
+    if (outputBlock) return withOutput(pathHead);
+    if (toolName === "Read" || toolName === "View") {
+      return (
+        <>
+          {pathHead}
+          <ReadFilePreview filePath={String(input.file_path)} />
+        </>
+      );
+    }
+    return pathHead;
   }
   if ("pattern" in input) {
     return withOutput(padBox(
       <div style={{ fontSize: 11.5, fontFamily: "var(--font-mono)" }}>
         <span style={{ color: "rgba(251,146,60,0.8)" }}>{String(input.pattern)}</span>
-        {input.path != null && <span style={{ color: "var(--c-dim)" }}> in {String(input.path)}</span>}
+        {input.path != null && <span style={{ color: "var(--c-dim)" }}> in {shortenFleetPath(String(input.path))}</span>}
       </div>
     ));
   }
@@ -679,12 +801,81 @@ function CopyIconOnly({ text }: { text: string }) {
 }
 
 /* ── Code block ── */
+// Connector glyphs that mark an ASCII flow diagram (arrows + box-drawing
+// + flow triangles).
+const DIAGRAM_GLYPHS = "→←↑↓↔⟶⟵⇒⇐⇄➜➝▸◂▶◀▼▲▾▴▿▵‣│─━┃┌┐└┘├┤┬┴┼╮╯╰╭╱╲";
+const DIAGRAM_RE = new RegExp(`[${DIAGRAM_GLYPHS}]`);
+const DIAGRAM_SPLIT = new RegExp(`([${DIAGRAM_GLYPHS}]+)`);
+
+/** A fenced block reads as a flow diagram when it's plain text (no real
+ *  language) and carries ≥2 unicode connector glyphs — which ordinary code
+ *  essentially never does. */
+function looksLikeDiagram(text: string, language: string): boolean {
+  const lang = (language || "").toLowerCase();
+  if (lang && !["text", "txt", "plain", "plaintext", "diagram", "flow", "ascii"].includes(lang)) {
+    return false;
+  }
+  const matches = text.match(new RegExp(`[${DIAGRAM_GLYPHS}]`, "g"));
+  return (matches?.length ?? 0) >= 2;
+}
+
+/** ASCII flow diagram → readable visual: monospace structure preserved, but
+ *  connectors (arrows / box rules) lifted into the accent color so the flow
+ *  pops, and ALL-CAPS state words gently emphasized. Airy line-height. */
+function DiagramBlock({ text }: { text: string }) {
+  const lines = text.replace(/\n+$/, "").split("\n");
+  return (
+    <div style={{
+      margin: "12px 0", borderRadius: 10, overflow: "hidden",
+      border: "1px solid var(--sidebar-border)",
+      background: "color-mix(in srgb, var(--sidebar) 55%, transparent)",
+    }}>
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: "7px 12px 3px", fontSize: 9.5, color: "var(--c-dim)",
+        letterSpacing: "0.1em", textTransform: "uppercase",
+      }}>
+        <span>Flow</span>
+        <CopyIconOnly text={text} />
+      </div>
+      {/* Monospace alignment is sacred — ASCII art lives or dies by it. Style
+          with COLOR ONLY below: any font-weight (faux-bold widens glyphs) or
+          letter-spacing shifts columns and bends the diagram. Tight-ish
+          line-height so vertical │/▼ connectors read as continuous. */}
+      <div style={{
+        padding: "6px 14px 12px", fontFamily: "var(--font-mono)",
+        fontSize: 12.5, lineHeight: 1.5, color: "var(--c-dim)",
+        overflowX: "auto", whiteSpace: "pre",
+      }}>
+        {lines.map((line, i) => (
+          <div key={i}>
+            {line === "" ? " " : line.split(DIAGRAM_SPLIT).map((seg, j) => {
+              if (!seg) return null;
+              if (DIAGRAM_RE.test(seg)) {
+                return <span key={j} style={{ color: "rgb(64,180,120)" }}>{seg}</span>;
+              }
+              // Emphasize ALL-CAPS state words (PROBLEM, KAYDET, OCR…).
+              return seg.split(/(\b[A-ZÇĞİÖŞÜ]{3,}\b)/).map((w, k) =>
+                /^[A-ZÇĞİÖŞÜ]{3,}$/.test(w)
+                  ? <span key={`${j}-${k}`} style={{ color: "var(--c-high)" }}>{w}</span>
+                  : <span key={`${j}-${k}`}>{w}</span>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function CodeBlock({ language, children }: { language: string; children: string }) {
-  const highlighted = useShikiHTML(children, language || "text");
+  const isDiagram = looksLikeDiagram(children, language);
+  const highlighted = useShikiHTML(children, isDiagram ? "text" : language || "text");
   const inner = highlighted ? stripShikiWrapper(highlighted) : null;
+  if (isDiagram) return <DiagramBlock text={children} />;
 
   return (
-    <div style={{ margin: "12px 0", borderRadius: 9, overflow: "hidden", border: "1px solid var(--c-brd)", background: "var(--code-bg)", fontFamily: "var(--font-mono)" }}>
+    <div style={{ margin: "12px 0", borderRadius: 8, overflow: "hidden", border: "1px solid var(--sidebar-border)", background: "var(--sidebar)", fontFamily: "var(--font-mono)" }}>
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",
         padding: "8px 12px 2px",
@@ -712,7 +903,14 @@ function CodeBlock({ language, children }: { language: string; children: string 
 const mdComponents: Components = {
   code({ className, children }) {
     const lang = className?.replace("language-", "") ?? "";
-    if (!className) {
+    const raw = String(children ?? "");
+    // Inline vs block: react-markdown gives no className to BOTH inline code
+    // AND no-language fenced blocks (```\n…\n```), so keying off className
+    // alone mis-rendered language-less fenced blocks (e.g. ASCII flow
+    // diagrams) as inline pills. A fenced block always carries a newline;
+    // inline code never does — so the newline is the reliable signal.
+    const isBlock = !!className || raw.includes("\n");
+    if (!isBlock) {
       return (
         <code style={{
           fontFamily: "var(--font-mono)", fontSize: "0.86em",
@@ -723,7 +921,7 @@ const mdComponents: Components = {
         }}>{children}</code>
       );
     }
-    return <CodeBlock language={lang}>{String(children).replace(/\n$/, "")}</CodeBlock>;
+    return <CodeBlock language={lang}>{raw.replace(/\n$/, "")}</CodeBlock>;
   },
   p({ children }) {
     return <p style={{ margin: "0 0 14px", lineHeight: 1.65, fontSize: 14, color: "var(--c-high)" }}>{children}</p>;
@@ -759,13 +957,15 @@ const mdComponents: Components = {
   // store-aware version so file-shaped hrefs can route to openFile()
   // instead of opening externally.
   table({ children }) {
+    // Same frame as the Bash / code card — radius 8, --sidebar-border,
+    // --sidebar bg — so every "box" in a message reads as one design family.
     return (
       <div style={{
-        margin: "14px 0",
-        borderRadius: 9,
+        margin: "12px 0",
+        borderRadius: 8,
         overflow: "hidden",
-        border: "1px solid var(--c-brd)",
-        background: "var(--background)",
+        border: "1px solid var(--sidebar-border)",
+        background: "var(--sidebar)",
       }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>{children}</table>
       </div>
@@ -774,21 +974,20 @@ const mdComponents: Components = {
   th({ children }) {
     return <th style={{
       padding: "9px 14px",
-      borderBottom: "1px solid var(--c-brd)",
+      borderBottom: "1px solid var(--sidebar-border)",
       textAlign: "left",
       fontWeight: 600,
       color: "var(--c-dim)",
       fontSize: 10.5,
       letterSpacing: "0.06em",
       textTransform: "uppercase",
-      background: "var(--c-srf)",
       verticalAlign: "middle",
     }}>{children}</th>;
   },
   td({ children }) {
     return <td style={{
       padding: "10px 14px",
-      borderBottom: "1px solid var(--c-brd)",
+      borderBottom: "1px solid var(--sidebar-border)",
       color: "var(--c-high)",
       fontSize: 13,
       lineHeight: 1.45,
@@ -796,7 +995,7 @@ const mdComponents: Components = {
     }}>{children}</td>;
   },
   hr() {
-    return <hr style={{ border: "none", borderTop: "1px solid var(--c-brd)", margin: "16px 0" }} />;
+    return <hr style={{ border: "none", borderTop: "1px solid var(--sidebar-border)", margin: "16px 0" }} />;
   },
 };
 
@@ -1388,12 +1587,10 @@ function ThoughtsChip({ bursts, liveText, isLive = false, forceOpen }: {
           userSelect: "none",
         }}
       >
+        {/* While live: the glowing Fleetify mark. Collapsed/done: the expand
+            triangle (the affordance). */}
         {liveOn ? (
-          <span style={{
-            display: "inline-block", width: 5, height: 5, borderRadius: "50%",
-            background: "var(--c-dim)", flexShrink: 0,
-            animation: "thinking-cursor 1.2s ease-in-out infinite",
-          }}/>
+          <LogoMark size={12} glow style={{ flexShrink: 0, color: "var(--c-high)" }} />
         ) : (
           <span style={{
             display: "inline-block", flexShrink: 0, fontSize: 8,
@@ -1402,10 +1599,30 @@ function ThoughtsChip({ bursts, liveText, isLive = false, forceOpen }: {
             color: "var(--c-ghost)",
           }}>▶</span>
         )}
-        <span>
-          {liveOn ? "thinking" : "Thought"}
-          {timeLabel ? <span style={{ color: "var(--c-ghost)", opacity: 0.6 }}> · {timeLabel}</span> : null}
-          {burstCount > 1 ? <span style={{ color: "var(--c-ghost)", opacity: 0.6 }}> · {burstCount}</span> : null}
+        <span style={{ display: "inline-flex", alignItems: "baseline", gap: 0 }}>
+          {liveOn ? (
+            <span className="thinking-shimmer-text" style={{ fontWeight: 500 }}>
+              thinking
+            </span>
+          ) : (
+            "Thought"
+          )}
+          {liveOn ? (
+            // Live: small, coarse 5s-stepped elapsed — not a constant tick.
+            liveElapsed >= 5000 ? (
+              <span style={{
+                color: "var(--c-ghost)", opacity: 0.5,
+                fontSize: 9.5, fontFamily: "var(--font-mono)", marginLeft: 6,
+              }}>
+                {fmtDuration(Math.floor(liveElapsed / 5000) * 5000)}
+              </span>
+            ) : null
+          ) : (
+            <>
+              {timeLabel ? <span style={{ color: "var(--c-ghost)", opacity: 0.6 }}> · {timeLabel}</span> : null}
+              {burstCount > 1 ? <span style={{ color: "var(--c-ghost)", opacity: 0.6 }}> · {burstCount}</span> : null}
+            </>
+          )}
         </span>
       </button>
 
@@ -1544,9 +1761,20 @@ function MessageStatsRow({ message, hovered, toolOnly = false }: { message: Chat
       opacity: (hasMeta || hovered) ? (hovered ? 1 : 0.45) : 0,
       transition: "opacity 0.2s",
     }}>
-      <span style={{ fontSize: 11.5, color: "var(--c-dim)", fontFamily: "var(--font-mono)", letterSpacing: "-0.01em" }}>
-        {[timePart, tokenPart, cachePart].filter(Boolean).join("  ·  ")}
-      </span>
+      {/* Fleetify mark — a subtle, static brand signature at the foot of
+          every finished assistant message (sits just before the meta line). */}
+      <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+        {hasMeta && (
+          <LogoMark
+            size={11}
+            ariaLabel="Fleetify"
+            style={{ color: "var(--c-dim)", opacity: 0.6, flexShrink: 0 }}
+          />
+        )}
+        <span style={{ fontSize: 11.5, color: "var(--c-dim)", fontFamily: "var(--font-mono)", letterSpacing: "-0.01em" }}>
+          {[timePart, tokenPart, cachePart].filter(Boolean).join("  ·  ")}
+        </span>
+      </div>
 
       {/* Action cluster — Save to memory + Copy. Both fade in on hover so
           they don't compete with the cost/token meta line at rest. */}
@@ -2181,7 +2409,7 @@ function DispatchPendingCard({ block }: { block: import("@/types/chat").Dispatch
           )}
           {showThinking && (
             <span style={{ fontStyle: "italic", color: "var(--c-ghost)" }}>
-              thinking · {thinkingTail}
+              <span className="status-sheen">thinking</span> · {thinkingTail}
             </span>
           )}
         </div>
@@ -3009,6 +3237,42 @@ export const MessageContent = React.memo(MessageContentInner, (prev, next) => {
   return true;
 });
 
+/* Present-tense verb for the live activity line — "editing products.py",
+ * "reading config", "running command"… Mirrors the tool-name → action
+ * mapping used elsewhere; falls back to a generic verb for unknown tools. */
+function liveVerb(name: string, input: Record<string, unknown> | undefined): string {
+  const n = (name || "").toLowerCase();
+  const base = (p: unknown) =>
+    typeof p === "string" && p ? p.split(/[\\/]/).pop() || "" : "";
+  const fp = base(input?.file_path ?? input?.path ?? input?.notebook_path);
+  if (n === "read" || n === "notebookread") return fp ? `reading ${fp}` : "reading";
+  if (n === "edit" || n === "multiedit" || n === "notebookedit")
+    return fp ? `editing ${fp}` : "editing";
+  if (n === "write") return fp ? `writing ${fp}` : "writing";
+  if (n === "bash" || n === "powershell") return "running command";
+  if (n === "grep") return "searching";
+  if (n === "glob") return "finding files";
+  if (n === "webfetch" || n === "websearch") return "browsing the web";
+  if (n === "task" || n === "agent") return "delegating";
+  if (n.startsWith("mcp__")) {
+    const tail = name.split("__").pop() || "";
+    return tail ? `using ${tail}` : "using a tool";
+  }
+  return name ? `running ${name}` : "working";
+}
+
+/* Full file path a file-touching tool is operating on (Read/Edit/Write/…),
+ * or null for non-file tools — used to make the live activity line clickable
+ * so it opens that file in the right-side editor pane. */
+function toolFilePath(name: string, input: Record<string, unknown> | undefined): string | null {
+  const n = (name || "").toLowerCase();
+  if (["read", "edit", "multiedit", "write", "notebookread", "notebookedit"].includes(n)) {
+    const p = input?.file_path ?? input?.path ?? input?.notebook_path;
+    return typeof p === "string" && p ? p : null;
+  }
+  return null;
+}
+
 /* ── Streaming message ── */
 export function StreamingMessage({ text, thinking }: { text: string; thinking: string }) {
   // Per-field selectors — full-state useAppStore() subscribed the
@@ -3059,6 +3323,18 @@ export function StreamingMessage({ text, thinking }: { text: string; thinking: s
   const isIdle = !text && !thinking && !hasContent && visibleTools.length === 0;
   const showLiveThinking = !dropThinking && !!thinking;
 
+  // Live activity line — the single morphing status word at the foot of the
+  // stream. When a tool is running it reflects the action ("editing X",
+  // "reading Y"); otherwise it reads "thinking". Shown while idle OR while a
+  // tool runs, so the user always sees what the agent is doing right now.
+  const lastVisible = visibleTools.at(-1);
+  const activeTool = lastVisible
+    ? (lastVisible[1] as { name: string; input: Record<string, unknown> })
+    : null;
+  const liveLabel = activeTool ? liveVerb(activeTool.name, activeTool.input) : "thinking";
+  const liveFilePath = activeTool ? toolFilePath(activeTool.name, activeTool.input) : null;
+  const showLive = isStreaming && (isIdle || !!activeTool);
+
   // Unified elapsed timer — used by both ThinkingIndicator and StreamingStats
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
@@ -3066,8 +3342,6 @@ export function StreamingMessage({ text, thinking }: { text: string; thinking: s
     const iv = setInterval(() => setElapsed(Date.now() - streamStartTime), 300);
     return () => clearInterval(iv);
   }, [isStreaming, streamStartTime]);
-
-  const approxTokens = Math.round(text.length / 4);
 
   return (
     <div style={{ marginBottom: 28 }} className="fade-in">
@@ -3145,86 +3419,49 @@ export function StreamingMessage({ text, thinking }: { text: string; thinking: s
             Rendering `cleaned` here would double-print the full text
             concatenation under the per-segment blocks. */}
 
-        {/* Idle "Thinking..." indicator — shown when nothing else has arrived
-            yet (e.g. Gemini doesn't emit thought chunks; the gap before the
-            first message_chunk would otherwise look like a frozen UI).
-            Now includes shimmer skeleton lines underneath so the empty
-            space below reads as "response loading" instead of "frozen". */}
-        {isIdle && isStreaming && (
-          <div style={{ padding: "4px 0" }}>
-            <div style={{
-              display: "inline-flex", alignItems: "center", gap: 10,
-            }}>
-              {/* Bounce-dot row removed — the shimmer skeleton below
-                  already carries the "loading" signal, and stacking two
-                  animations made the area feel busy. */}
-              <span style={{
-                fontSize: 12.5, color: "var(--c-dim)",
-                letterSpacing: "-0.015em", fontWeight: 450,
-              }}>
-                Thinking
-              </span>
-            {elapsed >= 800 && (
-              <span style={{
-                fontFamily: "var(--font-mono)", fontSize: 10.5,
-                color: "var(--c-ghost)", letterSpacing: 0,
-              }}>
-                {fmtDuration(elapsed)}
-              </span>
-            )}
-            </div>
-            {/* Shimmer skeleton — three placeholder lines that subtly
-                slide a bright band across each row. Communicates
-                "response is loading" instead of leaving the chat area
-                blank. Auto-fades in after 600ms so a fast first-token
-                response doesn't blink it. */}
-            {elapsed >= 600 && (
-              <div style={{
-                marginTop: 14,
-                display: "flex", flexDirection: "column", gap: 8,
-                animation: "fade-in 0.3s ease-out both",
-              }}>
-                <style>{`
-                  @keyframes thinking-shimmer {
-                    0%   { background-position: -200px 0; }
-                    100% { background-position: calc(200px + 100%) 0; }
-                  }
-                `}</style>
-                {[88, 72, 60].map((widthPct, i) => (
-                  <div key={i} style={{
-                    height: 10,
-                    width: `${widthPct}%`,
-                    borderRadius: 4,
-                    backgroundImage:
-                      "linear-gradient(90deg, var(--c-srf) 0%, var(--c-brd) 50%, var(--c-srf) 100%)",
-                    backgroundRepeat: "no-repeat",
-                    backgroundSize: "200px 100%",
-                    backgroundColor: "var(--c-srf)",
-                    animation: `thinking-shimmer 1.6s ease-in-out ${i * 0.18}s infinite`,
-                    opacity: 0.7 - i * 0.15,
-                  }} />
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Subtle stats row once content is streaming */}
-        {!isIdle && elapsed >= 800 && (
+        {/* Live activity line — one morphing, shimmering status word at the
+            foot of the stream. "thinking" while idle; the action verb
+            ("editing products.py", "reading config", "running command")
+            while a tool runs. No leading dot. The elapsed time is small and
+            only surfaces at coarse 5s steps (not a constant tick). */}
+        {showLive && (
           <div style={{
-            marginTop: 10, fontSize: 10.5, fontFamily: "var(--font-mono)",
-            color: "var(--c-ghost)",
-            display: "flex", alignItems: "center", gap: 6,
+            margin: "6px 0",
+            display: "inline-flex", alignItems: "center", gap: 7,
+            animation: "fade-in 0.2s ease both",
           }}>
-            <span>{fmtDuration(elapsed)}</span>
-            {approxTokens > 20 && (
-              <>
-                <span style={{ opacity: 0.4 }}>·</span>
-                <span>~{fmtTokens(approxTokens)} tok</span>
-              </>
+            <LogoMark size={13} glow style={{ flexShrink: 0, color: "var(--c-high)" }} />
+            <span
+              className="thinking-shimmer-text"
+              onClick={liveFilePath ? (e) => { e.stopPropagation(); useAppStore.getState().openFile(liveFilePath); } : undefined}
+              title={liveFilePath ? `Open ${liveFilePath} in the editor` : undefined}
+              style={{
+                fontSize: 12, fontWeight: 500,
+                fontFamily: "var(--font-sans)", letterSpacing: "-0.01em",
+                maxWidth: 460, overflow: "hidden",
+                textOverflow: "ellipsis", whiteSpace: "nowrap",
+                cursor: liveFilePath ? "pointer" : "default",
+              }}
+              onMouseEnter={liveFilePath ? (e) => { (e.currentTarget as HTMLElement).style.textDecoration = "underline"; } : undefined}
+              onMouseLeave={liveFilePath ? (e) => { (e.currentTarget as HTMLElement).style.textDecoration = "none"; } : undefined}
+            >
+              {liveLabel}
+            </span>
+            {elapsed >= 5000 && (
+              <span style={{
+                fontSize: 9.5, color: "var(--c-ghost)", opacity: 0.5,
+                fontFamily: "var(--font-mono)", letterSpacing: 0,
+              }}>
+                {fmtDuration(Math.floor(elapsed / 5000) * 5000)}
+              </span>
             )}
           </div>
         )}
+        {/* The standalone elapsed/token stats row was removed: it rendered
+            a SECOND timer ("3s") right under the ThoughtsChip's own
+            "thinking · 0s", so two separate time readouts stacked during a
+            turn. The reasoning chip (live) and the final committed message
+            stats now carry timing — one element, not two. */}
       </div>
     </div>
   );

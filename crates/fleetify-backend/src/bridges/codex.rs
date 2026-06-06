@@ -202,7 +202,11 @@ impl CodexBridge {
         self
     }
 
-    async fn cold_start(&self, base_url_override: Option<String>) -> Result<()> {
+    async fn cold_start(
+        &self,
+        base_url_override: Option<String>,
+        account_env: Vec<(String, String)>,
+    ) -> Result<()> {
         let mut guard = self.state.lock().await;
         if guard.is_some() {
             return Ok(());
@@ -280,6 +284,8 @@ impl CodexBridge {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        // Multi-account isolation (no-op for the System account).
+        crate::bridges::account_env::apply_to_command(&mut cmd, &account_env);
 
         let mut proc = cmd.spawn().map_err(|e| {
             anyhow!(
@@ -431,7 +437,7 @@ impl CodexBridge {
         let msg_owned = msg.to_string();
         let needs_cold_start = state_mu.lock().await.is_none();
         let cold_starter = if needs_cold_start {
-            Some(self.cold_start_fut(ctx.base_url_override.clone()))
+            Some(self.cold_start_fut(ctx.base_url_override.clone(), ctx.account_env.clone()))
         } else {
             None
         };
@@ -748,6 +754,7 @@ impl CodexBridge {
     fn cold_start_fut(
         &self,
         base_url_override: Option<String>,
+        account_env: Vec<(String, String)>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> {
         let session_id = self.session_id.clone();
         let project_path = self.project_path.clone();
@@ -773,7 +780,7 @@ impl CodexBridge {
                 state,
                 permission_handler,
             };
-            bridge.cold_start(base_url_override).await
+            bridge.cold_start(base_url_override, account_env).await
         })
     }
 }

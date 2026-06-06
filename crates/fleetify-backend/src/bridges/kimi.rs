@@ -242,7 +242,7 @@ impl KimiBridge {
 
     /// Lazily spawn `kimi acp`, run the ACP handshake, and create the ACP
     /// session. Idempotent — first call sets up State, later calls return.
-    async fn cold_start(&self) -> Result<()> {
+    async fn cold_start(&self, account_env: Vec<(String, String)>) -> Result<()> {
         let mut guard = self.state.lock().await;
         if guard.is_some() {
             return Ok(());
@@ -271,6 +271,8 @@ impl KimiBridge {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        // Multi-account isolation (no-op for the System account).
+        crate::bridges::account_env::apply_to_command(&mut cmd, &account_env);
 
         let mut proc = cmd.spawn().map_err(|e| {
             anyhow!(
@@ -498,7 +500,7 @@ impl KimiBridge {
         let system_prompt = self.system_prompt.clone();
         let needs_cold_start = state_mu.lock().await.is_none();
         let cold_starter = if needs_cold_start {
-            Some(self.cold_start_fut())
+            Some(self.cold_start_fut(ctx.account_env.clone()))
         } else {
             None
         };
@@ -631,6 +633,7 @@ impl KimiBridge {
     // it without holding the bridge ref.
     fn cold_start_fut(
         &self,
+        account_env: Vec<(String, String)>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> {
         let session_id = self.session_id.clone();
         let project_path = self.project_path.clone();
@@ -656,7 +659,7 @@ impl KimiBridge {
                 aborted: Arc::new(AtomicBool::new(false)),
                 state,
             };
-            bridge.cold_start().await
+            bridge.cold_start(account_env).await
         })
     }
 }

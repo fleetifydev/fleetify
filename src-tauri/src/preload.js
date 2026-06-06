@@ -246,6 +246,32 @@ document.addEventListener("mousedown", function (e) {
         },
         getKeyPreview:    function (id) { return invoke("providers_get_key_preview", { id: String(id || "") }); },
         deleteKey:        function (id) { return invoke("providers_delete_key", { id: String(id || "") }); },
+        // Multi-account: per-account HTTP keychain key + CLI PTY login.
+        setAccountKey:    function (id, accountId, key) {
+          return invoke("providers_set_account_key", {
+            id: String(id || ""),
+            accountId: String(accountId || ""),
+            key: String(key || ""),
+          });
+        },
+        getAccountKeyPreview: function (id, accountId) {
+          return invoke("providers_get_account_key_preview", {
+            id: String(id || ""),
+            accountId: String(accountId || ""),
+          });
+        },
+        deleteAccountKey: function (id, accountId) {
+          return invoke("providers_delete_account_key", {
+            id: String(id || ""),
+            accountId: String(accountId || ""),
+          });
+        },
+        openAccountLogin: function (id, accountId) {
+          return invoke("providers_open_account_login", {
+            id: String(id || ""),
+            accountId: String(accountId || ""),
+          });
+        },
         setEnabled:       function (id, enabled) {
           return invoke("providers_set_enabled", {
             id: String(id || ""),

@@ -19,6 +19,48 @@ fn clones_root() -> PathBuf {
     fleetify_core::fleetify_home().join("clones")
 }
 
+/// The user's GitHub OAuth access token, pushed in-process by the Tauri shell
+/// (it owns the keychain; the token never crosses to the renderer). Used to
+/// clone PRIVATE github.com repos — without it, `git clone https://github.com/…`
+/// of a private repo fails with "could not read Username … Device not
+/// configured". `None` ⇒ unauthenticated clone (public repos / system creds).
+static GITHUB_TOKEN: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+/// Set (or clear) the GitHub clone token. Called by the shell at startup and
+/// after the user links / refreshes / disconnects GitHub.
+pub fn set_github_token(token: Option<String>) {
+    if let Ok(mut g) = GITHUB_TOKEN.write() {
+        *g = token.filter(|t| !t.is_empty());
+    }
+}
+
+/// Rewrite an `https://github.com/owner/repo[.git]` URL to embed the token as
+/// `https://x-access-token:<token>@github.com/owner/repo.git` so the clone (and
+/// later fetches via the stored remote) authenticate. Non-github / non-https /
+/// already-credentialed URLs, or no token on file, are returned unchanged.
+fn inject_github_token(url: &str) -> String {
+    let token = match GITHUB_TOKEN.read().ok().and_then(|g| g.clone()) {
+        Some(t) => t,
+        None => return url.to_string(),
+    };
+    // Only plain https github.com URLs without existing credentials.
+    let Some(rest) = url.strip_prefix("https://github.com/") else {
+        return url.to_string();
+    };
+    if url.contains('@') {
+        return url.to_string();
+    }
+    format!("https://x-access-token:{token}@github.com/{rest}")
+}
+
+/// Replace any embedded token in an error string so it never reaches logs / UI.
+fn redact_token(text: &str) -> String {
+    match GITHUB_TOKEN.read().ok().and_then(|g| g.clone()) {
+        Some(t) if !t.is_empty() => text.replace(&t, "***"),
+        _ => text.to_string(),
+    }
+}
+
 fn repo_name_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| Regex::new(r"[^A-Za-z0-9._-]+").expect("REPO_NAME_RE"))
@@ -170,12 +212,17 @@ pub async fn clone_or_pull(
         }
     } else {
         let path_str = path.to_string_lossy().into_owned();
-        let mut args: Vec<&str> = vec!["clone", "--filter=blob:none"];
+        // Authenticate private github.com clones with the Fleetify GitHub token
+        // (no-op for public repos / non-github URLs). `-c credential.helper=`
+        // disables Git Credential Manager so a non-interactive run fails fast
+        // instead of blocking on a username prompt.
+        let auth_url = inject_github_token(url);
+        let mut args: Vec<&str> = vec!["-c", "credential.helper=", "clone", "--filter=blob:none"];
         if let Some(b) = branch {
             args.push("--branch");
             args.push(b);
         }
-        args.push(url);
+        args.push(&auth_url);
         args.push(&path_str);
         let (rc, _out, err) = git_cmd(&args, None, 300).await;
         if rc != 0 {
@@ -184,6 +231,8 @@ pub async fn clone_or_pull(
             if path.exists() {
                 let _ = std::fs::remove_dir_all(&path);
             }
+            // Redact the token if it leaked into the error text.
+            let err = redact_token(&err);
             return Err(CloneError::Failed(if err.is_empty() {
                 "git clone failed".into()
             } else {

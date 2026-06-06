@@ -112,7 +112,7 @@ impl OpenAICompatToolAdapter {
             crate::providers::AuthSpec::Bearer { env_hint } => env_hint,
             _ => None,
         };
-        let api_key = crate::providers::keys::get_key(spec.id)
+        let api_key = crate::providers::keys::get_key_for(spec.id, ctx.account_id.as_deref())
             .or_else(|| env_hint.and_then(|n| std::env::var(n).ok()))
             .ok_or_else(|| {
                 anyhow!(

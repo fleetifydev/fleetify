@@ -18,6 +18,8 @@ import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { ConnectionStatusPill } from "@/components/settings/shared/connection-status-pill";
 import { Toggle } from "@/components/settings/general/_primitives";
 import { AntigravitySdkSetupRow } from "./antigravity-sdk-setup";
+import { AccountsManager } from "@/components/settings/shared/accounts-manager";
+import "@/components/settings/settings-ui.css";
 import { checkPythonRuntime } from "@/lib/api";
 
 export interface AgentScanEntry {
@@ -31,23 +33,7 @@ export interface AgentScanEntry {
 }
 
 function DefaultBadge() {
-  return (
-    <span
-      style={{
-        fontSize: 9.5,
-        fontWeight: 700,
-        letterSpacing: "0.08em",
-        textTransform: "uppercase",
-        padding: "2px 6px",
-        borderRadius: 4,
-        background: "rgba(74,222,128,0.16)",
-        color: "rgb(74,222,128)",
-        border: "1px solid rgba(74,222,128,0.30)",
-      }}
-    >
-      Default
-    </span>
-  );
+  return <span className="s-tag">Default</span>;
 }
 
 const ghostBtn: React.CSSProperties = {
@@ -55,12 +41,12 @@ const ghostBtn: React.CSSProperties = {
   cursor: "pointer",
   outline: "none",
   padding: "6px 12px",
-  borderRadius: 7,
+  borderRadius: 8,
   fontSize: 12,
   fontWeight: 500,
-  background: "transparent",
+  background: "var(--c-srf)",
   border: "1px solid var(--c-brd)",
-  color: "var(--c-high)",
+  color: "var(--c-med)",
   display: "inline-flex",
   alignItems: "center",
   gap: 6,
@@ -71,7 +57,7 @@ const primaryBtn: React.CSSProperties = {
   cursor: "pointer",
   outline: "none",
   padding: "8px 14px",
-  borderRadius: 7,
+  borderRadius: 8,
   fontSize: 12,
   fontWeight: 600,
   background: "var(--c-high)",
@@ -315,32 +301,21 @@ export function AgentCard({
               onSetup={() => onInstall?.()}
             />
           )}
+          {/* Multiple accounts: HOME-isolated logins per CLI agent. Shown once
+              the binary is installed (the SDK has no on-disk login home). */}
+          {!isSdk && installed && (
+            <AccountsManager providerId={spec.id} kind="cli" onChanged={onChanged} />
+          )}
           {/* All other agents keep the legacy install-hint block. */}
           {!isSdk && !installed && installHint && (
             <div>
               <div style={{ fontSize: 12, fontWeight: 500, color: "var(--c-high)", marginBottom: 6 }}>
                 Install
               </div>
-              <div
-                style={{
-                  fontFamily: "var(--font-mono, monospace)",
-                  fontSize: 12,
-                  padding: "8px 10px",
-                  borderRadius: 6,
-                  background: "var(--c-srf)",
-                  border: "1px solid var(--c-brd)",
-                  color: "var(--c-high)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 8,
-                }}
-              >
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  $ {installHint}
-                </span>
-                <button onClick={onCopyInstall} style={ghostBtn}>
-                  {copiedInstall ? <Check size={11} /> : <Copy size={11} />}
+              <div className="s-cmd">
+                <code>{installHint}</code>
+                <button onClick={onCopyInstall} className="s-cmd-copy">
+                  {copiedInstall ? <Check size={12} /> : <Copy size={12} />}
                   {copiedInstall ? "Copied" : "Copy"}
                 </button>
               </div>
@@ -468,26 +443,10 @@ export function AgentCard({
               <div style={{ fontSize: 12, fontWeight: 500, color: "var(--c-high)", marginBottom: 6 }}>
                 Login
               </div>
-              <div
-                style={{
-                  fontFamily: "var(--font-mono, monospace)",
-                  fontSize: 12,
-                  padding: "8px 10px",
-                  borderRadius: 6,
-                  background: "var(--c-srf)",
-                  border: "1px solid var(--c-brd)",
-                  color: "var(--c-high)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 8,
-                }}
-              >
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  $ {loginHint}
-                </span>
-                <button onClick={onCopyLogin} style={ghostBtn}>
-                  {copiedLogin ? <Check size={11} /> : <Terminal size={11} />}
+              <div className="s-cmd">
+                <code>{loginHint}</code>
+                <button onClick={onCopyLogin} className="s-cmd-copy">
+                  {copiedLogin ? <Check size={12} /> : <Terminal size={12} />}
                   {copiedLogin ? "Copied" : "Copy"}
                 </button>
               </div>

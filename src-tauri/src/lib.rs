@@ -161,6 +161,10 @@ pub fn run() {
             shell::ipc::providers_set_enabled_models,
             shell::ipc::providers_set_ollama_base_url,
             shell::ipc::providers_set_cloudflare_account_id,
+            shell::ipc::providers_set_account_key,
+            shell::ipc::providers_get_account_key_preview,
+            shell::ipc::providers_delete_account_key,
+            shell::ipc::providers_open_account_login,
             shell::ipc::git_generate_commit_message,
             shell::ipc::git_generate_pr_summary,
             shell::ipc::git_review_diff,
@@ -315,6 +319,9 @@ pub fn run() {
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 }
                 crate::shell::providers_setup::warm_providers_at_boot(&handle).await;
+                // Hydrate the backend clone service with the linked GitHub
+                // token so private-repo clones authenticate from the first try.
+                crate::shell::github_link::push_clone_token().await;
 
                 // Restore the persisted PostHog opt-in. The backend's
                 // posthog::init already ran inside serve(), so the

@@ -30,6 +30,9 @@ export interface LogoMarkProps {
   className?: string;
   style?: CSSProperties;
   ariaLabel?: string;
+  /** Animate the three bars in a staggered top→bottom glow wave (with a
+   *  soft halo) — for live/active accents like the "thinking" indicator. */
+  glow?: boolean;
 }
 
 export function LogoMark({
@@ -39,6 +42,7 @@ export function LogoMark({
   className,
   style,
   ariaLabel = "Fleetify logo",
+  glow = false,
 }: LogoMarkProps) {
   return (
     <svg
@@ -48,7 +52,7 @@ export function LogoMark({
       height={size}
       viewBox="0 0 24 24"
       fill="none"
-      className={className}
+      className={[glow ? "logo-glow" : "", className].filter(Boolean).join(" ") || undefined}
       style={{ display: "block", ...style }}
     >
       {/* Top bar — full width. The "F" crossbar; the orchestrator

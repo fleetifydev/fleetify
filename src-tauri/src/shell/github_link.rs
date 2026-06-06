@@ -77,6 +77,25 @@ pub async fn get_link() -> Option<Value> {
     serde_json::from_str::<Value>(&raw).ok()
 }
 
+/// Push the linked GitHub `access_token` into the embedded backend (in-process,
+/// never to the renderer) so its clone service can authenticate PRIVATE
+/// github.com clones. Call at startup and after any link change (oauth /
+/// refresh / disconnect). Clears the token when no link is present.
+pub async fn push_clone_token() {
+    // Prefer the Fleetify OAuth link's token; fall back to the `gh` CLI's token
+    // (`gh auth token`) when the user authed via gh instead of the OAuth link —
+    // that's how `list_repos` already resolves repos (gh-first).
+    let mut token = get_link().await.and_then(|l| {
+        l.get("access_token")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+    });
+    if token.is_none() {
+        token = crate::shell::git::gh_auth_token().await;
+    }
+    fleetify_backend::services::clone::set_github_token(token);
+}
+
 async fn write_link(payload: &Value) -> anyhow::Result<()> {
     let uid = auth::get_user_id()
         .await

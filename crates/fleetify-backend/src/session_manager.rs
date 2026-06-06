@@ -286,8 +286,8 @@ impl SessionManager {
             "INSERT INTO sessions \
              (id,title,project_path,group_path,tool,command,status,use_worktree,\
               claude_session_id,model_name,permission_mode,session_mode,\
-              agent_template,user_id,pinned,order_idx,created_at,notes,budget_used) \
-             VALUES (?,?,?,?,?,?,'stopped',?,?,?,?,?,?,?,0,0,?,?,0.0)",
+              agent_template,account_id,user_id,pinned,order_idx,created_at,notes,budget_used) \
+             VALUES (?,?,?,?,?,?,'stopped',?,?,?,?,?,?,?,?,0,0,?,?,0.0)",
         )
         .bind(&id)
         .bind(&data.title)
@@ -301,6 +301,7 @@ impl SessionManager {
         .bind(&data.permission_mode)
         .bind(&data.session_mode)
         .bind(&data.agent_template)
+        .bind(&data.account_id)
         .bind(user_id)
         .bind(&created_at)
         .bind(&data.notes)

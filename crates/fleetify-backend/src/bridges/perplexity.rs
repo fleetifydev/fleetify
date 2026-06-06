@@ -40,8 +40,12 @@ pub struct PerplexityBridge {
 }
 
 impl PerplexityBridge {
-    pub fn new(session_id: impl Into<String>, model: impl Into<String>) -> Self {
-        let api_key = crate::providers::keys::get_key(PROVIDER_ID)
+    pub fn new(
+        session_id: impl Into<String>,
+        model: impl Into<String>,
+        account_id: Option<&str>,
+    ) -> Self {
+        let api_key = crate::providers::keys::get_key_for(PROVIDER_ID, account_id)
             .or_else(|| std::env::var("PERPLEXITY_API_KEY").ok());
         let model = model.into();
         let base_url = resolve_base_url(&model);
@@ -398,7 +402,7 @@ mod tests {
 
     #[test]
     fn sonar_model_uses_default_base() {
-        let b = PerplexityBridge::new("s1", "sonar");
+        let b = PerplexityBridge::new("s1", "sonar", None);
         assert_eq!(b.base_url, DEFAULT_BASE);
     }
 
@@ -406,7 +410,7 @@ mod tests {
     fn agent_model_uses_v1_agent_endpoint() {
         // The bridge looks up the catalog by model id; agent models
         // override the base URL via ModelSpec.endpoint.
-        let b = PerplexityBridge::new("s1", "anthropic/claude-sonnet-4-6");
+        let b = PerplexityBridge::new("s1", "anthropic/claude-sonnet-4-6", None);
         assert!(b.base_url.ends_with("/v1/agent"));
         assert_eq!(
             b.base_url,

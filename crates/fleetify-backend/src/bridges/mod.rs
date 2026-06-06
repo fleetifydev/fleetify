@@ -3,6 +3,7 @@
 //! Phase 2 (spec II.6). The normalized `BridgeEvent` is the exact wire
 //! shape the `/ws/sessions` handler forwards (unchanged React client).
 
+pub mod account_env;
 pub mod acp;
 pub mod agentic_runner;
 pub mod antigravity;
@@ -46,6 +47,19 @@ pub struct BridgeContext {
     /// Gemini CLIs may not honour runtime model override — flag as a
     /// known limitation but don't block.
     pub model_override: Option<String>,
+    /// Multi-account: HOME path for the selected account. Used ONLY by the
+    /// antigravity bridge for its in-process disk reads; the actual subprocess
+    /// env comes from `account_env`. `None` ⇒ System account.
+    pub home_override: Option<std::path::PathBuf>,
+    /// Env vars to set on the spawned CLI subprocess so it reads the selected
+    /// account's credentials — `CLAUDE_CONFIG_DIR=<dir>` for config-dir agents
+    /// (claude/codex), or a full HOME/XDG/AppData bundle for the rest. Empty
+    /// for System. Resolved by `services::accounts::resolve_env`.
+    pub account_env: Vec<(String, String)>,
+    /// Multi-account isolation for HTTP providers: which labeled keychain key
+    /// to use (`None`/`"system"` ⇒ the legacy/default key). CLI bridges ignore
+    /// this (they isolate via `home_override`).
+    pub account_id: Option<String>,
 }
 
 /// Tool-dispatch wrapper used by the `/ws/sessions` send flow (parity

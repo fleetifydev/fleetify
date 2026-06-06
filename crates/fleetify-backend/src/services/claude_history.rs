@@ -112,6 +112,36 @@ pub fn find_claude_project_dir(path: &str) -> Option<PathBuf> {
 /// no candidate directory holds the transcript at all — the orphaned-id case
 /// (cwd changed, `~/.claude` cleared, or the id was persisted before its
 /// transcript was durably written).
+/// Like [`resume_conversation_exists`] but checks under an explicit Claude
+/// config dir (`CLAUDE_CONFIG_DIR`) rather than the default `~/.claude`. Used by
+/// the multi-account path: a session pinned to / following the `~/.claude-2`
+/// account stores its transcripts under `~/.claude-2/projects/…`, so the resume
+/// check must look there — otherwise a conversation that exists under System
+/// looks "present" and `claude --resume` hard-fails in the other account with
+/// "No conversation found".
+pub fn resume_conversation_exists_in(
+    config_dir: &std::path::Path,
+    cwd: &str,
+    claude_session_id: &str,
+) -> bool {
+    if claude_session_id.is_empty() {
+        return false;
+    }
+    let projects_root = config_dir.join("projects");
+    let file = format!("{claude_session_id}.jsonl");
+    // Modern encoding (every non-alphanumeric → '-') and the slash-only
+    // encoding both seen in the wild.
+    let encoded_dash: String = cwd
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    if projects_root.join(&encoded_dash).join(&file).is_file() {
+        return true;
+    }
+    let encoded_slash: String = cwd.replace(['/', '\\'], "-");
+    projects_root.join(&encoded_slash).join(&file).is_file()
+}
+
 pub fn resume_conversation_exists(cwd: &str, claude_session_id: &str) -> bool {
     if claude_session_id.is_empty() {
         return false;

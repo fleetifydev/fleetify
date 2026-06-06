@@ -181,12 +181,36 @@ export type CloudflareVerifyResult = {
   error?: string | null;
 };
 
+/** One account/login for a provider or CLI agent. */
+export interface AccountInfo {
+  id: string;
+  provider_id: string;
+  /** Friendly name — the signed-in email when known, else dir/user label. */
+  label: string;
+  /** Secondary line: config-dir name, "System", or the user's custom label. */
+  detail?: string | null;
+  kind: "cli" | "http";
+  is_default: boolean;
+  /** CLI: indicators fire against the account's home; HTTP: a key is on file. */
+  authenticated: boolean;
+  /** The synthetic, undeletable "System" account (real HOME / legacy key). */
+  system: boolean;
+}
+
+export type ProvidersOpenLoginResult =
+  | { ok: true; pty_id: string }
+  | { ok: false; code?: string; error?: string };
+
 interface ProvidersAPI {
   listCatalog: () => Promise<ProvidersListResult>;
   fetchHealth: () => Promise<ProvidersHealthResult>;
   setKey: (id: string, key: string) => Promise<ProvidersSetKeyResult>;
   getKeyPreview: (id: string) => Promise<ProvidersKeyPreviewResult>;
   deleteKey: (id: string) => Promise<ProvidersDeleteResult>;
+  setAccountKey: (id: string, accountId: string, key: string) => Promise<ProvidersSetKeyResult>;
+  getAccountKeyPreview: (id: string, accountId: string) => Promise<ProvidersKeyPreviewResult>;
+  deleteAccountKey: (id: string, accountId: string) => Promise<ProvidersMutationResult>;
+  openAccountLogin: (id: string, accountId: string) => Promise<ProvidersOpenLoginResult>;
   setEnabled: (id: string, enabled: boolean) => Promise<ProvidersMutationResult>;
   setDefault: (id: string, model?: string | null) => Promise<ProvidersMutationResult & { default_model?: string | null }>;
   setConnectedBulk: (
@@ -220,6 +244,10 @@ function api(): ProvidersAPI {
       }),
       getKeyPreview: async () => ({ ok: true, preview: null }),
       deleteKey: async () => ({ ok: false }),
+      setAccountKey: async () => ({ ok: false, code: "KEYCHAIN", error: "electron unavailable" }),
+      getAccountKeyPreview: async () => ({ ok: true, preview: null }),
+      deleteAccountKey: async () => ({ ok: false, error: "electron unavailable" }),
+      openAccountLogin: async () => ({ ok: false, error: "electron unavailable" }),
       setEnabled: async () => ({ ok: false, error: "electron unavailable" }),
       setDefault: async (_id: string, _model?: string | null) => ({ ok: false, error: "electron unavailable" }),
       setConnectedBulk: async () => ({ ok: false, error: "electron unavailable" }),
@@ -266,6 +294,95 @@ export const providers = {
   setKey: (id: string, key: string) => api().setKey(id, key),
   getKeyPreview: (id: string) => api().getKeyPreview(id),
   deleteKey: (id: string) => api().deleteKey(id),
+
+  // ── Multi-account ──────────────────────────────────────────────────────
+  /** List a provider's accounts (System first, then saved). REST. */
+  listAccounts: async (id: string): Promise<AccountInfo[]> => {
+    try {
+      const res = await apiFetch(`/api/providers/${encodeURIComponent(id)}/accounts`);
+      if (!res.ok) return [];
+      const body = (await res.json()) as { accounts?: AccountInfo[] };
+      return body.accounts ?? [];
+    } catch {
+      return [];
+    }
+  },
+  /** Create an account row (returns its id). REST. */
+  createAccount: async (
+    id: string,
+    label: string,
+    kind?: "cli" | "http",
+  ): Promise<{ ok: boolean; account?: AccountInfo; error?: string }> => {
+    try {
+      const res = await apiFetch(`/api/providers/${encodeURIComponent(id)}/accounts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label, kind }),
+      });
+      if (!res.ok) return { ok: false, error: await res.text() };
+      const body = (await res.json()) as { account?: AccountInfo };
+      return { ok: true, account: body.account };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  },
+  /** Delete an account row. `force` nulls any sessions still using it. REST. */
+  deleteAccount: async (
+    id: string,
+    accountId: string,
+    force = false,
+  ): Promise<{ ok: boolean; error?: string; sessions?: number }> => {
+    try {
+      const qs = force ? "?force=1" : "";
+      const res = await apiFetch(
+        `/api/providers/${encodeURIComponent(id)}/accounts/${encodeURIComponent(accountId)}${qs}`,
+        { method: "DELETE" },
+      );
+      if (res.status === 409) {
+        const body = (await res.json()) as { sessions?: number };
+        return { ok: false, error: "in_use", sessions: body.sessions };
+      }
+      if (!res.ok) return { ok: false, error: await res.text() };
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  },
+  /** Make an account the provider's default. REST. */
+  setDefaultAccount: async (id: string, accountId: string): Promise<ProvidersMutationResult> => {
+    try {
+      const res = await apiFetch(
+        `/api/providers/${encodeURIComponent(id)}/accounts/${encodeURIComponent(accountId)}/default`,
+        { method: "POST" },
+      );
+      return { ok: res.ok };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  },
+  /** Rename an account. REST. */
+  renameAccount: async (id: string, accountId: string, label: string): Promise<ProvidersMutationResult> => {
+    try {
+      const res = await apiFetch(
+        `/api/providers/${encodeURIComponent(id)}/accounts/${encodeURIComponent(accountId)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ label }),
+        },
+      );
+      return { ok: res.ok };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  },
+  // HTTP key (keychain) + CLI login (PTY) go through the shell IPC.
+  setAccountKey: (id: string, accountId: string, key: string) =>
+    api().setAccountKey(id, accountId, key),
+  getAccountKeyPreview: (id: string, accountId: string) =>
+    api().getAccountKeyPreview(id, accountId),
+  deleteAccountKey: (id: string, accountId: string) => api().deleteAccountKey(id, accountId),
+  openAccountLogin: (id: string, accountId: string) => api().openAccountLogin(id, accountId),
   setEnabled: (id: string, enabled: boolean) => api().setEnabled(id, enabled),
   setDefault: (id: string, model?: string | null) => api().setDefault(id, model ?? null),
   setConnectedBulk: (connected: Record<string, boolean>, enabledAgents?: string[] | null) =>

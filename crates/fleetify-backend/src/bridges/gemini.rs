@@ -347,7 +347,11 @@ impl GeminiBridge {
     /// Lazily spawn `gemini --acp`, run the ACP handshake, and create
     /// the ACP session. Idempotent — first call sets up State, later
     /// calls return immediately.
-    async fn cold_start(&self, base_url_override: Option<String>) -> Result<()> {
+    async fn cold_start(
+        &self,
+        base_url_override: Option<String>,
+        account_env: Vec<(String, String)>,
+    ) -> Result<()> {
         let mut guard = self.state.lock().await;
         if guard.is_some() {
             return Ok(());
@@ -390,6 +394,8 @@ impl GeminiBridge {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        // Multi-account isolation (no-op for the System account).
+        crate::bridges::account_env::apply_to_command(&mut cmd, &account_env);
 
         let mut proc = match cmd.spawn() {
             Ok(p) => p,
@@ -634,7 +640,7 @@ impl GeminiBridge {
         let system_prompt = self.system_prompt.clone();
         let needs_cold_start = state_mu.lock().await.is_none();
         let cold_starter = if needs_cold_start {
-            Some(self.cold_start_fut(ctx.base_url_override.clone()))
+            Some(self.cold_start_fut(ctx.base_url_override.clone(), ctx.account_env.clone()))
         } else {
             None
         };
@@ -782,6 +788,7 @@ impl GeminiBridge {
     fn cold_start_fut(
         &self,
         base_url_override: Option<String>,
+        account_env: Vec<(String, String)>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> {
         // SAFETY: we only need a clone of fields; the future has 'static lifetime.
         let session_id = self.session_id.clone();
@@ -808,7 +815,7 @@ impl GeminiBridge {
                 state,
                 permission_handler,
             };
-            bridge.cold_start(base_url_override).await
+            bridge.cold_start(base_url_override, account_env).await
         })
     }
 }

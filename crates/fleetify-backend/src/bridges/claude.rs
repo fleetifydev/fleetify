@@ -69,6 +69,21 @@ fn swap_resume_for_continue(mut cmd: Vec<String>) -> Vec<String> {
     cmd
 }
 
+/// Drop the `--resume <id>` pair entirely, leaving NO resume flag — the turn
+/// starts a fresh conversation. Used when the session is running under a
+/// different account's `CLAUDE_CONFIG_DIR`: the conversation lives in another
+/// account's config dir, so neither `--resume` nor `--continue` (which would
+/// grab an unrelated recent conversation) is right; start clean in this account.
+fn drop_resume(mut cmd: Vec<String>) -> Vec<String> {
+    if let Some(i) = cmd.iter().position(|a| a == "--resume") {
+        cmd.remove(i); // drop "--resume"
+        if i < cmd.len() {
+            cmd.remove(i); // drop its <id> value
+        }
+    }
+    cmd
+}
+
 /// Parse one stream-json event → normalized events (1:1 with `_parse_event`).
 pub fn parse_event(event: &Value, st: &mut ParseState) -> Vec<BridgeEvent> {
     let mut out = Vec::new();
@@ -257,6 +272,49 @@ pub fn parse_event(event: &Value, st: &mut ParseState) -> Vec<BridgeEvent> {
                     }
                     _ => {}
                 }
+            }
+        }
+        // Claude Code streams tool outputs back as a `user` message whose
+        // content array holds `tool_result` blocks. Without this arm the
+        // outputs are dropped: the assistant message persists 23 tool_use
+        // blocks but 0 tool_result blocks → cards show commands, no output.
+        "user" => {
+            let blocks = event
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_array())
+                .cloned()
+                .unwrap_or_default();
+            for block in blocks {
+                if block.get("type").and_then(|x| x.as_str()) != Some("tool_result") {
+                    continue;
+                }
+                let tool_id = s(&block, "tool_use_id").unwrap_or_default();
+                let content = block.get("content").cloned().unwrap_or(json!(""));
+                let output = if let Some(arr) = content.as_array() {
+                    arr.iter()
+                        .map(|c| {
+                            c.get("text")
+                                .and_then(|t| t.as_str())
+                                .map(String::from)
+                                .unwrap_or_else(|| c.to_string())
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                } else if let Some(t) = content.as_str() {
+                    t.to_string()
+                } else {
+                    content.to_string()
+                };
+                let is_error = block
+                    .get("is_error")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(false);
+                out.push(BridgeEvent::ToolEnd {
+                    tool_id,
+                    output,
+                    is_error,
+                });
             }
         }
         "result" => {
@@ -528,17 +586,22 @@ impl ClaudeBridge {
                 c.push("--permission-mode".into());
                 c.push("plan".into());
             }
-            _ => {
-                // Default permission mode: when we have a Fleetify
-                // permission handler attached, point the CLI at the
-                // fleet_permission MCP tool so every tool use round-
-                // trips through the renderer dialog instead of
-                // stalling on the CLI's interactive prompt.
-                if self.permission_handler.is_some() && mcp_config_path.is_some() {
-                    c.push("--permission-prompt-tool".into());
-                    c.push("mcp__fleet_permission__permission_prompt".into());
-                }
-            }
+            _ => {}
+        }
+        // Point the CLI at the fleet_permission MCP tool in EVERY mode
+        // (when a handler is wired + an mcp config exists). In default
+        // mode every gated tool round-trips through the renderer dialog.
+        // In bypass/acceptEdits the mode flag above auto-allows ordinary
+        // tools so they never hit this tool — but `AskUserQuestion` CANNOT
+        // run headlessly, so the CLI falls back to the permission tool for
+        // it regardless of mode. That's our hook: the fleet_permission
+        // loopback intercepts AskUserQuestion and returns the user's chosen
+        // answer (see internal.rs::permission_prompt). Empirically verified
+        // that `--dangerously-skip-permissions` + `--permission-prompt-tool`
+        // coexist and only AskUserQuestion reaches the tool under bypass.
+        if self.permission_handler.is_some() && mcp_config_path.is_some() {
+            c.push("--permission-prompt-tool".into());
+            c.push("mcp__fleet_permission__permission_prompt".into());
         }
         if let Some(level) =
             effort_to_claude(&self.effort, self.model_name.as_deref().unwrap_or(""))
@@ -576,12 +639,13 @@ impl ClaudeBridge {
             self.is_staff,
             self.agent_template.as_deref(),
         );
-        // Splice in fleet_permission ONLY when a handler is wired AND
-        // we're in default mode — acceptEdits/bypass skip the prompt
-        // entirely, so mounting an unused MCP just wastes a
-        // subprocess. The MCP itself is keyed by FLEETIFY_SESSION_ID,
-        // so each spawn has its own per-session prompt routing.
-        if self.permission_handler.is_some() && self.permission_mode == "default" {
+        // Splice in fleet_permission whenever a handler is wired — in
+        // ALL modes. Default mode uses it for every gated tool; bypass/
+        // acceptEdits use it only as the fallback path for AskUserQuestion
+        // (which can't run headlessly), so the interactive question card
+        // works regardless of permission mode. The MCP is keyed by
+        // FLEETIFY_SESSION_ID, so each spawn has its own prompt routing.
+        if self.permission_handler.is_some() {
             if let Some(cfg) = crate::services::mcp_dispatch::builtin_mcp_config(
                 "fleet_permission",
                 &self.session_id,
@@ -674,15 +738,54 @@ impl ClaudeBridge {
         // healed turn emits a valid session id via its init event, which
         // chat.rs persists over the stale one.
         if let Some(id) = self.claude_session_id.as_deref() {
-            if !crate::services::claude_history::resume_conversation_exists(&self.project_path, id)
-            {
-                tracing::warn!(
-                    target: "fleetify::bridges::claude",
-                    session = %self.session_id,
-                    stale_claude_session_id = %id,
-                    "claude resume target missing on disk — self-healing with --continue (context preserved)"
-                );
-                cmd = swap_resume_for_continue(cmd);
+            // Multi-account: when a `CLAUDE_CONFIG_DIR` override is active the
+            // conversation must be checked under THAT account's config dir, not
+            // the default `~/.claude` — otherwise a transcript that exists under
+            // System looks present and `--resume` hard-fails in the other
+            // account. When it's genuinely absent there, drop `--resume` (fresh
+            // start in this account) rather than `--continue` (which would grab
+            // an unrelated recent conversation from the other account).
+            let claude_config_dir = ctx
+                .account_env
+                .iter()
+                .find(|(k, _)| k == "CLAUDE_CONFIG_DIR")
+                .map(|(_, v)| std::path::PathBuf::from(v));
+            let (present, account_scoped) = match &claude_config_dir {
+                Some(dir) => (
+                    crate::services::claude_history::resume_conversation_exists_in(
+                        dir,
+                        &self.project_path,
+                        id,
+                    ),
+                    true,
+                ),
+                None => (
+                    crate::services::claude_history::resume_conversation_exists(
+                        &self.project_path,
+                        id,
+                    ),
+                    false,
+                ),
+            };
+            if !present {
+                if account_scoped {
+                    tracing::warn!(
+                        target: "fleetify::bridges::claude",
+                        session = %self.session_id,
+                        stale_claude_session_id = %id,
+                        config_dir = ?claude_config_dir,
+                        "claude resume target not in this account's config dir — starting fresh in the selected account"
+                    );
+                    cmd = drop_resume(cmd);
+                } else {
+                    tracing::warn!(
+                        target: "fleetify::bridges::claude",
+                        session = %self.session_id,
+                        stale_claude_session_id = %id,
+                        "claude resume target missing on disk — self-healing with --continue (context preserved)"
+                    );
+                    cmd = swap_resume_for_continue(cmd);
+                }
             }
         }
         // Apply ctx.model_override by injecting `--model <m>` into the
@@ -715,6 +818,10 @@ impl ClaudeBridge {
             .current_dir(&cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // Multi-account isolation: point HOME (and XDG/Windows equivalents) at
+        // the selected account's private dir so `claude` reads that account's
+        // `~/.claude` credentials. No-op for the System account.
+        crate::bridges::account_env::apply_to_command(&mut command, &ctx.account_env);
         if let Some(ref url) = ctx.base_url_override {
             command.env("ANTHROPIC_BASE_URL", url);
         }
@@ -899,6 +1006,47 @@ mod tests {
             }]
         );
         assert_eq!(st.claude_session_id.as_deref(), Some("claude-123"));
+    }
+
+    #[test]
+    fn user_message_tool_result_emits_tool_end() {
+        // Claude Code streams tool OUTPUTS back as a `user` message. Regression
+        // guard: this arm was missing, so 23 tool_use blocks persisted with 0
+        // tool_result blocks (cards showed commands, never their output).
+        let mut st = ParseState::new("s");
+        let evs = parse_event(
+            &json!({"type":"user","message":{"role":"user","content":[
+                {"type":"tool_result","tool_use_id":"t1",
+                 "content":[{"type":"text","text":"file contents here"}]}]}}),
+            &mut st,
+        );
+        assert_eq!(
+            evs,
+            vec![BridgeEvent::ToolEnd {
+                tool_id: "t1".into(),
+                output: "file contents here".into(),
+                is_error: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn user_message_tool_result_string_content_and_error() {
+        let mut st = ParseState::new("s");
+        let evs = parse_event(
+            &json!({"type":"user","message":{"content":[
+                {"type":"tool_result","tool_use_id":"t2",
+                 "content":"boom","is_error":true}]}}),
+            &mut st,
+        );
+        assert_eq!(
+            evs,
+            vec![BridgeEvent::ToolEnd {
+                tool_id: "t2".into(),
+                output: "boom".into(),
+                is_error: true,
+            }]
+        );
     }
 
     #[test]
@@ -1148,16 +1296,42 @@ mod tests {
     }
 
     #[test]
-    fn permission_handler_in_accept_edits_mode_skips_prompt_tool_flag() {
-        // acceptEdits handles approvals via the CLI's built-in heuristic
-        // — wiring fleet_permission on top would prompt for every tool
-        // the user wanted auto-approved.
+    fn permission_handler_in_accept_edits_mode_still_emits_prompt_tool_flag() {
+        // acceptEdits auto-allows edits via the CLI's `--permission-mode`
+        // flag, but the fleet_permission tool is STILL mounted so the
+        // AskUserQuestion fallback path works (and non-edit tools can
+        // round-trip through the renderer dialog).
         let handler: super::super::permission::PermissionHandler =
             std::sync::Arc::new(|_n, _i| Box::pin(async { false }));
         let mut b = ClaudeBridge::new("s", "/tmp/x").with_permission_handler(handler);
         b.permission_mode = "acceptEdits".into();
         let c = b.build_command("hi", Some("/tmp/mcp.json"));
-        assert!(!c.iter().any(|a| a == "--permission-prompt-tool"));
+        assert!(c.iter().any(|a| a == "--permission-mode"));
+        assert!(c.windows(2).any(|w| w
+            == [
+                "--permission-prompt-tool",
+                "mcp__fleet_permission__permission_prompt"
+            ]));
+    }
+
+    #[test]
+    fn permission_handler_in_bypass_mode_still_emits_prompt_tool_flag() {
+        // Bypass auto-allows ordinary tools, but AskUserQuestion can't run
+        // headlessly so the CLI falls back to fleet_permission for it.
+        // Verified empirically that --dangerously-skip-permissions and
+        // --permission-prompt-tool coexist; the tool is only hit for
+        // AskUserQuestion under bypass.
+        let handler: super::super::permission::PermissionHandler =
+            std::sync::Arc::new(|_n, _i| Box::pin(async { false }));
+        let mut b = ClaudeBridge::new("s", "/tmp/x").with_permission_handler(handler);
+        b.permission_mode = "bypassPermissions".into();
+        let c = b.build_command("hi", Some("/tmp/mcp.json"));
+        assert!(c.iter().any(|a| a == "--dangerously-skip-permissions"));
+        assert!(c.windows(2).any(|w| w
+            == [
+                "--permission-prompt-tool",
+                "mcp__fleet_permission__permission_prompt"
+            ]));
     }
 
     #[test]
@@ -1171,14 +1345,16 @@ mod tests {
     }
 
     #[test]
-    fn build_mcp_config_skips_fleet_permission_in_bypass_mode() {
+    fn build_mcp_config_splices_fleet_permission_in_bypass_mode_too() {
+        // fleet_permission is now mounted in ALL modes so the
+        // AskUserQuestion fallback works under bypass.
         let handler: super::super::permission::PermissionHandler =
             std::sync::Arc::new(|_n, _i| Box::pin(async { false }));
         let mut b = ClaudeBridge::new("s", "/tmp/x").with_permission_handler(handler);
         b.permission_mode = "bypassPermissions".into();
         let cfg = b.build_mcp_config().expect("mcp config must exist");
         let servers = cfg.get("mcpServers").and_then(|v| v.as_object()).unwrap();
-        assert!(!servers.contains_key("fleet_permission"));
+        assert!(servers.contains_key("fleet_permission"));
     }
 
     #[test]

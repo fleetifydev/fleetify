@@ -31,6 +31,28 @@ pub fn spawn(
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
 ) -> Result<String, String> {
+    let program = shell.unwrap_or_else(|| {
+        if cfg!(windows) {
+            std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".into())
+        } else {
+            std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
+        }
+    });
+    spawn_argv(app, program, Vec::new(), cwd, env)
+}
+
+/// Like [`spawn`] but runs `program` with explicit `args` — used by the
+/// account-login flow, which runs e.g. `claude login` / `opencode auth login`
+/// in a per-account HOME so the agent writes its credentials into the isolated
+/// account dir. Shares the same registry + `pty:data`/`pty:exit` events, so the
+/// renderer drives it with the existing terminal component.
+pub fn spawn_argv(
+    app: AppHandle,
+    program: String,
+    args: Vec<String>,
+    cwd: Option<String>,
+    env: Option<HashMap<String, String>>,
+) -> Result<String, String> {
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -41,14 +63,10 @@ pub fn spawn(
         })
         .map_err(|e| e.to_string())?;
 
-    let shell = shell.unwrap_or_else(|| {
-        if cfg!(windows) {
-            std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".into())
-        } else {
-            std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
-        }
-    });
-    let mut cmd = CommandBuilder::new(&shell);
+    let mut cmd = CommandBuilder::new(&program);
+    for a in &args {
+        cmd.arg(a);
+    }
     if let Some(c) = cwd {
         cmd.cwd(c);
     }

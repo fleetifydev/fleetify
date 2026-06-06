@@ -17,3 +17,6 @@ docs/superpowers/
 .playwright-mcp/
 .claude/
 .firecrawl/
+
+# Fleetify
+.fleetify-worktrees/

@@ -68,12 +68,23 @@ pub async fn reload_backend(app: &tauri::AppHandle) {
         }
     }
 
-    let url = format!("http://127.0.0.1:{port}/api/internal/providers/reload");
-    let payload = json!({ "keys": keys, "cloudflare_account_id": cloudflare_account_id });
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .unwrap_or_default();
+
+    // Multi-account: enumerate HTTP provider accounts from the backend, read
+    // each labeled key from the keychain, and push them as `account_keys`
+    // alongside the legacy System keys above. CLI agents need nothing here —
+    // their isolation is a HOME override resolved from the DB at dispatch.
+    let account_keys = build_account_keys(&client, &port, &secret).await;
+
+    let url = format!("http://127.0.0.1:{port}/api/internal/providers/reload");
+    let payload = json!({
+        "keys": keys,
+        "cloudflare_account_id": cloudflare_account_id,
+        "account_keys": account_keys,
+    });
     let key_count = keys.len();
     match client
         .post(&url)
@@ -104,6 +115,59 @@ pub async fn reload_backend(app: &tauri::AppHandle) {
             );
         }
     }
+}
+
+/// Ask the backend which HTTP provider accounts exist, then read each one's
+/// labeled key from the OS keychain. Returns the `account_keys` array the
+/// reload endpoint folds into its per-account cache. Best-effort: any failure
+/// (backend not ready, no accounts, keychain miss) yields an empty list so the
+/// System keys still load.
+async fn build_account_keys(
+    client: &reqwest::Client,
+    port: &str,
+    secret: &str,
+) -> Vec<serde_json::Value> {
+    let url = format!("http://127.0.0.1:{port}/api/internal/accounts/http");
+    let resp = match client
+        .get(&url)
+        .header("X-Fleet-Internal", secret)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r,
+        _ => return Vec::new(),
+    };
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let Some(accounts) = body.get("accounts").and_then(|a| a.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for acc in accounts {
+        let (Some(provider_id), Some(account_id)) = (
+            acc.get("provider_id").and_then(|v| v.as_str()),
+            acc.get("account_id").and_then(|v| v.as_str()),
+        ) else {
+            continue;
+        };
+        let is_default = acc
+            .get("is_default")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        // The labeled key is stored under `account = <account_id>` (System keys
+        // use `account = <oidc-sub>`, handled by the legacy path above).
+        if let Ok(Some(key)) = providers_link::read_secret(provider_id, account_id) {
+            out.push(json!({
+                "provider_id": provider_id,
+                "account_id": account_id,
+                "key": key,
+                "is_default": is_default,
+            }));
+        }
+    }
+    out
 }
 
 /// Boot-time hydration: hydrate PROVIDER_KEYS *and* prime the

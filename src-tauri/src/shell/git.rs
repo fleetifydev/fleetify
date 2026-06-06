@@ -312,6 +312,24 @@ pub async fn gh_repo_list() -> (i32, String, String) {
     .await
 }
 
+/// The authenticated `gh` CLI's GitHub token (`gh auth token`), or `None` when
+/// gh is absent / not signed in. Used to authenticate private HTTPS clones when
+/// the user authed via `gh` rather than the Fleetify OAuth link.
+pub async fn gh_auth_token() -> Option<String> {
+    resolve_gh()?;
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let (rc, out, _err) = gh(&["auth", "token"], &cwd).await;
+    if rc != 0 {
+        return None;
+    }
+    let tok = out.trim().to_string();
+    if tok.is_empty() {
+        None
+    } else {
+        Some(tok)
+    }
+}
+
 pub async fn get_context(folder: &Path) -> Value {
     let (rc_b, branch, _) = git(&["rev-parse", "--abbrev-ref", "HEAD"], folder).await;
     if rc_b != 0 {

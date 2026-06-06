@@ -49,6 +49,8 @@ export interface Session {
   worktree_branch: string | null;
   claude_session_id: string | null;
   model_name: string | null;
+  /** Which provider/agent account drives this session (null ⇒ System). */
+  account_id?: string | null;
   permission_mode: string;
   session_mode: string;
   order_idx: number;

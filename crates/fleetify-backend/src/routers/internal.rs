@@ -42,6 +42,51 @@ pub fn router() -> Router<AppState> {
         .route("/routing/reload", post(routing_reload))
         .route("/providers/reload", post(providers_reload))
         .route("/providers/warm-health", post(providers_warm_health))
+        .route("/accounts/http", axum::routing::get(http_accounts))
+}
+
+/// Loopback-only: list every HTTP provider account (the ones whose API key
+/// lives in the OS keychain). The Tauri shell calls this during
+/// `reload_backend` to learn which `(provider_id, account_id)` keychain
+/// entries to read and push back as labeled keys. Returns metadata only — no
+/// secrets (the shell already holds the keychain). Spans all users; the
+/// keychain lookup naturally scopes to what actually exists.
+async fn http_accounts(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let presented = headers
+        .get("x-fleet-internal")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !constant_time_eq(presented.as_bytes(), st.internal_secret.as_bytes()) {
+        return Err(ApiError::Forbidden("internal-secret mismatch".into()));
+    }
+    let rows = sqlx::query_as::<_, crate::models::account::Account>(
+        "SELECT * FROM accounts WHERE kind = 'http'",
+    )
+    .fetch_all(&st.auth.pool)
+    .await?;
+    // The default ("main") account lives in the per-provider override table, not
+    // the account row's is_default column — read it so labeled-key resolution
+    // honours the user's main pick.
+    let mut accounts: Vec<Value> = Vec::with_capacity(rows.len());
+    for a in rows {
+        let default_id: Option<String> = sqlx::query_scalar(
+            "SELECT account_id FROM provider_default_account WHERE provider_id = ? LIMIT 1",
+        )
+        .bind(&a.provider_id)
+        .fetch_optional(&st.auth.pool)
+        .await
+        .ok()
+        .flatten();
+        accounts.push(json!({
+            "provider_id": a.provider_id,
+            "account_id": a.id,
+            "is_default": default_id.as_deref() == Some(a.id.as_str()),
+        }));
+    }
+    Ok(Json(json!({ "accounts": accounts })))
 }
 
 /// Hot-reload hook for provider state. The Tauri shell walks the OS
@@ -74,6 +119,20 @@ async fn providers_reload(
                 target: "fleet-backend",
                 count = count,
                 "providers reload: cache hydrated"
+            );
+        }
+        // Multi-account labeled keys (one entry per (provider_id, account_id)).
+        // Present-but-empty array ⇒ clear the account-key cache. Absent field
+        // leaves it untouched, so legacy single-key reloads keep working.
+        if let Some(arr) = v.get("account_keys") {
+            let labeled: Vec<crate::providers::keys::LabeledKey> =
+                serde_json::from_value(arr.clone()).unwrap_or_default();
+            let count = labeled.len();
+            crate::providers::keys::set_account_keys(labeled);
+            tracing::info!(
+                target: "fleet-backend",
+                count = count,
+                "providers reload: account-key cache hydrated"
             );
         }
         // Cloudflare Workers AI account id (non-secret) rides the same reload
@@ -317,6 +376,38 @@ async fn permission_prompt(
         ));
     }
 
+    // AskUserQuestion can't render headlessly, so Claude Code falls back to
+    // the permission tool for it in EVERY mode. We hijack that: instead of
+    // a yes/no, show the interactive question card, await the user's
+    // selection, and hand the answer back as the tool RESULT. Returning
+    // `behavior: "deny"` with the answer as `message` is the verified
+    // mechanism — Claude surfaces that message to the model as the
+    // AskUserQuestion result, so the model proceeds as if answered.
+    if tool.eq_ignore_ascii_case("AskUserQuestion") {
+        let ask = {
+            let guard = st.ask_registry.lock().await;
+            guard.get(sid).cloned()
+        };
+        let Some(ask) = ask else {
+            return Ok(Json(json!({
+                "behavior": "deny",
+                "message": "Fleetify chat is not open for this session — open it to answer questions.",
+            })));
+        };
+        let questions = b
+            .input
+            .get("questions")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+        let outcome = ask(json!({ "questions": questions }))
+            .await
+            .unwrap_or_else(|_| json!({ "answered": false }));
+        return Ok(Json(json!({
+            "behavior": "deny",
+            "message": format_ask_answer(&outcome),
+        })));
+    }
+
     // The PermissionSession is registered by chat.rs when the user's
     // WS opens. If the session never opened a WS — or it already
     // closed — we have nowhere to surface the dialog, so default to
@@ -352,6 +443,52 @@ async fn permission_prompt(
             "message": "User declined this action.",
         })))
     }
+}
+
+/// Render the renderer's AskUserQuestion answer into the plain-text result
+/// Claude Code feeds back to the model. Outcome shape (set by the WS
+/// `ask_user_question_response` arm):
+///   `{ "answered": bool, "answers": [ { "header"|"question", "selected": ["label", …] } ] }`
+fn format_ask_answer(outcome: &Value) -> String {
+    let answered = outcome
+        .get("answered")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false);
+    if !answered {
+        return "The user skipped the question without answering.".into();
+    }
+    let answers = outcome.get("answers").and_then(|x| x.as_array());
+    let Some(answers) = answers else {
+        return "The user answered, but no selection was captured.".into();
+    };
+    let mut lines = Vec::new();
+    for a in answers {
+        let label = a
+            .get("header")
+            .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| a.get("question").and_then(|x| x.as_str()))
+            .unwrap_or("Answer");
+        let selected: Vec<String> = a
+            .get("selected")
+            .and_then(|x| x.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let value = if selected.is_empty() {
+            "(no selection)".to_string()
+        } else {
+            selected.join(", ")
+        };
+        lines.push(format!("{label}: {value}"));
+    }
+    if lines.is_empty() {
+        return "The user answered, but no selection was captured.".into();
+    }
+    format!("The user answered:\n{}", lines.join("\n"))
 }
 
 async fn providers_warm_health(
@@ -395,6 +532,40 @@ mod tests {
     use axum::http::Request;
     use std::sync::Arc;
     use tower::ServiceExt;
+
+    #[test]
+    fn format_ask_answer_single_question() {
+        let outcome = json!({
+            "answered": true,
+            "answers": [{"header":"Color","question":"Pick a color","selected":["Green"]}],
+        });
+        assert_eq!(
+            super::format_ask_answer(&outcome),
+            "The user answered:\nColor: Green"
+        );
+    }
+
+    #[test]
+    fn format_ask_answer_multi_select_and_fallback_to_question() {
+        let outcome = json!({
+            "answered": true,
+            "answers": [{"question":"Pick toppings","selected":["A","B"]}],
+        });
+        // No header → falls back to the question text; multi-select joins.
+        assert_eq!(
+            super::format_ask_answer(&outcome),
+            "The user answered:\nPick toppings: A, B"
+        );
+    }
+
+    #[test]
+    fn format_ask_answer_skipped() {
+        let outcome = json!({ "answered": false });
+        assert_eq!(
+            super::format_ask_answer(&outcome),
+            "The user skipped the question without answering."
+        );
+    }
 
     async fn build_app(
         secret: &str,
@@ -449,6 +620,7 @@ mod tests {
             permission_registry: Arc::new(
                 tokio::sync::Mutex::new(std::collections::HashMap::new()),
             ),
+            ask_registry: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             agent_scan_cache: crate::routers::providers::AgentScanCache::default(),
             http_health_cache: crate::routers::providers::HttpHealthCache::default(),
         };

@@ -487,6 +487,50 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
                 }
             }
 
+            // Renderer's answer to a Claude AskUserQuestion card. Payload:
+            //   { type, session_id, id, answered, answers:[{header,question,selected}] }
+            // We resolve the matching InteractiveRequestSession oneshot with
+            // the raw `{answered, answers}` object; internal.rs formats it
+            // into the AskUserQuestion tool result.
+            "ask_user_question_response" => {
+                let sid = v
+                    .get("session_id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let req_id = v
+                    .get("id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if sid.is_empty() || req_id.is_empty() {
+                    tracing::warn!(
+                        target: "ask",
+                        "ask_user_question_response missing session_id or id — ignored"
+                    );
+                    continue;
+                }
+                let answered = v.get("answered").and_then(|x| x.as_bool()).unwrap_or(false);
+                let answers = v.get("answers").cloned().unwrap_or_else(|| json!([]));
+                let session_opt = interactive_sessions.lock().await.get(&sid).cloned();
+                if let Some(is) = session_opt {
+                    let resolved = is
+                        .resolve(&req_id, json!({ "answered": answered, "answers": answers }))
+                        .await;
+                    tracing::info!(
+                        target: "ask",
+                        session = %sid, req_id = %req_id, answered, resolved,
+                        "ask_response.resolved"
+                    );
+                } else {
+                    tracing::warn!(
+                        target: "ask",
+                        session = %sid, req_id = %req_id,
+                        "ask response for unknown session — dropped"
+                    );
+                }
+            }
+
             "send" => {
                 let Some(sid) = v
                     .get("session_id")
@@ -607,6 +651,18 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
                         })
                         .clone()
                 };
+                // Register the AskUserQuestion handler in the AppState
+                // registry so the fleet_permission loopback can reach it
+                // from `/api/internal/permission_prompt`. Keyed by session;
+                // re-registering on a later send just overwrites with the
+                // same sink. Cleaned up in the WS-close path below.
+                {
+                    let ask_handler = build_ask_question_handler(&interactive_session, &sink, &sid);
+                    st.ask_registry
+                        .lock()
+                        .await
+                        .insert(sid.clone(), ask_handler);
+                }
 
                 streaming.lock().await.insert(sid.clone());
                 let st2 = st.clone();
@@ -733,12 +789,24 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
         }
         sids
     };
-    // Same for Cursor extension-request round-trips: cancel any parked
-    // ask_question / create_plan so the bridge handler unblocks.
-    {
+    // Same for Cursor extension-request round-trips AND Claude
+    // AskUserQuestion cards (both ride the InteractiveRequestSession):
+    // cancel any parked request so the bridge handler unblocks.
+    let interactive_sids: Vec<String> = {
         let mut map = interactive_sessions.lock().await;
+        let sids: Vec<String> = map.keys().cloned().collect();
         for (_, is) in map.drain() {
             is.fail_all_pending().await;
+        }
+        sids
+    };
+    // Drop the AskUserQuestion loopback registry entries — without this a
+    // stale handler (whose captured sink points at a closed WS) would keep
+    // accepting calls from fleet-permission-mcp and never reach a user.
+    if !interactive_sids.is_empty() {
+        let mut reg = st.ask_registry.lock().await;
+        for sid in &interactive_sids {
+            reg.remove(sid);
         }
     }
     // Drop the loopback registry entries too — without this, a stale
@@ -807,6 +875,32 @@ fn build_cursor_question_handler(
     let sink = sink.clone();
     let sid = session_id.to_string();
     interactive_session.make_handler("cursor_ask_question", move |mut payload| {
+        if let Value::Object(ref mut m) = payload {
+            m.insert("session_id".into(), Value::String(sid.clone()));
+        }
+        let sink = sink.clone();
+        Box::pin(async move {
+            send_json(&sink, payload).await;
+        })
+    })
+}
+
+/// Build the AskUserQuestion handler for Claude Code's built-in
+/// `AskUserQuestion` tool. Ships an `ask_user_question` payload (the
+/// question/options + `id` + `session_id`) to the renderer and awaits the
+/// matching `ask_user_question_response` WS arm. Registered in
+/// `AppState::ask_registry` so the fleet_permission loopback can reach it.
+/// Reuses the generic `InteractiveRequestSession` round-trip (req_ids are
+/// UUIDs, so it shares the per-session instance with the cursor handlers
+/// without collision).
+fn build_ask_question_handler(
+    interactive_session: &Arc<crate::bridges::interactive::InteractiveRequestSession>,
+    sink: &Sink,
+    session_id: &str,
+) -> crate::bridges::acp::RequestHandler {
+    let sink = sink.clone();
+    let sid = session_id.to_string();
+    interactive_session.make_handler("ask_user_question", move |mut payload| {
         if let Value::Object(ref mut m) = payload {
             m.insert("session_id".into(), Value::String(sid.clone()));
         }
@@ -1085,13 +1179,24 @@ async fn run_send_flow(
             {
                 b.system_prompt = Some(tpl.system_prompt.to_string());
             }
-            // Claude CLI in default mode stalls on the interactive
-            // prompt when run headless. The MCP at fleet-permission-mcp
-            // gives the CLI a tool to call instead; the binary loops
-            // back through `/api/internal/permission_prompt` to the
-            // handler we register in `permission_registry` just below.
-            // Staff/acceptEdits/bypass paths still skip the dialog.
-            if !is_staff && session.permission_mode == "default" {
+            // Wire fleet-permission for every non-staff Claude session,
+            // in ALL modes. Default mode round-trips each gated tool
+            // through `/api/internal/permission_prompt` → the renderer
+            // dialog. Bypass/acceptEdits auto-allow ordinary tools via the
+            // CLI mode flag (they never hit the tool), but Claude's
+            // built-in AskUserQuestion can't render headlessly, so the CLI
+            // falls back to the permission tool for it regardless of mode —
+            // that's how the interactive question card reaches the user
+            // even under bypass. (The AskUserQuestion branch in
+            // internal.rs intercepts it before this yes/no handler runs.)
+            // Gate on the sidecar actually resolving: `--permission-prompt-tool`
+            // hard-fails the ENTIRE turn ("MCP tool … not found") if the
+            // fleet-permission-mcp binary isn't built (e.g. a dev worktree
+            // that only compiled fleetify-app). Skip the wiring in that case
+            // so the turn still runs — AskUserQuestion just falls back to its
+            // non-interactive behaviour instead of taking the whole turn down.
+            if !is_staff && crate::services::mcp_registry::builtin_resolves("fleet-permission-mcp")
+            {
                 let handler = build_permission_handler(&permission_session, &sink, &sid);
                 st.permission_registry
                     .lock()
@@ -1178,7 +1283,10 @@ async fn run_send_flow(
                         return;
                     }
                 };
-                let mut tool_ctx = crate::bridges::BridgeContext::default();
+                let mut tool_ctx = crate::bridges::BridgeContext {
+                    account_id: session.account_id.clone(),
+                    ..Default::default()
+                };
                 if pid == "cloudflare-workers-ai" {
                     match cloudflare_base_url() {
                         Some(u) => tool_ctx.base_url_override = Some(u),
@@ -1242,6 +1350,7 @@ async fn run_send_flow(
                     spec,
                     sid.clone(),
                     model,
+                    session.account_id.as_deref(),
                 );
                 if pid == "ollama" {
                     if let Ok(home) = std::env::var("FLEETIFY_HOME") {
@@ -1287,6 +1396,7 @@ async fn run_send_flow(
             AnyBridge::Perplexity(Arc::new(crate::bridges::perplexity::PerplexityBridge::new(
                 sid.clone(),
                 model,
+                session.account_id.as_deref(),
             )))
         }
         "kimi" => {
@@ -1702,12 +1812,27 @@ async fn run_send_flow(
             crate::services::routing::traits::ProviderKind::OpenAICompatible
         }
     };
+    // Multi-account: resolve the session's account to the subprocess env
+    // (CLAUDE_CONFIG_DIR for config-dir agents, HOME bundle otherwise) + a HOME
+    // path for antigravity's in-process disk reads. HTTP bridges use account_id.
+    let account_env = crate::services::accounts::resolve_env(
+        &st.auth.pool,
+        &session.tool,
+        session.account_id.as_deref(),
+        session.user_id.as_deref().unwrap_or(""),
+    )
+    .await;
+    let home_override =
+        crate::services::accounts::resolve_home(&st.auth.pool, session.account_id.as_deref()).await;
     let mut bridge_ctx = crate::bridges::BridgeContext {
         model_override: if resolution.model.is_empty() {
             None
         } else {
             Some(resolution.model.clone())
         },
+        home_override,
+        account_env,
+        account_id: session.account_id.clone(),
         ..Default::default()
     };
     if st.routing.enabled() {
@@ -2565,6 +2690,27 @@ pub(crate) async fn run_dispatched_task_internal(
     task_for_card: String,
     routing_res: crate::services::routing::persist::RoutingResolution,
 ) {
+    // The MCP `dispatch_to_agent` path (a non-staff agent dispatching a
+    // sub-agent) has no `[[DISPATCH:]]` token to ack, so unlike the staff
+    // paths it never told the renderer to OPEN a sub-agent. Emit a
+    // `dispatch_ack` to the CALLER now so the Tasks pane + Agent pane spin
+    // up a card for this run (fed live by the dispatch_stream events below,
+    // finalized by dispatch_result). `tool_card: true` tells the renderer
+    // the chat already shows this via the dispatch_to_agent tool row, so it
+    // creates the sub-agent task WITHOUT a duplicate "Dispatching…" chat
+    // bubble.
+    sm.send_to_session_ws(
+        &caller_sid,
+        json!({
+            "type": "dispatch_ack",
+            "session_id": caller_sid,
+            "target_id": target.id,
+            "task": task,
+            "success": true,
+            "tool_card": true,
+            "message": "Dispatched",
+        }),
+    );
     run_dispatched_task(
         pool,
         sm,
@@ -2713,6 +2859,7 @@ async fn run_dispatched_task(
                 spec,
                 target_id.clone(),
                 model,
+                target.account_id.as_deref(),
             );
             if pid == "cloudflare-workers-ai" {
                 match cloudflare_base_url() {
@@ -2731,7 +2878,11 @@ async fn run_dispatched_task(
                 .clone()
                 .unwrap_or_else(|| "sonar".to_string());
             AnyBridge::Perplexity(std::sync::Arc::new(
-                crate::bridges::perplexity::PerplexityBridge::new(target_id.clone(), model),
+                crate::bridges::perplexity::PerplexityBridge::new(
+                    target_id.clone(),
+                    model,
+                    target.account_id.as_deref(),
+                ),
             ))
         }
         "kimi" => {
@@ -2925,6 +3076,17 @@ async fn run_dispatched_task(
     // base_url/headers carry any active proxy gateway. When routing was
     // disabled or pass-through, all three collapse to the bridge's own
     // defaults (model = target.model_name, direct provider URLs).
+    // Multi-account: resolve the target session's account → subprocess env +
+    // HOME (for antigravity's disk reads).
+    let account_env = crate::services::accounts::resolve_env(
+        &pool,
+        &target.tool,
+        target.account_id.as_deref(),
+        target.user_id.as_deref().unwrap_or(""),
+    )
+    .await;
+    let home_override =
+        crate::services::accounts::resolve_home(&pool, target.account_id.as_deref()).await;
     let bridge_ctx = crate::bridges::BridgeContext {
         base_url_override: routing_res.base_url_override.clone(),
         extra_headers: routing_res.extra_headers.clone(),
@@ -2933,6 +3095,9 @@ async fn run_dispatched_task(
         } else {
             Some(routing_res.model.clone())
         },
+        home_override,
+        account_env,
+        account_id: target.account_id.clone(),
     };
     tracing::info!(
         target: "fleetify::routing::dispatch",
@@ -3118,7 +3283,9 @@ async fn run_dispatched_task(
                         );
                     }
                     BridgeEvent::ToolEnd {
-                        tool_id, is_error, ..
+                        tool_id,
+                        output,
+                        is_error,
                     } => {
                         sm.send_to_session_ws(
                             &staff_sid,
@@ -3129,6 +3296,10 @@ async fn run_dispatched_task(
                                 "kind": "tool_end",
                                 "tool_id": tool_id,
                                 "is_error": is_error,
+                                // Forward the sub-agent's stdout/result so the
+                                // parent's dispatched tool cards show output too,
+                                // not just the command (the user wants "everything").
+                                "output": output,
                             }),
                         );
                     }
@@ -3143,6 +3314,29 @@ async fn run_dispatched_task(
                                 "text": error,
                             }),
                         );
+                    }
+                    // Forward the sub-agent's per-turn token usage so the Tasks
+                    // card shows a live "<N> Tokens" count (the renderer
+                    // accumulates these). Provider-agnostic: every bridge emits
+                    // a Cost event with a usage object.
+                    BridgeEvent::Cost { usage, .. } => {
+                        let g = |k: &str| usage.get(k).and_then(|x| x.as_i64()).unwrap_or(0);
+                        let total = g("input_tokens")
+                            + g("output_tokens")
+                            + g("cache_read_tokens")
+                            + g("cache_write_tokens");
+                        if total > 0 {
+                            sm.send_to_session_ws(
+                                &staff_sid,
+                                json!({
+                                    "type": "dispatch_stream",
+                                    "session_id": staff_sid,
+                                    "target_id": target_id,
+                                    "kind": "cost",
+                                    "total_tokens": total,
+                                }),
+                            );
+                        }
                     }
                     _ => {}
                 }

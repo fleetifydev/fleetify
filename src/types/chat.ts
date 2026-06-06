@@ -292,6 +292,10 @@ export interface WSDispatchAck {
   task: string;
   success: boolean;
   message: string;
+  /** True for the MCP `dispatch_to_agent` path: the chat already shows a
+   *  "Dispatched: …" tool row, so the renderer creates the Tasks/Agent-pane
+   *  sub-agent card WITHOUT adding a duplicate "Dispatching…" chat bubble. */
+  tool_card?: boolean;
 }
 
 export interface WSDispatchResult {
@@ -331,12 +335,18 @@ export interface WSDispatchIncoming {
 export interface WSDispatchStream {
   type: "dispatch_stream";
   target_id: string;
-  kind: "message_delta" | "thinking" | "tool_start" | "tool_end" | "error";
+  kind: "message_delta" | "thinking" | "tool_start" | "tool_end" | "error" | "cost";
   text?: string;
   tool_name?: string;
   tool_id?: string;
   is_error?: boolean;
   error?: string;
+  /** Sub-agent tool stdout/result, forwarded on `tool_end` so the parent's
+   *  dispatched tool cards show output, not just the command. */
+  output?: string;
+  /** Sub-agent per-turn token usage, forwarded on `kind:"cost"`; the Tasks
+   *  card accumulates these into a live token total. */
+  total_tokens?: number;
 }
 
 /** Lifecycle status update from the backend dispatch handler. Fires on
@@ -516,6 +526,22 @@ export interface WSCursorAskQuestion {
   }>;
 }
 
+/** Claude Code's built-in `AskUserQuestion` tool, routed through the
+ *  fleet_permission loopback because it can't render headlessly. The
+ *  renderer shows an interactive card and round-trips an
+ *  `ask_user_question_response` carrying the chosen labels per question. */
+export interface WSAskUserQuestion {
+  type: "ask_user_question";
+  id: string;
+  session_id: string;
+  questions: Array<{
+    question: string;
+    header?: string;
+    multiSelect?: boolean;
+    options: Array<{ label: string; description?: string }>;
+  }>;
+}
+
 /** Cursor's blocking `cursor/create_plan` extension request. The renderer
  *  shows a plan-approval card and round-trips a `cursor_plan_response`. */
 export interface WSCursorCreatePlan {
@@ -565,5 +591,6 @@ export type WSServerMessage =
   | WSAvailableModels
   | WSSlashCommands
   | WSCursorAskQuestion
+  | WSAskUserQuestion
   | WSCursorCreatePlan
   | WSAuthRequired;

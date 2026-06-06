@@ -264,6 +264,7 @@ async fn update_session(
     set!("tool", p.tool.clone());
     set!("claude_session_id", p.claude_session_id.clone());
     set!("use_worktree", p.use_worktree);
+    set!("account_id", p.account_id.clone());
     // Manual picker selection wins over any prior routing decision.
     // `pinned_agent` / `pinned_model` are sticky across the session's
     // lifetime (Branch 1 of `resolve_routing_for_turn`), so without
@@ -474,8 +475,8 @@ async fn fork_session(
     sqlx::query(
         "INSERT INTO sessions (id,title,project_path,group_path,tool,command,status,\
          parent_id,user_id,created_at,notes,use_worktree,permission_mode,session_mode,\
-         pinned,order_idx,budget_used) \
-         VALUES (?,?,?,?,?,?,'idle',?,?,?,?,1,'default','new',0,0,0.0)",
+         account_id,pinned,order_idx,budget_used) \
+         VALUES (?,?,?,?,?,?,'idle',?,?,?,?,1,'default','new',?,0,0,0.0)",
     )
     .bind(&new_id)
     .bind(format!("{} (fork)", s.title))
@@ -487,6 +488,7 @@ async fn fork_session(
     .bind(&user.id)
     .bind(&created)
     .bind(&s.notes)
+    .bind(&s.account_id)
     .execute(&st.auth.pool)
     .await?;
     let msgs = sqlx::query_as::<_, Message>(

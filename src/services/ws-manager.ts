@@ -985,9 +985,19 @@ class WSManager {
         // collapse into one visible card — accepted degradation for a
         // rare case (sequential is the common path; the SDK serializes
         // sends to a single bridge anyway).
+        // `tool_card`: the MCP `dispatch_to_agent` path (a non-staff agent
+        // dispatching a sub-agent) already renders a "Dispatched: …" tool
+        // row in the chat, so we MUST NOT add a duplicate "Dispatching…"
+        // pending bubble — but we STILL want the Tasks/Agent pane card. The
+        // staff `[[DISPATCH:]]` paths have no tool row, so they get the
+        // pending bubble too.
+        const silent = !!data.tool_card;
         const sess = useChatStore.getState().sessions[sessionId];
         const alreadyPending = !!sess?.messages.some(m => m.id === pendingId);
-        if (!alreadyPending) {
+        const alreadyTask = !!sess?.subagentTasks?.[String(data.target_id)];
+
+        // Chat pending bubble + preview buffer — staff dispatches only.
+        if (!silent && !alreadyPending) {
           store.addMessage(sessionId, {
             id: pendingId,
             role: "system",
@@ -1003,31 +1013,29 @@ class WSManager {
           // render immediately (even before any deltas arrive).
           store.clearDispatchPreview(data.target_id);
           store.appendDispatchPreview(data.target_id, {});
+        }
 
-          // ── Mirror into the unified sub-agent pipeline ──
-          // Fleet's staff/control-center dispatch is semantically a
-          // sub-agent run (parent staff → worker agent → result back
-          // to staff). Surface it through the same Tasks pane / Agent
-          // pane that Claude's Task tool and Codex's spawnAgent feed.
-          // task_id = the target agent's session id (one card per
-          // active dispatch — parallel dispatches to the same target
-          // collapse, matching the chat-card de-dup above).
-          if (data.target_id) {
-            const desc = (data.task || dispatchName).split("\n")[0] || dispatchName;
-            store.startSubagent(sessionId, {
-              id: String(data.target_id),
-              toolUseId: null,  // Fleet dispatch isn't triggered by a tool_use block
-              description: desc.length > 80 ? desc.slice(0, 80) + "…" : desc,
-              taskType: dispatchName,  // worker agent name → shown as task type
-            });
-            // Auto-open Tasks + Agent panes for the active session,
-            // same trigger as Claude/Codex sub-agents.
-            if (sessionId === useAppStore.getState().activeSessionId) {
-              try {
-                useAppStore.getState().addWorkspaceView("tasks");
-                useAppStore.getState().addWorkspaceView("process");
-              } catch { /* hydrating */ }
-            }
+        // ── Mirror into the unified sub-agent pipeline ── (EVERY path)
+        // Fleet dispatch is semantically a sub-agent run (parent → worker →
+        // result back). Surface it through the same Tasks pane / Agent pane
+        // that Claude's Task tool and Codex's spawnAgent feed. task_id = the
+        // target agent's session id; dedup on the task already existing so
+        // parallel dispatches to one target collapse into a single card.
+        if (data.target_id && !alreadyTask) {
+          const desc = (data.task || dispatchName).split("\n")[0] || dispatchName;
+          store.startSubagent(sessionId, {
+            id: String(data.target_id),
+            toolUseId: null,  // Fleet dispatch isn't triggered by a tool_use block
+            description: desc.length > 80 ? desc.slice(0, 80) + "…" : desc,
+            taskType: dispatchName,  // worker agent name → shown as task type
+          });
+          // Auto-open Tasks + Agent panes for the active session, same
+          // trigger as Claude/Codex sub-agents.
+          if (sessionId === useAppStore.getState().activeSessionId) {
+            try {
+              useAppStore.getState().addWorkspaceView("tasks");
+              useAppStore.getState().addWorkspaceView("process");
+            } catch { /* hydrating */ }
           }
         }
         // Proactively subscribe the target session to the shared
@@ -1199,9 +1207,26 @@ class WSManager {
             store.pushSubagentContent(sessionId, taskId, {
               type: "tool_result",
               tool_id: String(data.tool_id),
-              output: "",  // Fleet dispatch_stream tool_end doesn't carry output text
+              // dispatch_stream tool_end now forwards the sub-agent's stdout/result.
+              output: String(data.output ?? ""),
               is_error: !!data.is_error,
             });
+          }
+        } else if (kind === "cost") {
+          // Live token count for the Tasks card — accumulate per-turn usage.
+          if (hasTask) {
+            const task = useChatStore.getState().sessions[sessionId]?.subagentTasks[taskId];
+            if (task) {
+              store.updateSubagentProgress(
+                sessionId, taskId,
+                {
+                  totalTokens: task.totalTokens + Number(data.total_tokens || 0),
+                  toolUses: task.toolUses,
+                  durationMs: Date.now() - task.startedAt,
+                },
+                task.lastToolName,
+              );
+            }
           }
         } else if (kind === "error") {
           store.appendDispatchPreview(data.target_id, { errored: true });
@@ -1371,6 +1396,17 @@ class WSManager {
           plan: data.plan,
           todos: data.todos,
           phases: data.phases,
+        });
+        useAppStore.getState().updateSession(sessionId, { status: "waiting" });
+        break;
+      }
+      case "ask_user_question": {
+        // Claude Code's built-in AskUserQuestion — surface an interactive
+        // multiple-choice card; `sendAskQuestionResponse` round-trips the
+        // chosen labels back as the tool result (via fleet_permission).
+        store.setAskQuestion(sessionId, {
+          id: data.id,
+          questions: data.questions ?? [],
         });
         useAppStore.getState().updateSession(sessionId, { status: "waiting" });
         break;
@@ -1949,6 +1985,26 @@ class WSManager {
       session_id: sessionId,
       id,
       outcome,
+    });
+  }
+
+  /** Answer Claude's AskUserQuestion card. `answers` is one entry per
+   *  question (`{header, question, selected:[labels]}`); pass `answered:false`
+   *  to skip. Clears the card, unblocks the parked AskUserQuestion tool. */
+  async sendAskQuestionResponse(
+    sessionId: string,
+    id: string,
+    answered: boolean,
+    answers: { header?: string; question: string; selected: string[] }[],
+  ) {
+    useChatStore.getState().setAskQuestion(sessionId, null);
+    useAppStore.getState().updateSession(sessionId, { status: "running" });
+    this._sendOrQueue({
+      type: "ask_user_question_response",
+      session_id: sessionId,
+      id,
+      answered,
+      answers,
     });
   }
 

@@ -719,7 +719,7 @@ impl HermesBridge {
 
     /// Lazily spawn `hermes acp`, run the ACP handshake (no `authenticate`),
     /// create the session, and apply model / mode. Idempotent.
-    async fn cold_start(&self) -> Result<()> {
+    async fn cold_start(&self, account_env: Vec<(String, String)>) -> Result<()> {
         let mut guard = self.state.lock().await;
         if guard.is_some() {
             return Ok(());
@@ -743,6 +743,9 @@ impl HermesBridge {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        // Multi-account isolation (no-op for the System account). On Windows
+        // Hermes reads %LOCALAPPDATA%\hermes, which `account_env` relocates.
+        crate::bridges::account_env::apply_to_command(&mut cmd, &account_env);
 
         let mut proc = cmd.spawn().map_err(|e| {
             anyhow!("Hermes CLI not found ({e}). Install: pip install \"hermes-agent[acp]\" (or see hermes-agent.nousresearch.com)")
@@ -988,7 +991,7 @@ impl HermesBridge {
         let system_prompt = self.system_prompt.clone();
         let needs_cold_start = state_mu.lock().await.is_none();
         let cold_starter = if needs_cold_start {
-            Some(self.cold_start_fut())
+            Some(self.cold_start_fut(ctx.account_env.clone()))
         } else {
             None
         };
@@ -1129,6 +1132,7 @@ impl HermesBridge {
 
     fn cold_start_fut(
         &self,
+        account_env: Vec<(String, String)>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> {
         let bridge = HermesBridge {
             session_id: self.session_id.clone(),
@@ -1144,7 +1148,7 @@ impl HermesBridge {
             aborted: Arc::new(AtomicBool::new(false)),
             state: self.state.clone(),
         };
-        Box::pin(async move { bridge.cold_start().await })
+        Box::pin(async move { bridge.cold_start(account_env).await })
     }
 }
 

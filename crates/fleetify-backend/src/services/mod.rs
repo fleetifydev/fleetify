@@ -1,5 +1,6 @@
 //! Non-bridge services. Phase 2 lands worktree/clone + git/gh helpers.
 
+pub mod accounts;
 pub mod activity_logger;
 pub mod auto_planner;
 pub mod builtin_templates;

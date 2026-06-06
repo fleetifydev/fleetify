@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { X, FolderOpen, Clock, ChevronDown, Check, Sparkles, Wand2 } from "lucide-react";
 import { ClaudeLogo, OpenAILogo, GeminiLogo, KimiLogo } from "@/components/ui/provider-logo";
 import { createSession, fetchClaudeSessions, fetchGeminiSessions, fetchCodexSessions, apiFetch, type ClaudeSession } from "@/lib/api";
+import { providers as providersApi, type AccountInfo } from "@/lib/providers-api";
 import { useAppStore } from "@/stores/app-store";
 import { useRouterConfig } from "@/hooks/use-router-config";
 import { RoutersStatusBar } from "@/components/settings/routers/routers-status-bar";
@@ -210,6 +211,9 @@ export function NewAgentView({ onClose }: Props) {
   const [sessLoading,    setSessLoading]    = useState(false);
   const [sessionCount,   setSessionCount]   = useState(0);
   const [showModel,      setShowModel]      = useState(false);
+  // Multi-account: which login/key this session uses (null ⇒ System / default).
+  const [accounts,  setAccounts]  = useState<AccountInfo[]>([]);
+  const [accountId, setAccountId] = useState<string | null>(null);
   const pathRef    = useRef<HTMLInputElement>(null);
   const fetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const modelRef   = useRef<HTMLDivElement>(null);
@@ -309,6 +313,20 @@ export function NewAgentView({ onClose }: Props) {
     const h = (e: MouseEvent) => { if (!modelRef.current?.contains(e.target as Node)) setShowModel(false); };
     document.addEventListener("mousedown", h); return () => document.removeEventListener("mousedown", h);
   }, [showModel]);
+  // Load the selected provider's accounts; preselect its default (null = System).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const list = await providersApi.listAccounts(provider);
+      if (cancelled) return;
+      setAccounts(list);
+      // Default to "follow main" (null) — the session then dynamically uses the
+      // provider's current main account, so changing the main updates it too.
+      // The user can pin a specific account from the dropdown if they want.
+      setAccountId(null);
+    })();
+    return () => { cancelled = true; };
+  }, [provider]);
   useEffect(() => {
     if (!path.trim() || !["claude","gemini","codex"].includes(provider)) {
       setClaudeSessions([]); setSessionCount(0); return;
@@ -436,6 +454,7 @@ export function NewAgentView({ onClose }: Props) {
         session_mode: mode, claude_session_id: mode === "resume" && resumeId ? resumeId : undefined,
         agent_template: builtinAgentTemplate,
         use_worktree: useWorktree,
+        account_id: accountId ?? undefined,
       });
       addSession(s); setActiveSession(s.id); onClose();
     } catch (e) { console.error(e); } finally { setLoading(false); }
@@ -962,6 +981,30 @@ export function NewAgentView({ onClose }: Props) {
                   )}
                 </div>
                 <Sep/>
+              </>
+            )}
+
+            {/* ── Account (only when the agent has more than just System) ── */}
+            {accounts.length > 1 && (
+              <>
+                <SecHead style={{ marginTop:20 }}>Account</SecHead>
+                <select
+                  value={accountId ?? "__main__"}
+                  onChange={(e) => setAccountId(e.target.value === "__main__" ? null : e.target.value)}
+                  className="na-inp"
+                  style={{ marginTop:10, height:32, padding:"0 10px", fontSize:12.5, cursor:"pointer", width:"100%", boxSizing:"border-box" }}
+                >
+                  {/* Follow the provider's main account (dynamic). */}
+                  <option value="__main__">
+                    Main account{(() => { const d = accounts.find((a) => a.is_default); return d ? ` — ${d.label}` : ""; })()}
+                  </option>
+                  {/* Or pin a specific account for this session. */}
+                  {accounts.map((a) => (
+                    <option key={a.id} value={a.system ? "system" : a.id}>
+                      Pin to {a.label}{a.authenticated ? "" : " — not signed in"}
+                    </option>
+                  ))}
+                </select>
               </>
             )}
 

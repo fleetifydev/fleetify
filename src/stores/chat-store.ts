@@ -54,6 +54,28 @@ export interface CursorPlan {
   phases: CursorPlanPhase[];
 }
 
+/* ── Claude AskUserQuestion ───────────────────────────────────────────────
+ * Claude Code's built-in `AskUserQuestion` tool can't render headlessly, so
+ * the backend routes it through the fleet_permission loopback and ships it as
+ * an `ask_user_question` WS event. The renderer shows an interactive card and
+ * `wsManager.sendAskQuestionResponse` round-trips the chosen labels back as
+ * the tool result. Schema mirrors Claude Code's tool input verbatim. */
+export interface AskQuestionOption {
+  label: string;
+  description?: string;
+}
+export interface AskQuestionItem {
+  question: string;
+  header?: string;
+  multiSelect?: boolean;
+  options: AskQuestionOption[];
+}
+export interface AskQuestion {
+  /** req_id the WS response must echo back. */
+  id: string;
+  questions: AskQuestionItem[];
+}
+
 export interface ProcessEvent {
   id: string;
   tool_id: string;
@@ -180,6 +202,8 @@ export interface SessionChatState {
   /** Pending Cursor blocking extension requests (one of each at most). */
   cursorQuestion: CursorQuestion | null;
   cursorPlan: CursorPlan | null;
+  /** Pending Claude AskUserQuestion card (at most one). */
+  askQuestion: AskQuestion | null;
   processLog: ProcessEvent[];
   /** Map of dispatched sub-agents keyed by task_id. Backed by the
    *  Claude Agent SDK's TaskStartedMessage / TaskProgressMessage /
@@ -208,6 +232,7 @@ const emptySession = (): SessionChatState => ({
   permissionRequest: null,
   cursorQuestion: null,
   cursorPlan: null,
+  askQuestion: null,
   processLog: [],
   subagentTasks: {},
   selectedSubagentTaskId: null,
@@ -328,6 +353,7 @@ interface ChatState {
   clearAll: (sessionId: string) => void;
   setPermissionRequest: (sessionId: string, req: PermissionRequest | null) => void;
   setCursorQuestion: (sessionId: string, q: CursorQuestion | null) => void;
+  setAskQuestion: (sessionId: string, q: AskQuestion | null) => void;
   setCursorPlan: (sessionId: string, p: CursorPlan | null) => void;
 
   /** Start the inline compaction pill — fired by ws-manager on the
@@ -446,6 +472,9 @@ interface ChatState {
   /** User picked a Tasks card or a "Ran agent X" chat row — focus the
    *  Agent pane on this task. Pass null to clear (auto-pick mode). */
   setSelectedSubagentTask: (sessionId: string, taskId: string | null) => void;
+  /** Drop all finished (non-running) sub-agent tasks — "Clear" in the
+   *  Tasks panel. Running tasks are kept. */
+  clearFinishedSubagents: (sessionId: string) => void;
 }
 
 // Deep-patch a single session entry immutably so React re-renders pick up the change.
@@ -757,6 +786,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setCursorQuestion: (sessionId, q) =>
     set((state) => patch(state, sessionId, () => ({ cursorQuestion: q }))),
+
+  setAskQuestion: (sessionId, q) =>
+    set((state) => patch(state, sessionId, () => ({ askQuestion: q }))),
 
   setCursorPlan: (sessionId, p) =>
     set((state) => patch(state, sessionId, () => ({ cursorPlan: p }))),
@@ -1084,6 +1116,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setSelectedSubagentTask: (sessionId, taskId) =>
     set((state) =>
       patch(state, sessionId, () => ({ selectedSubagentTaskId: taskId })),
+    ),
+
+  clearFinishedSubagents: (sessionId) =>
+    set((state) =>
+      patch(state, sessionId, (s) => {
+        const kept: Record<string, SubagentTask> = {};
+        for (const [id, t] of Object.entries(s.subagentTasks)) {
+          if (t.status === "running") kept[id] = t;
+        }
+        const selStillThere = s.selectedSubagentTaskId && kept[s.selectedSubagentTaskId];
+        return {
+          subagentTasks: kept,
+          selectedSubagentTaskId: selStillThere ? s.selectedSubagentTaskId : null,
+        };
+      }),
     ),
 }));
 

@@ -499,11 +499,18 @@ impl GitHubCopilotBridge {
     /// spawns a fresh subprocess. If a previous turn already established an
     /// ACP session id, `session/load` is used instead of `session/new` to
     /// resume conversational context.
-    async fn cold_start(&self, tx: mpsc::Sender<BridgeEvent>) -> Result<(Arc<AcpClient>, String)> {
+    async fn cold_start(
+        &self,
+        tx: mpsc::Sender<BridgeEvent>,
+        account_env: Vec<(String, String)>,
+    ) -> Result<(Arc<AcpClient>, String)> {
         let mut cmd = self.build_command();
         cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        // Multi-account isolation (no-op for the System account). On Windows
+        // Copilot reads %APPDATA%/%LOCALAPPDATA%, relocated by `account_env`.
+        crate::bridges::account_env::apply_to_command(&mut cmd, &account_env);
 
         // Set current_dir to the normalized cwd so relative paths in
         // copilot's tools resolve correctly.
@@ -685,7 +692,9 @@ impl GitHubCopilotBridge {
         msg: &str,
         ctx: super::BridgeContext,
     ) -> Result<mpsc::Receiver<BridgeEvent>> {
-        let _ = ctx; // model_override already applied at construction time
+        // model_override already applied at construction time; we still need
+        // the account HOME override for multi-account isolation.
+        let account_env = ctx.account_env.clone();
         let (tx, rx) = mpsc::channel::<BridgeEvent>(256);
 
         let bridge_self = self.clone_handle();
@@ -697,22 +706,23 @@ impl GitHubCopilotBridge {
             if aborted.load(Ordering::SeqCst) {
                 return;
             }
-            let (acp, session_id) = match bridge_self.cold_start(bridge_tx.clone()).await {
-                Ok(v) => v,
-                Err(e) => {
-                    let _ = bridge_tx
-                        .send(BridgeEvent::Error {
-                            error: e.to_string(),
-                        })
-                        .await;
-                    let _ = bridge_tx
-                        .send(BridgeEvent::Status {
-                            status: "done".into(),
-                        })
-                        .await;
-                    return;
-                }
-            };
+            let (acp, session_id) =
+                match bridge_self.cold_start(bridge_tx.clone(), account_env).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let _ = bridge_tx
+                            .send(BridgeEvent::Error {
+                                error: e.to_string(),
+                            })
+                            .await;
+                        let _ = bridge_tx
+                            .send(BridgeEvent::Status {
+                                status: "done".into(),
+                            })
+                            .await;
+                        return;
+                    }
+                };
 
             let _ = bridge_tx
                 .send(BridgeEvent::Status {

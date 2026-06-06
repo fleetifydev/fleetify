@@ -2,6 +2,7 @@
 //! names — the unchanged React renderer and future wire-protocol parity
 //! depend on these exact names.
 
+pub mod account;
 pub mod activity;
 pub mod cost;
 pub mod memory;

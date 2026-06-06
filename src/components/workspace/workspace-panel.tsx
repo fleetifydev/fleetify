@@ -1445,6 +1445,7 @@ function TaskCardsWorkspace({ sessionId }: { sessionId: string | null }) {
   const requestClose = useContext(PaneCloseContext);
   const sessionState = useChatStore(selectSession(sessionId));
   const setSelected = useChatStore(s => s.setSelectedSubagentTask);
+  const clearFinished = useChatStore(s => s.clearFinishedSubagents);
   const addView = useAppStore(s => s.addWorkspaceView);
   const { subagentTasks, selectedSubagentTaskId } = sessionState;
 
@@ -1516,6 +1517,24 @@ function TaskCardsWorkspace({ sessionId }: { sessionId: string | null }) {
           fontSize: 12.5, fontWeight: 600, color: "var(--c-high)",
           letterSpacing: 0.1, cursor: "grab",
         }}>Tasks</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        {finishedCards.length > 0 && (
+          <button
+            onClick={() => sessionId && clearFinished(sessionId)}
+            style={{
+              padding: "2px 8px", borderRadius: 5,
+              background: "transparent", border: "none",
+              cursor: "pointer", color: "var(--c-ghost)",
+              fontSize: 11, fontWeight: 500, fontFamily: "inherit",
+              transition: "background 0.12s, color 0.12s",
+            }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "var(--c-high)"; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "var(--c-ghost)"; }}
+            title="Clear finished tasks"
+          >
+            Clear
+          </button>
+        )}
         <button
           onClick={() => requestClose?.("tasks")}
           style={{
@@ -1531,6 +1550,7 @@ function TaskCardsWorkspace({ sessionId }: { sessionId: string | null }) {
         >
           <X size={13} strokeWidth={1.8} />
         </button>
+        </div>
       </div>
 
       <div className="scroll-subtle" style={{
@@ -1574,7 +1594,7 @@ function TaskCardsWorkspace({ sessionId }: { sessionId: string | null }) {
             {finishedCards.length > 0 && (
               <>
                 <SectionLabel style={{ marginTop: runningCards.length > 0 ? 14 : 0 }}>
-                  Completed
+                  Finished
                 </SectionLabel>
                 {finishedCards.map(t => (
                   <SubagentTaskCard
@@ -1621,7 +1641,7 @@ function SectionLabel({ children, style }: { children: React.ReactNode; style?: 
  * pushes that task into the Agent pane view.
  */
 function SubagentTaskCard({
-  task, nowMs, selected, fmt, onPick, onStop,
+  task, nowMs, selected, fmt, fmtTokens, onPick, onStop,
 }: {
   task: import("@/stores/chat-store").SubagentTask;
   nowMs: number;
@@ -1671,10 +1691,6 @@ function SubagentTaskCard({
     return null;
   })();
 
-  // Subtitle: "<Tool> · <Status>" — matches the reference layout
-  // (Bash · Completed). Falls back to "Agent · …" when no tool ran yet.
-  const subtitleTool = task.lastToolName ?? "Agent";
-
   return (
     <div
       role="button"
@@ -1715,10 +1731,13 @@ function SubagentTaskCard({
               background: "var(--c-med)",
               animation: "fleetPulse 1.4s ease-in-out infinite",
             }}/>
-          ) : failed ? (
-            <X size={11} strokeWidth={2.4} color="#f87171" />
           ) : (
-            <Check size={11} strokeWidth={2.4} color="var(--c-low)" />
+            // Static dot — gray when completed, red when failed/stopped
+            // (matches the Claude-Code Tasks panel's leading dot).
+            <span style={{
+              width: 6, height: 6, borderRadius: "50%",
+              background: failed ? "#f87171" : "var(--c-low)",
+            }}/>
           )}
         </span>
         <span style={{
@@ -1748,44 +1767,51 @@ function SubagentTaskCard({
             onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "var(--c-med)"; }}
           >Stop</span>
         )}
-        <ChevronDown size={11} color="var(--c-ghost)" />
       </div>
 
-      {/* Subtitle — packs tool · status · duration · tool count in one
-          mono line so the card is information-dense without bloat. */}
+      {/* Row 2 — "<Agent type>  <Status>  <duration>" (Claude-Code Tasks layout). */}
       <div style={{
-        marginLeft: 20,
-        fontSize: 10.5,
-        color: "var(--c-dim)",
-        fontFamily: "var(--font-mono)",
-        letterSpacing: 0,
-        display: "flex", alignItems: "center", gap: 5,
-        flexWrap: "wrap",
+        marginLeft: 20, marginTop: 3,
+        fontSize: 11, color: "var(--c-dim)",
+        display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
       }}>
-        <span>{subtitleTool}</span>
-        <span style={{ opacity: 0.4 }}>·</span>
-        <span>{statusLabel}</span>
-        {elapsed > 0 && (
-          <>
-            <span style={{ opacity: 0.4 }}>·</span>
-            <span>{fmt(elapsed)}</span>
-          </>
+        <span style={{ color: "var(--c-med)" }}>{task.taskType || "Agent"}</span>
+        <span className={running ? "status-sheen" : undefined}>{statusLabel}</span>
+        {elapsed > 0 && <span style={{ fontFamily: "var(--font-mono)" }}>{fmt(elapsed)}</span>}
+      </div>
+
+      {/* Row 3 — "<N> Tokens  <N> Tool uses  View transcript". */}
+      <div style={{
+        marginLeft: 20, marginTop: 3,
+        fontSize: 11, color: "var(--c-dim)",
+        display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap",
+      }}>
+        {task.totalTokens > 0 && (
+          <span>
+            <span style={{ color: "var(--c-med)", fontFamily: "var(--font-mono)" }}>{fmtTokens(task.totalTokens)}</span> Tokens
+          </span>
         )}
         {task.toolUses > 0 && (
-          <>
-            <span style={{ opacity: 0.4 }}>·</span>
-            <span>{task.toolUses} {task.toolUses === 1 ? "tool" : "tools"}</span>
-          </>
+          <span>
+            <span style={{ color: "var(--c-med)", fontFamily: "var(--font-mono)" }}>{task.toolUses}</span> {task.toolUses === 1 ? "Tool use" : "Tool uses"}
+          </span>
         )}
+        <span
+          role="button"
+          tabIndex={0}
+          onClick={e => { e.stopPropagation(); onPick(); }}
+          onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); onPick(); } }}
+          style={{ color: "rgb(110,162,228)", cursor: "pointer", fontWeight: 500 }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.textDecoration = "underline"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.textDecoration = "none"; }}
+        >View transcript</span>
       </div>
 
-      {/* Detail line — concrete preview of what the agent is doing /
-          did. Only renders when it'd add info beyond the title (avoids
-          the "title repeated" look when summary == description). */}
-      {detailLine && (
+      {/* Live activity line — only while running, shows the current tool. */}
+      {running && detailLine && (
         <div style={{
-          marginLeft: 20, marginTop: 2,
-          fontSize: 11.5, color: "var(--c-med)",
+          marginLeft: 20, marginTop: 4,
+          fontSize: 11, color: "var(--c-med)",
           lineHeight: 1.4,
           overflow: "hidden", textOverflow: "ellipsis",
           display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
@@ -1922,7 +1948,7 @@ function TaskCard({
       }}>
         <span>Agent</span>
         <span style={{ opacity: 0.4 }}>·</span>
-        <span>{statusLabel}</span>
+        <span className={running ? "status-sheen" : undefined}>{statusLabel}</span>
         <span style={{ opacity: 0.4 }}>·</span>
         <span>{fmt(card.durationMs)}</span>
         {card.tokens > 0 && (

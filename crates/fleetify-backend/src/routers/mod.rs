@@ -1,6 +1,7 @@
 //! axum routers = the FastAPI router surface. Phase 1c: sessions /
 //! messages / events. AppState carries auth + the SessionManager.
 
+pub mod accounts;
 pub mod auth;
 pub mod chat;
 pub mod docker;
@@ -57,6 +58,17 @@ pub struct AppState {
         tokio::sync::Mutex<
             std::collections::HashMap<String, crate::bridges::permission::PermissionHandler>,
         >,
+    >,
+    /// session_id → live AskUserQuestion handler. Populated by chat.rs
+    /// when a Claude session's WS opens. Consumed by the fleet-permission
+    /// loopback (`/api/internal/permission_prompt`): when Claude calls the
+    /// built-in `AskUserQuestion` tool (which can't render headlessly), the
+    /// loopback routes to this handler instead of the yes/no permission
+    /// flow — it ships the question card to the renderer, awaits the user's
+    /// selection, and returns it as the tool result. Returns a JSON outcome
+    /// (`{answered, answers:[…]}`), not a bool, hence a separate registry.
+    pub ask_registry: std::sync::Arc<
+        tokio::sync::Mutex<std::collections::HashMap<String, crate::bridges::acp::RequestHandler>>,
     >,
     /// CLI agent scan result, primed at backend startup and refreshed
     /// on install / manual ?refresh=1 hits. See routers::providers.
