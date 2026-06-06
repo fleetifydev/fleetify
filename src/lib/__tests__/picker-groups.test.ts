@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildPickerGroups, resolveDispatchTool, resolveModelChip, modelsForTile, resolveStartupDefault, hermesProviders, hermesHealModel } from "../picker-groups";
+import { buildPickerGroups, effortForDiscoveredModel, resolveDispatchTool, resolveModelChip, modelsForTile, resolveStartupDefault, hermesProviders, hermesHealModel } from "../picker-groups";
 import type { ProviderTile, ProviderSpec } from "@/lib/providers-api";
 
 const baseTile = (
@@ -29,10 +29,113 @@ const baseTile = (
   connected: kind !== "cli",
   has_key: kind !== "cli",
   enabled_models: [],
+  is_default: false,
+  capabilities: {
+    permission: { kind: "none" },
+    tool_matrix: null,
+    timing: { permission: "spawn", effort: "spawn" },
+    model_efforts: [],
+  },
   ...opts,
 });
 
+describe("effortForDiscoveredModel", () => {
+  // Regression: discovered/live models (e.g. /agents/claude/models on picker
+  // open) used to be built with a hard-coded effort:none, which overrode the
+  // CLI_MODELS fallback and blanked the Effort column for Claude/Codex/Gemini.
+  it("resolves a CLI agent's per-model effort from CLI_MODELS", () => {
+    const eff = effortForDiscoveredModel("claude", "claude-opus-4-8", []);
+    expect(eff.kind).toBe("levels");
+    if (eff.kind === "levels") expect(eff.levels).toContain("max");
+  });
+  it("returns none for a CLI model with no effort lever", () => {
+    expect(effortForDiscoveredModel("claude", "claude-haiku-4-5-20251001", []).kind).toBe("none");
+  });
+  it("falls back to tile model_efforts for HTTP discovered models", () => {
+    const tile = baseTile("openai", "OpenAI", "api", []);
+    tile.capabilities.model_efforts = [
+      { id: "gpt-5.5", effort: { kind: "levels", levels: ["low", "medium", "high"], default: "medium" } },
+    ];
+    expect(effortForDiscoveredModel("openai", "gpt-5.5", [tile]).kind).toBe("levels");
+  });
+  it("returns none for an unknown provider/model", () => {
+    expect(effortForDiscoveredModel("nope", "whatever", []).kind).toBe("none");
+  });
+});
+
 describe("buildPickerGroups", () => {
+  it("claude-opus-4-8 has a levels effort containing xhigh and max", () => {
+    const groups = buildPickerGroups([], []);
+    const claude = groups.find((g) => g.id === "claude");
+    const opus = claude?.models.find((m) => m.id === "claude-opus-4-8");
+    expect(opus?.effort.kind).toBe("levels");
+    if (opus?.effort.kind === "levels") {
+      expect(opus.effort.levels).toContain("xhigh");
+      expect(opus.effort.levels).toContain("max");
+    }
+    expect(opus?.supports_effort).toBe(true);
+  });
+
+  it("a none-effort model has supports_effort === false", () => {
+    const groups = buildPickerGroups([], []);
+    const claude = groups.find((g) => g.id === "claude");
+    const haiku = claude?.models.find((m) => m.id === "claude-haiku-4-5-20251001");
+    expect(haiku?.effort.kind).toBe("none");
+    expect(haiku?.supports_effort).toBe(false);
+  });
+
+  it("claude-sonnet-4-6 has levels low/medium/high/max but NOT xhigh", () => {
+    const groups = buildPickerGroups([], []);
+    const claude = groups.find((g) => g.id === "claude");
+    const sonnet = claude?.models.find((m) => m.id === "claude-sonnet-4-6");
+    expect(sonnet?.effort.kind).toBe("levels");
+    if (sonnet?.effort.kind === "levels") {
+      expect(sonnet.effort.levels).toContain("low");
+      expect(sonnet.effort.levels).toContain("max");
+      expect(sonnet.effort.levels).not.toContain("xhigh");
+    }
+  });
+
+  it("gemini CLI models have thinking_level effort with low and high", () => {
+    const groups = buildPickerGroups([], []);
+    const gemini = groups.find((g) => g.id === "gemini");
+    const pro = gemini?.models.find((m) => m.id === "gemini-3.1-pro-preview");
+    expect(pro?.effort.kind).toBe("thinking_level");
+    if (pro?.effort.kind === "thinking_level") {
+      expect(pro.effort.levels).toContain("low");
+      expect(pro.effort.levels).toContain("high");
+    }
+    // lite has no effort
+    const lite = gemini?.models.find((m) => m.id === "gemini-3.1-flash-lite-preview");
+    expect(lite?.effort.kind).toBe("none");
+    expect(lite?.supports_effort).toBe(false);
+  });
+
+  it("buildPickerGroups joins model_efforts from tile capabilities for HTTP providers", () => {
+    const tiles = [
+      baseTile("openai", "OpenAI", "api", ["gpt-5.5"], {
+        connected: true,
+        has_key: true,
+        capabilities: {
+          permission: { kind: "none" },
+          tool_matrix: null,
+          timing: { permission: "spawn", effort: "spawn" },
+          model_efforts: [
+            { id: "gpt-5.5", effort: { kind: "levels", levels: ["low", "medium", "high"], default: "medium" } },
+          ],
+        },
+      }),
+    ];
+    const groups = buildPickerGroups(tiles, []);
+    const openai = groups.find((g) => g.id === "openai");
+    const model = openai?.models.find((m) => m.id === "gpt-5.5");
+    expect(model?.effort.kind).toBe("levels");
+    if (model?.effort.kind === "levels") {
+      expect(model.effort.levels).toContain("high");
+    }
+    expect(model?.supports_effort).toBe(true);
+  });
+
   it("filters CLI agents by enabledAgentIds", () => {
     const tiles = [
       baseTile("claude", "Claude Code", "cli"),
@@ -389,6 +492,12 @@ function tile(
     has_key: false,
     enabled_models: [],
     is_default: false,
+    capabilities: {
+      permission: { kind: "none" },
+      tool_matrix: null,
+      timing: { permission: "spawn", effort: "spawn" },
+      model_efforts: [],
+    },
     ...over,
   };
 }

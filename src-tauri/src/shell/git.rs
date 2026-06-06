@@ -1147,8 +1147,18 @@ pub async fn create_pr_via_gh(
             if sr_rc == 0 { "ok" } else { sr_err.trim() },
         );
         if let Some(fb) = feature_branch {
-            // Baseline commit on main, then carve feature branch.
-            let baseline_msg = with_fleetify_trailer("Fleetify baseline");
+            // Baseline on main carries ONLY the .gitignore so the PR diff is
+            // the actual work, not gitignore noise. The feature branch (carved
+            // next) then captures everything else. `--allow-empty` covers a
+            // repo with no .gitignore to stage.
+            let _ = run(
+                "git",
+                &["add", ".gitignore"],
+                folder,
+                Duration::from_secs(10),
+            )
+            .await;
+            let baseline_msg = with_fleetify_trailer("chore: initialize repository");
             let (rc, _, err) = run(
                 "git",
                 &["commit", "--allow-empty", "-m", &baseline_msg],
@@ -1171,20 +1181,10 @@ pub async fn create_pr_via_gh(
             if rc != 0 {
                 return step_fail(&format!("checkout -B {fb}"), err.trim(), &trace);
             }
-            let (rc, _, err) = run("git", &["add", "-A"], folder, Duration::from_secs(120)).await;
-            note("git add -A (feature)", rc == 0, err.trim());
-            let init_msg = with_fleetify_trailer("Initial commit");
-            let (rc, _, err) = run(
-                "git",
-                &["commit", "--allow-empty", "-m", &init_msg],
-                folder,
-                Duration::from_secs(30),
-            )
-            .await;
-            note("initial commit (feature)", rc == 0, err.trim());
-            if rc != 0 {
-                return step_fail("initial commit", err.trim(), &trace);
-            }
+            // The work files stay UNCOMMITTED on the feature branch — the
+            // auto-commit step below commits them with a conventional AI
+            // message (so a fresh repo's first PR reads `feat: …` rather than a
+            // static "Initial commit").
         } else {
             let (_, _, _) = run("git", &["add", "-A"], folder, Duration::from_secs(120)).await;
             let init_msg = with_fleetify_trailer("Initial commit");
@@ -1201,27 +1201,110 @@ pub async fn create_pr_via_gh(
             }
         }
     } else if let Some(fb) = feature_branch {
-        // Already has HEAD — carve only when we're not on the branch.
-        let (rc, cur_out, _) = run(
+        // Does a remote exist yet? Decides whether this is the repo's FIRST PR
+        // (local-only history → re-baseline so the PR has a diff) or an
+        // established repo (carve the feature branch off the current HEAD).
+        let (origin_rc, _, _) = run(
             "git",
-            &["rev-parse", "--abbrev-ref", "HEAD"],
+            &["remote", "get-url", "origin"],
             folder,
             Duration::from_secs(5),
         )
         .await;
-        let cur = cur_out.trim().to_string();
-        note("current branch", rc == 0, &cur);
-        if rc == 0 && cur != fb {
+        if origin_rc != 0 {
+            // FIRST PR for a local-only repo. The work is committed on `main`
+            // (or pending in the tree), so a branch carved off HEAD would equal
+            // main → "No commits between". Re-baseline: `main` carries ONLY the
+            // .gitignore; the feature branch then captures ALL the content as
+            // the work. File CONTENT is preserved in the working tree — only the
+            // purely-local commit history is rebuilt.
             let (rc, _, err) = run(
                 "git",
-                &["checkout", "-B", fb],
+                &["checkout", "--orphan", "__fleet_base__"],
                 folder,
                 Duration::from_secs(10),
             )
             .await;
-            note(&format!("checkout -B {fb}"), rc == 0, err.trim());
+            note("orphan base", rc == 0, err.trim());
             if rc != 0 {
-                return step_fail(&format!("checkout -B {fb}"), err.trim(), &trace);
+                return step_fail("orphan base", err.trim(), &trace);
+            }
+            // Unstage everything the orphan carried over, then keep only the
+            // .gitignore for the baseline commit on main.
+            let _ = run(
+                "git",
+                &["rm", "-rf", "--cached", "."],
+                folder,
+                Duration::from_secs(60),
+            )
+            .await;
+            let _ = run(
+                "git",
+                &["add", ".gitignore"],
+                folder,
+                Duration::from_secs(10),
+            )
+            .await;
+            let baseline_msg = with_fleetify_trailer("chore: initialize repository");
+            let (rc, _, err) = run(
+                "git",
+                &["commit", "--allow-empty", "-m", &baseline_msg],
+                folder,
+                Duration::from_secs(30),
+            )
+            .await;
+            note("baseline commit (main)", rc == 0, err.trim());
+            if rc != 0 {
+                return step_fail("baseline commit", err.trim(), &trace);
+            }
+            // Force the baseline to become `main` (replacing the old local main).
+            let (rc, _, err) = run(
+                "git",
+                &["branch", "-M", "main"],
+                folder,
+                Duration::from_secs(10),
+            )
+            .await;
+            note("git branch -M main", rc == 0, err.trim());
+            if rc != 0 {
+                return step_fail("branch -M main", err.trim(), &trace);
+            }
+            // Carve the feature branch off the baseline; the work files are now
+            // untracked → the auto-commit step below commits them.
+            let (rc, _, err) = run(
+                "git",
+                &["checkout", "-b", fb],
+                folder,
+                Duration::from_secs(10),
+            )
+            .await;
+            note(&format!("checkout -b {fb}"), rc == 0, err.trim());
+            if rc != 0 {
+                return step_fail(&format!("checkout -b {fb}"), err.trim(), &trace);
+            }
+        } else {
+            // Established repo — carve off HEAD only when not already on it.
+            let (rc, cur_out, _) = run(
+                "git",
+                &["rev-parse", "--abbrev-ref", "HEAD"],
+                folder,
+                Duration::from_secs(5),
+            )
+            .await;
+            let cur = cur_out.trim().to_string();
+            note("current branch", rc == 0, &cur);
+            if rc == 0 && cur != fb {
+                let (rc, _, err) = run(
+                    "git",
+                    &["checkout", "-B", fb],
+                    folder,
+                    Duration::from_secs(10),
+                )
+                .await;
+                note(&format!("checkout -B {fb}"), rc == 0, err.trim());
+                if rc != 0 {
+                    return step_fail(&format!("checkout -B {fb}"), err.trim(), &trace);
+                }
             }
         }
     }
@@ -1276,6 +1359,27 @@ pub async fn create_pr_via_gh(
         note("working tree clean", true, "nothing to auto-commit");
     }
 
+    // 4b. Bail BEFORE touching the remote when the feature branch has no
+    // commits ahead of `main` — nothing to PR. Returning here avoids leaving a
+    // freshly-created GitHub repo + a stuck `origin` behind on an empty diff.
+    if let Some(fb) = feature_branch {
+        let (rc, ahead, _) = run(
+            "git",
+            &["rev-list", "--count", &format!("main..{fb}")],
+            folder,
+            Duration::from_secs(10),
+        )
+        .await;
+        if rc == 0 && ahead.trim() == "0" {
+            note("no diff", false, "branch has no commits ahead of main");
+            return json!({
+                "ok": false,
+                "code": "NO_DIFF",
+                "error": "No changes to open a pull request — the session has no edits to commit. Make some changes first, then try again."
+            });
+        }
+    }
+
     // 5. Ensure `origin` remote — create the GitHub repo on the fly
     //    when missing.
     let (probe_rc, probe_out, probe_err) = run(
@@ -1317,6 +1421,25 @@ pub async fn create_pr_via_gh(
         }
         if repo_name.is_empty() {
             repo_name = "fleet-project".into();
+        }
+        // Avoid colliding with a repo the user already owns: `gh repo view
+        // <name>` returns rc==0 when it exists. Append -1, -2, … until free,
+        // so a second "test_a" project opens "test_a-1" instead of failing on
+        // (or silently reusing) the existing repo.
+        {
+            let base_name = repo_name.clone();
+            let mut attempt = 0u32;
+            loop {
+                let (view_rc, _, _) = gh(&["repo", "view", &repo_name], folder).await;
+                if view_rc != 0 {
+                    break; // doesn't exist → free to create
+                }
+                attempt += 1;
+                if attempt > 30 {
+                    break; // safety: let gh repo create surface any leftover collision
+                }
+                repo_name = format!("{base_name}-{attempt}");
+            }
         }
         note("repo name", true, &repo_name);
         let (rc, out, err) = gh(
@@ -1515,6 +1638,16 @@ pub async fn create_pr_via_gh(
                     });
                 }
             }
+        }
+        // No diff between head and base — GitHub refuses an empty PR. Map the
+        // raw GraphQL "No commits between …" error to a clear, actionable one.
+        if combined.contains("No commits between") {
+            note("no diff", false, "branch has no commits ahead of base");
+            return json!({
+                "ok": false,
+                "code": "NO_DIFF",
+                "error": "No changes to open a pull request — this branch has no commits ahead of the base. Make some edits in the session (or commit pending changes), then try again."
+            });
         }
         return json!({
             "ok": false,

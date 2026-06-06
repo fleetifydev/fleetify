@@ -258,6 +258,8 @@ async fn update_session(
     set!("model_name", p.model_name.clone());
     set!("permission_mode", p.permission_mode.clone());
     set!("effort", p.effort.clone());
+    set!("sandbox", p.sandbox.clone());
+    set!("tool_overrides", p.tool_overrides.clone());
     set!("project_path", p.project_path.clone());
     set!("tool", p.tool.clone());
     set!("claude_session_id", p.claude_session_id.clone());

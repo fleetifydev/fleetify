@@ -67,6 +67,9 @@ import { fetchMessages } from "@/lib/api";
 import { MarkdownBody, rowSummary } from "@/components/chat/message-content";
 import type { Session } from "@/types/session";
 import type { ChatMessage } from "@/types/chat";
+import { useProvidersConfig } from "@/hooks/use-providers-config";
+import { permissionCapabilityFor, permissionModesFor, isLoudMode } from "@/lib/capabilities";
+import type { PermMode } from "@/lib/providers-api";
 
 /* ── Provider / model catalogue ───────────────────────────────────────
    Kept in sync with new-agent-dialog.tsx by hand. If you change models
@@ -93,18 +96,11 @@ const PROVIDERS: {
   ]},
 ];
 
-/* Mirror chat-input's PERM_MODES (id + label + idx) so a routine's
-   permission column matches the modes available in any live chat. */
-const PERM_MODES: { id: PermissionMode; label: string; idx: number }[] = [
-  { id: "default",           label: "Ask permissions",    idx: 1 },
-  { id: "acceptEdits",       label: "Accept edits",       idx: 2 },
-  { id: "plan",              label: "Plan mode",          idx: 3 },
-  { id: "auto",              label: "Auto mode",          idx: 4 },
-  { id: "bypassPermissions", label: "Bypass permissions", idx: 5 },
-];
-
-function permLabel(id: PermissionMode): string {
-  return PERM_MODES.find(m => m.id === id)?.label ?? id;
+/** Look up the display label for a permission mode from the resolved
+ *  native modes for the given provider. Falls back to the raw id when
+ *  the mode is not in the list (legacy stored value). */
+function permLabel(id: PermissionMode, modes: PermMode[]): string {
+  return modes.find((m) => m.id === id)?.label ?? id;
 }
 
 /* ── Built-in agent templates ─────────────────────────────────────────
@@ -792,11 +788,13 @@ function RoutineTableRow({ routine, onOpen, onEdit, onRequestDelete }: {
   const sessions = useAppStore(s => s.sessions);
   const runs = useRuns();
   const [hover, setHover] = useState(false);
+  const { tiles: providerTiles } = useProvidersConfig();
 
   const resumeSession = routine.target === "resume"
     ? sessions.find(x => x.id === routine.resumeSessionId)
     : null;
   const displayTool = resumeSession?.tool ?? routine.provider;
+  const routinePerms = permissionModesFor(permissionCapabilityFor(providerTiles, routine.provider));
 
   const project = routine.target === "resume"
     ? folderName(resumeSession?.project_path ?? "")
@@ -904,7 +902,7 @@ function RoutineTableRow({ routine, onOpen, onEdit, onRequestDelete }: {
             <Chip tone={routine.target === "resume" ? "purple" : "blue"}>
               {routine.target === "resume" ? "Resume session" : "New session"}
             </Chip>
-            <Chip tone={permTone(routine.permissionMode)}>{permLabel(routine.permissionMode)}</Chip>
+            <Chip tone={permTone(routine.permissionMode)}>{permLabel(routine.permissionMode, routinePerms)}</Chip>
             {routine.target === "new" && routine.useWorktree && <Chip>Worktree</Chip>}
             {agentTpl && <Chip>{agentTpl.icon} {agentTpl.name}</Chip>}
           </div>
@@ -1883,7 +1881,7 @@ function NewRoutineForm({ template, existing, onCancel, onSubmit, mode }: {
               </span>
             )}
           </div>
-          <PermissionPicker value={permissionMode} onChange={setPermissionMode} />
+          <PermissionPicker value={permissionMode} onChange={setPermissionMode} providerId={provider} />
         </div>
 
         {/* Border-trace — same SVG overlay chat-input uses, same
@@ -2055,6 +2053,8 @@ function RoutineDetail({ routine, onBack, onRequestDelete, onEdit, onOpenRun }: 
     ? sessions.find(s => s.id === routine.resumeSessionId) ?? null
     : null;
   const provider = PROVIDERS.find(p => p.id === routine.provider);
+  const { tiles: providerTiles } = useProvidersConfig();
+  const routinePerms = permissionModesFor(permissionCapabilityFor(providerTiles, routine.provider));
   const model = provider?.models.find(m => m.id === routine.modelId);
   const projectName = routine.projectPath ? folderName(routine.projectPath) : "";
   const agentTpl = routine.agentTemplate ? AGENT_TEMPLATES.find(t => t.id === routine.agentTemplate) : null;
@@ -2137,7 +2137,7 @@ function RoutineDetail({ routine, onBack, onRequestDelete, onEdit, onOpenRun }: 
               <Chip tone={routine.target === "resume" ? "purple" : "blue"}>
                 {routine.target === "resume" ? "Resume session" : "New session"}
               </Chip>
-              <Chip tone={permTone(routine.permissionMode)}>{permLabel(routine.permissionMode)}</Chip>
+              <Chip tone={permTone(routine.permissionMode)}>{permLabel(routine.permissionMode, routinePerms)}</Chip>
               {routine.target === "new" && routine.useWorktree && <Chip>Worktree</Chip>}
               {agentTpl && <Chip>{agentTpl.icon} {agentTpl.name}</Chip>}
             </div>
@@ -3367,9 +3367,11 @@ function ModelDropdown({ provider, value, onChange }: {
    and it persists into a routine record instead of patching a live
    session. Drift between this picker and the chat one will read as a
    bug, so keep them in sync. */
-function PermissionPicker({ value, onChange }: {
-  value: PermissionMode; onChange: (v: PermissionMode) => void;
+function PermissionPicker({ value, onChange, providerId }: {
+  value: PermissionMode; onChange: (v: PermissionMode) => void; providerId: string | null | undefined;
 }) {
+  const { tiles: providerTiles } = useProvidersConfig();
+  const modes = permissionModesFor(permissionCapabilityFor(providerTiles, providerId));
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   // Popover position is computed from the trigger's bounding rect and
@@ -3418,8 +3420,9 @@ function PermissionPicker({ value, onChange }: {
     };
   }, [open]);
 
-  const trigger = permLabel(value);
-  const loud = value === "bypassPermissions" || value === "auto";
+  if (modes.length === 0) return null;
+  const trigger = permLabel(value, modes);
+  const loud = isLoudMode(value);
 
   return (
     <div ref={wrapRef} style={{ position: "relative", flexShrink: 0 }}>
@@ -3468,13 +3471,13 @@ function PermissionPicker({ value, onChange }: {
           }}>
             <span style={{ fontSize: 10.5, color: "var(--c-dim)", fontWeight: 500 }}>Mode</span>
           </div>
-          {PERM_MODES.map(m => {
+          {modes.map((m, i) => {
             const active = value === m.id;
-            const loudRow = m.id === "bypassPermissions" || m.id === "auto";
+            const loudRow = isLoudMode(m.id);
             return (
               <button
                 key={m.id}
-                onClick={() => { onChange(m.id); setOpen(false); }}
+                onClick={() => { onChange(m.id as PermissionMode); setOpen(false); }}
                 onMouseDown={e => e.preventDefault()}
                 style={{
                   display: "flex", alignItems: "center", justifyContent: "space-between",
@@ -3498,7 +3501,7 @@ function PermissionPicker({ value, onChange }: {
                   <span style={{
                     fontSize: 10.5, color: "var(--c-dim)",
                     fontFamily: "var(--font-mono)",
-                  }}>{m.idx}</span>
+                  }}>{i + 1}</span>
                 </span>
               </button>
             );

@@ -5,6 +5,8 @@ import { createSession, fetchClaudeSessions, fetchGeminiSessions, fetchCodexSess
 import { useAppStore } from "@/stores/app-store";
 import { useRouterConfig } from "@/hooks/use-router-config";
 import { RoutersStatusBar } from "@/components/settings/routers/routers-status-bar";
+import { useProvidersConfig } from "@/hooks/use-providers-config";
+import { permissionCapabilityFor, permissionModesFor } from "@/lib/capabilities";
 
 interface PluginTemplate {
   name: string; title: string; description: string;
@@ -159,13 +161,6 @@ const PROVIDERS = [
   ]},
 ];
 
-const PERMS = [
-  { id: "default",           label: "Ask",          desc: "Ask before edits & shell commands",         rec: true  },
-  { id: "acceptEdits",       label: "Accept edits", desc: "Auto-approve file edits, ask for commands", rec: false },
-  { id: "bypassPermissions", label: "Full auto",    desc: "All tools run without asking",              rec: false },
-  { id: "plan",              label: "Plan only",    desc: "No execution — outputs a plan only",        rec: false },
-];
-
 function timeAgo(iso: string) {
   const d = Date.now() - new Date(iso).getTime();
   const m = Math.floor(d / 60000);
@@ -226,6 +221,10 @@ export function NewAgentView({ onClose }: Props) {
   // (no folder yet, probe in flight, or probe failed); true/false drives the
   // "will initialize" hint inside <WorktreeToggle>.
   const [pathIsGit, setPathIsGit] = useState<boolean | null>(null);
+  // Capability-driven permission modes. Tiles come from the shared
+  // providers-config store (same source as the composer/toolbar pickers).
+  const { tiles: providerTiles } = useProvidersConfig();
+
   // Provider-router master toggle + the currently active decision router
   // (the tile flagged `active_for_decision: true`). When the master is on
   // we collapse the agent/model picker behind a "🪄 Auto-routing enabled"
@@ -343,7 +342,13 @@ export function NewAgentView({ onClose }: Props) {
     const p = PROVIDERS.find(p => p.id === pid)!;
     const def = p.models.find(m => m.default) ?? p.models[0];
     if (def) setModelId(def.id);
-    if (pid === "gemini" && perm === "default") setPerm("acceptEdits");
+    // Reset perm to the first available mode for the new provider if the
+    // current selection won't be in the new list.
+    const newModes = permissionModesFor(permissionCapabilityFor(providerTiles, pid));
+    if (newModes.length > 0 && !newModes.some(m => m.id === perm)) {
+      const preferred = newModes.find(m => m.id === "default") ?? newModes[0];
+      if (preferred) setPerm(preferred.id);
+    }
     // If a template is selected, re-resolve the tier→model for the new provider
     if (selectedTpl) {
       const m = TIER_TO_MODEL[pid]?.[selectedTpl.preferred_tier];
@@ -442,7 +447,11 @@ export function NewAgentView({ onClose }: Props) {
   const canLaunch = !!path.trim() && (mode !== "resume" || !!resumeId) && !offWorktreeConflict;
   const curProv   = PROVIDERS.find(p => p.id === provider)!;
   const curModel  = curProv.models.find(m => m.id === modelId) ?? curProv.models[0]!;
-  const permList  = provider === "gemini" ? PERMS.filter(p => p.id !== "default") : PERMS;
+
+  // Derive the selectable permission modes from the provider's capability
+  // descriptor. `permissionCapabilityFor` looks up the tile for `provider`
+  // and falls back to HTTP-agentic modes when the tile isn't loaded yet.
+  const permModes = permissionModesFor(permissionCapabilityFor(providerTiles, provider));
 
   return (
     <>
@@ -536,12 +545,6 @@ export function NewAgentView({ onClose }: Props) {
         .na-launch:hover:not(:disabled) { opacity:.85; transform:translateY(-1px); }
         .na-launch:active:not(:disabled) { transform:translateY(0); opacity:.9; }
         .na-launch:disabled { background:var(--c-srf2); color:var(--c-ghost); cursor:not-allowed; transform:none; }
-
-        .na-rec {
-          font-size:9px; font-weight:600; letter-spacing:0.06em;
-          color:var(--c-dim); background:var(--c-srf2);
-          border:1px solid var(--c-brd); padding:1px 5px; border-radius:3px;
-        }
 
         .na-tpl-grid {
           display:grid; grid-template-columns:repeat(4, 1fr); gap:6px;
@@ -963,31 +966,24 @@ export function NewAgentView({ onClose }: Props) {
             )}
 
             {/* ── Permissions ── */}
-            <SecHead style={{ marginTop:20 }}>Permissions</SecHead>
-            <div style={{ display:"flex", flexDirection:"column", gap:2, marginTop:10, marginBottom:4 }}>
-              {provider === "gemini" && (
-                <div style={{ marginBottom:8, padding:"7px 10px", borderRadius:6, background:"rgba(142,117,178,.08)", border:"1px solid rgba(142,117,178,.2)", fontSize:11.5, color:"var(--c-low)", lineHeight:1.5 }}>
-                  Gemini headless doesn't support interactive dialogs.{" "}<strong style={{ color:"var(--foreground)" }}>Accept edits</strong> is recommended.
+            {permModes.length > 0 && (
+              <>
+                <SecHead style={{ marginTop:20 }}>Permissions</SecHead>
+                <div style={{ display:"flex", flexDirection:"column", gap:2, marginTop:10, marginBottom:4 }}>
+                  {permModes.map(p => {
+                    const sel = perm === p.id;
+                    return (
+                      <button key={p.id} className={`na-perm-row${sel ? " sel" : ""}`} onClick={() => setPerm(p.id)}>
+                        <Radio on={sel} style={{ marginTop:2, flexShrink:0 }}/>
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <span style={{ fontSize:13, fontWeight:sel ? 600 : 400, color:sel ? "var(--foreground)" : "var(--c-med)" }}>{p.label}</span>
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
-              )}
-              {permList.map(p => {
-                const sel = perm === p.id;
-                return (
-                  <button key={p.id} className={`na-perm-row${sel ? " sel" : ""}`} onClick={() => setPerm(p.id)}>
-                    <Radio on={sel} style={{ marginTop:2, flexShrink:0 }}/>
-                    <div style={{ flex:1, minWidth:0 }}>
-                      <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:2 }}>
-                        <span style={{ fontSize:13, fontWeight:sel ? 600 : 400, color:sel ? "var(--foreground)" : "var(--c-med)" }}>{p.label}</span>
-                        {((provider === "gemini" && p.id === "acceptEdits") || (provider !== "gemini" && p.rec)) && (
-                          <span className="na-rec">✓ Rec</span>
-                        )}
-                      </div>
-                      <div style={{ fontSize:11.5, color:"var(--c-ghost)", lineHeight:1.4 }}>{p.desc}</div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+              </>
+            )}
 
           </div>
 

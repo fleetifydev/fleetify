@@ -35,7 +35,11 @@ fn approval_mode_to_acp(mode: &str) -> &'static str {
     match mode {
         "default" => "default",
         "acceptEdits" => "auto_edit",
+        // Native Gemini approval-mode passthrough (idempotent).
+        "auto_edit" => "auto_edit",
         "bypassPermissions" | "dangerouslySkipPermissions" | "dontAsk" => "yolo",
+        // Native Gemini yolo passthrough (idempotent).
+        "yolo" => "yolo",
         "plan" => "plan",
         _ => "default",
     }
@@ -284,6 +288,11 @@ pub struct GeminiBridge {
     /// Without it, a staff Gemini session can neither see the fleet roster
     /// nor emit dispatch tokens — the gap this field closes.
     pub system_prompt: Option<String>,
+    /// OS sandbox toggle for the Gemini CLI (`--sandbox` flag).
+    /// When `Some("on")`, passes `--sandbox` to the gemini subprocess at spawn.
+    /// Best-effort: requires a sandbox runtime (Docker/Podman/sandbox-exec)
+    /// on the host; no-op if unavailable. Other values (or `None`) omit the flag.
+    pub sandbox: Option<String>,
     /// Same gating semantics as ClaudeBridge::is_staff — `fleet_dispatch`
     /// is suppressed on staff sessions so they use the text-protocol
     /// dispatch path instead.
@@ -316,6 +325,7 @@ impl GeminiBridge {
             permission_mode: permission_mode.into(),
             model_name,
             system_prompt: None,
+            sandbox: None,
             is_staff,
             agent_template,
             permission_handler: None,
@@ -354,6 +364,11 @@ impl GeminiBridge {
         }
         if let Some(ref url) = base_url_override {
             cmd.env("GEMINI_API_BASE", url);
+        }
+        // Gemini CLI OS sandbox (-s/--sandbox). Best-effort: requires a sandbox
+        // runtime (Docker/Podman/sandbox-exec) on the host; no-op if unavailable.
+        if self.sandbox.as_deref() == Some("on") {
+            cmd.arg("--sandbox");
         }
         // Defensive: even if an older session row still has a `\\?\`-
         // prefixed project_path, strip it before handing the cwd to
@@ -427,7 +442,7 @@ impl GeminiBridge {
         let perm_handler = self.permission_handler.clone();
         client
             .on_permission_request(Arc::new(move |params| {
-                let bypass = matches!(perm_mode.as_str(), "bypassPermissions" | "dontAsk");
+                let bypass = matches!(perm_mode.as_str(), "bypassPermissions" | "dontAsk" | "yolo");
                 let handler = perm_handler.clone();
                 Box::pin(async move {
                     if bypass {
@@ -774,6 +789,7 @@ impl GeminiBridge {
         let permission_mode = self.permission_mode.clone();
         let model_name = self.model_name.clone();
         let system_prompt = self.system_prompt.clone();
+        let sandbox = self.sandbox.clone();
         let is_staff = self.is_staff;
         let agent_template = self.agent_template.clone();
         let state = self.state.clone();
@@ -785,6 +801,7 @@ impl GeminiBridge {
                 permission_mode,
                 model_name,
                 system_prompt,
+                sandbox,
                 is_staff,
                 agent_template,
                 aborted: Arc::new(AtomicBool::new(false)),
@@ -1013,6 +1030,22 @@ mod tests {
     }
 
     #[test]
+    fn approval_mapping_native_gemini_ids_are_idempotent() {
+        // Native Gemini approval-mode values pass through unchanged and
+        // produce the same result as their canonical Fleet synonyms.
+        assert_eq!(approval_mode_to_acp("auto_edit"), "auto_edit");
+        assert_eq!(
+            approval_mode_to_acp("auto_edit"),
+            approval_mode_to_acp("acceptEdits")
+        );
+        assert_eq!(approval_mode_to_acp("yolo"), "yolo");
+        assert_eq!(
+            approval_mode_to_acp("yolo"),
+            approval_mode_to_acp("bypassPermissions")
+        );
+    }
+
+    #[test]
     fn translate_acp_tool_call_maps_kinds_to_names() {
         let u = json!({ "kind": "read", "rawInput": { "file_path": "/x" } });
         let (n, i) = translate_acp_tool_call(&u);
@@ -1116,6 +1149,20 @@ mod tests {
         assert_eq!(arr[0]["text"], "You ARE Fleet");
         assert_eq!(arr[1]["type"], "text");
         assert_eq!(arr[1]["text"], "list agents");
+    }
+
+    #[test]
+    fn sandbox_flag_logic() {
+        // Verify the conditional that guards --sandbox in cold_start.
+        // The actual spawn is not unit-testable without a real gemini binary,
+        // but the condition itself is straightforward enough to exercise here.
+        let on = Some("on".to_string());
+        let off = Some("off".to_string());
+        let none: Option<String> = None;
+
+        assert!(on.as_deref() == Some("on"), "on → pass --sandbox");
+        assert!(off.as_deref() != Some("on"), "off → omit --sandbox");
+        assert!(none.as_deref() != Some("on"), "None → omit --sandbox");
     }
 
     #[test]

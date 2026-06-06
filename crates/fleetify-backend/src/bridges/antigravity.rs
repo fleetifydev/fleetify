@@ -57,6 +57,13 @@ use super::BridgeEvent;
 use fleetify_core::user_home;
 use std::path::PathBuf;
 
+/// Returns `true` when `mode` means "skip all permission prompts" for the
+/// antigravity (agy) bridge — triggers `--dangerously-skip-permissions`.
+/// Native antigravity "always-proceed" is the autonomous tier.
+fn agy_is_bypass(mode: &str) -> bool {
+    matches!(mode, "bypassPermissions" | "dontAsk" | "always-proceed")
+}
+
 pub struct AntigravityBridge {
     pub session_id: String,
     /// Directory we spawn `agy` from. For use_worktree sessions this is
@@ -684,11 +691,8 @@ impl AntigravityBridge {
         // Mirror every other bridge: only enable the agy "skip permission
         // prompts" escape hatch when the user explicitly chose a mode
         // that means "don't ask me". Default + acceptEdits + plan stay
-        // safe.
-        if matches!(
-            self.permission_mode.as_str(),
-            "bypassPermissions" | "dontAsk"
-        ) {
+        // safe. Native antigravity "always-proceed" is the autonomous tier.
+        if agy_is_bypass(self.permission_mode.as_str()) {
             argv.push("--dangerously-skip-permissions".into());
         }
         // Use the same normalized path we already computed for cache
@@ -1190,7 +1194,25 @@ impl AntigravityBridge {
 
 #[cfg(test)]
 mod tests {
-    use super::AntigravityBridge;
+    use super::*;
+
+    #[test]
+    fn agy_is_bypass_native_always_proceed_skips_permissions() {
+        // Native antigravity "always-proceed" is the autonomous tier —
+        // should add --dangerously-skip-permissions just like bypassPermissions.
+        assert!(agy_is_bypass("always-proceed"));
+        assert_eq!(
+            agy_is_bypass("always-proceed"),
+            agy_is_bypass("bypassPermissions")
+        );
+        // Canonical bypass modes still work.
+        assert!(agy_is_bypass("bypassPermissions"));
+        assert!(agy_is_bypass("dontAsk"));
+        // Native safe modes must NOT bypass.
+        assert!(!agy_is_bypass("request-review"));
+        assert!(!agy_is_bypass("proceed-in-sandbox"));
+        assert!(!agy_is_bypass("default"));
+    }
 
     #[test]
     fn install_then_uninstall_round_trips_global_config() {

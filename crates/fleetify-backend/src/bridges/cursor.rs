@@ -194,6 +194,16 @@ fn permission_mode_to_session_mode(mode: &str) -> Option<&'static str> {
     }
 }
 
+/// Returns `true` when `mode` means "auto-allow all tool calls" for the Cursor
+/// bridge — i.e. no permission dialog should be shown. Factored out so it can
+/// be unit-tested independently of the async closure.
+fn cursor_is_bypass(mode: &str) -> bool {
+    matches!(
+        mode,
+        "bypassPermissions" | "dontAsk" | "dangerouslySkipPermissions" | "agent"
+    )
+}
+
 /// Decide whether to issue a `session/set_config_option` for the model.
 /// Returns `Some(model)` only when a model was requested, differs from the
 /// session's current model, and is actually offered by OpenCode.
@@ -463,6 +473,9 @@ pub struct CursorBridge {
     /// Handler for Cursor's blocking `cursor/create_plan` extension request.
     /// When absent the bridge auto-answers `accepted`.
     pub create_plan_handler: Option<super::acp::RequestHandler>,
+    /// Per-tool allow/deny overlay from `session.tool_overrides`. Keys and
+    /// values are lowercased. Empty (the default) means no overrides apply.
+    pub tool_overrides: std::collections::HashMap<String, String>,
     aborted: Arc<AtomicBool>,
     state: Arc<Mutex<Option<State>>>,
 }
@@ -490,6 +503,7 @@ impl CursorBridge {
             permission_handler: None,
             ask_question_handler: None,
             create_plan_handler: None,
+            tool_overrides: std::collections::HashMap::new(),
             aborted: Arc::new(AtomicBool::new(false)),
             state: Arc::new(Mutex::new(None)),
         }
@@ -635,30 +649,38 @@ impl CursorBridge {
         // Permission routing — bypass auto-allows, a wired handler asks the
         // renderer, neither auto-denies. The returned `optionId` is matched
         // by `kind` against the request's own options (see pick_*).
+        // Per-tool overrides (tool_overrides) are consulted FIRST and
+        // short-circuit the mode/handler logic when present.
         let perm_mode = self.permission_mode.clone();
         let perm_handler = self.permission_handler.clone();
+        let overrides = self.tool_overrides.clone();
         client
             .on_permission_request(Arc::new(move |params: Value| {
-                let bypass = matches!(
-                    perm_mode.as_str(),
-                    "bypassPermissions" | "dontAsk" | "dangerouslySkipPermissions"
-                );
+                let bypass = cursor_is_bypass(perm_mode.as_str());
                 let handler = perm_handler.clone();
+                let overrides = overrides.clone();
                 Box::pin(async move {
                     let options = params.get("options").cloned().unwrap_or(Value::Null);
-                    let approve = if bypass {
+                    // Extract tool name before bypass/handler check so the override
+                    // can short-circuit regardless of mode.
+                    let tool_name = params
+                        .get("toolCall")
+                        .and_then(|tc| {
+                            tc.get("title")
+                                .or_else(|| tc.get("kind"))
+                                .or_else(|| tc.get("name"))
+                        })
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    // Per-tool override takes priority over mode logic.
+                    let approve = if let Some(forced) =
+                        super::tool_override_decision(&overrides, &tool_name)
+                    {
+                        forced
+                    } else if bypass {
                         true
                     } else if let Some(h) = handler {
-                        let tool_name = params
-                            .get("toolCall")
-                            .and_then(|tc| {
-                                tc.get("title")
-                                    .or_else(|| tc.get("kind"))
-                                    .or_else(|| tc.get("name"))
-                            })
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
                         h(tool_name, params.clone()).await
                     } else {
                         tracing::warn!(
@@ -1035,6 +1057,7 @@ impl CursorBridge {
             permission_handler: self.permission_handler.clone(),
             ask_question_handler: self.ask_question_handler.clone(),
             create_plan_handler: self.create_plan_handler.clone(),
+            tool_overrides: self.tool_overrides.clone(),
             aborted: Arc::new(AtomicBool::new(false)),
             state: self.state.clone(),
         };
@@ -1185,6 +1208,26 @@ mod tests {
         assert_eq!(permission_mode_to_session_mode("acceptEdits"), None);
         assert_eq!(permission_mode_to_session_mode("bypassPermissions"), None);
         assert_eq!(permission_mode_to_session_mode("dontAsk"), None);
+    }
+
+    #[test]
+    fn cursor_is_bypass_native_agent_mode_auto_allows() {
+        // Cursor's native "agent" mode is the autonomous tier — it should
+        // auto-allow tool calls just like bypassPermissions.
+        assert!(cursor_is_bypass("agent"));
+        assert_eq!(
+            cursor_is_bypass("agent"),
+            cursor_is_bypass("bypassPermissions")
+        );
+        // Canonical bypass modes still work.
+        assert!(cursor_is_bypass("bypassPermissions"));
+        assert!(cursor_is_bypass("dontAsk"));
+        assert!(cursor_is_bypass("dangerouslySkipPermissions"));
+        // Ask-like modes must NOT bypass.
+        assert!(!cursor_is_bypass("default"));
+        assert!(!cursor_is_bypass("plan"));
+        assert!(!cursor_is_bypass("ask"));
+        assert!(!cursor_is_bypass("acceptEdits"));
     }
 
     fn models() -> Vec<ModelInfo> {

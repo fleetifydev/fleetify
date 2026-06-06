@@ -221,6 +221,35 @@ impl AnyBridge {
 
 use serde_json::{json, Value};
 
+/// Parse a session's `tool_overrides` JSON string into a normalized
+/// tool-name → decision map (keys + values lowercased). Returns an empty
+/// map on absent/invalid input — a bad override must never break dispatch.
+pub fn parse_tool_overrides(raw: Option<&str>) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let Some(s) = raw else { return map };
+    if let Ok(serde_json::Value::Object(obj)) = serde_json::from_str::<serde_json::Value>(s) {
+        for (k, v) in obj {
+            if let Some(decision) = v.as_str() {
+                map.insert(k.to_lowercase(), decision.to_lowercase());
+            }
+        }
+    }
+    map
+}
+
+/// Decision for a tool under an overrides map, if any. `Some(true)` = force
+/// allow, `Some(false)` = force deny, `None` = no override (use mode logic).
+pub fn tool_override_decision(
+    overrides: &std::collections::HashMap<String, String>,
+    tool_name: &str,
+) -> Option<bool> {
+    match overrides.get(&tool_name.to_lowercase()).map(String::as_str) {
+        Some("allow") => Some(true),
+        Some("deny") => Some(false),
+        _ => None,
+    }
+}
+
 /// Normalized event (parity with `ClaudeBridgeEvent`). `to_json()` is the
 /// exact `{type, …}` envelope sent over the chat WebSocket.
 #[derive(Debug, Clone, PartialEq)]
@@ -445,6 +474,67 @@ impl serde::Serialize for BridgeEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── parse_tool_overrides ─────────────────────────────────────────────────
+
+    #[test]
+    fn parse_tool_overrides_valid_json_returns_lowercased_map() {
+        let raw = r#"{"bash":"deny","Read":"allow","WebFetch":"ask"}"#;
+        let m = parse_tool_overrides(Some(raw));
+        assert_eq!(m.get("bash").map(String::as_str), Some("deny"));
+        assert_eq!(m.get("read").map(String::as_str), Some("allow"));
+        assert_eq!(m.get("webfetch").map(String::as_str), Some("ask"));
+        // Original-case keys are gone (lowercased on insert).
+        assert!(!m.contains_key("Read"));
+    }
+
+    #[test]
+    fn parse_tool_overrides_invalid_json_returns_empty() {
+        assert!(parse_tool_overrides(Some("{ THIS IS NOT VALID JSON")).is_empty());
+    }
+
+    #[test]
+    fn parse_tool_overrides_none_returns_empty() {
+        assert!(parse_tool_overrides(None).is_empty());
+    }
+
+    #[test]
+    fn parse_tool_overrides_empty_string_returns_empty() {
+        assert!(parse_tool_overrides(Some("")).is_empty());
+    }
+
+    // ── tool_override_decision ───────────────────────────────────────────────
+
+    #[test]
+    fn tool_override_decision_allow_returns_some_true() {
+        let mut m = std::collections::HashMap::new();
+        m.insert("bash".to_string(), "allow".to_string());
+        assert_eq!(tool_override_decision(&m, "bash"), Some(true));
+        // Case-insensitive lookup.
+        assert_eq!(tool_override_decision(&m, "BASH"), Some(true));
+        assert_eq!(tool_override_decision(&m, "Bash"), Some(true));
+    }
+
+    #[test]
+    fn tool_override_decision_deny_returns_some_false() {
+        let mut m = std::collections::HashMap::new();
+        m.insert("shell".to_string(), "deny".to_string());
+        assert_eq!(tool_override_decision(&m, "shell"), Some(false));
+        assert_eq!(tool_override_decision(&m, "SHELL"), Some(false));
+    }
+
+    #[test]
+    fn tool_override_decision_ask_or_absent_returns_none() {
+        let mut m = std::collections::HashMap::new();
+        m.insert("read".to_string(), "ask".to_string());
+        // "ask" is a fall-through → None.
+        assert_eq!(tool_override_decision(&m, "read"), None);
+        // Absent key → None.
+        assert_eq!(tool_override_decision(&m, "bash"), None);
+        // Empty map → None.
+        let empty: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        assert_eq!(tool_override_decision(&empty, "bash"), None);
+    }
 
     #[test]
     fn auth_required_serializes_with_snake_case_tag() {

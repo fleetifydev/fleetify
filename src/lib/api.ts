@@ -374,6 +374,8 @@ export async function updateSession(
     permission_mode?: string;
     tool?: string;
     effort?: string;
+    sandbox?: string | null;
+    tool_overrides?: string | null;
   },
 ) {
   const res = await apiFetch(`${API_BASE}/sessions/${id}`, {

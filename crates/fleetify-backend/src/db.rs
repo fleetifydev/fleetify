@@ -97,4 +97,27 @@ mod migration_tests {
             "sessions.routing_decision_id missing: {cols:?}"
         );
     }
+
+    #[tokio::test]
+    async fn sessions_table_has_sandbox_and_tool_overrides_columns() {
+        let pool = init_pool("sqlite::memory:")
+            .await
+            .expect("open in-memory db");
+        let rows = sqlx::query("PRAGMA table_info(sessions)")
+            .fetch_all(&pool)
+            .await
+            .expect("table_info(sessions)");
+        let cols: Vec<String> = rows
+            .iter()
+            .map(|r| r.try_get::<String, _>("name").unwrap())
+            .collect();
+        assert!(
+            cols.contains(&"sandbox".to_string()),
+            "sessions.sandbox missing: {cols:?}"
+        );
+        assert!(
+            cols.contains(&"tool_overrides".to_string()),
+            "sessions.tool_overrides missing: {cols:?}"
+        );
+    }
 }

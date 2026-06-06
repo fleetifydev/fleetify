@@ -17,13 +17,21 @@ import { resolveDispatchTool } from "@/lib/picker-groups";
 
 export type Effort = "low" | "medium" | "high" | "extra_high" | "max";
 
-const EFFORTS: Array<{ id: Effort; label: string }> = [
-  { id: "low", label: "Low" },
-  { id: "medium", label: "Medium" },
-  { id: "high", label: "High" },
-  { id: "extra_high", label: "Extra high" },
-  { id: "max", label: "Max" },
-];
+/** Map capability level ids (xhigh, etc.) to their display labels.
+ *  Falls back to capitalizing the raw level for values not in this table. */
+const EFFORT_LABELS: Record<string, string> = {
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Max",
+};
+
+/** Translate a capability level id to the session's effort vocabulary. */
+const capToSession = (lvl: string): string => (lvl === "xhigh" ? "extra_high" : lvl);
+/** Translate the session's effort vocabulary back to a capability level id. */
+const sessionToCap = (e: string): string => (e === "extra_high" ? "xhigh" : e);
 
 export interface UnifiedModelPickerProps {
   /** Active catalog provider id (e.g. "claude", "perplexity"). For
@@ -97,7 +105,9 @@ export function UnifiedModelPicker({
     }
     return undefined;
   }, [groups, model]);
-  const effortEnabled = activeModel?.supports_effort ?? false;
+  const eff = activeModel?.effort ?? { kind: "none" as const };
+  const levels = (eff.kind === "levels" || eff.kind === "thinking_level") ? eff.levels : [];
+  const effortEnabled = levels.length > 0;
 
   // Clear the filter whenever the active provider rail changes so switching
   // from OpenRouter back to a curated provider doesn't carry a stale query.
@@ -500,13 +510,14 @@ export function UnifiedModelPicker({
         title={effortEnabled ? undefined : "This model has no reasoning effort control"}
       >
         <SectionHeader>Effort</SectionHeader>
-        {EFFORTS.map((e) => {
-          const active = effort === e.id;
+        {levels.map((level) => {
+          const active = sessionToCap(effort) === level;
+          const label = EFFORT_LABELS[level] ?? (level.charAt(0).toUpperCase() + level.slice(1));
           return (
             <button
-              key={e.id}
+              key={level}
               disabled={!effortEnabled}
-              onClick={() => onPickEffort(e.id)}
+              onClick={() => onPickEffort(capToSession(level) as Effort)}
               onMouseDown={(ev) => ev.preventDefault()}
               style={{
                 display: "flex",
@@ -536,7 +547,7 @@ export function UnifiedModelPicker({
                   fontWeight: active ? 500 : 400,
                 }}
               >
-                {e.label}
+                {label}
               </span>
               {active && <Check size={10} style={{ color: "var(--c-dim, #9a9a9a)" }} />}
             </button>

@@ -69,6 +69,11 @@ pub struct OpenAICompatToolAdapter {
     pub base_url: String,
     pub api_key: String,
     pub extra_headers: http::HeaderMap,
+    /// Effort level from the session (e.g. "low", "medium", "high"). Only
+    /// forwarded as `reasoning_effort` to providers whose capability is
+    /// `EffortCapability::Levels` — sending it to non-reasoning models causes
+    /// a 400, so the gate is strict.
+    pub effort: Option<String>,
     /// Stream the `/chat/completions` response (the default). Forced off for
     /// providers in `BROKEN_STREAMING_TOOL_CALLS`, whose streaming tool calls
     /// are mis-serialised — see `streams_tool_calls`.
@@ -124,9 +129,20 @@ impl OpenAICompatToolAdapter {
                 .unwrap_or_else(|| spec.default_base_url.to_string()),
             api_key,
             extra_headers: ctx.extra_headers.clone(),
+            effort: None,
             streaming: streams_tool_calls(spec.id),
             http: reqwest::Client::new(),
         })
+    }
+
+    /// Set the effort level on an already-constructed adapter. Returns
+    /// `self` for a builder-style call chain.
+    ///
+    /// The value is forwarded as `reasoning_effort` only when the model's
+    /// `EffortCapability` is `Levels` — see `build_request_body`.
+    pub fn with_effort(mut self, effort: Option<String>) -> Self {
+        self.effort = effort;
+        self
     }
 
     /// Test/internal constructor — bypasses key resolution so wiremock
@@ -143,6 +159,7 @@ impl OpenAICompatToolAdapter {
             base_url,
             api_key,
             extra_headers: http::HeaderMap::new(),
+            effort: None,
             streaming: true,
             http: reqwest::Client::new(),
         }
@@ -160,6 +177,46 @@ impl OpenAICompatToolAdapter {
         } else {
             format!("{trimmed}/v1/chat/completions")
         }
+    }
+
+    /// Build the `/chat/completions` request body. Extracted as a pure
+    /// function so unit tests can assert on the exact JSON without standing
+    /// up a mock HTTP server.
+    pub(crate) fn build_request_body(&self, history: &AdapterHistory, catalog: &[Tool]) -> Value {
+        let mut body = json!({
+            "model": self.model,
+            "messages": history.messages,
+            "tools": render_tools(catalog),
+            "tool_choice": "auto",
+            "stream": self.streaming,
+        });
+        // `stream_options.include_usage` is only meaningful when streaming,
+        // and some compat providers reject it otherwise.
+        if self.streaming {
+            body["stream_options"] = json!({"include_usage": true});
+        }
+
+        // reasoning_effort: only for models whose capability is a discrete
+        // level set (OpenAI gpt-5/o-series, Grok reasoning, Perplexity deep
+        // research). Sending it to a non-reasoning model 400s the request,
+        // so gate strictly on EffortCapability::Levels.
+        if let Some(eff) = self.effort.as_deref().filter(|e| !e.is_empty()) {
+            if matches!(
+                crate::providers::capabilities::effort_capability(self.provider_id, &self.model),
+                crate::providers::capabilities::EffortCapability::Levels { .. }
+            ) {
+                // Defensive clamp: the picker emits the model's own levels,
+                // but a session carried over from a CLI model might hold
+                // xhigh/max which aren't valid for the OpenAI-compat API.
+                let api_effort = match eff {
+                    "extra_high" | "xhigh" | "max" => "high",
+                    other => other,
+                };
+                body["reasoning_effort"] = serde_json::json!(api_effort);
+            }
+        }
+
+        body
     }
 }
 
@@ -181,18 +238,7 @@ impl ToolAdapter for OpenAICompatToolAdapter {
         catalog: &[Tool],
         sink: &mpsc::Sender<TurnEvent>,
     ) -> Result<TurnOutcome> {
-        let mut body = json!({
-            "model": self.model,
-            "messages": history.messages,
-            "tools": render_tools(catalog),
-            "tool_choice": "auto",
-            "stream": self.streaming,
-        });
-        // `stream_options.include_usage` is only meaningful when streaming, and
-        // some compat providers reject it otherwise.
-        if self.streaming {
-            body["stream_options"] = json!({"include_usage": true});
-        }
+        let body = self.build_request_body(history, catalog);
 
         let mut req = self
             .http
@@ -1005,5 +1051,130 @@ mod tests {
         assert_eq!(outcome.text, "Hello world");
         assert!(outcome.tool_calls.is_empty());
         assert_eq!(outcome.usage, Some((3, 2)));
+    }
+
+    // ─── reasoning_effort gating ──────────────────────────────────────
+
+    /// Helper: build a minimal AdapterHistory so we can call build_request_body.
+    fn minimal_history() -> AdapterHistory {
+        AdapterHistory {
+            messages: vec![json!({"role": "user", "content": "hi"})],
+            system: "sys".into(),
+        }
+    }
+
+    #[test]
+    fn reasoning_effort_included_for_levels_capable_model() {
+        // openai/gpt-5.5 is Levels → reasoning_effort must appear in the body.
+        let adapter = OpenAICompatToolAdapter::new_raw(
+            "openai",
+            "gpt-5.5".into(),
+            "https://api.openai.com/v1".into(),
+            "k".into(),
+        )
+        .with_effort(Some("high".into()));
+
+        let body = adapter.build_request_body(&minimal_history(), &[]);
+        assert_eq!(
+            body["reasoning_effort"],
+            serde_json::json!("high"),
+            "reasoning_effort should be present for a Levels-capable model"
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_omitted_when_effort_is_none() {
+        // Even a Levels-capable model must NOT send reasoning_effort when
+        // the session carries no effort setting.
+        let adapter = OpenAICompatToolAdapter::new_raw(
+            "openai",
+            "gpt-5.5".into(),
+            "https://api.openai.com/v1".into(),
+            "k".into(),
+        );
+        // effort field defaults to None.
+
+        let body = adapter.build_request_body(&minimal_history(), &[]);
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "reasoning_effort must be absent when effort is None"
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_omitted_for_non_reasoning_model() {
+        // openai/gpt-4.1 is EffortCapability::None → reasoning_effort must
+        // NOT appear even when the session carries an effort value, because
+        // the provider would 400 the request.
+        let adapter = OpenAICompatToolAdapter::new_raw(
+            "openai",
+            "gpt-4.1".into(),
+            "https://api.openai.com/v1".into(),
+            "k".into(),
+        )
+        .with_effort(Some("high".into()));
+
+        let body = adapter.build_request_body(&minimal_history(), &[]);
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "reasoning_effort must be absent for a non-reasoning model (avoids 400)"
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_xhigh_clamped_to_high() {
+        // "xhigh" is a valid picker value for CLI models but not for the
+        // OpenAI HTTP API. The adapter must clamp it to "high".
+        let adapter = OpenAICompatToolAdapter::new_raw(
+            "openai",
+            "gpt-5.5".into(),
+            "https://api.openai.com/v1".into(),
+            "k".into(),
+        )
+        .with_effort(Some("xhigh".into()));
+
+        let body = adapter.build_request_body(&minimal_history(), &[]);
+        assert_eq!(
+            body["reasoning_effort"],
+            serde_json::json!("high"),
+            "xhigh must be clamped to high"
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_included_for_grok_reasoning_model() {
+        // grok/grok-4.3 is Levels in the capability table.
+        let adapter = OpenAICompatToolAdapter::new_raw(
+            "grok",
+            "grok-4.3".into(),
+            "https://api.x.ai/v1".into(),
+            "k".into(),
+        )
+        .with_effort(Some("low".into()));
+
+        let body = adapter.build_request_body(&minimal_history(), &[]);
+        assert_eq!(
+            body["reasoning_effort"],
+            serde_json::json!("low"),
+            "reasoning_effort should be forwarded for Grok reasoning models"
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_omitted_for_grok_non_reasoning_model() {
+        // grok/grok-4 (non-reasoning) is EffortCapability::None.
+        let adapter = OpenAICompatToolAdapter::new_raw(
+            "grok",
+            "grok-4".into(),
+            "https://api.x.ai/v1".into(),
+            "k".into(),
+        )
+        .with_effort(Some("high".into()));
+
+        let body = adapter.build_request_body(&minimal_history(), &[]);
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "reasoning_effort must be absent for non-reasoning Grok model"
+        );
     }
 }

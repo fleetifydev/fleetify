@@ -1,10 +1,14 @@
-import type { ProviderTile } from "@/lib/providers-api";
+import type { ProviderTile, EffortCapability } from "@/lib/providers-api";
 
 export interface PickerModel {
   id: string;
   label: string;
   ctx?: string;
   note?: string;
+  /** Capability descriptor driving the Effort column in UnifiedModelPicker.
+   *  `supports_effort` is derived from this (true iff kind !== "none") and kept
+   *  for backwards compatibility with any consumer that still reads it directly. */
+  effort: EffortCapability;
   supports_effort: boolean;
 }
 
@@ -33,26 +37,77 @@ export interface PickerGroup {
  *  encounters a CLI tile whose catalog `default_models` is empty, it pulls
  *  the list from here instead. Mirrors src/components/chat/chat-input.tsx's
  *  CLAUDE_MODELS / CODEX_MODELS / GEMINI_MODELS (kept in sync by hand). */
+/** Reusable no-effort descriptor for models that expose no effort lever. */
+const EFFORT_NONE: EffortCapability = { kind: "none" };
+
 const CLI_MODELS: Record<string, PickerModel[]> = {
   claude: [
-    { id: "claude-opus-4-8",           label: "Opus 4.8",   ctx: "200K", supports_effort: true },
-    { id: "claude-sonnet-4-6",         label: "Sonnet 4.6", ctx: "200K", supports_effort: true },
-    { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5",  ctx: "200K", supports_effort: true },
+    {
+      id: "claude-opus-4-8", label: "Opus 4.8", ctx: "200K",
+      effort: { kind: "levels", levels: ["low", "medium", "high", "xhigh", "max"], default: "high" },
+      supports_effort: true,
+    },
+    {
+      id: "claude-sonnet-4-6", label: "Sonnet 4.6", ctx: "200K",
+      effort: { kind: "levels", levels: ["low", "medium", "high", "max"], default: "high" },
+      supports_effort: true,
+    },
+    {
+      id: "claude-haiku-4-5-20251001", label: "Haiku 4.5", ctx: "200K",
+      effort: EFFORT_NONE,
+      supports_effort: false,
+    },
   ],
   codex: [
-    { id: "gpt-5.2", label: "GPT-5.2", ctx: "200K", supports_effort: true },
-    { id: "gpt-5.4", label: "GPT-5.4", ctx: "200K", supports_effort: true },
-    { id: "gpt-5.5", label: "GPT-5.5", ctx: "200K", supports_effort: true },
+    {
+      id: "gpt-5.2", label: "GPT-5.2", ctx: "200K",
+      effort: { kind: "levels", levels: ["low", "medium", "high", "xhigh"], default: "medium" },
+      supports_effort: true,
+    },
+    {
+      id: "gpt-5.4", label: "GPT-5.4", ctx: "200K",
+      effort: { kind: "levels", levels: ["low", "medium", "high", "xhigh"], default: "medium" },
+      supports_effort: true,
+    },
+    {
+      id: "gpt-5.5", label: "GPT-5.5", ctx: "200K",
+      effort: { kind: "levels", levels: ["low", "medium", "high", "xhigh"], default: "medium" },
+      supports_effort: true,
+    },
   ],
   gemini: [
-    { id: "gemini-3.1-pro-preview",        label: "3.1 Pro",  ctx: "1M", supports_effort: true },
-    { id: "gemini-3-flash-preview",        label: "3 Flash",  ctx: "1M", supports_effort: true },
-    { id: "gemini-3.1-flash-lite-preview", label: "3.1 Lite", ctx: "1M", supports_effort: false },
+    {
+      id: "gemini-3.1-pro-preview", label: "3.1 Pro", ctx: "1M",
+      effort: { kind: "thinking_level", levels: ["low", "high"], default: "high" },
+      supports_effort: true,
+    },
+    {
+      id: "gemini-3-flash-preview", label: "3 Flash", ctx: "1M",
+      effort: { kind: "thinking_level", levels: ["low", "high"], default: "high" },
+      supports_effort: true,
+    },
+    {
+      id: "gemini-3.1-flash-lite-preview", label: "3.1 Lite", ctx: "1M",
+      effort: EFFORT_NONE,
+      supports_effort: false,
+    },
   ],
   kimi: [
-    { id: "kimi-k2.6",          label: "Kimi K2.6",          ctx: "256K", supports_effort: false },
-    { id: "kimi-k2.6-thinking", label: "Kimi K2.6 Thinking", ctx: "256K", supports_effort: true },
-    { id: "kimi-k2.6-agent",    label: "Kimi K2.6 Agent",    ctx: "256K", supports_effort: true },
+    {
+      id: "kimi-k2.6", label: "Kimi K2.6", ctx: "256K",
+      effort: EFFORT_NONE,
+      supports_effort: false,
+    },
+    {
+      id: "kimi-k2.6-thinking", label: "Kimi K2.6 Thinking", ctx: "256K",
+      effort: { kind: "toggle", default: true },
+      supports_effort: false,
+    },
+    {
+      id: "kimi-k2.6-agent", label: "Kimi K2.6 Agent", ctx: "256K",
+      effort: EFFORT_NONE,
+      supports_effort: false,
+    },
   ],
   // Antigravity's `-p` (print) mode pins to whatever model the user
   // last selected via the TUI's `/model` slash command — that selection
@@ -68,7 +123,7 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
   // flag (or we ship PTY-driven dispatch that can run `/model <id>`
   // before each turn), the full per-(model × effort) list returns.
   agy: [
-    { id: "agy-default", label: "Auto", ctx: "1M", supports_effort: false },
+    { id: "agy-default", label: "Auto", ctx: "1M", effort: EFFORT_NONE, supports_effort: false },
   ],
   // Antigravity SDK — sibling of `agy` driven from a Python sidecar
   // wrapping `google.antigravity`. Here we DO expose the full per-
@@ -78,13 +133,13 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
   // strips the effort suffix (-medium/-high/-low/-thinking) before
   // handing to the SDK's base-name parameter.
   "antigravity-sdk": [
-    { id: "gemini-3.5-flash-medium",     label: "Gemini 3.5 Flash (Medium)",   ctx: "1M",   supports_effort: false },
-    { id: "gemini-3.5-flash-high",       label: "Gemini 3.5 Flash (High)",     ctx: "1M",   supports_effort: false },
-    { id: "gemini-3.1-pro-low",          label: "Gemini 3.1 Pro (Low)",        ctx: "1M",   supports_effort: false },
-    { id: "gemini-3.1-pro-high",         label: "Gemini 3.1 Pro (High)",       ctx: "1M",   supports_effort: false },
-    { id: "claude-sonnet-4-6-thinking",  label: "Claude Sonnet 4.6 (Thinking)", ctx: "200K", supports_effort: false },
-    { id: "claude-opus-4-6-thinking",    label: "Claude Opus 4.6 (Thinking)",   ctx: "200K", supports_effort: false },
-    { id: "gpt-oss-120b-medium",         label: "GPT-OSS 120B (Medium)",        ctx: "128K", supports_effort: false },
+    { id: "gemini-3.5-flash-medium",    label: "Gemini 3.5 Flash (Medium)",    ctx: "1M",   effort: EFFORT_NONE, supports_effort: false },
+    { id: "gemini-3.5-flash-high",      label: "Gemini 3.5 Flash (High)",      ctx: "1M",   effort: EFFORT_NONE, supports_effort: false },
+    { id: "gemini-3.1-pro-low",         label: "Gemini 3.1 Pro (Low)",         ctx: "1M",   effort: EFFORT_NONE, supports_effort: false },
+    { id: "gemini-3.1-pro-high",        label: "Gemini 3.1 Pro (High)",        ctx: "1M",   effort: EFFORT_NONE, supports_effort: false },
+    { id: "claude-sonnet-4-6-thinking", label: "Claude Sonnet 4.6 (Thinking)", ctx: "200K", effort: EFFORT_NONE, supports_effort: false },
+    { id: "claude-opus-4-6-thinking",   label: "Claude Opus 4.6 (Thinking)",   ctx: "200K", effort: EFFORT_NONE, supports_effort: false },
+    { id: "gpt-oss-120b-medium",        label: "GPT-OSS 120B (Medium)",        ctx: "128K", effort: EFFORT_NONE, supports_effort: false },
   ],
   // OpenCode + Cursor source their model list LIVE from the ACP session
   // (catalog default_models is empty), surfaced via `available_models_update`
@@ -95,20 +150,20 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
   // (OpenCode's `opencode/*` zen free models; Cursor's bracketed ids) so a
   // pick made before cold start still matches + applies via set_config_option.
   opencode: [
-    { id: "opencode/big-pickle",             label: "Big Pickle",        supports_effort: false },
-    { id: "opencode/deepseek-v4-flash-free", label: "DeepSeek V4 Flash", supports_effort: false },
-    { id: "opencode/mimo-v2.5-free",         label: "MiMo V2.5",         supports_effort: false },
-    { id: "opencode/nemotron-3-super-free",  label: "Nemotron 3 Super",  supports_effort: false },
+    { id: "opencode/big-pickle",             label: "Big Pickle",        effort: EFFORT_NONE, supports_effort: false },
+    { id: "opencode/deepseek-v4-flash-free", label: "DeepSeek V4 Flash", effort: EFFORT_NONE, supports_effort: false },
+    { id: "opencode/mimo-v2.5-free",         label: "MiMo V2.5",         effort: EFFORT_NONE, supports_effort: false },
+    { id: "opencode/nemotron-3-super-free",  label: "Nemotron 3 Super",  effort: EFFORT_NONE, supports_effort: false },
   ],
   cursor: [
-    { id: "default[]",                                                            label: "Auto",              supports_effort: false },
-    { id: "composer-2.5[fast=true]",                                              label: "Composer 2.5",      supports_effort: false },
-    { id: "claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]",   label: "Claude Opus 4.8",   ctx: "300K", supports_effort: false },
-    { id: "claude-sonnet-4-5[thinking=true,context=200k]",                        label: "Claude Sonnet 4.5", ctx: "200K", supports_effort: false },
-    { id: "gpt-5.5[context=272k,reasoning=medium,fast=false]",                    label: "GPT-5.5",           ctx: "272K", supports_effort: false },
-    { id: "gpt-5.2[reasoning=medium,fast=false]",                                 label: "GPT-5.2",           supports_effort: false },
-    { id: "gpt-5.3-codex[reasoning=medium,fast=false]",                           label: "GPT-5.3 Codex",     supports_effort: false },
-    { id: "gemini-3.1-pro[]",                                                     label: "Gemini 3.1 Pro",    supports_effort: false },
+    { id: "default[]",                                                            label: "Auto",              effort: EFFORT_NONE, supports_effort: false },
+    { id: "composer-2.5[fast=true]",                                              label: "Composer 2.5",      effort: EFFORT_NONE, supports_effort: false },
+    { id: "claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]",   label: "Claude Opus 4.8",   ctx: "300K", effort: EFFORT_NONE, supports_effort: false },
+    { id: "claude-sonnet-4-5[thinking=true,context=200k]",                        label: "Claude Sonnet 4.5", ctx: "200K", effort: EFFORT_NONE, supports_effort: false },
+    { id: "gpt-5.5[context=272k,reasoning=medium,fast=false]",                    label: "GPT-5.5",           ctx: "272K", effort: EFFORT_NONE, supports_effort: false },
+    { id: "gpt-5.2[reasoning=medium,fast=false]",                                 label: "GPT-5.2",           effort: EFFORT_NONE, supports_effort: false },
+    { id: "gpt-5.3-codex[reasoning=medium,fast=false]",                           label: "GPT-5.3 Codex",     effort: EFFORT_NONE, supports_effort: false },
+    { id: "gemini-3.1-pro[]",                                                     label: "Gemini 3.1 Pro",    effort: EFFORT_NONE, supports_effort: false },
   ],
   // Hermes sources its model list LIVE from the ACP session (catalog
   // default_models is empty): both the lazy toolbar/composer probe
@@ -120,7 +175,7 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
   // in Hermes's real available list, so picking it pre-discovery is a no-op
   // until live models arrive.)
   hermes: [
-    { id: "default", label: "Hermes (configured model)", supports_effort: false },
+    { id: "default", label: "Hermes (configured model)", effort: EFFORT_NONE, supports_effort: false },
   ],
 };
 
@@ -185,19 +240,24 @@ const PERPLEXITY_BRAND_PREFIXES: Array<{
   { prefix: "xai/", subId: "grok", label: "Grok", directProviderId: "grok" },
 ];
 
-function modelFromSpec(m: {
-  id: string;
-  label: string;
-  context_window?: string | null;
-  note?: string | null;
-  supports_effort: boolean;
-}): PickerModel {
+function modelFromSpec(
+  m: {
+    id: string;
+    label: string;
+    context_window?: string | null;
+    note?: string | null;
+    supports_effort: boolean;
+  },
+  effort: EffortCapability = EFFORT_NONE,
+): PickerModel {
+  const resolvedEffort = effort;
   return {
     id: m.id,
     label: m.label,
     ctx: m.context_window ?? undefined,
     note: m.note ?? undefined,
-    supports_effort: m.supports_effort,
+    effort: resolvedEffort,
+    supports_effort: resolvedEffort.kind !== "none",
   };
 }
 
@@ -267,7 +327,10 @@ export function buildPickerGroups(
   for (const t of tiles) {
     if (t.spec.kind !== "cli") continue;
     if (!enabledAgentIds.includes(t.spec.id)) continue;
-    const catalogModels = t.spec.default_models.map(modelFromSpec);
+    const catalogModels = t.spec.default_models.map((m) => {
+      const effort = t.capabilities?.model_efforts?.find((me) => me.id === m.id)?.effort ?? EFFORT_NONE;
+      return modelFromSpec(m, effort);
+    });
     const fallbackModels = CLI_MODELS[t.spec.id] ?? [];
     const dynamic = dynamicModels?.[t.spec.id] ?? [];
     const models =
@@ -330,7 +393,10 @@ export function buildPickerGroups(
       // Split: native Sonar stays here, marketplace entries are deferred.
       const native = t.spec.default_models
         .filter((m) => !m.id.includes("/"))
-        .map(modelFromSpec);
+        .map((m) => {
+          const effort = t.capabilities?.model_efforts?.find((me) => me.id === m.id)?.effort ?? EFFORT_NONE;
+          return modelFromSpec(m, effort);
+        });
       if (native.length > 0) {
         out.push({
           id: "perplexity",
@@ -346,7 +412,12 @@ export function buildPickerGroups(
     // resolved; otherwise show the catalog's default_models.
     const dynamic = dynamicModels?.[t.spec.id] ?? [];
     const models =
-      dynamic.length > 0 ? dynamic : t.spec.default_models.map(modelFromSpec);
+      dynamic.length > 0
+        ? dynamic
+        : t.spec.default_models.map((m) => {
+            const effort = t.capabilities?.model_efforts?.find((me) => me.id === m.id)?.effort ?? EFFORT_NONE;
+            return modelFromSpec(m, effort);
+          });
     if (models.length === 0) continue;
     out.push({
       id: t.spec.id,
@@ -367,7 +438,10 @@ export function buildPickerGroups(
     for (const { prefix, subId, label, directProviderId } of PERPLEXITY_BRAND_PREFIXES) {
       const models = perplexityTile.spec.default_models
         .filter((m) => m.id.startsWith(prefix))
-        .map(modelFromSpec);
+        .map((m) => {
+          const effort = perplexityTile.capabilities?.model_efforts?.find((me) => me.id === m.id)?.effort ?? EFFORT_NONE;
+          return modelFromSpec(m, effort);
+        });
       if (models.length === 0) continue;
       const hasDirect = directBrandIds.has(directProviderId);
       out.push({
@@ -390,9 +464,34 @@ export function buildPickerGroups(
  *  are fetched live). */
 export function modelsForTile(tile: ProviderTile, dynamic?: PickerModel[]): PickerModel[] {
   if (dynamic && dynamic.length > 0) return dynamic;
-  const catalog = tile.spec.default_models.map(modelFromSpec);
+  const catalog = tile.spec.default_models.map((m) => {
+    const effort = tile.capabilities?.model_efforts?.find((me) => me.id === m.id)?.effort ?? EFFORT_NONE;
+    return modelFromSpec(m, effort);
+  });
   if (catalog.length > 0) return catalog;
   return CLI_MODELS[tile.spec.id] ?? [];
+}
+
+/** Resolve a discovered / live-arriving model's effort descriptor.
+ *
+ *  Models fetched at runtime — `/agents/{id}/models` for the baked-lineup CLI
+ *  agents (claude/codex/gemini/kimi), or a bridge `available_models_update` —
+ *  carry no capability descriptor on the wire, so callers must re-derive it or
+ *  the Effort column goes blank for a model that actually has levels. CLI
+ *  agents keep their per-model effort in the static `CLI_MODELS` table (their
+ *  catalog `default_models` is empty); HTTP providers ship it in the tile's
+ *  `capabilities.model_efforts`. Falls back to "none". */
+export function effortForDiscoveredModel(
+  providerId: string,
+  modelId: string,
+  tiles: ProviderTile[],
+): EffortCapability {
+  const cli = CLI_MODELS[providerId]?.find((m) => m.id === modelId)?.effort;
+  if (cli && cli.kind !== "none") return cli;
+  const tile = tiles.find((t) => t.spec.id === providerId);
+  return (
+    tile?.capabilities?.model_efforts?.find((me) => me.id === modelId)?.effort ?? EFFORT_NONE
+  );
 }
 
 /** Resolve the (tool, model) pair to seed the Fleet hub on first launch.

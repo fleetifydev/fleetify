@@ -207,6 +207,9 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
       claude_session_id: composer.claudeSessionId,
       model_name: composer.modelName,
       permission_mode: composer.permissionMode,
+      sandbox: composer.sandbox,
+      effort: composer.effort,
+      tool_overrides: composer.toolOverrides,
       session_mode: "interactive",
       order_idx: 0,
       created_at: new Date().toISOString(),
@@ -222,6 +225,9 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     composer.tool,
     composer.modelName,
     composer.permissionMode,
+    composer.sandbox,
+    composer.effort,
+    composer.toolOverrides,
     composer.useWorktree,
     composer.claudeSessionId,
   ]);
@@ -2151,6 +2157,20 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
           branch={isControlCenter ? undefined : activeSession?.worktree_branch}
           sessionId={effectiveSessionId}
           permissionMode={isControlCenter ? undefined : (activeSession?.permission_mode ?? "default")}
+          sandbox={isControlCenter ? null : (activeSession?.sandbox ?? null)}
+          toolOverridesRaw={isControlCenter ? null : (activeSession?.tool_overrides ?? null)}
+          effort={isControlCenter ? undefined : (activeSession?.effort ?? "high")}
+          onEffortChange={isControlCenter ? undefined : (e) => {
+            if (!effectiveSessionId) {
+              // compose mode — no real session yet
+              useAppStore.getState().setComposerField({ effort: e });
+            } else if (activeSession?.local_only) {
+              useAppStore.getState().setDraftField({ effort: e });
+            } else {
+              updateSession(effectiveSessionId, { effort: e });
+              void apiUpdateSession(effectiveSessionId, { effort: e }).catch(() => {});
+            }
+          }}
           // BranchStrip is the POST-DEPLOY surface — it shows
           // base ← fleet/<slug>-<sid> + diff + Create PR once the
           // session is actually running. Pre-deploy we hide it: the
@@ -2238,6 +2258,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                   tool={activeSession.tool ?? "claude"}
                   model={activeSession.model_name ?? null}
                   permissionMode={activeSession.permission_mode ?? "default"}
+                  effort={activeSession.effort ?? "high"}
                   claudeSessionId={activeSession.claude_session_id}
                   useWorktree={activeSession.use_worktree ?? true}
                 />

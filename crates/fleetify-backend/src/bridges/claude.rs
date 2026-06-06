@@ -366,12 +366,31 @@ fn staff_subagents_json() -> &'static serde_json::Value {
     })
 }
 
+/// Effort picker → Claude CLI `--effort` level. Returns `None` when the
+/// model has no effort lever (Haiku) or no effort was chosen. Claude Code
+/// auto-falls-back for levels a model doesn't support (e.g. xhigh→high on
+/// Sonnet), so we only special-case Haiku + the empty/unknown input.
+fn effort_to_claude(effort: &str, model: &str) -> Option<&'static str> {
+    if model.contains("haiku") {
+        return None;
+    }
+    match effort {
+        "low" => Some("low"),
+        "medium" => Some("medium"),
+        "high" => Some("high"),
+        "extra_high" => Some("xhigh"),
+        "max" => Some("max"),
+        _ => None,
+    }
+}
+
 /// Drives the `claude` subprocess. `--mcp-config` injection is Phase 4.
 pub struct ClaudeBridge {
     pub session_id: String,
     pub project_path: String,
     pub claude_session_id: Option<String>,
     pub permission_mode: String,
+    pub effort: String,
     pub model_name: Option<String>,
     pub session_title: Option<String>,
     pub system_prompt: Option<String>,
@@ -410,6 +429,7 @@ impl ClaudeBridge {
             project_path: project_path.into(),
             claude_session_id: None,
             permission_mode: "default".into(),
+            effort: String::new(),
             model_name: None,
             session_title: None,
             system_prompt: None,
@@ -504,6 +524,10 @@ impl ClaudeBridge {
                 c.push("--permission-mode".into());
                 c.push("acceptEdits".into());
             }
+            "plan" => {
+                c.push("--permission-mode".into());
+                c.push("plan".into());
+            }
             _ => {
                 // Default permission mode: when we have a Fleetify
                 // permission handler attached, point the CLI at the
@@ -515,6 +539,12 @@ impl ClaudeBridge {
                     c.push("mcp__fleet_permission__permission_prompt".into());
                 }
             }
+        }
+        if let Some(level) =
+            effort_to_claude(&self.effort, self.model_name.as_deref().unwrap_or(""))
+        {
+            c.push("--effort".into());
+            c.push(level.into());
         }
         c.push(message.to_string());
         c
@@ -1173,5 +1203,50 @@ mod tests {
         let names = r.mcp_tool_names();
         assert!(names.contains(&"mcp__fleet_reveng__fetch_url"));
         assert!(names.contains(&"mcp__fleet_reveng__discover_assets"));
+    }
+
+    #[test]
+    fn effort_to_claude_maps_fleet_vocab() {
+        assert_eq!(effort_to_claude("low", "claude-opus-4-8"), Some("low"));
+        assert_eq!(
+            effort_to_claude("extra_high", "claude-opus-4-8"),
+            Some("xhigh")
+        );
+        assert_eq!(effort_to_claude("max", "claude-opus-4-8"), Some("max"));
+        // Sonnet lacks xhigh but Claude Code auto-falls-back, so we still pass it.
+        assert_eq!(
+            effort_to_claude("extra_high", "claude-sonnet-4-6"),
+            Some("xhigh")
+        );
+        // Haiku has no effort lever.
+        assert_eq!(effort_to_claude("high", "claude-haiku-4-5"), None);
+        // Empty / unknown → omit the flag.
+        assert_eq!(effort_to_claude("", "claude-opus-4-8"), None);
+        assert_eq!(effort_to_claude("bogus", "claude-opus-4-8"), None);
+    }
+
+    #[test]
+    fn build_command_includes_effort_flag() {
+        let mut b = ClaudeBridge::new("s", "/tmp/x");
+        b.model_name = Some("claude-opus-4-8".into());
+        b.effort = "high".into();
+        let c = b.build_command("hi", None);
+        assert!(c.windows(2).any(|w| w == ["--effort", "high"]));
+    }
+
+    #[test]
+    fn build_command_omits_effort_when_unset() {
+        let mut b = ClaudeBridge::new("s", "/tmp/x");
+        b.model_name = Some("claude-opus-4-8".into());
+        let c = b.build_command("hi", None);
+        assert!(!c.iter().any(|a| a == "--effort"));
+    }
+
+    #[test]
+    fn build_command_plan_mode_sets_permission_mode_plan() {
+        let mut b = ClaudeBridge::new("s", "/tmp/x");
+        b.permission_mode = "plan".into();
+        let c = b.build_command("hi", None);
+        assert!(c.windows(2).any(|w| w == ["--permission-mode", "plan"]));
     }
 }

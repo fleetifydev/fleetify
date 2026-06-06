@@ -351,6 +351,9 @@ pub struct OpenCodeBridge {
     /// the mode is not a bypass mode, OpenCode's `session/request_permission`
     /// routes through here to the renderer's dialog.
     pub permission_handler: Option<super::permission::PermissionHandler>,
+    /// Per-tool allow/deny overlay from `session.tool_overrides`. Keys and
+    /// values are lowercased. Empty (the default) means no overrides apply.
+    pub tool_overrides: std::collections::HashMap<String, String>,
     aborted: Arc<AtomicBool>,
     state: Arc<Mutex<Option<State>>>,
 }
@@ -376,6 +379,7 @@ impl OpenCodeBridge {
             agent_template,
             resume_session_id: None,
             permission_handler: None,
+            tool_overrides: std::collections::HashMap::new(),
             aborted: Arc::new(AtomicBool::new(false)),
             state: Arc::new(Mutex::new(None)),
         }
@@ -498,8 +502,11 @@ impl OpenCodeBridge {
         // Permission routing — bypass auto-allows, a wired handler asks the
         // renderer, neither auto-denies. The returned `optionId` is matched
         // by `kind` against the request's own options (see pick_*).
+        // Per-tool overrides (tool_overrides) are consulted FIRST and
+        // short-circuit the mode/handler logic when present.
         let perm_mode = self.permission_mode.clone();
         let perm_handler = self.permission_handler.clone();
+        let overrides = self.tool_overrides.clone();
         client
             .on_permission_request(Arc::new(move |params: Value| {
                 let bypass = matches!(
@@ -507,21 +514,29 @@ impl OpenCodeBridge {
                     "bypassPermissions" | "dontAsk" | "dangerouslySkipPermissions"
                 );
                 let handler = perm_handler.clone();
+                let overrides = overrides.clone();
                 Box::pin(async move {
                     let options = params.get("options").cloned().unwrap_or(Value::Null);
-                    let approve = if bypass {
+                    // Extract tool name before bypass/handler check so the override
+                    // can short-circuit regardless of mode.
+                    let tool_name = params
+                        .get("toolCall")
+                        .and_then(|tc| {
+                            tc.get("title")
+                                .or_else(|| tc.get("kind"))
+                                .or_else(|| tc.get("name"))
+                        })
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    // Per-tool override takes priority over mode logic.
+                    let approve = if let Some(forced) =
+                        super::tool_override_decision(&overrides, &tool_name)
+                    {
+                        forced
+                    } else if bypass {
                         true
                     } else if let Some(h) = handler {
-                        let tool_name = params
-                            .get("toolCall")
-                            .and_then(|tc| {
-                                tc.get("title")
-                                    .or_else(|| tc.get("kind"))
-                                    .or_else(|| tc.get("name"))
-                            })
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
                         h(tool_name, params.clone()).await
                     } else {
                         tracing::warn!(
@@ -879,6 +894,7 @@ impl OpenCodeBridge {
             agent_template: self.agent_template.clone(),
             resume_session_id: self.resume_session_id.clone(),
             permission_handler: self.permission_handler.clone(),
+            tool_overrides: self.tool_overrides.clone(),
             aborted: Arc::new(AtomicBool::new(false)),
             state: self.state.clone(),
         };
@@ -1225,5 +1241,27 @@ mod tests {
         assert!(s.contains("first"));
         assert!(s.contains("second"));
         assert!(s.contains("[diff: src/x.rs]"));
+    }
+
+    #[test]
+    fn tool_overrides_field_stored_and_queryable() {
+        let mut b = OpenCodeBridge::new("s", "/tmp", "default", None, None, false, None);
+        // Default: empty map — no override for any tool.
+        assert!(b.tool_overrides.is_empty());
+        // Set an override map and confirm lookup works.
+        b.tool_overrides =
+            super::super::parse_tool_overrides(Some(r#"{"bash":"deny","read":"allow"}"#));
+        assert_eq!(
+            super::super::tool_override_decision(&b.tool_overrides, "bash"),
+            Some(false)
+        );
+        assert_eq!(
+            super::super::tool_override_decision(&b.tool_overrides, "READ"),
+            Some(true)
+        );
+        assert_eq!(
+            super::super::tool_override_decision(&b.tool_overrides, "webfetch"),
+            None
+        );
     }
 }

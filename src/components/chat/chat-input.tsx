@@ -38,7 +38,11 @@ import { RoutingChip } from "@/components/settings/routers/routing-chip";
 import { commandsForContext, type SlashCmdDef } from "@/lib/slash-commands";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { UnifiedModelPicker, type Effort as UMEffort } from "./unified-model-picker";
-import { buildPickerGroups, resolveDispatchTool, resolveModelChip, type PickerModel } from "@/lib/picker-groups";
+import { buildPickerGroups, effortForDiscoveredModel, resolveDispatchTool, resolveModelChip, type PickerModel } from "@/lib/picker-groups";
+import { permissionCapabilityFor, permissionModesFor, defaultPermissionMode, isLoudMode, toolMatrixFor, parseToolOverrides, sandboxOptionsFor } from "@/lib/capabilities";
+import type { PermMode } from "@/lib/providers-api";
+import { ToolMatrixEditor } from "./tool-matrix-editor";
+import { SandboxControl } from "./sandbox-control";
 
 /* ─────────────────── constants ─────────────────── */
 
@@ -1133,18 +1137,11 @@ function TranscriptViewButton() {
  *    • Auto        — yellow (auto-accept everything; warning tone)
  *    • Bypass      — yellow (no confirmation; warning tone)
  */
-const PERM_MODES: { id: string; label: string; idx: number }[] = [
-  { id: "default",            label: "Ask permissions", idx: 1 },
-  { id: "acceptEdits",        label: "Accept edits",    idx: 2 },
-  { id: "plan",               label: "Plan mode",       idx: 3 },
-  { id: "auto",               label: "Auto mode",       idx: 4 },
-  { id: "bypassPermissions",  label: "Bypass permissions", idx: 5 },
-];
-
 function PermissionModePicker({
-  mode, onPick,
+  mode, modes, onPick,
 }: {
   mode: string;
+  modes: PermMode[];
   onPick: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -1164,14 +1161,10 @@ function PermissionModePicker({
     };
   }, [open]);
 
-  // Compact label for the trigger — full text is in the menu.
-  const trigger = mode === "default"           ? "Ask permissions"
-                : mode === "acceptEdits"       ? "Accept edits"
-                : mode === "plan"              ? "Plan mode"
-                : mode === "auto"              ? "Auto mode"
-                : mode === "bypassPermissions" ? "Bypass permissions"
-                : mode;
-  const loud = mode === "bypassPermissions" || mode === "auto";
+  if (modes.length === 0) return null;
+
+  const trigger = modes.find((m) => m.id === mode)?.label ?? modes.find((m) => m.id === "default")?.label ?? modes[0]?.label ?? mode;
+  const loud = isLoudMode(mode);
 
   return (
     <div ref={wrapRef} style={{ position: "relative", flexShrink: 0 }}>
@@ -1218,9 +1211,9 @@ function PermissionModePicker({
               <Kbd>⇧</Kbd><Kbd>⌘</Kbd><Kbd>M</Kbd>
             </div>
           </div>
-          {PERM_MODES.map(m => {
+          {modes.map((m, i) => {
             const active = mode === m.id;
-            const loudRow = m.id === "bypassPermissions" || m.id === "auto";
+            const loudRow = isLoudMode(m.id);
             return (
               <button
                 key={m.id}
@@ -1248,7 +1241,7 @@ function PermissionModePicker({
                   <span style={{
                     fontSize: 10.5, color: "var(--c-dim)",
                     fontFamily: "var(--font-mono)",
-                  }}>{m.idx}</span>
+                  }}>{i + 1}</span>
                 </span>
               </button>
             );
@@ -1352,6 +1345,12 @@ interface ChatInputProps {
   /** Session permission mode ("default" | "acceptEdits" | "bypassPermissions" | "plan").
    *  Drives the Permissions chip in the SessionSetupStrip. */
   permissionMode?: string;
+  /** Session sandbox value (provider-specific string or null). Passed
+   *  as a prop so draft/Local sessions show and can edit their own value. */
+  sandbox?: string | null;
+  /** Session tool_overrides JSON string or null. Passed as a prop so
+   *  draft/Local sessions show and can edit their own overrides. */
+  toolOverridesRaw?: string | null;
   /** Hide the BranchStrip (base ← branch / +X-Y / Create PR). Set
    *  while the SessionToolbar is rendered, so the user sees the
    *  setup chip row INSTEAD of git/PR state during pre-deploy. */
@@ -1417,10 +1416,11 @@ type GitContext = {
 const KNOWN_DEFAULTS = new Set(["main", "master"]);
 
 /* ── Copyable branch label ──
-   Inline pill that shows a branch name and reveals a copy icon on
-   hover; clicking anywhere on the pill copies the full branch name.
-   Matches the user's reference: text + faint copy glyph sliding in
-   under a soft hover background. */
+   Inline pill that shows a branch name. The body click BUBBLES to the
+   enclosing PillTrigger (which opens the branch menu) — the pill itself
+   does NOT copy. A copy button slides in on hover and copies the full
+   name on its own click, calling stopPropagation so it never also opens
+   the menu. (Per user request: click name → menu; click copy icon → copy.) */
 function BranchPill({ text, tone, dim }: {
   /** Full branch name. The pill MIDDLE-truncates for display when the
    *  name exceeds 32 chars, but `text` is what lands in the clipboard
@@ -1434,7 +1434,11 @@ function BranchPill({ text, tone, dim }: {
 }) {
   const [hovered, setHovered] = useState(false);
   const [copied, setCopied] = useState(false);
-  const onClick = useCallback(() => {
+  const onCopy = useCallback((e: React.MouseEvent | React.KeyboardEvent) => {
+    // Copy ONLY — stop the event so it never reaches the enclosing
+    // PillTrigger (which would also open the branch menu).
+    e.stopPropagation();
+    e.preventDefault();
     navigator.clipboard.writeText(text).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1400);
@@ -1442,17 +1446,14 @@ function BranchPill({ text, tone, dim }: {
   }, [text]);
   const display = truncateMid(text, 32);
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <span
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      title={copied ? "Copied" : `Copy ${text}`}
+      title={text}
       style={{
         display: "inline-flex", alignItems: "center", gap: 5,
         padding: "1px 6px",
         borderRadius: 5,
-        cursor: "pointer",
         fontFamily: "var(--font-mono)", fontSize: 12,
         fontWeight: 500, letterSpacing: -0.15,
         // Compact reference: --c-med for base, --c-high for current
@@ -1467,13 +1468,28 @@ function BranchPill({ text, tone, dim }: {
         border: dim ? "1px dashed rgba(var(--fg-rgb), 0.20)" : "none",
       }}
     >
-      <span>{display}</span>
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {display}
+      </span>
       {(hovered || copied) && (
-        copied
-          ? <Check size={10} strokeWidth={2.2} style={{ color: "var(--c-high)" }} />
-          : <Copy size={10} strokeWidth={1.85} style={{ color: "var(--c-low)" }} />
+        <span
+          role="button"
+          tabIndex={0}
+          onClick={onCopy}
+          onKeyDown={e => { if (e.key === "Enter" || e.key === " ") onCopy(e); }}
+          onMouseDown={e => e.preventDefault()}
+          title={copied ? "Copied" : `Copy ${text}`}
+          style={{
+            display: "inline-flex", alignItems: "center", flexShrink: 0,
+            cursor: "pointer", borderRadius: 3, padding: 1,
+          }}
+        >
+          {copied
+            ? <Check size={10} strokeWidth={2.2} style={{ color: "var(--c-high)" }} />
+            : <Copy size={10} strokeWidth={1.85} style={{ color: "var(--c-low)" }} />}
+        </span>
       )}
-    </button>
+    </span>
   );
 }
 
@@ -3124,6 +3140,8 @@ export function ChatInput({
   slotAbove,
   controlCenter,
   permissionMode,
+  sandbox,
+  toolOverridesRaw,
   hideBranchStrip,
   sessionTitle,
 }: ChatInputProps) {
@@ -3183,7 +3201,10 @@ export function ChatInput({
       const seen = new Set(base.map((m) => m.id));
       const live = sessionDynModels.models
         .filter((m) => !seen.has(m.id))
-        .map((m) => ({ id: m.id, label: m.label, supports_effort: false }));
+        .map((m) => {
+          const eff = effortForDiscoveredModel(key, m.id, providerTiles);
+          return { id: m.id, label: m.label, effort: eff, supports_effort: eff.kind !== "none" };
+        });
       merged[key] = [...base, ...live];
     }
     const dyn = Object.keys(merged).length > 0 ? merged : undefined;
@@ -3195,6 +3216,11 @@ export function ChatInput({
   const recordCost = useFleetStore(s => s.recordCost);
   // Fleet hub-only: global default mode (settable from this surface).
   const globalFleetMode = useFleetStore(s => s.globalMode);
+  // sandbox and toolOverridesRaw are now passed as props from chat-view
+  // (which reads them from activeSession, covering both real sessions and
+  // the composer's synthetic draft session). Using props means drafts
+  // are no longer frozen — the composer's ComposerState is the source of
+  // truth and updates reactively when the user picks.
   // Refine fires whenever mode is anything except "manual" — refine-only,
   // copilot, and auto all share the refine-on-send behaviour.
   const fleetActive = !controlCenter && !!sessionId && fleetMode !== "manual" && !fleetPaused;
@@ -3229,13 +3255,17 @@ export function ChatInput({
         if (cancelled || models.length === 0) return; // empty → keep static fallback
         setDiscoveredModels((prev) => ({
           ...prev,
-          [agentId]: models.map((m) => ({
-            id: m.id,
-            label: m.label,
-            ctx: m.ctx,
-            note: m.note,
-            supports_effort: m.supports_effort ?? false,
-          })),
+          [agentId]: models.map((m) => {
+            const eff = effortForDiscoveredModel(agentId, m.id, providerTiles);
+            return {
+              id: m.id,
+              label: m.label,
+              ctx: m.ctx,
+              note: m.note,
+              effort: eff,
+              supports_effort: eff.kind !== "none",
+            };
+          }),
         }));
       });
     }
@@ -3247,13 +3277,17 @@ export function ChatInput({
         if (cancelled || models.length === 0) return; // empty → keep curated fallback
         setDiscoveredModels((prev) => ({
           ...prev,
-          [pid]: models.map((m) => ({
-            id: m.id,
-            label: m.label,
-            ctx: m.ctx,
-            note: m.note,
-            supports_effort: m.supports_effort ?? false,
-          })),
+          [pid]: models.map((m) => {
+            const eff = effortForDiscoveredModel(pid, m.id, providerTiles);
+            return {
+              id: m.id,
+              label: m.label,
+              ctx: m.ctx,
+              note: m.note,
+              effort: eff,
+              supports_effort: eff.kind !== "none",
+            };
+          }),
         }));
       });
     }
@@ -4106,6 +4140,38 @@ export function ChatInput({
     return () => clearTimeout(t);
   }, [enhanceUndo, enhanceToast]);
 
+  // Heal a stale permission_mode: if the session (or draft) is carrying a
+  // mode id that doesn't exist for its current provider, snap it to the
+  // provider's default. Covers existing sessions whose provider was switched
+  // elsewhere and draft composers opened before this fix landed.
+  // Uses `tool` (from props) directly so this effect can live before
+  // chipDispatchTool's declaration. The `modes.some(...)` guard makes this
+  // idempotent — no render loop.
+  useEffect(() => {
+    if (controlCenter) return;
+    const cap = permissionCapabilityFor(providerTiles, tool ?? null);
+    const modes = permissionModesFor(cap);
+    if (modes.length === 0) return; // None capability (Perplexity) — leave as-is
+    const current = permissionMode ?? "default";
+    if (modes.some((m) => m.id === current)) return; // already valid — no-op
+    const defaultMode = modes.find((m) => m.id === "default");
+    const def = defaultMode ? defaultMode.id : modes[0]!.id;
+    const store = useAppStore.getState();
+    // Compose mode: effectiveSessionId is null and the "__composer__" virtual
+    // session isn't in sessions[], so heal the composer field directly.
+    if (!sessionId) {
+      store.setComposerField({ permissionMode: def });
+      return;
+    }
+    const sess = store.sessions.find((s) => s.id === sessionId);
+    if (sess?.local_only) {
+      store.setDraftField({ permission_mode: def });
+      return;
+    }
+    store.updateSession(sessionId, { permission_mode: def });
+    apiUpdateSession(sessionId, { permission_mode: def }).catch(() => {});
+  }, [sessionId, tool, permissionMode, providerTiles, controlCenter]);
+
   /* ── drag & drop ── */
   const onDragOver  = useCallback((e: React.DragEvent) => { e.preventDefault(); setDragging(true); }, []);
   const onDragLeave = useCallback(() => setDragging(false), []);
@@ -4331,8 +4397,13 @@ export function ChatInput({
                 // just model (same-provider). `onModelChange` covers the
                 // same-provider path via the parent's handleModelChange.
                 if (dispatchTool !== tool) {
-                  registerConfigPatch(sessionId, apiUpdateSession(sessionId, { tool: tid, model_name: modelId }));
-                  useAppStore.getState().updateSession(sessionId, { tool: tid, model_name: modelId });
+                  // Cross-provider: snap permission_mode to the new provider's
+                  // default and clear sandbox so stale values from the old
+                  // provider don't leak through.
+                  const cap = permissionCapabilityFor(providerTiles, dispatchTool);
+                  const patch = { tool: tid, model_name: modelId, permission_mode: defaultPermissionMode(cap), sandbox: null as string | null };
+                  registerConfigPatch(sessionId, apiUpdateSession(sessionId, patch));
+                  useAppStore.getState().updateSession(sessionId, patch);
                 } else {
                   onModelChange?.(modelId);
                 }
@@ -4340,10 +4411,9 @@ export function ChatInput({
                 // Composer / Control Center — no session row exists yet.
                 // Write the pick into the open composer so `commitComposer`
                 // creates the new session with the right (tool, model)
-                // pair. Without this branch, picks vanished into the
-                // void because `onModelChange` is undefined when
-                // `activeSessionId` is null.
-                useAppStore.getState().setComposerField({ tool: tid, modelName: modelId });
+                // pair. Snap permission + clear sandbox for the new provider.
+                const cap = permissionCapabilityFor(providerTiles, dispatchTool);
+                useAppStore.getState().setComposerField({ tool: tid, modelName: modelId, permissionMode: defaultPermissionMode(cap), sandbox: null });
               }
             }}
             onPickEffort={(e) => setEffort(e)}
@@ -4965,20 +5035,69 @@ export function ChatInput({
                 policy is meaningless there. (Fleet's own policy
                 lives in the Fleet mode chip below.) */}
             {!controlCenter ? (
-              <PermissionModePicker
-                mode={permissionMode ?? "default"}
-                onPick={(m) => {
-                  if (!sessionId) return;
-                  const store = useAppStore.getState();
-                  const session = store.sessions.find(s => s.id === sessionId);
-                  if (session?.local_only) {
-                    store.setDraftField({ permission_mode: m });
-                    return;
-                  }
-                  store.updateSession(sessionId, { permission_mode: m });
-                  apiUpdateSession(sessionId, { permission_mode: m }).catch(() => {});
-                }}
-              />
+              <>
+                <PermissionModePicker
+                  mode={permissionMode ?? "default"}
+                  modes={permissionModesFor(permissionCapabilityFor(providerTiles, chipDispatchTool))}
+                  onPick={(m) => {
+                    const store = useAppStore.getState();
+                    // Compose mode: sessionId is null + the virtual session isn't
+                    // in sessions[], so write straight to the composer.
+                    if (!sessionId) { store.setComposerField({ permissionMode: m }); return; }
+                    const session = store.sessions.find(s => s.id === sessionId);
+                    if (session?.local_only) {
+                      store.setDraftField({ permission_mode: m });
+                      return;
+                    }
+                    store.updateSession(sessionId, { permission_mode: m });
+                    apiUpdateSession(sessionId, { permission_mode: m }).catch(() => {});
+                  }}
+                />
+                {(() => {
+                  const sandboxOpts = sandboxOptionsFor(providerTiles, chipDispatchTool);
+                  if (!sandboxOpts) return null;
+                  return (
+                    <SandboxControl
+                      options={sandboxOpts}
+                      value={sandbox ?? null}
+                      onChange={(v) => {
+                        const st = useAppStore.getState();
+                        if (!sessionId) { st.setComposerField({ sandbox: v ?? null }); return; }
+                        const sess = st.sessions.find(s => s.id === sessionId);
+                        if (sess?.local_only) {
+                          st.setDraftField({ sandbox: v ?? undefined });
+                          return;
+                        }
+                        st.updateSession(sessionId, { sandbox: v });
+                        apiUpdateSession(sessionId, { sandbox: v }).catch(() => {});
+                      }}
+                    />
+                  );
+                })()}
+                {(() => {
+                  const matrix = toolMatrixFor(providerTiles, chipDispatchTool);
+                  if (!matrix) return null;
+                  const currentOverrides = parseToolOverrides(toolOverridesRaw);
+                  return (
+                    <ToolMatrixEditor
+                      matrix={matrix}
+                      overrides={currentOverrides}
+                      onChange={(next) => {
+                        const st = useAppStore.getState();
+                        const serialized = Object.keys(next).length === 0 ? "{}" : JSON.stringify(next);
+                        if (!sessionId) { st.setComposerField({ toolOverrides: serialized }); return; }
+                        const sess = st.sessions.find(s => s.id === sessionId);
+                        if (sess?.local_only) {
+                          st.setDraftField({ tool_overrides: serialized });
+                          return;
+                        }
+                        st.updateSession(sessionId, { tool_overrides: serialized });
+                        apiUpdateSession(sessionId, { tool_overrides: serialized }).catch(() => {});
+                      }}
+                    />
+                  );
+                })()}
+              </>
             ) : (() => {
               // Fleet hub: Fleet co-pilot mode picker takes the
               // leftmost slot where the permission picker would sit

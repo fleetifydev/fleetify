@@ -94,6 +94,9 @@ export interface ComposerState {
    *  backend expects in `SessionCreate.model_name`. */
   modelName: string | null;
   permissionMode: Session["permission_mode"];
+  sandbox: Session["sandbox"];
+  effort: Session["effort"];
+  toolOverrides: Session["tool_overrides"];
   useWorktree: boolean;
   /** Title the user has typed (or "New chat" placeholder). commitComposer
    *  treats the placeholder as "user didn't customise the title" and
@@ -365,6 +368,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     tool: "claude",
     modelName: null,
     permissionMode: "default",
+    sandbox: null,
+    effort: "high",
+    toolOverrides: null,
     useWorktree: true,
     title: "New chat",
     claudeSessionId: null,
@@ -830,6 +836,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         tool: defaultProvider,
         modelName: defaultModel,
         permissionMode: "default",
+        sandbox: null,
+        effort: "high",
+        toolOverrides: null,
         useWorktree: true,
         title: "New chat",
         claudeSessionId: null,
@@ -907,6 +916,19 @@ export const useAppStore = create<AppState>((set, get) => ({
         claude_session_id: c.claudeSessionId ?? undefined,
         use_worktree: c.useWorktree,
       });
+      // SessionCreate doesn't carry sandbox / tool_overrides / effort — PATCH
+      // them onto the freshly-created row right away so a draft's
+      // choices survive the commit. Fire-and-forget: the UI already
+      // reflects the composer values; a PATCH failure is non-fatal.
+      if (c.sandbox != null || c.toolOverrides != null || (c.effort && c.effort !== "high")) {
+        void import("@/lib/api").then(({ updateSession: apiPatchSession }) =>
+          apiPatchSession(session.id, {
+            ...(c.sandbox != null ? { sandbox: c.sandbox } : {}),
+            ...(c.toolOverrides != null ? { tool_overrides: c.toolOverrides } : {}),
+            ...(c.effort && c.effort !== "high" ? { effort: c.effort } : {}),
+          }).catch(() => {}),
+        );
+      }
       // Wipe compose-time messages (welcome typewriter, folder
       // warnings, …) before the surface flips to the real session —
       // they're transient compose-mode UX, not part of the new
@@ -950,6 +972,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (patch.tool !== undefined) c.tool = patch.tool;
     if (patch.model_name !== undefined) c.modelName = patch.model_name ?? null;
     if (patch.permission_mode !== undefined) c.permissionMode = patch.permission_mode;
+    if (patch.sandbox !== undefined) c.sandbox = patch.sandbox ?? null;
+    if (patch.effort !== undefined) c.effort = patch.effort;
+    if (patch.tool_overrides !== undefined) c.toolOverrides = patch.tool_overrides ?? null;
     if (patch.use_worktree !== undefined) c.useWorktree = patch.use_worktree;
     if (patch.title !== undefined) c.title = patch.title;
     if (patch.claude_session_id !== undefined) c.claudeSessionId = patch.claude_session_id ?? null;

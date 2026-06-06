@@ -2031,6 +2031,9 @@ pub struct ProviderTilePayload {
     /// `fleet.config.json`. The renderer surfaces a "DEFAULT" badge
     /// and the per-tile "Make default" action gates off this bit.
     pub is_default: bool,
+    /// Native permission + effort capability for this provider/its models.
+    /// Drives the composer's capability-aware pickers (Phase 2).
+    pub capabilities: fleetify_backend::providers::capabilities::TileCapabilities,
 }
 
 #[tauri::command]
@@ -2095,12 +2098,14 @@ pub async fn providers_list_catalog(app: tauri::AppHandle) -> serde_json::Value 
                 .cloned()
                 .unwrap_or_default();
             let is_default = default_provider_id.as_deref() == Some(spec.id);
+            let capabilities = fleetify_backend::providers::capabilities::tile_capabilities(spec);
             ProviderTilePayload {
                 spec,
                 connected,
                 has_key,
                 enabled_models,
                 is_default,
+                capabilities,
             }
         })
         .collect();

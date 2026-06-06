@@ -118,12 +118,42 @@ pub fn router() -> Router<AppState> {
         .route("/providers/cloudflare/verify", post(cloudflare_verify))
 }
 
+use crate::providers::capabilities;
+
+/// CATALOG serialized to JSON with each provider's capability descriptors
+/// (permission / tool_matrix / timing) merged in. Per-model effort is
+/// delivered with the model lists (catalog model entries + the dynamic
+/// `available_models_update` event), not here.
+pub fn catalog_with_capabilities() -> Vec<serde_json::Value> {
+    crate::providers::CATALOG
+        .iter()
+        .map(|p| {
+            let mut v = serde_json::to_value(p).unwrap_or(serde_json::Value::Null);
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert(
+                    "permission".into(),
+                    serde_json::to_value(capabilities::permission_capability(p.id)).unwrap(),
+                );
+                obj.insert(
+                    "tool_matrix".into(),
+                    serde_json::to_value(capabilities::tool_matrix(p.id)).unwrap(),
+                );
+                obj.insert(
+                    "timing".into(),
+                    serde_json::to_value(capabilities::config_timing(p.id)).unwrap(),
+                );
+            }
+            v
+        })
+        .collect()
+}
+
 /// Static catalog that drives Settings → Models tiles, Settings → Agents
 /// tiles, and the chat composer's grouped model picker. Returns the
-/// `'static` provider registry verbatim — no I/O, no auth check, safe to
-/// poll without rate-limiting concerns.
-async fn providers_catalog() -> Json<&'static [crate::providers::ProviderSpec]> {
-    Json(crate::providers::CATALOG)
+/// provider registry enriched with capability descriptors — no I/O, no
+/// auth check, safe to poll without rate-limiting concerns.
+async fn providers_catalog() -> Json<Vec<serde_json::Value>> {
+    Json(catalog_with_capabilities())
 }
 
 /// Read the prewarmed HTTP-provider health cache. Always returns a
@@ -2079,5 +2109,20 @@ mod tests {
         let m = out.iter().find(|m| m.id.ends_with("gpt-oss-120b")).unwrap();
         assert_eq!(m.label, "gpt-oss-120b");
         assert!(m.ctx.is_none());
+    }
+
+    #[test]
+    fn catalog_payload_includes_capability() {
+        let payload = super::catalog_with_capabilities();
+        let claude = payload.iter().find(|p| p["id"] == "claude").unwrap();
+        assert_eq!(claude["permission"]["kind"], "modes");
+        assert_eq!(claude["timing"]["permission"], "spawn");
+        let codex = payload.iter().find(|p| p["id"] == "codex").unwrap();
+        assert_eq!(codex["permission"]["kind"], "approval_sandbox");
+        let oc = payload.iter().find(|p| p["id"] == "opencode").unwrap();
+        assert_eq!(oc["tool_matrix"]["supports_glob"], true);
+        assert_eq!(oc["timing"]["effort"], "live");
+        let px = payload.iter().find(|p| p["id"] == "perplexity").unwrap();
+        assert_eq!(px["permission"]["kind"], "none");
     }
 }

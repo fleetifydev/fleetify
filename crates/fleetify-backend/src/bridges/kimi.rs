@@ -35,6 +35,13 @@ use super::BridgeEvent;
 /// doesn't complete in this window the subprocess has hung — bail out.
 const INIT_TIMEOUT_SECS: u64 = 30;
 
+/// Returns `true` when `mode` means "auto-allow all tool calls" for the Kimi
+/// bridge — i.e. no permission dialog should be shown. Factored out so it can
+/// be unit-tested independently of the async closure.
+fn kimi_is_bypass(mode: &str) -> bool {
+    matches!(mode, "bypassPermissions" | "dontAsk" | "yolo")
+}
+
 /// Normalize an ACP `mcpServers` array so every **stdio** entry (one with a
 /// `command`) carries an `env` field. ACP agents that mirror gemini-cli's
 /// strict `zMcpServerStdio` schema reject an env-less stdio entry with
@@ -192,6 +199,9 @@ pub struct KimiBridge {
     /// `"default"`, the ACP client's `on_permission_request` routes through
     /// this handler (the renderer's permission dialog). Unset → auto-deny.
     pub permission_handler: Option<super::permission::PermissionHandler>,
+    /// Per-tool allow/deny overlay from `session.tool_overrides`. Keys and
+    /// values are lowercased. Empty (the default) means no overrides apply.
+    pub tool_overrides: std::collections::HashMap<String, String>,
     aborted: Arc<AtomicBool>,
     state: Arc<Mutex<Option<State>>>,
 }
@@ -214,6 +224,7 @@ impl KimiBridge {
             is_staff,
             agent_template,
             permission_handler: None,
+            tool_overrides: std::collections::HashMap::new(),
             aborted: Arc::new(AtomicBool::new(false)),
             state: Arc::new(Mutex::new(None)),
         }
@@ -295,27 +306,40 @@ impl KimiBridge {
         // Permission handler routing — same three-way split as the Gemini
         // bridge: bypass → auto-allow; handler set → ask the user; neither →
         // auto-deny stub (safe fallback).
+        // Per-tool overrides (tool_overrides) are consulted FIRST and
+        // short-circuit the mode/handler logic when present.
         let perm_mode = self.permission_mode.clone();
         let perm_handler = self.permission_handler.clone();
+        let overrides = self.tool_overrides.clone();
         client
             .on_permission_request(Arc::new(move |params| {
-                let bypass = matches!(perm_mode.as_str(), "bypassPermissions" | "dontAsk");
+                let bypass = kimi_is_bypass(perm_mode.as_str());
                 let handler = perm_handler.clone();
+                let overrides = overrides.clone();
                 Box::pin(async move {
+                    // Extract tool name before bypass/handler check so the override
+                    // can short-circuit regardless of mode.
+                    let tool_name = params
+                        .get("toolCall")
+                        .and_then(|tc| tc.get("name"))
+                        .or_else(|| params.get("tool_name"))
+                        .or_else(|| params.get("name"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    // Per-tool override takes priority over mode logic.
+                    if let Some(forced) = super::tool_override_decision(&overrides, &tool_name) {
+                        let option_id = if forced { "allow_once" } else { "deny" };
+                        return Ok(json!({
+                            "outcome": { "outcome": "selected", "optionId": option_id }
+                        }));
+                    }
                     if bypass {
                         return Ok(json!({
                             "outcome": { "outcome": "selected", "optionId": "allow_once" }
                         }));
                     }
                     if let Some(h) = handler {
-                        let tool_name = params
-                            .get("toolCall")
-                            .and_then(|tc| tc.get("name"))
-                            .or_else(|| params.get("tool_name"))
-                            .or_else(|| params.get("name"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
                         let approved = h(tool_name, params.clone()).await;
                         let option_id = if approved { "allow_once" } else { "deny" };
                         return Ok(json!({
@@ -617,6 +641,7 @@ impl KimiBridge {
         let agent_template = self.agent_template.clone();
         let state = self.state.clone();
         let permission_handler = self.permission_handler.clone();
+        let tool_overrides = self.tool_overrides.clone();
         Box::pin(async move {
             let bridge = KimiBridge {
                 session_id,
@@ -627,6 +652,7 @@ impl KimiBridge {
                 is_staff,
                 agent_template,
                 permission_handler,
+                tool_overrides,
                 aborted: Arc::new(AtomicBool::new(false)),
                 state,
             };
@@ -827,6 +853,21 @@ async fn fold_usage_from_prompt_result(result: &Value, acc: &Arc<Mutex<UsageAcc>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kimi_is_bypass_native_yolo_auto_allows() {
+        // Kimi/Gemini native "yolo" maps to the bypass tier — same as
+        // bypassPermissions.
+        assert!(kimi_is_bypass("yolo"));
+        assert_eq!(kimi_is_bypass("yolo"), kimi_is_bypass("bypassPermissions"));
+        // Canonical bypass modes still work.
+        assert!(kimi_is_bypass("bypassPermissions"));
+        assert!(kimi_is_bypass("dontAsk"));
+        // Ask-like modes must NOT bypass.
+        assert!(!kimi_is_bypass("default"));
+        assert!(!kimi_is_bypass("plan"));
+        assert!(!kimi_is_bypass("ask"));
+    }
 
     #[test]
     fn ensure_stdio_env_backfills_only_envless_stdio() {

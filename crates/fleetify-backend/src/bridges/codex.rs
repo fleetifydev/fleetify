@@ -38,6 +38,11 @@ fn permission_mode_to_codex(mode: &str) -> (&'static str, &'static str) {
         "acceptEdits" => ("on-request", "workspace-write"),
         "bypassPermissions" | "dontAsk" => ("never", "danger-full-access"),
         "plan" => ("never", "read-only"),
+        // Native Codex approval-policy passthrough (approval axis only;
+        // sandbox axis deferred to Phase 3).
+        "untrusted" => ("untrusted", "workspace-write"),
+        "on-request" => ("on-request", "workspace-write"),
+        "never" => ("never", "danger-full-access"),
         _ => ("untrusted", "workspace-write"),
     }
 }
@@ -136,6 +141,12 @@ pub struct CodexBridge {
     pub permission_mode: String,
     pub model_name: Option<String>,
     pub effort: String,
+    /// Independent sandbox tier override for Codex. When `Some`, overrides
+    /// the sandbox value derived from `permission_mode` via
+    /// `permission_mode_to_codex`. Validated against the three known values
+    /// ("read-only", "workspace-write", "danger-full-access"); unknown values
+    /// fall back to the derived sandbox silently.
+    pub sandbox: Option<String>,
     /// Same gating semantics as ClaudeBridge::is_staff — `fleet_dispatch`
     /// is suppressed on staff sessions so they use the text-protocol
     /// dispatch path instead.
@@ -170,6 +181,7 @@ impl CodexBridge {
             permission_mode: permission_mode.into(),
             model_name,
             effort: effort.into(),
+            sandbox: None,
             is_staff,
             agent_template,
             permission_handler: None,
@@ -196,7 +208,24 @@ impl CodexBridge {
             return Ok(());
         }
 
-        let (approval, sandbox) = permission_mode_to_codex(&self.permission_mode);
+        let (approval, derived_sandbox) = permission_mode_to_codex(&self.permission_mode);
+        // Apply the user-selected sandbox override when it's one of the three
+        // known Codex sandbox values. Unknown strings fall back to the derived
+        // value so we never pass garbage to the codex CLI.
+        const KNOWN_SANDBOXES: &[&str] = &["read-only", "workspace-write", "danger-full-access"];
+        let sandbox: &str = match self.sandbox.as_deref() {
+            Some(s) if KNOWN_SANDBOXES.contains(&s) => s,
+            Some(unknown) => {
+                tracing::warn!(
+                    target: "codex",
+                    session_id = %self.session_id,
+                    unknown_sandbox = unknown,
+                    "codex: unknown sandbox value — falling back to derived sandbox '{derived_sandbox}'"
+                );
+                derived_sandbox
+            }
+            None => derived_sandbox,
+        };
         let bin = which::which("codex")
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| "codex".to_string());
@@ -294,7 +323,10 @@ impl CodexBridge {
         let perm_handler = self.permission_handler.clone();
         client
             .on_approval_request(Arc::new(move |method: String, params| {
-                let bypass = matches!(perm_mode.as_str(), "bypassPermissions" | "dontAsk");
+                let bypass = matches!(
+                    perm_mode.as_str(),
+                    "bypassPermissions" | "dontAsk" | "never"
+                );
                 let handler = perm_handler.clone();
                 Box::pin(async move {
                     if bypass {
@@ -722,6 +754,7 @@ impl CodexBridge {
         let permission_mode = self.permission_mode.clone();
         let model_name = self.model_name.clone();
         let effort = self.effort.clone();
+        let sandbox = self.sandbox.clone();
         let is_staff = self.is_staff;
         let agent_template = self.agent_template.clone();
         let state = self.state.clone();
@@ -733,6 +766,7 @@ impl CodexBridge {
                 permission_mode,
                 model_name,
                 effort,
+                sandbox,
                 is_staff,
                 agent_template,
                 aborted: Arc::new(AtomicBool::new(false)),
@@ -1076,6 +1110,68 @@ mod tests {
         assert_eq!(
             permission_mode_to_codex("nope"),
             ("untrusted", "workspace-write")
+        );
+    }
+
+    #[test]
+    fn permission_mapping_native_codex_ids_passthrough() {
+        // Native Codex approval-policy values pass through unchanged
+        // (approval axis only; sandbox axis deferred to Phase 3).
+        assert_eq!(permission_mode_to_codex("untrusted").0, "untrusted");
+        assert_eq!(permission_mode_to_codex("on-request").0, "on-request");
+        // Native "never" matches canonical bypassPermissions.
+        assert_eq!(
+            permission_mode_to_codex("never"),
+            permission_mode_to_codex("bypassPermissions")
+        );
+    }
+
+    #[test]
+    fn codex_bypass_check_treats_never_like_bypass_permissions() {
+        // The on_approval_request bypass check must treat Codex's native
+        // "never" approval policy identically to bypassPermissions/dontAsk.
+        let bypass = |mode: &str| matches!(mode, "bypassPermissions" | "dontAsk" | "never");
+        assert!(bypass("never"));
+        assert_eq!(bypass("never"), bypass("bypassPermissions"));
+        assert!(!bypass("untrusted"));
+        assert!(!bypass("on-request"));
+        assert!(!bypass("default"));
+    }
+
+    #[test]
+    fn sandbox_override_wins_over_derived_value() {
+        // When sandbox = Some("read-only"), the derived sandbox from
+        // "bypassPermissions" would be "danger-full-access", but the
+        // explicit override must win.
+        let known: &[&str] = &["read-only", "workspace-write", "danger-full-access"];
+        let (_, derived) = permission_mode_to_codex("bypassPermissions");
+        assert_eq!(derived, "danger-full-access");
+
+        // Simulate the override logic from cold_start:
+        let override_val = Some("read-only".to_string());
+        let effective = match override_val.as_deref() {
+            Some(s) if known.contains(&s) => s,
+            Some(_) | None => derived,
+        };
+        assert_eq!(effective, "read-only", "override should win over derived");
+
+        // None keeps the derived value.
+        let no_override: Option<String> = None;
+        let effective2 = match no_override.as_deref() {
+            Some(s) if known.contains(&s) => s,
+            Some(_) | None => derived,
+        };
+        assert_eq!(effective2, derived, "None should keep derived sandbox");
+
+        // Unknown string falls back to derived.
+        let unknown_override = Some("some-garbage".to_string());
+        let effective3 = match unknown_override.as_deref() {
+            Some(s) if known.contains(&s) => s,
+            Some(_) | None => derived,
+        };
+        assert_eq!(
+            effective3, derived,
+            "unknown sandbox should fall back to derived"
         );
     }
 

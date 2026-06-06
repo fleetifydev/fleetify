@@ -181,12 +181,27 @@ pub async fn generate_commit_message(
             if st_ok { st_out } else { String::new() }
         )
     } else {
-        let (st_ok, st_out) =
-            git_out(&path, &["diff", "--shortstat"], Duration::from_secs(5)).await;
-        let (fl_ok, fl_out) =
-            git_out(&path, &["diff", "--name-status"], Duration::from_secs(5)).await;
-        let (df_ok, df_out) =
-            git_out(&path, &["diff", "--unified=2"], Duration::from_secs(8)).await;
+        // The auto-commit step stages everything (`git add -A`) BEFORE calling
+        // this, so read the STAGED diff — the plain unstaged `git diff` is empty
+        // by then (and untracked work never shows up in it at all).
+        let (st_ok, st_out) = git_out(
+            &path,
+            &["diff", "--cached", "--shortstat"],
+            Duration::from_secs(5),
+        )
+        .await;
+        let (fl_ok, fl_out) = git_out(
+            &path,
+            &["diff", "--cached", "--name-status"],
+            Duration::from_secs(5),
+        )
+        .await;
+        let (df_ok, df_out) = git_out(
+            &path,
+            &["diff", "--cached", "--unified=2"],
+            Duration::from_secs(8),
+        )
+        .await;
         let truncated = if df_ok && df_out.len() > 30_000 {
             format!("{}\n…[truncated]", &df_out[..30_000])
         } else if df_ok {
@@ -202,7 +217,7 @@ pub async fn generate_commit_message(
     };
 
     let prompt = format!(
-        "You are writing a git commit message. Read the context below and emit a SINGLE LINE message (≤72 characters, imperative voice, no trailing period, no quotes, no Markdown). Focus on WHAT changed and WHY. Output ONLY the message text — no preamble, no explanation.\n\n{context}\n"
+        "You are writing a git commit message in the Conventional Commits format. Emit a SINGLE LINE shaped as `<type>(<scope>): <description>` (omit the `(<scope>)` part when the scope is unclear). `type` MUST be one of: feat, fix, docs, style, refactor, perf, test, build, ci, chore. The description is imperative and lowercase; the whole line is ≤72 characters, with no trailing period, no quotes, and no Markdown. Focus on WHAT changed and WHY. Output ONLY the commit message line — no preamble, no body, no explanation.\n\n{context}\n"
     );
 
     let (ok, cli, out, err) =

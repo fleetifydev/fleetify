@@ -105,7 +105,11 @@ pub struct AntigravitySdkBridge {
 pub fn autonomy_mode_from_permission(permission_mode: &str) -> &'static str {
     match permission_mode {
         "bypassPermissions" => "autonomous",
+        // Native antigravity-sdk "always-proceed" is the autonomous tier.
+        "always-proceed" => "autonomous",
         "acceptEdits" => "accept_edits",
+        // Native "request-review" and "proceed-in-sandbox" fall to chat
+        // (conservative safe default) until a dedicated SDK tier is wired.
         _ => "chat",
     }
 }
@@ -672,6 +676,23 @@ mod tests {
         // tier that still gives the model context.
         assert_eq!(autonomy_mode_from_permission("plan"), "chat");
         assert_eq!(autonomy_mode_from_permission(""), "chat");
+    }
+
+    #[test]
+    fn autonomy_mode_native_always_proceed_equals_bypass_permissions() {
+        // Native antigravity-sdk "always-proceed" is the autonomous tier —
+        // same result as bypassPermissions.
+        assert_eq!(
+            autonomy_mode_from_permission("always-proceed"),
+            "autonomous"
+        );
+        assert_eq!(
+            autonomy_mode_from_permission("always-proceed"),
+            autonomy_mode_from_permission("bypassPermissions")
+        );
+        // Native safe modes fall to chat (conservative default).
+        assert_eq!(autonomy_mode_from_permission("request-review"), "chat");
+        assert_eq!(autonomy_mode_from_permission("proceed-in-sandbox"), "chat");
     }
 
     #[test]

@@ -10,6 +10,7 @@
 //! borrows so the renderer's JSON serialization can copy out exactly the
 //! fields it needs without forcing every consumer into the same shape.
 
+pub mod capabilities;
 pub mod catalog;
 pub mod helpers;
 pub mod keys;

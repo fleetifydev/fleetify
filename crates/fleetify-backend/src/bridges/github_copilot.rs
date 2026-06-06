@@ -104,7 +104,14 @@ enum CopilotPermArgs {
 fn map_for_copilot(mode: &str) -> CopilotPermArgs {
     match mode {
         "bypassPermissions" | "dontAsk" => CopilotPermArgs::AllowAll,
+        // Native Copilot "autopilot" is the autonomous tier → AllowAll.
+        "autopilot" => CopilotPermArgs::AllowAll,
         "acceptEdits" => CopilotPermArgs::AcceptEdits,
+        // Native Copilot "ask" is the interactive tier → Ask.
+        "ask" => CopilotPermArgs::Ask,
+        // TODO(phase4): copilot plan mode — the Copilot CLI has no --plan
+        // permission flag; "plan" falls through to Ask (safe default) until a
+        // native mechanism is discovered.
         _ => CopilotPermArgs::Ask,
     }
 }
@@ -350,6 +357,12 @@ pub struct GitHubCopilotBridge {
     pub effort_level: Option<String>,
     /// Optional MCP config (Fleetify-side shape: `{"mcpServers": {name: {...}}}`).
     pub mcp_config: Option<Value>,
+    /// Per-tool allow/deny overlay from `session.tool_overrides`. Keys and
+    /// values are lowercased. Empty (the default) means no overrides apply.
+    /// For Copilot, `allow` entries emit extra `--allow-tool=<name>` flags at
+    /// spawn; `deny` entries cannot be expressed as a spawn flag (Copilot has
+    /// no `--deny-tool`) and are silently withheld from `--allow-tool`.
+    pub tool_overrides: std::collections::HashMap<String, String>,
 
     pub(crate) acp_session_id: Arc<Mutex<Option<String>>>,
     aborted: Arc<AtomicBool>,
@@ -372,6 +385,7 @@ impl GitHubCopilotBridge {
             model_name,
             effort_level,
             mcp_config,
+            tool_overrides: std::collections::HashMap::new(),
             acp_session_id: Arc::new(Mutex::new(None)),
             aborted: Arc::new(AtomicBool::new(false)),
             child: Arc::new(Mutex::new(None)),
@@ -394,6 +408,16 @@ impl GitHubCopilotBridge {
                 cmd.arg("--allow-tool=write").arg("--allow-tool=edit");
             }
             CopilotPermArgs::Ask => {}
+        }
+
+        // Apply per-tool overrides: emit `--allow-tool=<name>` for each
+        // `allow` entry. Copilot has no `--deny-tool` flag, so `deny` entries
+        // simply withhold the allow (tool stays at Copilot's default ask/deny).
+        // NOTE: copilot has no --deny-tool; deny overrides just withhold the allow.
+        for (tool, decision) in &self.tool_overrides {
+            if decision == "allow" {
+                cmd.arg(format!("--allow-tool={}", tool));
+            }
         }
 
         let cwd = if self.project_path.is_empty() {
@@ -463,6 +487,7 @@ impl GitHubCopilotBridge {
             model_name: self.model_name.clone(),
             effort_level: self.effort_level.clone(),
             mcp_config: self.mcp_config.clone(),
+            tool_overrides: self.tool_overrides.clone(),
             acp_session_id: self.acp_session_id.clone(),
             aborted: self.aborted.clone(),
             child: self.child.clone(),
@@ -759,6 +784,25 @@ mod tests {
     }
 
     #[test]
+    fn map_for_copilot_native_autopilot_equals_bypass_permissions() {
+        // Copilot's native "autopilot" mode is the autonomous tier —
+        // same result as bypassPermissions.
+        assert_eq!(map_for_copilot("autopilot"), CopilotPermArgs::AllowAll);
+        assert_eq!(
+            map_for_copilot("autopilot"),
+            map_for_copilot("bypassPermissions")
+        );
+    }
+
+    #[test]
+    fn map_for_copilot_native_ask_equals_default() {
+        // Copilot's native "ask" mode is the interactive tier — same result
+        // as the wildcard default.
+        assert_eq!(map_for_copilot("ask"), CopilotPermArgs::Ask);
+        assert_eq!(map_for_copilot("ask"), map_for_copilot("default"));
+    }
+
+    #[test]
     fn copilot_models_to_json_emits_id_label_array() {
         let models = vec![
             ("auto".to_string(), "Auto".to_string()),
@@ -900,6 +944,46 @@ mod tests {
         let b = dummy_bridge("default", None, Some("high"));
         let args = cmd_args(&b);
         assert!(args.iter().any(|a| a == "--effort=high"));
+    }
+
+    #[test]
+    fn build_command_tool_overrides_allow_emits_allow_tool_flag() {
+        // An `allow` override for "shell" should emit `--allow-tool=shell`.
+        let mut b = dummy_bridge("default", None, None);
+        b.tool_overrides = super::super::parse_tool_overrides(Some(r#"{"shell":"allow"}"#));
+        let args = cmd_args(&b);
+        assert!(
+            args.iter().any(|a| a == "--allow-tool=shell"),
+            "expected --allow-tool=shell in {:?}",
+            args
+        );
+    }
+
+    #[test]
+    fn build_command_tool_overrides_deny_does_not_emit_allow_tool() {
+        // A `deny` override must NOT emit --allow-tool (Copilot has no --deny-tool).
+        let mut b = dummy_bridge("default", None, None);
+        b.tool_overrides = super::super::parse_tool_overrides(Some(r#"{"shell":"deny"}"#));
+        let args = cmd_args(&b);
+        assert!(
+            !args.iter().any(|a| a == "--allow-tool=shell"),
+            "deny override must not emit --allow-tool=shell in {:?}",
+            args
+        );
+    }
+
+    #[test]
+    fn build_command_tool_overrides_allow_multiple_tools() {
+        let mut b = dummy_bridge("default", None, None);
+        b.tool_overrides = super::super::parse_tool_overrides(Some(
+            r#"{"shell":"allow","write":"allow","read":"deny"}"#,
+        ));
+        let args = cmd_args(&b);
+        // allow entries get a flag each.
+        assert!(args.iter().any(|a| a == "--allow-tool=shell"));
+        assert!(args.iter().any(|a| a == "--allow-tool=write"));
+        // deny entry does NOT get a flag.
+        assert!(!args.iter().any(|a| a == "--allow-tool=read"));
     }
 
     use serde_json::json;

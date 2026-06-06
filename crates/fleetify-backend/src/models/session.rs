@@ -19,6 +19,8 @@ pub struct Session {
     pub permission_mode: String,
     pub session_mode: String,
     pub effort: Option<String>,
+    pub sandbox: Option<String>,
+    pub tool_overrides: Option<String>,
     pub user_id: Option<String>,
     pub pinned: bool,
     pub order_idx: i64,
@@ -71,6 +73,8 @@ pub struct SessionUpdate {
     pub model_name: Option<String>,
     pub permission_mode: Option<String>,
     pub effort: Option<String>,
+    pub sandbox: Option<String>,
+    pub tool_overrides: Option<String>,
     pub project_path: Option<String>,
     pub tool: Option<String>,
     pub claude_session_id: Option<String>,
@@ -128,5 +132,68 @@ mod tests {
         let su: SessionUpdate = serde_json::from_str(r#"{"pinned":true}"#).unwrap();
         assert_eq!(su.pinned, Some(true));
         assert!(su.title.is_none());
+    }
+
+    /// Round-trip: create a session row, PATCH sandbox + tool_overrides via
+    /// raw SQL (mirrors the `set!` macro in routers/sessions.rs), then
+    /// re-read with `SELECT *` + `FromRow` and assert the values persisted.
+    #[tokio::test]
+    async fn sandbox_and_tool_overrides_round_trip() {
+        let pool = crate::db::init_pool("sqlite::memory:")
+            .await
+            .expect("open in-memory db");
+
+        // Insert a minimal session row (mirrors the session_migrations helper).
+        let id = "test-sandbox-rt-01";
+        sqlx::query(
+            "INSERT INTO sessions \
+             (id,title,project_path,group_path,tool,command,status,use_worktree,\
+              permission_mode,session_mode,pinned,order_idx,created_at,budget_used) \
+             VALUES (?,?,'','','claude','claude','idle',1,'default','new',0,0,\
+                     '2026-01-01T00:00:00Z',0.0)",
+        )
+        .bind(id)
+        .bind("Sandbox RT session")
+        .execute(&pool)
+        .await
+        .expect("insert session row");
+
+        // Verify both columns default to NULL.
+        let before = sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = ?")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .expect("fetch before patch");
+        assert!(before.sandbox.is_none(), "sandbox should start NULL");
+        assert!(
+            before.tool_overrides.is_none(),
+            "tool_overrides should start NULL"
+        );
+
+        // PATCH sandbox.
+        sqlx::query("UPDATE sessions SET sandbox = ? WHERE id = ?")
+            .bind("docker")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .expect("patch sandbox");
+
+        // PATCH tool_overrides.
+        let matrix = r#"{"bash":{"allow":true},"edit":{"allow":false}}"#;
+        sqlx::query("UPDATE sessions SET tool_overrides = ? WHERE id = ?")
+            .bind(matrix)
+            .bind(id)
+            .execute(&pool)
+            .await
+            .expect("patch tool_overrides");
+
+        // Re-read and assert.
+        let after = sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = ?")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .expect("fetch after patch");
+        assert_eq!(after.sandbox.as_deref(), Some("docker"));
+        assert_eq!(after.tool_overrides.as_deref(), Some(matrix));
     }
 }

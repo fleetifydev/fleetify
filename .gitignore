@@ -7,6 +7,7 @@ dist
 fleet.db
 fleet.db-wal
 fleet.db-shm
+*.premerge-bak
 src-tauri/gen
 .env
 .env.*

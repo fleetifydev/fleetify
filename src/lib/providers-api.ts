@@ -35,6 +35,35 @@ export interface ModelSpec {
   supports_effort: boolean;
 }
 
+// ─── Capability descriptors (mirror providers/capabilities.rs serde) ────
+export interface PermMode { id: string; label: string }
+export type PermissionCapability =
+  | { kind: "modes"; modes: PermMode[]; sandbox: string[] | null }
+  | { kind: "approval_sandbox"; approvals: string[]; sandboxes: string[] }
+  | { kind: "none" };
+export interface ToolMatrixCapability {
+  tools: string[];
+  decisions: string[];
+  supports_glob: boolean;
+}
+export type EffortCapability =
+  | { kind: "levels"; levels: string[]; default: string }
+  | { kind: "thinking_level"; levels: string[]; default: string }
+  | { kind: "budget"; min: number; max: number; default: number; can_disable: boolean }
+  | { kind: "toggle"; default: boolean }
+  | { kind: "none" };
+export interface ConfigTiming {
+  permission: "spawn" | "live";
+  effort: "spawn" | "live";
+}
+export interface ModelEffort { id: string; effort: EffortCapability }
+export interface TileCapabilities {
+  permission: PermissionCapability;
+  tool_matrix: ToolMatrixCapability | null;
+  timing: ConfigTiming;
+  model_efforts: ModelEffort[];
+}
+
 export interface ProviderExtras {
   citations?: boolean;
   search_results?: boolean;
@@ -88,6 +117,8 @@ export interface ProviderTile {
    *  `defaultProvider` in fleet.config.json). At most one tile carries
    *  this flag at a time. */
   is_default: boolean;
+  /** Native permission + effort capability (Phase 2). */
+  capabilities: TileCapabilities;
 }
 
 export type ProvidersListResult =

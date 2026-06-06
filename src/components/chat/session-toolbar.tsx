@@ -46,27 +46,16 @@ import { folderName as folderNameUtil } from "@/lib/utils";
 import { UnifiedModelPicker, type Effort as UMEffort } from "./unified-model-picker";
 import {
   buildPickerGroups,
+  effortForDiscoveredModel,
   resolveDispatchTool,
   resolveModelChip,
   type PickerGroup,
   type PickerModel,
 } from "@/lib/picker-groups";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
+import { permissionCapabilityFor, permissionModesFor } from "@/lib/capabilities";
 
 type MenuId = "source" | "git" | "model" | "perms" | "history" | null;
-
-// The `id` values double as both the CLI agents' `--permission-mode`
-// flag AND the agentic-loop autonomy switch for HTTP-provider sessions
-// (mapping lives in `chat.rs` + `bridges/antigravity_sdk.rs`). HTTP
-// providers ALWAYS get workspace context regardless of choice — the
-// tiers control which tools (read / edit / shell) the model can run
-// unattended.
-const PERMS: { id: string; label: string; desc: string }[] = [
-  { id: "default",           label: "Ask",          desc: "Read tools auto; edits & shell denied (HTTP) / confirm (CLI)" },
-  { id: "acceptEdits",       label: "Accept edits", desc: "Read + write auto; shell denied (HTTP) / confirm (CLI)" },
-  { id: "bypassPermissions", label: "Bypass permissions", desc: "All tools without asking" },
-  { id: "plan",              label: "Plan only",    desc: "No execution — just a plan (CLI agents only)" },
-];
 
 export function SessionToolbar({
   sessionId,
@@ -74,6 +63,7 @@ export function SessionToolbar({
   tool,
   model,
   permissionMode,
+  effort: effortProp,
   claudeSessionId,
   useWorktree,
 }: {
@@ -82,6 +72,10 @@ export function SessionToolbar({
   tool: string;
   model: string | null;
   permissionMode: string;
+  /** Controlled effort level — passed from chat-view so the toolbar
+   *  reflects the composer's effort on a draft without needing a real
+   *  session row. Falls back to session?.effort, then "high". */
+  effort?: string;
   /** Currently-selected Claude CLI session UUID to resume from.
    *  Drives the History chip's "selected" badge + loaded-history
    *  state. Null when starting fresh. */
@@ -357,10 +351,16 @@ export function SessionToolbar({
     ? (folderNameUtil(projectPath) || projectPath)
     : null;
 
-  const permLabel   = PERMS.find(p => p.id === permissionMode)?.label ?? permissionMode;
-
   const { tiles: providerTiles } = useProvidersConfig();
-  const effort: UMEffort = session?.effort ?? "high";
+  const perms = permissionModesFor(permissionCapabilityFor(providerTiles, resolveDispatchTool(tool)));
+  // Never fall back to the raw id: an invalid/stale mode for this provider
+  // shows its default (or first) mode's label until the heal effect coerces it.
+  const permLabel =
+    perms.find((p) => p.id === permissionMode)?.label ??
+    perms.find((p) => p.id === "default")?.label ??
+    perms[0]?.label ??
+    permissionMode;
+  const effort: UMEffort = ((effortProp ?? session?.effort) ?? "high") as UMEffort;
   const enabledAgentIds = providerTiles
     .filter((t) => t.spec.kind === "cli" && t.connected)
     .map((t) => t.spec.id);
@@ -387,13 +387,17 @@ export function SessionToolbar({
         if (cancelled || models.length === 0) return; // empty → keep static fallback
         setDiscoveredModels((prev) => ({
           ...prev,
-          [agentId]: models.map((m) => ({
-            id: m.id,
-            label: m.label,
-            ctx: m.ctx,
-            note: m.note,
-            supports_effort: m.supports_effort ?? false,
-          })),
+          [agentId]: models.map((m) => {
+            const eff = effortForDiscoveredModel(agentId, m.id, providerTiles);
+            return {
+              id: m.id,
+              label: m.label,
+              ctx: m.ctx,
+              note: m.note,
+              effort: eff,
+              supports_effort: eff.kind !== "none",
+            };
+          }),
         }));
       });
     }
@@ -405,13 +409,17 @@ export function SessionToolbar({
         if (cancelled || models.length === 0) return; // empty → keep curated fallback
         setDiscoveredModels((prev) => ({
           ...prev,
-          [pid]: models.map((m) => ({
-            id: m.id,
-            label: m.label,
-            ctx: m.ctx,
-            note: m.note,
-            supports_effort: m.supports_effort ?? false,
-          })),
+          [pid]: models.map((m) => {
+            const eff = effortForDiscoveredModel(pid, m.id, providerTiles);
+            return {
+              id: m.id,
+              label: m.label,
+              ctx: m.ctx,
+              note: m.note,
+              effort: eff,
+              supports_effort: eff.kind !== "none",
+            };
+          }),
         }));
       });
     }
@@ -430,7 +438,10 @@ export function SessionToolbar({
       const seen = new Set(base.map((m) => m.id));
       const live = sessionDynModels.models
         .filter((m) => !seen.has(m.id))
-        .map((m) => ({ id: m.id, label: m.label, supports_effort: false }));
+        .map((m) => {
+          const eff = effortForDiscoveredModel(tool, m.id, providerTiles);
+          return { id: m.id, label: m.label, effort: eff, supports_effort: eff.kind !== "none" };
+        });
       merged[tool] = [...base, ...live];
     }
     return Object.keys(merged).length > 0 ? merged : undefined;
@@ -764,27 +775,29 @@ export function SessionToolbar({
       )}
 
       {/* ── Permission ── */}
-      <Chip
-        active={openMenu === "perms"}
-        chevron
-        onClick={() => setOpenMenu(openMenu === "perms" ? null : "perms")}
-      >
-        <Lock size={11} style={{ color: "var(--c-dim, #9a9a9a)" }} />
-        <span>{permLabel}</span>
-        {openMenu === "perms" && (
-          <Menu>
-            {PERMS.map(p => (
-              <MenuRow
-                key={p.id}
-                active={permissionMode === p.id}
-                onClick={() => pickPerm(p.id)}
-                primary={p.label}
-                secondary={p.desc}
-              />
-            ))}
-          </Menu>
-        )}
-      </Chip>
+      {perms.length > 0 && (
+        <Chip
+          active={openMenu === "perms"}
+          chevron
+          onClick={() => setOpenMenu(openMenu === "perms" ? null : "perms")}
+        >
+          <Lock size={11} style={{ color: "var(--c-dim, #9a9a9a)" }} />
+          <span>{permLabel}</span>
+          {openMenu === "perms" && (
+            <Menu>
+              {perms.map(p => (
+                <MenuRow
+                  key={p.id}
+                  active={permissionMode === p.id}
+                  onClick={() => pickPerm(p.id)}
+                  primary={p.label}
+                  secondary=""
+                />
+              ))}
+            </Menu>
+          )}
+        </Chip>
+      )}
 
       {/* ── Git branch + worktree (composite chip) ──
             Two click targets glued together inside a single chip

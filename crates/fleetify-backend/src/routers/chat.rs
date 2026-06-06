@@ -1060,6 +1060,7 @@ async fn run_send_flow(
             let mut b = ClaudeBridge::new(sid.clone(), agent_cwd.clone());
             b.claude_session_id = session.claude_session_id.clone();
             b.permission_mode = session.permission_mode.clone();
+            b.effort = session.effort.clone().unwrap_or_default();
             b.model_name = session.model_name.clone();
             b.session_title = Some(session.title.clone());
             b.session_mode = session.session_mode.clone();
@@ -1200,7 +1201,9 @@ async fn run_send_flow(
                         spec,
                         model.clone(),
                         &tool_ctx,
-                    ) {
+                    )
+                    .map(|a| a.with_effort(session.effort.clone()))
+                    {
                         Ok(a) => a,
                         Err(e) => {
                             send_json(
@@ -1296,6 +1299,8 @@ async fn run_send_flow(
                 is_staff,
                 session.agent_template.clone(),
             );
+            b.tool_overrides =
+                crate::bridges::parse_tool_overrides(session.tool_overrides.as_deref());
             // ACP has no system-prompt slot — staff gets the orchestrator
             // prompt (roster + [[DISPATCH]] protocol), non-staff inherits its
             // template prompt; KimiBridge prepends it onto the turn. Parity
@@ -1393,6 +1398,10 @@ async fn run_send_flow(
                 is_staff,
                 session.agent_template.clone(),
             );
+            // Wire the OS-sandbox toggle (session.sandbox = "on"/"off").
+            // Antigravity's sandbox is already expressed via its
+            // proceed-in-sandbox mode, so we only set it for Gemini here.
+            b.sandbox = session.sandbox.clone();
             // Parity with the Claude block: staff gets the orchestrator
             // prompt (live roster + [[DISPATCH]] protocol), non-staff
             // inherits its template prompt. ACP has no system-prompt slot,
@@ -1438,15 +1447,18 @@ async fn run_send_flow(
                 is_staff,
                 session.agent_template.clone(),
             );
+            // Wire the independent sandbox axis (session.sandbox overrides the
+            // approval-derived sandbox; None keeps the derived value).
+            b.sandbox = session.sandbox.clone();
             // Codex V2 surfaces approvals through `on_approval_request`
-            // in every mode except bypass/dontAsk. Mirror the Python
-            // build's gate: install the dialog handler whenever the
-            // user-facing mode could ask. The bridge itself short-
-            // circuits inside the closure when perm_mode is bypass.
+            // in every mode except bypass/dontAsk/never. Wire the handler
+            // for all ask-like modes (default, acceptEdits, untrusted,
+            // on-request); skip for autonomous modes. The bridge itself
+            // short-circuits inside the closure when perm_mode is bypass.
             if !is_staff
                 && !matches!(
                     session.permission_mode.as_str(),
-                    "bypassPermissions" | "dontAsk"
+                    "never" | "bypassPermissions" | "dontAsk"
                 )
             {
                 b = b.with_permission_handler(build_permission_handler(
@@ -1468,6 +1480,8 @@ async fn run_send_flow(
                 is_staff,
                 session.agent_template.clone(),
             );
+            b.tool_overrides =
+                crate::bridges::parse_tool_overrides(session.tool_overrides.as_deref());
             // Resume the prior OpenCode ACP session if we persisted one
             // (our Init event stamped it into session.claude_session_id).
             b.resume_session_id = session.claude_session_id.clone();
@@ -1543,6 +1557,8 @@ async fn run_send_flow(
                 is_staff,
                 session.agent_template.clone(),
             );
+            b.tool_overrides =
+                crate::bridges::parse_tool_overrides(session.tool_overrides.as_deref());
             // Resume the prior Cursor ACP session if we persisted one (our Init
             // event stamped it into session.claude_session_id).
             b.resume_session_id = session.claude_session_id.clone();
@@ -1574,8 +1590,8 @@ async fn run_send_flow(
             }
             AnyBridge::Cursor(Arc::new(b))
         }
-        "github-copilot" => AnyBridge::GitHubCopilot(Arc::new(
-            crate::bridges::github_copilot::GitHubCopilotBridge::new(
+        "github-copilot" => {
+            let mut b = crate::bridges::github_copilot::GitHubCopilotBridge::new(
                 sid.clone(),
                 agent_cwd.clone(),
                 session.permission_mode.clone(),
@@ -1588,8 +1604,11 @@ async fn run_send_flow(
                         session.agent_template.as_deref(),
                     )
                 })),
-            ),
-        )),
+            );
+            b.tool_overrides =
+                crate::bridges::parse_tool_overrides(session.tool_overrides.as_deref());
+            AnyBridge::GitHubCopilot(Arc::new(b))
+        }
         other => {
             send_json(
                 &sink,
@@ -2724,6 +2743,8 @@ async fn run_dispatched_task(
                 false, // dispatched tasks always land on non-staff agents
                 target.agent_template.clone(),
             );
+            b.tool_overrides =
+                crate::bridges::parse_tool_overrides(target.tool_overrides.as_deref());
             // A dispatched Kimi agent inherits its template's system prompt
             // (e.g. reverse_engineering). Mirror the Gemini dispatch arm.
             if let Some(tpl) =
@@ -2770,6 +2791,8 @@ async fn run_dispatched_task(
                 false, // dispatched tasks always land on non-staff agents
                 target.agent_template.clone(),
             );
+            b.tool_overrides =
+                crate::bridges::parse_tool_overrides(target.tool_overrides.as_deref());
             b.resume_session_id = target.claude_session_id.clone();
             AnyBridge::OpenCode(std::sync::Arc::new(b))
         }
@@ -2802,11 +2825,13 @@ async fn run_dispatched_task(
                 false, // dispatched tasks always land on non-staff agents
                 target.agent_template.clone(),
             );
+            b.tool_overrides =
+                crate::bridges::parse_tool_overrides(target.tool_overrides.as_deref());
             b.resume_session_id = target.claude_session_id.clone();
             AnyBridge::Cursor(std::sync::Arc::new(b))
         }
-        "github-copilot" => AnyBridge::GitHubCopilot(std::sync::Arc::new(
-            crate::bridges::github_copilot::GitHubCopilotBridge::new(
+        "github-copilot" => {
+            let mut b = crate::bridges::github_copilot::GitHubCopilotBridge::new(
                 target_id.clone(),
                 target_cwd.clone(),
                 target.permission_mode.clone(),
@@ -2819,8 +2844,11 @@ async fn run_dispatched_task(
                         target.agent_template.as_deref(),
                     )
                 })),
-            ),
-        )),
+            );
+            b.tool_overrides =
+                crate::bridges::parse_tool_overrides(target.tool_overrides.as_deref());
+            AnyBridge::GitHubCopilot(std::sync::Arc::new(b))
+        }
         "agy" => AnyBridge::Antigravity(std::sync::Arc::new(
             crate::bridges::antigravity::AntigravityBridge::new(
                 target_id.clone(),
