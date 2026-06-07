@@ -24,15 +24,25 @@ use crate::services::{codex_toml, mcp_registry, mcp_secrets};
 /// ClaudeBridge used to own inline. Returns `None` when `name` is not
 /// one of the three known builtins.
 pub fn builtin_mcp_config(name: &str, session_id: &str) -> Option<Value> {
+    // Claude-only permission gate. Served IN-PROCESS by the backend's
+    // MCP-over-HTTP endpoint (routers::internal::mcp_permission_*), NOT a
+    // sidecar binary: Claude connects over http with the session id in the URL
+    // path and the loopback secret as a Bearer token (smoke-tested contract).
+    if name == "fleet_permission" {
+        let backend = std::env::var("FLEETIFY_BACKEND_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8765".into());
+        let secret = std::env::var("FLEETIFY_INTERNAL_SECRET").unwrap_or_default();
+        return Some(json!({
+            "type": "http",
+            "url": format!("{backend}/api/internal/mcp/permission/{session_id}"),
+            "headers": { "Authorization": format!("Bearer {secret}") },
+            "builtin": true,
+        }));
+    }
     let basename = match name {
         "fleet_memory" => "fleet-memory-mcp",
         "fleet_dispatch" => "fleet-dispatch-mcp",
         "fleet_reveng" => "fleet-reveng-mcp",
-        // Claude-only permission-prompt MCP. Claude calls its single
-        // tool via the CLI's `--permission-prompt-tool` flag before
-        // each tool use; the binary POSTs to the loopback backend,
-        // which runs the same WS round-trip Codex/Gemini already use.
-        "fleet_permission" => "fleet-permission-mcp",
         _ => return None,
     };
     let command = mcp_registry::resolve_builtin_path(basename);

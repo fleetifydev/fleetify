@@ -34,8 +34,7 @@ plus cloud HTTP model providers (OpenAI, OpenRouter, …).
 | `crates/memory-mcp` | bin `fleet-memory-mcp` | stdio MCP: `remember` + `recall` |
 | `crates/dispatch-mcp` | bin `fleet-dispatch-mcp` | stdio MCP: `dispatch_to_agent` |
 | `crates/reveng-mcp` | bin `fleet-reveng-mcp` | stdio MCP: `fetch_url` + `discover_assets` + … |
-| `crates/permission-mcp` | bin `fleet-permission-mcp` | stdio MCP: Claude permission bridge |
-| `src-tauri` | bin `fleetify-app` | Tauri shell; embeds the backend |
+| `src-tauri` | bin `fleetify-app` | Tauri shell; embeds the backend (incl. the in-process permission MCP, served over HTTP — no sidecar) |
 
 `src/` is the React + Vite renderer. State lives in Zustand stores
 (`src/stores/*`); the WebSocket client is `src/services/ws-manager.ts`.

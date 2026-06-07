@@ -1189,14 +1189,14 @@ async fn run_send_flow(
             // that's how the interactive question card reaches the user
             // even under bypass. (The AskUserQuestion branch in
             // internal.rs intercepts it before this yes/no handler runs.)
-            // Gate on the sidecar actually resolving: `--permission-prompt-tool`
-            // hard-fails the ENTIRE turn ("MCP tool … not found") if the
-            // fleet-permission-mcp binary isn't built (e.g. a dev worktree
-            // that only compiled fleetify-app). Skip the wiring in that case
-            // so the turn still runs — AskUserQuestion just falls back to its
-            // non-interactive behaviour instead of taking the whole turn down.
-            if !is_staff && crate::services::mcp_registry::builtin_resolves("fleet-permission-mcp")
-            {
+            // Permission is served IN-PROCESS now (backend MCP-over-HTTP
+            // endpoint, routers::internal::mcp_permission_*), so it's always
+            // reachable - no sidecar binary to gate on (this used to skip
+            // wiring when fleet-permission-mcp wasn't built, which silently
+            // disabled the approval dialog). Wire it for every non-staff
+            // session; claude.rs only adds --permission-prompt-tool when a
+            // handler is present.
+            if !is_staff {
                 let handler = build_permission_handler(&permission_session, &sink, &sid);
                 st.permission_registry
                     .lock()

@@ -40,7 +40,7 @@ Four stdio JSON-RPC 2.0 MCP servers, each a workspace crate emitting a
 | `crates/memory-mcp` | `fleet-memory-mcp` | `remember(title, content, kind?)`, `recall(query?, limit?)` | Project-scoped long-term memory that survives across sessions. Talks back to the backend at `/api/sessions/{id}/memory`. |
 | `crates/dispatch-mcp` | `fleet-dispatch-mcp` | `dispatch_to_agent(agent, task)` | Agent-to-agent task routing without returning to the user. Rate-limited (5 / 60 s / session); self-dispatch refused. POSTs `/api/internal/dispatch`. |
 | `crates/reveng-mcp` | `fleet-reveng-mcp` | `fetch_url`, `discover_assets`, `find_endpoints`, `save_asset` | Reverse-engineering toolkit (scrape + asset/endpoint discovery). Pure-local; writes under `<project>/.fleetify/reveng-assets/`. |
-| `crates/permission-mcp` | `fleet-permission-mcp` | `permission_prompt(tool_name, input)` | Claude-CLI permission bridge (`--permission-prompt-tool`); POSTs `/api/internal/permission_prompt`. Wired only by the Claude bridge. |
+| _(in-process, no binary)_ | HTTP `/api/internal/mcp/permission/{sid}` | `permission_prompt(tool_name, input)` | Claude-CLI permission gate (`--permission-prompt-tool`), served **in-process over HTTP** by the backend — not a sidecar binary. Claude connects with the session id in the URL + an `Authorization: Bearer <internal-secret>`. Wired only by the Claude bridge. |
 
 **Sidecars connect upward to the backend.** They receive their wiring via env
 vars set by the bridge at spawn:
@@ -71,9 +71,11 @@ build_merged_map(session_id, is_staff, agent_template) -> BTreeMap<String, Value
    - `fleet_memory` — **always**.
    - `fleet_dispatch` — **non-staff only** (staff dispatch via a text protocol).
    - `fleet_reveng` — only when `agent_template == "reverse_engineering"`.
-   - `fleet_permission` — *not* here; the Claude bridge mounts it separately.
-3. `builtin_mcp_config` resolves each built-in's binary path + env into a
-   `{ type: "stdio", command, args, env, builtin: true }` entry.
+   - `fleet_permission` — *not* here; the Claude bridge mounts it separately, as an in-process HTTP MCP (no sidecar).
+3. `builtin_mcp_config` resolves each built-in: the stdio sidecars
+   (memory/dispatch/reveng) → `{ type: "stdio", command, args, env, builtin: true }`;
+   `fleet_permission` → `{ type: "http", url, headers, builtin: true }` pointing at
+   the backend's own in-process MCP endpoint.
 4. `splice_oauth` injects stored OAuth Bearer tokens into http/sse `headers`
    (from `services/mcp_secrets.rs`) and the `FLEETIFY_*` env trio into the
    `fleet_*` stdio entries.
@@ -104,7 +106,7 @@ format-specific emitter:
 
 | Bridge | Mechanism |
 |---|---|
-| **Claude** (`bridges/claude.rs`) | `build_merged_map` → JSON → `claude -p --mcp-config <path>`. Adds `fleet_permission` + `--permission-prompt-tool` when a permission handler is set and mode is `default`. |
+| **Claude** (`bridges/claude.rs`) | `build_merged_map` → JSON → `claude -p --mcp-config <path>`. Adds `fleet_permission` (in-process HTTP MCP served by the backend) + `--permission-prompt-tool` whenever a permission handler is set (every non-staff session). |
 | **ACP** — Gemini / GitHub Copilot / OpenCode / Cursor / Hermes / **Kimi** | `build_merged_map` → `to_acp_servers` → `ensure_stdio_env` → sent in the ACP `session/new` request's `mcpServers`. |
 | **Codex** (`bridges/codex.rs`) | `build_merged_map` → `to_codex_cli_args` → `-c mcp_servers.…` flags on `codex app-server`. |
 | **Antigravity CLI** (`bridges/antigravity.rs`) | `build_merged_map` → `to_antigravity_cli_json` → writes `~/.gemini/config/mcp_config.json`; cleans up its own keys after the turn (preserves user entries). |

@@ -466,15 +466,13 @@ pub struct ClaudeBridge {
     /// stdio MCPs (`fleet_reveng` etc.) beyond the baseline
     /// memory+dispatch. Matches `Session.agent_template`.
     pub agent_template: Option<String>,
-    /// When set, this bridge mounts `fleet_permission` (the stdio MCP
-    /// at `fleet-permission-mcp`) and passes
-    /// `--permission-prompt-tool mcp__fleet_permission__permission_prompt`
-    /// so the CLI routes every tool prompt through Fleetify's WS
-    /// dialog instead of stalling in headless mode. Storing the
-    /// handler here is informational only — the actual lookup at
-    /// prompt time happens via the AppState `permission_registry`
-    /// keyed by `session_id`, since the MCP runs in a subprocess and
-    /// can only round-trip through the loopback HTTP endpoint.
+    /// When set, this bridge mounts `fleet_permission` (an in-process
+    /// MCP-over-HTTP server on the backend, NOT a sidecar binary) and
+    /// passes `--permission-prompt-tool mcp__fleet_permission__permission_prompt`
+    /// so the CLI routes every tool prompt through Fleetify's WS dialog
+    /// instead of stalling in headless mode. Storing the handler here is
+    /// informational only — the actual lookup at prompt time happens via
+    /// the AppState `permission_registry` keyed by `session_id`.
     pub permission_handler: Option<super::permission::PermissionHandler>,
     child: Arc<Mutex<Option<Child>>>,
     aborted: Arc<std::sync::atomic::AtomicBool>,

@@ -12,12 +12,12 @@
 //!
 //! WHY THIS EXISTS: nothing else builds these crates. They are standalone
 //! workspace binaries, NOT dependencies of `src-tauri`, so `tauri dev` /
-//! `tauri build` only ever compile the app. When the sidecars are missing,
-//! `builtin_resolves()` returns false and gated features silently degrade —
-//! most importantly the Claude permission gate
-//! (`mcp__fleet_permission__permission_prompt`) is never wired, so file writes
-//! run WITHOUT the Deny/Allow/Always-Allow dialog. This step is wired into
-//! `tauri.conf.json::build.beforeDevCommand` / `beforeBuildCommand`.
+//! `tauri build` only ever compile the app. When a sidecar is missing,
+//! `builtin_resolves()` returns false and that MCP silently disappears from
+//! the agent (no memory/recall, no dispatch, no reveng). This step is wired
+//! into `tauri.conf.json::build.beforeDevCommand` / `beforeBuildCommand`.
+//! (The Claude permission gate used to be a sidecar too; it now runs
+//! in-process over HTTP - see routers::internal::mcp_permission_*.)
 //!
 //! Usage:
 //!   node scripts/build-sidecars.mjs            # debug   (for `tauri dev`)
@@ -37,7 +37,6 @@ const SIDECARS = [
   { pkg: 'memory-mcp', bin: 'fleet-memory-mcp' },
   { pkg: 'dispatch-mcp', bin: 'fleet-dispatch-mcp' },
   { pkg: 'reveng-mcp', bin: 'fleet-reveng-mcp' },
-  { pkg: 'permission-mcp', bin: 'fleet-permission-mcp' },
 ];
 
 const release = process.argv.includes('--release');

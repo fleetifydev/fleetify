@@ -19,8 +19,10 @@
 //!      the staff `[[DISPATCH:]]` token).
 //!   6. Return `{ ok, target_session_id, task_dispatched }` to the MCP.
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -39,6 +41,14 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/dispatch", post(dispatch))
         .route("/permission_prompt", post(permission_prompt))
+        // In-process MCP-over-HTTP permission server. Claude connects here as
+        // a Streamable-HTTP MCP server (URL + Bearer baked into --mcp-config
+        // by mcp_dispatch::builtin_mcp_config). Replaces the
+        // `fleet-permission-mcp` stdio sidecar — no binary to build/bundle.
+        .route(
+            "/mcp/permission/{sid}",
+            post(mcp_permission_post).get(mcp_permission_get),
+        )
         .route("/routing/reload", post(routing_reload))
         .route("/providers/reload", post(providers_reload))
         .route("/providers/warm-health", post(providers_warm_health))
@@ -348,14 +358,12 @@ struct PermissionPromptBody {
     input: Value,
 }
 
-/// Loopback endpoint hit by `fleet-permission-mcp` (the stdio MCP
-/// Claude spawns via `--permission-prompt-tool`). Looks up the
-/// in-process PermissionSession for the caller, runs the usual WS
-/// round-trip, and returns the decision in the shape Claude's CLI
-/// expects — a JSON body whose `behavior` field is the source of
-/// truth (`allow` + `updatedInput`, or `deny` + `message`). The
-/// permission-mcp binary forwards this body verbatim as the tool
-/// result's text content.
+/// Legacy loopback REST endpoint for permission decisions — a thin
+/// wrapper over `decide_permission`. The Claude permission gate now runs
+/// in-process over HTTP (see `mcp_permission_post` below); this route is
+/// retained as a stable loopback surface and delegates to the same
+/// decision logic. Returns the JSON body whose `behavior` field Claude's
+/// CLI obeys (`allow` + `updatedInput`, or `deny` + `message`).
 async fn permission_prompt(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -376,43 +384,53 @@ async fn permission_prompt(
         ));
     }
 
-    // AskUserQuestion can't render headlessly, so Claude Code falls back to
-    // the permission tool for it in EVERY mode. We hijack that: instead of
-    // a yes/no, show the interactive question card, await the user's
-    // selection, and hand the answer back as the tool RESULT. Returning
-    // `behavior: "deny"` with the answer as `message` is the verified
-    // mechanism — Claude surfaces that message to the model as the
-    // AskUserQuestion result, so the model proceeds as if answered.
+    Ok(Json(decide_permission(&st, sid, tool, b.input).await))
+}
+
+// ── In-process MCP-over-HTTP permission server ──────────────────────────────
+//
+// Replaces the `fleet-permission-mcp` stdio sidecar. Instead of Claude
+// spawning a separate binary that POSTs back to /permission_prompt, Claude
+// connects directly to this endpoint as a Streamable-HTTP MCP server. The URL
+// (session id as the last path segment) and the `Authorization: Bearer
+// <internal_secret>` header are baked into `--mcp-config` by
+// `mcp_dispatch::builtin_mcp_config("fleet_permission", …)`. The single
+// `permission_prompt` tool runs `decide_permission` — the same WS round-trip
+// the stdio shim drove via the REST endpoint above. No binary to build/bundle.
+
+/// Shared permission decision (AskUserQuestion interception + per-session
+/// handler lookup + WS round-trip), returning the JSON body whose `behavior`
+/// field Claude obeys (`allow`+`updatedInput`, or `deny`+`message`). Mirrors
+/// the loopback `permission_prompt` REST handler so both transports agree.
+async fn decide_permission(st: &AppState, sid: &str, tool: &str, input: Value) -> Value {
+    // AskUserQuestion can't render headlessly, so Claude Code falls back to the
+    // permission tool for it in EVERY mode. We hijack that: show the
+    // interactive question card and hand the answer back as the tool RESULT.
+    // `behavior:"deny"` with the answer as `message` is the verified mechanism.
     if tool.eq_ignore_ascii_case("AskUserQuestion") {
         let ask = {
             let guard = st.ask_registry.lock().await;
             guard.get(sid).cloned()
         };
         let Some(ask) = ask else {
-            return Ok(Json(json!({
+            return json!({
                 "behavior": "deny",
                 "message": "Fleetify chat is not open for this session — open it to answer questions.",
-            })));
+            });
         };
-        let questions = b
-            .input
-            .get("questions")
-            .cloned()
-            .unwrap_or_else(|| json!([]));
+        let questions = input.get("questions").cloned().unwrap_or_else(|| json!([]));
         let outcome = ask(json!({ "questions": questions }))
             .await
             .unwrap_or_else(|_| json!({ "answered": false }));
-        return Ok(Json(json!({
+        return json!({
             "behavior": "deny",
             "message": format_ask_answer(&outcome),
-        })));
+        });
     }
 
-    // The PermissionSession is registered by chat.rs when the user's
-    // WS opens. If the session never opened a WS — or it already
-    // closed — we have nowhere to surface the dialog, so default to
-    // deny (safer than silently allow). Claude treats `deny` as a
-    // soft refusal and offers the user a chance to retry.
+    // The PermissionSession is registered by chat.rs when the user's WS opens.
+    // If it never opened (or already closed) we have nowhere to surface the
+    // dialog, so default to deny (safer than silently allow).
     let handler = {
         let guard = st.permission_registry.lock().await;
         guard.get(sid).cloned()
@@ -424,25 +442,155 @@ async fn permission_prompt(
             tool = %tool,
             "permission_prompt for unregistered session — denying"
         );
-        return Ok(Json(json!({
+        return json!({
             "behavior": "deny",
             "message": "Fleetify chat is not open for this session — open it to approve tools.",
-        })));
+        });
     };
 
-    let approved = handler(tool.to_string(), b.input.clone()).await;
-    if approved {
-        // Pass `input` straight through — we don't rewrite tool args.
-        Ok(Json(json!({
-            "behavior": "allow",
-            "updatedInput": b.input,
-        })))
+    if handler(tool.to_string(), input.clone()).await {
+        json!({ "behavior": "allow", "updatedInput": input })
     } else {
-        Ok(Json(json!({
-            "behavior": "deny",
-            "message": "User declined this action.",
-        })))
+        json!({ "behavior": "deny", "message": "User declined this action." })
     }
+}
+
+/// The single tool this MCP server advertises.
+fn permission_prompt_tool() -> Value {
+    json!({
+        "name": "permission_prompt",
+        "description": "Internal — invoked by Claude CLI via --permission-prompt-tool. Surfaces a per-tool approval prompt to the Fleetify user and returns allow/deny. Not meant for the model to call directly.",
+        "inputSchema": {
+            "type": "object",
+            "properties": { "tool_name": { "type": "string" }, "input": { "type": "object" } },
+            "required": ["tool_name", "input"]
+        }
+    })
+}
+
+/// `Authorization: Bearer <internal_secret>` check. Claude forwards the
+/// configured `--mcp-config` headers on every request to the server.
+fn mcp_bearer_ok(headers: &HeaderMap, secret: &str) -> bool {
+    let presented = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let token = presented.strip_prefix("Bearer ").unwrap_or(presented);
+    constant_time_eq(token.as_bytes(), secret.as_bytes())
+}
+
+/// One MCP JSON-RPC message → its reply, or `None` for notifications (no `id`).
+async fn mcp_permission_dispatch(st: &AppState, sid: &str, msg: &Value) -> Option<Value> {
+    let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
+    let id = msg.get("id").cloned()?; // notifications get no response
+    let params = msg.get("params").cloned().unwrap_or_else(|| json!({}));
+    let reply = match method {
+        "initialize" => json!({
+            "jsonrpc": "2.0", "id": id,
+            "result": {
+                "protocolVersion": params.get("protocolVersion").and_then(|v| v.as_str()).unwrap_or("2025-06-18"),
+                "capabilities": { "tools": { "listChanged": false } },
+                "serverInfo": { "name": "fleet-permission", "version": env!("CARGO_PKG_VERSION") }
+            }
+        }),
+        "tools/list" => json!({
+            "jsonrpc": "2.0", "id": id,
+            "result": { "tools": [ permission_prompt_tool() ] }
+        }),
+        "ping" => json!({ "jsonrpc": "2.0", "id": id, "result": {} }),
+        "tools/call" => {
+            let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            if name != "permission_prompt" {
+                json!({ "jsonrpc": "2.0", "id": id, "result": {
+                    "content": [{ "type": "text", "text": format!("unknown tool: {name}") }],
+                    "isError": true
+                }})
+            } else {
+                let args = params
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                let tool = args
+                    .get("tool_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim();
+                let input = args.get("input").cloned().unwrap_or_else(|| json!({}));
+                let decision = if tool.is_empty() {
+                    json!({ "behavior": "deny", "message": "tool_name is required" })
+                } else {
+                    decide_permission(st, sid, tool, input).await
+                };
+                // Claude reads the decision from the first text content block.
+                json!({ "jsonrpc": "2.0", "id": id, "result": {
+                    "content": [{ "type": "text", "text": decision.to_string() }],
+                    "isError": false
+                }})
+            }
+        }
+        other => json!({
+            "jsonrpc": "2.0", "id": id,
+            "error": { "code": -32601, "message": format!("method not handled: {other}") }
+        }),
+    };
+    Some(reply)
+}
+
+/// POST half of the Streamable-HTTP MCP server — handles initialize /
+/// tools/list / tools/call / ping (single message or JSON-RPC batch).
+async fn mcp_permission_post(
+    State(st): State<AppState>,
+    Path(sid): Path<String>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    if !mcp_bearer_ok(&headers, &st.internal_secret) {
+        return (StatusCode::FORBIDDEN, "internal-secret mismatch").into_response();
+    }
+    let Ok(parsed) = serde_json::from_slice::<Value>(&body) else {
+        return (StatusCode::BAD_REQUEST, "invalid json-rpc body").into_response();
+    };
+    let is_batch = parsed.is_array();
+    let msgs = if is_batch {
+        parsed.as_array().cloned().unwrap_or_default()
+    } else {
+        vec![parsed]
+    };
+    let mut replies = Vec::new();
+    for m in &msgs {
+        if let Some(r) = mcp_permission_dispatch(&st, &sid, m).await {
+            replies.push(r);
+        }
+    }
+    if replies.is_empty() {
+        return StatusCode::ACCEPTED.into_response(); // notifications only
+    }
+    let payload = if is_batch {
+        Value::Array(replies)
+    } else {
+        replies.into_iter().next().unwrap_or(Value::Null)
+    };
+    (
+        axum::response::AppendHeaders([("mcp-session-id", "fleet-permission")]),
+        Json(payload),
+    )
+        .into_response()
+}
+
+/// GET half — the optional server→client SSE channel. We never push; keep it
+/// open with keep-alives. All tool replies travel on the POST responses.
+async fn mcp_permission_get(
+    State(st): State<AppState>,
+    Path(_sid): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !mcp_bearer_ok(&headers, &st.internal_secret) {
+        return (StatusCode::FORBIDDEN, "internal-secret mismatch").into_response();
+    }
+    let stream = futures_util::stream::pending::<Result<Event, std::convert::Infallible>>();
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 /// Render the renderer's AskUserQuestion answer into the plain-text result
@@ -628,6 +776,82 @@ mod tests {
             .nest("/api/internal", router())
             .with_state(state);
         (app, pool, sm)
+    }
+
+    #[tokio::test]
+    async fn mcp_permission_rejects_missing_bearer() {
+        let (app, _pool, _sm) = build_app("sek").await;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/internal/mcp/permission/aaaaaaaa-0000-0000-0000-000000000001")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 403, "missing Bearer must 403");
+    }
+
+    #[tokio::test]
+    async fn mcp_permission_initialize_and_tools_list() {
+        let (app, _pool, _sm) = build_app("sek").await;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/internal/mcp/permission/sid1")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer sek")
+            .body(Body::from(
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#,
+            ))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["result"]["serverInfo"]["name"], "fleet-permission");
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/internal/mcp/permission/sid1")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer sek")
+            .body(Body::from(
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["result"]["tools"][0]["name"], "permission_prompt");
+    }
+
+    #[tokio::test]
+    async fn mcp_permission_tools_call_unregistered_session_denies() {
+        let (app, _pool, _sm) = build_app("sek").await;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/internal/mcp/permission/unregistered-sid")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer sek")
+            .body(Body::from(
+                r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"permission_prompt","arguments":{"tool_name":"Write","input":{"file_path":"/tmp/x"}}}}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        // The decision is JSON-stringified inside the first text content block.
+        let text = v["result"]["content"][0]["text"].as_str().unwrap();
+        let decision: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(decision["behavior"], "deny");
     }
 
     #[tokio::test]

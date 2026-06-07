@@ -6,7 +6,6 @@ members = [
   "crates/fleetify-core",
   "crates/fleetify-backend",
   "crates/memory-mcp",
-  "crates/permission-mcp",
   "crates/reveng-mcp",
   "src-tauri",
 ]

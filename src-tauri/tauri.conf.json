@@ -28,8 +28,7 @@
     "externalBin": [
       "binaries/fleet-memory-mcp",
       "binaries/fleet-dispatch-mcp",
-      "binaries/fleet-reveng-mcp",
-      "binaries/fleet-permission-mcp"
+      "binaries/fleet-reveng-mcp"
     ],
     "icon": [
       "icons/32x32.png",

@@ -123,8 +123,8 @@ Cursor adds blocking extension requests (`cursor/ask_question`,
 
 - **Claude** (`bridges/claude.rs`) — spawns `claude --output-format stream-json`;
   parses each NDJSON event into `BridgeEvent`s. Resume via `--resume <id>`
-  (swapped to `--continue` if the id was orphaned). Permission via the
-  `fleet-permission-mcp` `--permission-prompt-tool`.
+  (swapped to `--continue` if the id was orphaned). Permission via
+  `--permission-prompt-tool` → the backend's in-process HTTP MCP (no sidecar).
 - **Codex** (`bridges/codex.rs` + `codex_client.rs`) — `codex app-server`, a
   JSON-RPC 2.0 stdio server.
 - **HTTP-compat** (`bridges/openai_compat.rs`) — POST `/chat/completions` with SSE
@@ -147,9 +147,10 @@ Cursor adds blocking extension requests (`cursor/ask_question`,
 Dangerous tool calls route back to the renderer for approval; on timeout/error
 the default is **deny**.
 
-- **Claude** — the CLI calls `fleet-permission-mcp`, which POSTs
-  `/api/internal/permission_prompt`; the backend's `PermissionSession`
-  (`bridges/permission.rs`) awaits the user's click (a `oneshot`) and replies.
+- **Claude** — the CLI calls the backend's in-process permission MCP over HTTP
+  (`/api/internal/mcp/permission/{sid}`, no sidecar binary); the
+  `PermissionSession` (`bridges/permission.rs`) awaits the user's click (a
+  `oneshot`) and replies.
 - **ACP bridges** — `session/request_permission` is answered by the bridge's
   permission handler (matched by option `kind`: `allow_once` / `reject_once` /
   …).
