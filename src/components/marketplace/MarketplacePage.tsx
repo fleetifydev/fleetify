@@ -29,7 +29,7 @@
 import { useEffect, useState } from "react";
 import { PanelLeft, Settings as SettingsIcon, Check, Plus } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
-import { isWindowsPlatform } from "@/lib/utils";
+import { usesInAppTitleBar } from "@/lib/utils";
 import { usePluginStore } from "@/stores/plugin-store";
 import type { CatalogPlugin } from "@/types/plugin";
 import { BrowseTab } from "./browse/BrowseTab";
@@ -93,7 +93,7 @@ export function MarketplacePage() {
   const toggleSidebar = useAppStore(s => s.toggleSidebar);
   // Windows owns the sidebar toggle in its dedicated title bar — suppress
   // the page-level toggle (and traffic-light inset) there. macOS keeps it.
-  const isWindows = isWindowsPlatform();
+  const inAppBar = usesInAppTitleBar();
 
   // Opening the Marketplace force-refreshes the catalog from GitHub
   // (bypassing the backend disk-cache TTL) so newly-published or updated
@@ -158,7 +158,7 @@ export function MarketplacePage() {
         background: "var(--card)",
         zIndex: 2,
       }}>
-        {!isWindows && sidebarCollapsed && (
+        {!inAppBar && sidebarCollapsed && (
           <div className="no-drag" style={{ display: "flex", alignItems: "center", paddingLeft: 84 }}>
             <button
               onClick={toggleSidebar}

@@ -18,7 +18,7 @@ import { InstallDialog } from "../install/InstallDialog";
 import { UninstallDialog } from "../install/UninstallDialog";
 import type { PluginDetail, PluginInstall } from "@/types/plugin";
 import { pluginLabel } from "@/types/plugin";
-import { safeExternalUrl, isWindowsPlatform } from "@/lib/utils";
+import { safeExternalUrl, usesInAppTitleBar } from "@/lib/utils";
 
 interface Props {
   source_id: string;
@@ -738,7 +738,7 @@ function Wrapper({ children }: { children: React.ReactNode }) {
   const toggleSidebar = useAppStore(s => s.toggleSidebar);
   // Windows owns the sidebar toggle in its dedicated title bar — suppress
   // the page-level toggle (and traffic-light inset) there. macOS keeps it.
-  const isWindows = isWindowsPlatform();
+  const inAppBar = usesInAppTitleBar();
 
   return (
     <div style={{
@@ -765,7 +765,7 @@ function Wrapper({ children }: { children: React.ReactNode }) {
         background: "var(--card)",
         zIndex: 2,
       }}>
-        {!isWindows && sidebarCollapsed && (
+        {!inAppBar && sidebarCollapsed && (
           <div className="no-drag" style={{ display: "flex", alignItems: "center", paddingLeft: 84 }}>
             <button
               onClick={toggleSidebar}

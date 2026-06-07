@@ -15,7 +15,7 @@ import { useChatStore } from "@/stores/chat-store";
 import { useShallow } from "zustand/react/shallow";
 import { forkSession, fetchBulkStats, stopSession, restartSession, resetSession, archiveSession } from "@/lib/api";
 import { exportChat } from "@/lib/export-chat";
-import { isWindowsPlatform, folderName } from "@/lib/utils";
+import { usesInAppTitleBar, folderName } from "@/lib/utils";
 import { isStudioTool } from "@/lib/studio-tools";
 import type { Session } from "@/types/session";
 import { FeedbackModal } from "@/components/feedback-modal";
@@ -665,7 +665,7 @@ function SideRow({ icon, label, onClick, badge, active, count, tourKey }: {
      app actions reachable with a single click so users don't have to reopen
      the full sidebar just to create or switch to a session. ── */
 export function CollapsedSidebar() {
-  const showLogo = useMemo(() => isWindowsPlatform(), []);
+  const showLogo = useMemo(() => usesInAppTitleBar(), []);
   return <CollapsedRail showLogo={showLogo} />;
 }
 
@@ -758,7 +758,7 @@ function CollapsedRail({ showLogo }: { showLogo: boolean }) {
 }
 
 export function Sidebar() {
-  const showLogo = useMemo(() => isWindowsPlatform(), []);
+  const showLogo = useMemo(() => usesInAppTitleBar(), []);
   // ── Per-field selectors ──
   // Was: a single full-state destructure of useAppStore(). Zustand
   // returns the entire state, so EVERY app-store mutation (every

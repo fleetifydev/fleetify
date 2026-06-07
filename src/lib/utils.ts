@@ -15,6 +15,31 @@ export function isWindowsPlatform(): boolean {
   return false;
 }
 
+export function isMacPlatform(): boolean {
+  const api = (window as Window).electronAPI;
+  if (api && typeof api.platform === "string") return api.platform === "darwin";
+  if (typeof navigator !== "undefined") {
+    const ua = navigator.userAgent || "";
+    return /mac/i.test(ua);
+  }
+  return false;
+}
+
+/**
+ * True on platforms where the window is built decorationless and the renderer
+ * paints its OWN title bar (Windows + Linux). See `src-tauri/src/lib.rs`:
+ * `decorations(false)` is applied for `not(target_os = "macos")`, so both
+ * Windows and Linux ship the in-app title-bar strip. macOS keeps the native
+ * traffic lights and is the ONLY platform that does NOT use the in-app bar.
+ *
+ * Use this — NOT `isWindowsPlatform()` — for every title-bar / window-chrome
+ * layout decision so Windows and Linux render identically (the macOS branch is
+ * gated on `!usesInAppTitleBar()`).
+ */
+export function usesInAppTitleBar(): boolean {
+  return !isMacPlatform();
+}
+
 /**
  * Return the trailing folder/file name of a path, working for both
  * POSIX (`/`) and Windows (`\\`) separators. Strips trailing

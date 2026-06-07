@@ -34,7 +34,7 @@ import { usePluginStore } from "@/stores/plugin-store";
 import { useThemeStore } from "@/stores/theme-store";
 import type { PluginInstall } from "@/types/plugin";
 import { pluginLabel } from "@/types/plugin";
-import { isWindowsPlatform } from "@/lib/utils";
+import { usesInAppTitleBar } from "@/lib/utils";
 import { WindowsTitleBar } from "./layout/windows-title-bar";
 import { openDocs } from "./layout/sidebar";
 import { FeedbackModal } from "./feedback-modal";
@@ -203,7 +203,7 @@ export function LibraryPage({ onClose }: Props) {
               border and read as cramped. 12px gives the rail a bit
               of breathing room without re-introducing the dead
               header band the user explicitly asked us to remove. */}
-          {isWindowsPlatform() && (
+          {usesInAppTitleBar() && (
             <div style={{ height: 12, flexShrink: 0 }} />
           )}
 
@@ -217,7 +217,7 @@ export function LibraryPage({ onClose }: Props) {
               above already carries the back arrow + caption buttons,
               and the empty 78px traffic-light pad would otherwise
               waste vertical space at the top of the rail. */}
-          {!isWindowsPlatform() && (
+          {!usesInAppTitleBar() && (
             <div className="drag-region" style={{
               height: 44, flexShrink: 0,
               display: "flex", alignItems: "center",
@@ -302,7 +302,7 @@ export function LibraryPage({ onClose }: Props) {
             covers drag, and a phantom 44px gap would push the page
             heading down — the opposite of the "pull content up"
             adjustment the user requested. */}
-        {!isWindowsPlatform() && (
+        {!usesInAppTitleBar() && (
           <div className="drag-region" style={{ height: 44, flexShrink: 0 }} />
         )}
 

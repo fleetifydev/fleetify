@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import type { CSSProperties } from "react";
 import { PanelLeft, FolderOpen } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
-import { isWindowsPlatform } from "@/lib/utils";
+import { usesInAppTitleBar } from "@/lib/utils";
 import { LogoMark } from "@/components/brand/logo-mark";
 import { studioApi, type HfModel, type HfModelParam } from "@/lib/studio-api";
 
@@ -46,7 +46,7 @@ export function StudioSession({ sessionId }: { sessionId: string }) {
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const pendingGeneration = useAppStore((s) => s.pendingGeneration);
   const clearPendingGeneration = useAppStore((s) => s.clearPendingGeneration);
-  const isWindows = isWindowsPlatform();
+  const inAppBar = usesInAppTitleBar();
 
   const [media, setMedia] = useState<Media>("image");
   const [models, setModels] = useState<HfModel[]>([]);
@@ -191,8 +191,8 @@ export function StudioSession({ sessionId }: { sessionId: string }) {
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--card)" }}>
       {/* Header — session title in the breadcrumb style, folder readout right. */}
       <div className="drag-region" style={{ height: 44, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "0 16px", background: "var(--card)" }}>
-        <div className="no-drag" style={{ display: "flex", alignItems: "center", gap: 14, paddingLeft: !isWindows && sidebarCollapsed ? 84 : 0, minWidth: 0 }}>
-          {!isWindows && sidebarCollapsed && (
+        <div className="no-drag" style={{ display: "flex", alignItems: "center", gap: 14, paddingLeft: !inAppBar && sidebarCollapsed ? 84 : 0, minWidth: 0 }}>
+          {!inAppBar && sidebarCollapsed && (
             <button onClick={toggleSidebar} title="Show sidebar" style={{ width: 22, height: 22, borderRadius: 5, display: "flex", alignItems: "center", justifyContent: "center", background: "none", border: "none", cursor: "pointer", color: "var(--c-dim)" }}>
               <PanelLeft size={14} />
             </button>

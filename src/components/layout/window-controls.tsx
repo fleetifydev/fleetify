@@ -1,14 +1,14 @@
 import { Minus, Square, X } from "lucide-react";
-import { isWindowsPlatform } from "@/lib/utils";
+import { usesInAppTitleBar } from "@/lib/utils";
 
 /**
- * Custom Windows window controls — minimize / maximize / close.
+ * Custom window controls — minimize / maximize / close.
  *
- * `BrowserWindow.titleBarStyle: "hidden"` strips the native chrome on
- * Windows, so the renderer paints these buttons itself. Rendered inline
- * inside the WindowsTitleBar row, not as a fixed overlay — the title
- * bar is its own top section (ChatGPT-desktop style). macOS keeps the
- * standard traffic lights and never mounts this component.
+ * The window is built decorationless on Windows AND Linux (see
+ * `src-tauri/src/lib.rs` `decorations(false)`), so the renderer paints these
+ * buttons itself. Rendered inline inside the WindowsTitleBar row, not as a
+ * fixed overlay — the title bar is its own top section (ChatGPT-desktop style).
+ * macOS keeps the standard traffic lights and never mounts this component.
  *
  * Sizing follows the Windows 11 caption-button metric (46 × 32) so the
  * three buttons read as a native set rather than custom UI.
@@ -19,7 +19,7 @@ export const WINDOW_CONTROLS_WIDTH_PX = BTN_W * 3;
 export const WINDOWS_TITLEBAR_HEIGHT_PX = BTN_H;
 
 export function WindowControls() {
-  if (!isWindowsPlatform()) return null;
+  if (!usesInAppTitleBar()) return null;
 
   const minimize = () => window.electronAPI?.minimizeWindow();
   const maximize = () => window.electronAPI?.maximizeWindow();

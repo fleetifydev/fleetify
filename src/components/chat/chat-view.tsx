@@ -13,7 +13,7 @@ import { CursorPlanCard } from "./cursor-plan-card";
 import { SessionToolbar } from "./session-toolbar";
 import { fetchMessages, fetchClaudeHistory, createSession, clearSessionMessages, updateSession as apiUpdateSession, stopSession, restartSession, analyzeFleetResponse, fetchAgentModels } from "@/lib/api";
 import { registerConfigPatch } from "@/lib/session-config-sync";
-import { isWindowsPlatform, folderName } from "@/lib/utils";
+import { usesInAppTitleBar, folderName } from "@/lib/utils";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { resolveStartupDefault, hermesHealModel, HERMES_DEFAULT_SENTINEL } from "@/lib/picker-groups";
 import { FleetDecisionCard } from "./fleet-decision-card";
@@ -125,7 +125,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   // On Windows the dedicated title bar above the shell already owns
   // a sidebar toggle, so the chat-header toggle (and the macOS
   // traffic-light inset it lives in) is suppressed there.
-  const isWindows          = useMemo(() => isWindowsPlatform(), []);
+  const inAppBar          = useMemo(() => usesInAppTitleBar(), []);
   const fleetAutoMode      = useAppStore((s) => s.fleetAutoMode);
   const toggleFleetAutoMode = useAppStore((s) => s.toggleFleetAutoMode);
   const beginDraft         = useAppStore((s) => s.beginDraft);
@@ -1836,7 +1836,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
             // when the sidebar is collapsed (they'd otherwise overlap
             // the chat-header content). Windows has no traffic lights,
             // so the inset stays 0 and the header content starts flush.
-            paddingLeft: !isWindows && sidebarCollapsed ? 84 : 0,
+            paddingLeft: !inAppBar && sidebarCollapsed ? 84 : 0,
             minWidth: 0,
           }}>
             {/* Sidebar toggle (collapsed state only). Sized down to
@@ -1849,7 +1849,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                 reason. paneIdx === undefined is the legacy single
                 view; paneIdx === 0 is the leftmost pane in the
                 first row of the split grid. */}
-            {!isWindows && sidebarCollapsed && (paneIdx === undefined || paneIdx === 0) && (
+            {!inAppBar && sidebarCollapsed && (paneIdx === undefined || paneIdx === 0) && (
               <span data-align-anchor="traffic-lights" style={{ display: "inline-flex" }}>
                 <IBtn onClick={toggleSidebar} style={{ width: 22, height: 22, borderRadius: 5 }}>
                   <PanelLeft size={14} />

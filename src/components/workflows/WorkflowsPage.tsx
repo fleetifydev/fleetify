@@ -45,7 +45,7 @@ import {
   Sparkles, Undo2, Info, Wand2, Pencil, Square,
 } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
-import { isWindowsPlatform, folderName } from "@/lib/utils";
+import { usesInAppTitleBar, folderName } from "@/lib/utils";
 import { ClaudeLogo, OpenAILogo, GeminiLogo, ProviderLogo } from "@/components/ui/provider-logo";
 import { wsManager } from "@/services/ws-manager";
 import {
@@ -459,7 +459,7 @@ function TopBar({ sidebarCollapsed, toggleSidebar }: { sidebarCollapsed: boolean
   // Windows owns the sidebar toggle in its dedicated title bar above
   // the shell, so the page-level toggle (and its 84px traffic-light
   // inset) is suppressed there. macOS keeps it for traffic-light alignment.
-  const isWindows = isWindowsPlatform();
+  const inAppBar = usesInAppTitleBar();
   return (
     <div className="drag-region" style={{
       height: 44, flexShrink: 0,
@@ -468,7 +468,7 @@ function TopBar({ sidebarCollapsed, toggleSidebar }: { sidebarCollapsed: boolean
       background: "var(--card)",
       zIndex: 2,
     }}>
-      {!isWindows && sidebarCollapsed && (
+      {!inAppBar && sidebarCollapsed && (
         <div className="no-drag" style={{ display: "flex", alignItems: "center", paddingLeft: 84 }}>
           <button
             onClick={toggleSidebar}

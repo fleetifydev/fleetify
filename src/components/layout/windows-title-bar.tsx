@@ -1,11 +1,13 @@
 import { PanelLeft, Search, ArrowLeft } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
-import { isWindowsPlatform } from "@/lib/utils";
+import { usesInAppTitleBar } from "@/lib/utils";
 import { Ib, SortMenu } from "./sidebar";
 import { WindowControls, WINDOWS_TITLEBAR_HEIGHT_PX } from "./window-controls";
 
 /**
- * Windows-only top title bar — full-width row, ChatGPT-desktop style.
+ * In-app top title bar (Windows + Linux) — full-width row, ChatGPT-desktop
+ * style. Both platforms build the window decorationless, so the renderer owns
+ * the chrome here.
  *
  * The bar is split into three regions:
  *   • Left:   sidebar controls (toggle / search / sort) — moved here
@@ -36,7 +38,7 @@ export interface WindowsTitleBarProps {
 
 export function WindowsTitleBar({ backTo }: WindowsTitleBarProps = {}) {
   // Hooks first, platform gate after — keeps the call order stable
-  // even though isWindowsPlatform() is effectively const at runtime.
+  // even though usesInAppTitleBar() is effectively const at runtime.
   const toggleSidebar = useAppStore(s => s.toggleSidebar);
   const sidebarCollapsed = useAppStore(s => s.sidebarCollapsed);
   const setSidebarSearchOpen = useAppStore(s => s.setSidebarSearchOpen);
@@ -44,7 +46,7 @@ export function WindowsTitleBar({ backTo }: WindowsTitleBarProps = {}) {
   const sortBy = useAppStore(s => s.sidebarSortBy);
   const setSortBy = useAppStore(s => s.setSidebarSortBy);
 
-  if (!isWindowsPlatform()) return null;
+  if (!usesInAppTitleBar()) return null;
 
   // The search overlay only renders inside the EXPANDED sidebar (the
   // collapsed rail doesn't have room for an inline input). So when

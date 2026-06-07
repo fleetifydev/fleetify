@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import type { CSSProperties } from "react";
 import { PanelLeft, FolderOpen } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
-import { isWindowsPlatform } from "@/lib/utils";
+import { usesInAppTitleBar } from "@/lib/utils";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { studioApi, type HfModel, type StudioToolStatus, type HfAccount } from "@/lib/studio-api";
 import { STUDIO_TOOLS } from "@/lib/studio-tools";
@@ -36,7 +36,7 @@ export function StudioComposer() {
   const setPendingGeneration = useAppStore((s) => s.setPendingGeneration);
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
-  const isWindows = isWindowsPlatform();
+  const inAppBar = usesInAppTitleBar();
 
   const [provider, setProvider] = useState(STUDIO_TOOLS[0]?.id ?? "higgsfield");
   const [media, setMedia] = useState<Media>("image");
@@ -144,8 +144,8 @@ export function StudioComposer() {
           label sits INSIDE the 44px header at the exact scale/colour/font of
           the new-session "New chat" breadcrumb (chat-view SessionBreadcrumb). */}
       <div className="drag-region" style={{ height: 44, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 16px", background: "var(--card)" }}>
-        <div className="no-drag" style={{ display: "flex", alignItems: "center", gap: 14, paddingLeft: !isWindows && sidebarCollapsed ? 84 : 0, minWidth: 0 }}>
-          {!isWindows && sidebarCollapsed && (
+        <div className="no-drag" style={{ display: "flex", alignItems: "center", gap: 14, paddingLeft: !inAppBar && sidebarCollapsed ? 84 : 0, minWidth: 0 }}>
+          {!inAppBar && sidebarCollapsed && (
             <button
               onClick={toggleSidebar}
               title="Show sidebar"

@@ -36,7 +36,7 @@ import {
   // when ModelsSection moved to settings/models-section.tsx.
   ExternalLink,
 } from "lucide-react";
-import { isWindowsPlatform } from "@/lib/utils";
+import { usesInAppTitleBar } from "@/lib/utils";
 import { copyText } from "@/lib/clipboard";
 import { useAppStore } from "@/stores/app-store";
 import { useThemeStore } from "@/stores/theme-store";
@@ -951,7 +951,7 @@ export function SettingsPage({ initialTab = "General", onClose }: SettingsProps)
               border. 12px gives the rail a bit of breathing room
               without re-introducing the dead header band the user
               explicitly asked us to remove. */}
-          {isWindowsPlatform() && (
+          {usesInAppTitleBar() && (
             <div style={{ height: 12, flexShrink: 0 }} />
           )}
 
@@ -963,7 +963,7 @@ export function SettingsPage({ initialTab = "General", onClose }: SettingsProps)
               back arrow + caption buttons, and an empty 78px traffic-
               light pad would otherwise waste vertical space the user
               specifically asked us to reclaim. */}
-          {!isWindowsPlatform() && (
+          {!usesInAppTitleBar() && (
             <div className="drag-region" style={{
               height: 44, flexShrink: 0,
               display: "flex", alignItems: "center",
@@ -1052,7 +1052,7 @@ export function SettingsPage({ initialTab = "General", onClose }: SettingsProps)
             to match the sidebar-side suppression: there's nothing for
             it to align with, and the user asked us to pull content
             upward instead of reserving a phantom title-bar row. */}
-        {!isWindowsPlatform() && (
+        {!usesInAppTitleBar() && (
           <div className="drag-region" style={{
             height: 44, flexShrink: 0,
           }} />
