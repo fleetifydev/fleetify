@@ -9,6 +9,7 @@ fleet.db-wal
 fleet.db-shm
 *.premerge-bak
 src-tauri/gen
+src-tauri/binaries
 .env
 .env.*
 !.env.example
