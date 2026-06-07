@@ -27,6 +27,7 @@ import kimiIcon from "./agent-icons/kimi.svg";
 // used at normal/large sizes, but its 22-blur mask collapses at the picker's
 // ~12px, so the crisp inline AgyLogo is used below the size threshold.
 import antigravityColorIcon from "./agent-icons/antigravity.svg";
+import higgsfieldIcon from "./agent-icons/higgsfield.svg";
 import perplexityIcon from "./agent-icons/perplexity.svg";
 import deepseekIcon from "./agent-icons/deepseek.svg";
 import grokIcon from "./agent-icons/grok.svg";
@@ -419,6 +420,7 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
     case "perplexity": return <ImgIcon src={perplexityIcon} size={size} label="Perplexity" />;
     case "gemini-api": return <ImgIcon src={geminiIcon} size={size} label="Gemini" />;
     case "openrouter": return <OpenRouterLogo size={size} />;
+    case "higgsfield": return <ImgIcon src={higgsfieldIcon} size={size} label="Higgsfield" />;
     case "agy":
     case "antigravity":
     case "antigravity-sdk":
@@ -442,7 +444,7 @@ export function providerName(tool: string): string {
     ollama: "Ollama", kimi: "Kimi", agy: "Antigravity CLI",
     "antigravity-sdk": "Antigravity SDK",
     opencode: "OpenCode", "github-copilot": "GitHub Copilot", aider: "Aider",
-    openrouter: "OpenRouter", hermes: "Hermes Agent",
+    openrouter: "OpenRouter", hermes: "Hermes Agent", higgsfield: "Higgsfield",
   };
   return names[tool] ?? "Custom";
 }

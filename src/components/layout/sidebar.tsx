@@ -6,14 +6,14 @@ import {
   Pin, PinOff, Type, GitFork, Archive,
   SlidersHorizontal, X, Check,
   User, Sun, Square, RotateCcw, RefreshCw, PanelLeft, PanelLeftClose,
-  Download, Sparkles,
+  Download,
 } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { useThemeStore } from "@/stores/theme-store";
 import { useChatStore } from "@/stores/chat-store";
 import { useShallow } from "zustand/react/shallow";
-import { forkSession, fetchBulkStats, stopSession, restartSession, resetSession, archiveSession, createSession } from "@/lib/api";
+import { forkSession, fetchBulkStats, stopSession, restartSession, resetSession, archiveSession } from "@/lib/api";
 import { exportChat } from "@/lib/export-chat";
 import { isWindowsPlatform, folderName } from "@/lib/utils";
 import { isStudioTool } from "@/lib/studio-tools";
@@ -782,6 +782,9 @@ export function Sidebar() {
   const splitPaneIds = useAppStore(s => s.splitPaneIds);
   const appMode = useAppStore(s => s.appMode);
   const setAppMode = useAppStore(s => s.setAppMode);
+  const studioComposerOpen = useAppStore(s => s.studioComposerOpen);
+  const openStudioComposer = useAppStore(s => s.openStudioComposer);
+  const closeStudioComposer = useAppStore(s => s.closeStudioComposer);
   // Sessions that were spawned by a routine — filtered out of the
   // sidebar so background routine work doesn't pollute the user's
   // agent list. Re-reads on every routine-runtime notify (run added,
@@ -860,14 +863,6 @@ export function Sidebar() {
   const handleNew = useCallback(() => {
     window.dispatchEvent(new Event("fleet:new-agent"));
   }, []);
-
-  const handleNewStudio = useCallback(async () => {
-    try {
-      const s = await createSession({ title: "Generation", project_path: "", tool: "higgsfield", permission_mode: "default", use_worktree: false });
-      addSession(s);
-      setActiveSession(s.id);
-    } catch (e) { console.error("new studio session failed", e); }
-  }, [addSession, setActiveSession]);
 
   const handlePin = useCallback(async (session: Session) => {
     const p = !session.pinned;
@@ -1150,41 +1145,70 @@ export function Sidebar() {
           })}
         </div>
 
-        {appMode === "workspace" && (
-          <>
-        {/* Action — visually slightly emphasized via icon color, not
-            a different shape, so it sits in the same column as the others. */}
-        <SideRow
-          icon={<Plus size={13} strokeWidth={2.2} />}
-          label="New session"
-          onClick={handleNew}
-          tourKey="new-agent"
-        />
+        {/* Create action — Workspace creates an agent session; Studio opens
+            the generation composer. Fleet below is the SAME shared operations
+            center in both modes. Routines / Marketplace and the session list
+            differ per mode (Workspace agents vs Studio generations). */}
+        {appMode === "studio" ? (
+          <SideRow
+            icon={<Plus size={13} strokeWidth={2.2} />}
+            label="New generation"
+            active={studioComposerOpen}
+            onClick={() => openStudioComposer()}
+          />
+        ) : (
+          <SideRow
+            icon={<Plus size={13} strokeWidth={2.2} />}
+            label="New session"
+            onClick={handleNew}
+            tourKey="new-agent"
+          />
+        )}
 
-        {/* Real Fleet surfaces — match mainView values exactly. */}
+        {/* Real Fleet surfaces — the SAME shared operations center in both
+            Workspace and Studio modes. */}
         <SideRow
           icon={<LayoutGrid size={13} />}
           label="Fleet"
-          active={mainView === "fleet" && !activeSessionId}
+          active={mainView === "fleet" && !activeSessionId && !studioComposerOpen}
           count={allAgents.length}
-          onClick={() => { setMainView("fleet"); setActiveSession(null); }}
+          onClick={() => { closeStudioComposer(); setMainView("fleet"); setActiveSession(null); }}
         />
-        <SideRow
-          icon={<Repeat size={13} />}
-          label="Routines"
-          active={mainView === "workflows"}
-          onClick={() => { setMainView("workflows"); setActiveSession(null); }}
-        />
-        <SideRow
-          icon={<Store size={13} />}
-          label="Marketplace"
-          active={mainView === "marketplace"}
-          onClick={() => { setMainView("marketplace"); setActiveSession(null); }}
-        />
+        {/* Routines + Marketplace are Workspace-only. */}
+        {appMode === "workspace" && (
+          <>
+            <SideRow
+              icon={<Repeat size={13} />}
+              label="Routines"
+              active={mainView === "workflows"}
+              onClick={() => { setMainView("workflows"); setActiveSession(null); }}
+            />
+            <SideRow
+              icon={<Store size={13} />}
+              label="Marketplace"
+              active={mainView === "marketplace"}
+              onClick={() => { setMainView("marketplace"); setActiveSession(null); }}
+            />
+          </>
+        )}
         {/* Subtle gap before sessions */}
         <div style={{ height: 6 }} />
 
-        {/* Sessions */}
+        {/* Sessions — Studio shows generation sessions; Workspace shows agents. */}
+        {appMode === "studio" ? (
+        <div style={{ paddingBottom: 8 }}>
+          {(() => {
+            const studioSessions = sessions.filter(s => isStudioTool(s.tool) && !s.local_only && !s.archived_at);
+            return studioSessions.length === 0 ? (
+              <div style={{ padding: "4px 10px", fontSize: 11.5, color: "var(--c-ghost)" }}>No generations yet.</div>
+            ) : (
+              studioSessions.map(s => (
+                <SideRow key={s.id} icon={<ProviderLogo tool="higgsfield" size={14} />} label={s.title || "Generation"} active={activeSessionId === s.id} onClick={() => setActiveSession(s.id)} />
+              ))
+            );
+          })()}
+        </div>
+        ) : (
         <div style={{ paddingBottom: 8 }}>
             {sorted.length === 0 ? (
               <div style={{ padding: "4px 10px", fontSize: 11.5, color: "var(--c-ghost)", lineHeight: 1.5 }}>
@@ -1277,16 +1301,6 @@ export function Sidebar() {
               </>
             )}
         </div>
-          </>
-        )}
-        {appMode === "studio" && (
-          <>
-            <SideRow icon={<Plus size={13} strokeWidth={2.2} />} label="New generation" onClick={() => void handleNewStudio()} />
-            <div style={{ height: 6 }} />
-            {sessions.filter(s => isStudioTool(s.tool) && !s.local_only && !s.archived_at).map(s => (
-              <SideRow key={s.id} icon={<Sparkles size={13} />} label={s.title || "Generation"} active={activeSessionId === s.id} onClick={() => setActiveSession(s.id)} />
-            ))}
-          </>
         )}
         </div>
       </ReactLenis>

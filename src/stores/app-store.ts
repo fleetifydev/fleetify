@@ -2,7 +2,6 @@ import { create } from "zustand";
 import type { Session } from "@/types/session";
 import { wsManager } from "@/services/ws-manager";
 import { useChatStore, typeOutAssistantMessage } from "@/stores/chat-store";
-import { isStudioTool } from "@/lib/studio-tools";
 
 /** Sentinel chat-store key used for compose-time messages (welcome
  *  typewriter, "pick a folder" warnings, etc.). The composer doesn't
@@ -72,6 +71,17 @@ export type MainView = "fleet" | "workflows" | "marketplace";
  *  "studio" is the media-generation surface (Higgsfield, etc.). Persisted to
  *  localStorage so the choice survives restarts. */
 export type AppMode = "workspace" | "studio";
+
+/** One-shot payload handed from the Studio "New generation" composer to the
+ *  newly created session so the session view (not the composer) runs the first
+ *  generation and renders the live "Generating…" state. Cleared once consumed. */
+export interface PendingGeneration {
+  sessionId: string;
+  model: string;
+  media: "image" | "video";
+  params: Record<string, unknown>;
+  prompt: string;
+}
 
 /** Composer state — a NOT-YET-PERSISTED setup screen for a new session.
  *  Lives entirely in renderer state, OUTSIDE `sessions[]` (it isn't a
@@ -215,6 +225,12 @@ interface AppState {
   openFilePath: string | null;
   mainView: MainView;
   appMode: AppMode;
+  /** Studio "New generation" composer open (no session yet — the session is
+   *  created on the first Generate, mirroring the Workspace composer). */
+  studioComposerOpen: boolean;
+  /** One-shot handoff: the composer sets this right before activating the new
+   *  session; StudioSession consumes it on mount to run the first generation. */
+  pendingGeneration: PendingGeneration | null;
   newAgentDialogOpen: boolean;
   fleetAutoMode: boolean;
   _removedIds: Set<string>;
@@ -237,6 +253,13 @@ interface AppState {
   pruneRemovedIds: (currentServerIds: string[]) => void;
   updateSession: (id: string, updates: Partial<Session>) => void;
   setActiveSession: (id: string | null) => void;
+  /** Open the Studio "New generation" composer (centered; no session created
+   *  until the first Generate). */
+  openStudioComposer: () => void;
+  closeStudioComposer: () => void;
+  /** Stash the first generation for the freshly created Studio session. */
+  setPendingGeneration: (p: PendingGeneration) => void;
+  clearPendingGeneration: () => void;
   setStaffSessionId: (id: string | null) => void;
   toggleSidebar: () => void;
   setSidebarSearchOpen: (open: boolean) => void;
@@ -369,6 +392,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   openFilePath: null,
   mainView: "fleet",
   appMode: localStorage.getItem("fleet:appMode") === "studio" ? "studio" : "workspace",
+  studioComposerOpen: false,
+  pendingGeneration: null,
   newAgentDialogOpen: false,
   fleetAutoMode: localStorage.getItem("fleet:autoMode") === "true",
   composer: {
@@ -474,11 +499,13 @@ export const useAppStore = create<AppState>((set, get) => ({
           activeSessionId: targetId,
           splitPaneIds: next,
           composer: { ...state.composer, open: false },
+          studioComposerOpen: false,
         };
       }
       return {
         activeSessionId: targetId,
         composer: { ...state.composer, open: false },
+        studioComposerOpen: false,
       };
     }),
 
@@ -782,12 +809,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setAppMode: (mode) => {
     try { localStorage.setItem("fleet:appMode", mode); } catch { /* noop */ }
-    set((s) => {
-      const cur = s.sessions.find(x => x.id === s.activeSessionId);
-      const mismatch = !!cur && (mode === "studio") !== isStudioTool(cur.tool);
-      return mismatch ? { appMode: mode, activeSessionId: null } : { appMode: mode };
-    });
+    // The toggle only swaps the create action + the sidebar's lists; the main
+    // view persists ("continues from where it left off"). Switching back to
+    // Workspace closes the Studio-only generation composer.
+    set(mode === "workspace" ? { appMode: mode, studioComposerOpen: false } : { appMode: mode });
   },
+  openStudioComposer: () =>
+    set({ appMode: "studio", studioComposerOpen: true, activeSessionId: null, pendingGeneration: null }),
+  closeStudioComposer: () => set({ studioComposerOpen: false }),
+  setPendingGeneration: (p) => set({ pendingGeneration: p }),
+  clearPendingGeneration: () => set({ pendingGeneration: null }),
   setNewAgentDialogOpen: (open) => set({ newAgentDialogOpen: open }),
   // ── Composer state (new) ──
   // The compose surface is NOT a session. Opening it sets composer.open

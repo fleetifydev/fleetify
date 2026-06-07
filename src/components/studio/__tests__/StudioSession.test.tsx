@@ -57,4 +57,19 @@ describe("StudioSession", () => {
     await screen.findByText("a clip");
     await waitFor(() => expect(container.querySelector("video")).toBeTruthy());
   });
+
+  it("Edit on a result carries its job id as the source (image-to-image)", async () => {
+    m.listMessages.mockResolvedValue([
+      { role: "user", content: JSON.stringify([{ type: "text", text: "a dog" }]) },
+      { role: "assistant", content: JSON.stringify([{ type: "artifact", artifact_type: "image", content: "https://x/dog.png", job_id: "job-123" }]) },
+    ]);
+    render(<StudioSession sessionId="s1" />);
+    fireEvent.click(await screen.findByText("Edit"));
+    expect(await screen.findByText("Editing from this image")).toBeTruthy();
+    fireEvent.change(screen.getByPlaceholderText("Describe the edit…"), { target: { value: "make it blue" } });
+    fireEvent.click(screen.getByText("Generate edit"));
+    await waitFor(() =>
+      expect(m.generate).toHaveBeenCalledWith("s1", "nano_banana_2", { prompt: "make it blue", image: "job-123" }),
+    );
+  });
 });

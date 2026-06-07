@@ -154,12 +154,17 @@ async fn generate(
         }
         polls += 1;
         if polls > 100 {
-            return Err(ApiError::Internal("generation timed out".into()));
+            return Err(ApiError::Internal(
+                "Generation timed out — please try again.".into(),
+            ));
         }
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     };
     if job.is_failed() {
-        return Err(ApiError::Internal(format!("generation {}", job.status)));
+        return Err(ApiError::BadRequest(match job.failure_reason() {
+            Some(w) => format!("Generation {} — {w}", job.status),
+            None => format!("Generation {}.", job.status),
+        }));
     }
 
     // 3) verify session ownership before persisting
@@ -190,18 +195,34 @@ async fn generate(
         0.0,
     )
     .await?;
-    let blocks: Vec<serde_json::Value> = job
-        .urls()
-        .iter()
-        .map(|u| {
-            let kind = if adapter::is_video_url(u) {
-                "video"
-            } else {
-                "image"
-            };
-            json!({ "type": "artifact", "artifact_type": kind, "content": u })
-        })
-        .collect();
+    // Best-effort: save each asset into the session folder so the user keeps a
+    // local copy. Display still uses the remote URL; `saved_path` is null when
+    // the folder is unset or the download fails (generation already succeeded —
+    // a save failure must not lose the result).
+    let dir = std::path::PathBuf::from(&sess.project_path);
+    let mut blocks: Vec<serde_json::Value> = Vec::new();
+    for u in job.urls() {
+        let kind = if adapter::is_video_url(&u) {
+            "video"
+        } else {
+            "image"
+        };
+        let saved_path: Option<String> = if sess.project_path.is_empty() {
+            None
+        } else {
+            adapter::download_asset(&u, &dir)
+                .await
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned())
+        };
+        blocks.push(json!({
+            "type": "artifact",
+            "artifact_type": kind,
+            "content": u,
+            "job_id": &job.id,
+            "saved_path": saved_path,
+        }));
+    }
     if !blocks.is_empty() {
         super::persist::persist_studio_message(
             &st.auth.pool,

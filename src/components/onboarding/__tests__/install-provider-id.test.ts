@@ -102,7 +102,7 @@ describe("OnboardingChat install IPC", () => {
     expect(ids).not.toContain("googleai");
     expect(ids).toContain("gemini-api");
 
-    // The full catalog (21 ids).
+    // The full workspace catalog (21 ids — must match providers::CATALOG).
     const catalog = [
       "claude", "codex", "gemini", "kimi", "opencode", "github-copilot",
       "cursor", "hermes", "agy", "antigravity-sdk",
@@ -113,7 +113,15 @@ describe("OnboardingChat install IPC", () => {
     for (const id of catalog) {
       expect(ids, `expected catalog provider "${id}" in onboarding list`).toContain(id);
     }
-    expect(ids.length).toBe(catalog.length);
+
+    // Studio providers live in the Studio registry (not the provider catalog).
+    // They are appended after the workspace block with category: "studio".
+    const studioProviders = ["higgsfield"];
+    for (const id of studioProviders) {
+      expect(ids, `expected studio provider "${id}" in onboarding list`).toContain(id);
+    }
+
+    expect(ids.length).toBe(catalog.length + studioProviders.length);
   });
 
   it("renders a Continue button gated on at least one ready provider", () => {

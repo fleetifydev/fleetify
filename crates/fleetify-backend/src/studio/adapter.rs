@@ -131,6 +131,12 @@ pub struct HfJob {
     pub result_urls: Option<Vec<String>>,
     #[serde(default)]
     pub job_set_type: String,
+    /// Failure detail when hf marks a job failed/cancelled. Best-effort —
+    /// hf doesn't always populate these, so both are tolerated absent.
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 impl HfJob {
@@ -150,6 +156,14 @@ impl HfJob {
 
     pub fn is_failed(&self) -> bool {
         matches!(self.status.as_str(), "failed" | "error" | "cancelled")
+    }
+
+    /// Human-readable failure reason, if hf provided one.
+    pub fn failure_reason(&self) -> Option<&str> {
+        self.error
+            .as_deref()
+            .or(self.reason.as_deref())
+            .filter(|s| !s.is_empty())
     }
 }
 
@@ -199,36 +213,111 @@ pub fn is_video_url(url: &str) -> bool {
         .any(|ext| base.ends_with(ext))
 }
 
-/// `hf generate create --json` may print one or more JSON objects (progress).
-/// Extract the job id from the last JSON object that has an `id`.
-pub fn parse_job_id(stdout: &str) -> Result<String, ApiError> {
-    // `hf generate create` may emit mixed output: progress lines followed by
-    // a final JSON object. First try to find an `id` in any JSON line scanning
-    // from the bottom up (covers both single-JSON and multi-line cases).
-    // Only treat the whole output as "failed" when no JSON line exists at all.
-    let has_json_line = stdout.lines().any(|l| l.trim().starts_with('{'));
-    if !has_json_line && hf_failed(stdout) {
-        return Err(ApiError::Internal(format!(
-            "hf generate create: {}",
-            stdout.trim()
-        )));
+/// File name for a result URL: its last path segment (hf names files
+/// `hf_<ts>_<uuid>.<ext>`), ignoring query/fragment. Falls back to `asset`.
+pub fn asset_filename(url: &str) -> String {
+    url.split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("asset")
+        .to_string()
+}
+
+/// Download `url` into `dir`, returning the saved path. Best-effort from the
+/// caller's view: a failure just means "no local copy" and the remote URL is
+/// still shown. The folder is created if missing.
+pub async fn download_asset(
+    url: &str,
+    dir: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let resp = reqwest::get(url).await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("http {}", resp.status()));
     }
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    tokio::fs::create_dir_all(dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    let path = dir.join(asset_filename(url));
+    tokio::fs::write(&path, &bytes)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+/// Extract a job id from a create-response JSON value. Higgsfield's
+/// `hf generate create --json` returns a JSON array of id strings — `["<uuid>"]`
+/// — but we also tolerate an object carrying an `id` or a bare id string.
+fn job_id_from_value(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::Array(items) => {
+            items.iter().find_map(|x| x.as_str().map(str::to_string))
+        }
+        serde_json::Value::Object(_) => v.get("id").and_then(|x| x.as_str()).map(str::to_string),
+        serde_json::Value::String(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// Turn `hf`'s error stdout into a clear, user-facing message. hf prints
+/// `Error: {json}` (exit 0) where the json carries an `error_type`; map the
+/// known ones to friendly text and fall back to the raw error otherwise.
+pub fn hf_error_message(stdout: &str) -> String {
+    let trimmed = stdout.trim();
+    let body = trimmed
+        .strip_prefix("Error:")
+        .or_else(|| trimmed.strip_prefix("error:"))
+        .unwrap_or(trimmed)
+        .trim();
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(t) = v.get("error_type").and_then(|x| x.as_str()) {
+            return match t {
+                "not_enough_credits" => {
+                    "Not enough Higgsfield credits for this generation.".into()
+                }
+                "unauthorized" | "unauthenticated" | "not_authenticated" => {
+                    "Not connected to Higgsfield — run `hf auth login`.".into()
+                }
+                other => format!("Higgsfield error: {}", other.replace('_', " ")),
+            };
+        }
+    }
+    if body.is_empty() {
+        return "Higgsfield returned no result.".into();
+    }
+    let raw: String = body.chars().take(200).collect();
+    format!("Higgsfield error: {raw}")
+}
+
+/// Parse the job id out of `hf generate create --json` output.
+///
+/// The canonical shape is a JSON array of one id string (`["<uuid>"]`), but we
+/// also tolerate progress lines followed by a final JSON object that carries an
+/// `id`. Non-JSON output means a CLI error (hf prints errors on stdout, exit 0).
+pub fn parse_job_id(stdout: &str) -> Result<String, ApiError> {
+    // Whole-body first (handles pretty-printed multi-line arrays/objects)…
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(stdout.trim()) {
+        if let Some(id) = job_id_from_value(&v) {
+            return Ok(id);
+        }
+    }
+    // …then individual lines bottom-up (a final JSON object after progress text).
     for line in stdout.lines().rev() {
         let t = line.trim();
-        if t.starts_with('{') {
+        if t.starts_with('{') || t.starts_with('[') {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(t) {
-                if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
-                    return Ok(id.to_string());
+                if let Some(id) = job_id_from_value(&v) {
+                    return Ok(id);
                 }
             }
         }
     }
-    let v: serde_json::Value = serde_json::from_str(stdout)
-        .map_err(|e| ApiError::Internal(format!("parse create: {e}")))?;
-    v.get("id")
-        .and_then(|x| x.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| ApiError::Internal("create response had no id".into()))
+    // No id anywhere → hf reported an error (it prints `Error: {json}` on
+    // stdout with exit 0). Surface a clear, user-facing reason as a 400.
+    Err(ApiError::BadRequest(hf_error_message(stdout)))
 }
 
 #[cfg(test)]
@@ -362,9 +451,59 @@ mod tests {
     }
 
     #[test]
-    fn parse_job_id_err_on_bare_array() {
-        // A bare-array response (no object) must yield Err, not "no id" via an array path.
+    fn parse_job_id_from_string_array() {
+        // hf generate create --json returns ["<uuid>"] (the real shape).
+        let raw = "[\n  \"540f9619-4967-4e5e-bc58-04417b35cb0b\"\n]";
+        let id = parse_job_id(raw).expect("ok");
+        assert_eq!(id, "540f9619-4967-4e5e-bc58-04417b35cb0b");
+    }
+
+    #[test]
+    fn parse_job_id_from_compact_string_array() {
+        assert_eq!(parse_job_id(r#"["abc-123"]"#).expect("ok"), "abc-123");
+    }
+
+    #[test]
+    fn parse_job_id_err_on_empty_array() {
+        // An empty array carries no id → Err (not a panic, not a false id).
         assert!(parse_job_id("[]").is_err());
+    }
+
+    #[test]
+    fn hf_error_message_maps_credits() {
+        let raw = r#"Error: {"billing_period":null,"error_type":"not_enough_credits","plan_type":"free"}"#;
+        let msg = hf_error_message(raw);
+        assert!(msg.to_lowercase().contains("credit"), "got: {msg}");
+    }
+
+    #[test]
+    fn hf_error_message_humanizes_unknown_type() {
+        let raw = r#"Error: {"error_type":"some_weird_thing"}"#;
+        assert_eq!(hf_error_message(raw), "Higgsfield error: some weird thing");
+    }
+
+    #[test]
+    fn hf_error_message_falls_back_to_raw() {
+        assert_eq!(hf_error_message("Error: boom"), "Higgsfield error: boom");
+    }
+
+    #[test]
+    fn parse_job_id_credit_error_is_friendly() {
+        let raw = r#"Error: {"error_type":"not_enough_credits","plan_type":"free"}"#;
+        match parse_job_id(raw).unwrap_err() {
+            ApiError::BadRequest(m) => assert!(m.to_lowercase().contains("credit"), "got: {m}"),
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn asset_filename_extracts_segment() {
+        assert_eq!(
+            asset_filename("https://cdn/u/hf_20260607_161039_540f9619.png"),
+            "hf_20260607_161039_540f9619.png"
+        );
+        assert_eq!(asset_filename("https://cdn/a/out.mp4?sig=xyz&e=1"), "out.mp4");
+        assert_eq!(asset_filename("https://cdn/trailing/"), "asset");
     }
 
     #[test]

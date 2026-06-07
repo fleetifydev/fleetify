@@ -68,6 +68,12 @@ interface ProviderDef {
   logo: string;
   /** Bucket — drives the section header in the picker. */
   kind: "cli" | "api";
+  /** Display category. "workspace" (default when absent) covers the
+   *  backend `providers::CATALOG` entries (CLI agents + API providers).
+   *  "studio" covers image/video generation tools (Higgsfield etc.)
+   *  that live in the Studio registry rather than the providers catalog.
+   *  The picker renders workspace providers first, then studio ones. */
+  category?: "workspace" | "studio";
   scanKey?: keyof Pick<
     ProviderScan,
     | "claude_cli"
@@ -102,18 +108,25 @@ interface ProviderDef {
   hint: string;
 }
 
-// IDs MUST match the backend `providers::CATALOG` (see
+// Workspace entries MUST match the backend `providers::CATALOG` (see
 // crates/fleetify-backend/src/providers/catalog.rs). `providers.setKey`
 // and `providers.setConnectedBulk` validate against the catalog and
 // return `unknown provider <id>` for anything missing.
 //
-// This list is EXHAUSTIVE against the catalog (21 entries): 9 CLI agents
-// + the Antigravity SDK + Ollama + every API provider. A mount-time drift
-// guard (see useEffect below) warns if the catalog ever gains an id this
-// list lacks. The extra per-row fields (scanKey / envKey / autoInstall)
+// Workspace section is EXHAUSTIVE against the catalog (21 entries): 9 CLI
+// agents + the Antigravity SDK + Ollama + every API provider. A mount-time
+// drift guard (see useEffect below) warns if the catalog ever gains an id
+// this list lacks. The extra per-row fields (scanKey / envKey / autoInstall)
 // are onboarding-only verify metadata; the remaining probe-less rows
 // (anthropic, cloudflare-workers-ai — HTTP providers finished with an inline
 // key) simply omit them.
+//
+// Studio entries (category: "studio") come AFTER the workspace block and
+// are NOT in the provider catalog — they live in the Studio registry
+// (crates/fleetify-backend/src/studio/registry.rs). They are not passed to
+// setConnectedBulk and do not appear in the drift-guard check. Higgsfield
+// has no scan probe so its row renders without an "Installed" badge and does
+// not gate the "Continue" button — the user can finish Studio setup later.
 const PROVIDERS: ProviderDef[] = [
   // No CLI row opts in to `autoInstall` — users found the unattended
   // `npm install -g …` mid-onboarding surprising, so every install
@@ -167,6 +180,15 @@ const PROVIDERS: ProviderDef[] = [
   // Cloudflare Workers AI — needs an account id too (finished in
   // Settings); onboarding takes the token inline like other API rows.
   { id: "cloudflare-workers-ai", label: "Cloudflare Workers AI", logo: "cloudflare-workers-ai", kind: "api",                  hint: "API key + account id" },
+
+  // ── Studio providers ─────────────────────────────────────────────────
+  // These are image/video generation tools from the Studio registry, NOT
+  // the provider catalog. Detected via studioApi.getTools() rather than
+  // the agent scan, so they carry no scanKey and appear without an
+  // "Installed" badge. Rendered in a separate "Studio" section below the
+  // workspace providers. Selecting them enables them in Settings → Studio
+  // but does NOT block the "Continue" button.
+  { id: "higgsfield", label: "Higgsfield", logo: "higgsfield", kind: "cli", category: "studio", hint: "Image & video generation" },
 ];
 
 const TYPE_BASE_MS = 12;
@@ -299,11 +321,14 @@ export function OnboardingChat({ user, onDone }: Props) {
         tiles = res.ok ? res.tiles : [];
         setSelections((s) => ({ ...s, tiles }));
       }
-      const allIds = tiles.length > 0 ? tiles.map((t) => t.spec.id) : PROVIDERS.map((p) => p.id);
+      const allIds = tiles.length > 0 ? tiles.map((t) => t.spec.id) : PROVIDERS.filter((p) => p.category !== "studio").map((p) => p.id);
       const cliAgentIds = tiles.filter((t) => t.spec.kind === "cli").map((t) => t.spec.id);
+      // Exclude studio providers — they live in the Studio registry, not the
+      // provider catalog, so setConnectedBulk would reject their ids.
+      const catalogProviders = providers.filter((p) => p.category !== "studio");
       const { connected, enabledAgents } = buildSelectionPersist(
         allIds,
-        providers.map((p) => p.id),
+        catalogProviders.map((p) => p.id),
         cliAgentIds,
       );
       await providersApi.setConnectedBulk(connected, enabledAgents);
@@ -958,12 +983,16 @@ function ProvidersWidget({
 
   const count = selected.size;
 
-  // Order PROVIDERS by index but split by kind for sectioning.
-  const cliProviders = PROVIDERS.filter((p) => p.kind === "cli");
-  const apiProviders = PROVIDERS.filter((p) => p.kind === "api");
+  // Workspace providers (category !== "studio") appear first, then Studio
+  // providers. Within the workspace group, CLI and API are sub-sectioned as
+  // before. Studio providers get their own section header after workspace.
+  const workspaceProviders = PROVIDERS.filter((p) => p.category !== "studio");
+  const studioProviders    = PROVIDERS.filter((p) => p.category === "studio");
+  const cliProviders = workspaceProviders.filter((p) => p.kind === "cli");
+  const apiProviders = workspaceProviders.filter((p) => p.kind === "api");
 
   // Map each provider to its global reveal index so the stagger
-  // walks through CLI → API in source order, not section order.
+  // walks through workspace (CLI → API) → Studio in source order.
   const indexById = new Map(PROVIDERS.map((p, i) => [p.id, i]));
 
   const renderSection = (title: string, list: ProviderDef[]) => (
@@ -1013,6 +1042,7 @@ function ProvidersWidget({
       <div style={{ padding: "0 4px 6px", display: "flex", flexDirection: "column" }}>
         {renderSection("CLI", cliProviders)}
         {renderSection("API key", apiProviders)}
+        {studioProviders.length > 0 && renderSection("Studio", studioProviders)}
       </div>
 
       {/* Footer — hairline + counter + Continue */}

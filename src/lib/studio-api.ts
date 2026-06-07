@@ -9,15 +9,26 @@ export interface HfCost { credits: number; credits_exact: number; }
 export interface HfJob { id: string; status: string; result_url?: string; result_urls?: string[]; job_set_type: string; }
 export interface StudioMessage { role: string; content: string; }
 
+// The backend returns a plain-text reason (e.g. "Not enough Higgsfield
+// credits…") in the body — surface it instead of an opaque "http 500".
+async function errMessage(res: Response): Promise<string> {
+  try {
+    const t = (await res.text()).trim();
+    return t || `Request failed (${res.status})`;
+  } catch {
+    return `Request failed (${res.status})`;
+  }
+}
+
 async function getJson<T>(url: string): Promise<T> {
   const res = await apiFetch(url);
-  if (!res.ok) throw new Error(`http ${res.status}`);
+  if (!res.ok) throw new Error(await errMessage(res));
   return (await res.json()) as T;
 }
 
 async function postJson<T>(url: string, body: unknown): Promise<T> {
   const res = await apiFetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  if (!res.ok) throw new Error(`http ${res.status}`);
+  if (!res.ok) throw new Error(await errMessage(res));
   return (await res.json()) as T;
 }
 

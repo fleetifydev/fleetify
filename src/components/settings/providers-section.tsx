@@ -32,6 +32,7 @@ import { ProviderLogo } from "@/components/ui/provider-logo";
 import { buildPickerGroups, type PickerModel } from "@/lib/picker-groups";
 import { AgentsSection } from "./agents-section";
 import { ModelsSection } from "./models-section";
+import { StudioProvidersSection } from "./studio/studio-providers-section";
 
 /** Narrowed view of the persisted config for the Sessions Default picker, so a
  *  read-merge-write preserves every other key without importing the full
@@ -52,8 +53,10 @@ function cfgApi() {
 }
 
 type ProvidersTab = "agents" | "models";
+type ProvidersMode = "workspace" | "studio";
 
 const STORAGE_TAB = "fleet:settings:providers-tab";
+const STORAGE_MODE = "fleet:settings:providers-mode";
 
 function readTab(): ProvidersTab {
   try {
@@ -66,11 +69,27 @@ function writeTab(v: ProvidersTab) {
   try { localStorage.setItem(STORAGE_TAB, v); } catch { /* private mode */ }
 }
 
+function readMode(): ProvidersMode {
+  try {
+    const raw = localStorage.getItem(STORAGE_MODE);
+    if (raw === "workspace" || raw === "studio") return raw;
+  } catch { /* private mode */ }
+  return "workspace";
+}
+function writeMode(v: ProvidersMode) {
+  try { localStorage.setItem(STORAGE_MODE, v); } catch { /* private mode */ }
+}
+
 export function ProvidersSection({ initialSubTab }: { initialSubTab?: ProvidersTab }) {
   const [tab, setTabState] = useState<ProvidersTab>(() => initialSubTab ?? readTab());
   const setTab = (v: ProvidersTab) => {
     setTabState(v);
     writeTab(v);
+  };
+  const [mode, setModeState] = useState<ProvidersMode>(readMode);
+  const setMode = (v: ProvidersMode) => {
+    setModeState(v);
+    writeMode(v);
   };
   const { tiles } = useProvidersConfig();
 
@@ -127,40 +146,48 @@ export function ProvidersSection({ initialSubTab }: { initialSubTab?: ProvidersT
 
   return (
     <>
-      {/* Sessions Default — the provider + model a new session opens with.
-          A small logo + label/caption on the left, the dropdowns on the right. */}
-      <div
-        style={{
-          borderRadius: 10,
-          border: "1px solid var(--c-brd)",
-          background: "var(--card)",
-          overflow: "hidden",
-          marginBottom: 18,
-        }}
-      >
-        <DefaultPairRow
-          label="Sessions Default"
-          caption="Pre-selected when you start a new session."
-          providerId={sessProvider}
-          modelId={sessModel}
-          eligible={eligible}
-          modelsForProvider={modelsForProvider}
-          onPickProvider={(id) => {
-            void writeCfg({ sessionDefaultProvider: id, sessionDefaultModel: modelsForProvider(id)[0]?.id });
-            void import("@/lib/posthog").then(({ capture }) => {
-              capture("session_default_set", { provider_id: id });
-            });
+      {/* Top-level mode selector — Workspace vs Studio */}
+      <ModeBar mode={mode} onChange={setMode} />
+
+      {/* Sessions Default — only relevant in Workspace mode */}
+      {mode === "workspace" && (
+        <div
+          style={{
+            borderRadius: 10,
+            border: "1px solid var(--c-brd)",
+            background: "var(--card)",
+            overflow: "hidden",
+            marginBottom: 18,
           }}
-          onPickModel={(mid) => {
-            void writeCfg({ sessionDefaultModel: mid });
-          }}
-          emptyHint="Enable a tile below to pick a session default."
-        />
-      </div>
+        >
+          <DefaultPairRow
+            label="Sessions Default"
+            caption="Pre-selected when you start a new session."
+            providerId={sessProvider}
+            modelId={sessModel}
+            eligible={eligible}
+            modelsForProvider={modelsForProvider}
+            onPickProvider={(id) => {
+              void writeCfg({ sessionDefaultProvider: id, sessionDefaultModel: modelsForProvider(id)[0]?.id });
+              void import("@/lib/posthog").then(({ capture }) => {
+                capture("session_default_set", { provider_id: id });
+              });
+            }}
+            onPickModel={(mid) => {
+              void writeCfg({ sessionDefaultModel: mid });
+            }}
+            emptyHint="Enable a tile below to pick a session default."
+          />
+        </div>
+      )}
 
       <TabBar tab={tab} onChange={setTab} />
 
-      {tab === "agents" ? <AgentsSection /> : <ModelsSection />}
+      {mode === "workspace" ? (
+        tab === "agents" ? <AgentsSection /> : <ModelsSection />
+      ) : (
+        tab === "agents" ? <StudioProvidersSection /> : <StudioApiEmpty />
+      )}
     </>
   );
 }
@@ -361,7 +388,32 @@ function ModelSelect({
   );
 }
 
-// ── Tab bar ──────────────────────────────────────────────────────
+// ── Mode bar (Workspace | Studio) ────────────────────────────────
+
+function ModeBar({
+  mode,
+  onChange,
+}: {
+  mode: ProvidersMode;
+  onChange: (v: ProvidersMode) => void;
+}) {
+  return (
+    <div
+      role="tablist"
+      style={{
+        display: "flex",
+        gap: 4,
+        borderBottom: "1px solid var(--c-brd)",
+        marginBottom: 18,
+      }}
+    >
+      <TabButton active={mode === "workspace"} onClick={() => onChange("workspace")}>Workspace</TabButton>
+      <TabButton active={mode === "studio"} onClick={() => onChange("studio")}>Studio</TabButton>
+    </div>
+  );
+}
+
+// ── Sub-tab bar (Providers | API) ────────────────────────────────
 
 function TabBar({
   tab,
@@ -380,8 +432,18 @@ function TabBar({
         marginBottom: 18,
       }}
     >
-      <TabButton active={tab === "agents"} onClick={() => onChange("agents")}>Agents</TabButton>
-      <TabButton active={tab === "models"} onClick={() => onChange("models")}>Models</TabButton>
+      <TabButton active={tab === "agents"} onClick={() => onChange("agents")}>Providers</TabButton>
+      <TabButton active={tab === "models"} onClick={() => onChange("models")}>API</TabButton>
+    </div>
+  );
+}
+
+// ── Studio → API placeholder ─────────────────────────────────────
+
+function StudioApiEmpty() {
+  return (
+    <div style={{ fontSize: 13, color: "var(--c-low)", padding: "12px 2px" }}>
+      No API providers yet.
     </div>
   );
 }

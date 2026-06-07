@@ -6,8 +6,8 @@ import { RightPanelWrapper } from "./right-panel-wrapper";
 import { NewAgentView } from "@/components/agent/new-agent-dialog";
 import { FirstLaunchTour } from "@/components/onboarding/first-launch-tour";
 import { WindowsTitleBar } from "./windows-title-bar";
-import { StudioHub } from "@/components/studio/StudioHub";
 import { StudioSession } from "@/components/studio/StudioSession";
+import { StudioComposer } from "@/components/studio/StudioComposer";
 import { isStudioTool } from "@/lib/studio-tools";
 // MarketplacePage and WorkflowsPage are lazy-loaded — they're
 // rarely the first surface a user lands on (chat is), and pulling
@@ -81,7 +81,8 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
   const {
     setSessions, updateSession, staffSessionId, setStaffSessionId,
     sidebarCollapsed, sessions, setActiveSession,
-    rightPanelOpen, toggleRightPanel, _removedIds, pruneRemovedIds, mainView, appMode, activeSessionId,
+    rightPanelOpen, toggleRightPanel, _removedIds, pruneRemovedIds, mainView, activeSessionId,
+    studioComposerOpen,
   } = useAppStore();
 
   // ── Reveal once data is ready ──
@@ -332,7 +333,10 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
   // content) is revealed together once the data is ready; no slide-in.
   const sidebarWidth = !sidebarCollapsed ? leftWidth : 0;
 
-  const activeStudio = appMode === "studio" && activeSessionId
+  // A studio (Higgsfield) session renders the generation surface in EITHER
+  // mode — the session list is shared, so a studio session can be opened from
+  // Fleet in Workspace mode too.
+  const activeStudio = activeSessionId
     ? sessions.find(s => s.id === activeSessionId && isStudioTool(s.tool))
     : undefined;
 
@@ -432,8 +436,10 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
         opacity: introReveal && !dataReady ? 0 : 1,
         transition: "none",
       }}>
-        {appMode === "studio" ? (
-          activeStudio ? <StudioSession sessionId={activeStudio.id} /> : <StudioHub />
+        {studioComposerOpen ? (
+          <StudioComposer />
+        ) : activeStudio ? (
+          <StudioSession sessionId={activeStudio.id} />
         ) : mainView === "marketplace" ? (
           <Suspense fallback={<div style={{ flex: 1, background: "var(--card)" }} />}>
             <MarketplacePage />
@@ -453,7 +459,7 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
           the two flank the chat as a symmetrical pair: rounded
           corners, 1px border, 8px bottom margin. Collapsed state
           drops the chrome to zero so the chat reclaims the width. */}
-      {appMode !== "studio" && (
+      {!studioComposerOpen && !activeStudio && (
       <div style={{
         width: rightPanelOpen ? rightWidth : 0,
         flexShrink: 0,
