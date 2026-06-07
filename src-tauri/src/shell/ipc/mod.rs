@@ -9,7 +9,9 @@ use tauri::{Emitter, Manager};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use crate::shell::{ai_git, auth, config, feedback, git, github_link, head_watcher, logging, pty};
+use crate::shell::{
+    ai_git, auth, config, feedback, git, github_link, head_watcher, logging, pty, voice,
+};
 
 #[tauri::command]
 pub async fn auth_sign_in() -> serde_json::Value {
@@ -958,6 +960,40 @@ pub async fn github_list_repos(app: tauri::AppHandle) -> serde_json::Value {
 #[tauri::command]
 pub async fn github_list_installations(app: tauri::AppHandle) -> serde_json::Value {
     github_link::list_installations(app).await
+}
+
+// ── Voice dictation (webview capture → transcribe) ───────────────
+// Renderer records the mic, sends a base64 16 kHz WAV + engine choice;
+// Rust routes to local / broker / byok (key + bearer never cross IPC).
+#[tauri::command]
+pub async fn voice_transcribe(
+    audio_base64: String,
+    engine: String,
+    language: String,
+    model: String,
+    prompt: String,
+) -> serde_json::Value {
+    voice::transcribe(audio_base64, engine, language, model, prompt).await
+}
+
+#[tauri::command]
+pub fn voice_set_byok_key(provider: String, key: String) -> serde_json::Value {
+    voice::set_byok_key(&provider, &key)
+}
+
+#[tauri::command]
+pub fn voice_has_byok_key(provider: String) -> serde_json::Value {
+    voice::has_byok_key(&provider)
+}
+
+#[tauri::command]
+pub fn voice_list_models() -> serde_json::Value {
+    voice::list_models()
+}
+
+#[tauri::command]
+pub async fn voice_download_model(app: tauri::AppHandle, id: String) -> serde_json::Value {
+    voice::download_model(app, id).await
 }
 
 // ── .git/HEAD watcher (renderer branch strip) ────────────────────

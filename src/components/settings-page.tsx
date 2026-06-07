@@ -19,7 +19,7 @@
  */
 import { useState, useEffect, useCallback } from "react";
 import {
-  Settings, Cpu, Plug, Cable, Route,
+  Settings, Cpu, Plug, Cable, Route, Mic,
   FileCode, Webhook, FileText, FolderOpen, Loader2, Bug,
   Check, User, ArrowUpRight, HelpCircle, Sun, ArrowLeft,
   Copy, MessageCircle,
@@ -48,6 +48,7 @@ import { useThemeStore } from "@/stores/theme-store";
 // import type { ColorTheme } from "@/stores/theme-store";
 import { MCPSection } from "./settings/mcp-section";
 import { IntegrationsSection } from "./settings/integrations-section";
+import { VoiceSection } from "./settings/voice/voice-section";
 import { RoutersSection } from "./settings/routers-section";
 import { ProvidersSection } from "./settings/providers-section";
 import { GeneralSection as GeneralSectionV2 } from "./settings/general/general-section";
@@ -73,6 +74,7 @@ const NAV: { id: string; icon: React.FC<{ size?: number; style?: React.CSSProper
   { id: "Providers",    icon: Cpu        },
   { id: "Plugins",      icon: Plug       },
   { id: "Integrations", icon: Cable      },
+  { id: "Voice",        icon: Mic        },
   { id: "Routers",      icon: Route      },
   { id: "Rules",        icon: FileCode   },
   { id: "Tools & MCPs", icon: Webhook    },
@@ -1080,6 +1082,7 @@ export function SettingsPage({ initialTab = "General", onClose }: SettingsProps)
             {active === "Plugins"      && <PluginsSection onClose={onClose} />}
             {active === "Rules"        && <RulesSection />}
             {active === "Integrations" && <IntegrationsSection />}
+            {active === "Voice"        && <VoiceSection />}
             {active === "Routers"      && <RoutersSection />}
             {active === "Tools & MCPs" && <MCPSection />}
             {active === "Diagnostics"  && <DiagnosticsSection />}

@@ -365,6 +365,34 @@ document.addEventListener("mousedown", function (e) {
           return function () { try { unsub && unsub(); } catch (_) {} };
         },
       },
+      // ── voice dictation (webview captures audio → Rust transcribes) ──
+      // Audio is a base64 16 kHz mono WAV; key/bearer never cross IPC.
+      voice: {
+        transcribe: function (audioBase64, engine, language, model, prompt) {
+          return invoke("voice_transcribe", {
+            audioBase64: String(audioBase64 || ""),
+            engine: String(engine || "broker"),
+            language: String(language || "auto"),
+            model: String(model || ""),
+            prompt: String(prompt || ""),
+          });
+        },
+        setByokKey: function (provider, key) {
+          return invoke("voice_set_byok_key", { provider: String(provider || ""), key: String(key || "") });
+        },
+        hasByokKey: function (provider) {
+          return invoke("voice_has_byok_key", { provider: String(provider || "") });
+        },
+        listModels: function () { return invoke("voice_list_models"); },
+        downloadModel: function (id) { return invoke("voice_download_model", { id: String(id || "") }); },
+        onModelProgress: function (cb) {
+          var unsub = null;
+          Promise.resolve(window.__TAURI__.event.listen("voice-model-progress", function (e) {
+            try { cb(e && e.payload); } catch (_) {}
+          })).then(function (u) { unsub = u; });
+          return function () { try { unsub && unsub(); } catch (_) {} };
+        },
+      },
       getGitContext: function (folder) { return invoke("git_get_context", { folder: String(folder || "") }); },
       hasGhCli: function (opts) {
         return invoke("git_has_gh_cli", { refresh: !!(opts && opts.refresh) });

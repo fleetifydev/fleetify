@@ -29,6 +29,7 @@ import { MergeBox } from "@/components/chat/merge-box";
 import type { PreflightIssue } from "@/lib/git-api";
 import { git, type PRStatus, defaultPRTitle, defaultPRBody } from "@/lib/git-api";
 import { github } from "@/lib/github-link-api";
+import { useVoiceDictation } from "@/hooks/use-voice-dictation";
 import { glog } from "@/lib/git-log";
 import { useAppStore } from "@/stores/app-store";
 import { useRepoPrs } from "@/stores/pr-store";
@@ -789,7 +790,7 @@ function ToolBtn({ children, title, onClick }: {
  *  can choose which mic the dictation flow will use, rather than
  *  the icon being a no-op affordance. We persist the selected
  *  deviceId in localStorage so it sticks across sessions. */
-function MicButton() {
+function MicButton({ onTranscript }: { onTranscript: (text: string) => void }) {
   const [open, setOpen] = useState(false);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [selected, setSelected] = useState<string | null>(() => {
@@ -797,6 +798,9 @@ function MicButton() {
   });
   const [needsPerm, setNeedsPerm] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
+  // Mic icon = record toggle (start → stop & transcribe → insert at caret);
+  // the chevron still opens the device picker below.
+  const dict = useVoiceDictation(onTranscript);
 
   // Lazy-load the device list when the menu opens. We only ask for
   // permission if the labels come back empty (browsers redact them
@@ -861,8 +865,13 @@ function MicButton() {
       display: "inline-flex", alignItems: "center",
       gap: -2,
     }}>
-      <ToolBtn title="Voice input" onClick={() => setOpen(o => !o)}>
-        <Mic size={12} />
+      <ToolBtn
+        title={dict.recording ? "Stop & insert" : dict.busy ? "Transcribing…" : dict.error ? dict.error : "Voice input — click to dictate"}
+        onClick={dict.busy ? undefined : dict.toggle}
+      >
+        {dict.busy
+          ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} />
+          : <Mic size={12} color={dict.recording ? "rgb(248,113,113)" : dict.error ? "rgb(250,204,21)" : undefined} />}
       </ToolBtn>
       <button
         onClick={() => setOpen(o => !o)}
@@ -3483,6 +3492,26 @@ export function ChatInput({
       setMentionIndex(Math.max(0, mentionResults.length - 1));
   }, [mentionResults, mentionIndex]);
 
+  // Insert a voice transcript at the composer caret (space-padded so it
+  // doesn't glue onto existing text), then restore focus + caret.
+  const insertVoiceText = useCallback((text: string) => {
+    const t = text.trim();
+    if (!t) return;
+    const caret = ref.current?.selectionStart ?? value.length;
+    const before = value.slice(0, caret);
+    const after = value.slice(caret);
+    const pad = before && !/\s$/.test(before) ? " " : "";
+    const insert = pad + t;
+    setValue(before + insert + after);
+    requestAnimationFrame(() => {
+      const el = ref.current;
+      if (!el) return;
+      const pos = caret + insert.length;
+      el.focus();
+      el.setSelectionRange(pos, pos);
+    });
+  }, [value]);
+
   const pickMention = useCallback((entry: FileSearchEntry) => {
     const start = mentionStartRef.current;
     if (start < 0) { closeMention(); return; }
@@ -5267,7 +5296,7 @@ export function ChatInput({
               <Wand2 size={12} strokeWidth={1.75} />
             </button>
             <TranscriptViewButton />
-            <MicButton />
+            <MicButton onTranscript={insertVoiceText} />
           </div>
 
           {/* RIGHT — provider · model · effort + context arc.

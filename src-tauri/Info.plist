@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Shown in the macOS microphone-permission prompt the first time the
+	     user starts voice dictation. Tauri v2 merges this file into the
+	     bundled app's Info.plist on macOS builds. For signed/hardened
+	     builds also grant the `com.apple.security.device.audio-input`
+	     entitlement (packaging step). -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Fleetify uses your microphone for voice dictation — turning what you say into a chat prompt.</string>
+</dict>
+</plist>

@@ -57,6 +57,13 @@ notify-debouncer-mini = "0.4"
 # timestamps the cloud expects (Z-suffix RFC 3339, matches Electron).
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 
+# Voice dictation — on-device Whisper engine (whisper.cpp via whisper-rs)
+# + WAV decode (hound). Optional behind the `local-whisper` feature so
+# the app still builds without a C++/cmake toolchain; the cloud broker +
+# BYOK engines are pure reqwest and are always available. See [features].
+whisper-rs = { version = "0.16.0", optional = true }
+hound = { version = "3.5.1", optional = true }
+
 # macOS only: unlocks WKWebView's 60 FPS cap on macOS 13–15 so
 # CSS animations, scrolling, requestAnimationFrame, and xterm
 # rendering run at the display's native refresh rate (120 Hz on
@@ -72,3 +79,10 @@ tauri-plugin-macos-fps = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
+
+[features]
+# On by default so release builds ship the offline Whisper engine.
+# Build cloud-only (no cmake/C++ toolchain needed) with:
+#   cargo build --no-default-features
+default = ["local-whisper"]
+local-whisper = ["dep:whisper-rs", "dep:hound"]
