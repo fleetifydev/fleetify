@@ -53,12 +53,19 @@ type WidgetKind =
   | "github"
   | "telemetry-consent";
 
+/** Which provider bucket a `providers` / `scan` widget is bound to. The
+ *  onboarding runs selection then setup for Workspace first, then Studio. */
+type ProviderPhase = "workspace" | "studio";
+
 interface ChatMsg {
   id: string;
   sender: Sender;
   text: string;
   typing?: boolean;
   widget?: WidgetKind;
+  /** For `providers` / `scan` widgets — which bucket (Workspace/Studio)
+   *  this step covers. Absent on plain assistant bubbles. */
+  phase?: ProviderPhase;
   resolved?: boolean;
 }
 
@@ -198,6 +205,10 @@ const PROVIDER_REVEAL_STAGGER_MS = 55;
 
 interface Selections {
   providers?: ProviderDef[];
+  /** Picks from the Workspace selection step (CLI agents + API providers). */
+  workspacePicks?: ProviderDef[];
+  /** Picks from the Studio selection step (image/video tools). */
+  studioPicks?: ProviderDef[];
   scan?: ProviderScan | null;
   /** Subset of `providers` that reached a ready state during the verify
    *  step (CLI installed + signed in, Ollama running, API key saved +
@@ -262,12 +273,16 @@ export function OnboardingChat({ user, onDone }: Props) {
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, [messages]);
 
-  const pushAssistant = (text: string, widget?: WidgetKind): Promise<void> =>
+  const pushAssistant = (
+    text: string,
+    widget?: WidgetKind,
+    phase?: ProviderPhase,
+  ): Promise<void> =>
     new Promise((resolve) => {
       const id = `a-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
       setMessages((m) => [
         ...m,
-        { id, sender: "assistant", text: "", typing: true, widget },
+        { id, sender: "assistant", text: "", typing: true, widget, phase },
       ]);
 
       let i = 0;
@@ -306,14 +321,47 @@ export function OnboardingChat({ user, onDone }: Props) {
 
   // ─── Step handlers ────────────────────────────────────────
 
-  const handleProvidersConfirm = async (providers: ProviderDef[]) => {
+  // Selection + setup run in two phases — Workspace first, then Studio.
+  // `phase` tells us which picker/verify step just resolved.
+  const handleProvidersConfirm = async (
+    providers: ProviderDef[],
+    phase: ProviderPhase,
+  ) => {
     resolveLastWidget();
-    pushUser(humanList(providers.map((p) => p.label)));
-    setSelections((s) => ({ ...s, providers }));
+
+    // ── Workspace selection done → advance to the Studio selection step.
+    if (phase === "workspace") {
+      pushUser(
+        providers.length
+          ? humanList(providers.map((p) => p.label))
+          : "No workspace providers",
+      );
+      setSelections((s) => ({ ...s, workspacePicks: providers }));
+      await pushAssistant(
+        "Now your **Studio** tools — image and video generation (Higgsfield and friends). Pick any you'd like, or skip and add them later from **Settings**.",
+        "providers",
+        "studio",
+      );
+      return;
+    }
+
+    // ── Studio selection done → persist, then run the two sequential
+    //    setup steps (Workspace verify, then Studio verify).
+    pushUser(
+      providers.length
+        ? humanList(providers.map((p) => p.label))
+        : "Skip — no Studio tools",
+    );
+    const workspacePicks = selectionsRef.current.workspacePicks ?? [];
+    const studioPicks = providers;
+    const allPicks = [...workspacePicks, ...studioPicks];
+    setSelections((s) => ({ ...s, studioPicks, providers: allPicks }));
 
     // Persist the selection as the enabled set: selected → connected,
     // every other catalog provider → disabled (force-off). Also seed the
-    // CLI-agent shortlist. One IPC call → one backend reload.
+    // CLI-agent shortlist. One IPC call → one backend reload. Studio picks
+    // are excluded — they live in the Studio registry, not the catalog, so
+    // setConnectedBulk would reject their ids.
     try {
       let tiles = selectionsRef.current.tiles;
       if (!tiles) {
@@ -323,9 +371,7 @@ export function OnboardingChat({ user, onDone }: Props) {
       }
       const allIds = tiles.length > 0 ? tiles.map((t) => t.spec.id) : PROVIDERS.filter((p) => p.category !== "studio").map((p) => p.id);
       const cliAgentIds = tiles.filter((t) => t.spec.kind === "cli").map((t) => t.spec.id);
-      // Exclude studio providers — they live in the Studio registry, not the
-      // provider catalog, so setConnectedBulk would reject their ids.
-      const catalogProviders = providers.filter((p) => p.category !== "studio");
+      const catalogProviders = workspacePicks.filter((p) => p.category !== "studio");
       const { connected, enabledAgents } = buildSelectionPersist(
         allIds,
         catalogProviders.map((p) => p.id),
@@ -342,19 +388,19 @@ export function OnboardingChat({ user, onDone }: Props) {
     const scanPromise   = apiScanProviders().catch(() => null);
     const pythonPromise = checkPythonRuntime().catch(() => null);
 
-    const intro =
-      providers.length === 1
-        ? `Got it — **${providers[0]!.label}**. Let me verify it end-to-end before we move on, so you don't get a surprise the first time you hit send.`
-        : `Got it — **${providers.length} providers**. I'll verify each one end-to-end so you don't get a surprise the first time you hit send.`;
-    await pushAssistant(intro, "scan");
+    // ── Step 3: Workspace setup/verify ──
+    const wsIntro =
+      workspacePicks.length === 1
+        ? `Got it — let me verify **${workspacePicks[0]!.label}** end-to-end before we move on, so you don't get a surprise the first time you hit send.`
+        : `Got it — I'll verify your **${workspacePicks.length} workspace providers** end-to-end so you don't get a surprise the first time you hit send.`;
+    await pushAssistant(wsIntro, "scan", "workspace");
 
     const [scan, pythonRuntime] = await Promise.all([scanPromise, pythonPromise]);
     setSelections((s) => ({ ...s, scan, pythonRuntime }));
 
-    // Wait for the user to click Continue inside the ScanWidget. The
-    // widget's button is gated on "at least one provider ready"
-    // (CLI verified ok, Ollama running, API key saved + tested) so
-    // we never advance with a fully-empty roster.
+    // Wait for the user to click Continue inside the Workspace ScanWidget.
+    // Its button is gated on "at least one provider ready" so we never
+    // advance with a fully-empty roster.
     await new Promise<void>((resolve) => {
       scanContinueResolverRef.current = resolve;
     });
@@ -366,12 +412,33 @@ export function OnboardingChat({ user, onDone }: Props) {
     const finalScan = (await apiScanProviders().catch(() => null)) ?? scan;
     if (finalScan !== scan) setSelections((s) => ({ ...s, scan: finalScan }));
 
-    await pushAssistant(buildScanReadout(providers, finalScan, inlineSavedRef.current));
+    // ── Step 4: Studio setup/verify (skipped when nothing was picked) ──
+    if (studioPicks.length > 0) {
+      await pushAssistant(
+        studioPicks.length === 1
+          ? `And your Studio tool — let me check **${studioPicks[0]!.label}**.`
+          : "And your Studio tools — let me check those too.",
+        "scan",
+        "studio",
+      );
+      // Studio verify is optional (tools finish setup in Settings → Studio),
+      // so its Continue is never gated on readiness.
+      await new Promise<void>((resolve) => {
+        scanContinueResolverRef.current = resolve;
+      });
+      scanContinueResolverRef.current = null;
+      resolveLastWidget();
+    }
+
+    // ── Tail: readout + main-agent picker, scoped to Workspace picks.
+    //    Studio tools verify in their own step above and never drive a
+    //    chat session, so the default-agent flow only considers workspace.
+    await pushAssistant(buildScanReadout(workspacePicks, finalScan, inlineSavedRef.current));
 
     // Main-agent picker only renders the providers that actually
     // reached "ready" — picking a not-installed CLI as the default
     // would set the user up for an error on their first message.
-    const readyProviders = providers.filter((p) =>
+    const readyProviders = workspacePicks.filter((p) =>
       isProviderReady(p, finalScan, inlineSavedRef.current),
     );
     setSelections((s) => ({ ...s, readyProviders }));
@@ -589,8 +656,9 @@ export function OnboardingChat({ user, onDone }: Props) {
         "Fleet is a single cockpit for every AI coding agent — Claude Code, Codex, Gemini, Ollama, and the API providers behind them. Shared memory, real cost control, one sidebar.",
       );
       await pushAssistant(
-        "Let's set you up — pick one or more providers and I'll verify each is installed and signed in. You can edit any of this later from **Settings**.",
+        "Let's set you up — start with your **workspace** agents and API providers. Pick one or more and I'll verify each is installed and signed in. You can edit any of this later from **Settings**.",
         "providers",
+        "workspace",
       );
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -758,7 +826,7 @@ function Bubble({
   existingGithub?: { username: string } | null;
   /** Forwarded to ScanWidget for the Antigravity SDK row. */
   pythonRuntime?: PythonRuntimeResult | null;
-  onProvidersConfirm: (providers: ProviderDef[]) => void;
+  onProvidersConfirm: (providers: ProviderDef[], phase: ProviderPhase) => void;
   onMainAgentPick: (provider: ProviderDef, modelId?: string, modelLabel?: string) => void;
   onGithubResult: (
     result:
@@ -829,13 +897,20 @@ function Bubble({
       </div>
 
       {!msg.typing && !msg.resolved && msg.widget === "providers" && (
-        <ProvidersWidget onConfirm={onProvidersConfirm} scan={scan ?? null} />
+        <ProvidersWidget
+          phase={msg.phase ?? "workspace"}
+          onConfirm={(picks) => onProvidersConfirm(picks, msg.phase ?? "workspace")}
+          scan={scan ?? null}
+        />
       )}
       {!msg.typing && msg.widget === "scan" && chosenProviders && (
         <ScanWidget
-          providers={chosenProviders}
+          providers={chosenProviders.filter((p) =>
+            msg.phase === "studio" ? p.category === "studio" : p.category !== "studio",
+          )}
           scan={scan ?? null}
           frozen={Boolean(msg.resolved)}
+          optional={msg.phase === "studio"}
           pythonRuntime={pythonRuntime ?? null}
           onKeySaved={onKeySaved}
           onContinue={onScanContinue}
@@ -939,9 +1014,13 @@ function TelemetryConsentWidget({
    filled solid-surface row with a trailing check; hover uses
    the same solid surface (per the project's hover rule).            */
 function ProvidersWidget({
+  phase,
   onConfirm,
   scan,
 }: {
+  /** Which bucket this picker covers — Workspace (CLI agents + API) or
+   *  Studio (image/video tools). Studio selection is optional (skippable). */
+  phase: ProviderPhase;
   onConfirm: (providers: ProviderDef[]) => void;
   /** Snapshot of /providers/scan, pre-fetched on OnboardingChat mount.
    *  null while the request is still in flight — the picker just
@@ -951,6 +1030,19 @@ function ProvidersWidget({
   const [revealed, setRevealed] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
+  // Only this phase's providers, split into "Providers" (CLI agents) and
+  // "API" — mirroring Settings → Providers (Workspace/Studio × Providers/API).
+  // An empty sub-section is hidden, so Studio shows just "Providers" until
+  // studio API providers are added.
+  const phaseProviders = PROVIDERS.filter((p) =>
+    phase === "studio" ? p.category === "studio" : p.category !== "studio",
+  );
+  const providerKind = phaseProviders.filter((p) => p.kind === "cli");
+  const apiKind = phaseProviders.filter((p) => p.kind === "api");
+
+  // Studio is optional — the user can Continue (skip) with nothing picked.
+  const optional = phase === "studio";
+
   useEffect(() => {
     let cancelled = false;
     let i = 0;
@@ -958,12 +1050,13 @@ function ProvidersWidget({
       if (cancelled) return;
       i += 1;
       setRevealed(i);
-      if (i < PROVIDERS.length) setTimeout(tick, PROVIDER_REVEAL_STAGGER_MS);
+      if (i < phaseProviders.length) setTimeout(tick, PROVIDER_REVEAL_STAGGER_MS);
     };
     setTimeout(tick, 80);
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const toggle = (id: string) => {
@@ -976,24 +1069,16 @@ function ProvidersWidget({
   };
 
   const confirm = () => {
-    if (selected.size === 0) return;
-    const picks = PROVIDERS.filter((p) => selected.has(p.id));
+    if (!optional && selected.size === 0) return;
+    const picks = phaseProviders.filter((p) => selected.has(p.id));
     onConfirm(picks);
   };
 
   const count = selected.size;
+  const canContinue = optional || count > 0;
 
-  // Workspace providers (category !== "studio") appear first, then Studio
-  // providers. Within the workspace group, CLI and API are sub-sectioned as
-  // before. Studio providers get their own section header after workspace.
-  const workspaceProviders = PROVIDERS.filter((p) => p.category !== "studio");
-  const studioProviders    = PROVIDERS.filter((p) => p.category === "studio");
-  const cliProviders = workspaceProviders.filter((p) => p.kind === "cli");
-  const apiProviders = workspaceProviders.filter((p) => p.kind === "api");
-
-  // Map each provider to its global reveal index so the stagger
-  // walks through workspace (CLI → API) → Studio in source order.
-  const indexById = new Map(PROVIDERS.map((p, i) => [p.id, i]));
+  // Reveal stagger walks this phase's providers (Providers → API) in order.
+  const indexById = new Map(phaseProviders.map((p, i) => [p.id, i]));
 
   const renderSection = (title: string, list: ProviderDef[]) => (
     <div style={{ display: "flex", flexDirection: "column" }}>
@@ -1040,9 +1125,8 @@ function ProvidersWidget({
       }}
     >
       <div style={{ padding: "0 4px 6px", display: "flex", flexDirection: "column" }}>
-        {renderSection("CLI", cliProviders)}
-        {renderSection("API key", apiProviders)}
-        {studioProviders.length > 0 && renderSection("Studio", studioProviders)}
+        {providerKind.length > 0 && renderSection("Providers", providerKind)}
+        {apiKind.length > 0 && renderSection("API", apiKind)}
       </div>
 
       {/* Footer — hairline + counter + Continue */}
@@ -1057,11 +1141,15 @@ function ProvidersWidget({
         }}
       >
         <span style={{ fontSize: 11, color: "var(--m-text-3)", flex: 1 }}>
-          {count === 0 ? "None selected" : `${count} selected`}
+          {count === 0
+            ? optional
+              ? "Optional — pick any or skip"
+              : "None selected"
+            : `${count} selected`}
         </span>
         <button
           onClick={confirm}
-          disabled={count === 0}
+          disabled={!canContinue}
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -1071,22 +1159,22 @@ function ProvidersWidget({
             borderRadius: 5,
             fontSize: 11.5,
             fontWeight: 600,
-            background: count > 0 ? "#fff" : "rgba(255,255,255,0.05)",
-            color: count > 0 ? "#000" : "var(--m-text-3)",
+            background: canContinue ? "#fff" : "rgba(255,255,255,0.05)",
+            color: canContinue ? "#000" : "var(--m-text-3)",
             border: "none",
-            cursor: count > 0 ? "pointer" : "not-allowed",
+            cursor: canContinue ? "pointer" : "not-allowed",
             transition: "background 0.15s ease, transform 0.12s ease",
           }}
           onMouseEnter={(e) => {
-            if (count === 0) return;
+            if (!canContinue) return;
             e.currentTarget.style.transform = "translateY(-0.5px)";
           }}
           onMouseLeave={(e) => {
-            if (count === 0) return;
+            if (!canContinue) return;
             e.currentTarget.style.transform = "translateY(0)";
           }}
         >
-          Continue
+          {optional && count === 0 ? "Skip" : "Continue"}
           <ArrowRight size={10} strokeWidth={2.4} />
         </button>
       </div>
@@ -1249,6 +1337,7 @@ function ScanWidget({
   providers,
   scan,
   frozen = false,
+  optional = false,
   pythonRuntime,
   onKeySaved,
   onContinue,
@@ -1256,6 +1345,9 @@ function ScanWidget({
   providers: ProviderDef[];
   scan: ProviderScan | null;
   frozen?: boolean;
+  /** Optional bucket (Studio) — the Continue button is never gated on
+   *  readiness, since studio tools finish setup in Settings → Studio. */
+  optional?: boolean;
   /** Python runtime probe — forwarded to the Antigravity SDK row so
    *  it can swap between Setup / Add key / Ready states. null means
    *  the probe ran and found no Python installation. */
@@ -1266,10 +1358,11 @@ function ScanWidget({
    *  setKey / setOllamaBaseUrl succeeds inside this widget. */
   onKeySaved?: (id: string) => void;
   /** Continue button click handler. Resolves the parent's pending
-   *  promise so the readout + main-agent picker can land. Gated on
-   *  ≥1 provider being ready (CLI verified ok / Ollama running /
-   *  API key saved + tested) so we never advance with nothing
-   *  wired up. */
+   *  promise so the readout + main-agent picker can land. For the
+   *  workspace (required) step it's gated on ≥1 provider being ready
+   *  (CLI verified ok / Ollama running / API key saved + tested) so we
+   *  never advance with nothing wired up; for the optional Studio step
+   *  it's always enabled. */
   onContinue?: () => void;
 }) {
   const [states, setStates] = useState<Record<string, ProviderState>>({});
@@ -1709,6 +1802,9 @@ function ScanWidget({
     }
   };
 
+  // Each ScanWidget covers a single phase (the parent passes only the
+  // workspace or only the studio picks), so the rows render as one flat
+  // verify list — the phase separation lives in the chat flow, not here.
   return (
     <div
       style={{
@@ -1870,7 +1966,7 @@ function ScanWidget({
       })}
       {!frozen && onContinue && (
         <ContinueRow
-          enabled={providers.some((p) => isProviderReady(p, scan, new Set(Object.keys(keysAdded).filter((k) => keysAdded[k]))))}
+          enabled={optional || providers.some((p) => isProviderReady(p, scan, new Set(Object.keys(keysAdded).filter((k) => keysAdded[k]))))}
           onContinue={onContinue}
         />
       )}
