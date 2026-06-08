@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import type { CSSProperties } from "react";
-import { PanelLeft, FolderOpen } from "lucide-react";
+import { PanelLeft, FolderOpen, ChevronDown } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
 import { usesInAppTitleBar } from "@/lib/utils";
 import { ProviderLogo } from "@/components/ui/provider-logo";
@@ -48,6 +48,8 @@ export function StudioComposer() {
   const [error, setError] = useState<string | null>(null);
   const [tools, setTools] = useState<StudioToolStatus[] | null>(null);
   const [account, setAccount] = useState<HfAccount | null>(null);
+  const [title, setTitle] = useState("");
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
 
   const loadTools = useCallback(async () => {
     try {
@@ -103,9 +105,9 @@ export function StudioComposer() {
     setError(null);
     try {
       const text = prompt.trim();
-      const title = text.slice(0, 48) || "Generation";
+      const sessionTitle = title.trim() || text.slice(0, 48) || "Generation";
       const session = await createSession({
-        title,
+        title: sessionTitle,
         project_path: folder,
         tool: provider,
         permission_mode: "default",
@@ -121,7 +123,7 @@ export function StudioComposer() {
       setError(e instanceof Error ? e.message : String(e));
       setSubmitting(false);
     }
-  }, [model, prompt, folder, submitting, provider, media, addSession, setPendingGeneration, setActiveSession]);
+  }, [model, prompt, folder, submitting, provider, media, title, addSession, setPendingGeneration, setActiveSession]);
 
   const seg = (active: boolean): CSSProperties => ({
     padding: "5px 12px",
@@ -137,6 +139,7 @@ export function StudioComposer() {
   const status = tools?.find((t) => t.id === provider);
   const notInstalled = !!status && !status.installed;
   const notConnected = !!status && status.installed && !status.authenticated;
+  const selectedModel = models.find((m) => m.job_set_type === model);
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--card)" }}>
@@ -154,9 +157,18 @@ export function StudioComposer() {
               <PanelLeft size={14} />
             </button>
           )}
-          <span style={{ fontSize: 13, fontWeight: 400, color: "var(--c-med)", fontFamily: "var(--font-sans)", letterSpacing: "-0.01em", padding: "1px 4px" }}>
-            New generation
-          </span>
+          {/* Editable session name — same scale/font as the new-session "New
+              chat" breadcrumb, but typeable (placeholder reads "New generation"
+              until the user names it). */}
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="New generation"
+            aria-label="Generation name"
+            title="Name this generation"
+            className="no-drag studio-title-input"
+            style={{ fontSize: 13, fontWeight: 400, color: "var(--c-high)", fontFamily: "var(--font-sans)", letterSpacing: "-0.01em", padding: "1px 4px", background: "transparent", border: "none", outline: "none", width: 240, minWidth: 0 }}
+          />
         </div>
         {account && (
           <span className="no-drag" title={`Higgsfield balance · ${account.email}`} style={{ fontSize: 11, color: "var(--c-dim)", flexShrink: 0 }}>
@@ -218,13 +230,45 @@ export function StudioComposer() {
             </div>
           ) : (
             <>
-              <select aria-label="Model" value={model} onChange={(e) => setModel(e.target.value)} style={{ ...control, width: "100%", cursor: "pointer" }}>
-                {models.map((m) => (
-                  <option key={m.job_set_type} value={m.job_set_type}>
-                    {m.display_name}
-                  </option>
-                ))}
-              </select>
+              {/* Custom model dropdown — the native <select> rendered
+                  white-on-white (invisible) in the dark theme on Linux/GTK, so
+                  we paint our own menu with the app's surface tokens. */}
+              <div style={{ position: "relative", width: "100%" }}>
+                <button
+                  type="button"
+                  aria-label="Model"
+                  onClick={() => setModelMenuOpen((o) => !o)}
+                  style={{ ...control, width: "100%", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}
+                >
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {selectedModel?.display_name ?? (models.length ? "Select a model" : "Loading models…")}
+                  </span>
+                  <ChevronDown size={14} style={{ color: "var(--c-dim)", flexShrink: 0, transform: modelMenuOpen ? "rotate(180deg)" : "none", transition: "transform 0.12s" }} />
+                </button>
+                {modelMenuOpen && (
+                  <>
+                    <div onClick={() => setModelMenuOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+                    <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 50, maxHeight: 300, overflowY: "auto", background: "var(--c-srf2)", border: "1px solid var(--c-brd)", borderRadius: 8, padding: 4, boxShadow: "0 10px 30px rgba(0,0,0,0.35)" }}>
+                      {models.length === 0 && <div style={{ padding: "8px 10px", fontSize: 12, color: "var(--c-dim)" }}>No models available.</div>}
+                      {models.map((m) => {
+                        const active = m.job_set_type === model;
+                        return (
+                          <button
+                            key={m.job_set_type}
+                            type="button"
+                            onClick={() => { setModel(m.job_set_type); setModelMenuOpen(false); }}
+                            style={{ display: "block", width: "100%", textAlign: "left", padding: "7px 10px", borderRadius: 6, fontSize: 12.5, background: active ? "var(--c-srf)" : "transparent", color: active ? "var(--c-high)" : "var(--c-med)", border: "none", cursor: "pointer" }}
+                            onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "var(--c-srf)"; }}
+                            onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}
+                          >
+                            {m.display_name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+              </div>
 
               <textarea
                 value={prompt}

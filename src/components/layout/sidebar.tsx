@@ -918,7 +918,9 @@ export function Sidebar() {
     s.id !== staffSessionId
     && !s.local_only
     && !spawnedSet.has(s.id)
-    && !isStudioTool(s.tool)
+    // Studio mode lists generation sessions through the SAME pipeline (folder
+    // groups, drag-to-reorder, hover provider logo); Workspace lists agents.
+    && (appMode === "studio" ? isStudioTool(s.tool) : !isStudioTool(s.tool))
   );
   const filtered  = searchVal ? allAgents.filter(s => s.title.toLowerCase().includes(searchVal.toLowerCase())) : allAgents;
   const sorted = [...filtered].sort((a, b) => {
@@ -1194,27 +1196,15 @@ export function Sidebar() {
         {/* Subtle gap before sessions */}
         <div style={{ height: 6 }} />
 
-        {/* Sessions — Studio shows generation sessions; Workspace shows agents. */}
-        {appMode === "studio" ? (
-        <div style={{ paddingBottom: 8 }}>
-          {(() => {
-            const studioSessions = sessions.filter(s => isStudioTool(s.tool) && !s.local_only && !s.archived_at);
-            return studioSessions.length === 0 ? (
-              <div style={{ padding: "4px 10px", fontSize: 11.5, color: "var(--c-ghost)" }}>No generations yet.</div>
-            ) : (
-              studioSessions.map(s => (
-                <SideRow key={s.id} icon={<ProviderLogo tool="higgsfield" size={14} />} label={s.title || "Generation"} active={activeSessionId === s.id} onClick={() => setActiveSession(s.id)} />
-              ))
-            );
-          })()}
-        </div>
-        ) : (
+        {/* Sessions — Studio lists generation sessions, Workspace lists agents;
+            both flow through the same AgentRow / folder-group / drag-and-drop
+            pipeline (the `allAgents` filter above is mode-aware). */}
         <div style={{ paddingBottom: 8 }}>
             {sorted.length === 0 ? (
               <div style={{ padding: "4px 10px", fontSize: 11.5, color: "var(--c-ghost)", lineHeight: 1.5 }}>
                 {searchVal ? "No results." : (
-                  <button onClick={handleNew} style={{ background: "none", border: "none", color: "var(--c-ghost)", cursor: "pointer", fontSize: 11.5, padding: 0, fontFamily: "inherit", textAlign: "left" }}>
-                    No agents yet. Create one →
+                  <button onClick={appMode === "studio" ? openStudioComposer : handleNew} style={{ background: "none", border: "none", color: "var(--c-ghost)", cursor: "pointer", fontSize: 11.5, padding: 0, fontFamily: "inherit", textAlign: "left" }}>
+                    {appMode === "studio" ? "No generations yet. Create one →" : "No agents yet. Create one →"}
                   </button>
                 )}
               </div>
@@ -1301,7 +1291,6 @@ export function Sidebar() {
               </>
             )}
         </div>
-        )}
         </div>
       </ReactLenis>
 

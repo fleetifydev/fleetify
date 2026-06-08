@@ -816,6 +816,10 @@ td *::selection, th *::selection {
    secondary to actual entered text (--foreground), but legible. */
 textarea::placeholder { color: var(--c-dim); opacity: 1; }
 
+/* Studio "New generation" name field — placeholder matches the muted
+   new-session breadcrumb tone so the field reads like the old static label. */
+.studio-title-input::placeholder { color: var(--c-med); opacity: 1; }
+
 /* ─── Smooth focus rings ─── */
 textarea:focus { outline: none; }
 
