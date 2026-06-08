@@ -23,11 +23,8 @@ pub fn run(model_path: &std::path::Path, wav: &[u8], language: &str) -> Result<L
     }
     let duration_seconds = samples.len() as f64 / 16_000.0;
 
-    let ctx = WhisperContext::new_with_params(
-        &model_path.to_string_lossy(),
-        WhisperContextParameters::default(),
-    )
-    .map_err(|e| format!("load model: {e}"))?;
+    let ctx = WhisperContext::new_with_params(model_path, WhisperContextParameters::default())
+        .map_err(|e| format!("load model: {e}"))?;
     let mut state = ctx
         .create_state()
         .map_err(|e| format!("create state: {e}"))?;
@@ -50,13 +47,15 @@ pub fn run(model_path: &std::path::Path, wav: &[u8], language: &str) -> Result<L
         .full(params, &samples)
         .map_err(|e| format!("transcribe: {e}"))?;
 
-    let n = state
-        .full_n_segments()
-        .map_err(|e| format!("segments: {e}"))?;
+    // 0.16: `full_n_segments` returns the count directly (no `Result`), and
+    // segment text is read via `get_segment(i)` → `WhisperSegment::to_str`.
+    let n = state.full_n_segments();
     let mut text = String::new();
     for i in 0..n {
-        if let Ok(seg) = state.full_get_segment_text(i) {
-            text.push_str(&seg);
+        if let Some(seg) = state.get_segment(i) {
+            if let Ok(s) = seg.to_str() {
+                text.push_str(s);
+            }
         }
     }
 
