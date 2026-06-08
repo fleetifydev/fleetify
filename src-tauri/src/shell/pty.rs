@@ -70,6 +70,18 @@ pub fn spawn_argv(
     if let Some(c) = cwd {
         cmd.cwd(c);
     }
+    // Inherit the parent's environment first — portable_pty's CommandBuilder
+    // gives the child an EMPTY env by default, which is what made the
+    // in-app terminal run with no TERM, no PATH, no HOME → "TERM environment
+    // variable not set", no colours, `clear` failing, prompts missing.
+    // We pass through everything we have and then force-set a sensible
+    // colour-capable TERM + COLORTERM so the shell renders ANSI escapes
+    // properly. Caller-supplied env (the `env` arg) overrides afterwards.
+    for (k, v) in std::env::vars() {
+        cmd.env(k, v);
+    }
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
     if let Some(e) = env {
         for (k, v) in e {
             cmd.env(k, v);

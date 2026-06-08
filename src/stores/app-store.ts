@@ -741,9 +741,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       return {
         openWorkspaceViews: next,
         workspaceView: first,
-        // Closing the LAST pane closes the whole panel. Matches
-        // user expectation that "X on the only pane should hide the
-        // panel" — otherwise we'd leave an empty card behind.
         rightPanelOpen: next.length > 0,
       };
     }),

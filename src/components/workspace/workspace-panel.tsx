@@ -3926,6 +3926,7 @@ function WorkspaceGrid({ views }: { views: WorkspaceView[] }) {
           key={v}
           data-pane={v}
           style={{
+            position: "relative",
             flex: flexVal,
             minHeight: 0, minWidth: 0,
             background: "var(--sidebar)",

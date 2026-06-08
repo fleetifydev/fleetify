@@ -622,6 +622,52 @@ function ReadFilePreview({ filePath }: { filePath: string }) {
   );
 }
 
+/** Captured Read output → IDE-style: a line-number gutter + Shiki syntax
+ *  highlighting (the agent's `cat -n` output is plain otherwise). Parses the
+ *  "  30→code" / "  30\tcode" prefix Claude emits; falls back to no-gutter
+ *  highlighting when the output isn't line-numbered. */
+function ReadOutputView({ output, filePath }: { output: string; filePath: string }) {
+  const rawLines = output.replace(/\n+$/, "").split("\n");
+  const parsed = rawLines.map((l) => {
+    const m = l.match(/^\s*(\d+)(?:→|\t)(.*)$/);
+    return m ? { num: m[1] as string | null, code: m[2] ?? "" } : { num: null, code: l };
+  });
+  const matched = parsed.filter((p) => p.num != null).length;
+  const hasGutter = matched > Math.max(1, rawLines.length * 0.5);
+  const rows = hasGutter ? parsed : rawLines.map((l) => ({ num: null as string | null, code: l }));
+  const codeText = rows.map((r) => r.code).join("\n");
+  const lang = langFromPath(filePath) || "text";
+  const hl = useShikiLines(codeText, lang);
+
+  return (
+    <div style={{
+      borderTop: "1px solid var(--sidebar-border)",
+      maxHeight: 320, overflow: "auto",
+      fontFamily: "var(--font-mono)", fontSize: 11.5, lineHeight: 1.6,
+      padding: "6px 0",
+    }}>
+      {rows.map((r, i) => (
+        <div key={i} style={{ display: "flex", whiteSpace: "pre" }}>
+          {hasGutter && (
+            <span style={{
+              flexShrink: 0, width: 46, textAlign: "right", paddingRight: 14,
+              color: "var(--c-ghost)", userSelect: "none",
+            }}>{r.num}</span>
+          )}
+          <span style={{
+            flex: 1, minWidth: 0, paddingLeft: hasGutter ? 0 : 12, paddingRight: 12,
+            color: "var(--c-high)",
+          }}>
+            {hl && hl[i] != null
+              ? <span dangerouslySetInnerHTML={{ __html: hl[i] }} />
+              : (r.code || " ")}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function renderToolDetail(
   toolName: string,
   input: Record<string, unknown>,
@@ -703,10 +749,15 @@ function renderToolDetail(
         <span style={{ color: "var(--c-high)", fontWeight: 500 }}>{pp.name}</span>
       </span>,
     );
-    // When the agent captured the read output, show it. Otherwise — for a
-    // Read — fetch the file ourselves and preview it, so expanding the card
-    // shows the actual file content instead of just the path.
-    if (outputBlock) return withOutput(pathHead);
+    // When the agent captured the read output, show it. Read/View output is
+    // file content — render it IDE-style (line-number gutter + Shiki colours)
+    // instead of the flat mono panel. Other file tools keep the plain panel.
+    if (outputBlock) {
+      if (toolName === "Read" || toolName === "View" || toolName === "NotebookRead") {
+        return <>{pathHead}<ReadOutputView output={outputBlock} filePath={fullPath} /></>;
+      }
+      return withOutput(pathHead);
+    }
     if (toolName === "Read" || toolName === "View") {
       return (
         <>

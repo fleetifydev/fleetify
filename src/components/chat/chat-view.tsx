@@ -36,6 +36,14 @@ import type { WorkspaceView } from "@/stores/app-store";
  *
  *  `latestUserMsgRef` is a ref object — stable across renders, so
  *  passing it as a prop doesn't invalidate memo. */
+/** How many of the most-recent messages render at once. A long session
+ *  with hundreds of messages otherwise puts every one in the DOM — each with
+ *  markdown + Shiki code blocks — which bloats layout/paint and makes scroll
+ *  + streaming janky. We cap the live window and let the user reveal older
+ *  ones in chunks (the common case is reading the tail of a conversation). */
+const MESSAGE_WINDOW = 60;
+const MESSAGE_WINDOW_STEP = 80;
+
 const MessageList = memo(function MessageList({
   messages,
   latestUserMsgRef,
@@ -43,19 +51,43 @@ const MessageList = memo(function MessageList({
   messages: ChatMessage[];
   latestUserMsgRef: React.RefObject<HTMLDivElement | null>;
 }) {
+  const [windowCount, setWindowCount] = useState(MESSAGE_WINDOW);
+
   // Filter out the silent auto-intro marker prompt even if a session
   // was created before the backend skip-persistence fix landed (those
   // rows still live in the DB). Belt-and-suspenders so the
   // [fleet:auto-intro] payload never shows in chat.
-  const visible = messages.filter(m => {
+  const visible = useMemo(() => messages.filter(m => {
     if (m.role !== "user") return true;
     const firstText = m.content.find(b => (b as { type: string }).type === "text") as { text?: string } | undefined;
     return !firstText?.text?.startsWith("[fleet:auto-intro]");
-  });
-  const lastUserIdx = visible.map((m) => m.role).lastIndexOf("user");
+  }), [messages]);
+
+  const hiddenCount = Math.max(0, visible.length - windowCount);
+  const shown = hiddenCount > 0 ? visible.slice(-windowCount) : visible;
+  const lastUserIdx = shown.map((m) => m.role).lastIndexOf("user");
+
   return (
     <>
-      {visible.map((m, i) => (
+      {hiddenCount > 0 && (
+        <button
+          onClick={() => setWindowCount((c) => c + MESSAGE_WINDOW_STEP)}
+          style={{
+            display: "block", margin: "4px auto 16px",
+            padding: "6px 14px", borderRadius: 7,
+            background: "rgba(var(--fg-rgb),0.05)", border: "1px solid var(--c-brd)",
+            color: "var(--c-med)", fontSize: 12, fontWeight: 500,
+            cursor: "pointer", fontFamily: "inherit",
+            transition: "background 0.12s, color 0.12s",
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.color = "var(--c-high)"; e.currentTarget.style.background = "rgba(var(--fg-rgb),0.09)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = "var(--c-med)"; e.currentTarget.style.background = "rgba(var(--fg-rgb),0.05)"; }}
+        >
+          Show {Math.min(hiddenCount, MESSAGE_WINDOW_STEP)} earlier {hiddenCount === 1 ? "message" : "messages"}
+          {hiddenCount > MESSAGE_WINDOW_STEP ? ` · ${hiddenCount} hidden` : ""}
+        </button>
+      )}
+      {shown.map((m, i) => (
         <MessageContent
           key={m.id}
           message={m}
@@ -2061,7 +2093,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
             />
           ) : (
             <div style={{ maxWidth: 920, margin: "0 auto", width: "100%", padding: "24px 32px 8px" }}>
-              <MessageList messages={messages} latestUserMsgRef={latestUserMsgRef} />
+              <MessageList key={effectiveSessionId ?? "fleet"} messages={messages} latestUserMsgRef={latestUserMsgRef} />
               {/* Suppress StreamingMessage while a compaction pill is
                   active — /compact runs entirely server-side (no agent
                   turn, no thinking, no tools), so the idle "Thinking…"
