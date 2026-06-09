@@ -2588,6 +2588,68 @@ async fn handle_staff_dispatch_tokens(
         });
     }
 
+    // ── SPAWN ──
+    // Each [[SPAWN:{json}]] → resolve. No gaps ⇒ create now and emit a
+    // "created" result card. Gaps ⇒ emit a "pending" editable form card the
+    // user completes (Create posts to /api/sessions/spawn). The token itself
+    // is stripped from the saved bubble by strip_all_tokens at the call site.
+    for raw in crate::services::spawn::parse_spawns(text) {
+        let known = crate::services::spawn::known_project_paths(&st.auth.pool, staff_user_id).await;
+        let resolved = crate::services::spawn::resolve(&raw, &known);
+        tracing::info!(gaps = resolved.gaps.len(), "spawn.directive.handled");
+        let request_id = uuid::Uuid::new_v4().to_string();
+        if resolved.gaps.is_empty() {
+            match crate::services::spawn::create(st, staff_user_id, &resolved.spec, Some(staff_sid))
+                .await
+            {
+                Ok(session) => {
+                    send_json(
+                        sink,
+                        json!({
+                            "type": "spawn_form",
+                            "session_id": staff_sid,
+                            "request_id": request_id,
+                            "status": "created",
+                            "draft": resolved.spec,
+                            "gaps": [],
+                            "created_session_id": session.id,
+                            "title": session.title,
+                        }),
+                    )
+                    .await;
+                }
+                Err(e) => {
+                    send_json(
+                        sink,
+                        json!({
+                            "type": "spawn_form",
+                            "session_id": staff_sid,
+                            "request_id": request_id,
+                            "status": "failed",
+                            "draft": resolved.spec,
+                            "gaps": [],
+                            "error": e.to_string(),
+                        }),
+                    )
+                    .await;
+                }
+            }
+        } else {
+            send_json(
+                sink,
+                json!({
+                    "type": "spawn_form",
+                    "session_id": staff_sid,
+                    "request_id": request_id,
+                    "status": "pending",
+                    "draft": resolved.spec,
+                    "gaps": resolved.gaps,
+                }),
+            )
+            .await;
+        }
+    }
+
     // ── STOP / RESTART ──
     for stop_id in parse_stops(text) {
         if let Ok(Some(target)) =

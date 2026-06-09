@@ -74,6 +74,14 @@ fn restart_re() -> &'static Regex {
     R.get_or_init(|| Regex::new(r"(?i)\[\[RESTART:([a-f0-9-]+)\]\]").expect("RESTART_RE"))
 }
 
+fn spawn_re() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    // Capture everything up to the first `]]`. JSON braces inside are fine;
+    // only a value containing a literal "]]" breaks it (rare — the form is
+    // the safety net).
+    R.get_or_init(|| Regex::new(r"(?is)\[\[SPAWN:(.+?)\]\]").expect("SPAWN_RE"))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dispatch {
     pub target_id: String,
@@ -136,6 +144,16 @@ pub fn parse_restarts(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Raw JSON payloads from every `[[SPAWN:{…}]]` token, in document order.
+/// The semantic parse (into `services::spawn::RawSpawn`) lives in
+/// `services::spawn::parse_spawns`; this just owns the token grammar.
+pub fn parse_spawn_payloads(text: &str) -> Vec<String> {
+    spawn_re()
+        .captures_iter(text)
+        .map(|c| c[1].trim().to_string())
+        .collect()
+}
+
 /// Parse every `[[READ_AGENT:id|N]]` token. N caps at u32; the WS
 /// dispatcher further caps it at 50 to match the Python `min(N, 50)`.
 pub fn parse_read_agents(text: &str) -> Vec<ReadAgent> {
@@ -154,11 +172,12 @@ pub fn parse_read_agents(text: &str) -> Vec<ReadAgent> {
 /// Strip every dispatch-style token from `text` so the saved
 /// assistant content doesn't leak the raw syntax. Order matters:
 /// READ_AGENT first (it tokenises around a `|N`), then DIRECT_DISPATCH,
-/// then DISPATCH, finally STOP/RESTART. Returns a cleaned `String`.
+/// then DISPATCH, then SPAWN, finally STOP/RESTART. Returns a cleaned `String`.
 pub fn strip_all_tokens(text: &str) -> String {
     let s = read_agent_re().replace_all(text, "");
     let s = direct_dispatch_re().replace_all(&s, "");
     let s = dispatch_re().replace_all(&s, "");
+    let s = spawn_re().replace_all(&s, "");
     let s = stop_re().replace_all(&s, "");
     let s = restart_re().replace_all(&s, "");
     s.into_owned()
@@ -170,6 +189,20 @@ mod tests {
 
     const SID: &str = "5a99aaaa-0000-0000-0000-bbbbbbbbbbbb";
     const SID2: &str = "deadbeef-1234-5678-9abc-def012345678";
+
+    #[test]
+    fn parse_spawn_payloads_extracts_json() {
+        let text = r#"sure [[SPAWN:{"title":"x","project":"api"}]] done"#;
+        let payloads = parse_spawn_payloads(text);
+        assert_eq!(payloads.len(), 1);
+        assert!(payloads[0].contains("\"title\":\"x\""));
+    }
+
+    #[test]
+    fn strip_all_tokens_removes_spawn() {
+        let text = r#"a [[SPAWN:{"title":"x"}]] b"#;
+        assert_eq!(strip_all_tokens(text), "a  b");
+    }
 
     #[test]
     fn dispatch_extracts_target_and_task() {

@@ -162,6 +162,22 @@ Use this before dispatching a follow-up task to understand what the agent has al
 The fleet list below is live — use it to decide who to dispatch to, check who is busy,
 and understand each agent's project context before assigning work.
 
+### 5. Spawn new agents
+When the user asks to CREATE / SPAWN / ADD a new agent (not dispatch to an
+existing one), embed this EXACT token:
+  `[[SPAWN:{{"title":"...","project":"...","tool":"...","model":"...","perm":"...","template":"...","task":"..."}}]]`
+Fill only what the user gave you; omit fields you don't know. A confirmation
+form appears ONLY when something is missing or ambiguous — if you supplied
+everything and it resolves, the agent is created immediately. Field guide:
+- `tool`: the provider, e.g. "claude" (Claude Code), "openai", "gemini".
+- `model`: a model hint, e.g. "opus 4.8" — the backend canonicalises it.
+- `perm`: "bypass" (full auto), "acceptEdits", "plan", or "default" (ask).
+- `template`: optional, e.g. "reverse_engineering".
+- `task`: optional first task — if set, the new agent starts working on it
+  immediately; if omitted, it sits idle until the user opens it.
+After the token, write ONE line, e.g. "Spawning code-reviewer for xyz-backend."
+Do NOT do the work yourself and do NOT also dispatch — emit the token and stop.
+
 ## Auto Mode
 If the user message starts with "[AUTO MODE]":
 - DO NOT ask for clarification or confirmation

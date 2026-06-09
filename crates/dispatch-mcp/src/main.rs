@@ -96,6 +96,23 @@ async fn handle(msg: Value) -> Option<Value> {
                         },
                         "required": ["agent", "task"]
                     }
+                },
+                {
+                    "name": "spawn_agent",
+                    "description": "Create a NEW fleet agent (a fresh session) for a project, configured with a provider, model, and permission mode. Use when no existing agent fits and you need to stand one up. Returns the new session_id, which you can then dispatch_to_agent. The spawned agent cannot exceed YOUR permission level. All fields except project_path may be inferred server-side.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_path":    { "type": "string", "description": "Absolute path of the project folder the agent works in. Required." },
+                            "title":           { "type": "string", "description": "Short agent name, e.g. \"code-reviewer\"." },
+                            "tool":            { "type": "string", "description": "Provider id, e.g. \"claude\", \"openai\", \"gemini\". Defaults to claude." },
+                            "model":           { "type": "string", "description": "Model hint, e.g. \"opus 4.8\" — canonicalised server-side." },
+                            "permission_mode": { "type": "string", "description": "\"default\" | \"acceptEdits\" | \"plan\" | \"bypassPermissions\". Clamped to your own level." },
+                            "agent_template":  { "type": "string", "description": "Optional builtin template id, e.g. \"reverse_engineering\"." },
+                            "task":            { "type": "string", "description": "Optional first task — if set, the agent starts immediately." }
+                        },
+                        "required": ["project_path"]
+                    }
                 }]
             }
         })),
@@ -105,17 +122,11 @@ async fn handle(msg: Value) -> Option<Value> {
                 .get("arguments")
                 .cloned()
                 .unwrap_or(Value::Object(Default::default()));
-            if name != "dispatch_to_agent" {
-                return Some(json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": {
-                        "content": [{ "type": "text", "text": format!("unknown tool: {name}") }],
-                        "isError": true
-                    }
-                }));
-            }
-            let result = dispatch_to_agent(args).await;
+            let result = match name {
+                "dispatch_to_agent" => dispatch_to_agent(args).await,
+                "spawn_agent" => spawn_agent(args).await,
+                other => Err(format!("unknown tool: {other}")),
+            };
             Some(match result {
                 Ok(v) => json!({
                     "jsonrpc": "2.0", "id": id,
@@ -218,4 +229,65 @@ async fn dispatch_to_agent(args: Value) -> Result<Value, String> {
         .await
         .map_err(|e| format!("decode dispatch response failed: {e}"))?;
     Ok(v)
+}
+
+/// Create a new fleet agent via the loopback `/api/internal/spawn`. The
+/// backend resolves the semi-structured args (provider/model/permission hints),
+/// enforces the permission clamp, and returns the new session_id. Rate-limited
+/// with the same 5/60s window as dispatch to throttle spawn loops.
+async fn spawn_agent(args: Value) -> Result<Value, String> {
+    let caller = std::env::var("FLEETIFY_SESSION_ID")
+        .map_err(|_| "FLEETIFY_SESSION_ID env var missing".to_string())?;
+    let secret = std::env::var("FLEETIFY_INTERNAL_SECRET")
+        .map_err(|_| "FLEETIFY_INTERNAL_SECRET env var missing".to_string())?;
+    let backend = env_or("FLEETIFY_BACKEND_URL", "http://127.0.0.1:8765");
+
+    let project = args
+        .get("project_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    if project.is_empty() {
+        return Err("project_path is required".into());
+    }
+    check_rate(&caller)?;
+
+    // Forward the caller id + whatever optional hints were provided. The
+    // backend does all resolution/validation/clamping.
+    let mut body = serde_json::Map::new();
+    body.insert("caller_session_id".into(), json!(caller));
+    for key in [
+        "project_path",
+        "title",
+        "tool",
+        "model",
+        "permission_mode",
+        "agent_template",
+        "task",
+    ] {
+        if let Some(v) = args.get(key) {
+            body.insert(key.into(), v.clone());
+        }
+    }
+
+    let url = format!("{backend}/api/internal/spawn");
+    let r = reqwest::Client::new()
+        .post(&url)
+        .header("X-Fleet-Internal", &secret)
+        .json(&Value::Object(body))
+        .send()
+        .await
+        .map_err(|e| format!("POST /api/internal/spawn failed: {e}"))?;
+    let status = r.status();
+    if !status.is_success() {
+        let body = r.text().await.unwrap_or_default();
+        return Err(format!(
+            "/api/internal/spawn returned {}: {}",
+            status.as_u16(),
+            body.trim()
+        ));
+    }
+    r.json::<Value>()
+        .await
+        .map_err(|e| format!("decode spawn response failed: {e}"))
 }

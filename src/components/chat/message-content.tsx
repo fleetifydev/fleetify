@@ -12,6 +12,7 @@ import {
 } from "./staff-message-cards";
 import { CitationCard } from "./citation-card";
 import { AuthRequiredCard } from "./auth-required-card";
+import { SpawnFormCard } from "./spawn-form-card";
 import { LogoMark } from "@/components/brand/logo-mark";
 import { ChevronRight, Copy, Check, ArrowRightLeft, CheckCircle2, AlertCircle, Terminal, FileText, Globe, Search, Cpu, CheckSquare, FolderSearch, Pencil, Wrench, Brain, MoveHorizontal, Trash2, FolderOpen, Download, Code2, BarChart2, BookOpen, Image, CornerDownLeft, Send, Bookmark, BookmarkCheck, RotateCcw, X } from "lucide-react";
 import { createSessionMemory } from "@/lib/api";
@@ -3193,6 +3194,10 @@ function MessageContentInner({ message, msgRef }: { message: ChatMessage; msgRef
     if (permBlock) {
       return <DispatchPermissionCard block={permBlock} />;
     }
+
+    // Inline spawn-agent card (editable form on a gap, result card otherwise).
+    const spawnBlock = message.content.find(b => b.type === "spawn_form") as import("@/types/chat").SpawnFormBlock | undefined;
+    if (spawnBlock) return <SpawnFormCard block={spawnBlock} />;
 
     // Dispatch inline cards — show in Fleet chat AND right panel
     const pendingBlock = message.content.find(b => b.type === "dispatch_pending") as import("@/types/chat").DispatchPendingBlock | undefined;

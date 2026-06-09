@@ -79,6 +79,49 @@ export interface DispatchPendingBlock {
   task: string;
 }
 
+/** Canonical (or partial) spawn spec — mirrors backend `SpawnSpec`. */
+export interface SpawnSpecDraft {
+  title?: string | null;
+  project_path?: string | null;
+  tool?: string | null;
+  model_name?: string | null;
+  permission_mode?: string | null;
+  agent_template?: string | null;
+  effort?: string | null;
+  first_task?: string | null;
+}
+
+export interface SpawnGap {
+  field: string;
+  reason: "missing" | "ambiguous";
+  candidates: string[];
+}
+
+/** Inline "create agent" card. `status === "pending"` ⇒ editable form (some
+ *  fields unresolved → `gaps`); otherwise a compact result card. */
+export interface SpawnFormBlock {
+  type: "spawn_form";
+  request_id: string;
+  draft: SpawnSpecDraft;
+  gaps: SpawnGap[];
+  status: "pending" | "creating" | "created" | "cancelled" | "failed";
+  created_session_id?: string;
+  error?: string;
+}
+
+/** Server push that delivers a spawn form/result into the staff transcript. */
+export interface WSSpawnForm {
+  type: "spawn_form";
+  session_id: string;
+  request_id: string;
+  draft: SpawnSpecDraft;
+  gaps: SpawnGap[];
+  status: "pending" | "creating" | "created" | "cancelled" | "failed";
+  created_session_id?: string;
+  title?: string;
+  error?: string;
+}
+
 /** Named output produced by an agent — file, report, code, data, or image. */
 export interface ArtifactBlock {
   type: "artifact";
@@ -162,7 +205,8 @@ export type ContentBlock =
   | ArtifactBlock
   | ResourceCardBlock
   | CitationBlock
-  | AuthRequiredBlock;
+  | AuthRequiredBlock
+  | SpawnFormBlock;
 
 export interface ChatMessage {
   id: string;
@@ -593,4 +637,5 @@ export type WSServerMessage =
   | WSCursorAskQuestion
   | WSAskUserQuestion
   | WSCursorCreatePlan
-  | WSAuthRequired;
+  | WSAuthRequired
+  | WSSpawnForm;

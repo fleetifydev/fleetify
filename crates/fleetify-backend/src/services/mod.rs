@@ -32,6 +32,7 @@ pub mod recall_hook;
 pub mod routing;
 pub mod session_migrations;
 pub mod session_summarizer;
+pub mod spawn;
 pub mod staff_prompt;
 pub mod task_enricher;
 pub mod telemetry;

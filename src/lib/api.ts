@@ -348,6 +348,21 @@ export async function createSession(data: {
   return res.json();
 }
 
+/** Create a session from an edited SpawnSpec (the inline Spawn Form card's
+ *  "Create"). POSTs the canonical spec to /api/sessions/spawn. */
+export async function spawnSession(spec: import("@/types/chat").SpawnSpecDraft) {
+  const res = await apiFetch(`${API_BASE}/sessions/spawn`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(spec),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(detail?.trim() || `Failed to spawn agent (${res.status})`);
+  }
+  return res.json();
+}
+
 export async function deleteSession(id: string) {
   const res = await apiFetch(`${API_BASE}/sessions/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error("Failed to delete session");

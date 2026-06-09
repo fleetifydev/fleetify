@@ -40,6 +40,7 @@ pub fn router() -> Router<AppState> {
     // `POST /api/internal/providers/reload`.
     Router::new()
         .route("/dispatch", post(dispatch))
+        .route("/spawn", post(spawn))
         .route("/permission_prompt", post(permission_prompt))
         // In-process MCP-over-HTTP permission server. Claude connects here as
         // a Streamable-HTTP MCP server (URL + Bearer baked into --mcp-config
@@ -189,6 +190,119 @@ struct DispatchBody {
     agent: String,
     /// Task body. The target sees it verbatim as a `user` message.
     task: String,
+}
+
+/// Body for `POST /api/internal/spawn` — the `spawn_agent` MCP tool's
+/// semi-structured args. Resolved server-side; required fields must resolve.
+#[derive(Deserialize)]
+struct SpawnBody {
+    caller_session_id: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    project_path: Option<String>,
+    #[serde(default)]
+    tool: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    permission_mode: Option<String>,
+    #[serde(default)]
+    agent_template: Option<String>,
+    #[serde(default)]
+    task: Option<String>,
+}
+
+/// `POST /api/internal/spawn` — create a new agent on behalf of a worker
+/// (the `spawn_agent` MCP tool). Resolves the semi-structured args; a gap-free
+/// spec creates the session, otherwise returns a structured error the worker
+/// can react to. Enforces the K3 permission clamp (spawned mode ≤ caller's).
+async fn spawn(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(b): Json<SpawnBody>,
+) -> Result<Json<Value>, ApiError> {
+    let presented = headers
+        .get("x-fleet-internal")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !constant_time_eq(presented.as_bytes(), st.internal_secret.as_bytes()) {
+        return Err(ApiError::Forbidden("internal-secret mismatch".into()));
+    }
+
+    let SpawnBody {
+        caller_session_id,
+        title,
+        project_path,
+        tool,
+        model,
+        permission_mode,
+        agent_template,
+        task,
+    } = b;
+    let caller = caller_session_id.trim();
+    if caller.is_empty() {
+        return Err(ApiError::BadRequest("caller_session_id is required".into()));
+    }
+
+    let caller_row: Option<Session> =
+        sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = ?")
+            .bind(caller)
+            .fetch_optional(&st.auth.pool)
+            .await?;
+    let Some(caller_row) = caller_row else {
+        return Err(ApiError::NotFound(format!(
+            "caller session {caller} not found"
+        )));
+    };
+
+    let raw = crate::services::spawn::RawSpawn {
+        title,
+        project: project_path,
+        tool,
+        model,
+        perm: permission_mode,
+        template: agent_template,
+        effort: None,
+        task,
+    };
+    let known =
+        crate::services::spawn::known_project_paths(&st.auth.pool, caller_row.user_id.as_deref())
+            .await;
+    let resolved = crate::services::spawn::resolve(&raw, &known);
+    if !resolved.gaps.is_empty() {
+        let fields: Vec<String> = resolved.gaps.iter().map(|g| g.field.clone()).collect();
+        return Err(ApiError::BadRequest(format!(
+            "spawn spec incomplete; unresolved fields: {}",
+            fields.join(", ")
+        )));
+    }
+
+    // K3 permission clamp: the spawned agent may not exceed the caller's level.
+    let spawned = resolved
+        .spec
+        .permission_mode
+        .as_deref()
+        .unwrap_or("default");
+    if crate::services::spawn::perm_rank(spawned)
+        > crate::services::spawn::perm_rank(&caller_row.permission_mode)
+    {
+        return Err(ApiError::Forbidden(format!(
+            "permission clamp: a `{}` agent cannot spawn a `{spawned}` agent",
+            caller_row.permission_mode
+        )));
+    }
+
+    let session = crate::services::spawn::create(
+        &st,
+        caller_row.user_id.as_deref(),
+        &resolved.spec,
+        Some(caller),
+    )
+    .await
+    .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
+    Ok(Json(json!({ "ok": true, "session_id": session.id })))
 }
 
 async fn dispatch(

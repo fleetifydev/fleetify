@@ -20,6 +20,7 @@ use crate::routers::{ApiError, AppState};
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/sessions", get(list_sessions).post(create_session))
+        .route("/sessions/spawn", post(spawn_session))
         .route("/sessions/empty-drafts", delete(delete_empty_drafts))
         .route("/sessions/stats/overview", get(stats_overview))
         .route("/sessions/stats/bulk", get(stats_bulk))
@@ -57,6 +58,53 @@ pub fn router() -> Router<AppState> {
         .route("/git/repos", get(list_user_repos))
         .route("/git/clone", post(clone_repository))
         .route("/git/check", post(check_repo_accessible))
+}
+
+/// `POST /api/sessions/spawn` — create a session from an already-resolved,
+/// user-edited `SpawnSpec` (the inline Spawn Form card's "Create"). The spec
+/// is canonical here; we only re-validate `project_path` (required, must be a
+/// real dir), mirroring `create_session`, before delegating to the shared
+/// spawn core.
+async fn spawn_session(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Json(spec): Json<crate::services::spawn::SpawnSpec>,
+) -> Result<Json<Session>, ApiError> {
+    // Re-resolve through the canonicaliser so the form can pass human-ish
+    // edits (e.g. "opus 4.8" / "claude code"); the folder picker supplies an
+    // absolute project_path, which resolves to itself.
+    let raw = crate::services::spawn::RawSpawn {
+        title: spec.title,
+        project: spec.project_path,
+        tool: spec.tool,
+        model: spec.model_name,
+        perm: spec.permission_mode,
+        template: spec.agent_template,
+        effort: spec.effort,
+        task: spec.first_task,
+    };
+    let known = crate::services::spawn::known_project_paths(&st.auth.pool, Some(&user.id)).await;
+    let resolved = crate::services::spawn::resolve(&raw, &known);
+    if !resolved.gaps.is_empty() {
+        let fields: Vec<String> = resolved.gaps.iter().map(|g| g.field.clone()).collect();
+        return Err(ApiError::BadRequest(format!(
+            "spawn spec incomplete; unresolved fields: {}",
+            fields.join(", ")
+        )));
+    }
+    // project_path must be a real directory (mirror create_session).
+    if let Some(p) = resolved.spec.project_path.as_deref() {
+        let canon = fleetify_core::canonicalize_or_keep(std::path::Path::new(p));
+        if !canon.is_dir() {
+            return Err(ApiError::BadRequest(format!(
+                "Project path does not exist or is not a directory: {p}"
+            )));
+        }
+    }
+    let s = crate::services::spawn::create(&st, Some(&user.id), &resolved.spec, None)
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    Ok(Json(s))
 }
 
 async fn owned(st: &AppState, id: &str, user_id: &str) -> Result<Session, ApiError> {

@@ -1087,6 +1087,26 @@ class WSManager {
         }, 10 * 60 * 1000)); // 10 minutes
         break;
       }
+      case "spawn_form": {
+        // Inline "create agent" card in the staff transcript. Mirrors the
+        // dispatch_pending pattern: append a system message carrying the
+        // block; the SpawnFormCard renders/edits it and posts Create itself.
+        store.addMessage(sessionId, {
+          id: `spawn-${data.request_id}`,
+          role: "system",
+          content: [{
+            type: "spawn_form",
+            request_id: data.request_id,
+            draft: data.draft,
+            gaps: data.gaps,
+            status: data.status,
+            created_session_id: data.created_session_id,
+            error: data.error,
+          }],
+          timestamp: new Date().toISOString(),
+        });
+        break;
+      }
       case "dispatch_progress": {
         // Lifecycle status from the backend dispatch handler. Drives the
         // status badge on the pending card so the user can tell which
