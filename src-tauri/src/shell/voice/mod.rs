@@ -3,7 +3,8 @@
 //!
 //! The renderer records the mic (getUserMedia + AudioWorklet), encodes a
 //! 16 kHz mono WAV, base64s it, and calls `voice_transcribe`. We route to
-//! one of three engines:
+//! one of four engines:
+//! - `auto`: tries broker → byok → local in order; first success wins.
 //! - `local`: on-device whisper.cpp (cargo feature `local-whisper`).
 //! - `broker`: Fleetify-managed Groq via fleetify.dev — key server-side,
 //!   authed with the Fleetify OAuth bearer (zero user setup, quota'd).
@@ -13,16 +14,30 @@
 //! bearer / API key never crosses IPC and we sidestep webview CORS. Same
 //! trust model as `github_link.rs`.
 
+use std::sync::Arc;
+
 use base64::Engine as _;
 use serde_json::{json, Value};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::shell::auth;
+
+pub mod capture;
 
 #[cfg(feature = "local-whisper")]
 mod engine_local;
 #[cfg(feature = "local-whisper")]
 mod models;
+
+/// Managed state: one live recording at a time.
+/// Wrapped in Arc so IPC commands can clone the Arc before any `.await`,
+/// keeping State<'_> out of async futures (required for 'static bound).
+pub struct VoiceCaptureState(pub Arc<tokio::sync::Mutex<Option<capture::RecordingState>>>);
+
+/// Cancellation flag for an in-progress model download.
+/// Set to `true` by `voice_cancel_download`; reset to `false` at the
+/// start of each new `voice_download_model` call.
+pub struct DownloadCancelState(pub Arc<std::sync::atomic::AtomicBool>);
 
 const LOG_TARGET: &str = "voice";
 /// Keychain service for BYOK provider keys (account = provider name).
@@ -42,9 +57,30 @@ fn decode_audio(audio_b64: &str) -> Result<Vec<u8>, Value> {
         .map_err(|e| fail("BAD_AUDIO", &format!("audio base64 decode: {e}")))
 }
 
-/// Dispatch a transcription request. `engine` ∈ {`local`, `broker`, `byok`}.
-/// Returns `{ ok, text, language, duration_seconds, source }` or
-/// `{ ok:false, code, error }`.
+/// Dispatch from raw WAV bytes. Called by both the base64 IPC path and
+/// the native capture path (`voice_stop_recording`).
+pub async fn transcribe_bytes(
+    wav: Vec<u8>,
+    engine: String,
+    language: String,
+    model: String,
+    prompt: String,
+) -> Value {
+    if wav.is_empty() {
+        return fail("BAD_AUDIO", "empty audio");
+    }
+    tracing::info!(target: LOG_TARGET, engine = %engine, bytes = wav.len(), "transcribe");
+    match engine.as_str() {
+        "auto" => transcribe_auto(wav, &language, &model, &prompt).await,
+        "local" => transcribe_local(wav, &language, &model).await,
+        "broker" => transcribe_broker(wav, &language, &model, &prompt).await,
+        "byok" => transcribe_byok(wav, &language, &model, &prompt).await,
+        other => fail("BAD_ENGINE", &format!("unknown engine: {other}")),
+    }
+}
+
+/// Legacy base64 entry point — kept for backward compat with any callers
+/// that still send a base64-encoded WAV over IPC.
 pub async fn transcribe(
     audio_b64: String,
     engine: String,
@@ -56,17 +92,56 @@ pub async fn transcribe(
         Ok(b) => b,
         Err(e) => return e,
     };
-    if bytes.is_empty() {
-        return fail("BAD_AUDIO", "empty audio");
-    }
-    tracing::info!(target: LOG_TARGET, engine = %engine, bytes = bytes.len(), "transcribe");
+    transcribe_bytes(bytes, engine, language, model, prompt).await
+}
 
-    match engine.as_str() {
-        "local" => transcribe_local(bytes, &language, &model).await,
-        "broker" => transcribe_broker(bytes, &language, &model, &prompt).await,
-        "byok" => transcribe_byok(bytes, &language, &model, &prompt).await,
-        other => fail("BAD_ENGINE", &format!("unknown engine: {other}")),
+// ── auto (broker → byok → local, first success wins) ─────────────
+async fn transcribe_auto(wav: Vec<u8>, language: &str, model: &str, prompt: &str) -> Value {
+    // 1. Broker: if a valid Fleetify session exists
+    let has_token = auth::get_access_token(false)
+        .await
+        .and_then(|v| v.get("token").and_then(|t| t.as_str()).map(String::from))
+        .is_some();
+    if has_token {
+        let r = transcribe_broker(wav.clone(), language, model, prompt).await;
+        if r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            return r;
+        }
+        // Quota or transient error → try next engine.
     }
+
+    // 2. BYOK: if any provider key is saved in the keychain
+    let has_byok = byok_key("groq").map(|k| !k.is_empty()).unwrap_or(false)
+        || byok_key("openai").map(|k| !k.is_empty()).unwrap_or(false);
+    if has_byok {
+        let r = transcribe_byok(wav.clone(), language, model, prompt).await;
+        if r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            return r;
+        }
+    }
+
+    // 3. Local: any downloaded Whisper model (cfg-gated)
+    transcribe_auto_local(wav, language, model).await
+}
+
+#[cfg(feature = "local-whisper")]
+async fn transcribe_auto_local(wav: Vec<u8>, language: &str, model: &str) -> Value {
+    let r = transcribe_local(wav, language, model).await;
+    if r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return r;
+    }
+    fail(
+        "NO_ENGINE",
+        "No voice engine available. Sign in to Fleetify, add an API key, or download a local model in Settings → Voice.",
+    )
+}
+
+#[cfg(not(feature = "local-whisper"))]
+async fn transcribe_auto_local(_wav: Vec<u8>, _language: &str, _model: &str) -> Value {
+    fail(
+        "NO_ENGINE",
+        "No voice engine available. Sign in to Fleetify or add an API key in Settings → Voice.",
+    )
 }
 
 // ── local (on-device whisper.cpp) ─────────────────────────────────
@@ -109,10 +184,12 @@ async fn transcribe_broker(wav: Vec<u8>, language: &str, model: &str, prompt: &s
     let Some(bearer) = bearer else {
         return fail(
             "NO_TOKEN",
-            "Fleetify sign-in required for managed transcription.",
+            "Sign in to Fleetify to use cloud voice — or switch to your own key in Settings → Voice.",
         );
     };
 
+    // Capture the byte length before `wav` is moved into the multipart part.
+    let audio_bytes = wav.len();
     let part = match reqwest::multipart::Part::bytes(wav)
         .file_name("audio.wav")
         .mime_str("audio/wav")
@@ -132,6 +209,15 @@ async fn transcribe_broker(wav: Vec<u8>, language: &str, model: &str, prompt: &s
     }
 
     let url = format!("{}/api/integrations/voice/transcribe", api_base());
+    tracing::info!(
+        target: LOG_TARGET,
+        engine = "broker",
+        url = %url,
+        language = %language,
+        model = %model,
+        audio_bytes,
+        "broker request →"
+    );
     match reqwest::Client::new()
         .post(&url)
         .bearer_auth(&bearer)
@@ -142,6 +228,7 @@ async fn transcribe_broker(wav: Vec<u8>, language: &str, model: &str, prompt: &s
         Ok(r) => {
             let status = r.status().as_u16();
             if status == 429 {
+                tracing::warn!(target: LOG_TARGET, status, "broker ← quota exceeded");
                 return fail(
                     "QUOTA_EXCEEDED",
                     "Daily managed-transcription quota reached. Use the local engine or your own key.",
@@ -149,6 +236,12 @@ async fn transcribe_broker(wav: Vec<u8>, language: &str, model: &str, prompt: &s
             }
             if !(200..=299).contains(&status) {
                 let body = r.text().await.unwrap_or_default();
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    status,
+                    body = %body.chars().take(200).collect::<String>(),
+                    "broker ← error"
+                );
                 return fail(
                     "BROKER_FAILED",
                     &format!(
@@ -158,15 +251,40 @@ async fn transcribe_broker(wav: Vec<u8>, language: &str, model: &str, prompt: &s
                 );
             }
             let j: Value = r.json().await.unwrap_or_else(|_| json!({}));
+            let text = j
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let lang = j
+                .get("language")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let dur = j
+                .get("duration_seconds")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            tracing::info!(
+                target: LOG_TARGET,
+                status,
+                language = lang,
+                duration_s = dur,
+                text_chars = text.len(),
+                text_preview = %text.chars().take(120).collect::<String>(),
+                "broker ← ok"
+            );
             json!({
                 "ok": true,
-                "text": j.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                "text": text,
                 "language": j.get("language").cloned().unwrap_or(Value::Null),
-                "duration_seconds": j.get("duration_seconds").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                "duration_seconds": dur,
                 "source": "broker",
             })
         }
-        Err(e) => fail("BROKER_FAILED", &e.to_string()),
+        Err(e) => {
+            tracing::error!(target: LOG_TARGET, error = %e, "broker ← unreachable");
+            fail("BROKER_FAILED", &e.to_string())
+        }
     }
 }
 
@@ -292,7 +410,11 @@ pub fn list_models() -> Value {
 
 #[cfg(feature = "local-whisper")]
 pub async fn download_model(app: AppHandle, id: String) -> Value {
-    models::download(app, &id).await
+    // Clone the Arc before any await so State<'_> never crosses an await point.
+    let cancel: Arc<std::sync::atomic::AtomicBool> =
+        Arc::clone(&app.state::<DownloadCancelState>().0);
+    cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+    models::download(app, id, cancel).await
 }
 #[cfg(not(feature = "local-whisper"))]
 pub async fn download_model(_app: AppHandle, _id: String) -> Value {
@@ -300,4 +422,11 @@ pub async fn download_model(_app: AppHandle, _id: String) -> Value {
         "LOCAL_UNAVAILABLE",
         "Local Whisper engine not built in this binary.",
     )
+}
+
+pub fn cancel_download(app: AppHandle) -> Value {
+    let cancel: Arc<std::sync::atomic::AtomicBool> =
+        Arc::clone(&app.state::<DownloadCancelState>().0);
+    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    json!({ "ok": true })
 }

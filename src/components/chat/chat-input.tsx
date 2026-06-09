@@ -30,6 +30,7 @@ import type { PreflightIssue } from "@/lib/git-api";
 import { git, type PRStatus, defaultPRTitle, defaultPRBody } from "@/lib/git-api";
 import { github } from "@/lib/github-link-api";
 import { useVoiceDictation } from "@/hooks/use-voice-dictation";
+import { voice } from "@/lib/voice-api";
 import { glog } from "@/lib/git-log";
 import { useAppStore } from "@/stores/app-store";
 import { useRepoPrs } from "@/stores/pr-store";
@@ -792,35 +793,22 @@ function ToolBtn({ children, title, onClick }: {
  *  deviceId in localStorage so it sticks across sessions. */
 function MicButton({ onTranscript }: { onTranscript: (text: string) => void }) {
   const [open, setOpen] = useState(false);
-  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  const [devices, setDevices] = useState<{ id: string; name: string }[]>([]);
   const [selected, setSelected] = useState<string | null>(() => {
     try { return localStorage.getItem("fleet.mic.deviceId"); } catch { return null; }
   });
-  const [needsPerm, setNeedsPerm] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   // Mic icon = record toggle (start → stop & transcribe → insert at caret);
   // the chevron still opens the device picker below.
   const dict = useVoiceDictation(onTranscript);
 
-  // Lazy-load the device list when the menu opens. We only ask for
-  // permission if the labels come back empty (browsers redact them
-  // until the page has at least once been granted mic access).
+  // Lazy-load device list from Rust (cpal) — no getUserMedia needed.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    (async () => {
-      try {
-        const list = await navigator.mediaDevices.enumerateDevices();
-        if (cancelled) return;
-        const mics = list.filter(d => d.kind === "audioinput");
-        setDevices(mics);
-        // If we got a list but every label is empty, the browser
-        // wants the user to grant permission first.
-        setNeedsPerm(mics.length > 0 && mics.every(d => !d.label));
-      } catch {
-        if (!cancelled) setDevices([]);
-      }
-    })();
+    voice.listDevices().then((r) => {
+      if (!cancelled) setDevices(r.devices ?? []);
+    }).catch(() => { if (!cancelled) setDevices([]); });
     return () => { cancelled = true; };
   }, [open]);
 
@@ -833,20 +821,6 @@ function MicButton({ onTranscript }: { onTranscript: (text: string) => void }) {
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
   }, [open]);
-
-  const requestPermission = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // Stop tracks immediately — we only needed permission, not a stream.
-      stream.getTracks().forEach(t => t.stop());
-      const list = await navigator.mediaDevices.enumerateDevices();
-      const mics = list.filter(d => d.kind === "audioinput");
-      setDevices(mics);
-      setNeedsPerm(false);
-    } catch {
-      // Permission denied — leave the prompt up.
-    }
-  };
 
   const pick = (id: string) => {
     setSelected(id);
@@ -913,34 +887,17 @@ function MicButton({ onTranscript }: { onTranscript: (text: string) => void }) {
             letterSpacing: 0.6, textTransform: "uppercase",
             color: "var(--c-dim)",
           }}>Input device</div>
-          {needsPerm && (
-            <button
-              onClick={requestPermission}
-              onMouseDown={e => e.preventDefault()}
-              style={{
-                width: "100%", textAlign: "left",
-                padding: "6px 8px",
-                background: "transparent", border: "none", outline: "none",
-                color: "var(--c-fg)", fontSize: 12, cursor: "pointer",
-                borderRadius: 5, fontFamily: "inherit",
-              }}
-              onMouseEnter={e => { e.currentTarget.style.background = "var(--c-srf)"; }}
-              onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
-            >
-              Grant microphone access…
-            </button>
-          )}
-          {!needsPerm && devices.length === 0 && (
+          {devices.length === 0 && (
             <div style={{ padding: "8px 10px", fontSize: 11.5, color: "var(--c-dim)" }}>
               No input devices found.
             </div>
           )}
-          {!needsPerm && devices.map(d => {
-            const active = (selected ?? devices[0]?.deviceId) === d.deviceId;
+          {devices.map(d => {
+            const active = (selected ?? devices[0]?.id) === d.id;
             return (
               <button
-                key={d.deviceId}
-                onClick={() => pick(d.deviceId)}
+                key={d.id}
+                onClick={() => pick(d.id)}
                 onMouseDown={e => e.preventDefault()}
                 style={{
                   width: "100%", textAlign: "left",
@@ -961,7 +918,7 @@ function MicButton({ onTranscript }: { onTranscript: (text: string) => void }) {
                 <span style={{
                   flex: 1, fontSize: 11.5,
                   overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                }}>{d.label || `Microphone ${d.deviceId.slice(0, 6)}`}</span>
+                }}>{d.name}</span>
               </button>
             );
           })}

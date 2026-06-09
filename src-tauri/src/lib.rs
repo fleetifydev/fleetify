@@ -143,11 +143,15 @@ pub fn run() {
             shell::ipc::github_open_installation,
             shell::ipc::github_list_repos,
             shell::ipc::github_list_installations,
+            shell::ipc::voice_list_devices,
+            shell::ipc::voice_start_recording,
+            shell::ipc::voice_stop_recording,
             shell::ipc::voice_transcribe,
             shell::ipc::voice_set_byok_key,
             shell::ipc::voice_has_byok_key,
             shell::ipc::voice_list_models,
             shell::ipc::voice_download_model,
+            shell::ipc::voice_cancel_download,
             shell::ipc::routers_list_routers,
             shell::ipc::routers_connect,
             shell::ipc::routers_disconnect,
@@ -183,6 +187,12 @@ pub fn run() {
             shell::ipc::logs_open_folder,
             shell::ipc::feedback_send,
         ])
+        .manage(shell::voice::VoiceCaptureState(std::sync::Arc::new(
+            tokio::sync::Mutex::new(None),
+        )))
+        .manage(shell::voice::DownloadCancelState(std::sync::Arc::new(
+            std::sync::atomic::AtomicBool::new(false),
+        )))
         .setup(|app| {
             // Bring tracing online FIRST so any setup-phase warnings
             // (auth handle, embedded backend boot, webview build) land

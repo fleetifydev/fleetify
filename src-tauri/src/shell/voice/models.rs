@@ -3,6 +3,10 @@
 //! Download progress streams to the renderer via `voice-model-progress`.
 
 use std::path::PathBuf;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
@@ -79,8 +83,8 @@ pub fn list() -> Value {
     json!({ "ok": true, "supported": true, "models": models })
 }
 
-pub async fn download(app: AppHandle, id: &str) -> Value {
-    let Some(m) = def(id) else {
+pub async fn download(app: AppHandle, id: String, cancel: Arc<AtomicBool>) -> Value {
+    let Some(m) = def(&id) else {
         return json!({ "ok": false, "code": "BAD_MODEL", "error": "unknown model" });
     };
     let dest = models_dir().join(m.file);
@@ -105,6 +109,16 @@ pub async fn download(app: AppHandle, id: &str) -> Value {
     use std::io::Write;
     let mut received: u64 = 0;
     loop {
+        // Check cancellation before reading next chunk.
+        if cancel.load(Ordering::Relaxed) {
+            drop(file);
+            let _ = std::fs::remove_file(&tmp);
+            let _ = app.emit(
+                "voice-model-progress",
+                json!({ "id": id, "cancelled": true }),
+            );
+            return json!({ "ok": false, "code": "CANCELLED", "error": "Download cancelled" });
+        }
         match resp.chunk().await {
             Ok(Some(bytes)) => {
                 if file.write_all(&bytes).is_err() {

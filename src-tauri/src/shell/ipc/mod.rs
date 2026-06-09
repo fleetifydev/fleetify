@@ -962,9 +962,58 @@ pub async fn github_list_installations(app: tauri::AppHandle) -> serde_json::Val
     github_link::list_installations(app).await
 }
 
-// ── Voice dictation (webview capture → transcribe) ───────────────
-// Renderer records the mic, sends a base64 16 kHz WAV + engine choice;
-// Rust routes to local / broker / byok (key + bearer never cross IPC).
+// ── Voice dictation ───────────────────────────────────────────────
+// Native cpal capture: renderer calls start_recording / stop_recording;
+// audio never crosses IPC — only the final transcript returns.
+// The legacy voice_transcribe command is kept for backward compat.
+
+#[tauri::command]
+pub fn voice_list_devices() -> serde_json::Value {
+    let devs = voice::capture::list_devices();
+    serde_json::json!({
+        "ok": true,
+        "devices": devs.iter().map(|d| serde_json::json!({ "id": &d.id, "name": &d.name })).collect::<Vec<_>>()
+    })
+}
+
+#[tauri::command]
+pub async fn voice_start_recording(
+    app: tauri::AppHandle,
+    device_name: Option<String>,
+) -> serde_json::Value {
+    // Clone the Arc before any await so State<'_> never crosses an await point.
+    let mutex = std::sync::Arc::clone(&app.state::<voice::VoiceCaptureState>().0);
+    let mut lock = mutex.lock().await;
+    if lock.is_some() {
+        return serde_json::json!({ "ok": false, "code": "ALREADY_RECORDING", "error": "A recording is already in progress." });
+    }
+    match voice::capture::start(device_name.as_deref()) {
+        Ok(rec) => {
+            *lock = Some(rec);
+            serde_json::json!({ "ok": true })
+        }
+        Err(e) => serde_json::json!({ "ok": false, "code": "CAPTURE_FAILED", "error": e }),
+    }
+}
+
+#[tauri::command]
+pub async fn voice_stop_recording(
+    app: tauri::AppHandle,
+    engine: String,
+    language: String,
+    model: String,
+    prompt: String,
+) -> serde_json::Value {
+    // Clone Arc, release lock before await so State<'_> doesn't enter the future.
+    let mutex = std::sync::Arc::clone(&app.state::<voice::VoiceCaptureState>().0);
+    let rec = mutex.lock().await.take();
+    let Some(rec) = rec else {
+        return serde_json::json!({ "ok": false, "code": "NOT_RECORDING", "error": "No active recording." });
+    };
+    let wav = voice::capture::stop_and_encode(rec);
+    voice::transcribe_bytes(wav, engine, language, model, prompt).await
+}
+
 #[tauri::command]
 pub async fn voice_transcribe(
     audio_base64: String,
@@ -994,6 +1043,11 @@ pub fn voice_list_models() -> serde_json::Value {
 #[tauri::command]
 pub async fn voice_download_model(app: tauri::AppHandle, id: String) -> serde_json::Value {
     voice::download_model(app, id).await
+}
+
+#[tauri::command]
+pub fn voice_cancel_download(app: tauri::AppHandle) -> serde_json::Value {
+    voice::cancel_download(app)
 }
 
 // ── .git/HEAD watcher (renderer branch strip) ────────────────────

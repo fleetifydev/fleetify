@@ -9,7 +9,12 @@
  * never reach this layer.
  */
 
-export type VoiceEngine = "local" | "broker" | "byok";
+export type VoiceEngine = "auto" | "local" | "broker" | "byok";
+
+export interface VoiceDevice {
+  id: string;
+  name: string;
+}
 
 export interface VoiceTranscribeResult {
   ok: boolean;
@@ -36,17 +41,15 @@ export interface VoiceModelProgress {
 }
 
 interface VoiceAPI {
-  transcribe: (
-    audioBase64: string,
-    engine: string,
-    language: string,
-    model: string,
-    prompt: string,
-  ) => Promise<VoiceTranscribeResult>;
+  listDevices: () => Promise<{ ok: boolean; devices: VoiceDevice[] }>;
+  startRecording: (deviceName: string | null) => Promise<{ ok: boolean; code?: string; error?: string }>;
+  stopRecording: (engine: string, language: string, model: string, prompt: string) => Promise<VoiceTranscribeResult>;
+  transcribe: (audioBase64: string, engine: string, language: string, model: string, prompt: string) => Promise<VoiceTranscribeResult>;
   setByokKey: (provider: string, key: string) => Promise<{ ok: boolean; error?: string }>;
   hasByokKey: (provider: string) => Promise<{ ok: boolean; present: boolean }>;
   listModels: () => Promise<{ ok: boolean; supported: boolean; models: VoiceModel[] }>;
-  downloadModel: (id: string) => Promise<{ ok: boolean; error?: string; already?: boolean }>;
+  downloadModel: (id: string) => Promise<{ ok: boolean; error?: string; already?: boolean; code?: string }>;
+  cancelDownload: () => Promise<{ ok: boolean }>;
   onModelProgress: (cb: (p: VoiceModelProgress) => void) => () => void;
 }
 
@@ -56,22 +59,31 @@ function api(): VoiceAPI {
   };
   return (
     w.electronAPI?.voice ?? {
+      listDevices: async () => ({ ok: true, devices: [] }),
+      startRecording: async () => ({ ok: false, code: "ELECTRON_UNAVAILABLE", error: "voice unavailable" }),
+      stopRecording: async () => ({ ok: false, code: "ELECTRON_UNAVAILABLE", error: "voice unavailable" }),
       transcribe: async () => ({ ok: false, code: "ELECTRON_UNAVAILABLE", error: "voice unavailable" }),
       setByokKey: async () => ({ ok: false, error: "voice unavailable" }),
       hasByokKey: async () => ({ ok: true, present: false }),
       listModels: async () => ({ ok: true, supported: false, models: [] }),
       downloadModel: async () => ({ ok: false, error: "voice unavailable" }),
+      cancelDownload: async () => ({ ok: false }),
       onModelProgress: () => () => {},
     }
   );
 }
 
 export const voice = {
+  listDevices: () => api().listDevices(),
+  startRecording: (deviceName: string | null) => api().startRecording(deviceName),
+  stopRecording: (engine: string, language: string, model: string, prompt: string) =>
+    api().stopRecording(engine, language, model, prompt),
   transcribe: (audioBase64: string, engine: string, language: string, model: string, prompt: string) =>
     api().transcribe(audioBase64, engine, language, model, prompt),
   setByokKey: (provider: string, key: string) => api().setByokKey(provider, key),
   hasByokKey: (provider: string) => api().hasByokKey(provider),
   listModels: () => api().listModels(),
   downloadModel: (id: string) => api().downloadModel(id),
+  cancelDownload: () => api().cancelDownload(),
   onModelProgress: (cb: (p: VoiceModelProgress) => void) => api().onModelProgress(cb),
 };

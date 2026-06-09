@@ -365,13 +365,27 @@ document.addEventListener("mousedown", function (e) {
           return function () { try { unsub && unsub(); } catch (_) {} };
         },
       },
-      // ── voice dictation (webview captures audio → Rust transcribes) ──
-      // Audio is a base64 16 kHz mono WAV; key/bearer never cross IPC.
+      // ── voice dictation (native cpal capture → Rust transcribes) ────
+      // Mic access goes through cpal (WASAPI on Windows) — no browser
+      // permission dialog. Audio never crosses IPC; only text returns.
       voice: {
+        listDevices: function () { return invoke("voice_list_devices"); },
+        startRecording: function (deviceName) {
+          return invoke("voice_start_recording", { deviceName: deviceName || null });
+        },
+        stopRecording: function (engine, language, model, prompt) {
+          return invoke("voice_stop_recording", {
+            engine: String(engine || "auto"),
+            language: String(language || "auto"),
+            model: String(model || ""),
+            prompt: String(prompt || ""),
+          });
+        },
+        // Legacy base64 path — kept for compat, prefer start/stopRecording.
         transcribe: function (audioBase64, engine, language, model, prompt) {
           return invoke("voice_transcribe", {
             audioBase64: String(audioBase64 || ""),
-            engine: String(engine || "broker"),
+            engine: String(engine || "auto"),
             language: String(language || "auto"),
             model: String(model || ""),
             prompt: String(prompt || ""),
@@ -385,6 +399,7 @@ document.addEventListener("mousedown", function (e) {
         },
         listModels: function () { return invoke("voice_list_models"); },
         downloadModel: function (id) { return invoke("voice_download_model", { id: String(id || "") }); },
+        cancelDownload: function () { return invoke("voice_cancel_download"); },
         onModelProgress: function (cb) {
           var unsub = null;
           Promise.resolve(window.__TAURI__.event.listen("voice-model-progress", function (e) {

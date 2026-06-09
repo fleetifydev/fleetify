@@ -57,10 +57,11 @@ notify-debouncer-mini = "0.4"
 # timestamps the cloud expects (Z-suffix RFC 3339, matches Electron).
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 
-# Voice dictation — on-device Whisper engine (whisper.cpp via whisper-rs)
-# + WAV decode (hound). Optional behind the `local-whisper` feature so
-# the app still builds without a C++/cmake toolchain; the cloud broker +
-# BYOK engines are pure reqwest and are always available. See [features].
+# Voice dictation — native mic capture (cpal, always enabled) +
+# on-device Whisper engine (whisper.cpp via whisper-rs, optional) +
+# WAV decode for local engine (hound, optional). cpal uses WASAPI on
+# Windows (no extra system deps); ALSA/PulseAudio headers needed on Linux.
+cpal = "0.15"
 whisper-rs = { version = "0.16.0", optional = true }
 hound = { version = "3.5.1", optional = true }
 
