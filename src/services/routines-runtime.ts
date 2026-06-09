@@ -18,13 +18,15 @@
  *   - First run for a non-manual routine fires immediately when the
  *     ticker observes a routine that has zero runs.
  */
-import { createSession } from "@/lib/api";
+import { createSession, updateSession } from "@/lib/api";
 import { useAppStore } from "@/stores/app-store";
 import { useChatStore } from "@/stores/chat-store";
 import { wsManager } from "@/services/ws-manager";
 
 export type Schedule = "manual" | "hourly" | "daily" | "weekdays" | "weekly";
-export type Provider = "claude" | "codex" | "gemini";
+// Any connected catalog provider id (claude, codex, gemini, openai, deepseek,
+// openrouter, …) — routines mirror the Fleet picker, not a fixed trio.
+export type Provider = string;
 export type PermissionMode = "default" | "acceptEdits" | "plan" | "auto" | "bypassPermissions";
 export type Target = "new" | "resume";
 
@@ -41,6 +43,9 @@ export interface Routine {
   projectPath: string;
   provider: Provider;
   modelId: string;
+  /** Reasoning effort applied to the spawned session (chat parity). Optional
+   *  on routines created before effort existed — defaults to "high" at use. */
+  effort?: string;
   useWorktree: boolean;
   agentTemplate: string | null;
 
@@ -335,6 +340,12 @@ async function execute(routine: Routine): Promise<void> {
         // the next notify fires the hide.
         markSpawned(sessionId);
         useAppStore.getState().addSession(s);
+        // Apply the routine's chosen effort to the fresh session (createSession
+        // doesn't take it — mirror chat's PATCH). Best-effort.
+        if (routine.effort) {
+          try { await updateSession(sessionId, { effort: routine.effort }); }
+          catch { /* non-fatal */ }
+        }
 
         // Pin this session as the rolling target so the next tick
         // resumes it. Persist immediately — if the process dies

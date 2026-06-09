@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { Session } from "@/types/session";
 import { wsManager } from "@/services/ws-manager";
+import { STUDIO_ENABLED } from "@/lib/feature-flags";
 import { useChatStore, typeOutAssistantMessage } from "@/stores/chat-store";
 
 /** Sentinel chat-store key used for compose-time messages (welcome
@@ -391,7 +392,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   openWorkspaceViews: [],
   openFilePath: null,
   mainView: "fleet",
-  appMode: localStorage.getItem("fleet:appMode") === "studio" ? "studio" : "workspace",
+  // Studio is gated behind STUDIO_ENABLED — force Workspace while it's off so a
+  // previously-persisted "studio" value can't strand the app in a hidden mode.
+  appMode: STUDIO_ENABLED && localStorage.getItem("fleet:appMode") === "studio" ? "studio" : "workspace",
   studioComposerOpen: false,
   pendingGeneration: null,
   newAgentDialogOpen: false,
@@ -827,8 +830,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   // sidebar reconcile, history fetch, /detail poll, etc. never have to
   // remember to skip a phantom entry.
   openComposer: async () => {
-    let defaultModel = "claude-sonnet-4-6";
-    let defaultProvider: Session["tool"] = "claude";
+    // Default to Fleet "Auto" (auto-routes to whatever is actually working)
+    // rather than a concrete provider, so a user who finished onboarding
+    // without setting up / picking any provider doesn't land on a phantom
+    // Claude Code default they never chose. A real cfg default (below) wins.
+    let defaultModel = "auto";
+    let defaultProvider: Session["tool"] = "auto";
     // Pre-select the user's default workspace folder (Settings → General)
     // so a new chat starts in it instead of showing the empty "Pick
     // folder" state. Empty string keeps the picker prompt when unset.
@@ -859,7 +866,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       const tiles = (await providers.listCatalog()).tiles ?? [];
       const connected = tiles.filter((t) => t.connected);
       if (connected.length > 0) {
-        if (!connected.some((t) => t.spec.id === defaultProvider)) {
+        // "auto" is a valid pseudo-provider (Fleet routes it) — never swap it
+        // out for a concrete connected tile; only refine real providers.
+        if (defaultProvider !== "auto" && !connected.some((t) => t.spec.id === defaultProvider)) {
           const pick = connected.find((t) => t.is_default) ?? connected[0];
           if (pick) defaultProvider = pick.spec.id as Session["tool"];
         }
@@ -869,7 +878,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         );
         const provModels = groups.find((g) => g.id === defaultProvider)?.models ?? [];
         const firstModel = provModels[0];
-        if (firstModel && !provModels.some((m) => m.id === defaultModel)) {
+        if (defaultProvider !== "auto" && firstModel && !provModels.some((m) => m.id === defaultModel)) {
           defaultModel = firstModel.id;
         }
       }

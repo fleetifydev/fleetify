@@ -276,7 +276,7 @@ export function FirstLaunchTour({ onDone }: { onDone: () => void }) {
           width: cutout.w, height: cutout.h,
           borderRadius: cutout.r,
           border: "1px solid rgba(255,255,255,0.25)",
-          boxShadow: "0 0 0 1px rgba(255,255,255,0.06), 0 12px 36px rgba(0,0,0,0.5)",
+          boxShadow: "0 0 0 1px var(--secondary), 0 12px 36px rgba(0,0,0,0.5)",
           pointerEvents: "none",
           transition: "left 0.28s cubic-bezier(0.22,1,0.36,1), top 0.28s cubic-bezier(0.22,1,0.36,1), width 0.28s cubic-bezier(0.22,1,0.36,1), height 0.28s cubic-bezier(0.22,1,0.36,1)",
         }}
@@ -291,13 +291,13 @@ export function FirstLaunchTour({ onDone }: { onDone: () => void }) {
           position: "absolute",
           left: tipX, top: tipY,
           width: TIP_W,
-          background: "#141414",
-          border: "1px solid rgba(255,255,255,0.10)",
+          background: "var(--card)",
+          border: "1px solid var(--c-brd)",
           borderRadius: 12,
           boxShadow: "0 18px 48px rgba(0,0,0,0.55), 0 2px 6px rgba(0,0,0,0.35)",
           padding: 16,
           fontFamily: "inherit",
-          color: "#e6e6e6",
+          color: "var(--c-high)",
           transition: "left 0.28s cubic-bezier(0.22,1,0.36,1), top 0.28s cubic-bezier(0.22,1,0.36,1)",
         }}
       >
@@ -308,7 +308,7 @@ export function FirstLaunchTour({ onDone }: { onDone: () => void }) {
         }}>
           <span style={{
             fontSize: 10.5, fontWeight: 600, letterSpacing: 0.4,
-            textTransform: "uppercase", color: "#7a7a7a",
+            textTransform: "uppercase", color: "var(--c-low)",
             fontVariantNumeric: "tabular-nums",
           }}>
             {stepIdx + 1} / {STEPS.length}
@@ -320,15 +320,15 @@ export function FirstLaunchTour({ onDone }: { onDone: () => void }) {
               width: 22, height: 22, borderRadius: 6,
               display: "flex", alignItems: "center", justifyContent: "center",
               background: "transparent", border: "none", cursor: "pointer",
-              color: "#8a8a8a", transition: "background 0.12s, color 0.12s",
+              color: "var(--c-low)", transition: "background 0.12s, color 0.12s",
             }}
             onMouseEnter={e => {
-              e.currentTarget.style.background = "rgba(255,255,255,0.06)";
-              e.currentTarget.style.color = "#e6e6e6";
+              e.currentTarget.style.background = "var(--secondary)";
+              e.currentTarget.style.color = "var(--c-high)";
             }}
             onMouseLeave={e => {
               e.currentTarget.style.background = "transparent";
-              e.currentTarget.style.color = "#8a8a8a";
+              e.currentTarget.style.color = "var(--c-low)";
             }}
           >
             <X size={13} />
@@ -337,12 +337,12 @@ export function FirstLaunchTour({ onDone }: { onDone: () => void }) {
 
         <div style={{
           fontSize: 14.5, fontWeight: 600, lineHeight: 1.35,
-          color: "#fafafa", marginBottom: 6,
+          color: "var(--c-high)", marginBottom: 6,
         }}>
           {step.title}
         </div>
         <div style={{
-          fontSize: 12.5, lineHeight: 1.55, color: "#bdbdbd",
+          fontSize: 12.5, lineHeight: 1.55, color: "var(--c-med)",
           marginBottom: 14,
         }}>
           {step.body}
@@ -357,7 +357,7 @@ export function FirstLaunchTour({ onDone }: { onDone: () => void }) {
             {STEPS.map((_, i) => (
               <span key={i} style={{
                 width: i === stepIdx ? 16 : 5, height: 5, borderRadius: 3,
-                background: i === stepIdx ? "#e6e6e6" : "rgba(255,255,255,0.18)",
+                background: i === stepIdx ? "var(--c-high)" : "var(--c-brd)",
                 transition: "width 0.18s, background 0.18s",
               }} />
             ))}
@@ -372,23 +372,23 @@ export function FirstLaunchTour({ onDone }: { onDone: () => void }) {
                 padding: "6px 10px",
                 borderRadius: 7,
                 background: "transparent",
-                border: "1px solid rgba(255,255,255,0.10)",
+                border: "1px solid var(--c-brd)",
                 cursor: isFirst ? "default" : "pointer", outline: "none",
-                color: isFirst ? "rgba(230,230,230,0.30)" : "#cfcfcf",
+                color: isFirst ? "var(--c-dim)" : "var(--c-med)",
                 fontSize: 12.5, fontWeight: 500, fontFamily: "inherit",
                 transition: "background 0.12s, color 0.12s, border-color 0.12s",
               }}
               onMouseEnter={e => {
                 if (isFirst) return;
-                e.currentTarget.style.background = "rgba(255,255,255,0.06)";
-                e.currentTarget.style.borderColor = "rgba(255,255,255,0.18)";
-                e.currentTarget.style.color = "#fafafa";
+                e.currentTarget.style.background = "var(--secondary)";
+                e.currentTarget.style.borderColor = "var(--c-brd)";
+                e.currentTarget.style.color = "var(--c-high)";
               }}
               onMouseLeave={e => {
                 if (isFirst) return;
                 e.currentTarget.style.background = "transparent";
-                e.currentTarget.style.borderColor = "rgba(255,255,255,0.10)";
-                e.currentTarget.style.color = "#cfcfcf";
+                e.currentTarget.style.borderColor = "var(--c-brd)";
+                e.currentTarget.style.color = "var(--c-med)";
               }}
             >
               <ArrowLeft size={12} />
@@ -401,14 +401,14 @@ export function FirstLaunchTour({ onDone }: { onDone: () => void }) {
                 display: "inline-flex", alignItems: "center", gap: 6,
                 padding: "6px 12px",
                 borderRadius: 7,
-                background: "#e6e6e6",
+                background: "#52525b",
                 border: "none", cursor: "pointer", outline: "none",
-                color: "#0c0c0c",
+                color: "#ffffff",
                 fontSize: 12.5, fontWeight: 600, fontFamily: "inherit",
                 transition: "background 0.12s, transform 0.08s",
               }}
-              onMouseEnter={e => { e.currentTarget.style.background = "#fafafa"; }}
-              onMouseLeave={e => { e.currentTarget.style.background = "#e6e6e6"; }}
+              onMouseEnter={e => { e.currentTarget.style.background = "#3f3f46"; }}
+              onMouseLeave={e => { e.currentTarget.style.background = "#52525b"; }}
               onMouseDown={e => { e.currentTarget.style.transform = "translateY(0.5px)"; }}
               onMouseUp={e => { e.currentTarget.style.transform = "none"; }}
             >
@@ -431,7 +431,7 @@ export function FirstLaunchTour({ onDone }: { onDone: () => void }) {
             return <span style={{
               ...baseStyle, top: ay - size, left: -size,
               borderWidth: `${size}px ${size}px ${size}px 0`,
-              borderColor: `transparent #141414 transparent transparent`,
+              borderColor: `transparent var(--card) transparent transparent`,
             }} />;
           }
           if (arrowSide === "right") {
@@ -439,7 +439,7 @@ export function FirstLaunchTour({ onDone }: { onDone: () => void }) {
             return <span style={{
               ...baseStyle, top: ay - size, right: -size,
               borderWidth: `${size}px 0 ${size}px ${size}px`,
-              borderColor: `transparent transparent transparent #141414`,
+              borderColor: `transparent transparent transparent var(--card)`,
             }} />;
           }
           if (arrowSide === "top") {
@@ -447,7 +447,7 @@ export function FirstLaunchTour({ onDone }: { onDone: () => void }) {
             return <span style={{
               ...baseStyle, top: -size, left: ax - size,
               borderWidth: `0 ${size}px ${size}px ${size}px`,
-              borderColor: `transparent transparent #141414 transparent`,
+              borderColor: `transparent transparent var(--card) transparent`,
             }} />;
           }
           if (arrowSide === "bottom") {
@@ -455,7 +455,7 @@ export function FirstLaunchTour({ onDone }: { onDone: () => void }) {
             return <span style={{
               ...baseStyle, bottom: -size, left: ax - size,
               borderWidth: `${size}px ${size}px 0 ${size}px`,
-              borderColor: `#141414 transparent transparent transparent`,
+              borderColor: `var(--card) transparent transparent transparent`,
             }} />;
           }
           return null;

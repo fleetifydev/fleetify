@@ -46,7 +46,7 @@ import {
 } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
 import { usesInAppTitleBar, folderName } from "@/lib/utils";
-import { ClaudeLogo, OpenAILogo, GeminiLogo, ProviderLogo } from "@/components/ui/provider-logo";
+import { ProviderLogo } from "@/components/ui/provider-logo";
 import { wsManager } from "@/services/ws-manager";
 import {
   loadRoutines, saveRoutines, loadRuns,
@@ -68,6 +68,8 @@ import { MarkdownBody, rowSummary } from "@/components/chat/message-content";
 import type { Session } from "@/types/session";
 import type { ChatMessage } from "@/types/chat";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
+import { buildPickerGroups, resolveModelChip, resolveDispatchTool } from "@/lib/picker-groups";
+import { UnifiedModelPicker, type Effort } from "@/components/chat/unified-model-picker";
 import { permissionCapabilityFor, permissionModesFor, isLoudMode } from "@/lib/capabilities";
 import type { PermMode } from "@/lib/providers-api";
 
@@ -75,26 +77,51 @@ import type { PermMode } from "@/lib/providers-api";
    Kept in sync with new-agent-dialog.tsx by hand. If you change models
    here, change them there too — both surfaces should agree on what's
    selectable. Default model per provider is marked. */
-const PROVIDERS: {
-  id: Provider; name: string; icon: React.ComponentType<{ size?: number }>;
+interface CatalogProvider {
+  id: Provider;
+  name: string;
   models: { id: string; label: string; desc: string; default?: boolean }[];
-}[] = [
-  { id: "claude", name: "Claude", icon: ClaudeLogo, models: [
-    { id: "claude-opus-4-8",           label: "Opus 4.8",   desc: "Most capable" },
-    { id: "claude-sonnet-4-6",         label: "Sonnet 4.6", desc: "Balanced", default: true },
-    { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5",  desc: "Fastest" },
-  ]},
-  { id: "codex",  name: "Codex",  icon: OpenAILogo, models: [
-    { id: "gpt-5.2", label: "GPT-5.2", desc: "Fastest" },
-    { id: "gpt-5.4", label: "GPT-5.4", desc: "Balanced", default: true },
-    { id: "gpt-5.5", label: "GPT-5.5", desc: "Capable"  },
-  ]},
-  { id: "gemini", name: "Gemini", icon: GeminiLogo, models: [
-    { id: "gemini-3.1-pro-preview",        label: "3.1 Pro",  desc: "Best",    default: true },
-    { id: "gemini-3-flash-preview",        label: "3 Flash",  desc: "Fast"    },
-    { id: "gemini-3.1-flash-lite-preview", label: "3.1 Lite", desc: "Fastest" },
-  ]},
-];
+}
+
+/** Provider/model catalogue for routines — built from the SAME source as the
+ *  Fleet chat picker (`buildPickerGroups` over the connected provider tiles),
+ *  so Routines exposes every activated provider + its models (including live
+ *  model lists for OpenCode / Cursor / OpenRouter) rather than a fixed trio.
+ *  The "Auto" pseudo-provider is excluded — a routine pins a real provider. */
+function useProviderCatalog(): CatalogProvider[] {
+  const { tiles } = useProvidersConfig();
+  return useMemo(() => {
+    const cliIds = tiles
+      .filter((t) => t.spec.kind === "cli" && t.connected)
+      .map((t) => t.spec.id);
+    return buildPickerGroups(tiles, cliIds)
+      .filter((g) => g.id !== "auto" && g.models.length > 0)
+      .map((g) => ({
+        id: g.id,
+        name: g.label,
+        models: g.models.map((m, i) => ({
+          id: m.id,
+          label: m.label,
+          desc: m.ctx ?? "",
+          default: i === 0,
+        })),
+      }));
+  }, [tiles]);
+}
+
+/** Raw picker groups (Providers | Models | Effort) for the UnifiedModelPicker —
+ *  the exact same source + shape the Fleet chat composer consumes, so the
+ *  routine form's model menu can never drift from chat's. Includes the "auto"
+ *  group (Fleet-routed) which `useProviderCatalog` strips for the table label. */
+function useProviderGroups() {
+  const { tiles } = useProvidersConfig();
+  return useMemo(() => {
+    const cliIds = tiles
+      .filter((t) => t.spec.kind === "cli" && t.connected)
+      .map((t) => t.spec.id);
+    return buildPickerGroups(tiles, cliIds);
+  }, [tiles]);
+}
 
 /** Look up the display label for a permission mode from the resolved
  *  native modes for the given provider. Falls back to the raw id when
@@ -789,6 +816,7 @@ function RoutineTableRow({ routine, onOpen, onEdit, onRequestDelete }: {
   const runs = useRuns();
   const [hover, setHover] = useState(false);
   const { tiles: providerTiles } = useProvidersConfig();
+  const PROVIDERS = useProviderCatalog();
 
   const resumeSession = routine.target === "resume"
     ? sessions.find(x => x.id === routine.resumeSessionId)
@@ -1621,6 +1649,7 @@ function NewRoutineForm({ template, existing, onCancel, onSubmit, mode }: {
   );
 
   // ── Identity ────────────────────────────────────────────────────
+  const PROVIDERS = useProviderCatalog();
   const [name, setName] = useState(existing?.name ?? (template ? toKebabName(template.name) : ""));
   const [description, setDescription] = useState(existing?.description ?? template?.description ?? "");
   const [instructions, setInstructions] = useState(existing?.instructions ?? template?.defaults.instructions ?? "");
@@ -1633,6 +1662,7 @@ function NewRoutineForm({ template, existing, onCancel, onSubmit, mode }: {
   const [projectPath, setProjectPath] = useState(existing?.projectPath ?? userSessions[0]?.project_path ?? "");
   const [provider, setProvider] = useState<Provider>(existing?.provider ?? "claude");
   const [modelId, setModelId] = useState(existing?.modelId ?? "claude-sonnet-4-6");
+  const [effort, setEffort] = useState<Effort>((existing?.effort as Effort) ?? "high");
   const [useWorktree, setUseWorktree] = useState(existing?.useWorktree ?? true);
   const [agentTemplate, setAgentTemplate] = useState<string | null>(existing?.agentTemplate ?? null);
   const [resumeSessionId, setResumeSessionId] = useState<string | null>(existing?.resumeSessionId ?? null);
@@ -1717,6 +1747,15 @@ function NewRoutineForm({ template, existing, onCancel, onSubmit, mode }: {
     if (def) setModelId(def.id);
   };
 
+  // New routine: once the provider catalogue loads, snap to the first available
+  // provider if the default isn't actually connected — so the picker never
+  // opens on a provider the user can't run.
+  useEffect(() => {
+    if (existing || PROVIDERS.length === 0) return;
+    if (!PROVIDERS.some((p) => p.id === provider)) changeProvider(PROVIDERS[0]!.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [PROVIDERS]);
+
   const valid = useMemo(() => {
     if (name.trim().length === 0 || description.trim().length === 0) return false;
     if (target === "new" && projectPath.trim().length === 0) return false;
@@ -1739,6 +1778,7 @@ function NewRoutineForm({ template, existing, onCancel, onSubmit, mode }: {
       projectPath: projectPath.trim(),
       provider,
       modelId,
+      effort,
       useWorktree,
       agentTemplate,
       resumeSessionId: target === "resume" ? resumeSessionId : null,
@@ -1935,6 +1975,8 @@ function NewRoutineForm({ template, existing, onCancel, onSubmit, mode }: {
             onProviderChange={changeProvider}
             modelId={modelId}
             onModelIdChange={setModelId}
+            effort={effort}
+            onEffortChange={setEffort}
             useWorktree={useWorktree}
             onUseWorktreeChange={setUseWorktree}
             agentTemplate={agentTemplate}
@@ -2028,6 +2070,7 @@ function RoutineDetail({ routine, onBack, onRequestDelete, onEdit, onOpenRun }: 
   onEdit: () => void;
   onOpenRun: (runId: string) => void;
 }) {
+  const PROVIDERS = useProviderCatalog();
   const sessions = useAppStore(s => s.sessions);
   const setActiveSession = useAppStore(s => s.setActiveSession);
   const setMainView = useAppStore(s => s.setMainView);
@@ -2452,6 +2495,7 @@ function RunDetailView({ routineId, runId, onBack }: {
   // Re-derive routines on every render (loadRoutines is a cheap
   // localStorage read). Avoids importing the routines list from the
   // parent — keeps this view self-contained.
+  const PROVIDERS = useProviderCatalog();
   const routine = loadRoutines().find(r => r.id === routineId);
   const run = allRuns.find(r => r.id === runId);
   const setActiveSession = useAppStore(s => s.setActiveSession);
@@ -3081,6 +3125,7 @@ function PanelRow({ label, value, mono, icon }: {
 function NewSessionConfig({
   projectPath, onProjectPathChange, recentPaths,
   provider, onProviderChange, modelId, onModelIdChange,
+  effort, onEffortChange,
   useWorktree, onUseWorktreeChange,
   agentTemplate, onAgentTemplateChange,
 }: {
@@ -3091,11 +3136,22 @@ function NewSessionConfig({
   onProviderChange: (p: Provider) => void;
   modelId: string;
   onModelIdChange: (id: string) => void;
+  effort: Effort;
+  onEffortChange: (e: Effort) => void;
   useWorktree: boolean;
   onUseWorktreeChange: (v: boolean) => void;
   agentTemplate: string | null;
   onAgentTemplateChange: (id: string | null) => void;
 }) {
+  // Single model menu — same source + popover the Fleet composer uses, so the
+  // routine inherits provider · model · effort from one click-through picker
+  // instead of two disconnected dropdowns.
+  const groups = useProviderGroups();
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const { dispatchTool, label: modelLabel } = resolveModelChip(groups, provider, modelId);
+  const effortShort: Record<Effort, string> = {
+    low: "Low", medium: "Med", high: "High", extra_high: "X-Hi", max: "Max",
+  };
   return (
     <div style={{
       display: "flex", flexDirection: "column", gap: 12,
@@ -3106,14 +3162,55 @@ function NewSessionConfig({
     }}>
       <FolderPicker value={projectPath} onChange={onProjectPathChange} suggestions={recentPaths} />
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-        <Field label="Provider">
-          <ProviderTabs value={provider} onChange={onProviderChange} />
-        </Field>
-        <Field label="Model">
-          <ModelDropdown provider={provider} value={modelId} onChange={onModelIdChange} />
-        </Field>
-      </div>
+      <Field label="Model">
+        <div style={{ position: "relative" }}>
+          <button
+            type="button"
+            // Read the closure value (NOT a functional updater): the picker's
+            // own capture-phase outside-click already fired onClose by the time
+            // this runs, so `!pickerOpen` lands on "closed" instead of toggling
+            // back open. Mirrors the chat toolbar's model chip.
+            onClick={() => setPickerOpen(!pickerOpen)}
+            style={{
+              width: "100%",
+              display: "inline-flex", alignItems: "center", gap: 7,
+              padding: "8px 10px",
+              background: "var(--c-srf)",
+              border: `1px solid ${pickerOpen ? "var(--c-brd2)" : "var(--sidebar-border)"}`,
+              borderRadius: 7,
+              color: "var(--c-high)",
+              fontSize: 12.5, fontFamily: "inherit",
+              cursor: "pointer", textAlign: "left",
+            }}
+          >
+            <ProviderLogo tool={dispatchTool} size={14} />
+            <span>{modelLabel}</span>
+            <span style={{ color: "var(--c-dim)", fontSize: 11 }}>·</span>
+            <span style={{ color: "var(--c-low)", fontSize: 11.5 }}>{effortShort[effort]}</span>
+            <ChevronDown size={13} style={{ color: "var(--c-dim)", marginLeft: "auto", flexShrink: 0 }} />
+          </button>
+          {pickerOpen && (
+            <UnifiedModelPicker
+              tool={provider}
+              model={modelId}
+              effort={effort}
+              groups={groups}
+              onPickModel={(groupId, mId) => {
+                if (groupId === "auto") {
+                  onProviderChange("auto");
+                  onModelIdChange("auto");
+                } else {
+                  onProviderChange(resolveDispatchTool(groupId));
+                  onModelIdChange(mId);
+                }
+              }}
+              onPickEffort={(e) => onEffortChange(e)}
+              onClose={() => setPickerOpen(false)}
+              anchor="bottom"
+            />
+          )}
+        </div>
+      </Field>
 
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <Checkbox
@@ -3233,132 +3330,6 @@ function FolderPicker({ value, onChange, suggestions }: {
   );
 }
 
-/* ── Provider tabs ───────────────────────────────────────────────── */
-
-function ProviderTabs({ value, onChange }: { value: Provider; onChange: (p: Provider) => void }) {
-  return (
-    <div style={{
-      display: "flex",
-      padding: 2, gap: 1,
-      background: "var(--c-srf)",
-      border: "1px solid var(--sidebar-border)",
-      borderRadius: 7,
-    }}>
-      {PROVIDERS.map(p => {
-        const active = value === p.id;
-        const Icon = p.icon;
-        return (
-          <button
-            key={p.id}
-            onClick={() => onChange(p.id)}
-            style={{
-              flex: 1,
-              display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 5,
-              padding: "5px 8px",
-              background: active ? "var(--c-srf2)" : "transparent",
-              border: "none", borderRadius: 5,
-              color: active ? "var(--c-high)" : "var(--c-low)",
-              fontSize: 11.5, fontWeight: active ? 500 : 400,
-              fontFamily: "inherit",
-              cursor: "pointer",
-              transition: "background 0.08s, color 0.08s",
-            }}
-            onMouseEnter={e => { if (!active) e.currentTarget.style.color = "var(--c-high)"; }}
-            onMouseLeave={e => { if (!active) e.currentTarget.style.color = "var(--c-low)"; }}
-          >
-            <Icon size={11} />
-            <span>{p.name}</span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-/* ── Model dropdown ──────────────────────────────────────────────── */
-
-function ModelDropdown({ provider, value, onChange }: {
-  provider: Provider; value: string; onChange: (id: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const h = (e: MouseEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
-  }, [open]);
-
-  const models = PROVIDERS.find(p => p.id === provider)?.models ?? [];
-  const current = models.find(m => m.id === value) ?? models[0];
-
-  return (
-    <div ref={wrapRef} style={{ position: "relative" }}>
-      <button
-        onClick={() => setOpen(v => !v)}
-        style={{
-          width: "100%",
-          display: "inline-flex", alignItems: "center", justifyContent: "space-between",
-          gap: 5,
-          padding: "6px 10px",
-          background: "var(--c-srf)",
-          border: "1px solid var(--sidebar-border)",
-          borderRadius: 7,
-          color: "var(--c-high)",
-          fontSize: 12, fontFamily: "inherit",
-          cursor: "pointer",
-          textAlign: "left",
-          transition: "background 0.08s, border-color 0.08s",
-        }}
-        onMouseEnter={e => { e.currentTarget.style.background = "var(--c-srf2)"; }}
-        onMouseLeave={e => { e.currentTarget.style.background = "var(--c-srf)"; }}
-      >
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {current?.label ?? "Select model"}
-        </span>
-        <ChevronDown size={11} style={{ color: "var(--c-dim)", flexShrink: 0 }} />
-      </button>
-      {open && (
-        <div style={{
-          position: "absolute", left: 0, right: 0, top: "calc(100% + 4px)",
-          background: "var(--popover)",
-          border: "1px solid var(--c-brd2)",
-          borderRadius: 7,
-          padding: 3,
-          zIndex: 20,
-          boxShadow: "0 8px 24px rgba(0,0,0,0.35), 0 2px 8px rgba(0,0,0,0.18)",
-        }}>
-          {models.map(m => (
-            <button
-              key={m.id}
-              onMouseDown={e => { e.preventDefault(); onChange(m.id); setOpen(false); }}
-              style={{
-                display: "flex", alignItems: "center", justifyContent: "space-between",
-                width: "100%", padding: "6px 9px",
-                background: m.id === value ? "var(--c-srf)" : "transparent",
-                border: "none", borderRadius: 5,
-                color: m.id === value ? "var(--c-high)" : "var(--c-low)",
-                fontSize: 11.5, fontFamily: "inherit",
-                cursor: "pointer", textAlign: "left",
-              }}
-              onMouseEnter={e => { e.currentTarget.style.background = "var(--c-srf)"; e.currentTarget.style.color = "var(--c-high)"; }}
-              onMouseLeave={e => {
-                e.currentTarget.style.background = m.id === value ? "var(--c-srf)" : "transparent";
-                e.currentTarget.style.color = m.id === value ? "var(--c-high)" : "var(--c-low)";
-              }}
-            >
-              <span>{m.label}</span>
-              <span style={{ fontSize: 10, color: "var(--c-ghost)" }}>{m.desc}</span>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 /* ── Permission picker ───────────────────────────────────────────────
    Visual + interaction parity with chat-input's PermissionModePicker.

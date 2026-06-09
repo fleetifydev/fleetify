@@ -37,6 +37,8 @@ import type { ProviderTile } from "@/lib/providers-api";
 import { modelsForTile } from "@/lib/picker-groups";
 import type { PickerModel } from "@/lib/picker-groups";
 import { buildSelectionPersist } from "@/components/onboarding/provider-selection";
+import { STUDIO_ENABLED } from "@/lib/feature-flags";
+import { useThemeStore } from "@/stores/theme-store";
 import { capture, optIn, optOut } from "@/lib/posthog";
 
 interface Props {
@@ -51,7 +53,16 @@ type WidgetKind =
   | "scan"
   | "main-agent"
   | "github"
+  | "theme"
   | "telemetry-consent";
+
+/** Theme choice offered in onboarding. "system" follows the OS preference. */
+type ThemeMode = "system" | "dark" | "light";
+
+// Neutral gray for onboarding primary buttons (white text). Reads on both the
+// light and dark onboarding themes and is softer than a pure black/white CTA.
+const ONB_BTN_BG = "#52525b";
+const ONB_BTN_FG = "#ffffff";
 
 /** Which provider bucket a `providers` / `scan` widget is bound to. The
  *  onboarding runs selection then setup for Workspace first, then Studio. */
@@ -329,7 +340,8 @@ export function OnboardingChat({ user, onDone }: Props) {
   ) => {
     resolveLastWidget();
 
-    // ── Workspace selection done → advance to the Studio selection step.
+    // ── Workspace selection done → advance to the Studio selection step
+    //    (or straight to setup when Studio is gated off).
     if (phase === "workspace") {
       pushUser(
         providers.length
@@ -337,23 +349,32 @@ export function OnboardingChat({ user, onDone }: Props) {
           : "No workspace providers",
       );
       setSelections((s) => ({ ...s, workspacePicks: providers }));
-      await pushAssistant(
-        "Now your **Studio** tools — image and video generation (Higgsfield and friends). Pick any you'd like, or skip and add them later from **Settings**.",
-        "providers",
-        "studio",
-      );
-      return;
+      if (STUDIO_ENABLED) {
+        await pushAssistant(
+          "Now your **Studio** tools — image and video generation (Higgsfield and friends). Pick any you'd like, or skip and add them later from **Settings**.",
+          "providers",
+          "studio",
+        );
+        return;
+      }
+      // Studio hidden — fall through to the shared setup sequence with an
+      // empty studio bucket (workspace-only onboarding).
     }
 
-    // ── Studio selection done → persist, then run the two sequential
-    //    setup steps (Workspace verify, then Studio verify).
-    pushUser(
-      providers.length
-        ? humanList(providers.map((p) => p.label))
-        : "Skip — no Studio tools",
-    );
-    const workspacePicks = selectionsRef.current.workspacePicks ?? [];
-    const studioPicks = providers;
+    // ── Studio selection done (or skipped) → persist, then run the
+    //    sequential setup steps (Workspace verify, then Studio verify).
+    const fromStudioPhase = phase === "studio";
+    if (fromStudioPhase) {
+      pushUser(
+        providers.length
+          ? humanList(providers.map((p) => p.label))
+          : "Skip — no Studio tools",
+      );
+    }
+    const workspacePicks = fromStudioPhase
+      ? (selectionsRef.current.workspacePicks ?? [])
+      : providers;
+    const studioPicks = fromStudioPhase ? providers : [];
     const allPicks = [...workspacePicks, ...studioPicks];
     setSelections((s) => ({ ...s, studioPicks, providers: allPicks }));
 
@@ -565,11 +586,24 @@ export function OnboardingChat({ user, onDone }: Props) {
       );
     }
 
-    // One more step before we hand them the "Enter Fleet" button —
-    // ask whether to opt into PostHog product analytics. Default off so
-    // anyone who clicks past stays opted out; the consent widget's
-    // callback (`handleTelemetryConsent`) flips the SDK + backend gate
-    // only on an explicit "Sure, help out".
+    // Theme picker next, then the privacy/telemetry consent step. The theme
+    // widget applies the choice live, so the rest of onboarding previews it.
+    await pushAssistant(
+      `Almost there, ${firstName} — pick a look for Fleetify. You can change it any time in **Settings**.`,
+      "theme",
+    );
+  };
+
+  // Theme picked (already applied live) → ask for the privacy/telemetry
+  // consent — the last step before the "Enter Fleet" button. Default off so
+  // anyone who clicks past stays opted out; the consent widget's callback
+  // (`handleTelemetryConsent`) flips the SDK + backend gate only on an
+  // explicit "Sure, help out".
+  const handleThemeConfirm = async (mode: ThemeMode) => {
+    resolveLastWidget();
+    pushUser(
+      mode === "system" ? "System theme" : mode === "dark" ? "Dark theme" : "Light theme",
+    );
     await pushAssistant(
       `One last thing, ${firstName} — would you help us improve Fleetify? We'd send anonymous behavioural data only (which screens, which providers, how long onboarding takes). Never message content, API keys, or file paths. You can change this any time in **Settings → Privacy**.`,
       "telemetry-consent",
@@ -733,6 +767,7 @@ export function OnboardingChat({ user, onDone }: Props) {
             onProvidersConfirm={handleProvidersConfirm}
             onMainAgentPick={handleMainAgentPick}
             onGithubResult={handleGithubResult}
+            onThemeConfirm={handleThemeConfirm}
             onTelemetryConsent={handleTelemetryConsent}
             onKeySaved={(id) => inlineSavedRef.current.add(id)}
             onScanContinue={() => scanContinueResolverRef.current?.()}
@@ -762,10 +797,10 @@ export function OnboardingChat({ user, onDone }: Props) {
             gap: 7,
             fontSize: 13,
             fontWeight: 600,
-            background: done ? "#fff" : "rgba(255,255,255,0.06)",
-            color: done ? "#000" : "var(--m-text-3)",
+            background: done ? ONB_BTN_BG : "var(--secondary)",
+            color: done ? ONB_BTN_FG : "var(--m-text-3)",
             border: "1px solid",
-            borderColor: done ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.08)",
+            borderColor: done ? ONB_BTN_BG : "var(--c-brd)",
             cursor: done ? "pointer" : "not-allowed",
             opacity: done ? 1 : 0.55,
             boxShadow: done
@@ -808,6 +843,7 @@ function Bubble({
   onProvidersConfirm,
   onMainAgentPick,
   onGithubResult,
+  onThemeConfirm,
   onTelemetryConsent,
   onKeySaved,
   onScanContinue,
@@ -834,6 +870,7 @@ function Bubble({
       | { method: "oauth"; username?: string }
       | { skipped: true },
   ) => void;
+  onThemeConfirm: (mode: ThemeMode) => void;
   onTelemetryConsent: (enabled: boolean) => void;
   /** Threaded through to ScanWidget so OnboardingChat can stash the
    *  ids the user saved inline and feed them into the readout
@@ -910,7 +947,6 @@ function Bubble({
           )}
           scan={scan ?? null}
           frozen={Boolean(msg.resolved)}
-          optional={msg.phase === "studio"}
           pythonRuntime={pythonRuntime ?? null}
           onKeySaved={onKeySaved}
           onContinue={onScanContinue}
@@ -936,9 +972,149 @@ function Bubble({
       {msg.resolved && msg.widget === "github" && (
         <GithubResolved username={githubUsername} skipped={Boolean(githubSkipped)} />
       )}
+      {!msg.typing && !msg.resolved && msg.widget === "theme" && (
+        <ThemeWidget onConfirm={onThemeConfirm} />
+      )}
       {!msg.typing && !msg.resolved && msg.widget === "telemetry-consent" && (
         <TelemetryConsentWidget onChoice={onTelemetryConsent} />
       )}
+    </div>
+  );
+}
+
+/* ── ThemeWidget — System / Dark / Light, big side-by-side cards ──
+   Applies the choice live (setColorTheme) so the rest of onboarding
+   previews it; Continue advances to the privacy step. "System" resolves
+   the OS preference at selection. */
+function ThemePreview({ mode }: { mode: ThemeMode }) {
+  const swatch = (dark: boolean, key?: string) => {
+    const bg = dark ? "#161618" : "#fbfbfc";
+    const fg = dark ? "rgba(255,255,255,0.82)" : "rgba(0,0,0,0.78)";
+    const dim = dark ? "rgba(255,255,255,0.22)" : "rgba(0,0,0,0.16)";
+    const accent = dark ? "rgba(255,255,255,0.55)" : "rgba(0,0,0,0.45)";
+    return (
+      <div
+        key={key}
+        style={{
+          flex: 1,
+          background: bg,
+          display: "flex",
+          flexDirection: "column",
+          gap: 5,
+          padding: "12px 11px",
+          justifyContent: "center",
+        }}
+      >
+        <div style={{ width: 16, height: 5, borderRadius: 3, background: accent }} />
+        <div style={{ width: "78%", height: 5, borderRadius: 3, background: fg }} />
+        <div style={{ width: "92%", height: 4, borderRadius: 3, background: dim }} />
+        <div style={{ width: "58%", height: 4, borderRadius: 3, background: dim }} />
+      </div>
+    );
+  };
+  return (
+    <div
+      style={{
+        height: 80,
+        borderRadius: 9,
+        overflow: "hidden",
+        display: "flex",
+        border: "1px solid rgba(128,128,128,0.18)",
+      }}
+    >
+      {mode === "system"
+        ? [swatch(true, "d"), swatch(false, "l")]
+        : mode === "dark"
+          ? swatch(true)
+          : swatch(false)}
+    </div>
+  );
+}
+
+function ThemeWidget({ onConfirm }: { onConfirm: (mode: ThemeMode) => void }) {
+  const setColorTheme = useThemeStore((s) => s.setColorTheme);
+  const [mode, setMode] = useState<ThemeMode>(
+    useThemeStore.getState().theme === "light" ? "light" : "dark",
+  );
+
+  const apply = (m: ThemeMode) => {
+    setMode(m);
+    const osDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? true;
+    // Dark → default dark palette (zinc); Light → light palette; System →
+    // resolve the OS preference now.
+    const palette = m === "light" ? "light" : m === "dark" ? "zinc" : osDark ? "zinc" : "light";
+    setColorTheme(palette);
+  };
+
+  const OPTIONS: { mode: ThemeMode; label: string }[] = [
+    { mode: "system", label: "System" },
+    { mode: "dark", label: "Dark" },
+    { mode: "light", label: "Light" },
+  ];
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ display: "flex", gap: 10 }}>
+        {OPTIONS.map((o) => {
+          const active = mode === o.mode;
+          return (
+            <button
+              key={o.mode}
+              onClick={() => apply(o.mode)}
+              style={{
+                flex: 1,
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+                padding: 8,
+                borderRadius: 12,
+                cursor: "pointer",
+                background: active ? "var(--secondary)" : "transparent",
+                border: `1px solid ${active ? "var(--c-high)" : "var(--c-brd)"}`,
+                transition: "border-color 0.15s ease, background 0.15s ease",
+              }}
+            >
+              <ThemePreview mode={o.mode} />
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 5,
+                  fontSize: 12.5,
+                  fontWeight: active ? 600 : 500,
+                  color: active ? "var(--c-high)" : "var(--c-med)",
+                }}
+              >
+                {active && <Check size={12} strokeWidth={2.6} />}
+                {o.label}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+        <button
+          onClick={() => onConfirm(mode)}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 5,
+            height: 28,
+            padding: "0 14px",
+            borderRadius: 6,
+            fontSize: 12,
+            fontWeight: 600,
+            background: "var(--c-high)",
+            color: "var(--background)",
+            border: "none",
+            cursor: "pointer",
+          }}
+        >
+          Continue
+          <ArrowRight size={12} strokeWidth={2.4} />
+        </button>
+      </div>
     </div>
   );
 }
@@ -972,9 +1148,9 @@ function TelemetryConsentWidget({
         style={{
           padding: "9px 16px",
           borderRadius: 8,
-          background: "#fff",
-          color: "#000",
-          border: "1px solid rgba(255,255,255,0.9)",
+          background: ONB_BTN_BG,
+          color: ONB_BTN_FG,
+          border: "none",
           cursor: busy ? "default" : "pointer",
           fontSize: 13,
           fontWeight: 600,
@@ -1159,8 +1335,8 @@ function ProvidersWidget({
             borderRadius: 5,
             fontSize: 11.5,
             fontWeight: 600,
-            background: canContinue ? "#fff" : "rgba(255,255,255,0.05)",
-            color: canContinue ? "#000" : "var(--m-text-3)",
+            background: canContinue ? ONB_BTN_BG : "var(--secondary)",
+            color: canContinue ? ONB_BTN_FG : "var(--m-text-3)",
             border: "none",
             cursor: canContinue ? "pointer" : "not-allowed",
             transition: "background 0.15s ease, transform 0.12s ease",
@@ -1337,7 +1513,6 @@ function ScanWidget({
   providers,
   scan,
   frozen = false,
-  optional = false,
   pythonRuntime,
   onKeySaved,
   onContinue,
@@ -1345,9 +1520,6 @@ function ScanWidget({
   providers: ProviderDef[];
   scan: ProviderScan | null;
   frozen?: boolean;
-  /** Optional bucket (Studio) — the Continue button is never gated on
-   *  readiness, since studio tools finish setup in Settings → Studio. */
-  optional?: boolean;
   /** Python runtime probe — forwarded to the Antigravity SDK row so
    *  it can swap between Setup / Add key / Ready states. null means
    *  the probe ran and found no Python installation. */
@@ -1357,12 +1529,9 @@ function ScanWidget({
    *  pick up a keychain write). Called once per provider id when
    *  setKey / setOllamaBaseUrl succeeds inside this widget. */
   onKeySaved?: (id: string) => void;
-  /** Continue button click handler. Resolves the parent's pending
-   *  promise so the readout + main-agent picker can land. For the
-   *  workspace (required) step it's gated on ≥1 provider being ready
-   *  (CLI verified ok / Ollama running / API key saved + tested) so we
-   *  never advance with nothing wired up; for the optional Studio step
-   *  it's always enabled. */
+  /** Continue button click handler. Resolves the parent's pending promise so
+   *  the readout + main-agent picker can land. Always enabled — no provider is
+   *  mandatory; the user can finish setup later from Settings → Providers. */
   onContinue?: () => void;
 }) {
   const [states, setStates] = useState<Record<string, ProviderState>>({});
@@ -1966,7 +2135,9 @@ function ScanWidget({
       })}
       {!frozen && onContinue && (
         <ContinueRow
-          enabled={optional || providers.some((p) => isProviderReady(p, scan, new Set(Object.keys(keysAdded).filter((k) => keysAdded[k]))))}
+          // No provider is mandatory — the user can finish setup any time from
+          // Settings → Providers — so Continue is always available.
+          enabled
           onContinue={onContinue}
         />
       )}
@@ -2007,8 +2178,8 @@ function ContinueRow({
           borderRadius: 6,
           fontSize: 12,
           fontWeight: 600,
-          background: enabled ? "rgba(255,255,255,0.92)" : "rgba(255,255,255,0.18)",
-          color: enabled ? "#000" : "var(--m-text-3)",
+          background: enabled ? ONB_BTN_BG : "var(--secondary)",
+          color: enabled ? ONB_BTN_FG : "var(--m-text-3)",
           border: "none",
           cursor: enabled ? "pointer" : "not-allowed",
           transition: "background 0.12s ease",
@@ -2114,11 +2285,12 @@ function ActionButton({ label, onClick }: { label: string; onClick: () => void }
         borderRadius: 5,
         fontSize: 11,
         fontWeight: 600,
-        background: hover ? "#fff" : "rgba(255,255,255,0.85)",
-        color: "#000",
+        background: ONB_BTN_BG,
+        color: ONB_BTN_FG,
         border: "none",
         cursor: "pointer",
-        transition: "background 0.12s ease, transform 0.12s ease",
+        opacity: hover ? 0.88 : 1,
+        transition: "opacity 0.12s ease, transform 0.12s ease",
       }}
     >
       {label}
@@ -2265,6 +2437,29 @@ function StatusDot({ status }: { status: ScanStatus }) {
   );
 }
 
+/** Where users create an API key for each provider — surfaced as a link atop
+ *  the inline key-entry body so they aren't left hunting for the dashboard. */
+function apiKeyUrl(id: string): string | null {
+  switch (id) {
+    case "openai": return "https://platform.openai.com/api-keys";
+    case "anthropic": return "https://console.anthropic.com/settings/keys";
+    case "gemini-api":
+    case "antigravity-sdk": return "https://aistudio.google.com/apikey";
+    case "deepseek": return "https://platform.deepseek.com/api_keys";
+    case "grok": return "https://console.x.ai/";
+    case "kimi-api": return "https://platform.moonshot.ai/console/api-keys";
+    case "perplexity": return "https://www.perplexity.ai/account/api/keys";
+    case "nvidia-nim": return "https://build.nvidia.com/";
+    case "openrouter": return "https://openrouter.ai/keys";
+    case "cloudflare-workers-ai": return "https://dash.cloudflare.com/?to=/:account/ai/workers-ai";
+    default: return null;
+  }
+}
+
+function openKeyPage(url: string) {
+  window.electronAPI?.openExternal?.(url)?.catch(() => {});
+}
+
 /* ── KeyEntryRow ──────────────────────────────────────────────────
    Inline API-key entry + saved-state preview in the onboarding
    verify list. Same row chrome as ScanRow (logo + label + action +
@@ -2294,9 +2489,11 @@ function KeyEntryRow({
   frozen?: boolean;
   onSaved: () => void;
 }) {
-  type Mode = "entry" | "saving" | "saved";
-  const [mode, setMode] = useState<Mode>(initiallyHasKey ? "saved" : "entry");
+  const isCloudflare = provider.id === "cloudflare-workers-ai";
+  type Mode = "collapsed" | "entry" | "saving" | "saved";
+  const [mode, setMode] = useState<Mode>(initiallyHasKey ? "saved" : "collapsed");
   const [value, setValue] = useState("");
+  const [accountId, setAccountId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   // True when `setKey` landed but `testConnection` couldn't actually
@@ -2328,9 +2525,13 @@ function KeyEntryRow({
     };
   }, [mode, provider.id]);
 
+  const keyUrl = apiKeyUrl(provider.id);
+  const actionLabel = isCloudflare ? "Set up" : "Add key";
+  const canSave = isCloudflare ? !!value.trim() && !!accountId.trim() : !!value.trim();
+
   const save = async () => {
+    if (!canSave) return;
     const trimmed = value.trim();
-    if (!trimmed) return;
     setMode("saving");
     setError(null);
     try {
@@ -2339,6 +2540,14 @@ function KeyEntryRow({
         setMode("entry");
         setError(setResult.error || "Save failed");
         return;
+      }
+      if (isCloudflare) {
+        const acct = await providersApi.setCloudflareAccountId(accountId.trim());
+        if (!acct.ok) {
+          setMode("entry");
+          setError(acct.error || "Couldn't save the account id");
+          return;
+        }
       }
       // Test the key against the provider's API — mirrors the test
       // Settings → Models runs after a paste. AUTH or zero-model
@@ -2356,6 +2565,7 @@ function KeyEntryRow({
           setMode("saved");
           setSavedUnverified(false);
           setValue("");
+          setAccountId("");
           setPreview(null);
           onSaved();
           return;
@@ -2378,6 +2588,7 @@ function KeyEntryRow({
       setMode("saved");
       setSavedUnverified(true);
       setValue("");
+      setAccountId("");
       setPreview(null);
       onSaved();
     } catch (e) {
@@ -2387,8 +2598,9 @@ function KeyEntryRow({
   };
 
   const cancel = () => {
-    setMode(initiallyHasKey ? "saved" : "entry");
+    setMode(initiallyHasKey ? "saved" : "collapsed");
     setValue("");
+    setAccountId("");
     setError(null);
   };
 
@@ -2401,7 +2613,7 @@ function KeyEntryRow({
         ? { status: "running", detail: "Testing key…" }
         : value.length > 0
           ? { status: "running", detail: "Awaiting save" }
-          : { status: "warn", detail: "Add key" };
+          : { status: "warn", detail: actionLabel };
 
   return (
     <div style={{ display: "flex", flexDirection: "column" }}>
@@ -2453,16 +2665,88 @@ function KeyEntryRow({
               )}
             </>
           )}
-          <StatusPill state={pill} />
+          {mode === "collapsed" && !frozen ? (
+            <button
+              type="button"
+              onClick={() => setMode("entry")}
+              style={{
+                height: 22,
+                padding: "0 9px",
+                borderRadius: 5,
+                fontSize: 11,
+                fontWeight: 600,
+                background: ONB_BTN_BG,
+                color: ONB_BTN_FG,
+                border: "none",
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              {actionLabel}
+            </button>
+          ) : (
+            <StatusPill state={pill} />
+          )}
         </div>
       </div>
       {!frozen && mode === "entry" && (
-        <div style={{ padding: "4px 10px 8px 33px", display: "flex", flexDirection: "column", gap: 6 }}>
+        <div style={{ padding: "4px 10px 10px 33px", display: "flex", flexDirection: "column", gap: 7 }}>
+          {keyUrl && (
+            <button
+              type="button"
+              onClick={() => openKeyPage(keyUrl)}
+              style={{
+                alignSelf: "flex-start",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                background: "transparent",
+                border: "none",
+                padding: 0,
+                color: "var(--m-text-2)",
+                fontSize: 11,
+                fontWeight: 500,
+                cursor: "pointer",
+                textDecoration: "underline",
+                fontFamily: "inherit",
+              }}
+            >
+              {isCloudflare
+                ? "Create a Workers AI API token"
+                : `Get your ${provider.label} API key`}
+              <ExternalLink size={10} />
+            </button>
+          )}
+          {isCloudflare && (
+            <input
+              type="text"
+              placeholder="Account ID"
+              value={accountId}
+              onChange={(e) => setAccountId(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") save();
+                if (e.key === "Escape") cancel();
+              }}
+              style={{
+                width: "100%",
+                boxSizing: "border-box",
+                height: 26,
+                padding: "0 8px",
+                borderRadius: 5,
+                background: "rgba(0,0,0,0.25)",
+                border: "1px solid rgba(255,255,255,0.10)",
+                color: "var(--c-high)",
+                fontSize: 12,
+                fontFamily: "inherit",
+                outline: "none",
+              }}
+            />
+          )}
           <div style={{ display: "flex", gap: 6 }}>
             <input
               type="password"
-              autoFocus
-              placeholder={`Paste your ${provider.label} API key`}
+              autoFocus={!isCloudflare}
+              placeholder={isCloudflare ? "API token" : `Paste your ${provider.label} API key`}
               value={value}
               onChange={(e) => setValue(e.target.value)}
               onKeyDown={(e) => {
@@ -2471,6 +2755,7 @@ function KeyEntryRow({
               }}
               style={{
                 flex: 1,
+                minWidth: 0,
                 height: 26,
                 padding: "0 8px",
                 borderRadius: 5,
@@ -2485,41 +2770,39 @@ function KeyEntryRow({
             <button
               type="button"
               onClick={save}
-              disabled={!value.trim()}
+              disabled={!canSave}
               style={{
                 height: 26,
                 padding: "0 10px",
                 borderRadius: 5,
                 fontSize: 11,
                 fontWeight: 600,
-                background: !value.trim() ? "rgba(255,255,255,0.30)" : "rgba(255,255,255,0.92)",
-                color: "#000",
+                background: !canSave ? "var(--secondary)" : ONB_BTN_BG,
+                color: !canSave ? "var(--m-text-3)" : ONB_BTN_FG,
                 border: "none",
-                cursor: !value.trim() ? "default" : "pointer",
+                cursor: !canSave ? "default" : "pointer",
               }}
             >
               Save
             </button>
-            {initiallyHasKey && (
-              <button
-                type="button"
-                onClick={cancel}
-                style={{
-                  height: 26,
-                  padding: "0 10px",
-                  borderRadius: 5,
-                  fontSize: 11,
-                  fontWeight: 500,
-                  background: "transparent",
-                  color: "var(--m-text-2)",
-                  border: "1px solid rgba(255,255,255,0.10)",
-                  cursor: "pointer",
-                  fontFamily: "inherit",
-                }}
-              >
-                Cancel
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={cancel}
+              style={{
+                height: 26,
+                padding: "0 10px",
+                borderRadius: 5,
+                fontSize: 11,
+                fontWeight: 500,
+                background: "transparent",
+                color: "var(--m-text-2)",
+                border: "1px solid rgba(255,255,255,0.10)",
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              Cancel
+            </button>
           </div>
           {error && (
             <div style={{ fontSize: 11, color: "rgb(248,113,113)" }}>{error}</div>
@@ -2667,8 +2950,8 @@ function OllamaUrlRow({
                 borderRadius: 5,
                 fontSize: 11,
                 fontWeight: 600,
-                background: !value.trim() || saving ? "rgba(255,255,255,0.30)" : "rgba(255,255,255,0.92)",
-                color: "#000",
+                background: !value.trim() || saving ? "var(--secondary)" : ONB_BTN_BG,
+                color: !value.trim() || saving ? "var(--m-text-3)" : ONB_BTN_FG,
                 border: "none",
                 cursor: !value.trim() || saving ? "default" : "pointer",
               }}
@@ -2726,10 +3009,13 @@ function resolveProvider(p: ProviderDef, scan: ProviderScan | null): ProviderSta
       ? { status: "ok", detail: "Key found" }
       : { status: "warn", detail: "Add key in Settings" };
   }
-  // CLI agents with no onboarding scan probe (opencode / cursor /
-  // github-copilot) and any other probe-less row: not verifiable here,
-  // but selecting them still enabled them — point the user to Settings.
-  return { status: "warn", detail: "Set up in Settings" };
+  // Probe-less rows (no scanKey / ollama / envKey): not verifiable here, but
+  // selecting them still enabled them — point the user to Settings. API
+  // providers finish by pasting a key, so say "Add key in Settings" for them.
+  return {
+    status: "warn",
+    detail: p.kind === "api" ? "Add key in Settings" : "Set up in Settings",
+  };
 }
 
 function buildScanReadout(
@@ -2767,11 +3053,11 @@ function buildScanReadout(
   // single soft-broken paragraph and they wrap together — the screen
   // looked like one giant run-on sentence.
   if (ready.length === 0) {
-    const lines = needs.map((s) => `- **${s.p.label}** — ${s.st.detail}`).join("\n");
+    const lines = groupedNeeds(needs);
     return `Looks like a couple of things still need a touch:\n\n${lines}\n\nYou can finish setup from **Settings → Providers** any time.`;
   }
   const readyLine = humanList(ready.map((s) => `**${s.p.label}**`));
-  const needLines = needs.map((s) => `- **${s.p.label}** — ${s.st.detail}`).join("\n");
+  const needLines = groupedNeeds(needs);
   return `${readyLine} ${ready.length === 1 ? "is" : "are"} ready. A couple still need attention:\n\n${needLines}\n\nYou can finish those from **Settings → Providers** whenever.`;
 }
 
@@ -2780,6 +3066,38 @@ function humanList(items: string[]): string {
   if (items.length === 1) return items[0]!;
   if (items.length === 2) return `${items[0]} and ${items[1]}`;
   return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
+}
+
+/** Predicate for a group of providers that share the same status `detail`, so
+ *  the readout reads "X, Y and Z are not installed." instead of one line per
+ *  provider. */
+function needPredicate(detail: string, plural: boolean): string {
+  const be = plural ? "are" : "is";
+  const need = plural ? "need" : "needs";
+  switch (detail) {
+    case "Not installed": return `${be} not installed`;
+    case "Not running": return `${be} not running`;
+    case "Sign-in needed": return `still ${need} to sign in`;
+    case "Add key in Settings": return `${need} a key in Settings`;
+    case "Set up in Settings": return `${need} setup in Settings`;
+    case "Python required": return `${need} Python`;
+    case "Scan unreachable": return `couldn't be verified`;
+    default: return `${be} not ready (${detail.toLowerCase()})`;
+  }
+}
+
+/** Group not-ready providers by their status detail → one line each
+ *  ("**X**, **Y** and **Z** are not installed."), in first-seen order. */
+function groupedNeeds(needs: { p: ProviderDef; st: ProviderState }[]): string {
+  const byDetail = new Map<string, string[]>();
+  for (const { p, st } of needs) {
+    const labels = byDetail.get(st.detail) ?? [];
+    labels.push(`**${p.label}**`);
+    byDetail.set(st.detail, labels);
+  }
+  return [...byDetail.entries()]
+    .map(([detail, labels]) => `- ${humanList(labels)} ${needPredicate(detail, labels.length > 1)}.`)
+    .join("\n");
 }
 
 /* ── GitHub widget — same panel chrome as providers/scan ─── */
@@ -3162,20 +3480,20 @@ function GithubWidget({
   }) => {
     const isWhite = variant === "white";
     const isBlack = variant === "black";
-    const baseBg = isWhite ? "#fff" : isBlack ? "#000" : "rgba(255,255,255,0.025)";
-    const hoverBg = isWhite ? "#f1f1f1" : isBlack ? "#111" : "rgba(255,255,255,0.08)";
+    const baseBg = isWhite ? ONB_BTN_BG : isBlack ? "var(--secondary)" : "rgba(255,255,255,0.025)";
+    const hoverBg = isWhite ? ONB_BTN_BG : isBlack ? "var(--secondary)" : "rgba(255,255,255,0.08)";
     const baseBorder = isWhite
-      ? "rgba(0,0,0,0.08)"
+      ? "transparent"
       : isBlack
-        ? "rgba(255,255,255,0.12)"
+        ? "var(--c-brd)"
         : "rgba(255,255,255,0.08)";
     const hoverBorder = isWhite
-      ? "rgba(0,0,0,0.16)"
+      ? "transparent"
       : isBlack
-        ? "rgba(255,255,255,0.22)"
+        ? "var(--c-brd2)"
         : "rgba(255,255,255,0.18)";
-    const textColor = isWhite ? "#000" : isBlack ? "#fff" : "var(--m-text)";
-    const iconColor = isWhite ? "#000" : isBlack ? "#fff" : "var(--m-text-2)";
+    const textColor = isWhite ? ONB_BTN_FG : isBlack ? "var(--c-high)" : "var(--m-text)";
+    const iconColor = isWhite ? ONB_BTN_FG : isBlack ? "var(--c-high)" : "var(--m-text-2)";
     const badgeBg = isWhite
       ? "rgba(0,0,0,0.06)"
       : isBlack
@@ -3506,7 +3824,8 @@ function GithubWidget({
             borderRadius: 5,
             background: "transparent",
             border: "none",
-            color: "var(--m-text-3)",
+            color: "var(--m-text-2)",
+            textDecoration: "underline",
             cursor: pending !== null ? "not-allowed" : "pointer",
             opacity: pending !== null ? 0.5 : 1,
           }}

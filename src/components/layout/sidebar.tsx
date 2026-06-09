@@ -17,6 +17,7 @@ import { forkSession, fetchBulkStats, stopSession, restartSession, resetSession,
 import { exportChat } from "@/lib/export-chat";
 import { usesInAppTitleBar, folderName } from "@/lib/utils";
 import { isStudioTool } from "@/lib/studio-tools";
+import { STUDIO_ENABLED } from "@/lib/feature-flags";
 import type { Session } from "@/types/session";
 import { FeedbackModal } from "@/components/feedback-modal";
 
@@ -1122,30 +1123,32 @@ export function Sidebar() {
         {/* ── Workspace / Studio mode toggle ──
             Top-level surface switch. Workspace = agent/chat experience;
             Studio = media-generation surface. */}
-        <div style={{ display: "flex", gap: 4, padding: "0 3px 6px" }}>
-          {(["workspace", "studio"] as const).map((m) => {
-            const active = appMode === m;
-            return (
-              <button
-                key={m}
-                onClick={() => setAppMode(m)}
-                style={{
-                  flex: 1, padding: "4px 0", fontSize: 11.5,
-                  fontWeight: active ? 600 : 500,
-                  borderRadius: 5,
-                  border: `1px solid ${active ? "var(--c-brd)" : "transparent"}`,
-                  background: active ? "var(--c-srf2)" : "transparent",
-                  color: active ? "var(--c-high)" : "var(--c-med)",
-                  cursor: "pointer", transition: "none",
-                }}
-                onMouseEnter={(e) => { if (!active) e.currentTarget.style.color = "var(--c-high)"; }}
-                onMouseLeave={(e) => { if (!active) e.currentTarget.style.color = "var(--c-med)"; }}
-              >
-                {m === "workspace" ? "Workspace" : "Studio"}
-              </button>
-            );
-          })}
-        </div>
+        {STUDIO_ENABLED && (
+          <div style={{ display: "flex", gap: 4, padding: "0 3px 6px" }}>
+            {(["workspace", "studio"] as const).map((m) => {
+              const active = appMode === m;
+              return (
+                <button
+                  key={m}
+                  onClick={() => setAppMode(m)}
+                  style={{
+                    flex: 1, padding: "4px 0", fontSize: 11.5,
+                    fontWeight: active ? 600 : 500,
+                    borderRadius: 5,
+                    border: `1px solid ${active ? "var(--c-brd)" : "transparent"}`,
+                    background: active ? "var(--c-srf2)" : "transparent",
+                    color: active ? "var(--c-high)" : "var(--c-med)",
+                    cursor: "pointer", transition: "none",
+                  }}
+                  onMouseEnter={(e) => { if (!active) e.currentTarget.style.color = "var(--c-high)"; }}
+                  onMouseLeave={(e) => { if (!active) e.currentTarget.style.color = "var(--c-med)"; }}
+                >
+                  {m === "workspace" ? "Workspace" : "Studio"}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* Create action — Workspace creates an agent session; Studio opens
             the generation composer. Fleet below is the SAME shared operations

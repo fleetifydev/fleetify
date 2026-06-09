@@ -33,6 +33,7 @@ import { buildPickerGroups, type PickerModel } from "@/lib/picker-groups";
 import { AgentsSection } from "./agents-section";
 import { ModelsSection } from "./models-section";
 import { StudioProvidersSection } from "./studio/studio-providers-section";
+import { STUDIO_ENABLED } from "@/lib/feature-flags";
 
 /** Narrowed view of the persisted config for the Sessions Default picker, so a
  *  read-merge-write preserves every other key without importing the full
@@ -86,7 +87,8 @@ export function ProvidersSection({ initialSubTab }: { initialSubTab?: ProvidersT
     setTabState(v);
     writeTab(v);
   };
-  const [mode, setModeState] = useState<ProvidersMode>(readMode);
+  // Studio gated off → always Workspace; the mode bar is hidden too.
+  const [mode, setModeState] = useState<ProvidersMode>(() => (STUDIO_ENABLED ? readMode() : "workspace"));
   const setMode = (v: ProvidersMode) => {
     setModeState(v);
     writeMode(v);
@@ -146,8 +148,8 @@ export function ProvidersSection({ initialSubTab }: { initialSubTab?: ProvidersT
 
   return (
     <>
-      {/* Top-level mode selector — Workspace vs Studio */}
-      <ModeBar mode={mode} onChange={setMode} />
+      {/* Top-level mode selector — Workspace vs Studio (hidden while Studio is gated off) */}
+      {STUDIO_ENABLED && <ModeBar mode={mode} onChange={setMode} />}
 
       {/* Sessions Default — only relevant in Workspace mode */}
       {mode === "workspace" && (
