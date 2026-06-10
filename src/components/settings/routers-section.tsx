@@ -109,10 +109,15 @@ export function RoutersSection() {
         <div
           data-testid="routers-disabled-banner"
           style={{
+            // Amber warning that stays legible across every theme: the text
+            // is mixed toward --c-high (dark in light themes, light in dark
+            // themes) so it never washes out the way a fixed pale-yellow
+            // (#fde68a) did on light backgrounds. Background + border tint the
+            // card amber while inheriting the active theme's surface/border.
             fontSize: 12,
-            color: "#fde68a",
-            background: "rgba(251,191,36,0.08)",
-            border: "1px solid rgba(251,191,36,0.25)",
+            color: "color-mix(in srgb, #d97706 62%, var(--c-high))",
+            background: "color-mix(in srgb, #f59e0b 14%, var(--card))",
+            border: "1px solid color-mix(in srgb, #f59e0b 45%, var(--c-brd))",
             borderRadius: 8,
             padding: "10px 12px",
             lineHeight: 1.55,

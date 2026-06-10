@@ -163,20 +163,34 @@ The fleet list below is live — use it to decide who to dispatch to, check who 
 and understand each agent's project context before assigning work.
 
 ### 5. Spawn new agents
-When the user asks to CREATE / SPAWN / ADD a new agent (not dispatch to an
-existing one), embed this EXACT token:
-  `[[SPAWN:{{"title":"...","project":"...","tool":"...","model":"...","perm":"...","template":"...","task":"..."}}]]`
-Fill only what the user gave you; omit fields you don't know. A confirmation
-form appears ONLY when something is missing or ambiguous — if you supplied
-everything and it resolves, the agent is created immediately. Field guide:
-- `tool`: the provider, e.g. "claude" (Claude Code), "openai", "gemini".
+When the user asks to CREATE / SPAWN / ADD one or more new agents (not
+dispatch to an existing one), embed one token PER agent:
+  `[[SPAWN:{{"title":"...","project":"...","tool":"...","model":"...","perm":"...","template":"...","task":"...","worktree":false}}]]`
+Agents are created and started immediately from whatever you supply — there
+is NO confirmation form. The single exception: an unknown project folder
+shows the user an inline folder picker. Field guide:
+- `title`: short agent name — derive one from the context (e.g. "gemini-test_a").
+- `project`: the folder (absolute path or a known project name). OMIT when
+  the user didn't say where — NEVER guess a path; the picker handles it.
+- `task`: ALWAYS include. Use the user's wording when they stated a first
+  task; otherwise WRITE a short, sensible first task yourself from the
+  request context (or a brief kick-off: introduce itself + summarise the
+  project). One or two sentences.
+- `tool`: provider id, e.g. "claude" (Claude Code), "gemini", "codex". Omit
+  when not stated — the best available provider is auto-selected.
 - `model`: a model hint, e.g. "opus 4.8" — the backend canonicalises it.
+  Omit when not stated — the provider's default model is used.
 - `perm`: "bypass" (full auto), "acceptEdits", "plan", or "default" (ask).
+  Omit when not stated (defaults to ask).
 - `template`: optional, e.g. "reverse_engineering".
-- `task`: optional first task — if set, the new agent starts working on it
-  immediately; if omitted, it sits idle until the user opens it.
-After the token, write ONE line, e.g. "Spawning code-reviewer for xyz-backend."
-Do NOT do the work yourself and do NOT also dispatch — emit the token and stop.
+- `worktree`: git worktree isolation, default false (the agent works
+  directly in the project folder). Set true ONLY when the user explicitly
+  asks for an isolated worktree/branch; set false when they decline one.
+For multiple agents ("create 3 agents for X"), emit one token per agent,
+each with its own title and task. After the token(s) write ONE short line,
+e.g. "Creating 3 agents for test_a…" — the UI shows live progress and
+result cards. Do NOT do the work yourself and do NOT also dispatch — emit
+the token(s) and stop.
 
 ## Auto Mode
 If the user message starts with "[AUTO MODE]":

@@ -99,17 +99,18 @@ async fn handle(msg: Value) -> Option<Value> {
                 },
                 {
                     "name": "spawn_agent",
-                    "description": "Create a NEW fleet agent (a fresh session) for a project, configured with a provider, model, and permission mode. Use when no existing agent fits and you need to stand one up. Returns the new session_id, which you can then dispatch_to_agent. The spawned agent cannot exceed YOUR permission level. All fields except project_path may be inferred server-side.",
+                    "description": "Create a NEW fleet agent (a fresh session) for a project, configured with a provider, model, and permission mode. Use when no existing agent fits and you need to stand one up. Returns the new session_id, which you can then dispatch_to_agent. The spawned agent cannot exceed YOUR permission level. Optional fields are inferred server-side (best available provider, its default model).",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "project_path":    { "type": "string", "description": "Absolute path of the project folder the agent works in. Required." },
+                            "task":            { "type": "string", "description": "Optional first task — if set, the agent starts working on it immediately; if omitted, it is created idle for a later dispatch_to_agent." },
                             "title":           { "type": "string", "description": "Short agent name, e.g. \"code-reviewer\"." },
-                            "tool":            { "type": "string", "description": "Provider id, e.g. \"claude\", \"openai\", \"gemini\". Defaults to claude." },
-                            "model":           { "type": "string", "description": "Model hint, e.g. \"opus 4.8\" — canonicalised server-side." },
+                            "tool":            { "type": "string", "description": "Provider id, e.g. \"claude\", \"openai\", \"gemini\". Omit to auto-pick the best available." },
+                            "model":           { "type": "string", "description": "Model hint, e.g. \"opus 4.8\" — canonicalised server-side. Omit for the provider's default model." },
                             "permission_mode": { "type": "string", "description": "\"default\" | \"acceptEdits\" | \"plan\" | \"bypassPermissions\". Clamped to your own level." },
                             "agent_template":  { "type": "string", "description": "Optional builtin template id, e.g. \"reverse_engineering\"." },
-                            "task":            { "type": "string", "description": "Optional first task — if set, the agent starts immediately." }
+                            "use_worktree":    { "type": "boolean", "description": "Git worktree isolation. Default false (work directly in the folder); set true only when isolation is explicitly needed." }
                         },
                         "required": ["project_path"]
                     }
@@ -264,6 +265,7 @@ async fn spawn_agent(args: Value) -> Result<Value, String> {
         "permission_mode",
         "agent_template",
         "task",
+        "use_worktree",
     ] {
         if let Some(v) = args.get(key) {
             body.insert(key.into(), v.clone());

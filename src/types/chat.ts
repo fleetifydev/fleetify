@@ -89,6 +89,8 @@ export interface SpawnSpecDraft {
   agent_template?: string | null;
   effort?: string | null;
   first_task?: string | null;
+  /** Git worktree isolation — default off (work directly in the folder). */
+  use_worktree?: boolean | null;
 }
 
 export interface SpawnGap {

@@ -211,6 +211,9 @@ struct SpawnBody {
     agent_template: Option<String>,
     #[serde(default)]
     task: Option<String>,
+    /// Git worktree isolation — default OFF (work directly in the folder).
+    #[serde(default)]
+    use_worktree: Option<bool>,
 }
 
 /// `POST /api/internal/spawn` — create a new agent on behalf of a worker
@@ -239,6 +242,7 @@ async fn spawn(
         permission_mode,
         agent_template,
         task,
+        use_worktree,
     } = b;
     let caller = caller_session_id.trim();
     if caller.is_empty() {
@@ -265,6 +269,7 @@ async fn spawn(
         template: agent_template,
         effort: None,
         task,
+        worktree: use_worktree,
     };
     let known =
         crate::services::spawn::known_project_paths(&st.auth.pool, caller_row.user_id.as_deref())

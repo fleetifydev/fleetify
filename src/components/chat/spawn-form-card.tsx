@@ -2,8 +2,6 @@ import { useState, type CSSProperties } from "react";
 import type { SpawnFormBlock, SpawnSpecDraft } from "@/types/chat";
 import { spawnSession } from "@/lib/api";
 import { useAppStore } from "@/stores/app-store";
-import { useProvidersConfig } from "@/hooks/use-providers-config";
-import { permissionCapabilityFor, permissionModesFor } from "@/lib/capabilities";
 
 const MONO = "'SF Mono','Menlo','Monaco','Consolas',monospace";
 
@@ -30,13 +28,14 @@ const FIELD: CSSProperties = {
   boxSizing: "border-box",
 };
 
-/** Inline "create agent" card rendered in the staff transcript from a
- *  `spawn_form` block. Editable form when `status === "pending"`, compact
- *  result card once created. On Create it POSTs the edited spec to
- *  /api/sessions/spawn (the backend re-resolves human-ish field edits). */
+/** Inline spawn card rendered in the staff transcript from a `spawn_form`
+ *  block. Spawning is fully automatic — the backend auto-fills provider,
+ *  model, permission mode, and the first task — so the ONLY pending state
+ *  is a missing project folder: a minimal picker (folder + Cancel/Create).
+ *  Once created, a compact result card. Create POSTs the completed spec to
+ *  /api/sessions/spawn (the backend re-resolves human-ish edits). */
 export function SpawnFormCard({ block }: { block: SpawnFormBlock }) {
   const setActiveSession = useAppStore((s) => s.setActiveSession);
-  const { tiles } = useProvidersConfig();
 
   const [d, setD] = useState<SpawnSpecDraft>(block.draft ?? {});
   const [status, setStatus] = useState(block.status);
@@ -44,19 +43,10 @@ export function SpawnFormCard({ block }: { block: SpawnFormBlock }) {
   const [error, setError] = useState<string | undefined>(block.error);
 
   const set = (patch: Partial<SpawnSpecDraft>) => setD((prev) => ({ ...prev, ...patch }));
-  const projectGap = block.gaps.some((g) => g.field === "project_path");
   const projectCandidates =
     block.gaps.find((g) => g.field === "project_path")?.candidates ?? [];
 
-  // Permission options for the active tool, with the current value merged in
-  // so a pre-filled mode always displays even if the capability list omits it.
-  const permModes = permissionModesFor(permissionCapabilityFor(tiles, d.tool || "claude"));
-  const permOpts =
-    d.permission_mode && !permModes.some((p) => p.id === d.permission_mode)
-      ? [{ id: d.permission_mode, label: d.permission_mode }, ...permModes]
-      : permModes;
-
-  const canCreate = !!d.project_path?.trim() && !!d.tool?.trim() && status !== "creating";
+  const canCreate = !!d.project_path?.trim() && status !== "creating";
 
   async function pickFolder() {
     const w = window as unknown as {
@@ -72,7 +62,7 @@ export function SpawnFormCard({ block }: { block: SpawnFormBlock }) {
     setStatus("creating");
     setError(undefined);
     try {
-      const s = await spawnSession(d);
+      const s = await spawnSession({ ...d, use_worktree: !!d.use_worktree });
       setCreatedId(s.id as string);
       setStatus("created");
     } catch (e) {
@@ -114,7 +104,8 @@ export function SpawnFormCard({ block }: { block: SpawnFormBlock }) {
     );
   }
 
-  // ── Editable form ──
+  // ── Folder picker — the only pending state ──
+  const taskPreview = (d.first_task ?? "").trim();
   return (
     <div style={{ animation: "permCardIn 0.18s cubic-bezier(0.22,1,0.36,1) both" }}>
       <style>{`@keyframes permCardIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}`}</style>
@@ -130,15 +121,20 @@ export function SpawnFormCard({ block }: { block: SpawnFormBlock }) {
               fontWeight: 600,
             }}
           >
-            Create agent
+            Create agent — pick a folder
           </div>
 
-          <input
-            style={FIELD}
-            placeholder="Agent name"
-            value={d.title ?? ""}
-            onChange={(e) => set({ title: e.target.value })}
-          />
+          {/* Context line: which agent this folder is for. Everything else
+              (provider/model/perm/task) is already resolved in the draft. */}
+          <div style={{ fontSize: 12, color: "#c4c4c4", lineHeight: 1.5 }}>
+            {d.title || "Agent"} · {d.tool || "auto provider"}
+            {taskPreview ? (
+              <span style={{ color: "#6a6a6a" }}>
+                {" — "}
+                {taskPreview.length > 90 ? `${taskPreview.slice(0, 90)}…` : taskPreview}
+              </span>
+            ) : null}
+          </div>
 
           <button
             onClick={pickFolder}
@@ -147,8 +143,7 @@ export function SpawnFormCard({ block }: { block: SpawnFormBlock }) {
               textAlign: "left",
               cursor: "pointer",
               color: d.project_path ? "#ececec" : "#7a7a7a",
-              borderColor:
-                projectGap && !d.project_path ? "#7C6AF7" : "rgba(255,255,255,0.10)",
+              borderColor: d.project_path ? "rgba(255,255,255,0.10)" : "#7C6AF7",
             }}
           >
             {d.project_path || "Pick a folder…"}
@@ -169,45 +164,11 @@ export function SpawnFormCard({ block }: { block: SpawnFormBlock }) {
                     cursor: "pointer",
                   }}
                 >
-                  {c.split("/").pop()}
+                  {c.split(/[\\/]/).pop()}
                 </button>
               ))}
             </div>
           )}
-
-          <div style={{ display: "flex", gap: 8 }}>
-            <input
-              style={{ ...FIELD, flex: 1 }}
-              placeholder="Provider (e.g. claude)"
-              value={d.tool ?? ""}
-              onChange={(e) => set({ tool: e.target.value })}
-            />
-            <input
-              style={{ ...FIELD, flex: 1 }}
-              placeholder="Model (optional)"
-              value={d.model_name ?? ""}
-              onChange={(e) => set({ model_name: e.target.value || null })}
-            />
-          </div>
-
-          <select
-            style={FIELD}
-            value={d.permission_mode ?? "default"}
-            onChange={(e) => set({ permission_mode: e.target.value })}
-          >
-            {permOpts.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-
-          <textarea
-            style={{ ...FIELD, height: 56, padding: "6px 8px", resize: "vertical" }}
-            placeholder="First task (optional) — leave empty to create an idle agent"
-            value={d.first_task ?? ""}
-            onChange={(e) => set({ first_task: e.target.value || null })}
-          />
 
           {error && <div style={{ fontSize: 11.5, color: "#e0706a" }}>{error}</div>}
 

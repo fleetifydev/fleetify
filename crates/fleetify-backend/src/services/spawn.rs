@@ -34,6 +34,10 @@ pub struct RawSpawn {
     pub effort: Option<String>,
     #[serde(default)]
     pub task: Option<String>,
+    /// Git worktree isolation. Default OFF — only `true` when the user
+    /// explicitly asked for an isolated worktree/branch.
+    #[serde(default)]
+    pub worktree: Option<bool>,
 }
 
 /// A resolved, canonical spawn spec — a subset of `SessionCreate` plus
@@ -57,6 +61,10 @@ pub struct SpawnSpec {
     pub effort: Option<String>,
     #[serde(default)]
     pub first_task: Option<String>,
+    /// Git worktree isolation. `None`/`Some(false)` → work in the project
+    /// folder directly (the default); `Some(true)` → eager worktree carve.
+    #[serde(default)]
+    pub use_worktree: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -315,67 +323,38 @@ pub fn resolve_project(hint: &str, known: &[String]) -> ProjectResolution {
 /// Resolve a raw spawn request into a canonical spec + the unresolved gaps.
 /// `known_project_paths` are the caller's existing session folders (used to
 /// resolve a bare project name like "xyz-backend").
+///
+/// Gap policy: only `project_path` can gap. Every other field falls back to
+/// an auto-pick/default (tool → best active provider, model → provider
+/// default, perm → ask, task → kickoff message) so spawning never blocks on
+/// a form — the renderer only ever shows an inline folder picker.
 pub fn resolve(raw: &RawSpawn, known_project_paths: &[String]) -> ResolvedSpawn {
     let mut gaps = Vec::new();
 
-    // tool
-    let tool: Option<String> = match raw.tool.as_deref() {
-        Some(h) if !h.trim().is_empty() => match resolve_tool(h) {
-            Some(id) => Some(id.to_string()),
-            None => {
-                gaps.push(Gap {
-                    field: "tool".into(),
-                    reason: GapReason::Missing,
-                    candidates: vec![],
-                });
-                None
-            }
-        },
-        _ => None,
-    };
+    // tool — an unresolvable hint falls back to the auto-pick (never a gap).
+    let tool: Option<String> = raw
+        .tool
+        .as_deref()
+        .filter(|h| !h.trim().is_empty())
+        .and_then(resolve_tool)
+        .map(str::to_string);
 
-    // model (scoped to tool when known; optional — provider default applies)
+    // model (scoped to tool when known) — ambiguous/unknown hints fall back
+    // to the provider's default model (never a gap).
     let model_name: Option<String> = match raw.model.as_deref() {
         Some(h) if !h.trim().is_empty() => match resolve_model(tool.as_deref(), h) {
             ModelResolution::One(id) => Some(id.to_string()),
-            ModelResolution::Many(ids) => {
-                gaps.push(Gap {
-                    field: "model_name".into(),
-                    reason: GapReason::Ambiguous,
-                    candidates: ids.iter().map(|s| s.to_string()).collect(),
-                });
-                None
-            }
-            ModelResolution::None => {
-                gaps.push(Gap {
-                    field: "model_name".into(),
-                    reason: GapReason::Missing,
-                    candidates: vec![],
-                });
-                None
-            }
+            _ => None,
         },
         _ => None,
     };
 
-    // permission (validated against the tool surface; default to claude's)
-    let permission_mode: Option<String> = match raw.perm.as_deref() {
-        Some(h) if !h.trim().is_empty() => {
-            let pid = tool.as_deref().unwrap_or("claude");
-            match resolve_permission(pid, h) {
-                Some(id) => Some(id.to_string()),
-                None => {
-                    gaps.push(Gap {
-                        field: "permission_mode".into(),
-                        reason: GapReason::Missing,
-                        candidates: vec![],
-                    });
-                    None
-                }
-            }
-        }
-        _ => None,
-    };
+    // permission — validated against the tool surface; an unrecognised hint
+    // falls back to "default" (ask) at create time (never a gap).
+    let permission_mode: Option<String> = raw.perm.as_deref().and_then(|h| {
+        let pid = tool.as_deref().unwrap_or("claude");
+        resolve_permission(pid, h).map(str::to_string)
+    });
 
     let agent_template = raw
         .template
@@ -419,6 +398,11 @@ pub fn resolve(raw: &RawSpawn, known_project_paths: &[String]) -> ResolvedSpawn 
         }
     };
 
+    // first_task — optional at the resolve layer; the user-facing spawn
+    // paths (staff directive + folder-picker Create) substitute
+    // DEFAULT_KICKOFF_TASK when absent so the agent always starts.
+    let first_task = raw.task.clone().filter(|s| !s.trim().is_empty());
+
     ResolvedSpawn {
         spec: SpawnSpec {
             title: raw.title.clone().filter(|s| !s.trim().is_empty()),
@@ -428,10 +412,51 @@ pub fn resolve(raw: &RawSpawn, known_project_paths: &[String]) -> ResolvedSpawn 
             permission_mode,
             agent_template,
             effort,
-            first_task: raw.task.clone().filter(|s| !s.trim().is_empty()),
+            first_task,
+            use_worktree: raw.worktree,
         },
         gaps,
     }
+}
+
+/// Fallback first task when neither the user nor the staff model supplied
+/// one — a cheap activation turn so the new agent comes alive, introduces
+/// itself, and is ready for follow-up dispatches. Applied by the
+/// user-facing spawn paths only (staff directive + folder-picker Create);
+/// the worker MCP path keeps spawn-idle semantics for its
+/// spawn-then-dispatch flow.
+pub const DEFAULT_KICKOFF_TASK: &str = "Briefly introduce yourself and give a short overview of \
+     this project's structure, then wait for further instructions.";
+
+/// Pick the best available CLI agent — no local preference list. The two
+/// canonical sources the rest of the app already uses are crossed here:
+///   • `providers::list_cli_agents()` — the catalog, in its declared order
+///     (the same order Settings → Agents renders); first entry = primary.
+///   • `AgentScanCache` — the live installed/authenticated scan, warmed at
+///     boot and refreshed by Settings → Agents.
+/// First catalog agent that is installed AND authenticated wins; else the
+/// first merely installed; cold cache or nothing installed → "claude".
+pub async fn auto_pick_tool(st: &AppState) -> String {
+    let Some(scan) = st.agent_scan_cache.get().await else {
+        return "claude".into();
+    };
+    let flag = |id: &str, key: &str| {
+        scan.get(id)
+            .and_then(|v| v.get(key))
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false)
+    };
+    let agents = crate::providers::list_cli_agents();
+    if let Some(p) = agents
+        .iter()
+        .find(|p| flag(p.id, "installed") && flag(p.id, "authenticated"))
+    {
+        return p.id.to_string();
+    }
+    if let Some(p) = agents.iter().find(|p| flag(p.id, "installed")) {
+        return p.id.to_string();
+    }
+    "claude".into()
 }
 
 /// Distinct, non-empty project folders the user already has sessions in —
@@ -470,10 +495,16 @@ pub async fn create(
     spec: &SpawnSpec,
     kick_result_sid: Option<&str>,
 ) -> anyhow::Result<Session> {
+    // No provider named → the best active one (scan-cache preference order),
+    // not a blind "claude" (which may not even be installed on this machine).
+    let tool = match spec.tool.clone() {
+        Some(t) => t,
+        None => auto_pick_tool(st).await,
+    };
     let data = SessionCreate {
         title: spec.title.clone().unwrap_or_else(|| "Agent".into()),
         project_path: spec.project_path.clone().unwrap_or_default(),
-        tool: spec.tool.clone().unwrap_or_else(|| "claude".into()),
+        tool,
         group_path: String::new(),
         notes: None,
         model_name: spec.model_name.clone(),
@@ -483,7 +514,10 @@ pub async fn create(
             .unwrap_or_else(|| "default".into()),
         session_mode: "new".into(),
         claude_session_id: None,
-        use_worktree: true,
+        // Worktree isolation is opt-in: spawned agents work directly in the
+        // project folder unless the user explicitly asked for a worktree
+        // (form toggle or "worktree":true in the spawn directive).
+        use_worktree: spec.use_worktree.unwrap_or(false),
         agent_template: spec.agent_template.clone(),
         account_id: None,
     };
@@ -506,7 +540,7 @@ pub async fn create(
         .await;
     }
 
-    // Optional first task → start the agent immediately.
+    // First task → start the agent immediately.
     if let Some(task) = spec.first_task.as_deref().filter(|t| !t.trim().is_empty()) {
         let _ = sqlx::query(
             "INSERT INTO messages (id,session_id,role,content,cost_usd,timestamp) \
@@ -519,6 +553,13 @@ pub async fn create(
         .bind(chrono::Utc::now().to_rfc3339())
         .execute(&st.auth.pool)
         .await;
+
+        // `FLEETIFY_SPAWN_NO_KICK=1` is a test seam (mirrors FLEETIFY_NOAUTH):
+        // integration tests exercise the full create+seed path without
+        // launching a real CLI bridge turn.
+        if std::env::var("FLEETIFY_SPAWN_NO_KICK").is_ok_and(|v| v == "1") {
+            return Ok(session);
+        }
 
         let routing_res = crate::services::routing::persist::resolve_routing_for_dispatch(
             &st.auth.pool,
@@ -683,7 +724,7 @@ mod tests {
         let known = vec!["/home/u/xyz-backend".to_string()];
         let r = resolve(
             &raw(
-                r#"{"title":"code-reviewer","project":"xyz-backend","tool":"claude code","model":"opus 4.8","perm":"bypass","template":"code_review"}"#,
+                r#"{"title":"code-reviewer","project":"xyz-backend","tool":"claude code","model":"opus 4.8","perm":"bypass","template":"code_review","task":"review the open PR"}"#,
             ),
             &known,
         );
@@ -692,8 +733,11 @@ mod tests {
         assert_eq!(r.spec.model_name.as_deref(), Some("claude-opus-4-8"));
         assert_eq!(r.spec.permission_mode.as_deref(), Some("bypassPermissions"));
         assert_eq!(r.spec.project_path.as_deref(), Some("/home/u/xyz-backend"));
+        assert_eq!(r.spec.first_task.as_deref(), Some("review the open PR"));
         // "code_review" has no backend builtin template → agent_template stays None.
         assert_eq!(r.spec.agent_template, None);
+        // Worktree not mentioned → unset (create() defaults it OFF).
+        assert_eq!(r.spec.use_worktree, None);
     }
 
     #[test]
@@ -703,6 +747,59 @@ mod tests {
             .gaps
             .iter()
             .any(|g| g.field == "project_path" && g.reason == GapReason::Missing));
+    }
+
+    #[test]
+    fn resolve_missing_task_is_not_a_gap() {
+        // No first task ⇒ no gap: the user-facing paths substitute
+        // DEFAULT_KICKOFF_TASK so the agent is created and started without
+        // any confirmation form.
+        let known = vec!["/home/u/test_a".to_string()];
+        let r = resolve(
+            &raw(r#"{"title":"gemini-test_a","project":"test_a","tool":"gemini"}"#),
+            &known,
+        );
+        assert!(r.gaps.is_empty(), "expected no gaps, got {:?}", r.gaps);
+        assert_eq!(r.spec.first_task, None);
+        // Whitespace-only task normalises to None the same way.
+        let r = resolve(
+            &raw(r#"{"project":"test_a","tool":"gemini","task":"   "}"#),
+            &known,
+        );
+        assert!(r.gaps.is_empty());
+        assert_eq!(r.spec.first_task, None);
+    }
+
+    #[test]
+    fn resolve_unresolvable_hints_fall_back_without_gaps() {
+        // Only project_path can gap — bogus tool/model/perm hints degrade to
+        // None (auto-pick / provider default / ask) instead of opening a form.
+        let known = vec!["/home/u/test_a".to_string()];
+        let r = resolve(
+            &raw(
+                r#"{"project":"test_a","tool":"qwerty-unknown","model":"made-up-9000","perm":"gibberish","task":"do x"}"#,
+            ),
+            &known,
+        );
+        assert!(r.gaps.is_empty(), "expected no gaps, got {:?}", r.gaps);
+        assert_eq!(r.spec.tool, None);
+        assert_eq!(r.spec.model_name, None);
+        assert_eq!(r.spec.permission_mode, None);
+    }
+
+    #[test]
+    fn resolve_passes_worktree_through() {
+        let known = vec!["/home/u/test_a".to_string()];
+        let r = resolve(
+            &raw(r#"{"project":"test_a","tool":"gemini","task":"do x","worktree":true}"#),
+            &known,
+        );
+        assert_eq!(r.spec.use_worktree, Some(true));
+        let r = resolve(
+            &raw(r#"{"project":"test_a","tool":"gemini","task":"do x","worktree":false}"#),
+            &known,
+        );
+        assert_eq!(r.spec.use_worktree, Some(false));
     }
 
     #[test]

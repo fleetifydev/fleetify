@@ -2589,13 +2589,22 @@ async fn handle_staff_dispatch_tokens(
     }
 
     // ── SPAWN ──
-    // Each [[SPAWN:{json}]] → resolve. No gaps ⇒ create now and emit a
-    // "created" result card. Gaps ⇒ emit a "pending" editable form card the
-    // user completes (Create posts to /api/sessions/spawn). The token itself
-    // is stripped from the saved bubble by strip_all_tokens at the call site.
+    // Each [[SPAWN:{json}]] → resolve. Only a missing/ambiguous project
+    // folder gaps (⇒ the renderer shows an inline folder picker); every
+    // other absent field is auto-filled here — best active provider, the
+    // provider's default model, ask-mode, and a kickoff first task — so the
+    // agent is created and started immediately. The token itself is
+    // stripped from the saved bubble by strip_all_tokens at the call site.
     for raw in crate::services::spawn::parse_spawns(text) {
         let known = crate::services::spawn::known_project_paths(&st.auth.pool, staff_user_id).await;
-        let resolved = crate::services::spawn::resolve(&raw, &known);
+        let mut resolved = crate::services::spawn::resolve(&raw, &known);
+        if resolved.spec.tool.is_none() {
+            resolved.spec.tool = Some(crate::services::spawn::auto_pick_tool(st).await);
+        }
+        if resolved.spec.first_task.is_none() {
+            resolved.spec.first_task =
+                Some(crate::services::spawn::DEFAULT_KICKOFF_TASK.to_string());
+        }
         tracing::info!(gaps = resolved.gaps.len(), "spawn.directive.handled");
         let request_id = uuid::Uuid::new_v4().to_string();
         if resolved.gaps.is_empty() {
@@ -3215,6 +3224,11 @@ async fn run_dispatched_task(
     let mut model_name: Option<String> = target.model_name.clone();
     let mut summary_text = String::new();
     let mut new_claude_sid: Option<String> = None;
+    // Last bridge-level error seen on the stream. A bridge that dies on
+    // start-up emits Error + Status(done) and closes — without tracking
+    // this, the run used to resolve as success=true with an empty summary
+    // (the silent-failure that hid "Gemini start-up failed: …" entirely).
+    let mut bridge_error: Option<String> = None;
 
     // Stream-loss-on-session-switch fix (same as run_send_flow): insert
     // a placeholder assistant row on the TARGET session now, UPDATE it
@@ -3459,6 +3473,16 @@ async fn run_dispatched_task(
                             model_name = Some(model.clone());
                         }
                     }
+                    BridgeEvent::Error { error } => {
+                        tracing::error!(
+                            target: "dispatch",
+                            session_id = %target_id,
+                            staff = %staff_sid,
+                            error = %error,
+                            "dispatched bridge reported an error"
+                        );
+                        bridge_error = Some(error.clone());
+                    }
                     // Terminal event of the per-turn protocol. Daemon/ACP
                     // bridges (Gemini, Codex, OpenCode, Cursor, Antigravity)
                     // never close their `rx` on their own — the JSON-RPC
@@ -3503,13 +3527,26 @@ async fn run_dispatched_task(
     }
 
     // Finalize the placeholder assistant row we INSERTed before the
-    // stream loop. Empty content (immediate abort / no output) drops
-    // the placeholder so the target's transcript stays clean.
+    // stream loop. Empty content with a bridge error → persist the error
+    // into the target's transcript so opening the session explains what
+    // happened (previously the placeholder was silently deleted and the
+    // session showed a lone user message with no trace of the failure).
+    // Empty content with no error (immediate abort) drops the placeholder
+    // so the transcript stays clean.
     if content.is_empty() {
-        let _ = sqlx::query("DELETE FROM messages WHERE id = ?")
-            .bind(&assistant_msg_id)
-            .execute(&pool)
-            .await;
+        if let Some(err) = &bridge_error {
+            let _ = sqlx::query("UPDATE messages SET content = ?, timestamp = ? WHERE id = ?")
+                .bind(json!([{ "type": "text", "text": format!("⚠️ Agent failed to start: {err}") }]).to_string())
+                .bind(chrono::Utc::now().to_rfc3339())
+                .bind(&assistant_msg_id)
+                .execute(&pool)
+                .await;
+        } else {
+            let _ = sqlx::query("DELETE FROM messages WHERE id = ?")
+                .bind(&assistant_msg_id)
+                .execute(&pool)
+                .await;
+        }
     } else {
         let _ = sqlx::query(
             "UPDATE messages SET content = ?, model = ?, usage_json = ?, \
@@ -3586,19 +3623,31 @@ async fn run_dispatched_task(
             .await;
         });
     }
-    let final_status = if timed_out { "error" } else { "idle" };
+    let final_status = if timed_out || bridge_error.is_some() {
+        "error"
+    } else {
+        "idle"
+    };
     let _ = sm.update_status(&pool, &target_id, final_status).await;
 
     // Result card on staff side: trim the summary so it fits the
-    // inline card. Long agent runs get a "…" cutoff. Timeout path
-    // emits a fixed failure summary so the staff card resolves
-    // even when the bridge had no usable partial output.
-    let success = !timed_out;
+    // inline card. Long agent runs get a "…" cutoff. Timeout and
+    // bridge-error paths emit failure summaries so the staff card
+    // resolves with the real reason instead of a hollow success —
+    // a start-up failure must never read as "✓ done".
+    let success = !timed_out && bridge_error.is_none();
     let preview = if timed_out {
         format!(
             "Task timed out after {} minutes — bridge aborted.",
             DISPATCH_TIMEOUT_SECS / 60
         )
+    } else if let Some(err) = &bridge_error {
+        let p: String = err.chars().take(600).collect();
+        if err.chars().count() > 600 {
+            format!("{p}…")
+        } else {
+            p
+        }
     } else {
         let p: String = summary_text.chars().take(600).collect();
         if summary_text.chars().count() > 600 {

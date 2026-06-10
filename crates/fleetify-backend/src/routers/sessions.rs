@@ -82,9 +82,15 @@ async fn spawn_session(
         template: spec.agent_template,
         effort: spec.effort,
         task: spec.first_task,
+        worktree: spec.use_worktree,
     };
     let known = crate::services::spawn::known_project_paths(&st.auth.pool, Some(&user.id)).await;
-    let resolved = crate::services::spawn::resolve(&raw, &known);
+    let mut resolved = crate::services::spawn::resolve(&raw, &known);
+    // User-facing path: an absent first task falls back to the kickoff
+    // message (agents are never created idle from the chat/picker flow).
+    if resolved.spec.first_task.is_none() {
+        resolved.spec.first_task = Some(crate::services::spawn::DEFAULT_KICKOFF_TASK.to_string());
+    }
     if !resolved.gaps.is_empty() {
         let fields: Vec<String> = resolved.gaps.iter().map(|g| g.field.clone()).collect();
         return Err(ApiError::BadRequest(format!(

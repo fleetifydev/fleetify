@@ -35,7 +35,7 @@ describe("RouterCard", () => {
   const noop = async () => {};
   const meta = { description: "Test router." };
 
-  it("renders 'Activated' pill when active", () => {
+  it("renders the Voice-style selection tick (not a green 'Activated' pill) when active", () => {
     render(
       <RouterCard
         tile={tile({ connected: true, active_for_decision: true })}
@@ -44,7 +44,10 @@ describe("RouterCard", () => {
         onChanged={noop}
       />,
     );
-    expect(screen.getByText("Activated")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("router-active-check-decision-weave"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Activated")).not.toBeInTheDocument();
   });
 
   it("renders 'Connected' pill when connected but inactive", () => {

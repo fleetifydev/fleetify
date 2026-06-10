@@ -648,6 +648,14 @@ impl GeminiBridge {
         tokio::spawn(async move {
             if let Some(fut) = cold_starter {
                 if let Err(e) = fut.await {
+                    // Surface the root cause in the dev terminal too — the
+                    // Error event alone used to be live-WS-only, so a failed
+                    // cold start left no greppable trace anywhere.
+                    tracing::error!(
+                        target: "gemini",
+                        session_id = %session_id,
+                        "gemini cold start failed: {e}"
+                    );
                     let _ = bridge_tx
                         .send(BridgeEvent::Error {
                             error: format!("Gemini start-up failed: {e}"),

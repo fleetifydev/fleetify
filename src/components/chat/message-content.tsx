@@ -104,6 +104,12 @@ const DIRECT_DISPATCH_RE   = /\[\[DIRECT_DISPATCH:[a-f0-9-]+\|[^\]]+\]\]/gi;
 // — guard the renderer in case a row sneaks through with the raw form.
 const READ_AGENT_RE        = /\[\[READ_AGENT:[a-f0-9-]+\|\d+\]\]/gi;
 const DISPATCH_RAW_RE      = /\[\[DISPATCH:[^\]]+\]\]/gi;
+// Spawn directives — the payload is JSON (may span lines), captured up to
+// the first "]]" to mirror the backend token grammar. The PARTIAL form
+// masks a token still streaming in (no closing "]]" yet) so raw JSON never
+// flashes in the live bubble.
+const SPAWN_RAW_RE         = /\[\[SPAWN:[\s\S]*?\]\]/gi;
+const SPAWN_PARTIAL_RE     = /\[\[SPAWN:[\s\S]*$/i;
 // Internal routing markers — the backend reads these to branch into the
 // compactor / prompt-rewrite flows but they shouldn't reach the chat UI.
 // Strip them at render time so "/compact" shows in the bubble without the
@@ -1136,7 +1142,18 @@ function stripInternalTokens(text: string): string {
     .replace(READ_AGENT_RE, "")
     .replace(DIRECT_DISPATCH_RE, "")
     .replace(DISPATCH_RAW_RE, "")
+    .replace(SPAWN_RAW_RE, "")
+    .replace(SPAWN_PARTIAL_RE, "")
     .replace(/\n{3,}/g, "\n\n");
+}
+
+/** How many spawn directives the live stream carries — complete tokens plus
+ *  one in flight (opened but not yet closed). Drives the "creating N
+ *  agents" live label while the raw tokens themselves stay masked. */
+function countSpawnTokens(text: string): number {
+  const complete = text.match(SPAWN_RAW_RE)?.length ?? 0;
+  const partial = SPAWN_PARTIAL_RE.test(text.replace(SPAWN_RAW_RE, "")) ? 1 : 0;
+  return complete + partial;
 }
 
 function MarkdownBodyInner({ text }: { text: string }) {
@@ -3383,8 +3400,13 @@ export function StreamingMessage({ text, thinking }: { text: string; thinking: s
   const activeTool = lastVisible
     ? (lastVisible[1] as { name: string; input: Record<string, unknown> })
     : null;
+  // Spawn directives in the live text are masked from the markdown; the
+  // label is where the user sees what's happening ("creating 3 agents").
+  const spawnCount = countSpawnTokens(text);
   const liveLabel = activeTool
     ? liveVerb(activeTool.name, activeTool.input)
+    : spawnCount > 1 ? `creating ${spawnCount} agents`
+    : spawnCount === 1 ? "creating agent"
     : showLiveThinking ? "thinking"
     : (text || hasContent) ? "responding" : "thinking";
   const liveFilePath = activeTool ? toolFilePath(activeTool.name, activeTool.input) : null;

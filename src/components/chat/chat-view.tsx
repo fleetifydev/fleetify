@@ -310,6 +310,10 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   const staffIdRef = useRef(staffSessionId);
   const creatingStaffRef = useRef(false);
   const loadedSessionsRef = useRef<Set<string>>(new Set());
+  // Bumped whenever a session's initial message load settles. Refs don't
+  // re-run effects, so the auto-intro gate below needs a state tick to
+  // re-evaluate once `loadedSessionsRef` gains the active session.
+  const [loadedTick, setLoadedTick] = useState(0);
   // ── Pagination state, per session ──
   // hasMoreRef[sid] = true means there's likely older history on the
   // server. Set to false once a fetch returns less than `limit`.
@@ -751,7 +755,10 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
         const localMsgs = useChatStore.getState().sessions[effectiveSessionId]?.messages ?? [];
         if (!cancelled && localMsgs.length === 0) setMessages(effectiveSessionId, []);
       } finally {
-        if (!cancelled) loadedSessionsRef.current.add(effectiveSessionId);
+        if (!cancelled) {
+          loadedSessionsRef.current.add(effectiveSessionId);
+          setLoadedTick((t) => t + 1);
+        }
       }
     })();
     return () => { cancelled = true; ac.abort(); };
@@ -1295,6 +1302,13 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   useEffect(() => {
     if (!activeSessionId || !activeSession) return;
     if (!activeSession.project_path) return;
+    // Wait for the session's initial message load to settle before
+    // deciding "no user messages yet". Opening a freshly-SPAWNED session
+    // (kickoff task seeded server-side) used to race the fetch: the store
+    // was still empty, so this effect fired — renaming the title to the
+    // folder basename and sending a phantom intro prompt on a session
+    // that already had its first task.
+    if (!loadedSessionsRef.current.has(activeSessionId)) return;
     if (hasUserMessageEarly) return;
     if (isStreaming) return;
     if (autoIntroFiredRef.current.has(activeSessionId)) return;
@@ -1412,7 +1426,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     }, 2000);
     return () => { clearTimeout(t); clearTimeout(peekT); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSessionId, activeSession?.project_path, hasUserMessageEarly, isStreaming]);
+  }, [activeSessionId, activeSession?.project_path, hasUserMessageEarly, isStreaming, loadedTick]);
 
   // ── Fleet panel → "Send this" channel ──
   // The right-panel SessionRow's inline decision card dispatches
@@ -2195,7 +2209,13 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
               ? (composer.modelName ?? startupDefault.model)
               : isControlCenter
                 ? (staffSession?.model_name ?? startupDefault.model)
-                : (activeSession?.model_name ?? startupDefault.model)
+                // Real session: NEVER substitute the startup default. A
+                // spawned gemini session with model_name NULL used to show
+                // the user's persisted default (e.g. gpt-5.5), and the chip
+                // resolver matches by model id first — so it rendered a
+                // CODEX face on a GEMINI session. Null renders the session's
+                // own provider with a "Default" label instead.
+                : (activeSession?.model_name ?? null)
           }
           tool={
             !effectiveSessionId

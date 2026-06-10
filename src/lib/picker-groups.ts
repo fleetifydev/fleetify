@@ -575,7 +575,9 @@ export function resolveModelChip(
       ? model.slice(model.indexOf(":") + 1)
       : undefined) ??
     model ??
-    "Model";
+    // No model on the session (spawned agents default to the provider's
+    // own pick) — say so instead of a placeholder-looking "Model".
+    "Default";
   return { dispatchTool: resolveDispatchTool(activeGroup?.id ?? tool), label };
 }
 

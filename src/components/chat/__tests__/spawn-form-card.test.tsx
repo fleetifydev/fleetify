@@ -7,18 +7,6 @@ const { spawnSessionMock } = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/api", () => ({ spawnSession: spawnSessionMock }));
-vi.mock("@/hooks/use-providers-config", () => ({
-  useProvidersConfig: () => ({
-    tiles: [{ spec: { id: "claude", display_name: "Claude Code", default_models: [] } }],
-  }),
-}));
-vi.mock("@/lib/capabilities", () => ({
-  permissionCapabilityFor: () => ({ kind: "modes" }),
-  permissionModesFor: () => [
-    { id: "default", label: "Ask" },
-    { id: "bypassPermissions", label: "Full auto" },
-  ],
-}));
 vi.mock("@/stores/app-store", () => ({
   useAppStore: (sel: (s: { setActiveSession: () => void }) => unknown) =>
     sel({ setActiveSession: vi.fn() }),
@@ -31,48 +19,72 @@ function block(over: Partial<SpawnFormBlock> = {}): SpawnFormBlock {
     type: "spawn_form",
     request_id: "r1",
     status: "pending",
-    gaps: [],
+    gaps: [{ field: "project_path", reason: "missing", candidates: [] }],
     draft: {
-      title: "code-reviewer",
-      project_path: "/tmp/xyz",
-      tool: "claude",
-      model_name: "claude-opus-4-8",
-      permission_mode: "bypassPermissions",
+      title: "gemini-test_a",
+      tool: "gemini",
+      first_task: "Briefly introduce yourself.",
     },
     ...over,
   };
 }
 
-describe("SpawnFormCard", () => {
+describe("SpawnFormCard (folder picker)", () => {
   beforeEach(() => spawnSessionMock.mockClear());
 
-  it("prefills fields from the draft", () => {
+  it("shows the agent context and the folder prompt", () => {
     render(<SpawnFormCard block={block()} />);
-    expect((screen.getByPlaceholderText("Agent name") as HTMLInputElement).value).toBe(
-      "code-reviewer",
-    );
-    expect(screen.getByText("/tmp/xyz")).toBeTruthy();
+    expect(screen.getByText(/gemini-test_a · gemini/)).toBeTruthy();
+    expect(screen.getByText("Pick a folder…")).toBeTruthy();
   });
 
-  it("Create posts the edited spec", () => {
+  it("disables Create until a folder is picked", () => {
     render(<SpawnFormCard block={block()} />);
-    fireEvent.click(screen.getByText("Create"));
-    expect(spawnSessionMock).toHaveBeenCalledWith(
-      expect.objectContaining({ project_path: "/tmp/xyz", tool: "claude" }),
-    );
-  });
-
-  it("disables Create when project_path is empty (gap)", () => {
-    render(
-      <SpawnFormCard
-        block={block({
-          draft: { tool: "claude" },
-          gaps: [{ field: "project_path", reason: "missing", candidates: [] }],
-        })}
-      />,
-    );
     expect(
       (screen.getByText("Create").closest("button") as HTMLButtonElement).disabled,
     ).toBe(true);
+  });
+
+  it("a candidate chip fills the folder and Create posts the spec with worktree off", () => {
+    render(
+      <SpawnFormCard
+        block={block({
+          gaps: [
+            {
+              field: "project_path",
+              reason: "ambiguous",
+              candidates: ["/home/u/test_a", "/home/u/test_b"],
+            },
+          ],
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByText("test_a"));
+    const btn = screen.getByText("Create").closest("button") as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+    fireEvent.click(btn);
+    expect(spawnSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        project_path: "/home/u/test_a",
+        tool: "gemini",
+        first_task: "Briefly introduce yourself.",
+        use_worktree: false,
+      }),
+    );
+  });
+
+  it("renders the created card when status is created", () => {
+    render(
+      <SpawnFormCard
+        block={block({
+          status: "created",
+          created_session_id: "s-9",
+          draft: { title: "gemini-test_a", project_path: "/home/u/test_a" },
+          gaps: [],
+        })}
+      />,
+    );
+    expect(screen.getByText(/Created agent/)).toBeTruthy();
+    expect(screen.getByText("Open")).toBeTruthy();
   });
 });

@@ -1,9 +1,11 @@
 /**
  * Router card with three visual states that read at a glance:
  *
- *   • Active           — green border + "activated" pill in green. No
- *                        chrome shouting; the green stripe and the word
- *                        "activated" carry all the information.
+ *   • Active           — Voice-style selection: neutral high-contrast
+ *                        border + filled surface background + a check
+ *                        mark pinned to the far right. No green chrome;
+ *                        the background shift, border, and tick carry the
+ *                        "this one is selected" signal.
  *   • Connected/idle   — neutral card with a small "connected" tag.
  *                        Clickable to flip active immediately.
  *   • Needs setup      — yellow "Needs setup" badge in place of any
@@ -29,7 +31,7 @@
  */
 import type { MouseEvent } from "react";
 import { useEffect, useState } from "react";
-import { ExternalLink } from "lucide-react";
+import { Check, ExternalLink } from "lucide-react";
 
 import { routers, type RouterMode, type RouterTile } from "@/lib/routers-api";
 import { ConnectionStatusPill } from "@/components/settings/shared/connection-status-pill";
@@ -61,10 +63,13 @@ const cardBase: React.CSSProperties = {
   transition: "background 120ms ease, border-color 120ms ease",
 };
 
+// Selected state mirrors Settings → Voice's engine picker: a neutral
+// high-contrast border + a filled surface background (no green stripe),
+// paired with the far-right check mark rendered in the header row.
 const cardActive: React.CSSProperties = {
   ...cardBase,
-  borderColor: "#22c55e",
-  boxShadow: "0 0 0 1px rgba(34,197,94,0.25)",
+  borderColor: "var(--c-high)",
+  background: "var(--c-srf)",
 };
 
 // ── Buttons ───────────────────────────────────────────────────────
@@ -390,7 +395,6 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
         }}
       >
         <span style={nameStyle}>{tile.display_name}</span>
-        {isActive && <ConnectionStatusPill status="activated" />}
         {!isActive && tile.connected && !isImmortal && (
           <ConnectionStatusPill status="connected" />
         )}
@@ -455,6 +459,17 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
             >
               Edit
             </button>
+          )}
+
+          {/* Voice-style selection tick, pinned far-right when active. */}
+          {isActive && (
+            <Check
+              size={15}
+              strokeWidth={2.5}
+              aria-label="Active"
+              data-testid={`router-active-check-${category}-${tile.id}`}
+              style={{ color: "var(--c-accent, var(--c-high))", flexShrink: 0 }}
+            />
           )}
         </div>
       </div>

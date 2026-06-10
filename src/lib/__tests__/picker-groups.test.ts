@@ -413,10 +413,12 @@ describe("resolveModelChip", () => {
     expect(resolveModelChip(groups, "perplexity", "openai/gpt-5.5").dispatchTool).toBe("perplexity");
   });
 
-  it("falls through label resolution: CLI table → raw id → 'Model'", () => {
+  it("falls through label resolution: CLI table → raw id → 'Default'", () => {
     expect(resolveModelChip([], "claude", "claude-opus-4-8").label).toBe("Opus 4.8"); // CLI table
     expect(resolveModelChip([], "claude", "totally-unknown-xyz").label).toBe("totally-unknown-xyz"); // raw id
-    expect(resolveModelChip([], "claude", null).label).toBe("Model"); // final fallback
+    // Null model = the provider's own default (spawned agents) — labelled
+    // "Default", and the face stays on the SESSION's tool.
+    expect(resolveModelChip([], "claude", null).label).toBe("Default");
     expect(resolveModelChip([], "claude", null).dispatchTool).toBe("claude");
   });
 
