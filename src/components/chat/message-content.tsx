@@ -2465,7 +2465,7 @@ function DispatchPendingCard({ block }: { block: import("@/types/chat").Dispatch
           )}
           {showThinking && (
             <span style={{ fontStyle: "italic", color: "var(--c-ghost)" }}>
-              <span className="status-sheen">thinking</span> · {thinkingTail}
+              <span className="status-sheen" data-label="thinking">thinking</span> · {thinkingTail}
             </span>
           )}
         </div>
@@ -3511,6 +3511,7 @@ export function StreamingMessage({ text, thinking }: { text: string; thinking: s
               <span
                 key={liveLabel}
                 className="thinking-shimmer-text live-label-swap"
+                data-label={liveLabel}
                 style={{
                   fontSize: 12, fontWeight: 500,
                   fontFamily: "var(--font-sans)", letterSpacing: "-0.01em",

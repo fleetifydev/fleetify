@@ -241,7 +241,7 @@ export function StudioSession({ sessionId }: { sessionId: string }) {
               {pending.prompt && <div style={userBubble}>{pending.prompt}</div>}
               <div style={{ display: "inline-flex", alignItems: "center", gap: 7, animation: "fade-in 0.2s ease both" }}>
                 <LogoMark size={13} glow style={{ flexShrink: 0, color: "var(--c-high)" }} />
-                <span className="thinking-shimmer-text" style={{ fontSize: 12, fontWeight: 500, fontFamily: "var(--font-sans)", letterSpacing: "-0.01em" }}>
+                <span className="thinking-shimmer-text" data-label="Generating…" style={{ fontSize: 12, fontWeight: 500, fontFamily: "var(--font-sans)", letterSpacing: "-0.01em" }}>
                   Generating…
                 </span>
               </div>

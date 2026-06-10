@@ -1776,7 +1776,7 @@ function SubagentTaskCard({
         display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
       }}>
         <span style={{ color: "var(--c-med)" }}>{task.taskType || "Agent"}</span>
-        <span className={running ? "status-sheen" : undefined}>{statusLabel}</span>
+        <span className={running ? "status-sheen" : undefined} data-label={statusLabel}>{statusLabel}</span>
         {elapsed > 0 && <span style={{ fontFamily: "var(--font-mono)" }}>{fmt(elapsed)}</span>}
       </div>
 
@@ -1948,7 +1948,7 @@ function TaskCard({
       }}>
         <span>Agent</span>
         <span style={{ opacity: 0.4 }}>·</span>
-        <span className={running ? "status-sheen" : undefined}>{statusLabel}</span>
+        <span className={running ? "status-sheen" : undefined} data-label={statusLabel}>{statusLabel}</span>
         <span style={{ opacity: 0.4 }}>·</span>
         <span>{fmt(card.durationMs)}</span>
         {card.tokens > 0 && (

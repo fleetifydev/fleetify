@@ -605,25 +605,42 @@ body {
 }
 
 /* ─── Thinking label: a soft light sweeps across the word ───
-   A gradient clipped to the text, slid horizontally. Base is the muted
-   ghost tone; a brighter band passes through so "thinking" gently
-   breathes instead of sitting static. GPU-cheap (background-position). */
+   The word sits in the muted ghost tone; a brighter band glides across it
+   left→right so "thinking" gently breathes instead of sitting static.
+
+   IMPLEMENTATION NOTE — why this is a masked overlay, not the obvious
+   animated `background-position` on a `background-clip:text` element:
+   WebKitGTK (Tauri's renderer on Linux) does NOT re-rasterize a text-clipped
+   *background* as its position animates — it paints frame 0 and never
+   repaints, so the highlight freezes on the last glyph (the element is
+   text-width, and the static band lands at the right edge). Verified in
+   WebKitGTK 2.52.3: `background-position` froze; `will-change` and
+   `translateZ` did not help; animating `mask-position` repaints correctly.
+   So the bright sweep lives on an ::after overlay (a duplicate of the label
+   via `content: attr(data-label)`) and we animate its `mask-position`.
+   GPU-cheap (mask-position only). Callers MUST set `data-label` to the same
+   text they render, or the sweep silently no-ops (base text still shows). */
 @keyframes thinking-text-sweep {
-  0%   { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+  0%   { -webkit-mask-position: 200% 0; mask-position: 200% 0; }
+  100% { -webkit-mask-position: -200% 0; mask-position: -200% 0; }
 }
 .thinking-shimmer-text {
-  background: linear-gradient(
-    100deg,
-    var(--c-ghost) 38%,
-    color-mix(in srgb, var(--c-ghost) 45%, var(--c-high)) 50%,
-    var(--c-ghost) 62%
-  );
-  background-size: 200% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
+  position: relative;
+  color: var(--c-ghost);
+}
+.thinking-shimmer-text::after {
+  content: attr(data-label);
+  position: absolute;
+  top: 0;
+  left: 0;
+  color: color-mix(in srgb, var(--c-ghost) 45%, var(--c-high));
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(100deg, transparent 38%, #000 50%, transparent 62%);
+          mask-image: linear-gradient(100deg, transparent 38%, #000 50%, transparent 62%);
+  -webkit-mask-size: 200% 100%;
+          mask-size: 200% 100%;
+  -webkit-mask-repeat: repeat;
+          mask-repeat: repeat;
   animation: thinking-text-sweep 2.7s linear infinite;
 }
 /* Breathing dot that leads the thinking label — soft scale+fade. */
@@ -656,21 +673,32 @@ body {
    thinking, Working…). `currentColor` keeps the base tone identical to the
    label's own color, so only a faint highlight passes through — adapts to
    any color, stays subtle. Narrow band + slow 3.6s drift = "çok hafif". */
+/* Same WebKitGTK constraint as .thinking-shimmer-text above: animate
+   `mask-position` on a bright ::after overlay, not `background-position` on a
+   text-clipped background (which freezes in WebKitGTK). Base stays
+   `currentColor`; the overlay is a hair brighter so only a subtle highlight
+   passes through, adapting to whatever color the status word is. Callers
+   MUST set `data-label` to the rendered word. */
 @keyframes status-sheen {
-  0%   { background-position: 180% 0; }
-  100% { background-position: -80% 0; }
+  0%   { -webkit-mask-position: 180% 0; mask-position: 180% 0; }
+  100% { -webkit-mask-position: -80% 0; mask-position: -80% 0; }
 }
 .status-sheen {
-  background: linear-gradient(
-    100deg,
-    currentColor 45%,
-    color-mix(in srgb, currentColor 45%, var(--c-high)) 50%,
-    currentColor 55%
-  );
-  background-size: 260% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+  position: relative;
+}
+.status-sheen::after {
+  content: attr(data-label);
+  position: absolute;
+  top: 0;
+  left: 0;
+  color: color-mix(in srgb, currentColor 45%, var(--c-high));
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(100deg, transparent 45%, #000 50%, transparent 55%);
+          mask-image: linear-gradient(100deg, transparent 45%, #000 50%, transparent 55%);
+  -webkit-mask-size: 260% 100%;
+          mask-size: 260% 100%;
+  -webkit-mask-repeat: repeat;
+          mask-repeat: repeat;
   animation: status-sheen 3.6s ease-in-out infinite;
 }
 
