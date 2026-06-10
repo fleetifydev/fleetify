@@ -174,6 +174,19 @@ pub struct ClaudeSessionPreview {
     pub session_id: String,
     pub summary: String,
     pub updated_at: String,
+    /// Friendly label of the Claude account this transcript belongs to —
+    /// `"System"` for the primary `~/.claude` config dir, or the discovered
+    /// dir name (e.g. `".claude-2"`, `".claude-work"`) for sibling dirs.
+    /// Populated by `scan_sessions_all_accounts`; the legacy `scan_sessions`
+    /// (System-only) leaves it empty for back-compat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_label: Option<String>,
+    /// Original project path (Claude's encoded dir → human path) so the
+    /// resume picker can show which folder the conversation belongs to.
+    /// Recovered from `sessions-index.json::originalPath` when available,
+    /// otherwise decoded from the dir name (`-Users-…` → `/Users/…`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
 }
 
 /// Walk `~/.claude/projects/<encoded>/*.jsonl` and return one row per
@@ -205,10 +218,251 @@ pub fn scan_sessions(project_path: &str) -> Vec<ClaudeSessionPreview> {
             session_id: session_id.to_string(),
             summary,
             updated_at: mtime,
+            account_label: None,
+            project_path: project_path_for_dir(&project_dir),
         });
     }
     // Sort newest first.
     out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    out
+}
+
+/// Walks EVERY Claude config dir on disk — the primary `~/.claude/projects/`
+/// (label `"System"`) and every discovered sibling `~/.claude-*/projects/`
+/// (label = the dir name, e.g. `".claude-2"`). When `project_path` is `Some`,
+/// only that project's transcripts are returned (back-compat); when `None`,
+/// EVERY project across EVERY account is returned — the "general history" the
+/// resume picker uses so the user sees their full Claude conversation history.
+/// Capped to `MAX_RETURNED` entries (newest first) so the picker stays snappy.
+pub fn scan_sessions_all_accounts(project_path: Option<&str>) -> Vec<ClaudeSessionPreview> {
+    let mut out: Vec<ClaudeSessionPreview> = Vec::new();
+    let home = home();
+
+    // Build the list of (label, config_dir) pairs we'll walk.
+    let mut accounts: Vec<(String, std::path::PathBuf)> =
+        vec![("System".into(), home.join(".claude"))];
+    if let Ok(rd) = std::fs::read_dir(&home) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with(".claude-") && e.path().is_dir() {
+                accounts.push((name, e.path()));
+            }
+        }
+    }
+    accounts.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (label, config_dir) in accounts {
+        // Project dirs to scan inside this account.
+        let project_dirs: Vec<PathBuf> = match project_path {
+            // Path-filtered: the exact project dir AND any sub-project dirs
+            // Claude carved off for worktrees / nested checkouts (Claude
+            // encodes each unique path as its own `projects/<dir>` —
+            // `canadiantire`, `canadiantire--fleetify-worktrees-XXX`, etc.).
+            // Without the prefix match the worktree transcripts were
+            // invisible in the resume picker even though they belong to the
+            // same logical project.
+            Some(p) => find_claude_project_dirs_prefix(&config_dir, p),
+            // Global history: every project under this account.
+            None => {
+                let root = config_dir.join("projects");
+                std::fs::read_dir(&root)
+                    .map(|rd| {
+                        rd.flatten()
+                            .map(|e| e.path())
+                            .filter(|p| p.is_dir())
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            }
+        };
+        for project_dir in project_dirs {
+            let Ok(rd) = std::fs::read_dir(&project_dir) else {
+                continue;
+            };
+            for entry in rd.flatten() {
+                let p = entry.path();
+                if p.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                let Some(session_id) = p.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                let mtime = match entry.metadata().and_then(|m| m.modified()) {
+                    Ok(t) => chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339(),
+                    Err(_) => chrono::Utc::now().to_rfc3339(),
+                };
+                let summary = first_user_text(&p).unwrap_or_else(|| "No preview".to_string());
+                out.push(ClaudeSessionPreview {
+                    session_id: session_id.to_string(),
+                    summary,
+                    updated_at: mtime,
+                    account_label: Some(label.clone()),
+                    project_path: project_path_for_dir(&project_dir),
+                });
+            }
+        }
+    }
+    // Newest first across all accounts + cap so a user with hundreds of
+    // transcripts (we've seen 100+ per account) doesn't ship a megabyte of
+    // history through the resume picker's tiny menu.
+    out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    out.truncate(MAX_RETURNED);
+    out
+}
+
+/// Resolve a Claude project dir (`~/.claude*/projects/<encoded>/`) back to
+/// the original filesystem path. Prefers `sessions-index.json::originalPath`
+/// when present (authoritative); otherwise reconstructs from the dir name by
+/// stripping the leading `-` (which Claude uses for the path's leading `/`)
+/// and replacing the remaining `-` separators with `/`. Reconstruction is
+/// best-effort — a path with intentional dashes (e.g. `~/my-folder`) can't
+/// be perfectly recovered, but the resulting string is still enough for the
+/// resume picker to display "which folder?". Returns `None` only when neither
+/// signal is available.
+fn project_path_for_dir(project_dir: &Path) -> Option<String> {
+    // 1) Authoritative: Claude writes `originalPath` into sessions-index.json.
+    if let Ok(text) = std::fs::read_to_string(project_dir.join("sessions-index.json")) {
+        if let Ok(v) = serde_json::from_str::<Value>(&text) {
+            if let Some(p) = v.get("originalPath").and_then(|x| x.as_str()) {
+                if !p.is_empty() {
+                    return Some(p.to_string());
+                }
+            }
+        }
+    }
+    // 2) Best-effort: decode the dir name. `-Users-cryonicx-Desktop-foo`
+    //    → `/Users/cryonicx/Desktop/foo`.
+    let name = project_dir.file_name()?.to_string_lossy().into_owned();
+    if let Some(body) = name.strip_prefix('-') {
+        return Some(format!("/{}", body.replace('-', "/")));
+    }
+    None
+}
+
+/// Walk EVERY `~/.claude*/projects/*/` and return the absolute jsonl path of
+/// the transcript whose stem matches `claude_session_id`. The id is a v4 UUID
+/// so collisions across accounts are vanishingly unlikely — first match wins.
+/// Used by the resume-history fetcher so picking a row from another account
+/// loads its transcript instead of silently falling back to an empty body.
+pub fn find_jsonl_anywhere(claude_session_id: &str) -> Option<PathBuf> {
+    if claude_session_id.is_empty() {
+        return None;
+    }
+    let home = home();
+    let mut candidates: Vec<PathBuf> = vec![home.join(".claude")];
+    if let Ok(rd) = std::fs::read_dir(&home) {
+        for e in rd.flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if n.starts_with(".claude-") && e.path().is_dir() {
+                candidates.push(e.path());
+            }
+        }
+    }
+    let target = format!("{claude_session_id}.jsonl");
+    for c in candidates {
+        let root = c.join("projects");
+        let Ok(rd) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let dir = entry.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            let cand = dir.join(&target);
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    None
+}
+
+/// Strip a `<...>/.fleetify-worktrees/<UUID>/...` / `.claude-worktrees/<...>` /
+/// `.maestro-worktrees/<...>` suffix so a session opened from a worktree path
+/// still resolves to its parent project root. Worktree session lookups would
+/// otherwise be siloed: a user editing inside `<project>/.fleetify-worktrees/
+/// UUID/` would only see THAT worktree's transcripts, not the project's main
+/// history or sibling worktrees. Leaves paths without a worktree segment
+/// unchanged.
+fn project_root_path(path: &str) -> &str {
+    for marker in [
+        "/.fleetify-worktrees/",
+        "/.claude-worktrees/",
+        "/.maestro-worktrees/",
+    ] {
+        if let Some(idx) = path.find(marker) {
+            return &path[..idx];
+        }
+    }
+    path
+}
+
+/// Every `~/.claude*/projects/<encoded>/` whose encoded name matches the
+/// project root OR starts with `<root>-` — i.e. the project itself AND every
+/// sub-project Claude carved off for worktrees / nested checkouts.
+/// Worktree directories (`<project>--fleetify-worktrees-<UUID>/`) hold
+/// genuine conversations that BELONG to the same logical project; the old
+/// single-dir lookup left them invisible in the resume picker. Both modern
+/// (every non-alnum → `-`) and legacy (`/` → `-` only) encodings are tried,
+/// and any sessions-index.json match wins outright. Empty / non-existent
+/// projects root → empty vec.
+fn find_claude_project_dirs_prefix(config_dir: &Path, path: &str) -> Vec<PathBuf> {
+    let projects_root = config_dir.join("projects");
+    if !projects_root.is_dir() {
+        return Vec::new();
+    }
+    // Hop up out of any worktree subdir so the prefix scan covers the whole
+    // project (main + every sibling worktree), not just the active worktree.
+    let normalized = project_root_path(path)
+        .trim_end_matches('/')
+        .trim_end_matches('\\');
+    let modern: String = normalized
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let legacy = normalized.replace(['/', '\\'], "-");
+    let modern_pfx = format!("{modern}-");
+    let legacy_pfx = format!("{legacy}-");
+
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(&projects_root) else {
+        return out;
+    };
+    for entry in rd.flatten() {
+        let d = entry.path();
+        if !d.is_dir() {
+            continue;
+        }
+        // sessions-index.json originalPath — definitive same-project signal.
+        let index_match = std::fs::read_to_string(d.join("sessions-index.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|v| {
+                v.get("originalPath").and_then(|x| x.as_str()).map(|s| {
+                    s.trim_end_matches('/').trim_end_matches('\\') == normalized
+                        || s.trim_end_matches('/')
+                            .trim_end_matches('\\')
+                            .starts_with(&format!("{normalized}/"))
+                })
+            })
+            .unwrap_or(false);
+        if index_match {
+            out.push(d);
+            continue;
+        }
+        // Encoded-name match: exact OR project-prefix.
+        let Some(name) = d.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name == modern
+            || name == legacy
+            || name.starts_with(&modern_pfx)
+            || name.starts_with(&legacy_pfx)
+        {
+            out.push(d);
+        }
+    }
     out
 }
 

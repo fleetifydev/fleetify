@@ -70,26 +70,35 @@ function SandboxToggle({
       onMouseDown={(e) => e.preventDefault()}
       title={`Sandbox: ${active ? "On" : "Off"}`}
       style={{
-        padding: "3px 7px", marginRight: 1,
+        // Same "calm pill" pattern as the permission picker: neutral label,
+        // tiny state-coloured dot. Removes the loud green wall-of-text and
+        // makes the row read as a list of statuses, not competing accents.
+        padding: "3px 8px", marginRight: 1,
         border: "none",
         background: "none",
-        color: active ? "#4ade80" : "var(--c-low)",
-        fontSize: 12, fontWeight: 600, cursor: "pointer",
+        color: "var(--c-low)",
+        fontSize: 12, fontWeight: 500, cursor: "pointer",
         letterSpacing: "0.005em",
         borderRadius: 5,
         transition: "color 0.12s, background 0.12s",
-        flexShrink: 0,
+        flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 6,
         fontFamily: "var(--font-sans)",
         outline: "none",
       }}
       onMouseEnter={(e) => {
         e.currentTarget.style.background = "rgba(var(--fg-rgb),0.05)";
+        e.currentTarget.style.color = "var(--c-high)";
       }}
       onMouseLeave={(e) => {
         e.currentTarget.style.background = "none";
+        e.currentTarget.style.color = "var(--c-low)";
       }}
     >
-      Sandbox: {active ? "On" : "Off"}
+      <span style={{
+        width: 5, height: 5, borderRadius: "50%",
+        background: active ? "rgb(64,180,120)" : "var(--c-low)", flexShrink: 0,
+      }}/>
+      Sandbox {active ? "on" : "off"}
     </button>
   );
 }

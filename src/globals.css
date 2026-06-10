@@ -37,15 +37,14 @@
   --c-brd2:  #c7c7c7;            /* border strong: active, focused */
   --c-srf:   #f2f2f2;            /* surface: hover bg, card bg */
   --c-srf2:  #e8e8e8;            /* surface 2: active/selected bg */
-  /* Chat input + branch strip surface — sits one notch above --card.
-     Light: pure white card on the off-white chat surface. */
-  --chat-input-bg: #ffffff;
+  /* Chat input + branch strip surface — now matched to the sidebar so the
+     composer reads as the same elevation/family as the left rail. */
+  --chat-input-bg: var(--sidebar);
 }
 .dark {
-  /* Dark: #1B1B1B — user-pinned surface for chat-input, branch
-     strip, permission card. One unified flat elevation across the
-     whole "chat cluster" so the cards read as one family. */
-  --chat-input-bg: #1B1B1B;
+  /* Dark: matched to --sidebar so the chat input + branch strip share the
+     sidebar's exact surface colour (one unified elevation across the app). */
+  --chat-input-bg: var(--sidebar);
   /* Bright crisp ramp matching Claude Code — idle/secondary content
      stays at #b0 (clearly legible on #121212 sidebar), active items
      pop at #d8/#f0. Headings #f0. Meta dims to #6a. Borders subtle. */
@@ -274,7 +273,7 @@
   --popover-foreground: #f0f0f0;
   --muted-foreground: #444444;
   --sidebar-foreground: #444444;
-  --chat-input-bg: #161616; /* elevated so input stands out on pure black */
+  --chat-input-bg: var(--sidebar); /* matched to sidebar surface */
 }
 
 /* ──────────────────────────────────────────
@@ -687,6 +686,16 @@ body {
   to   { opacity: 1; transform: translateY(0); }
 }
 .fade-in { animation: fade-in 0.12s ease-out both; }
+
+/* Live status label crossfade — the persistent Fleetify mark stays put
+   while the label morphs between states (thinking → responding → editing).
+   A `key` on the span remounts it on every text change, replaying this
+   soft fade-up so transitions glide instead of hard-cutting. */
+@keyframes live-label-swap {
+  from { opacity: 0; transform: translateY(2px); filter: blur(1.5px); }
+  to   { opacity: 1; transform: translateY(0);  filter: blur(0); }
+}
+.live-label-swap { animation: live-label-swap 0.26s cubic-bezier(0.22, 1, 0.36, 1) both; }
 
 /* ─── Workspace pane entrance / exit ───
    Both animations use the same GPU-cheap transform + opacity pair.

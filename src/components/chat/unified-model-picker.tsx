@@ -47,6 +47,12 @@ export interface UnifiedModelPickerProps {
   onClose: () => void;
   /** Determines which edge the popover sits flush against. */
   anchor: "top" | "bottom";
+  /** Context-window usage — shown as a bar at the foot of the picker
+   *  (moved here from the toolbar). All optional; the bar hides when
+   *  there's nothing to show. */
+  contextPercent?: number;
+  contextUsedTokens?: number;
+  contextMaxTokens?: number;
 }
 
 export function UnifiedModelPicker({
@@ -58,6 +64,9 @@ export function UnifiedModelPicker({
   onPickEffort,
   onClose,
   anchor,
+  contextPercent = 0,
+  contextUsedTokens,
+  contextMaxTokens,
 }: UnifiedModelPickerProps) {
   const initialGroupId = useMemo(() => {
     if (model) {
@@ -84,6 +93,13 @@ export function UnifiedModelPicker({
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
+      const target = e.target as Element | null;
+      // Ignore clicks on the trigger chip — otherwise clicking it while the
+      // picker is OPEN races: this handler closes the picker, then the
+      // trigger's own onClick toggles it back open ("won't close" bug). By
+      // skipping the trigger here, the trigger's onClick alone owns the
+      // toggle and a second click closes it cleanly.
+      if (target?.closest?.("[data-model-trigger]")) return;
       if (!rootRef.current?.contains(e.target as Node)) onClose();
     };
     const onKey = (e: KeyboardEvent) => {
@@ -185,9 +201,10 @@ export function UnifiedModelPicker({
         left: 0,
         zIndex: 60,
         display: "flex",
+        flexDirection: "column",
         background: "var(--popover, #1a1a1a)",
         border: "1px solid var(--c-brd, rgba(255,255,255,0.10))",
-        borderRadius: 8,
+        borderRadius: 7,
         boxShadow:
           anchor === "bottom"
             ? "0 -14px 36px rgba(0,0,0,0.45)"
@@ -198,14 +215,16 @@ export function UnifiedModelPicker({
         maxWidth: "calc(100vw - 32px)",
       }}
     >
+      {/* Columns row */}
+      <div style={{ display: "flex" }}>
       {/* Providers column */}
       <div
         style={{
           display: "flex",
           flexDirection: "column",
           padding: 4,
-          width: 160,
-          height: 320,
+          width: 152,
+          height: 272,
           overflowY: "auto",
           borderRight: "1px solid var(--c-brd, rgba(255,255,255,0.08))",
         }}
@@ -246,7 +265,7 @@ export function UnifiedModelPicker({
                 gap: 9,
                 width: "100%",
                 textAlign: "left",
-                padding: "6px 10px",
+                padding: "4px 9px",
                 background: isHovered ? "var(--c-srf, rgba(255,255,255,0.06))" : "transparent",
                 border: "none",
                 outline: "none",
@@ -258,7 +277,7 @@ export function UnifiedModelPicker({
                 // which IS themed (dark text in light, light text in dark).
                 color: "var(--c-high)",
                 fontFamily: "var(--font-sans)",
-                fontSize: 12.5,
+                fontSize: 12,
                 fontWeight: isActiveProvider ? 600 : 500,
               }}
             >
@@ -293,8 +312,8 @@ export function UnifiedModelPicker({
           display: "flex",
           flexDirection: "column",
           padding: 4,
-          width: 240,
-          height: 320,
+          width: 222,
+          height: 272,
           borderRight: "1px solid var(--c-brd, rgba(255,255,255,0.08))",
         }}
       >
@@ -444,7 +463,7 @@ export function UnifiedModelPicker({
                   alignItems: "center",
                   justifyContent: "space-between",
                   width: "100%",
-                  padding: "6px 10px",
+                  padding: "4px 9px",
                   background: active ? "var(--c-srf, rgba(255,255,255,0.10))" : "transparent",
                   border: "none",
                   cursor: "pointer",
@@ -461,7 +480,7 @@ export function UnifiedModelPicker({
               >
                 <span
                   style={{
-                    fontSize: 12.5,
+                    fontSize: 12,
                     color: active ? "var(--c-high, #ffffff)" : "var(--c-low, #c0c0c0)",
                     fontWeight: active ? 500 : 400,
                     overflow: "hidden",
@@ -502,8 +521,8 @@ export function UnifiedModelPicker({
           display: "flex",
           flexDirection: "column",
           padding: 4,
-          width: 130,
-          height: 320,
+          width: 122,
+          height: 272,
           opacity: effortEnabled ? 1 : 0.4,
           pointerEvents: effortEnabled ? "auto" : "none",
         }}
@@ -524,7 +543,7 @@ export function UnifiedModelPicker({
                 alignItems: "center",
                 justifyContent: "space-between",
                 width: "100%",
-                padding: "6px 10px",
+                padding: "4px 9px",
                 background: active ? "var(--c-srf, rgba(255,255,255,0.10))" : "transparent",
                 border: "none",
                 cursor: effortEnabled ? "pointer" : "default",
@@ -542,7 +561,7 @@ export function UnifiedModelPicker({
             >
               <span
                 style={{
-                  fontSize: 12.5,
+                  fontSize: 12,
                   color: active ? "var(--c-high, #ffffff)" : "var(--c-low, #c0c0c0)",
                   fontWeight: active ? 500 : 400,
                 }}
@@ -554,6 +573,40 @@ export function UnifiedModelPicker({
           );
         })}
       </div>
+      </div>
+
+      {/* Context-window footer — moved here from the toolbar. Shows the
+          conversation's token usage as a thin bar + numbers; hidden when
+          there's nothing to report yet (fresh session). */}
+      {(() => {
+        const used = contextUsedTokens ?? 0;
+        const max = contextMaxTokens ?? 0;
+        const ratio = max > 0 ? Math.min(1, used / max) : Math.min(1, contextPercent);
+        if (used <= 0 && contextPercent <= 0) return null;
+        const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n);
+        const pctNum = Math.round(ratio * 100);
+        const barColor = ratio > 0.9 ? "rgb(216,110,118)" : ratio > 0.7 ? "rgb(210,170,90)" : "rgb(64,180,120)";
+        return (
+          <div style={{
+            borderTop: "1px solid var(--c-brd, rgba(255,255,255,0.08))",
+            padding: "8px 11px 9px",
+            display: "flex", flexDirection: "column", gap: 6,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span style={{ fontSize: 10, fontWeight: 500, letterSpacing: 0.3, textTransform: "uppercase", color: "var(--c-dim)" }}>
+                Context window
+              </span>
+              <span style={{ fontSize: 11, color: "var(--c-low)", fontFamily: "var(--font-mono)" }}>
+                {max > 0 ? `${fmt(used)} / ${fmt(max)}` : `${pctNum}%`}
+                <span style={{ color: "var(--c-dim)", marginLeft: 6 }}>{pctNum}%</span>
+              </span>
+            </div>
+            <div style={{ height: 4, borderRadius: 2, background: "rgba(var(--fg-rgb),0.08)", overflow: "hidden" }}>
+              <div style={{ width: `${pctNum}%`, height: "100%", background: barColor, borderRadius: 2, transition: "width 0.3s" }} />
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -562,8 +615,8 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
   return (
     <div
       style={{
-        padding: "4px 10px 6px",
-        fontSize: 10.5,
+        padding: "3px 9px 4px",
+        fontSize: 10,
         fontWeight: 500,
         letterSpacing: 0.3,
         textTransform: "uppercase",

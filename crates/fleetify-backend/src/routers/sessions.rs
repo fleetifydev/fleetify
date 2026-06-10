@@ -1005,16 +1005,25 @@ async fn claude_history(
     // + decode runs on a blocking pool so the axum task keeps serving
     // other requests. Faithful with the Python `asyncio.to_thread`.
     let messages = tokio::task::spawn_blocking(move || {
-        let Some(project_dir) =
+        // Two-stage lookup so a resume from ANY account's history works:
+        //  1) Same-project, primary `~/.claude` (legacy fast path).
+        //  2) Global walk across `~/.claude*/projects/*/<id>.jsonl` —
+        //     the picker now surfaces transcripts from sibling accounts
+        //     (".claude-2", ".claude-3"), and the original path-scoped
+        //     lookup couldn't find them.
+        if let Some(project_dir) =
             crate::services::claude_history::find_claude_project_dir(&project_path)
-        else {
-            return Vec::new();
-        };
-        let jsonl = project_dir.join(format!("{claude_sid_owned}.jsonl"));
-        if !jsonl.exists() {
-            return Vec::new();
+        {
+            let jsonl = project_dir.join(format!("{claude_sid_owned}.jsonl"));
+            if jsonl.exists() {
+                return crate::services::claude_history::parse_jsonl(&jsonl);
+            }
         }
-        crate::services::claude_history::parse_jsonl(&jsonl)
+        if let Some(jsonl) = crate::services::claude_history::find_jsonl_anywhere(&claude_sid_owned)
+        {
+            return crate::services::claude_history::parse_jsonl(&jsonl);
+        }
+        Vec::new()
     })
     .await
     .unwrap_or_default();
@@ -1130,15 +1139,30 @@ struct PathQ {
     path: String,
 }
 
-async fn list_claude_sessions(AuthUser(_u): AuthUser, Query(q): Query<PathQ>) -> Json<Value> {
-    let project_path = q.path.clone();
-    if project_path.trim().is_empty() {
-        return Json(json!([]));
-    }
-    // Walk + JSONL reads can blow past several MB on long sessions —
-    // offload via spawn_blocking so the axum task keeps serving.
+#[derive(Deserialize)]
+struct OptionalPathQ {
+    #[serde(default)]
+    path: Option<String>,
+}
+
+async fn list_claude_sessions(
+    AuthUser(_u): AuthUser,
+    Query(q): Query<OptionalPathQ>,
+) -> Json<Value> {
+    // Multi-account, multi-project: walk every `~/.claude*` config dir AND
+    // every project inside it so the resume picker shows the user's full
+    // Claude conversation history across accounts. Pass a non-empty `path`
+    // query param to filter to a single project (legacy back-compat).
+    let project_path = q.path.and_then(|p| {
+        let t = p.trim().to_string();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
+    });
     let rows = tokio::task::spawn_blocking(move || {
-        crate::services::claude_history::scan_sessions(&project_path)
+        crate::services::claude_history::scan_sessions_all_accounts(project_path.as_deref())
     })
     .await
     .unwrap_or_default();

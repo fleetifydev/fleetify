@@ -1733,8 +1733,10 @@ pub async fn pty_spawn(
     shell: Option<String>,
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
+    cols: Option<u16>,
+    rows: Option<u16>,
 ) -> serde_json::Value {
-    match pty::spawn(app, shell, cwd, env) {
+    match pty::spawn(app, shell, cwd, env, cols, rows) {
         Ok(id) => serde_json::json!({ "ok": true, "id": id }),
         Err(e) => serde_json::json!({ "error": e }),
     }
@@ -2527,6 +2529,8 @@ pub async fn providers_open_account_login(
         args,
         Some(home.to_string_lossy().into_owned()),
         Some(env),
+        None,
+        None,
     ) {
         Ok(pty_id) => serde_json::json!({ "ok": true, "pty_id": pty_id }),
         Err(e) => serde_json::json!({ "ok": false, "code": "SPAWN", "error": e }),

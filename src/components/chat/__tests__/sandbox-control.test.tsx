@@ -13,7 +13,7 @@ describe("SandboxControl — toggle variant", () => {
         onChange={vi.fn()}
       />,
     );
-    expect(screen.getByRole("button")).toHaveTextContent("Sandbox: Off");
+    expect(screen.getByRole("button")).toHaveTextContent("Sandbox off");
   });
 
   it("renders a toggle button showing On when value is 'on'", () => {
@@ -24,7 +24,7 @@ describe("SandboxControl — toggle variant", () => {
         onChange={vi.fn()}
       />,
     );
-    expect(screen.getByRole("button")).toHaveTextContent("Sandbox: On");
+    expect(screen.getByRole("button")).toHaveTextContent("Sandbox on");
   });
 
   it("calls onChange with 'on' when toggled from Off", () => {

@@ -301,15 +301,15 @@ export function BranchPickerMenu({
         position: "absolute",
         bottom: "calc(100% + 6px)",
         left: 0,
-        minWidth: 280,
-        maxWidth: 360,
-        maxHeight: 420,
+        minWidth: 220,
+        maxWidth: 340,
+        maxHeight: 380,
         overflow: "hidden",
         background: "var(--popover, #161616)",
         border: "1px solid var(--c-brd, rgba(255,255,255,0.10))",
-        borderRadius: 8,
+        borderRadius: 7,
         boxShadow: "0 -10px 32px rgba(0,0,0,0.45)",
-        padding: 4,
+        padding: 3,
         zIndex: 60,
         display: "flex",
         flexDirection: "column",
@@ -317,12 +317,12 @@ export function BranchPickerMenu({
       }}
     >
       <div style={{
-        padding: "8px 10px 6px",
+        padding: "3px 8px 3px",
         fontSize: 10,
         fontWeight: 600,
-        letterSpacing: "0.08em",
+        letterSpacing: "0.06em",
         textTransform: "uppercase",
-        color: "var(--c-low)",
+        color: "var(--c-dim)",
       }}>
         {title}
       </div>
@@ -362,12 +362,12 @@ export function BranchPickerMenu({
                 alignItems: "center",
                 gap: 8,
                 width: "100%",
-                padding: "8px 10px",
+                padding: "4px 8px",
                 background: isCurrent ? "rgba(255,255,255,0.06)" : "transparent",
                 border: "none",
-                borderRadius: 6,
+                borderRadius: 4,
                 color: "var(--c-fg)",
-                fontSize: 12.5,
+                fontSize: 12,
                 fontFamily: "inherit",
                 textAlign: "left",
                 cursor: isBusy || creating || pinning ? "default" : "pointer",
@@ -384,10 +384,10 @@ export function BranchPickerMenu({
             >
               <span style={{ display: "flex", color: "var(--c-low)", flexShrink: 0 }}>
                 {isBusy
-                  ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} />
+                  ? <Loader2 size={11} style={{ animation: "spin 1s linear infinite" }} />
                   : isBase
-                    ? <GitMerge size={12} />
-                    : <GitBranch size={12} />}
+                    ? <GitMerge size={11} />
+                    : <GitBranch size={11} />}
               </span>
               <span style={{
                 flex: 1,
@@ -429,7 +429,7 @@ export function BranchPickerMenu({
 
       <div style={{
         borderTop: "1px solid rgba(255,255,255,0.06)",
-        padding: 4,
+        padding: 3, marginTop: 2,
       }}>
         {mode === "working" && (
           <button
@@ -444,8 +444,8 @@ export function BranchPickerMenu({
           >
             <span style={{ display: "flex", color: "var(--c-low)" }}>
               {creating
-                ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} />
-                : <Plus size={13} strokeWidth={2.2} />}
+                ? <Loader2 size={11} style={{ animation: "spin 1s linear infinite" }} />
+                : <Plus size={12} strokeWidth={2.2} />}
             </span>
             <span style={{ flex: 1 }}>
               {creating ? "Creating branch…" : "Create new branch"}
@@ -552,12 +552,12 @@ function createButtonStyle(disabled: boolean): React.CSSProperties {
     alignItems: "center",
     gap: 8,
     width: "100%",
-    padding: "8px 10px",
+    padding: "4px 8px",
     background: "transparent",
     border: "none",
-    borderRadius: 6,
-    color: "var(--c-fg)",
-    fontSize: 12.5,
+    borderRadius: 4,
+    color: "var(--c-med)",
+    fontSize: 12,
     fontFamily: "inherit",
     textAlign: "left",
     cursor: disabled ? "default" : "pointer",

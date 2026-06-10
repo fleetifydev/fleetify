@@ -24,31 +24,37 @@ const wrap: React.CSSProperties = {
   display: "inline-flex",
 };
 
+// Same "calm pill" family as the permission picker / sandbox toggle /
+// model chip: ghost background, neutral muted label, tiny state-coloured
+// dot. No neon, no tonal fill — the chip earns attention only on hover
+// or while its popover is open.
 const chip: React.CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
   gap: 6,
-  padding: "2px 8px",
+  padding: "3px 8px",
   borderRadius: 5,
   border: "none",
   cursor: "pointer",
   background: "none",
   fontFamily: "inherit",
-  fontSize: 11.5,
+  fontSize: 12,
+  fontWeight: 500,
   color: "var(--c-low)",
-  transition: "background 120ms ease",
+  transition: "background 120ms ease, color 120ms ease",
   whiteSpace: "nowrap",
   outline: "none",
 };
 
 const dot = (active: boolean): React.CSSProperties => ({
-  width: 7,
-  height: 7,
+  width: 5,
+  height: 5,
   borderRadius: "50%",
-  background: active ? "#22c55e" : "var(--c-brd)",
-  boxShadow: active ? "0 0 6px rgba(34,197,94,0.65)" : "none",
+  // Refined green (same token as the branch strip / Sandbox dot) when
+  // routing is on; quiet --c-low ring otherwise. No glow, no neon.
+  background: active ? "rgb(64,180,120)" : "var(--c-low)",
   flexShrink: 0,
-  transition: "background 150ms ease, box-shadow 150ms ease",
+  transition: "background 150ms ease",
 });
 
 const popoverStyle: React.CSSProperties = {
@@ -105,6 +111,10 @@ export function RoutingChip() {
   const proxy = tiles.find((t) => t.active_for_proxy);
   const sameService = !!decision && !!proxy && decision.id === proxy.id;
   const lit = masterEnabled;
+  // Self-hide when routing is off — Settings → Routers is the surface to
+  // turn it on. Showing an always-dim "Routing" chip just for the disabled
+  // popover added noise the user explicitly asked to remove.
+  if (!lit) return null;
 
   return (
     <div ref={ref} style={wrap}>
@@ -113,13 +123,20 @@ export function RoutingChip() {
         onClick={() => setOpen((v) => !v)}
         style={{
           ...chip,
-          background: open ? "var(--c-srf2)" : "none",
+          background: open ? "rgba(var(--fg-rgb), 0.05)" : "none",
+          color: open ? "var(--c-high)" : "var(--c-low)",
         }}
         onMouseEnter={(e) => {
-          if (!open) e.currentTarget.style.background = "var(--c-srf)";
+          if (!open) {
+            e.currentTarget.style.background = "rgba(var(--fg-rgb), 0.05)";
+            e.currentTarget.style.color = "var(--c-high)";
+          }
         }}
         onMouseLeave={(e) => {
-          if (!open) e.currentTarget.style.background = "none";
+          if (!open) {
+            e.currentTarget.style.background = "none";
+            e.currentTarget.style.color = "var(--c-low)";
+          }
         }}
         onMouseDown={(e) => e.preventDefault()}
         data-testid="routing-chip"
@@ -127,9 +144,7 @@ export function RoutingChip() {
         aria-expanded={open}
       >
         <span style={dot(lit)} aria-hidden />
-        <span style={{ color: lit ? "var(--c-high)" : "var(--c-low)" }}>
-          Routing
-        </span>
+        <span>Routing</span>
       </button>
 
       {open && (

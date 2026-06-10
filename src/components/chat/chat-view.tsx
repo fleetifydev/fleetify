@@ -342,6 +342,9 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   const draftWelcomeFiredRef = useRef<Set<string>>(new Set());
 
   const [scrollSpacer, setScrollSpacer] = useState(0);
+  // Mirror of scrollSpacer for the rAF follow loop (avoids a stale closure).
+  const scrollSpacerRef = useRef(0);
+  useEffect(() => { scrollSpacerRef.current = scrollSpacer; }, [scrollSpacer]);
   const userScrolledUp = useRef(false);
   const scrollToUserMsg = useRef(false);
   const pinnedToExchange = useRef(false);
@@ -557,10 +560,24 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     }
     const tick = () => {
       const el = scrollRef.current;
-      if (el && !userScrolledUp.current && !pinnedToExchange.current) {
-        const target = el.scrollHeight - el.clientHeight;
-        const diff = target - el.scrollTop;
-        if (diff > 0.5) el.scrollTop = diff < 8 ? target : el.scrollTop + diff * 0.16;
+      if (el && !userScrolledUp.current) {
+        // Tail the ACTUAL content bottom (excluding the bottom spacer that
+        // pins the user's question at the top right after sending). Once the
+        // streamed content grows past the fold we ease the viewport down so
+        // the newest output stays visible — the page "follows" the agent.
+        // The initial pin-at-top still holds while content is short (the
+        // overflow check below is false), then hands off to the follow.
+        const contentBottom = el.scrollHeight - scrollSpacerRef.current;
+        const overflowsFold = contentBottom > el.scrollTop + el.clientHeight - 4;
+        if (overflowsFold) {
+          if (pinnedToExchange.current) pinnedToExchange.current = false;
+          const target = Math.min(
+            el.scrollHeight - el.clientHeight,
+            contentBottom - el.clientHeight + 28,
+          );
+          const diff = target - el.scrollTop;
+          if (diff > 0.5) el.scrollTop = diff < 8 ? target : el.scrollTop + diff * 0.16;
+        }
       }
       followRaf.current = requestAnimationFrame(tick);
     };
@@ -2073,6 +2090,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
          * overflows vertically. */}
         <div
           ref={scrollRef}
+          data-chat-scroll="1"
           style={{ flex: 1, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "none" }}
           onContextMenu={(e) => {
             const sel = window.getSelection()?.toString().trim() ?? "";

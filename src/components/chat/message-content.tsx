@@ -14,7 +14,7 @@ import { CitationCard } from "./citation-card";
 import { AuthRequiredCard } from "./auth-required-card";
 import { SpawnFormCard } from "./spawn-form-card";
 import { LogoMark } from "@/components/brand/logo-mark";
-import { ChevronRight, Copy, Check, ArrowRightLeft, CheckCircle2, AlertCircle, Terminal, FileText, Globe, Search, Cpu, CheckSquare, FolderSearch, Pencil, Wrench, Brain, MoveHorizontal, Trash2, FolderOpen, Download, Code2, BarChart2, BookOpen, Image, CornerDownLeft, Send, Bookmark, BookmarkCheck, RotateCcw, X } from "lucide-react";
+import { ChevronRight, Copy, Check, ArrowRightLeft, CheckCircle2, AlertCircle, Terminal, FileText, Globe, Search, Cpu, CheckSquare, FolderSearch, Pencil, Wrench, Brain, MoveHorizontal, Trash2, FolderOpen, Download, Code2, BarChart2, BookOpen, Image, CornerDownLeft, Send, Bookmark, BookmarkCheck, RotateCcw, X, Clock, ArrowUp, Database } from "lucide-react";
 import { createSessionMemory } from "@/lib/api";
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useChatStore, selectSession } from "@/stores/chat-store";
@@ -1570,169 +1570,35 @@ function ToolGroup({ tools, results, forceOpen, dropTools }: {
   );
 }
 
-/* ── Thoughts chip ──
- * Consolidates ALL reasoning bursts from one assistant message into a
- * single footer-level chip. Codex emits a fresh reasoning burst before
- * every tool batch, so the old per-burst inline rendering stacked 5+
- * `▸ Thought` chips between tools and dominated the chat. We now keep
- * the chat flow as text + tools only; thinking lives next to the stats
- * row as one compact affordance.
- *
- *   live  → `● thinking 8s`        (pulsing dot, live timer)
- *   done  → `▸ Thought 47s`        (one burst)
- *   done  → `▸ Thought 47s · 3`    (multiple bursts; trailing count)
- *
- * Expanding renders each burst in chronological order as italic prose
- * inside a subtle left-rule, separated by a thin divider so the
- * reasoning-tool interleaving is still recoverable on demand.
- */
-function ThoughtsChip({ bursts, liveText, isLive = false, forceOpen }: {
-  bursts: Array<{ text: string; durationMs?: number }>;
-  liveText?: string;
-  isLive?: boolean;
-  forceOpen?: boolean;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const startRef = useRef<number | null>(null);
-  const [liveElapsed, setLiveElapsed] = useState(0);
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  const liveOn = !!(isLive && liveText && liveText.trim());
-
-  useEffect(() => {
-    if (!liveOn) {
-      startRef.current = null;
-      setLiveElapsed(0);
-      return;
-    }
-    if (startRef.current === null) startRef.current = Date.now();
-    const iv = setInterval(() => {
-      if (startRef.current !== null) setLiveElapsed(Date.now() - startRef.current);
-    }, 300);
-    return () => clearInterval(iv);
-  }, [liveOn]);
-
-  useEffect(() => {
-    if (liveOn && expanded && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [liveText, liveOn, expanded]);
-
-  if (bursts.length === 0 && !liveOn) return null;
-
-  const open = expanded || forceOpen === true;
-  const totalBurstMs = bursts.reduce((a, b) => a + (b.durationMs ?? 0), 0);
-  const totalMs = totalBurstMs + (liveOn ? liveElapsed : 0);
-  const burstCount = bursts.length + (liveOn ? 1 : 0);
-  const timeLabel = totalMs > 0 ? fmtDuration(totalMs) : null;
-
-  return (
-    <div style={{ margin: "6px 0" }}>
-      <button
-        type="button"
-        onClick={() => setExpanded(v => !v)}
-        style={{
-          display: "inline-flex", alignItems: "center", gap: 5,
-          padding: "2px 0", background: "none", border: "none",
-          cursor: "pointer", fontSize: 11.5, color: "var(--c-ghost)",
-          fontFamily: "var(--font-sans)", letterSpacing: "-0.01em",
-          userSelect: "none",
-        }}
-      >
-        {/* While live: the glowing Fleetify mark. Collapsed/done: the expand
-            triangle (the affordance). */}
-        {liveOn ? (
-          <LogoMark size={12} glow style={{ flexShrink: 0, color: "var(--c-high)" }} />
-        ) : (
-          <span style={{
-            display: "inline-block", flexShrink: 0, fontSize: 8,
-            transform: open ? "rotate(90deg)" : "rotate(0deg)",
-            transition: "transform 0.15s ease",
-            color: "var(--c-ghost)",
-          }}>▶</span>
-        )}
-        <span style={{ display: "inline-flex", alignItems: "baseline", gap: 0 }}>
-          {liveOn ? (
-            <span className="thinking-shimmer-text" style={{ fontWeight: 500 }}>
-              thinking
-            </span>
-          ) : (
-            "Thought"
-          )}
-          {liveOn ? (
-            // Live: small, coarse 5s-stepped elapsed — not a constant tick.
-            liveElapsed >= 5000 ? (
-              <span style={{
-                color: "var(--c-ghost)", opacity: 0.5,
-                fontSize: 9.5, fontFamily: "var(--font-mono)", marginLeft: 6,
-              }}>
-                {fmtDuration(Math.floor(liveElapsed / 5000) * 5000)}
-              </span>
-            ) : null
-          ) : (
-            <>
-              {timeLabel ? <span style={{ color: "var(--c-ghost)", opacity: 0.6 }}> · {timeLabel}</span> : null}
-              {burstCount > 1 ? <span style={{ color: "var(--c-ghost)", opacity: 0.6 }}> · {burstCount}</span> : null}
-            </>
-          )}
-        </span>
-      </button>
-
-      <div style={{
-        display: "grid",
-        gridTemplateRows: open ? "1fr" : "0fr",
-        transition: "grid-template-rows 0.2s ease",
-      }}>
-        <div style={{ overflow: "hidden" }}>
-          <div
-            ref={scrollRef}
-            style={{
-              marginTop: 6,
-              paddingLeft: 12,
-              borderLeft: "2px solid var(--c-brd)",
-              maxHeight: liveOn ? 220 : undefined,
-              overflowY: liveOn ? "auto" : undefined,
-            }}
-          >
-            {bursts.map((b, i) => (
-              <p key={i} style={{
-                fontSize: 12.5, color: "var(--c-dim)",
-                lineHeight: 1.65, margin: i === 0 ? 0 : "8px 0 0",
-                whiteSpace: "pre-wrap", fontStyle: "italic",
-              }}>
-                {b.text}
-              </p>
-            ))}
-            {liveOn && (
-              <p style={{
-                fontSize: 12.5, color: "var(--c-dim)",
-                lineHeight: 1.65,
-                margin: bursts.length === 0 ? 0 : "8px 0 0",
-                whiteSpace: "pre-wrap", fontStyle: "italic",
-              }}>
-                {liveText}
-                <span style={{
-                  display: "inline-block", width: 1.5, height: 11,
-                  background: "var(--c-dim)", marginLeft: 2,
-                  verticalAlign: "text-bottom",
-                  animation: "thinking-cursor 0.9s ease-in-out infinite",
-                }}/>
-              </p>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-
 /* ── Message stats + copy row ── */
-function MessageStatsRow({ message, hovered, toolOnly = false }: { message: ChatMessage; hovered: boolean; toolOnly?: boolean }) {
+function MessageStatsRow({ message, hovered, toolOnly = false, thinkingBursts = [], forceThoughtsOpen = false }: { message: ChatMessage; hovered: boolean; toolOnly?: boolean; thinkingBursts?: Array<{ text: string; durationMs?: number }>; forceThoughtsOpen?: boolean }) {
   const { usage, cost_usd, duration_ms } = message;
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
+  // The Fleetify mark doubles as the thoughts toggle: click it to reveal the
+  // model's reasoning bursts inline below the stats row. Recedes to a static
+  // signature when the message has no thinking.
+  const [thoughtsOpen, setThoughtsOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // Toggle the reasoning panel WITHOUT moving the viewport. Expanding/
+  // collapsing changes the message height, and Lenis (smooth scroll) +
+  // browser scroll-anchoring otherwise drift the page. We pin the chat
+  // scroll container's scrollTop for a few frames across the open/close so
+  // the clicked row stays exactly where it is.
+  const toggleThoughts = useCallback(() => {
+    const sc = rootRef.current?.closest("[data-chat-scroll]") as HTMLElement | null;
+    if (!sc) { setThoughtsOpen(v => !v); return; }
+    const pinned = sc.scrollTop;
+    const startedAt = Date.now();
+    const hold = () => {
+      sc.scrollTop = pinned;
+      if (Date.now() - startedAt < 360) requestAnimationFrame(hold);
+    };
+    setThoughtsOpen(v => !v);
+    requestAnimationFrame(hold);
+  }, []);
   // Per-field selectors so the stats row doesn't re-render on every
   // notification / draft / pane-focus change. With one stats row per
   // assistant message and dozens of messages on screen, this was
@@ -1788,45 +1654,87 @@ function MessageStatsRow({ message, hovered, toolOnly = false }: { message: Chat
   const cacheTok  = usage?.cache_read_tokens ?? 0;
 
   // Cost is intentionally NOT surfaced in the per-message footer.
-  // The user asked for a calmer summary that doesn't put dollar signs
-  // under every reply — accumulated spend still rolls up in the
-  // session-level budget pill. We keep cost_usd on the model (the
-  // budget meter / billing surface needs it) but suppress it here.
   void cost_usd;
 
-  const timePart = duration_ms != null && duration_ms > 0 ? fmtDuration(duration_ms) : null;
-  const tokenPart = outputTok > 0 ? `${fmtTokens(outputTok)} tokens` : null;
-  const cachePart = cacheTok > 0 ? `${fmtTokens(cacheTok)} cached` : null;
+  const hasThoughts = thinkingBursts.length > 0;
+  const thoughtMs = thinkingBursts.reduce((a, b) => a + (b.durationMs ?? 0), 0);
+  const open = thoughtsOpen || forceThoughtsOpen;
 
-  const hasMeta = timePart || tokenPart || cachePart;
-  // Always reserve space — the row used to return null when nothing
-  // visible and hovered=false, which caused the entire message below
-  // to jump up by ~22px the moment the cursor entered. We keep the
-  // box around always; fade buttons in via opacity only.
-  const showRow = hasMeta || !toolOnly; // hovered surfacing only adds icons
+  // Structured meta segments rendered as discrete tokens (icon-led) rather
+  // than one mono string — easier to scan: ⏱ time · ↑ tokens · ⛁ cached.
+  const segs: Array<{ icon: React.ReactNode; text: string }> = [];
+  if (duration_ms != null && duration_ms > 0) {
+    segs.push({ icon: <Clock size={10} strokeWidth={1.9} />, text: fmtDuration(duration_ms) });
+  }
+  if (outputTok > 0) {
+    segs.push({ icon: <ArrowUp size={10} strokeWidth={2} />, text: `${fmtTokens(outputTok)} tok` });
+  }
+  if (cacheTok > 0) {
+    segs.push({ icon: <Database size={10} strokeWidth={1.8} />, text: `${fmtTokens(cacheTok)} cached` });
+  }
+
+  const hasMeta = segs.length > 0;
+  const showRow = hasMeta || hasThoughts || !toolOnly;
   if (!showRow) return null;
 
   return (
+    <div ref={rootRef} style={{ marginTop: 6 }}>
     <div style={{
-      display: "flex", alignItems: "center", gap: 8,
-      marginTop: 6, minHeight: 22,
-      opacity: (hasMeta || hovered) ? (hovered ? 1 : 0.45) : 0,
+      display: "flex", alignItems: "center", gap: 9,
+      minHeight: 22,
+      opacity: (hasMeta || hasThoughts || hovered) ? (hovered ? 1 : 0.5) : 0,
       transition: "opacity 0.2s",
     }}>
-      {/* Fleetify mark — a subtle, static brand signature at the foot of
-          every finished assistant message (sits just before the meta line). */}
-      <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-        {hasMeta && (
-          <LogoMark
-            size={11}
-            ariaLabel="Fleetify"
-            style={{ color: "var(--c-dim)", opacity: 0.6, flexShrink: 0 }}
-          />
-        )}
-        <span style={{ fontSize: 11.5, color: "var(--c-dim)", fontFamily: "var(--font-mono)", letterSpacing: "-0.01em" }}>
-          {[timePart, tokenPart, cachePart].filter(Boolean).join("  ·  ")}
-        </span>
-      </div>
+      {/* Fleetify mark — ALWAYS present at the foot of an assistant message.
+          When the message has reasoning, it's a button: click to reveal the
+          thoughts inline below. A subtle "Thought {time}" label sits beside
+          it so the affordance is discoverable; otherwise it's a quiet static
+          signature. */}
+      {hasThoughts ? (
+        <button
+          type="button"
+          onClick={toggleThoughts}
+          title={open ? "Hide reasoning" : "Show reasoning"}
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 6,
+            padding: "2px 6px 2px 2px", marginLeft: -2,
+            background: open ? "rgba(var(--fg-rgb),0.06)" : "none",
+            border: "none", outline: "none", cursor: "pointer", borderRadius: 5,
+            color: open ? "var(--c-med)" : "var(--c-dim)",
+            transition: "background 0.12s, color 0.12s",
+            flexShrink: 0,
+          }}
+          onMouseEnter={e => { e.currentTarget.style.background = "rgba(var(--fg-rgb),0.06)"; e.currentTarget.style.color = "var(--c-med)"; }}
+          onMouseLeave={e => { if (!open) { e.currentTarget.style.background = "none"; e.currentTarget.style.color = "var(--c-dim)"; } }}
+        >
+          <LogoMark size={12} glow={open} style={{ flexShrink: 0, color: open ? "var(--c-high)" : "var(--c-med)" }} />
+          <span style={{ fontSize: 11, fontFamily: "var(--font-sans)", fontWeight: 500 }}>
+            Thought{thoughtMs > 0 ? ` ${fmtDuration(thoughtMs)}` : ""}
+          </span>
+          <ChevronRight size={10} strokeWidth={2} style={{
+            color: "var(--c-ghost)", flexShrink: 0,
+            transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s",
+          }} />
+        </button>
+      ) : hasMeta ? (
+        <LogoMark size={11} ariaLabel="Fleetify" style={{ color: "var(--c-dim)", opacity: 0.6, flexShrink: 0 }} />
+      ) : null}
+
+      {/* Meta segments — icon-led, evenly spaced. */}
+      {hasMeta && (
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+          {segs.map((s, i) => (
+            <span key={i} style={{
+              display: "inline-flex", alignItems: "center", gap: 4,
+              fontSize: 11, color: "var(--c-dim)",
+              fontFamily: "var(--font-mono)", letterSpacing: "-0.01em",
+            }}>
+              <span style={{ display: "inline-flex", opacity: 0.7 }}>{s.icon}</span>
+              {s.text}
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* Action cluster — Save to memory + Copy. Both fade in on hover so
           they don't compete with the cost/token meta line at rest. */}
@@ -1874,6 +1782,36 @@ function MessageStatsRow({ message, hovered, toolOnly = false }: { message: Chat
           {copied ? <Check size={12} strokeWidth={2} /> : <Copy size={12} strokeWidth={1.75} />}
         </button>
       </div>
+    </div>
+
+      {/* Reasoning panel — revealed when the Fleetify mark is clicked. Each
+          burst is rendered as a quiet italic block with a left rail, the
+          same treatment the old inline ThoughtsChip used. */}
+      {hasThoughts && (
+        <div style={{
+          display: "grid",
+          gridTemplateRows: open ? "1fr" : "0fr",
+          transition: "grid-template-rows 0.2s ease",
+        }}>
+          <div style={{ overflow: "hidden" }}>
+            <div style={{
+              marginTop: 7, marginLeft: 2,
+              paddingLeft: 11,
+              borderLeft: "2px solid var(--c-brd)",
+            }}>
+              {thinkingBursts.map((b, i) => (
+                <p key={i} style={{
+                  fontSize: 12.5, color: "var(--c-dim)",
+                  lineHeight: 1.65, margin: i === 0 ? 0 : "8px 0 0",
+                  whiteSpace: "pre-wrap", fontStyle: "italic",
+                }}>
+                  {b.text}
+                </p>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2171,6 +2109,51 @@ function AssistantMessage({ message }: { message: ChatMessage }) {
     }
   }
 
+  // ── Surface sub-agent dispatches in the Tasks panel ──
+  // Agents spawned via the native `Task` tool OR a custom orchestration MCP
+  // (tool named "Agent", result carrying `agentId:` + a `<usage>` block) don't
+  // flow through Fleet's own dispatch_ack pipeline, so the right-side Tasks
+  // pane stayed empty. Here we parse each such tool_use + its result straight
+  // from the committed message and register a completed sub-agent task (id =
+  // agentId or tool_use id), with tokens / tool_uses / duration pulled from
+  // the `<usage>` block. startSubagent is idempotent, so re-renders are safe.
+  const sessId = useAppStore.getState().activeSessionId || useAppStore.getState().staffSessionId;
+  useEffect(() => {
+    if (!sessId) return;
+    const store = useChatStore.getState();
+    for (const b of content) {
+      if (b.type !== "tool_use") continue;
+      const tb = b as { tool_id?: string; tool_name?: string; name?: string; input?: Record<string, unknown> };
+      const tn = (tb.tool_name || tb.name || "").toLowerCase();
+      if (tn !== "agent" && tn !== "task") continue;
+      const res = tb.tool_id ? toolResultById[tb.tool_id] : undefined;
+      const out = res?.output ?? "";
+      // agentId from the result is the most stable id; fall back to tool id.
+      const agentId = /agentId:\s*([A-Za-z0-9]+)/.exec(out)?.[1] || tb.tool_id || "";
+      if (!agentId) continue;
+      const desc = String(tb.input?.description ?? tb.input?.prompt ?? "Agent").trim().split("\n")[0] || "Agent";
+      const tType = String(tb.input?.subagent_type ?? tb.input?.agent_type ?? "Agent");
+      store.startSubagent(sessId, {
+        id: agentId,
+        toolUseId: tb.tool_id ?? null,
+        description: desc.length > 80 ? desc.slice(0, 80) + "…" : desc,
+        taskType: tType,
+      });
+      // If the result is present the run already finished — finalize with
+      // the parsed usage so the card shows tokens / tool uses / duration.
+      if (out) {
+        const tok = Number(/total_tokens:\s*(\d+)/.exec(out)?.[1] ?? 0);
+        const uses = Number(/tool_uses:\s*(\d+)/.exec(out)?.[1] ?? 0);
+        const dur = Number(/duration_ms:\s*(\d+)/.exec(out)?.[1] ?? 0);
+        const summary = out.replace(/<usage>[\s\S]*?<\/usage>/g, "").replace(/agentId:[\s\S]*/g, "").trim();
+        store.endSubagent(sessId, agentId, res?.is_error ? "failed" : "completed", summary || null, {
+          totalTokens: tok, toolUses: uses, durationMs: dur,
+        });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [message.id, content.length, sessId]);
+
   return (
     <div
       className="msg-in"
@@ -2254,7 +2237,7 @@ function AssistantMessage({ message }: { message: ChatMessage }) {
               // the Agent pane on this sub-agent. Matches Claude Code
               // Desktop's chat where the sub-agent dispatch is a slim
               // standalone line linking out to its detail view.
-              if (tn === "Task" || tn === "task") {
+              if (tn === "Task" || tn === "task" || tn === "Agent" || tn === "agent") {
                 flushTools(`pre-subagent-${i}`);
                 const desc = String(
                   (tb.input?.description ?? tb.input?.prompt ?? "Agent")
@@ -2299,18 +2282,22 @@ function AssistantMessage({ message }: { message: ChatMessage }) {
           flushTools("tail");
           return out;
         })()}
-        {!dropThinking && (() => {
-          const bursts = content
+        {(() => {
+          const bursts = dropThinking ? [] : content
             .filter((b): b is { type: "thinking"; text: string; duration_ms?: number } => b.type === "thinking")
             .map(b => ({ text: b.text, durationMs: b.duration_ms }));
-          if (bursts.length === 0) return null;
+          // Thinking now lives ON the Fleetify mark in the stats row — click
+          // the logo to reveal the reasoning. No separate inline chip.
           return (
-            <div style={{ marginTop: 8 }}>
-              <ThoughtsChip bursts={bursts} forceOpen={forceThinkingOpen} />
-            </div>
+            <MessageStatsRow
+              message={message}
+              hovered={hovered}
+              toolOnly={!hasText}
+              thinkingBursts={bursts}
+              forceThoughtsOpen={forceThinkingOpen}
+            />
           );
         })()}
-        <MessageStatsRow message={message} hovered={hovered} toolOnly={!hasText} />
       </div>
     </div>
   );
@@ -3304,15 +3291,26 @@ function liveVerb(name: string, input: Record<string, unknown> | undefined): str
   if (n === "read" || n === "notebookread") return fp ? `reading ${fp}` : "reading";
   if (n === "edit" || n === "multiedit" || n === "notebookedit")
     return fp ? `editing ${fp}` : "editing";
-  if (n === "write") return fp ? `writing ${fp}` : "writing";
-  if (n === "bash" || n === "powershell") return "running command";
-  if (n === "grep") return "searching";
+  if (n === "write") return fp ? `creating ${fp}` : "creating a file";
+  if (n === "bash" || n === "powershell" || n === "shell") return "running a command";
+  if (n === "grep") return "searching the code";
   if (n === "glob") return "finding files";
-  if (n === "webfetch" || n === "websearch") return "browsing the web";
-  if (n === "task" || n === "agent") return "delegating";
+  if (n === "ls" || n === "listdir") return "listing files";
+  if (n === "webfetch") return "reading a page";
+  if (n === "websearch") return "searching the web";
+  if (n === "task" || n === "agent" || n === "dispatch_to_agent") return "delegating to an agent";
+  if (n === "todowrite" || n === "todoread") return "planning";
+  if (n === "exitplanmode") return "finishing the plan";
+  if (n.includes("remember") || n.includes("memory")) return "saving to memory";
+  if (n.includes("recall")) return "recalling memory";
+  if (n.includes("review")) return "reviewing changes";
+  if (n.includes("commit")) return "committing";
+  if (n.includes("test")) return "running tests";
+  if (n.includes("build") || n.includes("compile")) return "building";
+  if (n.includes("install")) return "installing packages";
   if (n.startsWith("mcp__")) {
     const tail = name.split("__").pop() || "";
-    return tail ? `using ${tail}` : "using a tool";
+    return tail ? `using ${tail.replace(/_/g, " ")}` : "using a tool";
   }
   return name ? `running ${name}` : "working";
 }
@@ -3352,7 +3350,6 @@ export function StreamingMessage({ text, thinking }: { text: string; thinking: s
   // moving (the live stream). Summary → drop thinking & tools;
   // thinking/verbose → force-expand the relevant rows.
   const transcriptView = useAppStore(s => s.transcriptView);
-  const forceThinkingOpen = transcriptView === "thinking" || transcriptView === "verbose";
   const forceToolOpen     = transcriptView === "verbose";
   const dropThinking      = transcriptView === "summary";
   const dropTools         = transcriptView === "summary";
@@ -3376,7 +3373,6 @@ export function StreamingMessage({ text, thinking }: { text: string; thinking: s
     ? []
     : toolCallList.filter(([id]) => !completedToolIds.has(id));
   const hasContent = contentSoFar.length > 0;
-  const isIdle = !text && !thinking && !hasContent && visibleTools.length === 0;
   const showLiveThinking = !dropThinking && !!thinking;
 
   // Live activity line — the single morphing status word at the foot of the
@@ -3387,12 +3383,17 @@ export function StreamingMessage({ text, thinking }: { text: string; thinking: s
   const activeTool = lastVisible
     ? (lastVisible[1] as { name: string; input: Record<string, unknown> })
     : null;
-  const liveLabel = activeTool ? liveVerb(activeTool.name, activeTool.input) : "thinking";
+  const liveLabel = activeTool
+    ? liveVerb(activeTool.name, activeTool.input)
+    : showLiveThinking ? "thinking"
+    : (text || hasContent) ? "responding" : "thinking";
   const liveFilePath = activeTool ? toolFilePath(activeTool.name, activeTool.input) : null;
-  const showLive = isStreaming && (isIdle || !!activeTool);
 
   // Unified elapsed timer — used by both ThinkingIndicator and StreamingStats
   const [elapsed, setElapsed] = useState(0);
+  // Live reasoning is collapsed by default — the user clicks the Fleetify
+  // mark to reveal it (no auto-expand). Same as the finished-message thoughts.
+  const [liveThoughtsOpen, setLiveThoughtsOpen] = useState(false);
   useEffect(() => {
     if (!isStreaming || !streamStartTime) { setElapsed(0); return; }
     const iv = setInterval(() => setElapsed(Date.now() - streamStartTime), 300);
@@ -3447,72 +3448,98 @@ export function StreamingMessage({ text, thinking }: { text: string; thinking: s
         {visibleTools.map(([id, tc]) => (
           <ToolCallRow key={id} toolName={tc.name} input={tc.input} forceOpen={forceToolOpen} />
         ))}
-        {/* Consolidated thinking chip — picks up every committed
-            reasoning burst from contentSoFar plus the still-streaming
-            buffer. Renders below the active tools so the chat flow
-            stays text+tools and the thinking lives as one footer-level
-            affordance. */}
-        {!dropThinking && (() => {
-          const bursts = contentSoFar
-            .filter((b): b is { type: "thinking"; text: string; duration_ms?: number } => b.type === "thinking")
-            .map(b => ({ text: b.text, durationMs: b.duration_ms }));
-          if (bursts.length === 0 && !showLiveThinking) return null;
+        {/* Unified live indicator — ONE persistent glowing Fleetify mark
+            that stays mounted across every working state (thinking →
+            responding → editing X). Only the LABEL swaps, with a soft
+            fade-slide crossfade (key forces the remount that triggers the
+            animation). Previously two separate elements (a thinking chip
+            and an activity line) each carried their own logo, so the mark
+            "jumped" when the state changed. Now the logo never unmounts —
+            just the text morphs. Below, the live reasoning text scrolls
+            while the model is thinking. */}
+        {isStreaming && (() => {
+          const hasLiveThinking = !dropThinking && showLiveThinking && !!thinking && !!thinking.trim();
+          const reasoningOpen = liveThoughtsOpen && hasLiveThinking;
+          // The mark is clickable when there's either a file to open (tool)
+          // or reasoning to reveal. File wins (open in editor); otherwise it
+          // toggles the live reasoning — collapsed by default, never auto-open.
+          const clickable = !!liveFilePath || hasLiveThinking;
+          const onClick = liveFilePath
+            ? (e: React.MouseEvent) => { e.stopPropagation(); useAppStore.getState().openFile(liveFilePath); }
+            : hasLiveThinking
+              ? () => setLiveThoughtsOpen(v => !v)
+              : undefined;
           return (
-            <div style={{ marginTop: 8 }}>
-              <ThoughtsChip
-                bursts={bursts}
-                liveText={showLiveThinking ? thinking : undefined}
-                isLive={isStreaming}
-                forceOpen={forceThinkingOpen}
-              />
-            </div>
-          );
-        })()}
-        {/* Text is intentionally NOT re-rendered here from
-            streamingText — appendStreamAndContent keeps contentSoFar's
-            text blocks in sync with every delta, so the chronological
-            map above already shows the live prose in its correct slot.
-            Rendering `cleaned` here would double-print the full text
-            concatenation under the per-segment blocks. */}
-
-        {/* Live activity line — one morphing, shimmering status word at the
-            foot of the stream. "thinking" while idle; the action verb
-            ("editing products.py", "reading config", "running command")
-            while a tool runs. No leading dot. The elapsed time is small and
-            only surfaces at coarse 5s steps (not a constant tick). */}
-        {showLive && (
-          <div style={{
-            margin: "6px 0",
-            display: "inline-flex", alignItems: "center", gap: 7,
-            animation: "fade-in 0.2s ease both",
-          }}>
-            <LogoMark size={13} glow style={{ flexShrink: 0, color: "var(--c-high)" }} />
-            <span
-              className="thinking-shimmer-text"
-              onClick={liveFilePath ? (e) => { e.stopPropagation(); useAppStore.getState().openFile(liveFilePath); } : undefined}
-              title={liveFilePath ? `Open ${liveFilePath} in the editor` : undefined}
+          <div className="fade-in" style={{ margin: "8px 0", maxWidth: 640 }}>
+            <button
+              type="button"
+              onClick={onClick}
+              onMouseDown={e => e.preventDefault()}
+              disabled={!clickable}
+              title={liveFilePath ? `Open ${liveFilePath} in the editor` : hasLiveThinking ? (reasoningOpen ? "Hide reasoning" : "Show reasoning") : undefined}
               style={{
-                fontSize: 12, fontWeight: 500,
-                fontFamily: "var(--font-sans)", letterSpacing: "-0.01em",
-                maxWidth: 460, overflow: "hidden",
-                textOverflow: "ellipsis", whiteSpace: "nowrap",
-                cursor: liveFilePath ? "pointer" : "default",
+                display: "inline-flex", alignItems: "center", gap: 7,
+                background: "none", border: "none", outline: "none", padding: 0,
+                cursor: clickable ? "pointer" : "default",
+                fontFamily: "inherit", textAlign: "left",
               }}
-              onMouseEnter={liveFilePath ? (e) => { (e.currentTarget as HTMLElement).style.textDecoration = "underline"; } : undefined}
-              onMouseLeave={liveFilePath ? (e) => { (e.currentTarget as HTMLElement).style.textDecoration = "none"; } : undefined}
             >
-              {liveLabel}
-            </span>
-            {elapsed >= 5000 && (
-              <span style={{
-                fontSize: 9.5, color: "var(--c-ghost)", opacity: 0.5,
-                fontFamily: "var(--font-mono)", letterSpacing: 0,
-              }}>
-                {fmtDuration(Math.floor(elapsed / 5000) * 5000)}
+              {/* PERSISTENT — same node for the whole stream, no key. */}
+              <LogoMark size={13} glow style={{ flexShrink: 0, color: "var(--c-high)" }} />
+              <span
+                key={liveLabel}
+                className="thinking-shimmer-text live-label-swap"
+                style={{
+                  fontSize: 12, fontWeight: 500,
+                  fontFamily: "var(--font-sans)", letterSpacing: "-0.01em",
+                  maxWidth: 460, overflow: "hidden",
+                  textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  textDecoration: liveFilePath ? undefined : "none",
+                }}
+              >
+                {liveLabel}
               </span>
+              {hasLiveThinking && (
+                <ChevronRight size={11} strokeWidth={2} style={{
+                  color: "var(--c-ghost)", flexShrink: 0,
+                  transform: reasoningOpen ? "rotate(90deg)" : "none",
+                  transition: "transform 0.15s",
+                }} />
+              )}
+              {elapsed >= 5000 && (
+                <span style={{
+                  fontSize: 9.5, color: "var(--c-ghost)", opacity: 0.5,
+                  fontFamily: "var(--font-mono)", letterSpacing: 0,
+                }}>
+                  {fmtDuration(Math.floor(elapsed / 5000) * 5000)}
+                </span>
+              )}
+            </button>
+
+            {/* Live reasoning text — collapsed by default, eased open when the
+                user clicks the mark. */}
+            {hasLiveThinking && (
+              <div style={{
+                display: "grid",
+                gridTemplateRows: reasoningOpen ? "1fr" : "0fr",
+                transition: "grid-template-rows 0.25s ease",
+              }}>
+                <div style={{ overflow: "hidden" }}>
+                  <p style={{
+                    marginTop: 7, marginLeft: 2, paddingLeft: 11,
+                    borderLeft: "2px solid var(--c-brd)",
+                    fontSize: 12.5, color: "var(--c-dim)", lineHeight: 1.65,
+                    whiteSpace: "pre-wrap", fontStyle: "italic",
+                    maxHeight: 200, overflowY: "auto",
+                  }}>
+                    {thinking}
+                  </p>
+                </div>
+              </div>
             )}
           </div>
-        )}
+          );
+        })()}
         {/* The standalone elapsed/token stats row was removed: it rendered
             a SECOND timer ("3s") right under the ThoughtsChip's own
             "thinking · 0s", so two separate time readouts stacked during a

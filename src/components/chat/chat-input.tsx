@@ -4,16 +4,15 @@ import {
   GitBranch, GitPullRequest, ArrowLeft,
   FolderOpen, Mic, X, FileText,
   Plus, Loader2, Copy,
-  CornerDownLeft,
   GitMerge,
   CircleSlash,
   ExternalLink,
   AlignLeft,
-  Sparkles, Undo2, Wand2,
-  ScanEye, Plug, RefreshCw, FolderTree,
+  Sparkles, Undo2, Wand2, MoreHorizontal,
+  Plug, RefreshCw, ArrowUp,
 } from "lucide-react";
 import { truncateMid, folderName } from "@/lib/utils";
-import { searchProjectFiles, apiFetch, type FileSearchEntry, updateSession as apiUpdateSession, fetchSessionDetail, enhancePrompt, fetchAgentModels, fetchProviderModels } from "@/lib/api";
+import { searchProjectFiles, apiFetch, type FileSearchEntry, updateSession as apiUpdateSession, enhancePrompt, fetchAgentModels, fetchProviderModels } from "@/lib/api";
 import { registerConfigPatch } from "@/lib/session-config-sync";
 import { useFleetStore, type FleetMode } from "@/stores/fleet-store";
 import { LogoMark } from "@/components/brand/logo-mark";
@@ -150,358 +149,6 @@ const EFFORT_SHORT: Record<Effort, string> = {
 
 /* ─────────────────── tiny components ─────────────────── */
 
-/** Circular context-window usage indicator.
- *
- * Always renders. Color crosses three thresholds:
- *   pct ≥ 0.85  → red     (almost full, urgent)
- *   pct ≥ 0.65  → orange  (filling fast, watch)
- *   pct  < 0.65 → blue    (plenty of room, nominal)
- *
- * The low-usage state is BLUE (#3b82f6) instead of grey so the empty
- * ring is clearly a context indicator, not a faded spinner. Empty
- * track sits at rgba(fg, 0.14) — visible enough to communicate the
- * full circumference even when nothing's filled yet. */
-function ContextArc({ pct, size = 13 }: { pct: number; size?: number }) {
-  // Stroke scales with size so a small ring still reads as a
-  // status indicator (not a hairline). Track alpha 0.22 makes
-  // the empty ring legible against dark surfaces — at 0.18 it
-  // was almost invisible, so the fill arc looked like it was
-  // floating on nothing. Fill arc clamps to a 4% minimum so
-  // even a fresh-session 0.5% shows a real sliver.
-  const stroke = Math.max(2, size * 0.18);
-  const r = (size - stroke) / 2;
-  const circ = 2 * Math.PI * r;
-  const safe = Math.max(0, Math.min(pct, 1));
-  const visible = safe > 0 ? Math.max(safe, 0.04) : 0;
-  const offset = circ * (1 - visible);
-  // Match the popover bar: vibrant blue at low fills so the arc
-  // POPS rather than reads as a thin hairline of white.
-  const fillColor = safe > 0.85 ? "#f87171"
-                 : safe > 0.65 ? "#fb923c"
-                 : "#60a5fa";
-  const pctLabel = Math.round(safe * 100);
-  return (
-    <svg
-      width={size} height={size}
-      style={{ transform: "rotate(-90deg)", flexShrink: 0 }}
-      aria-label={`Context ${pctLabel}%`}
-    >
-      <title>{`Context ${pctLabel}% used`}</title>
-      <circle cx={size / 2} cy={size / 2} r={r}
-        stroke="rgba(var(--fg-rgb),0.22)" strokeWidth={stroke} fill="none" />
-      {safe > 0 && (
-        <circle cx={size / 2} cy={size / 2} r={r}
-          stroke={fillColor} strokeWidth={stroke} fill="none"
-          strokeDasharray={circ} strokeDashoffset={offset}
-          strokeLinecap="round"
-          style={{ transition: "stroke-dashoffset 0.5s, stroke 0.3s" }}
-        />
-      )}
-    </svg>
-  );
-}
-
-/** Format a token count compactly: 262_900 → "262.9k", 1_000_000 → "1.0M" */
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}k`;
-  return String(n);
-}
-
-/** Format a duration in seconds into a compact "1h 23m" / "2m 14s" string. */
-function fmtDuration(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return "—";
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  if (h > 0) return `${h}h ${m}m`;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
-}
-
-/** ContextArcPopover — wraps ContextArc with a click-to-expand
- *  popover that shows BOTH the current context-window fill AND
- *  the cumulative session usage. The closed state is just the
- *  small ring next to the model button.
- *
- *  Layout (matches the user's reference but adapted to what we
- *  actually track):
- *
- *    Context window       262.9k / 1.0M  (26%)
- *    [████████░░░░░░░░░░░░░░░░░░░░░░]
- *
- *    Session usage              ─────────────
- *    Input  12.4k    [████████░░░░░░░░░░]
- *    Output  3.2k    [██░░░░░░░░░░░░░░░░]
- *    Cache   8.1k    [████░░░░░░░░░░░░░░]
- *
- *    ─────────────────────────────────────
- *    Turns   5            Cost   $0.03
- *    Active  2m 14s
- */
-function ContextArcPopover({
-  sessionId, max, fallbackPct, fallbackUsed, fallbackUsage,
-}: {
-  sessionId?: string | null;
-  /** Model's max context window. Caller derives this from the
-   *  session.model_name (200K vs 1M for wide-context variants). */
-  max?: number;
-  /** Live fallbacks for the closed-state arc — when the popover
-   *  hasn't fetched yet OR the user is mid-stream and we want
-   *  the ring to reflect in-flight tokens. Computed from the
-   *  in-store messages array by chat-view. */
-  fallbackPct: number;
-  fallbackUsed?: number;
-  fallbackUsage?: ChatInputProps["sessionUsage"];
-}) {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
-
-  // Backend-aggregated session detail. Fetched on first open, then
-  // re-polled every 8s while the popover stays open. The
-  // messages-array fallback (computed by chat-view) keeps rendering
-  // until the API resolves AND covers the case where backend is
-  // unreachable.
-  const [detail, setDetail] = useState<{
-    input: number; output: number; cache_read: number; cache_write: number;
-    last_input: number; last_cache_read: number;
-    cost: number; turns: number; createdAt?: string;
-  } | null>(null);
-
-  // Re-render every 30s while open so the "Active 2m 14s" duration
-  // ticks up live instead of freezing at the open-time snapshot.
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    if (!open) return;
-    const iv = setInterval(() => setTick(n => n + 1), 30_000);
-    return () => clearInterval(iv);
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  // Backend fetch — runs CONTINUOUSLY in the background (not just
-  // when the popover is open) so the closed-state ring fills as
-  // the conversation progresses. Re-polls every 8s; the backend's
-  // /sessions/:id/detail endpoint reads usage_json off every
-  // persisted message so this is authoritative even after a page
-  // reload (where the in-store messages array might have dropped
-  // its usage attachments). When the popover IS open we tighten
-  // the cadence to 3s so the user sees fresh numbers while
-  // they're looking at them.
-  useEffect(() => {
-    if (!sessionId) return;
-    // Local-only (compose-phase) sessions live in the renderer only —
-    // the backend has no row for them yet, so /detail would 404 on
-    // every poll until commitDraft swaps in the real backend row.
-    // The fallback usage numbers below cover the compose window.
-    const session = useAppStore.getState().sessions.find(s => s.id === sessionId);
-    if (session?.local_only) return;
-    let cancelled = false;
-    const load = () => {
-      fetchSessionDetail(sessionId).then(d => {
-        if (cancelled) return;
-        setDetail({
-          input: d.tokens.input,
-          output: d.tokens.output,
-          cache_read: d.tokens.cache_read,
-          cache_write: d.tokens.cache_write,
-          last_input: d.tokens.last_input,
-          last_cache_read: d.tokens.last_cache_read,
-          cost: d.total_cost_usd ?? 0,
-          // Prefer assistant_turns (counts only assistant replies);
-          // fall back to message_count for older backends that
-          // haven't been updated yet.
-          turns: d.assistant_turns ?? d.message_count,
-          createdAt: d.created_at ?? undefined,
-        });
-      }).catch(() => { /* swallow — fallback values keep rendering */ });
-    };
-    load();
-    const iv = setInterval(load, open ? 3_000 : 8_000);
-    return () => { cancelled = true; clearInterval(iv); };
-  }, [open, sessionId]);
-
-  // Pick the authoritative source for each value: backend detail
-  // when it has resolved, otherwise the in-store fallback.
-  const inputTotal      = detail?.input          ?? fallbackUsage?.inputTotal      ?? 0;
-  const outputTotal     = detail?.output         ?? fallbackUsage?.outputTotal     ?? 0;
-  const cacheReadTotal  = detail?.cache_read     ?? fallbackUsage?.cacheReadTotal  ?? 0;
-  const cacheWriteTotal = detail?.cache_write    ?? fallbackUsage?.cacheWriteTotal ?? 0;
-  const turns           = detail?.turns          ?? fallbackUsage?.turns           ?? 0;
-  const costUsd         = detail?.cost           ?? fallbackUsage?.costUsd;
-  const startedAt       = detail?.createdAt      ?? fallbackUsage?.startedAt;
-
-  // Last assistant turn's "what the model saw" — backend gives it
-  // directly via tokens.last_input + tokens.last_cache_read; the
-  // fallback uses the message-array derivation chat-view passes.
-  const lastInputView = detail
-    ? detail.last_input + detail.last_cache_read
-    : (fallbackUsed ?? 0);
-  const pct = max && max > 0 ? lastInputView / max : fallbackPct;
-
-  const safe = Math.max(0, Math.min(pct, 1));
-  const pctLabel = Math.round(safe * 100);
-  // Vibrant accent at low fills — white fill on a dark popover
-  // surface kept reading as "empty" to the user even when the
-  // bar was correctly at 45%. Using a saturated blue (matches
-  // the Cache bar below) makes the fill UNMISTAKABLE — any
-  // colored fill on a grey track screams "progress" the way a
-  // white-on-grey hairline never could. Threshold colors stay
-  // for the warning bands.
-  const barColor = safe > 0.85 ? "#f87171"
-                : safe > 0.65 ? "#fb923c"
-                : "#60a5fa";
-
-  const cacheTotal = cacheReadTotal + cacheWriteTotal;
-  const sessionMax = Math.max(1, inputTotal, outputTotal, cacheTotal);
-  const cacheHitRate = (inputTotal + cacheTotal) > 0
-    ? cacheTotal / (inputTotal + cacheTotal)
-    : 0;
-  const hasUsage = inputTotal + outputTotal + cacheTotal > 0;
-  const activeSeconds = startedAt
-    ? Math.max(0, (Date.now() - Date.parse(startedAt)) / 1000)
-    : 0;
-
-  return (
-    <div ref={wrapRef} style={{ position: "relative", flexShrink: 0 }}>
-      <button
-        onClick={() => setOpen(o => !o)}
-        onMouseDown={e => e.preventDefault()}
-        title={`Context ${pctLabel}% · ${turns} turns`}
-        style={{
-          width: 22, height: 22, padding: 0,
-          background: "transparent", border: "none", outline: "none",
-          cursor: "pointer",
-          display: "inline-flex", alignItems: "center", justifyContent: "center",
-        }}
-      >
-        <ContextArc pct={pct} size={13} />
-      </button>
-      {open && (
-        <div style={{
-          // Anchored to the RIGHT (arc lives in the right cluster
-          // beside the model button); right:0 keeps the popover
-          // from extending past the chat-input edge.
-          position: "absolute", bottom: "calc(100% + 8px)", right: 0,
-          width: 280,
-          background: "var(--popover, #161616)",
-          border: "1px solid var(--c-brd, rgba(255,255,255,0.08))",
-          borderRadius: 9,
-          padding: 0,
-          boxShadow: "0 -10px 28px rgba(0,0,0,0.42)",
-          zIndex: 80,
-          fontFamily: "var(--font-sans)",
-          animation: "fleet-popover-up 0.14s ease-out both",
-          overflow: "hidden",
-        }}>
-          {/* HEADER — single tight row with context fill + bar */}
-          <div style={{ padding: "10px 12px 9px" }}>
-            <div style={{
-              display: "flex", alignItems: "center", justifyContent: "space-between",
-              gap: 8, marginBottom: 6,
-            }}>
-              <span style={{
-                fontSize: 11.5, fontWeight: 500, color: "var(--c-fg)",
-              }}>Context window</span>
-              <span style={{
-                fontSize: 10.5, color: "var(--c-dim)",
-                fontFamily: "var(--font-mono)",
-                fontVariantNumeric: "tabular-nums",
-              }}>
-                {max
-                  ? <>{fmtTokens(lastInputView)} / {fmtTokens(max)} <span style={{
-                      color: barColor, marginLeft: 2, fontWeight: 500,
-                    }}>{pctLabel}%</span></>
-                  : "—"
-                }
-              </span>
-            </div>
-            <ProgressBar fill={safe} color={barColor} height={8} />
-          </div>
-
-          {/* SESSION USAGE — three compact lanes */}
-          {hasUsage && (
-            <div style={{
-              padding: "9px 12px 4px",
-              borderTop: "1px solid var(--c-brd, rgba(255,255,255,0.06))",
-            }}>
-              <div style={{
-                display: "flex", alignItems: "center", justifyContent: "space-between",
-                marginBottom: 6,
-              }}>
-                <span style={{
-                  fontSize: 11.5, fontWeight: 500, color: "var(--c-fg)",
-                }}>Session usage</span>
-                {cacheHitRate > 0 && (
-                  <span style={{
-                    fontSize: 10, color: "var(--c-dim)",
-                    fontFamily: "var(--font-mono)",
-                    fontVariantNumeric: "tabular-nums",
-                  }}>
-                    {Math.round(cacheHitRate * 100)}% cache
-                  </span>
-                )}
-              </div>
-
-              <CompactUsageRow
-                label="Input"
-                value={inputTotal}
-                fill={inputTotal / sessionMax}
-                color="var(--c-fg)"
-              />
-              <CompactUsageRow
-                label="Output"
-                value={outputTotal}
-                fill={outputTotal / sessionMax}
-                color="rgb(64,180,120)"
-              />
-              <CompactUsageRow
-                label="Cache"
-                value={cacheTotal}
-                fill={cacheTotal / sessionMax}
-                color="#60a5fa"
-              />
-            </div>
-          )}
-
-          {/* FOOTER — turns · cost · duration */}
-          <div style={{
-            padding: "8px 12px 9px",
-            background: "rgba(var(--fg-rgb), 0.025)",
-            borderTop: "1px solid var(--c-brd, rgba(255,255,255,0.06))",
-            display: "flex", alignItems: "center",
-          }}>
-            <FooterStat label="Turns" value={String(turns)} />
-            <FooterDot />
-            <FooterStat
-              label="Cost"
-              value={costUsd != null && costUsd > 0
-                ? (costUsd >= 1 ? `$${costUsd.toFixed(2)}` : `$${costUsd.toFixed(4)}`)
-                : "—"}
-            />
-            <FooterDot />
-            <FooterStat
-              label="Active"
-              value={startedAt ? fmtDuration(activeSeconds) : "—"}
-            />
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 /** MCPStatusButton — compact composer indicator showing how many MCP
  *  servers are connected, with a click-to-expand popover that lists
@@ -547,12 +194,19 @@ function MCPStatusButton() {
   const hasFailed = servers.some((s) => s.status?.status === "failed");
   const hasAuthNeeded = servers.some((s) => s.status?.status === "auth_needed");
   const allConnected = servers.length > 0 && connectedCount === servers.length;
+  // Refined palette — same family as the branch strip / status dots so the
+  // chat footer reads as one coherent row of muted indicators.
   const dotColor = servers.length === 0
     ? "var(--c-low)"
-    : hasFailed ? "#ef4444"
-    : hasAuthNeeded ? "#eab308"
-    : allConnected ? "#22c55e"
-    : "#3b82f6";
+    : hasFailed ? "rgb(216,110,118)"
+    : hasAuthNeeded ? "rgb(210,170,90)"
+    : allConnected ? "rgb(64,180,120)"
+    : "rgb(110,162,228)";
+
+  // Self-hide when no MCP servers are configured — the always-on "0/0" badge
+  // was just visual noise the user asked to remove. Add servers in Settings →
+  // MCP and the chip reappears automatically (the hook polls).
+  if (servers.length === 0) return null;
 
   return (
     <div ref={wrapRef} style={{ position: "relative" }}>
@@ -561,16 +215,31 @@ function MCPStatusButton() {
         onClick={() => setOpen((v) => !v)}
         title={`MCP — ${connectedCount}/${servers.length} connected`}
         style={{
-          display: "flex", alignItems: "center", gap: 4,
-          padding: "3px 7px", borderRadius: 6,
-          background: "transparent", border: "1px solid var(--border)",
-          color: "var(--c-low)", fontSize: 10.5, fontWeight: 500,
+          // Same "calm pill" family as Bypass perms / Routing / model chip:
+          // ghost background, neutral muted label, tiny state-coloured dot.
+          // Equal scale so the whole right cluster reads as one row.
+          display: "inline-flex", alignItems: "center", gap: 6,
+          padding: "3px 8px", borderRadius: 5,
+          background: "transparent", border: "none",
+          color: "var(--c-low)", fontSize: 12, fontWeight: 500,
           cursor: "pointer",
+          transition: "background 0.12s, color 0.12s",
+          outline: "none",
+        }}
+        onMouseEnter={e => {
+          (e.currentTarget as HTMLElement).style.background = "rgba(var(--fg-rgb), 0.05)";
+          (e.currentTarget as HTMLElement).style.color = "var(--c-high)";
+        }}
+        onMouseLeave={e => {
+          (e.currentTarget as HTMLElement).style.background = "transparent";
+          (e.currentTarget as HTMLElement).style.color = "var(--c-low)";
         }}
       >
-        <span style={{ width: 6, height: 6, borderRadius: "50%", background: dotColor }} />
-        <Plug size={10} strokeWidth={2} />
-        <span>{connectedCount}/{servers.length}</span>
+        <span style={{ width: 5, height: 5, borderRadius: "50%", background: dotColor }} />
+        <span>MCP</span>
+        <span style={{ color: "var(--c-dim)", fontFamily: "var(--font-mono)", fontSize: 11 }}>
+          {connectedCount}/{servers.length}
+        </span>
       </button>
       {open && (
         <div style={{
@@ -650,115 +319,14 @@ function MCPStatusButton() {
   );
 }
 
-/** Single tight row in the Session usage section: label + bar +
- *  value all on ONE line so the popover stays dense. */
-function CompactUsageRow({ label, value, fill, color }: {
-  label: string; value: number; fill: number; color: string;
-}) {
-  return (
-    <div style={{
-      display: "grid",
-      gridTemplateColumns: "44px 1fr 44px",
-      alignItems: "center",
-      gap: 8,
-      marginBottom: 6,
-    }}>
-      <span style={{
-        fontSize: 11, color: "var(--c-low)",
-      }}>{label}</span>
-      <ProgressBar fill={fill} color={color} height={5} />
-      <span style={{
-        fontSize: 10.5, color: "var(--c-fg)",
-        fontFamily: "var(--font-mono)",
-        fontVariantNumeric: "tabular-nums",
-        textAlign: "right",
-      }}>{fmtTokens(value)}</span>
-    </div>
-  );
-}
-
-/** Vertical dot divider between footer stats. */
-function FooterDot() {
-  return (
-    <span aria-hidden style={{
-      width: 2, height: 2, borderRadius: 999,
-      background: "var(--c-dim)",
-      margin: "0 9px",
-      flexShrink: 0, opacity: 0.5,
-    }} />
-  );
-}
-
-/** Reusable progress bar. The track is intentionally a clear,
- *  visible chip — at low alpha the bar reads as "fill on nothing"
- *  rather than "fill inside a container". The user explicitly
- *  called this out: even at 45% the bar looked empty because the
- *  unfilled portion blended into the popover surface.
- *
- *  We now lift the track to 0.18 alpha + a 1-px inset border so
- *  the bar reads as an actual container that fills up. The fill
- *  color stays as the caller passes it (theme-driven white at low
- *  fills, warm/red at thresholds). */
-function ProgressBar({ fill, color, height = 7 }: {
-  fill: number; color: string; height?: number;
-}) {
-  const safe = Math.max(0, Math.min(fill, 1));
-  return (
-    <div style={{
-      position: "relative",
-      width: "100%", height, borderRadius: 999,
-      background: "rgba(var(--fg-rgb), 0.18)",
-      // Inset shadow gives the track a hint of depth so the
-      // empty section reads as recessed, not flat.
-      boxShadow: "inset 0 0 0 1px rgba(var(--fg-rgb), 0.04)",
-      overflow: "hidden",
-    }}>
-      <div style={{
-        position: "absolute", top: 0, left: 0, bottom: 0,
-        width: `${safe * 100}%`,
-        background: color,
-        borderRadius: 999,
-        transition: "width 0.4s ease-out, background 0.3s",
-      }} />
-    </div>
-  );
-}
-
-// (UsageRow removed — replaced by CompactUsageRow above. The
-// two-line layout was too tall when stacked 3x and made the
-// popover read as "padded" rather than dense.)
-
-/** Footer stat tile — uppercase eyebrow label + mono value
- *  stacked. Three of these fit on a 280px popover. */
-function FooterStat({ label, value }: { label: string; value: string }) {
-  return (
-    <div style={{
-      flex: 1, minWidth: 0,
-      display: "flex", flexDirection: "column", gap: 1,
-    }}>
-      <span style={{
-        fontSize: 8.5, color: "var(--c-dim)",
-        textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 600,
-      }}>{label}</span>
-      <span style={{
-        fontSize: 11, color: "var(--c-fg)", fontWeight: 500,
-        fontFamily: "var(--font-mono)",
-        fontVariantNumeric: "tabular-nums",
-        whiteSpace: "nowrap",
-        overflow: "hidden", textOverflow: "ellipsis",
-      }}>{value}</span>
-    </div>
-  );
-}
-
 /** Keyboard shortcut badge */
 function Kbd({ children }: { children: React.ReactNode }) {
   return (
     <span style={{
       display: "inline-flex", alignItems: "center", justifyContent: "center",
-      minWidth: 16, height: 16, padding: "0 3px", borderRadius: 3,
+      minWidth: 14, height: 14, padding: "0 2px", borderRadius: 3,
       background: "rgba(var(--fg-rgb),0.06)", border: "1px solid rgba(var(--fg-rgb),0.09)",
-      fontSize: 9.5, color: "var(--c-dim)", fontFamily: "inherit",
+      fontSize: 8.5, color: "var(--c-dim)", fontFamily: "inherit",
     }}>{children}</span>
   );
 }
@@ -771,17 +339,16 @@ function ToolBtn({ children, title, onClick }: {
 }) {
   return (
     <button onClick={onClick} title={title} onMouseDown={e => e.preventDefault()} style={{
-      width: 22, height: 22, borderRadius: 5, flexShrink: 0,
+      width: 24, height: 24, borderRadius: 5, flexShrink: 0,
       display: "flex", alignItems: "center", justifyContent: "center",
+      // Bare ghost icons (Cursor-minimal): low at rest, subtle bg + high on
+      // hover. No chunky chrome.
       background: "none", border: "none", outline: "none", cursor: "pointer",
-      // Refined: ghost icons at rest, no chunky bg/border on hover.
-      // Just a subtle color shift up to high. Reads as deliberate
-      // status-bar affordances, not chunky toolbar buttons.
       color: "var(--c-low)",
-      transition: "color 0.12s",
+      transition: "color 0.12s, background 0.12s",
     }}
-      onMouseEnter={e => { e.currentTarget.style.color = "var(--c-high)"; }}
-      onMouseLeave={e => { e.currentTarget.style.color = "var(--c-low)"; }}
+      onMouseEnter={e => { e.currentTarget.style.color = "var(--c-high)"; e.currentTarget.style.background = "rgba(var(--fg-rgb),0.06)"; }}
+      onMouseLeave={e => { e.currentTarget.style.color = "var(--c-low)"; e.currentTarget.style.background = "none"; }}
     >{children}</button>
   );
 }
@@ -947,13 +514,24 @@ function MicButton({ onTranscript }: { onTranscript: (text: string) => void }) {
  *  renderer (filters thinking / tool blocks etc.); font scale
  *  applies via a CSS variable on the chat surface.
  */
-function TranscriptViewButton() {
+
+/** "More" popover that collapses two secondary input affordances — Enhance
+ *  prompt (⌘I) and Transcript view (Normal / Thinking / Verbose / Summary) —
+ *  behind a single horizontal-dots button. Keeps the footer row scannable:
+ *  the frequent actions (Attach, Mic) stay visible, the rest tucks away.
+ *  Enhance still has its full lifecycle inside the menu row: dim/disabled
+ *  when there's no prompt to enhance, vibrant + "Enhancing…" while in flight. */
+function MoreActionsMenu({
+  onEnhance, enhancing, canEnhance,
+}: {
+  onEnhance: () => void;
+  enhancing: boolean;
+  canEnhance: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const view  = useAppStore(s => s.transcriptView);
-  const scale = useAppStore(s => s.transcriptFontScale);
-  const setView  = useAppStore(s => s.setTranscriptView);
-  const setScale = useAppStore(s => s.setTranscriptFontScale);
+  const setView = useAppStore(s => s.setTranscriptView);
 
   useEffect(() => {
     if (!open) return;
@@ -969,126 +547,93 @@ function TranscriptViewButton() {
     };
   }, [open]);
 
-  const modes: { id: typeof view; label: string }[] = [
-    { id: "normal",   label: "Normal"   },
+  const modes = [
+    { id: "normal",   label: "Normal" },
     { id: "thinking", label: "Thinking" },
-    { id: "verbose",  label: "Verbose"  },
-    { id: "summary",  label: "Summary"  },
-  ];
-  const scales = [0.875, 1, 1.125];
+    { id: "verbose",  label: "Verbose" },
+    { id: "summary",  label: "Summary" },
+  ] as const;
 
   return (
     <div ref={wrapRef} style={{ position: "relative", flexShrink: 0 }}>
-      <ToolBtn
-        title="Transcript view"
-        onClick={() => setOpen(o => !o)}
-      >
-        {/* AlignLeft reads as "lines of text" — much closer to
-            the reference's transcript glyph than the Notebook
-            icon, which felt journal-y. */}
-        <AlignLeft size={12} strokeWidth={1.75} />
+      <ToolBtn title="More actions" onClick={() => setOpen(o => !o)}>
+        <MoreHorizontal size={14} strokeWidth={1.85} />
       </ToolBtn>
       {open && (
         <div style={{
           position: "absolute", bottom: "calc(100% + 6px)", left: 0,
-          width: 200,
+          minWidth: 194,
           background: "var(--popover, #161616)",
-          border: "1px solid var(--c-brd, rgba(255,255,255,0.08))",
-          borderRadius: 8,
-          padding: 4,
+          border: "1px solid var(--c-brd)",
+          borderRadius: 7,
+          padding: 3,
           boxShadow: "0 -8px 28px rgba(0,0,0,0.42)",
           zIndex: 60,
           fontFamily: "var(--font-sans)",
           animation: "fleet-popover-up 0.14s ease-out both",
         }}>
-          {/* Compact eyebrow — matches the menu chrome elsewhere
-              in Fleet (model picker, permission picker). */}
-          <div style={{
-            display: "flex", alignItems: "center", justifyContent: "space-between",
-            padding: "4px 7px 5px",
-          }}>
-            <span style={{
-              fontSize: 9.5, color: "var(--c-dim)", fontWeight: 600,
-              letterSpacing: 0.6, textTransform: "uppercase",
-            }}>Transcript view</span>
-            <div style={{ display: "flex", gap: 2 }}>
-              <Kbd>⇧</Kbd><Kbd>T</Kbd>
-            </div>
-          </div>
+          {/* Enhance prompt — keeps its disabled state + ⌘I shortcut. */}
+          <button
+            onClick={() => { onEnhance(); setOpen(false); }}
+            onMouseDown={e => e.preventDefault()}
+            disabled={!canEnhance && !enhancing}
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+              gap: 8, width: "100%", padding: "4px 8px",
+              background: "transparent", border: "none", outline: "none",
+              cursor: canEnhance ? "pointer" : "default",
+              color: enhancing ? "rgba(96,165,250,0.95)" : canEnhance ? "var(--c-med)" : "var(--c-dim)",
+              borderRadius: 4,
+              textAlign: "left", fontFamily: "inherit",
+            }}
+            onMouseEnter={e => { if (canEnhance) (e.currentTarget as HTMLButtonElement).style.background = "rgba(var(--fg-rgb),0.04)"; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
+          >
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12, fontWeight: 500 }}>
+              <Wand2 size={12} strokeWidth={1.75} />
+              {enhancing ? "Enhancing…" : "Enhance prompt"}
+            </span>
+            <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "var(--c-dim)" }}>⌘I</span>
+          </button>
 
-          {/* Mode rows — tighter padding, smaller font to match
-              the model / permission pickers. */}
+          {/* Tiny separator before the view modes — same hairline as the
+              other popovers in the chrome. */}
+          <div style={{ height: 1, background: "var(--c-brd)", margin: "3px 8px" }} />
+
+          <div style={{
+            padding: "3px 8px 3px",
+            fontSize: 10, fontWeight: 500,
+            letterSpacing: 0.3, textTransform: "uppercase",
+            color: "var(--c-dim)",
+            display: "flex", alignItems: "center", gap: 6,
+          }}>
+            <AlignLeft size={10} strokeWidth={1.85} />
+            Transcript view
+          </div>
           {modes.map(m => {
             const active = view === m.id;
             return (
               <button
                 key={m.id}
                 onClick={() => { setView(m.id); setOpen(false); }}
-                onMouseDown={(e) => e.preventDefault()}
+                onMouseDown={e => e.preventDefault()}
                 style={{
                   display: "flex", alignItems: "center", justifyContent: "space-between",
                   width: "100%", padding: "4px 8px",
-                  background: active ? "var(--c-srf)" : "transparent",
+                  background: active ? "rgba(var(--fg-rgb),0.06)" : "transparent",
                   border: "none", outline: "none", cursor: "pointer",
-                  borderRadius: 4,
-                  textAlign: "left",
-                  fontFamily: "inherit",
+                  color: active ? "var(--c-high)" : "var(--c-med)",
+                  fontSize: 12, fontWeight: active ? 600 : 500,
+                  borderRadius: 4, textAlign: "left", fontFamily: "inherit",
                 }}
-                onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "var(--c-srf)"; }}
-                onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}
+                onMouseEnter={e => { if (!active) (e.currentTarget as HTMLButtonElement).style.background = "rgba(var(--fg-rgb),0.04)"; }}
+                onMouseLeave={e => { if (!active) (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
               >
-                <span style={{
-                  fontSize: 12,
-                  fontWeight: active ? 500 : 400,
-                  color: active ? "var(--c-fg)" : "var(--c-low)",
-                }}>{m.label}</span>
-                {active && <Check size={11} strokeWidth={2.25} style={{ color: "var(--c-fg)" }} />}
+                <span>{m.label}</span>
+                {active && <Check size={10} style={{ color: "var(--c-low)" }} />}
               </button>
             );
           })}
-
-          {/* Font scale — three Aa pills, sized to MATCH the rest
-              of the popover chrome (28-px tall, not the chunky
-              48-px pills from the previous pass). The font-size
-              of each pill still grows so the user sees the
-              scale, but proportionally smaller. */}
-          <div style={{
-            marginTop: 4, paddingTop: 5,
-            borderTop: "1px solid var(--c-brd, rgba(255,255,255,0.06))",
-            display: "flex", gap: 4,
-            padding: "5px 4px 2px",
-          }}>
-            {scales.map((s, i) => {
-              const active = Math.abs(scale - s) < 0.01;
-              const fontPx = i === 0 ? 9.5 : i === 1 ? 11 : 13;
-              return (
-                <button
-                  key={s}
-                  onClick={() => setScale(s)}
-                  onMouseDown={(e) => e.preventDefault()}
-                  style={{
-                    flex: 1, height: 24,
-                    padding: 0,
-                    background: active ? "var(--c-srf)" : "transparent",
-                    border: "1px solid " + (active ? "var(--c-brd2)" : "var(--c-brd)"),
-                    color: active ? "var(--c-fg)" : "var(--c-low)",
-                    cursor: "pointer", outline: "none",
-                    borderRadius: 5,
-                    fontFamily: "var(--font-sans)",
-                    fontSize: fontPx, fontWeight: 500,
-                    display: "inline-flex", alignItems: "center", justifyContent: "center",
-                    transition: "background 0.12s, border-color 0.12s, color 0.12s",
-                  }}
-                  onMouseEnter={(e) => {
-                    if (!active) e.currentTarget.style.background = "var(--c-srf)";
-                  }}
-                  onMouseLeave={(e) => {
-                    if (!active) e.currentTarget.style.background = "transparent";
-                  }}
-                >Aa</button>
-              );
-            })}
-          </div>
         </div>
       )}
     </div>
@@ -1131,40 +676,56 @@ function PermissionModePicker({
 
   if (modes.length === 0) return null;
 
-  const trigger = modes.find((m) => m.id === mode)?.label ?? modes.find((m) => m.id === "default")?.label ?? modes[0]?.label ?? mode;
-  const loud = isLoudMode(mode);
+  const fullLabel = modes.find((m) => m.id === mode)?.label ?? modes.find((m) => m.id === "default")?.label ?? modes[0]?.label ?? mode;
+  // Single-word label for the chip — the dropdown still shows the long
+  // descriptive labels. "Bypass permissions" / "Accept edits" / "Ask
+  // permissions" → "Bypass" / "Accept" / "Ask".
+  const shortLabel = fullLabel.split(/\s+/)[0] ?? fullLabel;
 
   return (
     <div ref={wrapRef} style={{ position: "relative", flexShrink: 0 }}>
       <button
         onClick={() => setOpen(o => !o)}
         onMouseDown={e => e.preventDefault()}
-        title={`Permission mode: ${trigger}`}
+        title={`Permission mode: ${fullLabel}`}
         style={{
-          padding: "3px 7px", marginRight: 1,
-          border: "none", background: open ? "rgba(var(--fg-rgb), 0.05)" : "none",
-          color: loud ? "#eab308" : "var(--c-low)",
-          fontSize: 12, fontWeight: 600, cursor: "pointer",
-          letterSpacing: "0.005em",
+          // Deliberately understated — the user doesn't want this to look
+          // important. Just quiet dim text + a small chevron, no dot, no
+          // colour, no pill. It recedes like a status label; the dropdown
+          // carries the actual mode detail. Brightens only on hover/open.
+          padding: "4px 7px", marginRight: 1,
+          background: open ? "rgba(var(--fg-rgb), 0.06)" : "none",
+          border: "none",
+          color: open ? "var(--c-med)" : "var(--c-low)",
+          fontSize: 12, fontWeight: 500, cursor: "pointer",
           borderRadius: 5,
           transition: "color 0.12s, background 0.12s",
-          flexShrink: 0,
+          flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 4,
           fontFamily: "var(--font-sans)",
           outline: "none",
         }}
-        onMouseEnter={e => { if (!open) e.currentTarget.style.background = "rgba(var(--fg-rgb),0.05)"; }}
-        onMouseLeave={e => { if (!open) e.currentTarget.style.background = "none"; }}
+        onMouseEnter={e => {
+          if (open) return;
+          e.currentTarget.style.background = "rgba(var(--fg-rgb),0.06)";
+          e.currentTarget.style.color = "var(--c-med)";
+        }}
+        onMouseLeave={e => {
+          if (open) return;
+          e.currentTarget.style.background = "none";
+          e.currentTarget.style.color = "var(--c-low)";
+        }}
       >
-        {trigger}
+        {shortLabel}
+        <ChevronDown size={11} strokeWidth={2} style={{ color: "var(--c-ghost)", flexShrink: 0 }} />
       </button>
       {open && (
         <div style={{
           position: "absolute", bottom: "calc(100% + 6px)", left: 0,
-          minWidth: 240,
+          minWidth: 194,
           background: "var(--popover, #161616)",
           border: "1px solid var(--c-brd, rgba(255,255,255,0.08))",
-          borderRadius: 8,
-          padding: 4,
+          borderRadius: 7,
+          padding: 3,
           boxShadow: "0 -8px 28px rgba(0,0,0,0.42)",
           zIndex: 60,
           fontFamily: "var(--font-sans)",
@@ -1172,9 +733,9 @@ function PermissionModePicker({
         }}>
           <div style={{
             display: "flex", alignItems: "center", justifyContent: "space-between",
-            padding: "5px 9px 4px",
+            padding: "3px 8px 3px",
           }}>
-            <span style={{ fontSize: 10.5, color: "var(--c-dim)", fontWeight: 500 }}>Mode</span>
+            <span style={{ fontSize: 10, color: "var(--c-dim)", fontWeight: 500 }}>Mode</span>
             <div style={{ display: "flex", gap: 2 }}>
               <Kbd>⇧</Kbd><Kbd>⌘</Kbd><Kbd>M</Kbd>
             </div>
@@ -1189,25 +750,33 @@ function PermissionModePicker({
                 onMouseDown={e => e.preventDefault()}
                 style={{
                   display: "flex", alignItems: "center", justifyContent: "space-between",
-                  width: "100%", padding: "5px 10px",
-                  background: active ? "var(--c-srf)" : "transparent",
+                  width: "100%", padding: "4px 8px",
+                  background: active ? "rgba(var(--fg-rgb),0.06)" : "transparent",
                   border: "none", outline: "none", cursor: "pointer",
-                  borderRadius: 5,
+                  borderRadius: 4,
                   textAlign: "left",
                   fontFamily: "inherit",
                 }}
-                onMouseEnter={e => { if (!active) e.currentTarget.style.background = "var(--c-srf)"; }}
+                onMouseEnter={e => { if (!active) e.currentTarget.style.background = "rgba(var(--fg-rgb),0.04)"; }}
                 onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}
               >
-                <span style={{
-                  fontSize: 12.5,
-                  fontWeight: active ? 600 : 500,
-                  color: loudRow && active ? "#eab308" : "var(--c-fg)",
-                }}>{m.label}</span>
-                <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                  {active && <Check size={10} style={{ color: "var(--c-dim)" }} />}
+                <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  {/* Minimal dot indicator — amber for the loud modes
+                      (Bypass / Accept), quiet grey otherwise. */}
+                  <span aria-hidden style={{
+                    width: 4, height: 4, borderRadius: "50%", flexShrink: 0,
+                    background: loudRow ? "rgb(210,170,90)" : "var(--c-low)",
+                  }}/>
                   <span style={{
-                    fontSize: 10.5, color: "var(--c-dim)",
+                    fontSize: 12,
+                    fontWeight: active ? 600 : 500,
+                    color: active ? "var(--c-high)" : "var(--c-med)",
+                  }}>{m.label}</span>
+                </span>
+                <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  {active && <Check size={10} style={{ color: "var(--c-low)" }} />}
+                  <span style={{
+                    fontSize: 10, color: "var(--c-dim)",
                     fontFamily: "var(--font-mono)",
                   }}>{i + 1}</span>
                 </span>
@@ -1557,7 +1126,7 @@ export function computeBranchName(
   return `fleet/${slug}-${sessionId.slice(0, 8)}`;
 }
 
-export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sessionTitle, plannedBranch, isWorktree }: {
+export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sessionTitle, plannedBranch, isWorktree: _isWorktree }: {
   projectPath?: string | null;
   /** True when the resolved projectPath is a git worktree under
    *  `<source-repo>/.fleetify-worktrees/<session-id>/`. Drives the
@@ -1990,7 +1559,6 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
       (!!ctx!.baseBranch && ctx!.branch === ctx!.baseBranch) ||
       (!ctx!.baseBranch && KNOWN_DEFAULTS.has(ctx!.branch!))
     );
-  const hasDiff = (ctx?.plus ?? 0) > 0 || (ctx?.minus ?? 0) > 0;
   // Show Create PR whenever we have something the dispatcher can act
   // on. Three shapes flow through:
   //   - feature branch (existing happy path)
@@ -2456,14 +2024,13 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
     action = (
       <div ref={createMenuRef} style={{ position: "relative", flexShrink: 0 }}>
         <div style={{
-          display: "inline-flex", alignItems: "stretch",
-          // Dimmer chrome — user said the white frame around "Create PR"
-          // was too loud. Tonal-only fill, no visible border so the
-          // button reads as a quiet pill instead of a stamped button.
-          background: "rgba(var(--fg-rgb), 0.05)",
-          border: "1px solid transparent",
-          borderRadius: 6,
-          overflow: "hidden",
+          // Plain inline text-link in the flat breadcrumb (matches
+          // worktree · Review · Create PR). No pill, no fill — Create PR
+          // gets a blue accent so it reads as the lead action.
+          display: "inline-flex", alignItems: "center",
+          background: "transparent",
+          border: "none",
+          borderRadius: 0,
         }}>
           {/* Main action — auto-fill + auto-submit. The user
               explicitly asked for "Create PR" to skip the dialog
@@ -2482,13 +2049,11 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
             disabled={autoCreating}
             onMouseDown={e => e.preventDefault()}
             style={{
-              padding: "3px 10px",
+              padding: 0,
               background: "transparent",
               border: "none", outline: "none",
-              // Matches the branch-label scale at the compact 12px tier:
-              // --c-med resting / --c-high on hover keeps contrast
-              // legible without overpowering the strip.
-              color: "var(--c-med)",
+              // Blue accent text link — the lead action in the breadcrumb.
+              color: "rgb(110,162,228)",
               cursor: autoCreating ? "default" : "pointer",
               fontSize: 12, fontWeight: 500,
               fontFamily: "inherit",
@@ -2496,30 +2061,25 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
               opacity: autoCreating ? 0.7 : 1,
               transition: "color 0.1s",
             }}
-            onMouseEnter={e => { if (!autoCreating) e.currentTarget.style.color = "var(--c-high)"; }}
-            onMouseLeave={e => { e.currentTarget.style.color = "var(--c-med)"; }}
+            onMouseEnter={e => { if (!autoCreating) e.currentTarget.style.color = "rgb(140,184,236)"; }}
+            onMouseLeave={e => { e.currentTarget.style.color = "rgb(110,162,228)"; }}
           >
             {autoCreating
               ? <><Loader2 size={10} style={{ animation: "spin 1.2s linear infinite" }} /> Creating…</>
               : "Create PR"}
           </button>
 
-          {/* Divider */}
-          <span aria-hidden style={{
-            width: 1, alignSelf: "stretch",
-            background: "rgba(var(--fg-rgb), 0.10)",
-          }} />
-
-          {/* Dropdown trigger — same "no hover" treatment. */}
+          {/* Dropdown caret — quiet, directly after the link (no divider /
+              no pill, just a small chevron the same blue). */}
           <button
             onClick={() => setCreateMenuOpen(o => !o)}
             onMouseDown={e => e.preventDefault()}
             title="More create options"
             style={{
-              padding: "0 5px",
+              padding: "0 2px 0 4px",
               background: "transparent",
               border: "none", outline: "none",
-              color: "var(--c-dim)",
+              color: "rgb(110,162,228)",
               cursor: "pointer",
               display: "inline-flex", alignItems: "center",
             }}
@@ -2669,15 +2229,19 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   return (
     <>
       <div style={{
+        // Flat single-line breadcrumb — no pill, no border, no fill. Just a
+        // soft context row above the input that reads as the project's git
+        // location: branch on the left, action verbs on the right. Sits
+        // VERY quietly so the input itself is the focal point.
+        // Horizontal padding matches the input card's inner content so the
+        // branch glyph lines up with the textarea text and Create PR lines
+        // up with the Send button — the breadcrumb reads as the card's top
+        // line, not a separate floating row.
         display: "flex", alignItems: "center", gap: 7,
-        // Compact strip — back to a thin band that sits cleanly above
-        // the input. The previous 7px vertical was too tall and the
-        // strip read as a header instead of a quiet context row.
-        padding: "3px 5px 3px 7px",
-        borderRadius: 8,
-        background: "var(--chat-input-bg, #121212)",
-        border: "1px solid var(--c-brd, transparent)",
-        color: "var(--c-fg)",
+        padding: "0 11px 5px",
+        background: "transparent",
+        border: "none",
+        color: "var(--c-low)",
         fontSize: 12,
       }}>
         {/* Branch glyph — small, transparent chip; the icon itself
@@ -2794,89 +2358,40 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
           )}
         </div>
 
-        {/* Worktree indicator — surfaces only when the session's
-            project path is a `.fleetify-worktrees/<id>/` checkout, so
-            the user knows their file ops are isolated from the source
-            repo's working tree. Subtle: low-contrast pill, same height
-            as the diff stats, no border. */}
-        {isWorktree && (
-          <span
-            title="This session runs in an isolated git worktree under .fleetify-worktrees/"
-            style={{
-              // Slightly smaller than the action buttons — informational
-              // chip, so it sits a tick more recessed than Open / Merge.
-              height: 23, padding: "0 8px",
-              display: "inline-flex", alignItems: "center", gap: 4,
-              borderRadius: 6,
-              background: "rgba(var(--fg-rgb), 0.05)",
-              border: "1px solid var(--c-brd)",
-              color: "var(--c-low)",
-              fontSize: 10.5,
-              fontWeight: 500,
-              fontFamily: "var(--font-mono)",
-              letterSpacing: "0.02em",
-              flexShrink: 0,
-            }}
-          >
-            <FolderTree size={10} strokeWidth={1.85} />
-            worktree
-          </span>
-        )}
-
-        {/* Diff stats — only when there's something to show. hasDiff
-            already guarantees ctx is non-null and has positive +/-,
-            but TS can't narrow through the derived boolean, so we
-            fall back to ctxR for the property reads. */}
-        {hasDiff && (!pr || pr.state === "OPEN") && (
-          <span style={{
-            height: 23, padding: "0 8px",
-            display: "inline-flex", alignItems: "center", gap: 5,
-            borderRadius: 6,
-            background: "rgba(var(--fg-rgb), 0.05)",
-            border: "1px solid var(--c-brd)",
-            fontFamily: "var(--font-mono)", fontSize: 10.5,
-            flexShrink: 0,
-            fontVariantNumeric: "tabular-nums",
-          }}>
-            <span style={{ color: "rgb(64,180,120)" }}>+{ctxR.plus}</span>
-            <span style={{ color: "rgb(216,110,118)" }}>−{ctxR.minus}</span>
-          </span>
-        )}
-
-        {showReview && (
-          <button
-            onClick={() => setReviewOpen(true)}
-            onMouseDown={e => e.preventDefault()}
-            title={`Review with ${tool || "agent"}`}
-            aria-label="Review changes"
-            style={{
-              // A tick smaller than Open / Merge — a secondary affordance.
-              height: 23, padding: "0 9px",
-              background: "rgba(var(--fg-rgb),0.05)",
-              border: "1px solid var(--c-brd)",
-              borderRadius: 6,
-              color: "var(--c-med)",
-              cursor: "pointer",
-              fontSize: 11, fontWeight: 500,
-              fontFamily: "inherit",
-              display: "inline-flex", alignItems: "center", gap: 5,
-              flexShrink: 0,
-              transition: "color 0.12s, background 0.12s",
-            }}
-            onMouseEnter={e => {
-              e.currentTarget.style.color = "var(--c-high)";
-              e.currentTarget.style.background = "rgba(var(--fg-rgb), 0.09)";
-            }}
-            onMouseLeave={e => {
-              e.currentTarget.style.color = "var(--c-med)";
-              e.currentTarget.style.background = "rgba(var(--fg-rgb),0.05)";
-            }}
-          >
-            <ScanEye size={10} strokeWidth={1.85} />
-            Review
-          </button>
-        )}
-        {action}
+        {/* Right cluster — inline text breadcrumb (`worktree · Review ·
+            Create PR`), separated by hairline dots. No pills, no borders,
+            no diff counts — the strip is meant to whisper the project's
+            git location, not advertise it. Create PR / Merge / Open get a
+            blue accent so the lead action stands out without a button
+            chrome. Hidden behind a flex spacer so they sit flush right. */}
+        <div style={{ flex: 1 }} />
+        <div style={{
+          display: "inline-flex", alignItems: "center", gap: 8,
+          color: "var(--c-low)", fontSize: 12,
+        }}>
+          {showReview && (
+            <>
+              <button
+                onClick={() => setReviewOpen(true)}
+                onMouseDown={e => e.preventDefault()}
+                title={`Review with ${tool || "agent"}`}
+                aria-label="Review changes"
+                style={{
+                  background: "transparent", border: "none", outline: "none",
+                  padding: 0, fontFamily: "inherit", fontSize: 12,
+                  color: "var(--c-low)", cursor: "pointer",
+                  transition: "color 0.12s",
+                }}
+                onMouseEnter={e => { e.currentTarget.style.color = "var(--c-high)"; }}
+                onMouseLeave={e => { e.currentTarget.style.color = "var(--c-low)"; }}
+              >
+                Review
+              </button>
+              {action != null && <span aria-hidden style={{ opacity: 0.4 }}>·</span>}
+            </>
+          )}
+          {action}
+        </div>
       </div>
       {/* Repo-wide Merge box (bottom): switch between every open PR, merge,
           and — only for THIS session's branch — trigger sync + carve-next-round
@@ -3014,40 +2529,32 @@ function ActionBtn({
   disabled?: boolean;
   title?: string;
 }) {
+  // Inline text-link in the new "Focused" branch breadcrumb — no pill chrome
+  // any more. Primary actions (Create PR / Merge / Sync) get a blue accent
+  // so the lead verb stands out; secondary actions (Open · #N) stay muted.
+  const LINK_BLUE = "rgb(110,162,228)";
   return (
     <button
       onClick={onClick}
       disabled={disabled}
       title={title}
       style={{
-        // Equal sizing with the Review button — one consistent pill scale.
-        height: 26, padding: "0 11px", borderRadius: 6, flexShrink: 0,
-        // Monochrome + harmonious. Primary (Merge / Sync) is the SAME pill
-        // family as Open / Review — just a touch more filled + brighter
-        // text so it reads as the lead action by WEIGHT, not by colour (no
-        // green "go" stamp, no bright-white stamp).
-        background: primary ? "rgba(var(--fg-rgb),0.10)" : "rgba(var(--fg-rgb),0.05)",
-        border: "1px solid var(--c-brd)",
-        color: primary ? "var(--c-high)" : "var(--c-med)",
+        background: "transparent", border: "none", outline: "none",
+        padding: 0, fontFamily: "inherit", fontSize: 12,
+        fontWeight: primary ? 500 : 400,
+        color: primary ? LINK_BLUE : "var(--c-low)",
         cursor: disabled ? "default" : "pointer",
-        fontSize: 11.5, fontWeight: primary ? 600 : 500,
-        transition: "background 0.12s, color 0.12s, opacity 0.12s",
         opacity: disabled ? 0.5 : 1,
         display: "inline-flex", alignItems: "center", gap: 5,
-        fontFamily: "inherit",
-        outline: "none",
+        transition: "color 0.12s, opacity 0.12s",
       }}
-      // Suppress focus ring on click but keep keyboard a11y by only
-      // blurring after a mouse-driven click.
       onMouseDown={e => e.preventDefault()}
       onMouseEnter={e => {
         if (disabled) return;
-        e.currentTarget.style.background = primary ? "rgba(var(--fg-rgb),0.15)" : "rgba(var(--fg-rgb),0.09)";
-        if (!primary) e.currentTarget.style.color = "var(--c-high)";
+        e.currentTarget.style.color = primary ? "rgb(140,184,236)" : "var(--c-high)";
       }}
       onMouseLeave={e => {
-        e.currentTarget.style.background = primary ? "rgba(var(--fg-rgb),0.10)" : "rgba(var(--fg-rgb),0.05)";
-        if (!primary) e.currentTarget.style.color = "var(--c-med)";
+        e.currentTarget.style.color = primary ? LINK_BLUE : "var(--c-low)";
       }}
     >
       {children}
@@ -3075,7 +2582,7 @@ export function ChatInput({
   contextPercent = 0,
   contextUsedTokens,
   contextMaxTokens,
-  sessionUsage,
+  sessionUsage: _sessionUsage,
   projectPath, worktreePath, tool, sessionId,
   autoMode: _autoMode, onToggleAutoMode: _onToggleAutoMode,
   agentMentions,
@@ -4381,6 +3888,9 @@ export function ChatInput({
             onPickEffort={(e) => setEffort(e)}
             onClose={() => setOpenDrop(null)}
             anchor="bottom"
+            contextPercent={contextPercent}
+            contextUsedTokens={contextUsedTokens}
+            contextMaxTokens={contextMaxTokens}
           />
         )}
 
@@ -4587,7 +4097,7 @@ export function ChatInput({
               border kissed the input's top edge and the two read
               as one cramped block. */}
         {!hideBranchStrip && (
-          <div style={{ marginBottom: 10 }}>
+          <div style={{ marginBottom: 5 }}>
             <BranchStrip
               projectPath={worktreePath || projectPath}
               sourcePath={projectPath}
@@ -4604,9 +4114,8 @@ export function ChatInput({
         <div
           onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}
           style={{
-            // 10px corners — sharp enough for terminal emulator,
-            // soft enough to not feel like a tech demo.
-            borderRadius: 10,
+            // 8px corners — sharp / minimal (Cursor-style), not pill-soft.
+            borderRadius: 8,
             position: "relative",
             // Four-tier border: rest / focused / dragging /
             // ENHANCING. Enhancing keeps a soft blue base ring
@@ -4631,7 +4140,12 @@ export function ChatInput({
             boxShadow: focused
               ? "inset 0 1px 0 rgba(var(--fg-rgb),0.05), 0 0 0 1px rgba(var(--fg-rgb),0.06)"
               : "inset 0 1px 0 rgba(var(--fg-rgb),0.04)",
-            overflow: "hidden",
+            // visible (was hidden) — the toolbar now lives INSIDE this card,
+            // and its model / permission / MCP popovers open UPWARD. With
+            // overflow:hidden they'd be clipped by the card's top edge. The
+            // rounded corners are still clipped by border-radius on the
+            // background itself; only the escaping popovers need to overflow.
+            overflow: "visible",
             // No opacity dim when locked — that made the input look
             // visually disconnected from the permission card stacked
             // above it (one bright, one washed out). The placeholder
@@ -4700,7 +4214,7 @@ export function ChatInput({
                 aria-hidden="true"
                 style={{
                   position: "absolute", inset: 0, pointerEvents: "none",
-                  padding: attachments.length > 0 ? "10px 34px 4px 14px" : "11px 34px 4px 14px",
+                  padding: attachments.length > 0 ? "11px 13px 7px 13px" : "12px 13px 7px 13px",
                   fontSize: 13, lineHeight: 1.55, fontFamily: "inherit",
                   whiteSpace: "pre-wrap", wordBreak: "break-word",
                   overflow: "hidden", color: "transparent",
@@ -4824,14 +4338,15 @@ export function ChatInput({
             rows={1}
             style={{
               display: "block", width: "100%",
-              // Compact composer: 11px vertical padding for ~42px
-              // total height — matches the reference's tighter row.
+              // Tight single-line composer when empty — grows as the user
+              // types. The toolbar sits right below so there's no dead
+              // vertical void in the card.
               padding: attachments.length > 0
-                ? "10px 34px 10px 14px"
-                : "11px 34px 11px 14px",
+                ? "11px 13px 7px 13px"
+                : "12px 13px 7px 13px",
               background: "transparent", border: "none", outline: "none", resize: "none",
-              fontSize: 13, lineHeight: 1.55, color: "var(--foreground)", fontFamily: "inherit",
-              minHeight: 42, maxHeight: 220, overflowY: "auto", boxSizing: "border-box",
+              fontSize: 13, lineHeight: 1.5, color: "var(--foreground)", fontFamily: "inherit",
+              minHeight: 22, maxHeight: 220, overflowY: "auto", boxSizing: "border-box",
               position: "relative", /* sits above absolute mirror */
             }}
           />
@@ -4884,49 +4399,9 @@ export function ChatInput({
             </div>
           )}
 
-          {/* In-box send / stop — frameless icon flush right.
-              Two states only:
-                • streaming     → filled red Square (stop)
-                • idle / typing → CornerDownLeft (⏎ Enter glyph)
-              Position mirrors the `›` prompt chevron on the left:
-              left:11 → right:11, same vertical center. Frameless
-              (no bg, no border) — single glyph affordance. */}
-          <button
-            onClick={submit}
-            title={streaming ? "Stop (Esc)" : "Send (Enter)"}
-            disabled={!btnActive}
-            onMouseDown={e => e.preventDefault()}
-            style={{
-              position: "absolute", right: 11, bottom: 11,
-              width: 18, height: 18, borderRadius: 4, flexShrink: 0,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              background: "transparent",
-              border: "none", outline: "none",
-              color: streaming
-                ? "#f87171"
-                : canSend
-                ? "#f5f5f5"
-                : "#9a9a9a",
-              cursor: btnActive ? "pointer" : "default",
-              transition: "color 0.15s",
-            }}
-            onMouseEnter={e => {
-              if (!btnActive) return;
-              if (streaming) e.currentTarget.style.color = "#fb7474";
-              else e.currentTarget.style.color = "#ffffff";
-            }}
-            onMouseLeave={e => {
-              e.currentTarget.style.color = streaming
-                ? "#f87171"
-                : canSend
-                ? "#f5f5f5"
-                : "#9a9a9a";
-            }}
-          >
-            {streaming
-              ? <Square size={12} strokeWidth={0} style={{ fill: "currentColor" }} />
-              : <CornerDownLeft size={14} strokeWidth={2} />}
-          </button>
+          {/* (Send button lives in the in-box toolbar row below now —
+              see the right cluster — so the input area stays a clean
+              text field with no floating glyph.) */}
 
           {/* Border-trace overlay — SVG that follows the input's
               rounded perimeter with a soft white segment drifting
@@ -4973,16 +4448,15 @@ export function ChatInput({
             </svg>
           )}
           </div>
-        </div>
 
-        {/* ── External toolbar ── (outside the input box, transparent bg)
-            Compact one-row toolbar — bigger size felt like a separate
-            "panel" rather than a footer for the input. Now sized to
-            match a status-bar / command-bar in modern editors. */}
-        <div style={{
-          display: "flex", alignItems: "center",
-          padding: "6px 2px 0", gap: 0,
-        }}>
+          {/* ── In-box toolbar ── the control row lives INSIDE the input
+              card (bottom bar), so the whole composer reads as ONE cohesive
+              surface: text field on top, controls + Send on the bottom edge.
+              Left = permission + tool actions; right = model chip + Send. */}
+          <div style={{
+            display: "flex", alignItems: "center",
+            padding: "1px 8px 8px", gap: 1,
+          }}>
 
           {/* LEFT — flex:1 so the right cluster gets pushed to the
               right edge but only WITHIN the available row width
@@ -5200,77 +4674,32 @@ export function ChatInput({
               );
             })()}
 
-            {/* Tool cluster — + (attach), then mic with its own
-                device-picker chevron RIGHT NEXT TO it (split
-                button). The user explicitly asked for the chevron
-                to live next to the mic, since it's the mic's
-                input-device dropdown — not a separate "more". */}
-            <ToolBtn title="Attach file (or drag & drop)" onClick={() => fileRef.current?.click()}><Plus size={12} strokeWidth={2} /></ToolBtn>
-            {/* Enhance — Wand icon. Sits between + and the
-                transcript-view button so it reads as an "input
-                action". Dim + non-interactive when there's no text;
-                vibrant fg color when there IS text; ⌘I keyboard
-                shortcut still works whether the icon is dim or
-                live. While running, the icon swaps to a glowing
-                wand with a pulsing blue halo (wand-shimmer
-                keyframe) — purposely "working" feel, not a generic
-                spinner. The click triggers a brief wand-pop pop so
-                the user gets immediate feedback before the network
-                call returns. */}
-            <button
-              onClick={() => void handleEnhance()}
-              onMouseDown={(e) => e.preventDefault()}
-              disabled={enhancing || disabled || locked || !hasText}
-              title={
-                enhancing  ? "Enhancing…"
-                : !hasText ? "Type a prompt to enhance"
-                : "Enhance prompt (⌘I)"
-              }
-              style={{
-                width: 22, height: 22, borderRadius: 5, flexShrink: 0,
-                display: "flex", alignItems: "center", justifyContent: "center",
-                background: enhancing ? "rgba(96,165,250,0.10)" : "none",
-                border: "none", outline: "none",
-                cursor: (enhancing || !hasText) ? "default" : "pointer",
-                color: enhancing
-                  ? "rgba(96, 165, 250, 0.95)"          // vibrant blue while working
-                  : hasText
-                    ? "var(--c-fg)"                      // FULL fg when ready (was --c-low)
-                    : "var(--c-dim)",                    // dim when empty
-                transition: "color 0.12s, background 0.12s",
-              }}
-              onMouseEnter={(e) => {
-                if (!enhancing && hasText) {
-                  e.currentTarget.style.background = "rgba(var(--fg-rgb), 0.08)";
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (!enhancing) {
-                  e.currentTarget.style.background = "none";
-                }
-              }}
-            >
-              <Wand2 size={12} strokeWidth={1.75} />
-            </button>
-            <TranscriptViewButton />
+            {/* Tool cluster — sleeker. The frequent actions stay visible
+                (Plus = attach, Mic = voice), and the secondary actions
+                (Enhance + Transcript view) collapse into a single "More"
+                popover so the footer reads as 3 buttons instead of 5.
+                Result: same affordances, calmer row. */}
+            <ToolBtn title="Attach file (or drag & drop)" onClick={() => fileRef.current?.click()}><Plus size={14} strokeWidth={1.9} /></ToolBtn>
+            <MoreActionsMenu
+              onEnhance={() => void handleEnhance()}
+              enhancing={enhancing}
+              canEnhance={!enhancing && !disabled && !locked && hasText}
+            />
             <MicButton onTranscript={insertVoiceText} />
           </div>
 
-          {/* RIGHT — provider · model · effort + context arc.
-              flexShrink:0 keeps it from overflowing when the row
-              gets tight; the left flex:1 spacer pushes it to the
-              right edge. Layout: [logo] [model] [·] [effort] [▾] [arc] */}
+          {/* RIGHT — Routing · Model · MCP. Plain row, no enclosing pill or
+              dividers, so the right side reads the SAME way as the left
+              (Bypass + tool icons). RoutingChip / MCPStatusButton self-hide
+              when their service is off (lit=false / 0 servers) so the row
+              stays compact when nothing's live. */}
           <div style={{
-            display: "flex", alignItems: "center", gap: 6,
+            display: "inline-flex", alignItems: "center", gap: 6,
             flexShrink: 0,
           }}>
-            {/* Routing status — sits LEFT of the model button. Green
-                dot when intelligent routing is on; clicking opens a
-                small popover with the active decision + proxy. The
-                "below the composer" status bar is replaced by this
-                tighter placement so the toolbar doesn't get crowded. */}
             <RoutingChip />
             <button
+              data-model-trigger="1"
               onClick={() => setOpenDrop(d => d === "model" ? null : "model")}
               style={{
                 display: "flex", alignItems: "center", gap: 5,
@@ -5307,21 +4736,53 @@ export function ChatInput({
                 cluster together (tools vs. tokens). */}
             <MCPStatusButton />
 
-            {/* Context-window ring — sits IMMEDIATELY to the
-                right of the model button. Auto-polls every 8s
-                even when closed, so the fill grows live as the
-                conversation progresses (was previously only
-                fetched on click → ring stayed empty most of
-                the time). Click expands the breakdown. */}
-            <ContextArcPopover
-              sessionId={sessionId}
-              max={contextMaxTokens}
-              fallbackPct={contextPercent}
-              fallbackUsed={contextUsedTokens}
-              fallbackUsage={sessionUsage}
-            />
+            {/* Context-window indicator moved OUT of the toolbar — it now
+                lives inside the model picker (click the model chip → context
+                usage shown at the bottom). Keeps the toolbar minimal. */}
+
+            {/* Send / stop — ultra-minimal: a bare ↑ glyph, no fill, no
+                border. Brightens from low→high as the prompt becomes
+                sendable; streaming shows a red ▢ stop. Subtle hover bg keeps
+                it tactile without chrome. */}
+            <button
+              onClick={submit}
+              title={streaming ? "Stop (Esc)" : "Send (Enter)"}
+              disabled={!btnActive}
+              onMouseDown={e => e.preventDefault()}
+              style={{
+                marginLeft: 2,
+                width: 24, height: 24, borderRadius: 5, flexShrink: 0,
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+                background: "transparent",
+                border: "none", outline: "none",
+                color: streaming
+                  ? "#f87171"
+                  : canSend
+                    ? "var(--c-high)"
+                    : "var(--c-dim)",
+                cursor: btnActive ? "pointer" : "default",
+                transition: "background 0.12s, color 0.12s",
+              }}
+              onMouseEnter={e => {
+                if (!btnActive) return;
+                e.currentTarget.style.background = streaming
+                  ? "rgba(248,113,113,0.12)"
+                  : "rgba(var(--fg-rgb),0.06)";
+                if (!streaming) e.currentTarget.style.color = "var(--c-high)";
+              }}
+              onMouseLeave={e => {
+                e.currentTarget.style.background = "transparent";
+                if (!streaming) e.currentTarget.style.color = canSend ? "var(--c-high)" : "var(--c-dim)";
+              }}
+            >
+              {streaming
+                ? <Square size={11} strokeWidth={0} style={{ fill: "currentColor" }} />
+                : <ArrowUp size={16} strokeWidth={2.2} />}
+            </button>
+
           </div>
         </div>
+      </div>
       </div>
     </div>
   );

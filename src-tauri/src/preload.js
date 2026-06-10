@@ -520,6 +520,11 @@ document.addEventListener("mousedown", function (e) {
         var o = opts || {};
         return invoke("pty_spawn", {
           shell: o.shell || null, cwd: o.cwd || null, env: o.env || null,
+          // Forward the measured cell box so the PTY boots at the renderer's
+          // real size — otherwise a long zsh / powerlevel10k prompt would
+          // wrap on the first paint before the post-spawn resize lands.
+          cols: o.cols ? Number(o.cols) | 0 : null,
+          rows: o.rows ? Number(o.rows) | 0 : null,
         });
       },
       ptyWrite: function (id, data) { return invoke("pty_write", { id: String(id), data: String(data) }); },

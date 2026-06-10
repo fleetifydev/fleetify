@@ -852,13 +852,24 @@ export interface ClaudeSession {
   session_id: string;
   summary: string;
   updated_at: string;
+  /** Friendly label of the Claude account this transcript belongs to —
+   *  `"System"` for `~/.claude`, the dir name (e.g. `".claude-2"`) for
+   *  siblings. Backend populates it for the multi-account scan; older
+   *  builds omit the field. */
+  account_label?: string;
+  /** Original filesystem path the conversation was held in — shown as a
+   *  folder badge under each row so the user knows which project a session
+   *  belongs to without having to click into it. */
+  project_path?: string;
 }
 
-export async function fetchClaudeSessions(projectPath: string): Promise<ClaudeSession[]> {
-  // apiFetch attaches the Bearer token — the backend route is
-  // protected by Depends(get_current_user), so a plain fetch silently
-  // 401s and the History chip looks empty.
-  const res = await apiFetch(`${API_BASE}/claude-sessions?path=${encodeURIComponent(projectPath)}`);
+/** Resume-from-Claude history. With no `projectPath`, the backend returns
+ *  EVERY conversation across EVERY signed-in Claude account (the global
+ *  history the user expects from the toolbar History chip); with a path, it
+ *  filters to that project (legacy single-project behaviour). */
+export async function fetchClaudeSessions(projectPath?: string): Promise<ClaudeSession[]> {
+  const q = projectPath ? `?path=${encodeURIComponent(projectPath)}` : "";
+  const res = await apiFetch(`${API_BASE}/claude-sessions${q}`);
   if (!res.ok) return [];
   return res.json();
 }

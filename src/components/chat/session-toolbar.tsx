@@ -200,6 +200,16 @@ export function SessionToolbar({
   // resumes that conversation instead of starting fresh.
   const [cliHistory, setCliHistory] = useState<ClaudeSession[]>([]);
   const [cliHistoryLoading, setCliHistoryLoading] = useState(false);
+  /** Resume-picker UI: filter to a single Claude account ("All" → every row).
+   *  Resets when the popover closes so a fresh open lands on "All". */
+  const [historyAccountFilter, setHistoryAccountFilter] = useState<string | null>(null);
+  /** Resume-picker UI: free-text filter over the summary preview. */
+  const [historyQuery, setHistoryQuery] = useState("");
+  /** Resume-picker UI: scope. "all" walks every project across every account
+   *  (the user has multiple cwd encodings for the same topic — e.g. `ct` vs
+   *  `canadiantire` — so a folder-scoped picker hides legit history); "folder"
+   *  filters to the active project. Default = "all" so nothing's hidden. */
+  const [historyScope, setHistoryScope] = useState<"all" | "folder">("all");
   const cliHistoryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     // Reset immediately when the folder changes so stale entries don't
@@ -210,7 +220,12 @@ export function SessionToolbar({
     cliHistoryTimer.current = setTimeout(async () => {
       setCliHistoryLoading(true);
       try {
-        const rows = await fetchClaudeSessions(projectPath);
+        // Scope: "all" → global (no path, every account × every project).
+        // Powers the UX where the same logical topic lives under multiple
+        // cwds (e.g. `ct` vs `canadiantire`) — folder-scoped would hide one.
+        const rows = await fetchClaudeSessions(
+          historyScope === "folder" ? projectPath : undefined,
+        );
         // Filter out empty / system-leaked previews — same heuristic
         // the legacy new-agent dialog used. Avoids surfacing rows
         // whose summary is "<local-command-stdout>" or "No
@@ -228,7 +243,7 @@ export function SessionToolbar({
     return () => {
       if (cliHistoryTimer.current) clearTimeout(cliHistoryTimer.current);
     };
-  }, [projectPath, tool]);
+  }, [projectPath, tool, historyScope]);
   // Source tab — Local (browse), Git (repo list + clone-by-URL),
   // Remote (SSH host management), Container (running Docker containers).
   // The Git tab's repo-list state lives inside <GitSourceTab/>.
@@ -1126,13 +1141,29 @@ export function SessionToolbar({
                 )}
               </>
             )}
-            {openMenu === "history" && (
-              <Menu width={360}>
+            {openMenu === "history" && (() => {
+              // Per-account counts + a stable colour key, computed once on
+              // open so the filter chips don't re-flicker as the user types.
+              const counts: Record<string, number> = {};
+              for (const r of cliHistory) {
+                const k = r.account_label || "System";
+                counts[k] = (counts[k] || 0) + 1;
+              }
+              const accounts = Object.keys(counts).sort();
+              const filtered = cliHistory.filter((r) => {
+                const k = r.account_label || "System";
+                if (historyAccountFilter && k !== historyAccountFilter) return false;
+                if (historyQuery && !r.summary.toLowerCase().includes(historyQuery.toLowerCase())) return false;
+                return true;
+              });
+              return (
+              <Menu width={440}>
+                {/* Title row */}
                 <div style={{
-                  padding: "6px 10px 4px",
-                  fontSize: 10.5, fontWeight: 500,
+                  padding: "8px 12px 6px",
+                  fontSize: 10.5, fontWeight: 600,
                   letterSpacing: 0.3, textTransform: "uppercase",
-                  color: "var(--c-dim, #7a7a7a)",
+                  color: "var(--c-dim)",
                   display: "flex", alignItems: "center", justifyContent: "space-between",
                 }}>
                   <span>Resume from Claude CLI</span>
@@ -1140,65 +1171,206 @@ export function SessionToolbar({
                     <span style={{ textTransform: "none", letterSpacing: 0, fontWeight: 400 }}>Loading…</span>
                   )}
                 </div>
-                {count > 0 ? (
-                  cliHistory.map(row => {
-                    const selected = row.session_id === claudeSessionId;
+
+                {/* Scope switch — "All projects" (default) vs "This folder".
+                    Same logical bug bounty often spans multiple cwds (e.g.
+                    `~/Desktop/projects/ct` for the canadiantire bounty and
+                    `~/Desktop/projects/canadiantire` for follow-ups). A folder
+                    scope hides one or the other; default-global keeps both
+                    reachable. The folder option stays for users who DO want
+                    to narrow down. */}
+                <div style={{
+                  display: "flex", gap: 0,
+                  padding: "0 10px 6px",
+                }}>
+                  {([
+                    { id: "all", label: "All projects" },
+                    { id: "folder", label: "This folder" },
+                  ] as const).map((opt, i) => {
+                    const active = historyScope === opt.id;
                     return (
-                      <MenuRow
-                        key={row.session_id}
-                        onClick={async () => {
-                          setOpenMenu(null);
-                          if (selected) return; // re-click same row → no-op
-                          if (isDraft) {
-                            // ── Local-only mode: stash only, do NOT commit ──
-                            // Previously this branch eagerly committed the
-                            // draft to the DB so fetchClaudeHistory had a
-                            // real session id to look up. That violated the
-                            // "session row only on first user message"
-                            // contract: 21 zombie "New chat" rows piled up
-                            // because every accidental row click materialised
-                            // an empty session. Now we just stash the
-                            // claude_session_id; the resumed history will
-                            // load naturally once commitDraft fires from
-                            // the user's first send.
-                            setDraftField({ claude_session_id: row.session_id });
-                          } else {
-                            // Real session — PATCH claude_session_id
-                            // then reload history into the chat view.
-                            patch({ claude_session_id: row.session_id });
-                            const history = await fetchClaudeHistory(sessionId).catch(() => []);
-                            const safe: ChatMessage[] = Array.isArray(history)
-                              ? (history as unknown[]).flatMap(h =>
-                                  h && typeof h === "object" && "role" in (h as object)
-                                    ? [h as ChatMessage]
-                                    : [],
-                                )
-                              : [];
-                            setMessages(sessionId, safe);
-                          }
+                      <button
+                        key={opt.id}
+                        onClick={() => setHistoryScope(opt.id)}
+                        onMouseDown={e => e.preventDefault()}
+                        style={{
+                          flex: 1, height: 26, padding: "0 10px",
+                          background: active ? "rgba(var(--fg-rgb),0.10)" : "rgba(var(--fg-rgb),0.03)",
+                          border: "1px solid var(--c-brd)",
+                          borderLeftWidth: i === 0 ? 1 : 0,
+                          borderTopLeftRadius: i === 0 ? 6 : 0,
+                          borderBottomLeftRadius: i === 0 ? 6 : 0,
+                          borderTopRightRadius: i === 1 ? 6 : 0,
+                          borderBottomRightRadius: i === 1 ? 6 : 0,
+                          color: active ? "var(--c-high)" : "var(--c-low)",
+                          fontSize: 11.5, fontWeight: 500, cursor: "pointer",
+                          fontFamily: "inherit",
+                          transition: "background 0.1s, color 0.1s",
                         }}
-                        primary={row.summary || row.session_id.slice(0, 8)}
-                        secondary={formatRelative(row.updated_at)}
-                        left={<ProviderLogo tool="claude" size={11} />}
-                        right={selected ? <Check size={11} style={{ color: "var(--c-fg, #ffffff)" }} /> : undefined}
-                      />
+                      >
+                        {opt.label}
+                      </button>
                     );
-                  })
+                  })}
+                </div>
+
+                {/* Account filter chips. "All" first, then each discovered
+                    account with its row count. Active chip = filled tonal,
+                    others ghost — same family as the rest of the toolbar. */}
+                <div style={{ display: "flex", gap: 4, padding: "0 10px 6px", flexWrap: "wrap" }}>
+                  {([null, ...accounts] as (string | null)[]).map((acc) => {
+                    const active = historyAccountFilter === acc;
+                    const dot = acc === null ? null : accountDotColor(acc);
+                    const label = acc === null ? "All" : acc === "System" ? "Main" : acc.replace(/^\./, "");
+                    const n = acc === null ? cliHistory.length : (counts[acc] || 0);
+                    return (
+                      <button
+                        key={acc ?? "_all"}
+                        onClick={() => setHistoryAccountFilter(acc)}
+                        onMouseDown={e => e.preventDefault()}
+                        style={{
+                          display: "inline-flex", alignItems: "center", gap: 5,
+                          height: 22, padding: "0 8px", borderRadius: 5,
+                          background: active ? "rgba(var(--fg-rgb),0.10)" : "rgba(var(--fg-rgb),0.04)",
+                          border: "1px solid var(--c-brd)",
+                          color: active ? "var(--c-high)" : "var(--c-low)",
+                          fontSize: 11, fontWeight: 500, cursor: "pointer",
+                          fontFamily: "inherit",
+                          transition: "background 0.1s, color 0.1s",
+                        }}
+                      >
+                        {dot && <span style={{ width: 5, height: 5, borderRadius: "50%", background: dot }}/>}
+                        {label}
+                        <span style={{ color: "var(--c-dim)", fontFamily: "var(--font-mono)", fontSize: 10 }}>{n}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Search box — quick free-text over the conversation
+                    summary. Inline, no border, just a low-contrast pill. */}
+                <div style={{ padding: "0 10px 6px" }}>
+                  <input
+                    placeholder="Search conversations…"
+                    value={historyQuery}
+                    onChange={(e) => setHistoryQuery(e.target.value)}
+                    style={{
+                      width: "100%", height: 26, padding: "0 9px",
+                      background: "rgba(var(--fg-rgb),0.04)",
+                      border: "1px solid var(--c-brd)", borderRadius: 5,
+                      color: "var(--c-high)", fontSize: 11.5,
+                      fontFamily: "inherit", outline: "none",
+                    }}
+                  />
+                </div>
+
+                {/* Conversation list. Each row carries a 2px coloured left rail
+                    keyed to the account, the primary summary, and a meta line
+                    with timestamp + folder badge. Selected row highlights. */}
+                {filtered.length > 0 ? (
+                  <div style={{ maxHeight: 360, overflowY: "auto", padding: "2px 6px 6px" }}>
+                    {filtered.map(row => {
+                      const selected = row.session_id === claudeSessionId;
+                      const accKey = row.account_label || "System";
+                      const accColor = accountDotColor(accKey);
+                      const accDisplay = accKey === "System" ? "Main" : accKey.replace(/^\./, "");
+                      const folder = row.project_path
+                        ? row.project_path.split("/").filter(Boolean).pop()
+                        : null;
+                      return (
+                        <button
+                          key={row.session_id + "::" + accKey}
+                          onClick={async () => {
+                            setOpenMenu(null);
+                            if (selected) return;
+                            if (isDraft) {
+                              setDraftField({ claude_session_id: row.session_id });
+                            } else {
+                              patch({ claude_session_id: row.session_id });
+                              const history = await fetchClaudeHistory(sessionId).catch(() => []);
+                              const safe: ChatMessage[] = Array.isArray(history)
+                                ? (history as unknown[]).flatMap(h =>
+                                    h && typeof h === "object" && "role" in (h as object)
+                                      ? [h as ChatMessage]
+                                      : [],
+                                  )
+                                : [];
+                              setMessages(sessionId, safe);
+                            }
+                          }}
+                          onMouseDown={e => e.preventDefault()}
+                          style={{
+                            position: "relative",
+                            display: "flex", alignItems: "center", gap: 9,
+                            width: "100%", textAlign: "left",
+                            padding: "8px 10px 8px 14px",
+                            background: selected ? "rgba(var(--fg-rgb),0.07)" : "transparent",
+                            border: "none", outline: "none", cursor: "pointer",
+                            borderRadius: 6,
+                            fontFamily: "inherit",
+                            transition: "background 0.1s",
+                          }}
+                          onMouseEnter={e => { if (!selected) (e.currentTarget as HTMLButtonElement).style.background = "rgba(var(--fg-rgb),0.04)"; }}
+                          onMouseLeave={e => { if (!selected) (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
+                        >
+                          {/* 2px coloured rail on the left edge — instantly
+                              keys the row to its account without needing to
+                              read the badge. */}
+                          <span aria-hidden style={{
+                            position: "absolute", left: 5, top: 8, bottom: 8,
+                            width: 2, borderRadius: 1, background: accColor,
+                          }}/>
+                          <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 3 }}>
+                            <span style={{
+                              fontSize: 12.5, color: "var(--c-high)", fontWeight: 500,
+                              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                            }}>{row.summary || row.session_id.slice(0, 8)}</span>
+                            <span style={{
+                              display: "inline-flex", alignItems: "center", gap: 6,
+                              fontSize: 10.5, color: "var(--c-dim)",
+                              fontFamily: "var(--font-mono)",
+                            }}>
+                              <span>{formatRelative(row.updated_at)}</span>
+                              <span style={{ opacity: 0.4 }}>·</span>
+                              <span style={{
+                                display: "inline-flex", alignItems: "center", gap: 4,
+                                color: "var(--c-low)",
+                              }}>
+                                <span style={{ width: 4, height: 4, borderRadius: "50%", background: accColor }}/>
+                                {accDisplay}
+                              </span>
+                              {folder && (
+                                <>
+                                  <span style={{ opacity: 0.4 }}>·</span>
+                                  <span style={{
+                                    color: "var(--c-low)",
+                                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 180,
+                                  }} title={row.project_path}>{folder}</span>
+                                </>
+                              )}
+                            </span>
+                          </span>
+                          {selected && (
+                            <Check size={12} strokeWidth={2.4} style={{ color: "var(--c-high)", flexShrink: 0 }}/>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
                 ) : !cliHistoryLoading ? (
                   <div style={{
-                    padding: "10px 12px 14px",
-                    fontSize: 12, color: "var(--c-low, #b0b0b0)",
-                    lineHeight: 1.5,
+                    padding: "12px 14px 16px",
+                    fontSize: 12, color: "var(--c-low)",
+                    lineHeight: 1.5, textAlign: "center",
                   }}>
-                    No previous Claude conversations were found in
-                    <span style={{ fontFamily: "var(--font-mono, ui-monospace, monospace)", color: "var(--c-med, #d4d4d4)" }}>
-                      {" "}~/.claude/projects/
-                    </span>
-                    {" "}for this folder. New sessions will start fresh.
+                    {historyAccountFilter || historyQuery
+                      ? "No conversations match this filter."
+                      : "No previous Claude conversations found."}
                   </div>
                 ) : null}
               </Menu>
-            )}
+              );
+            })()}
           </Chip>
         );
       })()}
@@ -1334,6 +1506,25 @@ function SourceTab({
   );
 }
 
+/** Stable accent colour per Claude account so each row in the resume picker
+ *  carries an at-a-glance account identity (a 2px coloured left rail + dot).
+ *  System = neutral grey, signed-in siblings rotate through a small purple →
+ *  indigo → teal palette. Ordering is by account label, so a freshly-added
+ *  account inherits the next free slot without changing the others. */
+function accountDotColor(label: string): string {
+  if (label === "System") return "rgb(180,180,190)";
+  const PALETTE = [
+    "rgb(124,106,247)",  // .claude-2 — indigo
+    "rgb(96,165,250)",   // .claude-3 — sky
+    "rgb(64,180,160)",   // .claude-4 — teal
+    "rgb(216,120,196)",  // .claude-5 — pink
+    "rgb(232,168,80)",   // .claude-6 — amber
+  ];
+  const m = /(\d+)/.exec(label);
+  const idx = m ? Math.max(0, parseInt(m[1] ?? "2", 10) - 2) : 0;
+  return PALETTE[idx % PALETTE.length] ?? PALETTE[0]!;
+}
+
 /** Compact relative-time formatter for repo "updated" stamps.
  *  ("3d", "2w", "5mo", "1y") — keeps the row compact while still
  *  giving the user a recency cue. Falls back to empty string for
@@ -1413,7 +1604,7 @@ function MenuRow({
   active?: boolean;
   onClick: () => void;
   primary: string;
-  secondary?: string;
+  secondary?: React.ReactNode;
   left?: React.ReactNode;
   /** Optional small label rendered after `primary` ("Preview",
    *  "Legacy"). Quiet styling — it's a context cue, not a CTA. */

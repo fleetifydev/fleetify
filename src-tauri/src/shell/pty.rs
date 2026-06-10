@@ -30,6 +30,8 @@ pub fn spawn(
     shell: Option<String>,
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
+    cols: Option<u16>,
+    rows: Option<u16>,
 ) -> Result<String, String> {
     let program = shell.unwrap_or_else(|| {
         if cfg!(windows) {
@@ -38,7 +40,7 @@ pub fn spawn(
             std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
         }
     });
-    spawn_argv(app, program, Vec::new(), cwd, env)
+    spawn_argv(app, program, Vec::new(), cwd, env, cols, rows)
 }
 
 /// Like [`spawn`] but runs `program` with explicit `args` — used by the
@@ -52,12 +54,21 @@ pub fn spawn_argv(
     args: Vec<String>,
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
+    cols: Option<u16>,
+    rows: Option<u16>,
 ) -> Result<String, String> {
     let pty_system = native_pty_system();
+    // Honour the renderer's measured size from xterm.js + FitAddon. Without
+    // this the PTY booted at a fixed 100x30 even on a wider webview, so the
+    // shell's first prompt drew at 100 cols and a long zsh / powerlevel10k
+    // path wrapped onto a second line before the renderer's resize landed —
+    // leaving the cursor sitting on a "> " on the line BELOW the path. Sane
+    // floors (40 cols / 8 rows) guard against the worst transient measure
+    // (a momentarily-collapsed pane reporting 0).
     let pair = pty_system
         .openpty(PtySize {
-            rows: 30,
-            cols: 100,
+            rows: rows.unwrap_or(30).max(8),
+            cols: cols.unwrap_or(100).max(40),
             pixel_width: 0,
             pixel_height: 0,
         })
