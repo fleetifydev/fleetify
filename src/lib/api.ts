@@ -1,3 +1,5 @@
+import type { EffortCapability } from "@/lib/providers-api";
+
 const API_BASE = "/api";
 
 // ── window.fleetify (provided by Electron preload) ────────────
@@ -132,6 +134,7 @@ export interface DiscoveredModel {
   label: string;
   ctx?: string;
   supports_effort?: boolean;
+  effort?: EffortCapability;
   group?: string;
   note?: string;
   endpoint?: string;

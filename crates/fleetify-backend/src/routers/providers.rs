@@ -393,6 +393,10 @@ struct ProviderModel {
     note: Option<String>,
     /// Per-model endpoint override (Perplexity Agent → `/v1/agent`). Catalog-only.
     endpoint: Option<String>,
+    /// Rich effort descriptor (EffortCapability JSON) from the remote catalog.
+    /// Opaque here — passed through verbatim to the renderer. `None` for
+    /// live-discovery sources (OpenRouter/Cloudflare) that don't report it.
+    effort: Option<serde_json::Value>,
 }
 type ProviderModelList = Vec<ProviderModel>;
 
@@ -409,6 +413,7 @@ impl ProviderModel {
             group: None,
             note: None,
             endpoint: None,
+            effort: None,
         }
     }
 }
@@ -474,6 +479,9 @@ fn provider_model_json(m: &ProviderModel) -> Value {
     }
     if let Some(e) = &m.endpoint {
         o.insert("endpoint".into(), json!(e));
+    }
+    if let Some(e) = &m.effort {
+        o.insert("effort".into(), e.clone());
     }
     Value::Object(o)
 }
@@ -637,6 +645,7 @@ fn parse_remote_catalog(body: &Value) -> ProviderModelList {
                 group: str_field("group"),
                 note: str_field("note"),
                 endpoint: str_field("endpoint"),
+                effort: m.get("effort").cloned().filter(|v| !v.is_null()),
             })
         })
         .collect()
@@ -2018,7 +2027,7 @@ mod tests {
             "provider": {
                 "id": "claude", "name": "Claude Code", "kind": "cli",
                 "models": [
-                    { "id": "claude-opus-4-8", "label": "Opus 4.8", "context": 1_000_000, "supports_effort": true }
+                    { "id": "claude-opus-4-8", "label": "Opus 4.8", "context": 1_000_000, "supports_effort": true, "effort": {"kind":"levels","levels":["low","high"],"default":"high"} }
                 ]
             }
         });
@@ -2028,6 +2037,9 @@ mod tests {
         assert_eq!(out[0].label, "Opus 4.8");
         assert_eq!(out[0].ctx.as_deref(), Some("1M"));
         assert_eq!(out[0].supports_effort, Some(true));
+        // effort passes through verbatim
+        let effort = serde_json::json!({"kind":"levels","levels":["low","high"],"default":"high"});
+        assert_eq!(out[0].effort.as_ref(), Some(&effort));
     }
 
     #[test]
@@ -2046,6 +2058,18 @@ mod tests {
         assert_eq!(out[0].endpoint.as_deref(), Some("/v1/agent"));
         // Explicit JSON null collapses to None (omitted from the wire shape).
         assert_eq!(out[0].note, None);
+    }
+
+    #[test]
+    fn parse_remote_catalog_treats_null_effort_as_absent() {
+        // An explicit JSON null effort collapses to None so it's omitted from
+        // the wire shape, mirroring the `note: null -> None` behaviour.
+        let body = json!({ "models": [
+            { "id": "m1", "label": "M1", "effort": null }
+        ]});
+        let out = parse_remote_catalog(&body);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].effort.is_none());
     }
 
     #[test]
@@ -2157,6 +2181,9 @@ mod tests {
                 group: Some("Agent API".into()),
                 note: Some("Reasoning".into()),
                 endpoint: Some("/v1/agent".into()),
+                effort: Some(serde_json::json!({
+                    "kind": "levels", "levels": ["low", "high"], "default": "high"
+                })),
             },
             ProviderModel::basic("c/d".into(), "D".into(), None),
         ];
@@ -2168,10 +2195,14 @@ mod tests {
         assert_eq!(v["models"][0]["group"], "Agent API");
         assert_eq!(v["models"][0]["note"], "Reasoning");
         assert_eq!(v["models"][0]["endpoint"], "/v1/agent");
+        // effort descriptor round-trips back out verbatim.
+        assert_eq!(v["models"][0]["effort"]["kind"], "levels");
+        assert_eq!(v["models"][0]["effort"]["default"], "high");
         // Absent optionals are omitted from the wire shape (not null).
         assert!(v["models"][1].get("ctx").is_none());
         assert!(v["models"][1].get("supports_effort").is_none());
         assert!(v["models"][1].get("group").is_none());
+        assert!(v["models"][1].get("effort").is_none());
         assert_eq!(v["models"][1]["label"], "D");
     }
 

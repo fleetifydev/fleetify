@@ -2738,7 +2738,7 @@ export function ChatInput({
         setDiscoveredModels((prev) => ({
           ...prev,
           [agentId]: models.map((m) => {
-            const eff = effortForDiscoveredModel(agentId, m.id, providerTiles);
+            const eff = m.effort ?? effortForDiscoveredModel(agentId, m.id, providerTiles);
             return {
               id: m.id,
               label: m.label,
@@ -2760,7 +2760,7 @@ export function ChatInput({
         setDiscoveredModels((prev) => ({
           ...prev,
           [pid]: models.map((m) => {
-            const eff = effortForDiscoveredModel(pid, m.id, providerTiles);
+            const eff = m.effort ?? effortForDiscoveredModel(pid, m.id, providerTiles);
             return {
               id: m.id,
               label: m.label,

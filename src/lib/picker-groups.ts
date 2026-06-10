@@ -44,13 +44,13 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
   claude: [
     {
       id: "claude-opus-4-8", label: "Opus 4.8", ctx: "200K",
-      effort: { kind: "levels", levels: ["low", "medium", "high", "xhigh", "max"], default: "high" },
-      supports_effort: true,
+      effort: EFFORT_NONE,
+      supports_effort: false,
     },
     {
       id: "claude-sonnet-4-6", label: "Sonnet 4.6", ctx: "200K",
-      effort: { kind: "levels", levels: ["low", "medium", "high", "max"], default: "high" },
-      supports_effort: true,
+      effort: EFFORT_NONE,
+      supports_effort: false,
     },
     {
       id: "claude-haiku-4-5-20251001", label: "Haiku 4.5", ctx: "200K",
@@ -61,30 +61,30 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
   codex: [
     {
       id: "gpt-5.2", label: "GPT-5.2", ctx: "200K",
-      effort: { kind: "levels", levels: ["low", "medium", "high", "xhigh"], default: "medium" },
-      supports_effort: true,
+      effort: EFFORT_NONE,
+      supports_effort: false,
     },
     {
       id: "gpt-5.4", label: "GPT-5.4", ctx: "200K",
-      effort: { kind: "levels", levels: ["low", "medium", "high", "xhigh"], default: "medium" },
-      supports_effort: true,
+      effort: EFFORT_NONE,
+      supports_effort: false,
     },
     {
       id: "gpt-5.5", label: "GPT-5.5", ctx: "200K",
-      effort: { kind: "levels", levels: ["low", "medium", "high", "xhigh"], default: "medium" },
-      supports_effort: true,
+      effort: EFFORT_NONE,
+      supports_effort: false,
     },
   ],
   gemini: [
     {
       id: "gemini-3.1-pro-preview", label: "3.1 Pro", ctx: "1M",
-      effort: { kind: "thinking_level", levels: ["low", "high"], default: "high" },
-      supports_effort: true,
+      effort: EFFORT_NONE,
+      supports_effort: false,
     },
     {
       id: "gemini-3-flash-preview", label: "3 Flash", ctx: "1M",
-      effort: { kind: "thinking_level", levels: ["low", "high"], default: "high" },
-      supports_effort: true,
+      effort: EFFORT_NONE,
+      supports_effort: false,
     },
     {
       id: "gemini-3.1-flash-lite-preview", label: "3.1 Lite", ctx: "1M",
@@ -100,7 +100,7 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
     },
     {
       id: "kimi-k2.6-thinking", label: "Kimi K2.6 Thinking", ctx: "256K",
-      effort: { kind: "toggle", default: true },
+      effort: EFFORT_NONE,
       supports_effort: false,
     },
     {
@@ -476,22 +476,18 @@ export function modelsForTile(tile: ProviderTile, dynamic?: PickerModel[]): Pick
  *
  *  Models fetched at runtime — `/agents/{id}/models` for the baked-lineup CLI
  *  agents (claude/codex/gemini/kimi), or a bridge `available_models_update` —
- *  carry no capability descriptor on the wire, so callers must re-derive it or
- *  the Effort column goes blank for a model that actually has levels. CLI
- *  agents keep their per-model effort in the static `CLI_MODELS` table (their
- *  catalog `default_models` is empty); HTTP providers ship it in the tile's
- *  `capabilities.model_efforts`. Falls back to "none". */
+ *  may not carry a capability descriptor on the wire, so callers re-derive it
+ *  here or the Effort column goes blank for a model that actually has levels.
+ *  Effort now comes from the provider tile's registry-backed
+ *  `capabilities.model_efforts` (the same snapshot the backend resolves from the
+ *  model registry) for CLI and HTTP providers alike. Falls back to "none". */
 export function effortForDiscoveredModel(
   providerId: string,
   modelId: string,
   tiles: ProviderTile[],
 ): EffortCapability {
-  const cli = CLI_MODELS[providerId]?.find((m) => m.id === modelId)?.effort;
-  if (cli && cli.kind !== "none") return cli;
   const tile = tiles.find((t) => t.spec.id === providerId);
-  return (
-    tile?.capabilities?.model_efforts?.find((me) => me.id === modelId)?.effort ?? EFFORT_NONE
-  );
+  return tile?.capabilities?.model_efforts?.find((me) => me.id === modelId)?.effort ?? EFFORT_NONE;
 }
 
 /** Resolve the (tool, model) pair to seed the Fleet hub on first launch.

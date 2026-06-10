@@ -12,6 +12,7 @@
 
 pub mod capabilities;
 pub mod catalog;
+pub mod catalog_snapshot;
 pub mod helpers;
 pub mod keys;
 

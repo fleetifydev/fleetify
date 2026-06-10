@@ -40,43 +40,63 @@ const baseTile = (
 });
 
 describe("effortForDiscoveredModel", () => {
-  // Regression: discovered/live models (e.g. /agents/claude/models on picker
-  // open) used to be built with a hard-coded effort:none, which overrode the
-  // CLI_MODELS fallback and blanked the Effort column for Claude/Codex/Gemini.
-  it("resolves a CLI agent's per-model effort from CLI_MODELS", () => {
-    const eff = effortForDiscoveredModel("claude", "claude-opus-4-8", []);
+  // Effort is now sourced exclusively from the provider tile's registry-backed
+  // `capabilities.model_efforts` snapshot — no longer re-derived from CLI_MODELS
+  // (which keeps only the cold-start id/label list). Discovered/live models that
+  // arrive without a wire `effort` get re-hydrated from this tile lookup so the
+  // Effort column isn't blanked for a model that actually has levels.
+  it("reads a model's effort from the tile's registry-backed model_efforts", () => {
+    const tile = baseTile("claude", "Claude Code", "cli", []);
+    tile.capabilities.model_efforts = [
+      { id: "claude-opus-4-8", effort: { kind: "levels", levels: ["low", "medium", "high", "xhigh", "max"], default: "high" } },
+    ];
+    const eff = effortForDiscoveredModel("claude", "claude-opus-4-8", [tile]);
     expect(eff.kind).toBe("levels");
     if (eff.kind === "levels") expect(eff.levels).toContain("max");
   });
-  it("returns none for a CLI model with no effort lever", () => {
-    expect(effortForDiscoveredModel("claude", "claude-haiku-4-5-20251001", []).kind).toBe("none");
-  });
-  it("falls back to tile model_efforts for HTTP discovered models", () => {
+  it("works for HTTP providers too (tile model_efforts)", () => {
     const tile = baseTile("openai", "OpenAI", "api", []);
     tile.capabilities.model_efforts = [
       { id: "gpt-5.5", effort: { kind: "levels", levels: ["low", "medium", "high"], default: "medium" } },
     ];
     expect(effortForDiscoveredModel("openai", "gpt-5.5", [tile]).kind).toBe("levels");
   });
-  it("returns none for an unknown provider/model", () => {
+  it("returns none for a model the tile's model_efforts doesn't list", () => {
+    const tile = baseTile("claude", "Claude Code", "cli", []);
+    tile.capabilities.model_efforts = [
+      { id: "claude-opus-4-8", effort: { kind: "levels", levels: ["low", "high"], default: "high" } },
+    ];
+    expect(effortForDiscoveredModel("claude", "claude-haiku-4-5-20251001", [tile]).kind).toBe("none");
+  });
+  it("returns none when the tile carries no model_efforts entry", () => {
+    const tile = baseTile("claude", "Claude Code", "cli", []);
+    expect(effortForDiscoveredModel("claude", "claude-opus-4-8", [tile]).kind).toBe("none");
+  });
+  it("returns none for an unknown provider (no matching tile)", () => {
     expect(effortForDiscoveredModel("nope", "whatever", []).kind).toBe("none");
   });
 });
 
 describe("buildPickerGroups", () => {
-  it("claude-opus-4-8 has a levels effort containing xhigh and max", () => {
+  // B5: CLI_MODELS is now the cold-start id/label LIST only — it carries no
+  // effort. Effort rides in via the live `/models` response (dynamicModels) or
+  // the tile's registry-backed `capabilities.model_efforts`, NOT this table. So
+  // the fallback list always surfaces `none`/`false` with ids+labels+ctx intact.
+  it("CLI_MODELS fallback entries carry no effort but keep id/label/ctx", () => {
     const groups = buildPickerGroups([], []);
     const claude = groups.find((g) => g.id === "claude");
     const opus = claude?.models.find((m) => m.id === "claude-opus-4-8");
-    expect(opus?.effort.kind).toBe("levels");
-    if (opus?.effort.kind === "levels") {
-      expect(opus.effort.levels).toContain("xhigh");
-      expect(opus.effort.levels).toContain("max");
-    }
-    expect(opus?.supports_effort).toBe(true);
+    expect(opus?.label).toBe("Opus 4.8");
+    expect(opus?.ctx).toBe("200K");
+    expect(opus?.effort.kind).toBe("none");
+    expect(opus?.supports_effort).toBe(false);
+    const sonnet = claude?.models.find((m) => m.id === "claude-sonnet-4-6");
+    expect(sonnet?.label).toBe("Sonnet 4.6");
+    expect(sonnet?.effort.kind).toBe("none");
+    expect(sonnet?.supports_effort).toBe(false);
   });
 
-  it("a none-effort model has supports_effort === false", () => {
+  it("a cold-start CLI model has supports_effort === false", () => {
     const groups = buildPickerGroups([], []);
     const claude = groups.find((g) => g.id === "claude");
     const haiku = claude?.models.find((m) => m.id === "claude-haiku-4-5-20251001");
@@ -84,28 +104,14 @@ describe("buildPickerGroups", () => {
     expect(haiku?.supports_effort).toBe(false);
   });
 
-  it("claude-sonnet-4-6 has levels low/medium/high/max but NOT xhigh", () => {
-    const groups = buildPickerGroups([], []);
-    const claude = groups.find((g) => g.id === "claude");
-    const sonnet = claude?.models.find((m) => m.id === "claude-sonnet-4-6");
-    expect(sonnet?.effort.kind).toBe("levels");
-    if (sonnet?.effort.kind === "levels") {
-      expect(sonnet.effort.levels).toContain("low");
-      expect(sonnet.effort.levels).toContain("max");
-      expect(sonnet.effort.levels).not.toContain("xhigh");
-    }
-  });
-
-  it("gemini CLI models have thinking_level effort with low and high", () => {
+  it("gemini CLI fallback models keep their id/label/ctx with no effort", () => {
     const groups = buildPickerGroups([], []);
     const gemini = groups.find((g) => g.id === "gemini");
     const pro = gemini?.models.find((m) => m.id === "gemini-3.1-pro-preview");
-    expect(pro?.effort.kind).toBe("thinking_level");
-    if (pro?.effort.kind === "thinking_level") {
-      expect(pro.effort.levels).toContain("low");
-      expect(pro.effort.levels).toContain("high");
-    }
-    // lite has no effort
+    expect(pro?.label).toBe("3.1 Pro");
+    expect(pro?.ctx).toBe("1M");
+    expect(pro?.effort.kind).toBe("none");
+    expect(pro?.supports_effort).toBe(false);
     const lite = gemini?.models.find((m) => m.id === "gemini-3.1-flash-lite-preview");
     expect(lite?.effort.kind).toBe("none");
     expect(lite?.supports_effort).toBe(false);
@@ -374,6 +380,22 @@ describe("buildPickerGroups", () => {
     const tiles = [baseTile("openai", "OpenAI", "api", ["gpt-5"])];
     const groups = buildPickerGroups(tiles, []);
     expect(groups.find((g) => g.id === "openai")?.searchable).toBe(false);
+  });
+
+  // Registry-driven effort: a discovered model can carry its own `effort`
+  // descriptor (the backend resolved it from the model registry). That value
+  // must ride through buildPickerGroups onto the picker model verbatim — it is
+  // NOT re-derived from CLI_MODELS, so registry-only models (e.g. a brand-new
+  // "Fable 5" the renderer has never heard of) still get the right effort.
+  it("dynamicModels effort descriptor is preserved on the picker model", () => {
+    const tiles = [baseTile("claude", "Claude Code", "cli")];
+    const groups = buildPickerGroups(tiles, ["claude"], {
+      claude: [{ id: "claude-fable-5", label: "Fable 5",
+        effort: { kind: "levels", levels: ["low", "high"], default: "high" },
+        supports_effort: true }],
+    });
+    const claude = groups.find((g) => g.id === "claude")!;
+    expect(claude.models[0].effort).toEqual({ kind: "levels", levels: ["low", "high"], default: "high" });
   });
 });
 

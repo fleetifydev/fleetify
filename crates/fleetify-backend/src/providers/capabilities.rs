@@ -3,7 +3,7 @@
 //! literals) so each provider is an independent, testable unit. See
 //! docs/superpowers/specs/2026-06-05-effort-permission-architecture-design.md.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// When a config change for a provider's bridge takes effect.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -57,18 +57,18 @@ pub struct ToolMatrixCapability {
 }
 
 /// A model's native effort surface.
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EffortCapability {
     /// Discrete level set (subset of low|medium|high|xhigh|max).
     Levels {
-        levels: &'static [&'static str],
-        default: &'static str,
+        levels: Vec<String>,
+        default: String,
     },
     /// Gemini 3 style thinking-level (low|high|…).
     ThinkingLevel {
-        levels: &'static [&'static str],
-        default: &'static str,
+        levels: Vec<String>,
+        default: String,
     },
     /// Token thinking-budget (Gemini 2.5). `default` `-1` = dynamic.
     Budget {
@@ -81,6 +81,13 @@ pub enum EffortCapability {
     Toggle { default: bool },
     /// Intrinsic / non-reasoning — no effort control.
     None,
+}
+
+impl EffortCapability {
+    /// Build from a registry `effort` JSON object (renderer-identical shape).
+    pub fn from_json(v: &serde_json::Value) -> Option<EffortCapability> {
+        serde_json::from_value(v.clone()).ok()
+    }
 }
 
 const CLAUDE_MODES: &[PermMode] = &[
@@ -286,135 +293,10 @@ pub fn tool_matrix(provider_id: &str) -> Option<ToolMatrixCapability> {
     }
 }
 
-const CLAUDE_FULL: &[&str] = &["low", "medium", "high", "xhigh", "max"];
-const CLAUDE_NO_XHIGH: &[&str] = &["low", "medium", "high", "max"];
-const CLAUDE_BASE: &[&str] = &["low", "medium", "high"];
-
-fn claude_effort(model: &str) -> EffortCapability {
-    if model.contains("haiku") {
-        return EffortCapability::None;
-    }
-    if model.contains("opus-4-8") || model.contains("opus-4-7") {
-        EffortCapability::Levels {
-            levels: CLAUDE_FULL,
-            default: "high",
-        }
-    } else if model.contains("opus-4-5") {
-        EffortCapability::Levels {
-            levels: CLAUDE_BASE,
-            default: "high",
-        }
-    } else {
-        // opus-4-6, sonnet-4-6
-        EffortCapability::Levels {
-            levels: CLAUDE_NO_XHIGH,
-            default: "high",
-        }
-    }
-}
-
-fn openai_effort(model: &str) -> EffortCapability {
-    if model.starts_with("gpt-5") {
-        EffortCapability::Levels {
-            levels: &["minimal", "low", "medium", "high"],
-            default: "medium",
-        }
-    } else if model.starts_with("o1") || model.starts_with("o3") || model.starts_with("o4") {
-        EffortCapability::Levels {
-            levels: &["low", "medium", "high"],
-            default: "medium",
-        }
-    } else {
-        EffortCapability::None // gpt-4.1 / non-reasoning
-    }
-}
-
-fn gemini_effort(model: &str) -> EffortCapability {
-    if model.contains("2.5-flash") {
-        EffortCapability::Budget {
-            min: 0,
-            max: 24576,
-            default: -1,
-            can_disable: true,
-        }
-    } else if model.contains("2.5-pro") {
-        EffortCapability::Budget {
-            min: 128,
-            max: 32768,
-            default: -1,
-            can_disable: false,
-        }
-    } else if model.contains("-3") || model.contains("3.") {
-        EffortCapability::ThinkingLevel {
-            levels: &["low", "high"],
-            default: "high",
-        }
-    } else {
-        EffortCapability::None
-    }
-}
-
-fn grok_effort(model: &str) -> EffortCapability {
-    if model.contains("4.3") {
-        EffortCapability::Levels {
-            levels: &["none", "low", "medium", "high"],
-            default: "low",
-        }
-    } else if model.contains("3-mini") {
-        EffortCapability::Levels {
-            levels: &["low", "high"],
-            default: "low",
-        }
-    } else {
-        EffortCapability::None // grok-4 / grok-3 / code-fast: reasoning-always
-    }
-}
-
-/// Native effort surface for one provider+model (§9). Anthropic's HTTP
-/// compat endpoint ignores effort → None there (Claude effort is CLI-only).
+/// Native effort surface for one provider+model — resolved from the embedded
+/// registry snapshot (single source of truth; see `catalog_snapshot`).
 pub fn effort_capability(provider_id: &str, model_id: &str) -> EffortCapability {
-    match provider_id {
-        "claude" => claude_effort(model_id),
-        "codex" => EffortCapability::Levels {
-            levels: &["low", "medium", "high", "xhigh"],
-            default: "medium",
-        },
-        "openai" => openai_effort(model_id),
-        "gemini" | "gemini-api" => gemini_effort(model_id),
-        "grok" => grok_effort(model_id),
-        "kimi" | "kimi-api" => {
-            if model_id.contains("thinking") {
-                EffortCapability::Toggle { default: true }
-            } else {
-                EffortCapability::None
-            }
-        }
-        "deepseek" => {
-            if model_id.contains("reasoner") || model_id.contains("v3.2") {
-                EffortCapability::Toggle { default: true }
-            } else {
-                EffortCapability::None
-            }
-        }
-        "perplexity" => {
-            if model_id.contains("deep-research") {
-                EffortCapability::Levels {
-                    levels: &["low", "medium", "high"],
-                    default: "medium",
-                }
-            } else {
-                EffortCapability::None
-            }
-        }
-        "github-copilot" => EffortCapability::Levels {
-            levels: &["low", "medium", "high", "xhigh"],
-            default: "medium",
-        },
-        // anthropic (compat) / nvidia-nim / openrouter / cloudflare / ollama /
-        // opencode / cursor / hermes / agy → resolved via dynamic model events
-        // or unsupported here.
-        _ => EffortCapability::None,
-    }
+    crate::providers::catalog_snapshot::snapshot_effort(provider_id, model_id)
 }
 
 /// When permission/effort changes apply for a provider's bridge (§8).
@@ -496,12 +378,50 @@ mod tests {
         let none = serde_json::to_value(EffortCapability::None).unwrap();
         assert_eq!(none["kind"], "none");
         let levels = serde_json::to_value(EffortCapability::Levels {
-            levels: &["low", "high"],
-            default: "high",
+            levels: vec!["low".into(), "high".into()],
+            default: "high".into(),
         })
         .unwrap();
         assert_eq!(levels["kind"], "levels");
         assert_eq!(levels["default"], "high");
+    }
+
+    #[test]
+    fn effort_from_json_roundtrips_each_kind() {
+        use super::EffortCapability::*;
+        let levels = serde_json::json!({"kind":"levels","levels":["low","high"],"default":"high"});
+        assert_eq!(
+            super::EffortCapability::from_json(&levels),
+            Some(Levels {
+                levels: vec!["low".into(), "high".into()],
+                default: "high".into()
+            })
+        );
+        assert_eq!(
+            super::EffortCapability::from_json(&serde_json::json!({"kind":"none"})),
+            Some(None)
+        );
+        assert_eq!(
+            super::EffortCapability::from_json(
+                &serde_json::json!({"kind":"toggle","default":true})
+            ),
+            Some(Toggle { default: true })
+        );
+        assert_eq!(
+            super::EffortCapability::from_json(
+                &serde_json::json!({"kind":"budget","min":0,"max":10,"default":-1,"can_disable":true})
+            ),
+            Some(Budget {
+                min: 0,
+                max: 10,
+                default: -1,
+                can_disable: true
+            })
+        );
+        assert_eq!(
+            super::EffortCapability::from_json(&serde_json::json!({"bad":1})),
+            Option::None
+        );
     }
 
     #[test]
@@ -689,20 +609,50 @@ mod tests {
     #[test]
     fn effort_capability_is_model_specific() {
         use EffortCapability::*;
-        // Claude: model-specific level sets; Haiku none.
-        assert!(matches!(effort_capability("claude", "claude-opus-4-8"),
-            Levels { levels, .. } if levels.contains(&"xhigh") && levels.contains(&"max")));
-        assert!(matches!(effort_capability("claude", "claude-sonnet-4-6"),
-            Levels { levels, .. } if !levels.contains(&"xhigh") && levels.contains(&"max")));
-        assert!(matches!(effort_capability("claude", "claude-opus-4-5"),
-            Levels { levels, .. } if levels == ["low", "medium", "high"]));
-        assert_eq!(effort_capability("claude", "claude-haiku-4-5"), None);
-        // OpenAI: GPT-5 adds minimal; codex no minimal; o-series no minimal.
-        assert!(matches!(effort_capability("openai", "gpt-5.5"),
-            Levels { levels, .. } if levels.contains(&"minimal")));
-        assert!(matches!(effort_capability("codex", "gpt-5.2-codex"),
-            Levels { levels, .. } if !levels.contains(&"minimal") && levels.contains(&"xhigh")));
-        // Gemini: 2.5 budget, 3 thinking-level.
+        // Every assertion pins a (provider id, model id) pair that EXISTS in
+        // the embedded registry snapshot (assets/models-snapshot.json), so the
+        // value is the snapshot's effort descriptor — not a hardcoded default.
+
+        // levels — Claude: full set (xhigh + max), default high.
+        assert_eq!(
+            effort_capability("claude", "claude-opus-4-8"),
+            Levels {
+                levels: vec![
+                    "low".into(),
+                    "medium".into(),
+                    "high".into(),
+                    "xhigh".into(),
+                    "max".into()
+                ],
+                default: "high".into(),
+            }
+        );
+        // levels — Claude Sonnet drops xhigh but keeps max.
+        assert_eq!(
+            effort_capability("claude", "claude-sonnet-4-6"),
+            Levels {
+                levels: vec!["low".into(), "medium".into(), "high".into(), "max".into()],
+                default: "high".into(),
+            }
+        );
+        // levels — OpenAI GPT-5 family adds `minimal`, default medium.
+        assert_eq!(
+            effort_capability("openai", "gpt-5.5"),
+            Levels {
+                levels: vec![
+                    "minimal".into(),
+                    "low".into(),
+                    "medium".into(),
+                    "high".into()
+                ],
+                default: "medium".into(),
+            }
+        );
+        // levels — Codex: no `minimal`, adds `xhigh`.
+        assert!(matches!(effort_capability("codex", "gpt-5.2"),
+            Levels { levels, .. } if !levels.iter().any(|s| s == "minimal") && levels.iter().any(|s| s == "xhigh")));
+
+        // budget — Gemini 2.5: flash can disable, pro cannot.
         assert!(matches!(
             effort_capability("gemini-api", "gemini-2.5-flash"),
             Budget {
@@ -717,20 +667,35 @@ mod tests {
                 ..
             }
         ));
-        // Grok: bifurcated.
+
+        // thinking_level — Gemini 3.x: [low, high], default high.
+        assert_eq!(
+            effort_capability("gemini-api", "gemini-3.5-flash"),
+            ThinkingLevel {
+                levels: vec!["low".into(), "high".into()],
+                default: "high".into(),
+            }
+        );
+
+        // levels — Grok: 4.3 is graded; the non-reasoning sibling is none.
         assert!(matches!(
             effort_capability("grok", "grok-4.3"),
             Levels { .. }
         ));
-        assert_eq!(effort_capability("grok", "grok-4"), None);
-        // Kimi: toggle on thinking models.
-        assert!(matches!(
-            effort_capability("kimi-api", "kimi-k2-thinking"),
-            Toggle { .. }
-        ));
-        // Anthropic HTTP compat can't do effort levels → None (CLI-only).
+        assert_eq!(
+            effort_capability("grok", "grok-4.20-0309-non-reasoning"),
+            None
+        );
+
+        // none — non-reasoning models resolve to None even when present.
+        assert_eq!(
+            effort_capability("claude", "claude-haiku-4-5-20251001"),
+            None
+        );
+        assert_eq!(effort_capability("openai", "gpt-4.1"), None);
+        // Anthropic HTTP compat advertises no effort → None (CLI-only).
         assert_eq!(effort_capability("anthropic", "claude-opus-4-8"), None);
-        // Unknown → None.
+        // Unknown provider/model (absent from snapshot) → None.
         assert_eq!(effort_capability("ollama", "llama3"), None);
     }
 }
