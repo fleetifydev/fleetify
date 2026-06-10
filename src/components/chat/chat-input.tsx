@@ -389,9 +389,15 @@ function MicButton({ onTranscript }: { onTranscript: (text: string) => void }) {
     return () => document.removeEventListener("mousedown", onDoc);
   }, [open]);
 
-  const pick = (id: string) => {
+  // `id === null` means "System Default" — clear the pin so the renderer
+  // sends a null deviceId and Rust (cpal) resolves the OS default at record
+  // time. A specific id pins that device across sessions.
+  const pick = (id: string | null) => {
     setSelected(id);
-    try { localStorage.setItem("fleet.mic.deviceId", id); } catch { /* ignore */ }
+    try {
+      if (id === null) localStorage.removeItem("fleet.mic.deviceId");
+      else localStorage.setItem("fleet.mic.deviceId", id);
+    } catch { /* ignore */ }
     setOpen(false);
   };
 
@@ -454,13 +460,40 @@ function MicButton({ onTranscript }: { onTranscript: (text: string) => void }) {
             letterSpacing: 0.6, textTransform: "uppercase",
             color: "var(--c-dim)",
           }}>Input device</div>
+          {/* System Default — always first. Active on a fresh install (no
+              pinned deviceId → selected === null), so the menu reflects that
+              recording follows the OS's chosen mic until the user pins one. */}
+          <button
+            onClick={() => pick(null)}
+            onMouseDown={e => e.preventDefault()}
+            style={{
+              width: "100%", textAlign: "left",
+              display: "flex", alignItems: "center", gap: 7,
+              padding: "5px 8px",
+              background: "transparent", border: "none", outline: "none",
+              color: "var(--c-fg)",
+              cursor: "pointer", borderRadius: 5,
+              fontFamily: "inherit",
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = "var(--c-srf)"; }}
+            onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
+          >
+            {selected === null
+              ? <Check size={11} strokeWidth={2.5} style={{ color: "var(--c-fg)", flexShrink: 0 }} />
+              : <span style={{ width: 11, flexShrink: 0 }} />
+            }
+            <span style={{
+              flex: 1, fontSize: 11.5,
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            }}>System Default</span>
+          </button>
           {devices.length === 0 && (
             <div style={{ padding: "8px 10px", fontSize: 11.5, color: "var(--c-dim)" }}>
               No input devices found.
             </div>
           )}
           {devices.map(d => {
-            const active = (selected ?? devices[0]?.id) === d.id;
+            const active = selected === d.id;
             return (
               <button
                 key={d.id}
