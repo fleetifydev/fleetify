@@ -7,7 +7,9 @@
 //! mic access as a trusted desktop app). macOS will show the system
 //! permission dialog the first time (NSMicrophoneUsageDescription in Info.plist).
 
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
@@ -16,18 +18,22 @@ pub struct VoiceDevice {
     pub name: String,
 }
 
-/// Live recording — keep this alive to keep the stream running.
-/// Drop it (or call `stop_and_encode`) to finalize.
+/// Live recording. The `cpal::Stream` is owned entirely by a dedicated audio
+/// thread that builds, holds, and drops it — so the stream never crosses a
+/// thread boundary and `RecordingState` is `Send` with NO `unsafe impl` on any
+/// platform. This matters most on macOS, whose CoreAudio streams are
+/// thread-affine (a blanket `unsafe impl Send` would be UB there); it's also
+/// correct on Linux/ALSA and Windows/WASAPI. Only `Send` handles + the shared
+/// sample buffer live here.
 pub struct RecordingState {
-    stream: cpal::Stream,
+    /// Dropping this sender signals the audio thread to drop the stream + exit.
+    stop: mpsc::Sender<()>,
+    /// The audio thread. Joined in `stop_and_encode` so the stream is fully
+    /// dropped (cpal callbacks stopped) before we read the captured samples.
+    audio: JoinHandle<()>,
     samples: Arc<Mutex<Vec<f32>>>,
     sample_rate: u32,
 }
-
-// cpal::Stream is Send on Windows (WASAPI). macOS CoreAudio streams
-// must stay on their creation thread — revisit when shipping macOS.
-#[cfg(target_os = "windows")]
-unsafe impl Send for RecordingState {}
 
 pub fn list_devices() -> Vec<VoiceDevice> {
     let host = cpal::default_host();
@@ -45,6 +51,53 @@ pub fn list_devices() -> Vec<VoiceDevice> {
 }
 
 pub fn start(device_name: Option<&str>) -> Result<RecordingState, String> {
+    let samples = Arc::new(Mutex::new(Vec::<f32>::new()));
+    let (ready_tx, ready_rx) = mpsc::channel::<Result<u32, String>>();
+    let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    let device_name = device_name.map(str::to_string);
+    let samples_cb = samples.clone();
+
+    // Build, hold, and drop the cpal stream entirely on this dedicated thread
+    // so it never crosses a thread boundary (required for macOS CoreAudio;
+    // harmless elsewhere). `start` blocks only until the stream reports ready.
+    let audio = std::thread::Builder::new()
+        .name("voice-capture".into())
+        .spawn(
+            move || match build_and_play(device_name.as_deref(), samples_cb) {
+                Ok((stream, sample_rate)) => {
+                    if ready_tx.send(Ok(sample_rate)).is_err() {
+                        return; // caller gave up; drop the stream here.
+                    }
+                    // Keep the stream alive until stop is signalled (sender
+                    // dropped or `()` sent), then drop it on THIS thread.
+                    let _ = stop_rx.recv();
+                    drop(stream);
+                }
+                Err(e) => {
+                    let _ = ready_tx.send(Err(e));
+                }
+            },
+        )
+        .map_err(|e| format!("spawn voice-capture thread: {e}"))?;
+
+    match ready_rx.recv() {
+        Ok(Ok(sample_rate)) => Ok(RecordingState {
+            stop: stop_tx,
+            audio,
+            samples,
+            sample_rate,
+        }),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err("voice-capture thread exited before reporting status".into()),
+    }
+}
+
+/// Open the input device, build the capture stream, and start it. Runs on the
+/// dedicated audio thread; returns the live stream + its sample rate.
+fn build_and_play(
+    device_name: Option<&str>,
+    samples: Arc<Mutex<Vec<f32>>>,
+) -> Result<(cpal::Stream, u32), String> {
     let host = cpal::default_host();
 
     let device = match device_name {
@@ -64,23 +117,19 @@ pub fn start(device_name: Option<&str>) -> Result<RecordingState, String> {
     let fmt = config.sample_format();
     let stream_config: cpal::StreamConfig = config.into();
 
-    let samples = Arc::new(Mutex::new(Vec::<f32>::new()));
-
-    let stream = build_stream(&device, stream_config, fmt, channels, samples.clone())?;
+    let stream = build_stream(&device, stream_config, fmt, channels, samples)?;
     stream.play().map_err(|e| e.to_string())?;
 
     tracing::info!(target: "voice", device = device_name.unwrap_or("default"), sample_rate, "recording started");
-
-    Ok(RecordingState {
-        stream,
-        samples,
-        sample_rate,
-    })
+    Ok((stream, sample_rate))
 }
 
 /// Stop the stream, encode captured samples to 16-bit mono 16 kHz WAV.
 pub fn stop_and_encode(state: RecordingState) -> Vec<u8> {
-    drop(state.stream); // stops cpal callbacks immediately
+    // Signal the audio thread to drop the stream (stops cpal callbacks), then
+    // join so the drop completes before we read the captured samples.
+    drop(state.stop);
+    let _ = state.audio.join();
     let samples = state.samples.lock().unwrap().clone();
     tracing::info!(target: "voice", samples = samples.len(), "recording stopped");
     if samples.is_empty() {
