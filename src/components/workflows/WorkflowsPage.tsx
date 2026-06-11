@@ -69,6 +69,7 @@ import type { Session } from "@/types/session";
 import type { ChatMessage } from "@/types/chat";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { buildPickerGroups, resolveModelChip, resolveDispatchTool } from "@/lib/picker-groups";
+import { effortLabel } from "@/lib/effort";
 import { UnifiedModelPicker, type Effort } from "@/components/chat/unified-model-picker";
 import { permissionCapabilityFor, permissionModesFor, isLoudMode } from "@/lib/capabilities";
 import type { PermMode } from "@/lib/providers-api";
@@ -3149,9 +3150,6 @@ function NewSessionConfig({
   const groups = useProviderGroups();
   const [pickerOpen, setPickerOpen] = useState(false);
   const { dispatchTool, label: modelLabel } = resolveModelChip(groups, provider, modelId);
-  const effortShort: Record<Effort, string> = {
-    low: "Low", medium: "Med", high: "High", extra_high: "X-Hi", max: "Max",
-  };
   return (
     <div style={{
       display: "flex", flexDirection: "column", gap: 12,
@@ -3186,7 +3184,7 @@ function NewSessionConfig({
             <ProviderLogo tool={dispatchTool} size={14} />
             <span>{modelLabel}</span>
             <span style={{ color: "var(--c-dim)", fontSize: 11 }}>·</span>
-            <span style={{ color: "var(--c-low)", fontSize: 11.5 }}>{effortShort[effort]}</span>
+            <span style={{ color: "var(--c-low)", fontSize: 11.5 }}>{effortLabel(effort)}</span>
             <ChevronDown size={13} style={{ color: "var(--c-dim)", marginLeft: "auto", flexShrink: 0 }} />
           </button>
           {pickerOpen && (

@@ -40,6 +40,10 @@
   /* Chat input + branch strip surface — now matched to the sidebar so the
      composer reads as the same elevation/family as the left rail. */
   --chat-input-bg: var(--sidebar);
+  /* Onboarding primary-action buttons (Continue / Skip / Save / …). Gray in
+     light, white in dark — a high-contrast CTA against each theme's surface. */
+  --onb-btn-bg: #52525b;
+  --onb-btn-fg: #ffffff;
 }
 .dark {
   /* Dark: matched to --sidebar so the chat input + branch strip share the
@@ -59,6 +63,10 @@
      #121212 sidebar and #0c0c0c chat surfaces. */
   --c-srf:   #202020;
   --c-srf2:  #2a2a2a;
+  /* Onboarding CTA flips to white-on-dark in dark themes (was a muted gray
+     that read as a disabled/secondary button against the dark surface). */
+  --onb-btn-bg: #ffffff;
+  --onb-btn-fg: #0a0a0a;
 }
 
 /* ─── Fleet theme variables ─── */

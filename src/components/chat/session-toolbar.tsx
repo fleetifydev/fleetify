@@ -33,6 +33,7 @@ import {
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { updateSession as apiUpdateSession, cloneRepository, fetchClaudeSessions, fetchClaudeHistory, fetchAgentModels, fetchProviderModels, type ClaudeSession } from "@/lib/api";
 import { registerConfigPatch } from "@/lib/session-config-sync";
+import { effortLabel } from "@/lib/effort";
 import { extractOwnerRepo } from "@/lib/git-url";
 import { GitSourceTab } from "./git-source-tab";
 import { useAppStore } from "@/stores/app-store";
@@ -722,9 +723,6 @@ export function SessionToolbar({
         // chat composer's model chip (chat-input.tsx uses the same
         // resolveModelChip + the same groups), so the two can never disagree.
         const { dispatchTool, label: modelLabel } = resolveModelChip(groups, tool, model);
-        const effortShort: Record<UMEffort, string> = {
-          low: "Low", medium: "Med", high: "High", extra_high: "X-Hi", max: "Max",
-        };
         return (
           <Chip
             active={openMenu === "model"}
@@ -734,7 +732,7 @@ export function SessionToolbar({
             <ProviderLogo tool={dispatchTool} size={12} />
             <span>{modelLabel}</span>
             <span style={{ color: "var(--c-dim)", fontSize: 10 }}>·</span>
-            <span style={{ color: "var(--c-low)", fontSize: 10.5 }}>{effortShort[effort]}</span>
+            <span style={{ color: "var(--c-low)", fontSize: 10.5 }}>{effortLabel(effort)}</span>
           </Chip>
         );
       })()}

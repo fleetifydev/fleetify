@@ -59,10 +59,11 @@ type WidgetKind =
 /** Theme choice offered in onboarding. "system" follows the OS preference. */
 type ThemeMode = "system" | "dark" | "light";
 
-// Neutral gray for onboarding primary buttons (white text). Reads on both the
-// light and dark onboarding themes and is softer than a pure black/white CTA.
-const ONB_BTN_BG = "#52525b";
-const ONB_BTN_FG = "#ffffff";
+// Onboarding primary-button colors, theme-aware via globals.css: gray on white
+// in light, white on dark in dark (see --onb-btn-bg / --onb-btn-fg). Was a fixed
+// neutral gray that read as a disabled/secondary button on the dark theme.
+const ONB_BTN_BG = "var(--onb-btn-bg)";
+const ONB_BTN_FG = "var(--onb-btn-fg)";
 
 /** Which provider bucket a `providers` / `scan` widget is bound to. The
  *  onboarding runs selection then setup for Workspace first, then Studio. */

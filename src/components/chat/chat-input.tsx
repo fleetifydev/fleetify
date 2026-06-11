@@ -14,6 +14,7 @@ import {
 import { truncateMid, folderName } from "@/lib/utils";
 import { searchProjectFiles, apiFetch, type FileSearchEntry, updateSession as apiUpdateSession, enhancePrompt, fetchAgentModels, fetchProviderModels } from "@/lib/api";
 import { registerConfigPatch } from "@/lib/session-config-sync";
+import { effortLabel } from "@/lib/effort";
 import { useFleetStore, type FleetMode } from "@/stores/fleet-store";
 import { LogoMark } from "@/components/brand/logo-mark";
 import { wsManager } from "@/services/ws-manager";
@@ -141,10 +142,6 @@ function fmtModel(id: string | null | undefined, tool?: string | null): string {
   if (m.startsWith("gpt-5.")) return `GPT-${id.slice(4)}`;  // gpt-5.2 → GPT-5.2
   return id;
 }
-
-const EFFORT_SHORT: Record<Effort, string> = {
-  low: "Low", medium: "Med", high: "High", extra_high: "X-Hi", max: "Max",
-};
 
 /* ─────────────────── tiny components ─────────────────── */
 
@@ -4744,7 +4741,7 @@ export function ChatInput({
               <ProviderLogo tool={chipDispatchTool} size={11} />
               <span style={{ color: "var(--c-high)", fontWeight: 500 }}>{modelLabel}</span>
               <span style={{ color: "var(--c-dim)", fontSize: 10 }}>·</span>
-              <span style={{ color: "var(--c-low)", fontSize: 10.5 }}>{EFFORT_SHORT[effort]}</span>
+              <span style={{ color: "var(--c-low)", fontSize: 10.5 }}>{effortLabel(effort)}</span>
               <ChevronDown size={9} strokeWidth={2} style={{
                 color: "var(--c-low)", marginLeft: 0,
                 transform: openDrop === "model" ? "rotate(180deg)" : "none",
