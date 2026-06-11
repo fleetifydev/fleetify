@@ -322,6 +322,46 @@ pub async fn prewarm_hermes_models() {
     }
 }
 
+/// CLI agents whose model lineup comes from a live local probe (the match arms
+/// in [`discover_agent_models`]) rather than the remote catalog. Excluded from
+/// the remote-catalog prewarm — there is nothing on fleetify.dev/api to warm for
+/// them (`hermes` is prewarmed separately via [`prewarm_hermes_models`]).
+const LIVE_PROBE_AGENTS: &[&str] = &["opencode", "cursor", "github-copilot", "hermes"];
+
+/// Provider/agent ids whose model lineup is sourced from the remote catalog
+/// (fleetify.dev/api → jsDelivr): every [`crate::providers::catalog::CATALOG`]
+/// entry except the live-probe CLI agents. Pure (no I/O) so it's unit-testable.
+fn remote_catalog_prewarm_ids() -> Vec<&'static str> {
+    crate::providers::catalog::CATALOG
+        .iter()
+        .map(|p| p.id)
+        .filter(|id| !LIVE_PROBE_AGENTS.contains(id))
+        .collect()
+}
+
+/// Pre-warm the remote model catalog (fleetify.dev/api) for every remote-sourced
+/// provider/agent at startup, concurrently, so the model picker shows the live,
+/// up-to-date lineup on first open instead of the embedded snapshot baseline
+/// until the lazy on-open fetch returns. Best-effort: each fetch self-degrades
+/// to an empty (briefly negative-cached) result on network failure, so this
+/// never blocks boot and silently falls back to the snapshot when offline. Each
+/// `fetch_remote_catalog` populates `REMOTE_CATALOG_CACHE`, which both the
+/// `/providers/{id}/models` and (baked-agent) `/agents/{id}/models` endpoints
+/// read through.
+pub async fn prewarm_remote_catalog() {
+    let ids = remote_catalog_prewarm_ids();
+    let total = ids.len();
+    let warmed = futures_util::future::join_all(ids.into_iter().map(fetch_remote_catalog))
+        .await
+        .iter()
+        .filter(|models| !models.is_empty())
+        .count();
+    tracing::debug!(
+        target: "catalog.prewarm",
+        "prewarmed remote catalog: {warmed}/{total} providers populated at startup"
+    );
+}
+
 /// `opencode models` prints one model id per line (e.g. `opencode/big-pickle`,
 /// `antigravity-manager/claude-sonnet-4-6`). The ids match what the ACP
 /// session reports, so they're usable verbatim; the label is derived from the
@@ -1705,6 +1745,37 @@ mod tests {
         // `authenticated` depends on the host's opencode auth file / env var,
         // so assert the shape (a bool), not a fixed value.
         assert!(v["authenticated"].is_boolean());
+    }
+
+    #[test]
+    fn remote_catalog_prewarm_set_excludes_live_probe_agents_and_covers_remote_sources() {
+        let ids = remote_catalog_prewarm_ids();
+        // Live-probe CLI agents resolve their lineup from a local CLI/ACP call
+        // (the match arms in `discover_agent_models`), not fleetify.dev/api — so
+        // they must NOT be in the remote-catalog prewarm set.
+        for a in ["opencode", "cursor", "github-copilot", "hermes"] {
+            assert!(
+                !ids.contains(&a),
+                "{a} is discovered via a live probe and must be excluded from the remote prewarm"
+            );
+        }
+        // Baked CLI agents (no live probe → fall through to fetch_remote_catalog)
+        // and the HTTP API providers DO source their lineup from the remote
+        // catalog, so they must be prewarmed.
+        for p in [
+            "claude",
+            "codex",
+            "gemini",
+            "kimi",
+            "agy",
+            "openai",
+            "anthropic",
+        ] {
+            assert!(
+                ids.contains(&p),
+                "{p} sources from the remote catalog and must be prewarmed"
+            );
+        }
     }
 
     #[tokio::test]

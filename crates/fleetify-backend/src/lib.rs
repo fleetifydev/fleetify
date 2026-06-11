@@ -386,6 +386,17 @@ pub async fn serve_with_routing_setup(
         routers::providers::prewarm_hermes_models().await;
     });
 
+    // Warm the remote model catalog (fleetify.dev/api → jsDelivr) at boot so the
+    // composer's model picker shows the live, up-to-date lineup on first open
+    // instead of the embedded snapshot baseline until the lazy on-open fetch
+    // returns. Own task (not chained after the agent scan above) so the network
+    // fan-out runs in parallel with the local agent probing. Best-effort +
+    // non-blocking: offline self-degrades to the snapshot, never stalls boot.
+    tokio::spawn(async {
+        routers::providers::prewarm_remote_catalog().await;
+        tracing::debug!("remote_catalog_cache: warmed at startup");
+    });
+
     // Warm MCP server statuses at boot so Settings → Tools & MCPs and the
     // composer show real connection state on first open instead of "Unknown"
     // until the user clicks Test connection. Best-effort: a failed probe just
