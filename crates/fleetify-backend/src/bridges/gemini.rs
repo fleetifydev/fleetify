@@ -404,10 +404,10 @@ impl GeminiBridge {
             .stderr(std::process::Stdio::piped());
         // Multi-account isolation (no-op for the System account).
         crate::bridges::account_env::apply_to_command(&mut cmd, &account_env);
-        // The `gemini.cmd` npm shim runs under cmd.exe, which truncates a long
-        // inherited PATH at 8191 chars; keep Node reachable or the shim dies at
-        // spawn with "ACP stream closed". See `ensure_node_on_path`.
-        crate::bridges::ensure_node_on_path(&mut cmd);
+        // Canonical PATH (not our launch-chain-bloated runtime PATH) so cmd.exe's
+        // 8191-char truncation can't strip `node`/`git` from the `.cmd` shim and
+        // kill the agent at spawn. See `bridges::apply_clean_path`.
+        crate::bridges::apply_clean_path(&mut cmd);
 
         let mut proc = match cmd.spawn() {
             Ok(p) => p,

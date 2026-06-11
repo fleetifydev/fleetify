@@ -511,9 +511,10 @@ impl GitHubCopilotBridge {
         // Multi-account isolation (no-op for the System account). On Windows
         // Copilot reads %APPDATA%/%LOCALAPPDATA%, relocated by `account_env`.
         crate::bridges::account_env::apply_to_command(&mut cmd, &account_env);
-        // Keep Node reachable for the npm `.cmd` shim under cmd.exe's 8191-char
-        // PATH truncation — see `bridges::ensure_node_on_path`.
-        crate::bridges::ensure_node_on_path(&mut cmd);
+        // Canonical PATH (not our launch-chain-bloated runtime PATH) so cmd.exe's
+        // 8191-char truncation can't strip `node`/`git` from the `.cmd` shim and
+        // kill the agent at spawn. See `bridges::apply_clean_path`.
+        crate::bridges::apply_clean_path(&mut cmd);
 
         // Set current_dir to the normalized cwd so relative paths in
         // copilot's tools resolve correctly.

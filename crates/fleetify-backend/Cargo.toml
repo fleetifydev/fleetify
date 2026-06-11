@@ -57,6 +57,16 @@ dotenvy = "0.15"
 # code back is to give agy a real terminal that we own.
 portable-pty = "0.8"
 
+# Windows-only: read the user's canonical (Machine + User) registry PATH so
+# spawned CLI agents get the clean PATH a fresh terminal would have — NOT the
+# bloated runtime PATH our deep launch chain (npm -> cross-env -> tauri ->
+# cargo) accumulates (~17k chars / 180 entries on a dev box). cmd.exe — which
+# runs the agents' npm `.cmd` shims and their internal `chcp`/shell-outs —
+# truncates a PATH over 8191 chars, dropping `node`/`git` and killing the agent
+# at startup ("ACP stream closed: 'node' is not recognized").
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 tempfile = "3"

@@ -264,37 +264,119 @@ pub fn tool_override_decision(
     }
 }
 
-/// Prepend `dir` (+ `;`) to a PATH-style string. Pure so the cmd.exe
-/// truncation semantics are unit-testable without touching the environment.
-fn prepend_path_entry(dir: &std::ffi::OsStr, current: &std::ffi::OsStr) -> std::ffi::OsString {
-    let mut out = std::ffi::OsString::from(dir);
-    if !current.is_empty() {
-        out.push(";");
-        out.push(current);
+/// Expand Windows `%VAR%` references using `lookup` (injected for testability).
+/// Unknown / unterminated vars are left verbatim; `%%` collapses to a literal
+/// `%`. Registry PATH values are `REG_EXPAND_SZ`, which `winreg` returns
+/// unexpanded, so the canonical PATH must be expanded before use.
+#[cfg(windows)]
+fn expand_windows_vars(s: &str, lookup: impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('%') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        match after.find('%') {
+            Some(j) => {
+                let name = &after[..j];
+                match (name.is_empty(), lookup(name)) {
+                    (true, _) => out.push('%'), // "%%" → literal %
+                    (false, Some(v)) => out.push_str(&v),
+                    (false, None) => {
+                        // Unknown var: keep the literal `%NAME%`.
+                        out.push('%');
+                        out.push_str(name);
+                        out.push('%');
+                    }
+                }
+                rest = &after[j + 1..];
+            }
+            None => {
+                // No closing `%` — emit the remainder verbatim.
+                out.push('%');
+                out.push_str(after);
+                return out;
+            }
+        }
     }
+    out.push_str(rest);
     out
 }
 
-/// Windows: npm-shim CLIs (`gemini.cmd` / `codex.cmd` / `kimi.cmd` / …) launch
-/// `node` from PATH. cmd.exe — which runs the `.cmd` shim — TRUNCATES the
-/// inherited PATH at 8191 chars; when the user's PATH is bloated (>8191) and
-/// every Node directory sits past that boundary, the shim's `node` invocation
-/// fails (`'node' is not recognized`) and the agent dies the instant it spawns
-/// ("ACP stream closed"). Prepend Node's own directory so it always survives
-/// the truncation. No-op on non-Windows and when `node` can't be resolved (the
-/// child then inherits PATH unchanged, behaving exactly as before).
-pub fn ensure_node_on_path(cmd: &mut tokio::process::Command) {
-    if !cfg!(windows) {
-        return;
+/// Assemble the canonical PATH: `node_dir` (if known) first, then Machine then
+/// User entries, trimmed, with empty + case-insensitive-duplicate segments
+/// dropped. Pure so the assembly is unit-testable without the registry.
+#[cfg(windows)]
+fn clean_path(machine: &str, user: &str, node_dir: Option<&str>) -> String {
+    let mut seen = std::collections::HashSet::<String>::new();
+    let mut out: Vec<String> = Vec::new();
+    for raw in node_dir
+        .into_iter()
+        .chain(machine.split(';'))
+        .chain(user.split(';'))
+    {
+        let e = raw.trim();
+        if e.is_empty() {
+            continue;
+        }
+        if seen.insert(e.to_ascii_lowercase()) {
+            out.push(e.to_string());
+        }
     }
-    let Some(node_dir) = which::which("node")
-        .ok()
-        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
-    else {
-        return;
+    out.join(";")
+}
+
+/// The PATH a *fresh* process gets: the Machine + User registry `Path`,
+/// env-expanded, deduped, with Node's own directory ensured present. `None`
+/// when both registry reads fail.
+#[cfg(windows)]
+fn canonical_windows_path() -> Option<String> {
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    use winreg::RegKey;
+    let read = |root, sub: &str| -> String {
+        RegKey::predef(root)
+            .open_subkey(sub)
+            .ok()
+            .and_then(|k| k.get_value::<String, _>("Path").ok())
+            .unwrap_or_default()
     };
-    let current = std::env::var_os("PATH").unwrap_or_default();
-    cmd.env("PATH", prepend_path_entry(node_dir.as_os_str(), &current));
+    let machine = read(
+        HKEY_LOCAL_MACHINE,
+        r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+    );
+    let user = read(HKEY_CURRENT_USER, "Environment");
+    if machine.is_empty() && user.is_empty() {
+        return None;
+    }
+    let lookup = |k: &str| std::env::var(k).ok();
+    let machine = expand_windows_vars(&machine, lookup);
+    let user = expand_windows_vars(&user, lookup);
+    let node_dir = which::which("node")
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_string_lossy().into_owned()));
+    Some(clean_path(&machine, &user, node_dir.as_deref()))
+}
+
+/// Hand a spawned CLI agent the user's *canonical* PATH (the Machine + User
+/// registry PATH a fresh terminal gets) instead of the runtime PATH our deep
+/// launch chain (npm → cross-env → tauri → cargo) bloats to ~17k chars / ~180
+/// entries on a dev box. The agents' npm `.cmd` shims — and the agents' own
+/// internal `chcp` / shell-outs — run under cmd.exe, which truncates a PATH
+/// over 8191 chars and drops `node` / `git`, killing the agent at startup
+/// ("ACP stream closed: 'node' is not recognized"). The canonical PATH (~2.5k
+/// chars) carries node + System32 + git within the limit. No-op on non-Windows
+/// (no cmd.exe PATH-length truncation) and when the registry read fails (the
+/// child then keeps the inherited PATH — prior behaviour).
+pub fn apply_clean_path(cmd: &mut tokio::process::Command) {
+    #[cfg(windows)]
+    {
+        if let Some(path) = canonical_windows_path() {
+            cmd.env("PATH", path);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
 }
 
 /// Normalized event (parity with `ClaudeBridgeEvent`). `to_json()` is the
@@ -522,44 +604,58 @@ impl serde::Serialize for BridgeEvent {
 mod tests {
     use super::*;
 
-    // ── prepend_path_entry ───────────────────────────────────────────────────
+    // ── canonical PATH assembly (Windows: see apply_clean_path) ──────────────
 
+    #[cfg(windows)]
     #[test]
-    fn prepend_path_entry_puts_dir_within_cmd_truncation_window() {
-        use std::ffi::OsString;
-        // Reproduce the gemini "ACP stream closed" root cause: a bloated PATH
-        // (>8191 chars) where the node dir sits PAST cmd.exe's 8191-char
-        // truncation boundary, so the npm `.cmd` shim's `node` invocation can't
-        // find it. After prepending, the node dir must land at the very front,
-        // safely inside the window cmd.exe keeps.
-        let node = "C:\\Program Files\\nodejs";
-        let mut bloated = OsString::new();
-        for i in 0..400 {
-            bloated.push(format!("C:\\some\\padding\\dir-{i:03}\\bin;"));
-        }
-        bloated.push(node);
-        let before = bloated.to_string_lossy();
-        assert!(before.len() > 8191, "fixture must exceed the cmd.exe limit");
-        assert!(
-            before.find("nodejs").unwrap() > 8191,
-            "fixture must put nodejs past the truncation boundary"
+    fn clean_path_puts_node_first_dedupes_and_drops_empties() {
+        let machine = r"C:\Windows\System32;C:\Windows;C:\Program Files\Git\cmd";
+        let user = r"C:\Windows\System32;;C:\Users\me\AppData\Roaming\npm"; // dup + empty
+        let out = clean_path(machine, user, Some(r"C:\Program Files\nodejs"));
+        let parts: Vec<&str> = out.split(';').collect();
+        assert_eq!(parts[0], r"C:\Program Files\nodejs"); // node guaranteed first
+                                                          // System32 appears once despite being in both Machine and User.
+        assert_eq!(
+            parts
+                .iter()
+                .filter(|p| p.eq_ignore_ascii_case(r"C:\Windows\System32"))
+                .count(),
+            1
         );
-
-        let fixed = prepend_path_entry(std::ffi::OsStr::new(node), &bloated);
-        let after = fixed.to_string_lossy();
-        assert!(after.starts_with("C:\\Program Files\\nodejs;"));
-        assert!(
-            after.find("nodejs").unwrap() < 8191,
-            "after prepend the node dir must survive cmd.exe truncation"
-        );
-        // The original PATH is preserved after the prepended entry.
-        assert!(after.contains("dir-399"));
+        assert!(!parts.iter().any(|p| p.is_empty())); // empty segment dropped
+        assert!(parts.contains(&r"C:\Program Files\Git\cmd")); // real entries kept
+        assert!(parts.contains(&r"C:\Users\me\AppData\Roaming\npm"));
     }
 
+    #[cfg(windows)]
     #[test]
-    fn prepend_path_entry_handles_empty_current() {
-        let out = prepend_path_entry(std::ffi::OsStr::new("C:\\node"), std::ffi::OsStr::new(""));
-        assert_eq!(out.to_string_lossy(), "C:\\node");
+    fn clean_path_does_not_duplicate_node_already_present() {
+        let out = clean_path(
+            r"C:\Program Files\nodejs;C:\Windows\System32",
+            "",
+            Some(r"C:\Program Files\nodejs"),
+        );
+        assert_eq!(
+            out.split(';')
+                .filter(|p| p.eq_ignore_ascii_case(r"C:\Program Files\nodejs"))
+                .count(),
+            1
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn expand_windows_vars_expands_known_keeps_unknown_and_literal_percent() {
+        let lookup = |k: &str| match k {
+            "SystemRoot" => Some(r"C:\Windows".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            expand_windows_vars(r"%SystemRoot%\System32;%NOPE%\x", &lookup),
+            r"C:\Windows\System32;%NOPE%\x"
+        );
+        assert_eq!(expand_windows_vars("100%% done", &lookup), "100% done");
+        assert_eq!(expand_windows_vars("no vars", &lookup), "no vars");
     }
 
     // ── parse_tool_overrides ─────────────────────────────────────────────────
