@@ -43,6 +43,11 @@ const EFFORT_NONE: EffortCapability = { kind: "none" };
 const CLI_MODELS: Record<string, PickerModel[]> = {
   claude: [
     {
+      id: "claude-fable-5", label: "Fable 5", ctx: "1M",
+      effort: EFFORT_NONE,
+      supports_effort: false,
+    },
+    {
       id: "claude-opus-4-8", label: "Opus 4.8", ctx: "200K",
       effort: EFFORT_NONE,
       supports_effort: false,

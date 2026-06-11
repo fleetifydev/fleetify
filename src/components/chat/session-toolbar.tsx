@@ -31,8 +31,9 @@ import {
   Github, Server, Box,
 } from "lucide-react";
 import { ProviderLogo } from "@/components/ui/provider-logo";
-import { updateSession as apiUpdateSession, cloneRepository, fetchClaudeSessions, fetchClaudeHistory, fetchAgentModels, fetchProviderModels, type ClaudeSession } from "@/lib/api";
+import { updateSession as apiUpdateSession, cloneRepository, fetchClaudeSessions, fetchClaudeHistory, type ClaudeSession } from "@/lib/api";
 import { registerConfigPatch } from "@/lib/session-config-sync";
+import { useDiscoveredModelsStore } from "@/stores/discovered-models-store";
 import { effortLabel } from "@/lib/effort";
 import { extractOwnerRepo } from "@/lib/git-url";
 import { GitSourceTab } from "./git-source-tab";
@@ -385,63 +386,19 @@ export function SessionToolbar({
   //   1. The ACTIVE session's live list — pushed by the bridge via
   //      `available_models_update` once it cold-starts (freshest, only for
   //      the running agent), keyed by the session's own tool.
-  //   2. A discovered FULL catalog for every live-model agent, fetched lazily
-  //      from the backend (`opencode models` / a Cursor ACP probe) when the
-  //      model menu opens — so the rail shows the complete real list even
-  //      before any session of that agent has cold-started.
+  //   2. The app-wide discovered-catalog store — hydrated eagerly on mount
+  //      (remote-catalog agents + connected HTTP providers, so the model chip
+  //      resolves display names like "Fable 5" on first render) and topped up
+  //      with the live-probe agents when the model menu opens.
   // Both override the static CLI_MODELS fallback in buildPickerGroups.
   const sessionDynModels = useChatStore((s) => s.dynamicModels[sessionId]);
-  const [discoveredModels, setDiscoveredModels] = useState<Record<string, PickerModel[]>>({});
+  const discoveredModels = useDiscoveredModelsStore((s) => s.models);
   useEffect(() => {
-    if (openMenu !== "model") return; // discover lazily, only when the picker opens
-    let cancelled = false;
-    // Every CLI agent: live ACP/CLI probe for opencode/cursor/github-copilot/
-    // hermes; the baked-lineup agents (claude/codex/gemini/kimi/agy) resolve
-    // server-side from the remote catalog. Empty → keep the CLI_MODELS fallback.
-    for (const agentId of ["opencode", "cursor", "github-copilot", "hermes", "claude", "codex", "gemini", "kimi", "agy"]) {
-      void fetchAgentModels(agentId, projectPath ?? "").then(({ models }) => {
-        if (cancelled || models.length === 0) return; // empty → keep static fallback
-        setDiscoveredModels((prev) => ({
-          ...prev,
-          [agentId]: models.map((m) => {
-            const eff = m.effort ?? effortForDiscoveredModel(agentId, m.id, providerTiles);
-            return {
-              id: m.id,
-              label: m.label,
-              ctx: m.ctx,
-              note: m.note,
-              effort: eff,
-              supports_effort: eff.kind !== "none",
-            };
-          }),
-        }));
-      });
-    }
-    // Every connected HTTP provider: openrouter/cloudflare proxy their live
-    // `/models`; the rest resolve from the remote catalog (the backend merges
-    // the chain). Empty → keep the curated fallback; rail gets a search box >20.
-    for (const pid of providerTiles.filter((t) => t.spec.kind === "api" && t.connected).map((t) => t.spec.id)) {
-      void fetchProviderModels(pid).then((models) => {
-        if (cancelled || models.length === 0) return; // empty → keep curated fallback
-        setDiscoveredModels((prev) => ({
-          ...prev,
-          [pid]: models.map((m) => {
-            const eff = m.effort ?? effortForDiscoveredModel(pid, m.id, providerTiles);
-            return {
-              id: m.id,
-              label: m.label,
-              ctx: m.ctx,
-              note: m.note,
-              effort: eff,
-              supports_effort: eff.kind !== "none",
-            };
-          }),
-        }));
-      });
-    }
-    return () => {
-      cancelled = true;
-    };
+    void useDiscoveredModelsStore.getState().hydrate(providerTiles);
+  }, [providerTiles]);
+  useEffect(() => {
+    if (openMenu !== "model") return; // full discovery (incl. live-probe agents) on picker open
+    void useDiscoveredModelsStore.getState().discoverLive(providerTiles, projectPath ?? "");
   }, [openMenu, projectPath, providerTiles]);
   const dynamicModels: Record<string, PickerModel[]> | undefined = (() => {
     const merged: Record<string, PickerModel[]> = { ...discoveredModels };

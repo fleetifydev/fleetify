@@ -437,6 +437,9 @@ describe("resolveModelChip", () => {
 
   it("falls through label resolution: CLI table → raw id → 'Default'", () => {
     expect(resolveModelChip([], "claude", "claude-opus-4-8").label).toBe("Opus 4.8"); // CLI table
+    // Fable 5 must resolve from the cold-start CLI table too (before the
+    // discovered-catalog store hydrates / offline), not render as its raw id.
+    expect(resolveModelChip([], "claude", "claude-fable-5").label).toBe("Fable 5");
     expect(resolveModelChip([], "claude", "totally-unknown-xyz").label).toBe("totally-unknown-xyz"); // raw id
     // Null model = the provider's own default (spawned agents) — labelled
     // "Default", and the face stays on the SESSION's tool.
@@ -559,7 +562,9 @@ describe("resolveStartupDefault", () => {
     const tiles = [tile("claude", "cli", [], { is_default: true })];
     const r = resolveStartupDefault(tiles, "not-a-real-model");
     expect(r.tool).toBe("claude");
-    expect(r.model).toBe("claude-opus-4-8");
+    // First CLI-table entry — Fable 5 leads, matching the remote catalog's
+    // newest-flagship-first ordering.
+    expect(r.model).toBe("claude-fable-5");
   });
 
   it("falls back to the first connected tile and claude when none is default", () => {

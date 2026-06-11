@@ -69,6 +69,7 @@ import type { Session } from "@/types/session";
 import type { ChatMessage } from "@/types/chat";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { buildPickerGroups, resolveModelChip, resolveDispatchTool } from "@/lib/picker-groups";
+import { useDiscoveredModelsStore } from "@/stores/discovered-models-store";
 import { effortLabel } from "@/lib/effort";
 import { UnifiedModelPicker, type Effort } from "@/components/chat/unified-model-picker";
 import { permissionCapabilityFor, permissionModesFor, isLoudMode } from "@/lib/capabilities";
@@ -116,12 +117,19 @@ function useProviderCatalog(): CatalogProvider[] {
  *  group (Fleet-routed) which `useProviderCatalog` strips for the table label. */
 function useProviderGroups() {
   const { tiles } = useProvidersConfig();
+  // Discovered remote-catalog models (app-wide store) — without them the
+  // routine chip/menu can't resolve display names for models the static
+  // tables don't know (raw "claude-fable-5" instead of "Fable 5").
+  const discovered = useDiscoveredModelsStore((s) => s.models);
+  useEffect(() => {
+    void useDiscoveredModelsStore.getState().hydrate(tiles);
+  }, [tiles]);
   return useMemo(() => {
     const cliIds = tiles
       .filter((t) => t.spec.kind === "cli" && t.connected)
       .map((t) => t.spec.id);
-    return buildPickerGroups(tiles, cliIds);
-  }, [tiles]);
+    return buildPickerGroups(tiles, cliIds, Object.keys(discovered).length > 0 ? discovered : undefined);
+  }, [tiles, discovered]);
 }
 
 /** Look up the display label for a permission mode from the resolved

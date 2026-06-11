@@ -12,8 +12,9 @@ import {
   Plug, RefreshCw, ArrowUp,
 } from "lucide-react";
 import { truncateMid, folderName } from "@/lib/utils";
-import { searchProjectFiles, apiFetch, type FileSearchEntry, updateSession as apiUpdateSession, enhancePrompt, fetchAgentModels, fetchProviderModels } from "@/lib/api";
+import { searchProjectFiles, apiFetch, type FileSearchEntry, updateSession as apiUpdateSession, enhancePrompt } from "@/lib/api";
 import { registerConfigPatch } from "@/lib/session-config-sync";
+import { useDiscoveredModelsStore } from "@/stores/discovered-models-store";
 import { effortLabel } from "@/lib/effort";
 import { useFleetStore, type FleetMode } from "@/stores/fleet-store";
 import { LogoMark } from "@/components/brand/logo-mark";
@@ -52,6 +53,7 @@ import { SandboxControl } from "./sandbox-control";
 interface ModelOption { id: string; label: string; ctx: string }
 
 const CLAUDE_MODELS: ModelOption[] = [
+  { id: "claude-fable-5",            label: "Fable 5",    ctx: "1M"   },
   { id: "claude-opus-4-8",           label: "Opus 4.8",   ctx: "200K" },
   { id: "claude-sonnet-4-6",         label: "Sonnet 4.6", ctx: "200K" },
   { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5",  ctx: "200K" },
@@ -133,6 +135,7 @@ function fmtModel(id: string | null | undefined, tool?: string | null): string {
   }
   // Fallback: best-effort label inference from the id substring.
   const m = id.toLowerCase();
+  if (m.includes("fable"))   return "Fable 5";
   if (m.includes("opus"))    return "Opus 4.8";
   if (m.includes("sonnet"))  return "Sonnet 4.6";
   if (m.includes("haiku"))   return "Haiku 4.5";
@@ -2646,11 +2649,15 @@ export function ChatInput({
   // current model to the exact same provider icon + label as the toolbar chip.
   const { tiles: providerTiles } = useProvidersConfig();
   const sessionDynModels = useChatStore((s) => (sessionId ? s.dynamicModels[sessionId] : undefined));
-  // Live CLI-agent model catalogs (OpenCode / Cursor / GitHub Copilot) fetched
-  // over HTTP when the picker opens (see effect below). Mirrors SessionToolbar
-  // so the composer shows the real per-plan models immediately, not only after
-  // the first message's bridge `available_models_update`.
-  const [discoveredModels, setDiscoveredModels] = useState<Record<string, PickerModel[]>>({});
+  // Discovered model catalogs — app-wide store, hydrated eagerly on mount (and
+  // refreshed when the picker opens, below). Previously component-local state
+  // populated only while the picker was open, so a remount dropped the remote
+  // catalog and the model chip showed the raw id for any model the static
+  // tables don't know (e.g. "claude-fable-5" instead of "Fable 5").
+  const discoveredModels = useDiscoveredModelsStore((s) => s.models);
+  useEffect(() => {
+    void useDiscoveredModelsStore.getState().hydrate(providerTiles);
+  }, [providerTiles]);
   const pickerGroups = useMemo(() => {
     const enabledAgentIds = providerTiles
       .filter((t) => t.spec.kind === "cli" && t.connected)
@@ -2707,61 +2714,14 @@ export function ChatInput({
 
   const [openDrop, setOpenDrop] = useState<"model" | "fleet-mode" | null>(null);
 
-  // Discover live CLI-agent model catalogs when the model picker opens — same
-  // lazy fetch SessionToolbar runs. Without this the composer picker only sees
-  // models after the first message (the bridge `available_models_update`), so a
-  // fresh session showed the static catalog (e.g. wrong GitHub Copilot models).
-  // Empty results keep the static fallback; the backend caches per agent (TTL).
+  // Refresh the discovered catalogs when the model picker opens — adds the
+  // live-probe agents (opencode/cursor/github-copilot/hermes, a local CLI/ACP
+  // probe each) on top of the eager mount hydrate. Same fan-out SessionToolbar
+  // runs; results land in the shared store. Empty results keep the static
+  // fallback; the backend caches per agent (TTL).
   useEffect(() => {
     if (openDrop !== "model") return;
-    let cancelled = false;
-    // Every CLI agent: live ACP/CLI probe for opencode/cursor/github-copilot/
-    // hermes; the baked-lineup agents (claude/codex/gemini/kimi/agy) resolve
-    // server-side from the remote catalog. Empty → keep the CLI_MODELS fallback.
-    for (const agentId of ["opencode", "cursor", "github-copilot", "hermes", "claude", "codex", "gemini", "kimi", "agy"]) {
-      void fetchAgentModels(agentId, projectPath ?? "").then(({ models }) => {
-        if (cancelled || models.length === 0) return; // empty → keep static fallback
-        setDiscoveredModels((prev) => ({
-          ...prev,
-          [agentId]: models.map((m) => {
-            const eff = m.effort ?? effortForDiscoveredModel(agentId, m.id, providerTiles);
-            return {
-              id: m.id,
-              label: m.label,
-              ctx: m.ctx,
-              note: m.note,
-              effort: eff,
-              supports_effort: eff.kind !== "none",
-            };
-          }),
-        }));
-      });
-    }
-    // Every connected HTTP provider: openrouter/cloudflare proxy their live
-    // `/models`; the rest resolve from the remote catalog (the backend merges
-    // the chain). Empty → keep the curated fallback; rail gets a search box >20.
-    for (const pid of providerTiles.filter((t) => t.spec.kind === "api" && t.connected).map((t) => t.spec.id)) {
-      void fetchProviderModels(pid).then((models) => {
-        if (cancelled || models.length === 0) return; // empty → keep curated fallback
-        setDiscoveredModels((prev) => ({
-          ...prev,
-          [pid]: models.map((m) => {
-            const eff = m.effort ?? effortForDiscoveredModel(pid, m.id, providerTiles);
-            return {
-              id: m.id,
-              label: m.label,
-              ctx: m.ctx,
-              note: m.note,
-              effort: eff,
-              supports_effort: eff.kind !== "none",
-            };
-          }),
-        }));
-      });
-    }
-    return () => {
-      cancelled = true;
-    };
+    void useDiscoveredModelsStore.getState().discoverLive(providerTiles, projectPath ?? "");
   }, [openDrop, projectPath, providerTiles]);
 
   // Controlled-or-local effort
