@@ -38,9 +38,8 @@
 import {
   X, ArrowRight, FileText,
   ChevronDown, ChevronUp, Loader2,
-  Square, CheckCircle2,
   Brain, Send, AlertCircle, Sparkles, Archive,
-  StopCircle,
+  StopCircle, Eye, Pencil, Terminal, Globe,
 } from "lucide-react";
 import { memo, useMemo, useState, useCallback } from "react";
 import { useAppStore } from "@/stores/app-store";
@@ -61,7 +60,6 @@ const MONO = "'SF Mono','Menlo','Consolas',monospace";
 const C_GREEN  = "#4ade80";
 const C_ORANGE = "#fb923c";
 const C_RED    = "#f87171";
-const C_YELLOW = "#fbbf24";
 const C_BLUE   = "#60a5fa";
 
 /* ── Primitives ────────────────────────────────────────────────── */
@@ -152,43 +150,6 @@ function StatPair({ value, label, accent }: { value: number | string; label: str
   );
 }
 
-function MiniStat({ value, label }: { value: number | string; label: string }) {
-  return (
-    <span style={{ display: "inline-flex", alignItems: "baseline", gap: 4 }}>
-      <span style={{
-        fontSize: 12, fontWeight: 700,
-        color: "var(--c-high)",
-        fontVariantNumeric: "tabular-nums",
-        letterSpacing: "-0.01em",
-      }}>{value}</span>
-      <span style={{
-        fontSize: 9, fontWeight: 500,
-        color: "var(--c-ghost)",
-        textTransform: "uppercase",
-        letterSpacing: "0.06em",
-      }}>{label}</span>
-    </span>
-  );
-}
-
-function Sparkline({ values, width = 56, height = 11, color = "var(--c-low)" }: {
-  values: number[]; width?: number; height?: number; color?: string;
-}) {
-  if (values.length < 2) return null;
-  const max = Math.max(...values, 1);
-  const step = width / (values.length - 1);
-  const pts = values.map((v, i) => {
-    const x = i * step;
-    const y = height - (v / max) * height;
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(" ");
-  return (
-    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
-      <polyline fill="none" stroke={color} strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round" points={pts} />
-    </svg>
-  );
-}
-
 function ActionBtn({ children, icon: Icon, onClick, tone = "default" }: {
   children: React.ReactNode;
   icon: React.ComponentType<{ size?: number; strokeWidth?: number }>;
@@ -270,22 +231,6 @@ function shortPath(p: string | null | undefined): string {
   return parts.slice(-2).join("/");
 }
 
-function statusInfo(status: FleetSessionStatus, sessionRunning: boolean, sessionStatus: string): { color: string; label: string } {
-  if (status === "paused") return { color: C_RED, label: "Paused" };
-  if (sessionStatus === "error") return { color: C_RED, label: "Error" };
-  if (sessionRunning) {
-    if (status === "thinking") return { color: C_BLUE,   label: "Analyzing" };
-    if (status === "refining") return { color: C_YELLOW, label: "Refining" };
-    return { color: C_GREEN, label: "Running" };
-  }
-  switch (status) {
-    case "auto-continuing":  return { color: C_GREEN,  label: "Continuing" };
-    case "awaiting-user":    return { color: C_ORANGE, label: "Needs you" };
-    case "done":             return { color: C_GREEN,  label: "Done" };
-    default:                 return { color: "var(--c-brd2)", label: "Idle" };
-  }
-}
-
 /** Synthesize a one-line Fleet "verdict" caption from the session's
  *  activity ledger. This is the SMART part — instead of dumping the
  *  agent's last text quote, Fleet tells the user what THIS session
@@ -339,48 +284,6 @@ function fleetVerdict(
   }
 
   return null;
-}
-
-function todayCounters(
-  messages: Array<{ role: string; timestamp?: string }>,
-  activities: SessionActivityItem[],
-): { edits: number; files: number; cmds: number; msgs: number } {
-  const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
-  const cutoff = startOfDay.getTime();
-  let edits = 0, cmds = 0, msgs = 0;
-  const files = new Set<string>();
-  for (const a of activities) {
-    const ts = Date.parse(a.ts);
-    if (!isFinite(ts) || ts < cutoff) continue;
-    if (a.kind === "file_edit") {
-      edits++;
-      const m = /([A-Za-z0-9_\-./]+\.\w+)/.exec(a.summary);
-      if (m) files.add(m[1]!);
-    } else if (a.kind === "command") {
-      cmds++;
-    }
-  }
-  for (const m of messages) {
-    if (m.role !== "user" || !m.timestamp) continue;
-    const ts = Date.parse(m.timestamp);
-    if (isFinite(ts) && ts >= cutoff) msgs++;
-  }
-  return { edits, files: files.size, cmds, msgs };
-}
-
-function bucketActivity(activities: SessionActivityItem[], slots: number, windowMs: number): number[] {
-  const buckets = new Array(slots).fill(0);
-  const now = Date.now();
-  const step = windowMs / slots;
-  for (const a of activities) {
-    const ts = Date.parse(a.ts);
-    if (!isFinite(ts)) continue;
-    const age = now - ts;
-    if (age < 0 || age >= windowMs) continue;
-    const idx = slots - 1 - Math.floor(age / step);
-    if (idx >= 0 && idx < slots) buckets[idx]++;
-  }
-  return buckets;
 }
 
 /** Strip the noisy shell wrapper from activity summaries to reach
@@ -527,102 +430,6 @@ function InsightsList({ insights }: { insights: Insight[] }) {
   );
 }
 
-/* ── Inline decision card ──────────────────────────────────────── */
-
-function InlineDecision({ decision, onSend, onAnswer, onDismiss }: {
-  decision: FleetDecision;
-  onSend: (text: string) => void;
-  onAnswer: (text: string) => void;
-  onDismiss: () => void;
-}) {
-  const accent = decision.kind === "ask" ? C_ORANGE
-               : decision.kind === "continue" ? C_BLUE
-               : C_GREEN;
-  const verb = decision.kind === "ask" ? "Asks you"
-             : decision.kind === "continue" ? "Wants to continue"
-             : "Reports done";
-  const text = decision.kind === "ask" ? decision.question
-             : decision.kind === "continue" ? decision.nextPrompt
-             : decision.summary;
-  const Icon = decision.kind === "ask" ? AlertCircle
-             : decision.kind === "continue" ? ArrowRight
-             : CheckCircle2;
-  return (
-    <div style={{
-      display: "flex", flexDirection: "column", gap: 6,
-      marginTop: 6, marginLeft: 19,
-      padding: "8px 10px",
-      background: "var(--c-srf)",
-      borderRadius: 5,
-      borderLeft: `2px solid ${accent}`,
-    }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-        <Icon size={10} strokeWidth={2.4} style={{ color: accent }} />
-        <span style={{
-          fontSize: 9.5, fontWeight: 700, color: accent,
-          letterSpacing: "0.06em", textTransform: "uppercase",
-        }}>Fleet · {verb}</span>
-      </div>
-      {text && (
-        <span style={{
-          fontSize: 12, color: "var(--c-high)", lineHeight: 1.45,
-          whiteSpace: "pre-wrap",
-          display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical",
-          overflow: "hidden",
-        }}>{text}</span>
-      )}
-      <div style={{ display: "flex", gap: 6, marginTop: 2 }}>
-        {decision.kind === "continue" && text && (
-          <button onClick={e => { e.stopPropagation(); onSend(text); onDismiss(); }} style={pillStyle("primary")}
-            onMouseEnter={pillHover(true, "primary")} onMouseLeave={pillHover(false, "primary")}>
-            Send this
-          </button>
-        )}
-        {decision.kind === "ask" && text && (
-          <button onClick={e => { e.stopPropagation(); onAnswer(text); onDismiss(); }} style={pillStyle("primary")}
-            onMouseEnter={pillHover(true, "primary")} onMouseLeave={pillHover(false, "primary")}>
-            Answer below
-          </button>
-        )}
-        {decision.kind === "done" && (
-          <button onClick={e => { e.stopPropagation(); onDismiss(); }} style={pillStyle("primary")}
-            onMouseEnter={pillHover(true, "primary")} onMouseLeave={pillHover(false, "primary")}>
-            Mark complete
-          </button>
-        )}
-        <button onClick={e => { e.stopPropagation(); onDismiss(); }} style={pillStyle("secondary")}
-          onMouseEnter={pillHover(true, "secondary")} onMouseLeave={pillHover(false, "secondary")}>
-          Dismiss
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function pillStyle(tone: "primary" | "secondary"): React.CSSProperties {
-  return {
-    padding: "3px 9px", borderRadius: 4,
-    fontSize: 11, fontWeight: tone === "primary" ? 600 : 500,
-    color: tone === "primary" ? "var(--c-high)" : "var(--c-low)",
-    background: tone === "primary" ? "var(--c-srf2)" : "transparent",
-    border: `1px solid ${tone === "primary" ? "var(--c-brd2)" : "var(--c-brd)"}`,
-    cursor: "pointer", fontFamily: "inherit",
-    transition: "background 0.1s, color 0.1s",
-  };
-}
-function pillHover(enter: boolean, tone: "primary" | "secondary") {
-  return (e: React.MouseEvent<HTMLButtonElement>) => {
-    const el = e.currentTarget as HTMLElement;
-    if (enter) {
-      el.style.background = tone === "primary" ? "var(--c-brd)" : "var(--c-srf)";
-      if (tone === "secondary") el.style.color = "var(--c-high)";
-    } else {
-      el.style.background = tone === "primary" ? "var(--c-srf2)" : "transparent";
-      if (tone === "secondary") el.style.color = "var(--c-low)";
-    }
-  };
-}
-
 /* ── Session row ───────────────────────────────────────────────── */
 
 interface SessionRowProps {
@@ -632,6 +439,9 @@ interface SessionRowProps {
   fleetStatus: FleetSessionStatus;
   fleetLastAction: string | null;
   decision: FleetDecision | null;
+  /** Render the full rich card (running / waiting / error / top row) vs a
+   *  collapsed one-line idle row. */
+  expanded: boolean;
   // Id-aware callbacks so the parent can hand down a single stable
   // reference for every row. Without this, `() => jumpTo(s.id)` etc.
   // build a fresh closure per render and bust SessionRow's memo on
@@ -644,264 +454,228 @@ interface SessionRowProps {
 }
 
 const SessionRow = memo(function SessionRow({
-  session, detail, activity, fleetStatus, fleetLastAction, decision,
-  onJump, onSend, onAnswer, onDismissDecision,
+  session, detail, activity, fleetLastAction, expanded,
+  onJump,
 }: SessionRowProps) {
   const [hovered, setHovered] = useState(false);
   const [stopping, setStopping] = useState(false);
   const cs = useChatStore(s => s.sessions[session.id]);
-  // Identity check via staffSessionId, not the title. The title used
-  // to be the discriminator but a regression that renamed staff to
-  // the first user message ("selam", "test", …) broke that lookup;
-  // the id-based check survives any future title bug.
   const staffSessionId = useAppStore(s => s.staffSessionId);
   const isStaff = staffSessionId !== null && session.id === staffSessionId;
   const isRunning = session.status === "running" || session.status === "starting";
   const isWaiting = session.status === "waiting" || !!cs?.permissionRequest;
-  const info = statusInfo(fleetStatus, isRunning, session.status);
+  const isError = session.status === "error";
 
-  // Bind the row's session.id to each id-aware callback once so the
-  // local UI (button onClick, InlineDecision) sees a zero/one-arg
-  // shape and so callback identity stays stable across renders.
   const sessionId = session.id;
   const handleClick = useCallback(() => onJump(sessionId), [onJump, sessionId]);
-  const handleSend = useCallback((text: string) => onSend(sessionId, text), [onSend, sessionId]);
-  const handleAnswer = useCallback((text: string) => onAnswer(sessionId, text), [onAnswer, sessionId]);
-  const handleDismissDecision = useCallback(() => onDismissDecision(sessionId), [onDismissDecision, sessionId]);
-
-  const handleStop = async (e: React.MouseEvent) => {
+  const handleStop = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
     setStopping(true);
-    try { await stopSession(session.id); } catch { /* ignore */ }
+    try { await stopSession(sessionId); } catch { /* ignore */ }
     setStopping(false);
-  };
+  }, [sessionId]);
 
-  // Live activity (only while streaming).
-  const liveActivity = useMemo<string | null>(() => {
-    if (!cs?.isStreaming) return null;
-    const calls = Object.values(cs.activeToolCalls);
-    if (calls.length > 0) {
-      const c = calls[calls.length - 1]!;
-      const inp = c.input || {};
-      const fp = (inp.file_path as string) || (inp.path as string) || "";
-      const cmd = (inp.command as string) || "";
-      const detail = fp ? shortPath(fp) : cmd ? cmd.split("\n")[0]?.slice(0, 56) ?? "" : "";
-      return detail ? `${c.name} · ${detail}` : c.name;
-    }
-    return null;
-  }, [cs?.activeToolCalls, cs?.isStreaming]);
-
-  // Fleet's verdict caption — replaces the agent's noisy quote.
   const verdict = useMemo(
     () => fleetVerdict(session, detail, activity, fleetLastAction, isWaiting),
     [session, detail, activity, fleetLastAction, isWaiting],
   );
 
-  const counters = useMemo(
-    () => todayCounters(cs?.messages ?? [], activity),
-    [cs?.messages, activity],
+  const cost = detail?.total_cost_usd ?? session.budget_used ?? 0;
+  const costLabel = cost > 0 ? fmtCost(cost) : "$0";
+  const modelShort = shortModel(detail?.model ?? session.model_name);
+  const project = session.project_path ? folderName(session.project_path) : null;
+  const msgCount = detail?.message_count ?? cs?.messages?.length ?? 0;
+  const ago = relativeAgo(session.last_accessed ?? session.created_at);
+
+  const statusLabel = isError ? "ERROR" : isWaiting ? "WAITING" : isRunning ? "RUNNING" : "IDLE";
+  const statusColor = isError ? C_RED : isWaiting ? C_ORANGE : isRunning ? C_GREEN : "var(--c-dim)";
+
+  const tk = detail?.tokens;
+  const tokensTotal = tk ? tk.input + tk.output : 0;
+  const cachePct = tk && tk.input + tk.cache_read > 0
+    ? Math.round((tk.cache_read / (tk.input + tk.cache_read)) * 100) : 0;
+  const todos = detail?.todos ?? [];
+  const stepsDone = todos.filter(t => t.status === "completed").length;
+  const tools = detail?.tools ?? {};
+  const tc = {
+    read: tools.Read ?? 0,
+    edit: (tools.Edit ?? 0) + (tools.Write ?? 0) + (tools.MultiEdit ?? 0),
+    bash: tools.Bash ?? 0,
+    web: (tools.WebFetch ?? 0) + (tools.WebSearch ?? 0) + (tools.fetch_url ?? 0),
+  };
+  const tcTotal = Object.values(tools).reduce((a, b) => a + b, 0);
+
+  const files = useMemo(() => {
+    const seen = new Map<string, number>();
+    for (const a of activity) {
+      if (a.kind !== "file_edit" && a.kind !== "file_read") continue;
+      const label = (a.summary || "").trim();
+      if (!label) continue;
+      seen.set(label, (seen.get(label) ?? 0) + 1);
+    }
+    return [...seen.entries()].slice(0, 3).map(([path, n]) => ({ path, n }));
+  }, [activity]);
+
+  const header = (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
+      <StatusRing status={isWaiting ? "waiting" : isError ? "error" : session.status} size={11} />
+      {session.tool && <ProviderLogo tool={session.tool} size={11} />}
+      <span style={{
+        minWidth: 0, maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        fontSize: 13.5, fontWeight: 600, color: "var(--c-high)",
+      }}>{session.title || "Untitled"}</span>
+      {isStaff && (
+        <span style={{
+          fontSize: 9, fontWeight: 700, letterSpacing: "0.06em", padding: "2px 6px", borderRadius: 4,
+          background: "rgba(var(--fg-rgb),0.07)", border: "1px solid var(--c-brd)", color: "var(--c-med)", flexShrink: 0,
+        }}>FLEET</span>
+      )}
+      <span style={{ flex: 1 }} />
+      <div style={{ textAlign: "right", flexShrink: 0 }}>
+        <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", color: statusColor }}>{statusLabel}</div>
+        <div style={{ fontSize: 12, fontWeight: 600, fontFamily: MONO, color: "var(--c-med)", marginTop: 2, fontVariantNumeric: "tabular-nums" }}>{costLabel}</div>
+      </div>
+    </div>
   );
 
-  const sparkValues = useMemo(() => bucketActivity(activity, 12, 60 * 60 * 1000), [activity]);
-  const sparkNonZero = sparkValues.filter(v => v > 0).length;
+  const meta = (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 6, marginLeft: 19, marginTop: 4,
+      fontFamily: MONO, fontSize: 10.5, color: "var(--c-ghost)", overflow: "hidden", whiteSpace: "nowrap",
+    }}>
+      {project && <span>{project}</span>}
+      {project && modelShort && <span style={{ color: "var(--c-brd2)" }}>·</span>}
+      {modelShort && <span style={{ color: "var(--c-dim)" }}>{modelShort}</span>}
+      {msgCount > 0 && <><span style={{ color: "var(--c-brd2)" }}>·</span><span>{msgCount} msg</span></>}
+      <span style={{ marginLeft: "auto", color: "var(--c-ghost)" }}>{ago}</span>
+    </div>
+  );
 
-  const cost = detail?.total_cost_usd ?? session.budget_used ?? 0;
-  const costLabel = cost > 0 ? fmtCost(cost) : null;
-  const modelShort = shortModel(detail?.model ?? session.model_name);
-  const project = session.project_path
-    ? folderName(session.project_path)
-    : null;
-  const lastTs = session.last_accessed ?? session.created_at;
-  const ago = relativeAgo(lastTs);
+  if (!expanded) {
+    return (
+      <button
+        onClick={handleClick}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        style={{
+          display: "flex", flexDirection: "column", gap: 0, width: "100%",
+          padding: "12px 14px", border: "none", borderBottom: "1px solid var(--c-brd)",
+          cursor: "pointer", textAlign: "left", background: hovered ? "var(--c-srf)" : "transparent",
+          transition: "background 0.12s", fontFamily: "inherit",
+        }}
+      >
+        {header}
+        {meta}
+      </button>
+    );
+  }
 
-  const showDecision = !!decision;
-  const showLive = !showDecision && !!liveActivity;
-  const showVerdict = !showDecision && !showLive && !!verdict;
-
-  const hasAnyCounter = counters.edits > 0 || counters.files > 0 || counters.cmds > 0 || counters.msgs > 0;
+  const Box = ({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) => (
+    <div style={{ border: "1px solid var(--c-brd)", borderRadius: 8, padding: "9px 11px", minWidth: 0 }}>
+      <div style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.05em", color: "var(--c-dim)" }}>{label}</div>
+      <div style={{
+        fontSize: mono ? 12.5 : 14.5, fontWeight: 600, marginTop: 4, color: "var(--c-high)",
+        fontFamily: mono ? MONO : "inherit", fontVariantNumeric: "tabular-nums",
+        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+      }}>{value}</div>
+    </div>
+  );
+  const ToolCell = ({ icon: Ic, value, label }: { icon: typeof Eye; value: number; label: string }) => (
+    <div style={{ border: "1px solid var(--c-brd)", borderRadius: 8, padding: "9px 8px" }}>
+      <Ic size={12} style={{ color: "var(--c-dim)" }} />
+      <div style={{ fontSize: 15, fontWeight: 600, marginTop: 6, color: "var(--c-high)", fontVariantNumeric: "tabular-nums" }}>{value}</div>
+      <div style={{ fontSize: 8.5, fontWeight: 600, letterSpacing: "0.05em", color: "var(--c-dim)", marginTop: 1 }}>{label}</div>
+    </div>
+  );
+  const sectionLbl = (left: React.ReactNode, right?: React.ReactNode) => (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 7 }}>
+      <span style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: "0.05em", color: "var(--c-dim)" }}>{left}</span>
+      {right != null && <span style={{ fontSize: 10.5, fontFamily: MONO, color: "var(--c-med)" }}>{right}</span>}
+    </div>
+  );
 
   return (
-    <button
-      onClick={handleClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        position: "relative",
-        display: "flex", flexDirection: "column", gap: 4,
-        width: "100%",
-        padding: "11px 12px 12px",
-        borderRadius: 0,
-        border: "none",
-        borderBottom: "1px solid var(--c-brd)",
-        cursor: "pointer", textAlign: "left",
-        transition: "background 0.12s",
-        background: isWaiting
-          ? "rgba(251,146,60,0.06)"
-          : hovered ? "var(--c-srf)" : "transparent",
-        fontFamily: "inherit",
-      }}
-    >
-      {isWaiting && (
-        <span aria-hidden style={{
-          position: "absolute", left: 0, top: 8, bottom: 8, width: 2,
-          background: C_ORANGE, borderRadius: 2,
-        }} />
-      )}
+    <div style={{
+      margin: "0 12px 10px",
+      border: `1px solid ${isWaiting ? "rgba(251,146,60,0.35)" : "var(--c-brd)"}`,
+      borderRadius: 11, background: "var(--card, var(--c-srf))", overflow: "hidden",
+    }}>
+      <button
+        onClick={handleClick}
+        style={{ display: "flex", flexDirection: "column", gap: 0, width: "100%", padding: "13px 14px 0", border: "none", background: "transparent", cursor: "pointer", textAlign: "left", fontFamily: "inherit" }}
+      >
+        {header}
+        {meta}
+      </button>
 
-      {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
-        <StatusRing
-          status={isWaiting ? "waiting" : fleetStatus === "paused" ? "paused" : session.status}
-          size={11}
-        />
-        {session.tool && <ProviderLogo tool={session.tool} size={11} />}
-        <span style={{
-          minWidth: 0, overflow: "hidden",
-          WebkitMaskImage: "linear-gradient(to right, black 90%, transparent 100%)",
-          maskImage: "linear-gradient(to right, black 90%, transparent 100%)",
-          fontSize: 13.5,
-          fontWeight: isRunning ? 700 : 600,
-          letterSpacing: "-0.005em",
-          lineHeight: 1.2,
-          color: "var(--c-high)",
-          whiteSpace: "nowrap",
-        }}>{session.title || "Untitled"}</span>
-        {/* FLEET badge — surfaces the staff session as "the command
-            center" when it appears in the regular Sessions list.
-            id-based detection so a future title regression can't hide
-            the badge or mis-tag a normal session as Fleet. */}
-        {isStaff && (
-          <span style={{
-            fontSize: 9, fontWeight: 700,
-            letterSpacing: "0.08em",
-            padding: "2px 6px",
-            borderRadius: 4,
-            background: "rgba(var(--fg-rgb), 0.10)",
-            color: "var(--c-fg)",
-            flexShrink: 0,
+      <div style={{ padding: "12px 14px 13px" }}>
+        {isWaiting && (
+          <div style={{
+            display: "flex", alignItems: "center", gap: 9, padding: "9px 11px",
+            border: "1px solid var(--c-brd2)", borderRadius: 8, background: "var(--c-srf)", marginBottom: 12,
           }}>
-            FLEET
-          </span>
-        )}
-        <span style={{ flex: 1 }} />
-        <span style={{
-          fontSize: 9.5, fontWeight: 700,
-          color: fleetStatus === "paused" || fleetStatus === "awaiting-user" || isWaiting ? info.color : "var(--c-low)",
-          flexShrink: 0,
-          letterSpacing: "0.07em", textTransform: "uppercase",
-        }}>{info.label}</span>
-        {hovered && isRunning ? (
-          <button
-            onClick={handleStop}
-            title="Stop"
-            style={{
-              width: 18, height: 18, borderRadius: 4, border: "none", cursor: "pointer",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              background: "none", color: "var(--c-ghost)", flexShrink: 0,
-            }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = C_RED; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "var(--c-ghost)"; }}
-          >
-            {stopping ? <Loader2 size={9} className="animate-spin" /> : <Square size={9} strokeWidth={2.4} />}
-          </button>
-        ) : costLabel ? (
-          <span style={{
-            flexShrink: 0,
-            fontSize: 11.5, color: "var(--c-med)", fontWeight: 700,
-            fontFamily: MONO, fontVariantNumeric: "tabular-nums",
-          }}>{costLabel}</span>
-        ) : null}
-      </div>
-
-      {/* Meta */}
-      <div style={{
-        display: "flex", alignItems: "baseline", gap: 6,
-        marginLeft: 19,
-        fontSize: 10.5, color: "var(--c-ghost)", lineHeight: 1.2,
-        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-      }}>
-        {project && <span>{project}</span>}
-        {project && modelShort && <span aria-hidden style={{ color: "var(--c-brd2)" }}>·</span>}
-        {modelShort && <span style={{ color: "var(--c-dim)" }}>{modelShort}</span>}
-        <span style={{ marginLeft: "auto", color: "var(--c-ghost)" }}>{ago}</span>
-      </div>
-
-      {/* Content zone */}
-      {showDecision && decision && (
-        <InlineDecision decision={decision} onSend={handleSend} onAnswer={handleAnswer} onDismiss={handleDismissDecision} />
-      )}
-      {showLive && liveActivity && (
-        <div style={{
-          display: "flex", alignItems: "center", gap: 7,
-          marginTop: 6, marginLeft: 19,
-          padding: "5px 9px",
-          borderRadius: 5,
-          background: "var(--c-srf)",
-          fontSize: 10.5, color: "var(--c-low)",
-          lineHeight: 1.35,
-          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-          fontFamily: MONO,
-        }}>
-          <span aria-hidden style={{
-            width: 5, height: 5, borderRadius: 999,
-            background: "var(--c-high)",
-            animation: "fleetPulse 1.6s ease-in-out infinite",
-            flexShrink: 0,
-          }} />
-          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>{liveActivity}</span>
-        </div>
-      )}
-      {showVerdict && verdict && (
-        <div style={{
-          display: "flex", gap: 8,
-          marginTop: 6, marginLeft: 19,
-        }}>
-          <span aria-hidden style={{
-            width: 2, flexShrink: 0,
-            background: verdict.tone === "warning" ? C_ORANGE
-                      : verdict.tone === "fleet"   ? C_BLUE
-                      :                              "var(--c-brd2)",
-            borderRadius: 2,
-          }} />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{
-              fontSize: 9, fontWeight: 700,
-              color: verdict.tone === "warning" ? C_ORANGE
-                  : verdict.tone === "fleet"   ? C_BLUE
-                  :                              "var(--c-ghost)",
-              letterSpacing: "0.08em", textTransform: "uppercase",
-              marginBottom: 2,
-            }}>
-              {verdict.tone === "fleet" ? "Fleet" : verdict.tone === "warning" ? "Heads up" : "Take"}
-            </div>
-            <div style={{
-              fontSize: 11.5, color: "var(--c-med)", lineHeight: 1.4,
-              overflow: "hidden", textOverflow: "ellipsis",
-              display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
-            }}>{verdict.text}</div>
+            <span style={{ width: 15, height: 15, borderRadius: "50%", border: "1px solid var(--c-ghost)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: "var(--c-med)", flexShrink: 0 }}>?</span>
+            <span style={{ flex: 1, fontFamily: MONO, fontSize: 11.5, color: "var(--c-med)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Needs your response</span>
+            <button onClick={handleClick} style={{ fontSize: 11.5, fontWeight: 600, color: "var(--c-fg)", border: "1px solid var(--c-brd2)", borderRadius: 6, padding: "4px 11px", cursor: "pointer", background: "transparent" }}>Respond</button>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Counters */}
-      {hasAnyCounter && (
-        <div style={{
-          display: "flex", alignItems: "baseline", gap: 12,
-          marginTop: 8, marginLeft: 19,
-          fontVariantNumeric: "tabular-nums",
-        }}>
-          {counters.edits > 0 && <MiniStat value={counters.edits} label={counters.edits !== 1 ? "edits" : "edit"} />}
-          {counters.files > 0 && <MiniStat value={counters.files} label={counters.files !== 1 ? "files" : "file"} />}
-          {counters.cmds > 0 && <MiniStat value={counters.cmds} label="cmd" />}
-          {counters.msgs > 0 && <MiniStat value={counters.msgs} label="msg" />}
-          {sparkNonZero >= 2 && (
-            <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center" }}>
-              <Sparkline values={sparkValues} color={isRunning ? "var(--c-high)" : "var(--c-low)"} />
-            </span>
+        {verdict && (
+          <div style={{ fontSize: 12.5, color: "var(--c-med)", lineHeight: 1.5, marginBottom: 13 }}>{verdict.text}</div>
+        )}
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 13 }}>
+          <Box label="TOKENS" value={fmtTokens(tokensTotal)} />
+          <Box label="STEPS" value={todos.length > 0 ? `${stepsDone}/${todos.length}` : "—"} />
+          <Box label="REPO" value={project ?? "—"} mono />
+        </div>
+
+        {tokensTotal > 0 && (
+          <div style={{ marginBottom: 14 }}>
+            {sectionLbl("TOKEN MIX", `${cachePct}% cache`)}
+            <div style={{ height: 5, borderRadius: 3, background: "var(--c-srf)", overflow: "hidden", display: "flex" }}>
+              <span style={{ height: "100%", width: `${100 - cachePct}%`, background: "var(--c-med)" }} />
+              <span style={{ height: "100%", width: `${cachePct}%`, background: "rgba(var(--fg-rgb),0.18)" }} />
+            </div>
+          </div>
+        )}
+
+        {tcTotal > 0 && (
+          <div style={{ marginBottom: 13 }}>
+            {sectionLbl("TOOL CALLS", tcTotal)}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
+              <ToolCell icon={Eye} value={tc.read} label="READ" />
+              <ToolCell icon={Pencil} value={tc.edit} label="EDIT" />
+              <ToolCell icon={Terminal} value={tc.bash} label="BASH" />
+              <ToolCell icon={Globe} value={tc.web} label="WEB" />
+            </div>
+          </div>
+        )}
+
+        {files.length > 0 && (
+          <div style={{ marginBottom: 13 }}>
+            {sectionLbl(<>FILES <span style={{ color: "var(--c-ghost)" }}>{files.length}</span></>)}
+            {files.map(f => (
+              <div key={f.path} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", fontSize: 11.5 }}>
+                <span style={{ fontFamily: MONO, color: "var(--c-med)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "78%" }}>{f.path}</span>
+                <span style={{ fontFamily: MONO, fontSize: 10.5, color: "var(--c-dim)" }}>{f.n > 1 ? `${f.n}×` : ""}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+          <button onClick={handleClick} style={{ flex: 1, height: 34, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: "1px solid var(--c-brd2)", borderRadius: 8, fontSize: 12.5, fontWeight: 600, color: "var(--c-fg)", cursor: "pointer", background: "var(--c-srf)", fontFamily: "inherit" }}>
+            <ArrowRight size={13} /> Open
+          </button>
+          {isRunning && (
+            <button onClick={handleStop} style={{ height: 34, padding: "0 16px", border: "1px solid var(--c-brd)", borderRadius: 8, fontSize: 12.5, fontWeight: 500, color: "var(--c-med)", cursor: "pointer", background: "transparent", fontFamily: "inherit", display: "flex", alignItems: "center" }}>
+              {stopping ? <Loader2 size={12} className="animate-spin" /> : "Stop"}
+            </button>
           )}
         </div>
-      )}
-    </button>
+      </div>
+    </div>
   );
 });
 
@@ -1015,14 +789,24 @@ function AskFleetCard({ buildSnapshot, initialOpen, initialQuestion }: {
 
 function ActivityFeedRow({ row }: { row: FleetActivityRow }) {
   const isError = row.kind === "error";
+  // De-namespace MCP tool ids (mcp__server__tool → tool) so the feed never
+  // shows the raw "mcp__fleet_permission__ask_user" twice.
+  const rawTool = (row.payload?.tool ?? "").replace(/^mcp__[a-z0-9_]+?__/i, "");
   const verb = (() => {
-    const t = row.payload?.tool ?? "";
     if (row.kind === "file_edit") return "Edit";
     if (row.kind === "file_read") return "Read";
-    if (row.kind === "command")   return t || "Run";
+    if (row.kind === "command")   return "Run";
     if (row.kind === "web_fetch") return "Fetch";
     if (row.kind === "error")     return "Error";
-    return t || row.kind;
+    if (rawTool === "ask_user" || rawTool === "AskUserQuestion") return "Ask";
+    if (rawTool === "ToolSearch") return "Search";
+    return rawTool || "Tool";
+  })();
+  const detail = (() => {
+    if (row.kind === "error") return rawTool ? `${rawTool} failed` : (row.summary || "failed");
+    if (rawTool === "ask_user" || rawTool === "AskUserQuestion") return "asked you a question";
+    const h = humanActivity(row);
+    return h && h !== (row.payload?.tool ?? "") ? h : "";
   })();
   return (
     <div style={{
@@ -1054,8 +838,8 @@ function ActivityFeedRow({ row }: { row: FleetActivityRow }) {
         flex: 1, minWidth: 0,
         overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
         color: "var(--c-dim)",
-        fontFamily: verb === "Bash" || verb === "Run" ? MONO : "inherit",
-      }}>{humanActivity(row)}</span>
+        fontFamily: verb === "Run" ? MONO : "inherit",
+      }}>{detail}</span>
     </div>
   );
 }
@@ -1462,8 +1246,17 @@ export function FleetPanel({ sessions, onSelectAgent }: Props) {
             )}
 
             <SectionLabel count={agents.length}>Sessions</SectionLabel>
-            {sortedAgents.map(s => {
+            {sortedAgents.map((s, i) => {
               const fs = fleetSessions[s.id];
+              const live = s.status === "running" || s.status === "starting";
+              // Rich card for anything that needs attention or is the most
+              // relevant row; collapsed one-liners for the rest. Guarantees at
+              // least one expanded card whenever there are sessions.
+              const expanded = live
+                || s.status === "waiting"
+                || s.status === "error"
+                || decisionBySession.has(s.id)
+                || i === 0;
               return (
                 <SessionRow
                   key={s.id}
@@ -1473,6 +1266,7 @@ export function FleetPanel({ sessions, onSelectAgent }: Props) {
                   fleetStatus={fs?.status ?? "idle"}
                   fleetLastAction={fs?.lastAction ?? null}
                   decision={decisionBySession.get(s.id) ?? null}
+                  expanded={expanded}
                   onJump={jumpTo}
                   onSend={handleSend}
                   onAnswer={handleAnswer}
