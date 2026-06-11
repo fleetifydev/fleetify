@@ -267,6 +267,20 @@ pub fn resolve_template(hint: &str) -> Option<&'static str> {
     }
 }
 
+/// Default model id for a CLI agent spawned WITHOUT an explicit model, so the
+/// agent starts on a concrete, real model from its available lineup instead of
+/// the CLI's own opaque "auto" default. Only agents we deliberately pin live
+/// here; `None` keeps the agent on its built-in default (the prior behaviour).
+pub fn default_model_for(tool: &str) -> Option<&'static str> {
+    match tool {
+        // gemini-cli's `--model` default is `auto-gemini-3`; pin the top
+        // concrete model from its ACP `availableModels` so a no-model spawn is
+        // deterministic (`gemini-3.1-pro-preview`, matching the picker's lead).
+        "gemini" => Some("gemini-3.1-pro-preview"),
+        _ => None,
+    }
+}
+
 /// Map an effort hint to a canonical level. Optional field (never a gap).
 pub fn resolve_effort(hint: &str) -> Option<&'static str> {
     match hint.trim().to_lowercase().as_str() {
@@ -501,13 +515,20 @@ pub async fn create(
         Some(t) => t,
         None => auto_pick_tool(st).await,
     };
+    // No explicit model → pin the agent's concrete default (gemini lands on a
+    // real model instead of its opaque "auto"); agents without a pin keep their
+    // own built-in default. An explicit model is always honoured.
+    let model_name = spec
+        .model_name
+        .clone()
+        .or_else(|| default_model_for(&tool).map(str::to_string));
     let data = SessionCreate {
         title: spec.title.clone().unwrap_or_else(|| "Agent".into()),
         project_path: spec.project_path.clone().unwrap_or_default(),
         tool,
         group_path: String::new(),
         notes: None,
-        model_name: spec.model_name.clone(),
+        model_name,
         permission_mode: spec
             .permission_mode
             .clone()
@@ -692,6 +713,16 @@ mod tests {
         assert_eq!(resolve_effort("max"), Some("max"));
         assert_eq!(resolve_effort("HIGH"), Some("high"));
         assert_eq!(resolve_effort("nonsense"), None);
+    }
+
+    #[test]
+    fn default_model_for_gemini_picks_a_real_model() {
+        // Spawning gemini with no model must land on a concrete available model
+        // (not gemini-cli's opaque "auto" default). Other agents keep their own
+        // built-in default — None here means "don't pin".
+        assert_eq!(default_model_for("gemini"), Some("gemini-3.1-pro-preview"));
+        assert_eq!(default_model_for("claude"), None);
+        assert_eq!(default_model_for("totally-unknown"), None);
     }
 
     #[test]

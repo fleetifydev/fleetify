@@ -360,6 +360,14 @@ impl GeminiBridge {
         let bin = which::which("gemini")
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| "gemini".to_string());
+        tracing::info!(
+            target: "gemini",
+            session_id = %self.session_id,
+            bin = %bin,
+            model = self.model_name.as_deref().unwrap_or("(cli default)"),
+            approval,
+            "gemini cold start: spawning ACP subprocess"
+        );
 
         let mut cmd = Command::new(&bin);
         cmd.arg("--acp").arg("--approval-mode").arg(approval);
@@ -396,6 +404,10 @@ impl GeminiBridge {
             .stderr(std::process::Stdio::piped());
         // Multi-account isolation (no-op for the System account).
         crate::bridges::account_env::apply_to_command(&mut cmd, &account_env);
+        // The `gemini.cmd` npm shim runs under cmd.exe, which truncates a long
+        // inherited PATH at 8191 chars; keep Node reachable or the shim dies at
+        // spawn with "ACP stream closed". See `ensure_node_on_path`.
+        crate::bridges::ensure_node_on_path(&mut cmd);
 
         let mut proc = match cmd.spawn() {
             Ok(p) => p,
@@ -416,16 +428,47 @@ impl GeminiBridge {
             .ok_or_else(|| anyhow!("no stdout for gemini --acp"))?;
 
         // Drain stderr so MCP-server startup failures don't backpressure
-        // the subprocess (matches the Python `_pump_stderr` task).
+        // the subprocess (matches the Python `_pump_stderr` task). The tail is
+        // kept so a cold-start failure can carry the subprocess's own words —
+        // "ACP stream closed" alone (the process died) is undiagnosable from
+        // the UI, and the drain used to hide the root cause at debug level.
+        let stderr_tail: Arc<std::sync::Mutex<std::collections::VecDeque<String>>> =
+            Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
         if let Some(stderr) = proc.stderr.take() {
+            let tail = stderr_tail.clone();
+            let sid = self.session_id.clone();
             tokio::spawn(async move {
                 use tokio::io::{AsyncBufReadExt, BufReader};
                 let mut r = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = r.next_line().await {
-                    tracing::debug!(target: "gemini.stderr", "{line}");
+                    tracing::warn!(target: "gemini.stderr", session_id = %sid, "{line}");
+                    if let Ok(mut t) = tail.lock() {
+                        if t.len() >= 12 {
+                            t.pop_front();
+                        }
+                        t.push_back(line);
+                    }
                 }
             });
         }
+        // Decorate a cold-start step error with the subprocess's stderr tail
+        // (and exit status when it already died) so the user-facing message
+        // names the actual cause, not just the closed pipe.
+        let describe_failure = |step: &str, e: anyhow::Error, proc: &mut tokio::process::Child| {
+            let status = match proc.try_wait() {
+                Ok(Some(s)) => format!(" (process exited: {s})"),
+                _ => String::new(),
+            };
+            let tail = stderr_tail
+                .lock()
+                .map(|t| t.iter().cloned().collect::<Vec<_>>().join(" | "))
+                .unwrap_or_default();
+            if tail.is_empty() {
+                anyhow!("{step}: {e}{status}")
+            } else {
+                anyhow!("{step}: {e}{status} — gemini said: {tail}")
+            }
+        };
 
         let client = Arc::new(AcpClient::new());
         client.attach(stdout, stdin).await?;
@@ -537,16 +580,20 @@ impl GeminiBridge {
 
         // ACP handshake.
         let client_caps = json!({ "fs": { "readTextFile": true, "writeTextFile": true } });
-        let init = tokio::time::timeout(
+        let init = match tokio::time::timeout(
             std::time::Duration::from_secs(INIT_TIMEOUT_SECS),
             client.initialize(client_caps),
         )
         .await
-        .map_err(|_| {
-            anyhow!(
-                "Gemini timed out starting up after {INIT_TIMEOUT_SECS}s. Try again, or check that `gemini --acp` runs locally."
-            )
-        })??;
+        {
+            Err(_) => {
+                return Err(anyhow!(
+                    "Gemini timed out starting up after {INIT_TIMEOUT_SECS}s. Try again, or check that `gemini --acp` runs locally."
+                ))
+            }
+            Ok(Err(e)) => return Err(describe_failure("Gemini ACP initialize failed", e, &mut proc)),
+            Ok(Ok(v)) => v,
+        };
 
         let method_id = select_auth_method(init.get("authMethods").unwrap_or(&Value::Null))
             .ok_or_else(|| {
@@ -554,7 +601,9 @@ impl GeminiBridge {
                     "Gemini not authenticated. Run `gemini` once interactively to log in, or set GEMINI_API_KEY."
                 )
             })?;
-        client.authenticate(&method_id).await?;
+        if let Err(e) = client.authenticate(&method_id).await {
+            return Err(describe_failure("Gemini authenticate failed", e, &mut proc));
+        }
 
         // Materialize merged MCP map (user registry + fleet built-ins)
         // for ACP session/new. Mirrors codex bridge's MCP wiring.
@@ -572,10 +621,10 @@ impl GeminiBridge {
             mcp_mounted = ?mcp_map.keys().collect::<Vec<_>>(),
             "gemini MCP servers built"
         );
-        let acp_session_id = client
-            .session_new(&cwd, mcp_servers)
-            .await
-            .map_err(|e| anyhow!("session/new failed: {e}"))?;
+        let acp_session_id = match client.session_new(&cwd, mcp_servers).await {
+            Ok(s) => s,
+            Err(e) => return Err(describe_failure("session/new failed", e, &mut proc)),
+        };
 
         let model_label = self
             .model_name

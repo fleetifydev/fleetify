@@ -73,28 +73,44 @@ export function SpawnFormCard({ block }: { block: SpawnFormBlock }) {
 
   if (status === "cancelled") return null;
 
-  // ── Result / created card ──
+  // ── Created — a plain inline line (NOT a boxed card), so the confirmation
+  //    reads like a normal agent-dispatch note in the transcript. ──
   if (status === "created") {
     return (
-      <div style={{ ...SURFACE, padding: "10px 12px" }} className="fade-in">
-        <div style={{ fontSize: 13, color: "#f5f5f5", fontWeight: 600 }}>
-          ✓ Created agent <span style={{ color: "#c4c4c4" }}>{d.title || "Agent"}</span>
-          {d.project_path ? <span style={{ color: "#6a6a6a" }}> · {d.project_path}</span> : null}
-        </div>
+      <div
+        className="fade-in"
+        style={{
+          margin: "2px 0 12px",
+          fontSize: 12.5,
+          color: "var(--c-med)",
+          lineHeight: 1.5,
+          display: "flex",
+          alignItems: "center",
+          gap: 7,
+          flexWrap: "wrap",
+        }}
+      >
+        <span style={{ color: "var(--c-low)" }}>✓</span>
+        <span>
+          Created agent{" "}
+          <span style={{ color: "var(--c-high)", fontWeight: 500 }}>{d.title || "Agent"}</span>
+          {d.project_path ? <span style={{ color: "var(--c-dim)" }}> · {d.project_path}</span> : null}
+        </span>
         {createdId && (
           <button
             onClick={() => setActiveSession(createdId)}
+            onMouseEnter={(e) => { e.currentTarget.style.color = "var(--c-high)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = "var(--c-med)"; }}
             style={{
-              marginTop: 8,
-              height: 26,
-              padding: "0 11px",
-              background: "rgba(255,255,255,0.07)",
-              border: "1px solid rgba(255,255,255,0.12)",
-              borderRadius: 6,
-              color: "#f0f0f0",
-              fontSize: 12,
-              fontWeight: 600,
+              background: "none",
+              border: "none",
+              padding: 0,
               cursor: "pointer",
+              color: "var(--c-med)",
+              fontSize: 12.5,
+              fontWeight: 500,
+              textDecoration: "underline",
+              textUnderlineOffset: 2,
             }}
           >
             Open

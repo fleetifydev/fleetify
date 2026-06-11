@@ -264,6 +264,39 @@ pub fn tool_override_decision(
     }
 }
 
+/// Prepend `dir` (+ `;`) to a PATH-style string. Pure so the cmd.exe
+/// truncation semantics are unit-testable without touching the environment.
+fn prepend_path_entry(dir: &std::ffi::OsStr, current: &std::ffi::OsStr) -> std::ffi::OsString {
+    let mut out = std::ffi::OsString::from(dir);
+    if !current.is_empty() {
+        out.push(";");
+        out.push(current);
+    }
+    out
+}
+
+/// Windows: npm-shim CLIs (`gemini.cmd` / `codex.cmd` / `kimi.cmd` / …) launch
+/// `node` from PATH. cmd.exe — which runs the `.cmd` shim — TRUNCATES the
+/// inherited PATH at 8191 chars; when the user's PATH is bloated (>8191) and
+/// every Node directory sits past that boundary, the shim's `node` invocation
+/// fails (`'node' is not recognized`) and the agent dies the instant it spawns
+/// ("ACP stream closed"). Prepend Node's own directory so it always survives
+/// the truncation. No-op on non-Windows and when `node` can't be resolved (the
+/// child then inherits PATH unchanged, behaving exactly as before).
+pub fn ensure_node_on_path(cmd: &mut tokio::process::Command) {
+    if !cfg!(windows) {
+        return;
+    }
+    let Some(node_dir) = which::which("node")
+        .ok()
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+    else {
+        return;
+    };
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    cmd.env("PATH", prepend_path_entry(node_dir.as_os_str(), &current));
+}
+
 /// Normalized event (parity with `ClaudeBridgeEvent`). `to_json()` is the
 /// exact `{type, …}` envelope sent over the chat WebSocket.
 #[derive(Debug, Clone, PartialEq)]
@@ -488,6 +521,46 @@ impl serde::Serialize for BridgeEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── prepend_path_entry ───────────────────────────────────────────────────
+
+    #[test]
+    fn prepend_path_entry_puts_dir_within_cmd_truncation_window() {
+        use std::ffi::OsString;
+        // Reproduce the gemini "ACP stream closed" root cause: a bloated PATH
+        // (>8191 chars) where the node dir sits PAST cmd.exe's 8191-char
+        // truncation boundary, so the npm `.cmd` shim's `node` invocation can't
+        // find it. After prepending, the node dir must land at the very front,
+        // safely inside the window cmd.exe keeps.
+        let node = "C:\\Program Files\\nodejs";
+        let mut bloated = OsString::new();
+        for i in 0..400 {
+            bloated.push(format!("C:\\some\\padding\\dir-{i:03}\\bin;"));
+        }
+        bloated.push(node);
+        let before = bloated.to_string_lossy();
+        assert!(before.len() > 8191, "fixture must exceed the cmd.exe limit");
+        assert!(
+            before.find("nodejs").unwrap() > 8191,
+            "fixture must put nodejs past the truncation boundary"
+        );
+
+        let fixed = prepend_path_entry(std::ffi::OsStr::new(node), &bloated);
+        let after = fixed.to_string_lossy();
+        assert!(after.starts_with("C:\\Program Files\\nodejs;"));
+        assert!(
+            after.find("nodejs").unwrap() < 8191,
+            "after prepend the node dir must survive cmd.exe truncation"
+        );
+        // The original PATH is preserved after the prepended entry.
+        assert!(after.contains("dir-399"));
+    }
+
+    #[test]
+    fn prepend_path_entry_handles_empty_current() {
+        let out = prepend_path_entry(std::ffi::OsStr::new("C:\\node"), std::ffi::OsStr::new(""));
+        assert_eq!(out.to_string_lossy(), "C:\\node");
+    }
 
     // ── parse_tool_overrides ─────────────────────────────────────────────────
 

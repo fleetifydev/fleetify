@@ -476,6 +476,9 @@ impl OpenCodeBridge {
         // Multi-account isolation (no-op for the System account). OpenCode reads
         // XDG paths, which `account_env` relocates alongside HOME.
         crate::bridges::account_env::apply_to_command(&mut cmd, &account_env);
+        // Keep Node reachable for the npm `.cmd` shim under cmd.exe's 8191-char
+        // PATH truncation — see `bridges::ensure_node_on_path`.
+        crate::bridges::ensure_node_on_path(&mut cmd);
 
         let mut proc = cmd.spawn().map_err(|e| {
             anyhow!("OpenCode CLI not found ({e}). Install: npm install -g opencode-ai")
