@@ -26,46 +26,28 @@
  */
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
-  FolderOpen, Monitor, Lock, History, Plus, Check, ChevronDown,
+  FolderOpen, Monitor, History, Plus, Check, ChevronDown,
   GitBranch, Search as SearchIcon,
   Github, Server, Box,
 } from "lucide-react";
-import { ProviderLogo } from "@/components/ui/provider-logo";
 import { updateSession as apiUpdateSession, cloneRepository, fetchClaudeSessions, fetchClaudeHistory, type ClaudeSession } from "@/lib/api";
 import { registerConfigPatch } from "@/lib/session-config-sync";
-import { useDiscoveredModelsStore } from "@/stores/discovered-models-store";
-import { effortLabel } from "@/lib/effort";
 import { extractOwnerRepo } from "@/lib/git-url";
 import { GitSourceTab } from "./git-source-tab";
 import { useAppStore } from "@/stores/app-store";
 import { useChatStore } from "@/stores/chat-store";
-import { wsManager } from "@/services/ws-manager";
 import type { ChatMessage } from "@/types/chat";
 import type { Session } from "@/types/session";
 import { RemoteSshPanel } from "./remote-ssh-panel";
 import { DockerContainerPanel } from "./docker-container-panel";
 import { folderName as folderNameUtil } from "@/lib/utils";
-import { UnifiedModelPicker, type Effort as UMEffort } from "./unified-model-picker";
-import {
-  buildPickerGroups,
-  effortForDiscoveredModel,
-  resolveDispatchTool,
-  resolveModelChip,
-  type PickerGroup,
-  type PickerModel,
-} from "@/lib/picker-groups";
-import { useProvidersConfig } from "@/hooks/use-providers-config";
-import { permissionCapabilityFor, permissionModesFor } from "@/lib/capabilities";
 
-type MenuId = "source" | "git" | "model" | "perms" | "history" | null;
+type MenuId = "source" | "git" | "history" | null;
 
 export function SessionToolbar({
   sessionId,
   projectPath,
   tool,
-  model,
-  permissionMode,
-  effort: effortProp,
   claudeSessionId,
   useWorktree,
 }: {
@@ -359,71 +341,10 @@ export function SessionToolbar({
     }
   }, [isDraft, setDraftField, patch]);
 
-  const pickPerm = useCallback((id: string) => {
-    patch({ permission_mode: id });
-    setOpenMenu(null);
-  }, [patch]);
-
   const folderName = projectPath
     ? (folderNameUtil(projectPath) || projectPath)
     : null;
 
-  const { tiles: providerTiles } = useProvidersConfig();
-  const perms = permissionModesFor(permissionCapabilityFor(providerTiles, resolveDispatchTool(tool)));
-  // Never fall back to the raw id: an invalid/stale mode for this provider
-  // shows its default (or first) mode's label until the heal effect coerces it.
-  const permLabel =
-    perms.find((p) => p.id === permissionMode)?.label ??
-    perms.find((p) => p.id === "default")?.label ??
-    perms[0]?.label ??
-    permissionMode;
-  const effort: UMEffort = ((effortProp ?? session?.effort) ?? "high") as UMEffort;
-  const enabledAgentIds = providerTiles
-    .filter((t) => t.spec.kind === "cli" && t.connected)
-    .map((t) => t.spec.id);
-  // OpenCode and Cursor source their model list from the live ACP session
-  // (catalog default_models is empty). Two sources feed the picker rail:
-  //   1. The ACTIVE session's live list — pushed by the bridge via
-  //      `available_models_update` once it cold-starts (freshest, only for
-  //      the running agent), keyed by the session's own tool.
-  //   2. The app-wide discovered-catalog store — hydrated eagerly on mount
-  //      (remote-catalog agents + connected HTTP providers, so the model chip
-  //      resolves display names like "Fable 5" on first render) and topped up
-  //      with the live-probe agents when the model menu opens.
-  // Both override the static CLI_MODELS fallback in buildPickerGroups.
-  const sessionDynModels = useChatStore((s) => s.dynamicModels[sessionId]);
-  const discoveredModels = useDiscoveredModelsStore((s) => s.models);
-  useEffect(() => {
-    void useDiscoveredModelsStore.getState().hydrate(providerTiles);
-  }, [providerTiles]);
-  useEffect(() => {
-    if (openMenu !== "model") return; // full discovery (incl. live-probe agents) on picker open
-    void useDiscoveredModelsStore.getState().discoverLive(providerTiles, projectPath ?? "");
-  }, [openMenu, projectPath, providerTiles]);
-  const dynamicModels: Record<string, PickerModel[]> | undefined = (() => {
-    const merged: Record<string, PickerModel[]> = { ...discoveredModels };
-    if (sessionDynModels && sessionDynModels.models.length > 0) {
-      // Union the live session list (current provider, freshest) with the
-      // discovered catalog rather than replacing it: for Hermes the catalog
-      // spans every authenticated provider while the live list is only the
-      // active provider's subset — replacing would collapse the chip-row.
-      const base = merged[tool] ?? [];
-      const seen = new Set(base.map((m) => m.id));
-      const live = sessionDynModels.models
-        .filter((m) => !seen.has(m.id))
-        .map((m) => {
-          const eff = effortForDiscoveredModel(tool, m.id, providerTiles);
-          return { id: m.id, label: m.label, effort: eff, supports_effort: eff.kind !== "none" };
-        });
-      merged[tool] = [...base, ...live];
-    }
-    return Object.keys(merged).length > 0 ? merged : undefined;
-  })();
-  const groups: PickerGroup[] = buildPickerGroups(
-    providerTiles,
-    enabledAgentIds,
-    dynamicModels,
-  );
 
   return (
     <div
@@ -672,103 +593,6 @@ export function SessionToolbar({
         );
       })()}
 
-      {/* ── Model — single chip carrying the provider logo + the
-            current model name + effort. Opens UnifiedModelPicker
-            (three-column: providers | models | effort). ── */}
-      {(() => {
-        // Shared resolver — keeps this chip byte-for-byte identical to the
-        // chat composer's model chip (chat-input.tsx uses the same
-        // resolveModelChip + the same groups), so the two can never disagree.
-        const { dispatchTool, label: modelLabel } = resolveModelChip(groups, tool, model);
-        return (
-          <Chip
-            active={openMenu === "model"}
-            chevron
-            onClick={() => setOpenMenu(openMenu === "model" ? null : "model")}
-          >
-            <ProviderLogo tool={dispatchTool} size={12} />
-            <span>{modelLabel}</span>
-            <span style={{ color: "var(--c-dim)", fontSize: 10 }}>·</span>
-            <span style={{ color: "var(--c-low)", fontSize: 10.5 }}>{effortLabel(effort)}</span>
-          </Chip>
-        );
-      })()}
-
-      {/* Model picker popover — rendered at the TOOLBAR-ROOT level (a direct
-          child of the position:relative chip row), NOT inside the model
-          Chip, for two reasons: (1) a <button> can't legally contain the
-          picker's <button> rows, and the old nesting let row clicks bubble
-          to the Chip's onClick and close the menu mid-select; (2) with the
-          picker's built-in `left:0` it now anchors to the toolbar's LEFT
-          edge (left of the pick-folder chip) and opens upward — matching the
-          chat composer's far-left placement. */}
-      {openMenu === "model" && (
-        <UnifiedModelPicker
-          tool={tool}
-          model={model}
-          effort={effort}
-          groups={groups}
-          onPickModel={(groupId, modelId) => {
-            if (groupId === "auto") {
-              // Auto is Fleet-owned: the backend routes via Fleet's own Not
-              // Diamond key (.env), independent of the user's Settings →
-              // Routers config. Just pin the routing sentinel.
-              void patch({ tool: "auto", model_name: "auto" });
-              return;
-            }
-            const next = resolveDispatchTool(groupId);
-            const updates: Record<string, unknown> = { model_name: modelId };
-            if (next !== tool) updates.tool = next;
-            patch(updates);
-            // OpenCode, Cursor, and Hermes source models at runtime — switch
-            // the live ACP session too (the patch alone only affects the next
-            // cold start). Skipped for drafts (no live bridge yet).
-            if (
-              (next === "opencode" || next === "cursor" || next === "hermes") &&
-              !isDraft
-            ) {
-              wsManager.switchModel(sessionId, modelId);
-            }
-          }}
-          onPickEffort={(e) => {
-            patch({ effort: e });
-            // OpenCode + Cursor apply effort live via set_config_option.
-            if ((tool === "opencode" || tool === "cursor") && !isDraft) {
-              wsManager.switchConfig(sessionId, "effort", e);
-            }
-          }}
-          onClose={() => setOpenMenu(null)}
-          // Open UPWARD (above the toolbar / "Local" area), matching the
-          // other toolbar menus and the chat composer's picker.
-          anchor="bottom"
-        />
-      )}
-
-      {/* ── Permission ── */}
-      {perms.length > 0 && (
-        <Chip
-          active={openMenu === "perms"}
-          chevron
-          onClick={() => setOpenMenu(openMenu === "perms" ? null : "perms")}
-        >
-          <Lock size={11} style={{ color: "var(--c-dim, #9a9a9a)" }} />
-          <span>{permLabel}</span>
-          {openMenu === "perms" && (
-            <Menu>
-              {perms.map(p => (
-                <MenuRow
-                  key={p.id}
-                  active={permissionMode === p.id}
-                  onClick={() => pickPerm(p.id)}
-                  primary={p.label}
-                  secondary=""
-                />
-              ))}
-            </Menu>
-          )}
-        </Chip>
-      )}
-
       {/* ── Git branch + worktree (composite chip) ──
             Two click targets glued together inside a single chip
             shell — mirrors the reference design where the branch
@@ -808,12 +632,13 @@ export function SessionToolbar({
 
         // Shared chip-shell visuals — pulled from the Chip primitive
         // so this composite reads as a single chip in the strip.
-        const shellBg = isOpen
-          ? "var(--c-srf, rgba(255,255,255,0.07))"
-          : "var(--c-srf2, rgba(255,255,255,0.04))";
-        const shellBorder = isOpen
-          ? "var(--c-brd2, rgba(255,255,255,0.20))"
-          : "var(--c-brd, rgba(255,255,255,0.10))";
+        // Ghost-minimal to match the standalone chips: transparent box,
+        // a faint fill only while the branch menu is open. The internal
+        // separator keeps the branch | worktree segments reading as one
+        // grouped control even without a surrounding outline.
+        const shellBg = isOpen ? "rgba(var(--fg-rgb),0.10)" : "transparent";
+        const shellBorder = "transparent";
+        const shellSep = "rgba(var(--fg-rgb),0.12)";
 
         return (
           <div
@@ -828,6 +653,8 @@ export function SessionToolbar({
               transition: "background 0.12s, border-color 0.12s",
               overflow: "visible",
             }}
+            onMouseEnter={e => { if (!disabled && !isOpen) e.currentTarget.style.background = "rgba(var(--fg-rgb),0.06)"; }}
+            onMouseLeave={e => { if (!isOpen) e.currentTarget.style.background = "transparent"; }}
           >
             {/* ── LEFT: branch trigger ── */}
             <button
@@ -870,7 +697,7 @@ export function SessionToolbar({
             {/* ── Separator ── */}
             <span style={{
               width: 1, alignSelf: "stretch",
-              background: shellBorder,
+              background: shellSep,
               transition: "background 0.12s",
             }} />
 
@@ -1351,11 +1178,15 @@ function Chip({
   title?: string;
   disabled?: boolean;
 }) {
-  const baseBg     = "var(--c-srf2, rgba(255,255,255,0.04))";
-  const hoverBg    = "var(--c-srf, rgba(255,255,255,0.07))";
-  const activeBg   = "var(--c-srf, rgba(255,255,255,0.07))";
-  const baseBorder = "var(--c-brd, rgba(255,255,255,0.10))";
-  const hotBorder  = "var(--c-brd2, rgba(255,255,255,0.20))";
+  // Ghost-minimal, matching the chat composer's toolbar buttons: no
+  // resting border or fill, a faint wash on hover, a slightly stronger
+  // one while the menu is open. Fully monochrome — borders stay
+  // transparent so the layout never shifts between states.
+  const baseBg     = "transparent";
+  const hoverBg    = "rgba(var(--fg-rgb),0.06)";
+  const activeBg   = "rgba(var(--fg-rgb),0.10)";
+  const baseBorder = "transparent";
+  const hotBorder  = "transparent";
 
   return (
     <button
@@ -1461,23 +1292,25 @@ function SourceTab({
   );
 }
 
-/** Stable accent colour per Claude account so each row in the resume picker
- *  carries an at-a-glance account identity (a 2px coloured left rail + dot).
- *  System = neutral grey, signed-in siblings rotate through a small purple →
- *  indigo → teal palette. Ordering is by account label, so a freshly-added
- *  account inherits the next free slot without changing the others. */
+/** Per-account rail/dot tone in the resume picker. Monochrome by design —
+ *  the app's whole design language is neutral, so account identity is carried
+ *  by the text label, never a hue. We still vary the grey brightness slightly
+ *  so sibling accounts aren't pixel-identical, but no colour ever enters the
+ *  picker. Theme-aware via --fg-rgb (white-ish in dark, near-black in light).
+ *  Ordering is by account label, so a freshly-added account inherits the next
+ *  free slot without disturbing the others. */
 function accountDotColor(label: string): string {
-  if (label === "System") return "rgb(180,180,190)";
-  const PALETTE = [
-    "rgb(124,106,247)",  // .claude-2 — indigo
-    "rgb(96,165,250)",   // .claude-3 — sky
-    "rgb(64,180,160)",   // .claude-4 — teal
-    "rgb(216,120,196)",  // .claude-5 — pink
-    "rgb(232,168,80)",   // .claude-6 — amber
+  if (label === "System") return "rgba(var(--fg-rgb),0.55)";
+  const TONES = [
+    "rgba(var(--fg-rgb),0.46)",
+    "rgba(var(--fg-rgb),0.36)",
+    "rgba(var(--fg-rgb),0.50)",
+    "rgba(var(--fg-rgb),0.40)",
+    "rgba(var(--fg-rgb),0.32)",
   ];
   const m = /(\d+)/.exec(label);
   const idx = m ? Math.max(0, parseInt(m[1] ?? "2", 10) - 2) : 0;
-  return PALETTE[idx % PALETTE.length] ?? PALETTE[0]!;
+  return TONES[idx % TONES.length] ?? TONES[0]!;
 }
 
 /** Compact relative-time formatter for repo "updated" stamps.
@@ -1578,11 +1411,12 @@ function MenuRow({
         padding: "7px 10px",
         background: "transparent",
         border: "none", outline: "none", cursor: "pointer",
-        borderRadius: 5,
+        borderRadius: 6,
         color: "var(--c-fg, #dcdcdc)",
         fontFamily: "var(--font-sans)",
+        transition: "background 0.1s",
       }}
-      onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = "var(--c-srf, rgba(255,255,255,0.06))"; }}
+      onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(var(--fg-rgb),0.06)"; }}
       onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
     >
       {left && <span style={{ display: "inline-flex", flexShrink: 0 }}>{left}</span>}
