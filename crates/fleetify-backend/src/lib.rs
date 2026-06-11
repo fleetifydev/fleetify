@@ -360,6 +360,18 @@ pub async fn serve_with_routing_setup(
 
     let listener = TcpListener::bind(addr).await?;
     let local_addr = listener.local_addr()?;
+    // Pin the loopback URL the spawned MCP sidecars (and the in-process
+    // fleet_permission MCP-over-HTTP server) resolve, to the port we ACTUALLY
+    // bound. Worktree dev runs on a non-default port (e.g. 8862), so the
+    // `http://127.0.0.1:8765` fallback in `mcp_dispatch::builtin_mcp_config`
+    // pointed ask_user / permission loopbacks at the wrong port. Only set it
+    // when the shell hasn't already provided one (CI / prod injection wins).
+    if std::env::var("FLEETIFY_BACKEND_URL").is_err() {
+        std::env::set_var(
+            "FLEETIFY_BACKEND_URL",
+            format!("http://127.0.0.1:{}", local_addr.port()),
+        );
+    }
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
     let agent_scan_cache = state.agent_scan_cache.clone();

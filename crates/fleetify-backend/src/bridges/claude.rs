@@ -474,6 +474,12 @@ pub struct ClaudeBridge {
     /// informational only — the actual lookup at prompt time happens via
     /// the AppState `permission_registry` keyed by `session_id`.
     pub permission_handler: Option<super::permission::PermissionHandler>,
+    /// Disable the built-in AskUserQuestion (it can't render headlessly and its
+    /// `--permission-prompt-tool` hook was removed in Claude Code 2.1.x) and
+    /// route interactive questions to the in-process `ask_user` MCP tool
+    /// (served by `fleet_permission`). Independent of `permission_handler` —
+    /// staff agents ask the user too, with no per-tool approval dialog.
+    pub ask_user_enabled: bool,
     child: Arc<Mutex<Option<Child>>>,
     aborted: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -493,6 +499,7 @@ impl ClaudeBridge {
             is_staff: false,
             agent_template: None,
             permission_handler: None,
+            ask_user_enabled: false,
             child: Arc::new(Mutex::new(None)),
             aborted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
@@ -601,6 +608,25 @@ impl ClaudeBridge {
             c.push("--permission-prompt-tool".into());
             c.push("mcp__fleet_permission__permission_prompt".into());
         }
+        // Claude Code 2.1.x removed `--permission-prompt-tool` AND can't render
+        // the built-in AskUserQuestion headlessly (it errors out). Disable it
+        // and route the model to our in-process `ask_user` MCP tool, which
+        // renders the interactive card in Fleetify and blocks for the answer.
+        // Wired whenever fleet_permission is mounted — staff and non-staff alike.
+        if self.ask_user_enabled && mcp_config_path.is_some() {
+            c.push("--disallowedTools".into());
+            c.push("AskUserQuestion".into());
+            c.push("--append-system-prompt".into());
+            c.push(
+                "When you need the user to choose between options or clarify an \
+                 ambiguous decision, call the `ask_user` tool \
+                 (mcp__fleet_permission__ask_user) with a `questions` array (1-4 \
+                 questions, each with question/header/options[label+description]). \
+                 NEVER use AskUserQuestion — it is disabled here. `ask_user` renders \
+                 an interactive card in the app and returns the user's selection."
+                    .into(),
+            );
+        }
         if let Some(level) =
             effort_to_claude(&self.effort, self.model_name.as_deref().unwrap_or(""))
         {
@@ -643,7 +669,10 @@ impl ClaudeBridge {
         // (which can't run headlessly), so the interactive question card
         // works regardless of permission mode. The MCP is keyed by
         // FLEETIFY_SESSION_ID, so each spawn has its own prompt routing.
-        if self.permission_handler.is_some() {
+        // Also mount it for `ask_user_enabled` (staff orchestrator asks the
+        // user without a per-tool permission dialog) — the same in-process
+        // server advertises both `permission_prompt` and `ask_user`.
+        if self.permission_handler.is_some() || self.ask_user_enabled {
             if let Some(cfg) = crate::services::mcp_dispatch::builtin_mcp_config(
                 "fleet_permission",
                 &self.session_id,
@@ -682,6 +711,12 @@ impl ClaudeBridge {
             "mcp__fleet_memory__recall",
             "mcp__fleet_memory__dump_session_memory",
         ];
+        if self.ask_user_enabled {
+            // Must be allow-listed so the model-facing interactive-question
+            // tool doesn't hit a permission gate (the staff agent has no
+            // dialog, so an un-allowed MCP call hard-fails with "not granted").
+            names.push("mcp__fleet_permission__ask_user");
+        }
         if !self.is_staff {
             names.push("mcp__fleet_dispatch__dispatch_to_agent");
         }
@@ -1291,6 +1326,41 @@ mod tests {
         let b = ClaudeBridge::new("s", "/tmp/x");
         let c = b.build_command("hi", Some("/tmp/mcp.json"));
         assert!(!c.iter().any(|a| a == "--permission-prompt-tool"));
+    }
+
+    #[test]
+    fn ask_user_enabled_disables_builtin_and_allowlists_ask_user() {
+        // With ask_user_enabled + an mcp config path, the CLI must DISABLE the
+        // built-in AskUserQuestion (it can't render headlessly in 2.1.x) and
+        // the allow-list must include the model-facing ask_user MCP tool so it
+        // doesn't hit a permission gate.
+        let mut b = ClaudeBridge::new("s", "/tmp/x");
+        b.ask_user_enabled = true;
+        let c = b.build_command("hi", Some("/tmp/mcp.json"));
+        assert!(
+            c.windows(2)
+                .any(|w| w == ["--disallowedTools", "AskUserQuestion"]),
+            "ask_user_enabled must disable the built-in AskUserQuestion"
+        );
+        assert!(
+            c.iter().any(|a| a == "--append-system-prompt"),
+            "must inject the ask_user usage instruction"
+        );
+        assert!(
+            b.mcp_tool_names()
+                .contains(&"mcp__fleet_permission__ask_user"),
+            "ask_user tool must be allow-listed"
+        );
+    }
+
+    #[test]
+    fn no_ask_user_leaves_builtin_ask_question_untouched() {
+        let b = ClaudeBridge::new("s", "/tmp/x");
+        let c = b.build_command("hi", Some("/tmp/mcp.json"));
+        assert!(!c.iter().any(|a| a == "AskUserQuestion"));
+        assert!(!b
+            .mcp_tool_names()
+            .contains(&"mcp__fleet_permission__ask_user"));
     }
 
     #[test]

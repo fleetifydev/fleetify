@@ -587,6 +587,70 @@ fn permission_prompt_tool() -> Value {
     })
 }
 
+/// Model-facing interactive-question tool — the headless-safe replacement for
+/// Claude Code's built-in AskUserQuestion (which errors out, and whose
+/// `--permission-prompt-tool` hook was removed in 2.1.x). The model calls it
+/// directly; we render the card and return the user's pick as the tool result.
+fn ask_user_tool() -> Value {
+    json!({
+        "name": "ask_user",
+        "description": "Ask the Fleetify user to choose between options or clarify an ambiguous decision. Renders an interactive multiple-choice card in the app and returns the user's selection as text. Use this instead of AskUserQuestion, which is disabled.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "questions": {
+                    "type": "array",
+                    "description": "1-4 questions; each has a question, a short header, and 2-4 options.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "question": { "type": "string" },
+                            "header": { "type": "string" },
+                            "multiSelect": { "type": "boolean" },
+                            "options": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "label": { "type": "string" },
+                                        "description": { "type": "string" }
+                                    },
+                                    "required": ["label"]
+                                }
+                            }
+                        },
+                        "required": ["question", "header", "options"]
+                    }
+                }
+            },
+            "required": ["questions"]
+        }
+    })
+}
+
+/// Surface the interactive question card via the session's `ask_registry` and
+/// return the user's selection as plain text (the model reads it as the tool
+/// result). Shares the WS round-trip + `format_ask_answer` rendering with the
+/// legacy AskUserQuestion interception in `decide_permission`.
+async fn run_ask_user(st: &AppState, sid: &str, questions: Value) -> String {
+    let ask = {
+        let guard = st.ask_registry.lock().await;
+        guard.get(sid).cloned()
+    };
+    let Some(ask) = ask else {
+        return "Fleetify chat is not open for this session, so the question could not be shown. Proceed with your best judgment.".to_string();
+    };
+    let questions = if questions.is_array() {
+        questions
+    } else {
+        json!([])
+    };
+    let outcome = ask(json!({ "questions": questions }))
+        .await
+        .unwrap_or_else(|_| json!({ "answered": false }));
+    format_ask_answer(&outcome)
+}
+
 /// `Authorization: Bearer <internal_secret>` check. Claude forwards the
 /// configured `--mcp-config` headers on every request to the server.
 fn mcp_bearer_ok(headers: &HeaderMap, secret: &str) -> bool {
@@ -614,37 +678,46 @@ async fn mcp_permission_dispatch(st: &AppState, sid: &str, msg: &Value) -> Optio
         }),
         "tools/list" => json!({
             "jsonrpc": "2.0", "id": id,
-            "result": { "tools": [ permission_prompt_tool() ] }
+            "result": { "tools": [ permission_prompt_tool(), ask_user_tool() ] }
         }),
         "ping" => json!({ "jsonrpc": "2.0", "id": id, "result": {} }),
         "tools/call" => {
             let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            if name != "permission_prompt" {
-                json!({ "jsonrpc": "2.0", "id": id, "result": {
-                    "content": [{ "type": "text", "text": format!("unknown tool: {name}") }],
+            let args = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            match name {
+                "permission_prompt" => {
+                    let tool = args
+                        .get("tool_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .trim();
+                    let input = args.get("input").cloned().unwrap_or_else(|| json!({}));
+                    let decision = if tool.is_empty() {
+                        json!({ "behavior": "deny", "message": "tool_name is required" })
+                    } else {
+                        decide_permission(st, sid, tool, input).await
+                    };
+                    // Claude reads the decision from the first text content block.
+                    json!({ "jsonrpc": "2.0", "id": id, "result": {
+                        "content": [{ "type": "text", "text": decision.to_string() }],
+                        "isError": false
+                    }})
+                }
+                "ask_user" => {
+                    let questions = args.get("questions").cloned().unwrap_or_else(|| json!([]));
+                    let answer = run_ask_user(st, sid, questions).await;
+                    json!({ "jsonrpc": "2.0", "id": id, "result": {
+                        "content": [{ "type": "text", "text": answer }],
+                        "isError": false
+                    }})
+                }
+                other => json!({ "jsonrpc": "2.0", "id": id, "result": {
+                    "content": [{ "type": "text", "text": format!("unknown tool: {other}") }],
                     "isError": true
-                }})
-            } else {
-                let args = params
-                    .get("arguments")
-                    .cloned()
-                    .unwrap_or_else(|| json!({}));
-                let tool = args
-                    .get("tool_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim();
-                let input = args.get("input").cloned().unwrap_or_else(|| json!({}));
-                let decision = if tool.is_empty() {
-                    json!({ "behavior": "deny", "message": "tool_name is required" })
-                } else {
-                    decide_permission(st, sid, tool, input).await
-                };
-                // Claude reads the decision from the first text content block.
-                json!({ "jsonrpc": "2.0", "id": id, "result": {
-                    "content": [{ "type": "text", "text": decision.to_string() }],
-                    "isError": false
-                }})
+                }}),
             }
         }
         other => json!({
@@ -947,6 +1020,38 @@ mod tests {
             .unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["result"]["tools"][0]["name"], "permission_prompt");
+        assert_eq!(
+            v["result"]["tools"][1]["name"], "ask_user",
+            "ask_user must be advertised so the model can call it instead of the disabled AskUserQuestion"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_permission_ask_user_unregistered_session_falls_back() {
+        // No chat WS open for the session → ask_user returns graceful guidance
+        // text (not an error), so the turn keeps going.
+        let (app, _pool, _sm) = build_app("sek").await;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/internal/mcp/permission/sid-no-chat")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer sek")
+            .body(Body::from(
+                r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"ask_user","arguments":{"questions":[{"question":"x?","header":"h","options":[{"label":"a"}]}]}}}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["result"]["isError"], false);
+        let text = v["result"]["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("not open"),
+            "expected chat-not-open fallback, got: {text}"
+        );
     }
 
     #[tokio::test]

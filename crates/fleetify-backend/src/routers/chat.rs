@@ -1204,6 +1204,14 @@ async fn run_send_flow(
                     .insert(sid.clone(), handler.clone());
                 b = b.with_permission_handler(handler);
             }
+            // ask_user (interactive question card) — wired for EVERY Claude
+            // session, staff included. The in-process fleet_permission server
+            // is always reachable, and the model-facing `ask_user` tool is the
+            // headless-safe replacement for AskUserQuestion: Claude Code 2.1.x
+            // removed `--permission-prompt-tool` and can't render the built-in
+            // ask card, so the old interception never fires. claude.rs mounts
+            // fleet_permission + disables AskUserQuestion whenever this is set.
+            b.ask_user_enabled = true;
             AnyBridge::Claude(Arc::new(b))
         }
         // Generic OpenAI-compatible cloud providers (including "openai"
@@ -3536,7 +3544,10 @@ async fn run_dispatched_task(
     if content.is_empty() {
         if let Some(err) = &bridge_error {
             let _ = sqlx::query("UPDATE messages SET content = ?, timestamp = ? WHERE id = ?")
-                .bind(json!([{ "type": "text", "text": format!("⚠️ Agent failed to start: {err}") }]).to_string())
+                .bind(
+                    json!([{ "type": "text", "text": format!("⚠️ Agent failed to start: {err}") }])
+                        .to_string(),
+                )
                 .bind(chrono::Utc::now().to_rfc3339())
                 .bind(&assistant_msg_id)
                 .execute(&pool)
