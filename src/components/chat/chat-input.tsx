@@ -24,7 +24,6 @@ import { AuthChoicePopover } from "@/components/git/auth-choice-popover";
 import { BranchPickerMenu } from "@/components/git/branch-picker-menu";
 import { RecoveryDialog } from "@/components/git/recovery-dialog";
 import { PreflightDialog } from "@/components/git/preflight-dialog";
-import { MergeBox } from "@/components/chat/merge-box";
 import type { PreflightIssue } from "@/lib/git-api";
 import { git, type PRStatus, defaultPRTitle, defaultPRBody } from "@/lib/git-api";
 import { github } from "@/lib/github-link-api";
@@ -2426,16 +2425,6 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
           {action}
         </div>
       </div>
-      {/* Repo-wide Merge box (bottom): switch between every open PR, merge,
-          and — only for THIS session's branch — trigger sync + carve-next-round
-          (merge-scope rule). Renders nothing when there are no open PRs. */}
-      <MergeBox
-        folder={folder}
-        workBranch={ctx?.branch ?? plannedBranch}
-        onMergedOwnBranch={() => {
-          void doSyncAndCarve(ctx?.baseBranch || "main");
-        }}
-      />
 
       {/* PR creation dialog — controlled by Create PR button or the
           "Create draft PR" menu item. Both go through the same dialog;
