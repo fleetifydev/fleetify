@@ -8,7 +8,6 @@ import { MessageContent, StreamingMessage } from "./message-content";
 import { CompactionPill } from "./compaction-pill";
 import { PermissionDialog } from "./permission-dialog";
 import { CursorQuestionCard } from "./cursor-question-card";
-import { AskQuestionCard } from "./ask-question-card";
 import { CursorPlanCard } from "./cursor-plan-card";
 import { SessionToolbar } from "./session-toolbar";
 import { fetchMessages, fetchClaudeHistory, createSession, clearSessionMessages, updateSession as apiUpdateSession, stopSession, restartSession, analyzeFleetResponse, fetchAgentModels } from "@/lib/api";
@@ -2173,10 +2172,13 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
           onStop={handleStop}
           disabled={isStreaming}
           streaming={isStreaming}
-          locked={!!permissionRequest || !!cursorQuestion || !!cursorPlan || !!askQuestion}
+          locked={!!permissionRequest || !!cursorQuestion || !!cursorPlan}
+          askQuestion={askQuestion}
+          onAnswerQuestion={effectiveSessionId ? (id, answers) => wsManager.sendAskQuestionResponse(effectiveSessionId, id, true, answers) : undefined}
+          onSkipQuestion={effectiveSessionId ? (id) => wsManager.sendAskQuestionResponse(effectiveSessionId, id, false, []) : undefined}
           placeholder={
             askQuestion
-              ? "Answer above to continue…"
+              ? "Type a custom answer…  or pick an option above"
               : cursorQuestion
               ? "Answer above to continue…"
               : cursorPlan
@@ -2331,13 +2333,9 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                   onSkip={(id) => wsManager.sendQuestionResponse(effectiveSessionId, id, { outcome: "skipped" })}
                 />
               ) : null}
-              {askQuestion && effectiveSessionId ? (
-                <AskQuestionCard
-                  question={askQuestion}
-                  onAnswer={(id, answers) => wsManager.sendAskQuestionResponse(effectiveSessionId, id, true, answers)}
-                  onSkip={(id) => wsManager.sendAskQuestionResponse(effectiveSessionId, id, false, [])}
-                />
-              ) : null}
+              {/* AskUserQuestion now renders INLINE inside the composer
+                  (it grows to host the options). See ChatInput's askQuestion
+                  prop — no separate card above the box. */}
               {cursorPlan && effectiveSessionId ? (
                 <CursorPlanCard
                   plan={cursorPlan}

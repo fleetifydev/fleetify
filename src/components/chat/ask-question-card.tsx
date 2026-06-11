@@ -15,9 +15,6 @@ interface Props {
   onSkip: (id: string) => void;
 }
 
-const MONO = "'SF Mono','Menlo','Monaco','Consolas',monospace";
-const ACCENT = "#7C6AF7";
-
 /* Claude `AskUserQuestion` — an interactive multiple-choice card. Single-
  * select questions use radios, `multiSelect` ones use checkboxes. Options
  * carry an optional description shown as a sub-line. Mirrors the
@@ -61,27 +58,27 @@ export function AskQuestionCard({ question, onAnswer, onSkip }: Props) {
     <div style={{ marginBottom: 6 }}>
       <div
         style={{
-          borderRadius: 10,
-          border: "1px solid rgba(var(--fg-rgb),0.10)",
+          // Same surface as the composer / sidebar: sharp 8px card, hairline
+          // border, sidebar-matched background. Fully monochrome — no accent.
+          borderRadius: 8,
+          border: "1px solid var(--c-brd)",
           background: "var(--chat-input-bg)",
-          boxShadow: "inset 0 1px 0 rgba(var(--fg-rgb),0.04)",
           overflow: "hidden",
         }}
       >
-        <div style={{ padding: "10px 12px" }}>
+        <div style={{ padding: "11px 13px" }}>
           <div
             style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              fontFamily: MONO,
+              fontFamily: "var(--font-sans)",
               fontSize: 10,
-              letterSpacing: "0.12em",
+              fontWeight: 600,
+              letterSpacing: "0.3px",
               textTransform: "uppercase",
-              marginBottom: 8,
+              color: "var(--c-dim)",
+              marginBottom: 9,
             }}
           >
-            <span style={{ color: ACCENT, fontWeight: 600 }}>Question</span>
+            Question
           </div>
 
           {question.questions.map((q, qIdx) => {
@@ -93,9 +90,9 @@ export function AskQuestionCard({ question, onAnswer, onSkip }: Props) {
                   style={{
                     fontSize: 13.5,
                     fontWeight: 600,
-                    color: "#f2f2f2",
+                    color: "var(--c-high)",
                     lineHeight: 1.45,
-                    marginBottom: 7,
+                    marginBottom: 8,
                   }}
                 >
                   {q.question}
@@ -107,6 +104,8 @@ export function AskQuestionCard({ question, onAnswer, onSkip }: Props) {
                       <button
                         key={opt.label}
                         onClick={() => toggle(qIdx, opt.label, multi)}
+                        onMouseEnter={e => { if (!isOn) (e.currentTarget as HTMLButtonElement).style.background = "rgba(var(--fg-rgb),0.04)"; }}
+                        onMouseLeave={e => { if (!isOn) (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
                         style={{
                           display: "flex",
                           alignItems: "flex-start",
@@ -114,11 +113,11 @@ export function AskQuestionCard({ question, onAnswer, onSkip }: Props) {
                           width: "100%",
                           textAlign: "left",
                           padding: "8px 11px",
-                          borderRadius: 8,
-                          border: `1px solid ${isOn ? ACCENT : "rgba(var(--fg-rgb),0.10)"}`,
-                          background: isOn
-                            ? "rgba(124,106,247,0.12)"
-                            : "rgba(var(--fg-rgb),0.02)",
+                          borderRadius: 6,
+                          // Monochrome selection — selected = subtle fill +
+                          // brighter hairline, same language as the dropdowns.
+                          border: `1px solid ${isOn ? "var(--c-brd2)" : "var(--c-brd)"}`,
+                          background: isOn ? "rgba(var(--fg-rgb),0.07)" : "transparent",
                           color: "var(--c-high)",
                           fontSize: 12.5,
                           fontFamily: "inherit",
@@ -133,13 +132,22 @@ export function AskQuestionCard({ question, onAnswer, onSkip }: Props) {
                             height: 14,
                             flexShrink: 0,
                             marginTop: 1,
-                            borderRadius: multi ? 4 : 7,
-                            border: `1px solid ${isOn ? ACCENT : "rgba(var(--fg-rgb),0.28)"}`,
-                            background: isOn ? ACCENT : "transparent",
+                            borderRadius: multi ? 4 : "50%",
+                            border: `1.4px solid ${isOn ? "var(--c-high)" : "rgba(var(--fg-rgb),0.30)"}`,
+                            background: isOn ? "var(--c-high)" : "transparent",
+                            display: "inline-flex", alignItems: "center", justifyContent: "center",
                           }}
-                        />
+                        >
+                          {isOn && (
+                            <span style={{
+                              width: multi ? 6 : 5, height: multi ? 6 : 5,
+                              borderRadius: multi ? 1.5 : "50%",
+                              background: "var(--background)",
+                            }}/>
+                          )}
+                        </span>
                         <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                          <span style={{ fontWeight: 500, lineHeight: 1.35 }}>
+                          <span style={{ fontWeight: 500, lineHeight: 1.35, color: isOn ? "var(--c-high)" : "var(--c-med)" }}>
                             {opt.label}
                           </span>
                           {opt.description && (

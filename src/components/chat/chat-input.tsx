@@ -907,6 +907,13 @@ interface ChatInputProps {
    *  Used by chat-view to attach the permission card to the input
    *  cluster instead of floating it as a separate element above. */
   slotAbove?: React.ReactNode;
+  /** Active interactive question (AskUserQuestion). When set, the composer
+   *  GROWS to render the options inline above the textarea — the box itself
+   *  becomes the answer surface (pick an option, or type a custom answer and
+   *  Send). Cleared by the parent once answered → the box shrinks back. */
+  askQuestion?: import("@/stores/chat-store").AskQuestion | null;
+  onAnswerQuestion?: (id: string, answers: Array<{ header?: string; question: string; selected: string[] }>) => void;
+  onSkipQuestion?: (id: string) => void;
   /** True on the Fleet / staff / control-center chat. Suppresses the
    *  BranchStrip — PR/branch context doesn't apply to the orchestrator
    *  conversation, only to agent sessions bound to a worktree. */
@@ -2609,6 +2616,9 @@ export function ChatInput({
   autoMode: _autoMode, onToggleAutoMode: _onToggleAutoMode,
   agentMentions,
   slotAbove,
+  askQuestion,
+  onAnswerQuestion,
+  onSkipQuestion,
   controlCenter,
   permissionMode,
   sandbox,
@@ -2617,6 +2627,54 @@ export function ChatInput({
   sessionTitle,
 }: ChatInputProps) {
   const [value, setValue]       = useState("");
+  // Inline AskUserQuestion selection — per-question chosen option labels.
+  // Reset whenever a new question arrives (keyed on its id).
+  const [askSelected, setAskSelected] = useState<Record<number, string[]>>({});
+  // Wizard step — multi-question asks show ONE question at a time, so the
+  // composer doesn't balloon into a wall of options. Next/Submit advances.
+  const [askStep, setAskStep] = useState(0);
+  const askId = askQuestion?.id ?? null;
+  useEffect(() => { setAskSelected({}); setAskStep(0); }, [askId]);
+  const askCount = askQuestion?.questions.length ?? 0;
+  const askIsLast = askStep >= askCount - 1;
+  const askStepAnswered = (askSelected[askStep] ?? []).length > 0 || value.trim().length > 0;
+  const askActive = !!askQuestion;
+  const askAnyPicked = askActive && (askQuestion?.questions ?? []).some((_, i) => (askSelected[i] ?? []).length > 0);
+  const toggleAskOption = useCallback((qIdx: number, label: string, multi: boolean) => {
+    setAskSelected(prev => {
+      const cur = prev[qIdx] ?? [];
+      if (multi) {
+        return { ...prev, [qIdx]: cur.includes(label) ? cur.filter(x => x !== label) : [...cur, label] };
+      }
+      return { ...prev, [qIdx]: [label] };
+    });
+  }, []);
+  const submitAsk = useCallback((customText?: string) => {
+    if (!askQuestion || !onAnswerQuestion) return;
+    const t = (customText ?? "").trim();
+    const answers = askQuestion.questions.map((q, i) => {
+      const picked = askSelected[i] ?? [];
+      // A typed custom answer overrides picks for that question (applied to
+      // the first question when multiple — single-question is the norm).
+      const selected = (t && (i === 0 || picked.length === 0)) ? [t] : picked;
+      return { header: q.header, question: q.question, selected };
+    });
+    const hasAny = answers.some(a => a.selected.length > 0);
+    if (!hasAny) return;
+    onAnswerQuestion(askQuestion.id, answers);
+    setAskSelected({});
+    setValue("");
+  }, [askQuestion, onAnswerQuestion, askSelected]);
+  // Advance the wizard: not last → next question; last → submit all answers.
+  const advanceAsk = useCallback(() => {
+    if (!askQuestion) return;
+    if (askStep < askQuestion.questions.length - 1) {
+      setValue("");
+      setAskStep(s => s + 1);
+    } else {
+      submitAsk(value);
+    }
+  }, [askQuestion, askStep, submitAsk, value]);
   const [focused, setFocused]   = useState(false);
   // Prompt-enhance state — Sparkles button's lifecycle. While
   // `enhancing` is true the icon flips to a spinner and the click is
@@ -3387,6 +3445,13 @@ export function ChatInput({
    * or any failure we fall straight through to the legacy send path
    * so Fleet is never in the way of getting a message out. */
   const submit = useCallback(() => {
+    // Interactive question active → the composer answers it instead of
+    // sending a chat message. Enter / Send submits the typed custom answer
+    // (if any) or the picked option(s).
+    if (askQuestion) {
+      advanceAsk();
+      return;
+    }
     if (locked) return;
     if (streaming) { onStop?.(); return; }
     if (refining) return; // Already refining — ignore double-Enter
@@ -3444,7 +3509,7 @@ export function ChatInput({
         dispatchSend(t, snapshotAtts);
       })
       .finally(() => setRefining(false));
-  }, [value, disabled, streaming, locked, onStop, attachments, fleetActive, refining, pendingRefine, dispatchSend, projectPath, tool, model, sessionId, recordCost]);
+  }, [value, disabled, streaming, locked, onStop, attachments, fleetActive, refining, pendingRefine, dispatchSend, projectPath, tool, model, sessionId, recordCost, askQuestion, advanceAsk]);
 
   /* Refine-card actions */
   const confirmRefined = useCallback(() => {
@@ -3630,8 +3695,12 @@ export function ChatInput({
 
   /* ── derived ── */
   const hasText    = value.trim().length > 0;
-  const canSend    = (hasText || attachments.length > 0) && !disabled && !streaming && !locked;
-  const btnActive  = !locked && (streaming || canSend);
+  // While a question is active the Send button answers it: enabled when an
+  // option is picked OR the user typed a custom answer.
+  const canSend    = askActive
+    ? (askAnyPicked || hasText) && !streaming
+    : (hasText || attachments.length > 0) && !disabled && !streaming && !locked;
+  const btnActive  = streaming || canSend;
   // Resolve the chip face (provider icon + label) via the shared resolver
   // against the SAME groups the dropdown uses — identical logic to the
   // SessionToolbar chip, so the two never disagree. `fmtModel` remains the
@@ -4174,6 +4243,154 @@ export function ChatInput({
             </div>
           )}
 
+          {/* ── Inline AskUserQuestion ── The composer GROWS to host the
+              question: header + options render here, the textarea below
+              becomes the custom-answer field, and Send submits the pick or
+              the typed text. Animated open/close so the box grows then
+              shrinks. Fully monochrome — composer design language. */}
+          <div style={{
+            display: "grid",
+            gridTemplateRows: askActive ? "1fr" : "0fr",
+            transition: "grid-template-rows 0.24s cubic-bezier(0.22,1,0.36,1)",
+          }}>
+            <div style={{ overflow: "hidden" }}>
+              {askQuestion && (() => {
+                const q = askQuestion.questions[askStep];
+                if (!q) return null;
+                const multi = q.multiSelect ?? false;
+                const chosen = askSelected[askStep] ?? [];
+                return (
+                <div style={{ padding: "12px 13px 4px" }}>
+                  {/* Header — eyebrow + step counter (only when multi-question) */}
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 7 }}>
+                    <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.3px", textTransform: "uppercase", color: "var(--c-dim)" }}>
+                      Question
+                    </span>
+                    {askCount > 1 && (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                        {askQuestion.questions.map((_, i) => (
+                          <span key={i} aria-hidden style={{
+                            width: i === askStep ? 14 : 5, height: 5, borderRadius: 3,
+                            background: i < askStep ? "var(--c-low)" : i === askStep ? "var(--c-high)" : "rgba(var(--fg-rgb),0.18)",
+                            transition: "width 0.2s, background 0.2s",
+                          }}/>
+                        ))}
+                        <span style={{ fontSize: 10.5, color: "var(--c-dim)", fontFamily: "var(--font-mono)", marginLeft: 4 }}>
+                          {askStep + 1}/{askCount}
+                        </span>
+                      </span>
+                    )}
+                  </div>
+
+                  <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--c-high)", lineHeight: 1.4, marginBottom: 9 }}>
+                    {q.question}
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                    {q.options.map(opt => {
+                      const isOn = chosen.includes(opt.label);
+                      return (
+                        <button
+                          key={opt.label}
+                          onClick={() => {
+                            if (multi) { toggleAskOption(askStep, opt.label, true); return; }
+                            // Single-select → record + auto-advance (or submit
+                            // if last). Build the answer from the clicked label
+                            // directly so we don't depend on async state.
+                            const next = { ...askSelected, [askStep]: [opt.label] };
+                            setAskSelected(next);
+                            setValue("");
+                            if (askIsLast && onAnswerQuestion && askQuestion) {
+                              onAnswerQuestion(askQuestion.id, askQuestion.questions.map((qq, i) => ({
+                                header: qq.header, question: qq.question, selected: next[i] ?? [],
+                              })));
+                              setAskSelected({}); setAskStep(0);
+                            } else {
+                              setAskStep(s => s + 1);
+                            }
+                          }}
+                          onMouseDown={e => e.preventDefault()}
+                          onMouseEnter={e => { if (!isOn) (e.currentTarget as HTMLButtonElement).style.background = "rgba(var(--fg-rgb),0.04)"; }}
+                          onMouseLeave={e => { if (!isOn) (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
+                          style={{
+                            display: "flex", alignItems: "flex-start", gap: 10,
+                            width: "100%", textAlign: "left", padding: "9px 11px",
+                            borderRadius: 7,
+                            border: `1px solid ${isOn ? "var(--c-brd2)" : "var(--c-brd)"}`,
+                            background: isOn ? "rgba(var(--fg-rgb),0.07)" : "transparent",
+                            color: "var(--c-high)", fontSize: 12.5, fontFamily: "inherit",
+                            cursor: "pointer", transition: "border-color 0.12s, background 0.12s",
+                          }}
+                        >
+                          {/* Tick — filled accent with a crisp check when on;
+                              clean hollow ring/box when off. */}
+                          <span aria-hidden style={{
+                            width: 17, height: 17, flexShrink: 0, marginTop: 0.5,
+                            borderRadius: multi ? 5 : "50%",
+                            border: `1.5px solid ${isOn ? "var(--c-high)" : "rgba(var(--fg-rgb),0.28)"}`,
+                            background: isOn ? "var(--c-high)" : "transparent",
+                            display: "inline-flex", alignItems: "center", justifyContent: "center",
+                            transition: "background 0.12s, border-color 0.12s",
+                          }}>
+                            {isOn && <Check size={11} strokeWidth={3} style={{ color: "var(--background)" }} />}
+                          </span>
+                          <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                            <span style={{ fontWeight: 500, lineHeight: 1.35, color: isOn ? "var(--c-high)" : "var(--c-med)" }}>{opt.label}</span>
+                            {opt.description && (
+                              <span style={{ fontSize: 11.5, color: "var(--c-dim)", lineHeight: 1.4 }}>{opt.description}</span>
+                            )}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Action row — Skip (left), Back (when stepped), Next/Submit (right) */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+                    <button
+                      onClick={() => { if (askQuestion && onSkipQuestion) onSkipQuestion(askQuestion.id); }}
+                      onMouseDown={e => e.preventDefault()}
+                      style={{
+                        height: 26, padding: "0 9px", background: "transparent", border: "none",
+                        borderRadius: 6, color: "var(--c-dim)", fontSize: 12, fontWeight: 500,
+                        cursor: "pointer", fontFamily: "inherit",
+                      }}
+                    >Skip</button>
+                    {askStep > 0 && (
+                      <button
+                        onClick={() => { setAskStep(s => Math.max(0, s - 1)); setValue(""); }}
+                        onMouseDown={e => e.preventDefault()}
+                        style={{
+                          height: 26, padding: "0 9px", background: "transparent", border: "none",
+                          borderRadius: 6, color: "var(--c-low)", fontSize: 12, fontWeight: 500,
+                          cursor: "pointer", fontFamily: "inherit",
+                        }}
+                      >Back</button>
+                    )}
+                    <div style={{ flex: 1 }} />
+                    {/* Next/Submit — for multi-select & custom answers. Single-
+                        select auto-advances on click, so it only shows when
+                        the current step is answerable that way. */}
+                    {(multi ? askStepAnswered : false) || hasText ? (
+                      <button
+                        onClick={advanceAsk}
+                        onMouseDown={e => e.preventDefault()}
+                        style={{
+                          height: 26, padding: "0 14px",
+                          background: "var(--c-high)", border: "1px solid var(--c-high)",
+                          borderRadius: 6, color: "var(--background)",
+                          fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+                        }}
+                      >{askIsLast ? "Submit" : "Next"}</button>
+                    ) : null}
+                  </div>
+                  <div style={{ height: 1, background: "var(--c-brd)", margin: "9px -13px 0" }} />
+                </div>
+                );
+              })()}
+            </div>
+          </div>
+
           {/* Textarea + @mention highlight mirror */}
           <div style={{ position: "relative" }}>
             {/* CLI-style prompt chevron — sits at the left edge of the
@@ -4320,12 +4537,16 @@ export function ChatInput({
               // Tight single-line composer when empty — grows as the user
               // types. The toolbar sits right below so there's no dead
               // vertical void in the card.
-              padding: attachments.length > 0
+              // Tighter top padding while a question is open so the custom-
+              // answer line sits snug under the divider (no dead gap).
+              padding: askActive
+                ? "8px 13px 6px 13px"
+                : attachments.length > 0
                 ? "11px 13px 7px 13px"
                 : "12px 13px 7px 13px",
               background: "transparent", border: "none", outline: "none", resize: "none",
               fontSize: 13, lineHeight: 1.5, color: "var(--foreground)", fontFamily: "inherit",
-              minHeight: 22, maxHeight: 220, overflowY: "auto", boxSizing: "border-box",
+              minHeight: askActive ? 20 : 22, maxHeight: 220, overflowY: "auto", boxSizing: "border-box",
               position: "relative", /* sits above absolute mirror */
             }}
           />
