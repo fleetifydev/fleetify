@@ -63,7 +63,7 @@ import {
   type Schedule, type Provider, type PermissionMode, type Target,
 } from "@/services/routines-runtime";
 import { useChatStore } from "@/stores/chat-store";
-import { fetchMessages } from "@/lib/api";
+import { apiFetch, fetchMessages } from "@/lib/api";
 import { MarkdownBody, rowSummary } from "@/components/chat/message-content";
 import type { Session } from "@/types/session";
 import type { ChatMessage } from "@/types/chat";
@@ -226,9 +226,21 @@ function useRuns(): RoutineRun[] {
   return runs;
 }
 
+/** An agent preset surfaced in Routines → Templates (from
+ *  /api/runtime/templates): builtin / plugin / library agent templates.
+ *  Picking one seeds a new routine whose `agentTemplate` is the preset name. */
+interface AgentPreset {
+  name: string;
+  title: string;
+  description: string;
+  providers: string[];
+  preferred_tier: string;
+  permission_mode: string;
+}
+
 type View =
   | { kind: "list" }
-  | { kind: "new"; template?: Template }
+  | { kind: "new"; template?: Template; agentPreset?: AgentPreset }
   | { kind: "edit"; routine: Routine }
   | { kind: "detail"; id: string }
   | { kind: "run"; routineId: string; runId: string };
@@ -331,6 +343,7 @@ export function WorkflowsPage() {
               routines={routines}
               onNew={() => setView({ kind: "new" })}
               onTemplate={t => setView({ kind: "new", template: t })}
+              onAgentPreset={p => setView({ kind: "new", agentPreset: p })}
               onOpen={id => setView({ kind: "detail", id })}
               onOpenRun={(routineId, runId) => setView({ kind: "run", routineId, runId })}
               onEdit={r => setView({ kind: "edit", routine: r })}
@@ -340,6 +353,7 @@ export function WorkflowsPage() {
           {view.kind === "new" && (
             <NewRoutineForm
               template={view.template}
+              agentPreset={view.agentPreset}
               onCancel={() => setView({ kind: "list" })}
               onSubmit={onCreate}
               mode="create"
@@ -535,10 +549,11 @@ function TopBar({ sidebarCollapsed, toggleSidebar }: { sidebarCollapsed: boolean
    doesn't dump them all under the active routines. */
 type ListTab = "active" | "all" | "templates" | "logs";
 
-function ListView({ routines, onNew, onTemplate, onOpen, onOpenRun, onEdit, onRequestDelete }: {
+function ListView({ routines, onNew, onTemplate, onAgentPreset, onOpen, onOpenRun, onEdit, onRequestDelete }: {
   routines: Routine[];
   onNew: () => void;
   onTemplate: (t: Template) => void;
+  onAgentPreset: (p: AgentPreset) => void;
   onOpen: (id: string) => void;
   onOpenRun: (routineId: string, runId: string) => void;
   onEdit: (routine: Routine) => void;
@@ -648,7 +663,7 @@ function ListView({ routines, onNew, onTemplate, onOpen, onOpenRun, onEdit, onRe
 
       {/* ── Tab content ── */}
       {tab === "templates" ? (
-        <TemplatesPanel onPick={onTemplate} />
+        <TemplatesPanel onPick={onTemplate} onAgentPreset={onAgentPreset} />
       ) : tab === "logs" ? (
         <LogsPanel routines={routines} onOpenRun={onOpenRun} />
       ) : tab === "all" ? (
@@ -1545,10 +1560,35 @@ function EmptyPanel({ title, subtitle }: { title: string; subtitle?: string }) {
 
 /* ── Templates panel ──────────────────────────────────────────────── */
 
-function TemplatesPanel({ onPick }: { onPick: (t: Template) => void }) {
+function TemplatesPanel({ onPick, onAgentPreset }: { onPick: (t: Template) => void; onAgentPreset: (p: AgentPreset) => void }) {
   const setMainView = useAppStore(s => s.setMainView);
+  // Agent presets (builtin + marketplace plugin + Library templates) come from
+  // the unified runtime endpoint; picking one seeds a routine with that persona.
+  const [agentPresets, setAgentPresets] = useState<AgentPreset[]>([]);
+  useEffect(() => {
+    apiFetch("/api/runtime/templates")
+      .then(r => (r.ok ? r.json() : []))
+      .then((data: AgentPreset[]) => setAgentPresets(data || []))
+      .catch(() => setAgentPresets([]));
+  }, []);
   return (
     <>
+      {agentPresets.length > 0 && (
+        <>
+          <GroupLabel text="Agent presets" />
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+            gap: 8,
+            marginBottom: 16,
+          }}>
+            {agentPresets.map(p => (
+              <AgentPresetCard key={p.name} preset={p} onClick={() => onAgentPreset(p)} />
+            ))}
+          </div>
+        </>
+      )}
+      <GroupLabel text="Automation presets" />
       <div style={{
         display: "grid",
         gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
@@ -1585,6 +1625,45 @@ function TemplatesPanel({ onPick }: { onPick: (t: Template) => void }) {
         </button>
       </div>
     </>
+  );
+}
+
+function GroupLabel({ text }: { text: string }) {
+  return (
+    <div style={{
+      fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase",
+      color: "var(--c-dim)", margin: "0 0 8px",
+    }}>{text}</div>
+  );
+}
+
+/** A card for an agent preset (builtin/plugin/library template) in the
+ *  Routines → Templates "Agent presets" group. */
+function AgentPresetCard({ preset, onClick }: { preset: AgentPreset; onClick: () => void }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <div
+      role="button"
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        padding: "12px 14px", borderRadius: 9, cursor: "pointer",
+        background: "var(--card)",
+        border: "1px solid", borderColor: hover ? "var(--c-brd2)" : "var(--c-brd)",
+        transition: "border-color 0.12s",
+      }}
+    >
+      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--c-high)", marginBottom: 3 }}>
+        {preset.title}
+      </div>
+      <div style={{
+        fontSize: 11.5, color: "var(--c-dim)", lineHeight: 1.4,
+        overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
+      }}>
+        {preset.description}
+      </div>
+    </div>
   );
 }
 
@@ -1643,8 +1722,9 @@ function TemplateCard({ template, onClick }: { template: Template; onClick: () =
 
 /* ── New routine form ────────────────────────────────────────────── */
 
-function NewRoutineForm({ template, existing, onCancel, onSubmit, mode }: {
+function NewRoutineForm({ template, agentPreset, existing, onCancel, onSubmit, mode }: {
   template?: Template;
+  agentPreset?: AgentPreset;
   existing?: Routine;
   onCancel: () => void;
   onSubmit: (r: Routine) => void;
@@ -1659,8 +1739,8 @@ function NewRoutineForm({ template, existing, onCancel, onSubmit, mode }: {
 
   // ── Identity ────────────────────────────────────────────────────
   const PROVIDERS = useProviderCatalog();
-  const [name, setName] = useState(existing?.name ?? (template ? toKebabName(template.name) : ""));
-  const [description, setDescription] = useState(existing?.description ?? template?.description ?? "");
+  const [name, setName] = useState(existing?.name ?? (agentPreset ? toKebabName(agentPreset.title) : template ? toKebabName(template.name) : ""));
+  const [description, setDescription] = useState(existing?.description ?? agentPreset?.description ?? template?.description ?? "");
   const [instructions, setInstructions] = useState(existing?.instructions ?? template?.defaults.instructions ?? "");
 
   // ── Permissions ────────────────────────────────────────────────
@@ -1673,7 +1753,7 @@ function NewRoutineForm({ template, existing, onCancel, onSubmit, mode }: {
   const [modelId, setModelId] = useState(existing?.modelId ?? "claude-sonnet-4-6");
   const [effort, setEffort] = useState<Effort>((existing?.effort as Effort) ?? "high");
   const [useWorktree, setUseWorktree] = useState(existing?.useWorktree ?? true);
-  const [agentTemplate, setAgentTemplate] = useState<string | null>(existing?.agentTemplate ?? null);
+  const [agentTemplate, setAgentTemplate] = useState<string | null>(existing?.agentTemplate ?? agentPreset?.name ?? null);
   const [resumeSessionId, setResumeSessionId] = useState<string | null>(existing?.resumeSessionId ?? null);
 
   // ── Schedule ───────────────────────────────────────────────────

@@ -119,6 +119,116 @@ pub fn unmaterialize(result: &MaterializationResult) -> Result<()> {
     Ok(())
 }
 
+// ── library-authored single items ──────────────────────────────────────────
+// Unlike plugin materialization, the bare `slug` IS the on-disk id (no
+// `<plugin>-` namespacing) and the payload path is passed explicitly — the
+// store layout is the library service's concern, not this module's. Cleanup
+// reuses `unmaterialize` (deletes every recorded path).
+
+/// Materialize a single library-authored prompt. Fleetify-native prompts are
+/// provider-agnostic: one shared `~/.fleetify/prompts/<slug>.md` available to
+/// every agent. `payload_md` is the authored prompt body file.
+pub fn materialize_prompt_item(payload_md: &Path, slug: &str) -> Result<MaterializationResult> {
+    let mut r = MaterializationResult {
+        provider: "fleetify".to_string(),
+        ..Default::default()
+    };
+    let dst_dir = fleetify_core::fleetify_home().join("prompts");
+    std::fs::create_dir_all(&dst_dir)?;
+    let target = dst_dir.join(format!("{slug}.md"));
+    std::fs::copy(payload_md, &target)?;
+    r.paths.push(target.to_string_lossy().into_owned());
+    Ok(r)
+}
+
+/// Materialize a single library-authored skill into `provider`'s skills dir
+/// as `<home>/skills/<slug>/`. `payload_dir` IS the skill directory (contains
+/// `SKILL.md` + any assets). Returns `Ok` with no path written if the provider
+/// has no skills home (never happens for the 9 component providers).
+pub fn materialize_skill_item(
+    payload_dir: &Path,
+    slug: &str,
+    provider: &str,
+) -> Result<MaterializationResult> {
+    let mut r = MaterializationResult {
+        provider: provider.to_string(),
+        ..Default::default()
+    };
+    let Some(skills_root) = providers::skills_dir(provider) else {
+        return Ok(r);
+    };
+    let target = skills_root.join(slug);
+    copy_dir_recursive(payload_dir, &target)?;
+    // OpenCode/Cursor require SKILL.md `name:` == the directory name.
+    let _ = rewrite_skill_name(&target.join("SKILL.md"), slug);
+    r.paths.push(target.to_string_lossy().into_owned());
+    Ok(r)
+}
+
+/// Materialize a single library-authored command into `provider`'s command
+/// surface. `payload_md` is the authored command body (markdown, optional
+/// frontmatter). Providers without a command surface (`commands_dir == None`)
+/// are a no-op. Gemini is special-cased to TOML.
+pub fn materialize_command_item(
+    payload_md: &Path,
+    slug: &str,
+    provider: &str,
+) -> Result<MaterializationResult> {
+    let mut r = MaterializationResult {
+        provider: provider.to_string(),
+        ..Default::default()
+    };
+    let Some(dst_dir) = providers::commands_dir(provider) else {
+        return Ok(r);
+    };
+    std::fs::create_dir_all(&dst_dir)?;
+    let target = if provider == "gemini" {
+        // Gemini reads TOML commands (`description` + `prompt`), not markdown.
+        let t = dst_dir.join(format!("{slug}.toml"));
+        write_gemini_command(payload_md, &t)?;
+        t
+    } else {
+        let t = dst_dir.join(format!("{slug}.md"));
+        std::fs::copy(payload_md, &t)?;
+        t
+    };
+    r.paths.push(target.to_string_lossy().into_owned());
+    Ok(r)
+}
+
+/// Convert a markdown command (optional `--- name/description ---` frontmatter,
+/// then the body) into Gemini's TOML command format with `description` and
+/// `prompt` keys. Serialized via the `toml` crate so escaping is correct.
+fn write_gemini_command(payload_md: &Path, dst_toml: &Path) -> Result<()> {
+    let content = std::fs::read_to_string(payload_md)?;
+    let (_name, description) = crate::services::provider_inspector::parse_frontmatter(&content);
+    let prompt = strip_frontmatter(&content);
+    #[derive(serde::Serialize)]
+    struct GeminiCommandToml {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        prompt: String,
+    }
+    let toml_str = toml::to_string(&GeminiCommandToml {
+        description,
+        prompt,
+    })?;
+    std::fs::write(dst_toml, toml_str)?;
+    Ok(())
+}
+
+/// Return the body after a leading `--- … ---` YAML frontmatter block, or the
+/// whole text if there is none. Mirrors `parse_frontmatter`'s fence detection.
+fn strip_frontmatter(text: &str) -> String {
+    if let Some(rest) = text.strip_prefix("---") {
+        if let Some(end) = rest.find("\n---") {
+            let after = &rest[end + "\n---".len()..];
+            return after.trim_start_matches(['\r', '\n']).to_string();
+        }
+    }
+    text.to_string()
+}
+
 // ── component resolution ──────────────────────────────────────────────────
 
 fn dir_if_exists(p: &Path) -> Option<PathBuf> {
@@ -339,11 +449,23 @@ mod tests {
         let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
         let prev = std::env::var(key).ok();
         std::env::set_var(key, home);
+        // provider_home()/user_home() read USERPROFILE before HOME; pin it too
+        // so a sibling test that leaked USERPROFILE can't redirect provider homes.
+        let prev_up = std::env::var("USERPROFILE").ok();
+        std::env::set_var("USERPROFILE", home);
         // Hermes resolves its home from %LOCALAPPDATA% on Windows; pin it to
         // the fake home too so the test controls every provider's home dir.
         let prev_local = std::env::var("LOCALAPPDATA").ok();
         std::env::set_var("LOCALAPPDATA", home);
+        // Pin FLEETIFY_HOME so fleetify_home()-based writers (prompts) are
+        // deterministic and isolated to the fake home.
+        let prev_fleet = std::env::var("FLEETIFY_HOME").ok();
+        std::env::set_var("FLEETIFY_HOME", home.join(".fleetify"));
         let r = f();
+        match prev_fleet {
+            Some(v) => std::env::set_var("FLEETIFY_HOME", v),
+            None => std::env::remove_var("FLEETIFY_HOME"),
+        }
         match prev_local {
             Some(v) => std::env::set_var("LOCALAPPDATA", v),
             None => std::env::remove_var("LOCALAPPDATA"),
@@ -351,6 +473,10 @@ mod tests {
         match prev {
             Some(v) => std::env::set_var(key, v),
             None => std::env::remove_var(key),
+        }
+        match prev_up {
+            Some(v) => std::env::set_var("USERPROFILE", v),
+            None => std::env::remove_var("USERPROFILE"),
         }
         r
     }
@@ -498,6 +624,191 @@ mod tests {
             // resolve it through the registry rather than hard-coding `.hermes`.
             let hermes = providers::provider_home("hermes").unwrap();
             assert!(hermes.join("hooks/p-audit/HOOK.yaml").is_file());
+        });
+    }
+
+    #[test]
+    fn materialize_prompt_item_writes_fleetify_prompt() {
+        let tmp = tempdir().unwrap();
+        let payload = tmp.path().join("payload.md");
+        std::fs::write(
+            &payload,
+            b"---\ndescription: greet\n---\nSay hello to {{name}}.",
+        )
+        .unwrap();
+        let home = tmp.path().join("home");
+        with_home(&home, || {
+            let r = materialize_prompt_item(&payload, "my-greeting").unwrap();
+            let dst = home.join(".fleetify/prompts/my-greeting.md");
+            assert!(dst.is_file(), "prompt should land in ~/.fleetify/prompts/");
+            assert_eq!(
+                std::fs::read_to_string(&dst).unwrap(),
+                "---\ndescription: greet\n---\nSay hello to {{name}}."
+            );
+            // The written path is recorded for unmaterialize.
+            assert_eq!(r.paths, vec![dst.to_string_lossy().into_owned()]);
+            assert_eq!(r.provider, "fleetify");
+        });
+    }
+
+    #[test]
+    fn materialize_skill_item_copies_payload_and_rewrites_name() {
+        let tmp = tempdir().unwrap();
+        // Payload dir = the skill itself: SKILL.md + an asset.
+        let payload = tmp.path().join("payload");
+        std::fs::create_dir_all(&payload).unwrap();
+        std::fs::write(
+            payload.join("SKILL.md"),
+            b"---\nname: whatever\ndescription: d\n---\n# body",
+        )
+        .unwrap();
+        std::fs::write(payload.join("ref.txt"), b"x").unwrap();
+        let home = tmp.path().join("home");
+        with_home(&home, || {
+            let r = materialize_skill_item(&payload, "my-skill", "claude").unwrap();
+            let dst = home.join(".claude/skills/my-skill");
+            assert!(dst.join("SKILL.md").is_file());
+            assert!(dst.join("ref.txt").is_file(), "assets copied");
+            // Bare slug is the dir id (NOT namespaced) and the frontmatter
+            // name is rewritten to equal the dir.
+            let md = std::fs::read_to_string(dst.join("SKILL.md")).unwrap();
+            assert!(md.contains("name: my-skill"));
+            assert!(!md.contains("name: whatever"));
+            assert_eq!(r.paths, vec![dst.to_string_lossy().into_owned()]);
+        });
+    }
+
+    #[test]
+    fn materialize_skill_item_targets_each_providers_home() {
+        let tmp = tempdir().unwrap();
+        let payload = tmp.path().join("payload");
+        std::fs::create_dir_all(&payload).unwrap();
+        std::fs::write(
+            payload.join("SKILL.md"),
+            b"---\nname: s\ndescription: d\n---\nbody",
+        )
+        .unwrap();
+        let home = tmp.path().join("home");
+        with_home(&home, || {
+            materialize_skill_item(&payload, "s", "opencode").unwrap();
+            materialize_skill_item(&payload, "s", "kimi").unwrap();
+            assert!(home.join(".config/opencode/skills/s/SKILL.md").is_file());
+            assert!(home.join(".kimi/skills/s/SKILL.md").is_file());
+        });
+    }
+
+    #[test]
+    fn materialize_command_item_md_providers() {
+        let tmp = tempdir().unwrap();
+        let payload = tmp.path().join("command.md");
+        std::fs::write(&payload, b"## /deploy\nDeploy the app.").unwrap();
+        let home = tmp.path().join("home");
+        with_home(&home, || {
+            let rc = materialize_command_item(&payload, "deploy", "claude").unwrap();
+            let rx = materialize_command_item(&payload, "deploy", "codex").unwrap();
+            // Claude → commands/<slug>.md ; Codex → prompts/<slug>.md
+            assert!(home.join(".claude/commands/deploy.md").is_file());
+            assert!(home.join(".codex/prompts/deploy.md").is_file());
+            assert_eq!(rc.paths.len(), 1);
+            assert_eq!(rx.paths.len(), 1);
+        });
+    }
+
+    #[test]
+    fn materialize_command_item_unsupported_provider_is_noop() {
+        let tmp = tempdir().unwrap();
+        let payload = tmp.path().join("command.md");
+        std::fs::write(&payload, b"x").unwrap();
+        let home = tmp.path().join("home");
+        with_home(&home, || {
+            // kimi has no command surface (commands_dir == None).
+            let r = materialize_command_item(&payload, "x", "kimi").unwrap();
+            assert!(r.paths.is_empty());
+        });
+    }
+
+    #[test]
+    fn materialize_command_item_gemini_writes_toml() {
+        let tmp = tempdir().unwrap();
+        let payload = tmp.path().join("command.md");
+        std::fs::write(
+            &payload,
+            b"---\ndescription: Ship it\n---\nDeploy {{args}} to prod.",
+        )
+        .unwrap();
+        let home = tmp.path().join("home");
+        with_home(&home, || {
+            let r = materialize_command_item(&payload, "deploy", "gemini").unwrap();
+            let dst = home.join(".gemini/commands/deploy.toml");
+            assert!(dst.is_file(), "gemini command must be .toml");
+            let txt = std::fs::read_to_string(&dst).unwrap();
+            // Parse it back as TOML and check the two keys Gemini needs.
+            let parsed: toml::Value = toml::from_str(&txt).unwrap();
+            assert_eq!(
+                parsed.get("description").and_then(|v| v.as_str()),
+                Some("Ship it")
+            );
+            assert_eq!(
+                parsed.get("prompt").and_then(|v| v.as_str()),
+                Some("Deploy {{args}} to prod.")
+            );
+            assert_eq!(r.paths, vec![dst.to_string_lossy().into_owned()]);
+        });
+    }
+
+    #[test]
+    fn materialize_command_item_gemini_without_frontmatter() {
+        let tmp = tempdir().unwrap();
+        let payload = tmp.path().join("command.md");
+        std::fs::write(&payload, b"Just a bare prompt body.").unwrap();
+        let home = tmp.path().join("home");
+        with_home(&home, || {
+            materialize_command_item(&payload, "bare", "gemini").unwrap();
+            let txt = std::fs::read_to_string(home.join(".gemini/commands/bare.toml")).unwrap();
+            let parsed: toml::Value = toml::from_str(&txt).unwrap();
+            assert!(
+                parsed.get("description").is_none(),
+                "no description key when absent"
+            );
+            assert_eq!(
+                parsed.get("prompt").and_then(|v| v.as_str()),
+                Some("Just a bare prompt body.")
+            );
+        });
+    }
+
+    #[test]
+    fn unmaterialize_reverses_item_writers() {
+        let tmp = tempdir().unwrap();
+        // skill payload
+        let skill = tmp.path().join("skill");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            b"---\nname: s\ndescription: d\n---\nb",
+        )
+        .unwrap();
+        // command + prompt payloads
+        let cmd = tmp.path().join("command.md");
+        std::fs::write(&cmd, b"## /x").unwrap();
+        let prompt = tmp.path().join("prompt.md");
+        std::fs::write(&prompt, b"hello").unwrap();
+
+        let home = tmp.path().join("home");
+        with_home(&home, || {
+            let rs = materialize_skill_item(&skill, "s", "claude").unwrap();
+            let rc = materialize_command_item(&cmd, "x", "claude").unwrap();
+            let rp = materialize_prompt_item(&prompt, "p").unwrap();
+            assert!(home.join(".claude/skills/s").is_dir());
+            assert!(home.join(".claude/commands/x.md").is_file());
+            assert!(home.join(".fleetify/prompts/p.md").is_file());
+
+            unmaterialize(&rs).unwrap();
+            unmaterialize(&rc).unwrap();
+            unmaterialize(&rp).unwrap();
+            assert!(!home.join(".claude/skills/s").exists());
+            assert!(!home.join(".claude/commands/x.md").exists());
+            assert!(!home.join(".fleetify/prompts/p.md").exists());
         });
     }
 }

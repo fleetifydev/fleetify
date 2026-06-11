@@ -78,7 +78,11 @@ pub fn builtin_names_for(is_staff: bool, agent_template: Option<&str>) -> Vec<&'
     if !is_staff {
         names.push("fleet_dispatch");
     }
-    if matches!(agent_template, Some("reverse_engineering")) {
+    // A template (builtin/plugin/library) can request fleet built-in MCPs by
+    // name; user-registry MCPs are mounted separately for every session.
+    if crate::services::templates::resolve(agent_template)
+        .is_some_and(|t| t.extra_mcp_servers.iter().any(|s| s == "fleet_reveng"))
+    {
         names.push("fleet_reveng");
     }
     names

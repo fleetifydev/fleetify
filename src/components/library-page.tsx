@@ -27,10 +27,13 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft, Library as LibraryIcon, FileText, Sparkles, Terminal, Webhook,
   Workflow, LayoutTemplate, Cable, Package, HelpCircle, MessageCircle,
-  User, Sun,
+  User, Sun, Plus, Trash2, Pencil,
 } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
 import { usePluginStore } from "@/stores/plugin-store";
+import { useLibraryStore } from "@/stores/library-store";
+import { CreateItemDialog } from "./library/create-item-dialog";
+import type { LibraryKind, LibraryItem } from "@/lib/library-api";
 import { useThemeStore } from "@/stores/theme-store";
 import type { PluginInstall } from "@/types/plugin";
 import { pluginLabel } from "@/types/plugin";
@@ -92,6 +95,15 @@ const NAV: SectionDef[] = [
   },
 ];
 
+/** Which authorable LibraryKind each section maps to. Workflows (plugin-only)
+ *  and MCP (redirects to Settings) have none. */
+const SECTION_KIND: Partial<Record<SectionId, LibraryKind>> = {
+  Prompts: "prompt", Skills: "skill", Commands: "command", Hooks: "hook", Templates: "template",
+};
+const KIND_SECTION: Record<LibraryKind, SectionId> = {
+  prompt: "Prompts", skill: "Skills", command: "Commands", hook: "Hooks", template: "Templates",
+};
+
 /** Sum the components that a single plugin install contributes to a
  *  given section. Mirrors the rules in `deriveProvides` so the counts
  *  match the marketplace's filter chips one-to-one. */
@@ -116,10 +128,15 @@ export function LibraryPage({ onClose }: Props) {
   const loadingInstalls = usePluginStore(s => s.loadingInstalls);
   const refreshInstalls = usePluginStore(s => s.refreshInstalls);
   const setMainView = useAppStore(s => s.setMainView);
+  const libraryItems = useLibraryStore(s => s.items);
+  const refreshLibrary = useLibraryStore(s => s.refresh);
+  const removeLibraryItem = useLibraryStore(s => s.remove);
+  const [dialogKind, setDialogKind] = useState<LibraryKind | null>(null);
+  const [dialogEditing, setDialogEditing] = useState<LibraryItem | null>(null);
 
   // Refresh once on open so the page doesn't show stale install state
   // from a cold-mount that happened before the user installed anything.
-  useEffect(() => { void refreshInstalls(); }, [refreshInstalls]);
+  useEffect(() => { void refreshInstalls(); void refreshLibrary(); }, [refreshInstalls, refreshLibrary]);
 
   // Esc closes — same shortcut Settings uses, so the two surfaces
   // share muscle memory.
@@ -136,11 +153,18 @@ export function LibraryPage({ onClose }: Props) {
       Prompts: 0, Skills: 0, Commands: 0, Hooks: 0,
       Workflows: 0, Templates: 0, MCP: 0,
     };
+    // Plugin skills/commands/templates are enumerated as items (in
+    // libraryItems), so their declares would double-count — skip those sections.
+    const ENUMERATED: SectionId[] = ["Skills", "Commands", "Templates"];
     for (const inst of installs) {
-      for (const sec of NAV) out[sec.id] += countForSection(inst, sec.id);
+      for (const sec of NAV) {
+        if (ENUMERATED.includes(sec.id)) continue;
+        out[sec.id] += countForSection(inst, sec.id);
+      }
     }
+    for (const it of libraryItems) out[KIND_SECTION[it.kind]] += 1;
     return out;
-  }, [installs]);
+  }, [installs, libraryItems]);
 
   // Plugins that contribute at least one item to the active section.
   // Sorted by descending count so the heaviest contributor lands first
@@ -151,6 +175,12 @@ export function LibraryPage({ onClose }: Props) {
       .filter(x => x.count > 0)
       .sort((a, b) => b.count - a.count);
   }, [installs, active]);
+
+  const activeKind = SECTION_KIND[active];
+  const userItems = useMemo(
+    () => (activeKind ? libraryItems.filter(i => i.kind === activeKind) : []),
+    [libraryItems, activeKind],
+  );
 
   const openMarketplace = () => {
     setMainView("marketplace");
@@ -334,18 +364,37 @@ export function LibraryPage({ onClose }: Props) {
               {NAV.find(n => n.id === active)?.blurb}
             </div>
 
-            {loadingInstalls && installs.length === 0 ? (
-              <CenteredHint text="Loading installed plugins…" />
-            ) : contributors.length === 0 ? (
-              <EmptyState section={active} onBrowse={openMarketplace} />
+            {active === "MCP" ? (
+              <McpRedirectCard />
+            ) : active === "Workflows" ? (
+              loadingInstalls && installs.length === 0 ? (
+                <CenteredHint text="Loading installed plugins…" />
+              ) : contributors.length === 0 ? (
+                <EmptyState section={active} onBrowse={openMarketplace} />
+              ) : (
+                <ContributorList contributors={contributors} />
+              )
             ) : (
-              <ContributorList contributors={contributors} />
+              <UserItemsList
+                kind={activeKind!}
+                items={userItems}
+                onNew={() => { setDialogEditing(null); setDialogKind(activeKind!); }}
+                onEdit={(it) => { setDialogEditing(it); setDialogKind(activeKind!); }}
+                onDelete={removeLibraryItem}
+              />
             )}
           </div>
         </div>
       </div>
       </div>
       <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
+      {dialogKind && (
+        <CreateItemDialog
+          kind={dialogKind}
+          editing={dialogEditing ?? undefined}
+          onClose={() => { setDialogKind(null); setDialogEditing(null); }}
+        />
+      )}
     </div>
   );
 }
@@ -597,5 +646,153 @@ function CenteredHint({ text }: { text: string }) {
       color: "var(--c-low)",
       fontSize: 12.5,
     }}>{text}</div>
+  );
+}
+
+/* ── SubHeading — small uppercase section divider label. */
+function SubHeading({ text }: { text: string }) {
+  return (
+    <div style={{
+      fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase",
+      color: "var(--c-dim)", marginBottom: 10,
+    }}>{text}</div>
+  );
+}
+
+/* ── UserItemsList — the user's own authored items for a section, with a
+   New button and per-item delete. Plugin-contributed items render separately
+   below (read-only). */
+function UserItemsList({
+  kind, items, onNew, onEdit, onDelete,
+}: {
+  kind: LibraryKind;
+  items: LibraryItem[];
+  onNew: () => void;
+  onEdit: (item: LibraryItem) => void;
+  onDelete: (id: string) => void;
+}) {
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+        <SubHeading text="Items" />
+        <button
+          onClick={onNew}
+          style={{
+            display: "flex", alignItems: "center", gap: 6,
+            padding: "5px 11px", fontSize: 12, fontWeight: 600,
+            background: "var(--c-high)", color: "var(--card)",
+            border: "none", borderRadius: 7, cursor: "pointer",
+          }}
+        >
+          <Plus size={13} /> New
+        </button>
+      </div>
+      {items.length === 0 ? (
+        <div style={{
+          border: "1px dashed var(--c-brd)", borderRadius: 10, padding: 24,
+          textAlign: "center", color: "var(--c-low)", fontSize: 12.5,
+        }}>
+          No {kind}s yet — create one or install a plugin.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {items.map(it => (
+            <UserItemRow key={it.id} item={it} onEdit={() => onEdit(it)} onDelete={() => onDelete(it.id)} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UserItemRow({ item, onEdit, onDelete }: { item: LibraryItem; onEdit: () => void; onDelete: () => void }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <div
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: "flex", alignItems: "center", gap: 12,
+        padding: "11px 14px", background: "var(--card)",
+        border: "1px solid", borderColor: hover ? "var(--c-brd2)" : "var(--c-brd)",
+        borderRadius: 9, transition: "border-color 0.12s",
+      }}
+    >
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 500, color: "var(--c-high)", display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.name}</span>
+          <span style={{ fontSize: 10.5, fontFamily: "var(--font-mono)", color: "var(--c-ghost)", flexShrink: 0 }}>{item.slug}</span>
+          <span style={{
+            fontSize: 9.5, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase",
+            color: "var(--c-med)", background: "var(--c-srf)", borderRadius: 4, padding: "1px 5px", flexShrink: 0,
+          }}>{item.editable === false ? (item.source ?? "plugin") : "You"}</span>
+        </div>
+        {item.description && (
+          <div style={{ fontSize: 11.5, color: "var(--c-dim)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {item.description}
+          </div>
+        )}
+        {item.providers.length > 0 && (
+          <div style={{ fontSize: 11, color: "var(--c-low)", marginTop: 3, fontFamily: "var(--font-mono)" }}>
+            {item.providers.join(" · ")}
+          </div>
+        )}
+      </div>
+      {item.editable !== false && (
+        <>
+          <button
+            onClick={onEdit}
+            title="Edit"
+            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--c-dim)", display: "flex", padding: 4, flexShrink: 0 }}
+          >
+            <Pencil size={13} />
+          </button>
+          <button
+            onClick={onDelete}
+            title="Delete"
+            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--c-dim)", display: "flex", padding: 4, flexShrink: 0 }}
+          >
+            <Trash2 size={14} />
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ── McpRedirectCard — the Library doesn't author MCP servers; it points the
+   user to Settings → Tools & MCPs (same proven event the Account row uses). */
+function McpRedirectCard() {
+  const openMcpSettings = () =>
+    window.dispatchEvent(new CustomEvent("fleet:open-settings", { detail: { tab: "Tools & MCPs" } }));
+  return (
+    <div style={{
+      border: "1px dashed var(--c-brd)", borderRadius: 10, padding: "32px 24px",
+      textAlign: "center", color: "var(--c-low)",
+    }}>
+      <div style={{
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        width: 40, height: 40, borderRadius: "50%", background: "var(--c-srf)",
+        marginBottom: 14, color: "var(--c-dim)",
+      }}>
+        <Cable size={18} />
+      </div>
+      <div style={{ fontSize: 14, fontWeight: 500, color: "var(--c-high)", marginBottom: 6 }}>
+        MCP servers live in Settings
+      </div>
+      <div style={{ fontSize: 12.5, color: "var(--c-low)", lineHeight: 1.5, maxWidth: 380, margin: "0 auto 16px" }}>
+        MCP servers are shared across every agent. Add, edit, and authenticate them in Settings → Tools &amp; MCPs.
+      </div>
+      <button
+        onClick={openMcpSettings}
+        style={{
+          padding: "6px 14px", fontSize: 12.5, fontWeight: 600,
+          background: "var(--c-high)", color: "var(--card)", border: "none",
+          borderRadius: 7, cursor: "pointer",
+        }}
+      >
+        Manage in Settings
+      </button>
+    </div>
   );
 }

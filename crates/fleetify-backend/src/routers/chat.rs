@@ -1175,7 +1175,7 @@ async fn run_send_flow(
                     .await,
                 );
             } else if let Some(tpl) =
-                crate::services::builtin_templates::get(session.agent_template.as_deref())
+                crate::services::templates::resolve(session.agent_template.as_deref())
             {
                 b.system_prompt = Some(tpl.system_prompt.to_string());
             }
@@ -1433,7 +1433,7 @@ async fn run_send_flow(
                     .await,
                 );
             } else if let Some(tpl) =
-                crate::services::builtin_templates::get(session.agent_template.as_deref())
+                crate::services::templates::resolve(session.agent_template.as_deref())
             {
                 b.system_prompt = Some(tpl.system_prompt.to_string());
             }
@@ -1465,7 +1465,7 @@ async fn run_send_flow(
                     .await,
                 )
             } else {
-                crate::services::builtin_templates::get(session.agent_template.as_deref())
+                crate::services::templates::resolve(session.agent_template.as_deref())
                     .map(|tpl| tpl.system_prompt.to_string())
             };
             let mut b = crate::bridges::antigravity::AntigravityBridge::new(
@@ -1491,7 +1491,7 @@ async fn run_send_flow(
                     .await,
                 )
             } else {
-                crate::services::builtin_templates::get(session.agent_template.as_deref())
+                crate::services::templates::resolve(session.agent_template.as_deref())
                     .map(|tpl| tpl.system_prompt.to_string())
             };
             AnyBridge::AntigravitySdk(Arc::new(
@@ -1535,7 +1535,7 @@ async fn run_send_flow(
                     .await,
                 );
             } else if let Some(tpl) =
-                crate::services::builtin_templates::get(session.agent_template.as_deref())
+                crate::services::templates::resolve(session.agent_template.as_deref())
             {
                 b.system_prompt = Some(tpl.system_prompt.to_string());
             }
@@ -1645,7 +1645,7 @@ async fn run_send_flow(
                     .await,
                 );
             } else if let Some(tpl) =
-                crate::services::builtin_templates::get(session.agent_template.as_deref())
+                crate::services::templates::resolve(session.agent_template.as_deref())
             {
                 b.system_prompt = Some(tpl.system_prompt.to_string());
             }
@@ -2906,8 +2906,7 @@ async fn run_dispatched_task(
             b.session_mode = target.session_mode.clone();
             b.is_staff = false; // dispatched tasks always land on non-staff agents
             b.agent_template = target.agent_template.clone();
-            if let Some(tpl) =
-                crate::services::builtin_templates::get(target.agent_template.as_deref())
+            if let Some(tpl) = crate::services::templates::resolve(target.agent_template.as_deref())
             {
                 b.system_prompt = Some(tpl.system_prompt.to_string());
             }
@@ -2977,8 +2976,7 @@ async fn run_dispatched_task(
                 crate::bridges::parse_tool_overrides(target.tool_overrides.as_deref());
             // A dispatched Kimi agent inherits its template's system prompt
             // (e.g. reverse_engineering). Mirror the Gemini dispatch arm.
-            if let Some(tpl) =
-                crate::services::builtin_templates::get(target.agent_template.as_deref())
+            if let Some(tpl) = crate::services::templates::resolve(target.agent_template.as_deref())
             {
                 b.system_prompt = Some(tpl.system_prompt.to_string());
             }
@@ -2995,8 +2993,7 @@ async fn run_dispatched_task(
             );
             // Mirror the Claude dispatch arm: a dispatched Gemini agent
             // inherits its template's system prompt (e.g. reverse_engineering).
-            if let Some(tpl) =
-                crate::services::builtin_templates::get(target.agent_template.as_deref())
+            if let Some(tpl) = crate::services::templates::resolve(target.agent_template.as_deref())
             {
                 b.system_prompt = Some(tpl.system_prompt.to_string());
             }
@@ -3038,8 +3035,7 @@ async fn run_dispatched_task(
             );
             b.resume_session_id = target.claude_session_id.clone();
             // A dispatched Hermes agent inherits its template's system prompt.
-            if let Some(tpl) =
-                crate::services::builtin_templates::get(target.agent_template.as_deref())
+            if let Some(tpl) = crate::services::templates::resolve(target.agent_template.as_deref())
             {
                 b.system_prompt = Some(tpl.system_prompt.to_string());
             }
@@ -3091,7 +3087,7 @@ async fn run_dispatched_task(
         )),
         "antigravity-sdk" => {
             let system_prompt =
-                crate::services::builtin_templates::get(target.agent_template.as_deref())
+                crate::services::templates::resolve(target.agent_template.as_deref())
                     .map(|tpl| tpl.system_prompt.to_string());
             AnyBridge::AntigravitySdk(std::sync::Arc::new(
                 crate::bridges::antigravity_sdk::AntigravitySdkBridge::new(

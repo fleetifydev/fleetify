@@ -18,7 +18,10 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn templates() -> Json<Value> {
-    Json(json!([]))
+    Json(
+        serde_json::to_value(crate::services::templates::list_all_specs())
+            .unwrap_or_else(|_| json!([])),
+    )
 }
 async fn commands() -> Json<Value> {
     Json(json!([]))

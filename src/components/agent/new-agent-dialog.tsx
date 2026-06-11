@@ -436,12 +436,10 @@ export function NewAgentView({ onClose }: Props) {
     if (!path.trim()) return;
     setLoading(true);
     try {
-      // Resolve agent_template from either built-in (selectedTemplate) or
-      // plugin (selectedTpl) source. Built-ins win when both are set —
-      // the user actively clicked the builtin grid more recently. Plugin
-      // templates carry their own system_prompt server-side so we don't
-      // pass agent_template for them; that path uses the existing
-      // plugin/template runtime.
+      // Resolve agent_template from either the built-in grid (selectedTemplate)
+      // or a plugin/library template (selectedTpl). The backend resolver
+      // (services::templates::resolve) maps the id — a builtin id OR a plugin/
+      // library template name — to its system prompt + MCP servers at spawn.
       const builtinTpl = AGENT_TEMPLATES.find(t => t.id === selectedTemplate);
       const builtinAgentTemplate =
         builtinTpl && "agentTemplate" in builtinTpl
@@ -452,7 +450,7 @@ export function NewAgentView({ onClose }: Props) {
         title: name.trim() || "New agent", project_path: path.trim(),
         tool: provider, model_name: modelId, permission_mode: perm,
         session_mode: mode, claude_session_id: mode === "resume" && resumeId ? resumeId : undefined,
-        agent_template: builtinAgentTemplate,
+        agent_template: builtinAgentTemplate ?? selectedTpl?.name,
         use_worktree: useWorktree,
         account_id: accountId ?? undefined,
       });

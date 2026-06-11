@@ -720,7 +720,9 @@ impl ClaudeBridge {
         if !self.is_staff {
             names.push("mcp__fleet_dispatch__dispatch_to_agent");
         }
-        if matches!(self.agent_template.as_deref(), Some("reverse_engineering")) {
+        if crate::services::templates::resolve(self.agent_template.as_deref())
+            .is_some_and(|t| t.extra_mcp_servers.iter().any(|s| s == "fleet_reveng"))
+        {
             names.extend([
                 "mcp__fleet_reveng__fetch_url",
                 "mcp__fleet_reveng__discover_assets",

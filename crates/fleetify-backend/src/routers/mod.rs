@@ -10,6 +10,7 @@ pub mod fleet;
 pub mod fs;
 pub mod groups;
 pub mod internal;
+pub mod library;
 pub mod marketplace;
 pub mod mcp;
 pub mod messages;
@@ -116,5 +117,10 @@ impl From<sqlx::Error> for ApiError {
 impl From<anyhow::Error> for ApiError {
     fn from(e: anyhow::Error) -> Self {
         ApiError::Internal(e.to_string())
+    }
+}
+impl From<serde_json::Error> for ApiError {
+    fn from(e: serde_json::Error) -> Self {
+        ApiError::Internal(format!("json error: {e}"))
     }
 }
