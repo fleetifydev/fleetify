@@ -97,7 +97,7 @@ Object.defineProperty(window, "electronAPI", {
 });
 
 async function loadBranchStrip() {
-  const mod = await import("../chat-input");
+  const mod = await import("../branch-strip");
   return mod;
 }
 
