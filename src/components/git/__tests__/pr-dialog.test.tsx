@@ -236,3 +236,95 @@ describe("PRDialog error recovery", () => {
     expect(ghMock.beginOAuth).toHaveBeenCalled();
   });
 });
+
+describe("PRDialog — on-demand AI generation", () => {
+  beforeEach(() => {
+    gitMock.hasGhCli.mockReset();
+    gitMock.createPR.mockReset();
+    gitMock.generatePRSummary.mockReset();
+    ghMock.getLink.mockReset();
+    ghMock.beginOAuth.mockReset();
+  });
+
+  it("does NOT call generatePRSummary on mount; opens directly in compose", async () => {
+    ghMock.getLink.mockResolvedValue({ ok: true, link: samplePayload });
+    render(<PRDialog folder="/repo" branch="fleet/x-a1b2c3d4" baseBranch="main" onClose={() => {}} />);
+    // compose is immediate: title input enabled and prefilled from the branch name
+    const title = await screen.findByPlaceholderText("Short summary…");
+    expect((title as HTMLInputElement).value).not.toBe("");
+    expect(gitMock.generatePRSummary).not.toHaveBeenCalled();
+    // body starts EMPTY (no diff-summary seed)
+    const body = screen.getByPlaceholderText("What changed and why?") as HTMLTextAreaElement;
+    expect(body.value).toBe("");
+  });
+
+  it("Generate title fills ONLY the title", async () => {
+    ghMock.getLink.mockResolvedValue({ ok: true, link: samplePayload });
+    gitMock.generatePRSummary.mockResolvedValue({ ok: true, title: "AI title", body: "AI body" });
+    render(<PRDialog folder="/repo" branch="fleet/x" baseBranch="main" onClose={() => {}} />);
+    const body = await screen.findByPlaceholderText("What changed and why?");
+    fireEvent.change(body, { target: { value: "hand-written body" } });
+    fireEvent.click(screen.getByRole("button", { name: "Generate title with AI" }));
+    await waitFor(() => {
+      expect((screen.getByPlaceholderText("Short summary…") as HTMLInputElement).value).toBe("AI title");
+    });
+    expect((body as HTMLTextAreaElement).value).toBe("hand-written body");
+  });
+
+  it("Generate description fills ONLY the body", async () => {
+    ghMock.getLink.mockResolvedValue({ ok: true, link: samplePayload });
+    gitMock.generatePRSummary.mockResolvedValue({ ok: true, title: "AI title", body: "AI body" });
+    render(<PRDialog folder="/repo" branch="fleet/x" baseBranch="main" onClose={() => {}} />);
+    const title = await screen.findByPlaceholderText("Short summary…");
+    fireEvent.change(title, { target: { value: "hand-written title" } });
+    fireEvent.click(screen.getByRole("button", { name: "Generate description with AI" }));
+    await waitFor(() => {
+      expect((screen.getByPlaceholderText("What changed and why?") as HTMLTextAreaElement).value).toBe("AI body");
+    });
+    expect((title as HTMLInputElement).value).toBe("hand-written title");
+  });
+
+  it("per-field generation failure shows an inline error for that field only", async () => {
+    ghMock.getLink.mockResolvedValue({ ok: true, link: samplePayload });
+    gitMock.generatePRSummary.mockResolvedValue({ ok: false, error: "agent unavailable" });
+    render(<PRDialog folder="/repo" branch="fleet/x" baseBranch="main" onClose={() => {}} />);
+    await screen.findByPlaceholderText("Short summary…");
+    fireEvent.click(screen.getByRole("button", { name: "Generate description with AI" }));
+    await waitFor(() => expect(screen.getByText(/agent unavailable/)).toBeInTheDocument());
+  });
+
+  it("blocks submit (button, other hint, and ⌘↵) while a field is generating", async () => {
+    gitMock.hasGhCli.mockResolvedValue({ ok: false, version: null, authed: false, ghLogin: null });
+    ghMock.getLink.mockResolvedValue({ ok: true, link: samplePayload });
+    // Hold the generation open with a deferred promise so we can observe
+    // the in-flight locked state before it resolves.
+    let resolveGen: (v: { ok: true; title: string; body: string }) => void = () => {};
+    gitMock.generatePRSummary.mockImplementation(
+      () => new Promise(r => { resolveGen = r; }),
+    );
+    render(<PRDialog folder="/repo" branch="fleet/x" baseBranch="main" onClose={() => {}} />);
+    await screen.findByPlaceholderText("Short summary…");
+    // Auth-ready: the @login chip means submit is otherwise eligible.
+    await waitFor(() => expect(screen.getByText(/@greg/)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Generate description with AI" }));
+
+    // While generation is pending: submit is disabled, the OTHER hint is
+    // disabled, and ⌘↵ must NOT fire createPR.
+    const submit = screen.getByRole("button", { name: /create pr/i });
+    await waitFor(() => expect(submit).toBeDisabled());
+    expect(screen.getByRole("button", { name: "Generate title with AI" })).toBeDisabled();
+
+    fireEvent.keyDown(window, { key: "Enter", metaKey: true });
+    expect(gitMock.createPR).not.toHaveBeenCalled();
+
+    // Resolve the generation — body fills and submit re-enables.
+    await act(async () => {
+      resolveGen({ ok: true, title: "T", body: "B" });
+    });
+    await waitFor(() =>
+      expect((screen.getByPlaceholderText("What changed and why?") as HTMLTextAreaElement).value).toBe("B"),
+    );
+    await waitFor(() => expect(submit).toBeEnabled());
+  });
+});

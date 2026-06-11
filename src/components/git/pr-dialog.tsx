@@ -11,10 +11,10 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { X, GitPullRequest, Loader2, ExternalLink, Check, Sparkles } from "lucide-react";
-import { git, defaultPRTitle, defaultPRBody } from "@/lib/git-api";
+import { git, defaultPRTitle } from "@/lib/git-api";
 import { github, type GitHubLinkPayload } from "@/lib/github-link-api";
 
-type Phase = "drafting" | "compose" | "creating" | "done" | "error";
+type Phase = "compose" | "creating" | "done" | "error";
 
 export function PRDialog({
   folder, branch, baseBranch, tool, initialDraft, onClose, onCreated,
@@ -33,11 +33,14 @@ export function PRDialog({
   const [title,   setTitle]   = useState("");
   const [body,    setBody]    = useState("");
   const [draft,   setDraft]   = useState(!!initialDraft);
-  const [phase,   setPhase]   = useState<Phase>("drafting");
+  const [phase,   setPhase]   = useState<Phase>("compose");
   const [error,   setError]   = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [result,  setResult]  = useState<{ number: number | null; url: string } | null>(null);
-  const [aiUsed,  setAiUsed]  = useState(false);
+  const [genField, setGenField] = useState<"title" | "body" | null>(null);
+  const [genErr, setGenErr] = useState<{ title?: string; body?: string }>({});
+  const [aiTitleUsed, setAiTitleUsed] = useState(false);
+  const [aiBodyUsed, setAiBodyUsed] = useState(false);
   // Probe gh availability AND any stored GitHub link at open time so
   // we know which auth path to dispatch through at submit. authReady
   // gates the submit button while both probes are in flight.
@@ -48,6 +51,10 @@ export function PRDialog({
   const [connecting,  setConnecting]  = useState(false);
   const [browserFallbackUrl, setBrowserFallbackUrl] = useState<string | null>(null);
   const titleRef = useRef<HTMLInputElement>(null);
+  // Liveness guard for async setters that resolve after the dialog may
+  // have unmounted — mirrors the `cancelled` flag the mount effect uses.
+  const aliveRef = useRef(true);
+  useEffect(() => () => { aliveRef.current = false; }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -104,68 +111,48 @@ export function PRDialog({
     link     ? "link" :
                "none";
 
-  // ── Initial draft on mount ──
-  // Two-pass fill so the form is NEVER empty:
-  //   1. Heuristic seed (branch name title + diff-summary body) fires
-  //      immediately — the user sees a real draft within ~100ms.
-  //   2. AI generation runs in parallel; when it completes it
-  //      overwrites whatever the heuristic put down.
-  // Either way the dialog is editable from the moment it appears.
+  // ── Initial seed on mount ──
+  // Title from the branch name (cheap local heuristic — NOT the AI).
+  // Body stays empty. AI generation is strictly on-demand per field
+  // via the GenerateHint buttons below.
   useEffect(() => {
-    let cancelled = false;
-    setPhase("drafting");
     setTitle(defaultPRTitle(branch));
+    setTimeout(() => titleRef.current?.focus(), 50);
+  }, [branch]);
 
-    // Pass 1 — heuristic body shows up fast.
-    git.diffSummary(folder, baseBranch).then(sum => {
-      if (cancelled) return;
-      if (sum.ok) setBody(defaultPRBody(sum));
-    });
-
-    // Pass 2 — AI overwrites when ready.
-    (async () => {
-      const ai = await git.generatePRSummary(folder, baseBranch, tool ?? undefined);
-      if (cancelled) return;
-      if (ai.ok) {
-        setTitle(ai.title);
-        setBody(ai.body);
-        setAiUsed(true);
-      }
-      setPhase("compose");
-      setTimeout(() => titleRef.current?.focus(), 50);
-    })();
-
-    return () => { cancelled = true; };
-  }, [folder, branch, baseBranch, tool]);
-
-  // Re-run AI generation on demand (Sparkles button).
-  const regenerate = async () => {
-    setPhase("drafting"); setError(null);
+  // One generation at a time. Both fields share the same backend call
+  // (generatePRSummary returns {title, body}); we apply only the half
+  // the user asked for — no backend change needed.
+  const generateField = async (field: "title" | "body") => {
+    if (genField) return;
+    setGenField(field);
+    setGenErr(e => ({ ...e, [field]: undefined }));
     const ai = await git.generatePRSummary(folder, baseBranch, tool ?? undefined);
+    if (!aliveRef.current) return;
     if (ai.ok) {
-      setTitle(ai.title);
-      setBody(ai.body);
-      setAiUsed(true);
-      setPhase("compose");
+      if (field === "title") { setTitle(ai.title); setAiTitleUsed(true); }
+      else { setBody(ai.body); setAiBodyUsed(true); }
     } else {
-      setError(`AI draft failed: ${ai.error}`);
-      setPhase("compose");
+      setGenErr(e => ({ ...e, [field]: ai.error || "Generation failed" }));
     }
+    setGenField(null);
   };
 
   // Esc closes; ⌘↵ submits — both no-op while a network call is in flight.
+  // genField !== null means a per-field AI generation is running; ⌘↵ must
+  // not slip past the disabled Create button while it's in flight.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && phase !== "creating" && phase !== "drafting") onClose();
+      if (e.key === "Escape" && phase !== "creating") onClose();
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && phase === "compose") {
         e.preventDefault();
-        if (title.trim() && authReady && authMethod !== "none") submit();
+        if (title.trim() && authReady && authMethod !== "none" && !genField) submit();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, onClose, title, authReady, authMethod]);
+  }, [phase, onClose, title, authReady, authMethod, genField]);
 
   // GitHub's documented PR body cap is ~65,536 chars. We pre-truncate
   // at 65,000 with a "[…body truncated]" marker so the user sees what
@@ -175,6 +162,9 @@ export function PRDialog({
 
   const submit = async () => {
     if (!title.trim() || phase === "creating") return;
+    // Belt-and-braces: never submit mid-generation even if a caller
+    // (e.g. a stale keydown handler) slips past the guards above.
+    if (genField) return;
     setPhase("creating"); setError(null); setErrorCode(null);
     const trimmedBody = body.length > PR_BODY_MAX
       ? `${body.slice(0, PR_BODY_MAX)}\n\n[…body truncated — GitHub's limit is ~65k chars]`
@@ -194,9 +184,8 @@ export function PRDialog({
 
   const open = () => { if (result?.url) git.openPR(folder); };
 
-  const drafting = phase === "drafting";
-  const creating = phase === "creating";
-  const busy     = drafting || creating;
+  const creating   = phase === "creating";
+  const generating = genField !== null;
 
   return (
     <div
@@ -218,7 +207,7 @@ export function PRDialog({
           // showed up as a black card over white chrome in light
           // mode. --popover already follows the active theme.
           background: "var(--popover, #161616)",
-          border: "1px solid var(--c-brd, rgba(255,255,255,0.09))",
+          border: "1px solid var(--c-brd, rgba(127,127,127,0.18))",
           borderRadius: 14,
           overflow: "hidden",
           boxShadow: "0 28px 72px rgba(0,0,0,0.62), 0 6px 14px rgba(0,0,0,0.38)",
@@ -228,9 +217,8 @@ export function PRDialog({
         <div style={{
           display: "flex", alignItems: "center", gap: 13,
           padding: "16px 20px",
-          borderBottom: "1px solid rgba(255,255,255,0.07)",
+          borderBottom: "1px solid var(--c-brd, rgba(127,127,127,0.15))",
           flexShrink: 0,
-          background: "linear-gradient(180deg, rgba(255,255,255,0.02), transparent)",
         }}>
           <span style={{
             width: 32, height: 32, borderRadius: 8, flexShrink: 0,
@@ -244,14 +232,14 @@ export function PRDialog({
               : "rgba(var(--fg-rgb), 0.06)",
             border: phase === "done"
               ? "1px solid rgba(74,222,128,0.25)"
-              : "1px solid var(--c-brd, rgba(255,255,255,0.10))",
+              : "1px solid var(--c-brd, rgba(127,127,127,0.18))",
             color: phase === "done" ? "#86efac" : "var(--c-fg)",
             transition: "background 0.2s, color 0.2s",
           }}>
             {phase === "done" ? <Check size={16} strokeWidth={2.5} /> : <GitPullRequest size={15} />}
           </span>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 15, fontWeight: 600, color: "#f5f5f5", letterSpacing: 0.1 }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: "var(--c-fg)", letterSpacing: 0.1 }}>
               {phase === "done" ? "Pull request created" : "Create pull request"}
             </div>
             <div style={{
@@ -259,7 +247,7 @@ export function PRDialog({
               marginTop: 4, flexWrap: "wrap",
             }}>
               <BranchPill name={branch} kind="head" />
-              <span style={{ fontSize: 11, color: "#7a7a7a" }}>→</span>
+              <span style={{ fontSize: 11, color: "var(--c-dim)" }}>→</span>
               <BranchPill name={baseBranch} kind="base" />
               {authMethod === "gh" && ghLogin && (
                 <AuthChip avatar={null} label={`@${ghLogin}`} hint="via gh" />
@@ -283,15 +271,15 @@ export function PRDialog({
               )}
             </div>
           </div>
-          <button onClick={onClose} disabled={busy} title="Close" style={{
-            background: "none", border: "none", cursor: busy ? "default" : "pointer",
-            color: "#9a9a9a", padding: 6, borderRadius: 6,
+          <button onClick={onClose} disabled={creating} title="Close" style={{
+            background: "none", border: "none", cursor: creating ? "default" : "pointer",
+            color: "var(--c-low)", padding: 6, borderRadius: 6,
             display: "flex", alignItems: "center", justifyContent: "center",
-            opacity: busy ? 0.4 : 1,
+            opacity: creating ? 0.4 : 1,
             transition: "color 0.12s, background 0.12s",
           }}
-            onMouseEnter={e => { if (!busy) { e.currentTarget.style.color = "#f5f5f5"; e.currentTarget.style.background = "rgba(255,255,255,0.06)"; } }}
-            onMouseLeave={e => { if (!busy) { e.currentTarget.style.color = "#9a9a9a"; e.currentTarget.style.background = "none"; } }}
+            onMouseEnter={e => { if (!creating) { e.currentTarget.style.color = "var(--c-fg)"; e.currentTarget.style.background = "rgba(var(--fg-rgb), 0.06)"; } }}
+            onMouseLeave={e => { if (!creating) { e.currentTarget.style.color = "var(--c-low)"; e.currentTarget.style.background = "none"; } }}
           >
             <X size={16} />
           </button>
@@ -310,7 +298,7 @@ export function PRDialog({
             }}>
               <Check size={24} strokeWidth={2.5} />
             </div>
-            <div style={{ fontSize: 14, color: "#e8e8e8", textAlign: "center", fontWeight: 500 }}>
+            <div style={{ fontSize: 14, color: "var(--c-fg)", textAlign: "center", fontWeight: 500 }}>
               {result.number != null ? `#${result.number}` : "PR"} opened on the remote.
             </div>
             <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
@@ -325,50 +313,48 @@ export function PRDialog({
             <div style={{
               padding: "18px 20px", display: "flex", flexDirection: "column", gap: 14,
               overflow: "auto", flex: 1,
-              opacity: drafting ? 0.6 : 1,
-              transition: "opacity 0.15s",
             }}>
               <Field label="Title" hint={
-                <button
-                  onClick={regenerate}
-                  disabled={busy}
-                  title={`Regenerate via ${tool ?? "claude"}`}
-                  style={{
-                    background: "none", border: "none", cursor: busy ? "default" : "pointer",
-                    // Sparkle/regenerate hint — was purple to match the
-                    // old "AI primary" accent. Switched to --c-fg for
-                    // active and --c-dim for idle so the cue reads
-                    // brand-neutral (no purple anywhere in Fleet now).
-                    color: aiUsed ? "var(--c-fg)" : "var(--c-dim)",
-                    fontSize: 11, padding: "1px 4px", borderRadius: 3,
-                    display: "inline-flex", alignItems: "center", gap: 4,
-                    fontFamily: "inherit",
-                  }}
-                >
-                  {drafting
-                    ? <><Loader2 size={10} style={{ animation: "spin 1.2s linear infinite" }} /> Drafting…</>
-                    : <><Sparkles size={10} /> {aiUsed ? "Regenerate" : "Draft with AI"}</>
-                  }
-                </button>
+                <GenerateHint
+                  ariaLabel="Generate title with AI"
+                  generating={genField === "title"}
+                  used={aiTitleUsed}
+                  disabled={creating || genField === "body"}
+                  onClick={() => void generateField("title")}
+                />
               }>
                 <input
                   ref={titleRef}
                   value={title}
                   onChange={e => setTitle(e.target.value)}
-                  disabled={busy}
-                  placeholder={drafting ? "" : "Short summary…"}
+                  disabled={creating || genField === "title"}
+                  placeholder="Short summary…"
                   style={inputStyle}
                 />
+                {genErr.title && (
+                  <div style={{ fontSize: 11, color: "#fca5a5", marginTop: 4 }}>{genErr.title}</div>
+                )}
               </Field>
 
-              <Field label="Description (Markdown)">
+              <Field label="Description (Markdown)" hint={
+                <GenerateHint
+                  ariaLabel="Generate description with AI"
+                  generating={genField === "body"}
+                  used={aiBodyUsed}
+                  disabled={creating || genField === "title"}
+                  onClick={() => void generateField("body")}
+                />
+              }>
                 <textarea
                   value={body}
                   onChange={e => setBody(e.target.value)}
-                  disabled={busy}
-                  placeholder={drafting ? "" : "What changed and why?"}
+                  disabled={creating || genField === "body"}
+                  placeholder="What changed and why?"
                   style={textareaStyle}
                 />
+                {genErr.body && (
+                  <div style={{ fontSize: 11, color: "#fca5a5", marginTop: 4 }}>{genErr.body}</div>
+                )}
                 {bodyTooLong && (
                   <div style={{
                     fontSize: 11, color: "#fde68a",
@@ -386,7 +372,7 @@ export function PRDialog({
               <DraftToggle
                 value={draft}
                 onChange={setDraft}
-                disabled={busy}
+                disabled={creating}
               />
 
               {authReady && authMethod === "none" && (
@@ -474,24 +460,24 @@ export function PRDialog({
             <div style={{
               display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
               padding: "13px 20px",
-              borderTop: "1px solid rgba(255,255,255,0.07)",
-              background: "rgba(255,255,255,0.015)",
+              borderTop: "1px solid var(--c-brd, rgba(127,127,127,0.15))",
+              background: "rgba(var(--fg-rgb), 0.02)",
               flexShrink: 0,
             }}>
-              <span style={{ fontSize: 11, color: "#7a7a7a", fontFamily: "var(--font-mono)" }}>
+              <span style={{ fontSize: 11, color: "var(--c-dim)", fontFamily: "var(--font-mono)" }}>
                 ⌘↵ to submit
               </span>
               <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={onClose} disabled={busy} style={btnGhost}>Cancel</button>
+                <button onClick={onClose} disabled={creating} style={btnGhost}>Cancel</button>
                 <button
                   onClick={submit}
-                  disabled={!title.trim() || busy || !authReady || authMethod === "none"}
+                  disabled={!title.trim() || creating || generating || !authReady || authMethod === "none"}
                   title={
                     !authReady ? "Checking auth…" :
                     authMethod === "none" ? "Connect GitHub first" :
                     undefined
                   }
-                  style={!title.trim() || busy || !authReady || authMethod === "none" ? btnPrimaryDisabled : btnPrimary}
+                  style={!title.trim() || creating || generating || !authReady || authMethod === "none" ? btnPrimaryDisabled : btnPrimary}
                 >
                   {creating
                     ? <><Loader2 size={13} style={{ animation: "spin 1.2s linear infinite" }} /> Creating…</>
@@ -550,9 +536,9 @@ function AuthChip({ avatar, label, hint, onSwitch, onDisconnect }: {
           display: "inline-flex", alignItems: "center", gap: 4,
           padding: "2px 8px 2px 2px",
           fontSize: 11, fontWeight: 500,
-          background: open ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.04)",
-          border: "1px solid rgba(255,255,255,0.10)",
-          color: "#cfcfcf",
+          background: open ? "rgba(var(--fg-rgb), 0.08)" : "rgba(var(--fg-rgb), 0.04)",
+          border: "1px solid var(--c-brd, rgba(127,127,127,0.20))",
+          color: "var(--c-low)",
           borderRadius: 999,
           maxWidth: 220,
           fontFamily: "inherit",
@@ -565,7 +551,7 @@ function AuthChip({ avatar, label, hint, onSwitch, onDisconnect }: {
         ) : (
           <span style={{
             width: 14, height: 14, borderRadius: 999,
-            background: "rgba(255,255,255,0.10)",
+            background: "rgba(var(--fg-rgb), 0.10)",
             display: "inline-block",
           }} />
         )}
@@ -580,7 +566,7 @@ function AuthChip({ avatar, label, hint, onSwitch, onDisconnect }: {
           style={{
             position: "absolute", top: "calc(100% + 6px)", right: 0,
             background: "var(--popover, #161616)",
-            border: "1px solid var(--c-brd, rgba(255,255,255,0.10))",
+            border: "1px solid var(--c-brd, rgba(127,127,127,0.18))",
             borderRadius: 8,
             padding: 4,
             minWidth: 140,
@@ -618,7 +604,7 @@ const popoverItem: React.CSSProperties = {
   padding: "7px 10px",
   borderRadius: 6,
   fontSize: 12, fontFamily: "inherit",
-  color: "#dcdcdc",
+  color: "var(--c-fg)",
   cursor: "pointer",
 };
 
@@ -946,13 +932,45 @@ function Field({ label, hint, children }: { label: string; hint?: React.ReactNod
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: 18 }}>
         <span style={{
-          fontSize: 11, color: "#9a9a9a", fontWeight: 600,
+          fontSize: 11, color: "var(--c-low)", fontWeight: 600,
           textTransform: "uppercase", letterSpacing: "0.06em",
         }}>{label}</span>
         {hint}
       </div>
       {children}
     </div>
+  );
+}
+
+/** Per-field "✦ Generate with AI" hint button. aria-label carries the
+ *  field so tests/screen-readers can tell the two apart. */
+function GenerateHint({ ariaLabel, generating, used, disabled, onClick }: {
+  ariaLabel: string;
+  generating: boolean;
+  used: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={ariaLabel}
+      onClick={onClick}
+      disabled={disabled || generating}
+      style={{
+        background: "none", border: "none",
+        cursor: disabled || generating ? "default" : "pointer",
+        color: used ? "var(--c-fg)" : "var(--c-dim)",
+        fontSize: 11, padding: "1px 4px", borderRadius: 3,
+        display: "inline-flex", alignItems: "center", gap: 4,
+        fontFamily: "inherit",
+        opacity: disabled && !generating ? 0.5 : 1,
+      }}
+    >
+      {generating
+        ? <><Loader2 size={10} style={{ animation: "spin 1.2s linear infinite" }} /> Generating…</>
+        : <><Sparkles size={10} /> {used ? "Regenerate" : "Generate with AI"}</>}
+    </button>
   );
 }
 
@@ -1003,7 +1021,7 @@ function DraftToggle({ value, onChange, disabled }: {
         // old AI accent. Now it tracks the foreground colour so it
         // works in both themes and stays brand-neutral.
         background: value ? "var(--c-fg)" : "rgba(var(--fg-rgb), 0.10)",
-        border: value ? "1px solid var(--c-fg)" : "1px solid var(--c-brd, rgba(255,255,255,0.12))",
+        border: value ? "1px solid var(--c-fg)" : "1px solid var(--c-brd, rgba(127,127,127,0.18))",
         transition: "background 0.16s, border 0.16s",
         flexShrink: 0,
       }}>
@@ -1013,14 +1031,14 @@ function DraftToggle({ value, onChange, disabled }: {
           width: 13, height: 13, borderRadius: 999,
           // ON: dark thumb so it pops against the white track.
           // OFF: light thumb against the dim track.
-          background: value ? "var(--card, #0d0d0d)" : "#cfcfcf",
+          background: value ? "var(--card, #0d0d0d)" : "var(--c-low)",
           transition: "left 0.16s, background 0.16s",
           boxShadow: "0 1px 2px rgba(0,0,0,0.4)",
         }} />
       </span>
       <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        <span style={{ fontSize: 12.5, color: "#dcdcdc", fontWeight: 500 }}>Open as draft</span>
-        <span style={{ fontSize: 11, color: "#7a7a7a" }}>
+        <span style={{ fontSize: 12.5, color: "var(--c-fg)", fontWeight: 500 }}>Open as draft</span>
+        <span style={{ fontSize: 11, color: "var(--c-dim)" }}>
           Reviewers won't be requested until you mark it ready.
         </span>
       </span>
@@ -1028,14 +1046,13 @@ function DraftToggle({ value, onChange, disabled }: {
   );
 }
 
-/* Shared input style — focus ring uses the foreground colour so
-   the dialog feels visually coherent end-to-end. Was purple to
-   match the old AI accent; now strictly brand-neutral. */
+/* Shared input style — strictly theme-token driven so the dialog
+   renders correctly on both dark and light chrome. */
 const focusableField: React.CSSProperties = {
   width: "100%",
-  background: "#0d0d0d",
-  border: "1px solid rgba(255,255,255,0.09)",
-  color: "#f0f0f0",
+  background: "var(--card, #0d0d0d)",
+  border: "1px solid var(--c-brd, rgba(127,127,127,0.22))",
+  color: "var(--c-fg, #f0f0f0)",
   outline: "none",
   transition: "border-color 0.12s, box-shadow 0.12s, background 0.12s",
 };
@@ -1056,9 +1073,9 @@ const textareaStyle: React.CSSProperties = {
 
 const btnGhost: React.CSSProperties = {
   padding: "8px 15px", borderRadius: 7,
-  background: "rgba(255,255,255,0.03)",
-  border: "1px solid rgba(255,255,255,0.10)",
-  color: "#dcdcdc", cursor: "pointer", fontSize: 12.5,
+  background: "transparent",
+  border: "1px solid var(--c-brd, rgba(127,127,127,0.25))",
+  color: "var(--c-fg, #dcdcdc)", cursor: "pointer", fontSize: 12.5,
   fontFamily: "inherit", fontWeight: 500,
   outline: "none",
   transition: "background 0.12s, border-color 0.12s, color 0.12s",
@@ -1066,9 +1083,6 @@ const btnGhost: React.CSSProperties = {
 
 const btnPrimary: React.CSSProperties = {
   padding: "8px 16px", borderRadius: 7,
-  // Neutral primary — was a purple gradient. Now uses the same
-  // white-on-dark / dark-on-light treatment the SessionToolbar's
-  // primary actions use. Card token gives the contrast text.
   background: "var(--c-fg)",
   border: "1px solid var(--c-fg)",
   color: "var(--card, #0d0d0d)",
@@ -1081,9 +1095,9 @@ const btnPrimary: React.CSSProperties = {
 
 const btnPrimaryDisabled: React.CSSProperties = {
   ...btnPrimary,
-  background: "rgba(255,255,255,0.06)",
-  border: "1px solid rgba(255,255,255,0.10)",
-  color: "#7a7a7a",
+  background: "rgba(var(--fg-rgb), 0.08)",
+  border: "1px solid var(--c-brd, rgba(127,127,127,0.20))",
+  color: "var(--c-dim, #7a7a7a)",
   cursor: "default",
   boxShadow: "none",
 };

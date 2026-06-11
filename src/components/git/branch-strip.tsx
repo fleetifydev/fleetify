@@ -28,7 +28,8 @@ import { github } from "@/lib/github-link-api";
 import { glog } from "@/lib/git-log";
 import { useAppStore, COMPOSER_CHAT_KEY } from "@/stores/app-store";
 import { pushChatError } from "@/stores/chat-store";
-import { useRepoPrs } from "@/stores/pr-store";
+import { useRepoPrs, useOpenPrs, usePrStore } from "@/stores/pr-store";
+import { PrSwitcherChip, prIconColor } from "@/components/git/pr-switcher-chip";
 /* ── BranchStrip ──
    The Claude-Code-style git context strip that sits ABOVE the chat
    textarea. Layout (left → right):
@@ -584,6 +585,18 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
                 commentsCount: 0,
               });
               setPrStatusLoaded(true);
+              // Seed the repo-wide store too so the switcher chip / merge
+              // cluster pick up the auto-opened PR without waiting for the
+              // next prList poll.
+              usePrStore.getState().upsert({
+                number: nr,
+                state: "OPEN",
+                headRefName: ctx.branch ?? "",
+                isDraft: false,
+                mergeable: "UNKNOWN",
+                title: sessionTitle ?? undefined,
+                url: r.prUrl ?? undefined,
+              });
             }
             // Refine the optimistic state from gh — checks counts,
             // draft status, etc. Lookup by the specific number to
@@ -658,6 +671,53 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // Merge box switcher (+ branch-picker badges). No-op until `folder` resolves.
   useRepoPrs(folder);
 
+  // ── Repo-wide PR selection (Merge-box switcher, spec §6) ──
+  // Effective selection: explicit pick (while still open) → the working
+  // branch's open PR → the newest open PR. The chip + merge cluster
+  // target this PR; Create PR stays bound to the working branch.
+  const openPrsList = useOpenPrs();
+  const [selectedPrNumber, setSelectedPrNumber] = useState<number | null>(null);
+  const branchOpenPr = pr && pr.state === "OPEN" ? pr : null;
+  const effectiveSelectedNumber =
+    selectedPrNumber != null && openPrsList.some(p => p.number === selectedPrNumber)
+      ? selectedPrNumber
+      : branchOpenPr?.number ?? openPrsList[0]?.number ?? null;
+  const selectedRepoPr = effectiveSelectedNumber != null
+    ? openPrsList.find(p => p.number === effectiveSelectedNumber) ?? null
+    : null;
+  // The selected PR is the working branch's own when its number matches
+  // the branch PR OR — before the branch poll lands — when the store
+  // entry's head ref is the current branch. The latter avoids a transient
+  // foreign-poll for our own PR while `pr` is still loading (which would
+  // also race the branch poll's prStatus mock in tests).
+  const selectedIsBranchPr =
+    effectiveSelectedNumber != null && (
+      effectiveSelectedNumber === branchOpenPr?.number ||
+      (!!ctx?.branch && selectedRepoPr?.headRefName === ctx.branch)
+    );
+
+  // Foreign-PR detail poll — checks/mergeable/draft gating for a selected
+  // PR that ISN'T the working branch's. Same 15s cadence as the branch
+  // poll; `git.prStatus(folder, number)` is already number-addressable.
+  const [foreignPr, setForeignPr] = useState<PRStatus | null>(null);
+  useEffect(() => {
+    if (!folder || effectiveSelectedNumber == null || selectedIsBranchPr) {
+      setForeignPr(null);
+      return;
+    }
+    let cancelled = false;
+    const load = () => {
+      git.prStatus(folder, effectiveSelectedNumber).then(r => {
+        if (!cancelled && r.ok) setForeignPr(r.pr ?? null);
+      }).catch(() => {});
+    };
+    load();
+    const iv = setInterval(load, 15000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [folder, effectiveSelectedNumber, selectedIsBranchPr]);
+
+  const selectedPr: PRStatus | null = selectedIsBranchPr ? pr : foreignPr;
+
   if (controlCenter) return null;
 
   const noGit = !ctx?.branch;
@@ -676,6 +736,25 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   const showCreatePR =
     (!noGit && !onDefaultBranch) ||
     ((noGit || onDefaultBranch) && !!plannedBranch);
+  // ── Empty-diff gating ──
+  // `ctx.plus/minus` already refresh on the 5s git-context poll, so
+  // this costs nothing extra. Bootstrap shapes (no git yet, or on the
+  // default branch with a planned carve target) must stay clickable —
+  // there the diff doesn't exist YET by design and the dispatcher
+  // bootstraps it. The ≤5s staleness window is backstopped by the
+  // backend's NO_COMMITS error surfacing through the recovery path.
+  const isBootstrapShape = (noGit || onDefaultBranch) && !!plannedBranch;
+  const emptyDiffBlocked =
+    !isBootstrapShape && ((ctx?.plus ?? 0) + (ctx?.minus ?? 0)) === 0;
+  // Create-slot gating — Create PR stays rendered but disabled while the
+  // working branch already has an open PR (spec §6): a second create
+  // would just race "a PR already exists". The branch-open PR check
+  // takes priority over the empty-diff tooltip.
+  const createDisabled = autoCreating || !!branchOpenPr || emptyDiffBlocked;
+  const createTooltip =
+    branchOpenPr ? `PR #${branchOpenPr.number} is already open for this branch`
+    : emptyDiffBlocked ? "No changes to include in a PR"
+    : undefined;
   // Review is available whenever a git repo exists with something
   // the agent can read — noGit folders have no diff yet, so the
   // button stays hidden until bootstrap. (Conductor's parity: their
@@ -689,49 +768,64 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   const ctxR = ctx as GitContext & { branch: string };
 
   const onMerge = async () => {
-    if (!folder || !pr || pr.state !== "OPEN") return;
+    if (!folder || !selectedPr || selectedPr.state !== "OPEN") return;
     // Capture base + prNumber BEFORE the mergePR call, because by the
     // time the auto-cleanup runs we'll have cleared `pr` and gh may
     // have switched the local checkout to main.
-    const baseBranch = pr.baseRefName || ctx?.baseBranch || "main";
-    const mergedPrNumber = pr.number;
-    glog("ui", "merge.start", { prNumber: mergedPrNumber, baseRef: baseBranch, wasDraft: pr.isDraft });
+    const mergedPrNumber = selectedPr.number;
+    // Identity gate (spec §7): only the working branch's own PR triggers
+    // the sync+carve+auto-switch flow. A foreign PR merges in place —
+    // syncMain would otherwise check out the base branch inside the
+    // user's working dir on worktree-off sessions.
+    const ownBranchMerge = selectedPr.headRefName === ctx?.branch;
+    const baseBranch = selectedPr.baseRefName || ctx?.baseBranch || "main";
+    glog("ui", "merge.start", { prNumber: mergedPrNumber, baseRef: baseBranch, wasDraft: selectedPr.isDraft, ownBranchMerge });
     setMerging(true);
     // Mark so the fallback auto-cleanup useEffect could ALSO fire if
     // the state-flip path beats the direct trigger below. Cleared in
-    // doSyncAndCarve so we never double-run.
-    justMergedRef.current = true;
+    // doSyncAndCarve so we never double-run. Only set for own-branch
+    // merges — a foreign merge must never touch the working branch.
+    if (ownBranchMerge) justMergedRef.current = true;
     // Always attempt `gh pr ready` before merge — the local
-    // `pr.isDraft` flag can be stale (optimistic setPr defaults it
-    // to false even when the actual PR on GitHub is still a draft
-    // from an earlier auto-PR run that hardcoded draft:true). The
-    // backend's pr_ready treats "already ready" as a silent no-op so
-    // running it unconditionally is cheap. Without this, hitting
-    // Merge on a stale-draft PR produced "GraphQL: Pull Request is
-    // still a draft" from `gh pr merge`.
+    // `isDraft` flag can be stale (optimistic setPr defaults it to
+    // false even when the actual PR on GitHub is still a draft from an
+    // earlier auto-PR run that hardcoded draft:true). The backend's
+    // pr_ready treats "already ready" as a silent no-op so running it
+    // unconditionally is cheap. Without this, hitting Merge on a
+    // stale-draft PR produced "GraphQL: Pull Request is still a draft"
+    // from `gh pr merge`.
     const ready = await git.markPRReady(folder, mergedPrNumber);
     if (!ready.ok) {
       setMerging(false);
       justMergedRef.current = false;
       return;
     }
-    setPr(prev => prev && prev.number === mergedPrNumber ? { ...prev, isDraft: false } : prev);
+    if (ownBranchMerge) {
+      setPr(prev => prev && prev.number === mergedPrNumber ? { ...prev, isDraft: false } : prev);
+    }
     const r = await git.mergePR(folder, mergedPrNumber, "squash");
     setMerging(false);
     glog("ui", "merge.result", { ok: r.ok, error: r.ok ? undefined : r.error });
     if (r.ok) {
-      // Drop the OPEN pr immediately. The prStatus poll will not be
-      // re-fetched here — doSyncAndCarve clears pr at its end too,
-      // and the regular poll resumes when ctx settles.
-      setPr(null);
-      // Trigger sync+carve DIRECTLY. We don't wait for pr.state to
-      // flip to MERGED via prStatus — `gh pr merge --auto
-      // --delete-branch` switches the local checkout to main and
-      // deletes the feature branch, so by the time our poll runs
-      // again the state has skipped from OPEN straight to null (no
-      // PR for main). The useEffect waiting on state===MERGED would
-      // never fire. Running it directly here is deterministic.
-      void doSyncAndCarve(baseBranch);
+      // Optimistically drop the merged PR from the repo-wide store; the
+      // selection falls back automatically (branch PR → newest open).
+      usePrStore.getState().remove(mergedPrNumber);
+      // Only clear the selection if it still points at the PR we just
+      // merged — if the user picked a DIFFERENT PR in the popover during
+      // the merge await, leave their pick intact rather than clobbering it.
+      setSelectedPrNumber(prev => prev === mergedPrNumber ? null : prev);
+      if (ownBranchMerge) {
+        // Drop the OPEN pr immediately and trigger sync+carve DIRECTLY.
+        // We don't wait for pr.state to flip to MERGED via prStatus —
+        // `gh pr merge --auto --delete-branch` switches the local
+        // checkout to main and deletes the feature branch, so by the
+        // time our poll runs again the state has skipped from OPEN
+        // straight to null (no PR for main). The useEffect waiting on
+        // state===MERGED would never fire. Running it directly here is
+        // deterministic.
+        setPr(null);
+        void doSyncAndCarve(baseBranch);
+      }
     } else {
       // mergePR rejected (checks failing, auth, …) — wasn't really
       // a merge, clear the flag so the useEffect can't fire either.
@@ -802,6 +896,18 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   };
 
   const onOpenPR = () => folder && git.openPR(folder);
+
+  // Open the SELECTED PR on GitHub. For a foreign PR (not the working
+  // branch's) we open its own url directly — `git.openPR(folder)`
+  // resolves the working branch's PR, which would open the wrong one.
+  const onOpenSelected = () => {
+    if (selectedRepoPr && !selectedIsBranchPr && selectedRepoPr.url) {
+      const w = window as unknown as { electronAPI?: { openExternal?: (url: string) => Promise<unknown> } };
+      void w.electronAPI?.openExternal?.(selectedRepoPr.url);
+      return;
+    }
+    void onOpenPR();
+  };
 
   // ── Create PR pipeline ──
   // Two phases:
@@ -1004,6 +1110,19 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
             commentsCount: 0,
           });
           setPrStatusLoaded(true);
+          // Optimistically seed the repo-wide store too so the switcher
+          // chip + always-visible merge cluster reflect the new PR
+          // immediately, instead of waiting up to 7s for the next
+          // prList poll. Server reconciles on the next poll.
+          usePrStore.getState().upsert({
+            number: r.prNumber,
+            state: "OPEN",
+            headRefName: ctx?.branch ?? "",
+            isDraft: false,
+            mergeable: "UNKNOWN",
+            title: sessionTitle ?? undefined,
+            url: r.prUrl ?? undefined,
+          });
         }
         // Query gh by the specific prNumber we just got back so the
         // lookup is deterministic — gh's branch-to-PR resolution can
@@ -1105,11 +1224,17 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // "auto-PR's optimistic setPr fired."
   const prCheckedOnce = noGit || onDefaultBranch ? true : prStatusLoaded;
   const checkingPr = !prCheckedOnce || (autoPrInFlight && !pr);
-  let action: React.ReactNode = null;
+
+  // ── Create slot (left of the merge cluster) ──
+  // Create PR is ALWAYS rendered once the branch shape can act on it,
+  // but goes disabled while the working branch already has an open PR
+  // (spec §6). The merge cluster below targets the SELECTED PR
+  // independently.
+  let createSlot: React.ReactNode = null;
   if (checkingPr) {
     // Quiet placeholder so the slot stays the same width during the
     // initial poll — no jumpy layout when Merge / Create PR resolves.
-    action = (
+    createSlot = (
       <span
         title="Checking PR status…"
         style={{
@@ -1125,10 +1250,10 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
         Checking…
       </span>
     );
-  } else if (showCreatePR && !pr) {
+  } else if (showCreatePR || branchOpenPr) {
     // Split button: main "Create PR" + chevron-down for variants
     // (draft PR / manually create on the GitHub website).
-    action = (
+    createSlot = (
       <div ref={createMenuRef} style={{ position: "relative", flexShrink: 0 }}>
         <div style={{
           // Plain inline text-link in the flat breadcrumb (matches
@@ -1153,7 +1278,8 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
               the dialog used as its initial seed. */}
           <button
             onClick={submitCreatePR}
-            disabled={autoCreating}
+            disabled={createDisabled}
+            title={createTooltip}
             onMouseDown={e => e.preventDefault()}
             style={{
               padding: 0,
@@ -1161,14 +1287,14 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
               border: "none", outline: "none",
               // Blue accent text link — the lead action in the breadcrumb.
               color: "rgb(110,162,228)",
-              cursor: autoCreating ? "default" : "pointer",
+              cursor: createDisabled ? "default" : "pointer",
               fontSize: 12, fontWeight: 500,
               fontFamily: "inherit",
               display: "inline-flex", alignItems: "center", gap: 5,
-              opacity: autoCreating ? 0.7 : 1,
+              opacity: createDisabled && !autoCreating ? 0.5 : autoCreating ? 0.7 : 1,
               transition: "color 0.1s",
             }}
-            onMouseEnter={e => { if (!autoCreating) e.currentTarget.style.color = "rgb(140,184,236)"; }}
+            onMouseEnter={e => { if (!createDisabled) e.currentTarget.style.color = "rgb(140,184,236)"; }}
             onMouseLeave={e => { e.currentTarget.style.color = "rgb(110,162,228)"; }}
           >
             {autoCreating
@@ -1230,11 +1356,15 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
             <CreateMenuItem
               icon={<GitPullRequest size={12} />}
               label="Create with custom title…"
+              disabled={emptyDiffBlocked}
+              title={emptyDiffBlocked ? "No changes to include in a PR" : undefined}
               onClick={() => { setCreateMenuOpen(false); setShowDialog(true); }}
             />
             <CreateMenuItem
               icon={<GitPullRequest size={12} />}
               label="Create draft PR"
+              disabled={emptyDiffBlocked}
+              title={emptyDiffBlocked ? "No changes to include in a PR" : undefined}
               onClick={() => { setCreateMenuOpen(false); setDraftDialog(true); }}
             />
             <CreateMenuItem
@@ -1269,67 +1399,85 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
         )}
       </div>
     );
-  } else if (pr) {
-    // Once a PR exists we always offer "Open ↗" so the user can drop
-    // out to GitHub for review / comments / manual merge. The
-    // primary affordance to its right is state-driven:
-    //   OPEN    → Merge (disabled w/ tooltip when checks/draft block it)
-    //   MERGED  → Sync main (post-merge cleanup on the source repo)
-    //   CLOSED  → just the Open button — nothing else makes sense
-    const openBtn = (
-      <ActionBtn onClick={onOpenPR} title={`Open #${pr.number} on GitHub`}>
-        <ExternalLink size={11} strokeWidth={1.85} /> Open · #{pr.number}
-      </ActionBtn>
-    );
+  }
 
-    if (pr.state === "MERGED") {
-      action = (
+  // ── Merge slot (right of the create slot) ──
+  // The merge cluster is ALWAYS visible once there's a PR to act on,
+  // and targets the SELECTED PR (spec §6) — which may be the working
+  // branch's own PR or a foreign one picked via the switcher chip. The
+  // MERGED / CLOSED states stay bound to the working branch's PR.
+  let mergeSlot: React.ReactNode = null;
+  if (!checkingPr) {
+    // The selected-PR cluster (Open · #N + purple Merge), targeting the
+    // SELECTED repo-wide PR (spec §6). Extracted into a local so the
+    // MERGED transitional state can render it ALONGSIDE the Sync-main
+    // pair — otherwise the chip can point at a PR with no merge cluster.
+    // null when there's no open PR to select.
+    let foreignCluster: React.ReactNode = null;
+    if (selectedRepoPr) {
+      // `det` is the full PRStatus for the selected PR (the working
+      // branch's own pr, or the foreign-PR poll). The mergeable / draft /
+      // conflicts logic decides whether Merge is enabled. Pending checks
+      // DON'T block — gh's `--auto` flag queues the merge and lets GitHub
+      // do it once they pass.
+      const det = selectedPr;
+      const checksFailing = det ? det.checks.failing > 0 : false;
+      const checksPending = det ? det.checks.pending > 0 && det.checks.failing === 0 : false;
+      const canMerge = !!det && det.mergeable !== "CONFLICTING" && !checksFailing;
+      const mergeTitle = !det ? "Loading PR status…"
+        : !canMerge
+          ? (checksFailing ? `${det.checks.failing} check${det.checks.failing > 1 ? "s" : ""} failing`
+            : det.mergeable === "CONFLICTING" ? "Has merge conflicts — resolve on GitHub or rebase locally"
+            : "Merge unavailable")
+          : det.isDraft ? `Mark #${det.number} ready for review and squash + merge into ${det.baseRefName}`
+          : checksPending ? `Auto-merge queued — will squash + merge once ${det.checks.pending} check${det.checks.pending > 1 ? "s" : ""} pass`
+          : `Squash + merge #${det.number} into ${det.baseRefName}`;
+      foreignCluster = (
         <>
-          {openBtn}
-          <ActionBtn onClick={onSyncMain} primary disabled={syncing}
-            title={`Checkout ${pr.baseRefName || "main"} on the source repo and pull --ff-only`}>
-            {syncing
-              ? <><Loader2 size={11} style={{ animation: "spin 1.2s linear infinite" }} /> Syncing…</>
-              : <><Check size={11} /> Sync {pr.baseRefName || "main"}</>}
+          <ActionBtn onClick={onOpenSelected} title={`Open #${selectedRepoPr.number} on GitHub`}>
+            <ExternalLink size={11} strokeWidth={1.85} /> Open · #{selectedRepoPr.number}
           </ActionBtn>
-        </>
-      );
-    } else if (pr.state === "CLOSED") {
-      action = (
-        <ActionBtn onClick={onOpenPR} title={`Closed · #${pr.number}`}>
-          <X size={11} /> Closed · #{pr.number}
-        </ActionBtn>
-      );
-    } else {
-      // OPEN. The mergeable / draft / conflicts logic decides whether
-      // Merge is enabled. Pending checks DON'T block — gh's `--auto`
-      // flag queues the merge and lets GitHub do it once they pass.
-      // So pending stays clickable; failing/conflicting/draft do
-      // disable the button.
-      const checksFailing = pr.checks.failing > 0;
-      const checksPending = pr.checks.pending > 0 && pr.checks.failing === 0;
-      // Draft no longer disables Merge — the click handler un-drafts
-      // the PR first (gh pr ready) and then squash-merges.
-      const canMerge = pr.mergeable !== "CONFLICTING" && !checksFailing;
-      const mergeTitle = !canMerge
-        ? (checksFailing   ? `${pr.checks.failing} check${pr.checks.failing > 1 ? "s" : ""} failing`
-          : pr.mergeable === "CONFLICTING" ? "Has merge conflicts — resolve on GitHub or rebase locally"
-          : "Merge unavailable")
-        : pr.isDraft
-          ? `Mark #${pr.number} ready for review and squash + merge into ${pr.baseRefName}`
-          : checksPending
-            ? `Auto-merge queued — will squash + merge once ${pr.checks.pending} check${pr.checks.pending > 1 ? "s" : ""} pass`
-            : `Squash + merge #${pr.number} into ${pr.baseRefName}`;
-      action = (
-        <>
-          {openBtn}
-          <ActionBtn onClick={onMerge} primary disabled={!canMerge || merging} title={mergeTitle}>
+          <ActionBtn onClick={onMerge} primary accent="purple" disabled={!canMerge || merging} title={mergeTitle}>
             {merging
               ? <><Loader2 size={11} style={{ animation: "spin 1.2s linear infinite" }} /> Merging…</>
               : <><GitMerge size={11} /> Merge{checksPending ? " (auto)" : ""}</>}
           </ActionBtn>
         </>
       );
+    }
+
+    if (pr && pr.state === "MERGED") {
+      // The branch PR was MERGED (Sync main pair shows). When the repo
+      // ALSO has an open PR, the chip falls back to it (branchOpenPr is
+      // null for a MERGED branch PR), and `selectedRepoPr` is that
+      // foreign PR by construction — a merged PR isn't in openPrs. Render
+      // its merge cluster too, so the chip never points at an
+      // unactionable PR: spec §6's "merge section visible whenever the
+      // repo has an open PR" holds through the MERGED transitional state.
+      mergeSlot = (
+        <>
+          <ActionBtn onClick={onOpenPR} title={`Open #${pr.number} on GitHub`}>
+            <ExternalLink size={11} strokeWidth={1.85} /> Open · #{pr.number}
+          </ActionBtn>
+          <ActionBtn onClick={onSyncMain} primary disabled={syncing}
+            title={`Checkout ${pr.baseRefName || "main"} on the source repo and pull --ff-only`}>
+            {syncing
+              ? <><Loader2 size={11} style={{ animation: "spin 1.2s linear infinite" }} /> Syncing…</>
+              : <><Check size={11} /> Sync {pr.baseRefName || "main"}</>}
+          </ActionBtn>
+          {foreignCluster != null && <span aria-hidden style={{ opacity: 0.4 }}>·</span>}
+          {foreignCluster}
+        </>
+      );
+    } else if (pr && pr.state === "CLOSED" && !selectedRepoPr) {
+      mergeSlot = (
+        <ActionBtn onClick={onOpenPR} title={`Closed · #${pr.number}`}>
+          <X size={11} /> Closed · #{pr.number}
+        </ActionBtn>
+      );
+    } else if (selectedRepoPr) {
+      // OPEN, repo-wide — the common case.
+      mergeSlot = foreignCluster;
     }
   }
 
@@ -1351,6 +1499,23 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
         color: "var(--c-low)",
         fontSize: 12,
       }}>
+        {/* Far-left PR switcher chip — selected open PR + status dot,
+            popover lists every open PR in the repo (spec §6). Only
+            surfaces once the repo-wide poll has open PRs. */}
+        {openPrsList.length > 0 && effectiveSelectedNumber != null && (
+          <PrSwitcherChip
+            openPrs={openPrsList}
+            selectedNumber={effectiveSelectedNumber}
+            selectedStatus={selectedPr}
+            onSelect={setSelectedPrNumber}
+            onOpenUrl={(p) => {
+              const w = window as unknown as { electronAPI?: { openExternal?: (url: string) => Promise<unknown> } };
+              if (p.url) void w.electronAPI?.openExternal?.(p.url);
+              else if (folder) void git.openPR(folder);
+            }}
+          />
+        )}
+
         {/* Branch glyph — small, transparent chip; the icon itself
             carries the leading-status signal. Colour shifts with PR
             state so MERGED / CLOSED stay legible at a glance. */}
@@ -1494,10 +1659,12 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
               >
                 Review
               </button>
-              {action != null && <span aria-hidden style={{ opacity: 0.4 }}>·</span>}
+              {(createSlot != null || mergeSlot != null) && <span aria-hidden style={{ opacity: 0.4 }}>·</span>}
             </>
           )}
-          {action}
+          {createSlot}
+          {createSlot != null && mergeSlot != null && <span aria-hidden style={{ opacity: 0.4 }}>·</span>}
+          {mergeSlot}
         </div>
       </div>
 
@@ -1586,16 +1753,20 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
 /** Single row inside the Create-PR split-button dropdown.
  *  Icon + label, optional trailing checkmark for the "current" choice. */
 function CreateMenuItem({
-  icon, label, checked, onClick,
+  icon, label, checked, disabled, title, onClick,
 }: {
   icon: React.ReactNode;
   label: string;
   checked?: boolean;
+  disabled?: boolean;
+  title?: string;
   onClick: () => void;
 }) {
   return (
     <button
-      onClick={onClick}
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
+      title={title}
       onMouseDown={e => e.preventDefault()}
       style={{
         display: "flex", alignItems: "center", gap: 9,
@@ -1603,11 +1774,12 @@ function CreateMenuItem({
         background: "transparent", border: "none", outline: "none",
         color: "#e8e8e8",
         fontSize: 12.5, fontWeight: 400,
-        cursor: "pointer", textAlign: "left",
+        cursor: disabled ? "default" : "pointer", textAlign: "left",
         borderRadius: 5, fontFamily: "inherit",
+        opacity: disabled ? 0.45 : 1,
         transition: "background 0.1s",
       }}
-      onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; }}
+      onMouseEnter={e => { if (!disabled) e.currentTarget.style.background = "rgba(255,255,255,0.06)"; }}
       onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
     >
       <span style={{ display: "flex", color: "#a8a8a8", flexShrink: 0 }}>{icon}</span>
@@ -1618,18 +1790,22 @@ function CreateMenuItem({
 }
 
 function ActionBtn({
-  children, onClick, primary, disabled, title,
+  children, onClick, primary, accent, disabled, title,
 }: {
   children: React.ReactNode;
   onClick?: () => void;
   primary?: boolean;
+  /** Primary accent — "blue" (default, Create PR/Sync) or "purple" (Merge). */
+  accent?: "blue" | "purple";
   disabled?: boolean;
   title?: string;
 }) {
   // Inline text-link in the new "Focused" branch breadcrumb — no pill chrome
-  // any more. Primary actions (Create PR / Merge / Sync) get a blue accent
-  // so the lead verb stands out; secondary actions (Open · #N) stay muted.
-  const LINK_BLUE = "rgb(110,162,228)";
+  // any more. Primary actions get an accent so the lead verb stands out;
+  // secondary actions (Open · #N) stay muted. Merge goes purple; everything
+  // else (Create PR / Sync) stays blue.
+  const LINK = accent === "purple" ? "#a78bfa" : "rgb(110,162,228)";
+  const LINK_HOVER = accent === "purple" ? "#c4b5fd" : "rgb(140,184,236)";
   return (
     <button
       onClick={onClick}
@@ -1639,7 +1815,7 @@ function ActionBtn({
         background: "transparent", border: "none", outline: "none",
         padding: 0, fontFamily: "inherit", fontSize: 12,
         fontWeight: primary ? 500 : 400,
-        color: primary ? LINK_BLUE : "var(--c-low)",
+        color: primary ? LINK : "var(--c-low)",
         cursor: disabled ? "default" : "pointer",
         opacity: disabled ? 0.5 : 1,
         display: "inline-flex", alignItems: "center", gap: 5,
@@ -1648,23 +1824,13 @@ function ActionBtn({
       onMouseDown={e => e.preventDefault()}
       onMouseEnter={e => {
         if (disabled) return;
-        e.currentTarget.style.color = primary ? "rgb(140,184,236)" : "var(--c-high)";
+        e.currentTarget.style.color = primary ? LINK_HOVER : "var(--c-high)";
       }}
       onMouseLeave={e => {
-        e.currentTarget.style.color = primary ? LINK_BLUE : "var(--c-low)";
+        e.currentTarget.style.color = primary ? LINK : "var(--c-low)";
       }}
     >
       {children}
     </button>
   );
-}
-
-function prIconColor(pr: PRStatus | null): string {
-  if (!pr) return "var(--c-low)";
-  if (pr.state === "MERGED") return "#a78bfa";
-  if (pr.state === "CLOSED") return "#f87171";
-  if (pr.checks.failing > 0) return "#f87171";
-  if (pr.mergeable === "CONFLICTING") return "#fb923c";
-  if (pr.checks.pending > 0) return "#fbbf24";
-  return "rgb(64,180,120)";
 }

@@ -2,13 +2,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 
 const {
-  gitContextMock, prStatusMock, createPRMock, reviewDiffMock,
+  gitContextMock, prStatusMock, prListMock, createPRMock, reviewDiffMock,
   diagnoseFailureMock, applyRecoveryMock, preflightCheckMock,
   applyPreflightFixMock, mergePRMock, markPRReadyMock, syncMainMock, carveNextRoundMock,
   pushNotificationMock, hasGhCliMock, getLinkMock, beginOAuthMock,
 } = vi.hoisted(() => ({
   gitContextMock: vi.fn(),
   prStatusMock: vi.fn().mockResolvedValue({ ok: true, pr: null }),
+  prListMock: vi.fn().mockResolvedValue({ ok: true, prs: [] }),
   createPRMock: vi.fn(),
   reviewDiffMock: vi.fn(),
   diagnoseFailureMock: vi.fn(),
@@ -52,6 +53,7 @@ vi.mock("@/lib/git-api", async () => {
         applyPreflightFixMock(folder, action, data),
       mergePR: (folder: string, prNumber: number | null, method?: string) =>
         mergePRMock(folder, prNumber, method),
+      prList: (folder: string, limit?: number) => prListMock(folder, limit),
       markPRReady: (folder: string, prNumber: number) =>
         markPRReadyMock(folder, prNumber),
       syncMain: (folder: string, baseBranch?: string) =>
@@ -92,9 +94,11 @@ Object.defineProperty(window, "electronAPI", {
   value: {
     getGitContext: (folder: string) => gitContextMock(folder),
     getProjectRoot: async () => "/repo",
-    getPRStatus: (folder: string) => prStatusMock(folder),
+    getPRStatus: (folder: string, num?: number) => prStatusMock(folder, num),
   },
 });
+
+import { usePrStore } from "@/stores/pr-store";
 
 async function loadBranchStrip() {
   const mod = await import("../branch-strip");
@@ -102,8 +106,14 @@ async function loadBranchStrip() {
 }
 
 beforeEach(() => {
+  // Reset the repo-wide PR store between every test so an empty store is
+  // the default — only the switcher describe block seeds it. Without
+  // this, a seeded store leaks into later tests and surfaces the chip /
+  // merge cluster where those tests don't expect it.
+  usePrStore.setState({ prs: [] });
   gitContextMock.mockReset();
   prStatusMock.mockReset();
+  prListMock.mockReset();
   reviewDiffMock.mockReset();
   diagnoseFailureMock.mockReset();
   applyRecoveryMock.mockReset();
@@ -117,6 +127,7 @@ beforeEach(() => {
   getLinkMock.mockReset();
   beginOAuthMock.mockReset();
   prStatusMock.mockResolvedValue({ ok: true, pr: null });
+  prListMock.mockResolvedValue({ ok: true, prs: [] });
   // Default: preflight clean + auth available (gh authed). Individual
   // tests override these to exercise the no-auth → auto-OAuth branch.
   preflightCheckMock.mockResolvedValue({ ok: true, issues: [] });
@@ -181,6 +192,15 @@ describe("BranchStrip — 6 visual states", () => {
   });
 
   it("STATE 6: feature + remote + PR exists → Merge button", async () => {
+    // The always-visible merge cluster targets the SELECTED open PR from
+    // the repo-wide store (spec §6) — seed it to mirror the branch PR.
+    // prList must echo it too, else the store's first poll wipes the seed.
+    const repoPr42 = {
+      number: 42, state: "OPEN", headRefName: "fleet/x-a1b2c3d4",
+      isDraft: false, mergeable: "MERGEABLE", title: "PR 42", url: "https://github.com/u/r/pull/42",
+    };
+    usePrStore.setState({ prs: [repoPr42] });
+    prListMock.mockResolvedValue({ ok: true, prs: [repoPr42] });
     gitContextMock.mockResolvedValue({ branch: "fleet/x-a1b2c3d4", baseBranch: "main", plus: 5, minus: 2, remoteHttpsUrl: "https://github.com/u/r" });
     prStatusMock.mockResolvedValue({
       ok: true,
@@ -375,10 +395,13 @@ describe("BranchStrip — createPR forwards `tool` to dispatcher", () => {
 
   it("passes the session's tool string in opts so the dispatcher can pick the right CLI", async () => {
     gitContextMock.mockResolvedValue({
-      branch: "fleet/foo-abc12345", baseBranch: "main",
-      // plus:0 disarms the auto-PR background effect so only the user's
-      // click lands on createPRMock, keeping the assertion clean.
-      plus: 0, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
+      // plus:1 keeps the diff non-empty so Create PR is ENABLED under the
+      // empty-diff gating (plus:0 would disable it). baseBranch:null makes
+      // the background auto-PR effect bail (it requires a resolved base),
+      // so only the user's click lands on createPRMock — the dispatch
+      // still targets "main" via the `ctx?.baseBranch || "main"` default.
+      branch: "fleet/foo-abc12345", baseBranch: null,
+      plus: 1, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
     });
     createPRMock.mockResolvedValue({ ok: true, prNumber: 1, prUrl: "https://github.com/u/r/pull/1" });
     const { BranchStrip } = await loadBranchStrip();
@@ -409,10 +432,13 @@ describe("BranchStrip — auto-OAuth pre-flight on Create PR", () => {
 
   it("auto-triggers GitHub App OAuth when neither gh nor link is available", async () => {
     gitContextMock.mockResolvedValue({
-      branch: "fleet/foo-abc12345", baseBranch: "main",
-      // plus:0 disarms the background auto-PR effect so it doesn't race
-      // executeCreatePR's OAuth pre-flight.
-      plus: 0, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
+      // plus:1 keeps the diff non-empty (Create PR ENABLED under the
+      // empty-diff gating). baseBranch:null makes the background auto-PR
+      // effect bail (it requires a resolved base), so it can't race
+      // executeCreatePR's OAuth pre-flight; the dispatch still targets
+      // "main" via the `ctx?.baseBranch || "main"` default.
+      branch: "fleet/foo-abc12345", baseBranch: null,
+      plus: 1, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
     });
     // No auth on either path → executeCreatePR must auto-OAuth
     // before falling through to createPR.
@@ -440,9 +466,12 @@ describe("BranchStrip — auto-OAuth pre-flight on Create PR", () => {
 
   it("surfaces a toast and skips createPR when auto-OAuth fails", async () => {
     gitContextMock.mockResolvedValue({
-      branch: "fleet/foo-abc12345", baseBranch: "main",
-      // plus:0 disarms the background auto-PR effect.
-      plus: 0, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
+      // plus:1 keeps the diff non-empty (Create PR ENABLED under the
+      // empty-diff gating). baseBranch:null makes the background auto-PR
+      // effect bail, so it can't race executeCreatePR; the dispatch
+      // still targets "main" via the `ctx?.baseBranch || "main"` default.
+      branch: "fleet/foo-abc12345", baseBranch: null,
+      plus: 1, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
     });
     hasGhCliMock.mockResolvedValue({ ok: false, version: null, authed: false, ghLogin: null });
     getLinkMock.mockResolvedValue({ ok: false, link: null });
@@ -588,14 +617,15 @@ describe("BranchStrip — sad-path RecoveryDialog", () => {
   });
 
   it("Retry after Apply re-fires createPR with the same opts", async () => {
-    // plus:0, minus:0 — suppresses the BranchStrip's auto-PR effect so
-    // the first call to `createPR` is the user's Create PR click, not
-    // the background draft auto-fire. Otherwise the auto-PR consumes
-    // the first mockResolvedValueOnce and the user click gets the
-    // success value, never triggering the recovery flow.
+    // plus:1 keeps the diff non-empty so Create PR is ENABLED under the
+    // empty-diff gating. baseBranch:null makes the background auto-PR
+    // effect bail (it requires a resolved base), so it can't consume the
+    // first mockResolvedValueOnce — the user's click is the first call to
+    // `createPR` and triggers the recovery flow as intended. The dispatch
+    // still targets "main" via the `ctx?.baseBranch || "main"` default.
     gitContextMock.mockResolvedValue({
-      branch: "fleet/x-abc12345", baseBranch: "main",
-      plus: 0, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
+      branch: "fleet/x-abc12345", baseBranch: null,
+      plus: 1, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
     });
     createPRMock
       .mockResolvedValueOnce({ ok: false, error: "rejected non-fast-forward" })
@@ -631,8 +661,12 @@ describe("BranchStrip — preflight gate", () => {
 
   it("opens PreflightDialog when preflightCheck returns issues; does NOT fire createPR yet", async () => {
     gitContextMock.mockResolvedValue({
-      branch: "fleet/x-abc12345", baseBranch: "main",
-      plus: 0, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
+      // plus:1 → Create PR ENABLED under the empty-diff gating;
+      // baseBranch:null disarms the background auto-PR effect so the
+      // ONLY createPR path is the user's click (the preflight gate must
+      // hold it back). Dispatch still uses "main" via the base default.
+      branch: "fleet/x-abc12345", baseBranch: null,
+      plus: 1, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
     });
     preflightCheckMock.mockResolvedValue({
       ok: true,
@@ -658,8 +692,11 @@ describe("BranchStrip — preflight gate", () => {
 
   it("Fix and Continue applies every actionable issue in sequence, then fires the dispatcher", async () => {
     gitContextMock.mockResolvedValue({
-      branch: "fleet/x-abc12345", baseBranch: "main",
-      plus: 0, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
+      // plus:1 → Create PR ENABLED; baseBranch:null disarms the
+      // background auto-PR effect so createPR Times(1) counts only the
+      // user's click. Dispatch still uses "main" via the base default.
+      branch: "fleet/x-abc12345", baseBranch: null,
+      plus: 1, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
     });
     preflightCheckMock.mockResolvedValue({
       ok: true,
@@ -703,8 +740,11 @@ describe("BranchStrip — preflight gate", () => {
 
   it("Continue anyway skips the fixes and fires the dispatcher", async () => {
     gitContextMock.mockResolvedValue({
-      branch: "fleet/x-abc12345", baseBranch: "main",
-      plus: 0, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
+      // plus:1 → Create PR ENABLED; baseBranch:null disarms the
+      // background auto-PR effect so createPR Times(1) counts only the
+      // user's click. Dispatch still uses "main" via the base default.
+      branch: "fleet/x-abc12345", baseBranch: null,
+      plus: 1, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
     });
     preflightCheckMock.mockResolvedValue({
       ok: true,
@@ -732,8 +772,11 @@ describe("BranchStrip — preflight gate", () => {
 
   it("preflight failure (electron unavailable etc.) falls through to dispatcher — no hard block", async () => {
     gitContextMock.mockResolvedValue({
-      branch: "fleet/x-abc12345", baseBranch: "main",
-      plus: 0, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
+      // plus:1 → Create PR ENABLED; baseBranch:null disarms the
+      // background auto-PR effect so createPR Times(1) counts only the
+      // user's click. Dispatch still uses "main" via the base default.
+      branch: "fleet/x-abc12345", baseBranch: null,
+      plus: 1, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
     });
     preflightCheckMock.mockResolvedValue({ ok: false, error: "electron unavailable" });
     createPRMock.mockResolvedValue({ ok: true, prNumber: 2, prUrl: "https://github.com/u/r/pull/2" });
@@ -753,8 +796,12 @@ describe("BranchStrip — recovery dialog custom-command", () => {
 
   it("renders the agent's exact command and forwards it on Apply", async () => {
     gitContextMock.mockResolvedValue({
-      branch: "fleet/x-abc12345", baseBranch: "main",
-      plus: 0, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
+      // plus:1 → Create PR ENABLED; baseBranch:null disarms the
+      // background auto-PR effect so the user's click is the only
+      // createPR path. applyRecovery still receives "main" via the base
+      // default (`ctx?.baseBranch || "main"`).
+      branch: "fleet/x-abc12345", baseBranch: null,
+      plus: 1, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
     });
     createPRMock.mockResolvedValue({ ok: false, error: "fatal: gh auth expired" });
     diagnoseFailureMock.mockResolvedValue({
@@ -797,6 +844,14 @@ describe("BranchStrip — post-PR lifecycle", () => {
     checks: { passing: 2, failing: 0, pending: 0, total: 2 },
     commentsCount: 0,
   };
+  // The repo-wide store entry mirroring `openPr` — the always-visible
+  // merge cluster targets the SELECTED open PR, which must come from the
+  // store (spec §6). Seed it in the OPEN-state tests; MERGED/CLOSED tests
+  // intentionally leave it empty so the branch-PR-driven path renders.
+  const openRepoPr = {
+    number: 42, state: "OPEN", headRefName: "fleet/x-a1b2c3d4",
+    isDraft: false, mergeable: "MERGEABLE", title: "PR 42", url: "https://github.com/u/r/pull/42",
+  };
 
   beforeEach(() => {
     // markPRReady must return ok:true so onMerge doesn't bail before calling mergePR.
@@ -804,6 +859,8 @@ describe("BranchStrip — post-PR lifecycle", () => {
   });
 
   it("OPEN PR: surfaces BOTH 'Open · #N' and 'Merge' buttons", async () => {
+    usePrStore.setState({ prs: [openRepoPr] });
+    prListMock.mockResolvedValue({ ok: true, prs: [openRepoPr] });
     gitContextMock.mockResolvedValue({
       branch: "fleet/x-a1b2c3d4", baseBranch: "main",
       plus: 5, minus: 2, remoteHttpsUrl: "https://github.com/u/r",
@@ -816,6 +873,8 @@ describe("BranchStrip — post-PR lifecycle", () => {
   });
 
   it("OPEN PR with failing checks: Merge disabled with tooltip, Open still enabled", async () => {
+    usePrStore.setState({ prs: [openRepoPr] });
+    prListMock.mockResolvedValue({ ok: true, prs: [openRepoPr] });
     gitContextMock.mockResolvedValue({
       branch: "fleet/x-a1b2c3d4", baseBranch: "main",
       plus: 5, minus: 2, remoteHttpsUrl: "https://github.com/u/r",
@@ -827,14 +886,22 @@ describe("BranchStrip — post-PR lifecycle", () => {
     });
     const { BranchStrip } = await loadBranchStrip();
     render(<BranchStrip projectPath="/repo" />);
-    const merge = await screen.findByRole("button", { name: /^Merge$/i });
-    expect(merge).toBeDisabled();
-    expect(merge).toHaveAttribute("title", expect.stringMatching(/1 check failing/i));
+    await screen.findByRole("button", { name: /^Merge$/i });
+    // The merge cluster is store-driven so it renders before the branch
+    // prStatus poll lands; wait for the resolved title (was a synchronous
+    // assert when Merge only appeared after `pr` loaded). Re-query each
+    // tick — React swaps the button node on re-render.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Merge$/i }))
+        .toHaveAttribute("title", expect.stringMatching(/1 check failing/i)));
+    expect(screen.getByRole("button", { name: /^Merge$/i })).toBeDisabled();
     // Open button stays usable so the user can drop to GitHub.
     expect(screen.getByRole("button", { name: /Open · #42/i })).toBeEnabled();
   });
 
   it("OPEN PR with PENDING checks: Merge ENABLED — gh --auto queues it; label flips to 'Merge (auto)'", async () => {
+    usePrStore.setState({ prs: [openRepoPr] });
+    prListMock.mockResolvedValue({ ok: true, prs: [openRepoPr] });
     gitContextMock.mockResolvedValue({
       branch: "fleet/x-a1b2c3d4", baseBranch: "main",
       plus: 5, minus: 2, remoteHttpsUrl: "https://github.com/u/r",
@@ -920,6 +987,8 @@ describe("BranchStrip — post-PR lifecycle", () => {
   });
 
   it("Merge click forwards to git.mergePR with squash + the PR number", async () => {
+    usePrStore.setState({ prs: [openRepoPr] });
+    prListMock.mockResolvedValue({ ok: true, prs: [openRepoPr] });
     gitContextMock.mockResolvedValue({
       branch: "fleet/x-a1b2c3d4", baseBranch: "main",
       plus: 5, minus: 2, remoteHttpsUrl: "https://github.com/u/r",
@@ -934,7 +1003,12 @@ describe("BranchStrip — post-PR lifecycle", () => {
     carveNextRoundMock.mockResolvedValue({ ok: true, branch: "fleet/x-a1b2c3d4", base: "main" });
     const { BranchStrip } = await loadBranchStrip();
     render(<BranchStrip projectPath="/repo" plannedBranch="fleet/x-a1b2c3d4" />);
-    fireEvent.click(await screen.findByRole("button", { name: /^Merge$/i }));
+    // The merge cluster is store-driven so it renders in a "Loading"
+    // (disabled) state before the branch prStatus poll lands — wait for
+    // it to enable before clicking. Re-query each tick: React replaces
+    // the button element on re-render, so a captured ref goes stale.
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Merge$/i })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: /^Merge$/i }));
     await waitFor(() => {
       expect(mergePRMock).toHaveBeenCalledWith("/repo", 42, "squash");
     });
@@ -952,15 +1026,22 @@ describe("BranchStrip — post-PR lifecycle", () => {
   // initial prStatus resolution. The flake rate is ~10-20% locally;
   // one retry brings it under 1%.
   it("auto-cleanup: merge → state flips to MERGED → syncMain + carveNextRound fire automatically", { retry: 2 }, async () => {
+    usePrStore.setState({ prs: [openRepoPr] });
+    prListMock.mockResolvedValue({ ok: true, prs: [openRepoPr] });
     gitContextMock.mockResolvedValue({
       branch: "fleet/x-a1b2c3d4", baseBranch: "main",
       plus: 5, minus: 2, remoteHttpsUrl: "https://github.com/u/r",
     });
-    // First prStatus poll: OPEN (so the user gets the Merge button).
-    // Subsequent polls (post-merge timeout + interval): MERGED.
+    // OPEN before the merge (so the user gets the Merge button), MERGED
+    // after. State-driven rather than mockResolvedValueOnce because the
+    // store-backed cluster + branch poll can both call prStatus and a
+    // one-shot would be consumed non-deterministically by whichever
+    // lands first.
     prStatusMock.mockReset();
-    prStatusMock.mockResolvedValueOnce({ ok: true, pr: openPr });
-    prStatusMock.mockResolvedValue({ ok: true, pr: { ...openPr, state: "MERGED" } });
+    prStatusMock.mockImplementation(async () =>
+      mergePRMock.mock.calls.length > 0
+        ? { ok: true, pr: { ...openPr, state: "MERGED" } }
+        : { ok: true, pr: openPr });
     mergePRMock.mockResolvedValue({ ok: true });
     syncMainMock.mockResolvedValue({ ok: true, base: "main", prevBranch: "fleet/x-a1b2c3d4" });
     carveNextRoundMock.mockResolvedValue({ ok: true, branch: "fleet/x-a1b2c3d4", base: "main" });
@@ -968,10 +1049,13 @@ describe("BranchStrip — post-PR lifecycle", () => {
     render(<BranchStrip projectPath="/repo" plannedBranch="fleet/x-a1b2c3d4" />);
     // Default findByRole timeout (1000ms) races the auto-PR effect's
     // chain on slower machines — bump to 3000ms so the Merge button
-    // has time to land after prStatus resolves with the OPEN pr.
-    fireEvent.click(
-      await screen.findByRole("button", { name: /^Merge$/i }, { timeout: 3000 }),
-    );
+    // has time to land after prStatus resolves with the OPEN pr. The
+    // store-driven cluster renders disabled ("Loading") first, so wait
+    // for it to enable before clicking. Re-query each tick — React swaps
+    // the button node on re-render.
+    await screen.findByRole("button", { name: /^Merge$/i }, { timeout: 3000 });
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Merge$/i })).toBeEnabled(), { timeout: 3000 });
+    fireEvent.click(screen.getByRole("button", { name: /^Merge$/i }));
     // The post-merge prStatus refetch fires after an 800ms timeout,
     // then the auto-cleanup useEffect picks up the MERGED state.
     await waitFor(() => {
@@ -1068,5 +1152,167 @@ describe("BranchStrip — toast variants on auto-create", () => {
     await waitFor(() => expect(createPRMock).toHaveBeenCalledTimes(1));
     // Strip resets — Create PR button is still visible (no optimistic PR set).
     await waitFor(() => expect(screen.queryByRole("button", { name: /^Merge$/i })).toBeNull());
+  });
+});
+
+describe("BranchStrip — empty-diff gating", () => {
+  it("feature branch + empty diff → Create PR disabled with tooltip", async () => {
+    gitContextMock.mockResolvedValue({ branch: "fleet/x-a1b2c3d4", baseBranch: "main", plus: 0, minus: 0, remoteHttpsUrl: null });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" />);
+    const btn = await screen.findByRole("button", { name: /^create pr$/i });
+    await waitFor(() => expect(btn).toBeDisabled());
+    expect(btn).toHaveAttribute("title", "No changes to include in a PR");
+  });
+
+  it("bootstrap (no git + plannedBranch) stays clickable with empty diff", async () => {
+    gitContextMock.mockResolvedValue({ branch: null, baseBranch: null, plus: 0, minus: 0, remoteHttpsUrl: null });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" plannedBranch="fleet/my-app-abc12345" />);
+    const btn = await screen.findByRole("button", { name: /^create pr$/i });
+    expect(btn).not.toBeDisabled();
+  });
+
+  it("empty diff disables the custom-title and draft menu items", async () => {
+    gitContextMock.mockResolvedValue({ branch: "fleet/x-a1b2c3d4", baseBranch: "main", plus: 0, minus: 0, remoteHttpsUrl: null });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" />);
+    await screen.findByRole("button", { name: /^create pr$/i });
+    fireEvent.click(screen.getByTitle("More create options"));
+    const custom = await screen.findByRole("button", { name: /create with custom title/i });
+    const draft  = screen.getByRole("button", { name: /create draft pr/i });
+    expect(custom).toBeDisabled();
+    expect(draft).toBeDisabled();
+    expect(screen.getByRole("button", { name: /open on github/i })).not.toBeDisabled();
+  });
+});
+
+const OPEN_PR_5 = {
+  number: 5, url: "https://github.com/u/r/pull/5", state: "OPEN", mergeable: "MERGEABLE",
+  isDraft: false, baseRefName: "main", headRefName: "fleet/x-a1b2c3d4",
+  checks: { passing: 1, failing: 0, pending: 0, total: 1 }, commentsCount: 0,
+};
+const OPEN_PR_7 = {
+  ...OPEN_PR_5, number: 7, url: "https://github.com/u/r/pull/7", headRefName: "feat/other",
+};
+const REPO_PRS = [
+  { number: 7, state: "OPEN", headRefName: "feat/other", isDraft: false, mergeable: "MERGEABLE", title: "Other feature", url: "https://github.com/u/r/pull/7" },
+  { number: 5, state: "OPEN", headRefName: "fleet/x-a1b2c3d4", isDraft: false, mergeable: "MERGEABLE", title: "My branch PR", url: "https://github.com/u/r/pull/5" },
+];
+
+describe("BranchStrip — PR switcher + repo-wide merge", () => {
+  beforeEach(() => {
+    usePrStore.setState({ prs: REPO_PRS });
+    prListMock.mockResolvedValue({ ok: true, prs: REPO_PRS });
+    gitContextMock.mockResolvedValue({ branch: "fleet/x-a1b2c3d4", baseBranch: "main", plus: 5, minus: 2, remoteHttpsUrl: "https://github.com/u/r" });
+    prStatusMock.mockImplementation(async (_f: string, num?: number) =>
+      ({ ok: true, pr: num === 7 ? OPEN_PR_7 : OPEN_PR_5 }));
+  });
+  afterEach(() => { usePrStore.setState({ prs: [] }); });
+
+  it("renders the far-left PR chip defaulting to the working branch's PR", async () => {
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" />);
+    await waitFor(() => expect(screen.getByText("#5")).toBeInTheDocument());
+  });
+
+  it("Create PR is disabled while the working branch has an open PR", async () => {
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" />);
+    const btn = await screen.findByRole("button", { name: /^create pr$/i });
+    await waitFor(() => expect(btn).toBeDisabled());
+    expect(btn).toHaveAttribute("title", "PR #5 is already open for this branch");
+  });
+
+  it("chip popover lists open PRs; picking one retargets Merge", async () => {
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" />);
+    fireEvent.click(await screen.findByRole("button", { name: /switch pull request/i }));
+    fireEvent.click(await screen.findByText("Other feature"));
+    await waitFor(() => expect(screen.getByText("#7")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /merge/i }))
+        .toHaveAttribute("title", expect.stringContaining("#7")));
+  });
+
+  it("merging a FOREIGN PR does not sync main or carve; working branch untouched", async () => {
+    mergePRMock.mockResolvedValue({ ok: true });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" />);
+    fireEvent.click(await screen.findByRole("button", { name: /switch pull request/i }));
+    fireEvent.click(await screen.findByText("Other feature"));
+    await screen.findByRole("button", { name: /merge/i });
+    await waitFor(() => expect(screen.getByRole("button", { name: /merge/i })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: /merge/i }));
+    await waitFor(() => expect(mergePRMock).toHaveBeenCalledWith("/repo", 7, "squash"));
+    expect(syncMainMock).not.toHaveBeenCalled();
+    expect(carveNextRoundMock).not.toHaveBeenCalled();
+  });
+
+  it("merging the OWN-branch PR still syncs + carves the next round", async () => {
+    mergePRMock.mockResolvedValue({ ok: true });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" plannedBranch="fleet/x-a1b2c3d4" />);
+    // Re-query each tick — React swaps the button node on re-render, so a
+    // captured ref goes stale while the cluster resolves from "Loading".
+    await screen.findByRole("button", { name: /merge/i });
+    await waitFor(() => expect(screen.getByRole("button", { name: /merge/i })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: /merge/i }));
+    await waitFor(() => expect(mergePRMock).toHaveBeenCalledWith("/repo", 5, "squash"));
+    await waitFor(() => expect(syncMainMock).toHaveBeenCalled());
+    await waitFor(() => expect(carveNextRoundMock).toHaveBeenCalled());
+  });
+
+  // Fix 1 (review): MERGED transitional state must NOT strand the chip on
+  // an unactionable PR. When the branch PR is MERGED (Sync main showing)
+  // and the repo still has an open foreign PR, the chip selects that
+  // foreign PR — so the selected PR's merge cluster must render ALONGSIDE
+  // the Sync-main pair. Spec §6 ("merge section visible whenever the repo
+  // has an open PR") holds through the MERGED transition.
+  it("MERGED branch PR + open foreign PR: renders BOTH Sync main AND the foreign Merge", async () => {
+    // Store holds only #7 (the merged branch PR #5 is no longer open).
+    const REPO_PRS_7_ONLY = [
+      { number: 7, state: "OPEN", headRefName: "feat/other", isDraft: false, mergeable: "MERGEABLE", title: "Other feature", url: "https://github.com/u/r/pull/7" },
+    ];
+    usePrStore.setState({ prs: REPO_PRS_7_ONLY });
+    prListMock.mockResolvedValue({ ok: true, prs: REPO_PRS_7_ONLY });
+    gitContextMock.mockResolvedValue({ branch: "fleet/x-a1b2c3d4", baseBranch: "main", plus: 0, minus: 0, remoteHttpsUrl: "https://github.com/u/r" });
+    // Branch poll (no num / num===5) → MERGED; foreign detail poll (#7) → OPEN.
+    prStatusMock.mockImplementation(async (_f: string, num?: number) =>
+      num === 7
+        ? { ok: true, pr: OPEN_PR_7 }
+        : { ok: true, pr: { ...OPEN_PR_5, state: "MERGED" } });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" />);
+    // Sync-main pair (just-merged branch PR) is present…
+    await waitFor(() => expect(screen.getByRole("button", { name: /Sync main/i })).toBeEnabled());
+    // …AND the foreign PR's Merge cluster renders alongside it.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Merge$/i }))
+        .toHaveAttribute("title", expect.stringContaining("#7")));
+  });
+
+  // Fix 3 (review): foreign-PR `det`-gating — a selected foreign PR whose
+  // detail poll reports failing checks must disable Merge with the
+  // matching tooltip. Pins the riskiest new path (the foreign `selectedPr`
+  // feeding the merge cluster's check gating).
+  it("foreign PR with failing checks: Merge disabled with a failing-checks tooltip", async () => {
+    usePrStore.setState({ prs: REPO_PRS });
+    prListMock.mockResolvedValue({ ok: true, prs: REPO_PRS });
+    gitContextMock.mockResolvedValue({ branch: "fleet/x-a1b2c3d4", baseBranch: "main", plus: 5, minus: 2, remoteHttpsUrl: "https://github.com/u/r" });
+    // #7's detail poll reports 2 failing checks; #5 (the working branch) is clean.
+    prStatusMock.mockImplementation(async (_f: string, num?: number) =>
+      num === 7
+        ? { ok: true, pr: { ...OPEN_PR_7, checks: { passing: 0, failing: 2, pending: 0, total: 2 } } }
+        : { ok: true, pr: OPEN_PR_5 });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" />);
+    fireEvent.click(await screen.findByRole("button", { name: /switch pull request/i }));
+    fireEvent.click(await screen.findByText("Other feature"));
+    await waitFor(() => expect(screen.getByText("#7")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Merge$/i }))
+        .toHaveAttribute("title", expect.stringMatching(/2 checks failing/i)));
+    expect(screen.getByRole("button", { name: /^Merge$/i })).toBeDisabled();
   });
 });
