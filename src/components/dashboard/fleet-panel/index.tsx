@@ -478,11 +478,11 @@ function AgentDetail({ session, detail, activity, onBack, onOpenChat }: {
   ].filter(([, n]) => (n as number) > 0) as Array<[string, number]>;
   const tcMax = Math.max(1, ...tc.map(([, n]) => n));
 
-  const memory: string[] = (detail?.memory_items ?? []).map((m) => {
-    if (typeof m === "string") return m;
-    const o = m as { text?: string; content?: string; summary?: string; value?: string };
-    return o.text ?? o.content ?? o.summary ?? o.value ?? "";
-  }).filter(Boolean);
+  const memory = (detail?.memory_items ?? []).map((m) => {
+    if (typeof m === "string") return { title: "", content: m };
+    const o = m as { title?: string; text?: string; content?: string; summary?: string; value?: string };
+    return { title: o.title ?? "", content: o.content ?? o.text ?? o.summary ?? o.value ?? "" };
+  }).filter(x => x.content);
 
   const files = (() => {
     const seen = new Map<string, { edits: number; reads: number }>();
@@ -582,42 +582,71 @@ function AgentDetail({ session, detail, activity, onBack, onOpenChat }: {
         <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--c-brd)" }}>
           <DetailLabel label="Memory" count={memory.length} />
           {memory.map((m, i) => (
-            <div key={i} style={{ display: "flex", gap: 8, padding: "3px 0", fontSize: 12, color: "var(--c-med)", lineHeight: 1.45 }}>
-              <span style={{ color: "var(--c-ghost)", flexShrink: 0 }}>·</span><span>{m}</span>
+            <div key={i} style={{ padding: "5px 0 6px", borderTop: i > 0 ? "1px solid var(--c-brd)" : "none" }}>
+              {m.title && <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase", color: "var(--c-dim)", marginBottom: 3 }}>{m.title}</div>}
+              <div style={{ fontSize: 12, color: "var(--c-med)", lineHeight: 1.5 }}>{m.content}</div>
             </div>
           ))}
         </div>
       )}
 
-      {/* FILES */}
+      {/* FILES — click to open in the workspace */}
       {files.length > 0 && (
         <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--c-brd)" }}>
           <DetailLabel label="Files" count={files.length} />
           {files.map((f) => (
-            <div key={f.path} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", fontFamily: MONO, fontSize: 11 }}>
-              <span style={{ color: "var(--c-med)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "70%" }}>{f.path}</span>
-              <span style={{ color: "var(--c-ghost)" }}>{f.edits > 0 ? `${f.edits} edit${f.edits === 1 ? "" : "s"}` : `${f.reads} read${f.reads === 1 ? "" : "s"}`}</span>
-            </div>
+            <button
+              key={f.path}
+              onClick={onOpenChat}
+              title="Open in workspace"
+              style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, width: "100%", padding: "4px 6px", margin: "0 -6px", borderRadius: 5, border: "none", background: "none", cursor: "pointer", fontFamily: MONO, fontSize: 11, textAlign: "left" }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "var(--c-srf)"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "none"; }}
+            >
+              <span style={{ color: "var(--c-med)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{f.path}</span>
+              <span style={{ color: "var(--c-ghost)", flexShrink: 0 }}>{f.edits > 0 ? `${f.edits} edit${f.edits === 1 ? "" : "s"}` : `${f.reads} read${f.reads === 1 ? "" : "s"}`}</span>
+              <ChevronRight size={12} style={{ color: "var(--c-ghost)", flexShrink: 0 }} />
+            </button>
           ))}
         </div>
       )}
 
-      {/* ACTIVITY — monochrome icon timeline (todo writes live in Tasks) */}
+      {/* ACTIVITY — expandable monochrome timeline (todo writes live in Tasks) */}
       {activity.some(r => r.kind !== "todo") && (
         <div style={{ padding: "14px 16px" }}>
           <DetailLabel label="Activity" count={activity.filter(r => r.kind !== "todo").length} />
-          {activity.filter(r => r.kind !== "todo").map((row) => {
-            const Icon = logIcon(row);
-            const isErr = row.kind === "error";
-            const mono = row.kind === "command";
-            return (
-              <div key={row.id} style={{ display: "flex", gap: 9, padding: "4.5px 0", alignItems: "baseline" }}>
-                <span style={{ width: 38, flexShrink: 0, fontFamily: MONO, fontSize: 10, color: "var(--c-ghost)", fontVariantNumeric: "tabular-nums" }}>{clockTime(row.ts)}</span>
-                <Icon size={12} strokeWidth={2} style={{ color: isErr ? "var(--c-med)" : "var(--c-dim)", flexShrink: 0, position: "relative", top: 1 }} />
-                <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: mono ? 11 : 11.5, fontFamily: mono ? MONO : "inherit", color: isErr ? "var(--c-med)" : "var(--c-dim)" }}>{logText(row)}</span>
-              </div>
-            );
-          })}
+          {activity.filter(r => r.kind !== "todo").map((row) => (
+            <ActivityRow key={row.id} row={row} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One activity row — collapsed by default, expands to show the agent's
+ *  raw output (command result, error detail) in a mono block. */
+function ActivityRow({ row }: { row: SessionActivityItem }) {
+  const [open, setOpen] = useState(false);
+  const Icon = logIcon(row);
+  const isErr = row.kind === "error";
+  const mono = row.kind === "command";
+  const output = (row.payload?.output ?? "").trim();
+  const hasMore = output.length > 0;
+  return (
+    <div>
+      <button
+        onClick={() => hasMore && setOpen(o => !o)}
+        style={{ display: "flex", gap: 9, width: "100%", padding: "4.5px 0", alignItems: "baseline", background: "none", border: "none", cursor: hasMore ? "pointer" : "default", textAlign: "left", fontFamily: "inherit" }}
+      >
+        <span style={{ width: 38, flexShrink: 0, fontFamily: MONO, fontSize: 10, color: "var(--c-ghost)", fontVariantNumeric: "tabular-nums" }}>{clockTime(row.ts)}</span>
+        <Icon size={12} strokeWidth={2} style={{ color: isErr ? "var(--c-med)" : "var(--c-dim)", flexShrink: 0, position: "relative", top: 1 }} />
+        <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: mono ? 11 : 11.5, fontFamily: mono ? MONO : "inherit", color: isErr ? "var(--c-med)" : "var(--c-dim)" }}>{logText(row)}</span>
+        {hasMore && <ChevronRight size={12} style={{ color: "var(--c-ghost)", flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />}
+      </button>
+      {open && hasMore && (
+        <div style={{ margin: "1px 0 8px 38px", padding: "8px 10px", background: "var(--c-srf)", border: "1px solid var(--c-brd)", borderRadius: 6, fontFamily: MONO, fontSize: 10.5, color: "var(--c-med)", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 200, overflowY: "auto", lineHeight: 1.55 }}>
+          {output}
         </div>
       )}
     </div>
