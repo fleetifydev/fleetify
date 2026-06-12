@@ -28,6 +28,12 @@
 /* ─── Semantic color scale — proper contrast in light AND dark ─── */
 /* Light: solid grays with real contrast. Dark: white-alpha hierarchy. */
 :root {
+  /* --c-fg is referenced ~95 times across the renderer (solid CTA fills,
+     toggle tracks, primary text) but was never defined — var(--c-fg)
+     without a fallback computed to TRANSPARENT for backgrounds, which is
+     why the PR dialog's Create button and the draft switch's ON state
+     vanished in both themes. Defined = the theme's full-contrast fg. */
+  --c-fg:    #111111;
   --c-high:  #111111;             /* primary text: titles, values */
   --c-med:   #2a2a2a;             /* secondary text: labels, names */
   --c-low:   #444444;             /* tertiary text: meta, hints */
@@ -56,6 +62,7 @@
   /* Bright crisp ramp matching Claude Code — idle/secondary content
      stays at #b0 (clearly legible on #121212 sidebar), active items
      pop at #d8/#f0. Headings #f0. Meta dims to #6a. Borders subtle. */
+  --c-fg:    #f0f0f0;
   --c-high:  #f0f0f0;
   --c-med:   #d4d4d4;
   --c-low:   #b0b0b0;

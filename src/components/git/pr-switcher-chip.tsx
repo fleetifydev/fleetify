@@ -65,14 +65,20 @@ export function PrSwitcherChip({ openPrs, selectedNumber, selectedStatus, onSele
         aria-label="Switch pull request"
         title={`${openPrs.length} open PR${openPrs.length > 1 ? "s" : ""} — click to switch`}
         style={{
+          // Flat inline trigger — no pill/box (per user request). Matches
+          // the strip's quiet breadcrumb language: dot + mono #N + chevron;
+          // hover brightens the text like the other inline actions.
           display: "inline-flex", alignItems: "center", gap: 5,
-          padding: "2px 7px", borderRadius: 6,
-          background: "rgba(var(--fg-rgb), 0.04)",
-          border: "1px solid var(--c-brd, rgba(127,127,127,0.18))",
-          color: "var(--c-fg)", cursor: "pointer",
+          padding: 0,
+          background: "transparent",
+          border: "none",
+          color: "var(--c-med)", cursor: "pointer",
           fontSize: 11.5, fontWeight: 500, fontFamily: "var(--font-mono)",
           outline: "none",
+          transition: "color 0.12s",
         }}
+        onMouseEnter={e => { e.currentTarget.style.color = "var(--c-high)"; }}
+        onMouseLeave={e => { e.currentTarget.style.color = "var(--c-med)"; }}
       >
         <span style={{ width: 6, height: 6, borderRadius: 999, background: dotColor, flexShrink: 0 }} />
         #{selectedNumber}

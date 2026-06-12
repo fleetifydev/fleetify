@@ -99,7 +99,10 @@ interface GitAPI {
    *  review". Used by the Merge button so one click un-drafts +
    *  squash-merges in sequence. */
   markPRReady?(folder: string, prNumber: number, authMethod?: string, authStored?: string): Promise<{ ok: boolean; error?: string }>;
-  openPR(folder: string): Promise<{ ok: boolean; error?: string }>;
+  /** Open the PR in the browser. With `prNumber` the exact /pull/<n>
+   *  page opens; without it the backend tries to resolve the current
+   *  branch's PR via gh before falling back to the repo's /pulls list. */
+  openPR(folder: string, prNumber?: number): Promise<{ ok: boolean; error?: string }>;
   syncMain(folder: string, baseBranch?: string): Promise<SyncMainResult>;
   carveNextRound(folder: string, branch: string, baseBranch?: string): Promise<CarveNextRoundResult>;
   setBaseBranch?(folder: string, branch: string): Promise<{ ok: boolean; base?: string; error?: string }>;
@@ -194,7 +197,7 @@ export const git = {
   markPRReady:    (folder: string, prNumber: number) =>
                     api().markPRReady?.(folder, prNumber, undefined, storedAuthMethod())
                     ?? Promise.resolve({ ok: false, error: "electron unavailable" }),
-  openPR:         (folder: string) => api().openPR(folder),
+  openPR:         (folder: string, prNumber?: number) => api().openPR(folder, prNumber),
   /** Post-merge cleanup: switch the source repo to `baseBranch`
    *  (default "main") and pull --ff-only. Runs on the SOURCE repo,
    *  not the agent's worktree — caller passes the source path. */

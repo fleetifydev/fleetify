@@ -5,7 +5,7 @@ const {
   gitContextMock, prStatusMock, prListMock, createPRMock, reviewDiffMock,
   diagnoseFailureMock, applyRecoveryMock, preflightCheckMock,
   applyPreflightFixMock, mergePRMock, markPRReadyMock, syncMainMock, carveNextRoundMock,
-  pushNotificationMock, hasGhCliMock, getLinkMock, beginOAuthMock,
+  pushNotificationMock, hasGhCliMock, getLinkMock, beginOAuthMock, openPRMock,
 } = vi.hoisted(() => ({
   gitContextMock: vi.fn(),
   prStatusMock: vi.fn().mockResolvedValue({ ok: true, pr: null }),
@@ -29,6 +29,7 @@ const {
   hasGhCliMock: vi.fn().mockResolvedValue({ ok: true, version: "2.55.0", authed: true, ghLogin: "test" }),
   getLinkMock: vi.fn().mockResolvedValue({ ok: false, link: null }),
   beginOAuthMock: vi.fn().mockResolvedValue({ ok: false, code: "STUB", error: "stub" }),
+  openPRMock: vi.fn().mockResolvedValue({ ok: true }),
 }));
 
 vi.mock("@/lib/git-api", async () => {
@@ -60,6 +61,7 @@ vi.mock("@/lib/git-api", async () => {
         syncMainMock(folder, baseBranch),
       carveNextRound: (folder: string, branch: string, baseBranch?: string) =>
         carveNextRoundMock(folder, branch, baseBranch),
+      openPR: (folder: string, prNumber?: number) => openPRMock(folder, prNumber),
     },
   };
 });
@@ -126,6 +128,8 @@ beforeEach(() => {
   hasGhCliMock.mockReset();
   getLinkMock.mockReset();
   beginOAuthMock.mockReset();
+  openPRMock.mockReset();
+  openPRMock.mockResolvedValue({ ok: true });
   prStatusMock.mockResolvedValue({ ok: true, pr: null });
   prListMock.mockResolvedValue({ ok: true, prs: [] });
   // Default: preflight clean + auth available (gh authed). Individual
@@ -872,6 +876,25 @@ describe("BranchStrip — post-PR lifecycle", () => {
     expect(screen.getByRole("button", { name: /^Merge$/i })).toBeEnabled();
   });
 
+  it("Open click forwards the PR number so the browser lands on /pull/<n>, not /pulls", async () => {
+    usePrStore.setState({ prs: [openRepoPr] });
+    prListMock.mockResolvedValue({ ok: true, prs: [openRepoPr] });
+    gitContextMock.mockResolvedValue({
+      branch: "fleet/x-a1b2c3d4", baseBranch: "main",
+      plus: 5, minus: 2, remoteHttpsUrl: "https://github.com/u/r",
+    });
+    prStatusMock.mockResolvedValue({ ok: true, pr: openPr });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" />);
+    // Wait for git context to land — until then the selection can't be
+    // recognised as the working branch's own PR and the click would take
+    // the foreign-PR openExternal path instead of git.openPR.
+    await screen.findByText("fleet/x-a1b2c3d4");
+    const open = await screen.findByRole("button", { name: /Open · #42/i });
+    fireEvent.click(open);
+    await waitFor(() => expect(openPRMock).toHaveBeenCalledWith("/repo", 42));
+  });
+
   it("OPEN PR with failing checks: Merge disabled with tooltip, Open still enabled", async () => {
     usePrStore.setState({ prs: [openRepoPr] });
     prListMock.mockResolvedValue({ ok: true, prs: [openRepoPr] });
@@ -1156,13 +1179,19 @@ describe("BranchStrip — toast variants on auto-create", () => {
 });
 
 describe("BranchStrip — empty-diff gating", () => {
-  it("feature branch + empty diff → Create PR disabled with tooltip", async () => {
+  it("feature branch + empty diff → Create PR, its chevron AND Review are hidden entirely", async () => {
+    // Hide-not-disable: a dead Create PR (and a Review with nothing to
+    // review) used to render grayed out; now the whole cluster is gone.
     gitContextMock.mockResolvedValue({ branch: "fleet/x-a1b2c3d4", baseBranch: "main", plus: 0, minus: 0, remoteHttpsUrl: null });
     const { BranchStrip } = await loadBranchStrip();
     render(<BranchStrip projectPath="/repo" />);
-    const btn = await screen.findByRole("button", { name: /^create pr$/i });
-    await waitFor(() => expect(btn).toBeDisabled());
-    expect(btn).toHaveAttribute("title", "No changes to include in a PR");
+    // Wait for the strip to mount and the initial PR poll to resolve so
+    // the "Checking…" placeholder has cleared before asserting absence.
+    await screen.findByText("fleet/x-a1b2c3d4");
+    await waitFor(() => expect(screen.queryByTitle("Checking PR status…")).toBeNull());
+    expect(screen.queryByRole("button", { name: /^create pr$/i })).toBeNull();
+    expect(screen.queryByTitle("More create options")).toBeNull();
+    expect(screen.queryByRole("button", { name: /review changes/i })).toBeNull();
   });
 
   it("bootstrap (no git + plannedBranch) stays clickable with empty diff", async () => {
@@ -1173,18 +1202,6 @@ describe("BranchStrip — empty-diff gating", () => {
     expect(btn).not.toBeDisabled();
   });
 
-  it("empty diff disables the custom-title and draft menu items", async () => {
-    gitContextMock.mockResolvedValue({ branch: "fleet/x-a1b2c3d4", baseBranch: "main", plus: 0, minus: 0, remoteHttpsUrl: null });
-    const { BranchStrip } = await loadBranchStrip();
-    render(<BranchStrip projectPath="/repo" />);
-    await screen.findByRole("button", { name: /^create pr$/i });
-    fireEvent.click(screen.getByTitle("More create options"));
-    const custom = await screen.findByRole("button", { name: /create with custom title/i });
-    const draft  = screen.getByRole("button", { name: /create draft pr/i });
-    expect(custom).toBeDisabled();
-    expect(draft).toBeDisabled();
-    expect(screen.getByRole("button", { name: /open on github/i })).not.toBeDisabled();
-  });
 });
 
 const OPEN_PR_5 = {
@@ -1216,12 +1233,14 @@ describe("BranchStrip — PR switcher + repo-wide merge", () => {
     await waitFor(() => expect(screen.getByText("#5")).toBeInTheDocument());
   });
 
-  it("Create PR is disabled while the working branch has an open PR", async () => {
+  it("Create PR and Review hide while the working branch has an open PR — merge cluster stands alone", async () => {
     const { BranchStrip } = await loadBranchStrip();
     render(<BranchStrip projectPath="/repo" />);
-    const btn = await screen.findByRole("button", { name: /^create pr$/i });
-    await waitFor(() => expect(btn).toBeDisabled());
-    expect(btn).toHaveAttribute("title", "PR #5 is already open for this branch");
+    // Merge cluster targets the branch's own open PR…
+    await screen.findByRole("button", { name: /Open · #5/i });
+    // …and the blocked create slot (plus Review) is gone, not grayed out.
+    await waitFor(() => expect(screen.queryByRole("button", { name: /^create pr$/i })).toBeNull());
+    expect(screen.queryByRole("button", { name: /review changes/i })).toBeNull();
   });
 
   it("chip popover lists open PRs; picking one retargets Merge", async () => {

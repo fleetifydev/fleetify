@@ -546,8 +546,8 @@ pub async fn git_diff_summary(folder: String, base_branch: String) -> serde_json
     git::diff_summary(&PathBuf::from(folder), &base_branch).await
 }
 #[tauri::command]
-pub async fn git_open_pr(folder: String) -> serde_json::Value {
-    git::open_pr(&PathBuf::from(folder)).await
+pub async fn git_open_pr(folder: String, pr_number: Option<i64>) -> serde_json::Value {
+    git::open_pr(&PathBuf::from(folder), pr_number).await
 }
 /// IPC: create a pull request. `method` selects the auth path:
 /// "gh" | "cli" → GitHub CLI only, "oauth" | "link" → Fleetify OAuth

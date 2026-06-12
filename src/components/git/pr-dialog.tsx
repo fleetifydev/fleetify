@@ -182,7 +182,7 @@ export function PRDialog({
     onCreated?.(out);
   };
 
-  const open = () => { if (result?.url) git.openPR(folder); };
+  const open = () => { if (result?.url) git.openPR(folder, result.number ?? undefined); };
 
   const creating   = phase === "creating";
   const generating = genField !== null;
@@ -201,53 +201,43 @@ export function PRDialog({
       <div
         onClick={e => e.stopPropagation()}
         style={{
-          width: 640, maxWidth: "100%", maxHeight: "88vh",
+          width: 600, maxWidth: "100%", maxHeight: "88vh",
           display: "flex", flexDirection: "column",
           // Theme-aware surface — was hardcoded #141414, which
           // showed up as a black card over white chrome in light
           // mode. --popover already follows the active theme.
           background: "var(--popover, #161616)",
           border: "1px solid var(--c-brd, rgba(127,127,127,0.18))",
-          borderRadius: 14,
+          borderRadius: 12,
           overflow: "hidden",
-          boxShadow: "0 28px 72px rgba(0,0,0,0.62), 0 6px 14px rgba(0,0,0,0.38)",
+          boxShadow: "0 24px 64px rgba(0,0,0,0.50), 0 4px 12px rgba(0,0,0,0.28)",
         }}
       >
-        {/* Header — generous padding, branch pill instead of inline arrow */}
+        {/* Header — flat: title + branch route, no icon chip. Matches the
+            BranchStrip's quiet breadcrumb language instead of stacking a
+            boxed glyph inside the boxed card. */}
         <div style={{
-          display: "flex", alignItems: "center", gap: 13,
-          padding: "16px 20px",
+          display: "flex", alignItems: "flex-start", gap: 12,
+          padding: "18px 22px 14px",
           borderBottom: "1px solid var(--c-brd, rgba(127,127,127,0.15))",
           flexShrink: 0,
         }}>
-          <span style={{
-            width: 32, height: 32, borderRadius: 8, flexShrink: 0,
-            display: "inline-flex", alignItems: "center", justifyContent: "center",
-            // Neutral icon chip — was purple at rest. Done state
-            // keeps the green to convey success, otherwise we use
-            // the same soft-fg surface the BranchStrip uses for its
-            // glyph chip so the dialog reads as Fleet, not branded.
-            background: phase === "done"
-              ? "rgba(74,222,128,0.10)"
-              : "rgba(var(--fg-rgb), 0.06)",
-            border: phase === "done"
-              ? "1px solid rgba(74,222,128,0.25)"
-              : "1px solid var(--c-brd, rgba(127,127,127,0.18))",
-            color: phase === "done" ? "#86efac" : "var(--c-fg)",
-            transition: "background 0.2s, color 0.2s",
-          }}>
-            {phase === "done" ? <Check size={16} strokeWidth={2.5} /> : <GitPullRequest size={15} />}
-          </span>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 15, fontWeight: 600, color: "var(--c-fg)", letterSpacing: 0.1 }}>
+            <div style={{
+              display: "flex", alignItems: "center", gap: 8,
+              fontSize: 14.5, fontWeight: 600, color: "var(--c-high)", letterSpacing: -0.1,
+            }}>
+              {phase === "done"
+                ? <Check size={14} strokeWidth={2.5} style={{ color: "#4ade80", flexShrink: 0 }} />
+                : <GitPullRequest size={14} strokeWidth={1.85} style={{ color: "var(--c-low)", flexShrink: 0 }} />}
               {phase === "done" ? "Pull request created" : "Create pull request"}
             </div>
             <div style={{
-              display: "flex", alignItems: "center", gap: 6,
-              marginTop: 4, flexWrap: "wrap",
+              display: "flex", alignItems: "center", gap: 7,
+              marginTop: 7, flexWrap: "wrap",
             }}>
               <BranchPill name={branch} kind="head" />
-              <span style={{ fontSize: 11, color: "var(--c-dim)" }}>→</span>
+              <span style={{ fontSize: 11, color: "var(--c-ghost)" }}>→</span>
               <BranchPill name={baseBranch} kind="base" />
               {authMethod === "gh" && ghLogin && (
                 <AuthChip avatar={null} label={`@${ghLogin}`} hint="via gh" />
@@ -287,16 +277,15 @@ export function PRDialog({
 
         {/* Body */}
         {phase === "done" && result ? (
-          <div style={{ padding: "36px 28px 32px", display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
+          <div style={{ padding: "32px 24px 28px", display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
             <div style={{
-              width: 56, height: 56, borderRadius: 999,
-              background: "rgba(74,222,128,0.12)",
-              border: "1.5px solid rgba(74,222,128,0.40)",
+              width: 44, height: 44, borderRadius: 999,
+              background: "rgba(74,222,128,0.10)",
+              border: "1px solid rgba(74,222,128,0.35)",
               display: "flex", alignItems: "center", justifyContent: "center",
               color: "#4ade80",
-              boxShadow: "0 0 0 6px rgba(74,222,128,0.04)",
             }}>
-              <Check size={24} strokeWidth={2.5} />
+              <Check size={20} strokeWidth={2.5} />
             </div>
             <div style={{ fontSize: 14, color: "var(--c-fg)", textAlign: "center", fontWeight: 500 }}>
               {result.number != null ? `#${result.number}` : "PR"} opened on the remote.
@@ -311,7 +300,7 @@ export function PRDialog({
         ) : (
           <>
             <div style={{
-              padding: "18px 20px", display: "flex", flexDirection: "column", gap: 14,
+              padding: "16px 22px 18px", display: "flex", flexDirection: "column", gap: 16,
               overflow: "auto", flex: 1,
             }}>
               <Field label="Title" hint={
@@ -330,13 +319,15 @@ export function PRDialog({
                   disabled={creating || genField === "title"}
                   placeholder="Short summary…"
                   style={inputStyle}
+                  onFocus={e => { e.currentTarget.style.borderColor = "var(--c-brd2, rgba(127,127,127,0.4))"; }}
+                  onBlur={e => { e.currentTarget.style.borderColor = "var(--c-brd, rgba(127,127,127,0.22))"; }}
                 />
                 {genErr.title && (
                   <div style={{ fontSize: 11, color: "#fca5a5", marginTop: 4 }}>{genErr.title}</div>
                 )}
               </Field>
 
-              <Field label="Description (Markdown)" hint={
+              <Field label="Description · Markdown" hint={
                 <GenerateHint
                   ariaLabel="Generate description with AI"
                   generating={genField === "body"}
@@ -351,6 +342,8 @@ export function PRDialog({
                   disabled={creating || genField === "body"}
                   placeholder="What changed and why?"
                   style={textareaStyle}
+                  onFocus={e => { e.currentTarget.style.borderColor = "var(--c-brd2, rgba(127,127,127,0.4))"; }}
+                  onBlur={e => { e.currentTarget.style.borderColor = "var(--c-brd, rgba(127,127,127,0.22))"; }}
                 />
                 {genErr.body && (
                   <div style={{ fontSize: 11, color: "#fca5a5", marginTop: 4 }}>{genErr.body}</div>
@@ -456,12 +449,13 @@ export function PRDialog({
               ) : null}
             </div>
 
-            {/* Footer — sticky, slightly raised against the body */}
+            {/* Footer — flat: hairline divider only, no raised fill. One
+                surface end-to-end keeps the card reading as a single
+                quiet sheet instead of stacked zones. */}
             <div style={{
               display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
-              padding: "13px 20px",
+              padding: "12px 22px 16px",
               borderTop: "1px solid var(--c-brd, rgba(127,127,127,0.15))",
-              background: "rgba(var(--fg-rgb), 0.02)",
               flexShrink: 0,
             }}>
               <span style={{ fontSize: 11, color: "var(--c-dim)", fontFamily: "var(--font-mono)" }}>
@@ -615,9 +609,9 @@ function ConnectGitHubBlock({ connecting, browserFallbackUrl, onConnect }: {
 }) {
   return (
     <div style={{
-      fontSize: 12, color: "#dcdcdc",
-      background: "rgba(255,255,255,0.025)",
-      border: "1px dashed rgba(255,255,255,0.15)",
+      fontSize: 12, color: "var(--c-med)",
+      background: "rgba(var(--fg-rgb), 0.03)",
+      border: "1px dashed var(--c-brd2, rgba(127,127,127,0.3))",
       borderRadius: 8, padding: "12px 14px",
       lineHeight: 1.55,
     }}>
@@ -627,7 +621,7 @@ function ConnectGitHubBlock({ connecting, browserFallbackUrl, onConnect }: {
           so the copy explains that. After it resolves or fails the
           original "no connection" prompt comes back so a manual retry
           still reads naturally. */}
-      <div style={{ fontWeight: 600, marginBottom: 4, color: "#f0f0f0" }}>
+      <div style={{ fontWeight: 600, marginBottom: 4, color: "var(--c-high)" }}>
         {connecting ? "GitHub yetkilendirmesi açıldı" : "GitHub bağlantısı yok"}
       </div>
       <div style={{ color: "var(--c-low, #9a9a9a)", marginBottom: 10 }}>
@@ -931,10 +925,9 @@ function Field({ label, hint, children }: { label: string; hint?: React.ReactNod
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: 18 }}>
-        <span style={{
-          fontSize: 11, color: "var(--c-low)", fontWeight: 600,
-          textTransform: "uppercase", letterSpacing: "0.06em",
-        }}>{label}</span>
+        {/* Sentence-case label — the SCREAMING uppercase + tracking read
+            as heavy chrome against the app's quiet text hierarchy. */}
+        <span style={{ fontSize: 11.5, color: "var(--c-dim)", fontWeight: 500 }}>{label}</span>
         {hint}
       </div>
       {children}
@@ -974,21 +967,18 @@ function GenerateHint({ ariaLabel, generating, used, disabled, onClick }: {
   );
 }
 
-/* Pill-shaped branch indicator with a tiny git-branch icon.
-   Heading-color for the head branch (foreground), muted for base. */
+/* Flat mono branch label — same language as the BranchStrip pills.
+   The old purple/bordered pills fought the app's monochrome theme
+   (and the purple head pill broke entirely on light chrome). Head
+   reads brighter than base; the full name lives in the title attr. */
 function BranchPill({ name, kind }: { name: string; kind: "head" | "base" }) {
   const isBase = kind === "base";
   return (
-    <span style={{
-      display: "inline-flex", alignItems: "center", gap: 4,
-      padding: "2px 8px",
-      fontSize: 11, fontWeight: 500,
-      fontFamily: "var(--font-mono)",
-      background: isBase ? "rgba(255,255,255,0.04)" : "rgba(167,139,250,0.10)",
-      border: isBase ? "1px solid rgba(255,255,255,0.10)" : "1px solid rgba(167,139,250,0.22)",
-      color: isBase ? "#bdbdbd" : "#d8c4ff",
-      borderRadius: 999,
-      maxWidth: 220,
+    <span title={name} style={{
+      fontSize: 11.5, fontWeight: 500,
+      fontFamily: "var(--font-mono)", letterSpacing: -0.15,
+      color: isBase ? "var(--c-med)" : "var(--c-high)",
+      maxWidth: 240,
       overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
     }}>{name}</span>
   );
@@ -1065,24 +1055,26 @@ const inputStyle: React.CSSProperties = {
 
 const textareaStyle: React.CSSProperties = {
   ...focusableField,
-  minHeight: 200, maxHeight: 340,
+  minHeight: 160, maxHeight: 320,
   padding: "11px 13px", borderRadius: 8,
   fontSize: 12.5, fontFamily: "var(--font-mono)",
   resize: "vertical", lineHeight: 1.6,
 };
 
+// Quiet text button — borderless, like the BranchStrip's inline action
+// verbs. The bordered ghost made Cancel compete with the primary.
 const btnGhost: React.CSSProperties = {
-  padding: "8px 15px", borderRadius: 7,
+  padding: "7px 12px", borderRadius: 7,
   background: "transparent",
-  border: "1px solid var(--c-brd, rgba(127,127,127,0.25))",
-  color: "var(--c-fg, #dcdcdc)", cursor: "pointer", fontSize: 12.5,
+  border: "none",
+  color: "var(--c-low)", cursor: "pointer", fontSize: 12.5,
   fontFamily: "inherit", fontWeight: 500,
   outline: "none",
-  transition: "background 0.12s, border-color 0.12s, color 0.12s",
+  transition: "color 0.12s",
 };
 
 const btnPrimary: React.CSSProperties = {
-  padding: "8px 16px", borderRadius: 7,
+  padding: "7px 16px", borderRadius: 7,
   background: "var(--c-fg)",
   border: "1px solid var(--c-fg)",
   color: "var(--card, #0d0d0d)",

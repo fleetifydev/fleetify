@@ -746,10 +746,14 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   const isBootstrapShape = (noGit || onDefaultBranch) && !!plannedBranch;
   const emptyDiffBlocked =
     !isBootstrapShape && ((ctx?.plus ?? 0) + (ctx?.minus ?? 0)) === 0;
-  // Create-slot gating — Create PR stays rendered but disabled while the
-  // working branch already has an open PR (spec §6): a second create
-  // would just race "a PR already exists". The branch-open PR check
-  // takes priority over the empty-diff tooltip.
+  // Create-slot gating. When the slot can't act — the working branch
+  // already has an open PR (a second create would just race "a PR
+  // already exists"), or the diff is empty — Create PR and Review are
+  // HIDDEN entirely rather than rendered grayed out (per user request:
+  // a dead lead action is noise next to the live merge cluster).
+  // autoCreating is excluded so the in-flight "Creating…" feedback
+  // stays visible right after the click.
+  const createBlocked = !autoCreating && (!!branchOpenPr || emptyDiffBlocked);
   const createDisabled = autoCreating || !!branchOpenPr || emptyDiffBlocked;
   const createTooltip =
     branchOpenPr ? `PR #${branchOpenPr.number} is already open for this branch`
@@ -759,7 +763,8 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // the agent can read — noGit folders have no diff yet, so the
   // button stays hidden until bootstrap. (Conductor's parity: their
   // Review action is only useful once there's a workspace state.)
-  const showReview = !!folder && !noGit;
+  // Hidden alongside Create PR whenever that slot is blocked.
+  const showReview = !!folder && !noGit && !createBlocked;
 
   // noGit may be true here; we render <NoGitPill /> from the unified
   // JSX path below. The legacy non-noGit render uses ctxR.branch /
@@ -895,7 +900,9 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
     return doSyncAndCarve(base);
   };
 
-  const onOpenPR = () => folder && git.openPR(folder);
+  // Forward the branch PR's number so the browser lands on the exact
+  // /pull/<n> page instead of the repo-wide /pulls list.
+  const onOpenPR = () => folder && git.openPR(folder, pr?.number);
 
   // Open the SELECTED PR on GitHub. For a foreign PR (not the working
   // branch's) we open its own url directly — `git.openPR(folder)`
@@ -906,7 +913,9 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
       void w.electronAPI?.openExternal?.(selectedRepoPr.url);
       return;
     }
-    void onOpenPR();
+    // Branch-own selection: prefer the selected entry's number — `pr`
+    // can lag a poll behind right after creation.
+    if (folder) void git.openPR(folder, selectedRepoPr?.number ?? pr?.number);
   };
 
   // ── Create PR pipeline ──
@@ -1238,11 +1247,12 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
       <span
         title="Checking PR status…"
         style={{
-          display: "inline-flex", alignItems: "center", gap: 6,
-          padding: "3px 10px", borderRadius: 6,
-          background: "rgba(var(--fg-rgb), 0.04)",
+          // Plain inline breadcrumb text — no pill, no fill. Matches the
+          // Review / Create PR links so the loading state reads as part
+          // of the same quiet text row instead of popping as a box.
+          display: "inline-flex", alignItems: "center", gap: 5,
           color: "var(--c-low)",
-          fontSize: 11.5,
+          fontSize: 12,
           flexShrink: 0,
         }}
       >
@@ -1250,9 +1260,11 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
         Checking…
       </span>
     );
-  } else if (showCreatePR || branchOpenPr) {
+  } else if ((showCreatePR || branchOpenPr) && !createBlocked) {
     // Split button: main "Create PR" + chevron-down for variants
-    // (draft PR / manually create on the GitHub website).
+    // (draft PR / manually create on the GitHub website). Not rendered
+    // at all while blocked (open PR exists / empty diff) — see
+    // createBlocked above.
     createSlot = (
       <div ref={createMenuRef} style={{ position: "relative", flexShrink: 0 }}>
         <div style={{
@@ -1303,17 +1315,21 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
           </button>
 
           {/* Dropdown caret — quiet, directly after the link (no divider /
-              no pill, just a small chevron the same blue). */}
+              no pill, just a small chevron the same blue). Disabled in
+              lockstep with the main Create PR action: a clickable menu
+              next to a dead button read as a bug. */}
           <button
-            onClick={() => setCreateMenuOpen(o => !o)}
+            onClick={createDisabled ? undefined : () => setCreateMenuOpen(o => !o)}
+            disabled={createDisabled}
             onMouseDown={e => e.preventDefault()}
-            title="More create options"
+            title={createDisabled ? createTooltip : "More create options"}
             style={{
               padding: "0 2px 0 4px",
               background: "transparent",
               border: "none", outline: "none",
               color: "rgb(110,162,228)",
-              cursor: "pointer",
+              cursor: createDisabled ? "default" : "pointer",
+              opacity: createDisabled && !autoCreating ? 0.5 : autoCreating ? 0.7 : 1,
               display: "inline-flex", alignItems: "center",
             }}
           >
@@ -1370,7 +1386,7 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
             <CreateMenuItem
               icon={<ExternalLink size={12} />}
               label="Open on GitHub"
-              onClick={() => { setCreateMenuOpen(false); if (folder) git.openPR(folder); }}
+              onClick={() => { setCreateMenuOpen(false); if (folder) git.openPR(folder, branchOpenPr?.number); }}
             />
           </div>
         )}
@@ -1502,26 +1518,10 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
         color: "var(--c-low)",
         fontSize: 12,
       }}>
-        {/* Far-left PR switcher chip — selected open PR + status dot,
-            popover lists every open PR in the repo (spec §6). Only
-            surfaces once the repo-wide poll has open PRs. */}
-        {openPrsList.length > 0 && effectiveSelectedNumber != null && (
-          <PrSwitcherChip
-            openPrs={openPrsList}
-            selectedNumber={effectiveSelectedNumber}
-            selectedStatus={selectedPr}
-            onSelect={setSelectedPrNumber}
-            onOpenUrl={(p) => {
-              const w = window as unknown as { electronAPI?: { openExternal?: (url: string) => Promise<unknown> } };
-              if (p.url) void w.electronAPI?.openExternal?.(p.url);
-              else if (folder) void git.openPR(folder);
-            }}
-          />
-        )}
-
-        {/* Branch glyph — small, transparent chip; the icon itself
-            carries the leading-status signal. Colour shifts with PR
-            state so MERGED / CLOSED stay legible at a glance. */}
+        {/* Branch glyph — FAR LEFT (per user request); small, transparent
+            chip; the icon itself carries the leading-status signal.
+            Colour shifts with PR state so MERGED / CLOSED stay legible
+            at a glance. */}
         <span style={{
           width: 18, height: 18, borderRadius: 5,
           display: "inline-flex", alignItems: "center", justifyContent: "center",
@@ -1533,6 +1533,23 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
             : pr?.state === "CLOSED" ? <X size={12} strokeWidth={2.5} />
             : <GitBranch size={12} strokeWidth={1.85} />}
         </span>
+
+        {/* PR switcher — right of the glyph: selected open PR + status
+            dot, popover lists every open PR in the repo (spec §6). Only
+            surfaces once the repo-wide poll has open PRs. */}
+        {openPrsList.length > 0 && effectiveSelectedNumber != null && (
+          <PrSwitcherChip
+            openPrs={openPrsList}
+            selectedNumber={effectiveSelectedNumber}
+            selectedStatus={selectedPr}
+            onSelect={setSelectedPrNumber}
+            onOpenUrl={(p) => {
+              const w = window as unknown as { electronAPI?: { openExternal?: (url: string) => Promise<unknown> } };
+              if (p.url) void w.electronAPI?.openExternal?.(p.url);
+              else if (folder) void git.openPR(folder, p.number);
+            }}
+          />
+        )}
 
         {/* Branch label — minimal, no decorative dots or pulses.
             Per-pill click handlers: the base/main pill opens the

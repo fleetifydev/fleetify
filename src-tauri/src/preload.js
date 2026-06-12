@@ -458,7 +458,11 @@ document.addEventListener("mousedown", function (e) {
       gitDiffSummary: function (folder, baseBranch) {
         return invoke("git_diff_summary", { folder: String(folder || ""), baseBranch: String(baseBranch || "main") });
       },
-      openPR: function (folder) { return invoke("git_open_pr", { folder: String(folder || "") }); },
+      openPR: function (folder, prNumber) {
+        var args = { folder: String(folder || "") };
+        if (typeof prNumber === "number") args.prNumber = prNumber;
+        return invoke("git_open_pr", args);
+      },
       createPR: function (folder, opts) {
         var o = opts || {};
         return invoke("git_create_pr", {

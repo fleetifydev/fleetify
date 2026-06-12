@@ -543,7 +543,17 @@ pub async fn diff_summary(folder: &Path, base: &str) -> Value {
     })
 }
 
-pub async fn open_pr(folder: &Path) -> Value {
+/// Browser target for "Open PR": the exact `/pull/<n>` page when the
+/// caller knows the PR number, the repo's `/pulls` list as the last
+/// resort (no PR exists yet, or resolution failed).
+fn pr_page_url(repo_url: &str, pr_number: Option<i64>) -> String {
+    match pr_number {
+        Some(n) => format!("{repo_url}/pull/{n}"),
+        None => format!("{repo_url}/pulls"),
+    }
+}
+
+pub async fn open_pr(folder: &Path, pr_number: Option<i64>) -> Value {
     let (rc, remote, _) = git(&["remote", "get-url", "origin"], folder).await;
     if rc != 0 {
         return json!({ "ok": false, "error": "no origin remote" });
@@ -552,7 +562,21 @@ pub async fn open_pr(folder: &Path) -> Value {
     if let Some(stripped) = url.strip_suffix(".git") {
         url = stripped.to_string();
     }
-    let target = format!("{url}/pulls");
+    // Callers that know the PR number (BranchStrip's Open buttons, the
+    // PR dialog) land on the exact /pull/<n> page. Number-less callers
+    // (Cmd+Shift+G shortcut, legacy paths) get one `gh pr view` attempt
+    // to resolve the current branch's PR before the /pulls fallback.
+    let target = if pr_number.is_some() {
+        pr_page_url(&url, pr_number)
+    } else {
+        let (grc, gout, _) = gh(&["pr", "view", "--json", "url", "-q", ".url"], folder).await;
+        let resolved = gout.trim();
+        if grc == 0 && resolved.starts_with("http") {
+            resolved.to_string()
+        } else {
+            pr_page_url(&url, None)
+        }
+    };
     match ::open::that(&target) {
         Ok(_) => json!({ "ok": true, "url": target }),
         Err(e) => json!({ "ok": false, "error": e.to_string() }),
@@ -2218,6 +2242,18 @@ mod tests {
         );
         assert_eq!(parse_pr_number("https://github.com/foo/bar"), None);
         assert_eq!(parse_pr_number(""), None);
+    }
+
+    #[test]
+    fn pr_page_url_targets_exact_pr_or_pulls_list() {
+        assert_eq!(
+            pr_page_url("https://github.com/foo/bar", Some(1)),
+            "https://github.com/foo/bar/pull/1"
+        );
+        assert_eq!(
+            pr_page_url("https://github.com/foo/bar", None),
+            "https://github.com/foo/bar/pulls"
+        );
     }
 
     #[test]
