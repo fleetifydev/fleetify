@@ -117,7 +117,7 @@ mod tests {
     fn matrix() -> CapabilityMatrix {
         toml::from_str(
             r#"
-[agents.claude]
+[agents.claude-code]
 supports_tool_use = true
 supports_vision = true
 max_context = 200000

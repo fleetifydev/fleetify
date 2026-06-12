@@ -235,7 +235,8 @@ pub fn default_kind(provider_id: &str) -> AccountKind {
 /// `None` ⇒ the agent isolates via a HOME override instead.
 pub fn config_dir_spec(provider_id: &str) -> Option<(&'static str, &'static str)> {
     match provider_id {
-        "claude" => Some(("CLAUDE_CONFIG_DIR", ".claude")),
+        // Accept the legacy "claude" id too — config dirs predate the rename.
+        "claude" | "claude-code" => Some(("CLAUDE_CONFIG_DIR", ".claude")),
         "codex" => Some(("CODEX_HOME", ".codex")),
         _ => None,
     }
@@ -251,7 +252,7 @@ const DISCOVERED_PREFIX: &str = "dir:";
 /// `config_dir` is the account's config dir (`~/.claude-2`) or `None` for the
 /// System account (which reads `~/.claude.json` at the home root).
 fn friendly_label(provider_id: &str, config_dir: Option<&Path>) -> Option<String> {
-    if provider_id != "claude" {
+    if !matches!(provider_id, "claude" | "claude-code") {
         return None;
     }
     let json_path = match config_dir {
@@ -586,7 +587,7 @@ mod tests {
 
     #[test]
     fn default_kind_classifies_cli_vs_http() {
-        assert_eq!(default_kind("claude"), AccountKind::Cli);
+        assert_eq!(default_kind("claude-code"), AccountKind::Cli);
         assert_eq!(default_kind("openai"), AccountKind::Http);
         assert_eq!(default_kind("unknown-xyz"), AccountKind::Http);
     }
@@ -594,7 +595,7 @@ mod tests {
     #[test]
     fn config_dir_agents_use_native_env_var() {
         assert_eq!(
-            config_dir_spec("claude"),
+            config_dir_spec("claude-code"),
             Some(("CLAUDE_CONFIG_DIR", ".claude"))
         );
         assert_eq!(config_dir_spec("codex"), Some(("CODEX_HOME", ".codex")));
@@ -613,31 +614,35 @@ mod tests {
         // A managed claude account pointing at a fake config dir.
         sqlx::query(
             "INSERT INTO accounts (id,user_id,provider_id,label,kind,home_dir,is_default,created_at) \
-             VALUES ('acc1','u1','claude','Work','cli','/tmp/acc1',0,'2026-01-01T00:00:00Z')",
+             VALUES ('acc1','u1','claude-code','Work','cli','/tmp/acc1',0,'2026-01-01T00:00:00Z')",
         )
         .execute(&pool)
         .await
         .unwrap();
 
         // No main set → NULL resolves to System (empty env).
-        assert!(resolve_env(&pool, "claude", None, "u1").await.is_empty());
+        assert!(resolve_env(&pool, "claude-code", None, "u1")
+            .await
+            .is_empty());
 
         // Make acc1 the main account.
-        set_default(&pool, "claude", "acc1", "u1").await.unwrap();
+        set_default(&pool, "claude-code", "acc1", "u1")
+            .await
+            .unwrap();
 
         // NULL now follows the main dynamically → CLAUDE_CONFIG_DIR=/tmp/acc1,
         // so every un-pinned chat + Fleet uses the new account.
         assert_eq!(
-            resolve_env(&pool, "claude", None, "u1").await,
+            resolve_env(&pool, "claude-code", None, "u1").await,
             vec![("CLAUDE_CONFIG_DIR".to_string(), "/tmp/acc1".to_string())]
         );
         // Explicit System overrides the main (stays on System).
-        assert!(resolve_env(&pool, "claude", Some("system"), "u1")
+        assert!(resolve_env(&pool, "claude-code", Some("system"), "u1")
             .await
             .is_empty());
         // An explicit pinned account always wins.
         assert_eq!(
-            resolve_env(&pool, "claude", Some("acc1"), "u1").await,
+            resolve_env(&pool, "claude-code", Some("acc1"), "u1").await,
             vec![("CLAUDE_CONFIG_DIR".to_string(), "/tmp/acc1".to_string())]
         );
     }

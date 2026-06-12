@@ -33,7 +33,7 @@ async fn spawn_endpoints() {
         .json(&serde_json::json!({
             "title": "reviewer",
             "project_path": tmp,
-            "tool": "claude",
+            "tool": "claude-code",
             "permission_mode": "bypassPermissions",
             "first_task": "review the open PR"
         }))
@@ -64,7 +64,7 @@ async fn spawn_endpoints() {
     let res = client
         .post(format!("{base}/api/sessions/spawn"))
         .json(&serde_json::json!({
-            "title": "no-task-given", "project_path": tmp, "tool": "claude"
+            "title": "no-task-given", "project_path": tmp, "tool": "claude-code"
         }))
         .send()
         .await
@@ -92,7 +92,7 @@ async fn spawn_endpoints() {
     let caller: serde_json::Value = client
         .post(format!("{base}/api/sessions/spawn"))
         .json(&serde_json::json!({
-            "title": "worker", "project_path": tmp, "tool": "claude",
+            "title": "worker", "project_path": tmp, "tool": "claude-code",
             "permission_mode": "default", "first_task": "stand by for clamp checks"
         }))
         .send()
@@ -113,7 +113,7 @@ async fn spawn_endpoints() {
         .json(&serde_json::json!({
             "caller_session_id": caller_id,
             "project_path": tmp,
-            "tool": "claude",
+            "tool": "claude-code",
             "permission_mode": "bypassPermissions",
             "task": "escalate"
         }))
@@ -129,7 +129,7 @@ async fn spawn_endpoints() {
         .json(&serde_json::json!({
             "caller_session_id": caller_id,
             "project_path": tmp,
-            "tool": "claude",
+            "tool": "claude-code",
             "permission_mode": "default",
             "task": "run the smoke suite"
         }))

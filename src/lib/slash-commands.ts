@@ -24,7 +24,7 @@
  * (see chat-input's slashAll merge).
  */
 
-export type SessionTool = "claude" | "codex" | "gemini";
+export type SessionTool = "claude-code" | "codex" | "gemini";
 
 export type SlashIntent =
   | "fleet.new"
@@ -84,7 +84,7 @@ export const FLEET_CMDS: SlashCmdDef[] = [
 ];
 
 export const SESSION_CMDS_BY_TOOL: Record<SessionTool, SlashCmdDef[]> = {
-  claude: [
+  "claude-code": [
     { intent: "session.compaction", cmd: "/compact", desc: "Summarize conversation to free context", scope: "session" },
     { intent: "session.context",    cmd: "/context", desc: "Show context window usage",              scope: "session" },
     { intent: "session.plan",       cmd: "/plan",    desc: "Switch to plan mode",                    scope: "session" },
@@ -126,15 +126,15 @@ export const SESSION_CMDS_COMMON: SlashCmdDef[] = [
   { intent: "session.mcp",         cmd: "/mcp",         desc: "Show MCP server status for this session",                                       scope: "session" },
   // /effort is meaningless for Gemini (no reasoning-effort knob — Gemini
   // controls depth via model SKU only). Hide it there.
-  { intent: "session.effort",      cmd: "/effort",      desc: "Change reasoning effort (low/medium/high/extra_high/max)", scope: "session", supportedTools: ["claude", "codex"] },
+  { intent: "session.effort",      cmd: "/effort",      desc: "Change reasoning effort (low/medium/high/extra_high/max)", scope: "session", supportedTools: ["claude-code", "codex"] },
   // /commands lists user-defined slash commands. Codex calls them "prompts"
   // and namespaces them under /prompts:<name>; surface that naming instead.
-  { intent: "session.commands",    cmd: "/commands",    desc: "Browse custom slash commands",                             scope: "session", supportedTools: ["claude", "gemini"] },
+  { intent: "session.commands",    cmd: "/commands",    desc: "Browse custom slash commands",                             scope: "session", supportedTools: ["claude-code", "gemini"] },
   { intent: "session.commands",    cmd: "/prompts",     desc: "Browse custom prompts",                                    scope: "session", supportedTools: ["codex"] },
 ];
 
 function isKnownTool(t: unknown): t is SessionTool {
-  return t === "claude" || t === "codex" || t === "gemini";
+  return t === "claude-code" || t === "codex" || t === "gemini";
 }
 
 /**

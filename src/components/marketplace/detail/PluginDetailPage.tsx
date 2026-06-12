@@ -343,7 +343,7 @@ function ComponentsBody({ declares }: { declares: PluginDetail["manifest"]["decl
   // targets (claude … agy) gets a breakdown. Each provider declares
   // skills/commands/hooks uniformly; only non-zero rows render.
   const PROVIDER_LABEL: Record<string, string> = {
-    claude: "Claude Code",
+    "claude-code": "Claude Code",
     codex: "Codex",
     gemini: "Gemini",
     kimi: "Kimi",

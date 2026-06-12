@@ -74,12 +74,12 @@ mod tests {
         assert_eq!(c.server.host, "127.0.0.1");
         assert_eq!(c.server.port, 8765);
         assert_eq!(c.database.path, "fleet.db");
-        assert_eq!(c.agents["claude"].command, "claude");
+        assert_eq!(c.agents["claude-code"].command, "claude");
         assert_eq!(
-            c.agents["claude"].args,
+            c.agents["claude-code"].args,
             vec!["-p", "--output-format", "stream-json", "--verbose"]
         );
-        assert!(c.agents["claude"].chat_ui);
+        assert!(c.agents["claude-code"].chat_ui);
         assert!(!c.agents["aider"].chat_ui);
     }
 }

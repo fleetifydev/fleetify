@@ -77,7 +77,7 @@ fn builtin_to_spec(b: &BuiltinTemplate) -> TemplateSpec {
         preferred_tier: "most_capable".to_string(),
         permission_mode: b.default_permission_mode.to_string(),
         system_prompt: b.system_prompt.to_string(),
-        providers: vec!["claude".to_string()],
+        providers: vec!["claude-code".to_string()],
         mcp_servers: b.extra_mcp_servers.iter().map(|s| s.to_string()).collect(),
         plugin: "builtin".to_string(),
         tags: vec![],
@@ -102,7 +102,7 @@ fn dynamic_specs() -> Vec<TemplateSpec> {
             permission_mode: "default".to_string(),
             system_prompt,
             providers: if item.providers.is_empty() {
-                vec!["claude".to_string()]
+                vec!["claude-code".to_string()]
             } else {
                 item.providers.clone()
             },
@@ -198,7 +198,7 @@ mod tests {
                 name: "Code Reviewer".to_string(),
                 slug: "code-reviewer".to_string(),
                 description: Some("reviews diffs".to_string()),
-                providers: vec!["claude".to_string()],
+                providers: vec!["claude-code".to_string()],
                 materialized: Vec::<Materialized>::new(),
                 hook_merge: Vec::new(),
                 created_at: "t0".to_string(),
@@ -218,7 +218,7 @@ mod tests {
             let lib = specs.iter().find(|s| s.name == "code-reviewer").unwrap();
             assert_eq!(lib.plugin, "library");
             assert_eq!(lib.title, "Code Reviewer");
-            assert_eq!(lib.providers, vec!["claude".to_string()]);
+            assert_eq!(lib.providers, vec!["claude-code".to_string()]);
             // Builtins still present alongside.
             assert!(specs.iter().any(|s| s.name == "reverse_engineering"));
         });

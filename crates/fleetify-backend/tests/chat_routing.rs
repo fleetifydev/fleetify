@@ -27,7 +27,7 @@ use parking_lot::RwLock;
 fn matrix_with_claude() -> CapabilityMatrix {
     toml::from_str(
         r#"
-[agents.claude]
+[agents.claude-code]
 supports_tool_use = true
 supports_vision = true
 max_context = 200000
@@ -97,14 +97,14 @@ async fn new_session_with_routing_enabled_persists_decision_and_pins() {
 
     let pool = init_pool("sqlite::memory:").await.unwrap();
     let routing = make_orchestrator(true);
-    seed_session(&pool, "s-new", "claude").await;
+    seed_session(&pool, "s-new", "claude-code").await;
 
     let task = chat_task("s-new", "Refactor this module please.");
     let r = resolve_routing_for_turn(
         &pool,
         &routing,
         "s-new",
-        "claude",
+        "claude-code",
         Some("claude-sonnet-4-6"),
         task,
     )
@@ -123,7 +123,7 @@ async fn new_session_with_routing_enabled_persists_decision_and_pins() {
             .await
             .unwrap();
     assert_eq!(count, 1, "exactly one routing_decisions row");
-    assert_eq!(agent, "claude");
+    assert_eq!(agent, "claude-code");
     assert_eq!(model_persisted, r.model);
 
     // sessions row was pinned.
@@ -134,7 +134,7 @@ async fn new_session_with_routing_enabled_persists_decision_and_pins() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(pa.as_deref(), Some("claude"));
+    assert_eq!(pa.as_deref(), Some("claude-code"));
     assert_eq!(pm.as_deref(), Some(r.model.as_str()));
     assert_eq!(rid.as_deref(), Some(decision_id.as_str()));
 }
@@ -147,7 +147,7 @@ async fn existing_pinned_session_skips_routing() {
 
     let pool = init_pool("sqlite::memory:").await.unwrap();
     let routing = make_orchestrator(true);
-    seed_session(&pool, "s-pinned", "claude").await;
+    seed_session(&pool, "s-pinned", "claude-code").await;
 
     // Seed a decision row + pin the session against it. Mirrors what a
     // first turn would have written.
@@ -156,7 +156,7 @@ async fn existing_pinned_session_skips_routing() {
         "prior-decision",
         "chat",
         Some("s-pinned"),
-        "claude",
+        "claude-code",
         "claude-haiku-4-5",
         "builtin",
         "first-turn rationale",
@@ -171,7 +171,7 @@ async fn existing_pinned_session_skips_routing() {
     pin_session(
         &pool,
         "s-pinned",
-        "claude",
+        "claude-code",
         "claude-haiku-4-5",
         "prior-decision",
     )
@@ -193,7 +193,7 @@ async fn existing_pinned_session_skips_routing() {
         &pool,
         &routing,
         "s-pinned",
-        "claude",
+        "claude-code",
         Some("claude-sonnet-4-6"),
         task,
     )
@@ -220,14 +220,14 @@ async fn disabled_routing_uses_manual_fields() {
 
     let pool = init_pool("sqlite::memory:").await.unwrap();
     let routing = make_orchestrator(false);
-    seed_session(&pool, "s-manual", "claude").await;
+    seed_session(&pool, "s-manual", "claude-code").await;
 
     let task = chat_task("s-manual", "do a thing");
     let r = resolve_routing_for_turn(
         &pool,
         &routing,
         "s-manual",
-        "claude",
+        "claude-code",
         Some("claude-sonnet-4-6"),
         task,
     )
@@ -270,7 +270,7 @@ async fn dispatch_routing_records_decision_when_enabled() {
 
     let pool = init_pool("sqlite::memory:").await.unwrap();
     let routing = make_orchestrator(true);
-    seed_session(&pool, "tgt-1", "claude").await;
+    seed_session(&pool, "tgt-1", "claude-code").await;
 
     let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM routing_decisions")
         .fetch_one(&pool)
@@ -283,7 +283,7 @@ async fn dispatch_routing_records_decision_when_enabled() {
         &routing,
         "tgt-1",                   // task_id surrogate
         "tgt-1",                   // target_session_id
-        "claude",                  // target_tool
+        "claude-code",             // target_tool
         Some("claude-sonnet-4-6"), // target_model (the orchestrator overrides)
         "Refactor module foo. This is a long task that should be tiered.",
     )
@@ -330,14 +330,14 @@ async fn dispatch_routing_skipped_when_disabled() {
 
     let pool = init_pool("sqlite::memory:").await.unwrap();
     let routing = make_orchestrator(false);
-    seed_session(&pool, "tgt-2", "claude").await;
+    seed_session(&pool, "tgt-2", "claude-code").await;
 
     let res = resolve_routing_for_dispatch(
         &pool,
         &routing,
         "tgt-2",
         "tgt-2",
-        "claude",
+        "claude-code",
         Some("claude-haiku-4-5"),
         "Disabled-router pass-through task",
     )

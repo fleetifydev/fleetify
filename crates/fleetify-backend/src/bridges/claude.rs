@@ -681,7 +681,7 @@ impl ClaudeBridge {
             }
         }
         tracing::info!(
-            target: "claude",
+            target: "claude-code",
             session_id = %self.session_id,
             is_staff = self.is_staff,
             agent_template = self.agent_template.as_deref().unwrap_or(""),
@@ -753,7 +753,7 @@ impl ClaudeBridge {
                 match std::fs::write(&tmp, value.to_string()) {
                     Ok(_) => Some(tmp.to_string_lossy().into_owned()),
                     Err(e) => {
-                        tracing::warn!(target: "claude", "mcp_config write failed: {e}; running without MCPs");
+                        tracing::warn!(target: "claude-code", "mcp_config write failed: {e}; running without MCPs");
                         None
                     }
                 }

@@ -1490,8 +1490,8 @@ async fn list_models() -> Json<Value> {
     Json(json!({
         "providers": [
             {
-                "id": "claude",
-                "label": "Claude",
+                "id": "claude-code",
+                "label": "Claude Code",
                 "models": [
                     {"id": "claude-opus-4-7",           "label": "Opus 4.7",      "ctx": "200K"},
                     {"id": "claude-opus-4-7[1m]",       "label": "Opus 4.7 (1M)", "ctx": "1M"},
@@ -1763,7 +1763,7 @@ mod tests {
         // and the HTTP API providers DO source their lineup from the remote
         // catalog, so they must be prewarmed.
         for p in [
-            "claude",
+            "claude-code",
             "codex",
             "gemini",
             "kimi",
@@ -1814,7 +1814,7 @@ mod tests {
             .collect();
         for (id, probe) in probes {
             match (id, probe) {
-                ("claude", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "claude"),
+                ("claude-code", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "claude"),
                 ("codex", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "codex"),
                 ("gemini", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "gemini"),
                 ("kimi", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "kimi"),
@@ -1919,7 +1919,7 @@ mod tests {
     fn resolve_install_hint_falls_back_to_static_when_unset() {
         let p = crate::providers::CATALOG
             .iter()
-            .find(|p| p.id == "claude")
+            .find(|p| p.id == "claude-code")
             .unwrap();
         // CLI agents have install_hints: None, so the resolver falls back
         // to the single install_hint string (npm install -g …).
@@ -2096,7 +2096,7 @@ mod tests {
         let body = json!({
             "schemaVersion": 1, "commit": "abc",
             "provider": {
-                "id": "claude", "name": "Claude Code", "kind": "cli",
+                "id": "claude-code", "name": "Claude Code", "kind": "cli",
                 "models": [
                     { "id": "claude-opus-4-8", "label": "Opus 4.8", "context": 1_000_000, "supports_effort": true, "effort": {"kind":"levels","levels":["low","high"],"default":"high"} }
                 ]
@@ -2303,7 +2303,7 @@ mod tests {
     #[test]
     fn catalog_payload_includes_capability() {
         let payload = super::catalog_with_capabilities();
-        let claude = payload.iter().find(|p| p["id"] == "claude").unwrap();
+        let claude = payload.iter().find(|p| p["id"] == "claude-code").unwrap();
         assert_eq!(claude["permission"]["kind"], "modes");
         assert_eq!(claude["timing"]["permission"], "spawn");
         let codex = payload.iter().find(|p| p["id"] == "codex").unwrap();

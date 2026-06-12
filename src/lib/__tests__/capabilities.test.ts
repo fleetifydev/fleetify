@@ -76,7 +76,7 @@ describe("permissionModesFor", () => {
 
 describe("permissionCapabilityFor", () => {
   const tiles = [
-    makeTile("claude", {
+    makeTile("claude-code", {
       kind: "modes",
       modes: [
         { id: "default", label: "Ask permissions" },
@@ -90,7 +90,7 @@ describe("permissionCapabilityFor", () => {
   ];
 
   it("returns the tile's capability for a known provider id", () => {
-    const cap = permissionCapabilityFor(tiles, "claude");
+    const cap = permissionCapabilityFor(tiles, "claude-code");
     expect(cap.kind).toBe("modes");
     if (cap.kind === "modes") {
       expect(cap.modes).toHaveLength(4);
@@ -215,7 +215,7 @@ describe("sandboxOptionsFor", () => {
     modes: [{ id: "default", label: "Ask permissions" }],
     sandbox: ["off", "on"],
   });
-  const claudeTile = makeTile("claude", {
+  const claudeTile = makeTile("claude-code", {
     kind: "modes",
     modes: [{ id: "default", label: "Ask permissions" }],
     sandbox: null,
@@ -232,7 +232,7 @@ describe("sandboxOptionsFor", () => {
   });
 
   it("returns null for a modes provider without sandbox (claude)", () => {
-    const opts = sandboxOptionsFor([claudeTile], "claude");
+    const opts = sandboxOptionsFor([claudeTile], "claude-code");
     expect(opts).toBeNull();
   });
 
@@ -284,7 +284,7 @@ describe("parseToolOverrides", () => {
 
 describe("defaultPermissionMode", () => {
   const claudeTiles = [
-    makeTile("claude", {
+    makeTile("claude-code", {
       kind: "modes",
       modes: [
         { id: "default", label: "Ask permissions" },
@@ -296,7 +296,7 @@ describe("defaultPermissionMode", () => {
   ];
 
   it("returns 'default' for claude (HTTP-fallback-like modes capability with a 'default' mode)", () => {
-    const cap = permissionCapabilityFor(claudeTiles, "claude");
+    const cap = permissionCapabilityFor(claudeTiles, "claude-code");
     expect(defaultPermissionMode(cap)).toBe("default");
   });
 

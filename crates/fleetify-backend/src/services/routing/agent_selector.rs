@@ -58,7 +58,7 @@ impl AgentSelector {
 
 fn agent_key(a: AgentKind) -> &'static str {
     match a {
-        AgentKind::Claude => "claude",
+        AgentKind::Claude => "claude-code",
         AgentKind::OpenAI => "openai",
         AgentKind::Gemini => "gemini",
         AgentKind::Codex => "codex",
@@ -75,7 +75,7 @@ mod tests {
     fn matrix() -> CapabilityMatrix {
         toml::from_str(
             r#"
-[agents.claude]
+[agents.claude-code]
 supports_tool_use = true
 supports_vision = true
 max_context = 200000

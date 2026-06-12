@@ -450,7 +450,7 @@ mod tests {
             description: "Summarises diffs.".into(),
             author: None,
             min_fleetify_version: None,
-            providers: vec!["claude".into()],
+            providers: vec!["claude-code".into()],
             tags: vec!["productivity".into()],
             provides: vec!["skills".into()],
             icon: None,

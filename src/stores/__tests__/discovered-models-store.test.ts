@@ -49,7 +49,7 @@ const baseTile = (
 });
 
 const TILES: ProviderTile[] = [
-  baseTile("claude", "Claude Code", "cli", { connected: true }),
+  baseTile("claude-code", "Claude Code", "cli", { connected: true }),
   baseTile("openai", "OpenAI", "api"),
 ];
 
@@ -73,15 +73,15 @@ describe("discovered-models-store hydrate", () => {
 
   it("resolves a remote-catalog-only model's display name after hydrate (the claude-fable-5 chip regression)", async () => {
     mockedAgent.mockImplementation(async (id: string) =>
-      id === "claude"
+      id === "claude-code"
         ? { models: [{ id: "claude-fable-5", label: "Fable 5", ctx: "200K" }], current: null }
         : { models: [], current: null },
     );
     await useDiscoveredModelsStore.getState().hydrate(TILES);
     // The composer chip resolves through the same groups — before this store,
     // a remount lost the picker-fetched catalog and the chip showed the raw id.
-    const groups = buildPickerGroups(TILES, ["claude"], useDiscoveredModelsStore.getState().models);
-    expect(resolveModelChip(groups, "claude", "claude-fable-5").label).toBe("Fable 5");
+    const groups = buildPickerGroups(TILES, ["claude-code"], useDiscoveredModelsStore.getState().models);
+    expect(resolveModelChip(groups, "claude-code", "claude-fable-5").label).toBe("Fable 5");
   });
 
   it("is single-flight: a second hydrate does not refetch", async () => {

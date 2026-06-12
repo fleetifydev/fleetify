@@ -55,9 +55,9 @@ export interface CreateLibraryItem {
  *  it carries no picker. Kept here (next to the types) so the dialog and any
  *  validation read the same source of truth. */
 export const PROVIDERS_FOR_KIND: Record<LibraryKind, Provider[]> = {
-  skill: ["claude", "codex", "gemini", "kimi", "opencode", "github-copilot", "cursor", "hermes", "agy"],
-  command: ["claude", "gemini", "opencode", "codex"],
-  hook: ["claude", "cursor", "agy", "kimi", "github-copilot", "opencode", "hermes"],
+  skill: ["claude-code", "codex", "gemini", "kimi", "opencode", "github-copilot", "cursor", "hermes", "agy"],
+  command: ["claude-code", "gemini", "opencode", "codex"],
+  hook: ["claude-code", "cursor", "agy", "kimi", "github-copilot", "opencode", "hermes"],
   prompt: [],
   template: [],
 };

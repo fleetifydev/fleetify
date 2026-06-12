@@ -88,13 +88,13 @@ fn scan_root(root: &Path, provider: &str, tier: &'static str) -> Vec<Skill> {
 
 /// User-tier `~/.claude/skills/` + (optional) project-tier
 /// `<project>/.claude/skills/` (parity with `_skill_roots` for the
-/// "claude" provider).
+/// "claude-code" provider).
 pub fn list_claude_skills(home: &Path, project: Option<&Path>) -> Vec<Skill> {
-    let mut all = scan_root(&home.join(".claude").join("skills"), "claude", "user");
+    let mut all = scan_root(&home.join(".claude").join("skills"), "claude-code", "user");
     if let Some(p) = project {
         all.extend(scan_root(
             &p.join(".claude").join("skills"),
-            "claude",
+            "claude-code",
             "project",
         ));
     }
@@ -102,7 +102,7 @@ pub fn list_claude_skills(home: &Path, project: Option<&Path>) -> Vec<Skill> {
 }
 
 /// Per-provider skill directory matrix. Faithful with `_skill_roots`.
-/// `provider` is "claude" | "gemini" | "codex"; unknown values yield
+/// `provider` is "claude-code" | "gemini" | "codex"; unknown values yield
 /// an empty matrix.
 fn skill_roots(
     provider: &str,
@@ -111,7 +111,7 @@ fn skill_roots(
 ) -> Vec<(PathBuf, &'static str)> {
     let mut roots: Vec<(PathBuf, &'static str)> = Vec::new();
     match provider {
-        "claude" => {
+        "claude-code" => {
             roots.push((home.join(".claude").join("skills"), "user"));
             if let Some(p) = project {
                 roots.push((p.join(".claude").join("skills"), "project"));
@@ -312,18 +312,18 @@ fn scan_codex_hooks(json_path: &Path, toml_path: &Path, tier: &'static str) -> V
 pub fn list_claude_hooks(home: &Path, project: Option<&Path>) -> Vec<Hook> {
     let mut all = scan_settings_hooks(
         &home.join(".claude").join("settings.json"),
-        "claude",
+        "claude-code",
         "user",
     );
     if let Some(p) = project {
         all.extend(scan_settings_hooks(
             &p.join(".claude").join("settings.json"),
-            "claude",
+            "claude-code",
             "project",
         ));
         all.extend(scan_settings_hooks(
             &p.join(".claude").join("settings.local.json"),
-            "claude",
+            "claude-code",
             "project",
         ));
     }
@@ -369,7 +369,7 @@ pub fn list_codex_hooks(home: &Path, project: Option<&Path>) -> Vec<Hook> {
 /// `list_skills_for_provider`. Unknown tools return [].
 pub fn list_hooks_for_provider(provider: &str, home: &Path, project: Option<&Path>) -> Vec<Hook> {
     match provider {
-        "claude" => list_claude_hooks(home, project),
+        "claude-code" => list_claude_hooks(home, project),
         "gemini" => list_gemini_hooks(home, project),
         "codex" => list_codex_hooks(home, project),
         _ => Vec::new(),
@@ -464,14 +464,14 @@ fn push_md_command(
 pub fn list_claude_commands(home: &Path, project: Option<&Path>) -> Vec<Command> {
     let mut all = scan_md_commands(
         &home.join(".claude").join("commands"),
-        "claude",
+        "claude-code",
         "user",
         None,
     );
     if let Some(p) = project {
         all.extend(scan_md_commands(
             &p.join(".claude").join("commands"),
-            "claude",
+            "claude-code",
             "project",
             None,
         ));
@@ -572,7 +572,7 @@ pub fn list_commands_for_provider(
     project: Option<&Path>,
 ) -> Vec<Command> {
     match provider {
-        "claude" => list_claude_commands(home, project),
+        "claude-code" => list_claude_commands(home, project),
         "gemini" => list_gemini_commands(home, project),
         "codex" => list_codex_commands(home),
         _ => Vec::new(),
@@ -840,7 +840,7 @@ mod tests {
         let foo = items.iter().find(|s| s.source_tier == "user").unwrap();
         assert_eq!(foo.name, "foo-skill");
         assert_eq!(foo.description.as_deref(), Some("U"));
-        assert_eq!(foo.provider, "claude");
+        assert_eq!(foo.provider, "claude-code");
         let bar = items.iter().find(|s| s.source_tier == "project").unwrap();
         assert_eq!(bar.name, "bar"); // fallback to directory name
         assert!(bar.description.is_none());

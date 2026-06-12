@@ -13,7 +13,7 @@ export type AgentTool =
   // (Not Diamond, or the offline built-in router as fallback). The renderer
   // surfaces it as a neutral "Auto" chip — never dispatched as a literal agent.
   | "auto"
-  | "claude"
+  | "claude-code"
   | "gemini"
   | "codex"
   | "aider"

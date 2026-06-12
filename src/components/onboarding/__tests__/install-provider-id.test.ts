@@ -10,7 +10,7 @@ import { describe, it, expect } from "vitest";
 // Regression context: passing `p.scanKey` ("agy_cli",
 // "antigravity_sdk", "claude_cli"…) to `installProvider` lands at
 // the backend's `shell_install_provider` which routes on the kebab
-// `p.id` ("agy", "antigravity-sdk", "claude") and returns
+// `p.id` ("agy", "antigravity-sdk", "claude-code") and returns
 // `unknown provider: <scanKey>` for every CLI install in onboarding.
 import onboardingSrc from "@/components/onboarding/onboarding-chat.tsx?raw";
 
@@ -104,7 +104,7 @@ describe("OnboardingChat install IPC", () => {
 
     // The full workspace catalog (21 ids — must match providers::CATALOG).
     const catalog = [
-      "claude", "codex", "gemini", "kimi", "opencode", "github-copilot",
+      "claude-code", "codex", "gemini", "kimi", "opencode", "github-copilot",
       "cursor", "hermes", "agy", "antigravity-sdk",
       "openai", "anthropic", "deepseek", "grok", "nvidia-nim", "kimi-api",
       "gemini-api", "perplexity", "openrouter", "cloudflare-workers-ai",

@@ -223,7 +223,7 @@ function DefaultPairRow({
   const models = providerId ? modelsForProvider(providerId) : [];
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "13px 16px" }}>
-      <ProviderLogo tool={providerId || "claude"} size={20} />
+      <ProviderLogo tool={providerId || "claude-code"} size={20} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 13, fontWeight: 600, color: "var(--c-high)" }}>{label}</div>
         <div style={{ fontSize: 11.5, color: "var(--c-dim)", marginTop: 1 }}>{caption}</div>

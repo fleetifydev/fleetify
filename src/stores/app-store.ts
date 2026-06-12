@@ -402,7 +402,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   composer: {
     open: false,
     projectPath: "",
-    tool: "claude",
+    tool: "claude-code",
     modelName: null,
     permissionMode: "default",
     sandbox: null,
@@ -858,7 +858,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch { /* keep fallbacks */ }
     // Guarantee the (provider, model) maps to a CONNECTED provider — otherwise a
     // fresh session opens on a tile the user can't dispatch (e.g. the hardcoded
-    // "claude" fallback when Claude isn't set up). If the resolved provider
+    // "claude-code" fallback when Claude isn't set up). If the resolved provider
     // isn't connected, switch to the Fleet-default-or-first connected tile; then
     // make sure the model belongs to it (the picker's list, CLI fallbacks
     // included), else take that provider's first model.

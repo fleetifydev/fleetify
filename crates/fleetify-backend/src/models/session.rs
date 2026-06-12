@@ -106,7 +106,7 @@ pub struct GroupCreate {
 }
 
 fn default_tool() -> String {
-    "claude".into()
+    "claude-code".into()
 }
 fn default_perm() -> String {
     "default".into()
@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn session_create_defaults_match_python() {
         let sc: SessionCreate = serde_json::from_str(r#"{"title":"x"}"#).unwrap();
-        assert_eq!(sc.tool, "claude");
+        assert_eq!(sc.tool, "claude-code");
         assert_eq!(sc.permission_mode, "default");
         assert_eq!(sc.session_mode, "new");
         assert!(sc.use_worktree);
@@ -155,7 +155,7 @@ mod tests {
             "INSERT INTO sessions \
              (id,title,project_path,group_path,tool,command,status,use_worktree,\
               permission_mode,session_mode,pinned,order_idx,created_at,budget_used) \
-             VALUES (?,?,'','','claude','claude','idle',1,'default','new',0,0,\
+             VALUES (?,?,'','','claude-code','claude-code','idle',1,'default','new',0,0,\
                      '2026-01-01T00:00:00Z',0.0)",
         )
         .bind(id)

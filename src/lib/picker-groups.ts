@@ -41,7 +41,7 @@ export interface PickerGroup {
 const EFFORT_NONE: EffortCapability = { kind: "none" };
 
 const CLI_MODELS: Record<string, PickerModel[]> = {
-  claude: [
+  "claude-code": [
     {
       id: "claude-fable-5", label: "Fable 5", ctx: "1M",
       effort: EFFORT_NONE,
@@ -189,7 +189,8 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
  *  (cold-start race or transient IPC failure) so the picker never shows a
  *  blank rail. */
 const CLI_FALLBACK_LABELS: Record<string, string> = {
-  claude:            "Claude Code",
+  "claude-code":     "Claude Code",
+  claude:            "Claude Code", // legacy id alias (pre-rename sessions)
   codex:             "Codex CLI",
   gemini:            "Gemini CLI",
   kimi:              "Kimi Code CLI",
@@ -497,7 +498,7 @@ export function effortForDiscoveredModel(
 
 /** Resolve the (tool, model) pair to seed the Fleet hub on first launch.
  *  `tool` = the connected default tile, else the first connected tile,
- *  else "claude". `model` = the persisted `defaultModel` when it is a
+ *  else "claude-code". `model` = the persisted `defaultModel` when it is a
  *  valid model id for that tool's group, otherwise the group's first
  *  model. This is what stops the hub from defaulting to "Auto" after
  *  onboarding pinned a real model. */
@@ -507,7 +508,7 @@ export function resolveStartupDefault(
 ): { tool: string; model: string | undefined } {
   const pick =
     tiles.find((t) => t.is_default && t.connected) ?? tiles.find((t) => t.connected);
-  const tool = pick?.spec.id ?? "claude";
+  const tool = pick?.spec.id ?? "claude-code";
   const groups = buildPickerGroups(
     tiles,
     tiles.filter((t) => t.spec.kind === "cli" && t.connected).map((t) => t.spec.id),

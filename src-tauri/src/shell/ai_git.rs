@@ -18,12 +18,15 @@ use serde_json::{json, Value};
 
 use crate::shell::git;
 
+// Tuple is (binary, args). The provider id is "claude-code" (see cli_for's
+// default) but the spawned binary stays "claude" — that's the executable the
+// `@anthropic-ai/claude-code` npm package installs on PATH.
 const CLAUDE: (&str, &[&str]) = ("claude", &["--print"]);
 const CODEX: (&str, &[&str]) = ("codex", &["exec", "--quiet"]);
 const GEMINI: (&str, &[&str]) = ("gemini", &["--prompt-stdin"]);
 
 fn cli_for(tool: Option<&str>) -> (&'static str, &'static [&'static str]) {
-    match tool.unwrap_or("claude") {
+    match tool.unwrap_or("claude-code") {
         "codex" => CODEX,
         "gemini" => GEMINI,
         _ => CLAUDE, // unknown → claude (parity with the Electron fallback)
@@ -684,7 +687,7 @@ mod tests {
 
     #[test]
     fn cli_for_picks_per_tool() {
-        assert_eq!(cli_for(Some("claude")).0, "claude");
+        assert_eq!(cli_for(Some("claude-code")).0, "claude");
         assert_eq!(cli_for(Some("codex")).0, "codex");
         assert_eq!(cli_for(Some("gemini")).0, "gemini");
         // Unknown → claude (parity with Electron fallback).

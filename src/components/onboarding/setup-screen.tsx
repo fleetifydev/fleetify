@@ -19,11 +19,11 @@ interface Provider {
 }
 
 const PROVIDERS: Provider[] = [
-  { key: "claude_cli", logo: "claude", name: "Claude Code", action: "install" },
+  { key: "claude_cli", logo: "claude-code", name: "Claude Code", action: "install" },
   { key: "gemini_cli", logo: "gemini", name: "Gemini CLI",  action: "install" },
   { key: "codex_cli",  logo: "codex",  name: "Codex CLI",   action: "install" },
   { key: "ollama",     logo: "ollama", name: "Ollama",      action: "open", externalUrl: "https://ollama.com/download" },
-  { key: "anthropic",  logo: "claude", name: "Anthropic",   action: "key", configKey: "anthropic" },
+  { key: "anthropic",  logo: "claude-code", name: "Anthropic",   action: "key", configKey: "anthropic" },
   { key: "openai",     logo: "openai", name: "OpenAI",      action: "key", configKey: "openai" },
   { key: "gemini_api", logo: "gemini", name: "Google AI",   action: "key", configKey: "gemini" },
   { key: "groq",       logo: "groq",   name: "Groq",        action: "key", configKey: "groq" },

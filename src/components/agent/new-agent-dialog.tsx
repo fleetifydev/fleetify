@@ -17,7 +17,7 @@ interface PluginTemplate {
 }
 
 const TIER_TO_MODEL: Record<string, Record<string, string>> = {
-  claude: {
+  "claude-code": {
     fastest: "claude-haiku-4-5-20251001",
     balanced: "claude-sonnet-4-6",
     most_capable: "claude-opus-4-8",
@@ -52,7 +52,7 @@ const AGENT_TEMPLATES = [
     icon: "🔬",
     name: "Reverse Engineer",
     description: "Login endpoint discovery, JS bundle analysis, proxy support",
-    provider: "claude",
+    provider: "claude-code",
     model: "claude-opus-4-8",
     systemPromptHint: "You are a web reverse-engineering specialist with proxied fetch + JS analysis tools.",
     // Maps to backend BuiltinTemplate id — unlocks the fleet_reveng MCP
@@ -65,7 +65,7 @@ const AGENT_TEMPLATES = [
     icon: "🕷️",
     name: "Web Scraper",
     description: "Scrapes websites, extracts structured data",
-    provider: "claude",
+    provider: "claude-code",
     model: "claude-sonnet-4-6",
     systemPromptHint: "You are a web scraping specialist. Extract structured data from websites efficiently.",
   },
@@ -74,7 +74,7 @@ const AGENT_TEMPLATES = [
     icon: "🔍",
     name: "Code Reviewer",
     description: "Reviews code for bugs, style, security",
-    provider: "claude",
+    provider: "claude-code",
     model: "claude-opus-4-8",
     systemPromptHint: "You are an expert code reviewer. Analyze code for bugs, security vulnerabilities, and improvement opportunities.",
   },
@@ -83,7 +83,7 @@ const AGENT_TEMPLATES = [
     icon: "📚",
     name: "Researcher",
     description: "Deep research, report generation",
-    provider: "claude",
+    provider: "claude-code",
     model: "claude-opus-4-8",
     systemPromptHint: "You are a research specialist. Conduct thorough research and produce structured, cited reports.",
   },
@@ -92,7 +92,7 @@ const AGENT_TEMPLATES = [
     icon: "✅",
     name: "QA Engineer",
     description: "Writes and runs tests, finds bugs",
-    provider: "claude",
+    provider: "claude-code",
     model: "claude-sonnet-4-6",
     systemPromptHint: "You are a QA engineer. Write comprehensive tests, identify edge cases, and ensure software quality.",
   },
@@ -101,7 +101,7 @@ const AGENT_TEMPLATES = [
     icon: "⚙️",
     name: "DevOps Agent",
     description: "CI/CD, deployments, infrastructure",
-    provider: "claude",
+    provider: "claude-code",
     model: "claude-sonnet-4-6",
     systemPromptHint: "You are a DevOps specialist. Manage deployments, CI/CD pipelines, and infrastructure.",
   },
@@ -110,7 +110,7 @@ const AGENT_TEMPLATES = [
     icon: "📊",
     name: "Data Analyst",
     description: "Analyzes data, generates insights",
-    provider: "claude",
+    provider: "claude-code",
     model: "claude-sonnet-4-6",
     systemPromptHint: "You are a data analyst. Process datasets, identify patterns, and generate actionable insights.",
   },
@@ -119,7 +119,7 @@ const AGENT_TEMPLATES = [
     icon: "✍️",
     name: "Technical Writer",
     description: "Docs, READMEs, API references",
-    provider: "claude",
+    provider: "claude-code",
     model: "claude-haiku-4-5-20251001",
     systemPromptHint: "You are a technical writer. Create clear, accurate documentation and developer guides.",
   },
@@ -137,7 +137,7 @@ const AGENT_TEMPLATES = [
 type TemplateId = typeof AGENT_TEMPLATES[number]["id"];
 
 const PROVIDERS = [
-  { id: "claude", name: "Claude Code", icon: ClaudeLogo, models: [
+  { id: "claude-code", name: "Claude Code", icon: ClaudeLogo, models: [
     { id: "claude-opus-4-8",          label: "Opus 4.8",   desc: "Most capable" },
     { id: "claude-sonnet-4-6",         label: "Sonnet 4.6", desc: "Balanced", default: true },
     { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5",  desc: "Fastest" },
@@ -190,7 +190,7 @@ export function hasOffWorktreeConflict(
 
 export function NewAgentView({ onClose }: Props) {
   const { addSession, setActiveSession, sessions, staffSessionId } = useAppStore();
-  const [provider,  setProvider]  = useState("claude");
+  const [provider,  setProvider]  = useState("claude-code");
   const [modelId,   setModelId]   = useState("claude-sonnet-4-6");
   const [name,      setName]      = useState("");
   // Per-session git isolation. Default mirrors the app-store default
@@ -328,7 +328,7 @@ export function NewAgentView({ onClose }: Props) {
     return () => { cancelled = true; };
   }, [provider]);
   useEffect(() => {
-    if (!path.trim() || !["claude","gemini","codex"].includes(provider)) {
+    if (!path.trim() || !["claude-code","gemini","codex"].includes(provider)) {
       setClaudeSessions([]); setSessionCount(0); return;
     }
     if (fetchTimer.current) clearTimeout(fetchTimer.current);
@@ -379,8 +379,8 @@ export function NewAgentView({ onClose }: Props) {
     setShowTpl(false);
     // Pick the first compatible provider; default to claude if available.
     const preferred = tpl.providers.includes(provider) ? provider :
-      tpl.providers.includes("claude") ? "claude" :
-      tpl.providers[0] ?? "claude";
+      tpl.providers.includes("claude-code") ? "claude-code" :
+      tpl.providers[0] ?? "claude-code";
     setProvider(preferred);
     const tierModel = TIER_TO_MODEL[preferred]?.[tpl.preferred_tier];
     if (tierModel) setModelId(tierModel);
@@ -934,7 +934,7 @@ export function NewAgentView({ onClose }: Props) {
             <Sep/>
 
             {/* ── Session ── */}
-            {["claude","gemini","codex"].includes(provider) && (
+            {["claude-code","gemini","codex"].includes(provider) && (
               <>
                 <SecHead style={{ marginTop:20 }}>Session</SecHead>
                 <div style={{ display:"flex", flexDirection:"column", gap:8, marginTop:10, marginBottom:20 }}>

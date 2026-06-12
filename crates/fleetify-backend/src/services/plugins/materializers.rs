@@ -517,7 +517,7 @@ mod tests {
 
         let home = tmp.path().join("home");
         with_home(&home, || {
-            let r = materialize("my-plugin", &install, "claude").unwrap();
+            let r = materialize("my-plugin", &install, "claude-code").unwrap();
             // Hyphen-namespaced (NOT my-plugin__cool-skill).
             let dst = home.join(".claude/skills/my-plugin-cool-skill");
             assert!(dst.is_dir());
@@ -665,7 +665,7 @@ mod tests {
         std::fs::write(payload.join("ref.txt"), b"x").unwrap();
         let home = tmp.path().join("home");
         with_home(&home, || {
-            let r = materialize_skill_item(&payload, "my-skill", "claude").unwrap();
+            let r = materialize_skill_item(&payload, "my-skill", "claude-code").unwrap();
             let dst = home.join(".claude/skills/my-skill");
             assert!(dst.join("SKILL.md").is_file());
             assert!(dst.join("ref.txt").is_file(), "assets copied");
@@ -704,7 +704,7 @@ mod tests {
         std::fs::write(&payload, b"## /deploy\nDeploy the app.").unwrap();
         let home = tmp.path().join("home");
         with_home(&home, || {
-            let rc = materialize_command_item(&payload, "deploy", "claude").unwrap();
+            let rc = materialize_command_item(&payload, "deploy", "claude-code").unwrap();
             let rx = materialize_command_item(&payload, "deploy", "codex").unwrap();
             // Claude → commands/<slug>.md ; Codex → prompts/<slug>.md
             assert!(home.join(".claude/commands/deploy.md").is_file());
@@ -796,8 +796,8 @@ mod tests {
 
         let home = tmp.path().join("home");
         with_home(&home, || {
-            let rs = materialize_skill_item(&skill, "s", "claude").unwrap();
-            let rc = materialize_command_item(&cmd, "x", "claude").unwrap();
+            let rs = materialize_skill_item(&skill, "s", "claude-code").unwrap();
+            let rc = materialize_command_item(&cmd, "x", "claude-code").unwrap();
             let rp = materialize_prompt_item(&prompt, "p").unwrap();
             assert!(home.join(".claude/skills/s").is_dir());
             assert!(home.join(".claude/commands/x.md").is_file());

@@ -403,6 +403,7 @@ export function HermesLogo({ size = 18 }: { size?: number }) {
 export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number }) {
   switch (tool) {
     case "auto":       return <AutoLogo size={size} />;
+    case "claude-code":
     case "claude":     return <ImgIcon src={claudeIcon} size={size} label="Claude Code" />;
     case "anthropic":  return <ImgIcon src={claudeIcon} size={size} label="Claude Code" />;
     case "codex":      return <ThemedImgIcon light={codexLightIcon} dark={codexDarkIcon} size={size} label="Codex" />;
@@ -440,7 +441,7 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
 
 export function providerName(tool: string): string {
   const names: Record<string, string> = {
-    claude: "Claude Code", codex: "Codex", cursor: "Cursor", gemini: "Gemini",
+    "claude-code": "Claude Code", claude: "Claude Code", codex: "Codex", cursor: "Cursor", gemini: "Gemini",
     ollama: "Ollama", kimi: "Kimi", agy: "Antigravity CLI",
     "antigravity-sdk": "Antigravity SDK",
     opencode: "OpenCode", "github-copilot": "GitHub Copilot", aider: "Aider",

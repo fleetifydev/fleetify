@@ -4,7 +4,7 @@
  *  components to an on-disk home; `antigravity-sdk` is MCP-only (no home).
  *  Mirrors the backend `KNOWN_PROVIDERS`. */
 export type Provider =
-  | "claude"
+  | "claude-code"
   | "codex"
   | "gemini"
   | "kimi"

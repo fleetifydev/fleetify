@@ -8,7 +8,7 @@ interface WelcomeScreenProps {
   onAuth: (user: AuthUser, token: string, isNew: boolean) => void;
 }
 
-const PROVIDERS = ["claude", "codex", "cursor", "gemini", "ollama", "kimi"] as const;
+const PROVIDERS = ["claude-code", "codex", "cursor", "gemini", "ollama", "kimi"] as const;
 
 /**
  * Welcome — chevron + Geist Bold lockup, provider logo strip, single

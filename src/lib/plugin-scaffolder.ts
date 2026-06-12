@@ -19,7 +19,7 @@ export interface ScaffoldInput {
   homepage?: string;
   license?: string;
   tags: string[];        // each kebab-case-ish; we lowercase before write
-  providers: ("claude" | "codex" | "gemini")[]; // non-empty
+  providers: ("claude-code" | "codex" | "gemini")[]; // non-empty
   components: {
     mcp_server: boolean;
     skill: boolean;
@@ -101,7 +101,7 @@ export function generateScaffold(input: ScaffoldInput): ScaffoldOutput {
     templates:   input.components.template ? 1 : 0,
     workflows:   input.components.workflow ? 1 : 0,
     providers: {
-      claude: input.providers.includes("claude") ? perProvider : blankProvider,
+      "claude-code": input.providers.includes("claude-code") ? perProvider : blankProvider,
       gemini: input.providers.includes("gemini") ? perProvider : blankProvider,
       codex:  input.providers.includes("codex")
         ? { ...perProvider, commands: 0 }  // Codex doesn't ship commands
@@ -270,12 +270,12 @@ function generateReadme(input: ScaffoldInput): string {
   // Surface provider-scoped components once with the first listed
   // provider as a representative path, so the README isn't N copies of
   // the same line. The actual files live under every declared provider.
-  const firstProvider = input.providers[0] ?? "claude";
+  const firstProvider = input.providers[0] ?? "claude-code";
   if (input.components.mcp_server) componentLines.push("- **MCP server** — `mcp.json`");
   if (input.components.skill)      componentLines.push(`- **Skill** — \`.${firstProvider}/skills/example-skill/\``);
   if (input.components.template)   componentLines.push("- **Agent template** — `templates/example-agent.json`");
   if (input.components.command) {
-    const cmdProvider = input.providers.find(p => p !== "codex") ?? "claude";
+    const cmdProvider = input.providers.find(p => p !== "codex") ?? "claude-code";
     const ext = cmdProvider === "gemini" ? "toml" : "md";
     componentLines.push(`- **Slash command** — \`.${cmdProvider}/commands/example.${ext}\``);
   }

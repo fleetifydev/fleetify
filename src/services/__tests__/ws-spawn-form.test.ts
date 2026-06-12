@@ -18,7 +18,7 @@ describe("spawn_form ws event", () => {
         session_id: sid,
         request_id: "r1",
         status: "pending",
-        draft: { title: "x", tool: "claude" },
+        draft: { title: "x", tool: "claude-code" },
         gaps: [],
       }),
     } as MessageEvent);

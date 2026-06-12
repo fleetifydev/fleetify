@@ -81,7 +81,7 @@ describe("openComposer — provider/model default precedence", () => {
       configurable: true,
       value: {
         getConfig: async () => ({
-          defaultProvider: "claude",
+          defaultProvider: "claude-code",
           defaultModel: "claude-opus-4-8",
           sessionDefaultProvider: "openai",
           sessionDefaultModel: "gpt-5.5",
@@ -114,7 +114,7 @@ describe("openComposer — provider/model default precedence", () => {
     });
     await useAppStore.getState().openComposer();
     const c = useAppStore.getState().composer;
-    expect(c.tool).toBe("claude");
+    expect(c.tool).toBe("claude-code");
     expect(c.modelName).toBe("claude-sonnet-4-6");
   });
 });

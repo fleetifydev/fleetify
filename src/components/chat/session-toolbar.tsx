@@ -199,7 +199,7 @@ export function SessionToolbar({
     // Reset immediately when the folder changes so stale entries don't
     // flash before the next fetch settles.
     setCliHistory([]);
-    if (!projectPath || tool !== "claude") return;
+    if (!projectPath || tool !== "claude-code") return;
     if (cliHistoryTimer.current) clearTimeout(cliHistoryTimer.current);
     cliHistoryTimer.current = setTimeout(async () => {
       setCliHistoryLoading(true);
@@ -860,7 +860,7 @@ export function SessionToolbar({
             in follow-ups). ── */}
       {(() => {
         const count = cliHistory.length;
-        const disabled = !projectPath || tool !== "claude";
+        const disabled = !projectPath || tool !== "claude-code";
         // Resume target settled? Two display modes for the chip:
         //   • no claudeSessionId → "History" + count badge (picker)
         //   • claudeSessionId set → green dot + the picked summary
@@ -870,7 +870,7 @@ export function SessionToolbar({
         const disabledReason =
           !projectPath
             ? "Pick a folder first to see previous Claude conversations"
-            : tool !== "claude"
+            : tool !== "claude-code"
               ? "History resume currently supports Claude only"
               : isResumed
                 ? `Resuming "${resumed?.summary ?? claudeSessionId.slice(0, 8)}". Click to change.`

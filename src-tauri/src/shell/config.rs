@@ -262,7 +262,7 @@ mod tests {
         let mut cfg = json!({});
         let mut p = ProvidersConfig {
             ollama_base_url: Some("http://192.168.1.50:11434".into()),
-            enabled_agents: vec!["claude".into(), "kimi".into()],
+            enabled_agents: vec!["claude-code".into(), "kimi".into()],
             ..Default::default()
         };
         p.connected.insert("openai".into(), true);
@@ -276,7 +276,7 @@ mod tests {
             back.ollama_base_url.as_deref(),
             Some("http://192.168.1.50:11434")
         );
-        assert_eq!(back.enabled_agents, vec!["claude", "kimi"]);
+        assert_eq!(back.enabled_agents, vec!["claude-code", "kimi"]);
         assert_eq!(back.connected.get("openai"), Some(&true));
         assert_eq!(back.connected.get("perplexity"), Some(&true));
         assert_eq!(
@@ -342,7 +342,7 @@ mod tests {
         };
         routing_set(&mut cfg, &r);
         let p = ProvidersConfig {
-            enabled_agents: vec!["claude".into()],
+            enabled_agents: vec!["claude-code".into()],
             ..Default::default()
         };
         providers_set(&mut cfg, &p);
@@ -355,7 +355,7 @@ mod tests {
         assert!(routing_from(&cfg).enabled);
         assert_eq!(
             providers_from(&cfg).enabled_agents,
-            vec!["claude".to_string()]
+            vec!["claude-code".to_string()]
         );
         assert!(telemetry_from(&cfg).posthog_enabled);
         assert_eq!(telemetry_from(&cfg).posthog_enabled_at, Some(42));

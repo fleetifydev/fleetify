@@ -8,7 +8,7 @@ const NONE_EFFORT = { kind: "none" as const };
 
 const groups: PickerGroup[] = [
   {
-    id: "claude",
+    id: "claude-code",
     label: "Claude Code",
     models: [
       { id: "claude-opus-4-7", label: "Opus 4.7", ctx: "200K", effort: LEVELS_EFFORT, supports_effort: true },
@@ -39,7 +39,7 @@ function harness(overrides: Partial<React.ComponentProps<typeof UnifiedModelPick
   const onClose = vi.fn();
   render(
     <UnifiedModelPicker
-      tool="claude"
+      tool="claude-code"
       model="claude-opus-4-7"
       effort="high"
       groups={groups}
@@ -117,7 +117,7 @@ describe("UnifiedModelPicker", () => {
       <div>
         <span data-testid="outside">outside</span>
         <UnifiedModelPicker
-          tool="claude"
+          tool="claude-code"
           model="claude-opus-4-7"
           effort="high"
           groups={groups}
@@ -141,7 +141,7 @@ describe("UnifiedModelPicker", () => {
   it("renders dividers between CLI / HTTP / Perplexity-Agent sections", () => {
     const { container } = render(
       <UnifiedModelPicker
-        tool="claude"
+        tool="claude-code"
         model="claude-opus-4-7"
         effort="high"
         groups={groups}
@@ -161,7 +161,7 @@ describe("UnifiedModelPicker", () => {
     // fall between the CLI block and OpenAI — not between the four classic
     // CLIs and the newer ones (the bug this guards against).
     const cliGroups: PickerGroup[] = [
-      { id: "claude", label: "Claude Code", models: [{ id: "claude-opus-4-7", label: "Opus 4.7", effort: LEVELS_EFFORT, supports_effort: true }] },
+      { id: "claude-code", label: "Claude Code", models: [{ id: "claude-opus-4-7", label: "Opus 4.7", effort: LEVELS_EFFORT, supports_effort: true }] },
       { id: "codex", label: "Codex CLI", models: [{ id: "gpt-5.5", label: "GPT-5.5", effort: LEVELS_EFFORT, supports_effort: true }] },
       { id: "gemini", label: "Gemini CLI", models: [{ id: "gemini-3.1-pro-preview", label: "3.1 Pro", effort: LEVELS_EFFORT, supports_effort: true }] },
       { id: "kimi", label: "Kimi Code CLI", models: [{ id: "kimi-k2.6", label: "Kimi K2.6", effort: NONE_EFFORT, supports_effort: false }] },
@@ -172,7 +172,7 @@ describe("UnifiedModelPicker", () => {
     ];
     const { container } = render(
       <UnifiedModelPicker
-        tool="claude"
+        tool="claude-code"
         model="claude-opus-4-7"
         effort="high"
         groups={cliGroups}
@@ -188,7 +188,7 @@ describe("UnifiedModelPicker", () => {
   });
 
   it("checkmarks the active model row", () => {
-    harness({ tool: "claude", model: "claude-opus-4-7" });
+    harness({ tool: "claude-code", model: "claude-opus-4-7" });
     const row = screen.getByRole("option", { name: /Opus 4.7/ });
     expect(row.getAttribute("aria-selected")).toBe("true");
   });
@@ -203,7 +203,7 @@ describe("UnifiedModelPicker", () => {
   it("renders exactly the model's level buttons for a levels-effort model (opus = 5 buttons incl Max)", () => {
     const opusGroups: PickerGroup[] = [
       {
-        id: "claude",
+        id: "claude-code",
         label: "Claude Code",
         models: [
           {
@@ -218,7 +218,7 @@ describe("UnifiedModelPicker", () => {
     ];
     render(
       <UnifiedModelPicker
-        tool="claude"
+        tool="claude-code"
         model="claude-opus-4-8"
         effort="high"
         groups={opusGroups}
@@ -239,7 +239,7 @@ describe("UnifiedModelPicker", () => {
   it("clicking Extra high calls onPickEffort with 'extra_high'", () => {
     const opusGroups: PickerGroup[] = [
       {
-        id: "claude",
+        id: "claude-code",
         label: "Claude Code",
         models: [
           {
@@ -255,7 +255,7 @@ describe("UnifiedModelPicker", () => {
     const onPickEffort = vi.fn();
     render(
       <UnifiedModelPicker
-        tool="claude"
+        tool="claude-code"
         model="claude-opus-4-8"
         effort="high"
         groups={opusGroups}

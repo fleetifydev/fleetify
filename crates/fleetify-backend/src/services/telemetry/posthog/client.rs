@@ -105,7 +105,7 @@ mod tests {
             .send_batch(vec![json!({
                 "event": "session_started",
                 "distinct_id": "device-1",
-                "properties": { "provider": "claude" },
+                "properties": { "provider": "claude-code" },
                 "timestamp": "2026-05-27T12:00:00Z",
             })])
             .await;
@@ -117,7 +117,7 @@ mod tests {
         assert_eq!(body["historical_migration"], false);
         assert_eq!(body["batch"][0]["event"], "session_started");
         assert_eq!(body["batch"][0]["distinct_id"], "device-1");
-        assert_eq!(body["batch"][0]["properties"]["provider"], "claude");
+        assert_eq!(body["batch"][0]["properties"]["provider"], "claude-code");
     }
 
     #[tokio::test]

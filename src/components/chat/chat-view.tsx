@@ -260,7 +260,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   const activeSession = realActiveSession ?? composerVirtualSession;
   // Staff Agent row lookup — needed by the Fleet hub's ChatInput so
   // the model picker reflects the user's current Staff tool/model
-  // pair instead of the hardcoded "claude" / undefined that ignored
+  // pair instead of the hardcoded "claude-code" / undefined that ignored
   // any switch the user made.
   const staffSession = useMemo(
     () => sessions.find((s) => s.id === staffSessionId),
@@ -271,7 +271,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   // (no staff session yet) — or any session/composer that hasn't set a tool —
   // show a provider + model the user can actually dispatch: the Fleet default
   // tile if it's connected, else the first connected tile + its first model,
-  // instead of a hardcoded "claude" that may not be set up.
+  // instead of a hardcoded "claude-code" that may not be set up.
   const { tiles: providerTiles } = useProvidersConfig();
   // Persisted Fleet default model (fleet.config.json::defaultModel), written
   // by onboarding's fleet-model step. Loaded once on mount; the staff session
@@ -1363,7 +1363,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     // message gate (hasRealMessage) and the title-parser ignore
     // them. They use the typewriter helper → land char-by-char.
     const sid = activeSessionId;
-    const provider = activeSession.tool || "claude";
+    const provider = activeSession.tool || "claude-code";
     const modelLabelMap: Record<string, string> = {
       "claude-opus-4-8": "Opus 4.8",
       // Kept for sessions created before the Opus 4.8 default so their
@@ -1676,7 +1676,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
       });
       const projectName = folderName(fresh.project_path) || "your project";
       const providerLabel =
-        fresh.tool === "claude" ? "Claude Code"
+        fresh.tool === "claude-code" ? "Claude Code"
         : fresh.tool === "codex" ? "Codex"
         : fresh.tool === "gemini" ? "Gemini"
         : fresh.tool.charAt(0).toUpperCase() + fresh.tool.slice(1);
@@ -2380,7 +2380,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                   // is the only place that sees it.
                   sessionId={effectiveSessionId ?? activeSession.id}
                   projectPath={activeSession.project_path || null}
-                  tool={activeSession.tool ?? "claude"}
+                  tool={activeSession.tool ?? "claude-code"}
                   model={activeSession.model_name ?? null}
                   permissionMode={activeSession.permission_mode ?? "default"}
                   effort={activeSession.effort ?? "high"}

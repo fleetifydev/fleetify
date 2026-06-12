@@ -156,7 +156,7 @@ mod tests {
         let p = json!({
             "kind": "session_start",
             "local_session_id": "abc-123",
-            "tool": "claude",
+            "tool": "claude-code",
             "model": "claude-sonnet-4-6",
             "status": "running",
             "session_title": "Refactor auth module",
@@ -166,7 +166,7 @@ mod tests {
         let event = to_posthog_event("device-1", &p).unwrap();
         assert_eq!(event["event"], "session_started");
         assert_eq!(event["distinct_id"], "device-1");
-        assert_eq!(event["properties"]["provider"], "claude");
+        assert_eq!(event["properties"]["provider"], "claude-code");
         assert_eq!(event["properties"]["model"], "claude-sonnet-4-6");
         assert_eq!(event["timestamp"], "2026-05-27T12:00:00Z");
         // Sensitive fields MUST NOT appear anywhere in the payload.
@@ -288,14 +288,14 @@ mod tests {
     fn agent_detected_carries_install_and_auth_flags() {
         let p = json!({
             "kind": "agent_detected",
-            "agent": "claude",
+            "agent": "claude-code",
             "installed": true,
             "authenticated": false,
             "occurred_at": "2026-05-27T12:00:00Z",
         });
         let event = to_posthog_event("device-1", &p).unwrap();
         assert_eq!(event["event"], "agent_detected");
-        assert_eq!(event["properties"]["agent"], "claude");
+        assert_eq!(event["properties"]["agent"], "claude-code");
         assert_eq!(event["properties"]["installed"], true);
         assert_eq!(event["properties"]["authenticated"], false);
     }

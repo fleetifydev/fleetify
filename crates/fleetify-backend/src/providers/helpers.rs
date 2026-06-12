@@ -4,14 +4,31 @@
 
 use super::catalog::{ProviderKind, ProviderSpec, CATALOG};
 
-/// Return the spec for *any* provider id (HTTP, LocalHttp, or CLI).
+/// Map a legacy/alias provider id to its current canonical catalog id.
+///
+/// The Claude Code CLI's provider id was renamed `"claude"` → `"claude-code"`.
+/// Persisted state (old sessions, accounts, routing pins) and external callers
+/// may still send `"claude"`; canonicalising at the catalog lookup boundary
+/// keeps those working without a hard data dependency. The CLI *binary* stays
+/// `claude` (catalog `bin`) — this only touches the id used for routing/UI.
+pub fn canonical_provider_id(id: &str) -> &str {
+    match id {
+        "claude" => "claude-code",
+        other => other,
+    }
+}
+
+/// Return the spec for *any* provider id (HTTP, LocalHttp, or CLI). Accepts
+/// legacy ids (see [`canonical_provider_id`]).
 pub fn find_provider(id: &str) -> Option<&'static ProviderSpec> {
+    let id = canonical_provider_id(id);
     CATALOG.iter().find(|p| p.id == id)
 }
 
 /// CLI agents only — Settings → Agents tab + `routers/chat.rs` dispatch
-/// when `tool` matches a CLI bridge.
+/// when `tool` matches a CLI bridge. Accepts legacy ids.
 pub fn find_agent(id: &str) -> Option<&'static ProviderSpec> {
+    let id = canonical_provider_id(id);
     CATALOG
         .iter()
         .find(|p| p.id == id && matches!(p.kind, ProviderKind::Cli))
@@ -73,14 +90,24 @@ mod tests {
         // Ollama (LocalHttp) is included.
         assert!(api.iter().any(|p| p.id == "ollama"));
         // Claude (CLI) is not.
-        assert!(api.iter().all(|p| p.id != "claude"));
+        assert!(api.iter().all(|p| p.id != "claude-code"));
+    }
+
+    #[test]
+    fn claude_legacy_id_resolves_to_canonical_spec() {
+        // The catalog id is "claude-code"; the legacy "claude" must still
+        // resolve via canonical_provider_id so old persisted state works.
+        assert_eq!(canonical_provider_id("claude"), "claude-code");
+        assert_eq!(canonical_provider_id("codex"), "codex");
+        assert_eq!(find_provider("claude").map(|p| p.id), Some("claude-code"));
+        assert_eq!(find_agent("claude").map(|p| p.id), Some("claude-code"));
     }
 
     #[test]
     fn list_cli_agents_excludes_http_providers() {
         let cli = list_cli_agents();
         assert!(cli.iter().all(|p| matches!(p.kind, ProviderKind::Cli)));
-        assert!(cli.iter().any(|p| p.id == "claude"));
+        assert!(cli.iter().any(|p| p.id == "claude-code"));
         assert!(cli.iter().any(|p| p.id == "kimi"));
         assert!(cli.iter().all(|p| p.id != "openai"));
         assert!(cli.iter().all(|p| p.id != "ollama"));

@@ -12,7 +12,7 @@ export function TaskRoutedCard({ agentName, task, model, project, onView }: {
         <span style={{ fontSize: 13, fontWeight: 600, color: "var(--foreground)" }}>Task routed</span>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 6, background: "var(--accent)", marginBottom: 8 }}>
-        <ProviderLogo tool="claude" size={16} />
+        <ProviderLogo tool="claude-code" size={16} />
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 13, fontWeight: 500, color: "var(--foreground)" }}>{agentName}</div>
           <div style={{ fontSize: 11, color: "var(--muted-foreground)" }}>{project} · {model}</div>

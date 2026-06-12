@@ -31,8 +31,8 @@ interface Props {
   onClose: () => void;
 }
 
-const PROVIDERS: { id: "claude" | "codex" | "gemini"; label: string }[] = [
-  { id: "claude", label: "Claude Code" },
+const PROVIDERS: { id: "claude-code" | "codex" | "gemini"; label: string }[] = [
+  { id: "claude-code", label: "Claude Code" },
   { id: "codex",  label: "Codex"  },
   { id: "gemini", label: "Gemini" },
 ];
@@ -62,7 +62,7 @@ export function PublishView({ onClose }: Props) {
   const [homepage, setHomepage] = useState("");
   const [license, setLicense] = useState("MIT");
   const [tagsRaw, setTagsRaw] = useState("");
-  const [providers, setProviders] = useState<("claude" | "codex" | "gemini")[]>(["claude", "codex", "gemini"]);
+  const [providers, setProviders] = useState<("claude-code" | "codex" | "gemini")[]>(["claude-code", "codex", "gemini"]);
   const [components, setComponents] = useState({
     mcp_server: true,
     skill: false,
@@ -134,7 +134,7 @@ export function PublishView({ onClose }: Props) {
     return <SuccessView path={result.path} written={result.written} onClose={onClose} />;
   }
 
-  const toggleProvider = (id: "claude" | "codex" | "gemini") => {
+  const toggleProvider = (id: "claude-code" | "codex" | "gemini") => {
     setProviders(prev => prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id]);
   };
   const toggleComponent = (k: keyof typeof components) => {

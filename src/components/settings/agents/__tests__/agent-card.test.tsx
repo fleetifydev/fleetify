@@ -4,21 +4,21 @@ import { AgentCard, type AgentScanEntry } from "../agent-card";
 import type { ProviderSpec } from "@/lib/providers-api";
 
 const spec: ProviderSpec = {
-  id: "claude",
+  id: "claude-code",
   display_name: "Claude Code",
   kind: "cli",
   default_base_url: "",
   auth: { kind: "none" },
   default_models: [],
   extras: {},
-  bin: "claude",
+  bin: "claude-code",
   auth_indicators: [],
   install_hint: "npm install -g @anthropic-ai/claude-code",
   login_hint: "claude login",
 };
 
 const installedScan: AgentScanEntry = {
-  id: "claude",
+  id: "claude-code",
   display_name: "Claude Code",
   installed: true,
   authenticated: true,

@@ -1454,7 +1454,7 @@ function AllRunsPanel({ routines, onOpenRun }: {
               marginBottom: 8,
               paddingBottom: 6,
             }}>
-              <ProviderLogo tool={routine.target === "resume" ? "claude" : routine.provider} size={13} />
+              <ProviderLogo tool={routine.target === "resume" ? "claude-code" : routine.provider} size={13} />
               <span style={{ fontSize: 13, fontWeight: 600, color: "var(--c-high)" }}>{routine.name}</span>
               <span style={{ fontSize: 10.5, color: "var(--c-ghost)", fontFamily: "var(--font-mono)" }}>
                 {list.length} recent
@@ -1749,7 +1749,7 @@ function NewRoutineForm({ template, agentPreset, existing, onCancel, onSubmit, m
   // ── Target & session config ────────────────────────────────────
   const [target, setTarget] = useState<Target>(existing?.target ?? "new");
   const [projectPath, setProjectPath] = useState(existing?.projectPath ?? userSessions[0]?.project_path ?? "");
-  const [provider, setProvider] = useState<Provider>(existing?.provider ?? "claude");
+  const [provider, setProvider] = useState<Provider>(existing?.provider ?? "claude-code");
   const [modelId, setModelId] = useState(existing?.modelId ?? "claude-sonnet-4-6");
   const [effort, setEffort] = useState<Effort>((existing?.effort as Effort) ?? "high");
   const [useWorktree, setUseWorktree] = useState(existing?.useWorktree ?? true);
@@ -2691,7 +2691,7 @@ function RunDetailView({ routineId, runId, onBack }: {
             background: "var(--c-srf2)",
             borderRadius: 4,
           }}>
-            <ProviderLogo tool={routine.target === "resume" ? "claude" : routine.provider} size={11} />
+            <ProviderLogo tool={routine.target === "resume" ? "claude-code" : routine.provider} size={11} />
             <span style={{ fontSize: 11, fontWeight: 500, color: "var(--c-high)" }}>
               {model?.label ?? routine.modelId}
             </span>

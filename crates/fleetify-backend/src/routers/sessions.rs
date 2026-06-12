@@ -1102,7 +1102,7 @@ async fn list_hooks(
 ) -> Result<Json<Value>, ApiError> {
     let s = owned(&st, &id, &user.id).await?;
     let provider = s.tool.as_str();
-    if !matches!(provider, "claude" | "gemini" | "codex") {
+    if !matches!(provider, "claude-code" | "gemini" | "codex") {
         return Ok(Json(json!({ "items": [] })));
     }
     let home = std::path::PathBuf::from(
@@ -1134,7 +1134,7 @@ async fn list_commands(
 ) -> Result<Json<Value>, ApiError> {
     let s = owned(&st, &id, &user.id).await?;
     let provider = s.tool.as_str();
-    if !matches!(provider, "claude" | "gemini" | "codex") {
+    if !matches!(provider, "claude-code" | "gemini" | "codex") {
         return Ok(Json(json!({ "items": [] })));
     }
     let home = std::path::PathBuf::from(
@@ -1170,7 +1170,7 @@ async fn list_skills(
 ) -> Result<Json<Value>, ApiError> {
     let s = owned(&st, &id, &user.id).await?;
     let provider = s.tool.as_str();
-    if !matches!(provider, "claude" | "gemini" | "codex") {
+    if !matches!(provider, "claude-code" | "gemini" | "codex") {
         return Ok(Json(json!({ "items": [] })));
     }
     let home = std::path::PathBuf::from(

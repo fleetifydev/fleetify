@@ -528,8 +528,8 @@
         }
       ]
     },
-    "claude": {
-      "id": "claude",
+    "claude-code": {
+      "id": "claude-code",
       "name": "Claude Code",
       "kind": "cli",
       "doc": "https://docs.anthropic.com/en/docs/claude-code",

@@ -10,7 +10,7 @@ path = "fleet.db"
 level = "INFO"
 format = "json"
 
-[agents.claude]
+[agents.claude-code]
 command = "claude"
 args = ["-p", "--output-format", "stream-json", "--verbose"]
 chat_ui = true

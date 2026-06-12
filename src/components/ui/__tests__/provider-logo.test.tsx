@@ -5,7 +5,7 @@ import { useThemeStore } from "@/stores/theme-store";
 
 describe("ProviderLogo — agent brand icons", () => {
   it.each([
-    ["claude", "Claude Code"],
+    ["claude-code", "Claude Code"],
     ["anthropic", "Claude Code"],
     ["codex", "Codex"],
     ["gemini", "Gemini"],

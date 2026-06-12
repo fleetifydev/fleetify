@@ -219,7 +219,7 @@ mod tests {
     async fn null_model_name_rows_are_ignored() {
         let pool = init_pool("sqlite::memory:").await.expect("pool");
         // CLI-agent shaped session — no pinned model.
-        insert_session(&pool, "s1", "claude", None).await;
+        insert_session(&pool, "s1", "claude-code", None).await;
 
         let out = migrate_orphaned_model_names(&pool).await;
         assert_eq!(out.migrated, 0);
@@ -268,7 +268,7 @@ mod tests {
         // Valid (OpenAI) — should be left.
         insert_session(&pool, "s_valid", "openai", Some("gpt-5.5")).await;
         // Null model_name (CLI) — should be ignored entirely.
-        insert_session(&pool, "s_null", "claude", None).await;
+        insert_session(&pool, "s_null", "claude-code", None).await;
         // Unknown tool — should bump skipped.
         insert_session(&pool, "s_unknown", "custom-x", Some("foo")).await;
 

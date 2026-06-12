@@ -651,11 +651,11 @@ mod tests {
             _ => None,
         };
         assert_eq!(
-            expand_windows_vars(r"%SystemRoot%\System32;%NOPE%\x", &lookup),
+            expand_windows_vars(r"%SystemRoot%\System32;%NOPE%\x", lookup),
             r"C:\Windows\System32;%NOPE%\x"
         );
-        assert_eq!(expand_windows_vars("100%% done", &lookup), "100% done");
-        assert_eq!(expand_windows_vars("no vars", &lookup), "no vars");
+        assert_eq!(expand_windows_vars("100%% done", lookup), "100% done");
+        assert_eq!(expand_windows_vars("no vars", lookup), "no vars");
     }
 
     // ── parse_tool_overrides ─────────────────────────────────────────────────

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 /// (see `plugins::providers`); `antigravity-sdk` is MCP-only (no home),
 /// valid in `providers` so MCP-only plugins can target it.
 pub const KNOWN_PROVIDERS: &[&str] = &[
-    "claude",
+    "claude-code",
     "codex",
     "gemini",
     "kimi",
@@ -286,7 +286,7 @@ mod tests {
 
         d.mcp_servers = 1;
         d.providers.insert(
-            "claude".into(),
+            "claude-code".into(),
             ProviderDeclares {
                 skills: 2,
                 ..Default::default()
@@ -335,10 +335,10 @@ mod tests {
         let raw = r#"{
             "name": "my-plugin",
             "version": "1.2.3",
-            "providers": ["claude"],
+            "providers": ["claude-code"],
             "declares": {
                 "mcp_servers": 1,
-                "providers": { "claude": { "skills": 2 } }
+                "providers": { "claude-code": { "skills": 2 } }
             }
         }"#;
         let m: PluginManifest = serde_json::from_str(raw).unwrap();
@@ -346,10 +346,10 @@ mod tests {
         assert_eq!(m.version, "1.2.3");
         assert!(is_valid_name(&m.name));
         assert!(is_valid_semver(&m.version));
-        assert_eq!(m.providers, vec!["claude".to_string()]);
+        assert_eq!(m.providers, vec!["claude-code".to_string()]);
         assert_eq!(m.declares.mcp_servers, 1);
         assert_eq!(
-            m.declares.providers.get("claude").map(|d| d.skills),
+            m.declares.providers.get("claude-code").map(|d| d.skills),
             Some(2)
         );
         // Round-trip back to JSON keeps the same structure.

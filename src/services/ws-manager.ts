@@ -1501,7 +1501,7 @@ class WSManager {
         // messages and the streaming preview so the user sees the action
         // running. The streaming chat-input lock is driven by the
         // regular isStreaming flag already; no extra wiring needed here.
-        const provider = String(data.provider ?? "claude");
+        const provider = String(data.provider ?? "claude-code");
         const command = String(data.command ?? "/compact");
         store.startCompactionPill(sessionId, { provider, command });
         break;

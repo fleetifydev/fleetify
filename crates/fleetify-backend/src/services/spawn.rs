@@ -117,7 +117,7 @@ pub fn resolve_tool(hint: &str) -> Option<&'static str> {
     }
     // 3. curated aliases
     let alias = match n.as_str() {
-        "claudecode" | "cc" => Some("claude"),
+        "claudecode" | "cc" => Some("claude-code"),
         "gpt" | "chatgpt" => Some("openai"),
         "codexcli" => Some("codex"),
         "geminicli" => Some("gemini"),
@@ -366,7 +366,7 @@ pub fn resolve(raw: &RawSpawn, known_project_paths: &[String]) -> ResolvedSpawn 
     // permission — validated against the tool surface; an unrecognised hint
     // falls back to "default" (ask) at create time (never a gap).
     let permission_mode: Option<String> = raw.perm.as_deref().and_then(|h| {
-        let pid = tool.as_deref().unwrap_or("claude");
+        let pid = tool.as_deref().unwrap_or("claude-code");
         resolve_permission(pid, h).map(str::to_string)
     });
 
@@ -449,10 +449,10 @@ pub const DEFAULT_KICKOFF_TASK: &str = "Briefly introduce yourself and give a sh
 ///   • `AgentScanCache` — the live installed/authenticated scan, warmed at
 ///     boot and refreshed by Settings → Agents.
 /// First catalog agent that is installed AND authenticated wins; else the
-/// first merely installed; cold cache or nothing installed → "claude".
+/// first merely installed; cold cache or nothing installed → "claude-code".
 pub async fn auto_pick_tool(st: &AppState) -> String {
     let Some(scan) = st.agent_scan_cache.get().await else {
-        return "claude".into();
+        return "claude-code".into();
     };
     let flag = |id: &str, key: &str| {
         scan.get(id)
@@ -470,7 +470,7 @@ pub async fn auto_pick_tool(st: &AppState) -> String {
     if let Some(p) = agents.iter().find(|p| flag(p.id, "installed")) {
         return p.id.to_string();
     }
-    "claude".into()
+    "claude-code".into()
 }
 
 /// Distinct, non-empty project folders the user already has sessions in —
@@ -510,7 +510,7 @@ pub async fn create(
     kick_result_sid: Option<&str>,
 ) -> anyhow::Result<Session> {
     // No provider named → the best active one (scan-cache preference order),
-    // not a blind "claude" (which may not even be installed on this machine).
+    // not a blind "claude-code" (which may not even be installed on this machine).
     let tool = match spec.tool.clone() {
         Some(t) => t,
         None => auto_pick_tool(st).await,
@@ -633,7 +633,7 @@ mod tests {
     #[test]
     fn raw_spawn_parses_from_json() {
         let raw: RawSpawn = serde_json::from_str(
-            r#"{"title":"code-reviewer","project":"xyz-backend","tool":"claude","model":"opus 4.8","perm":"bypass","template":"code_review"}"#,
+            r#"{"title":"code-reviewer","project":"xyz-backend","tool":"claude-code","model":"opus 4.8","perm":"bypass","template":"code_review"}"#,
         )
         .unwrap();
         assert_eq!(raw.title.as_deref(), Some("code-reviewer"));
@@ -647,15 +647,15 @@ mod tests {
 
     #[test]
     fn resolve_tool_exact_and_alias() {
-        assert_eq!(resolve_tool("claude"), Some("claude"));
-        assert_eq!(resolve_tool("Claude Code"), Some("claude"));
+        assert_eq!(resolve_tool("claude-code"), Some("claude-code"));
+        assert_eq!(resolve_tool("Claude Code"), Some("claude-code"));
         assert_eq!(resolve_tool("OpenAI"), Some("openai"));
         assert_eq!(resolve_tool("totally-unknown-xyz"), None);
     }
 
     #[test]
     fn resolve_model_opus_48() {
-        match resolve_model(Some("claude"), "opus 4.8") {
+        match resolve_model(Some("claude-code"), "opus 4.8") {
             ModelResolution::One(id) => assert_eq!(id, "claude-opus-4-8"),
             other => panic!("expected One(claude-opus-4-8), got {other:?}"),
         }
@@ -664,7 +664,7 @@ mod tests {
     #[test]
     fn resolve_model_unknown_is_none() {
         assert!(matches!(
-            resolve_model(Some("claude"), "totally-made-up-model"),
+            resolve_model(Some("claude-code"), "totally-made-up-model"),
             ModelResolution::None
         ));
     }
@@ -672,20 +672,20 @@ mod tests {
     #[test]
     fn resolve_permission_phrases() {
         assert_eq!(
-            resolve_permission("claude", "bypass all permissions"),
+            resolve_permission("claude-code", "bypass all permissions"),
             Some("bypassPermissions")
         );
         assert_eq!(
-            resolve_permission("claude", "full auto"),
+            resolve_permission("claude-code", "full auto"),
             Some("bypassPermissions")
         );
-        assert_eq!(resolve_permission("claude", "ask"), Some("default"));
-        assert_eq!(resolve_permission("claude", "plan only"), Some("plan"));
+        assert_eq!(resolve_permission("claude-code", "ask"), Some("default"));
+        assert_eq!(resolve_permission("claude-code", "plan only"), Some("plan"));
         assert_eq!(
-            resolve_permission("claude", "bypassPermissions"),
+            resolve_permission("claude-code", "bypassPermissions"),
             Some("bypassPermissions")
         );
-        assert_eq!(resolve_permission("claude", "gibberish"), None);
+        assert_eq!(resolve_permission("claude-code", "gibberish"), None);
     }
 
     #[test]
@@ -721,7 +721,7 @@ mod tests {
         // (not gemini-cli's opaque "auto" default). Other agents keep their own
         // built-in default — None here means "don't pin".
         assert_eq!(default_model_for("gemini"), Some("gemini-3.1-pro-preview"));
-        assert_eq!(default_model_for("claude"), None);
+        assert_eq!(default_model_for("claude-code"), None);
         assert_eq!(default_model_for("totally-unknown"), None);
     }
 
@@ -760,7 +760,7 @@ mod tests {
             &known,
         );
         assert!(r.gaps.is_empty(), "expected no gaps, got {:?}", r.gaps);
-        assert_eq!(r.spec.tool.as_deref(), Some("claude"));
+        assert_eq!(r.spec.tool.as_deref(), Some("claude-code"));
         assert_eq!(r.spec.model_name.as_deref(), Some("claude-opus-4-8"));
         assert_eq!(r.spec.permission_mode.as_deref(), Some("bypassPermissions"));
         assert_eq!(r.spec.project_path.as_deref(), Some("/home/u/xyz-backend"));
@@ -773,7 +773,7 @@ mod tests {
 
     #[test]
     fn resolve_missing_project_is_gap() {
-        let r = resolve(&raw(r#"{"title":"x","tool":"claude"}"#), &[]);
+        let r = resolve(&raw(r#"{"title":"x","tool":"claude-code"}"#), &[]);
         assert!(r
             .gaps
             .iter()

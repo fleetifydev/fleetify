@@ -203,8 +203,8 @@ mod tests {
             r#"{
                 "name": "my-plugin",
                 "version": "1.0.0",
-                "providers": ["claude"],
-                "declares": { "mcp_servers": 1, "providers": { "claude": { "skills": 2 } } }
+                "providers": ["claude-code"],
+                "declares": { "mcp_servers": 1, "providers": { "claude-code": { "skills": 2 } } }
             }"#,
         );
         let m = parse_plugin(tmp.path()).unwrap();
@@ -241,7 +241,7 @@ mod tests {
             r#"{
                 "name": "ok",
                 "version": "1.0.0",
-                "providers": ["claude"],
+                "providers": ["claude-code"],
                 "declares": {}
             }"#,
         );

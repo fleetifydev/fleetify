@@ -46,11 +46,11 @@ describe("effortForDiscoveredModel", () => {
   // arrive without a wire `effort` get re-hydrated from this tile lookup so the
   // Effort column isn't blanked for a model that actually has levels.
   it("reads a model's effort from the tile's registry-backed model_efforts", () => {
-    const tile = baseTile("claude", "Claude Code", "cli", []);
+    const tile = baseTile("claude-code", "Claude Code", "cli", []);
     tile.capabilities.model_efforts = [
       { id: "claude-opus-4-8", effort: { kind: "levels", levels: ["low", "medium", "high", "xhigh", "max"], default: "high" } },
     ];
-    const eff = effortForDiscoveredModel("claude", "claude-opus-4-8", [tile]);
+    const eff = effortForDiscoveredModel("claude-code", "claude-opus-4-8", [tile]);
     expect(eff.kind).toBe("levels");
     if (eff.kind === "levels") expect(eff.levels).toContain("max");
   });
@@ -62,15 +62,15 @@ describe("effortForDiscoveredModel", () => {
     expect(effortForDiscoveredModel("openai", "gpt-5.5", [tile]).kind).toBe("levels");
   });
   it("returns none for a model the tile's model_efforts doesn't list", () => {
-    const tile = baseTile("claude", "Claude Code", "cli", []);
+    const tile = baseTile("claude-code", "Claude Code", "cli", []);
     tile.capabilities.model_efforts = [
       { id: "claude-opus-4-8", effort: { kind: "levels", levels: ["low", "high"], default: "high" } },
     ];
-    expect(effortForDiscoveredModel("claude", "claude-haiku-4-5-20251001", [tile]).kind).toBe("none");
+    expect(effortForDiscoveredModel("claude-code", "claude-haiku-4-5-20251001", [tile]).kind).toBe("none");
   });
   it("returns none when the tile carries no model_efforts entry", () => {
-    const tile = baseTile("claude", "Claude Code", "cli", []);
-    expect(effortForDiscoveredModel("claude", "claude-opus-4-8", [tile]).kind).toBe("none");
+    const tile = baseTile("claude-code", "Claude Code", "cli", []);
+    expect(effortForDiscoveredModel("claude-code", "claude-opus-4-8", [tile]).kind).toBe("none");
   });
   it("returns none for an unknown provider (no matching tile)", () => {
     expect(effortForDiscoveredModel("nope", "whatever", []).kind).toBe("none");
@@ -84,7 +84,7 @@ describe("buildPickerGroups", () => {
   // the fallback list always surfaces `none`/`false` with ids+labels+ctx intact.
   it("CLI_MODELS fallback entries carry no effort but keep id/label/ctx", () => {
     const groups = buildPickerGroups([], []);
-    const claude = groups.find((g) => g.id === "claude");
+    const claude = groups.find((g) => g.id === "claude-code");
     const opus = claude?.models.find((m) => m.id === "claude-opus-4-8");
     expect(opus?.label).toBe("Opus 4.8");
     expect(opus?.ctx).toBe("200K");
@@ -98,7 +98,7 @@ describe("buildPickerGroups", () => {
 
   it("a cold-start CLI model has supports_effort === false", () => {
     const groups = buildPickerGroups([], []);
-    const claude = groups.find((g) => g.id === "claude");
+    const claude = groups.find((g) => g.id === "claude-code");
     const haiku = claude?.models.find((m) => m.id === "claude-haiku-4-5-20251001");
     expect(haiku?.effort.kind).toBe("none");
     expect(haiku?.supports_effort).toBe(false);
@@ -144,12 +144,12 @@ describe("buildPickerGroups", () => {
 
   it("filters CLI agents by enabledAgentIds", () => {
     const tiles = [
-      baseTile("claude", "Claude Code", "cli"),
+      baseTile("claude-code", "Claude Code", "cli"),
       baseTile("kimi", "Kimi Code CLI", "cli"),
     ];
-    const groups = buildPickerGroups(tiles, ["claude"]);
+    const groups = buildPickerGroups(tiles, ["claude-code"]);
     const cliIds = groups.filter((g) => g.id !== "ollama").map((g) => g.id);
-    expect(cliIds).toContain("claude");
+    expect(cliIds).toContain("claude-code");
     expect(cliIds).not.toContain("kimi");
   });
 
@@ -211,13 +211,13 @@ describe("buildPickerGroups", () => {
 
   it("uses CLI display_name verbatim (Claude Code) and short brand label for APIs (OpenAI)", () => {
     const tiles = [
-      baseTile("claude", "Claude Code", "cli"),
+      baseTile("claude-code", "Claude Code", "cli"),
       baseTile("openai", "OpenAI", "api", ["gpt-5"]),
       baseTile("kimi-api", "Kimi (Moonshot)", "api", ["kimi-k2.6"]),
       baseTile("gemini-api", "Gemini (Google API)", "api", ["gemini-3.1-pro"]),
     ];
-    const groups = buildPickerGroups(tiles, ["claude"]);
-    expect(groups.find((g) => g.id === "claude")?.label).toBe("Claude Code");
+    const groups = buildPickerGroups(tiles, ["claude-code"]);
+    expect(groups.find((g) => g.id === "claude-code")?.label).toBe("Claude Code");
     expect(groups.find((g) => g.id === "openai")?.label).toBe("OpenAI");
     expect(groups.find((g) => g.id === "kimi-api")?.label).toBe("Kimi");
     expect(groups.find((g) => g.id === "gemini-api")?.label).toBe("Gemini");
@@ -268,19 +268,19 @@ describe("buildPickerGroups", () => {
     expect(resolveDispatchTool("perplexity:claude")).toBe("perplexity");
     expect(resolveDispatchTool("perplexity:gpt")).toBe("perplexity");
     expect(resolveDispatchTool("perplexity")).toBe("perplexity");
-    expect(resolveDispatchTool("claude")).toBe("claude");
+    expect(resolveDispatchTool("claude-code")).toBe("claude-code");
     expect(resolveDispatchTool("openai")).toBe("openai");
   });
 
   it("populates CLI agent groups with hardcoded model lists", () => {
     const tiles = [
-      baseTile("claude", "Claude Code", "cli"),
+      baseTile("claude-code", "Claude Code", "cli"),
       baseTile("codex", "Codex CLI", "cli"),
       baseTile("gemini", "Gemini CLI", "cli"),
       baseTile("kimi", "Kimi Code CLI", "cli"),
     ];
-    const groups = buildPickerGroups(tiles, ["claude", "codex", "gemini", "kimi"]);
-    const claude = groups.find((g) => g.id === "claude");
+    const groups = buildPickerGroups(tiles, ["claude-code", "codex", "gemini", "kimi"]);
+    const claude = groups.find((g) => g.id === "claude-code");
     expect(claude?.models.length).toBeGreaterThan(0);
     expect(claude?.models.some((m) => m.id.startsWith("claude-"))).toBe(true);
     const codex = groups.find((g) => g.id === "codex");
@@ -329,9 +329,9 @@ describe("buildPickerGroups", () => {
     const groups = buildPickerGroups([], []);
     const ids = groups.map((g) => g.id);
     expect(ids).toEqual(
-      expect.arrayContaining(["claude", "codex", "gemini", "kimi", "agy", "antigravity-sdk"]),
+      expect.arrayContaining(["claude-code", "codex", "gemini", "kimi", "agy", "antigravity-sdk"]),
     );
-    for (const id of ["claude", "codex", "gemini", "kimi", "agy", "antigravity-sdk"]) {
+    for (const id of ["claude-code", "codex", "gemini", "kimi", "agy", "antigravity-sdk"]) {
       const g = groups.find((gg) => gg.id === id);
       expect(g?.models.length ?? 0).toBeGreaterThan(0);
     }
@@ -339,7 +339,7 @@ describe("buildPickerGroups", () => {
 
   it("CLI rail labels match the catalog display_name even when tiles is empty", () => {
     const groups = buildPickerGroups([], []);
-    expect(groups.find((g) => g.id === "claude")?.label).toBe("Claude Code");
+    expect(groups.find((g) => g.id === "claude-code")?.label).toBe("Claude Code");
     expect(groups.find((g) => g.id === "codex")?.label).toBe("Codex CLI");
     expect(groups.find((g) => g.id === "gemini")?.label).toBe("Gemini CLI");
     expect(groups.find((g) => g.id === "kimi")?.label).toBe("Kimi Code CLI");
@@ -388,13 +388,13 @@ describe("buildPickerGroups", () => {
   // NOT re-derived from CLI_MODELS, so registry-only models (e.g. a brand-new
   // "Fable 5" the renderer has never heard of) still get the right effort.
   it("dynamicModels effort descriptor is preserved on the picker model", () => {
-    const tiles = [baseTile("claude", "Claude Code", "cli")];
-    const groups = buildPickerGroups(tiles, ["claude"], {
-      claude: [{ id: "claude-fable-5", label: "Fable 5",
+    const tiles = [baseTile("claude-code", "Claude Code", "cli")];
+    const groups = buildPickerGroups(tiles, ["claude-code"], {
+      "claude-code": [{ id: "claude-fable-5", label: "Fable 5",
         effort: { kind: "levels", levels: ["low", "high"], default: "high" },
         supports_effort: true }],
     });
-    const claude = groups.find((g) => g.id === "claude")!;
+    const claude = groups.find((g) => g.id === "claude-code")!;
     expect(claude.models[0].effort).toEqual({ kind: "levels", levels: ["low", "high"], default: "high" });
   });
 });
@@ -407,13 +407,13 @@ describe("resolveModelChip", () => {
   // (Uses a non-"auto" id since "auto" is now the routing sentinel.)
   it("resolves a cross-group model to the same face regardless of the tool", () => {
     const tiles = [
-      baseTile("claude", "Claude Code", "cli"),
+      baseTile("claude-code", "Claude Code", "cli"),
       baseTile("github-copilot", "GitHub Copilot", "cli"),
     ];
-    const groups = buildPickerGroups(tiles, ["claude", "github-copilot"], {
+    const groups = buildPickerGroups(tiles, ["claude-code", "github-copilot"], {
       "github-copilot": [{ id: "copilot-gpt-5", label: "GPT-5 (Copilot)", supports_effort: false }],
     });
-    const fromComposer = resolveModelChip(groups, "claude", "copilot-gpt-5");
+    const fromComposer = resolveModelChip(groups, "claude-code", "copilot-gpt-5");
     const fromToolbar = resolveModelChip(groups, "github-copilot", "copilot-gpt-5");
     expect(fromComposer).toEqual(fromToolbar);
     expect(fromComposer.dispatchTool).toBe("github-copilot");
@@ -421,9 +421,9 @@ describe("resolveModelChip", () => {
   });
 
   it("falls back to the tool's own group when the model is in no other group", () => {
-    const groups = buildPickerGroups([baseTile("claude", "Claude Code", "cli")], ["claude"]);
-    const chip = resolveModelChip(groups, "claude", "claude-opus-4-8");
-    expect(chip.dispatchTool).toBe("claude");
+    const groups = buildPickerGroups([baseTile("claude-code", "Claude Code", "cli")], ["claude-code"]);
+    const chip = resolveModelChip(groups, "claude-code", "claude-opus-4-8");
+    expect(chip.dispatchTool).toBe("claude-code");
     expect(chip.label).toBe("Opus 4.8");
   });
 
@@ -436,19 +436,19 @@ describe("resolveModelChip", () => {
   });
 
   it("falls through label resolution: CLI table → raw id → 'Default'", () => {
-    expect(resolveModelChip([], "claude", "claude-opus-4-8").label).toBe("Opus 4.8"); // CLI table
+    expect(resolveModelChip([], "claude-code", "claude-opus-4-8").label).toBe("Opus 4.8"); // CLI table
     // Fable 5 must resolve from the cold-start CLI table too (before the
     // discovered-catalog store hydrates / offline), not render as its raw id.
-    expect(resolveModelChip([], "claude", "claude-fable-5").label).toBe("Fable 5");
-    expect(resolveModelChip([], "claude", "totally-unknown-xyz").label).toBe("totally-unknown-xyz"); // raw id
+    expect(resolveModelChip([], "claude-code", "claude-fable-5").label).toBe("Fable 5");
+    expect(resolveModelChip([], "claude-code", "totally-unknown-xyz").label).toBe("totally-unknown-xyz"); // raw id
     // Null model = the provider's own default (spawned agents) — labelled
     // "Default", and the face stays on the SESSION's tool.
-    expect(resolveModelChip([], "claude", null).label).toBe("Default");
-    expect(resolveModelChip([], "claude", null).dispatchTool).toBe("claude");
+    expect(resolveModelChip([], "claude-code", null).label).toBe("Default");
+    expect(resolveModelChip([], "claude-code", null).dispatchTool).toBe("claude-code");
   });
 
   it("surfaces an 'Auto' group first and resolves the auto sentinel neutrally", () => {
-    const groups = buildPickerGroups([baseTile("claude", "Claude Code", "cli")], ["claude"]);
+    const groups = buildPickerGroups([baseTile("claude-code", "Claude Code", "cli")], ["claude-code"]);
     expect(groups[0]?.id).toBe("auto");
     expect(groups[0]?.label).toBe("Auto");
     // The sentinel resolves to a neutral face, never attributed to a provider.
@@ -491,7 +491,7 @@ describe("hermesHealModel", () => {
   });
 
   it("only applies to the hermes tool", () => {
-    expect(hermesHealModel("claude", "default", "copilot:claude-opus-4.8")).toBeNull();
+    expect(hermesHealModel("claude-code", "default", "copilot:claude-opus-4.8")).toBeNull();
   });
 });
 
@@ -536,12 +536,12 @@ describe("modelsForTile", () => {
   });
 
   it("falls back to CLI_MODELS for a CLI tile with no catalog models", () => {
-    const t = tile("claude", "cli", []);
+    const t = tile("claude-code", "cli", []);
     expect(modelsForTile(t).map((m) => m.id)).toContain("claude-opus-4-8");
   });
 
   it("prefers dynamic models over catalog/CLI fallback", () => {
-    const t = tile("claude", "cli", []);
+    const t = tile("claude-code", "cli", []);
     const dyn = [{ id: "live-1", label: "Live", supports_effort: false }];
     expect(modelsForTile(t, dyn).map((m) => m.id)).toEqual(["live-1"]);
   });
@@ -553,15 +553,15 @@ describe("modelsForTile", () => {
 
 describe("resolveStartupDefault", () => {
   it("honors the persisted default model when valid for the default provider", () => {
-    const tiles = [tile("claude", "cli", [], { is_default: true })];
+    const tiles = [tile("claude-code", "cli", [], { is_default: true })];
     const r = resolveStartupDefault(tiles, "claude-sonnet-4-6");
-    expect(r).toEqual({ tool: "claude", model: "claude-sonnet-4-6" });
+    expect(r).toEqual({ tool: "claude-code", model: "claude-sonnet-4-6" });
   });
 
   it("falls back to the provider's first model when the persisted model is invalid", () => {
-    const tiles = [tile("claude", "cli", [], { is_default: true })];
+    const tiles = [tile("claude-code", "cli", [], { is_default: true })];
     const r = resolveStartupDefault(tiles, "not-a-real-model");
-    expect(r.tool).toBe("claude");
+    expect(r.tool).toBe("claude-code");
     // First CLI-table entry — Fable 5 leads, matching the remote catalog's
     // newest-flagship-first ordering.
     expect(r.model).toBe("claude-fable-5");
@@ -576,7 +576,7 @@ describe("resolveStartupDefault", () => {
   it("defaults the tool to claude when no tile is connected", () => {
     const tiles = [tile("openai", "api", [{ id: "gpt-5.5", label: "GPT-5.5" }], { connected: false })];
     const r = resolveStartupDefault(tiles, null);
-    expect(r.tool).toBe("claude");
+    expect(r.tool).toBe("claude-code");
   });
 
   it("validates a Perplexity Agent-marketplace model across split groups", () => {

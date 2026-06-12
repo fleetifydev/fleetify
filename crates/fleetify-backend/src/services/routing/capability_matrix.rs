@@ -57,7 +57,7 @@ mod tests {
     #[test]
     fn parses_minimum_matrix() {
         let toml_src = r#"
-[agents.claude]
+[agents.claude-code]
 supports_tool_use = true
 supports_vision = true
 max_context = 200000
@@ -66,7 +66,7 @@ default_model = "claude-sonnet-4-6"
 tiers = ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7"]
         "#;
         let m: CapabilityMatrix = toml::from_str(toml_src).unwrap();
-        let c = &m.agents["claude"];
+        let c = &m.agents["claude-code"];
         assert_eq!(c.tiers.len(), 3);
         assert_eq!(c.max_context, 200000);
         assert!(c.supports_tool_use);
@@ -77,10 +77,10 @@ tiers = ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7"]
     fn loads_real_agents_toml() {
         // Should find config/agents.toml via load_default's search.
         let m = CapabilityMatrix::load_default().expect("config/agents.toml must be present");
-        assert!(m.agents.contains_key("claude"), "claude agent missing");
+        assert!(m.agents.contains_key("claude-code"), "claude agent missing");
         assert!(m.agents.contains_key("openai"), "openai agent missing");
         assert!(m.agents.contains_key("gemini"), "gemini agent missing");
         assert!(m.agents.contains_key("codex"), "codex agent missing");
-        assert!(m.agents["claude"].tiers.len() >= 2);
+        assert!(m.agents["claude-code"].tiers.len() >= 2);
     }
 }

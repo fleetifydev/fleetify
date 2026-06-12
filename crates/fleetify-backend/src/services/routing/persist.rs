@@ -86,7 +86,7 @@ pub async fn pin_session(
 pub fn agent_kind_to_str(a: crate::services::routing::traits::AgentKind) -> &'static str {
     use crate::services::routing::traits::AgentKind;
     match a {
-        AgentKind::Claude => "claude",
+        AgentKind::Claude => "claude-code",
         AgentKind::OpenAI => "openai",
         AgentKind::Gemini => "gemini",
         AgentKind::Codex => "codex",
@@ -100,7 +100,9 @@ pub fn agent_kind_to_str(a: crate::services::routing::traits::AgentKind) -> &'st
 pub fn str_to_agent_kind(s: &str) -> Option<crate::services::routing::traits::AgentKind> {
     use crate::services::routing::traits::AgentKind;
     match s {
-        "claude" => Some(AgentKind::Claude),
+        // Accept the legacy "claude" id — persisted pins/overrides predate
+        // the "claude" → "claude-code" rename.
+        "claude" | "claude-code" => Some(AgentKind::Claude),
         "openai" => Some(AgentKind::OpenAI),
         "gemini" => Some(AgentKind::Gemini),
         "codex" => Some(AgentKind::Codex),
@@ -253,7 +255,7 @@ pub struct RoutingResolution {
 ///    a `routing_decisions` row, UPDATE the session's `pinned_*` columns,
 ///    emit a `routing_decision` telemetry event, return the new id.
 ///
-/// `manual_tool` MUST be one of `"claude" | "openai" | "gemini" | "codex"`;
+/// `manual_tool` MUST be one of `"claude-code" | "openai" | "gemini" | "codex"`;
 /// anything else falls through to `AgentKind::Claude` so we never crash on
 /// a row with a bogus tool string (the chat handler already rejects unknown
 /// tools earlier in the flow, so this is purely defensive).
@@ -461,7 +463,7 @@ pub async fn fleet_auto_resolve(
             freshly_routed: false,
             base_url_override: None,
             extra_headers: http::HeaderMap::new(),
-            tool_override: Some("claude".to_string()),
+            tool_override: Some("claude-code".to_string()),
         };
     }
     let candidates = auto_pool::candidates(routes);
@@ -779,7 +781,7 @@ mod tests {
             "d-1",
             "chat",
             Some("s1"),
-            "claude",
+            "claude-code",
             "claude-sonnet-4-6",
             "builtin",
             "test rationale",
@@ -799,7 +801,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(row.0, "d-1");
-        assert_eq!(row.1, "claude");
+        assert_eq!(row.1, "claude-code");
         assert_eq!(row.2, "claude-sonnet-4-6");
         assert_eq!(row.3, 42);
         assert_eq!(row.4, 0);
@@ -843,7 +845,7 @@ mod tests {
         sqlx::query(
             "INSERT INTO sessions (id, title, project_path, group_path, tool, command, status, \
              permission_mode, session_mode, pinned, order_idx, created_at, budget_used) \
-             VALUES ('s1','t','/p','','claude','','idle','default','new',0,0,'2026-01-01',0.0)",
+             VALUES ('s1','t','/p','','claude-code','','idle','default','new',0,0,'2026-01-01',0.0)",
         )
         .execute(&pool)
         .await
@@ -854,7 +856,7 @@ mod tests {
             "d-3",
             "chat",
             Some("s1"),
-            "claude",
+            "claude-code",
             "claude-haiku-4-5",
             "builtin",
             "rat",
@@ -866,7 +868,7 @@ mod tests {
         )
         .await
         .unwrap();
-        pin_session(&pool, "s1", "claude", "claude-haiku-4-5", "d-3")
+        pin_session(&pool, "s1", "claude-code", "claude-haiku-4-5", "d-3")
             .await
             .unwrap();
         let row: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
@@ -876,7 +878,7 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(row.0.as_deref(), Some("claude"));
+        assert_eq!(row.0.as_deref(), Some("claude-code"));
         assert_eq!(row.1.as_deref(), Some("claude-haiku-4-5"));
         assert_eq!(row.2.as_deref(), Some("d-3"));
     }
@@ -887,7 +889,7 @@ mod tests {
         sqlx::query(
             "INSERT INTO sessions (id, title, project_path, group_path, tool, command, status, \
              permission_mode, session_mode, pinned, order_idx, created_at, budget_used) \
-             VALUES ('s-r1','t','/p','','claude','','idle','default','new',0,0,'2026-01-01',0.0)",
+             VALUES ('s-r1','t','/p','','claude-code','','idle','default','new',0,0,'2026-01-01',0.0)",
         )
         .execute(&pool)
         .await
@@ -897,7 +899,7 @@ mod tests {
             "d-r1",
             "chat",
             Some("s-r1"),
-            "claude",
+            "claude-code",
             "claude-sonnet-4-6",
             "builtin",
             "balanced for general coding",
@@ -909,11 +911,11 @@ mod tests {
         )
         .await
         .unwrap();
-        pin_session(&pool, "s-r1", "claude", "claude-sonnet-4-6", "d-r1")
+        pin_session(&pool, "s-r1", "claude-code", "claude-sonnet-4-6", "d-r1")
             .await
             .unwrap();
         let info = load_session_routing(&pool, "s-r1").await.unwrap();
-        assert_eq!(info.agent, "claude");
+        assert_eq!(info.agent, "claude-code");
         assert_eq!(info.model, "claude-sonnet-4-6");
         assert_eq!(info.source, "builtin");
         assert_eq!(info.rationale, "balanced for general coding");
@@ -925,7 +927,7 @@ mod tests {
         sqlx::query(
             "INSERT INTO sessions (id, title, project_path, group_path, tool, command, status, \
              permission_mode, session_mode, pinned, order_idx, created_at, budget_used) \
-             VALUES ('s-r2','t','/p','','claude','','idle','default','new',0,0,'2026-01-01',0.0)",
+             VALUES ('s-r2','t','/p','','claude-code','','idle','default','new',0,0,'2026-01-01',0.0)",
         )
         .execute(&pool)
         .await
@@ -964,7 +966,7 @@ mod tests {
         sqlx::query(
             "INSERT INTO sessions (id, title, project_path, group_path, tool, model_name, command, status, \
              permission_mode, session_mode, pinned, order_idx, created_at, budget_used) \
-             VALUES ('s-pin','t','/p','','claude','claude-sonnet-4-6','','idle','default','new',0,0,'2026-01-01',0.0)",
+             VALUES ('s-pin','t','/p','','claude-code','claude-sonnet-4-6','','idle','default','new',0,0,'2026-01-01',0.0)",
         )
         .execute(&pool)
         .await
@@ -974,7 +976,7 @@ mod tests {
             "d-pin",
             "chat",
             Some("s-pin"),
-            "claude",
+            "claude-code",
             "claude-haiku-4-5",
             "builtin",
             "rat",
@@ -986,7 +988,7 @@ mod tests {
         )
         .await
         .unwrap();
-        pin_session(&pool, "s-pin", "claude", "claude-haiku-4-5", "d-pin")
+        pin_session(&pool, "s-pin", "claude-code", "claude-haiku-4-5", "d-pin")
             .await
             .unwrap();
 
@@ -1009,7 +1011,7 @@ mod tests {
             &pool,
             &orch,
             "s-pin",
-            "claude",                  // manual tool — agrees with pin's agent
+            "claude-code",             // manual tool — agrees with pin's agent
             Some("claude-sonnet-4-6"), // manual model — must be IGNORED in favour of pin's model
             task,
         )
@@ -1049,7 +1051,7 @@ mod tests {
             "d-old",
             "chat",
             Some("s-stale"),
-            "claude",
+            "claude-code",
             "claude-sonnet-4-6",
             "builtin",
             "rat",
@@ -1061,9 +1063,15 @@ mod tests {
         )
         .await
         .unwrap();
-        pin_session(&pool, "s-stale", "claude", "claude-sonnet-4-6", "d-old")
-            .await
-            .unwrap();
+        pin_session(
+            &pool,
+            "s-stale",
+            "claude-code",
+            "claude-sonnet-4-6",
+            "d-old",
+        )
+        .await
+        .unwrap();
 
         // Routing disabled so Branch 2 (manual fallback) is the
         // expected destination after the self-heal skips Branch 1.

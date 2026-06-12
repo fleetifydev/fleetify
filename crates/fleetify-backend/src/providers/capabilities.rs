@@ -212,7 +212,7 @@ const SANDBOX_TOGGLE: &[&str] = &["off", "on"];
 /// Native permission surface per provider (§9).
 pub fn permission_capability(provider_id: &str) -> PermissionCapability {
     match provider_id {
-        "claude" => PermissionCapability::Modes {
+        "claude-code" => PermissionCapability::Modes {
             modes: CLAUDE_MODES,
             sandbox: None,
         },
@@ -468,7 +468,7 @@ mod tests {
         );
         // Spawn-fixed.
         assert_eq!(
-            config_timing("claude"),
+            config_timing("claude-code"),
             ConfigTiming {
                 permission: Apply::Spawn,
                 effort: Apply::Spawn
@@ -493,7 +493,7 @@ mod tests {
     #[test]
     fn permission_capability_per_provider() {
         // Claude: 4 modes (default/acceptEdits/plan/bypassPermissions), no sandbox.
-        match permission_capability("claude") {
+        match permission_capability("claude-code") {
             PermissionCapability::Modes { modes, sandbox } => {
                 assert!(modes.iter().any(|m| m.id == "plan"));
                 assert_eq!(modes.len(), 4);
@@ -574,7 +574,7 @@ mod tests {
         assert_eq!(cop.decisions, &["allow", "deny"]);
 
         // Non-matrix agents → None.
-        assert!(tool_matrix("claude").is_none());
+        assert!(tool_matrix("claude-code").is_none());
         assert!(tool_matrix("codex").is_none());
         assert!(tool_matrix("openai").is_none());
     }
@@ -597,7 +597,7 @@ mod tests {
         );
         let claude = crate::providers::CATALOG
             .iter()
-            .find(|s| s.id == "claude")
+            .find(|s| s.id == "claude-code")
             .expect("claude in catalog");
         let ccaps = tile_capabilities(claude);
         assert!(
@@ -615,7 +615,7 @@ mod tests {
 
         // levels — Claude: full set (xhigh + max), default high.
         assert_eq!(
-            effort_capability("claude", "claude-opus-4-8"),
+            effort_capability("claude-code", "claude-opus-4-8"),
             Levels {
                 levels: vec![
                     "low".into(),
@@ -629,7 +629,7 @@ mod tests {
         );
         // levels — Claude Sonnet drops xhigh but keeps max.
         assert_eq!(
-            effort_capability("claude", "claude-sonnet-4-6"),
+            effort_capability("claude-code", "claude-sonnet-4-6"),
             Levels {
                 levels: vec!["low".into(), "medium".into(), "high".into(), "max".into()],
                 default: "high".into(),
@@ -689,7 +689,7 @@ mod tests {
 
         // none — non-reasoning models resolve to None even when present.
         assert_eq!(
-            effort_capability("claude", "claude-haiku-4-5-20251001"),
+            effort_capability("claude-code", "claude-haiku-4-5-20251001"),
             None
         );
         assert_eq!(effort_capability("openai", "gpt-4.1"), None);

@@ -13,7 +13,7 @@ describe("studio-tools registry", () => {
 
   it("isStudioTool is true only for registered tool ids", () => {
     expect(isStudioTool("higgsfield")).toBe(true);
-    expect(isStudioTool("claude")).toBe(false);
+    expect(isStudioTool("claude-code")).toBe(false);
     expect(isStudioTool("")).toBe(false);
     expect(isStudioTool(null)).toBe(false);
     expect(isStudioTool(undefined)).toBe(false);

@@ -43,7 +43,7 @@ pub struct HookMergeRecord {
 /// four are handled here; copy strategies (Copilot/OpenCode/Hermes) reuse the
 /// plugin materializer's file copy, and codex/gemini have no hook surface.
 pub fn is_merge_provider(provider: &str) -> bool {
-    matches!(provider, "claude" | "cursor" | "agy" | "kimi")
+    matches!(provider, "claude-code" | "cursor" | "agy" | "kimi")
 }
 
 /// The config file a provider's hooks merge into. Note agy diverges from
@@ -51,7 +51,7 @@ pub fn is_merge_provider(provider: &str) -> bool {
 /// `~/.gemini/config/hooks.json`.
 fn hook_file(provider: &str) -> Option<PathBuf> {
     match provider {
-        "claude" => Some(providers::provider_home("claude")?.join("settings.json")),
+        "claude-code" => Some(providers::provider_home("claude-code")?.join("settings.json")),
         "cursor" => Some(providers::provider_home("cursor")?.join("hooks.json")),
         "kimi" => Some(providers::provider_home("kimi")?.join("config.toml")),
         // agy: ~/.gemini/config/hooks.json (NOT the antigravity-cli home).
@@ -74,7 +74,7 @@ pub fn materialize_hook_item(
         return Ok(None);
     };
     match provider {
-        "claude" => merge_claude(&file, hook)?,
+        "claude-code" => merge_claude(&file, hook)?,
         "cursor" => merge_cursor(&file, hook)?,
         "agy" => merge_agy(&file, hook)?,
         "kimi" => merge_kimi(&file, hook)?,
@@ -96,7 +96,7 @@ pub fn unmaterialize_hook(rec: &HookMergeRecord) -> Result<()> {
         return Ok(());
     }
     match rec.provider.as_str() {
-        "claude" => unmerge_claude(file, rec),
+        "claude-code" => unmerge_claude(file, rec),
         "cursor" => unmerge_cursor(file, rec),
         "agy" => unmerge_agy(file, rec),
         "kimi" => unmerge_kimi(file, rec),
@@ -429,11 +429,13 @@ mod tests {
             )
             .unwrap();
 
-            let rec = materialize_hook_item("claude", &hook("PreToolUse", Some("Edit"), "fmt.sh"))
-                .unwrap()
-                .unwrap();
+            let rec =
+                materialize_hook_item("claude-code", &hook("PreToolUse", Some("Edit"), "fmt.sh"))
+                    .unwrap()
+                    .unwrap();
             // Idempotent: second apply is a no-op.
-            materialize_hook_item("claude", &hook("PreToolUse", Some("Edit"), "fmt.sh")).unwrap();
+            materialize_hook_item("claude-code", &hook("PreToolUse", Some("Edit"), "fmt.sh"))
+                .unwrap();
 
             let v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
             let groups = v["hooks"]["PreToolUse"].as_array().unwrap();

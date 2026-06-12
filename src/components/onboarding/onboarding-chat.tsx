@@ -152,7 +152,7 @@ const PROVIDERS: ProviderDef[] = [
   // now waits for an explicit Install button click. The verify-loop
   // gate (`p.autoInstall === true`) is preserved in case a future
   // first-run experience wants to opt a tile back in.
-  { id: "claude",         label: "Claude Code",       logo: "claude", kind: "cli", scanKey: "claude_cli", hint: "Anthropic CLI" },
+  { id: "claude-code",         label: "Claude Code",       logo: "claude-code", kind: "cli", scanKey: "claude_cli", hint: "Anthropic CLI" },
   { id: "codex",          label: "Codex CLI",         logo: "codex",  kind: "cli", scanKey: "codex_cli",  hint: "OpenAI CLI" },
   // Antigravity sits next to its predecessor Gemini CLI — Google sunsets
   // the latter for individual AI Pro/Ultra users on 2026-06-18, so
@@ -185,7 +185,7 @@ const PROVIDERS: ProviderDef[] = [
   { id: "openai",         label: "OpenAI",            logo: "openai", kind: "api", envKey: "openai",                          hint: "API key" },
   // Anthropic API (Claude over the HTTP API — distinct from the Claude
   // Code CLI row above). No env-var probe; key entered inline.
-  { id: "anthropic",      label: "Anthropic",         logo: "claude", kind: "api",                                            hint: "API key (Claude API)" },
+  { id: "anthropic",      label: "Anthropic",         logo: "claude-code", kind: "api",                                            hint: "API key (Claude API)" },
   // Backend catalog id is "gemini-api" (the OpenAI-compat endpoint
   // at /v1beta/openai); the label is just "Gemini" so the row
   // matches the brand the user knows it by.
@@ -1622,7 +1622,7 @@ function ScanWidget({
           }));
           try {
             // Backend `shell_install_provider` routes on the kebab id
-            // ("claude", "codex", "gemini"), not the snake-case
+            // ("claude-code", "codex", "gemini"), not the snake-case
             // scanKey ("claude_cli", …) used by the scan probe.
             const installRes = await window.electronAPI.installProvider(p.id);
             if (cancelled) return;

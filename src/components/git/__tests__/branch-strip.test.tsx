@@ -368,13 +368,13 @@ describe("BranchStrip — Review button + dialog", () => {
 
   it("clicking Review opens the dialog and renders the agent's markdown when ready", async () => {
     gitContextMock.mockResolvedValue({ branch: "fleet/foo-abc12345", baseBranch: "main", plus: 3, minus: 1, remoteHttpsUrl: null });
-    reviewDiffMock.mockResolvedValue({ ok: true, review: "## Findings\n\n- looks good", cli: "claude" });
+    reviewDiffMock.mockResolvedValue({ ok: true, review: "## Findings\n\n- looks good", cli: "claude-code" });
     const { BranchStrip } = await loadBranchStrip();
-    render(<BranchStrip projectPath="/repo" tool="claude" />);
+    render(<BranchStrip projectPath="/repo" tool="claude-code" />);
     const reviewBtn = await screen.findByRole("button", { name: /Review changes/i });
     fireEvent.click(reviewBtn);
     await waitFor(() => {
-      expect(reviewDiffMock).toHaveBeenCalledWith("/repo", "main", "claude");
+      expect(reviewDiffMock).toHaveBeenCalledWith("/repo", "main", "claude-code");
     });
     // The markdown ## Findings becomes an h2 with "Findings" text.
     await waitFor(() => expect(screen.getByText("Findings")).toBeInTheDocument());
@@ -385,7 +385,7 @@ describe("BranchStrip — Review button + dialog", () => {
     gitContextMock.mockResolvedValue({ branch: "fleet/foo-abc12345", baseBranch: "main", plus: 1, minus: 0, remoteHttpsUrl: null });
     reviewDiffMock.mockResolvedValue({ ok: false, error: "claude timed out" });
     const { BranchStrip } = await loadBranchStrip();
-    render(<BranchStrip projectPath="/repo" tool="claude" />);
+    render(<BranchStrip projectPath="/repo" tool="claude-code" />);
     fireEvent.click(await screen.findByRole("button", { name: /Review changes/i }));
     await waitFor(() => expect(screen.getByText(/claude timed out/i)).toBeInTheDocument());
     expect(screen.getByRole("button", { name: /Retry/i })).toBeEnabled();
@@ -522,7 +522,7 @@ describe("BranchStrip — sad-path RecoveryDialog", () => {
     });
     createPRMock.mockResolvedValue({ ok: false, code: "REPO_CREATE_FORBIDDEN", error: "GitHub returned 403." });
     const { BranchStrip } = await loadBranchStrip();
-    render(<BranchStrip projectPath="/repo" tool="claude" />);
+    render(<BranchStrip projectPath="/repo" tool="claude-code" />);
     fireEvent.click(await screen.findByRole("button", { name: /Create PR/i }));
     await waitFor(() => expect(createPRMock).toHaveBeenCalledTimes(1));
     // Diagnose flow must NOT fire for this error code.
@@ -542,10 +542,10 @@ describe("BranchStrip — sad-path RecoveryDialog", () => {
       rationale: "Rebasing your commits onto the remote tip resolves the divergence.",
       command: "git pull --rebase origin main",
       risk: "low",
-      cli: "claude",
+      cli: "claude-code",
     });
     const { BranchStrip } = await loadBranchStrip();
-    render(<BranchStrip projectPath="/repo" tool="claude" />);
+    render(<BranchStrip projectPath="/repo" tool="claude-code" />);
     fireEvent.click(await screen.findByRole("button", { name: /Create PR/i }));
     // Dialog header surfaces "Create PR failed" + the raw error.
     await waitFor(() => expect(screen.getByText(/Create PR failed/i)).toBeInTheDocument());
@@ -555,7 +555,7 @@ describe("BranchStrip — sad-path RecoveryDialog", () => {
       expect(diagnoseFailureMock).toHaveBeenCalledWith(
         "/repo",
         expect.stringContaining("non-fast-forward"),
-        "claude",
+        "claude-code",
         "Create PR",
         "main",
       );
@@ -579,11 +579,11 @@ describe("BranchStrip — sad-path RecoveryDialog", () => {
       rationale: "Rebase onto origin/main.",
       command: "git pull --rebase origin main",
       risk: "low",
-      cli: "claude",
+      cli: "claude-code",
     });
     applyRecoveryMock.mockResolvedValue({ ok: true, output: "Successfully rebased and updated." });
     const { BranchStrip } = await loadBranchStrip();
-    render(<BranchStrip projectPath="/repo" tool="claude" />);
+    render(<BranchStrip projectPath="/repo" tool="claude-code" />);
     fireEvent.click(await screen.findByRole("button", { name: /Create PR/i }));
     const applyBtn = await screen.findByRole("button", { name: /Apply: Pull \(rebase\) and retry/i });
     fireEvent.click(applyBtn);
@@ -608,10 +608,10 @@ describe("BranchStrip — sad-path RecoveryDialog", () => {
       rationale: "No automated recovery — install gh from cli.github.com.",
       command: null,
       risk: "low",
-      cli: "claude",
+      cli: "claude-code",
     });
     const { BranchStrip } = await loadBranchStrip();
-    render(<BranchStrip projectPath="/repo" tool="claude" />);
+    render(<BranchStrip projectPath="/repo" tool="claude-code" />);
     fireEvent.click(await screen.findByRole("button", { name: /Create PR/i }));
     await waitFor(() => expect(screen.getByText(/GitHub CLI isn't installed/i)).toBeInTheDocument());
     // No Apply button for manual actions.
@@ -641,11 +641,11 @@ describe("BranchStrip — sad-path RecoveryDialog", () => {
       rationale: "Rebase.",
       command: "git pull --rebase origin main",
       risk: "low",
-      cli: "claude",
+      cli: "claude-code",
     });
     applyRecoveryMock.mockResolvedValue({ ok: true, output: "rebased" });
     const { BranchStrip } = await loadBranchStrip();
-    render(<BranchStrip projectPath="/repo" tool="claude" sessionTitle="t" />);
+    render(<BranchStrip projectPath="/repo" tool="claude-code" sessionTitle="t" />);
     fireEvent.click(await screen.findByRole("button", { name: /Create PR/i }));
     fireEvent.click(await screen.findByRole("button", { name: /Apply: Pull/i }));
     fireEvent.click(await screen.findByRole("button", { name: /Retry Create PR/i }));
@@ -686,7 +686,7 @@ describe("BranchStrip — preflight gate", () => {
       }],
     });
     const { BranchStrip } = await loadBranchStrip();
-    render(<BranchStrip projectPath="/repo" tool="claude" />);
+    render(<BranchStrip projectPath="/repo" tool="claude-code" />);
     fireEvent.click(await screen.findByRole("button", { name: /Create PR/i }));
     // Dialog opens with the issue description.
     await waitFor(() => expect(screen.getByText(/has its own \.git\/ but no commits/)).toBeInTheDocument());
@@ -730,7 +730,7 @@ describe("BranchStrip — preflight gate", () => {
     applyPreflightFixMock.mockResolvedValue({ ok: true, output: "done" });
     createPRMock.mockResolvedValue({ ok: true, prNumber: 1, prUrl: "https://github.com/u/r/pull/1" });
     const { BranchStrip } = await loadBranchStrip();
-    render(<BranchStrip projectPath="/repo" tool="claude" sessionTitle="t" />);
+    render(<BranchStrip projectPath="/repo" tool="claude-code" sessionTitle="t" />);
     fireEvent.click(await screen.findByRole("button", { name: /Create PR/i }));
     fireEvent.click(await screen.findByRole("button", { name: /Fix and Continue/i }));
     await waitFor(() => {
@@ -766,7 +766,7 @@ describe("BranchStrip — preflight gate", () => {
     applyPreflightFixMock.mockResolvedValue({ ok: true });
     createPRMock.mockResolvedValue({ ok: true, prNumber: 1, prUrl: "https://github.com/u/r/pull/1" });
     const { BranchStrip } = await loadBranchStrip();
-    render(<BranchStrip projectPath="/repo" tool="claude" sessionTitle="t" />);
+    render(<BranchStrip projectPath="/repo" tool="claude-code" sessionTitle="t" />);
     fireEvent.click(await screen.findByRole("button", { name: /Create PR/i }));
     fireEvent.click(await screen.findByRole("button", { name: /Continue anyway/i }));
     await waitFor(() => expect(createPRMock).toHaveBeenCalledTimes(1));
@@ -785,7 +785,7 @@ describe("BranchStrip — preflight gate", () => {
     preflightCheckMock.mockResolvedValue({ ok: false, error: "electron unavailable" });
     createPRMock.mockResolvedValue({ ok: true, prNumber: 2, prUrl: "https://github.com/u/r/pull/2" });
     const { BranchStrip } = await loadBranchStrip();
-    render(<BranchStrip projectPath="/repo" tool="claude" sessionTitle="t" />);
+    render(<BranchStrip projectPath="/repo" tool="claude-code" sessionTitle="t" />);
     fireEvent.click(await screen.findByRole("button", { name: /Create PR/i }));
     await waitFor(() => expect(createPRMock).toHaveBeenCalledTimes(1));
   });
@@ -815,11 +815,11 @@ describe("BranchStrip — recovery dialog custom-command", () => {
       rationale: "Refresh the gh OAuth token.",
       command: "gh auth refresh",
       risk: "low",
-      cli: "claude",
+      cli: "claude-code",
     });
     applyRecoveryMock.mockResolvedValue({ ok: true, output: "Refreshed." });
     const { BranchStrip } = await loadBranchStrip();
-    render(<BranchStrip projectPath="/repo" tool="claude" />);
+    render(<BranchStrip projectPath="/repo" tool="claude-code" />);
     fireEvent.click(await screen.findByRole("button", { name: /Create PR/i }));
     // Wait for diagnosis to surface (summary text).
     await waitFor(() => expect(screen.getByText(/gh token expired/i)).toBeInTheDocument());

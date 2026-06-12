@@ -106,7 +106,7 @@ async fn sessions_api_round_trip_with_auth() {
     assert_eq!(created.status().as_u16(), 200, "create failed");
     let s: serde_json::Value = created.json().await.unwrap();
     assert!(s["id"].as_str().is_some());
-    assert_eq!(s["tool"], "claude");
+    assert_eq!(s["tool"], "claude-code");
     assert_eq!(
         s["command"],
         "claude -p --output-format stream-json --verbose"

@@ -879,7 +879,7 @@ interface ChatInputProps {
    *  branch (fleet/<slug>-<id>) instead of the source repo's HEAD. */
   worktreePath?: string | null;
   branch?: string | null;
-  /** Provider/tool of the current agent ("claude" | "gemini" | ...). Drives the model dropdown. */
+  /** Provider/tool of the current agent ("claude-code" | "gemini" | ...). Drives the model dropdown. */
   tool?: string | null;
   /** Session ID — used to scope plugin slash commands. Optional (no plugin commands when absent). */
   sessionId?: string | null;
@@ -1075,7 +1075,7 @@ export function ChatInput({
       // replacing it — for Hermes the catalog spans every authenticated
       // provider while the live list is only the active provider's subset, and
       // replacing would collapse the provider chip-row to one provider.
-      const key = tool ?? "claude";
+      const key = tool ?? "claude-code";
       const base = merged[key] ?? [];
       const seen = new Set(base.map((m) => m.id));
       const live = sessionDynModels.models
@@ -1751,7 +1751,7 @@ export function ChatInput({
         // same surface a real failure would. Start → fail atomically so
         // the user never sees a fake "Compacting…" beat.
         useChatStore.getState().startCompactionPill(sessionId, {
-          provider: tool ?? "claude",
+          provider: tool ?? "claude-code",
           command: t,
         });
         useChatStore.getState().failCompactionPill(sessionId, reason);
@@ -2053,7 +2053,7 @@ export function ChatInput({
   // last-resort label for ids not present in any group (rare cold-start).
   const { dispatchTool: chipDispatchTool, label: chipLabel } = resolveModelChip(
     pickerGroups,
-    tool ?? "claude",
+    tool ?? "claude-code",
     model ?? null,
   );
   const modelLabel = model && chipLabel === model ? fmtModel(model, tool) : chipLabel;
@@ -2236,7 +2236,7 @@ export function ChatInput({
             PATCHes the session's tool so the toolbar logo flips to match. */}
         {openDrop === "model" && (
           <UnifiedModelPicker
-            tool={tool ?? "claude"}
+            tool={tool ?? "claude-code"}
             model={model ?? null}
             effort={effort as UMEffort}
             groups={pickerGroups}

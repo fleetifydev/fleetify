@@ -21,7 +21,7 @@ use std::path::PathBuf;
 /// config home (it authenticates via `GEMINI_API_KEY`), so only its MCP
 /// servers materialize (through the shared registry, not a home dir).
 pub const COMPONENT_PROVIDERS: &[&str] = &[
-    "claude",
+    "claude-code",
     "codex",
     "gemini",
     "kimi",
@@ -72,7 +72,7 @@ fn home() -> Option<PathBuf> {
 pub fn provider_home(provider: &str) -> Option<PathBuf> {
     let h = home()?;
     let p = match provider {
-        "claude" => h.join(".claude"),
+        "claude-code" => h.join(".claude"),
         "codex" => h.join(".codex"),
         "gemini" => h.join(".gemini"),
         "kimi" => h.join(".kimi"),
@@ -114,7 +114,7 @@ pub fn skills_dir(provider: &str) -> Option<PathBuf> {
 /// (`/skill-name`), so they return `None`.
 pub fn commands_dir(provider: &str) -> Option<PathBuf> {
     let sub = match provider {
-        "claude" | "gemini" | "opencode" => "commands",
+        "claude-code" | "gemini" | "opencode" => "commands",
         "codex" => "prompts",
         _ => return None,
     };
@@ -128,7 +128,7 @@ pub fn commands_dir(provider: &str) -> Option<PathBuf> {
 /// `None`.
 pub fn agents_dir(provider: &str) -> Option<(PathBuf, &'static str)> {
     let (sub, ext) = match provider {
-        "claude" | "opencode" | "agy" => ("agents", "md"),
+        "claude-code" | "opencode" | "agy" => ("agents", "md"),
         "github-copilot" => ("agents", "agent.md"),
         _ => return None,
     };
@@ -138,7 +138,7 @@ pub fn agents_dir(provider: &str) -> Option<(PathBuf, &'static str)> {
 /// The hook-materialization strategy for a provider.
 pub fn hook_strategy(provider: &str) -> HookStrategy {
     match provider {
-        "claude" => HookStrategy::MergeJson {
+        "claude-code" => HookStrategy::MergeJson {
             file: "settings.json",
             key: "hooks",
         },
@@ -256,7 +256,7 @@ mod tests {
     #[test]
     fn hook_strategy_classifies_merge_vs_copy() {
         assert!(matches!(
-            hook_strategy("claude"),
+            hook_strategy("claude-code"),
             HookStrategy::MergeJson { .. }
         ));
         assert!(matches!(

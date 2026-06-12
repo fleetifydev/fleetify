@@ -237,7 +237,7 @@ impl HealthState {
 #[allow(dead_code)]
 fn agent_key(a: AgentKind) -> &'static str {
     match a {
-        AgentKind::Claude => "claude",
+        AgentKind::Claude => "claude-code",
         AgentKind::OpenAI => "openai",
         AgentKind::Gemini => "gemini",
         AgentKind::Codex => "codex",
@@ -594,13 +594,13 @@ mod routing_emitter_tests {
         assert_eq!(p["task_flow"], "chat");
         assert_eq!(p["task_ref"], "s1");
         assert_eq!(p["router_source"], "builtin");
-        assert_eq!(p["agent"], "claude");
+        assert_eq!(p["agent"], "claude-code");
         assert_eq!(p["model"], "claude-sonnet-4-6");
         assert_eq!(p["rationale"], "test rationale");
         assert_eq!(p["latency_ms"], 42);
         assert_eq!(p["fallback_used"], false);
         assert!(p["primary_router_if_fallback"].is_null());
-        assert_eq!(p["candidates"][0]["agent"], "claude");
+        assert_eq!(p["candidates"][0]["agent"], "claude-code");
         assert_eq!(p["candidates"][0]["model"], "claude-haiku-4-5");
     }
 

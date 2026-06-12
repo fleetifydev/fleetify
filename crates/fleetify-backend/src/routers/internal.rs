@@ -926,7 +926,7 @@ mod tests {
                  (id,title,project_path,group_path,tool,command,status,\
                   use_worktree,permission_mode,session_mode,pinned,order_idx,\
                   budget_used,created_at,user_id) \
-                 VALUES (?,?,?,'','claude','','idle',1,'default','new',0,0,0.0,?,?)",
+                 VALUES (?,?,?,'','claude-code','','idle',1,'default','new',0,0,0.0,?,?)",
             )
             .bind(id)
             .bind(title)

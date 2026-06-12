@@ -1093,7 +1093,7 @@ async fn run_send_flow(
             auto_routes.iter().map(|r| r.agent).collect()
         } else {
             match session.tool.as_str() {
-                "claude" => vec![crate::services::routing::traits::AgentKind::Claude],
+                "claude-code" => vec![crate::services::routing::traits::AgentKind::Claude],
                 "openai" => vec![crate::services::routing::traits::AgentKind::OpenAI],
                 "gemini" => vec![crate::services::routing::traits::AgentKind::Gemini],
                 "codex" => vec![crate::services::routing::traits::AgentKind::Codex],
@@ -1150,7 +1150,7 @@ async fn run_send_flow(
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| session.project_path.clone());
     let any_bridge: AnyBridge = match session.tool.as_str() {
-        "claude" => {
+        "claude-code" => {
             let mut b = ClaudeBridge::new(sid.clone(), agent_cwd.clone());
             b.claude_session_id = session.claude_session_id.clone();
             b.permission_mode = session.permission_mode.clone();
@@ -1773,8 +1773,8 @@ async fn run_send_flow(
     // via BridgeContext but cannot swap the bridge identity mid-turn.
     // Full bridge-swap is deferred (see task notes).
     let bridge_tool_str = match session.tool.as_str() {
-        "claude" | "openai" | "gemini" | "codex" | "github-copilot" => session.tool.as_str(),
-        _ => "claude",
+        "claude-code" | "openai" | "gemini" | "codex" | "github-copilot" => session.tool.as_str(),
+        _ => "claude-code",
     };
     let resolution_tool_str =
         crate::services::routing::persist::agent_kind_to_str(resolution.agent);
@@ -2897,7 +2897,7 @@ async fn run_dispatched_task(
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| target.project_path.clone());
     let any_bridge: AnyBridge = match target.tool.as_str() {
-        "claude" => {
+        "claude-code" => {
             let mut b = ClaudeBridge::new(target_id.clone(), target_cwd.clone());
             b.claude_session_id = target.claude_session_id.clone();
             b.permission_mode = target.permission_mode.clone();
@@ -3812,7 +3812,7 @@ mod tests {
             "INSERT INTO sessions \
              (id,title,project_path,group_path,tool,command,status,\
               use_worktree,permission_mode,session_mode,pinned,order_idx,budget_used,created_at) \
-             VALUES (?,?,?,'','claude','','idle',1,'default','new',0,0,0.0,?)",
+             VALUES (?,?,?,'','claude-code','','idle',1,'default','new',0,0,0.0,?)",
         )
         .bind(id)
         .bind(title)

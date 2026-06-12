@@ -99,10 +99,10 @@ pub fn select_routes(
     let mut routes = Vec::new();
 
     // Claude family: Claude Code CLI first, then the direct Anthropic API.
-    if cli_authed("claude") {
+    if cli_authed("claude-code") {
         routes.push(AutoRoute {
             agent: AgentKind::Claude,
-            execution_tool: "claude".into(),
+            execution_tool: "claude-code".into(),
             nd_models: claude_nd_models(),
         });
     } else if anthropic_api_available && has_key("anthropic") {
@@ -191,10 +191,10 @@ mod tests {
     #[test]
     fn only_active_families_are_offered() {
         // Only Claude Code authed → only the Claude family, via the CLI.
-        let routes = select_routes(&|id| id == "claude", &none, false);
+        let routes = select_routes(&|id| id == "claude-code", &none, false);
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0].agent, AgentKind::Claude);
-        assert_eq!(routes[0].execution_tool, "claude");
+        assert_eq!(routes[0].execution_tool, "claude-code");
     }
 
     #[test]
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn candidates_mirror_routes() {
-        let routes = select_routes(&|id| id == "claude", &none, false);
+        let routes = select_routes(&|id| id == "claude-code", &none, false);
         let c = candidates(&routes);
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].agent, AgentKind::Claude);

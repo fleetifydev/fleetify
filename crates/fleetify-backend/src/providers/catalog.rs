@@ -1495,7 +1495,11 @@ pub static CATALOG: &[ProviderSpec] = &[
     },
     // ── CLI agents ────
     ProviderSpec {
-        id: "claude",
+        // Provider id is "claude-code"; the spawned binary stays "claude"
+        // (see `bin` below) — the npm package `@anthropic-ai/claude-code`
+        // installs the executable as `claude`. Legacy "claude" ids resolve
+        // via `helpers::canonical_provider_id`.
+        id: "claude-code",
         display_name: "Claude Code",
         kind: ProviderKind::Cli,
         default_base_url: "",
@@ -1841,7 +1845,7 @@ mod tests {
         let s = serde_json::to_string(CATALOG).expect("serialize");
         assert!(s.contains("\"openai\""));
         assert!(s.contains("\"perplexity\""));
-        assert!(s.contains("\"claude\""));
+        assert!(s.contains("\"claude-code\""));
     }
 
     #[test]
@@ -2054,7 +2058,7 @@ mod tests {
         // Antigravity is the exception — its installer is a per-OS shell
         // script (curl/irm), so it populates `install_hints` instead. See
         // `agy_has_per_os_install_hints` below for that side of the contract.
-        const NPM_CLI_IDS: &[&str] = &["claude", "codex", "gemini", "kimi"];
+        const NPM_CLI_IDS: &[&str] = &["claude-code", "codex", "gemini", "kimi"];
         for p in CATALOG
             .iter()
             .filter(|p| matches!(p.kind, ProviderKind::Cli))

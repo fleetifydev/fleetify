@@ -34,7 +34,7 @@ const capToSession = (lvl: string): string => (lvl === "xhigh" ? "extra_high" : 
 const sessionToCap = (e: string): string => (e === "extra_high" ? "xhigh" : e);
 
 export interface UnifiedModelPickerProps {
-  /** Active catalog provider id (e.g. "claude", "perplexity"). For
+  /** Active catalog provider id (e.g. "claude-code", "perplexity"). For
    *  Perplexity Agent brand splits the picker still highlights the
    *  source-provider row matching this value AND the brand-split row
    *  whose models include the active `model`. */
@@ -636,7 +636,7 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
 // github-copilot, agy, antigravity-sdk); a missing id here mis-buckets that
 // agent as HTTP and splits it off below the divider.
 const CLI_IDS = new Set([
-  "claude",
+  "claude-code",
   "codex",
   "gemini",
   "kimi",

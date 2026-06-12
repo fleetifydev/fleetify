@@ -26,7 +26,7 @@ import type { ProviderTile } from "@/lib/providers-api";
 
 /** CLI agents whose lineup the backend serves from the remote model catalog
  *  (fleetify.dev/api) - cheap to fetch eagerly at mount. */
-export const REMOTE_CATALOG_AGENTS = ["claude", "codex", "gemini", "kimi", "agy"] as const;
+export const REMOTE_CATALOG_AGENTS = ["claude-code", "codex", "gemini", "kimi", "agy"] as const;
 
 /** CLI agents whose lineup comes from a live local CLI/ACP probe - fetched
  *  lazily (picker open) to avoid spawning processes at app mount. Their

@@ -1445,7 +1445,9 @@ pub async fn shell_check_github_auth() -> serde_json::Value {
 }
 
 const NPM_PROVIDER_PKG: &[(&str, &str)] = &[
-    ("claude", "@anthropic-ai/claude-code"),
+    // Key is the provider id ("claude-code"); the npm package name keeps its
+    // own spelling. The installed binary is still `claude`.
+    ("claude-code", "@anthropic-ai/claude-code"),
     ("codex", "@openai/codex"),
     ("gemini", "@google/gemini-cli"),
     ("kimi", "@moonshot-ai/kimi-code"),
