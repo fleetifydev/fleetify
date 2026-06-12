@@ -36,7 +36,7 @@
  *   waiting glow   → rgba(251,146,60,0.06) tint + 2px strip
  */
 import {
-  X, ArrowRight, FileText,
+  X, ArrowRight, FileText, Check,
   ChevronDown, ChevronUp, Loader2,
   Brain, Send, AlertCircle, Sparkles, Archive,
   StopCircle,
@@ -498,6 +498,33 @@ const SessionRow = memo(function SessionRow({
   const stepsDone = todos.filter(t => t.status === "completed").length;
   const tools = detail?.tools ?? {};
   const tcTotal = Object.values(tools).reduce((a, b) => a + b, 0);
+  const tc = {
+    read: tools.Read ?? 0,
+    edit: (tools.Edit ?? 0) + (tools.Write ?? 0) + (tools.MultiEdit ?? 0),
+    bash: tools.Bash ?? 0,
+    web: (tools.WebFetch ?? 0) + (tools.WebSearch ?? 0) + (tools.fetch_url ?? 0),
+  };
+
+  // Memory items → plain strings (the backend ships either shape).
+  const memory: string[] = (detail?.memory_items ?? []).map((m) => {
+    if (typeof m === "string") return m;
+    const o = m as { text?: string; content?: string; summary?: string; value?: string };
+    return o.text ?? o.content ?? o.summary ?? o.value ?? "";
+  }).filter(Boolean);
+
+  // Files touched, from the activity ledger (deduped, with edit/read counts).
+  const files = useMemo(() => {
+    const seen = new Map<string, { edits: number; reads: number }>();
+    for (const a of activity) {
+      if (a.kind !== "file_edit" && a.kind !== "file_read") continue;
+      const label = (a.summary || "").trim();
+      if (!label) continue;
+      const e = seen.get(label) ?? { edits: 0, reads: 0 };
+      if (a.kind === "file_edit") e.edits++; else e.reads++;
+      seen.set(label, e);
+    }
+    return [...seen.entries()].map(([path, c]) => ({ path, ...c }));
+  }, [activity]);
 
   const header = (
     <div style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
@@ -542,7 +569,7 @@ const SessionRow = memo(function SessionRow({
         onMouseLeave={() => setHovered(false)}
         style={{
           display: "flex", flexDirection: "column", gap: 0, width: "100%",
-          padding: "12px 14px", border: "none", borderBottom: "1px solid var(--c-brd)",
+          padding: "12px 16px", border: "none", borderBottom: "1px solid var(--c-brd)",
           cursor: "pointer", textAlign: "left", background: hovered ? "var(--c-srf)" : "transparent",
           transition: "background 0.12s", fontFamily: "inherit",
         }}
@@ -553,61 +580,169 @@ const SessionRow = memo(function SessionRow({
     );
   }
 
-  // Inline metric chips as plain text — no boxes, no tiles.
-  const stats: Array<[string, string]> = [];
-  if (tokensTotal > 0) stats.push([fmtTokens(tokensTotal), "tokens"]);
-  if (tokensTotal > 0 && cachePct > 0) stats.push([`${cachePct}%`, "cache"]);
-  if (todos.length > 0) stats.push([`${stepsDone}/${todos.length}`, "steps"]);
-  if (tcTotal > 0) stats.push([String(tcTotal), "tools"]);
-
   return (
-    <div
-      style={{
-        position: "relative",
-        padding: "12px 16px",
-        borderBottom: "1px solid var(--c-brd)",
-        background: isWaiting ? "rgba(251,146,60,0.05)" : "transparent",
-      }}
-    >
+    <div style={{ position: "relative", borderBottom: "1px solid var(--c-brd)", background: isWaiting ? "rgba(251,146,60,0.04)" : "transparent" }}>
       {isWaiting && (
-        <span aria-hidden style={{ position: "absolute", left: 0, top: 12, bottom: 12, width: 2, background: C_ORANGE, borderRadius: 2 }} />
+        <span aria-hidden style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 2, background: C_ORANGE }} />
       )}
       <button
         onClick={handleClick}
-        style={{ display: "flex", flexDirection: "column", gap: 0, width: "100%", padding: 0, border: "none", background: "transparent", cursor: "pointer", textAlign: "left", fontFamily: "inherit" }}
+        style={{ display: "flex", flexDirection: "column", gap: 0, width: "100%", padding: "12px 16px 0", border: "none", background: "transparent", cursor: "pointer", textAlign: "left", fontFamily: "inherit" }}
       >
         {header}
         {meta}
       </button>
 
-      {verdict && (
-        <div style={{ marginLeft: 15, marginTop: 8, fontSize: 12, color: "var(--c-med)", lineHeight: 1.5 }}>{verdict.text}</div>
-      )}
+      <div style={{ padding: "0 16px 14px", marginLeft: 4 }}>
+        {/* token line */}
+        {tokensTotal > 0 && (
+          <div style={{ marginLeft: 15, marginTop: 7, fontFamily: MONO, fontSize: 10.5, color: "var(--c-dim)" }}>
+            <b style={{ color: "var(--c-med)", fontWeight: 600 }}>{fmtTokens(tokensTotal)}</b> tokens
+            {cachePct > 0 && <> <span style={{ color: "var(--c-brd2)" }}>·</span> <b style={{ color: "var(--c-med)", fontWeight: 600 }}>{cachePct}%</b> cache</>}
+          </div>
+        )}
 
-      {stats.length > 0 && (
-        <div style={{ marginLeft: 15, marginTop: 8, display: "flex", flexWrap: "wrap", gap: 10, fontFamily: MONO, fontSize: 10.5, color: "var(--c-dim)" }}>
-          {stats.map(([num, unit], i) => (
-            <span key={i}><span style={{ color: "var(--c-med)", fontWeight: 600 }}>{num}</span> {unit}</span>
-          ))}
+        {verdict && (
+          <div style={{ marginLeft: 15, marginTop: 8, fontSize: 12, color: "var(--c-med)", lineHeight: 1.5 }}>{verdict.text}</div>
+        )}
+
+        {/* TASKS */}
+        {todos.length > 0 && (
+          <Section label="Tasks" count={`${stepsDone}/${todos.length}`}>
+            {todos.map((t, i) => {
+              const done = t.status === "completed";
+              const prog = t.status === "in_progress";
+              return (
+                <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "2.5px 0", fontSize: 12, lineHeight: 1.45,
+                  color: done ? "var(--c-dim)" : prog ? "var(--c-high)" : "var(--c-med)" }}>
+                  <span aria-hidden style={{
+                    width: 13, height: 13, borderRadius: 4, flexShrink: 0, marginTop: 1,
+                    display: "inline-flex", alignItems: "center", justifyContent: "center",
+                    background: done ? "var(--c-med)" : "transparent",
+                    border: done ? "none" : `1.4px solid ${prog ? C_ORANGE : "var(--c-ghost)"}`,
+                  }}>
+                    {done && <Check size={9} strokeWidth={3} style={{ color: "var(--background)" }} />}
+                    {prog && <span style={{ width: 5, height: 5, borderRadius: "50%", background: C_ORANGE }} />}
+                  </span>
+                  <span style={{ textDecoration: done ? "line-through" : "none", textDecorationColor: "var(--c-ghost)" }}>
+                    {t.activeForm && prog ? t.activeForm : t.content}
+                  </span>
+                </div>
+              );
+            })}
+          </Section>
+        )}
+
+        {/* MEMORY */}
+        {memory.length > 0 && (
+          <Section label="Memory" count={memory.length}>
+            {memory.slice(0, 8).map((m, i) => (
+              <div key={i} style={{ display: "flex", gap: 8, padding: "2.5px 0", fontSize: 11.5, color: "var(--c-med)", lineHeight: 1.45 }}>
+                <span style={{ color: "var(--c-ghost)", flexShrink: 0 }}>·</span>
+                <span>{m}</span>
+              </div>
+            ))}
+          </Section>
+        )}
+
+        {/* TOOL CALLS */}
+        {tcTotal > 0 && (
+          <Section label="Tool calls" count={tcTotal}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 12, fontFamily: MONO, fontSize: 11, color: "var(--c-dim)" }}>
+              {tc.read > 0 && <span><b style={{ color: C_BLUE, fontWeight: 700 }}>{tc.read}</b> read</span>}
+              {tc.edit > 0 && <span><b style={{ color: C_GREEN, fontWeight: 700 }}>{tc.edit}</b> edit</span>}
+              {tc.bash > 0 && <span><b style={{ color: C_ORANGE, fontWeight: 700 }}>{tc.bash}</b> bash</span>}
+              {tc.web > 0 && <span><b style={{ color: "var(--c-med)", fontWeight: 700 }}>{tc.web}</b> web</span>}
+            </div>
+          </Section>
+        )}
+
+        {/* FILES */}
+        {files.length > 0 && (
+          <Section label="Files" count={files.length}>
+            {files.map((f) => (
+              <div key={f.path} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "2.5px 0", fontFamily: MONO, fontSize: 11 }}>
+                <span style={{ color: "var(--c-med)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "70%" }}>{f.path}</span>
+                <span style={{ color: "var(--c-ghost)", flexShrink: 0 }}>
+                  {f.edits > 0 ? `${f.edits} edit${f.edits === 1 ? "" : "s"}` : `${f.reads} read${f.reads === 1 ? "" : "s"}`}
+                </span>
+              </div>
+            ))}
+          </Section>
+        )}
+
+        {/* FULL LOG */}
+        {activity.length > 0 && (
+          <Section label="Log" count="full">
+            <div style={{ display: "flex", flexDirection: "column" }}>
+              {activity.map((row) => {
+                const lk = logKind(row);
+                return (
+                  <div key={row.id} style={{ display: "flex", gap: 8, padding: "2.5px 0", fontFamily: MONO, fontSize: 10.5, alignItems: "baseline" }}>
+                    <span style={{ color: "var(--c-ghost)", width: 30, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{relativeAgo(row.ts)}</span>
+                    <span style={{ color: lk.color, width: 34, flexShrink: 0, fontWeight: 600 }}>{lk.label}</span>
+                    <span style={{ color: "var(--c-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{logText(row)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </Section>
+        )}
+
+        {/* actions */}
+        <div style={{ marginLeft: 15, marginTop: 14, display: "flex", alignItems: "center", gap: 16 }}>
+          {isWaiting && (
+            <button onClick={handleClick} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 600, color: C_ORANGE, display: "inline-flex", alignItems: "center", gap: 4 }}>
+              Respond <ArrowRight size={11} />
+            </button>
+          )}
+          <button onClick={handleClick} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 600, color: "var(--c-med)" }}>Open</button>
+          {isRunning && (
+            <button onClick={handleStop} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 500, color: "var(--c-dim)", display: "inline-flex", alignItems: "center" }}>
+              {stopping ? <Loader2 size={11} className="animate-spin" /> : "Stop"}
+            </button>
+          )}
         </div>
-      )}
-
-      <div style={{ marginLeft: 15, marginTop: 10, display: "flex", alignItems: "center", gap: 14 }}>
-        {isWaiting && (
-          <button onClick={handleClick} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600, color: C_ORANGE, display: "inline-flex", alignItems: "center", gap: 4 }}>
-            Respond <ArrowRight size={11} />
-          </button>
-        )}
-        <button onClick={handleClick} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600, color: "var(--c-med)" }}>Open</button>
-        {isRunning && (
-          <button onClick={handleStop} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 500, color: "var(--c-dim)", display: "inline-flex", alignItems: "center" }}>
-            {stopping ? <Loader2 size={11} className="animate-spin" /> : "Stop"}
-          </button>
-        )}
       </div>
     </div>
   );
 });
+
+/** Labeled detail section inside an expanded session card. */
+function Section({ label, count, children }: { label: string; count?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div style={{ marginLeft: 15, marginTop: 14 }}>
+      <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", color: "var(--c-ghost)", marginBottom: 7 }}>
+        {label}{count != null && <span style={{ color: "var(--c-dim)", marginLeft: 5, fontWeight: 600 }}>{count}</span>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** Map an activity row to a short coloured log kind. */
+function logKind(row: SessionActivityItem): { label: string; color: string } {
+  const t = (row.payload?.tool ?? "").replace(/^mcp__[a-z0-9_]+?__/i, "");
+  if (row.kind === "file_edit") return { label: "edit", color: C_GREEN };
+  if (row.kind === "file_read") return { label: "read", color: C_BLUE };
+  if (row.kind === "command")   return { label: "bash", color: C_ORANGE };
+  if (row.kind === "web_fetch") return { label: "web", color: C_BLUE };
+  if (row.kind === "error")     return { label: "err", color: C_RED };
+  if (row.kind === "todo")      return { label: "task", color: "var(--c-med)" };
+  if (row.kind === "plan")      return { label: "plan", color: "var(--c-med)" };
+  if (t === "ask_user" || t === "AskUserQuestion") return { label: "ask", color: "var(--c-med)" };
+  return { label: (t || row.kind).slice(0, 5).toLowerCase(), color: "var(--c-med)" };
+}
+
+/** Cleaned, human log text for one activity row (de-namespaced, no select: junk). */
+function logText(row: SessionActivityItem): string {
+  const t = (row.payload?.tool ?? "").replace(/^mcp__[a-z0-9_]+?__/i, "");
+  if (t === "ask_user" || t === "AskUserQuestion") return "asked you a question";
+  const clean = (s: string) => s.replace(/select:/gi, "").replace(/mcp__[a-z0-9_]+?__/gi, "").trim();
+  const base = humanActivity(row);
+  const out = clean(base);
+  return out || clean(row.summary || "") || row.kind;
+}
 
 /* ── Ask Fleet ─────────────────────────────────────────────────── */
 
