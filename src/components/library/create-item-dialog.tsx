@@ -6,8 +6,8 @@
  * submit it POSTs via `useLibraryStore().create`, surfacing the backend's
  * 400 (invalid slug / no providers) and 409 (slug exists) inline.
  */
-import { useMemo, useRef, useState } from "react";
-import { Upload, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Check, ChevronDown, Upload, X } from "lucide-react";
 import { useLibraryStore } from "@/stores/library-store";
 import {
   PROVIDERS_FOR_KIND,
@@ -194,33 +194,11 @@ export function CreateItemDialog({
 
         {providerScoped && (
           <Field label="Providers" hint="where this materializes">
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {allowedProviders.map((id) => {
-                const on = providers.includes(id);
-                return (
-                  <button
-                    key={id}
-                    onClick={() => toggleProvider(id)}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      padding: "4px 9px",
-                      borderRadius: 7,
-                      fontSize: 12,
-                      cursor: "pointer",
-                      border: "1px solid",
-                      borderColor: on ? "var(--c-high)" : "var(--c-brd)",
-                      background: on ? "var(--c-srf)" : "transparent",
-                      color: on ? "var(--c-high)" : "var(--c-med)",
-                    }}
-                  >
-                    <ProviderLogo tool={id} size={13} />
-                    {providerName(id)}
-                  </button>
-                );
-              })}
-            </div>
+            <ProviderMultiSelect
+              allowed={allowedProviders}
+              selected={providers}
+              onToggle={toggleProvider}
+            />
           </Field>
         )}
 
@@ -295,6 +273,138 @@ function Field({
       </span>
       {children}
     </label>
+  );
+}
+
+/**
+ * Multi-select dropdown for the provider scope. Replaces the old inline
+ * toggle-pill row: a single trigger that shows the picked providers (logo
+ * + name chips) and opens a checkable list below. Selecting a row toggles
+ * it WITHOUT closing the menu, so several providers can be picked in one
+ * pass; an outside click (or Escape) closes it. Matches the modal's input
+ * chrome so it reads as one more field.
+ */
+function ProviderMultiSelect({
+  allowed,
+  selected,
+  onToggle,
+}: {
+  allowed: string[];
+  selected: string[];
+  onToggle: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  // Close on outside click + Escape — same pattern as the app's other
+  // popovers (branch picker, PR switcher).
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        style={{
+          ...inputStyle,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          minHeight: 36,
+          cursor: "pointer",
+          textAlign: "left",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 5, flex: 1, minWidth: 0 }}>
+          {selected.length === 0 ? (
+            <span style={{ color: "var(--c-dim)", fontSize: 13 }}>Select providers…</span>
+          ) : (
+            selected.map((id) => (
+              <span
+                key={id}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 5,
+                  padding: "2px 7px", borderRadius: 6, fontSize: 12,
+                  background: "var(--c-srf)", color: "var(--c-high)",
+                  border: "1px solid var(--c-brd)",
+                }}
+              >
+                <ProviderLogo tool={id} size={13} />
+                {providerName(id)}
+              </span>
+            ))
+          )}
+        </div>
+        <ChevronDown
+          size={15}
+          style={{
+            color: "var(--c-dim)", flexShrink: 0,
+            transform: open ? "rotate(180deg)" : "none",
+            transition: "transform 0.15s",
+          }}
+        />
+      </button>
+
+      {open && (
+        <div
+          role="listbox"
+          aria-multiselectable
+          style={{
+            position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0,
+            zIndex: 20,
+            maxHeight: 240, overflowY: "auto",
+            background: "var(--popover, var(--card))",
+            border: "1px solid var(--c-brd)",
+            borderRadius: 8,
+            boxShadow: "0 10px 30px rgba(0,0,0,0.30)",
+            padding: 4,
+            display: "flex", flexDirection: "column", gap: 2,
+          }}
+        >
+          {allowed.map((id) => {
+            const on = selected.includes(id);
+            return (
+              <button
+                key={id}
+                type="button"
+                role="option"
+                aria-selected={on}
+                onClick={() => onToggle(id)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 9,
+                  width: "100%", padding: "7px 9px",
+                  borderRadius: 6, border: "none", outline: "none",
+                  background: on ? "var(--c-srf)" : "transparent",
+                  color: on ? "var(--c-high)" : "var(--c-med)",
+                  fontSize: 13, cursor: "pointer", textAlign: "left",
+                  transition: "background 0.1s",
+                }}
+                onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = "var(--c-srf)"; }}
+                onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = "transparent"; }}
+              >
+                <ProviderLogo tool={id} size={15} />
+                <span style={{ flex: 1 }}>{providerName(id)}</span>
+                {on && <Check size={14} strokeWidth={2.5} style={{ color: "var(--c-high)", flexShrink: 0 }} />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 

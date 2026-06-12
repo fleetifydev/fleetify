@@ -1676,7 +1676,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
       });
       const projectName = folderName(fresh.project_path) || "your project";
       const providerLabel =
-        fresh.tool === "claude" ? "Claude"
+        fresh.tool === "claude" ? "Claude Code"
         : fresh.tool === "codex" ? "Codex"
         : fresh.tool === "gemini" ? "Gemini"
         : fresh.tool.charAt(0).toUpperCase() + fresh.tool.slice(1);

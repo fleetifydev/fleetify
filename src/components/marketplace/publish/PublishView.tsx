@@ -32,7 +32,7 @@ interface Props {
 }
 
 const PROVIDERS: { id: "claude" | "codex" | "gemini"; label: string }[] = [
-  { id: "claude", label: "Claude" },
+  { id: "claude", label: "Claude Code" },
   { id: "codex",  label: "Codex"  },
   { id: "gemini", label: "Gemini" },
 ];

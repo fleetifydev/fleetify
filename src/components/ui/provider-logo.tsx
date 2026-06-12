@@ -440,7 +440,7 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
 
 export function providerName(tool: string): string {
   const names: Record<string, string> = {
-    claude: "Claude", codex: "Codex", cursor: "Cursor", gemini: "Gemini",
+    claude: "Claude Code", codex: "Codex", cursor: "Cursor", gemini: "Gemini",
     ollama: "Ollama", kimi: "Kimi", agy: "Antigravity CLI",
     "antigravity-sdk": "Antigravity SDK",
     opencode: "OpenCode", "github-copilot": "GitHub Copilot", aider: "Aider",
