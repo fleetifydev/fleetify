@@ -25,6 +25,28 @@ use tokio::sync::Mutex;
 
 use super::BridgeEvent;
 
+/// Fleetify's OpenRouter app-attribution values. OpenRouter surfaces the
+/// calling app on its public rankings (`https://openrouter.ai/apps`) when
+/// requests carry `HTTP-Referer` (the app's site) + `X-Title` (its name) —
+/// see <https://openrouter.ai/docs/app-attribution>. Shared with the model
+/// discovery fetch in `routers/providers.rs`.
+pub const OPENROUTER_REFERER: &str = "https://fleetify.dev";
+pub const OPENROUTER_TITLE: &str = "Fleetify";
+
+/// Static app-attribution headers a provider wants on every API call. Only
+/// OpenRouter needs them today; every other OpenAI-compatible provider adds
+/// none. A free fn so it stays unit-testable — the request build is inline in
+/// an async task that would otherwise need a live server to exercise.
+fn attribution_headers(provider_id: &str) -> &'static [(&'static str, &'static str)] {
+    match provider_id {
+        "openrouter" => &[
+            ("HTTP-Referer", OPENROUTER_REFERER),
+            ("X-Title", OPENROUTER_TITLE),
+        ],
+        _ => &[],
+    }
+}
+
 #[derive(Default)]
 pub struct OpenAICompatState {
     pub history: Vec<Value>,
@@ -165,6 +187,10 @@ impl OpenAICompatBridge {
                 .post(&url)
                 .bearer_auth(&api_key)
                 .json(&body);
+            // App-attribution (OpenRouter rankings); no-op for other providers.
+            for (k, v) in attribution_headers(provider_id) {
+                req = req.header(*k, *v);
+            }
             for (k, v) in extra_headers.iter() {
                 req = req.header(k.as_str(), v.as_bytes());
             }
@@ -336,6 +362,16 @@ fn parse_sse_event(block: &str, assistant_text: &mut String, usage: &mut Value) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn openrouter_carries_app_attribution_headers() {
+        let h = attribution_headers("openrouter");
+        assert!(h.iter().any(|(k, _)| *k == "HTTP-Referer"));
+        assert!(h.iter().any(|(k, v)| *k == "X-Title" && *v == "Fleetify"));
+        // Other OpenAI-compat providers add nothing.
+        assert!(attribution_headers("openai").is_empty());
+        assert!(attribution_headers("deepseek").is_empty());
+    }
 
     #[test]
     fn parser_extracts_delta_and_usage_like_openai() {

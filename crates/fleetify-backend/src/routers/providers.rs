@@ -703,7 +703,16 @@ async fn discover_openrouter_models() -> ProviderModelList {
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
-    let mut req = client.get("https://openrouter.ai/api/v1/models");
+    let mut req = client
+        .get("https://openrouter.ai/api/v1/models")
+        // Same app-attribution headers we send on chat calls (OpenRouter
+        // rankings) — applied here too so every Fleetify→OpenRouter request
+        // is attributed consistently.
+        .header(
+            "HTTP-Referer",
+            crate::bridges::openai_compat::OPENROUTER_REFERER,
+        )
+        .header("X-Title", crate::bridges::openai_compat::OPENROUTER_TITLE);
     if let Some(key) = crate::providers::keys::get_key("openrouter") {
         req = req.bearer_auth(key);
     }
