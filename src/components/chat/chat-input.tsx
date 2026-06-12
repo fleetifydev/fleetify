@@ -32,6 +32,8 @@ import { permissionCapabilityFor, permissionModesFor, defaultPermissionMode, isL
 import type { PermMode } from "@/lib/providers-api";
 import { ToolMatrixEditor } from "./tool-matrix-editor";
 import { SandboxControl } from "./sandbox-control";
+import { PromptsPicker } from "./prompts-picker";
+import { listPrompts, resolvePromptArg } from "@/lib/prompts-api";
 
 /* ─────────────────── constants ─────────────────── */
 
@@ -1153,6 +1155,8 @@ export function ChatInput({
   const [slashQuery, setSlashQuery] = useState("");
   const [slashIndex, setSlashIndex] = useState(0);
   const [pluginCmds, setPluginCmds] = useState<Array<{ cmd: string; desc: string; body: string | null; args: string[] }>>([]);
+  // /prompts picker open state (the no-arg `/prompts` dialog).
+  const [promptsOpen, setPromptsOpen] = useState(false);
   // Fetch plugin slash commands for the active session
   useEffect(() => {
     if (!sessionId) { setPluginCmds([]); return; }
@@ -1687,6 +1691,27 @@ export function ChatInput({
     return false;
   }, [sessionId, tool, effort, setEffortLocal, onEffortChange]);
 
+  /** `/prompts` — app-owned. No argument opens the picker; `/prompts <slug>`
+   *  resolves and sends the prompt's body, or toasts on an unknown slug. Works
+   *  in both a session and the Fleet composer (no provider needed) and runs
+   *  before Fleet refine so the command itself is never rewritten. */
+  const handlePromptsCommand = useCallback((t: string) => {
+    const arg = t.slice("/prompts".length).trim();
+    setValue(""); setAttachments([]);
+    if (ref.current) ref.current.style.height = "0px";
+    if (!arg) { setPromptsOpen(true); return; }
+    void (async () => {
+      try {
+        const list = await listPrompts();
+        const hit = resolvePromptArg(list, arg);
+        if (hit) onSend(hit.body);
+        else setEnhanceToast(`No prompt matches "${arg}"`);
+      } catch (e) {
+        setEnhanceToast(`Couldn't load prompts: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    })();
+  }, [onSend]);
+
   /** Dispatches the actual send. Bypasses Fleet refine — used both
    *  by the post-refine "Send refined" / "Send original" buttons and
    *  by the direct submit path when Fleet is off / control-center /
@@ -1810,6 +1835,13 @@ export function ChatInput({
     if (!t && attachments.length === 0) return;
     if (disabled) return;
 
+    // /prompts is app-owned — open the picker or send a named prompt. Handled
+    // before the Fleet refine branch so the command is never rewritten.
+    if (t.split(/\s+/)[0] === "/prompts") {
+      handlePromptsCommand(t);
+      return;
+    }
+
     if (!fleetActive) {
       dispatchSend(t, attachments);
       return;
@@ -1855,7 +1887,7 @@ export function ChatInput({
         dispatchSend(t, snapshotAtts);
       })
       .finally(() => setRefining(false));
-  }, [value, disabled, streaming, locked, onStop, attachments, fleetActive, refining, pendingRefine, dispatchSend, projectPath, tool, model, sessionId, recordCost, askQuestion, advanceAsk]);
+  }, [value, disabled, streaming, locked, onStop, attachments, fleetActive, refining, pendingRefine, dispatchSend, projectPath, tool, model, sessionId, recordCost, askQuestion, advanceAsk, handlePromptsCommand]);
 
   /* Refine-card actions */
   const confirmRefined = useCallback(() => {
@@ -2300,6 +2332,12 @@ export function ChatInput({
             Caller-provided content (e.g. permission card) rendered as
             part of the input cluster so it visually attaches to the
             box below. */}
+        <PromptsPicker
+          open={promptsOpen}
+          onClose={() => setPromptsOpen(false)}
+          onPick={(p) => { setPromptsOpen(false); onSend(p.body); }}
+        />
+
         {slotAbove}
 
         {/* ── Fleet refine card ──

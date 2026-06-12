@@ -25,6 +25,7 @@ pub mod migration;
 pub mod plugins;
 pub mod pricing;
 pub mod prompt_enhancer;
+pub mod prompts;
 pub mod provider_inspector;
 pub mod provider_sessions;
 pub mod providers_health;

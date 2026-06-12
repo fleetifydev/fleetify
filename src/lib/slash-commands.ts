@@ -34,6 +34,7 @@ export type SlashIntent =
   | "fleet.help"
   | "fleet.compaction"
   | "fleet.mcp"
+  | "fleet.prompts"
   | "session.compaction"
   | "session.clear"
   | "session.context"
@@ -47,6 +48,7 @@ export type SlashIntent =
   | "session.usage"
   | "session.permissions"
   | "session.commands"
+  | "session.prompts"
   | "session.mcp";
 
 export type SlashScope = "fleet" | "session";
@@ -81,6 +83,7 @@ export const FLEET_CMDS: SlashCmdDef[] = [
   { intent: "fleet.compaction", cmd: "/compact", desc: "Summarize the fleet conversation with the fleet model", scope: "fleet" },
   { intent: "fleet.mcp",        cmd: "/mcp",     desc: "Show MCP server status across the fleet",         scope: "fleet" },
   { intent: "fleet.help",       cmd: "/help",    desc: "Show tips and keyboard shortcuts",                scope: "fleet" },
+  { intent: "fleet.prompts",    cmd: "/prompts", desc: "Browse & send a saved prompt",                    scope: "fleet" },
 ];
 
 export const SESSION_CMDS_BY_TOOL: Record<SessionTool, SlashCmdDef[]> = {
@@ -127,6 +130,11 @@ export const SESSION_CMDS_COMMON: SlashCmdDef[] = [
   // /effort is meaningless for Gemini (no reasoning-effort knob — Gemini
   // controls depth via model SKU only). Hide it there.
   { intent: "session.effort",      cmd: "/effort",      desc: "Change reasoning effort (low/medium/high/extra_high/max)", scope: "session", supportedTools: ["claude-code", "codex"] },
+  // /prompts surfaces the user's reusable prompts (Library + plugins) in a
+  // searchable picker; the handler lives in chat-input. Tool-agnostic, and
+  // ordered before the Codex `session.commands` `/prompts` alias so the
+  // cmd-dedup in commandsForContext keeps this entry.
+  { intent: "session.prompts",     cmd: "/prompts",     desc: "Browse & send a saved prompt",                             scope: "session" },
   // /commands lists user-defined slash commands. Codex calls them "prompts"
   // and namespaces them under /prompts:<name>; surface that naming instead.
   { intent: "session.commands",    cmd: "/commands",    desc: "Browse custom slash commands",                             scope: "session", supportedTools: ["claude-code", "gemini"] },
@@ -165,5 +173,14 @@ export function commandsForContext(
   );
   const sessionCmds = new Set([...perTool, ...common].map((c) => c.cmd));
   const fleetSurfaced = FLEET_CMDS.filter((c) => !sessionCmds.has(c.cmd));
-  return [...fleetSurfaced, ...perTool, ...common];
+  const merged = [...fleetSurfaced, ...perTool, ...common];
+  // Dedup by literal cmd, keeping the first occurrence. The new universal
+  // `/prompts` is ordered before the Codex `session.commands` `/prompts` alias,
+  // so it wins; all other builtins are already cmd-unique.
+  const seen = new Set<string>();
+  return merged.filter((c) => {
+    if (seen.has(c.cmd)) return false;
+    seen.add(c.cmd);
+    return true;
+  });
 }

@@ -16,6 +16,7 @@ pub mod mcp;
 pub mod messages;
 pub mod plugins;
 pub mod prompt;
+pub mod prompts;
 pub mod providers;
 pub mod runtime;
 pub mod sessions;

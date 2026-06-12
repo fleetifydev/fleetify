@@ -275,9 +275,7 @@ pub fn hf_error_message(stdout: &str) -> String {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
         if let Some(t) = v.get("error_type").and_then(|x| x.as_str()) {
             return match t {
-                "not_enough_credits" => {
-                    "Not enough Higgsfield credits for this generation.".into()
-                }
+                "not_enough_credits" => "Not enough Higgsfield credits for this generation.".into(),
                 "unauthorized" | "unauthenticated" | "not_authenticated" => {
                     "Not connected to Higgsfield — run `hf auth login`.".into()
                 }
@@ -502,7 +500,10 @@ mod tests {
             asset_filename("https://cdn/u/hf_20260607_161039_540f9619.png"),
             "hf_20260607_161039_540f9619.png"
         );
-        assert_eq!(asset_filename("https://cdn/a/out.mp4?sig=xyz&e=1"), "out.mp4");
+        assert_eq!(
+            asset_filename("https://cdn/a/out.mp4?sig=xyz&e=1"),
+            "out.mp4"
+        );
         assert_eq!(asset_filename("https://cdn/trailing/"), "asset");
     }
 

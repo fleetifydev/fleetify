@@ -8,8 +8,8 @@ use tower_http::services::ServeDir;
 
 use crate::routers::{
     accounts, auth as auth_router, chat, docker, events, fleet, fs, groups, internal, library,
-    marketplace, mcp, messages, plugins, prompt, providers, runtime, sessions, ssh, workflows,
-    workspace, AppState,
+    marketplace, mcp, messages, plugins, prompt, prompts, providers, runtime, sessions, ssh,
+    workflows, workspace, AppState,
 };
 
 /// Build the axum app. Single origin: `/healthz`, `/api/*` (auth'd),
@@ -46,6 +46,7 @@ pub fn app(state: AppState, static_dir: Option<PathBuf>) -> Router {
         .merge(plugins::router())
         .merge(marketplace::router())
         .merge(library::router())
+        .merge(prompts::router())
         .merge(runtime::router())
         .merge(workflows::router())
         .merge(mcp::router())
