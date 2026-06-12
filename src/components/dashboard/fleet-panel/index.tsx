@@ -36,15 +36,15 @@
  *   waiting glow   → rgba(251,146,60,0.06) tint + 2px strip
  */
 import {
-  X, ArrowRight, FileText, Check, ChevronRight, ChevronLeft,
+  X, ArrowRight, FileText,
   ChevronDown, ChevronUp, Loader2,
   Brain, Send, AlertCircle, Sparkles, Archive,
-  StopCircle, Pencil, Terminal, Eye, Globe, HelpCircle,
+  StopCircle, Eye, Pencil, Terminal, Globe,
 } from "lucide-react";
 import { memo, useMemo, useState, useCallback } from "react";
 import { useAppStore } from "@/stores/app-store";
 import { useChatStore } from "@/stores/chat-store";
-import { useFleetStore, type FleetReport, type FleetDecision } from "@/stores/fleet-store";
+import { useFleetStore, type FleetSessionStatus, type FleetReport, type FleetDecision } from "@/stores/fleet-store";
 import { useFleetData, type FleetActivityRow } from "./hooks/use-fleet-data";
 import { askFleet, stopSession, archiveSession, type SessionDetail, type SessionActivityItem } from "@/lib/api";
 import { ProviderLogo } from "@/components/ui/provider-logo";
@@ -235,6 +235,57 @@ function shortPath(p: string | null | undefined): string {
  *  activity ledger. This is the SMART part — instead of dumping the
  *  agent's last text quote, Fleet tells the user what THIS session
  *  is fundamentally doing. The user reads one line and knows. */
+function fleetVerdict(
+  session: Session,
+  detail: SessionDetail | undefined,
+  activity: SessionActivityItem[],
+  fleetLastAction: string | null,
+  hasPermission: boolean,
+): { tone: "info" | "warning" | "fleet"; text: string } | null {
+  // Fleet brain has spoken — always preferred.
+  if (fleetLastAction) return { tone: "fleet", text: fleetLastAction };
+
+  // Permission request → most actionable thing.
+  if (hasPermission) return { tone: "warning", text: "Waiting on permission" };
+
+  // Recent error → flag it.
+  if (activity[0]?.kind === "error") return { tone: "warning", text: `Error: ${activity[0].summary.slice(0, 80)}` };
+
+  // Tool histogram tells the story of what this session is doing.
+  const tools = detail?.tools ?? {};
+  const ks = Object.keys(tools);
+  if (ks.length > 0) {
+    const total = Object.values(tools).reduce((a, b) => a + b, 0);
+    const top = ks.sort((a, b) => (tools[b] ?? 0) - (tools[a] ?? 0)).slice(0, 3);
+    const editCount  = (tools.Edit ?? 0) + (tools.Write ?? 0) + (tools.MultiEdit ?? 0);
+    const readCount  = tools.Read ?? 0;
+    const bashCount  = tools.Bash ?? 0;
+    if (editCount === 0 && readCount > total * 0.5) {
+      return { tone: "info", text: `Reading codebase · ${readCount} files explored` };
+    }
+    if (editCount === 0 && bashCount > total * 0.5) {
+      return { tone: "info", text: `Running commands · ${bashCount} shell calls` };
+    }
+    if (editCount > 0) {
+      return { tone: "info", text: `Writing code · ${editCount} edits across ${top.length} tool kinds` };
+    }
+    return { tone: "info", text: `Tool mix: ${top.join(" · ")}` };
+  }
+
+  // Idle session age signal.
+  const lastTs = session.last_accessed ?? session.created_at;
+  if (lastTs) {
+    const age = Date.now() - Date.parse(lastTs);
+    if (isFinite(age)) {
+      const hours = age / 3_600_000;
+      if (hours > 24)  return { tone: "warning", text: `Untouched ${Math.round(hours / 24)}d · consider archive` };
+      if (hours > 3)   return { tone: "info",    text: `Idle for ${Math.round(hours)}h` };
+    }
+  }
+
+  return null;
+}
+
 /** Strip the noisy shell wrapper from activity summaries to reach
  *  the actual command. Backend stores rows like:
  *    /bin/zsh -lc 'rg -n "import jwt" *.py'
@@ -381,316 +432,252 @@ function InsightsList({ insights }: { insights: Insight[] }) {
 
 /* ── Session row ───────────────────────────────────────────────── */
 
-const SessionRow = memo(function SessionRow({
-  session, detail, onOpen,
-}: {
+interface SessionRowProps {
   session: Session;
   detail: SessionDetail | undefined;
-  onOpen: (id: string) => void;
-}) {
+  activity: SessionActivityItem[];
+  fleetStatus: FleetSessionStatus;
+  fleetLastAction: string | null;
+  decision: FleetDecision | null;
+  /** Render the full rich card (running / waiting / error / top row) vs a
+   *  collapsed one-line idle row. */
+  expanded: boolean;
+  // Id-aware callbacks so the parent can hand down a single stable
+  // reference for every row. Without this, `() => jumpTo(s.id)` etc.
+  // build a fresh closure per render and bust SessionRow's memo on
+  // every parent tick. SessionRow binds its own session.id locally
+  // before passing to children that expect zero-arg callbacks.
+  onJump: (sessionId: string) => void;
+  onSend: (sessionId: string, text: string) => void;
+  onAnswer: (sessionId: string, text: string) => void;
+  onDismissDecision: (sessionId: string) => void;
+}
+
+const SessionRow = memo(function SessionRow({
+  session, detail, activity, fleetLastAction, expanded,
+  onJump,
+}: SessionRowProps) {
   const [hovered, setHovered] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const cs = useChatStore(s => s.sessions[session.id]);
   const staffSessionId = useAppStore(s => s.staffSessionId);
   const isStaff = staffSessionId !== null && session.id === staffSessionId;
   const isRunning = session.status === "running" || session.status === "starting";
   const isWaiting = session.status === "waiting" || !!cs?.permissionRequest;
   const isError = session.status === "error";
+
+  const sessionId = session.id;
+  const handleClick = useCallback(() => onJump(sessionId), [onJump, sessionId]);
+  const handleStop = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setStopping(true);
+    try { await stopSession(sessionId); } catch { /* ignore */ }
+    setStopping(false);
+  }, [sessionId]);
+
+  const verdict = useMemo(
+    () => fleetVerdict(session, detail, activity, fleetLastAction, isWaiting),
+    [session, detail, activity, fleetLastAction, isWaiting],
+  );
+
   const cost = detail?.total_cost_usd ?? session.budget_used ?? 0;
   const costLabel = cost > 0 ? fmtCost(cost) : "$0";
   const modelShort = shortModel(detail?.model ?? session.model_name);
   const project = session.project_path ? folderName(session.project_path) : null;
   const msgCount = detail?.message_count ?? cs?.messages?.length ?? 0;
   const ago = relativeAgo(session.last_accessed ?? session.created_at);
+
   const statusLabel = isError ? "ERROR" : isWaiting ? "WAITING" : isRunning ? "RUNNING" : "IDLE";
   const statusColor = isError ? C_RED : isWaiting ? C_ORANGE : isRunning ? C_GREEN : "var(--c-dim)";
-
-  return (
-    <button
-      onClick={() => onOpen(session.id)}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        position: "relative", display: "flex", flexDirection: "column", gap: 0, width: "100%",
-        padding: "12px 16px", border: "none", borderBottom: "1px solid var(--c-brd)",
-        cursor: "pointer", textAlign: "left",
-        background: isWaiting ? "rgba(251,146,60,0.05)" : hovered ? "var(--c-srf)" : "transparent",
-        transition: "background 0.12s", fontFamily: "inherit",
-      }}
-    >
-      {isWaiting && <span aria-hidden style={{ position: "absolute", left: 0, top: 12, bottom: 12, width: 2, background: C_ORANGE, borderRadius: 2 }} />}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
-        <StatusRing status={isWaiting ? "waiting" : isError ? "error" : session.status} size={11} />
-        {session.tool && <ProviderLogo tool={session.tool} size={11} />}
-        <span style={{ minWidth: 0, maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 13.5, fontWeight: 600, color: "var(--c-high)" }}>{session.title || "Untitled"}</span>
-        {isStaff && <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.06em", padding: "2px 6px", borderRadius: 4, background: "rgba(var(--fg-rgb),0.07)", border: "1px solid var(--c-brd)", color: "var(--c-med)", flexShrink: 0 }}>FLEET</span>}
-        <span style={{ flex: 1 }} />
-        <div style={{ textAlign: "right", flexShrink: 0 }}>
-          <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", color: statusColor }}>{statusLabel}</div>
-          <div style={{ fontSize: 12, fontWeight: 600, fontFamily: MONO, color: "var(--c-med)", marginTop: 2, fontVariantNumeric: "tabular-nums" }}>{costLabel}</div>
-        </div>
-        <ChevronRight size={14} style={{ color: "var(--c-ghost)", flexShrink: 0, marginLeft: 2 }} />
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: 19, marginTop: 4, fontFamily: MONO, fontSize: 10.5, color: "var(--c-ghost)", overflow: "hidden", whiteSpace: "nowrap" }}>
-        {project && <span>{project}</span>}
-        {project && modelShort && <span style={{ color: "var(--c-brd2)" }}>·</span>}
-        {modelShort && <span style={{ color: "var(--c-dim)" }}>{modelShort}</span>}
-        {msgCount > 0 && <><span style={{ color: "var(--c-brd2)" }}>·</span><span>{msgCount} msg</span></>}
-        <span style={{ marginLeft: "auto", color: "var(--c-ghost)" }}>{ago}</span>
-      </div>
-    </button>
-  );
-});
-
-/* ── Agent detail — the full visualised drill-down opened on click ── */
-function AgentDetail({ session, detail, activity, onBack, onOpenChat }: {
-  session: Session;
-  detail: SessionDetail | undefined;
-  activity: SessionActivityItem[];
-  onBack: () => void;
-  onOpenChat: () => void;
-}) {
-  const [stopping, setStopping] = useState(false);
-  const cs = useChatStore(s => s.sessions[session.id]);
-  const isRunning = session.status === "running" || session.status === "starting";
-  const isWaiting = session.status === "waiting" || !!cs?.permissionRequest;
-  const isError = session.status === "error";
-  const statusLabel = isError ? "ERROR" : isWaiting ? "WAITING" : isRunning ? "RUNNING" : "IDLE";
-  const statusColor = isError ? C_RED : isWaiting ? C_ORANGE : isRunning ? C_GREEN : "var(--c-dim)";
-
-  const cost = detail?.total_cost_usd ?? session.budget_used ?? 0;
-  const modelShort = shortModel(detail?.model ?? session.model_name);
-  const project = session.project_path ? folderName(session.project_path) : null;
-  const msgCount = detail?.message_count ?? cs?.messages?.length ?? 0;
-  const ago = relativeAgo(session.last_accessed ?? session.created_at);
 
   const tk = detail?.tokens;
   const tokensTotal = tk ? tk.input + tk.output : 0;
-  const cachePct = tk && tk.input + tk.cache_read > 0 ? Math.round((tk.cache_read / (tk.input + tk.cache_read)) * 100) : 0;
+  const cachePct = tk && tk.input + tk.cache_read > 0
+    ? Math.round((tk.cache_read / (tk.input + tk.cache_read)) * 100) : 0;
   const todos = detail?.todos ?? [];
   const stepsDone = todos.filter(t => t.status === "completed").length;
   const tools = detail?.tools ?? {};
+  const tc = {
+    read: tools.Read ?? 0,
+    edit: (tools.Edit ?? 0) + (tools.Write ?? 0) + (tools.MultiEdit ?? 0),
+    bash: tools.Bash ?? 0,
+    web: (tools.WebFetch ?? 0) + (tools.WebSearch ?? 0) + (tools.fetch_url ?? 0),
+  };
   const tcTotal = Object.values(tools).reduce((a, b) => a + b, 0);
-  const tc: Array<[string, number]> = [
-    ["read", tools.Read ?? 0],
-    ["bash", tools.Bash ?? 0],
-    ["edit", (tools.Edit ?? 0) + (tools.Write ?? 0) + (tools.MultiEdit ?? 0)],
-    ["web", (tools.WebFetch ?? 0) + (tools.WebSearch ?? 0) + (tools.fetch_url ?? 0)],
-  ].filter(([, n]) => (n as number) > 0) as Array<[string, number]>;
-  const tcMax = Math.max(1, ...tc.map(([, n]) => n));
 
-  const memory = (detail?.memory_items ?? []).map((m) => {
-    if (typeof m === "string") return { title: "", content: m };
-    const o = m as { title?: string; text?: string; content?: string; summary?: string; value?: string };
-    return { title: o.title ?? "", content: o.content ?? o.text ?? o.summary ?? o.value ?? "" };
-  }).filter(x => x.content);
-
-  const files = (() => {
-    const seen = new Map<string, { edits: number; reads: number }>();
+  const files = useMemo(() => {
+    const seen = new Map<string, number>();
     for (const a of activity) {
       if (a.kind !== "file_edit" && a.kind !== "file_read") continue;
       const label = (a.summary || "").trim();
       if (!label) continue;
-      const e = seen.get(label) ?? { edits: 0, reads: 0 };
-      if (a.kind === "file_edit") e.edits++; else e.reads++;
-      seen.set(label, e);
+      seen.set(label, (seen.get(label) ?? 0) + 1);
     }
-    return [...seen.entries()].map(([path, c]) => ({ path, ...c }));
-  })();
+    return [...seen.entries()].slice(0, 3).map(([path, n]) => ({ path, n }));
+  }, [activity]);
 
-  const freshPct = tk && tk.input + tk.cache_read > 0 ? Math.round((tk.input / (tk.input + tk.cache_read)) * 100) : 100;
-
-  const doStop = async () => { setStopping(true); try { await stopSession(session.id); } catch { /* ignore */ } setStopping(false); };
-
-  return (
-    <div style={{ animation: "fp-detail-in 0.22s cubic-bezier(0.22,1,0.36,1) both" }}>
-      <style>{`@keyframes fp-detail-in { from { opacity: 0; transform: translateX(12px); } to { opacity: 1; transform: none; } }`}</style>
-      {/* nav bar */}
-      <div style={{ display: "flex", alignItems: "center", padding: "12px 14px", borderBottom: "1px solid var(--c-brd)" }}>
-        <button onClick={onBack} style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 500, color: "var(--c-dim)" }}>
-          <ChevronLeft size={14} /> Fleet
-        </button>
-        <span style={{ flex: 1 }} />
-        <button onClick={onOpenChat} style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 600, color: "var(--c-med)" }}>Open chat</button>
-        {isRunning && <button onClick={doStop} style={{ marginLeft: 14, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 500, color: "var(--c-dim)" }}>{stopping ? "Stopping…" : "Stop"}</button>}
+  const header = (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
+      <StatusRing status={isWaiting ? "waiting" : isError ? "error" : session.status} size={11} />
+      {session.tool && <ProviderLogo tool={session.tool} size={11} />}
+      <span style={{
+        minWidth: 0, maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        fontSize: 13.5, fontWeight: 600, color: "var(--c-high)",
+      }}>{session.title || "Untitled"}</span>
+      {isStaff && (
+        <span style={{
+          fontSize: 9, fontWeight: 700, letterSpacing: "0.06em", padding: "2px 6px", borderRadius: 4,
+          background: "rgba(var(--fg-rgb),0.07)", border: "1px solid var(--c-brd)", color: "var(--c-med)", flexShrink: 0,
+        }}>FLEET</span>
+      )}
+      <span style={{ flex: 1 }} />
+      <div style={{ textAlign: "right", flexShrink: 0 }}>
+        <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", color: statusColor }}>{statusLabel}</div>
+        <div style={{ fontSize: 12, fontWeight: 600, fontFamily: MONO, color: "var(--c-med)", marginTop: 2, fontVariantNumeric: "tabular-nums" }}>{costLabel}</div>
       </div>
-
-      {/* header + token gauge */}
-      <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--c-brd)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 9 }}>
-          <StatusRing status={isWaiting ? "waiting" : isError ? "error" : session.status} size={12} />
-          {session.tool && <ProviderLogo tool={session.tool} size={12} />}
-          <span style={{ fontSize: 15, fontWeight: 600, color: "var(--c-high)" }}>{session.title || "Untitled"}</span>
-          <span style={{ flex: 1 }} />
-          <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", color: statusColor }}>{statusLabel}</span>
-        </div>
-        <div style={{ fontFamily: MONO, fontSize: 11, color: "var(--c-dim)", marginBottom: 12 }}>
-          {[project, modelShort, msgCount > 0 ? `${msgCount} msg` : null, cost > 0 ? fmtCost(cost) : null, ago].filter(Boolean).join("  ·  ")}
-        </div>
-        {tokensTotal > 0 && (
-          <>
-            <div style={{ height: 6, borderRadius: 3, background: "var(--c-srf)", overflow: "hidden", display: "flex", marginBottom: 5 }}>
-              <span style={{ height: "100%", width: `${freshPct}%`, background: "var(--c-med)" }} />
-              <span style={{ height: "100%", width: `${100 - freshPct}%`, background: "rgba(var(--fg-rgb),0.18)" }} />
-            </div>
-            <div style={{ fontFamily: MONO, fontSize: 10.5, color: "var(--c-dim)" }}>
-              <b style={{ color: "var(--c-med)", fontWeight: 600 }}>{fmtTokens(tokensTotal)}</b> tokens <span style={{ color: "var(--c-brd2)" }}>·</span> <b style={{ color: "var(--c-med)", fontWeight: 600 }}>{cachePct}%</b> from cache
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* TASKS */}
-      {todos.length > 0 && (
-        <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--c-brd)" }}>
-          <DetailLabel label="Tasks" count={`${stepsDone}/${todos.length}`} />
-          <div style={{ height: 3, borderRadius: 2, background: "var(--c-srf)", overflow: "hidden", marginBottom: 11 }}>
-            <span style={{ display: "block", height: "100%", width: `${Math.round((stepsDone / todos.length) * 100)}%`, background: "var(--c-med)" }} />
-          </div>
-          {todos.map((t, i) => {
-            const done = t.status === "completed"; const prog = t.status === "in_progress";
-            return (
-              <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 9, padding: "3px 0", fontSize: 12.5, lineHeight: 1.45, color: done ? "var(--c-dim)" : prog ? "var(--c-high)" : "var(--c-med)" }}>
-                <span aria-hidden style={{ width: 14, height: 14, borderRadius: 4, flexShrink: 0, marginTop: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", background: done ? "var(--c-med)" : "transparent", border: done ? "none" : "1.5px solid var(--c-ghost)" }}>
-                  {done && <Check size={9} strokeWidth={3} style={{ color: "var(--background)" }} />}
-                  {prog && <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--c-high)" }} />}
-                </span>
-                <span style={{ textDecoration: done ? "line-through" : "none", textDecorationColor: "var(--c-ghost)" }}>{t.activeForm && prog ? t.activeForm : t.content}</span>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* TOOL CALLS — visual bars */}
-      {tcTotal > 0 && (
-        <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--c-brd)" }}>
-          <DetailLabel label="Tool calls" count={tcTotal} />
-          {tc.map(([k, n]) => (
-            <div key={k} style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 7, fontFamily: MONO, fontSize: 11 }}>
-              <span style={{ width: 36, color: "var(--c-dim)" }}>{k}</span>
-              <span style={{ flex: 1, height: 5, borderRadius: 3, background: "var(--c-srf)", overflow: "hidden" }}>
-                <span style={{ display: "block", height: "100%", width: `${Math.round((n / tcMax) * 100)}%`, background: "var(--c-med)" }} />
-              </span>
-              <span style={{ width: 32, textAlign: "right", color: "var(--c-med)", fontWeight: 600 }}>{n}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* MEMORY */}
-      {memory.length > 0 && (
-        <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--c-brd)" }}>
-          <DetailLabel label="Memory" count={memory.length} />
-          {memory.map((m, i) => (
-            <div key={i} style={{ padding: "5px 0 6px", borderTop: i > 0 ? "1px solid var(--c-brd)" : "none" }}>
-              {m.title && <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase", color: "var(--c-dim)", marginBottom: 3 }}>{m.title}</div>}
-              <div style={{ fontSize: 12, color: "var(--c-med)", lineHeight: 1.5 }}>{m.content}</div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* FILES — click to open in the workspace */}
-      {files.length > 0 && (
-        <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--c-brd)" }}>
-          <DetailLabel label="Files" count={files.length} />
-          {files.map((f) => (
-            <button
-              key={f.path}
-              onClick={onOpenChat}
-              title="Open in workspace"
-              style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, width: "100%", padding: "4px 6px", margin: "0 -6px", borderRadius: 5, border: "none", background: "none", cursor: "pointer", fontFamily: MONO, fontSize: 11, textAlign: "left" }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "var(--c-srf)"; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "none"; }}
-            >
-              <span style={{ color: "var(--c-med)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{f.path}</span>
-              <span style={{ color: "var(--c-ghost)", flexShrink: 0 }}>{f.edits > 0 ? `${f.edits} edit${f.edits === 1 ? "" : "s"}` : `${f.reads} read${f.reads === 1 ? "" : "s"}`}</span>
-              <ChevronRight size={12} style={{ color: "var(--c-ghost)", flexShrink: 0 }} />
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* ACTIVITY — expandable monochrome timeline (todo writes live in Tasks) */}
-      {activity.some(r => r.kind !== "todo") && (
-        <div style={{ padding: "14px 16px" }}>
-          <DetailLabel label="Activity" count={activity.filter(r => r.kind !== "todo").length} />
-          {activity.filter(r => r.kind !== "todo").map((row) => (
-            <ActivityRow key={row.id} row={row} />
-          ))}
-        </div>
-      )}
     </div>
   );
-}
 
-/** One activity row — collapsed by default, expands to show the agent's
- *  raw output (command result, error detail) in a mono block. */
-function ActivityRow({ row }: { row: SessionActivityItem }) {
-  const [open, setOpen] = useState(false);
-  const Icon = logIcon(row);
-  const isErr = row.kind === "error";
-  const mono = row.kind === "command";
-  const output = (row.payload?.output ?? "").trim();
-  const hasMore = output.length > 0;
-  return (
-    <div>
+  const meta = (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 6, marginLeft: 19, marginTop: 4,
+      fontFamily: MONO, fontSize: 10.5, color: "var(--c-ghost)", overflow: "hidden", whiteSpace: "nowrap",
+    }}>
+      {project && <span>{project}</span>}
+      {project && modelShort && <span style={{ color: "var(--c-brd2)" }}>·</span>}
+      {modelShort && <span style={{ color: "var(--c-dim)" }}>{modelShort}</span>}
+      {msgCount > 0 && <><span style={{ color: "var(--c-brd2)" }}>·</span><span>{msgCount} msg</span></>}
+      <span style={{ marginLeft: "auto", color: "var(--c-ghost)" }}>{ago}</span>
+    </div>
+  );
+
+  if (!expanded) {
+    return (
       <button
-        onClick={() => hasMore && setOpen(o => !o)}
-        style={{ display: "flex", gap: 9, width: "100%", padding: "4.5px 0", alignItems: "baseline", background: "none", border: "none", cursor: hasMore ? "pointer" : "default", textAlign: "left", fontFamily: "inherit" }}
+        onClick={handleClick}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        style={{
+          display: "flex", flexDirection: "column", gap: 0, width: "100%",
+          padding: "12px 14px", border: "none", borderBottom: "1px solid var(--c-brd)",
+          cursor: "pointer", textAlign: "left", background: hovered ? "var(--c-srf)" : "transparent",
+          transition: "background 0.12s", fontFamily: "inherit",
+        }}
       >
-        <span style={{ width: 38, flexShrink: 0, fontFamily: MONO, fontSize: 10, color: "var(--c-ghost)", fontVariantNumeric: "tabular-nums" }}>{clockTime(row.ts)}</span>
-        <Icon size={12} strokeWidth={2} style={{ color: isErr ? "var(--c-med)" : "var(--c-dim)", flexShrink: 0, position: "relative", top: 1 }} />
-        <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: mono ? 11 : 11.5, fontFamily: mono ? MONO : "inherit", color: isErr ? "var(--c-med)" : "var(--c-dim)" }}>{logText(row)}</span>
-        {hasMore && <ChevronRight size={12} style={{ color: "var(--c-ghost)", flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />}
+        {header}
+        {meta}
       </button>
-      {open && hasMore && (
-        <div style={{ margin: "1px 0 8px 38px", padding: "8px 10px", background: "var(--c-srf)", border: "1px solid var(--c-brd)", borderRadius: 6, fontFamily: MONO, fontSize: 10.5, color: "var(--c-med)", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 200, overflowY: "auto", lineHeight: 1.55 }}>
-          {output}
-        </div>
-      )}
+    );
+  }
+
+  const Box = ({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) => (
+    <div style={{ border: "1px solid var(--c-brd)", borderRadius: 8, padding: "9px 11px", minWidth: 0 }}>
+      <div style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.05em", color: "var(--c-dim)" }}>{label}</div>
+      <div style={{
+        fontSize: mono ? 12.5 : 14.5, fontWeight: 600, marginTop: 4, color: "var(--c-high)",
+        fontFamily: mono ? MONO : "inherit", fontVariantNumeric: "tabular-nums",
+        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+      }}>{value}</div>
     </div>
   );
-}
+  const ToolCell = ({ icon: Ic, value, label }: { icon: typeof Eye; value: number; label: string }) => (
+    <div style={{ border: "1px solid var(--c-brd)", borderRadius: 8, padding: "9px 8px" }}>
+      <Ic size={12} style={{ color: "var(--c-dim)" }} />
+      <div style={{ fontSize: 15, fontWeight: 600, marginTop: 6, color: "var(--c-high)", fontVariantNumeric: "tabular-nums" }}>{value}</div>
+      <div style={{ fontSize: 8.5, fontWeight: 600, letterSpacing: "0.05em", color: "var(--c-dim)", marginTop: 1 }}>{label}</div>
+    </div>
+  );
+  const sectionLbl = (left: React.ReactNode, right?: React.ReactNode) => (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 7 }}>
+      <span style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: "0.05em", color: "var(--c-dim)" }}>{left}</span>
+      {right != null && <span style={{ fontSize: 10.5, fontFamily: MONO, color: "var(--c-med)" }}>{right}</span>}
+    </div>
+  );
 
-function DetailLabel({ label, count }: { label: string; count?: React.ReactNode }) {
   return (
-    <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", color: "var(--c-ghost)", marginBottom: 10 }}>
-      {label}{count != null && <span style={{ color: "var(--c-dim)", marginLeft: 5, fontWeight: 600 }}>{count}</span>}
+    <div style={{
+      margin: "0 12px 10px",
+      border: `1px solid ${isWaiting ? "rgba(251,146,60,0.35)" : "var(--c-brd)"}`,
+      borderRadius: 11, background: "var(--card, var(--c-srf))", overflow: "hidden",
+    }}>
+      <button
+        onClick={handleClick}
+        style={{ display: "flex", flexDirection: "column", gap: 0, width: "100%", padding: "13px 14px 0", border: "none", background: "transparent", cursor: "pointer", textAlign: "left", fontFamily: "inherit" }}
+      >
+        {header}
+        {meta}
+      </button>
+
+      <div style={{ padding: "12px 14px 13px" }}>
+        {isWaiting && (
+          <div style={{
+            display: "flex", alignItems: "center", gap: 9, padding: "9px 11px",
+            border: "1px solid var(--c-brd2)", borderRadius: 8, background: "var(--c-srf)", marginBottom: 12,
+          }}>
+            <span style={{ width: 15, height: 15, borderRadius: "50%", border: "1px solid var(--c-ghost)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: "var(--c-med)", flexShrink: 0 }}>?</span>
+            <span style={{ flex: 1, fontFamily: MONO, fontSize: 11.5, color: "var(--c-med)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Needs your response</span>
+            <button onClick={handleClick} style={{ fontSize: 11.5, fontWeight: 600, color: "var(--c-fg)", border: "1px solid var(--c-brd2)", borderRadius: 6, padding: "4px 11px", cursor: "pointer", background: "transparent" }}>Respond</button>
+          </div>
+        )}
+
+        {verdict && (
+          <div style={{ fontSize: 12.5, color: "var(--c-med)", lineHeight: 1.5, marginBottom: 13 }}>{verdict.text}</div>
+        )}
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 13 }}>
+          <Box label="TOKENS" value={fmtTokens(tokensTotal)} />
+          <Box label="STEPS" value={todos.length > 0 ? `${stepsDone}/${todos.length}` : "—"} />
+          <Box label="REPO" value={project ?? "—"} mono />
+        </div>
+
+        {tokensTotal > 0 && (
+          <div style={{ marginBottom: 14 }}>
+            {sectionLbl("TOKEN MIX", `${cachePct}% cache`)}
+            <div style={{ height: 5, borderRadius: 3, background: "var(--c-srf)", overflow: "hidden", display: "flex" }}>
+              <span style={{ height: "100%", width: `${100 - cachePct}%`, background: "var(--c-med)" }} />
+              <span style={{ height: "100%", width: `${cachePct}%`, background: "rgba(var(--fg-rgb),0.18)" }} />
+            </div>
+          </div>
+        )}
+
+        {tcTotal > 0 && (
+          <div style={{ marginBottom: 13 }}>
+            {sectionLbl("TOOL CALLS", tcTotal)}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
+              <ToolCell icon={Eye} value={tc.read} label="READ" />
+              <ToolCell icon={Pencil} value={tc.edit} label="EDIT" />
+              <ToolCell icon={Terminal} value={tc.bash} label="BASH" />
+              <ToolCell icon={Globe} value={tc.web} label="WEB" />
+            </div>
+          </div>
+        )}
+
+        {files.length > 0 && (
+          <div style={{ marginBottom: 13 }}>
+            {sectionLbl(<>FILES <span style={{ color: "var(--c-ghost)" }}>{files.length}</span></>)}
+            {files.map(f => (
+              <div key={f.path} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", fontSize: 11.5 }}>
+                <span style={{ fontFamily: MONO, color: "var(--c-med)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "78%" }}>{f.path}</span>
+                <span style={{ fontFamily: MONO, fontSize: 10.5, color: "var(--c-dim)" }}>{f.n > 1 ? `${f.n}×` : ""}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+          <button onClick={handleClick} style={{ flex: 1, height: 34, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: "1px solid var(--c-brd2)", borderRadius: 8, fontSize: 12.5, fontWeight: 600, color: "var(--c-fg)", cursor: "pointer", background: "var(--c-srf)", fontFamily: "inherit" }}>
+            <ArrowRight size={13} /> Open
+          </button>
+          {isRunning && (
+            <button onClick={handleStop} style={{ height: 34, padding: "0 16px", border: "1px solid var(--c-brd)", borderRadius: 8, fontSize: 12.5, fontWeight: 500, color: "var(--c-med)", cursor: "pointer", background: "transparent", fontFamily: "inherit", display: "flex", alignItems: "center" }}>
+              {stopping ? <Loader2 size={12} className="animate-spin" /> : "Stop"}
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
-}
-
-/** Monochrome lucide icon for an activity row — the kind is read at a glance
- *  from the icon, not a colour. */
-function logIcon(row: SessionActivityItem): typeof Pencil {
-  const t = (row.payload?.tool ?? "").replace(/^mcp__[a-z0-9_]+?__/i, "");
-  if (row.kind === "file_edit") return Pencil;
-  if (row.kind === "file_read") return Eye;
-  if (row.kind === "command")   return Terminal;
-  if (row.kind === "web_fetch") return Globe;
-  if (row.kind === "error")     return AlertCircle;
-  if (row.kind === "plan")      return FileText;
-  if (t === "ask_user" || t === "AskUserQuestion") return HelpCircle;
-  return Sparkles;
-}
-
-/** Wall-clock HH:MM for one activity row. */
-function clockTime(ts: string): string {
-  const d = new Date(ts);
-  if (Number.isNaN(d.getTime())) return "";
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-}
-
-/** Cleaned, human log text for one activity row (de-namespaced, no select: junk). */
-function logText(row: SessionActivityItem): string {
-  const t = (row.payload?.tool ?? "").replace(/^mcp__[a-z0-9_]+?__/i, "");
-  if (t === "ask_user" || t === "AskUserQuestion") return "asked you a question";
-  const clean = (s: string) => s.replace(/select:/gi, "").replace(/mcp__[a-z0-9_]+?__/gi, "").trim();
-  const base = humanActivity(row);
-  const out = clean(base);
-  return out || clean(row.summary || "") || row.kind;
-}
+});
 
 /* ── Ask Fleet ─────────────────────────────────────────────────── */
 
@@ -815,16 +802,10 @@ function ActivityFeedRow({ row }: { row: FleetActivityRow }) {
     if (rawTool === "ToolSearch") return "Search";
     return rawTool || "Tool";
   })();
-  const cleanText = (s: string) =>
-    s.replace(/select:/gi, "").replace(/mcp__[a-z0-9_]+?__/gi, "").trim();
   const detail = (() => {
     if (row.kind === "error") return rawTool ? `${rawTool} failed` : (row.summary || "failed");
     if (rawTool === "ask_user" || rawTool === "AskUserQuestion") return "asked you a question";
-    if (rawTool === "ToolSearch") {
-      const t = cleanText(row.summary || "");
-      return t ? `for ${t}` : "";
-    }
-    const h = cleanText(humanActivity(row));
+    const h = humanActivity(row);
     return h && h !== (row.payload?.tool ?? "") ? h : "";
   })();
   return (
@@ -964,6 +945,7 @@ export function FleetPanel({ sessions, onSelectAgent }: Props) {
   const fleetSessions = useFleetStore(s => s.sessions);
   const decisions = useFleetStore(s => s.decisions);
   const reports = useFleetStore(s => s.reports);
+  const resolveDecision = useFleetStore(s => s.resolveDecision);
   // Manual mode hides the co-pilot meta surfaces (Observations + Ask
   // Fleet) so the right panel reduces to the watching strip + session
   // rows + reports list. Keeps the demo path uncluttered.
@@ -973,8 +955,6 @@ export function FleetPanel({ sessions, onSelectAgent }: Props) {
   // Bridge for the "Catch me up" button — pre-fills Ask Fleet input
   // and auto-opens the section.
   const [askInitial, setAskInitial] = useState<{ q: string; tick: number } | null>(null);
-  // Master-detail: which session is drilled into (full visual detail view).
-  const [detailId, setDetailId] = useState<string | null>(null);
 
   const agents = useMemo(
     () => sessions.filter(s => (s.title || "").trim() !== "New chat"),
@@ -1101,6 +1081,27 @@ export function FleetPanel({ sessions, onSelectAgent }: Props) {
   // latest map via the closure variable; the SessionRow itself only
   // sees a (sessionId) => void signature so its callback identity
   // stays the same across parent re-renders.
+  const handleDismissDecision = useCallback((sessionId: string) => {
+    const d = decisionBySession.get(sessionId);
+    if (d) resolveDecision(d.id);
+  }, [decisionBySession, resolveDecision]);
+
+  const handleSend = useCallback((sessionId: string, text: string) => {
+    setActiveSession(sessionId);
+    onSelectAgent(sessionId);
+    requestAnimationFrame(() => {
+      window.dispatchEvent(new CustomEvent("fleet:send-prompt", { detail: { sessionId, text } }));
+    });
+  }, [setActiveSession, onSelectAgent]);
+
+  const handleAnswer = useCallback((sessionId: string, text: string) => {
+    setActiveSession(sessionId);
+    onSelectAgent(sessionId);
+    requestAnimationFrame(() => {
+      window.dispatchEvent(new CustomEvent("fleet:focus-input", { detail: { text } }));
+    });
+  }, [setActiveSession, onSelectAgent]);
+
   const buildSnapshot = useCallback((): string => {
     const lines: string[] = [];
     lines.push(`Fleet has ${agents.length} agents (${activeCount} active, ${pendingCount} pending).`);
@@ -1216,19 +1217,6 @@ export function FleetPanel({ sessions, onSelectAgent }: Props) {
             <span style={{ color: "var(--c-low)" }}>No agents yet.</span>
             <span style={{ fontSize: 11, color: "var(--c-ghost)" }}>Spawn one from the canvas to start.</span>
           </div>
-        ) : detailId && agents.some(a => a.id === detailId) ? (
-          (() => {
-            const ds = agents.find(a => a.id === detailId)!;
-            return (
-              <AgentDetail
-                session={ds}
-                detail={details[ds.id]}
-                activity={activityBySession.get(ds.id) ?? []}
-                onBack={() => setDetailId(null)}
-                onOpenChat={() => { setDetailId(null); jumpTo(ds.id); }}
-              />
-            );
-          })()
         ) : (
           <>
             <WatchingStrip
@@ -1258,14 +1246,34 @@ export function FleetPanel({ sessions, onSelectAgent }: Props) {
             )}
 
             <SectionLabel count={agents.length}>Sessions</SectionLabel>
-            {sortedAgents.map((s) => (
-              <SessionRow
-                key={s.id}
-                session={s}
-                detail={details[s.id]}
-                onOpen={setDetailId}
-              />
-            ))}
+            {sortedAgents.map((s, i) => {
+              const fs = fleetSessions[s.id];
+              const live = s.status === "running" || s.status === "starting";
+              // Rich card for anything that needs attention or is the most
+              // relevant row; collapsed one-liners for the rest. Guarantees at
+              // least one expanded card whenever there are sessions.
+              const expanded = live
+                || s.status === "waiting"
+                || s.status === "error"
+                || decisionBySession.has(s.id)
+                || i === 0;
+              return (
+                <SessionRow
+                  key={s.id}
+                  session={s}
+                  detail={details[s.id]}
+                  activity={activityBySession.get(s.id) ?? []}
+                  fleetStatus={fs?.status ?? "idle"}
+                  fleetLastAction={fs?.lastAction ?? null}
+                  decision={decisionBySession.get(s.id) ?? null}
+                  expanded={expanded}
+                  onJump={jumpTo}
+                  onSend={handleSend}
+                  onAnswer={handleAnswer}
+                  onDismissDecision={handleDismissDecision}
+                />
+              );
+            })}
 
             {activity.length > 0 && (
               <>
