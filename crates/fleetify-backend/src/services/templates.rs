@@ -201,6 +201,7 @@ mod tests {
                 providers: vec!["claude-code".to_string()],
                 materialized: Vec::<Materialized>::new(),
                 hook_merge: Vec::new(),
+                rule_merge: Vec::new(),
                 created_at: "t0".to_string(),
                 updated_at: "t0".to_string(),
             };

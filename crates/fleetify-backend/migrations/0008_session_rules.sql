@@ -1,0 +1,11 @@
+-- Per-session rules. A free-text rule block scoped to one session, persisted
+-- here and materialized into the session's working-directory rule file
+-- (CLAUDE.md / GEMINI.md / AGENTS.md / .github/copilot-instructions.md, or a
+-- Cursor `.cursor/rules/*.mdc`) so the provider reads it automatically the next
+-- time it spawns in that directory. NULL ⇒ no session rule.
+--
+-- The block is fenced with a session-keyed marker
+-- (`<!-- fleetify:rule:session-<id> START -->`) so it un-merges precisely and
+-- coexists with the user's own project rule file and any other session that
+-- shares the same in-place project directory.
+ALTER TABLE sessions ADD COLUMN session_rules TEXT;

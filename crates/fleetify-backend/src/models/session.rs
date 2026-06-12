@@ -37,6 +37,9 @@ pub struct Session {
     /// Which provider/agent account this session uses. NULL ⇒ the synthetic
     /// System account (real HOME for CLI / legacy keychain key for HTTP).
     pub account_id: Option<String>,
+    /// Free-text session rules, materialized as a marked block into the
+    /// session's working-directory rule file for its provider. NULL ⇒ none.
+    pub session_rules: Option<String>,
 }
 
 /// POST /api/sessions body. Defaults mirror `SessionCreate` in Python.

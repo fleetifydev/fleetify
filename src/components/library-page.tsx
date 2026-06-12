@@ -3,7 +3,7 @@
  *   across all the user's plugins, sliced by content type.
  *
  * Sits next to Settings: Settings is "how Fleet behaves", Library is
- * "what's available to your agents right now". The seven tabs mirror
+ * "what's available to your agents right now". The tabs mirror
  * the `provides` taxonomy plus templates, so the user can answer
  * questions like "do I have any prompts installed?" or "which plugin
  * gave me this skill?" without digging through individual install
@@ -27,7 +27,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft, Library as LibraryIcon, FileText, Sparkles, Webhook,
   Workflow, LayoutTemplate, Cable, Package, HelpCircle, MessageCircle,
-  User, Sun, Plus, Trash2, Pencil,
+  User, Sun, Plus, Trash2, Pencil, Bot, ScrollText,
 } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
 import { usePluginStore } from "@/stores/plugin-store";
@@ -50,7 +50,9 @@ interface Props {
 type SectionId =
   | "Prompts"
   | "Skills"
+  | "Subagents"
   | "Hooks"
+  | "Rules"
   | "Workflows"
   | "Templates"
   | "MCP";
@@ -73,8 +75,16 @@ const NAV: SectionDef[] = [
     blurb: "Skill packs auto-attached to your agents' system prompt.",
   },
   {
+    id: "Subagents", icon: Bot,
+    blurb: "Delegate agents materialised to each provider's agents/ dir.",
+  },
+  {
     id: "Hooks", icon: Webhook,
     blurb: "Lifecycle hook handlers wired into the agent's tool calls.",
+  },
+  {
+    id: "Rules", icon: ScrollText,
+    blurb: "Always-on instructions merged into each provider's rule file.",
   },
   {
     id: "Workflows", icon: Workflow,
@@ -93,10 +103,12 @@ const NAV: SectionDef[] = [
 /** Which authorable LibraryKind each section maps to. Workflows (plugin-only)
  *  and MCP (redirects to Settings) have none. */
 const SECTION_KIND: Partial<Record<SectionId, LibraryKind>> = {
-  Prompts: "prompt", Skills: "skill", Hooks: "hook", Templates: "template",
+  Prompts: "prompt", Skills: "skill", Subagents: "subagent",
+  Hooks: "hook", Rules: "rule", Templates: "template",
 };
 const KIND_SECTION: Record<LibraryKind, SectionId> = {
-  prompt: "Prompts", skill: "Skills", hook: "Hooks", template: "Templates",
+  prompt: "Prompts", skill: "Skills", subagent: "Subagents",
+  hook: "Hooks", rule: "Rules", template: "Templates",
 };
 
 /** Sum the components that a single plugin install contributes to a
@@ -108,7 +120,11 @@ function countForSection(inst: PluginInstall, section: SectionId): number {
   switch (section) {
     case "Prompts":   return d.prompts ?? 0;
     case "Skills":    return pv.reduce((s, p) => s + p.skills, 0);
+    // Subagents + Rules are enumerated as items (libraryItems), so their
+    // counts come from there, not the per-install declares.
+    case "Subagents": return 0;
     case "Hooks":     return pv.reduce((s, p) => s + p.hooks, 0);
+    case "Rules":     return 0;
     case "Workflows": return d.workflows;
     case "Templates": return d.templates;
     case "MCP":       return d.mcp_servers;
@@ -144,12 +160,12 @@ export function LibraryPage({ onClose }: Props) {
   // count. Computed once per installs change so picking a tab is free.
   const totals = useMemo(() => {
     const out: Record<SectionId, number> = {
-      Prompts: 0, Skills: 0, Hooks: 0,
+      Prompts: 0, Skills: 0, Subagents: 0, Hooks: 0, Rules: 0,
       Workflows: 0, Templates: 0, MCP: 0,
     };
-    // Plugin skills/templates are enumerated as items (in libraryItems), so
-    // their declares would double-count — skip those sections.
-    const ENUMERATED: SectionId[] = ["Skills", "Templates"];
+    // Plugin skills/subagents/templates are enumerated as items (in
+    // libraryItems), so their declares would double-count — skip those sections.
+    const ENUMERATED: SectionId[] = ["Skills", "Subagents", "Templates"];
     for (const inst of installs) {
       for (const sec of NAV) {
         if (ENUMERATED.includes(sec.id)) continue;

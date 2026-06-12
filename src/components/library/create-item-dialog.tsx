@@ -23,6 +23,8 @@ const KIND_LABEL: Record<LibraryKind, string> = {
   skill: "Skill",
   hook: "Hook",
   template: "Template",
+  subagent: "Subagent",
+  rule: "Rule",
 };
 
 const BODY_HINT: Record<LibraryKind, string> = {
@@ -30,12 +32,21 @@ const BODY_HINT: Record<LibraryKind, string> = {
   skill: "SKILL.md content. Frontmatter is optional — name + description are set for you.",
   hook: "",
   template: "The system prompt for this agent preset.",
+  subagent: "The agent's system prompt. Frontmatter is optional — name + description are set for you.",
+  rule: "The rule text. Merged into each provider's rule file (CLAUDE.md / AGENTS.md / …).",
 };
 
 /** The Agent-Skills open standard caps `description` at 1024 chars; every
  *  provider (Codex/OpenCode/Copilot…) requires a non-empty one, so skills make
- *  the Description field mandatory. */
+ *  the Description field mandatory. Subagents reuse the same field — the
+ *  `description` frontmatter is how a provider decides when to delegate. */
 const SKILL_DESCRIPTION_MAX = 1024;
+
+/** Kinds whose `description` is mandatory (injected into materialized
+ *  frontmatter and required by the consuming provider). */
+function descriptionRequired(kind: LibraryKind): boolean {
+  return kind === "skill" || kind === "subagent";
+}
 
 export function CreateItemDialog({
   kind,
@@ -80,9 +91,9 @@ export function CreateItemDialog({
     if (name.trim().length === 0 || !slugValid) return false;
     if (!editing && body.trim().length === 0) return false;
     if (providerScoped && providers.length === 0) return false;
-    // Skills must carry a non-empty, ≤1024-char description — it's injected
-    // into the materialized SKILL.md and required by the open standard.
-    if (kind === "skill") {
+    // Skills + subagents must carry a non-empty, ≤1024-char description — it's
+    // injected into the materialized frontmatter and required by the consumer.
+    if (descriptionRequired(kind)) {
       const d = description.trim();
       if (d.length === 0 || d.length > SKILL_DESCRIPTION_MAX) return false;
     }
@@ -195,13 +206,19 @@ export function CreateItemDialog({
 
         <Field
           label="Description"
-          hint={kind === "skill" ? `required · injected into SKILL.md (≤${SKILL_DESCRIPTION_MAX})` : "optional"}
+          hint={descriptionRequired(kind) ? `required · injected into frontmatter (≤${SKILL_DESCRIPTION_MAX})` : "optional"}
         >
           <input
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            maxLength={kind === "skill" ? SKILL_DESCRIPTION_MAX : undefined}
-            placeholder={kind === "skill" ? "What this skill does and when to use it" : undefined}
+            maxLength={descriptionRequired(kind) ? SKILL_DESCRIPTION_MAX : undefined}
+            placeholder={
+              kind === "skill"
+                ? "What this skill does and when to use it"
+                : kind === "subagent"
+                  ? "What this agent does and when to delegate to it"
+                  : undefined
+            }
             style={inputStyle}
           />
         </Field>

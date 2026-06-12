@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::services::plugins::hook_merge::HookMergeRecord;
+use crate::services::plugins::rule_merge::RuleMergeRecord;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -12,6 +13,12 @@ pub enum LibraryKind {
     Skill,
     Hook,
     Template,
+    /// A named delegate agent (`<provider>/agents/<slug>.md`, cross-tool
+    /// Agent-Skills-style frontmatter; Codex gets a `.toml`).
+    Subagent,
+    /// Persistent project instructions merged into each provider's user-global
+    /// rule file (CLAUDE.md / AGENTS.md / GEMINI.md, or Cursor's `.mdc`).
+    Rule,
 }
 
 impl LibraryKind {
@@ -22,14 +29,16 @@ impl LibraryKind {
             "skill" => Some(Self::Skill),
             "hook" => Some(Self::Hook),
             "template" => Some(Self::Template),
+            "subagent" => Some(Self::Subagent),
+            "rule" => Some(Self::Rule),
             _ => None,
         }
     }
 
-    /// Whether this kind targets specific providers (skill/hook) vs.
-    /// being provider-agnostic (prompt) or app-level metadata (template).
+    /// Whether this kind targets specific providers (skill/hook/subagent/rule)
+    /// vs. being provider-agnostic (prompt) or app-level metadata (template).
     pub fn is_provider_scoped(self) -> bool {
-        matches!(self, Self::Skill | Self::Hook)
+        matches!(self, Self::Skill | Self::Hook | Self::Subagent | Self::Rule)
     }
 }
 
@@ -59,6 +68,11 @@ pub struct LibraryItem {
     /// which merge into a shared config rather than writing a standalone file.
     #[serde(default)]
     pub hook_merge: Vec<HookMergeRecord>,
+    /// Reversal records for rules merged as a marked block into a provider's
+    /// global rule file (CLAUDE.md / AGENTS.md / …). Cursor's `.mdc` is a
+    /// standalone file recorded in `materialized` instead.
+    #[serde(default)]
+    pub rule_merge: Vec<RuleMergeRecord>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -95,7 +109,11 @@ mod tests {
         assert_eq!(LibraryKind::parse("skill"), Some(LibraryKind::Skill));
         assert_eq!(LibraryKind::parse("command"), None);
         assert_eq!(LibraryKind::parse("nope"), None);
+        assert_eq!(LibraryKind::parse("subagent"), Some(LibraryKind::Subagent));
+        assert_eq!(LibraryKind::parse("rule"), Some(LibraryKind::Rule));
         assert!(LibraryKind::Hook.is_provider_scoped());
+        assert!(LibraryKind::Subagent.is_provider_scoped());
+        assert!(LibraryKind::Rule.is_provider_scoped());
         assert!(!LibraryKind::Prompt.is_provider_scoped());
         assert!(!LibraryKind::Template.is_provider_scoped());
     }

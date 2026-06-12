@@ -29,8 +29,11 @@ pub fn plugin_items(kind: LibraryKind) -> Vec<(String, LibraryItem)> {
         let plugin = ent.file_name().to_string_lossy().into_owned();
         match kind {
             LibraryKind::Skill => collect_skill_dirs(&root, "skills", &plugin, &mut out),
+            LibraryKind::Subagent => collect_agent_files(&root, &plugin, &mut out),
             LibraryKind::Template => collect_templates(&root, &plugin, &mut out),
-            LibraryKind::Prompt | LibraryKind::Hook => {}
+            // Prompts/hooks aren't surfaced as library rows, and rules are a
+            // user-global concept — plugins never contribute them.
+            LibraryKind::Prompt | LibraryKind::Hook | LibraryKind::Rule => {}
         }
     }
     out
@@ -46,6 +49,7 @@ fn synthetic(kind: LibraryKind, plugin: &str, name: &str, providers: Vec<String>
         providers,
         materialized: Vec::new(),
         hook_merge: Vec::new(),
+        rule_merge: Vec::new(),
         created_at: String::new(),
         updated_at: String::new(),
     }
@@ -73,6 +77,45 @@ fn collect_skill_dirs(root: &Path, sub: &str, plugin: &str, out: &mut Vec<(Strin
             }
         }
     }
+}
+
+/// Sub-agent files (`agents/<name>.md` / `.agent.md` / `.toml`) across every
+/// `.<provider>/agents/`, deduped by agent name (a plugin ships the same agent
+/// per provider in each provider's native format).
+fn collect_agent_files(root: &Path, plugin: &str, out: &mut Vec<(String, LibraryItem)>) {
+    let mut seen = BTreeSet::new();
+    for p in COMPONENT_PROVIDERS {
+        let dir = root.join(format!(".{p}")).join("agents");
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for ent in rd.flatten() {
+            let path = ent.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name) = agent_stem(&path) else {
+                continue;
+            };
+            if seen.insert(name.clone()) {
+                out.push((
+                    plugin.to_string(),
+                    synthetic(LibraryKind::Subagent, plugin, &name, vec![]),
+                ));
+            }
+        }
+    }
+}
+
+/// The agent name from a sub-agent file path, stripping the provider-specific
+/// extension (`.md`, `.toml`, and Copilot's compound `.agent.md`).
+fn agent_stem(path: &Path) -> Option<String> {
+    let file = path.file_name()?.to_str()?;
+    let stem = file
+        .strip_suffix(".agent.md")
+        .or_else(|| file.strip_suffix(".md"))
+        .or_else(|| file.strip_suffix(".toml"))?;
+    (!stem.is_empty()).then(|| stem.to_string())
 }
 
 /// `templates/*.json` — read `name`/`title` if present, else the file stem.

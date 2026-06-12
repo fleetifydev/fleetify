@@ -7,9 +7,15 @@
 import { apiFetch } from "./api";
 import type { Provider } from "@/types/plugin";
 
-/** The five authorable content kinds. Mirrors the backend `LibraryKind`.
+/** The authorable content kinds. Mirrors the backend `LibraryKind`.
  *  Provider gating per kind lives in `PROVIDERS_FOR_KIND` below. */
-export type LibraryKind = "prompt" | "skill" | "hook" | "template";
+export type LibraryKind =
+  | "prompt"
+  | "skill"
+  | "hook"
+  | "template"
+  | "subagent"
+  | "rule";
 
 /** One materialized on-disk artifact for a library item — the provider it
  *  was written for and the absolute path it landed at. */
@@ -57,6 +63,11 @@ export interface CreateLibraryItem {
 export const PROVIDERS_FOR_KIND: Record<LibraryKind, Provider[]> = {
   skill: ["claude-code", "codex", "gemini", "kimi", "opencode", "github-copilot", "cursor", "hermes", "agy"],
   hook: ["claude-code", "cursor", "agy", "kimi", "github-copilot", "opencode", "hermes"],
+  // Sub-agents need an on-disk `agents/` surface — Kimi/Hermes have none.
+  subagent: ["claude-code", "codex", "gemini", "opencode", "github-copilot", "cursor", "agy"],
+  // Rules merge into a per-provider rule file (Cursor gets a `.mdc`) — every
+  // provider with such a file; Hermes (profile identity, not project rules) is out.
+  rule: ["claude-code", "codex", "gemini", "kimi", "opencode", "github-copilot", "cursor", "agy"],
   prompt: [],
   template: [],
 };

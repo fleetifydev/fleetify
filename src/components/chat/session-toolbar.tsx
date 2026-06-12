@@ -40,6 +40,7 @@ import type { ChatMessage } from "@/types/chat";
 import type { Session } from "@/types/session";
 import { RemoteSshPanel } from "./remote-ssh-panel";
 import { DockerContainerPanel } from "./docker-container-panel";
+import { SessionRulesChip } from "./session-rules-chip";
 import { folderName as folderNameUtil } from "@/lib/utils";
 
 type MenuId = "source" | "git" | "history" | null;
@@ -1156,6 +1157,11 @@ export function SessionToolbar({
           </Chip>
         );
       })()}
+
+      {/* ── Session rules — per-session instructions written into the
+            session's working-dir rule file. Only for a committed session;
+            a draft has no row or working dir to materialize into yet. ── */}
+      {!isDraft && <SessionRulesChip sessionId={sessionId} />}
 
       {/* ── Add slot — placeholder for future "add another worktree /
             additional folder" affordance. Visible but inert for now

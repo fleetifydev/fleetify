@@ -52,6 +52,10 @@ pub fn router() -> Router<AppState> {
         .route("/sessions/{id}/skills", get(list_skills))
         .route("/sessions/{id}/hooks", get(list_hooks))
         .route("/sessions/{id}/commands", get(list_commands))
+        .route(
+            "/sessions/{id}/rules",
+            get(get_session_rules).put(set_session_rules),
+        )
         .route("/claude-sessions", get(list_claude_sessions))
         .route("/gemini-sessions", get(list_gemini_sessions))
         .route("/codex-sessions", get(list_codex_sessions))
@@ -601,6 +605,110 @@ async fn set_budget(
     Ok(Json(
         json!({"ok": true, "budget_limit": s.budget_limit, "budget_used": s.budget_used}),
     ))
+}
+
+// ── per-session rules ────────────────────────────────────────────────
+#[derive(Deserialize)]
+struct RulesBody {
+    #[serde(default)]
+    rules: String,
+}
+
+/// `GET /api/sessions/{id}/rules` — the session's current rule text (or "").
+async fn get_session_rules(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let s = owned(&st, &id, &user.id).await?;
+    Ok(Json(
+        json!({ "rules": s.session_rules.unwrap_or_default() }),
+    ))
+}
+
+/// `PUT /api/sessions/{id}/rules` — persist the session's rule text and
+/// materialize it (or strip it, when empty) into the session's working-dir
+/// rule file for its provider, so the CLI reads it automatically on next spawn.
+async fn set_session_rules(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+    Json(b): Json<RulesBody>,
+) -> Result<Json<Value>, ApiError> {
+    let s = owned(&st, &id, &user.id).await?;
+    let rules = b.rules.trim().to_string();
+    apply_session_rules(&s, &rules);
+    let stored: Option<String> = (!rules.is_empty()).then(|| rules.clone());
+    sqlx::query("UPDATE sessions SET session_rules = ? WHERE id = ?")
+        .bind(&stored)
+        .bind(&id)
+        .execute(&st.auth.pool)
+        .await?;
+    Ok(Json(
+        json!({ "ok": true, "rules": stored.unwrap_or_default() }),
+    ))
+}
+
+/// The working directory a session's provider spawns in (mirrors chat.rs:
+/// worktree checkout when present, else the in-place project path).
+fn session_workdir(s: &Session) -> Option<std::path::PathBuf> {
+    let dir = s
+        .worktree_path
+        .clone()
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| s.project_path.clone());
+    (!dir.trim().is_empty()).then(|| std::path::PathBuf::from(dir))
+}
+
+/// Materialize (or strip, when `rules` is empty) the session rule into its
+/// working-dir rule file for the session's provider. Best-effort: filesystem
+/// errors are swallowed — the DB row is the source of truth and the next spawn
+/// re-applies. The block is keyed by session id so it coexists with the user's
+/// own project rule file and any sibling session in the same in-place dir.
+fn apply_session_rules(s: &Session, rules: &str) {
+    use crate::providers::helpers::canonical_provider_id;
+    use crate::services::plugins::rule_merge::{self, RuleMergeRecord};
+
+    let Some(dir) = session_workdir(s) else {
+        return;
+    };
+    let provider = canonical_provider_id(&s.tool).to_string();
+    let slug = format!("session-{}", s.id);
+
+    // Cursor: a project-scoped standalone `.cursor/rules/<slug>.mdc`.
+    if provider == "cursor" {
+        let mdc = dir
+            .join(".cursor")
+            .join("rules")
+            .join(format!("{slug}.mdc"));
+        if rules.is_empty() {
+            let _ = std::fs::remove_file(&mdc);
+        } else if mdc
+            .parent()
+            .is_some_and(|p| std::fs::create_dir_all(p).is_ok())
+        {
+            let body = format!(
+                "---\ndescription: Session rule\nalwaysApply: true\n---\n\n{}\n",
+                rules.trim_end()
+            );
+            let _ = std::fs::write(&mdc, body);
+        }
+        return;
+    }
+
+    // Everything else: a slug-fenced block merged into the project rule file.
+    let Some(file) = rule_merge::project_rule_file(&provider, &dir) else {
+        return;
+    };
+    if rules.is_empty() {
+        rule_merge::unmaterialize_rule(&RuleMergeRecord {
+            provider,
+            file: file.to_string_lossy().into_owned(),
+            slug,
+        });
+    } else {
+        let _ = rule_merge::write_block(&provider, &slug, rules, &file);
+    }
 }
 
 // ── activity / files / memory (pure DB, faithful) ───────────────────
@@ -1434,5 +1542,45 @@ mod tests {
         let out = rest_repos_to_gh_shape(&raw);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["nameWithOwner"], "o/dup");
+    }
+
+    /// Session rules materialize a fenced block into the session's working-dir
+    /// `CLAUDE.md` (in-place project path here) and strip cleanly when cleared.
+    #[tokio::test]
+    async fn session_rules_materialize_and_strip_in_project_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let proj = tmp.path().join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let pool = crate::db::init_pool("sqlite::memory:").await.unwrap();
+        let id = "rules-rt-01";
+        sqlx::query(
+            "INSERT INTO sessions \
+             (id,title,project_path,group_path,tool,command,status,use_worktree,\
+              permission_mode,session_mode,pinned,order_idx,created_at,budget_used) \
+             VALUES (?,?,?,'','claude-code','claude-code','idle',0,'default','new',0,0,\
+                     '2026-01-01T00:00:00Z',0.0)",
+        )
+        .bind(id)
+        .bind("Rules RT")
+        .bind(proj.to_string_lossy().as_ref())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let s = sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = ?")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        apply_session_rules(&s, "Always run tests before commit.");
+        let claude = proj.join("CLAUDE.md");
+        let txt = std::fs::read_to_string(&claude).unwrap();
+        assert!(txt.contains("Always run tests before commit."));
+        assert!(txt.contains("fleetify:rule:session-rules-rt-01 START"));
+
+        apply_session_rules(&s, "");
+        let txt2 = std::fs::read_to_string(&claude).unwrap_or_default();
+        assert!(!txt2.contains("Always run tests before commit."));
+        assert!(!txt2.contains("fleetify:rule"));
     }
 }

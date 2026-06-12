@@ -189,6 +189,121 @@ pub fn materialize_skill_shared(
     Ok(r)
 }
 
+/// Materialize a library-authored **subagent** into `provider`'s `agents/` dir
+/// as `<slug>.<ext>`. `payload_md` is the authored agent file (YAML frontmatter
+/// plus a system-prompt body). The `.md`/`.agent.md` providers get the file with
+/// `name`=slug + `description` ensured (same helper as skills); **Codex** gets a
+/// standalone `.toml` (`name`/`description`/`developer_instructions`). Providers
+/// without an agents dir (Kimi/Hermes) are a no-op.
+pub fn materialize_subagent_item(
+    payload_md: &Path,
+    slug: &str,
+    provider: &str,
+    description: Option<&str>,
+) -> Result<MaterializationResult> {
+    let mut r = MaterializationResult {
+        provider: provider.to_string(),
+        ..Default::default()
+    };
+    if provider == "codex" {
+        let Some(home) = providers::provider_home("codex") else {
+            return Ok(r);
+        };
+        let dir = home.join("agents");
+        std::fs::create_dir_all(&dir)?;
+        let target = dir.join(format!("{slug}.toml"));
+        write_codex_agent(payload_md, slug, description, &target)?;
+        r.paths.push(target.to_string_lossy().into_owned());
+        return Ok(r);
+    }
+    let Some((dir, ext)) = providers::agents_dir(provider) else {
+        return Ok(r);
+    };
+    std::fs::create_dir_all(&dir)?;
+    let target = dir.join(format!("{slug}.{ext}"));
+    std::fs::copy(payload_md, &target)?;
+    let _ = rewrite_skill_frontmatter(&target, slug, description);
+    r.paths.push(target.to_string_lossy().into_owned());
+    Ok(r)
+}
+
+/// Convert an authored agent markdown (frontmatter `name`/`description` + body)
+/// into Codex's TOML agent format. The body becomes `developer_instructions`.
+fn write_codex_agent(
+    payload_md: &Path,
+    slug: &str,
+    description: Option<&str>,
+    dst: &Path,
+) -> Result<()> {
+    let content = std::fs::read_to_string(payload_md)?;
+    let (_name, fm_desc) = crate::services::provider_inspector::parse_frontmatter(&content);
+    let body = strip_frontmatter(&content);
+    let desc = description
+        .map(str::to_string)
+        .or(fm_desc)
+        .unwrap_or_default();
+    #[derive(serde::Serialize)]
+    struct CodexAgent {
+        name: String,
+        #[serde(skip_serializing_if = "String::is_empty")]
+        description: String,
+        developer_instructions: String,
+    }
+    let toml_str = toml::to_string(&CodexAgent {
+        name: slug.to_string(),
+        description: desc,
+        developer_instructions: body,
+    })?;
+    std::fs::write(dst, toml_str)?;
+    Ok(())
+}
+
+/// Materialize a library-authored **rule** for Cursor as a standalone
+/// `~/.cursor/rules/<slug>.mdc` with `description` + `alwaysApply: true`
+/// frontmatter (Cursor's per-rule format). Every other provider merges into a
+/// single global rule file via `rule_merge` instead.
+pub fn materialize_rule_cursor(
+    payload_md: &Path,
+    slug: &str,
+    description: Option<&str>,
+) -> Result<MaterializationResult> {
+    let mut r = MaterializationResult {
+        provider: "cursor".to_string(),
+        ..Default::default()
+    };
+    let Some(dir) = providers::cursor_rules_dir() else {
+        return Ok(r);
+    };
+    std::fs::create_dir_all(&dir)?;
+    let authored = std::fs::read_to_string(payload_md).unwrap_or_default();
+    let rule_body = strip_frontmatter(&authored);
+    let desc = description
+        .unwrap_or("Project rule")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mdc = format!(
+        "---\ndescription: {desc}\nalwaysApply: true\n---\n\n{}\n",
+        rule_body.trim_end()
+    );
+    let target = dir.join(format!("{slug}.mdc"));
+    std::fs::write(&target, mdc)?;
+    r.paths.push(target.to_string_lossy().into_owned());
+    Ok(r)
+}
+
+/// Return the body after a leading `--- … ---` YAML frontmatter block, or the
+/// whole text if there is none.
+fn strip_frontmatter(text: &str) -> String {
+    if let Some(rest) = text.strip_prefix("---") {
+        if let Some(end) = rest.find("\n---") {
+            let after = &rest[end + "\n---".len()..];
+            return after.trim_start_matches(['\r', '\n']).to_string();
+        }
+    }
+    text.to_string()
+}
+
 // ── component resolution ──────────────────────────────────────────────────
 
 fn dir_if_exists(p: &Path) -> Option<PathBuf> {

@@ -60,7 +60,11 @@ async fn list_items(Query(q): Query<ListQuery>) -> Result<Json<Value>, ApiError>
     // enumerable kinds when unfiltered.
     let kinds = match kind {
         Some(k) => vec![k],
-        None => vec![LibraryKind::Skill, LibraryKind::Template],
+        None => vec![
+            LibraryKind::Skill,
+            LibraryKind::Subagent,
+            LibraryKind::Template,
+        ],
     };
     for k in kinds {
         for (plugin, item) in enumerate::plugin_items(k) {
@@ -133,12 +137,14 @@ async fn create_item(
         providers: b.providers,
         materialized: vec![],
         hook_merge: vec![],
+        rule_merge: vec![],
         created_at: now.clone(),
         updated_at: now,
     };
     let out = materialize::materialize_item(&item, &payload)?;
     item.materialized = out.materialized;
     item.hook_merge = out.hook_merge;
+    item.rule_merge = out.rule_merge;
     store::save(&item)?;
     Ok(Json(serde_json::to_value(item)?))
 }
@@ -146,7 +152,7 @@ async fn create_item(
 async fn delete_item(AxPath(id): AxPath<String>) -> Result<Json<Value>, ApiError> {
     let item = store::get(&id)
         .ok_or_else(|| ApiError::NotFound(format!("library item {id} not found")))?;
-    materialize::unmaterialize_item(&item.materialized, &item.hook_merge);
+    materialize::unmaterialize_item(&item.materialized, &item.hook_merge, &item.rule_merge);
     store::delete_record(&id)?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -168,7 +174,7 @@ async fn update_item(
             b.kind
         )));
     }
-    materialize::unmaterialize_item(&item.materialized, &item.hook_merge);
+    materialize::unmaterialize_item(&item.materialized, &item.hook_merge, &item.rule_merge);
 
     item.name = b.name;
     item.description = b.description;
@@ -184,6 +190,7 @@ async fn update_item(
     let out = materialize::materialize_item(&item, &payload)?;
     item.materialized = out.materialized;
     item.hook_merge = out.hook_merge;
+    item.rule_merge = out.rule_merge;
     store::save(&item)?;
     Ok(Json(serde_json::to_value(item)?))
 }
@@ -196,6 +203,8 @@ fn existing_payload(dir: &Path, kind: LibraryKind) -> PathBuf {
         LibraryKind::Prompt => dir.join("prompt.md"),
         LibraryKind::Hook => dir.join("hook.json"),
         LibraryKind::Template => dir.join("system_prompt.md"),
+        LibraryKind::Subagent => dir.join("subagent.md"),
+        LibraryKind::Rule => dir.join("rule.md"),
     }
 }
 
@@ -224,6 +233,18 @@ fn write_payload(dir: &Path, kind: LibraryKind, body: &str) -> std::io::Result<P
             // The authored body is the agent preset's system prompt; the rest
             // of the spec derives from item metadata (see services::templates).
             let p = dir.join("system_prompt.md");
+            std::fs::write(&p, body)?;
+            p
+        }
+        LibraryKind::Subagent => {
+            // A single agent markdown file (frontmatter + system prompt).
+            let p = dir.join("subagent.md");
+            std::fs::write(&p, body)?;
+            p
+        }
+        LibraryKind::Rule => {
+            // Plain rule text; merged per-provider into the global rule file.
+            let p = dir.join("rule.md");
             std::fs::write(&p, body)?;
             p
         }

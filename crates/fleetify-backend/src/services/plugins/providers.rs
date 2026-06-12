@@ -130,17 +130,25 @@ pub fn commands_dir(provider: &str) -> Option<PathBuf> {
 }
 
 /// Where a provider reads markdown sub-agents, plus the file extension it
-/// expects. GitHub Copilot uses the distinctive `.agent.md` extension;
-/// Claude / OpenCode / agy use plain `.md`. Providers without a
-/// declarative on-disk agent format (Kimi YAML, Cursor, Hermes) return
-/// `None`.
+/// expects. Most agents use a plain `.md` in `<home>/agents/`; GitHub Copilot
+/// uses the distinctive `.agent.md`. **Codex is excluded here** — its agents
+/// are TOML, converted by the library subagent materializer rather than copied
+/// verbatim like the plugin path does. Kimi and Hermes have no on-disk
+/// per-agent file → `None`.
 pub fn agents_dir(provider: &str) -> Option<(PathBuf, &'static str)> {
     let (sub, ext) = match provider {
-        "claude-code" | "opencode" | "agy" => ("agents", "md"),
+        "claude-code" | "opencode" | "agy" | "gemini" | "cursor" => ("agents", "md"),
         "github-copilot" => ("agents", "agent.md"),
         _ => return None,
     };
     Some((provider_home(provider)?.join(sub), ext))
+}
+
+/// Cursor's per-rule directory (`~/.cursor/rules/`). Cursor is the one rules
+/// provider that uses standalone `.mdc` files (with `description`/`alwaysApply`
+/// frontmatter) instead of merging into a single root rule file.
+pub fn cursor_rules_dir() -> Option<PathBuf> {
+    Some(provider_home("cursor")?.join("rules"))
 }
 
 /// The hook-materialization strategy for a provider.

@@ -423,6 +423,30 @@ export async function updateSession(
   return res.json();
 }
 
+/** Fetch the session's per-session rules text (empty string when none). The
+ *  rules are materialized into the session's working-dir rule file so the CLI
+ *  reads them automatically — this just returns the stored source text. */
+export async function getSessionRules(sessionId: string): Promise<string> {
+  const res = await apiFetch(`${API_BASE}/sessions/${sessionId}/rules`);
+  if (!res.ok) throw new Error("Failed to load session rules");
+  const data = (await res.json()) as { rules?: string };
+  return data.rules ?? "";
+}
+
+/** Set (or clear, with an empty string) the session's rules. The backend
+ *  persists the text and re-materializes the marked block into the session's
+ *  working-dir rule file for its provider. */
+export async function setSessionRules(sessionId: string, rules: string): Promise<string> {
+  const res = await apiFetch(`${API_BASE}/sessions/${sessionId}/rules`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rules }),
+  });
+  if (!res.ok) throw new Error("Failed to save session rules");
+  const data = (await res.json()) as { rules?: string };
+  return data.rules ?? "";
+}
+
 export async function forkSession(sessionId: string) {
   const res = await apiFetch(`${API_BASE}/sessions/${sessionId}/fork`, { method: "POST" });
   if (!res.ok) throw new Error("Failed to fork session");
