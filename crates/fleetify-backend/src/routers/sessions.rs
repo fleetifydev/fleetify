@@ -897,6 +897,61 @@ async fn session_detail(
             last_model = m.model.clone();
         }
     }
+    // Aggregate the per-session activity ledger into the detail surface the
+    // Fleet panel renders: tool-call counts (bucketed), the latest todo list,
+    // and the persisted memory items. These used to be hard-coded empty, so
+    // the panel always looked bare regardless of what the agent had done.
+    let acts = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT kind, payload_json FROM session_activity WHERE session_id = ? ORDER BY ts",
+    )
+    .bind(&id)
+    .fetch_all(&st.auth.pool)
+    .await
+    .unwrap_or_default();
+    let mut tools: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+    let mut todos: Value = json!([]);
+    for (kind, payload) in &acts {
+        let parsed = payload
+            .as_ref()
+            .and_then(|p| serde_json::from_str::<Value>(p).ok());
+        let name = match kind.as_str() {
+            "file_edit" => "Edit".to_string(),
+            "file_read" => "Read".to_string(),
+            "command" => "Bash".to_string(),
+            "web_fetch" => "WebFetch".to_string(),
+            "todo" => {
+                if let Some(v) = &parsed {
+                    todos = if v.is_array() {
+                        v.clone()
+                    } else {
+                        v.get("todos").cloned().unwrap_or_else(|| json!([]))
+                    };
+                }
+                continue;
+            }
+            "plan" | "note" | "error" => continue,
+            _ => parsed
+                .as_ref()
+                .and_then(|v| v.get("tool").and_then(|t| t.as_str()).map(String::from))
+                .unwrap_or_else(|| kind.clone()),
+        };
+        *tools.entry(name).or_insert(0) += 1;
+    }
+    let mem_rows = sqlx::query_as::<_, (String, String, String, String)>(
+        "SELECT title, content, kind, created_at FROM session_memory \
+         WHERE session_id = ? ORDER BY created_at DESC",
+    )
+    .bind(&id)
+    .fetch_all(&st.auth.pool)
+    .await
+    .unwrap_or_default();
+    let memory_items: Vec<Value> = mem_rows
+        .into_iter()
+        .map(|(title, content, kind, created_at)| {
+            json!({ "title": title, "content": content, "kind": kind, "created_at": created_at })
+        })
+        .collect();
+
     Ok(Json(json!({
         "session_id": id,
         "message_count": msgs.len(),
@@ -908,9 +963,9 @@ async fn session_detail(
         "project_path": s.project_path,
         "tokens": {"input": it, "output": ot, "cache_read": cr, "cache_write": cw,
                    "last_input": 0, "last_cache_read": 0},
-        "tools": {},
-        "todos": [],
-        "memory_items": [],
+        "tools": tools,
+        "todos": todos,
+        "memory_items": memory_items,
         "plans": []
     })))
 }
