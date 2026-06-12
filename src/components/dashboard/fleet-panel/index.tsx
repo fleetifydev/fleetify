@@ -36,7 +36,7 @@
  *   waiting glow   → rgba(251,146,60,0.06) tint + 2px strip
  */
 import {
-  X, ArrowRight, FileText, Check,
+  X, ArrowRight, FileText, Check, ChevronRight, ChevronLeft,
   ChevronDown, ChevronUp, Loader2,
   Brain, Send, AlertCircle, Sparkles, Archive,
   StopCircle,
@@ -44,7 +44,7 @@ import {
 import { memo, useMemo, useState, useCallback } from "react";
 import { useAppStore } from "@/stores/app-store";
 import { useChatStore } from "@/stores/chat-store";
-import { useFleetStore, type FleetSessionStatus, type FleetReport, type FleetDecision } from "@/stores/fleet-store";
+import { useFleetStore, type FleetReport, type FleetDecision } from "@/stores/fleet-store";
 import { useFleetData, type FleetActivityRow } from "./hooks/use-fleet-data";
 import { askFleet, stopSession, archiveSession, type SessionDetail, type SessionActivityItem } from "@/lib/api";
 import { ProviderLogo } from "@/components/ui/provider-logo";
@@ -235,57 +235,6 @@ function shortPath(p: string | null | undefined): string {
  *  activity ledger. This is the SMART part — instead of dumping the
  *  agent's last text quote, Fleet tells the user what THIS session
  *  is fundamentally doing. The user reads one line and knows. */
-function fleetVerdict(
-  session: Session,
-  detail: SessionDetail | undefined,
-  activity: SessionActivityItem[],
-  fleetLastAction: string | null,
-  hasPermission: boolean,
-): { tone: "info" | "warning" | "fleet"; text: string } | null {
-  // Fleet brain has spoken — always preferred.
-  if (fleetLastAction) return { tone: "fleet", text: fleetLastAction };
-
-  // Permission request → most actionable thing.
-  if (hasPermission) return { tone: "warning", text: "Waiting on permission" };
-
-  // Recent error → flag it.
-  if (activity[0]?.kind === "error") return { tone: "warning", text: `Error: ${activity[0].summary.slice(0, 80)}` };
-
-  // Tool histogram tells the story of what this session is doing.
-  const tools = detail?.tools ?? {};
-  const ks = Object.keys(tools);
-  if (ks.length > 0) {
-    const total = Object.values(tools).reduce((a, b) => a + b, 0);
-    const top = ks.sort((a, b) => (tools[b] ?? 0) - (tools[a] ?? 0)).slice(0, 3);
-    const editCount  = (tools.Edit ?? 0) + (tools.Write ?? 0) + (tools.MultiEdit ?? 0);
-    const readCount  = tools.Read ?? 0;
-    const bashCount  = tools.Bash ?? 0;
-    if (editCount === 0 && readCount > total * 0.5) {
-      return { tone: "info", text: `Reading codebase · ${readCount} files explored` };
-    }
-    if (editCount === 0 && bashCount > total * 0.5) {
-      return { tone: "info", text: `Running commands · ${bashCount} shell calls` };
-    }
-    if (editCount > 0) {
-      return { tone: "info", text: `Writing code · ${editCount} edits across ${top.length} tool kinds` };
-    }
-    return { tone: "info", text: `Tool mix: ${top.join(" · ")}` };
-  }
-
-  // Idle session age signal.
-  const lastTs = session.last_accessed ?? session.created_at;
-  if (lastTs) {
-    const age = Date.now() - Date.parse(lastTs);
-    if (isFinite(age)) {
-      const hours = age / 3_600_000;
-      if (hours > 24)  return { tone: "warning", text: `Untouched ${Math.round(hours / 24)}d · consider archive` };
-      if (hours > 3)   return { tone: "info",    text: `Idle for ${Math.round(hours)}h` };
-    }
-  }
-
-  return null;
-}
-
 /** Strip the noisy shell wrapper from activity summaries to reach
  *  the actual command. Backend stores rows like:
  *    /bin/zsh -lc 'rg -n "import jwt" *.py'
@@ -432,88 +381,110 @@ function InsightsList({ insights }: { insights: Insight[] }) {
 
 /* ── Session row ───────────────────────────────────────────────── */
 
-interface SessionRowProps {
+const SessionRow = memo(function SessionRow({
+  session, detail, onOpen,
+}: {
   session: Session;
   detail: SessionDetail | undefined;
-  activity: SessionActivityItem[];
-  fleetStatus: FleetSessionStatus;
-  fleetLastAction: string | null;
-  decision: FleetDecision | null;
-  /** Render the full rich card (running / waiting / error / top row) vs a
-   *  collapsed one-line idle row. */
-  expanded: boolean;
-  // Id-aware callbacks so the parent can hand down a single stable
-  // reference for every row. Without this, `() => jumpTo(s.id)` etc.
-  // build a fresh closure per render and bust SessionRow's memo on
-  // every parent tick. SessionRow binds its own session.id locally
-  // before passing to children that expect zero-arg callbacks.
-  onJump: (sessionId: string) => void;
-  onSend: (sessionId: string, text: string) => void;
-  onAnswer: (sessionId: string, text: string) => void;
-  onDismissDecision: (sessionId: string) => void;
-}
-
-const SessionRow = memo(function SessionRow({
-  session, detail, activity, fleetLastAction, expanded,
-  onJump,
-}: SessionRowProps) {
+  onOpen: (id: string) => void;
+}) {
   const [hovered, setHovered] = useState(false);
-  const [stopping, setStopping] = useState(false);
   const cs = useChatStore(s => s.sessions[session.id]);
   const staffSessionId = useAppStore(s => s.staffSessionId);
   const isStaff = staffSessionId !== null && session.id === staffSessionId;
   const isRunning = session.status === "running" || session.status === "starting";
   const isWaiting = session.status === "waiting" || !!cs?.permissionRequest;
   const isError = session.status === "error";
-
-  const sessionId = session.id;
-  const handleClick = useCallback(() => onJump(sessionId), [onJump, sessionId]);
-  const handleStop = useCallback(async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setStopping(true);
-    try { await stopSession(sessionId); } catch { /* ignore */ }
-    setStopping(false);
-  }, [sessionId]);
-
-  const verdict = useMemo(
-    () => fleetVerdict(session, detail, activity, fleetLastAction, isWaiting),
-    [session, detail, activity, fleetLastAction, isWaiting],
-  );
-
   const cost = detail?.total_cost_usd ?? session.budget_used ?? 0;
   const costLabel = cost > 0 ? fmtCost(cost) : "$0";
   const modelShort = shortModel(detail?.model ?? session.model_name);
   const project = session.project_path ? folderName(session.project_path) : null;
   const msgCount = detail?.message_count ?? cs?.messages?.length ?? 0;
   const ago = relativeAgo(session.last_accessed ?? session.created_at);
-
   const statusLabel = isError ? "ERROR" : isWaiting ? "WAITING" : isRunning ? "RUNNING" : "IDLE";
   const statusColor = isError ? C_RED : isWaiting ? C_ORANGE : isRunning ? C_GREEN : "var(--c-dim)";
 
+  return (
+    <button
+      onClick={() => onOpen(session.id)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        position: "relative", display: "flex", flexDirection: "column", gap: 0, width: "100%",
+        padding: "12px 16px", border: "none", borderBottom: "1px solid var(--c-brd)",
+        cursor: "pointer", textAlign: "left",
+        background: isWaiting ? "rgba(251,146,60,0.05)" : hovered ? "var(--c-srf)" : "transparent",
+        transition: "background 0.12s", fontFamily: "inherit",
+      }}
+    >
+      {isWaiting && <span aria-hidden style={{ position: "absolute", left: 0, top: 12, bottom: 12, width: 2, background: C_ORANGE, borderRadius: 2 }} />}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
+        <StatusRing status={isWaiting ? "waiting" : isError ? "error" : session.status} size={11} />
+        {session.tool && <ProviderLogo tool={session.tool} size={11} />}
+        <span style={{ minWidth: 0, maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 13.5, fontWeight: 600, color: "var(--c-high)" }}>{session.title || "Untitled"}</span>
+        {isStaff && <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.06em", padding: "2px 6px", borderRadius: 4, background: "rgba(var(--fg-rgb),0.07)", border: "1px solid var(--c-brd)", color: "var(--c-med)", flexShrink: 0 }}>FLEET</span>}
+        <span style={{ flex: 1 }} />
+        <div style={{ textAlign: "right", flexShrink: 0 }}>
+          <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", color: statusColor }}>{statusLabel}</div>
+          <div style={{ fontSize: 12, fontWeight: 600, fontFamily: MONO, color: "var(--c-med)", marginTop: 2, fontVariantNumeric: "tabular-nums" }}>{costLabel}</div>
+        </div>
+        <ChevronRight size={14} style={{ color: "var(--c-ghost)", flexShrink: 0, marginLeft: 2 }} />
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: 19, marginTop: 4, fontFamily: MONO, fontSize: 10.5, color: "var(--c-ghost)", overflow: "hidden", whiteSpace: "nowrap" }}>
+        {project && <span>{project}</span>}
+        {project && modelShort && <span style={{ color: "var(--c-brd2)" }}>·</span>}
+        {modelShort && <span style={{ color: "var(--c-dim)" }}>{modelShort}</span>}
+        {msgCount > 0 && <><span style={{ color: "var(--c-brd2)" }}>·</span><span>{msgCount} msg</span></>}
+        <span style={{ marginLeft: "auto", color: "var(--c-ghost)" }}>{ago}</span>
+      </div>
+    </button>
+  );
+});
+
+/* ── Agent detail — the full visualised drill-down opened on click ── */
+function AgentDetail({ session, detail, activity, onBack, onOpenChat }: {
+  session: Session;
+  detail: SessionDetail | undefined;
+  activity: SessionActivityItem[];
+  onBack: () => void;
+  onOpenChat: () => void;
+}) {
+  const [stopping, setStopping] = useState(false);
+  const cs = useChatStore(s => s.sessions[session.id]);
+  const isRunning = session.status === "running" || session.status === "starting";
+  const isWaiting = session.status === "waiting" || !!cs?.permissionRequest;
+  const isError = session.status === "error";
+  const statusLabel = isError ? "ERROR" : isWaiting ? "WAITING" : isRunning ? "RUNNING" : "IDLE";
+  const statusColor = isError ? C_RED : isWaiting ? C_ORANGE : isRunning ? C_GREEN : "var(--c-dim)";
+
+  const cost = detail?.total_cost_usd ?? session.budget_used ?? 0;
+  const modelShort = shortModel(detail?.model ?? session.model_name);
+  const project = session.project_path ? folderName(session.project_path) : null;
+  const msgCount = detail?.message_count ?? cs?.messages?.length ?? 0;
+  const ago = relativeAgo(session.last_accessed ?? session.created_at);
+
   const tk = detail?.tokens;
   const tokensTotal = tk ? tk.input + tk.output : 0;
-  const cachePct = tk && tk.input + tk.cache_read > 0
-    ? Math.round((tk.cache_read / (tk.input + tk.cache_read)) * 100) : 0;
+  const cachePct = tk && tk.input + tk.cache_read > 0 ? Math.round((tk.cache_read / (tk.input + tk.cache_read)) * 100) : 0;
   const todos = detail?.todos ?? [];
   const stepsDone = todos.filter(t => t.status === "completed").length;
   const tools = detail?.tools ?? {};
   const tcTotal = Object.values(tools).reduce((a, b) => a + b, 0);
-  const tc = {
-    read: tools.Read ?? 0,
-    edit: (tools.Edit ?? 0) + (tools.Write ?? 0) + (tools.MultiEdit ?? 0),
-    bash: tools.Bash ?? 0,
-    web: (tools.WebFetch ?? 0) + (tools.WebSearch ?? 0) + (tools.fetch_url ?? 0),
-  };
+  const tc: Array<[string, number, string]> = [
+    ["read", tools.Read ?? 0, C_BLUE],
+    ["bash", tools.Bash ?? 0, C_ORANGE],
+    ["edit", (tools.Edit ?? 0) + (tools.Write ?? 0) + (tools.MultiEdit ?? 0), C_GREEN],
+    ["web", (tools.WebFetch ?? 0) + (tools.WebSearch ?? 0) + (tools.fetch_url ?? 0), "var(--c-med)"],
+  ].filter(([, n]) => (n as number) > 0) as Array<[string, number, string]>;
+  const tcMax = Math.max(1, ...tc.map(([, n]) => n));
 
-  // Memory items → plain strings (the backend ships either shape).
   const memory: string[] = (detail?.memory_items ?? []).map((m) => {
     if (typeof m === "string") return m;
     const o = m as { text?: string; content?: string; summary?: string; value?: string };
     return o.text ?? o.content ?? o.summary ?? o.value ?? "";
   }).filter(Boolean);
 
-  // Files touched, from the activity ledger (deduped, with edit/read counts).
-  const files = useMemo(() => {
+  const files = (() => {
     const seen = new Map<string, { edits: number; reads: number }>();
     for (const a of activity) {
       if (a.kind !== "file_edit" && a.kind !== "file_read") continue;
@@ -524,202 +495,145 @@ const SessionRow = memo(function SessionRow({
       seen.set(label, e);
     }
     return [...seen.entries()].map(([path, c]) => ({ path, ...c }));
-  }, [activity]);
+  })();
 
-  const header = (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
-      <StatusRing status={isWaiting ? "waiting" : isError ? "error" : session.status} size={11} />
-      {session.tool && <ProviderLogo tool={session.tool} size={11} />}
-      <span style={{
-        minWidth: 0, maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-        fontSize: 13.5, fontWeight: 600, color: "var(--c-high)",
-      }}>{session.title || "Untitled"}</span>
-      {isStaff && (
-        <span style={{
-          fontSize: 9, fontWeight: 700, letterSpacing: "0.06em", padding: "2px 6px", borderRadius: 4,
-          background: "rgba(var(--fg-rgb),0.07)", border: "1px solid var(--c-brd)", color: "var(--c-med)", flexShrink: 0,
-        }}>FLEET</span>
-      )}
-      <span style={{ flex: 1 }} />
-      <div style={{ textAlign: "right", flexShrink: 0 }}>
-        <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", color: statusColor }}>{statusLabel}</div>
-        <div style={{ fontSize: 12, fontWeight: 600, fontFamily: MONO, color: "var(--c-med)", marginTop: 2, fontVariantNumeric: "tabular-nums" }}>{costLabel}</div>
-      </div>
-    </div>
-  );
+  const freshPct = tk && tk.input + tk.cache_read > 0 ? Math.round((tk.input / (tk.input + tk.cache_read)) * 100) : 100;
 
-  const meta = (
-    <div style={{
-      display: "flex", alignItems: "center", gap: 6, marginLeft: 19, marginTop: 4,
-      fontFamily: MONO, fontSize: 10.5, color: "var(--c-ghost)", overflow: "hidden", whiteSpace: "nowrap",
-    }}>
-      {project && <span>{project}</span>}
-      {project && modelShort && <span style={{ color: "var(--c-brd2)" }}>·</span>}
-      {modelShort && <span style={{ color: "var(--c-dim)" }}>{modelShort}</span>}
-      {msgCount > 0 && <><span style={{ color: "var(--c-brd2)" }}>·</span><span>{msgCount} msg</span></>}
-      <span style={{ marginLeft: "auto", color: "var(--c-ghost)" }}>{ago}</span>
-    </div>
-  );
-
-  if (!expanded) {
-    return (
-      <button
-        onClick={handleClick}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-        style={{
-          display: "flex", flexDirection: "column", gap: 0, width: "100%",
-          padding: "12px 16px", border: "none", borderBottom: "1px solid var(--c-brd)",
-          cursor: "pointer", textAlign: "left", background: hovered ? "var(--c-srf)" : "transparent",
-          transition: "background 0.12s", fontFamily: "inherit",
-        }}
-      >
-        {header}
-        {meta}
-      </button>
-    );
-  }
+  const doStop = async () => { setStopping(true); try { await stopSession(session.id); } catch { /* ignore */ } setStopping(false); };
 
   return (
-    <div style={{ position: "relative", borderBottom: "1px solid var(--c-brd)", background: isWaiting ? "rgba(251,146,60,0.04)" : "transparent" }}>
-      {isWaiting && (
-        <span aria-hidden style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 2, background: C_ORANGE }} />
-      )}
-      <button
-        onClick={handleClick}
-        style={{ display: "flex", flexDirection: "column", gap: 0, width: "100%", padding: "12px 16px 0", border: "none", background: "transparent", cursor: "pointer", textAlign: "left", fontFamily: "inherit" }}
-      >
-        {header}
-        {meta}
-      </button>
+    <div style={{ animation: "fp-fade-in 0.18s ease-out both" }}>
+      {/* nav bar */}
+      <div style={{ display: "flex", alignItems: "center", padding: "12px 14px", borderBottom: "1px solid var(--c-brd)" }}>
+        <button onClick={onBack} style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 500, color: "var(--c-dim)" }}>
+          <ChevronLeft size={14} /> Fleet
+        </button>
+        <span style={{ flex: 1 }} />
+        <button onClick={onOpenChat} style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 600, color: "var(--c-med)" }}>Open chat</button>
+        {isRunning && <button onClick={doStop} style={{ marginLeft: 14, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 500, color: "var(--c-dim)" }}>{stopping ? "Stopping…" : "Stop"}</button>}
+      </div>
 
-      <div style={{ padding: "0 16px 14px", marginLeft: 4 }}>
-        {/* token line */}
+      {/* header + token gauge */}
+      <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--c-brd)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 9 }}>
+          <StatusRing status={isWaiting ? "waiting" : isError ? "error" : session.status} size={12} />
+          {session.tool && <ProviderLogo tool={session.tool} size={12} />}
+          <span style={{ fontSize: 15, fontWeight: 600, color: "var(--c-high)" }}>{session.title || "Untitled"}</span>
+          <span style={{ flex: 1 }} />
+          <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", color: statusColor }}>{statusLabel}</span>
+        </div>
+        <div style={{ fontFamily: MONO, fontSize: 11, color: "var(--c-dim)", marginBottom: 12 }}>
+          {[project, modelShort, msgCount > 0 ? `${msgCount} msg` : null, cost > 0 ? fmtCost(cost) : null, ago].filter(Boolean).join("  ·  ")}
+        </div>
         {tokensTotal > 0 && (
-          <div style={{ marginLeft: 15, marginTop: 7, fontFamily: MONO, fontSize: 10.5, color: "var(--c-dim)" }}>
-            <b style={{ color: "var(--c-med)", fontWeight: 600 }}>{fmtTokens(tokensTotal)}</b> tokens
-            {cachePct > 0 && <> <span style={{ color: "var(--c-brd2)" }}>·</span> <b style={{ color: "var(--c-med)", fontWeight: 600 }}>{cachePct}%</b> cache</>}
+          <>
+            <div style={{ height: 6, borderRadius: 3, background: "var(--c-srf)", overflow: "hidden", display: "flex", marginBottom: 5 }}>
+              <span style={{ height: "100%", width: `${freshPct}%`, background: "var(--c-med)" }} />
+              <span style={{ height: "100%", width: `${100 - freshPct}%`, background: "rgba(var(--fg-rgb),0.18)" }} />
+            </div>
+            <div style={{ fontFamily: MONO, fontSize: 10.5, color: "var(--c-dim)" }}>
+              <b style={{ color: "var(--c-med)", fontWeight: 600 }}>{fmtTokens(tokensTotal)}</b> tokens <span style={{ color: "var(--c-brd2)" }}>·</span> <b style={{ color: "var(--c-med)", fontWeight: 600 }}>{cachePct}%</b> from cache
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* TASKS */}
+      {todos.length > 0 && (
+        <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--c-brd)" }}>
+          <DetailLabel label="Tasks" count={`${stepsDone}/${todos.length}`} />
+          <div style={{ height: 4, borderRadius: 2, background: "var(--c-srf)", overflow: "hidden", marginBottom: 11 }}>
+            <span style={{ display: "block", height: "100%", width: `${Math.round((stepsDone / todos.length) * 100)}%`, background: C_GREEN }} />
           </div>
-        )}
+          {todos.map((t, i) => {
+            const done = t.status === "completed"; const prog = t.status === "in_progress";
+            return (
+              <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 9, padding: "3px 0", fontSize: 12.5, lineHeight: 1.45, color: done ? "var(--c-dim)" : prog ? "var(--c-high)" : "var(--c-med)" }}>
+                <span aria-hidden style={{ width: 14, height: 14, borderRadius: 4, flexShrink: 0, marginTop: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", background: done ? "var(--c-med)" : "transparent", border: done ? "none" : `1.5px solid ${prog ? C_ORANGE : "var(--c-ghost)"}` }}>
+                  {done && <Check size={9} strokeWidth={3} style={{ color: "var(--background)" }} />}
+                  {prog && <span style={{ width: 5, height: 5, borderRadius: "50%", background: C_ORANGE }} />}
+                </span>
+                <span style={{ textDecoration: done ? "line-through" : "none", textDecorationColor: "var(--c-ghost)" }}>{t.activeForm && prog ? t.activeForm : t.content}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
-        {verdict && (
-          <div style={{ marginLeft: 15, marginTop: 8, fontSize: 12, color: "var(--c-med)", lineHeight: 1.5 }}>{verdict.text}</div>
-        )}
+      {/* TOOL CALLS — visual bars */}
+      {tcTotal > 0 && (
+        <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--c-brd)" }}>
+          <DetailLabel label="Tool calls" count={tcTotal} />
+          {tc.map(([k, n, c]) => (
+            <div key={k} style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 7, fontFamily: MONO, fontSize: 11 }}>
+              <span style={{ width: 36, color: "var(--c-dim)" }}>{k}</span>
+              <span style={{ flex: 1, height: 6, borderRadius: 3, background: "var(--c-srf)", overflow: "hidden" }}>
+                <span style={{ display: "block", height: "100%", width: `${Math.round((n / tcMax) * 100)}%`, background: c }} />
+              </span>
+              <span style={{ width: 32, textAlign: "right", color: "var(--c-med)", fontWeight: 600 }}>{n}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
-        {/* TASKS */}
-        {todos.length > 0 && (
-          <Section label="Tasks" count={`${stepsDone}/${todos.length}`}>
-            {todos.map((t, i) => {
-              const done = t.status === "completed";
-              const prog = t.status === "in_progress";
+      {/* MEMORY */}
+      {memory.length > 0 && (
+        <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--c-brd)" }}>
+          <DetailLabel label="Memory" count={memory.length} />
+          {memory.map((m, i) => (
+            <div key={i} style={{ display: "flex", gap: 8, padding: "3px 0", fontSize: 12, color: "var(--c-med)", lineHeight: 1.45 }}>
+              <span style={{ color: "var(--c-ghost)", flexShrink: 0 }}>·</span><span>{m}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* FILES */}
+      {files.length > 0 && (
+        <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--c-brd)" }}>
+          <DetailLabel label="Files" count={files.length} />
+          {files.map((f) => (
+            <div key={f.path} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", fontFamily: MONO, fontSize: 11 }}>
+              <span style={{ color: "var(--c-med)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "70%" }}>{f.path}</span>
+              <span style={{ color: "var(--c-ghost)" }}>{f.edits > 0 ? `${f.edits} edit${f.edits === 1 ? "" : "s"}` : `${f.reads} read${f.reads === 1 ? "" : "s"}`}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ACTIVITY — timeline */}
+      {activity.length > 0 && (
+        <div style={{ padding: "14px 16px" }}>
+          <DetailLabel label="Activity" count="full" />
+          <div style={{ position: "relative", paddingLeft: 14 }}>
+            <span aria-hidden style={{ position: "absolute", left: 3, top: 5, bottom: 5, width: 1, background: "var(--c-brd2)" }} />
+            {activity.map((row) => {
+              const lk = logKind(row);
               return (
-                <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "2.5px 0", fontSize: 12, lineHeight: 1.45,
-                  color: done ? "var(--c-dim)" : prog ? "var(--c-high)" : "var(--c-med)" }}>
-                  <span aria-hidden style={{
-                    width: 13, height: 13, borderRadius: 4, flexShrink: 0, marginTop: 1,
-                    display: "inline-flex", alignItems: "center", justifyContent: "center",
-                    background: done ? "var(--c-med)" : "transparent",
-                    border: done ? "none" : `1.4px solid ${prog ? C_ORANGE : "var(--c-ghost)"}`,
-                  }}>
-                    {done && <Check size={9} strokeWidth={3} style={{ color: "var(--background)" }} />}
-                    {prog && <span style={{ width: 5, height: 5, borderRadius: "50%", background: C_ORANGE }} />}
-                  </span>
-                  <span style={{ textDecoration: done ? "line-through" : "none", textDecorationColor: "var(--c-ghost)" }}>
-                    {t.activeForm && prog ? t.activeForm : t.content}
-                  </span>
+                <div key={row.id} style={{ position: "relative", display: "flex", gap: 8, padding: "4px 0", fontFamily: MONO, fontSize: 10.5, alignItems: "baseline" }}>
+                  <span aria-hidden style={{ position: "absolute", left: -13, top: 9, width: 6, height: 6, borderRadius: "50%", background: lk.color, border: "2px solid var(--sidebar)" }} />
+                  <span style={{ color: "var(--c-ghost)", width: 30, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{relativeAgo(row.ts)}</span>
+                  <span style={{ color: lk.color, width: 32, flexShrink: 0, fontWeight: 600 }}>{lk.label}</span>
+                  <span style={{ color: "var(--c-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{logText(row)}</span>
                 </div>
               );
             })}
-          </Section>
-        )}
-
-        {/* MEMORY */}
-        {memory.length > 0 && (
-          <Section label="Memory" count={memory.length}>
-            {memory.slice(0, 8).map((m, i) => (
-              <div key={i} style={{ display: "flex", gap: 8, padding: "2.5px 0", fontSize: 11.5, color: "var(--c-med)", lineHeight: 1.45 }}>
-                <span style={{ color: "var(--c-ghost)", flexShrink: 0 }}>·</span>
-                <span>{m}</span>
-              </div>
-            ))}
-          </Section>
-        )}
-
-        {/* TOOL CALLS */}
-        {tcTotal > 0 && (
-          <Section label="Tool calls" count={tcTotal}>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 12, fontFamily: MONO, fontSize: 11, color: "var(--c-dim)" }}>
-              {tc.read > 0 && <span><b style={{ color: C_BLUE, fontWeight: 700 }}>{tc.read}</b> read</span>}
-              {tc.edit > 0 && <span><b style={{ color: C_GREEN, fontWeight: 700 }}>{tc.edit}</b> edit</span>}
-              {tc.bash > 0 && <span><b style={{ color: C_ORANGE, fontWeight: 700 }}>{tc.bash}</b> bash</span>}
-              {tc.web > 0 && <span><b style={{ color: "var(--c-med)", fontWeight: 700 }}>{tc.web}</b> web</span>}
-            </div>
-          </Section>
-        )}
-
-        {/* FILES */}
-        {files.length > 0 && (
-          <Section label="Files" count={files.length}>
-            {files.map((f) => (
-              <div key={f.path} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "2.5px 0", fontFamily: MONO, fontSize: 11 }}>
-                <span style={{ color: "var(--c-med)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "70%" }}>{f.path}</span>
-                <span style={{ color: "var(--c-ghost)", flexShrink: 0 }}>
-                  {f.edits > 0 ? `${f.edits} edit${f.edits === 1 ? "" : "s"}` : `${f.reads} read${f.reads === 1 ? "" : "s"}`}
-                </span>
-              </div>
-            ))}
-          </Section>
-        )}
-
-        {/* FULL LOG */}
-        {activity.length > 0 && (
-          <Section label="Log" count="full">
-            <div style={{ display: "flex", flexDirection: "column" }}>
-              {activity.map((row) => {
-                const lk = logKind(row);
-                return (
-                  <div key={row.id} style={{ display: "flex", gap: 8, padding: "2.5px 0", fontFamily: MONO, fontSize: 10.5, alignItems: "baseline" }}>
-                    <span style={{ color: "var(--c-ghost)", width: 30, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{relativeAgo(row.ts)}</span>
-                    <span style={{ color: lk.color, width: 34, flexShrink: 0, fontWeight: 600 }}>{lk.label}</span>
-                    <span style={{ color: "var(--c-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{logText(row)}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </Section>
-        )}
-
-        {/* actions */}
-        <div style={{ marginLeft: 15, marginTop: 14, display: "flex", alignItems: "center", gap: 16 }}>
-          {isWaiting && (
-            <button onClick={handleClick} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 600, color: C_ORANGE, display: "inline-flex", alignItems: "center", gap: 4 }}>
-              Respond <ArrowRight size={11} />
-            </button>
-          )}
-          <button onClick={handleClick} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 600, color: "var(--c-med)" }}>Open</button>
-          {isRunning && (
-            <button onClick={handleStop} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 500, color: "var(--c-dim)", display: "inline-flex", alignItems: "center" }}>
-              {stopping ? <Loader2 size={11} className="animate-spin" /> : "Stop"}
-            </button>
-          )}
+          </div>
         </div>
-      </div>
-    </div>
-  );
-});
-
-/** Labeled detail section inside an expanded session card. */
-function Section({ label, count, children }: { label: string; count?: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <div style={{ marginLeft: 15, marginTop: 14 }}>
-      <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", color: "var(--c-ghost)", marginBottom: 7 }}>
-        {label}{count != null && <span style={{ color: "var(--c-dim)", marginLeft: 5, fontWeight: 600 }}>{count}</span>}
-      </div>
-      {children}
+      )}
     </div>
   );
 }
 
+function DetailLabel({ label, count }: { label: string; count?: React.ReactNode }) {
+  return (
+    <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", color: "var(--c-ghost)", marginBottom: 10 }}>
+      {label}{count != null && <span style={{ color: "var(--c-dim)", marginLeft: 5, fontWeight: 600 }}>{count}</span>}
+    </div>
+  );
+}
+
+/** Labeled detail section inside an expanded session card. */
 /** Map an activity row to a short coloured log kind. */
 function logKind(row: SessionActivityItem): { label: string; color: string } {
   const t = (row.payload?.tool ?? "").replace(/^mcp__[a-z0-9_]+?__/i, "");
@@ -1016,7 +930,6 @@ export function FleetPanel({ sessions, onSelectAgent }: Props) {
   const fleetSessions = useFleetStore(s => s.sessions);
   const decisions = useFleetStore(s => s.decisions);
   const reports = useFleetStore(s => s.reports);
-  const resolveDecision = useFleetStore(s => s.resolveDecision);
   // Manual mode hides the co-pilot meta surfaces (Observations + Ask
   // Fleet) so the right panel reduces to the watching strip + session
   // rows + reports list. Keeps the demo path uncluttered.
@@ -1026,6 +939,8 @@ export function FleetPanel({ sessions, onSelectAgent }: Props) {
   // Bridge for the "Catch me up" button — pre-fills Ask Fleet input
   // and auto-opens the section.
   const [askInitial, setAskInitial] = useState<{ q: string; tick: number } | null>(null);
+  // Master-detail: which session is drilled into (full visual detail view).
+  const [detailId, setDetailId] = useState<string | null>(null);
 
   const agents = useMemo(
     () => sessions.filter(s => (s.title || "").trim() !== "New chat"),
@@ -1152,27 +1067,6 @@ export function FleetPanel({ sessions, onSelectAgent }: Props) {
   // latest map via the closure variable; the SessionRow itself only
   // sees a (sessionId) => void signature so its callback identity
   // stays the same across parent re-renders.
-  const handleDismissDecision = useCallback((sessionId: string) => {
-    const d = decisionBySession.get(sessionId);
-    if (d) resolveDecision(d.id);
-  }, [decisionBySession, resolveDecision]);
-
-  const handleSend = useCallback((sessionId: string, text: string) => {
-    setActiveSession(sessionId);
-    onSelectAgent(sessionId);
-    requestAnimationFrame(() => {
-      window.dispatchEvent(new CustomEvent("fleet:send-prompt", { detail: { sessionId, text } }));
-    });
-  }, [setActiveSession, onSelectAgent]);
-
-  const handleAnswer = useCallback((sessionId: string, text: string) => {
-    setActiveSession(sessionId);
-    onSelectAgent(sessionId);
-    requestAnimationFrame(() => {
-      window.dispatchEvent(new CustomEvent("fleet:focus-input", { detail: { text } }));
-    });
-  }, [setActiveSession, onSelectAgent]);
-
   const buildSnapshot = useCallback((): string => {
     const lines: string[] = [];
     lines.push(`Fleet has ${agents.length} agents (${activeCount} active, ${pendingCount} pending).`);
@@ -1288,6 +1182,19 @@ export function FleetPanel({ sessions, onSelectAgent }: Props) {
             <span style={{ color: "var(--c-low)" }}>No agents yet.</span>
             <span style={{ fontSize: 11, color: "var(--c-ghost)" }}>Spawn one from the canvas to start.</span>
           </div>
+        ) : detailId && agents.some(a => a.id === detailId) ? (
+          (() => {
+            const ds = agents.find(a => a.id === detailId)!;
+            return (
+              <AgentDetail
+                session={ds}
+                detail={details[ds.id]}
+                activity={activityBySession.get(ds.id) ?? []}
+                onBack={() => setDetailId(null)}
+                onOpenChat={() => { setDetailId(null); jumpTo(ds.id); }}
+              />
+            );
+          })()
         ) : (
           <>
             <WatchingStrip
@@ -1317,34 +1224,14 @@ export function FleetPanel({ sessions, onSelectAgent }: Props) {
             )}
 
             <SectionLabel count={agents.length}>Sessions</SectionLabel>
-            {sortedAgents.map((s, i) => {
-              const fs = fleetSessions[s.id];
-              const live = s.status === "running" || s.status === "starting";
-              // Rich card for anything that needs attention or is the most
-              // relevant row; collapsed one-liners for the rest. Guarantees at
-              // least one expanded card whenever there are sessions.
-              const expanded = live
-                || s.status === "waiting"
-                || s.status === "error"
-                || decisionBySession.has(s.id)
-                || i === 0;
-              return (
-                <SessionRow
-                  key={s.id}
-                  session={s}
-                  detail={details[s.id]}
-                  activity={activityBySession.get(s.id) ?? []}
-                  fleetStatus={fs?.status ?? "idle"}
-                  fleetLastAction={fs?.lastAction ?? null}
-                  decision={decisionBySession.get(s.id) ?? null}
-                  expanded={expanded}
-                  onJump={jumpTo}
-                  onSend={handleSend}
-                  onAnswer={handleAnswer}
-                  onDismissDecision={handleDismissDecision}
-                />
-              );
-            })}
+            {sortedAgents.map((s) => (
+              <SessionRow
+                key={s.id}
+                session={s}
+                detail={details[s.id]}
+                onOpen={setDetailId}
+              />
+            ))}
 
             {activity.length > 0 && (
               <>
