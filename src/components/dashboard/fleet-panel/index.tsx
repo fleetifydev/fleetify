@@ -39,7 +39,7 @@ import {
   X, ArrowRight, FileText, Check, ChevronRight, ChevronLeft,
   ChevronDown, ChevronUp, Loader2,
   Brain, Send, AlertCircle, Sparkles, Archive,
-  StopCircle,
+  StopCircle, Pencil, Terminal, Eye, Globe, HelpCircle,
 } from "lucide-react";
 import { memo, useMemo, useState, useCallback } from "react";
 import { useAppStore } from "@/stores/app-store";
@@ -470,12 +470,12 @@ function AgentDetail({ session, detail, activity, onBack, onOpenChat }: {
   const stepsDone = todos.filter(t => t.status === "completed").length;
   const tools = detail?.tools ?? {};
   const tcTotal = Object.values(tools).reduce((a, b) => a + b, 0);
-  const tc: Array<[string, number, string]> = [
-    ["read", tools.Read ?? 0, C_BLUE],
-    ["bash", tools.Bash ?? 0, C_ORANGE],
-    ["edit", (tools.Edit ?? 0) + (tools.Write ?? 0) + (tools.MultiEdit ?? 0), C_GREEN],
-    ["web", (tools.WebFetch ?? 0) + (tools.WebSearch ?? 0) + (tools.fetch_url ?? 0), "var(--c-med)"],
-  ].filter(([, n]) => (n as number) > 0) as Array<[string, number, string]>;
+  const tc: Array<[string, number]> = [
+    ["read", tools.Read ?? 0],
+    ["bash", tools.Bash ?? 0],
+    ["edit", (tools.Edit ?? 0) + (tools.Write ?? 0) + (tools.MultiEdit ?? 0)],
+    ["web", (tools.WebFetch ?? 0) + (tools.WebSearch ?? 0) + (tools.fetch_url ?? 0)],
+  ].filter(([, n]) => (n as number) > 0) as Array<[string, number]>;
   const tcMax = Math.max(1, ...tc.map(([, n]) => n));
 
   const memory: string[] = (detail?.memory_items ?? []).map((m) => {
@@ -502,7 +502,8 @@ function AgentDetail({ session, detail, activity, onBack, onOpenChat }: {
   const doStop = async () => { setStopping(true); try { await stopSession(session.id); } catch { /* ignore */ } setStopping(false); };
 
   return (
-    <div style={{ animation: "fp-fade-in 0.18s ease-out both" }}>
+    <div style={{ animation: "fp-detail-in 0.22s cubic-bezier(0.22,1,0.36,1) both" }}>
+      <style>{`@keyframes fp-detail-in { from { opacity: 0; transform: translateX(12px); } to { opacity: 1; transform: none; } }`}</style>
       {/* nav bar */}
       <div style={{ display: "flex", alignItems: "center", padding: "12px 14px", borderBottom: "1px solid var(--c-brd)" }}>
         <button onClick={onBack} style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 500, color: "var(--c-dim)" }}>
@@ -542,16 +543,16 @@ function AgentDetail({ session, detail, activity, onBack, onOpenChat }: {
       {todos.length > 0 && (
         <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--c-brd)" }}>
           <DetailLabel label="Tasks" count={`${stepsDone}/${todos.length}`} />
-          <div style={{ height: 4, borderRadius: 2, background: "var(--c-srf)", overflow: "hidden", marginBottom: 11 }}>
-            <span style={{ display: "block", height: "100%", width: `${Math.round((stepsDone / todos.length) * 100)}%`, background: C_GREEN }} />
+          <div style={{ height: 3, borderRadius: 2, background: "var(--c-srf)", overflow: "hidden", marginBottom: 11 }}>
+            <span style={{ display: "block", height: "100%", width: `${Math.round((stepsDone / todos.length) * 100)}%`, background: "var(--c-med)" }} />
           </div>
           {todos.map((t, i) => {
             const done = t.status === "completed"; const prog = t.status === "in_progress";
             return (
               <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 9, padding: "3px 0", fontSize: 12.5, lineHeight: 1.45, color: done ? "var(--c-dim)" : prog ? "var(--c-high)" : "var(--c-med)" }}>
-                <span aria-hidden style={{ width: 14, height: 14, borderRadius: 4, flexShrink: 0, marginTop: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", background: done ? "var(--c-med)" : "transparent", border: done ? "none" : `1.5px solid ${prog ? C_ORANGE : "var(--c-ghost)"}` }}>
+                <span aria-hidden style={{ width: 14, height: 14, borderRadius: 4, flexShrink: 0, marginTop: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", background: done ? "var(--c-med)" : "transparent", border: done ? "none" : "1.5px solid var(--c-ghost)" }}>
                   {done && <Check size={9} strokeWidth={3} style={{ color: "var(--background)" }} />}
-                  {prog && <span style={{ width: 5, height: 5, borderRadius: "50%", background: C_ORANGE }} />}
+                  {prog && <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--c-high)" }} />}
                 </span>
                 <span style={{ textDecoration: done ? "line-through" : "none", textDecorationColor: "var(--c-ghost)" }}>{t.activeForm && prog ? t.activeForm : t.content}</span>
               </div>
@@ -564,11 +565,11 @@ function AgentDetail({ session, detail, activity, onBack, onOpenChat }: {
       {tcTotal > 0 && (
         <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--c-brd)" }}>
           <DetailLabel label="Tool calls" count={tcTotal} />
-          {tc.map(([k, n, c]) => (
+          {tc.map(([k, n]) => (
             <div key={k} style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 7, fontFamily: MONO, fontSize: 11 }}>
               <span style={{ width: 36, color: "var(--c-dim)" }}>{k}</span>
-              <span style={{ flex: 1, height: 6, borderRadius: 3, background: "var(--c-srf)", overflow: "hidden" }}>
-                <span style={{ display: "block", height: "100%", width: `${Math.round((n / tcMax) * 100)}%`, background: c }} />
+              <span style={{ flex: 1, height: 5, borderRadius: 3, background: "var(--c-srf)", overflow: "hidden" }}>
+                <span style={{ display: "block", height: "100%", width: `${Math.round((n / tcMax) * 100)}%`, background: "var(--c-med)" }} />
               </span>
               <span style={{ width: 32, textAlign: "right", color: "var(--c-med)", fontWeight: 600 }}>{n}</span>
             </div>
@@ -601,24 +602,22 @@ function AgentDetail({ session, detail, activity, onBack, onOpenChat }: {
         </div>
       )}
 
-      {/* ACTIVITY — timeline */}
-      {activity.length > 0 && (
+      {/* ACTIVITY — monochrome icon timeline (todo writes live in Tasks) */}
+      {activity.some(r => r.kind !== "todo") && (
         <div style={{ padding: "14px 16px" }}>
-          <DetailLabel label="Activity" count="full" />
-          <div style={{ position: "relative", paddingLeft: 14 }}>
-            <span aria-hidden style={{ position: "absolute", left: 3, top: 5, bottom: 5, width: 1, background: "var(--c-brd2)" }} />
-            {activity.map((row) => {
-              const lk = logKind(row);
-              return (
-                <div key={row.id} style={{ position: "relative", display: "flex", gap: 8, padding: "4px 0", fontFamily: MONO, fontSize: 10.5, alignItems: "baseline" }}>
-                  <span aria-hidden style={{ position: "absolute", left: -13, top: 9, width: 6, height: 6, borderRadius: "50%", background: lk.color, border: "2px solid var(--sidebar)" }} />
-                  <span style={{ color: "var(--c-ghost)", width: 30, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{relativeAgo(row.ts)}</span>
-                  <span style={{ color: lk.color, width: 32, flexShrink: 0, fontWeight: 600 }}>{lk.label}</span>
-                  <span style={{ color: "var(--c-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{logText(row)}</span>
-                </div>
-              );
-            })}
-          </div>
+          <DetailLabel label="Activity" count={activity.filter(r => r.kind !== "todo").length} />
+          {activity.filter(r => r.kind !== "todo").map((row) => {
+            const Icon = logIcon(row);
+            const isErr = row.kind === "error";
+            const mono = row.kind === "command";
+            return (
+              <div key={row.id} style={{ display: "flex", gap: 9, padding: "4.5px 0", alignItems: "baseline" }}>
+                <span style={{ width: 38, flexShrink: 0, fontFamily: MONO, fontSize: 10, color: "var(--c-ghost)", fontVariantNumeric: "tabular-nums" }}>{clockTime(row.ts)}</span>
+                <Icon size={12} strokeWidth={2} style={{ color: isErr ? "var(--c-med)" : "var(--c-dim)", flexShrink: 0, position: "relative", top: 1 }} />
+                <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: mono ? 11 : 11.5, fontFamily: mono ? MONO : "inherit", color: isErr ? "var(--c-med)" : "var(--c-dim)" }}>{logText(row)}</span>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -633,19 +632,25 @@ function DetailLabel({ label, count }: { label: string; count?: React.ReactNode 
   );
 }
 
-/** Labeled detail section inside an expanded session card. */
-/** Map an activity row to a short coloured log kind. */
-function logKind(row: SessionActivityItem): { label: string; color: string } {
+/** Monochrome lucide icon for an activity row — the kind is read at a glance
+ *  from the icon, not a colour. */
+function logIcon(row: SessionActivityItem): typeof Pencil {
   const t = (row.payload?.tool ?? "").replace(/^mcp__[a-z0-9_]+?__/i, "");
-  if (row.kind === "file_edit") return { label: "edit", color: C_GREEN };
-  if (row.kind === "file_read") return { label: "read", color: C_BLUE };
-  if (row.kind === "command")   return { label: "bash", color: C_ORANGE };
-  if (row.kind === "web_fetch") return { label: "web", color: C_BLUE };
-  if (row.kind === "error")     return { label: "err", color: C_RED };
-  if (row.kind === "todo")      return { label: "task", color: "var(--c-med)" };
-  if (row.kind === "plan")      return { label: "plan", color: "var(--c-med)" };
-  if (t === "ask_user" || t === "AskUserQuestion") return { label: "ask", color: "var(--c-med)" };
-  return { label: (t || row.kind).slice(0, 5).toLowerCase(), color: "var(--c-med)" };
+  if (row.kind === "file_edit") return Pencil;
+  if (row.kind === "file_read") return Eye;
+  if (row.kind === "command")   return Terminal;
+  if (row.kind === "web_fetch") return Globe;
+  if (row.kind === "error")     return AlertCircle;
+  if (row.kind === "plan")      return FileText;
+  if (t === "ask_user" || t === "AskUserQuestion") return HelpCircle;
+  return Sparkles;
+}
+
+/** Wall-clock HH:MM for one activity row. */
+function clockTime(ts: string): string {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
 /** Cleaned, human log text for one activity row (de-namespaced, no select: junk). */
