@@ -39,7 +39,7 @@ import {
   X, ArrowRight, FileText,
   ChevronDown, ChevronUp, Loader2,
   Brain, Send, AlertCircle, Sparkles, Archive,
-  StopCircle, Eye, Pencil, Terminal, Globe,
+  StopCircle,
 } from "lucide-react";
 import { memo, useMemo, useState, useCallback } from "react";
 import { useAppStore } from "@/stores/app-store";
@@ -497,24 +497,7 @@ const SessionRow = memo(function SessionRow({
   const todos = detail?.todos ?? [];
   const stepsDone = todos.filter(t => t.status === "completed").length;
   const tools = detail?.tools ?? {};
-  const tc = {
-    read: tools.Read ?? 0,
-    edit: (tools.Edit ?? 0) + (tools.Write ?? 0) + (tools.MultiEdit ?? 0),
-    bash: tools.Bash ?? 0,
-    web: (tools.WebFetch ?? 0) + (tools.WebSearch ?? 0) + (tools.fetch_url ?? 0),
-  };
   const tcTotal = Object.values(tools).reduce((a, b) => a + b, 0);
-
-  const files = useMemo(() => {
-    const seen = new Map<string, number>();
-    for (const a of activity) {
-      if (a.kind !== "file_edit" && a.kind !== "file_read") continue;
-      const label = (a.summary || "").trim();
-      if (!label) continue;
-      seen.set(label, (seen.get(label) ?? 0) + 1);
-    }
-    return [...seen.entries()].slice(0, 3).map(([path, n]) => ({ path, n }));
-  }, [activity]);
 
   const header = (
     <div style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
@@ -570,110 +553,57 @@ const SessionRow = memo(function SessionRow({
     );
   }
 
-  const Box = ({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) => (
-    <div style={{ border: "1px solid var(--c-brd)", borderRadius: 8, padding: "9px 11px", minWidth: 0 }}>
-      <div style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.05em", color: "var(--c-dim)" }}>{label}</div>
-      <div style={{
-        fontSize: mono ? 12.5 : 14.5, fontWeight: 600, marginTop: 4, color: "var(--c-high)",
-        fontFamily: mono ? MONO : "inherit", fontVariantNumeric: "tabular-nums",
-        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-      }}>{value}</div>
-    </div>
-  );
-  const ToolCell = ({ icon: Ic, value, label }: { icon: typeof Eye; value: number; label: string }) => (
-    <div style={{ border: "1px solid var(--c-brd)", borderRadius: 8, padding: "9px 8px" }}>
-      <Ic size={12} style={{ color: "var(--c-dim)" }} />
-      <div style={{ fontSize: 15, fontWeight: 600, marginTop: 6, color: "var(--c-high)", fontVariantNumeric: "tabular-nums" }}>{value}</div>
-      <div style={{ fontSize: 8.5, fontWeight: 600, letterSpacing: "0.05em", color: "var(--c-dim)", marginTop: 1 }}>{label}</div>
-    </div>
-  );
-  const sectionLbl = (left: React.ReactNode, right?: React.ReactNode) => (
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 7 }}>
-      <span style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: "0.05em", color: "var(--c-dim)" }}>{left}</span>
-      {right != null && <span style={{ fontSize: 10.5, fontFamily: MONO, color: "var(--c-med)" }}>{right}</span>}
-    </div>
-  );
+  // Inline metric chips as plain text — no boxes, no tiles.
+  const stats: Array<[string, string]> = [];
+  if (tokensTotal > 0) stats.push([fmtTokens(tokensTotal), "tokens"]);
+  if (tokensTotal > 0 && cachePct > 0) stats.push([`${cachePct}%`, "cache"]);
+  if (todos.length > 0) stats.push([`${stepsDone}/${todos.length}`, "steps"]);
+  if (tcTotal > 0) stats.push([String(tcTotal), "tools"]);
 
   return (
-    <div style={{
-      margin: "0 12px 10px",
-      border: `1px solid ${isWaiting ? "rgba(251,146,60,0.35)" : "var(--c-brd)"}`,
-      borderRadius: 11, background: "var(--card, var(--c-srf))", overflow: "hidden",
-    }}>
+    <div
+      style={{
+        position: "relative",
+        padding: "12px 16px",
+        borderBottom: "1px solid var(--c-brd)",
+        background: isWaiting ? "rgba(251,146,60,0.05)" : "transparent",
+      }}
+    >
+      {isWaiting && (
+        <span aria-hidden style={{ position: "absolute", left: 0, top: 12, bottom: 12, width: 2, background: C_ORANGE, borderRadius: 2 }} />
+      )}
       <button
         onClick={handleClick}
-        style={{ display: "flex", flexDirection: "column", gap: 0, width: "100%", padding: "13px 14px 0", border: "none", background: "transparent", cursor: "pointer", textAlign: "left", fontFamily: "inherit" }}
+        style={{ display: "flex", flexDirection: "column", gap: 0, width: "100%", padding: 0, border: "none", background: "transparent", cursor: "pointer", textAlign: "left", fontFamily: "inherit" }}
       >
         {header}
         {meta}
       </button>
 
-      <div style={{ padding: "12px 14px 13px" }}>
+      {verdict && (
+        <div style={{ marginLeft: 15, marginTop: 8, fontSize: 12, color: "var(--c-med)", lineHeight: 1.5 }}>{verdict.text}</div>
+      )}
+
+      {stats.length > 0 && (
+        <div style={{ marginLeft: 15, marginTop: 8, display: "flex", flexWrap: "wrap", gap: 10, fontFamily: MONO, fontSize: 10.5, color: "var(--c-dim)" }}>
+          {stats.map(([num, unit], i) => (
+            <span key={i}><span style={{ color: "var(--c-med)", fontWeight: 600 }}>{num}</span> {unit}</span>
+          ))}
+        </div>
+      )}
+
+      <div style={{ marginLeft: 15, marginTop: 10, display: "flex", alignItems: "center", gap: 14 }}>
         {isWaiting && (
-          <div style={{
-            display: "flex", alignItems: "center", gap: 9, padding: "9px 11px",
-            border: "1px solid var(--c-brd2)", borderRadius: 8, background: "var(--c-srf)", marginBottom: 12,
-          }}>
-            <span style={{ width: 15, height: 15, borderRadius: "50%", border: "1px solid var(--c-ghost)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: "var(--c-med)", flexShrink: 0 }}>?</span>
-            <span style={{ flex: 1, fontFamily: MONO, fontSize: 11.5, color: "var(--c-med)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Needs your response</span>
-            <button onClick={handleClick} style={{ fontSize: 11.5, fontWeight: 600, color: "var(--c-fg)", border: "1px solid var(--c-brd2)", borderRadius: 6, padding: "4px 11px", cursor: "pointer", background: "transparent" }}>Respond</button>
-          </div>
-        )}
-
-        {verdict && (
-          <div style={{ fontSize: 12.5, color: "var(--c-med)", lineHeight: 1.5, marginBottom: 13 }}>{verdict.text}</div>
-        )}
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 13 }}>
-          <Box label="TOKENS" value={fmtTokens(tokensTotal)} />
-          <Box label="STEPS" value={todos.length > 0 ? `${stepsDone}/${todos.length}` : "—"} />
-          <Box label="REPO" value={project ?? "—"} mono />
-        </div>
-
-        {tokensTotal > 0 && (
-          <div style={{ marginBottom: 14 }}>
-            {sectionLbl("TOKEN MIX", `${cachePct}% cache`)}
-            <div style={{ height: 5, borderRadius: 3, background: "var(--c-srf)", overflow: "hidden", display: "flex" }}>
-              <span style={{ height: "100%", width: `${100 - cachePct}%`, background: "var(--c-med)" }} />
-              <span style={{ height: "100%", width: `${cachePct}%`, background: "rgba(var(--fg-rgb),0.18)" }} />
-            </div>
-          </div>
-        )}
-
-        {tcTotal > 0 && (
-          <div style={{ marginBottom: 13 }}>
-            {sectionLbl("TOOL CALLS", tcTotal)}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
-              <ToolCell icon={Eye} value={tc.read} label="READ" />
-              <ToolCell icon={Pencil} value={tc.edit} label="EDIT" />
-              <ToolCell icon={Terminal} value={tc.bash} label="BASH" />
-              <ToolCell icon={Globe} value={tc.web} label="WEB" />
-            </div>
-          </div>
-        )}
-
-        {files.length > 0 && (
-          <div style={{ marginBottom: 13 }}>
-            {sectionLbl(<>FILES <span style={{ color: "var(--c-ghost)" }}>{files.length}</span></>)}
-            {files.map(f => (
-              <div key={f.path} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", fontSize: 11.5 }}>
-                <span style={{ fontFamily: MONO, color: "var(--c-med)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "78%" }}>{f.path}</span>
-                <span style={{ fontFamily: MONO, fontSize: 10.5, color: "var(--c-dim)" }}>{f.n > 1 ? `${f.n}×` : ""}</span>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-          <button onClick={handleClick} style={{ flex: 1, height: 34, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: "1px solid var(--c-brd2)", borderRadius: 8, fontSize: 12.5, fontWeight: 600, color: "var(--c-fg)", cursor: "pointer", background: "var(--c-srf)", fontFamily: "inherit" }}>
-            <ArrowRight size={13} /> Open
+          <button onClick={handleClick} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600, color: C_ORANGE, display: "inline-flex", alignItems: "center", gap: 4 }}>
+            Respond <ArrowRight size={11} />
           </button>
-          {isRunning && (
-            <button onClick={handleStop} style={{ height: 34, padding: "0 16px", border: "1px solid var(--c-brd)", borderRadius: 8, fontSize: 12.5, fontWeight: 500, color: "var(--c-med)", cursor: "pointer", background: "transparent", fontFamily: "inherit", display: "flex", alignItems: "center" }}>
-              {stopping ? <Loader2 size={12} className="animate-spin" /> : "Stop"}
-            </button>
-          )}
-        </div>
+        )}
+        <button onClick={handleClick} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600, color: "var(--c-med)" }}>Open</button>
+        {isRunning && (
+          <button onClick={handleStop} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 500, color: "var(--c-dim)", display: "inline-flex", alignItems: "center" }}>
+            {stopping ? <Loader2 size={11} className="animate-spin" /> : "Stop"}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -802,10 +732,16 @@ function ActivityFeedRow({ row }: { row: FleetActivityRow }) {
     if (rawTool === "ToolSearch") return "Search";
     return rawTool || "Tool";
   })();
+  const cleanText = (s: string) =>
+    s.replace(/select:/gi, "").replace(/mcp__[a-z0-9_]+?__/gi, "").trim();
   const detail = (() => {
     if (row.kind === "error") return rawTool ? `${rawTool} failed` : (row.summary || "failed");
     if (rawTool === "ask_user" || rawTool === "AskUserQuestion") return "asked you a question";
-    const h = humanActivity(row);
+    if (rawTool === "ToolSearch") {
+      const t = cleanText(row.summary || "");
+      return t ? `for ${t}` : "";
+    }
+    const h = cleanText(humanActivity(row));
     return h && h !== (row.payload?.tool ?? "") ? h : "";
   })();
   return (
