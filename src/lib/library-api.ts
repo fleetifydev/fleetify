@@ -9,7 +9,7 @@ import type { Provider } from "@/types/plugin";
 
 /** The five authorable content kinds. Mirrors the backend `LibraryKind`.
  *  Provider gating per kind lives in `PROVIDERS_FOR_KIND` below. */
-export type LibraryKind = "prompt" | "skill" | "command" | "hook" | "template";
+export type LibraryKind = "prompt" | "skill" | "hook" | "template";
 
 /** One materialized on-disk artifact for a library item — the provider it
  *  was written for and the absolute path it landed at. */
@@ -56,7 +56,6 @@ export interface CreateLibraryItem {
  *  validation read the same source of truth. */
 export const PROVIDERS_FOR_KIND: Record<LibraryKind, Provider[]> = {
   skill: ["claude-code", "codex", "gemini", "kimi", "opencode", "github-copilot", "cursor", "hermes", "agy"],
-  command: ["claude-code", "gemini", "opencode", "codex"],
   hook: ["claude-code", "cursor", "agy", "kimi", "github-copilot", "opencode", "hermes"],
   prompt: [],
   template: [],

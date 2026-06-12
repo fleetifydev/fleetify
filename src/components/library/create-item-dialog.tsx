@@ -21,18 +21,21 @@ import { ProviderLogo, providerName } from "@/components/ui/provider-logo";
 const KIND_LABEL: Record<LibraryKind, string> = {
   prompt: "Prompt",
   skill: "Skill",
-  command: "Command",
   hook: "Hook",
   template: "Template",
 };
 
 const BODY_HINT: Record<LibraryKind, string> = {
   prompt: "The reusable prompt text. Available to every agent.",
-  skill: "SKILL.md content. Frontmatter is optional — the name is set for you.",
-  command: "The slash-command body (markdown).",
+  skill: "SKILL.md content. Frontmatter is optional — name + description are set for you.",
   hook: "",
   template: "The system prompt for this agent preset.",
 };
+
+/** The Agent-Skills open standard caps `description` at 1024 chars; every
+ *  provider (Codex/OpenCode/Copilot…) requires a non-empty one, so skills make
+ *  the Description field mandatory. */
+const SKILL_DESCRIPTION_MAX = 1024;
 
 export function CreateItemDialog({
   kind,
@@ -77,8 +80,14 @@ export function CreateItemDialog({
     if (name.trim().length === 0 || !slugValid) return false;
     if (!editing && body.trim().length === 0) return false;
     if (providerScoped && providers.length === 0) return false;
+    // Skills must carry a non-empty, ≤1024-char description — it's injected
+    // into the materialized SKILL.md and required by the open standard.
+    if (kind === "skill") {
+      const d = description.trim();
+      if (d.length === 0 || d.length > SKILL_DESCRIPTION_MAX) return false;
+    }
     return true;
-  }, [editing, name, slugValid, body, providerScoped, providers]);
+  }, [editing, name, slugValid, body, providerScoped, providers, kind, description]);
 
   const toggleProvider = (id: string) =>
     setProviders((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
@@ -184,10 +193,15 @@ export function CreateItemDialog({
           )}
         </Field>
 
-        <Field label="Description" hint="optional">
+        <Field
+          label="Description"
+          hint={kind === "skill" ? `required · injected into SKILL.md (≤${SKILL_DESCRIPTION_MAX})` : "optional"}
+        >
           <input
             value={description}
             onChange={(e) => setDescription(e.target.value)}
+            maxLength={kind === "skill" ? SKILL_DESCRIPTION_MAX : undefined}
+            placeholder={kind === "skill" ? "What this skill does and when to use it" : undefined}
             style={inputStyle}
           />
         </Field>

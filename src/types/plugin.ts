@@ -57,7 +57,6 @@ export interface Declares {
 export type Provides =
   | "mcp"
   | "skills"
-  | "commands"
   | "prompts"
   | "hooks"
   | "subagents"
@@ -69,7 +68,7 @@ export type Provides =
  *  authored for an agent CLI's /command surface, prompts are
  *  Fleetify-native reusable text blocks. */
 export const PROVIDES_ORDER: readonly Provides[] = [
-  "mcp", "skills", "commands", "prompts", "hooks", "subagents", "workflows",
+  "mcp", "skills", "prompts", "hooks", "subagents", "workflows",
 ] as const;
 
 /** Bilingual labels for the filter chips. The backend ships English
@@ -78,7 +77,6 @@ export const PROVIDES_ORDER: readonly Provides[] = [
 export const PROVIDES_LABEL_TR: Record<Provides, string> = {
   mcp: "MCP Sunucusu",
   skills: "Skill",
-  commands: "Komut",
   prompts: "Prompt",
   hooks: "Hook",
   subagents: "Alt Ajan",
@@ -87,7 +85,6 @@ export const PROVIDES_LABEL_TR: Record<Provides, string> = {
 export const PROVIDES_LABEL_EN: Record<Provides, string> = {
   mcp: "MCP Server",
   skills: "Skills",
-  commands: "Commands",
   prompts: "Prompts",
   hooks: "Hooks",
   subagents: "Subagents",
@@ -105,9 +102,6 @@ export function deriveProvides(d: Declares): Provides[] {
   const pv = Object.values(d.providers ?? {});
   if (d.mcp_servers > 0) out.push("mcp");
   if (pv.some((p) => p.skills > 0)) out.push("skills");
-  // ``commands`` = /-commands authored for an agent CLI's command surface
-  // (Claude / Gemini / OpenCode), counted across every provider.
-  if (pv.some((p) => p.commands > 0)) out.push("commands");
   if (d.prompts > 0) out.push("prompts");
   if (pv.some((p) => p.hooks > 0)) out.push("hooks");
   if (d.templates > 0) out.push("subagents");
@@ -129,7 +123,7 @@ export function manifestProvides(m: PluginManifest): Provides[] {
  *  commands across Claude+Gemini only, sums prompts on Codex only. */
 export function totalDeclaredComponents(d: Declares): number {
   const perProvider = Object.values(d.providers ?? {}).reduce(
-    (sum, p) => sum + p.skills + p.commands + p.hooks,
+    (sum, p) => sum + p.skills + p.hooks,
     0,
   );
   return d.mcp_servers + d.templates + d.workflows + d.prompts + perProvider;

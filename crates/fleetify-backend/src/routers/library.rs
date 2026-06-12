@@ -60,11 +60,7 @@ async fn list_items(Query(q): Query<ListQuery>) -> Result<Json<Value>, ApiError>
     // enumerable kinds when unfiltered.
     let kinds = match kind {
         Some(k) => vec![k],
-        None => vec![
-            LibraryKind::Skill,
-            LibraryKind::Command,
-            LibraryKind::Template,
-        ],
+        None => vec![LibraryKind::Skill, LibraryKind::Template],
     };
     for k in kinds {
         for (plugin, item) in enumerate::plugin_items(k) {
@@ -197,7 +193,6 @@ async fn update_item(
 fn existing_payload(dir: &Path, kind: LibraryKind) -> PathBuf {
     match kind {
         LibraryKind::Skill => dir.join("skill"),
-        LibraryKind::Command => dir.join("command.md"),
         LibraryKind::Prompt => dir.join("prompt.md"),
         LibraryKind::Hook => dir.join("hook.json"),
         LibraryKind::Template => dir.join("system_prompt.md"),
@@ -214,11 +209,6 @@ fn write_payload(dir: &Path, kind: LibraryKind, body: &str) -> std::io::Result<P
             std::fs::create_dir_all(&sdir)?;
             std::fs::write(sdir.join("SKILL.md"), body)?;
             sdir
-        }
-        LibraryKind::Command => {
-            let p = dir.join("command.md");
-            std::fs::write(&p, body)?;
-            p
         }
         LibraryKind::Prompt => {
             let p = dir.join("prompt.md");

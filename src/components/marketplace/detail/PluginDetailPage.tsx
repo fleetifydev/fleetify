@@ -354,7 +354,7 @@ function ComponentsBody({ declares }: { declares: PluginDetail["manifest"]["decl
     agy: "Antigravity CLI",
     "antigravity-sdk": "Antigravity SDK",
   };
-  const providerKinds = ["skills", "commands", "hooks"] as const;
+  const providerKinds = ["skills", "hooks"] as const;
   const providerRows = Object.entries(declares.providers ?? {})
     .flatMap(([prov, counts]) =>
       providerKinds.map((k) => ({
@@ -858,11 +858,8 @@ const COMPONENT_LABEL: Record<string, string> = {
   mcp_servers: "MCP servers",
   skills: "Skills",
   templates: "Templates",
-  commands: "Slash commands",
   // Codex-only — ~/.codex/prompts/*.md auto-loaded by the CLI as
-  // /prompts:<name>. Surfaced as a distinct row from "Slash commands"
-  // so the user can see at a glance that this is a Codex-specific
-  // component class, not just a synonym for the others' commands.
+  // /prompts:<name>.
   prompts: "Codex prompts",
   hooks: "Hooks",
   workflows: "Workflows",

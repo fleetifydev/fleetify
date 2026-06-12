@@ -51,7 +51,6 @@ const COMPONENT_LABELS = {
   templates: "agent template",
   workflows: "workflow",
   skills: "skill",
-  commands: "slash command",
   prompts: "Codex prompt",
   hooks: "hook",
 } as const;
@@ -62,14 +61,13 @@ function aggregateCounts(d: PluginManifest["declares"]) {
   // `prompts` is the Fleetify-native cross-cutting count (Codex's on-disk
   // prompts are materialized from its `commands` slot).
   const pv = Object.values(d.providers ?? {});
-  const sum = (f: (p: { skills: number; commands: number; hooks: number }) => number) =>
+  const sum = (f: (p: { skills: number; hooks: number }) => number) =>
     pv.reduce((s, p) => s + f(p), 0);
   return {
     mcp_servers: d.mcp_servers,
     templates: d.templates,
     workflows: d.workflows,
     skills: sum((p) => p.skills),
-    commands: sum((p) => p.commands),
     prompts: d.prompts,
     hooks: sum((p) => p.hooks),
   };

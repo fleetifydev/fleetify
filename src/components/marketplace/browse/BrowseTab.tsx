@@ -53,7 +53,7 @@ export function BrowseTab({ onOpenDetail, onQuickInstall }: Props) {
   // ``docs/provides.md`` example uses the same total-count behaviour.
   const providesCounts = useMemo(() => {
     const counts: Record<Provides, number> = {
-      mcp: 0, skills: 0, commands: 0, prompts: 0,
+      mcp: 0, skills: 0, prompts: 0,
       hooks: 0, subagents: 0, workflows: 0,
     };
     for (const p of catalog) {

@@ -149,6 +149,7 @@ pub fn materialize_skill_item(
     payload_dir: &Path,
     slug: &str,
     provider: &str,
+    description: Option<&str>,
 ) -> Result<MaterializationResult> {
     let mut r = MaterializationResult {
         provider: provider.to_string(),
@@ -159,74 +160,33 @@ pub fn materialize_skill_item(
     };
     let target = skills_root.join(slug);
     copy_dir_recursive(payload_dir, &target)?;
-    // OpenCode/Cursor require SKILL.md `name:` == the directory name.
-    let _ = rewrite_skill_name(&target.join("SKILL.md"), slug);
+    let _ = rewrite_skill_frontmatter(&target.join("SKILL.md"), slug, description);
     r.paths.push(target.to_string_lossy().into_owned());
     Ok(r)
 }
 
-/// Materialize a single library-authored command into `provider`'s command
-/// surface. `payload_md` is the authored command body (markdown, optional
-/// frontmatter). Providers without a command surface (`commands_dir == None`)
-/// are a no-op. Gemini is special-cased to TOML.
-pub fn materialize_command_item(
-    payload_md: &Path,
+/// Write a library-authored skill to the shared `~/.agents/skills/<slug>/`
+/// open-standard location read by Codex, Gemini, Copilot, Cursor and Kimi, so
+/// the skill is discoverable cross-tool regardless of which providers were
+/// selected. Recorded under the synthetic provider id `"agents"` so deletion
+/// reverses it like any other artifact.
+pub fn materialize_skill_shared(
+    payload_dir: &Path,
     slug: &str,
-    provider: &str,
+    description: Option<&str>,
 ) -> Result<MaterializationResult> {
     let mut r = MaterializationResult {
-        provider: provider.to_string(),
+        provider: "agents".to_string(),
         ..Default::default()
     };
-    let Some(dst_dir) = providers::commands_dir(provider) else {
+    let Some(root) = providers::agents_skills_dir() else {
         return Ok(r);
     };
-    std::fs::create_dir_all(&dst_dir)?;
-    let target = if provider == "gemini" {
-        // Gemini reads TOML commands (`description` + `prompt`), not markdown.
-        let t = dst_dir.join(format!("{slug}.toml"));
-        write_gemini_command(payload_md, &t)?;
-        t
-    } else {
-        let t = dst_dir.join(format!("{slug}.md"));
-        std::fs::copy(payload_md, &t)?;
-        t
-    };
+    let target = root.join(slug);
+    copy_dir_recursive(payload_dir, &target)?;
+    let _ = rewrite_skill_frontmatter(&target.join("SKILL.md"), slug, description);
     r.paths.push(target.to_string_lossy().into_owned());
     Ok(r)
-}
-
-/// Convert a markdown command (optional `--- name/description ---` frontmatter,
-/// then the body) into Gemini's TOML command format with `description` and
-/// `prompt` keys. Serialized via the `toml` crate so escaping is correct.
-fn write_gemini_command(payload_md: &Path, dst_toml: &Path) -> Result<()> {
-    let content = std::fs::read_to_string(payload_md)?;
-    let (_name, description) = crate::services::provider_inspector::parse_frontmatter(&content);
-    let prompt = strip_frontmatter(&content);
-    #[derive(serde::Serialize)]
-    struct GeminiCommandToml {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        description: Option<String>,
-        prompt: String,
-    }
-    let toml_str = toml::to_string(&GeminiCommandToml {
-        description,
-        prompt,
-    })?;
-    std::fs::write(dst_toml, toml_str)?;
-    Ok(())
-}
-
-/// Return the body after a leading `--- … ---` YAML frontmatter block, or the
-/// whole text if there is none. Mirrors `parse_frontmatter`'s fence detection.
-fn strip_frontmatter(text: &str) -> String {
-    if let Some(rest) = text.strip_prefix("---") {
-        if let Some(end) = rest.find("\n---") {
-            let after = &rest[end + "\n---".len()..];
-            return after.trim_start_matches(['\r', '\n']).to_string();
-        }
-    }
-    text.to_string()
 }
 
 // ── component resolution ──────────────────────────────────────────────────
@@ -332,6 +292,64 @@ fn set_frontmatter_name(content: &str, new_name: &str) -> String {
 fn rewrite_skill_name(skill_md: &Path, new_name: &str) -> std::io::Result<()> {
     let content = std::fs::read_to_string(skill_md)?;
     std::fs::write(skill_md, set_frontmatter_name(&content, new_name))
+}
+
+/// Like `set_frontmatter_name` but also guarantees a `description:` line — the
+/// Agent-Skills open standard requires both `name` and `description`, and
+/// Codex/OpenCode/Copilot reject a skill without a description. A description
+/// already authored in the SKILL.md is kept; the library item's description is
+/// only injected when none is present.
+fn set_frontmatter_name_desc(content: &str, name: &str, description: Option<&str>) -> String {
+    let withname = set_frontmatter_name(content, name);
+    let Some(desc) = description.map(str::trim).filter(|d| !d.is_empty()) else {
+        return withname;
+    };
+    let lines: Vec<&str> = withname.lines().collect();
+    let Some(close) = lines
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, l)| l.trim() == "---")
+        .map(|(i, _)| i)
+    else {
+        return withname;
+    };
+    // Keep a user-authored description if the frontmatter already has one.
+    if lines[1..close]
+        .iter()
+        .any(|l| l.trim_start().starts_with("description:"))
+    {
+        return withname;
+    }
+    // Collapse to a one-line YAML scalar, capped at the 1024-char limit.
+    let mut one_line = desc.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one_line.chars().count() > 1024 {
+        one_line = one_line.chars().take(1024).collect();
+    }
+    let after_name = lines[1..close]
+        .iter()
+        .position(|l| l.trim_start().starts_with("name:"))
+        .map(|p| p + 2) // +1 for the skipped open fence, +1 to land after `name:`
+        .unwrap_or(1);
+    let mut out: Vec<String> = lines.iter().map(|s| (*s).to_string()).collect();
+    out.insert(after_name, format!("description: {one_line}"));
+    let mut s = out.join("\n");
+    if withname.ends_with('\n') {
+        s.push('\n');
+    }
+    s
+}
+
+fn rewrite_skill_frontmatter(
+    skill_md: &Path,
+    name: &str,
+    description: Option<&str>,
+) -> std::io::Result<()> {
+    let content = std::fs::read_to_string(skill_md)?;
+    std::fs::write(
+        skill_md,
+        set_frontmatter_name_desc(&content, name, description),
+    )
 }
 
 // ── flat markdown (commands / prompts / agents) ────────────────────────────
@@ -665,7 +683,7 @@ mod tests {
         std::fs::write(payload.join("ref.txt"), b"x").unwrap();
         let home = tmp.path().join("home");
         with_home(&home, || {
-            let r = materialize_skill_item(&payload, "my-skill", "claude-code").unwrap();
+            let r = materialize_skill_item(&payload, "my-skill", "claude-code", None).unwrap();
             let dst = home.join(".claude/skills/my-skill");
             assert!(dst.join("SKILL.md").is_file());
             assert!(dst.join("ref.txt").is_file(), "assets copied");
@@ -690,90 +708,68 @@ mod tests {
         .unwrap();
         let home = tmp.path().join("home");
         with_home(&home, || {
-            materialize_skill_item(&payload, "s", "opencode").unwrap();
-            materialize_skill_item(&payload, "s", "kimi").unwrap();
+            materialize_skill_item(&payload, "s", "opencode", None).unwrap();
+            materialize_skill_item(&payload, "s", "kimi", None).unwrap();
             assert!(home.join(".config/opencode/skills/s/SKILL.md").is_file());
             assert!(home.join(".kimi/skills/s/SKILL.md").is_file());
         });
     }
 
     #[test]
-    fn materialize_command_item_md_providers() {
+    fn skill_item_injects_description_into_frontmatter() {
         let tmp = tempdir().unwrap();
-        let payload = tmp.path().join("command.md");
-        std::fs::write(&payload, b"## /deploy\nDeploy the app.").unwrap();
+        let payload = tmp.path().join("payload");
+        std::fs::create_dir_all(&payload).unwrap();
+        // Authored SKILL.md has a name but NO description.
+        std::fs::write(payload.join("SKILL.md"), b"---\nname: x\n---\n# body").unwrap();
         let home = tmp.path().join("home");
         with_home(&home, || {
-            let rc = materialize_command_item(&payload, "deploy", "claude-code").unwrap();
-            let rx = materialize_command_item(&payload, "deploy", "codex").unwrap();
-            // Claude → commands/<slug>.md ; Codex → prompts/<slug>.md
-            assert!(home.join(".claude/commands/deploy.md").is_file());
-            assert!(home.join(".codex/prompts/deploy.md").is_file());
-            assert_eq!(rc.paths.len(), 1);
-            assert_eq!(rx.paths.len(), 1);
+            materialize_skill_item(&payload, "my-skill", "claude-code", Some("Does a thing"))
+                .unwrap();
+            let md =
+                std::fs::read_to_string(home.join(".claude/skills/my-skill/SKILL.md")).unwrap();
+            assert!(md.contains("name: my-skill"));
+            assert!(
+                md.contains("description: Does a thing"),
+                "item description injected when frontmatter lacks one:\n{md}"
+            );
         });
     }
 
     #[test]
-    fn materialize_command_item_unsupported_provider_is_noop() {
+    fn skill_item_keeps_authored_description() {
         let tmp = tempdir().unwrap();
-        let payload = tmp.path().join("command.md");
-        std::fs::write(&payload, b"x").unwrap();
-        let home = tmp.path().join("home");
-        with_home(&home, || {
-            // kimi has no command surface (commands_dir == None).
-            let r = materialize_command_item(&payload, "x", "kimi").unwrap();
-            assert!(r.paths.is_empty());
-        });
-    }
-
-    #[test]
-    fn materialize_command_item_gemini_writes_toml() {
-        let tmp = tempdir().unwrap();
-        let payload = tmp.path().join("command.md");
+        let payload = tmp.path().join("payload");
+        std::fs::create_dir_all(&payload).unwrap();
         std::fs::write(
-            &payload,
-            b"---\ndescription: Ship it\n---\nDeploy {{args}} to prod.",
+            payload.join("SKILL.md"),
+            b"---\nname: x\ndescription: authored\n---\nbody",
         )
         .unwrap();
         let home = tmp.path().join("home");
         with_home(&home, || {
-            let r = materialize_command_item(&payload, "deploy", "gemini").unwrap();
-            let dst = home.join(".gemini/commands/deploy.toml");
-            assert!(dst.is_file(), "gemini command must be .toml");
-            let txt = std::fs::read_to_string(&dst).unwrap();
-            // Parse it back as TOML and check the two keys Gemini needs.
-            let parsed: toml::Value = toml::from_str(&txt).unwrap();
-            assert_eq!(
-                parsed.get("description").and_then(|v| v.as_str()),
-                Some("Ship it")
-            );
-            assert_eq!(
-                parsed.get("prompt").and_then(|v| v.as_str()),
-                Some("Deploy {{args}} to prod.")
-            );
-            assert_eq!(r.paths, vec![dst.to_string_lossy().into_owned()]);
+            materialize_skill_item(&payload, "s", "claude-code", Some("item-level")).unwrap();
+            let md = std::fs::read_to_string(home.join(".claude/skills/s/SKILL.md")).unwrap();
+            assert!(md.contains("description: authored"));
+            assert!(!md.contains("item-level"), "authored description preserved");
         });
     }
 
     #[test]
-    fn materialize_command_item_gemini_without_frontmatter() {
+    fn skill_shared_writes_agents_dir() {
         let tmp = tempdir().unwrap();
-        let payload = tmp.path().join("command.md");
-        std::fs::write(&payload, b"Just a bare prompt body.").unwrap();
+        let payload = tmp.path().join("payload");
+        std::fs::create_dir_all(&payload).unwrap();
+        std::fs::write(payload.join("SKILL.md"), b"---\nname: x\n---\nbody").unwrap();
         let home = tmp.path().join("home");
         with_home(&home, || {
-            materialize_command_item(&payload, "bare", "gemini").unwrap();
-            let txt = std::fs::read_to_string(home.join(".gemini/commands/bare.toml")).unwrap();
-            let parsed: toml::Value = toml::from_str(&txt).unwrap();
-            assert!(
-                parsed.get("description").is_none(),
-                "no description key when absent"
-            );
-            assert_eq!(
-                parsed.get("prompt").and_then(|v| v.as_str()),
-                Some("Just a bare prompt body.")
-            );
+            let r = materialize_skill_shared(&payload, "shared-skill", Some("d")).unwrap();
+            assert_eq!(r.provider, "agents");
+            let dst = home.join(".agents/skills/shared-skill/SKILL.md");
+            assert!(dst.is_file());
+            assert!(std::fs::read_to_string(&dst)
+                .unwrap()
+                .contains("name: shared-skill"));
         });
     }
 
@@ -788,26 +784,19 @@ mod tests {
             b"---\nname: s\ndescription: d\n---\nb",
         )
         .unwrap();
-        // command + prompt payloads
-        let cmd = tmp.path().join("command.md");
-        std::fs::write(&cmd, b"## /x").unwrap();
         let prompt = tmp.path().join("prompt.md");
         std::fs::write(&prompt, b"hello").unwrap();
 
         let home = tmp.path().join("home");
         with_home(&home, || {
-            let rs = materialize_skill_item(&skill, "s", "claude-code").unwrap();
-            let rc = materialize_command_item(&cmd, "x", "claude-code").unwrap();
+            let rs = materialize_skill_item(&skill, "s", "claude-code", None).unwrap();
             let rp = materialize_prompt_item(&prompt, "p").unwrap();
             assert!(home.join(".claude/skills/s").is_dir());
-            assert!(home.join(".claude/commands/x.md").is_file());
             assert!(home.join(".fleetify/prompts/p.md").is_file());
 
             unmaterialize(&rs).unwrap();
-            unmaterialize(&rc).unwrap();
             unmaterialize(&rp).unwrap();
             assert!(!home.join(".claude/skills/s").exists());
-            assert!(!home.join(".claude/commands/x.md").exists());
             assert!(!home.join(".fleetify/prompts/p.md").exists());
         });
     }

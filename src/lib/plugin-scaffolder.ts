@@ -24,7 +24,6 @@ export interface ScaffoldInput {
     mcp_server: boolean;
     skill: boolean;
     template: boolean;
-    command: boolean;
     hook: boolean;
     workflow: boolean;
   };
@@ -92,7 +91,7 @@ export function generateScaffold(input: ScaffoldInput): ScaffoldOutput {
   //    into every declared provider's .<provider>/ subdir below. ──
   const perProvider = {
     skills:   input.components.skill ? 1 : 0,
-    commands: input.components.command ? 1 : 0,
+    commands: 0,
     hooks:    input.components.hook ? 1 : 0,
   };
   const blankProvider = { skills: 0, commands: 0, hooks: 0 };
@@ -103,9 +102,7 @@ export function generateScaffold(input: ScaffoldInput): ScaffoldOutput {
     providers: {
       "claude-code": input.providers.includes("claude-code") ? perProvider : blankProvider,
       gemini: input.providers.includes("gemini") ? perProvider : blankProvider,
-      codex:  input.providers.includes("codex")
-        ? { ...perProvider, commands: 0 }  // Codex doesn't ship commands
-        : blankProvider,
+      codex:  input.providers.includes("codex") ? perProvider : blankProvider,
     },
   };
 
@@ -172,27 +169,6 @@ should load when this skill is invoked. Skills are surfaced as part of
 the system prompt — keep them tight and high-signal.
 `;
 
-  // Claude uses Markdown for commands; Gemini uses TOML. Codex doesn't
-  // ship commands (custom prompts are deprecated) so we skip it.
-  const CLAUDE_COMMAND =
-`---
-name: example
-description: What this slash command does (one line).
----
-
-# /example
-
-Replace this with the prompt template the slash command should expand
-into. Anything the user types after \`/example\` is appended.
-`;
-  const GEMINI_COMMAND =
-`description = "What this slash command does (one line)."
-prompt = """
-Replace this with the prompt template the slash command should expand
-into. {{args}} substitutes the user's text after the command name.
-"""
-`;
-
   const HOOK_SCRIPT =
 `#!/usr/bin/env sh
 # Example hook — fired by the provider's hook subsystem.
@@ -222,11 +198,6 @@ echo "hello from example-hook" >&2
   for (const provider of input.providers) {
     if (input.components.skill) {
       files[`.${provider}/skills/example-skill/SKILL.md`] = SKILL_BODY;
-    }
-    if (input.components.command && provider !== "codex") {
-      const ext = provider === "gemini" ? "toml" : "md";
-      const body = provider === "gemini" ? GEMINI_COMMAND : CLAUDE_COMMAND;
-      files[`.${provider}/commands/example.${ext}`] = body;
     }
     if (input.components.hook) {
       files[`.${provider}/hooks/hooks.json`] = HOOKS_JSON;
@@ -274,11 +245,6 @@ function generateReadme(input: ScaffoldInput): string {
   if (input.components.mcp_server) componentLines.push("- **MCP server** — `mcp.json`");
   if (input.components.skill)      componentLines.push(`- **Skill** — \`.${firstProvider}/skills/example-skill/\``);
   if (input.components.template)   componentLines.push("- **Agent template** — `templates/example-agent.json`");
-  if (input.components.command) {
-    const cmdProvider = input.providers.find(p => p !== "codex") ?? "claude-code";
-    const ext = cmdProvider === "gemini" ? "toml" : "md";
-    componentLines.push(`- **Slash command** — \`.${cmdProvider}/commands/example.${ext}\``);
-  }
   if (input.components.hook)       componentLines.push(`- **Hook** — \`.${firstProvider}/hooks/hooks.json\``);
   if (input.components.workflow)   componentLines.push("- **Workflow** — `workflows/example-workflow.json`");
 

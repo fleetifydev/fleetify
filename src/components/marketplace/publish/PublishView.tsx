@@ -41,7 +41,6 @@ const COMPONENTS: { key: keyof ScaffoldInput["components"]; label: string; hint:
   { key: "mcp_server", label: "MCP server",      hint: "Connect to an external API or service via Model Context Protocol." },
   { key: "skill",      label: "Skill",           hint: "Markdown guidance the agent loads when invoking this skill." },
   { key: "template",   label: "Agent template",  hint: "Preset agent role with its own system prompt + tool surface." },
-  { key: "command",    label: "Slash command",   hint: "Custom /command that expands into a prompt template." },
   { key: "hook",       label: "Hook",            hint: "Run a shell action on pre_send / post_response events." },
   { key: "workflow",   label: "Workflow",        hint: "Multi-step recipe the agent can execute end-to-end." },
 ];
@@ -67,7 +66,6 @@ export function PublishView({ onClose }: Props) {
     mcp_server: true,
     skill: false,
     template: false,
-    command: false,
     hook: false,
     workflow: false,
   });

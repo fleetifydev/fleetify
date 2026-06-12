@@ -43,16 +43,19 @@ pub fn materialize_item(item: &LibraryItem, payload: &Path) -> Result<Materializ
             push_paths(&mut materialized, &r.provider, r.paths);
         }
         LibraryKind::Skill => {
+            // `description` is injected into SKILL.md frontmatter so the
+            // materialized skill is valid against the Agent-Skills open
+            // standard (Codex/OpenCode/Copilot require name + description).
+            let desc = item.description.as_deref();
             for provider in &item.providers {
-                let r = materializers::materialize_skill_item(payload, &item.slug, provider)?;
+                let r = materializers::materialize_skill_item(payload, &item.slug, provider, desc)?;
                 push_paths(&mut materialized, provider, r.paths);
             }
-        }
-        LibraryKind::Command => {
-            for provider in &item.providers {
-                let r = materializers::materialize_command_item(payload, &item.slug, provider)?;
-                push_paths(&mut materialized, provider, r.paths);
-            }
+            // Also write the shared ~/.agents/skills/ copy (the interoperable
+            // open-standard location read by Codex, Gemini, Copilot, Cursor and
+            // Kimi) so the skill is discoverable cross-tool.
+            let shared = materializers::materialize_skill_shared(payload, &item.slug, desc)?;
+            push_paths(&mut materialized, &shared.provider, shared.paths);
         }
         LibraryKind::Hook => {
             let spec: HookSpec = serde_json::from_str(&std::fs::read_to_string(payload)?)?;
@@ -169,10 +172,12 @@ mod tests {
             it.materialized = out.materialized;
             store::save(&it).unwrap();
 
-            // Materialized into both providers' homes.
+            // Materialized into both providers' homes + the shared
+            // ~/.agents/skills/ open-standard location.
             assert!(home.join(".claude/skills/my-skill/SKILL.md").is_file());
             assert!(home.join(".kimi/skills/my-skill/SKILL.md").is_file());
-            assert_eq!(it.materialized.len(), 2);
+            assert!(home.join(".agents/skills/my-skill/SKILL.md").is_file());
+            assert_eq!(it.materialized.len(), 3);
 
             // Store round-trips.
             let listed = store::list(Some(LibraryKind::Skill));
@@ -185,6 +190,7 @@ mod tests {
             store::delete_record(&it.id).unwrap();
             assert!(!home.join(".claude/skills/my-skill").exists());
             assert!(!home.join(".kimi/skills/my-skill").exists());
+            assert!(!home.join(".agents/skills/my-skill").exists());
             assert!(store::get(&it.id).is_none());
             assert!(store::list(None).is_empty());
         });

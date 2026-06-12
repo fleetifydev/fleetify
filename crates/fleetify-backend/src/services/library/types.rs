@@ -10,7 +10,6 @@ use crate::services::plugins::hook_merge::HookMergeRecord;
 pub enum LibraryKind {
     Prompt,
     Skill,
-    Command,
     Hook,
     Template,
 }
@@ -21,17 +20,16 @@ impl LibraryKind {
         match s {
             "prompt" => Some(Self::Prompt),
             "skill" => Some(Self::Skill),
-            "command" => Some(Self::Command),
             "hook" => Some(Self::Hook),
             "template" => Some(Self::Template),
             _ => None,
         }
     }
 
-    /// Whether this kind targets specific providers (skill/command/hook) vs.
+    /// Whether this kind targets specific providers (skill/hook) vs.
     /// being provider-agnostic (prompt) or app-level metadata (template).
     pub fn is_provider_scoped(self) -> bool {
-        matches!(self, Self::Skill | Self::Command | Self::Hook)
+        matches!(self, Self::Skill | Self::Hook)
     }
 }
 
@@ -95,8 +93,9 @@ mod tests {
     #[test]
     fn kind_parse_and_scope() {
         assert_eq!(LibraryKind::parse("skill"), Some(LibraryKind::Skill));
+        assert_eq!(LibraryKind::parse("command"), None);
         assert_eq!(LibraryKind::parse("nope"), None);
-        assert!(LibraryKind::Command.is_provider_scoped());
+        assert!(LibraryKind::Hook.is_provider_scoped());
         assert!(!LibraryKind::Prompt.is_provider_scoped());
         assert!(!LibraryKind::Template.is_provider_scoped());
     }

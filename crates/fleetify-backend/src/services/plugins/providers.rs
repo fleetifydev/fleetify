@@ -108,6 +108,14 @@ pub fn skills_dir(provider: &str) -> Option<PathBuf> {
     Some(provider_home(provider)?.join("skills"))
 }
 
+/// The shared `~/.agents/skills/` location from the Agent-Skills open standard.
+/// Codex (USER scope), Gemini, GitHub Copilot, Cursor and Kimi all read it, so
+/// writing a skill here makes it discoverable cross-tool independent of each
+/// agent's own home dir. `None` only when no home dir resolves.
+pub fn agents_skills_dir() -> Option<PathBuf> {
+    Some(home()?.join(".agents").join("skills"))
+}
+
 /// Where a provider reads slash-commands / prompts, if it has such a
 /// surface. Claude / Gemini / OpenCode use `commands/<name>.md`; Codex
 /// uses `prompts/<name>.md`. The rest expose commands only via skills

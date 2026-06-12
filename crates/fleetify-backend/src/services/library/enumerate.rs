@@ -29,7 +29,6 @@ pub fn plugin_items(kind: LibraryKind) -> Vec<(String, LibraryItem)> {
         let plugin = ent.file_name().to_string_lossy().into_owned();
         match kind {
             LibraryKind::Skill => collect_skill_dirs(&root, "skills", &plugin, &mut out),
-            LibraryKind::Command => collect_command_files(&root, &plugin, &mut out),
             LibraryKind::Template => collect_templates(&root, &plugin, &mut out),
             LibraryKind::Prompt | LibraryKind::Hook => {}
         }
@@ -76,33 +75,6 @@ fn collect_skill_dirs(root: &Path, sub: &str, plugin: &str, out: &mut Vec<(Strin
     }
 }
 
-/// `*.md` command/prompt files across each provider's command dir, deduped.
-fn collect_command_files(root: &Path, plugin: &str, out: &mut Vec<(String, LibraryItem)>) {
-    let mut seen = BTreeSet::new();
-    for p in COMPONENT_PROVIDERS {
-        let sub = if *p == "codex" { "prompts" } else { "commands" };
-        let dir = root.join(format!(".{p}")).join(sub);
-        let Ok(rd) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for ent in rd.flatten() {
-            let path = ent.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            if seen.insert(stem.to_string()) {
-                out.push((
-                    plugin.to_string(),
-                    synthetic(LibraryKind::Command, plugin, stem, vec![]),
-                ));
-            }
-        }
-    }
-}
-
 /// `templates/*.json` — read `name`/`title` if present, else the file stem.
 fn collect_templates(root: &Path, plugin: &str, out: &mut Vec<(String, LibraryItem)>) {
     let Ok(rd) = std::fs::read_dir(root.join("templates")) else {
@@ -138,7 +110,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn enumerates_plugin_skills_commands_templates() {
+    fn enumerates_plugin_skills_and_templates() {
         let tmp = tempdir().unwrap();
         let _g = crate::test_support::home_lock()
             .lock()
@@ -149,8 +121,6 @@ mod tests {
         let plug = tmp.path().join("plugins/cool");
         std::fs::create_dir_all(plug.join(".claude/skills/reviewer")).unwrap();
         std::fs::write(plug.join(".claude/skills/reviewer/SKILL.md"), b"x").unwrap();
-        std::fs::create_dir_all(plug.join(".claude/commands")).unwrap();
-        std::fs::write(plug.join(".claude/commands/deploy.md"), b"x").unwrap();
         std::fs::create_dir_all(plug.join("templates")).unwrap();
         std::fs::write(
             plug.join("templates/persona.json"),
@@ -162,7 +132,6 @@ mod tests {
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].0, "cool");
         assert_eq!(skills[0].1.slug, "reviewer");
-        assert_eq!(plugin_items(LibraryKind::Command)[0].1.slug, "deploy");
         assert_eq!(plugin_items(LibraryKind::Template)[0].1.slug, "persona");
         assert!(plugin_items(LibraryKind::Prompt).is_empty());
 

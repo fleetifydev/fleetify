@@ -25,7 +25,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import {
-  ArrowLeft, Library as LibraryIcon, FileText, Sparkles, Terminal, Webhook,
+  ArrowLeft, Library as LibraryIcon, FileText, Sparkles, Webhook,
   Workflow, LayoutTemplate, Cable, Package, HelpCircle, MessageCircle,
   User, Sun, Plus, Trash2, Pencil,
 } from "lucide-react";
@@ -50,7 +50,6 @@ interface Props {
 type SectionId =
   | "Prompts"
   | "Skills"
-  | "Commands"
   | "Hooks"
   | "Workflows"
   | "Templates"
@@ -74,10 +73,6 @@ const NAV: SectionDef[] = [
     blurb: "Skill packs auto-attached to your agents' system prompt.",
   },
   {
-    id: "Commands", icon: Terminal,
-    blurb: "Slash commands the Claude / Gemini CLIs surface to you.",
-  },
-  {
     id: "Hooks", icon: Webhook,
     blurb: "Lifecycle hook handlers wired into the agent's tool calls.",
   },
@@ -98,10 +93,10 @@ const NAV: SectionDef[] = [
 /** Which authorable LibraryKind each section maps to. Workflows (plugin-only)
  *  and MCP (redirects to Settings) have none. */
 const SECTION_KIND: Partial<Record<SectionId, LibraryKind>> = {
-  Prompts: "prompt", Skills: "skill", Commands: "command", Hooks: "hook", Templates: "template",
+  Prompts: "prompt", Skills: "skill", Hooks: "hook", Templates: "template",
 };
 const KIND_SECTION: Record<LibraryKind, SectionId> = {
-  prompt: "Prompts", skill: "Skills", command: "Commands", hook: "Hooks", template: "Templates",
+  prompt: "Prompts", skill: "Skills", hook: "Hooks", template: "Templates",
 };
 
 /** Sum the components that a single plugin install contributes to a
@@ -113,7 +108,6 @@ function countForSection(inst: PluginInstall, section: SectionId): number {
   switch (section) {
     case "Prompts":   return d.prompts ?? 0;
     case "Skills":    return pv.reduce((s, p) => s + p.skills, 0);
-    case "Commands":  return pv.reduce((s, p) => s + p.commands, 0);
     case "Hooks":     return pv.reduce((s, p) => s + p.hooks, 0);
     case "Workflows": return d.workflows;
     case "Templates": return d.templates;
@@ -150,12 +144,12 @@ export function LibraryPage({ onClose }: Props) {
   // count. Computed once per installs change so picking a tab is free.
   const totals = useMemo(() => {
     const out: Record<SectionId, number> = {
-      Prompts: 0, Skills: 0, Commands: 0, Hooks: 0,
+      Prompts: 0, Skills: 0, Hooks: 0,
       Workflows: 0, Templates: 0, MCP: 0,
     };
-    // Plugin skills/commands/templates are enumerated as items (in
-    // libraryItems), so their declares would double-count — skip those sections.
-    const ENUMERATED: SectionId[] = ["Skills", "Commands", "Templates"];
+    // Plugin skills/templates are enumerated as items (in libraryItems), so
+    // their declares would double-count — skip those sections.
+    const ENUMERATED: SectionId[] = ["Skills", "Templates"];
     for (const inst of installs) {
       for (const sec of NAV) {
         if (ENUMERATED.includes(sec.id)) continue;
