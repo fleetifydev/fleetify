@@ -1435,12 +1435,15 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
       foreignCluster = (
         <>
           <ActionBtn onClick={onOpenSelected} title={`Open #${selectedRepoPr.number} on GitHub`}>
-            <ExternalLink size={11} strokeWidth={1.85} /> Open · #{selectedRepoPr.number}
+            Open · #{selectedRepoPr.number} <ExternalLink size={11} strokeWidth={1.85} />
           </ActionBtn>
+          {/* Hairline-dot separator matches the Review · Create PR rhythm so
+              Open and Merge read as two distinct actions, not one run-on. */}
+          <span aria-hidden style={{ opacity: 0.4 }}>·</span>
           <ActionBtn onClick={onMerge} primary accent="purple" disabled={!canMerge || merging} title={mergeTitle}>
             {merging
-              ? <><Loader2 size={11} style={{ animation: "spin 1.2s linear infinite" }} /> Merging…</>
-              : <><GitMerge size={11} /> Merge{checksPending ? " (auto)" : ""}</>}
+              ? <>Merging… <Loader2 size={11} style={{ animation: "spin 1.2s linear infinite" }} /></>
+              : <>Merge{checksPending ? " (auto)" : ""} <GitMerge size={11} /></>}
           </ActionBtn>
         </>
       );
@@ -1457,7 +1460,7 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
       mergeSlot = (
         <>
           <ActionBtn onClick={onOpenPR} title={`Open #${pr.number} on GitHub`}>
-            <ExternalLink size={11} strokeWidth={1.85} /> Open · #{pr.number}
+            Open · #{pr.number} <ExternalLink size={11} strokeWidth={1.85} />
           </ActionBtn>
           <ActionBtn onClick={onSyncMain} primary disabled={syncing}
             title={`Checkout ${pr.baseRefName || "main"} on the source repo and pull --ff-only`}>
@@ -1802,10 +1805,11 @@ function ActionBtn({
 }) {
   // Inline text-link in the new "Focused" branch breadcrumb — no pill chrome
   // any more. Primary actions get an accent so the lead verb stands out;
-  // secondary actions (Open · #N) stay muted. Merge goes purple; everything
-  // else (Create PR / Sync) stays blue.
-  const LINK = accent === "purple" ? "#a78bfa" : "rgb(110,162,228)";
-  const LINK_HOVER = accent === "purple" ? "#c4b5fd" : "rgb(140,184,236)";
+  // secondary actions (Open · #N) stay muted. Merge goes purple via the
+  // theme-tuned --pr-merge vars (light needs a deeper violet than dark);
+  // everything else (Create PR / Sync) stays blue.
+  const LINK = accent === "purple" ? "var(--pr-merge, #c4b5fd)" : "rgb(110,162,228)";
+  const LINK_HOVER = accent === "purple" ? "var(--pr-merge-hover, #ddd6fe)" : "rgb(140,184,236)";
   return (
     <button
       onClick={onClick}

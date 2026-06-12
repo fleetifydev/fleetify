@@ -11,11 +11,16 @@ import { Check, ChevronDown, ExternalLink } from "lucide-react";
 import type { RepoPr } from "@/stores/pr-store";
 import type { PRStatus } from "@/lib/git-api";
 
+/** Draft PRs read as "not in play yet" — a neutral theme-aware gray
+ *  (GitHub parity) instead of the green/red/amber live-status ramp. */
+const DRAFT_DOT = "var(--c-dim)";
+
 /** Status-dot palette — mirrors the BranchStrip glyph colours. */
 export function prIconColor(pr: PRStatus | null): string {
   if (!pr) return "var(--c-low)";
   if (pr.state === "MERGED") return "#a78bfa";
   if (pr.state === "CLOSED") return "#f87171";
+  if (pr.isDraft) return DRAFT_DOT;
   if (pr.checks.failing > 0) return "#f87171";
   if (pr.mergeable === "CONFLICTING") return "#fb923c";
   if (pr.checks.pending > 0) return "#fbbf24";
@@ -32,6 +37,16 @@ export function PrSwitcherChip({ openPrs, selectedNumber, selectedStatus, onSele
 }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
+
+  // Chip dot — the detailed PRStatus drives it once loaded; until then
+  // fall back to the prList entry so a draft still reads gray (not the
+  // "unknown" low-gray) during the first detail-poll window.
+  const selectedRepo = openPrs.find(p => p.number === selectedNumber) ?? null;
+  const dotColor = selectedStatus
+    ? prIconColor(selectedStatus)
+    : selectedRepo
+      ? (selectedRepo.isDraft ? DRAFT_DOT : "rgb(64,180,120)")
+      : "var(--c-low)";
 
   useEffect(() => {
     if (!open) return;
@@ -59,7 +74,7 @@ export function PrSwitcherChip({ openPrs, selectedNumber, selectedStatus, onSele
           outline: "none",
         }}
       >
-        <span style={{ width: 6, height: 6, borderRadius: 999, background: prIconColor(selectedStatus), flexShrink: 0 }} />
+        <span style={{ width: 6, height: 6, borderRadius: 999, background: dotColor, flexShrink: 0 }} />
         #{selectedNumber}
         <ChevronDown size={10} strokeWidth={2.25} style={{
           opacity: 0.7,
@@ -98,7 +113,9 @@ export function PrSwitcherChip({ openPrs, selectedNumber, selectedStatus, onSele
             >
               <span style={{
                 width: 6, height: 6, borderRadius: 999, flexShrink: 0,
-                background: p.mergeable === "CONFLICTING" ? "#fb923c" : "rgb(64,180,120)",
+                background: p.isDraft ? DRAFT_DOT
+                  : p.mergeable === "CONFLICTING" ? "#fb923c"
+                  : "rgb(64,180,120)",
               }} />
               <span style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, color: "var(--c-fg)", flexShrink: 0 }}>
                 #{p.number}
