@@ -614,10 +614,26 @@ pub async fn open_installation() -> Value {
     }
 }
 
-/// Parse `gh repo list --json …` output into a sorted (newest-first)
-/// JSON array. Returns an empty array on any parse failure.
-fn parse_gh_repos(stdout: &str) -> Value {
-    let mut repos: Vec<Value> = serde_json::from_str(stdout).unwrap_or_default();
+/// Parse `gh api user/repos …` output (a raw GitHub REST repo array) into
+/// the renderer's `GhRepo` shape: map each element via `map_gh_repo`, dedupe
+/// by `nameWithOwner`, and sort newest-first. Returns an empty array on any
+/// parse failure. Mirrors `oauth_list_repos`'s map/dedupe/sort so both
+/// resolution paths hand the renderer an identical shape.
+fn parse_gh_api_repos(stdout: &str) -> Value {
+    let raw: Vec<Value> = serde_json::from_str(stdout).unwrap_or_default();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut repos: Vec<Value> = Vec::new();
+    for r in &raw {
+        let mapped = map_gh_repo(r);
+        let key = mapped
+            .get("nameWithOwner")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if !key.is_empty() && seen.insert(key) {
+            repos.push(mapped);
+        }
+    }
     repos.sort_by(|a, b| {
         let av = a.get("updatedAt").and_then(|x| x.as_str()).unwrap_or("");
         let bv = b.get("updatedAt").and_then(|x| x.as_str()).unwrap_or("");
@@ -669,6 +685,17 @@ fn link_installation_ids(link: &Value) -> Vec<String> {
 /// nameWithOwner and sorted newest-first. Refreshes the token once on a
 /// 401 from any installation.
 async fn oauth_list_repos(app: &AppHandle) -> Value {
+    // Freshen the installation list first. When the user authorizes the
+    // Fleetify GitHub App on an organization separately (each org is its own
+    // GitHub App installation), that org's repos only become listable once
+    // the install shows up in the link's `installations[]`. Syncing here means
+    // a newly-authorized org appears without the user having to reopen
+    // Settings → Integrations. Best-effort: on any failure (no Fleetify
+    // sign-in, transport, non-2xx) `list_installations` leaves the cached link
+    // untouched and we fall through to whatever installations it already
+    // carries.
+    let _ = list_installations(app.clone()).await;
+
     let Some(link) = get_link().await else {
         return json!({ "ok": false, "code": "NOT_CONNECTED" });
     };
@@ -825,7 +852,7 @@ pub async fn list_repos(app: AppHandle) -> Value {
     if has_gh {
         let (rc, out, _err) = crate::shell::git::gh_repo_list().await;
         if rc == 0 {
-            return json!({ "ok": true, "source": "gh", "repos": parse_gh_repos(&out) });
+            return json!({ "ok": true, "source": "gh", "repos": parse_gh_api_repos(&out) });
         }
         if has_oauth {
             return oauth_list_repos(&app).await;
@@ -876,20 +903,69 @@ mod tests {
     }
 
     #[test]
-    fn parse_gh_repos_sorts_by_updated_desc() {
+    fn parse_gh_api_repos_maps_rest_fields_and_keeps_org_repos() {
+        // Raw GitHub REST `/user/repos` payload: one personal repo and one
+        // ORG-owned repo. The org repo must survive the mapping — that's the
+        // whole point of moving off `gh repo list` (which dropped org repos).
+        // REST field names (`full_name`/`html_url`/`ssh_url`/`private`/
+        // `updated_at`) must map to the renderer's `GhRepo` shape.
         let raw = r#"[
-            {"nameWithOwner":"o/old","description":null,"url":"u1","sshUrl":"s1","isPrivate":false,"updatedAt":"2024-01-01T00:00:00Z"},
-            {"nameWithOwner":"o/new","description":"x","url":"u2","sshUrl":"s2","isPrivate":true,"updatedAt":"2026-01-01T00:00:00Z"}
+            {"full_name":"dorukozgen/personal","description":null,"html_url":"https://github.com/dorukozgen/personal","ssh_url":"git@github.com:dorukozgen/personal.git","private":false,"updated_at":"2024-01-01T00:00:00Z"},
+            {"full_name":"fleetifydev/app","description":"org repo","html_url":"https://github.com/fleetifydev/app","ssh_url":"git@github.com:fleetifydev/app.git","private":true,"updated_at":"2026-01-01T00:00:00Z"}
         ]"#;
-        let out = parse_gh_repos(raw);
+        let out = parse_gh_api_repos(raw);
         let arr = out.as_array().expect("array");
         assert_eq!(arr.len(), 2);
-        assert_eq!(arr[0]["nameWithOwner"], "o/new"); // newest first
-        assert_eq!(arr[1]["nameWithOwner"], "o/old");
+        // newest-first: the org repo (2026) sorts ahead of personal (2024).
+        assert_eq!(arr[0]["nameWithOwner"], "fleetifydev/app");
+        assert_eq!(arr[0]["isPrivate"], true);
+        assert_eq!(arr[0]["url"], "https://github.com/fleetifydev/app");
+        assert_eq!(arr[0]["sshUrl"], "git@github.com:fleetifydev/app.git");
+        assert_eq!(arr[0]["description"], "org repo");
+        assert_eq!(arr[1]["nameWithOwner"], "dorukozgen/personal");
+        assert_eq!(arr[1]["description"], Value::Null);
     }
 
     #[test]
-    fn parse_gh_repos_tolerates_garbage() {
-        assert_eq!(parse_gh_repos("not json").as_array().unwrap().len(), 0);
+    fn parse_gh_api_repos_dedupes_by_name_with_owner() {
+        // A repo reachable via two affiliations (owner + org_member) appears
+        // once in the REST array per affiliation; dedupe keeps one row.
+        let raw = r#"[
+            {"full_name":"o/dup","html_url":"u","ssh_url":"s","private":false,"updated_at":"2025-01-01T00:00:00Z"},
+            {"full_name":"o/dup","html_url":"u","ssh_url":"s","private":false,"updated_at":"2025-01-01T00:00:00Z"}
+        ]"#;
+        assert_eq!(parse_gh_api_repos(raw).as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn parse_gh_api_repos_tolerates_garbage() {
+        assert_eq!(parse_gh_api_repos("not json").as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn link_installation_ids_lists_every_installation() {
+        // The OAuth path enumerates one installation per authorized account —
+        // personal + every org. All must be listed so each org's repos get
+        // fetched; the legacy single `installation_id` is NOT appended when
+        // `installations[]` is present.
+        let link = json!({
+            "installation_id": 111,
+            "installations": [
+                {"installation_id": 222, "account_login": "dorukozgen"},
+                {"installation_id": 333, "account_login": "fleetifydev"}
+            ]
+        });
+        assert_eq!(
+            link_installation_ids(&link),
+            vec!["222".to_string(), "333".to_string()]
+        );
+    }
+
+    #[test]
+    fn link_installation_ids_falls_back_to_legacy_single() {
+        let link = json!({ "installation_id": 444 });
+        assert_eq!(link_installation_ids(&link), vec!["444".to_string()]);
+        // `0` means "installed nowhere" → no installations to list.
+        assert!(link_installation_ids(&json!({ "installation_id": 0 })).is_empty());
     }
 }

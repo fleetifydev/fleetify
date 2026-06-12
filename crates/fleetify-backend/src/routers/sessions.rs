@@ -1267,9 +1267,12 @@ async fn list_codex_sessions(AuthUser(_u): AuthUser, Query(q): Query<PathQ>) -> 
 }
 
 async fn list_user_repos(AuthUser(_u): AuthUser) -> Result<Json<Value>, ApiError> {
-    // Pulls the user's GitHub repos via the gh CLI — inherits whatever
-    // auth state the user already configured (web login, token, SSH).
-    // Faithful with sessions.py::list_user_repos.
+    // Lists every repo the gh-authed user can reach — owned, collaborator,
+    // AND organization-member — via `gh api /user/repos` with an explicit
+    // `affiliation` filter. `gh repo list` (no owner) only returns *owned*
+    // repos and silently drops org repos, so we use the REST endpoint and map
+    // its raw fields into the renderer's `GhRepo` shape. Inherits whatever
+    // auth state the user configured (web login, token, SSH).
     let gh = match which::which("gh") {
         Ok(p) => p.to_string_lossy().into_owned(),
         Err(_) => {
@@ -1282,26 +1285,27 @@ async fn list_user_repos(AuthUser(_u): AuthUser) -> Result<Json<Value>, ApiError
         std::time::Duration::from_secs(15),
         tokio::process::Command::new(&gh)
             .args([
-                "repo",
-                "list",
-                "--limit",
-                "100",
-                "--json",
-                "nameWithOwner,description,url,sshUrl,isPrivate,updatedAt",
+                "api",
+                "user/repos?affiliation=owner,collaborator,organization_member&sort=updated&per_page=100",
             ])
             .output(),
     )
     .await
-    .map_err(|_| ApiError::Internal("gh repo list timed out".into()))?
+    .map_err(|_| ApiError::Internal("gh api user/repos timed out".into()))?
     .map_err(|e| ApiError::Internal(format!("spawn gh failed: {e}")))?;
     if !proc.status.success() {
         let stderr = String::from_utf8_lossy(&proc.stderr).trim().to_string();
         let msg = if stderr.is_empty() {
-            "gh repo list failed".to_string()
+            "gh api user/repos failed".to_string()
         } else {
             stderr
         };
-        if msg.to_lowercase().contains("authentication") || msg.to_lowercase().contains("logged in")
+        let low = msg.to_lowercase();
+        if low.contains("authentication")
+            || low.contains("logged in")
+            || low.contains("gh auth login")
+            || low.contains("bad credentials")
+            || low.contains("http 401")
         {
             return Err(ApiError::Forbidden(
                 "Not signed in to gh — run `gh auth login` in your terminal".into(),
@@ -1309,13 +1313,39 @@ async fn list_user_repos(AuthUser(_u): AuthUser) -> Result<Json<Value>, ApiError
         }
         return Err(ApiError::BadRequest(msg));
     }
-    let mut repos: Vec<Value> = serde_json::from_slice(&proc.stdout).unwrap_or_default();
-    repos.sort_by(|a, b| {
+    let raw: Vec<Value> = serde_json::from_slice(&proc.stdout).unwrap_or_default();
+    Ok(Json(Value::Array(rest_repos_to_gh_shape(&raw))))
+}
+
+/// Map a raw GitHub REST `/user/repos` array into the renderer's `GhRepo`
+/// shape (`nameWithOwner`/`description`/`url`/`sshUrl`/`isPrivate`/
+/// `updatedAt`), dedupe by `nameWithOwner`, and sort newest-first. Kept in
+/// sync with the Tauri shell's `map_gh_repo` + `parse_gh_api_repos`
+/// (src-tauri/src/shell/github_link.rs), which feed the same shape to the
+/// renderer's `GhRepo` type.
+fn rest_repos_to_gh_shape(raw: &[Value]) -> Vec<Value> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out: Vec<Value> = Vec::new();
+    for r in raw {
+        let name = r.get("full_name").and_then(|v| v.as_str()).unwrap_or("");
+        if name.is_empty() || !seen.insert(name.to_string()) {
+            continue;
+        }
+        out.push(json!({
+            "nameWithOwner": name,
+            "description":   r.get("description").cloned().unwrap_or(Value::Null),
+            "url":           r.get("html_url").and_then(|v| v.as_str()).unwrap_or(""),
+            "sshUrl":        r.get("ssh_url").and_then(|v| v.as_str()).unwrap_or(""),
+            "isPrivate":     r.get("private").and_then(|v| v.as_bool()).unwrap_or(false),
+            "updatedAt":     r.get("updated_at").and_then(|v| v.as_str()).unwrap_or(""),
+        }));
+    }
+    out.sort_by(|a, b| {
         let av = a.get("updatedAt").and_then(|x| x.as_str()).unwrap_or("");
         let bv = b.get("updatedAt").and_then(|x| x.as_str()).unwrap_or("");
         bv.cmp(av)
     });
-    Ok(Json(Value::Array(repos)))
+    out
 }
 
 #[derive(Deserialize)]
@@ -1362,4 +1392,47 @@ fn dirs_home() -> String {
 /// a multi-byte char like a raw byte slice would).
 fn trunc(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rest_repos_to_gh_shape_maps_fields_and_keeps_org_repos() {
+        // Raw `gh api /user/repos` payload: a personal repo and an ORG repo.
+        // The org repo must survive (the reason we moved off `gh repo list`),
+        // REST field names must map to the renderer's `GhRepo` shape, and the
+        // result must be newest-first.
+        let raw: Vec<Value> = serde_json::from_str(
+            r#"[
+                {"full_name":"me/personal","description":null,"html_url":"https://github.com/me/personal","ssh_url":"git@github.com:me/personal.git","private":false,"updated_at":"2024-01-01T00:00:00Z"},
+                {"full_name":"acme/widget","description":"org repo","html_url":"https://github.com/acme/widget","ssh_url":"git@github.com:acme/widget.git","private":true,"updated_at":"2026-01-01T00:00:00Z"}
+            ]"#,
+        )
+        .unwrap();
+        let out = rest_repos_to_gh_shape(&raw);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0]["nameWithOwner"], "acme/widget"); // newest first
+        assert_eq!(out[0]["isPrivate"], true);
+        assert_eq!(out[0]["url"], "https://github.com/acme/widget");
+        assert_eq!(out[0]["sshUrl"], "git@github.com:acme/widget.git");
+        assert_eq!(out[1]["nameWithOwner"], "me/personal");
+        assert_eq!(out[1]["description"], Value::Null);
+    }
+
+    #[test]
+    fn rest_repos_to_gh_shape_dedupes_and_skips_nameless() {
+        let raw: Vec<Value> = serde_json::from_str(
+            r#"[
+                {"full_name":"o/dup","html_url":"u","ssh_url":"s","private":false,"updated_at":"2025-01-01T00:00:00Z"},
+                {"full_name":"o/dup","html_url":"u","ssh_url":"s","private":false,"updated_at":"2025-01-01T00:00:00Z"},
+                {"html_url":"x","ssh_url":"y","private":false,"updated_at":"2025-01-01T00:00:00Z"}
+            ]"#,
+        )
+        .unwrap();
+        let out = rest_repos_to_gh_shape(&raw);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["nameWithOwner"], "o/dup");
+    }
 }

@@ -301,21 +301,27 @@ async fn gh(args: &[&str], cwd: &Path) -> (i32, String, String) {
     }
 }
 
-/// Run `gh repo list` for the authenticated user, JSON-shaped to match
-/// the renderer's `GhRepo`. Auth is whatever `gh()` resolves — the OAuth
-/// keychain token (injected as `GH_TOKEN`) or gh's own login. Returns
-/// `(rc, stdout, stderr)`; rc != 0 means gh failed (often unauthed).
+/// List every repo the authenticated user can reach — repos they own,
+/// repos they collaborate on, AND repos in their organizations — as the raw
+/// GitHub REST `/user/repos` JSON array.
+///
+/// We deliberately do NOT use `gh repo list`: with no `<owner>` argument it
+/// only returns repos *owned by the authenticated account* and silently
+/// drops every organization repo, so org members never saw their org repos
+/// in the picker. The REST endpoint with an explicit `affiliation` filter
+/// returns all three classes in one call. Auth is whatever `gh()` resolves —
+/// the OAuth keychain token (injected as `GH_TOKEN`) or gh's own login.
+///
+/// Returns `(rc, stdout, stderr)`; rc != 0 means gh failed (often unauthed).
+/// The stdout uses REST field names (`full_name`, `html_url`, …) — the caller
+/// maps them into the renderer's `GhRepo` shape via `parse_gh_api_repos`.
 /// Requires the gh binary — callers gate on `resolve_gh()`.
 pub async fn gh_repo_list() -> (i32, String, String) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     gh(
         &[
-            "repo",
-            "list",
-            "--limit",
-            "100",
-            "--json",
-            "nameWithOwner,description,url,sshUrl,isPrivate,updatedAt",
+            "api",
+            "user/repos?affiliation=owner,collaborator,organization_member&sort=updated&per_page=100",
         ],
         &cwd,
     )
