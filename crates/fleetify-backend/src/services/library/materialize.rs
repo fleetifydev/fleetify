@@ -3,15 +3,15 @@
 //! Returns the `Materialized` records (paths written) to persist on the item;
 //! deletion reverses them.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use serde::Deserialize;
 
-use super::types::{LibraryItem, LibraryKind, Materialized};
+use super::types::{LibraryItem, LibraryKind, Materialized, RuleFormat, RuleScope, RuleSpec};
 use crate::services::plugins::hook_merge::{self, HookMergeRecord, NormalizedHook};
-use crate::services::plugins::materializers;
 use crate::services::plugins::rule_merge::{self, RuleMergeRecord};
+use crate::services::plugins::{materializers, providers};
 
 /// Everything a materialization produced: standalone file/dir artifacts
 /// (skills/commands/prompts) plus merge-hook reversal records (Claude/Cursor/
@@ -86,17 +86,55 @@ pub fn materialize_item(item: &LibraryItem, payload: &Path) -> Result<Materializ
             }
         }
         LibraryKind::Rule => {
-            // Cursor gets a standalone `.mdc` file; every other provider gets a
-            // marked block merged into its user-global rule file (reversible).
+            // Dispatch by the rule's format/scope (rule_spec). A legacy rule
+            // (rule_spec == None) defaults to a global "general" markdown merge.
             let desc = item.description.as_deref();
             let body = std::fs::read_to_string(payload)?;
-            for provider in &item.providers {
-                if provider == "cursor" {
-                    let r = materializers::materialize_rule_cursor(payload, &item.slug, desc)?;
-                    push_paths(&mut materialized, &r.provider, r.paths);
-                } else if let Some(rec) = rule_merge::materialize_rule(provider, &item.slug, &body)?
-                {
-                    rules.push(rec);
+            let spec = item.rule_spec.clone().unwrap_or_default();
+            match spec.format {
+                RuleFormat::General => {
+                    // Markdown merge into each provider's rule file (home or folder).
+                    for provider in &item.providers {
+                        if let Some(rec) = merge_general_rule(provider, &item.slug, &body, &spec)? {
+                            rules.push(rec);
+                        }
+                    }
+                }
+                RuleFormat::Cursor => {
+                    // Standalone `.mdc` with rule-type frontmatter.
+                    if let Some(dir) = cursor_rules_dir_for(&spec) {
+                        let rule_type = spec.cursor_rule_type.unwrap_or_default();
+                        let r = materializers::materialize_rule_cursor(
+                            &dir,
+                            &item.slug,
+                            rule_type,
+                            desc,
+                            spec.globs.as_deref(),
+                            &body,
+                        )?;
+                        push_paths(&mut materialized, &r.provider, r.paths);
+                    }
+                }
+                RuleFormat::Copilot => {
+                    // With globs + a folder → a `.github/instructions/*` path file;
+                    // otherwise a plain merge into `copilot-instructions.md`.
+                    let globs = spec.globs.as_deref().filter(|g| !g.trim().is_empty());
+                    match (globs, folder_path(&spec)) {
+                        (Some(globs), Some(folder)) => {
+                            let github = folder.join(".github");
+                            let r = materializers::materialize_rule_copilot_instructions(
+                                &github, &item.slug, globs, &body,
+                            )?;
+                            push_paths(&mut materialized, &r.provider, r.paths);
+                        }
+                        _ => {
+                            if let Some(rec) =
+                                merge_general_rule("github-copilot", &item.slug, &body, &spec)?
+                            {
+                                rules.push(rec);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -142,10 +180,51 @@ fn push_paths(out: &mut Vec<Materialized>, provider: &str, paths: Vec<String>) {
     }
 }
 
+/// The folder a folder-scoped rule writes into, or `None` for global scope.
+fn folder_path(spec: &RuleSpec) -> Option<PathBuf> {
+    if spec.scope == RuleScope::Folder {
+        spec.folder
+            .as_deref()
+            .map(str::trim)
+            .filter(|f| !f.is_empty())
+            .map(PathBuf::from)
+    } else {
+        None
+    }
+}
+
+/// Merge a general/markdown (or Copilot-plain) rule block into the provider's
+/// rule file — the chosen folder's file for folder scope, else the home file.
+fn merge_general_rule(
+    provider: &str,
+    slug: &str,
+    body: &str,
+    spec: &RuleSpec,
+) -> Result<Option<RuleMergeRecord>> {
+    match folder_path(spec) {
+        Some(folder) => match rule_merge::project_rule_file(provider, &folder) {
+            Some(file) => Ok(Some(rule_merge::write_block(provider, slug, body, &file)?)),
+            None => Ok(None),
+        },
+        None => rule_merge::materialize_rule(provider, slug, body),
+    }
+}
+
+/// The `.cursor/rules/` directory for a rule's scope — the chosen folder's for
+/// folder scope, else the user-home `~/.cursor/rules/`.
+fn cursor_rules_dir_for(spec: &RuleSpec) -> Option<PathBuf> {
+    match folder_path(spec) {
+        Some(folder) => Some(folder.join(".cursor").join("rules")),
+        None => providers::cursor_rules_dir(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::store;
-    use super::super::types::{LibraryItem, LibraryKind};
+    use super::super::types::{
+        CursorRuleType, LibraryItem, LibraryKind, RuleFormat, RuleScope, RuleSpec,
+    };
     use super::*;
     use std::path::Path;
     use tempfile::tempdir;
@@ -187,6 +266,7 @@ mod tests {
             materialized: vec![],
             hook_merge: vec![],
             rule_merge: vec![],
+            rule_spec: None,
             created_at: "t0".into(),
             updated_at: "t0".into(),
         }
@@ -313,37 +393,178 @@ mod tests {
         });
     }
 
+    /// Author a Rule item, write its `rule.md` payload, return (item, payload).
+    fn rule(slug: &str, providers: &[&str], body: &str, spec: RuleSpec) -> (LibraryItem, PathBuf) {
+        let mut it = item(LibraryKind::Rule, slug, providers);
+        it.rule_spec = Some(spec);
+        let payload = store::item_dir(&it.id).join("rule.md");
+        std::fs::create_dir_all(payload.parent().unwrap()).unwrap();
+        std::fs::write(&payload, body).unwrap();
+        (it, payload)
+    }
+
     #[test]
-    fn rule_item_merges_global_file_and_writes_cursor_mdc() {
+    fn general_rule_global_merges_home_file_and_strips() {
         let tmp = tempdir().unwrap();
         let home = tmp.path().join("home");
         with_test_home(&home, || {
-            let mut it = item(LibraryKind::Rule, "no-emoji", &["claude-code", "cursor"]);
-            it.description = Some("Never use emoji".into());
-            let payload = store::item_dir(&it.id).join("rule.md");
-            std::fs::create_dir_all(payload.parent().unwrap()).unwrap();
-            std::fs::write(&payload, b"Never use emoji in code or commits.").unwrap();
-
+            let (it, payload) = rule(
+                "no-emoji",
+                &["claude-code"],
+                "Never use emoji.",
+                RuleSpec::default(), // general + global
+            );
             let out = materialize_item(&it, &payload).unwrap();
-            // Claude → marked block merged into ~/.claude/CLAUDE.md (rule_merge)
             assert_eq!(out.rule_merge.len(), 1);
             let claude_md = home.join(".claude/CLAUDE.md");
-            assert!(claude_md.is_file());
             assert!(std::fs::read_to_string(&claude_md)
                 .unwrap()
-                .contains("Never use emoji"));
-            // Cursor → standalone .mdc (materialized path)
-            let mdc = home.join(".cursor/rules/no-emoji.mdc");
-            assert!(mdc.is_file());
-            let mdc_txt = std::fs::read_to_string(&mdc).unwrap();
-            assert!(mdc_txt.contains("alwaysApply: true"));
-            assert!(mdc_txt.contains("Never use emoji"));
+                .contains("Never use emoji."));
 
             unmaterialize_item(&out.materialized, &out.hook_merge, &out.rule_merge);
-            assert!(!mdc.exists());
             assert!(!std::fs::read_to_string(&claude_md)
                 .unwrap()
-                .contains("Never use emoji"));
+                .contains("Never use emoji."));
+        });
+    }
+
+    #[test]
+    fn general_rule_folder_merges_project_file() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let proj = tmp.path().join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        with_test_home(&home, || {
+            let (it, payload) = rule(
+                "tabs",
+                &["codex"],
+                "Prefer tabs.",
+                RuleSpec {
+                    format: RuleFormat::General,
+                    scope: RuleScope::Folder,
+                    folder: Some(proj.to_string_lossy().into_owned()),
+                    ..Default::default()
+                },
+            );
+            let out = materialize_item(&it, &payload).unwrap();
+            // Folder scope → <folder>/AGENTS.md (codex), NOT the home file.
+            let agents = proj.join("AGENTS.md");
+            assert!(std::fs::read_to_string(&agents)
+                .unwrap()
+                .contains("Prefer tabs."));
+            assert!(!home.join(".codex/AGENTS.md").exists());
+
+            unmaterialize_item(&out.materialized, &out.hook_merge, &out.rule_merge);
+            assert!(!std::fs::read_to_string(&agents)
+                .unwrap()
+                .contains("Prefer tabs."));
+        });
+    }
+
+    #[test]
+    fn cursor_rule_frontmatter_per_type() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let proj = tmp.path().join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let folder = proj.to_string_lossy().into_owned();
+        let cases = [
+            (CursorRuleType::Always, None, None, "alwaysApply: true"),
+            (
+                CursorRuleType::Intelligent,
+                Some("Backend RPC conventions"),
+                None,
+                "description: Backend RPC conventions",
+            ),
+            (
+                CursorRuleType::Specific,
+                None,
+                Some("src/**/*.ts"),
+                "globs: src/**/*.ts",
+            ),
+            (CursorRuleType::Manual, None, None, "alwaysApply: false"),
+        ];
+        with_test_home(&home, || {
+            for (i, (rt, desc, globs, expect)) in cases.iter().enumerate() {
+                let slug = format!("cursor-rule-{i}");
+                let mut it = item(LibraryKind::Rule, &slug, &["cursor"]);
+                it.description = desc.map(str::to_string);
+                it.rule_spec = Some(RuleSpec {
+                    format: RuleFormat::Cursor,
+                    scope: RuleScope::Folder,
+                    folder: Some(folder.clone()),
+                    cursor_rule_type: Some(*rt),
+                    globs: globs.map(str::to_string),
+                });
+                let payload = store::item_dir(&it.id).join("rule.md");
+                std::fs::create_dir_all(payload.parent().unwrap()).unwrap();
+                std::fs::write(&payload, b"The rule body.").unwrap();
+
+                let out = materialize_item(&it, &payload).unwrap();
+                let mdc = proj.join(".cursor/rules").join(format!("{slug}.mdc"));
+                let txt = std::fs::read_to_string(&mdc).unwrap();
+                assert!(
+                    txt.contains(expect),
+                    "{slug}: expected `{expect}` in\n{txt}"
+                );
+                assert!(txt.contains("The rule body."));
+                // Manual/Specific/Intelligent never emit alwaysApply: true.
+                if !matches!(rt, CursorRuleType::Always) {
+                    assert!(!txt.contains("alwaysApply: true"));
+                }
+                unmaterialize_item(&out.materialized, &out.hook_merge, &out.rule_merge);
+                assert!(!mdc.exists());
+            }
+        });
+    }
+
+    #[test]
+    fn copilot_rule_applyto_path_file_vs_plain() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let proj = tmp.path().join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let folder = proj.to_string_lossy().into_owned();
+        with_test_home(&home, || {
+            // With globs (folder) → .github/instructions/<slug>.instructions.md (applyTo).
+            let (it, payload) = rule(
+                "ts-rule",
+                &["github-copilot"],
+                "Use strict types.",
+                RuleSpec {
+                    format: RuleFormat::Copilot,
+                    scope: RuleScope::Folder,
+                    folder: Some(folder.clone()),
+                    globs: Some("**/*.ts,**/*.tsx".into()),
+                    ..Default::default()
+                },
+            );
+            let out = materialize_item(&it, &payload).unwrap();
+            let inst = proj.join(".github/instructions/ts-rule.instructions.md");
+            let txt = std::fs::read_to_string(&inst).unwrap();
+            assert!(txt.contains("applyTo: \"**/*.ts,**/*.tsx\""));
+            assert!(txt.contains("Use strict types."));
+            unmaterialize_item(&out.materialized, &out.hook_merge, &out.rule_merge);
+            assert!(!inst.exists());
+
+            // No globs (folder) → plain merged block in .github/copilot-instructions.md.
+            let (it2, payload2) = rule(
+                "plain-rule",
+                &["github-copilot"],
+                "Be concise.",
+                RuleSpec {
+                    format: RuleFormat::Copilot,
+                    scope: RuleScope::Folder,
+                    folder: Some(folder.clone()),
+                    ..Default::default()
+                },
+            );
+            let out2 = materialize_item(&it2, &payload2).unwrap();
+            assert_eq!(out2.rule_merge.len(), 1);
+            let plain = proj.join(".github/copilot-instructions.md");
+            assert!(std::fs::read_to_string(&plain)
+                .unwrap()
+                .contains("Be concise."));
         });
     }
 }

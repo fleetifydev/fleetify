@@ -23,7 +23,7 @@
  * view answers the most common question ("what's in my Library?")
  * without that round-trip.
  */
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft, Library as LibraryIcon, FileText, Sparkles, Webhook,
   Workflow, LayoutTemplate, Cable, Package, HelpCircle, MessageCircle,
@@ -33,6 +33,8 @@ import { useAppStore } from "@/stores/app-store";
 import { usePluginStore } from "@/stores/plugin-store";
 import { useLibraryStore } from "@/stores/library-store";
 import { CreateItemDialog } from "./library/create-item-dialog";
+import { RuleForm } from "./library/rule-form";
+import { ProviderLogo, providerName } from "@/components/ui/provider-logo";
 import type { LibraryKind, LibraryItem } from "@/lib/library-api";
 import { useThemeStore } from "@/stores/theme-store";
 import type { PluginInstall } from "@/types/plugin";
@@ -398,13 +400,18 @@ export function LibraryPage({ onClose }: Props) {
       </div>
       </div>
       <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
-      {dialogKind && (
+      {dialogKind === "rule" ? (
+        <RuleForm
+          editing={dialogEditing ?? undefined}
+          onClose={() => { setDialogKind(null); setDialogEditing(null); }}
+        />
+      ) : dialogKind ? (
         <CreateItemDialog
           kind={dialogKind}
           editing={dialogEditing ?? undefined}
           onClose={() => { setDialogKind(null); setDialogEditing(null); }}
         />
-      )}
+      ) : null}
     </div>
   );
 }
@@ -715,6 +722,19 @@ function UserItemsList({
   );
 }
 
+const RULE_FORMAT_LABEL: Record<string, string> = {
+  general: "General",
+  cursor: "Cursor",
+  copilot: "GitHub Copilot",
+};
+
+/** The last path segment of a folder path (handles `/` and `\`). */
+function folderBasename(path?: string): string {
+  if (!path) return "…";
+  const parts = path.split(/[/\\]+/).filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
+
 function UserItemRow({ item, onEdit, onDelete }: { item: LibraryItem; onEdit: () => void; onDelete: () => void }) {
   const [hover, setHover] = useState(false);
   return (
@@ -743,8 +763,44 @@ function UserItemRow({ item, onEdit, onDelete }: { item: LibraryItem; onEdit: ()
           </div>
         )}
         {item.providers.length > 0 && (
-          <div style={{ fontSize: 11, color: "var(--c-low)", marginTop: 3, fontFamily: "var(--font-mono)" }}>
-            {item.providers.join(" · ")}
+          <div style={{
+            display: "flex", flexWrap: "wrap", alignItems: "center",
+            gap: 6, marginTop: 6, fontSize: 11, color: "var(--c-med)",
+          }}>
+            {item.providers.map((id, i) => (
+              <Fragment key={id}>
+                {i > 0 && <span style={{ color: "var(--c-ghost)", userSelect: "none" }}>·</span>}
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                  <ProviderLogo tool={id} size={12} />
+                  {providerName(id)}
+                </span>
+              </Fragment>
+            ))}
+          </div>
+        )}
+        {item.kind === "rule" && item.rule_spec && (
+          <div style={{
+            display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6,
+            marginTop: 5, fontSize: 10.5, color: "var(--c-low)",
+          }}>
+            <span>{RULE_FORMAT_LABEL[item.rule_spec.format]}</span>
+            <span style={{ color: "var(--c-ghost)" }}>·</span>
+            <span>
+              {item.rule_spec.scope === "folder"
+                ? `Folder: ${folderBasename(item.rule_spec.folder)}`
+                : "Global"}
+            </span>
+            {item.rule_spec.cursor_rule_type && (
+              <>
+                <span style={{ color: "var(--c-ghost)" }}>·</span>
+                <span style={{ textTransform: "capitalize" }}>{item.rule_spec.cursor_rule_type}</span>
+              </>
+            )}
+            {item.rule_spec.globs && (
+              <span style={{ fontFamily: "var(--font-mono)", color: "var(--c-ghost)" }}>
+                {item.rule_spec.globs}
+              </span>
+            )}
           </div>
         )}
       </div>

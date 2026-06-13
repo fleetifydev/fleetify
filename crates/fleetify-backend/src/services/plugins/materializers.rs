@@ -23,6 +23,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use super::providers::{self, COMPONENT_PROVIDERS};
+use crate::services::library::types::CursorRuleType;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MaterializationResult {
@@ -258,36 +259,89 @@ fn write_codex_agent(
     Ok(())
 }
 
-/// Materialize a library-authored **rule** for Cursor as a standalone
-/// `~/.cursor/rules/<slug>.mdc` with `description` + `alwaysApply: true`
-/// frontmatter (Cursor's per-rule format). Every other provider merges into a
-/// single global rule file via `rule_merge` instead.
+/// Materialize a library-authored **Cursor rule** as a standalone `.mdc` in
+/// `rules_dir` (a `<base>/.cursor/rules/` directory — home or a project folder).
+/// The frontmatter is built from the Cursor rule type per cursor.com/docs/rules:
+/// Always ⇒ `alwaysApply: true`; Apply Intelligently ⇒ `description:`; Apply to
+/// Specific Files ⇒ `globs:`; Manual ⇒ neither. `authored` is the rule body (any
+/// leading frontmatter is stripped). Recorded in `materialized`, removed on delete.
 pub fn materialize_rule_cursor(
-    payload_md: &Path,
+    rules_dir: &Path,
     slug: &str,
+    rule_type: CursorRuleType,
     description: Option<&str>,
+    globs: Option<&str>,
+    authored: &str,
 ) -> Result<MaterializationResult> {
     let mut r = MaterializationResult {
         provider: "cursor".to_string(),
         ..Default::default()
     };
-    let Some(dir) = providers::cursor_rules_dir() else {
-        return Ok(r);
-    };
-    std::fs::create_dir_all(&dir)?;
-    let authored = std::fs::read_to_string(payload_md).unwrap_or_default();
-    let rule_body = strip_frontmatter(&authored);
-    let desc = description
-        .unwrap_or("Project rule")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    std::fs::create_dir_all(rules_dir)?;
+    let body = strip_frontmatter(authored);
     let mdc = format!(
-        "---\ndescription: {desc}\nalwaysApply: true\n---\n\n{}\n",
-        rule_body.trim_end()
+        "{}\n\n{}\n",
+        cursor_frontmatter(rule_type, description, globs),
+        body.trim_end()
     );
-    let target = dir.join(format!("{slug}.mdc"));
+    let target = rules_dir.join(format!("{slug}.mdc"));
     std::fs::write(&target, mdc)?;
+    r.paths.push(target.to_string_lossy().into_owned());
+    Ok(r)
+}
+
+/// Build the `--- … ---` frontmatter for a Cursor `.mdc` from its rule type.
+fn cursor_frontmatter(
+    rule_type: CursorRuleType,
+    description: Option<&str>,
+    globs: Option<&str>,
+) -> String {
+    let one_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut fm = String::from("---\n");
+    match rule_type {
+        CursorRuleType::Always => fm.push_str("alwaysApply: true\n"),
+        CursorRuleType::Intelligent => {
+            if let Some(d) = description.filter(|d| !d.trim().is_empty()) {
+                fm.push_str(&format!("description: {}\n", one_line(d)));
+            }
+            fm.push_str("alwaysApply: false\n");
+        }
+        CursorRuleType::Specific => {
+            if let Some(g) = globs.filter(|g| !g.trim().is_empty()) {
+                fm.push_str(&format!("globs: {}\n", g.trim()));
+            }
+            fm.push_str("alwaysApply: false\n");
+        }
+        CursorRuleType::Manual => fm.push_str("alwaysApply: false\n"),
+    }
+    fm.push_str("---");
+    fm
+}
+
+/// Materialize a GitHub Copilot **path-specific** instructions file at
+/// `<github_dir>/instructions/<slug>.instructions.md` with an `applyTo` glob
+/// header. Used when a Copilot rule carries globs (folder scope only — `applyTo`
+/// is repo-relative). Recorded in `materialized`, removed on delete.
+pub fn materialize_rule_copilot_instructions(
+    github_dir: &Path,
+    slug: &str,
+    apply_to: &str,
+    authored: &str,
+) -> Result<MaterializationResult> {
+    let mut r = MaterializationResult {
+        provider: "github-copilot".to_string(),
+        ..Default::default()
+    };
+    let dir = github_dir.join("instructions");
+    std::fs::create_dir_all(&dir)?;
+    let body = strip_frontmatter(authored);
+    let content = format!(
+        "---\napplyTo: \"{}\"\n---\n\n{}\n",
+        apply_to.trim(),
+        body.trim_end()
+    );
+    let target = dir.join(format!("{slug}.instructions.md"));
+    std::fs::write(&target, content)?;
     r.paths.push(target.to_string_lossy().into_owned());
     Ok(r)
 }

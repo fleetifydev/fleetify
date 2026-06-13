@@ -50,6 +50,7 @@ fn synthetic(kind: LibraryKind, plugin: &str, name: &str, providers: Vec<String>
         materialized: Vec::new(),
         hook_merge: Vec::new(),
         rule_merge: Vec::new(),
+        rule_spec: None,
         created_at: String::new(),
         updated_at: String::new(),
     }

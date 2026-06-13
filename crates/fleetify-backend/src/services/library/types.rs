@@ -50,6 +50,65 @@ pub struct Materialized {
     pub path: String,
 }
 
+/// Which rule "shape" (modal tab) produced a `Rule` item — each maps to a
+/// distinct on-disk format and provider set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RuleFormat {
+    /// Plain markdown merged into CLAUDE.md / GEMINI.md / AGENTS.md.
+    #[default]
+    General,
+    /// Cursor `.mdc` with rule-type frontmatter.
+    Cursor,
+    /// GitHub Copilot — `copilot-instructions.md`, or a
+    /// `.github/instructions/<slug>.instructions.md` path file with `applyTo`.
+    Copilot,
+}
+
+/// Where a rule is written: the user-global home, or a chosen project folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RuleScope {
+    #[default]
+    Global,
+    Folder,
+}
+
+/// Cursor rule type → `.mdc` frontmatter (per cursor.com/docs/rules).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CursorRuleType {
+    /// `alwaysApply: true` — always included.
+    #[default]
+    Always,
+    /// `description:` + `alwaysApply: false` — agent includes when relevant.
+    Intelligent,
+    /// `globs:` + `alwaysApply: false` — auto-attached on matching files.
+    Specific,
+    /// `alwaysApply: false`, no description/globs — only on `@`-mention.
+    Manual,
+}
+
+/// Extra configuration for a `Rule` item: the format/scope and the
+/// format-specific bits. `None` on an item ⇒ a legacy global "general" rule
+/// (back-compat with rules authored before this field existed).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RuleSpec {
+    #[serde(default)]
+    pub format: RuleFormat,
+    #[serde(default)]
+    pub scope: RuleScope,
+    /// Absolute folder path when `scope == Folder`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    /// Cursor rule type (only when `format == Cursor`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_rule_type: Option<CursorRuleType>,
+    /// Glob patterns — Cursor "specific files" globs or Copilot `applyTo` (CSV).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub globs: Option<String>,
+}
+
 /// A user-authored library item. `slug` is the on-disk id (no plugin prefix);
 /// `materialized` records every path written so delete is a clean reverse.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +132,10 @@ pub struct LibraryItem {
     /// standalone file recorded in `materialized` instead.
     #[serde(default)]
     pub rule_merge: Vec<RuleMergeRecord>,
+    /// Extra rule configuration (format / scope / folder / cursor-type / globs).
+    /// Only present on `Rule` items; `None` ⇒ a legacy global general rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_spec: Option<RuleSpec>,
     pub created_at: String,
     pub updated_at: String,
 }

@@ -285,7 +285,7 @@ export function CreateItemDialog({
   );
 }
 
-function Field({
+export function Field({
   label,
   hint,
   children,
@@ -315,7 +315,7 @@ function Field({
  * pass; an outside click (or Escape) closes it. Matches the modal's input
  * chrome so it reads as one more field.
  */
-function ProviderMultiSelect({
+export function ProviderMultiSelect({
   allowed,
   selected,
   onToggle,
@@ -439,7 +439,7 @@ function ProviderMultiSelect({
   );
 }
 
-const inputStyle: React.CSSProperties = {
+export const inputStyle: React.CSSProperties = {
   width: "100%",
   padding: "7px 10px",
   fontSize: 13,
@@ -451,7 +451,7 @@ const inputStyle: React.CSSProperties = {
   boxSizing: "border-box",
 };
 
-const btnSecondary: React.CSSProperties = {
+export const btnSecondary: React.CSSProperties = {
   padding: "6px 14px",
   fontSize: 12.5,
   fontWeight: 600,
@@ -462,7 +462,7 @@ const btnSecondary: React.CSSProperties = {
   cursor: "pointer",
 };
 
-function btnPrimary(enabled: boolean): React.CSSProperties {
+export function btnPrimary(enabled: boolean): React.CSSProperties {
   return {
     padding: "6px 14px",
     fontSize: 12.5,

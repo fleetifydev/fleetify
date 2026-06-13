@@ -24,6 +24,37 @@ export interface Materialized {
   path: string;
 }
 
+/** Which rule "shape" (modal tab) a `rule` item uses. Mirrors backend `RuleFormat`. */
+export type RuleFormat = "general" | "cursor" | "copilot";
+/** Where a rule is written. Mirrors backend `RuleScope`. */
+export type RuleScope = "global" | "folder";
+/** Cursor rule type → `.mdc` frontmatter. Mirrors backend `CursorRuleType`. */
+export type CursorRuleType = "always" | "intelligent" | "specific" | "manual";
+
+/** Extra config persisted on a `rule` item (format/scope/folder + the
+ *  format-specific bits). Mirrors backend `RuleSpec`. */
+export interface RuleSpec {
+  format: RuleFormat;
+  scope: RuleScope;
+  folder?: string;
+  cursor_rule_type?: CursorRuleType;
+  globs?: string;
+}
+
+/** Cursor rule types with their labels + which extra field each requires
+ *  (per cursor.com/docs/rules). Drives the Cursor tab's selector. */
+export const CURSOR_RULE_TYPES: ReadonlyArray<{
+  value: CursorRuleType;
+  label: string;
+  hint: string;
+  needs: "none" | "description" | "globs";
+}> = [
+  { value: "always", label: "Always", hint: "Always included in context.", needs: "none" },
+  { value: "intelligent", label: "Apply Intelligently", hint: "Agent includes it when the description is relevant.", needs: "description" },
+  { value: "specific", label: "Apply to Specific Files", hint: "Auto-attached when a matching file is in context.", needs: "globs" },
+  { value: "manual", label: "Manual", hint: "Only when you @-mention the rule.", needs: "none" },
+];
+
 /** A single authored library item as returned by the backend. `providers`
  *  is the set of agent ids the item targets (empty for provider-agnostic
  *  kinds like `prompt`); `materialized` is the realised on-disk fan-out. */
@@ -35,6 +66,9 @@ export interface LibraryItem {
   description?: string;
   providers: string[];
   materialized: Materialized[];
+  /** Present only on `rule` items — the format/scope/folder + format-specific
+   *  bits. Absent ⇒ a legacy global general rule. */
+  rule_spec?: RuleSpec;
   created_at: string;
   updated_at: string;
   /** Origin: "user" for your own items, or a plugin name. Plugin-contributed
@@ -54,6 +88,12 @@ export interface CreateLibraryItem {
   description?: string;
   providers: string[];
   body: string;
+  // ── Rule-only (ignored for other kinds) ──
+  rule_format?: RuleFormat;
+  scope?: RuleScope;
+  folder?: string;
+  cursor_rule_type?: CursorRuleType;
+  globs?: string;
 }
 
 /** Provider gating per kind — the EXACT id sets the backend accepts. The
@@ -65,9 +105,10 @@ export const PROVIDERS_FOR_KIND: Record<LibraryKind, Provider[]> = {
   hook: ["claude-code", "cursor", "agy", "kimi", "github-copilot", "opencode", "hermes"],
   // Sub-agents need an on-disk `agents/` surface — Kimi/Hermes have none.
   subagent: ["claude-code", "codex", "gemini", "opencode", "github-copilot", "cursor", "agy"],
-  // Rules merge into a per-provider rule file (Cursor gets a `.mdc`) — every
-  // provider with such a file; Hermes (profile identity, not project rules) is out.
-  rule: ["claude-code", "codex", "gemini", "kimi", "opencode", "github-copilot", "cursor", "agy"],
+  // The Rule modal's *General* tab — the plain-markdown providers
+  // (CLAUDE.md / GEMINI.md / AGENTS.md). Cursor + GitHub Copilot have their own
+  // tabs (distinct on-disk formats), so they're not in this multi-select.
+  rule: ["claude-code", "gemini", "codex", "kimi", "opencode", "agy"],
   prompt: [],
   template: [],
 };

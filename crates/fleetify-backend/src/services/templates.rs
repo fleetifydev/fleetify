@@ -202,6 +202,7 @@ mod tests {
                 materialized: Vec::<Materialized>::new(),
                 hook_merge: Vec::new(),
                 rule_merge: Vec::new(),
+                rule_spec: None,
                 created_at: "t0".to_string(),
                 updated_at: "t0".to_string(),
             };

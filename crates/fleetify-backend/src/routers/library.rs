@@ -12,7 +12,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::routers::{ApiError, AppState};
-use crate::services::library::types::{is_valid_slug, LibraryItem, LibraryKind};
+use crate::services::library::types::{
+    is_valid_slug, CursorRuleType, LibraryItem, LibraryKind, RuleFormat, RuleScope, RuleSpec,
+};
 use crate::services::library::{enumerate, materialize, store};
 
 pub fn router() -> Router<AppState> {
@@ -97,6 +99,62 @@ struct CreateBody {
     /// / template json, depending on `kind`.
     #[serde(default)]
     body: String,
+    // ── Rule-only fields (ignored for other kinds) ──
+    /// Which rule format/tab: `general` | `cursor` | `copilot`.
+    #[serde(default)]
+    rule_format: Option<RuleFormat>,
+    /// Rule scope: `global` (home files) | `folder` (a chosen project dir).
+    #[serde(default)]
+    scope: Option<RuleScope>,
+    /// Absolute folder path when `scope == folder`.
+    #[serde(default)]
+    folder: Option<String>,
+    /// Cursor rule type: `always` | `intelligent` | `specific` | `manual`.
+    #[serde(default)]
+    cursor_rule_type: Option<CursorRuleType>,
+    /// Globs — Cursor "specific files" / Copilot `applyTo` (comma-separated).
+    #[serde(default)]
+    globs: Option<String>,
+}
+
+/// Build a rule's `RuleSpec` from the request (only meaningful for `Rule`).
+fn build_rule_spec(b: &CreateBody) -> RuleSpec {
+    RuleSpec {
+        format: b.rule_format.unwrap_or_default(),
+        scope: b.scope.unwrap_or_default(),
+        folder: b.folder.clone().filter(|f| !f.trim().is_empty()),
+        cursor_rule_type: b.cursor_rule_type,
+        globs: b.globs.clone().filter(|g| !g.trim().is_empty()),
+    }
+}
+
+/// Validate a rule's spec against its body/description. Returns the 400 message
+/// on a missing required field (folder for folder scope; description/globs for
+/// the Cursor rule types that need them).
+fn validate_rule(b: &CreateBody, spec: &RuleSpec) -> Result<(), ApiError> {
+    if spec.scope == RuleScope::Folder && spec.folder.is_none() {
+        return Err(ApiError::BadRequest(
+            "a folder-scoped rule needs a folder path".into(),
+        ));
+    }
+    if spec.format == RuleFormat::Cursor {
+        match spec.cursor_rule_type.unwrap_or_default() {
+            CursorRuleType::Intelligent
+                if b.description.as_deref().unwrap_or("").trim().is_empty() =>
+            {
+                return Err(ApiError::BadRequest(
+                    "an 'Apply Intelligently' Cursor rule needs a description".into(),
+                ));
+            }
+            CursorRuleType::Specific if spec.globs.is_none() => {
+                return Err(ApiError::BadRequest(
+                    "an 'Apply to Specific Files' Cursor rule needs globs".into(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 async fn create_item(
@@ -122,6 +180,15 @@ async fn create_item(
         ));
     }
 
+    // Rule items carry a typed spec (format/scope/folder/cursor-type/globs).
+    let rule_spec = if kind == LibraryKind::Rule {
+        let spec = build_rule_spec(&b);
+        validate_rule(&b, &spec)?;
+        Some(spec)
+    } else {
+        None
+    };
+
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let dir = store::item_dir(&id);
@@ -138,6 +205,7 @@ async fn create_item(
         materialized: vec![],
         hook_merge: vec![],
         rule_merge: vec![],
+        rule_spec,
         created_at: now.clone(),
         updated_at: now,
     };
@@ -174,11 +242,21 @@ async fn update_item(
             b.kind
         )));
     }
+    // Recompute the rule spec (format/scope/folder/cursor-type/globs) before
+    // re-materializing, so an edit can re-point scope/folder/format cleanly.
+    let rule_spec = if item.kind == LibraryKind::Rule {
+        let spec = build_rule_spec(&b);
+        validate_rule(&b, &spec)?;
+        Some(spec)
+    } else {
+        None
+    };
     materialize::unmaterialize_item(&item.materialized, &item.hook_merge, &item.rule_merge);
 
     item.name = b.name;
     item.description = b.description;
     item.providers = b.providers;
+    item.rule_spec = rule_spec;
     item.updated_at = chrono::Utc::now().to_rfc3339();
 
     let dir = store::item_dir(&id);
