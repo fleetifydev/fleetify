@@ -427,9 +427,9 @@ const SessionRow = memo(function SessionRow({ session, detail, onOpen }: {
 });
 
 /* ── Agent detail — V3 elevated-card drill-down, app tokens ── */
-function Card({ label, count, children }: { label?: string; count?: React.ReactNode; children: React.ReactNode }) {
+function Card({ label, count, span, children }: { label?: string; count?: React.ReactNode; span?: boolean; children: React.ReactNode }) {
   return (
-    <div style={{ background: "var(--c-srf)", border: "1px solid var(--c-brd)", borderRadius: 8, padding: "12px 13px" }}>
+    <div style={{ gridColumn: span ? "1 / -1" : undefined, background: "var(--c-srf)", border: "1px solid var(--c-brd)", borderRadius: 8, padding: "12px 13px" }}>
       {label && (
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
           <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--c-ghost)" }}>{label}</span>
@@ -501,9 +501,9 @@ function AgentDetail({ session, detail, activity, onBack, onOpenChat }: {
         {isRunning && <button onClick={doStop} style={{ marginLeft: 14, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 500, color: "var(--c-dim)" }}>{stopping ? "Stopping…" : "Stop"}</button>}
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: 10 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(248px, 1fr))", gap: 8, padding: 10, alignContent: "start" }}>
         {/* header */}
-        <Card>
+        <Card span>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <StatusRing status={isWaiting ? "waiting" : isError ? "error" : session.status} size={12} />
             {session.tool && <ProviderLogo tool={session.tool} size={12} />}
@@ -564,7 +564,7 @@ function AgentDetail({ session, detail, activity, onBack, onOpenChat }: {
 
         {/* tasks */}
         {todos.length > 0 && (
-          <Card label="Tasks" count={`${stepsDone}/${todos.length}`}>
+          <Card span label="Tasks" count={`${stepsDone}/${todos.length}`}>
             <div style={{ height: 3, borderRadius: 2, background: "var(--c-srf)", overflow: "hidden", marginBottom: 10 }}>
               <span style={{ display: "block", height: "100%", width: `${Math.round((stepsDone / todos.length) * 100)}%`, background: "var(--c-med)" }} />
             </div>
@@ -583,7 +583,7 @@ function AgentDetail({ session, detail, activity, onBack, onOpenChat }: {
 
         {/* tool calls */}
         {tcTotal > 0 && (
-          <Card label="Tool calls" count={tcTotal}>
+          <Card span label="Tool calls" count={tcTotal}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
               {tcGrid.map(([Ic, n, l]) => (
                 <div key={l} style={{ border: "1px solid var(--c-brd)", borderRadius: 7, padding: "9px 6px", textAlign: "center" }}>
@@ -598,7 +598,7 @@ function AgentDetail({ session, detail, activity, onBack, onOpenChat }: {
 
         {/* files */}
         {files.length > 0 && (
-          <Card label="Files" count={files.length}>
+          <Card span label="Files" count={files.length}>
             {files.map((f) => (
               <button key={f.path} onClick={onOpenChat} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, width: "100%", padding: "4px 0", border: "none", background: "none", cursor: "pointer", fontFamily: MONO, fontSize: 11, textAlign: "left" }}>
                 <span style={{ color: "var(--c-med)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{f.path}</span>
@@ -611,7 +611,7 @@ function AgentDetail({ session, detail, activity, onBack, onOpenChat }: {
 
         {/* memory */}
         {memory.length > 0 && (
-          <Card label="Memory" count={memory.length}>
+          <Card span label="Memory" count={memory.length}>
             {memory.map((m, i) => (
               <div key={i} style={{ padding: "6px 0", borderTop: i > 0 ? "1px solid var(--c-brd)" : "none" }}>
                 {m.title && <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.3px", textTransform: "uppercase", color: "var(--c-dim)", marginBottom: 3, display: "flex", gap: 6, alignItems: "center" }}>{m.title}{m.by && <span style={{ fontSize: 8, color: "var(--c-ghost)", border: "1px solid var(--c-brd)", borderRadius: 3, padding: "0 4px" }}>{m.by}</span>}</div>}
@@ -623,7 +623,7 @@ function AgentDetail({ session, detail, activity, onBack, onOpenChat }: {
 
         {/* activity */}
         {activity.some(r => r.kind !== "todo") && (
-          <Card label="Activity" count={activity.filter(r => r.kind !== "todo").length}>
+          <Card span label="Activity" count={activity.filter(r => r.kind !== "todo").length}>
             {activity.filter(r => r.kind !== "todo").map((row) => <ActivityRow key={row.id} row={row} />)}
           </Card>
         )}
