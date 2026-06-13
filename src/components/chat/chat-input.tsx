@@ -83,9 +83,9 @@ const OPENAI_MODELS: ModelOption[] = [
 ];
 
 function modelsFor(tool: string | null | undefined): ModelOption[] {
-  if (tool === "gemini") return GEMINI_MODELS;
-  if (tool === "codex")  return CODEX_MODELS;
-  if (tool === "agy")    return AGY_MODELS;
+  if (tool === "gemini-cli") return GEMINI_MODELS;
+  if (tool === "codex-cli")  return CODEX_MODELS;
+  if (tool === "antigravity-cli")    return AGY_MODELS;
   if (tool === "antigravity-sdk") return AGY_SDK_MODELS;
   if (tool === "openai") return OPENAI_MODELS;
   return CLAUDE_MODELS;
@@ -115,8 +115,8 @@ function fmtModel(id: string | null | undefined, tool?: string | null): string {
   if (exact) return exact.label;
   // For codex, fall back to the dialog default rather than the legacy GPT-4o.
   if (!id) {
-    if (tool === "codex") return "GPT-5.4";
-    if (tool === "agy") return "Auto";
+    if (tool === "codex-cli") return "GPT-5.4";
+    if (tool === "antigravity-cli") return "Auto";
     if (tool === "antigravity-sdk") return "Gemini 3.5 Flash (Medium)";
     return list[0]?.label ?? "Model";
   }
@@ -881,7 +881,7 @@ interface ChatInputProps {
    *  branch (fleet/<slug>-<id>) instead of the source repo's HEAD. */
   worktreePath?: string | null;
   branch?: string | null;
-  /** Provider/tool of the current agent ("claude-code" | "gemini" | ...). Drives the model dropdown. */
+  /** Provider/tool of the current agent ("claude-code" | "gemini-cli" | ...). Drives the model dropdown. */
   tool?: string | null;
   /** Session ID — used to scope plugin slash commands. Optional (no plugin commands when absent). */
   sessionId?: string | null;
@@ -1677,7 +1677,7 @@ export function ChatInput({
       }
       apiUpdateSession(sessionId, { permission_mode: arg })
         .then(() => {
-          const respawnHint = (tool === "codex" || tool === "gemini")
+          const respawnHint = (tool === "codex-cli" || tool === "gemini-cli")
             ? " Codex/Gemini pick this up on the next spawn — stop and restart the session to apply now."
             : "";
           pushInfo("Permissions updated", `Mode set to ${arg}.${respawnHint}`);

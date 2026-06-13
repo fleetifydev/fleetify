@@ -12,15 +12,15 @@ Settings → Agents as cards driven by `/api/agents/scan`.
 
 | Agent | Catalog id | Binary | Transport | Install / Login |
 |---|---|---|---|---|
-| Claude Code | `claude` | `claude` | subprocess `--output-format stream-json` | `npm i -g @anthropic-ai/claude-code` · `claude login` |
-| Codex CLI | `codex` | `codex` | `codex app-server` (JSON-RPC/stdio) | `npm i -g @openai/codex` · `codex login` |
-| Gemini CLI | `gemini` | `gemini` | ACP (`gemini --acp`) | `npm i -g @google/gemini-cli` · `gemini` |
-| Kimi Code CLI | `kimi` | `kimi` | (bridge present) | `npm i -g @moonshot-ai/kimi-code` · `kimi login` |
+| Claude Code | `claude-code` | `claude` | subprocess `--output-format stream-json` | `npm i -g @anthropic-ai/claude-code` · `claude login` |
+| Codex CLI | `codex-cli` | `codex` | `codex app-server` (JSON-RPC/stdio) | `npm i -g @openai/codex` · `codex login` |
+| Gemini CLI | `gemini-cli` | `gemini` | ACP (`gemini --acp`) | `npm i -g @google/gemini-cli` · `gemini` |
+| Kimi Code CLI | `kimi-code` | `kimi` | (bridge present) | `npm i -g @moonshot-ai/kimi-code` · `kimi login` |
 | OpenCode | `opencode` | `opencode` | ACP (`opencode acp`) | `npm i -g opencode-ai` · `opencode auth login` |
-| Cursor CLI | `cursor` | `cursor-agent` | ACP (`cursor-agent acp`) + `cursor/*` extensions | shell installer · `cursor-agent login` |
+| Cursor CLI | `cursor-cli` | `cursor-agent` | ACP (`cursor-agent acp`) + `cursor/*` extensions | shell installer · `cursor-agent login` |
 | GitHub Copilot CLI | `github-copilot` | `copilot` | ACP (`copilot --acp`) | `npm i -g @github/copilot` · `copilot login` |
-| Hermes Agent | `hermes` | `hermes` | ACP (`hermes acp`), multi-provider | `pip install "hermes-agent[acp]"` · `hermes model` |
-| Antigravity CLI | `agy` | `agy` | PTY `agy -p` (print mode) | shell installer · `agy` |
+| Hermes Agent | `hermes-agent` | `hermes` | ACP (`hermes acp`), multi-provider | `pip install "hermes-agent[acp]"` · `hermes model` |
+| Antigravity CLI | `antigravity-cli` | `agy` | PTY `agy -p` (print mode) | shell installer · `agy` |
 | Antigravity SDK | `antigravity-sdk` | `python3` | Python sidecar (NDJSON) | `pip install` · set `GEMINI_API_KEY` |
 
 ACP agents share `bridges/acp.rs`'s `AcpClient` (JSON-RPC 2.0 over stdio); the

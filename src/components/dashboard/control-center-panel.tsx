@@ -113,7 +113,7 @@ function shortModel(m: string | null | undefined) {
   if (m.includes("haiku"))  return "Haiku";
   if (m.includes("gpt-4o")) return "GPT-4o";
   if (m.includes("gpt-4"))  return "GPT-4";
-  if (m.includes("gemini")) return "Gemini";
+  if (m.includes("gemini-cli")) return "Gemini";
   return m.split("-").slice(0, 2).join("-");
 }
 
@@ -126,7 +126,7 @@ function ctxLimit(model: string | null | undefined): number | null {
   if (model.includes("claude"))  return 200_000;
   if (model.includes("gpt-4"))   return 128_000;
   if (model.includes("gemini-2") || model.includes("gemini-1.5")) return 1_000_000;
-  if (model.includes("gemini"))  return 32_000;
+  if (model.includes("gemini-cli"))  return 32_000;
   return null;
 }
 function fmtCtx(n: number): string {

@@ -22,7 +22,7 @@ function block(over: Partial<SpawnFormBlock> = {}): SpawnFormBlock {
     gaps: [{ field: "project_path", reason: "missing", candidates: [] }],
     draft: {
       title: "gemini-test_a",
-      tool: "gemini",
+      tool: "gemini-cli",
       first_task: "Briefly introduce yourself.",
     },
     ...over,
@@ -66,7 +66,7 @@ describe("SpawnFormCard (folder picker)", () => {
     expect(spawnSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({
         project_path: "/home/u/test_a",
-        tool: "gemini",
+        tool: "gemini-cli",
         first_task: "Briefly introduce yourself.",
         use_worktree: false,
       }),

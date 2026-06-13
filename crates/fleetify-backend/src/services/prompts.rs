@@ -83,7 +83,11 @@ fn plugin_prompts(seen: &mut BTreeSet<String>, out: &mut Vec<PromptSummary>) {
             _ => continue,
         };
         for p in COMPONENT_PROVIDERS {
-            let sub = if *p == "codex" { "prompts" } else { "commands" };
+            let sub = if *p == "codex-cli" {
+                "prompts"
+            } else {
+                "commands"
+            };
             let dir = root.join(format!(".{p}")).join(sub);
             let Ok(entries) = std::fs::read_dir(&dir) else {
                 continue;

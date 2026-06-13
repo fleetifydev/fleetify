@@ -237,7 +237,7 @@ pub fn config_dir_spec(provider_id: &str) -> Option<(&'static str, &'static str)
     match provider_id {
         // Accept the legacy "claude" id too — config dirs predate the rename.
         "claude" | "claude-code" => Some(("CLAUDE_CONFIG_DIR", ".claude")),
-        "codex" => Some(("CODEX_HOME", ".codex")),
+        "codex-cli" => Some(("CODEX_HOME", ".codex")),
         _ => None,
     }
 }
@@ -598,10 +598,10 @@ mod tests {
             config_dir_spec("claude-code"),
             Some(("CLAUDE_CONFIG_DIR", ".claude"))
         );
-        assert_eq!(config_dir_spec("codex"), Some(("CODEX_HOME", ".codex")));
+        assert_eq!(config_dir_spec("codex-cli"), Some(("CODEX_HOME", ".codex")));
         // Gemini/kimi/agy isolate via HOME, not a config-dir env var.
-        assert!(config_dir_spec("gemini").is_none());
-        assert!(config_dir_spec("agy").is_none());
+        assert!(config_dir_spec("gemini-cli").is_none());
+        assert!(config_dir_spec("antigravity-cli").is_none());
     }
 
     /// The "set main account" + "no conversation lost" model: the account is

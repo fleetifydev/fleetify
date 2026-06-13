@@ -221,7 +221,7 @@ function shortModel(m: string | null | undefined): string | null {
   if (m.includes("haiku"))  return "Haiku";
   if (m.includes("gpt-5"))  return "GPT-5";
   if (m.includes("gpt-4"))  return "GPT-4";
-  if (m.includes("gemini")) return "Gemini";
+  if (m.includes("gemini-cli")) return "Gemini";
   return m.length > 16 ? m.slice(0, 16) : m;
 }
 

@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use super::types::{LibraryItem, LibraryKind};
-use crate::services::plugins::providers::COMPONENT_PROVIDERS;
+use crate::services::plugins::providers::{component_basename, COMPONENT_PROVIDERS};
 
 /// `(plugin_name, item)` for every plugin-contributed item of `kind`. Skills
 /// and commands fan out across provider dirs (deduped by name); templates come
@@ -61,7 +61,7 @@ fn synthetic(kind: LibraryKind, plugin: &str, name: &str, providers: Vec<String>
 fn collect_skill_dirs(root: &Path, sub: &str, plugin: &str, out: &mut Vec<(String, LibraryItem)>) {
     let mut seen = BTreeSet::new();
     for p in COMPONENT_PROVIDERS {
-        let dir = root.join(format!(".{p}")).join(sub);
+        let dir = root.join(format!(".{}", component_basename(p))).join(sub);
         let Ok(rd) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -86,7 +86,9 @@ fn collect_skill_dirs(root: &Path, sub: &str, plugin: &str, out: &mut Vec<(Strin
 fn collect_agent_files(root: &Path, plugin: &str, out: &mut Vec<(String, LibraryItem)>) {
     let mut seen = BTreeSet::new();
     for p in COMPONENT_PROVIDERS {
-        let dir = root.join(format!(".{p}")).join("agents");
+        let dir = root
+            .join(format!(".{}", component_basename(p)))
+            .join("agents");
         let Ok(rd) = std::fs::read_dir(&dir) else {
             continue;
         };

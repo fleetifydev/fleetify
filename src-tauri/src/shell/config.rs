@@ -262,7 +262,7 @@ mod tests {
         let mut cfg = json!({});
         let mut p = ProvidersConfig {
             ollama_base_url: Some("http://192.168.1.50:11434".into()),
-            enabled_agents: vec!["claude-code".into(), "kimi".into()],
+            enabled_agents: vec!["claude-code".into(), "kimi-code".into()],
             ..Default::default()
         };
         p.connected.insert("openai".into(), true);
@@ -276,7 +276,7 @@ mod tests {
             back.ollama_base_url.as_deref(),
             Some("http://192.168.1.50:11434")
         );
-        assert_eq!(back.enabled_agents, vec!["claude-code", "kimi"]);
+        assert_eq!(back.enabled_agents, vec!["claude-code", "kimi-code"]);
         assert_eq!(back.connected.get("openai"), Some(&true));
         assert_eq!(back.connected.get("perplexity"), Some(&true));
         assert_eq!(

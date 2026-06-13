@@ -101,14 +101,14 @@ export interface CreateLibraryItem {
  *  it carries no picker. Kept here (next to the types) so the dialog and any
  *  validation read the same source of truth. */
 export const PROVIDERS_FOR_KIND: Record<LibraryKind, Provider[]> = {
-  skill: ["claude-code", "codex", "gemini", "kimi", "opencode", "github-copilot", "cursor", "hermes", "agy"],
-  hook: ["claude-code", "cursor", "agy", "kimi", "github-copilot", "opencode", "hermes"],
+  skill: ["claude-code", "codex-cli", "gemini-cli", "kimi-code", "opencode", "github-copilot", "cursor-cli", "hermes-agent", "antigravity-cli"],
+  hook: ["claude-code", "cursor-cli", "antigravity-cli", "kimi-code", "github-copilot", "opencode", "hermes-agent"],
   // Sub-agents need an on-disk `agents/` surface — Kimi/Hermes have none.
-  subagent: ["claude-code", "codex", "gemini", "opencode", "github-copilot", "cursor", "agy"],
+  subagent: ["claude-code", "codex-cli", "gemini-cli", "opencode", "github-copilot", "cursor-cli", "antigravity-cli"],
   // The Rule modal's *General* tab — the plain-markdown providers
   // (CLAUDE.md / GEMINI.md / AGENTS.md). Cursor + GitHub Copilot have their own
   // tabs (distinct on-disk formats), so they're not in this multi-select.
-  rule: ["claude-code", "gemini", "codex", "kimi", "opencode", "agy"],
+  rule: ["claude-code", "gemini-cli", "codex-cli", "kimi-code", "opencode", "antigravity-cli"],
   prompt: [],
   template: [],
 };

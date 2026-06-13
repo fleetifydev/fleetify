@@ -5,14 +5,14 @@
  *  Mirrors the backend `KNOWN_PROVIDERS`. */
 export type Provider =
   | "claude-code"
-  | "codex"
-  | "gemini"
-  | "kimi"
+  | "codex-cli"
+  | "gemini-cli"
+  | "kimi-code"
   | "opencode"
   | "github-copilot"
-  | "cursor"
-  | "hermes"
-  | "agy"
+  | "cursor-cli"
+  | "hermes-agent"
+  | "antigravity-cli"
   | "antigravity-sdk";
 export type ScopeType = "user" | "project" | "agent";
 

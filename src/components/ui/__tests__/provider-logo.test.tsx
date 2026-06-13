@@ -7,10 +7,10 @@ describe("ProviderLogo — agent brand icons", () => {
   it.each([
     ["claude-code", "Claude Code"],
     ["anthropic", "Claude Code"],
-    ["codex", "Codex"],
-    ["gemini", "Gemini"],
+    ["codex-cli", "Codex"],
+    ["gemini-cli", "Gemini"],
     ["gemini-api", "Gemini"],
-    ["kimi", "Kimi"],
+    ["kimi-code", "Kimi"],
     ["kimi-api", "Kimi"],
     ["opencode", "OpenCode"],
   ])("renders a bundled <img> brand icon for %s", (tool, label) => {
@@ -31,7 +31,7 @@ describe("ProviderLogo — agent brand icons", () => {
   });
 
   it("renders the Cursor mark inline so it adapts to the theme", () => {
-    const { getByLabelText } = render(<ProviderLogo tool="cursor" size={20} />);
+    const { getByLabelText } = render(<ProviderLogo tool="cursor-cli" size={20} />);
     const svg = getByLabelText("Cursor");
     expect(svg.tagName.toLowerCase()).toBe("svg");
     // The hexagon mark's path is painted with currentColor so it reads on
@@ -75,7 +75,7 @@ describe("ProviderLogo — model-provider brand icons", () => {
 
   it.each([
     ["openai", "OpenAI"],
-    ["agy", "Antigravity CLI"],
+    ["antigravity-cli", "Antigravity CLI"],
     ["antigravity", "Antigravity CLI"],
     ["antigravity-sdk", "Antigravity CLI"],
   ])("renders %s as a self-coloured inline SVG, crisp at the picker's small size", (tool, label) => {
@@ -89,7 +89,7 @@ describe("ProviderLogo — model-provider brand icons", () => {
   });
 
   it.each([
-    ["agy"],
+    ["antigravity-cli"],
     ["antigravity"],
     ["antigravity-sdk"],
   ])("renders %s as the official bundled colour <img> at Settings sizes (>=16px)", (tool) => {

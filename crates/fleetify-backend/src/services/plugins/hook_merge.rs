@@ -43,20 +43,23 @@ pub struct HookMergeRecord {
 /// four are handled here; copy strategies (Copilot/OpenCode/Hermes) reuse the
 /// plugin materializer's file copy, and codex/gemini have no hook surface.
 pub fn is_merge_provider(provider: &str) -> bool {
-    matches!(provider, "claude-code" | "cursor" | "agy" | "kimi")
+    matches!(
+        provider,
+        "claude-code" | "cursor-cli" | "antigravity-cli" | "kimi-code"
+    )
 }
 
 /// The config file a provider's hooks merge into. Note agy diverges from
-/// `provider_home("agy")` (`~/.gemini/antigravity-cli`): its hooks live under
+/// `provider_home("antigravity-cli")` (`~/.gemini/antigravity-cli`): its hooks live under
 /// `~/.gemini/config/hooks.json`.
 fn hook_file(provider: &str) -> Option<PathBuf> {
     match provider {
         "claude-code" => Some(providers::provider_home("claude-code")?.join("settings.json")),
-        "cursor" => Some(providers::provider_home("cursor")?.join("hooks.json")),
-        "kimi" => Some(providers::provider_home("kimi")?.join("config.toml")),
+        "cursor-cli" => Some(providers::provider_home("cursor-cli")?.join("hooks.json")),
+        "kimi-code" => Some(providers::provider_home("kimi-code")?.join("config.toml")),
         // agy: ~/.gemini/config/hooks.json (NOT the antigravity-cli home).
-        "agy" => Some(
-            providers::provider_home("gemini")?
+        "antigravity-cli" => Some(
+            providers::provider_home("gemini-cli")?
                 .join("config")
                 .join("hooks.json"),
         ),
@@ -75,9 +78,9 @@ pub fn materialize_hook_item(
     };
     match provider {
         "claude-code" => merge_claude(&file, hook)?,
-        "cursor" => merge_cursor(&file, hook)?,
-        "agy" => merge_agy(&file, hook)?,
-        "kimi" => merge_kimi(&file, hook)?,
+        "cursor-cli" => merge_cursor(&file, hook)?,
+        "antigravity-cli" => merge_agy(&file, hook)?,
+        "kimi-code" => merge_kimi(&file, hook)?,
         _ => return Ok(None),
     }
     Ok(Some(HookMergeRecord {
@@ -97,9 +100,9 @@ pub fn unmaterialize_hook(rec: &HookMergeRecord) -> Result<()> {
     }
     match rec.provider.as_str() {
         "claude-code" => unmerge_claude(file, rec),
-        "cursor" => unmerge_cursor(file, rec),
-        "agy" => unmerge_agy(file, rec),
-        "kimi" => unmerge_kimi(file, rec),
+        "cursor-cli" => unmerge_cursor(file, rec),
+        "antigravity-cli" => unmerge_agy(file, rec),
+        "kimi-code" => unmerge_kimi(file, rec),
         _ => Ok(()),
     }
 }
@@ -455,7 +458,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let home = tmp.path().to_path_buf();
         with_home(&home, || {
-            let rec = materialize_hook_item("cursor", &hook("PreToolUse", None, "guard.sh"))
+            let rec = materialize_hook_item("cursor-cli", &hook("PreToolUse", None, "guard.sh"))
                 .unwrap()
                 .unwrap();
             let file = home.join(".cursor/hooks.json");
@@ -477,10 +480,12 @@ mod tests {
         let tmp = tempdir().unwrap();
         let home = tmp.path().to_path_buf();
         with_home(&home, || {
-            let rec =
-                materialize_hook_item("agy", &hook("PostToolUse", Some("run_command"), "lint.sh"))
-                    .unwrap()
-                    .unwrap();
+            let rec = materialize_hook_item(
+                "antigravity-cli",
+                &hook("PostToolUse", Some("run_command"), "lint.sh"),
+            )
+            .unwrap()
+            .unwrap();
             // NOT under antigravity-cli — under ~/.gemini/config/.
             let file = home.join(".gemini/config/hooks.json");
             assert!(file.is_file());
@@ -505,10 +510,12 @@ mod tests {
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(&file, "model = \"kimi\"\n").unwrap();
 
-            let rec =
-                materialize_hook_item("kimi", &hook("PreToolUse", Some("WriteFile"), "protect.sh"))
-                    .unwrap()
-                    .unwrap();
+            let rec = materialize_hook_item(
+                "kimi-code",
+                &hook("PreToolUse", Some("WriteFile"), "protect.sh"),
+            )
+            .unwrap()
+            .unwrap();
             let parsed: toml::Table =
                 toml::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
             assert_eq!(parsed.get("model").and_then(|v| v.as_str()), Some("kimi"));
@@ -541,7 +548,7 @@ mod tests {
                     .is_none()
             );
             assert!(
-                materialize_hook_item("codex", &hook("PreToolUse", None, "x"))
+                materialize_hook_item("codex-cli", &hook("PreToolUse", None, "x"))
                     .unwrap()
                     .is_none()
             );

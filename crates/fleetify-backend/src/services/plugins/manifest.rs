@@ -174,7 +174,7 @@ pub fn discover_provider_dirs(dir: &Path) -> Vec<PathBuf> {
     PROVIDERS
         .iter()
         .filter_map(|p| {
-            let pd = dir.join(format!(".{p}"));
+            let pd = dir.join(format!(".{}", super::providers::component_basename(p)));
             if pd.is_dir() {
                 Some(pd)
             } else {

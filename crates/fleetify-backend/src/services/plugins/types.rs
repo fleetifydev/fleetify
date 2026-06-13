@@ -16,14 +16,14 @@ use serde::{Deserialize, Serialize};
 /// valid in `providers` so MCP-only plugins can target it.
 pub const KNOWN_PROVIDERS: &[&str] = &[
     "claude-code",
-    "codex",
-    "gemini",
-    "kimi",
+    "codex-cli",
+    "gemini-cli",
+    "kimi-code",
     "opencode",
     "github-copilot",
-    "cursor",
-    "hermes",
-    "agy",
+    "cursor-cli",
+    "hermes-agent",
+    "antigravity-cli",
     "antigravity-sdk",
 ];
 
@@ -293,7 +293,7 @@ mod tests {
             },
         );
         d.providers.insert(
-            "gemini".into(),
+            "gemini-cli".into(),
             ProviderDeclares {
                 commands: 1,
                 ..Default::default()
@@ -301,7 +301,7 @@ mod tests {
         );
         d.prompts = 5;
         d.providers.insert(
-            "kimi".into(),
+            "kimi-code".into(),
             ProviderDeclares {
                 hooks: 1,
                 ..Default::default()
@@ -326,7 +326,7 @@ mod tests {
         // A provider entry with all-zero counts surfaces nothing.
         let mut d2 = Declares::default();
         d2.providers
-            .insert("codex".into(), ProviderDeclares::default());
+            .insert("codex-cli".into(), ProviderDeclares::default());
         assert!(derive_provides(&d2).is_empty());
     }
 

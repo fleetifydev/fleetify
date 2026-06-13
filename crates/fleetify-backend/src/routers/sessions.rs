@@ -666,17 +666,17 @@ fn session_workdir(s: &Session) -> Option<std::path::PathBuf> {
 /// re-applies. The block is keyed by session id so it coexists with the user's
 /// own project rule file and any sibling session in the same in-place dir.
 fn apply_session_rules(s: &Session, rules: &str) {
-    use crate::providers::helpers::canonical_provider_id;
     use crate::services::plugins::rule_merge::{self, RuleMergeRecord};
 
     let Some(dir) = session_workdir(s) else {
         return;
     };
-    let provider = canonical_provider_id(&s.tool).to_string();
+    // `s.tool` is already the canonical provider id (migrations keep it current).
+    let provider = s.tool.clone();
     let slug = format!("session-{}", s.id);
 
     // Cursor: a project-scoped standalone `.cursor/rules/<slug>.mdc`.
-    if provider == "cursor" {
+    if provider == "cursor-cli" {
         let mdc = dir
             .join(".cursor")
             .join("rules")
@@ -1210,7 +1210,7 @@ async fn list_hooks(
 ) -> Result<Json<Value>, ApiError> {
     let s = owned(&st, &id, &user.id).await?;
     let provider = s.tool.as_str();
-    if !matches!(provider, "claude-code" | "gemini" | "codex") {
+    if !matches!(provider, "claude-code" | "gemini-cli" | "codex-cli") {
         return Ok(Json(json!({ "items": [] })));
     }
     let home = std::path::PathBuf::from(
@@ -1242,7 +1242,7 @@ async fn list_commands(
 ) -> Result<Json<Value>, ApiError> {
     let s = owned(&st, &id, &user.id).await?;
     let provider = s.tool.as_str();
-    if !matches!(provider, "claude-code" | "gemini" | "codex") {
+    if !matches!(provider, "claude-code" | "gemini-cli" | "codex-cli") {
         return Ok(Json(json!({ "items": [] })));
     }
     let home = std::path::PathBuf::from(
@@ -1278,7 +1278,7 @@ async fn list_skills(
 ) -> Result<Json<Value>, ApiError> {
     let s = owned(&st, &id, &user.id).await?;
     let provider = s.tool.as_str();
-    if !matches!(provider, "claude-code" | "gemini" | "codex") {
+    if !matches!(provider, "claude-code" | "gemini-cli" | "codex-cli") {
         return Ok(Json(json!({ "items": [] })));
     }
     let home = std::path::PathBuf::from(

@@ -79,8 +79,8 @@ tiers = ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7"]
         let m = CapabilityMatrix::load_default().expect("config/agents.toml must be present");
         assert!(m.agents.contains_key("claude-code"), "claude agent missing");
         assert!(m.agents.contains_key("openai"), "openai agent missing");
-        assert!(m.agents.contains_key("gemini"), "gemini agent missing");
-        assert!(m.agents.contains_key("codex"), "codex agent missing");
+        assert!(m.agents.contains_key("gemini-cli"), "gemini agent missing");
+        assert!(m.agents.contains_key("codex-cli"), "codex agent missing");
         assert!(m.agents["claude-code"].tiers.len() >= 2);
     }
 }

@@ -176,7 +176,7 @@ shows the user an inline folder picker. Field guide:
   task; otherwise WRITE a short, sensible first task yourself from the
   request context (or a brief kick-off: introduce itself + summarise the
   project). One or two sentences.
-- `tool`: provider id, e.g. "claude-code" (Claude Code), "gemini", "codex". Omit
+- `tool`: provider id, e.g. "claude-code" (Claude Code), "gemini-cli", "codex-cli". Omit
   when not stated — the best available provider is auto-selected.
 - `model`: a model hint, e.g. "opus 4.8" — the backend canonicalises it.
   Omit when not stated — the provider's default model is used.

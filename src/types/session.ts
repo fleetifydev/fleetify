@@ -14,11 +14,11 @@ export type AgentTool =
   // surfaces it as a neutral "Auto" chip — never dispatched as a literal agent.
   | "auto"
   | "claude-code"
-  | "gemini"
-  | "codex"
+  | "gemini-cli"
+  | "codex-cli"
   | "aider"
   | "opencode"
-  | "cursor"
+  | "cursor-cli"
   | "custom"
   // ── Cloud HTTP providers from the registry (Settings → Models) ──
   // These map to the same `session.tool` column the CLI agents use;
@@ -33,7 +33,7 @@ export type AgentTool =
   | "perplexity"
   | "openrouter"
   | "ollama"
-  | "kimi";
+  | "kimi-code";
 
 export interface Session {
   id: string;

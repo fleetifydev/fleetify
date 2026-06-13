@@ -162,12 +162,12 @@ describe("UnifiedModelPicker", () => {
     // CLIs and the newer ones (the bug this guards against).
     const cliGroups: PickerGroup[] = [
       { id: "claude-code", label: "Claude Code", models: [{ id: "claude-opus-4-7", label: "Opus 4.7", effort: LEVELS_EFFORT, supports_effort: true }] },
-      { id: "codex", label: "Codex CLI", models: [{ id: "gpt-5.5", label: "GPT-5.5", effort: LEVELS_EFFORT, supports_effort: true }] },
-      { id: "gemini", label: "Gemini CLI", models: [{ id: "gemini-3.1-pro-preview", label: "3.1 Pro", effort: LEVELS_EFFORT, supports_effort: true }] },
-      { id: "kimi", label: "Kimi Code CLI", models: [{ id: "kimi-k2.6", label: "Kimi K2.6", effort: NONE_EFFORT, supports_effort: false }] },
+      { id: "codex-cli", label: "Codex CLI", models: [{ id: "gpt-5.5", label: "GPT-5.5", effort: LEVELS_EFFORT, supports_effort: true }] },
+      { id: "gemini-cli", label: "Gemini CLI", models: [{ id: "gemini-3.1-pro-preview", label: "3.1 Pro", effort: LEVELS_EFFORT, supports_effort: true }] },
+      { id: "kimi-code", label: "Kimi Code CLI", models: [{ id: "kimi-k2.6", label: "Kimi K2.6", effort: NONE_EFFORT, supports_effort: false }] },
       { id: "opencode", label: "OpenCode", models: [{ id: "oc-1", label: "OC", effort: NONE_EFFORT, supports_effort: false }] },
       { id: "github-copilot", label: "GitHub Copilot CLI", models: [{ id: "gh-1", label: "GH", effort: NONE_EFFORT, supports_effort: false }] },
-      { id: "agy", label: "Antigravity CLI", models: [{ id: "agy-default", label: "Auto", effort: NONE_EFFORT, supports_effort: false }] },
+      { id: "antigravity-cli", label: "Antigravity CLI", models: [{ id: "agy-default", label: "Auto", effort: NONE_EFFORT, supports_effort: false }] },
       { id: "openai", label: "OpenAI", models: [{ id: "gpt-4.1", label: "GPT-4.1", effort: NONE_EFFORT, supports_effort: false }] },
     ];
     const { container } = render(
@@ -272,7 +272,7 @@ describe("UnifiedModelPicker", () => {
   it("renders no effort buttons for a none-effort model", () => {
     const noneGroups: PickerGroup[] = [
       {
-        id: "gemini",
+        id: "gemini-cli",
         label: "Gemini CLI",
         models: [
           {
@@ -287,7 +287,7 @@ describe("UnifiedModelPicker", () => {
     ];
     const { container } = render(
       <UnifiedModelPicker
-        tool="gemini"
+        tool="gemini-cli"
         model="gemini-3.1-flash-lite-preview"
         effort="medium"
         groups={noneGroups}
@@ -306,7 +306,7 @@ describe("UnifiedModelPicker", () => {
   it("renders thinking_level effort buttons (low, high) for a gemini thinking model", () => {
     const geminiGroups: PickerGroup[] = [
       {
-        id: "gemini",
+        id: "gemini-cli",
         label: "Gemini CLI",
         models: [
           {
@@ -321,7 +321,7 @@ describe("UnifiedModelPicker", () => {
     ];
     render(
       <UnifiedModelPicker
-        tool="gemini"
+        tool="gemini-cli"
         model="gemini-3.1-pro-preview"
         effort="high"
         groups={geminiGroups}

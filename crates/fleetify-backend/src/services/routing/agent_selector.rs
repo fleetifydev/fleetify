@@ -60,9 +60,9 @@ fn agent_key(a: AgentKind) -> &'static str {
     match a {
         AgentKind::Claude => "claude-code",
         AgentKind::OpenAI => "openai",
-        AgentKind::Gemini => "gemini",
-        AgentKind::Codex => "codex",
-        AgentKind::Kimi => "kimi",
+        AgentKind::Gemini => "gemini-cli",
+        AgentKind::Codex => "codex-cli",
+        AgentKind::Kimi => "kimi-code",
         AgentKind::GitHubCopilot => "github-copilot",
     }
 }

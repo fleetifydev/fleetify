@@ -19,7 +19,7 @@ export interface ScaffoldInput {
   homepage?: string;
   license?: string;
   tags: string[];        // each kebab-case-ish; we lowercase before write
-  providers: ("claude-code" | "codex" | "gemini")[]; // non-empty
+  providers: ("claude-code" | "codex-cli" | "gemini-cli")[]; // non-empty
   components: {
     mcp_server: boolean;
     skill: boolean;
@@ -101,8 +101,8 @@ export function generateScaffold(input: ScaffoldInput): ScaffoldOutput {
     workflows:   input.components.workflow ? 1 : 0,
     providers: {
       "claude-code": input.providers.includes("claude-code") ? perProvider : blankProvider,
-      gemini: input.providers.includes("gemini") ? perProvider : blankProvider,
-      codex:  input.providers.includes("codex") ? perProvider : blankProvider,
+      gemini: input.providers.includes("gemini-cli") ? perProvider : blankProvider,
+      codex:  input.providers.includes("codex-cli") ? perProvider : blankProvider,
     },
   };
 

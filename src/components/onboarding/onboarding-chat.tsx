@@ -153,34 +153,34 @@ const PROVIDERS: ProviderDef[] = [
   // gate (`p.autoInstall === true`) is preserved in case a future
   // first-run experience wants to opt a tile back in.
   { id: "claude-code",         label: "Claude Code",       logo: "claude-code", kind: "cli", scanKey: "claude_cli", hint: "Anthropic CLI" },
-  { id: "codex",          label: "Codex CLI",         logo: "codex",  kind: "cli", scanKey: "codex_cli",  hint: "OpenAI CLI" },
+  { id: "codex-cli",          label: "Codex CLI",         logo: "codex-cli",  kind: "cli", scanKey: "codex_cli",  hint: "OpenAI CLI" },
   // Antigravity sits next to its predecessor Gemini CLI — Google sunsets
   // the latter for individual AI Pro/Ultra users on 2026-06-18, so
   // surfacing both side-by-side gives migrating users a one-tap path.
-  { id: "gemini",         label: "Gemini CLI",        logo: "gemini", kind: "cli", scanKey: "gemini_cli", hint: "Google CLI" },
+  { id: "gemini-cli",         label: "Gemini CLI",        logo: "gemini-cli", kind: "cli", scanKey: "gemini_cli", hint: "Google CLI" },
   // Kimi Code ships as `@moonshot-ai/kimi-code` (npm). Auth state is
   // read from `~/.kimi/auth.json` or `KIMI_API_KEY`
   // (KIMI_CLI_INDICATORS in the catalog).
-  { id: "kimi",           label: "Kimi Code",         logo: "kimi",   kind: "cli", scanKey: "kimi_cli",   hint: "Moonshot CLI" },
+  { id: "kimi-code",           label: "Kimi Code",         logo: "kimi-code",   kind: "cli", scanKey: "kimi_cli",   hint: "Moonshot CLI" },
   // Antigravity CLI installer runs a remote shell script
   // (`iex (irm https://antigravity.google/cli/install.ps1)` on Windows,
   // `curl … | bash` elsewhere). Same explicit-click contract as above.
-  { id: "agy",            label: "Antigravity CLI",   logo: "agy",    kind: "cli", scanKey: "agy_cli",                       hint: "Google's terminal agent (OAuth)" },
+  { id: "antigravity-cli",            label: "Antigravity CLI",   logo: "antigravity-cli",    kind: "cli", scanKey: "agy_cli",                       hint: "Google's terminal agent (OAuth)" },
   // OpenCode / Cursor / GitHub Copilot — detected via the scan probe like the
   // CLIs above. A not-installed row shows an Install button that runs the
   // OS-appropriate installer in the background (npm for OpenCode/Copilot, the
   // curl|bash / irm script for Cursor) and waits for the binary to land before
   // flipping to Sign-in / Ready.
   { id: "opencode",       label: "OpenCode",          logo: "opencode", kind: "cli", scanKey: "opencode_cli",                 hint: "CLI agent" },
-  { id: "cursor",         label: "Cursor CLI",        logo: "cursor", kind: "cli", scanKey: "cursor_cli",                     hint: "CLI agent" },
+  { id: "cursor-cli",         label: "Cursor CLI",        logo: "cursor-cli", kind: "cli", scanKey: "cursor_cli",                     hint: "CLI agent" },
   { id: "github-copilot", label: "GitHub Copilot",    logo: "github-copilot", kind: "cli", scanKey: "github_copilot_cli",    hint: "CLI agent" },
   // Hermes Agent — one CLI that fans out across whichever providers the user's
   // `hermes model` config has authenticated (Copilot, Anthropic, ...). Installs
   // via the official curl|bash / irm script; detected via the scan probe.
-  { id: "hermes",         label: "Hermes Agent",      logo: "hermes", kind: "cli", scanKey: "hermes_cli",                     hint: "CLI agent (multi-provider)" },
+  { id: "hermes-agent",         label: "Hermes Agent",      logo: "hermes-agent", kind: "cli", scanKey: "hermes_cli",                     hint: "CLI agent (multi-provider)" },
   // SDK pairs a pip install with a GEMINI_API_KEY entry. The renderer
   // handles the two-stage flow inline.
-  { id: "antigravity-sdk",label: "Antigravity SDK",   logo: "agy",    kind: "api", envKey: "gemini", scanKey: "antigravity_sdk", hint: "Python SDK + Gemini key" },
+  { id: "antigravity-sdk",label: "Antigravity SDK",   logo: "antigravity-cli",    kind: "api", envKey: "gemini", scanKey: "antigravity_sdk", hint: "Python SDK + Gemini key" },
   { id: "ollama",         label: "Ollama",            logo: "ollama", kind: "cli", ollama: true,                              hint: "Local models" },
   { id: "openai",         label: "OpenAI",            logo: "openai", kind: "api", envKey: "openai",                          hint: "API key" },
   // Anthropic API (Claude over the HTTP API — distinct from the Claude
@@ -189,10 +189,10 @@ const PROVIDERS: ProviderDef[] = [
   // Backend catalog id is "gemini-api" (the OpenAI-compat endpoint
   // at /v1beta/openai); the label is just "Gemini" so the row
   // matches the brand the user knows it by.
-  { id: "gemini-api",     label: "Gemini",            logo: "gemini", kind: "api", envKey: "gemini",                          hint: "API key (Gemini API)" },
+  { id: "gemini-api",     label: "Gemini",            logo: "gemini-cli", kind: "api", envKey: "gemini",                          hint: "API key (Gemini API)" },
   { id: "deepseek",       label: "DeepSeek",          logo: "deepseek", kind: "api",                                          hint: "API key" },
   { id: "grok",           label: "Grok (xAI)",        logo: "grok",   kind: "api",                                            hint: "API key" },
-  { id: "kimi-api",       label: "Kimi (Moonshot)",   logo: "kimi",   kind: "api",                                            hint: "API key" },
+  { id: "kimi-api",       label: "Kimi (Moonshot)",   logo: "kimi-code",   kind: "api",                                            hint: "API key" },
   { id: "perplexity",     label: "Perplexity",        logo: "perplexity", kind: "api",                                        hint: "API key" },
   { id: "nvidia-nim",     label: "NVIDIA NIM",        logo: "nvidia-nim", kind: "api",                                        hint: "API key" },
   { id: "openrouter",     label: "OpenRouter",        logo: "openrouter", kind: "api",                                        hint: "API key — 100s of models" },
@@ -1622,7 +1622,7 @@ function ScanWidget({
           }));
           try {
             // Backend `shell_install_provider` routes on the kebab id
-            // ("claude-code", "codex", "gemini"), not the snake-case
+            // ("claude-code", "codex-cli", "gemini-cli"), not the snake-case
             // scanKey ("claude_cli", …) used by the scan probe.
             const installRes = await window.electronAPI.installProvider(p.id);
             if (cancelled) return;
@@ -1752,7 +1752,7 @@ function ScanWidget({
   // Race-based completion detection. We start TWO signals in parallel:
   //
   //   1. /providers/scan poll (every 2 s) — primary success signal.
-  //      The backend's shutil.which("codex"|"gemini"|"claude") checks
+  //      The backend's shutil.which("codex-cli"|"gemini-cli"|"claude") checks
   //      whether the new shim is on PATH; that's the source of truth.
   //      Wins as soon as npm has finished writing the .cmd / bin.
   //

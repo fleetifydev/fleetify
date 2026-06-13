@@ -58,12 +58,13 @@ pub fn materialize(
     if let Some(dst) = providers::commands_dir(provider) {
         // Codex stores prompts; everyone else commands. Source is the
         // provider's own dir, else the canonical `.claude/commands`.
-        let plugin_sub = if provider == "codex" {
+        let plugin_sub = if provider == "codex-cli" {
             "prompts"
         } else {
             "commands"
         };
-        let src = dir_if_exists(&install_path.join(format!(".{provider}")).join(plugin_sub))
+        let vendor = providers::component_basename(provider);
+        let src = dir_if_exists(&install_path.join(format!(".{vendor}")).join(plugin_sub))
             .or_else(|| dir_if_exists(&install_path.join(".claude").join("commands")));
         if let Some(src) = src {
             materialize_flat(plugin_name, &src, &dst, "md", &mut r)?;
@@ -84,7 +85,9 @@ pub fn materialize(
     // (Claude settings.json, Kimi config.toml, Cursor/agy hooks.json) write
     // into a user's live config and are the documented next step — see
     // `docs/MARKETPLACE.md`; no marketplace plugin ships hooks yet.
-    let hooks_src = install_path.join(format!(".{provider}")).join("hooks");
+    let hooks_src = install_path
+        .join(format!(".{}", providers::component_basename(provider)))
+        .join("hooks");
     if hooks_src.is_dir() {
         if let Some(home) = providers::provider_home(provider) {
             match providers::hook_strategy(provider) {
@@ -206,8 +209,8 @@ pub fn materialize_subagent_item(
         provider: provider.to_string(),
         ..Default::default()
     };
-    if provider == "codex" {
-        let Some(home) = providers::provider_home("codex") else {
+    if provider == "codex-cli" {
+        let Some(home) = providers::provider_home("codex-cli") else {
             return Ok(r);
         };
         let dir = home.join("agents");
@@ -274,7 +277,7 @@ pub fn materialize_rule_cursor(
     authored: &str,
 ) -> Result<MaterializationResult> {
     let mut r = MaterializationResult {
-        provider: "cursor".to_string(),
+        provider: "cursor-cli".to_string(),
         ..Default::default()
     };
     std::fs::create_dir_all(rules_dir)?;
@@ -379,13 +382,19 @@ fn dir_if_exists(p: &Path) -> Option<PathBuf> {
 /// `.{p}/{subdir}` across the known providers (canonical fan-out). Lets a
 /// plugin ship one `.claude/skills/…` and reach every agent.
 fn component_source(install_path: &Path, provider: &str, subdir: &str) -> Option<PathBuf> {
-    let own = install_path.join(format!(".{provider}")).join(subdir);
+    let own = install_path
+        .join(format!(".{}", providers::component_basename(provider)))
+        .join(subdir);
     if own.is_dir() {
         return Some(own);
     }
     COMPONENT_PROVIDERS
         .iter()
-        .map(|p| install_path.join(format!(".{p}")).join(subdir))
+        .map(|p| {
+            install_path
+                .join(format!(".{}", providers::component_basename(p)))
+                .join(subdir)
+        })
         .find(|p| p.is_dir())
 }
 
@@ -739,7 +748,7 @@ mod tests {
 
         let home = tmp.path().join("home");
         with_home(&home, || {
-            materialize("p", &install, "kimi").unwrap();
+            materialize("p", &install, "kimi-code").unwrap();
             materialize("p", &install, "opencode").unwrap();
             assert!(home.join(".kimi/skills/p-s/SKILL.md").is_file());
             // OpenCode uses XDG ~/.config/opencode, not ~/.opencode.
@@ -762,7 +771,7 @@ mod tests {
 
         let home = tmp.path().join("home");
         with_home(&home, || {
-            materialize("p", &install, "codex").unwrap();
+            materialize("p", &install, "codex-cli").unwrap();
             materialize("p", &install, "github-copilot").unwrap();
             assert!(home.join(".codex/prompts/p-audit.md").is_file());
             // Copilot's distinctive .agent.md extension.
@@ -778,7 +787,7 @@ mod tests {
         std::fs::write(install.join(".gemini/commands/x.md"), b"# x").unwrap();
         let home = tmp.path().join("home");
         with_home(&home, || {
-            let r = materialize("q", &install, "gemini").unwrap();
+            let r = materialize("q", &install, "gemini-cli").unwrap();
             let written = home.join(".gemini/commands/q-x.md");
             assert!(written.is_file());
             unmaterialize(&r).unwrap();
@@ -809,13 +818,13 @@ mod tests {
         with_home(&home, || {
             materialize("p", &install, "github-copilot").unwrap();
             materialize("p", &install, "opencode").unwrap();
-            materialize("p", &install, "hermes").unwrap();
+            materialize("p", &install, "hermes-agent").unwrap();
             // Copilot → standalone json; OpenCode → plugins/*.ts; Hermes → dir.
             assert!(home.join(".copilot/hooks/p-log.json").is_file());
             assert!(home.join(".config/opencode/plugins/p-guard.ts").is_file());
             // Hermes home is OS-specific (%LOCALAPPDATA%\hermes on Windows) —
             // resolve it through the registry rather than hard-coding `.hermes`.
-            let hermes = providers::provider_home("hermes").unwrap();
+            let hermes = providers::provider_home("hermes-agent").unwrap();
             assert!(hermes.join("hooks/p-audit/HOOK.yaml").is_file());
         });
     }
@@ -884,7 +893,7 @@ mod tests {
         let home = tmp.path().join("home");
         with_home(&home, || {
             materialize_skill_item(&payload, "s", "opencode", None).unwrap();
-            materialize_skill_item(&payload, "s", "kimi", None).unwrap();
+            materialize_skill_item(&payload, "s", "kimi-code", None).unwrap();
             assert!(home.join(".config/opencode/skills/s/SKILL.md").is_file());
             assert!(home.join(".kimi/skills/s/SKILL.md").is_file());
         });

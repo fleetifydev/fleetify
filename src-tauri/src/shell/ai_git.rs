@@ -27,8 +27,8 @@ const GEMINI: (&str, &[&str]) = ("gemini", &["--prompt-stdin"]);
 
 fn cli_for(tool: Option<&str>) -> (&'static str, &'static [&'static str]) {
     match tool.unwrap_or("claude-code") {
-        "codex" => CODEX,
-        "gemini" => GEMINI,
+        "codex-cli" => CODEX,
+        "gemini-cli" => GEMINI,
         _ => CLAUDE, // unknown → claude (parity with the Electron fallback)
     }
 }
@@ -63,7 +63,7 @@ async fn binary_on_path(bin: &str) -> bool {
 /// If the requested tool's binary isn't on PATH, transparently falls
 /// back through the remaining CLIs in `cli_fallback_chain` order so a
 /// user with only `claude` installed still gets a working AI summary
-/// when their session was created with `tool: "gemini"`.
+/// when their session was created with `tool: "gemini-cli"`.
 async fn run_session_cli(
     folder: &str,
     tool: Option<&str>,
@@ -688,8 +688,8 @@ mod tests {
     #[test]
     fn cli_for_picks_per_tool() {
         assert_eq!(cli_for(Some("claude-code")).0, "claude");
-        assert_eq!(cli_for(Some("codex")).0, "codex");
-        assert_eq!(cli_for(Some("gemini")).0, "gemini");
+        assert_eq!(cli_for(Some("codex-cli")).0, "codex");
+        assert_eq!(cli_for(Some("gemini-cli")).0, "gemini");
         // Unknown → claude (parity with Electron fallback).
         assert_eq!(cli_for(Some("does-not-exist")).0, "claude");
         assert_eq!(cli_for(None).0, "claude");

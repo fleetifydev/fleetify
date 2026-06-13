@@ -637,13 +637,13 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
 // agent as HTTP and splits it off below the divider.
 const CLI_IDS = new Set([
   "claude-code",
-  "codex",
-  "gemini",
-  "kimi",
+  "codex-cli",
+  "gemini-cli",
+  "kimi-code",
   "opencode",
-  "cursor",
+  "cursor-cli",
   "github-copilot",
-  "agy",
+  "antigravity-cli",
   "antigravity-sdk",
 ]);
 function isCliId(id: string): boolean {

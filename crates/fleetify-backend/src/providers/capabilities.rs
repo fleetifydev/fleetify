@@ -216,19 +216,19 @@ pub fn permission_capability(provider_id: &str) -> PermissionCapability {
             modes: CLAUDE_MODES,
             sandbox: None,
         },
-        "codex" => PermissionCapability::ApprovalSandbox {
+        "codex-cli" => PermissionCapability::ApprovalSandbox {
             approvals: &["untrusted", "on-request", "never"],
             sandboxes: &["read-only", "workspace-write", "danger-full-access"],
         },
-        "agy" | "antigravity-sdk" => PermissionCapability::Modes {
+        "antigravity-cli" | "antigravity-sdk" => PermissionCapability::Modes {
             modes: ANTIGRAVITY_MODES,
             sandbox: Some(SANDBOX_TOGGLE),
         },
-        "gemini" => PermissionCapability::Modes {
+        "gemini-cli" => PermissionCapability::Modes {
             modes: GEMINI_MODES,
             sandbox: Some(SANDBOX_TOGGLE),
         },
-        "cursor" => PermissionCapability::Modes {
+        "cursor-cli" => PermissionCapability::Modes {
             modes: CURSOR_MODES,
             sandbox: None,
         },
@@ -240,11 +240,11 @@ pub fn permission_capability(provider_id: &str) -> PermissionCapability {
             modes: OPENCODE_MODES,
             sandbox: None,
         },
-        "kimi" => PermissionCapability::Modes {
+        "kimi-code" => PermissionCapability::Modes {
             modes: KIMI_MODES,
             sandbox: None,
         },
-        "hermes" => PermissionCapability::Modes {
+        "hermes-agent" => PermissionCapability::Modes {
             modes: HERMES_MODES,
             sandbox: None,
         },
@@ -274,7 +274,7 @@ pub fn tool_matrix(provider_id: &str) -> Option<ToolMatrixCapability> {
             decisions: &["allow", "ask", "deny"],
             supports_glob: true,
         }),
-        "cursor" => Some(ToolMatrixCapability {
+        "cursor-cli" => Some(ToolMatrixCapability {
             tools: &["Read", "Write", "Shell", "WebFetch", "Mcp"],
             decisions: &["allow", "deny"],
             supports_glob: true,
@@ -284,7 +284,7 @@ pub fn tool_matrix(provider_id: &str) -> Option<ToolMatrixCapability> {
             decisions: &["allow", "deny"],
             supports_glob: true,
         }),
-        "kimi" => Some(ToolMatrixCapability {
+        "kimi-code" => Some(ToolMatrixCapability {
             tools: &["mcp_tool"],
             decisions: &["allow", "deny"],
             supports_glob: true,
@@ -302,7 +302,7 @@ pub fn effort_capability(provider_id: &str, model_id: &str) -> EffortCapability 
 /// When permission/effort changes apply for a provider's bridge (§8).
 pub fn config_timing(provider_id: &str) -> ConfigTiming {
     match provider_id {
-        "opencode" | "cursor" | "hermes" => ConfigTiming {
+        "opencode" | "cursor-cli" | "hermes-agent" => ConfigTiming {
             permission: Apply::Live,
             effort: Apply::Live,
         },
@@ -445,14 +445,14 @@ mod tests {
             }
         );
         assert_eq!(
-            config_timing("cursor"),
+            config_timing("cursor-cli"),
             ConfigTiming {
                 permission: Apply::Live,
                 effort: Apply::Live
             }
         );
         assert_eq!(
-            config_timing("hermes"),
+            config_timing("hermes-agent"),
             ConfigTiming {
                 permission: Apply::Live,
                 effort: Apply::Live
@@ -475,7 +475,7 @@ mod tests {
             }
         );
         assert_eq!(
-            config_timing("codex"),
+            config_timing("codex-cli"),
             ConfigTiming {
                 permission: Apply::Spawn,
                 effort: Apply::Spawn
@@ -502,7 +502,7 @@ mod tests {
             _ => panic!("claude must be Modes"),
         }
         // Codex: two-axis cross-product.
-        match permission_capability("codex") {
+        match permission_capability("codex-cli") {
             PermissionCapability::ApprovalSandbox {
                 approvals,
                 sandboxes,
@@ -516,7 +516,7 @@ mod tests {
             _ => panic!("codex must be ApprovalSandbox"),
         }
         // Antigravity: 3-tier Modes + sandbox toggle.
-        match permission_capability("agy") {
+        match permission_capability("antigravity-cli") {
             PermissionCapability::Modes { modes, sandbox } => {
                 assert_eq!(modes.len(), 3);
                 assert!(sandbox.is_some());
@@ -538,7 +538,7 @@ mod tests {
             _ => panic!("openai must be Modes"),
         }
         // Gemini CLI uses its native approval ids.
-        match permission_capability("gemini") {
+        match permission_capability("gemini-cli") {
             PermissionCapability::Modes { modes, .. } => {
                 assert!(modes.iter().any(|m| m.id == "auto_edit"));
                 assert!(modes.iter().any(|m| m.id == "yolo"));
@@ -575,7 +575,7 @@ mod tests {
 
         // Non-matrix agents → None.
         assert!(tool_matrix("claude-code").is_none());
-        assert!(tool_matrix("codex").is_none());
+        assert!(tool_matrix("codex-cli").is_none());
         assert!(tool_matrix("openai").is_none());
     }
 
@@ -649,7 +649,7 @@ mod tests {
             }
         );
         // levels — Codex: no `minimal`, adds `xhigh`.
-        assert!(matches!(effort_capability("codex", "gpt-5.2"),
+        assert!(matches!(effort_capability("codex-cli", "gpt-5.2"),
             Levels { levels, .. } if !levels.iter().any(|s| s == "minimal") && levels.iter().any(|s| s == "xhigh")));
 
         // budget — Gemini 2.5: flash can disable, pro cannot.

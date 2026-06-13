@@ -409,12 +409,12 @@ describe("BranchStrip — createPR forwards `tool` to dispatcher", () => {
     });
     createPRMock.mockResolvedValue({ ok: true, prNumber: 1, prUrl: "https://github.com/u/r/pull/1" });
     const { BranchStrip } = await loadBranchStrip();
-    render(<BranchStrip projectPath="/repo" tool="codex" sessionTitle="t" />);
+    render(<BranchStrip projectPath="/repo" tool="codex-cli" sessionTitle="t" />);
     fireEvent.click(await screen.findByRole("button", { name: /Create PR/i }));
     await waitFor(() => {
       expect(createPRMock).toHaveBeenCalledWith(
         "/repo",
-        expect.objectContaining({ tool: "codex" }),
+        expect.objectContaining({ tool: "codex-cli" }),
       );
     });
   });

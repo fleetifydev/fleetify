@@ -123,14 +123,14 @@ under the synthetic provider id `"agents"`):
 | Provider id | USER skills dir |
 |---|---|
 | `claude-code` | `~/.claude/skills/` |
-| `codex` | `~/.codex/skills/` *(written, but Codex reads the shared dir — see below)* |
-| `gemini` | `~/.gemini/skills/` |
-| `kimi` | `~/.kimi/skills/` |
+| `codex-cli` | `~/.codex/skills/` *(written, but Codex reads the shared dir — see below)* |
+| `gemini-cli` | `~/.gemini/skills/` |
+| `kimi-code` | `~/.kimi/skills/` |
 | `opencode` | `~/.config/opencode/skills/` |
 | `github-copilot` | `~/.copilot/skills/` |
-| `cursor` | `~/.cursor/skills/` |
-| `hermes` | `~/.hermes/skills/` (`%LOCALAPPDATA%\hermes\skills` on Windows) |
-| `agy` (Antigravity) | `~/.gemini/antigravity-cli/skills/` |
+| `cursor-cli` | `~/.cursor/skills/` |
+| `hermes-agent` | `~/.hermes/skills/` (`%LOCALAPPDATA%\hermes\skills` on Windows) |
+| `antigravity-cli` (Antigravity) | `~/.gemini/antigravity-cli/skills/` |
 | *(shared)* | `~/.agents/skills/` — read by Codex (its **only** USER scope), Gemini, Copilot, Cursor and Kimi |
 
 > **Why the shared dir matters.** **Codex's USER skill scope is `~/.agents/skills`,
@@ -154,12 +154,12 @@ format is per-provider:
 | Provider id | Sub-agent file |
 |---|---|
 | `claude-code` | `~/.claude/agents/<slug>.md` |
-| `codex` | `~/.codex/agents/<slug>.toml` — converted to TOML (`name` / `description` / `developer_instructions`) |
-| `gemini` | `~/.gemini/agents/<slug>.md` |
+| `codex-cli` | `~/.codex/agents/<slug>.toml` — converted to TOML (`name` / `description` / `developer_instructions`) |
+| `gemini-cli` | `~/.gemini/agents/<slug>.md` |
 | `opencode` | `~/.config/opencode/agents/<slug>.md` |
 | `github-copilot` | `~/.copilot/agents/<slug>.agent.md` (Copilot's compound extension) |
-| `cursor` | `~/.cursor/agents/<slug>.md` |
-| `agy` (Antigravity) | `~/.gemini/antigravity-cli/agents/<slug>.md` |
+| `cursor-cli` | `~/.cursor/agents/<slug>.md` |
+| `antigravity-cli` (Antigravity) | `~/.gemini/antigravity-cli/agents/<slug>.md` |
 
 > **Kimi and Hermes have no on-disk per-agent file**, so they're absent from
 > `PROVIDERS_FOR_KIND.subagent`. **Codex is the one non-copy path**: its agents are
@@ -204,10 +204,10 @@ The block looks like:
 | Provider id | Global rule file |
 |---|---|
 | `claude-code` | `~/.claude/CLAUDE.md` |
-| `gemini` | `~/.gemini/GEMINI.md` |
-| `codex` / `kimi` / `opencode` / `agy` | `<home>/AGENTS.md` (the dominant cross-tool standard) |
+| `gemini-cli` | `~/.gemini/GEMINI.md` |
+| `codex-cli` / `kimi-code` / `opencode` / `antigravity-cli` | `<home>/AGENTS.md` (the dominant cross-tool standard) |
 | `github-copilot` | `~/.copilot/copilot-instructions.md` |
-| `cursor` | `~/.cursor/rules/<slug>.mdc` — **standalone file**, not a merge (Cursor's per-rule format with `description` + `alwaysApply: true` frontmatter) |
+| `cursor-cli` | `~/.cursor/rules/<slug>.mdc` — **standalone file**, not a merge (Cursor's per-rule format with `description` + `alwaysApply: true` frontmatter) |
 
 Each merge writes a `RuleMergeRecord` onto the item (`meta.json::rule_merge`);
 delete strips exactly that block (Cursor's `.mdc` is removed as a standalone
@@ -331,7 +331,7 @@ enumerate prompts/hooks/rules.
 - **Session rules write into your project directory.** A non-worktree session
   merges its block into `<project_path>/CLAUDE.md` (etc.); the marker is
   session-keyed so concurrent sessions in the same dir don't clobber each other.
-- **Provider ids are canonical** (`claude-code`, `agy`, …) — the same set the
+- **Provider ids are canonical** (`claude-code`, `antigravity-cli`, …) — the same set the
   catalog and marketplace use. A skill/subagent/rule written for an unknown id
   silently no-ops.
 - **Everything is FLEETIFY_HOME-scoped.** Two instances with different

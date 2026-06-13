@@ -292,7 +292,11 @@ mod tests {
         let home = tmp.path().join("home");
         with_test_home(&home, || {
             // Author a skill targeting claude + kimi.
-            let it = item(LibraryKind::Skill, "my-skill", &["claude-code", "kimi"]);
+            let it = item(
+                LibraryKind::Skill,
+                "my-skill",
+                &["claude-code", "kimi-code"],
+            );
             let payload = store::item_dir(&it.id).join("skill");
             std::fs::create_dir_all(&payload).unwrap();
             std::fs::write(
@@ -352,7 +356,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let home = tmp.path().join("home");
         with_test_home(&home, || {
-            let it = item(LibraryKind::Hook, "fmt", &["claude-code", "kimi"]);
+            let it = item(LibraryKind::Hook, "fmt", &["claude-code", "kimi-code"]);
             let payload = store::item_dir(&it.id).join("hook.json");
             std::fs::create_dir_all(payload.parent().unwrap()).unwrap();
             std::fs::write(
@@ -380,7 +384,11 @@ mod tests {
         let tmp = tempdir().unwrap();
         let home = tmp.path().join("home");
         with_test_home(&home, || {
-            let mut it = item(LibraryKind::Subagent, "reviewer", &["claude-code", "codex"]);
+            let mut it = item(
+                LibraryKind::Subagent,
+                "reviewer",
+                &["claude-code", "codex-cli"],
+            );
             it.description = Some("Reviews diffs for bugs".into());
             let payload = store::item_dir(&it.id).join("subagent.md");
             std::fs::create_dir_all(payload.parent().unwrap()).unwrap();
@@ -451,7 +459,7 @@ mod tests {
         with_test_home(&home, || {
             let (it, payload) = rule(
                 "tabs",
-                &["codex"],
+                &["codex-cli"],
                 "Prefer tabs.",
                 RuleSpec {
                     format: RuleFormat::General,
@@ -507,7 +515,7 @@ mod tests {
         with_test_home(&home, || {
             for (i, (rt, desc, globs, expect)) in cases.iter().enumerate() {
                 let slug = format!("cursor-rule-{i}");
-                let mut it = item(LibraryKind::Rule, &slug, &["cursor"]);
+                let mut it = item(LibraryKind::Rule, &slug, &["cursor-cli"]);
                 it.description = desc.map(str::to_string);
                 it.rule_spec = Some(RuleSpec {
                     format: RuleFormat::Cursor,

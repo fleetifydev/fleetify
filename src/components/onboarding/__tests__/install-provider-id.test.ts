@@ -10,7 +10,7 @@ import { describe, it, expect } from "vitest";
 // Regression context: passing `p.scanKey` ("agy_cli",
 // "antigravity_sdk", "claude_cli"…) to `installProvider` lands at
 // the backend's `shell_install_provider` which routes on the kebab
-// `p.id` ("agy", "antigravity-sdk", "claude-code") and returns
+// `p.id` ("antigravity-cli", "antigravity-sdk", "claude-code") and returns
 // `unknown provider: <scanKey>` for every CLI install in onboarding.
 import onboardingSrc from "@/components/onboarding/onboarding-chat.tsx?raw";
 
@@ -104,8 +104,8 @@ describe("OnboardingChat install IPC", () => {
 
     // The full workspace catalog (21 ids — must match providers::CATALOG).
     const catalog = [
-      "claude-code", "codex", "gemini", "kimi", "opencode", "github-copilot",
-      "cursor", "hermes", "agy", "antigravity-sdk",
+      "claude-code", "codex-cli", "gemini-cli", "kimi-code", "opencode", "github-copilot",
+      "cursor-cli", "hermes-agent", "antigravity-cli", "antigravity-sdk",
       "openai", "anthropic", "deepseek", "grok", "nvidia-nim", "kimi-api",
       "gemini-api", "perplexity", "openrouter", "cloudflare-workers-ai",
       "ollama",
@@ -223,9 +223,9 @@ describe("OnboardingChat install IPC", () => {
       scanKeyById.set(idMatch[1], skMatch ? skMatch[1] : null);
     }
     expect(scanKeyById.get("opencode")).toBe("opencode_cli");
-    expect(scanKeyById.get("cursor")).toBe("cursor_cli");
+    expect(scanKeyById.get("cursor-cli")).toBe("cursor_cli");
     expect(scanKeyById.get("github-copilot")).toBe("github_copilot_cli");
-    expect(scanKeyById.get("hermes")).toBe("hermes_cli");
+    expect(scanKeyById.get("hermes-agent")).toBe("hermes_cli");
     // The Install / Sign-in buttons are wired only when a row has a scanKey.
     expect(onboardingSrc).toMatch(/onInstall=\{!frozen && p\.scanKey \? \(\) => handleInstall\(p\)/);
   });

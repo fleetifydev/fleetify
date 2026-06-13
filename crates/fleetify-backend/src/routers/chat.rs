@@ -1095,8 +1095,8 @@ async fn run_send_flow(
             match session.tool.as_str() {
                 "claude-code" => vec![crate::services::routing::traits::AgentKind::Claude],
                 "openai" => vec![crate::services::routing::traits::AgentKind::OpenAI],
-                "gemini" => vec![crate::services::routing::traits::AgentKind::Gemini],
-                "codex" => vec![crate::services::routing::traits::AgentKind::Codex],
+                "gemini-cli" => vec![crate::services::routing::traits::AgentKind::Gemini],
+                "codex-cli" => vec![crate::services::routing::traits::AgentKind::Codex],
                 "github-copilot" => {
                     vec![crate::services::routing::traits::AgentKind::GitHubCopilot]
                 }
@@ -1407,7 +1407,7 @@ async fn run_send_flow(
                 session.account_id.as_deref(),
             )))
         }
-        "kimi" => {
+        "kimi-code" => {
             let is_staff = session.title == "Staff Agent";
             let mut b = crate::bridges::kimi::KimiBridge::new(
                 sid.clone(),
@@ -1448,7 +1448,7 @@ async fn run_send_flow(
             }
             AnyBridge::Kimi(Arc::new(b))
         }
-        "agy" => {
+        "antigravity-cli" => {
             let is_staff = session.title == "Staff Agent";
             // agy `-p` has no system-prompt flag, so the staff dispatch protocol
             // (or a template prompt) is carried in the message by the bridge —
@@ -1506,7 +1506,7 @@ async fn run_send_flow(
                 ),
             ))
         }
-        "gemini" => {
+        "gemini-cli" => {
             let is_staff = session.title == "Staff Agent";
             let mut b = GeminiBridge::new(
                 sid.clone(),
@@ -1554,7 +1554,7 @@ async fn run_send_flow(
             }
             AnyBridge::Gemini(Arc::new(b))
         }
-        "codex" => {
+        "codex-cli" => {
             let is_staff = session.title == "Staff Agent";
             let mut b = CodexBridge::new(
                 sid.clone(),
@@ -1620,7 +1620,7 @@ async fn run_send_flow(
             }
             AnyBridge::OpenCode(Arc::new(b))
         }
-        "hermes" => {
+        "hermes-agent" => {
             let is_staff = session.title == "Staff Agent";
             let mut b = crate::bridges::hermes::HermesBridge::new(
                 sid.clone(),
@@ -1664,7 +1664,7 @@ async fn run_send_flow(
             }
             AnyBridge::Hermes(Arc::new(b))
         }
-        "cursor" => {
+        "cursor-cli" => {
             let is_staff = session.title == "Staff Agent";
             let mut b = crate::bridges::cursor::CursorBridge::new(
                 sid.clone(),
@@ -1773,7 +1773,9 @@ async fn run_send_flow(
     // via BridgeContext but cannot swap the bridge identity mid-turn.
     // Full bridge-swap is deferred (see task notes).
     let bridge_tool_str = match session.tool.as_str() {
-        "claude-code" | "openai" | "gemini" | "codex" | "github-copilot" => session.tool.as_str(),
+        "claude-code" | "openai" | "gemini-cli" | "codex-cli" | "github-copilot" => {
+            session.tool.as_str()
+        }
         _ => "claude-code",
     };
     let resolution_tool_str =
@@ -2963,7 +2965,7 @@ async fn run_dispatched_task(
                 ),
             ))
         }
-        "kimi" => {
+        "kimi-code" => {
             let mut b = crate::bridges::kimi::KimiBridge::new(
                 target_id.clone(),
                 target_cwd.clone(),
@@ -2982,7 +2984,7 @@ async fn run_dispatched_task(
             }
             AnyBridge::Kimi(std::sync::Arc::new(b))
         }
-        "gemini" => {
+        "gemini-cli" => {
             let mut b = GeminiBridge::new(
                 target_id.clone(),
                 target_cwd.clone(),
@@ -2999,7 +3001,7 @@ async fn run_dispatched_task(
             }
             AnyBridge::Gemini(std::sync::Arc::new(b))
         }
-        "codex" => AnyBridge::Codex(std::sync::Arc::new(CodexBridge::new(
+        "codex-cli" => AnyBridge::Codex(std::sync::Arc::new(CodexBridge::new(
             target_id.clone(),
             target_cwd.clone(),
             target.permission_mode.clone(),
@@ -3023,7 +3025,7 @@ async fn run_dispatched_task(
             b.resume_session_id = target.claude_session_id.clone();
             AnyBridge::OpenCode(std::sync::Arc::new(b))
         }
-        "hermes" => {
+        "hermes-agent" => {
             let mut b = crate::bridges::hermes::HermesBridge::new(
                 target_id.clone(),
                 target_cwd.clone(),
@@ -3041,7 +3043,7 @@ async fn run_dispatched_task(
             }
             AnyBridge::Hermes(std::sync::Arc::new(b))
         }
-        "cursor" => {
+        "cursor-cli" => {
             let mut b = crate::bridges::cursor::CursorBridge::new(
                 target_id.clone(),
                 target_cwd.clone(),
@@ -3075,7 +3077,7 @@ async fn run_dispatched_task(
                 crate::bridges::parse_tool_overrides(target.tool_overrides.as_deref());
             AnyBridge::GitHubCopilot(std::sync::Arc::new(b))
         }
-        "agy" => AnyBridge::Antigravity(std::sync::Arc::new(
+        "antigravity-cli" => AnyBridge::Antigravity(std::sync::Arc::new(
             crate::bridges::antigravity::AntigravityBridge::new(
                 target_id.clone(),
                 target_cwd.clone(),

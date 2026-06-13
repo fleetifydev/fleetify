@@ -406,12 +406,12 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
     case "claude-code":
     case "claude":     return <ImgIcon src={claudeIcon} size={size} label="Claude Code" />;
     case "anthropic":  return <ImgIcon src={claudeIcon} size={size} label="Claude Code" />;
-    case "codex":      return <ThemedImgIcon light={codexLightIcon} dark={codexDarkIcon} size={size} label="Codex" />;
-    case "cursor":     return <CursorLogo size={size} />;
-    case "gemini":     return <ImgIcon src={geminiIcon} size={size} label="Gemini" />;
+    case "codex-cli":  return <ThemedImgIcon light={codexLightIcon} dark={codexDarkIcon} size={size} label="Codex" />;
+    case "cursor-cli": return <CursorLogo size={size} />;
+    case "gemini-cli": return <ImgIcon src={geminiIcon} size={size} label="Gemini" />;
     case "ollama":     return <MaskIcon src={ollamaIcon} size={size} label="Ollama" />;
     case "cloudflare-workers-ai": return <ImgIcon src={cloudflareIcon} size={size} label="Cloudflare Workers AI" />;
-    case "kimi":       return <ImgIcon src={kimiIcon} size={size} label="Kimi" />;
+    case "kimi-code":  return <ImgIcon src={kimiIcon} size={size} label="Kimi" />;
     case "kimi-api":   return <ImgIcon src={kimiIcon} size={size} label="Kimi" />;
     case "openai":     return <OpenAILogo size={size} />;
     case "groq":       return <GroqLogo size={size} />;
@@ -422,7 +422,7 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
     case "gemini-api": return <ImgIcon src={geminiIcon} size={size} label="Gemini" />;
     case "openrouter": return <OpenRouterLogo size={size} />;
     case "higgsfield": return <ImgIcon src={higgsfieldIcon} size={size} label="Higgsfield" />;
-    case "agy":
+    case "antigravity-cli":
     case "antigravity":
     case "antigravity-sdk":
       // Official lobehub colour mark at normal/large sizes (Settings cards,
@@ -433,7 +433,7 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
         : <AgyLogo size={size} />;
     case "github-copilot": return <GitHubCopilotLogo size={size} />;
     case "opencode":   return <ThemedImgIcon light={opencodeLightIcon} dark={opencodeIcon} size={size} label="OpenCode" />;
-    case "hermes":     return <HermesLogo size={size} />;
+    case "hermes-agent": return <HermesLogo size={size} />;
     case "aider":      return <AiderLogo size={size} />;
     default:           return <CustomAgentLogo size={size} />;
   }
@@ -441,11 +441,11 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
 
 export function providerName(tool: string): string {
   const names: Record<string, string> = {
-    "claude-code": "Claude Code", claude: "Claude Code", codex: "Codex", cursor: "Cursor", gemini: "Gemini",
-    ollama: "Ollama", kimi: "Kimi", agy: "Antigravity CLI",
+    "claude-code": "Claude Code", "codex-cli": "Codex", "cursor-cli": "Cursor", "gemini-cli": "Gemini",
+    ollama: "Ollama", "kimi-code": "Kimi", "antigravity-cli": "Antigravity CLI",
     "antigravity-sdk": "Antigravity SDK",
     opencode: "OpenCode", "github-copilot": "GitHub Copilot", aider: "Aider",
-    openrouter: "OpenRouter", hermes: "Hermes Agent", higgsfield: "Higgsfield",
+    openrouter: "OpenRouter", "hermes-agent": "Hermes Agent", higgsfield: "Higgsfield",
   };
   return names[tool] ?? "Custom";
 }

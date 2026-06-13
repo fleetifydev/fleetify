@@ -176,7 +176,7 @@ describe("toolMatrixFor", () => {
   };
   const tiles = [
     makeTileWithMatrix("opencode", matrix),
-    makeTileWithMatrix("cursor", null),
+    makeTileWithMatrix("cursor-cli", null),
   ];
 
   it("returns the matrix for a provider that has one", () => {
@@ -184,7 +184,7 @@ describe("toolMatrixFor", () => {
   });
 
   it("returns null for a provider with no matrix", () => {
-    expect(toolMatrixFor(tiles, "cursor")).toBeNull();
+    expect(toolMatrixFor(tiles, "cursor-cli")).toBeNull();
   });
 
   it("returns null for an unknown provider id", () => {
@@ -205,12 +205,12 @@ describe("toolMatrixFor", () => {
 });
 
 describe("sandboxOptionsFor", () => {
-  const codexTile = makeTile("codex", {
+  const codexTile = makeTile("codex-cli", {
     kind: "approval_sandbox",
     approvals: ["untrusted", "on-request", "never"],
     sandboxes: ["read-only", "workspace-write", "danger-full-access"],
   });
-  const geminiTile = makeTile("gemini", {
+  const geminiTile = makeTile("gemini-cli", {
     kind: "modes",
     modes: [{ id: "default", label: "Ask permissions" }],
     sandbox: ["off", "on"],
@@ -222,12 +222,12 @@ describe("sandboxOptionsFor", () => {
   });
 
   it("returns the sandboxes array for an approval_sandbox provider (codex)", () => {
-    const opts = sandboxOptionsFor([codexTile], "codex");
+    const opts = sandboxOptionsFor([codexTile], "codex-cli");
     expect(opts).toEqual(["read-only", "workspace-write", "danger-full-access"]);
   });
 
   it("returns sandbox options for a modes provider with a sandbox toggle (gemini)", () => {
-    const opts = sandboxOptionsFor([geminiTile], "gemini");
+    const opts = sandboxOptionsFor([geminiTile], "gemini-cli");
     expect(opts).toEqual(["off", "on"]);
   });
 

@@ -6,13 +6,13 @@ const promptsHits = (ctx: "fleet" | "session-chat", tool: string | null) =>
 
 describe("/prompts in commandsForContext", () => {
   it("appears exactly once for codex (no dup with the legacy alias)", () => {
-    const hits = promptsHits("session-chat", "codex");
+    const hits = promptsHits("session-chat", "codex-cli");
     expect(hits).toHaveLength(1);
     expect(hits[0].intent).toBe("session.prompts");
   });
   it("is present for claude and gemini sessions", () => {
     expect(promptsHits("session-chat", "claude")).toHaveLength(1);
-    expect(promptsHits("session-chat", "gemini")).toHaveLength(1);
+    expect(promptsHits("session-chat", "gemini-cli")).toHaveLength(1);
   });
   it("is present in the fleet command center", () => {
     const hits = promptsHits("fleet", null);
@@ -20,7 +20,7 @@ describe("/prompts in commandsForContext", () => {
     expect(hits[0].intent).toBe("fleet.prompts");
   });
   it("leaves /commands for claude untouched", () => {
-    const all = commandsForContext("session-chat", "claude").map((c) => c.cmd);
+    const all = commandsForContext("session-chat", "claude-code").map((c) => c.cmd);
     expect(all).toContain("/commands");
   });
 });

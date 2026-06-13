@@ -26,13 +26,13 @@ import type { ProviderTile } from "@/lib/providers-api";
 
 /** CLI agents whose lineup the backend serves from the remote model catalog
  *  (fleetify.dev/api) - cheap to fetch eagerly at mount. */
-export const REMOTE_CATALOG_AGENTS = ["claude-code", "codex", "gemini", "kimi", "agy"] as const;
+export const REMOTE_CATALOG_AGENTS = ["claude-code", "codex-cli", "gemini-cli", "kimi-code", "antigravity-cli"] as const;
 
 /** CLI agents whose lineup comes from a live local CLI/ACP probe - fetched
  *  lazily (picker open) to avoid spawning processes at app mount. Their
  *  running sessions also push `available_models_update`, which heals the
  *  per-session list independently of this store. */
-export const LIVE_PROBE_AGENTS = ["opencode", "cursor", "github-copilot", "hermes"] as const;
+export const LIVE_PROBE_AGENTS = ["opencode", "cursor-cli", "github-copilot", "hermes-agent"] as const;
 
 function toPickerModels(
   providerId: string,

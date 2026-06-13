@@ -63,7 +63,7 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
       supports_effort: false,
     },
   ],
-  codex: [
+  "codex-cli": [
     {
       id: "gpt-5.2", label: "GPT-5.2", ctx: "200K",
       effort: EFFORT_NONE,
@@ -80,7 +80,7 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
       supports_effort: false,
     },
   ],
-  gemini: [
+  "gemini-cli": [
     {
       id: "gemini-3.1-pro-preview", label: "3.1 Pro", ctx: "1M",
       effort: EFFORT_NONE,
@@ -97,7 +97,7 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
       supports_effort: false,
     },
   ],
-  kimi: [
+  "kimi-code": [
     {
       id: "kimi-k2.6", label: "Kimi K2.6", ctx: "256K",
       effort: EFFORT_NONE,
@@ -127,7 +127,7 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
   // whatever agy is configured to use." When upstream lands a `--model`
   // flag (or we ship PTY-driven dispatch that can run `/model <id>`
   // before each turn), the full per-(model × effort) list returns.
-  agy: [
+  "antigravity-cli": [
     { id: "agy-default", label: "Auto", ctx: "1M", effort: EFFORT_NONE, supports_effort: false },
   ],
   // Antigravity SDK — sibling of `agy` driven from a Python sidecar
@@ -160,7 +160,7 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
     { id: "opencode/mimo-v2.5-free",         label: "MiMo V2.5",         effort: EFFORT_NONE, supports_effort: false },
     { id: "opencode/nemotron-3-super-free",  label: "Nemotron 3 Super",  effort: EFFORT_NONE, supports_effort: false },
   ],
-  cursor: [
+  "cursor-cli": [
     { id: "default[]",                                                            label: "Auto",              effort: EFFORT_NONE, supports_effort: false },
     { id: "composer-2.5[fast=true]",                                              label: "Composer 2.5",      effort: EFFORT_NONE, supports_effort: false },
     { id: "claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]",   label: "Claude Opus 4.8",   ctx: "300K", effort: EFFORT_NONE, supports_effort: false },
@@ -179,7 +179,7 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
   // model is whatever `hermes model` configured. (This placeholder id is never
   // in Hermes's real available list, so picking it pre-discovery is a no-op
   // until live models arrive.)
-  hermes: [
+  "hermes-agent": [
     { id: "default", label: "Hermes (configured model)", effort: EFFORT_NONE, supports_effort: false },
   ],
 };
@@ -191,14 +191,14 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
 const CLI_FALLBACK_LABELS: Record<string, string> = {
   "claude-code":     "Claude Code",
   claude:            "Claude Code", // legacy id alias (pre-rename sessions)
-  codex:             "Codex CLI",
-  gemini:            "Gemini CLI",
-  kimi:              "Kimi Code CLI",
+  "codex-cli":             "Codex CLI",
+  "gemini-cli":            "Gemini CLI",
+  "kimi-code":              "Kimi Code CLI",
   opencode:          "OpenCode",
-  cursor:            "Cursor CLI",
-  agy:               "Antigravity CLI",
+  "cursor-cli":            "Cursor CLI",
+  "antigravity-cli":               "Antigravity CLI",
   "antigravity-sdk": "Antigravity SDK",
-  hermes:            "Hermes Agent",
+  "hermes-agent":            "Hermes Agent",
 };
 
 /** Flat lookup of every CLI model id → its friendly label, derived from
@@ -276,7 +276,7 @@ const HERMES_PROVIDER_LABELS: Record<string, string> = {
   nous: "Nous",
   "nous-api": "Nous",
   "openai-codex": "Codex",
-  gemini: "Gemini",
+  "gemini-cli": "Gemini",
   zai: "Z.AI",
   "kimi-coding": "Kimi",
   minimax: "MiniMax",
@@ -354,7 +354,7 @@ export function buildPickerGroups(
     // model ids are `provider:model`. Surface the providers so the picker shows
     // a chip-row above the models. Only when >1 (a single provider needs no
     // selector — the flat list is clearer).
-    if (t.spec.id === "hermes") {
+    if (t.spec.id === "hermes-agent") {
       const provs = hermesProviders(models);
       if (provs.length > 1) group.providers = provs;
     }
@@ -573,7 +573,7 @@ export function resolveModelChip(
     // (or a healed default) matches no group, so show the bare model name
     // instead of the raw `copilot:…` id. Tool-scoped so it never mangles other
     // colon-bearing ids (e.g. Ollama's `llama3:8b`).
-    (model && tool === "hermes" && model.includes(":")
+    (model && tool === "hermes-agent" && model.includes(":")
       ? model.slice(model.indexOf(":") + 1)
       : undefined) ??
     model ??
@@ -601,7 +601,7 @@ export function hermesHealModel(
   modelName: string | null,
   current: string | null | undefined,
 ): string | null {
-  if (tool !== "hermes") return null;
+  if (tool !== "hermes-agent") return null;
   if (modelName !== HERMES_DEFAULT_SENTINEL) return null;
   if (!current || current === HERMES_DEFAULT_SENTINEL) return null;
   return current;

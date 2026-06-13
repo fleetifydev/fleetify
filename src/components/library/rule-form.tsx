@@ -118,7 +118,7 @@ export function RuleForm({
     setSaving(true);
     setError(null);
     const providersForTab =
-      tab === "general" ? providers : tab === "cursor" ? ["cursor"] : ["github-copilot"];
+      tab === "general" ? providers : tab === "cursor" ? ["cursor-cli"] : ["github-copilot"];
     const sendGlobs =
       (tab === "cursor" && cursorNeedsGlobs) || tab === "copilot"
         ? globs.trim() || undefined

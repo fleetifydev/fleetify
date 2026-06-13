@@ -119,8 +119,8 @@ pub fn resolve_tool(hint: &str) -> Option<&'static str> {
     let alias = match n.as_str() {
         "claudecode" | "cc" => Some("claude-code"),
         "gpt" | "chatgpt" => Some("openai"),
-        "codexcli" => Some("codex"),
-        "geminicli" => Some("gemini"),
+        "codexcli" => Some("codex-cli"),
+        "geminicli" => Some("gemini-cli"),
         _ => None,
     };
     if alias.is_some() {
@@ -276,7 +276,7 @@ pub fn default_model_for(tool: &str) -> Option<&'static str> {
         // gemini-cli's `--model` default is `auto-gemini-3`; pin the top
         // concrete model from its ACP `availableModels` so a no-model spawn is
         // deterministic (`gemini-3.1-pro-preview`, matching the picker's lead).
-        "gemini" => Some("gemini-3.1-pro-preview"),
+        "gemini-cli" => Some("gemini-3.1-pro-preview"),
         _ => None,
     }
 }
@@ -720,7 +720,10 @@ mod tests {
         // Spawning gemini with no model must land on a concrete available model
         // (not gemini-cli's opaque "auto" default). Other agents keep their own
         // built-in default — None here means "don't pin".
-        assert_eq!(default_model_for("gemini"), Some("gemini-3.1-pro-preview"));
+        assert_eq!(
+            default_model_for("gemini-cli"),
+            Some("gemini-3.1-pro-preview")
+        );
         assert_eq!(default_model_for("claude-code"), None);
         assert_eq!(default_model_for("totally-unknown"), None);
     }
@@ -787,14 +790,14 @@ mod tests {
         // any confirmation form.
         let known = vec!["/home/u/test_a".to_string()];
         let r = resolve(
-            &raw(r#"{"title":"gemini-test_a","project":"test_a","tool":"gemini"}"#),
+            &raw(r#"{"title":"gemini-test_a","project":"test_a","tool":"gemini-cli"}"#),
             &known,
         );
         assert!(r.gaps.is_empty(), "expected no gaps, got {:?}", r.gaps);
         assert_eq!(r.spec.first_task, None);
         // Whitespace-only task normalises to None the same way.
         let r = resolve(
-            &raw(r#"{"project":"test_a","tool":"gemini","task":"   "}"#),
+            &raw(r#"{"project":"test_a","tool":"gemini-cli","task":"   "}"#),
             &known,
         );
         assert!(r.gaps.is_empty());
@@ -822,12 +825,12 @@ mod tests {
     fn resolve_passes_worktree_through() {
         let known = vec!["/home/u/test_a".to_string()];
         let r = resolve(
-            &raw(r#"{"project":"test_a","tool":"gemini","task":"do x","worktree":true}"#),
+            &raw(r#"{"project":"test_a","tool":"gemini-cli","task":"do x","worktree":true}"#),
             &known,
         );
         assert_eq!(r.spec.use_worktree, Some(true));
         let r = resolve(
-            &raw(r#"{"project":"test_a","tool":"gemini","task":"do x","worktree":false}"#),
+            &raw(r#"{"project":"test_a","tool":"gemini-cli","task":"do x","worktree":false}"#),
             &known,
         );
         assert_eq!(r.spec.use_worktree, Some(false));

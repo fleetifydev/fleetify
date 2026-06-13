@@ -16,7 +16,7 @@ acp = false
 default_model = "gpt-4o"
 tiers = ["gpt-4o-mini", "gpt-4o"]
 
-[agents.gemini]
+[agents.gemini-cli]
 supports_tool_use = true
 supports_vision = true
 max_context = 1000000
@@ -25,7 +25,7 @@ acp = true
 default_model = "gemini-3.1-pro-preview"
 tiers = ["gemini-3.1-flash-lite-preview", "gemini-3.1-pro-preview"]
 
-[agents.codex]
+[agents.codex-cli]
 supports_tool_use = true
 supports_vision = false
 max_context = 200000
@@ -36,7 +36,7 @@ tiers = ["gpt-5-codex"]
 
 # Kimi Code CLI (Moonshot). ACP-based like Gemini — when the spawn impl
 # lands in bridges/kimi.rs the routing layer is already ready.
-[agents.kimi]
+[agents.kimi-code]
 supports_tool_use = true
 supports_vision = true
 max_context = 200000

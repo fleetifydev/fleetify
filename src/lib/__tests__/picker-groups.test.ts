@@ -106,7 +106,7 @@ describe("buildPickerGroups", () => {
 
   it("gemini CLI fallback models keep their id/label/ctx with no effort", () => {
     const groups = buildPickerGroups([], []);
-    const gemini = groups.find((g) => g.id === "gemini");
+    const gemini = groups.find((g) => g.id === "gemini-cli");
     const pro = gemini?.models.find((m) => m.id === "gemini-3.1-pro-preview");
     expect(pro?.label).toBe("3.1 Pro");
     expect(pro?.ctx).toBe("1M");
@@ -145,24 +145,24 @@ describe("buildPickerGroups", () => {
   it("filters CLI agents by enabledAgentIds", () => {
     const tiles = [
       baseTile("claude-code", "Claude Code", "cli"),
-      baseTile("kimi", "Kimi Code CLI", "cli"),
+      baseTile("kimi-code", "Kimi Code CLI", "cli"),
     ];
     const groups = buildPickerGroups(tiles, ["claude-code"]);
     const cliIds = groups.filter((g) => g.id !== "ollama").map((g) => g.id);
     expect(cliIds).toContain("claude-code");
-    expect(cliIds).not.toContain("kimi");
+    expect(cliIds).not.toContain("kimi-code");
   });
 
   it("groups Hermes dynamic models by provider into a chip-row", () => {
-    const tiles = [baseTile("hermes", "Hermes Agent", "cli")];
+    const tiles = [baseTile("hermes-agent", "Hermes Agent", "cli")];
     const dyn = {
-      hermes: [
+      "hermes-agent": [
         { id: "copilot:claude-opus-4.8", label: "claude-opus-4.8", supports_effort: false },
         { id: "copilot:gpt-5.5", label: "gpt-5.5", supports_effort: false },
         { id: "anthropic:claude-opus-4-6", label: "claude-opus-4-6", supports_effort: false },
       ],
     };
-    const hermes = buildPickerGroups(tiles, ["hermes"], dyn).find((g) => g.id === "hermes");
+    const hermes = buildPickerGroups(tiles, ["hermes-agent"], dyn).find((g) => g.id === "hermes-agent");
     expect(hermes?.providers).toEqual([
       { id: "copilot", label: "Copilot" },
       { id: "anthropic", label: "Anthropic" },
@@ -172,14 +172,14 @@ describe("buildPickerGroups", () => {
   });
 
   it("omits the Hermes provider chip-row when only one provider is present", () => {
-    const tiles = [baseTile("hermes", "Hermes Agent", "cli")];
+    const tiles = [baseTile("hermes-agent", "Hermes Agent", "cli")];
     const dyn = {
-      hermes: [
+      "hermes-agent": [
         { id: "copilot:claude-opus-4.8", label: "claude-opus-4.8", supports_effort: false },
         { id: "copilot:gpt-5.5", label: "gpt-5.5", supports_effort: false },
       ],
     };
-    const hermes = buildPickerGroups(tiles, ["hermes"], dyn).find((g) => g.id === "hermes");
+    const hermes = buildPickerGroups(tiles, ["hermes-agent"], dyn).find((g) => g.id === "hermes-agent");
     expect(hermes?.providers).toBeUndefined();
     expect(hermes?.models).toHaveLength(2);
   });
@@ -275,21 +275,21 @@ describe("buildPickerGroups", () => {
   it("populates CLI agent groups with hardcoded model lists", () => {
     const tiles = [
       baseTile("claude-code", "Claude Code", "cli"),
-      baseTile("codex", "Codex CLI", "cli"),
-      baseTile("gemini", "Gemini CLI", "cli"),
-      baseTile("kimi", "Kimi Code CLI", "cli"),
+      baseTile("codex-cli", "Codex CLI", "cli"),
+      baseTile("gemini-cli", "Gemini CLI", "cli"),
+      baseTile("kimi-code", "Kimi Code CLI", "cli"),
     ];
-    const groups = buildPickerGroups(tiles, ["claude-code", "codex", "gemini", "kimi"]);
+    const groups = buildPickerGroups(tiles, ["claude-code", "codex-cli", "gemini-cli", "kimi-code"]);
     const claude = groups.find((g) => g.id === "claude-code");
     expect(claude?.models.length).toBeGreaterThan(0);
     expect(claude?.models.some((m) => m.id.startsWith("claude-"))).toBe(true);
-    const codex = groups.find((g) => g.id === "codex");
+    const codex = groups.find((g) => g.id === "codex-cli");
     expect(codex?.models.length).toBeGreaterThan(0);
     expect(codex?.models.some((m) => m.id.startsWith("gpt-5"))).toBe(true);
-    const gemini = groups.find((g) => g.id === "gemini");
+    const gemini = groups.find((g) => g.id === "gemini-cli");
     expect(gemini?.models.length).toBeGreaterThan(0);
     expect(gemini?.models.some((m) => m.id.startsWith("gemini-"))).toBe(true);
-    const kimi = groups.find((g) => g.id === "kimi");
+    const kimi = groups.find((g) => g.id === "kimi-code");
     expect(kimi?.models.length).toBeGreaterThan(0);
     expect(kimi?.models.some((m) => m.id.startsWith("kimi-") || m.id.startsWith("moonshot"))).toBe(true);
   });
@@ -302,24 +302,24 @@ describe("buildPickerGroups", () => {
   it("gives OpenCode and Cursor a fallback model list so their rail isn't blank", () => {
     const tiles = [
       baseTile("opencode", "OpenCode", "cli"),
-      baseTile("cursor", "Cursor CLI", "cli"),
+      baseTile("cursor-cli", "Cursor CLI", "cli"),
     ];
-    const groups = buildPickerGroups(tiles, ["opencode", "cursor"]);
+    const groups = buildPickerGroups(tiles, ["opencode", "cursor-cli"]);
     const oc = groups.find((g) => g.id === "opencode");
     expect(oc?.models.length).toBeGreaterThan(0);
     expect(oc?.models.some((m) => m.id.startsWith("opencode/"))).toBe(true);
-    const cu = groups.find((g) => g.id === "cursor");
+    const cu = groups.find((g) => g.id === "cursor-cli");
     expect(cu?.models.length).toBeGreaterThan(0);
     expect(cu?.models.some((m) => m.label === "Auto")).toBe(true);
   });
 
   it("lets the live ACP model list override the OpenCode/Cursor fallback", () => {
-    const tiles = [baseTile("cursor", "Cursor CLI", "cli")];
+    const tiles = [baseTile("cursor-cli", "Cursor CLI", "cli")];
     const live = [
       { id: "gpt-5.2[reasoning=medium,fast=false]", label: "GPT-5.2", supports_effort: false },
     ];
-    const groups = buildPickerGroups(tiles, ["cursor"], { cursor: live });
-    expect(groups.find((g) => g.id === "cursor")?.models).toEqual(live);
+    const groups = buildPickerGroups(tiles, ["cursor-cli"], { "cursor-cli": live });
+    expect(groups.find((g) => g.id === "cursor-cli")?.models).toEqual(live);
   });
 
   // Regression: when providerTiles is empty (cold-start race or transient
@@ -329,9 +329,9 @@ describe("buildPickerGroups", () => {
     const groups = buildPickerGroups([], []);
     const ids = groups.map((g) => g.id);
     expect(ids).toEqual(
-      expect.arrayContaining(["claude-code", "codex", "gemini", "kimi", "agy", "antigravity-sdk"]),
+      expect.arrayContaining(["claude-code", "codex-cli", "gemini-cli", "kimi-code", "antigravity-cli", "antigravity-sdk"]),
     );
-    for (const id of ["claude-code", "codex", "gemini", "kimi", "agy", "antigravity-sdk"]) {
+    for (const id of ["claude-code", "codex-cli", "gemini-cli", "kimi-code", "antigravity-cli", "antigravity-sdk"]) {
       const g = groups.find((gg) => gg.id === id);
       expect(g?.models.length ?? 0).toBeGreaterThan(0);
     }
@@ -340,17 +340,17 @@ describe("buildPickerGroups", () => {
   it("CLI rail labels match the catalog display_name even when tiles is empty", () => {
     const groups = buildPickerGroups([], []);
     expect(groups.find((g) => g.id === "claude-code")?.label).toBe("Claude Code");
-    expect(groups.find((g) => g.id === "codex")?.label).toBe("Codex CLI");
-    expect(groups.find((g) => g.id === "gemini")?.label).toBe("Gemini CLI");
-    expect(groups.find((g) => g.id === "kimi")?.label).toBe("Kimi Code CLI");
-    expect(groups.find((g) => g.id === "agy")?.label).toBe("Antigravity CLI");
+    expect(groups.find((g) => g.id === "codex-cli")?.label).toBe("Codex CLI");
+    expect(groups.find((g) => g.id === "gemini-cli")?.label).toBe("Gemini CLI");
+    expect(groups.find((g) => g.id === "kimi-code")?.label).toBe("Kimi Code CLI");
+    expect(groups.find((g) => g.id === "antigravity-cli")?.label).toBe("Antigravity CLI");
     expect(groups.find((g) => g.id === "antigravity-sdk")?.label).toBe("Antigravity SDK");
   });
 
   it("antigravity-sdk exposes per-(model × effort) lineup unlike agy CLI", () => {
     const groups = buildPickerGroups([], []);
     const sdk = groups.find((g) => g.id === "antigravity-sdk");
-    const cli = groups.find((g) => g.id === "agy");
+    const cli = groups.find((g) => g.id === "antigravity-cli");
     // CLI side collapses to a single "Auto" entry because print mode
     // can't accept a model override; SDK side gets the full lineup.
     expect(cli?.models.length).toBe(1);
@@ -463,31 +463,31 @@ describe("resolveModelChip", () => {
     // cold-start placeholder, so a persisted `copilot:claude-opus-4.8` (a real
     // pick or a healed default) must resolve to the bare model name — NOT the
     // raw `copilot:…` id and NOT the "Hermes (configured model)" placeholder.
-    const groups = buildPickerGroups([baseTile("hermes", "Hermes Agent", "cli")], ["hermes"]);
-    expect(resolveModelChip(groups, "hermes", "copilot:claude-opus-4.8").label).toBe("claude-opus-4.8");
+    const groups = buildPickerGroups([baseTile("hermes-agent", "Hermes Agent", "cli")], ["hermes-agent"]);
+    expect(resolveModelChip(groups, "hermes-agent", "copilot:claude-opus-4.8").label).toBe("claude-opus-4.8");
   });
 
   it("keeps the placeholder label for the bare Hermes 'default' sentinel", () => {
     // The sentinel itself still reads as the placeholder; the self-heal rewrites
     // the persisted model_name (away from "default"), it does not relabel "default".
-    const groups = buildPickerGroups([baseTile("hermes", "Hermes Agent", "cli")], ["hermes"]);
-    expect(resolveModelChip(groups, "hermes", "default").label).toBe("Hermes (configured model)");
+    const groups = buildPickerGroups([baseTile("hermes-agent", "Hermes Agent", "cli")], ["hermes-agent"]);
+    expect(resolveModelChip(groups, "hermes-agent", "default").label).toBe("Hermes (configured model)");
   });
 });
 
 describe("hermesHealModel", () => {
   it("heals the Hermes 'default' sentinel to the discovered configured model", () => {
-    expect(hermesHealModel("hermes", "default", "copilot:claude-opus-4.8")).toBe("copilot:claude-opus-4.8");
+    expect(hermesHealModel("hermes-agent", "default", "copilot:claude-opus-4.8")).toBe("copilot:claude-opus-4.8");
   });
 
   it("never overwrites an explicit real pick", () => {
-    expect(hermesHealModel("hermes", "copilot:gpt-5-mini", "copilot:claude-opus-4.8")).toBeNull();
+    expect(hermesHealModel("hermes-agent", "copilot:gpt-5-mini", "copilot:claude-opus-4.8")).toBeNull();
   });
 
   it("is a no-op without a usable current model", () => {
-    expect(hermesHealModel("hermes", "default", null)).toBeNull();
-    expect(hermesHealModel("hermes", "default", "default")).toBeNull();
-    expect(hermesHealModel("hermes", "default", "")).toBeNull();
+    expect(hermesHealModel("hermes-agent", "default", null)).toBeNull();
+    expect(hermesHealModel("hermes-agent", "default", "default")).toBeNull();
+    expect(hermesHealModel("hermes-agent", "default", "")).toBeNull();
   });
 
   it("only applies to the hermes tool", () => {

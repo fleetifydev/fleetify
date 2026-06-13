@@ -38,22 +38,22 @@ control (only the first two render a level picker in v1):
 
 | Agent (`id`) | Model(s) | Family | Levels / detail | Default |
 |---|---|---|---|---|
-| Claude Code (`claude`) | Opus 4.8, Opus 4.7 | Levels | `low · medium · high · xhigh · max` | `high` |
+| Claude Code (`claude-code`) | Opus 4.8, Opus 4.7 | Levels | `low · medium · high · xhigh · max` | `high` |
 | | Opus 4.6, Sonnet 4.6 | Levels | `low · medium · high · max` | `high` |
 | | Opus 4.5 | Levels | `low · medium · high` | `high` |
 | | Haiku 4.5 | None | — | — |
-| Codex CLI (`codex`) | all (GPT-5.x-codex) | Levels | `low · medium · high · xhigh` | `medium` |
-| Gemini CLI (`gemini`) | 3.x (3.1 Pro, 3 Flash) | ThinkingLevel | `low · high` | `high` |
+| Codex CLI (`codex-cli`) | all (GPT-5.x-codex) | Levels | `low · medium · high · xhigh` | `medium` |
+| Gemini CLI (`gemini-cli`) | 3.x (3.1 Pro, 3 Flash) | ThinkingLevel | `low · high` | `high` |
 | | 2.5 Flash | Budget | `0 – 24576` tokens, dynamic, can disable | dynamic (`-1`) |
 | | 2.5 Pro | Budget | `128 – 32768` tokens, dynamic | dynamic (`-1`) |
 | | other (incl. 3.x Lite) | None | — | — |
 | GitHub Copilot CLI (`github-copilot`) | all | Levels | `low · medium · high · xhigh` | `medium` |
-| Kimi Code CLI (`kimi`) | `*-thinking` | Toggle | on / off | on |
+| Kimi Code CLI (`kimi-code`) | `*-thinking` | Toggle | on / off | on |
 | | other | None | — | — |
 | OpenCode (`opencode`) | all | None¹ | — | — |
-| Cursor CLI (`cursor`) | all | None¹ | — | — |
-| Hermes Agent (`hermes`) | all | None | — | — |
-| Antigravity CLI (`agy`) | all | None² | — | — |
+| Cursor CLI (`cursor-cli`) | all | None¹ | — | — |
+| Hermes Agent (`hermes-agent`) | all | None | — | — |
+| Antigravity CLI (`antigravity-cli`) | all | None² | — | — |
 | Antigravity SDK (`antigravity-sdk`) | all | None² | — | — |
 
 ¹ OpenCode / Cursor expose effort *live* over ACP, but their catalogued models carry no
@@ -82,7 +82,7 @@ chosen by picking the model, not a separate lever.
 
 ³ **Anthropic's OpenAI-compat endpoint ignores `effort`.** Claude reasoning effort is
 **CLI-only** (the `claude --effort` flag); over the HTTP API there is no effort lever, so
-this is `None` by design — distinct from Claude Code (`claude`) above.
+this is `None` by design — distinct from Claude Code (`claude-code`) above.
 
 ---
 

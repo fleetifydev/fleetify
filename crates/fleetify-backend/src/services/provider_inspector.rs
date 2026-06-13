@@ -102,7 +102,7 @@ pub fn list_claude_skills(home: &Path, project: Option<&Path>) -> Vec<Skill> {
 }
 
 /// Per-provider skill directory matrix. Faithful with `_skill_roots`.
-/// `provider` is "claude-code" | "gemini" | "codex"; unknown values yield
+/// `provider` is "claude-code" | "gemini-cli" | "codex-cli"; unknown values yield
 /// an empty matrix.
 fn skill_roots(
     provider: &str,
@@ -117,7 +117,7 @@ fn skill_roots(
                 roots.push((p.join(".claude").join("skills"), "project"));
             }
         }
-        "gemini" => {
+        "gemini-cli" => {
             roots.push((home.join(".gemini").join("skills"), "user"));
             roots.push((home.join(".agents").join("skills"), "user"));
             if let Some(p) = project {
@@ -125,7 +125,7 @@ fn skill_roots(
                 roots.push((p.join(".agents").join("skills"), "project"));
             }
         }
-        "codex" => {
+        "codex-cli" => {
             roots.push((home.join(".agents").join("skills"), "user"));
             roots.push((home.join(".codex").join("skills"), "user"));
             roots.push((PathBuf::from("/etc/codex/skills"), "system"));
@@ -286,7 +286,7 @@ fn scan_codex_hooks(json_path: &Path, toml_path: &Path, tier: &'static str) -> V
                 // Codex accepts either {"hooks": {...}} or the bare
                 // {...} at top level.
                 let block = v.get("hooks").cloned().unwrap_or_else(|| v.clone());
-                return flatten_hooks_block(&block, "codex", tier, json_path, "json");
+                return flatten_hooks_block(&block, "codex-cli", tier, json_path, "json");
             }
         }
     }
@@ -299,7 +299,7 @@ fn scan_codex_hooks(json_path: &Path, toml_path: &Path, tier: &'static str) -> V
                 // Round-trip TOML→JSON via serde_json so the JSON-based
                 // flattener can reuse its logic.
                 if let Ok(json_v) = serde_json::to_value(hooks) {
-                    return flatten_hooks_block(&json_v, "codex", tier, toml_path, "toml");
+                    return flatten_hooks_block(&json_v, "codex-cli", tier, toml_path, "toml");
                 }
             }
         }
@@ -334,13 +334,13 @@ pub fn list_claude_hooks(home: &Path, project: Option<&Path>) -> Vec<Hook> {
 pub fn list_gemini_hooks(home: &Path, project: Option<&Path>) -> Vec<Hook> {
     let mut all = scan_settings_hooks(
         &home.join(".gemini").join("settings.json"),
-        "gemini",
+        "gemini-cli",
         "user",
     );
     if let Some(p) = project {
         all.extend(scan_settings_hooks(
             &p.join(".gemini").join("settings.json"),
-            "gemini",
+            "gemini-cli",
             "project",
         ));
     }
@@ -370,8 +370,8 @@ pub fn list_codex_hooks(home: &Path, project: Option<&Path>) -> Vec<Hook> {
 pub fn list_hooks_for_provider(provider: &str, home: &Path, project: Option<&Path>) -> Vec<Hook> {
     match provider {
         "claude-code" => list_claude_hooks(home, project),
-        "gemini" => list_gemini_hooks(home, project),
-        "codex" => list_codex_hooks(home, project),
+        "gemini-cli" => list_gemini_hooks(home, project),
+        "codex-cli" => list_codex_hooks(home, project),
         _ => Vec::new(),
     }
 }
@@ -541,11 +541,11 @@ fn push_toml_command(
 
 /// Gemini commands: `~/.gemini/commands/**/*.toml` + project equivalent.
 pub fn list_gemini_commands(home: &Path, project: Option<&Path>) -> Vec<Command> {
-    let mut all = scan_toml_commands(&home.join(".gemini").join("commands"), "gemini", "user");
+    let mut all = scan_toml_commands(&home.join(".gemini").join("commands"), "gemini-cli", "user");
     if let Some(p) = project {
         all.extend(scan_toml_commands(
             &p.join(".gemini").join("commands"),
-            "gemini",
+            "gemini-cli",
             "project",
         ));
     }
@@ -558,7 +558,7 @@ pub fn list_gemini_commands(home: &Path, project: Option<&Path>) -> Vec<Command>
 pub fn list_codex_commands(home: &Path) -> Vec<Command> {
     scan_md_commands(
         &home.join(".codex").join("prompts"),
-        "codex",
+        "codex-cli",
         "user",
         Some("prompts"),
     )
@@ -573,8 +573,8 @@ pub fn list_commands_for_provider(
 ) -> Vec<Command> {
     match provider {
         "claude-code" => list_claude_commands(home, project),
-        "gemini" => list_gemini_commands(home, project),
-        "codex" => list_codex_commands(home),
+        "gemini-cli" => list_gemini_commands(home, project),
+        "codex-cli" => list_codex_commands(home),
         _ => Vec::new(),
     }
 }
@@ -614,11 +614,11 @@ mod tests {
         .unwrap();
         std::fs::write(a.join("SKILL.md"), "body").unwrap();
 
-        let items = list_skills_for_provider("gemini", &home, None);
+        let items = list_skills_for_provider("gemini-cli", &home, None);
         // Two roots → 2 skills.
         assert_eq!(items.len(), 2);
-        // Provider field on both rows is "gemini" (matches Python).
-        assert!(items.iter().all(|s| s.provider == "gemini"));
+        // Provider field on both rows is "gemini-cli" (matches Python).
+        assert!(items.iter().all(|s| s.provider == "gemini-cli"));
         assert!(items.iter().any(|s| s.name == "gemini-named"));
         assert!(items.iter().any(|s| s.name == "agent-skill"));
 
@@ -628,7 +628,7 @@ mod tests {
         let c = home.join(".codex/skills/codex-x");
         std::fs::create_dir_all(&c).unwrap();
         std::fs::write(c.join("SKILL.md"), "body").unwrap();
-        let cx = list_skills_for_provider("codex", &home, None);
+        let cx = list_skills_for_provider("codex-cli", &home, None);
         assert!(cx.iter().any(|s| s.name == "codex-x"));
         assert!(cx.iter().any(|s| s.name == "agent-skill"));
     }
@@ -696,7 +696,7 @@ mod tests {
         .unwrap();
         let items = list_gemini_hooks(&home, None);
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].provider, "gemini");
+        assert_eq!(items[0].provider, "gemini-cli");
         assert_eq!(items[0].event, "PreToolUse");
         assert_eq!(items[0].matcher.as_deref(), Some("Bash"));
         assert_eq!(items[0].command, "./check.sh");
@@ -764,7 +764,7 @@ mod tests {
         let ns = cmds.iter().find(|c| c.name == "commit").unwrap();
         assert_eq!(ns.namespace.as_deref(), Some("git"));
         assert_eq!(ns.description.as_deref(), Some("nice commit"));
-        assert!(cmds.iter().all(|c| c.provider == "gemini"));
+        assert!(cmds.iter().all(|c| c.provider == "gemini-cli"));
     }
 
     #[test]
@@ -782,7 +782,7 @@ mod tests {
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0].namespace.as_deref(), Some("prompts"));
         assert_eq!(cmds[0].name, "review");
-        assert_eq!(cmds[0].provider, "codex");
+        assert_eq!(cmds[0].provider, "codex-cli");
     }
 
     #[test]

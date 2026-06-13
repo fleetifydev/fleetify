@@ -88,9 +88,9 @@ pub fn agent_kind_to_str(a: crate::services::routing::traits::AgentKind) -> &'st
     match a {
         AgentKind::Claude => "claude-code",
         AgentKind::OpenAI => "openai",
-        AgentKind::Gemini => "gemini",
-        AgentKind::Codex => "codex",
-        AgentKind::Kimi => "kimi",
+        AgentKind::Gemini => "gemini-cli",
+        AgentKind::Codex => "codex-cli",
+        AgentKind::Kimi => "kimi-code",
         AgentKind::GitHubCopilot => "github-copilot",
     }
 }
@@ -104,9 +104,9 @@ pub fn str_to_agent_kind(s: &str) -> Option<crate::services::routing::traits::Ag
         // the "claude" → "claude-code" rename.
         "claude" | "claude-code" => Some(AgentKind::Claude),
         "openai" => Some(AgentKind::OpenAI),
-        "gemini" => Some(AgentKind::Gemini),
-        "codex" => Some(AgentKind::Codex),
-        "kimi" => Some(AgentKind::Kimi),
+        "gemini-cli" => Some(AgentKind::Gemini),
+        "codex-cli" => Some(AgentKind::Codex),
+        "kimi-code" => Some(AgentKind::Kimi),
         "github-copilot" => Some(AgentKind::GitHubCopilot),
         _ => None,
     }
@@ -255,7 +255,7 @@ pub struct RoutingResolution {
 ///    a `routing_decisions` row, UPDATE the session's `pinned_*` columns,
 ///    emit a `routing_decision` telemetry event, return the new id.
 ///
-/// `manual_tool` MUST be one of `"claude-code" | "openai" | "gemini" | "codex"`;
+/// `manual_tool` MUST be one of `"claude-code" | "openai" | "gemini-cli" | "codex-cli"`;
 /// anything else falls through to `AgentKind::Claude` so we never crash on
 /// a row with a bogus tool string (the chat handler already rejects unknown
 /// tools earlier in the flow, so this is purely defensive).
@@ -1091,7 +1091,7 @@ mod tests {
             &pool,
             &orch,
             "s-stale",
-            "codex",         // session.tool — disagrees with pin's agent
+            "codex-cli",     // session.tool — disagrees with pin's agent
             Some("gpt-5.2"), // session.model_name
             task,
         )

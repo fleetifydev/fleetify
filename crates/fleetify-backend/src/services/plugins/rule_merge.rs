@@ -32,8 +32,8 @@ pub fn rule_file(provider: &str) -> Option<PathBuf> {
     let h = super::providers::provider_home(provider)?;
     let name = match provider {
         "claude-code" => "CLAUDE.md",
-        "gemini" => "GEMINI.md",
-        "codex" | "kimi" | "opencode" | "agy" => "AGENTS.md",
+        "gemini-cli" => "GEMINI.md",
+        "codex-cli" | "kimi-code" | "opencode" | "antigravity-cli" => "AGENTS.md",
         "github-copilot" => "copilot-instructions.md",
         _ => return None,
     };
@@ -49,8 +49,8 @@ pub fn rule_file(provider: &str) -> Option<PathBuf> {
 pub fn project_rule_file(provider: &str, dir: &Path) -> Option<PathBuf> {
     let p = match provider {
         "claude-code" => dir.join("CLAUDE.md"),
-        "gemini" => dir.join("GEMINI.md"),
-        "codex" | "kimi" | "opencode" | "agy" => dir.join("AGENTS.md"),
+        "gemini-cli" => dir.join("GEMINI.md"),
+        "codex-cli" | "kimi-code" | "opencode" | "antigravity-cli" => dir.join("AGENTS.md"),
         "github-copilot" => dir.join(".github").join("copilot-instructions.md"),
         _ => return None,
     };
@@ -149,7 +149,7 @@ mod tests {
         let file = tmp.path().join("AGENTS.md");
         std::fs::write(&file, "# My own rules\n\nUse tabs.\n").unwrap();
 
-        let rec = write_block("codex", "no-emoji", "Never use emoji.", &file).unwrap();
+        let rec = write_block("codex-cli", "no-emoji", "Never use emoji.", &file).unwrap();
         let after = std::fs::read_to_string(&file).unwrap();
         assert!(after.contains("# My own rules"));
         assert!(after.contains("Never use emoji."));
@@ -179,12 +179,12 @@ mod tests {
         // provider_home reads USERPROFILE/HOME; just assert the file name logic.
         std::env::set_var("USERPROFILE", "/tmp/fakehome");
         assert!(rule_file("claude-code").unwrap().ends_with("CLAUDE.md"));
-        assert!(rule_file("gemini").unwrap().ends_with("GEMINI.md"));
-        assert!(rule_file("codex").unwrap().ends_with("AGENTS.md"));
+        assert!(rule_file("gemini-cli").unwrap().ends_with("GEMINI.md"));
+        assert!(rule_file("codex-cli").unwrap().ends_with("AGENTS.md"));
         assert!(rule_file("github-copilot")
             .unwrap()
             .ends_with("copilot-instructions.md"));
-        assert!(rule_file("cursor").is_none());
-        assert!(rule_file("hermes").is_none());
+        assert!(rule_file("cursor-cli").is_none());
+        assert!(rule_file("hermes-agent").is_none());
     }
 }

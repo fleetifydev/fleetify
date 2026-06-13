@@ -266,7 +266,7 @@ fn models_json(id: &str, models: &ModelList, current: &Option<String>) -> Value 
 async fn discover_agent_models(id: &str, cwd: &str) -> (ModelList, Option<String>) {
     match id {
         "opencode" => (discover_opencode_models().await, None),
-        "cursor" => (
+        "cursor-cli" => (
             crate::bridges::cursor::list_models(cwd)
                 .await
                 .map(|ms| ms.into_iter().map(|m| (m.id, m.name)).collect())
@@ -279,7 +279,7 @@ async fn discover_agent_models(id: &str, cwd: &str) -> (ModelList, Option<String
                 .unwrap_or_default(),
             None,
         ),
-        "hermes" => {
+        "hermes-agent" => {
             // Prefer the full multi-provider catalog (every authenticated
             // provider) so the picker can offer a provider selector; fall back
             // to a live `session/new` probe (current provider only) when the
@@ -311,13 +311,13 @@ async fn discover_agent_models(id: &str, cwd: &str) -> (ModelList, Option<String
 /// on-open fetch retries. Self-gates — returns fast when Hermes isn't installed
 /// (no venv python / binary), so it's safe to always call at boot.
 pub async fn prewarm_hermes_models() {
-    let (models, current) = discover_agent_models("hermes", "").await;
+    let (models, current) = discover_agent_models("hermes-agent", "").await;
     if !models.is_empty() {
         let n = models.len();
-        agent_models_cache()
-            .write()
-            .await
-            .insert("hermes".to_string(), (Instant::now(), models, current));
+        agent_models_cache().write().await.insert(
+            "hermes-agent".to_string(),
+            (Instant::now(), models, current),
+        );
         tracing::debug!(target: "hermes.discover", "prewarmed {n} hermes models at startup");
     }
 }
@@ -326,7 +326,7 @@ pub async fn prewarm_hermes_models() {
 /// in [`discover_agent_models`]) rather than the remote catalog. Excluded from
 /// the remote-catalog prewarm — there is nothing on fleetify.dev/api to warm for
 /// them (`hermes` is prewarmed separately via [`prewarm_hermes_models`]).
-const LIVE_PROBE_AGENTS: &[&str] = &["opencode", "cursor", "github-copilot", "hermes"];
+const LIVE_PROBE_AGENTS: &[&str] = &["opencode", "cursor-cli", "github-copilot", "hermes-agent"];
 
 /// Provider/agent ids whose model lineup is sourced from the remote catalog
 /// (fleetify.dev/api → jsDelivr): every [`crate::providers::catalog::CATALOG`]
@@ -878,13 +878,13 @@ enum ScanProbe {
 /// here so the catalog's `ProviderSpec` stays declarative.
 fn scan_probe_for(id: &'static str, bin: &'static str) -> ScanProbe {
     match id {
-        "agy" => ScanProbe::AgyCli,
+        "antigravity-cli" => ScanProbe::AgyCli,
         "antigravity-sdk" => ScanProbe::PythonModule {
             module: "google.antigravity",
         },
-        "cursor" => ScanProbe::CursorCli,
+        "cursor-cli" => ScanProbe::CursorCli,
         "github-copilot" => ScanProbe::GitHubCopilotCli,
-        "hermes" => ScanProbe::HermesCli,
+        "hermes-agent" => ScanProbe::HermesCli,
         _ => ScanProbe::BinOnly { bin },
     }
 }
@@ -898,7 +898,7 @@ pub async fn scan_all_agents() -> HashMap<String, Value> {
         let path = match &probe {
             ScanProbe::BinOnly { bin } => cli_path(bin).await,
             ScanProbe::AgyCli => {
-                if let Some(p) = cli_path("agy").await {
+                if let Some(p) = cli_path("antigravity-cli").await {
                     Some(p)
                 } else if agy_installed_via_marker(&home()) {
                     Some("<installer marker>".to_string())
@@ -1104,7 +1104,7 @@ pub async fn python_module_installed(module: &str) -> PythonProbe {
 /// Resolve `<bin>` on PATH and return its absolute path. Uses the
 /// `which` crate so Windows `.cmd` / `.bat` / `.ps1` shims (which
 /// `npm install -g` creates for gemini / codex / claude) resolve via
-/// PATHEXT — `tokio::process::Command::new("gemini")` otherwise fails
+/// PATHEXT — `tokio::process::Command::new("gemini-cli")` otherwise fails
 /// on Windows because it doesn't honour PATHEXT for bare names. This
 /// is exactly the "Not Installed" symptom users hit when the CLI is
 /// installed but the renderer claims otherwise.
@@ -1148,7 +1148,7 @@ async fn check_claude_cli() -> Value {
 }
 
 async fn check_gemini_cli() -> Value {
-    let Some(p) = cli_path("gemini").await else {
+    let Some(p) = cli_path("gemini-cli").await else {
         return json!({ "installed": false, "authenticated": false, "path": null });
     };
     let authed = home().join(".gemini/oauth_creds.json").exists()
@@ -1158,7 +1158,7 @@ async fn check_gemini_cli() -> Value {
 }
 
 async fn check_codex_cli() -> Value {
-    let Some(p) = cli_path("codex").await else {
+    let Some(p) = cli_path("codex-cli").await else {
         return json!({ "installed": false, "authenticated": false, "path": null });
     };
     let authed =
@@ -1167,7 +1167,7 @@ async fn check_codex_cli() -> Value {
 }
 
 async fn check_kimi_cli() -> Value {
-    let Some(p) = cli_path("kimi").await else {
+    let Some(p) = cli_path("kimi-code").await else {
         return json!({ "installed": false, "authenticated": false, "path": null });
     };
     let authed = home().join(".kimi/auth.json").exists() || std::env::var("KIMI_API_KEY").is_ok();
@@ -1175,7 +1175,7 @@ async fn check_kimi_cli() -> Value {
 }
 
 async fn check_agy_cli() -> Value {
-    let Some(p) = cli_path("agy").await else {
+    let Some(p) = cli_path("antigravity-cli").await else {
         return json!({ "installed": false, "authenticated": false, "path": null });
     };
     // Agy nests under `~/.gemini/antigravity-cli/` and writes
@@ -1463,12 +1463,12 @@ async fn scan_providers() -> Json<Value> {
     // helpers dispatch + the Settings scan use so off-PATH installs are
     // detected and the Install button's completion poll agrees with reality.
     let opencode = cli_agent_scan("opencode", opencode_path);
-    let cursor = cli_agent_scan("cursor", crate::bridges::cursor::resolve_cursor_bin());
+    let cursor = cli_agent_scan("cursor-cli", crate::bridges::cursor::resolve_cursor_bin());
     let github_copilot = cli_agent_scan(
         "github-copilot",
         crate::bridges::github_copilot::resolve_copilot_bin(),
     );
-    let hermes = cli_agent_scan("hermes", crate::bridges::hermes::resolve_hermes_bin());
+    let hermes = cli_agent_scan("hermes-agent", crate::bridges::hermes::resolve_hermes_bin());
     Json(json!({
         "claude_cli": claude,
         "gemini_cli": gemini,
@@ -1484,7 +1484,7 @@ async fn scan_providers() -> Json<Value> {
         "env_keys": {
             "anthropic": std::env::var("ANTHROPIC_API_KEY").is_ok(),
             "openai": std::env::var("OPENAI_API_KEY").is_ok(),
-            "gemini":
+            "gemini-cli":
                 std::env::var("GEMINI_API_KEY").is_ok()
                     || std::env::var("GOOGLE_API_KEY").is_ok(),
             "groq": std::env::var("GROQ_API_KEY").is_ok(),
@@ -1514,7 +1514,7 @@ async fn list_models() -> Json<Value> {
                 ]
             },
             {
-                "id": "codex",
+                "id": "codex-cli",
                 "label": "Codex",
                 "models": [
                     {"id": "gpt-5.5",   "label": "GPT-5.5",   "ctx": "200K"},
@@ -1540,7 +1540,7 @@ async fn list_models() -> Json<Value> {
                 ]
             },
             {
-                "id": "gemini",
+                "id": "gemini-cli",
                 "label": "Gemini",
                 "models": [
                     {"id": "gemini-3.1-pro-preview",        "label": "3.1 Pro",  "ctx": "1M", "note": "Preview"},
@@ -1762,7 +1762,7 @@ mod tests {
         // Live-probe CLI agents resolve their lineup from a local CLI/ACP call
         // (the match arms in `discover_agent_models`), not fleetify.dev/api — so
         // they must NOT be in the remote-catalog prewarm set.
-        for a in ["opencode", "cursor", "github-copilot", "hermes"] {
+        for a in ["opencode", "cursor-cli", "github-copilot", "hermes-agent"] {
             assert!(
                 !ids.contains(&a),
                 "{a} is discovered via a live probe and must be excluded from the remote prewarm"
@@ -1773,10 +1773,10 @@ mod tests {
         // catalog, so they must be prewarmed.
         for p in [
             "claude-code",
-            "codex",
-            "gemini",
-            "kimi",
-            "agy",
+            "codex-cli",
+            "gemini-cli",
+            "kimi-code",
+            "antigravity-cli",
             "openai",
             "anthropic",
         ] {
@@ -1824,17 +1824,17 @@ mod tests {
         for (id, probe) in probes {
             match (id, probe) {
                 ("claude-code", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "claude"),
-                ("codex", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "codex"),
-                ("gemini", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "gemini"),
-                ("kimi", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "kimi"),
+                ("codex-cli", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "codex"),
+                ("gemini-cli", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "gemini"),
+                ("kimi-code", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "kimi"),
                 ("opencode", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "opencode"),
                 ("github-copilot", ScanProbe::GitHubCopilotCli) => {}
-                ("agy", ScanProbe::AgyCli) => {}
+                ("antigravity-cli", ScanProbe::AgyCli) => {}
                 ("antigravity-sdk", ScanProbe::PythonModule { module }) => {
                     assert_eq!(module, "google.antigravity");
                 }
-                ("cursor", ScanProbe::CursorCli) => {}
-                ("hermes", ScanProbe::HermesCli) => {}
+                ("cursor-cli", ScanProbe::CursorCli) => {}
+                ("hermes-agent", ScanProbe::HermesCli) => {}
                 (other, _) => panic!("unmapped CLI id in scan_probe_for: {other}"),
             }
         }
@@ -1842,7 +1842,7 @@ mod tests {
 
     #[tokio::test]
     async fn scan_probe_for_agy_uses_agy_cli_variant() {
-        let probe = scan_probe_for("agy", "agy");
+        let probe = scan_probe_for("antigravity-cli", "agy");
         assert!(
             matches!(probe, ScanProbe::AgyCli),
             "agy must use AgyCli probe so installation_id fallback works"
@@ -1851,7 +1851,7 @@ mod tests {
 
     #[tokio::test]
     async fn scan_probe_for_cursor_uses_cursor_cli_variant() {
-        let probe = scan_probe_for("cursor", "cursor-agent");
+        let probe = scan_probe_for("cursor-cli", "cursor-agent");
         assert!(
             matches!(probe, ScanProbe::CursorCli),
             "cursor must use CursorCli probe (binary is off-PATH on Windows)"
@@ -1860,7 +1860,7 @@ mod tests {
 
     #[tokio::test]
     async fn scan_probe_for_hermes_uses_hermes_cli_variant() {
-        let probe = scan_probe_for("hermes", "hermes");
+        let probe = scan_probe_for("hermes-agent", "hermes-agent");
         assert!(
             matches!(probe, ScanProbe::HermesCli),
             "hermes must use HermesCli probe (binary is off-PATH on Windows)"
@@ -2315,7 +2315,7 @@ mod tests {
         let claude = payload.iter().find(|p| p["id"] == "claude-code").unwrap();
         assert_eq!(claude["permission"]["kind"], "modes");
         assert_eq!(claude["timing"]["permission"], "spawn");
-        let codex = payload.iter().find(|p| p["id"] == "codex").unwrap();
+        let codex = payload.iter().find(|p| p["id"] == "codex-cli").unwrap();
         assert_eq!(codex["permission"]["kind"], "approval_sandbox");
         let oc = payload.iter().find(|p| p["id"] == "opencode").unwrap();
         assert_eq!(oc["tool_matrix"]["supports_glob"], true);

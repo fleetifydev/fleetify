@@ -15,17 +15,17 @@ interface Provider {
   name: string;
   action: RowAction;
   externalUrl?: string;
-  configKey?: "anthropic" | "openai" | "gemini" | "groq";
+  configKey?: "anthropic" | "openai" | "gemini-cli" | "groq";
 }
 
 const PROVIDERS: Provider[] = [
   { key: "claude_cli", logo: "claude-code", name: "Claude Code", action: "install" },
-  { key: "gemini_cli", logo: "gemini", name: "Gemini CLI",  action: "install" },
-  { key: "codex_cli",  logo: "codex",  name: "Codex CLI",   action: "install" },
+  { key: "gemini_cli", logo: "gemini-cli", name: "Gemini CLI",  action: "install" },
+  { key: "codex_cli",  logo: "codex-cli",  name: "Codex CLI",   action: "install" },
   { key: "ollama",     logo: "ollama", name: "Ollama",      action: "open", externalUrl: "https://ollama.com/download" },
   { key: "anthropic",  logo: "claude-code", name: "Anthropic",   action: "key", configKey: "anthropic" },
   { key: "openai",     logo: "openai", name: "OpenAI",      action: "key", configKey: "openai" },
-  { key: "gemini_api", logo: "gemini", name: "Google AI",   action: "key", configKey: "gemini" },
+  { key: "gemini_api", logo: "gemini-cli", name: "Google AI",   action: "key", configKey: "gemini-cli" },
   { key: "groq",       logo: "groq",   name: "Groq",        action: "key", configKey: "groq" },
 ];
 

@@ -1497,8 +1497,7 @@ pub static CATALOG: &[ProviderSpec] = &[
     ProviderSpec {
         // Provider id is "claude-code"; the spawned binary stays "claude"
         // (see `bin` below) — the npm package `@anthropic-ai/claude-code`
-        // installs the executable as `claude`. Legacy "claude" ids resolve
-        // via `helpers::canonical_provider_id`.
+        // installs the executable as `claude`.
         id: "claude-code",
         display_name: "Claude Code",
         kind: ProviderKind::Cli,
@@ -1513,7 +1512,7 @@ pub static CATALOG: &[ProviderSpec] = &[
         login_hint: "claude login",
     },
     ProviderSpec {
-        id: "codex",
+        id: "codex-cli",
         display_name: "Codex CLI",
         kind: ProviderKind::Cli,
         default_base_url: "",
@@ -1527,7 +1526,7 @@ pub static CATALOG: &[ProviderSpec] = &[
         login_hint: "codex login",
     },
     ProviderSpec {
-        id: "gemini",
+        id: "gemini-cli",
         display_name: "Gemini CLI",
         kind: ProviderKind::Cli,
         default_base_url: "",
@@ -1541,7 +1540,7 @@ pub static CATALOG: &[ProviderSpec] = &[
         login_hint: "gemini",
     },
     ProviderSpec {
-        id: "kimi",
+        id: "kimi-code",
         display_name: "Kimi Code CLI",
         kind: ProviderKind::Cli,
         default_base_url: "",
@@ -1595,7 +1594,7 @@ pub static CATALOG: &[ProviderSpec] = &[
     // off-PATH on Windows, so install uses per-OS `install_hints` and detection
     // uses the custom `ScanProbe::CursorCli` (see routers/providers.rs).
     ProviderSpec {
-        id: "cursor",
+        id: "cursor-cli",
         display_name: "Cursor CLI",
         kind: ProviderKind::Cli,
         default_base_url: "",
@@ -1617,7 +1616,7 @@ pub static CATALOG: &[ProviderSpec] = &[
     // configured inside Hermes (`hermes model`), so no key is stored and the
     // model list is sourced live from the ACP session (like OpenCode/Cursor).
     ProviderSpec {
-        id: "hermes",
+        id: "hermes-agent",
         display_name: "Hermes Agent",
         kind: ProviderKind::Cli,
         default_base_url: "",
@@ -1643,7 +1642,7 @@ pub static CATALOG: &[ProviderSpec] = &[
     // real commands. The shell IPC layer branches on this when wiring the
     // Install button.
     ProviderSpec {
-        id: "agy",
+        id: "antigravity-cli",
         display_name: "Antigravity CLI",
         kind: ProviderKind::Cli,
         default_base_url: "",
@@ -1757,7 +1756,7 @@ mod tests {
     fn cursor_is_registered_cli_agent() {
         let c = CATALOG
             .iter()
-            .find(|p| p.id == "cursor")
+            .find(|p| p.id == "cursor-cli")
             .expect("cursor in catalog");
         assert!(matches!(c.kind, ProviderKind::Cli));
         assert!(matches!(c.auth, AuthSpec::None));
@@ -1814,7 +1813,7 @@ mod tests {
         // separate ids/auth/dispatch. The CLI keeps the picker collapsed to
         // "Auto" (server-side model pin); the SDK exposes a real picker
         // (per-turn LocalAgentConfig(model=...)).
-        let cli = CATALOG.iter().find(|p| p.id == "agy").unwrap();
+        let cli = CATALOG.iter().find(|p| p.id == "antigravity-cli").unwrap();
         let sdk = CATALOG.iter().find(|p| p.id == "antigravity-sdk").unwrap();
         assert!(matches!(cli.auth, AuthSpec::None));
         assert!(matches!(sdk.auth, AuthSpec::ApiKey { .. }));
@@ -2058,7 +2057,7 @@ mod tests {
         // Antigravity is the exception — its installer is a per-OS shell
         // script (curl/irm), so it populates `install_hints` instead. See
         // `agy_has_per_os_install_hints` below for that side of the contract.
-        const NPM_CLI_IDS: &[&str] = &["claude-code", "codex", "gemini", "kimi"];
+        const NPM_CLI_IDS: &[&str] = &["claude-code", "codex-cli", "gemini-cli", "kimi-code"];
         for p in CATALOG
             .iter()
             .filter(|p| matches!(p.kind, ProviderKind::Cli))
@@ -2116,7 +2115,7 @@ mod tests {
 
     #[test]
     fn agy_has_per_os_install_hints() {
-        let p = CATALOG.iter().find(|p| p.id == "agy").unwrap();
+        let p = CATALOG.iter().find(|p| p.id == "antigravity-cli").unwrap();
         let h = p
             .install_hints
             .as_ref()
@@ -2402,7 +2401,7 @@ mod tests {
     fn agy_display_name_says_cli() {
         let p = CATALOG
             .iter()
-            .find(|p| p.id == "agy")
+            .find(|p| p.id == "antigravity-cli")
             .expect("agy in catalog");
         assert_eq!(
             p.display_name, "Antigravity CLI",

@@ -59,7 +59,7 @@ never half-applies a plugin.
   hooks}`), not a fixed struct — new agents are additive.
 - **`provides`** (`["mcp","skills",…]`, the marketplace filter chips) is
   auto-derived from `declares` by the backend; authors may omit it.
-- The ids are the app's **canonical** ones — Antigravity CLI is **`agy`** (the
+- The ids are the app's **canonical** ones — Antigravity CLI is **`antigravity-cli`** (the
   marketplace string MUST match the app, or materialization silently no-ops).
 
 ## 3. The provider registry — where each agent reads its components
@@ -69,15 +69,15 @@ naive `~/.{id}`:
 
 | id | home | skills | command/prompt | sub-agents | hooks |
 |---|---|---|---|---|---|
-| `claude` | `~/.claude` | `skills/` | `commands/*.md` | `agents/*.md` | `settings.json` (merge†) |
-| `codex` | `~/.codex` | `skills/` | `prompts/*.md` | — | — |
-| `gemini` | `~/.gemini` | `skills/` | `commands/*.md` | — | — |
-| `kimi` | `~/.kimi` | `skills/` | — | — | `config.toml` (TOML merge†) |
+| `claude-code` | `~/.claude` | `skills/` | `commands/*.md` | `agents/*.md` | `settings.json` (merge†) |
+| `codex-cli` | `~/.codex` | `skills/` | `prompts/*.md` | — | — |
+| `gemini-cli` | `~/.gemini` | `skills/` | `commands/*.md` | — | — |
+| `kimi-code` | `~/.kimi` | `skills/` | — | — | `config.toml` (TOML merge†) |
 | `opencode` | `~/.config/opencode` | `skills/` | `commands/*.md` | `agents/*.md` | `plugins/*.ts` (copy) |
 | `github-copilot` | `~/.copilot` | `skills/` | — | `agents/*.agent.md` | `hooks/*.json` (copy) |
-| `cursor` | `~/.cursor` | `skills/` | — | — | `hooks.json` (merge†) |
-| `hermes` | `~/.hermes`‡ | `skills/` | — | — | `hooks/<n>/` (copy dir) |
-| `agy` | `~/.gemini/antigravity-cli` | `skills/` | — | `agents/*.md` | `hooks.json` (merge†) |
+| `cursor-cli` | `~/.cursor` | `skills/` | — | — | `hooks.json` (merge†) |
+| `hermes-agent` | `~/.hermes`‡ | `skills/` | — | — | `hooks/<n>/` (copy dir) |
+| `antigravity-cli` | `~/.gemini/antigravity-cli` | `skills/` | — | `agents/*.md` | `hooks.json` (merge†) |
 | `antigravity-sdk` | — | — | — | — | — (MCP only) |
 
 ‡ Hermes uses `%LOCALAPPDATA%\hermes` on Windows. † merge = next step (§7).
@@ -133,7 +133,7 @@ each plugin's manifest for fast listing. The official repo is
 `fleetifydev/marketplace`. Provider-id conventions:
 
 - **MCP plugins** (github, slack, postgres, …) → `providers` = the 9
-  MCP-bridge-capable agents (everything except `kimi`, whose CLI has no MCP
+  MCP-bridge-capable agents (everything except `kimi-code`, whose CLI has no MCP
   bridge); per-provider `declares` empty.
 - **Skill / template plugins** (diff-summarizer, code-reviewer, …) → `providers`
   = all 9 CLI agents.

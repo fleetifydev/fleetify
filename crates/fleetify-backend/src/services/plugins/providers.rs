@@ -22,14 +22,14 @@ use std::path::PathBuf;
 /// servers materialize (through the shared registry, not a home dir).
 pub const COMPONENT_PROVIDERS: &[&str] = &[
     "claude-code",
-    "codex",
-    "gemini",
-    "kimi",
+    "codex-cli",
+    "gemini-cli",
+    "kimi-code",
     "opencode",
     "github-copilot",
-    "cursor",
-    "hermes",
-    "agy",
+    "cursor-cli",
+    "hermes-agent",
+    "antigravity-cli",
 ];
 
 /// How a provider consumes lifecycle hooks. Drives the materializer's
@@ -73,19 +73,39 @@ pub fn provider_home(provider: &str) -> Option<PathBuf> {
     let h = home()?;
     let p = match provider {
         "claude-code" => h.join(".claude"),
-        "codex" => h.join(".codex"),
-        "gemini" => h.join(".gemini"),
-        "kimi" => h.join(".kimi"),
+        "codex-cli" => h.join(".codex"),
+        "gemini-cli" => h.join(".gemini"),
+        "kimi-code" => h.join(".kimi"),
         // XDG-style, even on Windows under %USERPROFILE% (per OpenCode docs).
         "opencode" => h.join(".config").join("opencode"),
         "github-copilot" => h.join(".copilot"),
-        "cursor" => h.join(".cursor"),
-        "hermes" => hermes_home(&h),
+        "cursor-cli" => h.join(".cursor"),
+        "hermes-agent" => hermes_home(&h),
         // Antigravity CLI stages everything under the Gemini namespace.
-        "agy" => h.join(".gemini").join("antigravity-cli"),
+        "antigravity-cli" => h.join(".gemini").join("antigravity-cli"),
         _ => return None,
     };
     Some(p)
+}
+
+/// The `.{basename}/` directory name a **plugin** uses to ship a provider's
+/// components (e.g. `.codex/skills/`, `.claude/commands/`). Plugins organise by
+/// the VENDOR name — the same name the real agent reads on disk — which for the
+/// suffix-renamed CLI ids differs from the routing id (`codex-cli` → `.codex`).
+/// This is the structural complement to `provider_home` (where the agent reads),
+/// not a legacy-id alias. Identity for ids that were never suffixed
+/// (`opencode`, `github-copilot`, `antigravity-sdk`).
+pub fn component_basename(provider: &str) -> &str {
+    match provider {
+        "claude-code" => "claude",
+        "codex-cli" => "codex",
+        "gemini-cli" => "gemini",
+        "kimi-code" => "kimi",
+        "cursor-cli" => "cursor",
+        "hermes-agent" => "hermes",
+        "antigravity-cli" => "agy",
+        other => other,
+    }
 }
 
 /// Hermes keeps native data under `%LOCALAPPDATA%\hermes` on Windows,
@@ -122,8 +142,8 @@ pub fn agents_skills_dir() -> Option<PathBuf> {
 /// (`/skill-name`), so they return `None`.
 pub fn commands_dir(provider: &str) -> Option<PathBuf> {
     let sub = match provider {
-        "claude-code" | "gemini" | "opencode" => "commands",
-        "codex" => "prompts",
+        "claude-code" | "gemini-cli" | "opencode" => "commands",
+        "codex-cli" => "prompts",
         _ => return None,
     };
     Some(provider_home(provider)?.join(sub))
@@ -137,7 +157,9 @@ pub fn commands_dir(provider: &str) -> Option<PathBuf> {
 /// per-agent file → `None`.
 pub fn agents_dir(provider: &str) -> Option<(PathBuf, &'static str)> {
     let (sub, ext) = match provider {
-        "claude-code" | "opencode" | "agy" | "gemini" | "cursor" => ("agents", "md"),
+        "claude-code" | "opencode" | "antigravity-cli" | "gemini-cli" | "cursor-cli" => {
+            ("agents", "md")
+        }
         "github-copilot" => ("agents", "agent.md"),
         _ => return None,
     };
@@ -148,7 +170,7 @@ pub fn agents_dir(provider: &str) -> Option<(PathBuf, &'static str)> {
 /// provider that uses standalone `.mdc` files (with `description`/`alwaysApply`
 /// frontmatter) instead of merging into a single root rule file.
 pub fn cursor_rules_dir() -> Option<PathBuf> {
-    Some(provider_home("cursor")?.join("rules"))
+    Some(provider_home("cursor-cli")?.join("rules"))
 }
 
 /// The hook-materialization strategy for a provider.
@@ -158,16 +180,16 @@ pub fn hook_strategy(provider: &str) -> HookStrategy {
             file: "settings.json",
             key: "hooks",
         },
-        "cursor" | "agy" => HookStrategy::MergeJson {
+        "cursor-cli" | "antigravity-cli" => HookStrategy::MergeJson {
             file: "hooks.json",
             key: "hooks",
         },
-        "kimi" => HookStrategy::MergeToml {
+        "kimi-code" => HookStrategy::MergeToml {
             file: "config.toml",
         },
         "github-copilot" => HookStrategy::CopyJsonFile,
         "opencode" => HookStrategy::CopyTsPlugin,
-        "hermes" => HookStrategy::CopyDir,
+        "hermes-agent" => HookStrategy::CopyDir,
         _ => HookStrategy::Unsupported,
     }
 }
@@ -265,7 +287,9 @@ mod tests {
                 .unwrap()
                 .to_string_lossy()
                 .contains(".config"));
-            assert!(provider_home("agy").unwrap().ends_with("antigravity-cli"));
+            assert!(provider_home("antigravity-cli")
+                .unwrap()
+                .ends_with("antigravity-cli"));
         });
     }
 
@@ -276,12 +300,12 @@ mod tests {
             HookStrategy::MergeJson { .. }
         ));
         assert!(matches!(
-            hook_strategy("kimi"),
+            hook_strategy("kimi-code"),
             HookStrategy::MergeToml { .. }
         ));
         assert_eq!(hook_strategy("github-copilot"), HookStrategy::CopyJsonFile);
         assert_eq!(hook_strategy("opencode"), HookStrategy::CopyTsPlugin);
-        assert_eq!(hook_strategy("hermes"), HookStrategy::CopyDir);
-        assert_eq!(hook_strategy("codex"), HookStrategy::Unsupported);
+        assert_eq!(hook_strategy("hermes-agent"), HookStrategy::CopyDir);
+        assert_eq!(hook_strategy("codex-cli"), HookStrategy::Unsupported);
     }
 }

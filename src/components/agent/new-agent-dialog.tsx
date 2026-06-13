@@ -142,12 +142,12 @@ const PROVIDERS = [
     { id: "claude-sonnet-4-6",         label: "Sonnet 4.6", desc: "Balanced", default: true },
     { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5",  desc: "Fastest" },
   ]},
-  { id: "codex",  name: "Codex",  icon: OpenAILogo, models: [
+  { id: "codex-cli",  name: "Codex",  icon: OpenAILogo, models: [
     { id: "gpt-5.2", label: "GPT-5.2", desc: "Fastest" },
     { id: "gpt-5.4", label: "GPT-5.4", desc: "Balanced", default: true },
     { id: "gpt-5.5", label: "GPT-5.5", desc: "Capable"  },
   ]},
-  { id: "gemini", name: "Gemini", icon: GeminiLogo, models: [
+  { id: "gemini-cli", name: "Gemini", icon: GeminiLogo, models: [
     { id: "gemini-3.1-pro-preview",        label: "3.1 Pro",  desc: "Best",    default: true },
     { id: "gemini-3-flash-preview",        label: "3 Flash",  desc: "Fast"    },
     { id: "gemini-3.1-flash-lite-preview", label: "3.1 Lite", desc: "Fastest" },
@@ -155,7 +155,7 @@ const PROVIDERS = [
   // Kimi Code CLI (Moonshot). Tier mapping aligns with the capability-
   // matrix entry in config/agents.toml — fast → k1.5-preview, balanced
   // → k2-instruct (default), max → k2-thinking.
-  { id: "kimi", name: "Kimi", icon: KimiLogo, models: [
+  { id: "kimi-code", name: "Kimi", icon: KimiLogo, models: [
     { id: "kimi-k1.5-preview",  label: "K1.5 Preview",  desc: "Fast"     },
     { id: "kimi-k2-instruct",   label: "K2 Instruct",   desc: "Balanced", default: true },
     { id: "kimi-k2-thinking",   label: "K2 Thinking",   desc: "Most capable" },
@@ -328,14 +328,14 @@ export function NewAgentView({ onClose }: Props) {
     return () => { cancelled = true; };
   }, [provider]);
   useEffect(() => {
-    if (!path.trim() || !["claude-code","gemini","codex"].includes(provider)) {
+    if (!path.trim() || !["claude-code","gemini-cli","codex-cli"].includes(provider)) {
       setClaudeSessions([]); setSessionCount(0); return;
     }
     if (fetchTimer.current) clearTimeout(fetchTimer.current);
     fetchTimer.current = setTimeout(async () => {
       setSessLoading(true);
       try {
-        const fn = provider === "gemini" ? fetchGeminiSessions : provider === "codex" ? fetchCodexSessions : fetchClaudeSessions;
+        const fn = provider === "gemini-cli" ? fetchGeminiSessions : provider === "codex-cli" ? fetchCodexSessions : fetchClaudeSessions;
         const r = await fn(path.trim());
         setClaudeSessions(r); setSessionCount(r.length); setResumeId(null);
       } catch { setClaudeSessions([]); setSessionCount(0); }
@@ -934,7 +934,7 @@ export function NewAgentView({ onClose }: Props) {
             <Sep/>
 
             {/* ── Session ── */}
-            {["claude-code","gemini","codex"].includes(provider) && (
+            {["claude-code","gemini-cli","codex-cli"].includes(provider) && (
               <>
                 <SecHead style={{ marginTop:20 }}>Session</SecHead>
                 <div style={{ display:"flex", flexDirection:"column", gap:8, marginTop:10, marginBottom:20 }}>

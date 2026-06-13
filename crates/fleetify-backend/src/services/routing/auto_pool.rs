@@ -114,10 +114,10 @@ pub fn select_routes(
     }
 
     // OpenAI family: Codex CLI first, then the direct OpenAI API.
-    if cli_authed("codex") {
+    if cli_authed("codex-cli") {
         routes.push(AutoRoute {
             agent: AgentKind::OpenAI,
-            execution_tool: "codex".into(),
+            execution_tool: "codex-cli".into(),
             nd_models: openai_codex_nd_models(),
         });
     } else if has_key("openai") {
@@ -129,10 +129,10 @@ pub fn select_routes(
     }
 
     // Gemini family: Gemini CLI first, then the direct Google API.
-    if cli_authed("gemini") {
+    if cli_authed("gemini-cli") {
         routes.push(AutoRoute {
             agent: AgentKind::Gemini,
-            execution_tool: "gemini".into(),
+            execution_tool: "gemini-cli".into(),
             nd_models: gemini_cli_nd_models(),
         });
     } else if has_key("gemini-api") {
@@ -207,7 +207,7 @@ mod tests {
     fn cli_wins_over_api_for_openai_and_gemini() {
         // Codex + Gemini CLI authed AND their API keys present → CLI wins.
         let routes = select_routes(
-            &|id| matches!(id, "codex" | "gemini"),
+            &|id| matches!(id, "codex-cli" | "gemini-cli"),
             &|id| matches!(id, "openai" | "gemini-api"),
             false,
         );
@@ -215,12 +215,12 @@ mod tests {
             .iter()
             .find(|r| r.agent == AgentKind::OpenAI)
             .unwrap();
-        assert_eq!(openai.execution_tool, "codex");
+        assert_eq!(openai.execution_tool, "codex-cli");
         let gemini = routes
             .iter()
             .find(|r| r.agent == AgentKind::Gemini)
             .unwrap();
-        assert_eq!(gemini.execution_tool, "gemini");
+        assert_eq!(gemini.execution_tool, "gemini-cli");
     }
 
     #[test]

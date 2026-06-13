@@ -15,12 +15,12 @@ command = "claude"
 args = ["-p", "--output-format", "stream-json", "--verbose"]
 chat_ui = true
 
-[agents.gemini]
+[agents.gemini-cli]
 command = "gemini"
 args = ["--acp"]
 chat_ui = true
 
-[agents.codex]
+[agents.codex-cli]
 command = "codex"
 args = ["app-server", "--listen", "stdio://"]
 chat_ui = true

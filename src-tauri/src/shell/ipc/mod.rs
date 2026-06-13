@@ -1448,9 +1448,9 @@ const NPM_PROVIDER_PKG: &[(&str, &str)] = &[
     // Key is the provider id ("claude-code"); the npm package name keeps its
     // own spelling. The installed binary is still `claude`.
     ("claude-code", "@anthropic-ai/claude-code"),
-    ("codex", "@openai/codex"),
-    ("gemini", "@google/gemini-cli"),
-    ("kimi", "@moonshot-ai/kimi-code"),
+    ("codex-cli", "@openai/codex"),
+    ("gemini-cli", "@google/gemini-cli"),
+    ("kimi-code", "@moonshot-ai/kimi-code"),
     // OpenCode and GitHub Copilot both ship cross-platform npm packages —
     // `npm install -g` is the documented all-OS install for each.
     ("opencode", "opencode-ai"),
@@ -1535,7 +1535,7 @@ pub async fn shell_install_provider(tool_key: String) -> serde_json::Value {
     // per-OS shell script (irm on Windows, curl|bash elsewhere). Mirror
     // the `shell_install_ollama` pattern so the renderer's Install button
     // works for it without an npm package.
-    if tool_key == "agy" {
+    if tool_key == "antigravity-cli" {
         let res = if cfg!(windows) {
             tokio::process::Command::new("powershell")
                 .args([
@@ -1575,7 +1575,7 @@ pub async fn shell_install_provider(tool_key: String) -> serde_json::Value {
     // PowerShell one-liner with the win32 flag; macOS/Linux run the
     // curl|bash script. Commands mirror the catalog's cursor `install_hints`
     // so the Install button and the Settings-displayed command agree.
-    if tool_key == "cursor" {
+    if tool_key == "cursor-cli" {
         let res = if cfg!(windows) {
             tokio::process::Command::new("powershell")
                 .args([
@@ -1593,12 +1593,12 @@ pub async fn shell_install_provider(tool_key: String) -> serde_json::Value {
                 .output()
                 .await
         };
-        return shell_installer_result(res, "cursor");
+        return shell_installer_result(res, "cursor-cli");
     }
     // Hermes Agent installs via the official scripts at
     // hermes-agent.nousresearch.com (irm|iex on Windows, curl|bash on
     // Unix). Mirrors the catalog's hermes `install_hints`.
-    if tool_key == "hermes" {
+    if tool_key == "hermes-agent" {
         let res = if cfg!(windows) {
             tokio::process::Command::new("powershell")
                 .args([
@@ -1619,7 +1619,7 @@ pub async fn shell_install_provider(tool_key: String) -> serde_json::Value {
                 .output()
                 .await
         };
-        return shell_installer_result(res, "hermes");
+        return shell_installer_result(res, "hermes-agent");
     }
     let pkg = NPM_PROVIDER_PKG
         .iter()
@@ -2489,8 +2489,8 @@ pub async fn providers_open_account_login(
     // Resolve the binary to an absolute path, sharing the bridges' per-agent
     // resolvers so off-PATH installs (cursor/hermes/copilot) are found.
     let program = match spec.id {
-        "cursor" => fleetify_backend::bridges::cursor::resolve_cursor_bin(),
-        "hermes" => fleetify_backend::bridges::hermes::resolve_hermes_bin(),
+        "cursor-cli" => fleetify_backend::bridges::cursor::resolve_cursor_bin(),
+        "hermes-agent" => fleetify_backend::bridges::hermes::resolve_hermes_bin(),
         "github-copilot" => fleetify_backend::bridges::github_copilot::resolve_copilot_bin(),
         _ => which::which(&tokens[0])
             .ok()

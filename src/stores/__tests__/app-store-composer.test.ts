@@ -98,12 +98,12 @@ describe("openComposer — provider/model default precedence", () => {
     Object.defineProperty(window, "electronAPI", {
       configurable: true,
       value: {
-        getConfig: async () => ({ defaultProvider: "gemini", defaultModel: "gemini-3.1-pro-preview" }),
+        getConfig: async () => ({ defaultProvider: "gemini-cli", defaultModel: "gemini-3.1-pro-preview" }),
       },
     });
     await useAppStore.getState().openComposer();
     const c = useAppStore.getState().composer;
-    expect(c.tool).toBe("gemini");
+    expect(c.tool).toBe("gemini-cli");
     expect(c.modelName).toBe("gemini-3.1-pro-preview");
   });
 

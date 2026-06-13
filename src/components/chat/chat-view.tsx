@@ -838,17 +838,17 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   // the actual model shows AND survives the next launch. `hermesHealModel` only
   // fires on "default", so an explicit pick is never overwritten.
   const healTarget = sessions.find((s) => s.id === effectiveSessionId);
-  // AgentTool intentionally omits some agent ids (e.g. "hermes") — the backend
+  // AgentTool intentionally omits some agent ids (e.g. "hermes-agent") — the backend
   // keys off the bare string — so compare as a plain string.
   const healTool: string | undefined = healTarget?.tool;
   const healModel = healTarget?.model_name;
   useEffect(() => {
     const sid = effectiveSessionId;
-    if (!sid || healTool !== "hermes" || healModel !== HERMES_DEFAULT_SENTINEL) return;
+    if (!sid || healTool !== "hermes-agent" || healModel !== HERMES_DEFAULT_SENTINEL) return;
     let cancelled = false;
-    void fetchAgentModels("hermes", "").then(({ current }) => {
+    void fetchAgentModels("hermes-agent", "").then(({ current }) => {
       if (cancelled) return;
-      const healed = hermesHealModel("hermes", HERMES_DEFAULT_SENTINEL, current);
+      const healed = hermesHealModel("hermes-agent", HERMES_DEFAULT_SENTINEL, current);
       if (!healed) return;
       updateSession(sid, { model_name: healed });
       registerConfigPatch(sid, apiUpdateSession(sid, { model_name: healed }));
@@ -1677,8 +1677,8 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
       const projectName = folderName(fresh.project_path) || "your project";
       const providerLabel =
         fresh.tool === "claude-code" ? "Claude Code"
-        : fresh.tool === "codex" ? "Codex"
-        : fresh.tool === "gemini" ? "Gemini"
+        : fresh.tool === "codex-cli" ? "Codex"
+        : fresh.tool === "gemini-cli" ? "Gemini"
         : fresh.tool.charAt(0).toUpperCase() + fresh.tool.slice(1);
       const text = `Ready when you are — I'll be working in **${projectName}** with **${providerLabel}**. What would you like to do?`;
       typeOutAssistantMessage(did, welcomeId, text, 14);
@@ -2260,7 +2260,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
             const m = (activeSession?.model_name ?? "").toLowerCase();
             // 1M for Gemini Pro / models tagged 1M, 200K everywhere
             // else. Claude Opus 4.8's 1M variant gets the wide cap.
-            const max = m.includes("gemini") || m.includes("1m") ? 1_000_000 : 200_000;
+            const max = m.includes("gemini-cli") || m.includes("1m") ? 1_000_000 : 200_000;
             return {
               contextPercent: lastInputView / max,
               contextUsedTokens: lastInputView,
