@@ -291,6 +291,9 @@ pub fn materialize_rule_cursor(
 }
 
 /// Build the `--- … ---` frontmatter for a Cursor `.mdc` from its rule type.
+/// `description` is written (when provided) for **every** rule type — Cursor
+/// only consults it for "Apply Intelligently", but it documents the rule on the
+/// others. `globs`/`alwaysApply` follow the type per cursor.com/docs/rules.
 fn cursor_frontmatter(
     rule_type: CursorRuleType,
     description: Option<&str>,
@@ -298,21 +301,20 @@ fn cursor_frontmatter(
 ) -> String {
     let one_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut fm = String::from("---\n");
+    if let Some(d) = description.filter(|d| !d.trim().is_empty()) {
+        fm.push_str(&format!("description: {}\n", one_line(d)));
+    }
     match rule_type {
         CursorRuleType::Always => fm.push_str("alwaysApply: true\n"),
-        CursorRuleType::Intelligent => {
-            if let Some(d) = description.filter(|d| !d.trim().is_empty()) {
-                fm.push_str(&format!("description: {}\n", one_line(d)));
-            }
-            fm.push_str("alwaysApply: false\n");
-        }
         CursorRuleType::Specific => {
             if let Some(g) = globs.filter(|g| !g.trim().is_empty()) {
                 fm.push_str(&format!("globs: {}\n", g.trim()));
             }
             fm.push_str("alwaysApply: false\n");
         }
-        CursorRuleType::Manual => fm.push_str("alwaysApply: false\n"),
+        CursorRuleType::Intelligent | CursorRuleType::Manual => {
+            fm.push_str("alwaysApply: false\n");
+        }
     }
     fm.push_str("---");
     fm
@@ -320,12 +322,14 @@ fn cursor_frontmatter(
 
 /// Materialize a GitHub Copilot **path-specific** instructions file at
 /// `<github_dir>/instructions/<slug>.instructions.md` with an `applyTo` glob
-/// header. Used when a Copilot rule carries globs (folder scope only — `applyTo`
-/// is repo-relative). Recorded in `materialized`, removed on delete.
+/// header (and an optional `description`). Used when a Copilot rule carries
+/// globs (folder scope only — `applyTo` is repo-relative). Recorded in
+/// `materialized`, removed on delete.
 pub fn materialize_rule_copilot_instructions(
     github_dir: &Path,
     slug: &str,
     apply_to: &str,
+    description: Option<&str>,
     authored: &str,
 ) -> Result<MaterializationResult> {
     let mut r = MaterializationResult {
@@ -335,11 +339,13 @@ pub fn materialize_rule_copilot_instructions(
     let dir = github_dir.join("instructions");
     std::fs::create_dir_all(&dir)?;
     let body = strip_frontmatter(authored);
-    let content = format!(
-        "---\napplyTo: \"{}\"\n---\n\n{}\n",
-        apply_to.trim(),
-        body.trim_end()
-    );
+    let one_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut fm = format!("---\napplyTo: \"{}\"\n", apply_to.trim());
+    if let Some(d) = description.filter(|d| !d.trim().is_empty()) {
+        fm.push_str(&format!("description: {}\n", one_line(d)));
+    }
+    fm.push_str("---");
+    let content = format!("{fm}\n\n{}\n", body.trim_end());
     let target = dir.join(format!("{slug}.instructions.md"));
     std::fs::write(&target, content)?;
     r.paths.push(target.to_string_lossy().into_owned());

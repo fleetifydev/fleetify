@@ -253,12 +253,14 @@ export function RuleForm({
                 })}
               </div>
             </Field>
-            {cursorNeedsDesc && (
-              <Field label="Description" hint="required · how the agent decides to apply this">
-                <input value={description} onChange={(e) => setDescription(e.target.value)}
-                  placeholder="e.g. Backend RPC service conventions" style={inputStyle} />
-              </Field>
-            )}
+            <Field
+              label="Description"
+              hint={cursorNeedsDesc
+                ? "required · how the agent decides to apply this"
+                : "optional · written to the .mdc frontmatter"}>
+              <input value={description} onChange={(e) => setDescription(e.target.value)}
+                placeholder="e.g. Backend RPC service conventions" style={inputStyle} />
+            </Field>
             {cursorNeedsGlobs && (
               <Field label="Globs" hint="required · comma-separated file patterns">
                 <input value={globs} onChange={(e) => setGlobs(e.target.value)}
@@ -269,16 +271,22 @@ export function RuleForm({
         )}
 
         {tab === "copilot" && (
-          <Field label="Applies to (globs)" hint="optional · path-specific rule">
-            <input value={globs} onChange={(e) => setGlobs(e.target.value)}
-              placeholder="**/*.ts,**/*.tsx — blank = repo-wide copilot-instructions.md"
-              style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
-            {globs.trim() && scope !== "folder" && (
-              <div style={{ fontSize: 11, color: "var(--c-dim)", marginTop: 4 }}>
-                Path rules are repo-relative — pick Folder scope, or this falls back to the plain file.
-              </div>
-            )}
-          </Field>
+          <>
+            <Field label="Description" hint="optional · written to the rule file">
+              <input value={description} onChange={(e) => setDescription(e.target.value)}
+                placeholder="What this rule covers" style={inputStyle} />
+            </Field>
+            <Field label="Applies to (globs)" hint="optional · path-specific rule">
+              <input value={globs} onChange={(e) => setGlobs(e.target.value)}
+                placeholder="**/*.ts,**/*.tsx — blank = repo-wide copilot-instructions.md"
+                style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
+              {globs.trim() && scope !== "folder" && (
+                <div style={{ fontSize: 11, color: "var(--c-dim)", marginTop: 4 }}>
+                  Path rules are repo-relative — pick Folder scope, or this falls back to the plain file.
+                </div>
+              )}
+            </Field>
+          </>
         )}
 
         <Field label="Body" hint={editing ? "leave blank to keep current" : "the rule text"}>

@@ -116,20 +116,24 @@ pub fn materialize_item(item: &LibraryItem, payload: &Path) -> Result<Materializ
                     }
                 }
                 RuleFormat::Copilot => {
-                    // With globs + a folder → a `.github/instructions/*` path file;
-                    // otherwise a plain merge into `copilot-instructions.md`.
+                    // With globs + a folder → a `.github/instructions/*` path file
+                    // (applyTo + description frontmatter); otherwise a plain merge
+                    // into `copilot-instructions.md` (the description, when given,
+                    // is prepended to the merged block since that file has no
+                    // frontmatter).
                     let globs = spec.globs.as_deref().filter(|g| !g.trim().is_empty());
                     match (globs, folder_path(&spec)) {
                         (Some(globs), Some(folder)) => {
                             let github = folder.join(".github");
                             let r = materializers::materialize_rule_copilot_instructions(
-                                &github, &item.slug, globs, &body,
+                                &github, &item.slug, globs, desc, &body,
                             )?;
                             push_paths(&mut materialized, &r.provider, r.paths);
                         }
                         _ => {
+                            let merged = prepend_description(desc, &body);
                             if let Some(rec) =
-                                merge_general_rule("github-copilot", &item.slug, &body, &spec)?
+                                merge_general_rule("github-copilot", &item.slug, &merged, &spec)?
                             {
                                 rules.push(rec);
                             }
@@ -216,6 +220,16 @@ fn cursor_rules_dir_for(spec: &RuleSpec) -> Option<PathBuf> {
     match folder_path(spec) {
         Some(folder) => Some(folder.join(".cursor").join("rules")),
         None => providers::cursor_rules_dir(),
+    }
+}
+
+/// Prepend a non-empty `description` as a leading paragraph to a rule body —
+/// used for the plain `copilot-instructions.md` merge, which has no frontmatter
+/// slot for it.
+fn prepend_description(description: Option<&str>, body: &str) -> String {
+    match description.map(str::trim).filter(|d| !d.is_empty()) {
+        Some(d) => format!("{d}\n\n{body}"),
+        None => body.to_string(),
     }
 }
 
@@ -469,7 +483,13 @@ mod tests {
         std::fs::create_dir_all(&proj).unwrap();
         let folder = proj.to_string_lossy().into_owned();
         let cases = [
-            (CursorRuleType::Always, None, None, "alwaysApply: true"),
+            // Always now also carries a description (written for every type).
+            (
+                CursorRuleType::Always,
+                Some("Always-on coding standards"),
+                None,
+                "alwaysApply: true",
+            ),
             (
                 CursorRuleType::Intelligent,
                 Some("Backend RPC conventions"),
@@ -508,6 +528,13 @@ mod tests {
                     "{slug}: expected `{expect}` in\n{txt}"
                 );
                 assert!(txt.contains("The rule body."));
+                // Description is written for EVERY rule type when provided.
+                if let Some(d) = desc {
+                    assert!(
+                        txt.contains(&format!("description: {d}")),
+                        "{slug}: description should be written for {rt:?}\n{txt}"
+                    );
+                }
                 // Manual/Specific/Intelligent never emit alwaysApply: true.
                 if !matches!(rt, CursorRuleType::Always) {
                     assert!(!txt.contains("alwaysApply: true"));
@@ -526,8 +553,9 @@ mod tests {
         std::fs::create_dir_all(&proj).unwrap();
         let folder = proj.to_string_lossy().into_owned();
         with_test_home(&home, || {
-            // With globs (folder) → .github/instructions/<slug>.instructions.md (applyTo).
-            let (it, payload) = rule(
+            // With globs (folder) → .github/instructions/<slug>.instructions.md
+            // (applyTo + description frontmatter).
+            let (mut it, payload) = rule(
                 "ts-rule",
                 &["github-copilot"],
                 "Use strict types.",
@@ -539,16 +567,19 @@ mod tests {
                     ..Default::default()
                 },
             );
+            it.description = Some("Strict TS conventions".into());
             let out = materialize_item(&it, &payload).unwrap();
             let inst = proj.join(".github/instructions/ts-rule.instructions.md");
             let txt = std::fs::read_to_string(&inst).unwrap();
             assert!(txt.contains("applyTo: \"**/*.ts,**/*.tsx\""));
+            assert!(txt.contains("description: Strict TS conventions"));
             assert!(txt.contains("Use strict types."));
             unmaterialize_item(&out.materialized, &out.hook_merge, &out.rule_merge);
             assert!(!inst.exists());
 
-            // No globs (folder) → plain merged block in .github/copilot-instructions.md.
-            let (it2, payload2) = rule(
+            // No globs (folder) → plain merged block in .github/copilot-instructions.md;
+            // the description is prepended (no frontmatter slot on that file).
+            let (mut it2, payload2) = rule(
                 "plain-rule",
                 &["github-copilot"],
                 "Be concise.",
@@ -559,12 +590,13 @@ mod tests {
                     ..Default::default()
                 },
             );
+            it2.description = Some("House style".into());
             let out2 = materialize_item(&it2, &payload2).unwrap();
             assert_eq!(out2.rule_merge.len(), 1);
             let plain = proj.join(".github/copilot-instructions.md");
-            assert!(std::fs::read_to_string(&plain)
-                .unwrap()
-                .contains("Be concise."));
+            let plain_txt = std::fs::read_to_string(&plain).unwrap();
+            assert!(plain_txt.contains("House style"));
+            assert!(plain_txt.contains("Be concise."));
         });
     }
 }
