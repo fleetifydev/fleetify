@@ -22,7 +22,7 @@ import {
   Settings, Cpu, Plug, Cable, Route, Mic,
   FileCode, Webhook, FileText, FolderOpen, Loader2, Bug,
   Check, User, ArrowUpRight, HelpCircle, Sun, ArrowLeft,
-  Copy, MessageCircle,
+  Copy, MessageCircle, Pencil,
   // Palette — kept here (commented) because the Appearance / Themes
   // section below is preserved as dormant code. Uncomment along with
   // the NAV row, AppearanceSection, ThemeCard and the render guard
@@ -38,6 +38,7 @@ import {
 } from "lucide-react";
 import { usesInAppTitleBar } from "@/lib/utils";
 import { copyText } from "@/lib/clipboard";
+import { getFleetRules, setFleetRules } from "@/lib/api";
 import { useAppStore } from "@/stores/app-store";
 import { useThemeStore } from "@/stores/theme-store";
 // Dormant — the Settings → Appearance picker is commented out below but
@@ -758,33 +759,211 @@ function PluginsSection({ onClose }: { onClose: () => void }) {
 function RulesSection() {
   return (
     <>
-      <SectionHeader>How rules work</SectionHeader>
+      <SectionHeader>Fleet rules</SectionHeader>
       <div style={{ fontSize: 12.5, color: "var(--c-low)", lineHeight: 1.6, marginTop: -6, marginBottom: 16 }}>
-        Fleet doesn't store rules in app settings — they live in your repo. Drop one of the files below at
-        the project root and every agent run inside that folder picks them up automatically.
+        <strong style={{ color: "var(--c-med)", fontWeight: 600 }}>FLEET.md</strong> holds your general
+        rules for Fleet itself — the orchestration layer that routes, dispatches, and coordinates your
+        agents. It lives at <code style={{ fontFamily: "var(--font-mono)" }}>~/.fleetify/FLEET.md</code> and
+        applies across every project. Edit it right here.
+      </div>
+      <FleetRulesEditor />
+
+      <SectionHeader>Per-agent rule files</SectionHeader>
+      <div style={{ fontSize: 12.5, color: "var(--c-low)", lineHeight: 1.6, marginTop: -6, marginBottom: 16 }}>
+        Each CLI agent also reads its own rule file from the project (or your home dir). Drop one at the
+        project root and every run inside that folder picks it up automatically — or author them per-provider,
+        global or per-folder, from <strong style={{ color: "var(--c-med)", fontWeight: 600 }}>Library → Rules</strong>.
       </div>
       <Card>
         <Row
           title="AGENTS.md"
-          desc="Agent-agnostic. Fleet reads this for every provider."
-        >
-          <ValueText>Auto-detected</ValueText>
-        </Row>
-        <Row
-          title=".cursorrules"
-          desc="Cursor's convention. Picked up by Codex / Cursor providers and surfaced to others."
+          desc="The cross-tool standard. Read by Codex, Kimi, OpenCode, and Antigravity (CLAUDE.md / GEMINI.md fall back to it)."
         >
           <ValueText>Auto-detected</ValueText>
         </Row>
         <Row
           title="CLAUDE.md"
-          desc="Claude Code's convention. Read by Claude provider; other CLIs inherit via AGENTS.md fallback."
+          desc="Claude Code's file. Read at the project root, nested dirs, and ~/.claude/CLAUDE.md."
+        >
+          <ValueText>Auto-detected</ValueText>
+        </Row>
+        <Row
+          title="GEMINI.md"
+          desc="Gemini CLI's file. Read at the project root and ~/.gemini/GEMINI.md."
+        >
+          <ValueText>Auto-detected</ValueText>
+        </Row>
+        <Row
+          title=".cursor/rules/*.mdc"
+          desc="Cursor's per-rule files — each with description / globs / alwaysApply frontmatter (the older single .cursorrules still works)."
+        >
+          <ValueText>Auto-detected</ValueText>
+        </Row>
+        <Row
+          title=".github/copilot-instructions.md"
+          desc="GitHub Copilot's repo-wide file. Path-specific rules go in .github/instructions/*.instructions.md with an applyTo glob."
           last
         >
           <ValueText>Auto-detected</ValueText>
         </Row>
       </Card>
     </>
+  );
+}
+
+/* ── FleetRulesEditor — ~/.fleetify/FLEET.md, read/written via
+   GET/PUT /api/fleet/rules. Shows a quiet preview by default; the textarea only
+   opens behind an explicit Edit button. ── */
+function FleetRulesEditor() {
+  const [content, setContent] = useState(""); // working draft (edit mode)
+  const [saved, setSaved] = useState(""); // current on-disk value
+  const [loaded, setLoaded] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const c = await getFleetRules();
+        if (!cancelled) {
+          setContent(c);
+          setSaved(c);
+        }
+      } catch {
+        /* leave empty — still editable */
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const dirty = content !== saved;
+  const startEdit = () => {
+    setContent(saved);
+    setError(null);
+    setEditing(true);
+  };
+  const cancel = () => {
+    setContent(saved);
+    setError(null);
+    setEditing(false);
+  };
+  const save = async () => {
+    if (saving || !dirty) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const c = await setFleetRules(content);
+      setSaved(c);
+      setContent(c);
+      setEditing(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card>
+      <div style={{ padding: "13px 14px", display: "flex", flexDirection: "column", gap: 6 }}>
+        {/* Header: file identity + the Edit affordance (preview mode only). */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <FileText size={14} style={{ color: "var(--c-dim)", flexShrink: 0 }} />
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--c-high)", fontFamily: "var(--font-mono)" }}>
+            FLEET.md
+          </span>
+          <span style={{ fontSize: 11, color: "var(--c-ghost)", fontFamily: "var(--font-mono)" }}>
+            ~/.fleetify/FLEET.md
+          </span>
+          <div style={{ flex: 1 }} />
+          {!editing && loaded && (
+            <button
+              onClick={startEdit}
+              style={{
+                fontFamily: "inherit", cursor: "pointer", outline: "none",
+                display: "inline-flex", alignItems: "center", gap: 5,
+                // Compact so it doesn't inflate the header row past the title.
+                padding: "3px 10px", borderRadius: 6, fontSize: 12, fontWeight: 500,
+                background: "transparent", border: "1px solid var(--c-brd)", color: "var(--c-med)",
+                transition: "background 0.12s, border-color 0.12s, color 0.12s",
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "var(--c-srf2)"; e.currentTarget.style.color = "var(--c-high)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--c-med)"; }}
+            >
+              <Pencil size={12} />
+              {saved.trim() ? "Edit" : "Add rules"}
+            </button>
+          )}
+        </div>
+
+        {editing ? (
+          <>
+            <textarea
+              value={content}
+              autoFocus
+              onChange={(e) => setContent(e.target.value)}
+              rows={10}
+              placeholder="e.g. Always summarize what each agent did before dispatching the next task."
+              style={{
+                width: "100%", padding: "10px 12px", fontSize: 12.5,
+                fontFamily: "var(--font-mono)", lineHeight: 1.55, borderRadius: 8,
+                border: "1px solid var(--c-brd)", background: "var(--c-srf)",
+                color: "var(--c-high)", outline: "none", resize: "vertical", boxSizing: "border-box",
+              }}
+            />
+            {error && <div style={{ fontSize: 11.5, color: "rgb(248,113,113)" }}>{error}</div>}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
+              <button
+                onClick={cancel}
+                style={{
+                  fontFamily: "inherit", cursor: "pointer", outline: "none",
+                  padding: "6px 14px", borderRadius: 7, fontSize: 12.5, fontWeight: 500,
+                  background: "transparent", border: "1px solid var(--c-brd)", color: "var(--c-med)",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={save}
+                disabled={!dirty || saving}
+                style={{
+                  fontFamily: "inherit", cursor: dirty && !saving ? "pointer" : "default", outline: "none",
+                  padding: "6px 14px", borderRadius: 7, fontSize: 12.5, fontWeight: 600, border: "none",
+                  background: dirty && !saving ? "var(--c-high)" : "var(--c-srf2)",
+                  color: dirty && !saving ? "var(--card)" : "var(--c-dim)",
+                  transition: "background 0.12s, color 0.12s",
+                }}
+              >
+                {saving ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </>
+        ) : !loaded ? (
+          <div style={{ fontSize: 12.5, color: "var(--c-dim)" }}>Loading…</div>
+        ) : saved.trim() ? (
+          <div
+            style={{
+              fontSize: 12.5, fontFamily: "var(--font-mono)", lineHeight: 1.55,
+              color: "var(--c-med)", whiteSpace: "pre-wrap", wordBreak: "break-word",
+              maxHeight: 220, overflowY: "auto",
+              background: "var(--c-srf)", borderRadius: 8, padding: "10px 12px",
+            }}
+          >
+            {saved}
+          </div>
+        ) : (
+          <div style={{ fontSize: 12.5, color: "var(--c-dim)", lineHeight: 1.5 }}>
+            No Fleet rules yet — add general instructions for how Fleet should orchestrate your agents.
+          </div>
+        )}
+      </div>
+    </Card>
   );
 }
 

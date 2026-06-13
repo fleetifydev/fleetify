@@ -447,6 +447,27 @@ export async function setSessionRules(sessionId: string, rules: string): Promise
   return data.rules ?? "";
 }
 
+/** Fetch the Fleet rule file (`~/.fleetify/FLEET.md`) — general, app-level
+ *  rules for Fleet itself. Empty string when the file doesn't exist yet. */
+export async function getFleetRules(): Promise<string> {
+  const res = await apiFetch(`${API_BASE}/fleet/rules`);
+  if (!res.ok) throw new Error("Failed to load Fleet rules");
+  const data = (await res.json()) as { content?: string };
+  return data.content ?? "";
+}
+
+/** Persist the Fleet rule file (`~/.fleetify/FLEET.md`). */
+export async function setFleetRules(content: string): Promise<string> {
+  const res = await apiFetch(`${API_BASE}/fleet/rules`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  if (!res.ok) throw new Error("Failed to save Fleet rules");
+  const data = (await res.json()) as { content?: string };
+  return data.content ?? "";
+}
+
 export async function forkSession(sessionId: string) {
   const res = await apiFetch(`${API_BASE}/sessions/${sessionId}/fork`, { method: "POST" });
   if (!res.ok) throw new Error("Failed to fork session");
