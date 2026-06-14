@@ -23,11 +23,13 @@
  * view answers the most common question ("what's in my Library?")
  * without that round-trip.
  */
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowLeft, Library as LibraryIcon, FileText, Sparkles, Webhook,
   Workflow, LayoutTemplate, Cable, Package, HelpCircle, MessageCircle,
   User, Sun, Plus, Trash2, Pencil, Bot, ScrollText,
+  MoreHorizontal, FolderOpen, Copy, Search, X,
 } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
 import { usePluginStore } from "@/stores/plugin-store";
@@ -694,6 +696,17 @@ function UserItemsList({
   onEdit: (item: LibraryItem) => void;
   onDelete: (id: string) => void;
 }) {
+  const [query, setQuery] = useState("");
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return items;
+    return items.filter(
+      (it) =>
+        it.name.toLowerCase().includes(q) ||
+        it.slug.toLowerCase().includes(q) ||
+        (it.description ?? "").toLowerCase().includes(q),
+    );
+  }, [items, query]);
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
@@ -710,6 +723,9 @@ function UserItemsList({
           <Plus size={13} /> New
         </button>
       </div>
+      {items.length > 0 && (
+        <SearchBox value={query} onChange={setQuery} placeholder={`Search ${kind}s by name…`} />
+      )}
       {items.length === 0 ? (
         <div style={{
           border: "1px dashed var(--c-brd)", borderRadius: 10, padding: 24,
@@ -717,12 +733,57 @@ function UserItemsList({
         }}>
           No {kind}s yet — create one or install a plugin.
         </div>
+      ) : filtered.length === 0 ? (
+        <div style={{
+          border: "1px dashed var(--c-brd)", borderRadius: 10, padding: 24,
+          textAlign: "center", color: "var(--c-low)", fontSize: 12.5,
+        }}>
+          No {kind}s match “{query}”.
+        </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {items.map(it => (
+          {filtered.map((it) => (
             <UserItemRow key={it.id} item={it} onEdit={() => onEdit(it)} onDelete={() => onDelete(it.id)} />
           ))}
         </div>
+      )}
+    </div>
+  );
+}
+
+/** Compact search input used at the top of each Library section. */
+function SearchBox({
+  value, onChange, placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+}) {
+  return (
+    <div style={{ position: "relative", marginBottom: 12 }}>
+      <Search
+        size={13}
+        style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--c-dim)", pointerEvents: "none" }}
+      />
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        style={{
+          width: "100%", boxSizing: "border-box", padding: "7px 28px 7px 30px", fontSize: 12.5,
+          background: "var(--c-srf)", color: "var(--c-high)", border: "1px solid var(--c-brd)",
+          borderRadius: 8, outline: "none",
+        }}
+      />
+      {value && (
+        <button
+          type="button"
+          onClick={() => onChange("")}
+          aria-label="Clear search"
+          style={{ position: "absolute", right: 7, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "var(--c-dim)", display: "flex" }}
+        >
+          <X size={13} />
+        </button>
       )}
     </div>
   );
@@ -739,6 +800,145 @@ function folderBasename(path?: string): string {
   if (!path) return "…";
   const parts = path.split(/[/\\]+/).filter(Boolean);
   return parts[parts.length - 1] ?? path;
+}
+
+/** Per-item actions menu (⋯): open file location / open raw file / copy path,
+ *  plus Edit / Delete for authored items. Reuses the app's portal-popover idiom. */
+function RowMenu({
+  item, onEdit, onDelete,
+}: {
+  item: LibraryItem;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const r = btnRef.current?.getBoundingClientRect();
+      if (r) setPos({ top: r.bottom + 4, right: window.innerWidth - r.right });
+    };
+    place();
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (menuRef.current?.contains(t) || btnRef.current?.contains(t)) return;
+      setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const editable = item.editable !== false;
+  const path = item.primary_path;
+  // Read-only plugin row with no on-disk file → no actions, no menu.
+  if (!editable && !path) return null;
+
+  const reveal = () => {
+    if (path) window.electronAPI?.showItemInFolder?.(path)?.catch(() => {});
+  };
+  const openRaw = () => {
+    if (path) window.electronAPI?.openExternal?.(path)?.catch(() => {});
+  };
+  const copyPath = () => {
+    if (path) navigator.clipboard?.writeText(path)?.catch(() => {});
+  };
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-label="Actions"
+        title="Actions"
+        style={{
+          width: 28, height: 28, borderRadius: 6, flexShrink: 0,
+          background: open ? "var(--c-srf)" : "none", border: "none", cursor: "pointer",
+          color: "var(--c-dim)", display: "flex", alignItems: "center", justifyContent: "center",
+        }}
+      >
+        <MoreHorizontal size={15} />
+      </button>
+      {open && pos && createPortal(
+        <div
+          ref={menuRef}
+          role="menu"
+          style={{
+            position: "fixed", top: pos.top, right: pos.right, minWidth: 190, zIndex: 2000,
+            background: "var(--card)", border: "1px solid var(--c-brd)", borderRadius: 8, padding: 4,
+            boxShadow: "0 10px 28px rgba(0,0,0,0.45), 0 2px 6px rgba(0,0,0,0.3)",
+            animation: "fleet-popover-in 0.12s ease-out",
+          }}
+        >
+          {path && (
+            <>
+              <MenuItem icon={<FolderOpen size={13} />} label="Open file location" onClick={() => { setOpen(false); reveal(); }} />
+              <MenuItem icon={<FileText size={13} />} label="Open raw file" onClick={() => { setOpen(false); openRaw(); }} />
+              <MenuItem icon={<Copy size={13} />} label="Copy path" onClick={() => { setOpen(false); copyPath(); }} />
+              {editable && <div style={{ height: 1, background: "var(--c-brd)", margin: "4px 2px" }} />}
+            </>
+          )}
+          {editable && (
+            <>
+              <MenuItem icon={<Pencil size={13} />} label="Edit" onClick={() => { setOpen(false); onEdit(); }} />
+              <MenuItem icon={<Trash2 size={13} />} label="Delete" danger onClick={() => { setOpen(false); onDelete(); }} />
+            </>
+          )}
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
+
+function MenuItem({
+  icon, label, onClick, danger,
+}: {
+  icon: ReactNode;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+}) {
+  const [hover, setHover] = useState(false);
+  const color = danger ? "var(--c-danger, #d44)" : "var(--c-high)";
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: "flex", alignItems: "center", gap: 9, width: "100%", padding: "7px 9px",
+        borderRadius: 6, border: "none", background: hover ? "var(--c-srf)" : "transparent",
+        color, fontSize: 12.5, cursor: "pointer", textAlign: "left",
+      }}
+    >
+      <span style={{ display: "flex", flexShrink: 0, color: danger ? color : "var(--c-dim)" }}>{icon}</span>
+      {label}
+    </button>
+  );
 }
 
 function UserItemRow({ item, onEdit, onDelete }: { item: LibraryItem; onEdit: () => void; onDelete: () => void }) {
@@ -810,24 +1010,7 @@ function UserItemRow({ item, onEdit, onDelete }: { item: LibraryItem; onEdit: ()
           </div>
         )}
       </div>
-      {item.editable !== false && (
-        <>
-          <button
-            onClick={onEdit}
-            title="Edit"
-            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--c-dim)", display: "flex", padding: 4, flexShrink: 0 }}
-          >
-            <Pencil size={13} />
-          </button>
-          <button
-            onClick={onDelete}
-            title="Delete"
-            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--c-dim)", display: "flex", padding: 4, flexShrink: 0 }}
-          >
-            <Trash2 size={14} />
-          </button>
-        </>
-      )}
+      <RowMenu item={item} onEdit={onEdit} onDelete={onDelete} />
     </div>
   );
 }

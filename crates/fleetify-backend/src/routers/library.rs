@@ -41,6 +41,10 @@ struct ItemRow {
     item: LibraryItem,
     source: String,
     editable: bool,
+    /// The single most-useful on-disk file for this item — drives the row's
+    /// open-file-location / open-raw-file / copy-path actions. None for
+    /// read-only plugin rows.
+    primary_path: Option<String>,
 }
 
 async fn list_items(Query(q): Query<ListQuery>) -> Result<Json<Value>, ApiError> {
@@ -54,6 +58,7 @@ async fn list_items(Query(q): Query<ListQuery>) -> Result<Json<Value>, ApiError>
     let mut rows: Vec<ItemRow> = store::list(kind)
         .into_iter()
         .map(|item| ItemRow {
+            primary_path: item_primary_path(&item),
             item,
             source: "user".to_string(),
             editable: true,
@@ -72,6 +77,7 @@ async fn list_items(Query(q): Query<ListQuery>) -> Result<Json<Value>, ApiError>
     for k in kinds {
         for (plugin, item) in enumerate::plugin_items(k) {
             rows.push(ItemRow {
+                primary_path: None,
                 item,
                 source: plugin,
                 editable: false,
@@ -417,6 +423,37 @@ fn existing_payload(dir: &Path, kind: LibraryKind) -> PathBuf {
         LibraryKind::Subagent => dir.join("subagent.md"),
         LibraryKind::Rule => dir.join("rule.md"),
     }
+}
+
+/// The single most-useful on-disk file for an authored item, for the row's
+/// "open file location / open raw file" actions: the first materialized
+/// artifact, else the first merged config it touched, else the store payload
+/// (the authored source, which always exists for a user item).
+fn item_primary_path(item: &LibraryItem) -> Option<String> {
+    let base = if let Some(m) = item.materialized.first() {
+        m.path.clone()
+    } else if let Some(h) = item.hook_merge.first() {
+        h.file.clone()
+    } else if let Some(r) = item.rule_merge.first() {
+        r.file.clone()
+    } else {
+        existing_payload(&store::item_dir(&item.id), item.kind)
+            .to_string_lossy()
+            .into_owned()
+    };
+    // Skills (and Hermes-gateway hooks) record a DIRECTORY as their path; resolve
+    // it to the raw file inside so "open raw file" opens the file, not the folder
+    // ("open file location" then reveals that file highlighted in its folder).
+    let p = Path::new(&base);
+    if p.is_dir() {
+        for f in ["SKILL.md", "HOOK.yaml"] {
+            let cand = p.join(f);
+            if cand.is_file() {
+                return Some(cand.to_string_lossy().into_owned());
+            }
+        }
+    }
+    Some(base)
 }
 
 /// Write the authored body into the item dir, returning the payload path the

@@ -95,6 +95,9 @@ export interface LibraryItem {
    *  items are read-only (no edit/delete). Absent ⇒ treat as your own. */
   source?: string;
   editable?: boolean;
+  /** The single most-useful on-disk file for this item (open-location /
+   *  open-raw / copy-path). Absent on read-only plugin rows. */
+  primary_path?: string;
 }
 
 /** Create-item request body. `body` is the authored content (SKILL.md text
