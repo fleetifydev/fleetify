@@ -319,10 +319,14 @@ export function ProviderMultiSelect({
   allowed,
   selected,
   onToggle,
+  single = false,
 }: {
   allowed: string[];
   selected: string[];
   onToggle: (id: string) => void;
+  /** Radio behaviour: singular placeholder + close the popover on select. The
+   *  parent still owns the selection (pass an onToggle that keeps a single id). */
+  single?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -362,7 +366,9 @@ export function ProviderMultiSelect({
       >
         <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 5, flex: 1, minWidth: 0 }}>
           {selected.length === 0 ? (
-            <span style={{ color: "var(--c-dim)", fontSize: 13 }}>Select providers…</span>
+            <span style={{ color: "var(--c-dim)", fontSize: 13 }}>
+              {single ? "Select a provider…" : "Select providers…"}
+            </span>
           ) : (
             selected.map((id) => (
               <span
@@ -393,7 +399,7 @@ export function ProviderMultiSelect({
       {open && (
         <div
           role="listbox"
-          aria-multiselectable
+          aria-multiselectable={!single}
           style={{
             position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0,
             zIndex: 20,
@@ -414,7 +420,10 @@ export function ProviderMultiSelect({
                 type="button"
                 role="option"
                 aria-selected={on}
-                onClick={() => onToggle(id)}
+                onClick={() => {
+                  onToggle(id);
+                  if (single) setOpen(false);
+                }}
                 style={{
                   display: "flex", alignItems: "center", gap: 9,
                   width: "100%", padding: "7px 9px",

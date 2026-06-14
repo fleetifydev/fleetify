@@ -1,14 +1,16 @@
 /**
- * HookForm — the Library "Hooks" create/edit modal. Provider-specific: pick
- * provider(s) at top, then inputs shaped to the chosen providers. Three modes:
- *   • Command — trigger + matcher + command (+ optional handler file), merged
- *     into / written as each provider's native hook config. Multi-provider; the
- *     trigger list is the intersection of native events.
- *   • Plugin  — OpenCode only (exclusive): attach a .ts plugin, copied to
+ * HookForm — the Library "Hooks" create/edit modal. Single-provider: pick ONE
+ * provider, then inputs shaped to that provider's native hook events. The mode
+ * is implied by the provider:
+ *   • Command — trigger + matcher + command (+ optional handler file), written
+ *     as the provider's native hook config. The trigger list is that provider's
+ *     own native event set (no cross-provider intersection).
+ *   • Plugin  — OpenCode: attach a .ts plugin, copied to
  *     ~/.config/opencode/plugin/<slug>.ts.
- *   • Gateway — Hermes only (exclusive): attach handler.py + pick events →
+ *   • Gateway — Hermes: attach handler.py + pick events →
  *     ~/.hermes/hooks/<slug>/{HOOK.yaml,handler.py}.
- * Scope (Global/Folder) is shared like the Rules modal.
+ * Scope (Global/Folder) is shared like the Rules modal. The stored `providers`
+ * stays a 1-element array so the backend materializer is unchanged.
  */
 import { useMemo, useRef, useState } from "react";
 import { X, FolderOpen, Upload } from "lucide-react";
@@ -35,8 +37,8 @@ import {
   btnSecondary,
 } from "./create-item-dialog";
 
-/** Resolve the mode implied by the selected providers. opencode/hermes-gateway
- *  are exclusive — selecting one forces Plugin/Gateway. */
+/** Resolve the mode implied by the (single) selected provider: opencode →
+ *  Plugin, hermes-agent + gateway → Gateway, otherwise Command. */
 function modeForProviders(providers: string[], hermesGateway: boolean): HookMode {
   if (providers.includes("opencode")) return "plugin";
   if (providers.includes("hermes-agent") && hermesGateway) return "gateway";
@@ -86,15 +88,12 @@ export function HookForm({ editing, onClose }: { editing?: LibraryItem; onClose:
   // the user's pick is preserved if they re-widen the selection).
   const effectiveTrigger = selectedTrigger ? trigger : "";
 
-  // Selecting opencode (plugin) or hermes-gateway makes that provider exclusive.
-  const toggleProvider = (id: string) => {
-    setProviders((prev) => {
-      if (prev.includes(id)) return prev.filter((x) => x !== id);
-      if (id === "opencode") return ["opencode"];
-      if (id === "hermes-agent" && hermesGateway) return ["hermes-agent"];
-      // Adding a normal provider drops the exclusive opencode.
-      return [...prev.filter((x) => x !== "opencode"), id];
-    });
+  // Single-provider: selecting a provider replaces the (1-element) selection.
+  // The mode then follows from which provider it is (see modeForProviders).
+  const selectProvider = (id: string) => {
+    setProviders([id]);
+    // Hermes supports only Gateway in v1 (shell is n/a), so default it on.
+    if (id === "hermes-agent") setHermesGateway(true);
   };
 
   const onPickFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -186,8 +185,8 @@ export function HookForm({ editing, onClose }: { editing?: LibraryItem; onClose:
           </button>
         </div>
 
-        <Field label="Providers" hint="where this hook is installed">
-          <ProviderMultiSelect allowed={PROVIDERS_FOR_KIND.hook} selected={providers} onToggle={toggleProvider} />
+        <Field label="Provider" hint="which agent this hook targets — triggers are that provider's native events">
+          <ProviderMultiSelect single allowed={PROVIDERS_FOR_KIND.hook} selected={providers} onToggle={selectProvider} />
         </Field>
 
         {providers.includes("hermes-agent") && (
@@ -250,10 +249,10 @@ export function HookForm({ editing, onClose }: { editing?: LibraryItem; onClose:
 
         {mode === "command" && (
           <>
-            <Field label="Trigger" hint={providers.length > 1 ? "events all selected providers share" : "native event"}>
+            <Field label="Trigger" hint="the provider's native event">
               {available.length === 0 ? (
                 <div style={{ fontSize: 12, color: "var(--c-dim)" }}>
-                  These providers share no common trigger — pick a smaller set.
+                  This provider has no configurable command triggers.
                 </div>
               ) : (
                 <select value={effectiveTrigger} onChange={(e) => setTrigger(e.target.value)} style={inputStyle}>
