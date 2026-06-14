@@ -111,14 +111,18 @@ pub async fn call_haiku_with_meta_cost(
     Ok(text)
 }
 
-/// Streaming variant of `call_haiku` that pins an explicit `model` and
-/// reads stdout incrementally, invoking `on_bytes(total_bytes_so_far)`
-/// after each read so the caller can drive a live progress %. Returns
-/// the full trimmed text. The prompt is piped on stdin (same ARG_MAX
-/// dodge as `call_haiku`). Bytes are accumulated raw and decoded once at
-/// the end, so a multi-byte UTF-8 char split across a read boundary is
-/// never corrupted in the returned summary. stderr is discarded (we only
-/// need stdout + the exit status), which also avoids a pipe-fill stall.
+/// Streaming variant of `call_haiku` that pins an explicit `model` and reads
+/// the CLI's **stream-json** output, invoking `on_bytes(total_activity_bytes)`
+/// as deltas arrive so the caller can drive a live progress %. Progress counts
+/// BOTH thinking and text deltas (so the bar never stalls while the model
+/// thinks), but only TEXT deltas form the returned summary.
+///
+/// The call is deliberately ISOLATED so it behaves like a clean meta-call:
+/// `--strict-mcp-config` drops MCP servers, `--setting-sources project,local`
+/// skips the user's settings/hooks (otherwise the superpowers SessionStart hook
+/// injects ~19k tokens and makes the model deliberate about skills before
+/// summarising), and a neutral cwd avoids project CLAUDE.md auto-discovery.
+/// OAuth still works — only `--bare` disables keychain auth, so we don't use it.
 pub async fn call_model_streaming<F>(
     model: &str,
     prompt: &str,
@@ -136,7 +140,18 @@ where
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "claude".to_string());
 
-    let mut args: Vec<String> = vec!["--print".into(), "--model".into(), model.to_string()];
+    let mut args: Vec<String> = vec![
+        "--print".into(),
+        "--output-format".into(),
+        "stream-json".into(),
+        "--verbose".into(),
+        "--include-partial-messages".into(),
+        "--strict-mcp-config".into(),
+        "--setting-sources".into(),
+        "project,local".into(),
+        "--model".into(),
+        model.to_string(),
+    ];
     if let Some(s) = system {
         args.push("--system-prompt".into());
         args.push(s.to_string());
@@ -144,6 +159,7 @@ where
 
     let mut cmd = tokio::process::Command::new(&bin);
     cmd.args(&args)
+        .current_dir(std::env::temp_dir())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
@@ -161,7 +177,7 @@ where
         drop(stdin);
     }
 
-    let mut stdout = match child.stdout.take() {
+    let stdout = match child.stdout.take() {
         Some(s) => s,
         None => {
             haiku_breaker::record_haiku_failure();
@@ -169,25 +185,27 @@ where
         }
     };
 
-    let read_loop = async {
-        use tokio::io::AsyncReadExt;
-        let mut acc: Vec<u8> = Vec::new();
-        let mut buf = [0u8; 4096];
-        loop {
-            match stdout.read(&mut buf).await {
-                Ok(0) => break,
-                Ok(n) => {
-                    acc.extend_from_slice(&buf[..n]);
-                    on_bytes(acc.len());
+    // Read line-delimited stream-json. Each text/thinking delta advances the
+    // activity counter (progress); only text deltas build the summary.
+    let read_loop = async move {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let mut summary = String::new();
+        let mut activity = 0usize;
+        let mut lines = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Some(piece) = parse_stream_delta(&line) {
+                activity += piece.text.len();
+                if piece.is_text {
+                    summary.push_str(&piece.text);
                 }
-                Err(_) => break,
+                on_bytes(activity);
             }
         }
-        acc
+        summary
     };
 
-    let acc = match tokio::time::timeout(timeout.unwrap_or(DEFAULT_TIMEOUT), read_loop).await {
-        Ok(a) => a,
+    let summary = match tokio::time::timeout(timeout.unwrap_or(DEFAULT_TIMEOUT), read_loop).await {
+        Ok(s) => s,
         Err(_) => {
             haiku_breaker::record_haiku_failure();
             let _ = child.start_kill();
@@ -198,7 +216,7 @@ where
     match child.wait().await {
         Ok(status) if status.success() => {
             haiku_breaker::record_haiku_success();
-            Ok(String::from_utf8_lossy(&acc).trim().to_string())
+            Ok(summary.trim().to_string())
         }
         Ok(status) => {
             haiku_breaker::record_haiku_failure();
@@ -208,6 +226,39 @@ where
             haiku_breaker::record_haiku_failure();
             Err(anyhow!("claude CLI wait failed: {e}"))
         }
+    }
+}
+
+/// One delta extracted from a claude stream-json line.
+struct StreamDelta {
+    /// true = assistant text (part of the summary); false = thinking.
+    is_text: bool,
+    text: String,
+}
+
+/// Parse one stream-json line into its text/thinking delta, if any. Mirrors the
+/// bridge's `content_block_delta` handling. Lines that are not a
+/// text_delta/thinking_delta (init, message_start, tool deltas, …) → None.
+fn parse_stream_delta(line: &str) -> Option<StreamDelta> {
+    let v: Value = serde_json::from_str(line.trim()).ok()?;
+    if v.get("type")?.as_str()? != "stream_event" {
+        return None;
+    }
+    let ev = v.get("event")?;
+    if ev.get("type")?.as_str()? != "content_block_delta" {
+        return None;
+    }
+    let delta = ev.get("delta")?;
+    match delta.get("type")?.as_str()? {
+        "text_delta" => Some(StreamDelta {
+            is_text: true,
+            text: delta.get("text")?.as_str()?.to_string(),
+        }),
+        "thinking_delta" => Some(StreamDelta {
+            is_text: false,
+            text: delta.get("thinking")?.as_str()?.to_string(),
+        }),
+        _ => None,
     }
 }
 
@@ -295,5 +346,30 @@ mod tests {
         let raw = r#"{"foo": [1,2,3], "bar": {"baz": true}}"#;
         let v = extract_json_object(raw).unwrap();
         assert_eq!(v, json!({ "foo": [1, 2, 3], "bar": { "baz": true } }));
+    }
+
+    #[test]
+    fn parse_stream_delta_extracts_text_and_thinking() {
+        let text = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}}"#;
+        let d = parse_stream_delta(text).expect("text delta");
+        assert!(d.is_text);
+        assert_eq!(d.text, "Hello");
+
+        let think = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}}}"#;
+        let t = parse_stream_delta(think).expect("thinking delta");
+        assert!(!t.is_text);
+        assert_eq!(t.text, "hmm");
+
+        // Non-deltas → None (init, message_start, tool deltas, junk).
+        assert!(parse_stream_delta(r#"{"type":"system","subtype":"init"}"#).is_none());
+        assert!(parse_stream_delta(
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{}}}"#
+        )
+        .is_none());
+        assert!(
+            parse_stream_delta(r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{}"}}}"#)
+                .is_none()
+        );
+        assert!(parse_stream_delta("not json").is_none());
     }
 }

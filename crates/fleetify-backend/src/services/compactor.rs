@@ -27,22 +27,22 @@ const COMPACT_TIMEOUT: Duration = Duration::from_secs(120);
 /// Model used to summarise — Opus 4.8 per the product decision (higher-
 /// quality summaries; the live progress bar covers the extra latency).
 const SUMMARIZER_MODEL: &str = "claude-opus-4-8";
-/// Rough byte budget for a typical (now uncapped, Claude-Code-style)
-/// summary, used only to map streamed output onto the 0–100 % bar. The
-/// bar clamps at 92 % if a summary runs longer, so this only needs to be
-/// in the right ballpark (~1300 words).
-const TARGET_SUMMARY_BYTES: usize = 8000;
+/// Curve constant for the summarise-phase progress bar (see `summarize_pct`).
+/// Smaller = the bar rises faster early. Tuned so a typical summary's streamed
+/// activity (thinking + text) approaches ~90 % by the time the model finishes.
+const SUMMARIZE_CURVE_K: usize = 2500;
 
 /// Auto-compaction fires when a session's context fill reaches this fraction
 /// of the model's window. 0.90 leaves headroom so the triggering turn does not
 /// overflow (waiting for a literal 1.0 would already be too late).
 pub const AUTO_COMPACT_THRESHOLD: f32 = 0.90;
 
-// Modeled on how Claude Code / Anthropic compaction actually summarises
-// (preserve user intent, current state, decisions, files+code, errors,
-// in-flight work, next steps; no tight word cap; keep code that preserves
-// continuity). See docs/superpowers/specs for the analysis.
-const SYSTEM_PROMPT: &str = "You are a conversation compactor for a coding agent. Rewrite the transcript below as a dense Markdown summary that lets the NEXT agent turn continue the work seamlessly after the raw history is gone: it will be replaced by this summary.\n\nALWAYS respond with the summary as plain text only. Never refuse, never reply empty, never ask questions, never call a tool. Preserve continuity above all; keeping a useful detail beats dropping it. There is no tight word limit: scale length to the work, but cut redundancy, pleasantries, and resolved dead ends.\n\nUse these sections (skip one only if it is truly empty):\n## User intent\nThe user's explicit requests and goals, in their own words where it matters; do not lose what they actually asked for.\n## Current state\nWhat has been done so far and the state of the code/task right now.\n## Key decisions and learnings\nArchitectural choices, naming conventions, constraints, and gotchas discovered.\n## Files and code\nFiles created or edited (exact paths) and the specific code under active work; include short snippets or diffs where they are needed to continue.\n## Errors and fixes\nProblems hit and how they were resolved, or that they are still open.\n## In progress and next steps\nExactly what was being worked on when this summary was written, and the immediate next action(s).\n## Open questions\nUnresolved questions or decisions still pending.\n\nRules:\n- Cite file paths, symbols, and commands verbatim.\n- Keep code only where it preserves in-flight work; otherwise describe it.\n- Do not invent anything the transcript did not contain.";
+// Modeled faithfully on Claude Code's conversation-summarization structure
+// (Primary request & intent / Key technical concepts / Files & code / Errors &
+// fixes / Problem solving / Pending tasks & next steps / Open questions; be
+// chronological + thorough; preserve security constraints verbatim; the next
+// step must be DIRECTLY in line with the user's most recent request).
+const SYSTEM_PROMPT: &str = "You are summarizing a coding-agent conversation so the NEXT turn can continue seamlessly after the raw history is replaced by this summary. Analyze the transcript chronologically and be THOROUGH: capture every technical detail, decision, and piece of state needed to keep working without the original messages. Losing a relevant detail is worse than being long; there is no word limit, but cut redundancy, pleasantries, and resolved dead ends.\n\nALWAYS respond with the summary as plain text only. Never refuse, never reply empty, never ask questions, never call a tool or skill.\n\nWrite these sections (omit one only if it is genuinely empty):\n## Primary request and intent\nAll of the user's explicit requests and goals, in their own words where wording matters. Do not drift from what they actually asked for.\n## Key technical concepts\nTechnologies, frameworks, patterns, and conventions in play.\n## Files and code\nEvery file created or edited (exact paths) and the specific code under active work — include short snippets or diffs where they preserve in-flight work.\n## Errors and fixes\nProblems encountered and how each was resolved, or that it is still open. Note any user feedback and how you adjusted.\n## Problem solving\nProblems solved and any ongoing troubleshooting.\n## Pending tasks and next steps\nWhat remains, plus EXACTLY what was being worked on immediately before this summary and the immediate next action — the next step must be DIRECTLY in line with the user's most recent explicit request, introducing no new scope.\n## Open questions\nUnresolved questions or decisions still pending.\n\nRules:\n- Cite file paths, symbols, and commands verbatim.\n- Preserve any security-relevant instruction or constraint VERBATIM so it stays in effect after compaction.\n- Do not invent anything the transcript did not contain.";
 
 #[derive(Debug, Clone)]
 pub struct CompactionResult {
@@ -182,15 +182,13 @@ fn transcript_metrics(rows: &[(String, String, String)]) -> (i64, i64) {
     (chars, rows.len() as i64)
 }
 
-/// Map streamed summary bytes onto the summarise-phase band (8→92).
-/// Monotonic and clamped — never 0 (work has started) and never 100
-/// (persist owns the tail). Pure for unit testing.
-fn summarize_pct(bytes: usize, target: usize) -> u32 {
-    let frac = if target == 0 {
-        1.0
-    } else {
-        (bytes as f64 / target as f64).min(1.0)
-    };
+/// Map streamed activity bytes (thinking + text) onto the summarise-phase band
+/// (8→92) with an asymptotic curve, so the bar advances smoothly and approaches
+/// — but never reaches — 92 regardless of summary length (persist owns the
+/// tail). Monotonic. Pure for unit testing.
+fn summarize_pct(bytes: usize, k: usize) -> u32 {
+    let k = if k == 0 { 1 } else { k };
+    let frac = 1.0 - (-(bytes as f64) / k as f64).exp();
     8 + (84.0 * frac) as u32
 }
 
@@ -348,6 +346,7 @@ where
     };
 
     on_progress(8, "summarize");
+    let mut last_pct = 8u32;
     let summary = match call_model_streaming_with_meta_cost(
         pool,
         "compactor",
@@ -356,7 +355,15 @@ where
         &transcript,
         Some(SYSTEM_PROMPT),
         Some(COMPACT_TIMEOUT),
-        |bytes| on_progress(summarize_pct(bytes, TARGET_SUMMARY_BYTES), "summarize"),
+        // Throttle to monotonic %: stream-json fires a delta per token, so only
+        // forward when the integer % actually advances (≤ ~84 events/run).
+        |bytes| {
+            let p = summarize_pct(bytes, SUMMARIZE_CURVE_K);
+            if p > last_pct {
+                last_pct = p;
+                on_progress(p, "summarize");
+            }
+        },
     )
     .await
     {
@@ -600,11 +607,14 @@ mod tests {
 
     #[test]
     fn summarize_pct_is_monotonic_and_clamped() {
-        assert_eq!(summarize_pct(0, 3600), 8);
-        assert_eq!(summarize_pct(3600, 3600), 92);
-        assert_eq!(summarize_pct(7200, 3600), 92); // clamps over target
-        assert!(summarize_pct(1800, 3600) > 8 && summarize_pct(1800, 3600) < 92);
-        assert_eq!(summarize_pct(100, 0), 92); // zero target -> full
+        // Starts at 8, climbs, asymptotically approaches but never exceeds 92.
+        assert_eq!(summarize_pct(0, 2500), 8);
+        assert!(summarize_pct(2500, 2500) > 40 && summarize_pct(2500, 2500) < 92);
+        assert!(summarize_pct(50_000, 2500) >= 90 && summarize_pct(50_000, 2500) <= 92);
+        // Monotonic: more activity -> higher (until it saturates near 92).
+        assert!(summarize_pct(5000, 2500) > summarize_pct(2500, 2500));
+        // k = 0 is guarded (no divide-by-zero / NaN).
+        assert_eq!(summarize_pct(100, 0), summarize_pct(100, 1));
     }
 
     #[test]
