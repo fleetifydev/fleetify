@@ -17,7 +17,7 @@ import { LogoMark } from "@/components/brand/logo-mark";
 import { wsManager } from "@/services/ws-manager";
 import { FileMentionPopup } from "./file-mention-popup";
 import { BranchStrip, computeBranchName } from "@/components/git/branch-strip";
-import { useVoiceDictation } from "@/hooks/use-voice-dictation";
+import { useVoiceDictation, isVoiceReady } from "@/hooks/use-voice-dictation";
 import { voice } from "@/lib/voice-api";
 import { useAppStore } from "@/stores/app-store";
 import { useChatStore } from "@/stores/chat-store";
@@ -320,21 +320,24 @@ function Kbd({ children }: { children: React.ReactNode }) {
 /** Toolbar icon button — compact 22×22, ghosted at rest, lifts on
  *  hover. Sized down from 26×26 so the toolbar reads as one tight
  *  control row rather than spaced affordances. */
-function ToolBtn({ children, title, onClick }: {
-  children: React.ReactNode; title?: string; onClick?: () => void;
+function ToolBtn({ children, title, onClick, disabled }: {
+  children: React.ReactNode; title?: string; onClick?: () => void; disabled?: boolean;
 }) {
   return (
-    <button onClick={onClick} title={title} onMouseDown={e => e.preventDefault()} style={{
+    <button onClick={disabled ? undefined : onClick} title={title} disabled={disabled}
+      onMouseDown={e => e.preventDefault()} style={{
       width: 24, height: 24, borderRadius: 5, flexShrink: 0,
       display: "flex", alignItems: "center", justifyContent: "center",
       // Bare ghost icons (Cursor-minimal): low at rest, subtle bg + high on
       // hover. No chunky chrome.
-      background: "none", border: "none", outline: "none", cursor: "pointer",
+      background: "none", border: "none", outline: "none",
+      cursor: disabled ? "not-allowed" : "pointer",
       color: "var(--c-low)",
+      opacity: disabled ? 0.4 : 1,
       transition: "color 0.12s, background 0.12s",
     }}
-      onMouseEnter={e => { e.currentTarget.style.color = "var(--c-high)"; e.currentTarget.style.background = "rgba(var(--fg-rgb),0.06)"; }}
-      onMouseLeave={e => { e.currentTarget.style.color = "var(--c-low)"; e.currentTarget.style.background = "none"; }}
+      onMouseEnter={e => { if (disabled) return; e.currentTarget.style.color = "var(--c-high)"; e.currentTarget.style.background = "rgba(var(--fg-rgb),0.06)"; }}
+      onMouseLeave={e => { if (disabled) return; e.currentTarget.style.color = "var(--c-low)"; e.currentTarget.style.background = "none"; }}
     >{children}</button>
   );
 }
@@ -354,6 +357,9 @@ function MicButton({ onTranscript }: { onTranscript: (text: string) => void }) {
   // Mic icon = record toggle (start → stop & transcribe → insert at caret);
   // the chevron still opens the device picker below.
   const dict = useVoiceDictation(onTranscript);
+  // On-device engine with no model picked → the mic can only error, so disable
+  // it (read per-render; the composer re-renders when you return from Settings).
+  const voiceReady = isVoiceReady();
 
   // Lazy-load device list from Rust (cpal) — no getUserMedia needed.
   useEffect(() => {
@@ -399,7 +405,10 @@ function MicButton({ onTranscript }: { onTranscript: (text: string) => void }) {
       gap: -2,
     }}>
       <ToolBtn
-        title={dict.recording ? "Stop & insert" : dict.busy ? "Transcribing…" : dict.error ? dict.error : "Voice input — click to dictate"}
+        title={!voiceReady
+          ? "Select an on-device model in Settings → Voice to use the mic"
+          : dict.recording ? "Stop & insert" : dict.busy ? "Transcribing…" : dict.error ? dict.error : "Voice input — click to dictate"}
+        disabled={!voiceReady}
         onClick={dict.busy ? undefined : dict.toggle}
       >
         {dict.busy

@@ -7,7 +7,7 @@
  * reads as a sibling of the Sources / Installed cards elsewhere
  * in the marketplace.
  */
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { ArrowLeft, ExternalLink, Loader2, Package, PanelLeft, Plus, ShieldCheck, Trash2, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -16,9 +16,24 @@ import { useAppStore } from "@/stores/app-store";
 import { usePluginStore } from "@/stores/plugin-store";
 import { InstallDialog } from "../install/InstallDialog";
 import { UninstallDialog } from "../install/UninstallDialog";
+import { ProviderLogo, providerName } from "@/components/ui/provider-logo";
 import type { PluginDetail, PluginInstall } from "@/types/plugin";
 import { pluginLabel } from "@/types/plugin";
 import { safeExternalUrl, usesInAppTitleBar } from "@/lib/utils";
+
+/** Open a URL in the user's default browser. In Tauri a bare
+ *  `<a target="_blank">` navigates the webview instead of opening externally,
+ *  so route through the preload bridge (matching the sidebar's openDocs), with
+ *  a window.open fallback for the plain-web/dev case. */
+function openExternalUrl(url: string) {
+  const safe = safeExternalUrl(url);
+  if (!safe) return;
+  if (window.electronAPI?.openExternal) {
+    window.electronAPI.openExternal(safe).catch(() => {});
+  } else {
+    window.open(safe, "_blank", "noopener,noreferrer");
+  }
+}
 
 interface Props {
   source_id: string;
@@ -161,10 +176,10 @@ export function PluginDetailPage({ source_id, plugin_path, onBack }: Props) {
             }}>v{m.version}</span>
             {detail.source_is_official && (
               <span
-                title="Fleet Official — verified source"
+                title="Fleetify Official — verified source"
                 style={{
                   display: "inline-flex", alignItems: "center", justifyContent: "center",
-                  color: "#4ade80",
+                  color: "var(--c-official)",
                   marginLeft: -2,
                 }}
               >
@@ -180,9 +195,9 @@ export function PluginDetailPage({ source_id, plugin_path, onBack }: Props) {
             <span style={{ color: "var(--c-ghost)" }}>·</span>
             <span style={{
               display: "inline-flex", alignItems: "center", gap: 3,
-              color: detail.source_is_official ? "#4ade80" : "var(--c-dim)",
+              color: detail.source_is_official ? "var(--c-official)" : "var(--c-dim)",
             }}>
-              {detail.source_is_official ? "Fleet Official" : `from ${detail.source_name}`}
+              {detail.source_is_official ? "Fleetify Official" : `from ${detail.source_name}`}
             </span>
           </div>
           <p style={{
@@ -662,20 +677,46 @@ function InfoCard({
     }}>
       <Row label="Repository">
         {repoUrl ? (
-          <a href={repoUrl} target="_blank" rel="noreferrer" style={linkStyle}>
+          <a
+            href={repoUrl}
+            onClick={(e) => { e.preventDefault(); openExternalUrl(repoUrl); }}
+            style={linkStyle}
+          >
             {repoLabel} <ExternalLink size={10} />
           </a>
         ) : repoLabel}
       </Row>
       {homepage && (
         <Row label="Homepage">
-          <a href={homepage} target="_blank" rel="noreferrer" style={linkStyle}>
+          <a
+            href={homepage}
+            onClick={(e) => { e.preventDefault(); openExternalUrl(homepage); }}
+            style={linkStyle}
+          >
             {homepage.replace(/^https?:\/\//, "")} <ExternalLink size={10} />
           </a>
         </Row>
       )}
       {license && <Row label="License">{license}</Row>}
-      <Row label="Providers">{providers.join(" · ")}</Row>
+      <Row label="Providers">
+        {providers.length > 0 ? (
+          <div style={{
+            display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6,
+          }}>
+            {providers.map((id, i) => (
+              <Fragment key={id}>
+                {i > 0 && <span style={{ color: "var(--c-ghost)", userSelect: "none" }}>·</span>}
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                  <ProviderLogo tool={id} size={12} />
+                  {providerName(id)}
+                </span>
+              </Fragment>
+            ))}
+          </div>
+        ) : (
+          <span style={{ color: "var(--c-ghost)" }}>—</span>
+        )}
+      </Row>
       {tags.length > 0 && (
         <Row label="Tags">
           <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>

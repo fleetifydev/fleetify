@@ -62,6 +62,15 @@ export function setVoicePref(key: keyof typeof LS, value: string) {
   try { localStorage.setItem(LS[key], value); } catch { /* private mode */ }
 }
 
+/** Whether dictation can actually run with the current prefs. False when the
+ *  on-device ("local") engine is selected but no local model is chosen — the
+ *  mic would only ever error with NO_MODEL, so we disable it up front. Every
+ *  other engine ("auto"/"broker"/"byok") doesn't require a downloaded model. */
+export function isVoiceReady(): boolean {
+  const { engine, model } = getVoicePrefs();
+  return engine !== "local" || model.trim() !== "";
+}
+
 type State = "idle" | "recording" | "transcribing";
 
 export interface UseVoiceDictation {

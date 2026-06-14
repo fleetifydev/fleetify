@@ -54,6 +54,10 @@
      a more saturated violet to stay legible on white; dark lifts lighter. */
   --pr-merge: #8b5cf6;
   --pr-merge-hover: #a78bfa;
+  /* Verified-source ("Fleetify Official") badge accent. Light needs a darker,
+     saturated green to stay legible on the near-white sidebar; dark lifts to a
+     brighter mint. Referenced by the marketplace plugin-detail official badge. */
+  --c-official: #16a34a;
 }
 .dark {
   /* Dark: matched to --sidebar so the chat input + branch strip share the
@@ -80,6 +84,7 @@
   --onb-btn-fg: #0a0a0a;
   --pr-merge: #c4b5fd;
   --pr-merge-hover: #ddd6fe;
+  --c-official: #4ade80;
 }
 
 /* ─── Fleet theme variables ─── */
