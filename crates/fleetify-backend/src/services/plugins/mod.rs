@@ -21,6 +21,7 @@
 //! - runtime (component_registry + per-tool dispatch hooks).
 
 pub mod hook_merge;
+pub mod hook_triggers;
 pub mod installer;
 pub mod manifest;
 pub mod marketplace_fetch;

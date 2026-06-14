@@ -173,6 +173,74 @@ pub fn cursor_rules_dir() -> Option<PathBuf> {
     Some(provider_home("cursor-cli")?.join("rules"))
 }
 
+/// Where a provider's handler scripts are copied. `base = None` ⇒ the user
+/// home; `Some(folder)` ⇒ a project dir's vendor dotdir. Antigravity diverges
+/// to the Gemini namespace (global `~/.gemini/config/hooks`, folder
+/// `<folder>/.agents/hooks`). Copilot/OpenCode use their own dirs below.
+pub fn hooks_dir(provider: &str, base: Option<&std::path::Path>) -> Option<PathBuf> {
+    match base {
+        None => match provider {
+            "antigravity-cli" => Some(provider_home("gemini-cli")?.join("config").join("hooks")),
+            _ => Some(provider_home(provider)?.join("hooks")),
+        },
+        Some(folder) => match provider {
+            "antigravity-cli" => Some(folder.join(".agents").join("hooks")),
+            _ => Some(
+                folder
+                    .join(format!(".{}", component_basename(provider)))
+                    .join("hooks"),
+            ),
+        },
+    }
+}
+
+/// The config file a Command-mode merge writes into, for the given scope. The
+/// global path mirrors the old `hook_merge::hook_file`; the folder path is the
+/// project vendor dotdir. `None` for providers handled outside the merge engine
+/// (Copilot/OpenCode/Hermes).
+pub fn hook_config_file(provider: &str, base: Option<&std::path::Path>) -> Option<PathBuf> {
+    let (sub, file): (Option<&str>, &str) = match provider {
+        "claude-code" | "gemini-cli" => (None, "settings.json"),
+        "codex-cli" | "cursor-cli" => (None, "hooks.json"),
+        "kimi-code" => (None, "config.toml"),
+        "antigravity-cli" => (Some("config"), "hooks.json"),
+        _ => return None,
+    };
+    let root = match base {
+        None => match provider {
+            "antigravity-cli" => provider_home("gemini-cli")?,
+            _ => provider_home(provider)?,
+        },
+        Some(folder) => match provider {
+            "antigravity-cli" => folder.join(".agents"),
+            _ => folder.join(format!(".{}", component_basename(provider))),
+        },
+    };
+    let mut p = root;
+    // Global antigravity nests under `config/`; folder scope uses `.agents/` flat.
+    if let (Some(seg), None) = (sub, base) {
+        p = p.join(seg);
+    }
+    Some(p.join(file))
+}
+
+/// OpenCode plugin dir: `~/.config/opencode/plugin/` (global) or
+/// `<folder>/.opencode/plugin/` (project). Singular `plugin` per OpenCode docs.
+pub fn opencode_plugin_dir(base: Option<&std::path::Path>) -> Option<PathBuf> {
+    match base {
+        None => Some(provider_home("opencode")?.join("plugin")),
+        Some(folder) => Some(folder.join(".opencode").join("plugin")),
+    }
+}
+
+/// Copilot hooks dir: `~/.copilot/hooks/` (global) or `<folder>/.github/hooks/`.
+pub fn copilot_hooks_dir(base: Option<&std::path::Path>) -> Option<PathBuf> {
+    match base {
+        None => Some(provider_home("github-copilot")?.join("hooks")),
+        Some(folder) => Some(folder.join(".github").join("hooks")),
+    }
+}
+
 /// The hook-materialization strategy for a provider.
 pub fn hook_strategy(provider: &str) -> HookStrategy {
     match provider {
@@ -307,5 +375,51 @@ mod tests {
         assert_eq!(hook_strategy("opencode"), HookStrategy::CopyTsPlugin);
         assert_eq!(hook_strategy("hermes-agent"), HookStrategy::CopyDir);
         assert_eq!(hook_strategy("codex-cli"), HookStrategy::Unsupported);
+    }
+
+    #[test]
+    fn hooks_dir_global_and_folder() {
+        with_home(|| {
+            let g = hooks_dir("claude-code", None).unwrap();
+            assert!(g.ends_with(".claude/hooks"));
+            let f = hooks_dir("claude-code", Some(std::path::Path::new("/proj"))).unwrap();
+            assert!(f.ends_with(".claude/hooks"));
+            assert!(f.to_string_lossy().contains("proj"));
+            // antigravity global diverges to ~/.gemini/config/hooks.
+            let a = hooks_dir("antigravity-cli", None).unwrap();
+            assert!(a.to_string_lossy().contains(".gemini"));
+            assert!(a.ends_with("config/hooks"));
+        });
+    }
+
+    #[test]
+    fn hook_config_file_paths() {
+        with_home(|| {
+            assert!(hook_config_file("gemini-cli", None)
+                .unwrap()
+                .ends_with(".gemini/settings.json"));
+            assert!(hook_config_file("codex-cli", None)
+                .unwrap()
+                .ends_with(".codex/hooks.json"));
+            assert!(hook_config_file("antigravity-cli", None)
+                .unwrap()
+                .ends_with(".gemini/config/hooks.json"));
+            assert!(
+                hook_config_file("claude-code", Some(std::path::Path::new("/p")))
+                    .unwrap()
+                    .ends_with(".claude/settings.json")
+            );
+            // Copilot/OpenCode aren't merge providers.
+            assert!(hook_config_file("github-copilot", None).is_none());
+        });
+    }
+
+    #[test]
+    fn opencode_plugin_dir_is_singular() {
+        with_home(|| {
+            let d = opencode_plugin_dir(None).unwrap();
+            assert!(d.ends_with("opencode/plugin"));
+            assert!(copilot_hooks_dir(None).unwrap().ends_with(".copilot/hooks"));
+        });
     }
 }

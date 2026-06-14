@@ -39,45 +39,44 @@ pub struct HookMergeRecord {
     pub command: String,
 }
 
-/// Whether a provider's hooks are merged (vs copied / unsupported). Only these
-/// four are handled here; copy strategies (Copilot/OpenCode/Hermes) reuse the
-/// plugin materializer's file copy, and codex/gemini have no hook surface.
+/// Whether a provider's hooks are merged into a shared config (vs a standalone
+/// file/dir written by the library materializer). Copilot (standalone file),
+/// OpenCode (`.ts` plugin) and Hermes (gateway dir) are handled there instead.
 pub fn is_merge_provider(provider: &str) -> bool {
     matches!(
         provider,
-        "claude-code" | "cursor-cli" | "antigravity-cli" | "kimi-code"
+        "claude-code" | "gemini-cli" | "codex-cli" | "cursor-cli" | "antigravity-cli" | "kimi-code"
     )
 }
 
-/// The config file a provider's hooks merge into. Note agy diverges from
-/// `provider_home("antigravity-cli")` (`~/.gemini/antigravity-cli`): its hooks live under
-/// `~/.gemini/config/hooks.json`.
-fn hook_file(provider: &str) -> Option<PathBuf> {
-    match provider {
-        "claude-code" => Some(providers::provider_home("claude-code")?.join("settings.json")),
-        "cursor-cli" => Some(providers::provider_home("cursor-cli")?.join("hooks.json")),
-        "kimi-code" => Some(providers::provider_home("kimi-code")?.join("config.toml")),
-        // agy: ~/.gemini/config/hooks.json (NOT the antigravity-cli home).
-        "antigravity-cli" => Some(
-            providers::provider_home("gemini-cli")?
-                .join("config")
-                .join("hooks.json"),
-        ),
-        _ => None,
-    }
+/// The config file a provider's hooks merge into, for the given scope.
+/// Delegated to `providers::hook_config_file` — the single source of truth for
+/// per-provider, per-scope hook paths (incl. agy's `~/.gemini/config/`).
+fn hook_file(provider: &str, base: Option<&Path>) -> Option<PathBuf> {
+    providers::hook_config_file(provider, base)
 }
 
-/// Merge `hook` into `provider`'s config, returning the reversal record (or
-/// `None` if the provider isn't a merge provider).
+/// Merge `hook` into `provider`'s GLOBAL config, returning the reversal record
+/// (or `None` if the provider isn't a merge provider).
 pub fn materialize_hook_item(
     provider: &str,
     hook: &NormalizedHook,
 ) -> Result<Option<HookMergeRecord>> {
-    let Some(file) = hook_file(provider) else {
+    materialize_hook_item_at(provider, hook, None)
+}
+
+/// Merge `hook` into `provider`'s config for the given scope (`base = None` ⇒
+/// the global home; `Some(folder)` ⇒ that project dir's vendor config file).
+pub fn materialize_hook_item_at(
+    provider: &str,
+    hook: &NormalizedHook,
+    base: Option<&Path>,
+) -> Result<Option<HookMergeRecord>> {
+    let Some(file) = hook_file(provider, base) else {
         return Ok(None);
     };
     match provider {
-        "claude-code" => merge_claude(&file, hook)?,
+        "claude-code" | "gemini-cli" | "codex-cli" => merge_claude(&file, hook)?,
         "cursor-cli" => merge_cursor(&file, hook)?,
         "antigravity-cli" => merge_agy(&file, hook)?,
         "kimi-code" => merge_kimi(&file, hook)?,
@@ -99,7 +98,7 @@ pub fn unmaterialize_hook(rec: &HookMergeRecord) -> Result<()> {
         return Ok(());
     }
     match rec.provider.as_str() {
-        "claude-code" => unmerge_claude(file, rec),
+        "claude-code" | "gemini-cli" | "codex-cli" => unmerge_claude(file, rec),
         "cursor-cli" => unmerge_cursor(file, rec),
         "antigravity-cli" => unmerge_agy(file, rec),
         "kimi-code" => unmerge_kimi(file, rec),
@@ -486,8 +485,9 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-            // NOT under antigravity-cli — under ~/.gemini/config/.
-            let file = home.join(".gemini/config/hooks.json");
+            // NOT under antigravity-cli — under ~/.gemini/config/. Build with
+            // separate joins so the separator matches rec.file on Windows.
+            let file = home.join(".gemini").join("config").join("hooks.json");
             assert!(file.is_file());
             assert_eq!(rec.file, file.to_string_lossy());
             let v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
@@ -539,6 +539,58 @@ mod tests {
     }
 
     #[test]
+    fn merge_into_folder_scoped_config() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        let proj = tmp.path().join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        with_home(&home, || {
+            let rec = materialize_hook_item_at(
+                "claude-code",
+                &hook("PreToolUse", Some("Bash"), "x.sh"),
+                Some(&proj),
+            )
+            .unwrap()
+            .unwrap();
+            // Wrote <proj>/.claude/settings.json, NOT the home file. Build the
+            // expected path with separate joins so the separator matches rec.file.
+            let f = proj.join(".claude").join("settings.json");
+            assert!(f.is_file());
+            assert!(!home.join(".claude").join("settings.json").exists());
+            assert_eq!(rec.file, f.to_string_lossy());
+            unmaterialize_hook(&rec).unwrap();
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+            assert!(v["hooks"].get("PreToolUse").is_none());
+        });
+    }
+
+    #[test]
+    fn gemini_and_codex_merge_nested_json() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        with_home(&home, || {
+            let g = materialize_hook_item(
+                "gemini-cli",
+                &hook("BeforeTool", Some("write_file"), "g.sh"),
+            )
+            .unwrap()
+            .unwrap();
+            let gf = home.join(".gemini/settings.json");
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(&gf).unwrap()).unwrap();
+            assert_eq!(v["hooks"]["BeforeTool"][0]["hooks"][0]["command"], "g.sh");
+            unmaterialize_hook(&g).unwrap();
+
+            let c = materialize_hook_item("codex-cli", &hook("PreToolUse", None, "c.sh"))
+                .unwrap()
+                .unwrap();
+            let cf = home.join(".codex/hooks.json");
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(&cf).unwrap()).unwrap();
+            assert_eq!(v["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "c.sh");
+            unmaterialize_hook(&c).unwrap();
+        });
+    }
+
+    #[test]
     fn non_merge_provider_returns_none() {
         let tmp = tempdir().unwrap();
         with_home(tmp.path(), || {
@@ -547,8 +599,9 @@ mod tests {
                     .unwrap()
                     .is_none()
             );
+            // opencode + hermes are handled by the library materializer, not here.
             assert!(
-                materialize_hook_item("codex-cli", &hook("PreToolUse", None, "x"))
+                materialize_hook_item("opencode", &hook("PreToolUse", None, "x"))
                     .unwrap()
                     .is_none()
             );

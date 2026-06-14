@@ -41,6 +41,24 @@ export interface RuleSpec {
   globs?: string;
 }
 
+/** Which on-disk shape a hook produces. Mirrors backend `HookMode`. */
+export type HookMode = "command" | "plugin" | "gateway";
+/** Where a hook is written. Mirrors backend `HookScope` (= RuleScope). */
+export type HookScope = "global" | "folder";
+
+/** Extra config persisted on a `hook` item. Mirrors backend `HookSpec`. */
+export interface HookSpec {
+  mode: HookMode;
+  trigger?: string;
+  events?: string[];
+  matcher?: string;
+  command?: string;
+  timeout?: number;
+  handler_file?: string;
+  scope: HookScope;
+  folder?: string;
+}
+
 /** Cursor rule types with their labels + which extra field each requires
  *  (per cursor.com/docs/rules). Drives the Cursor tab's selector. */
 export const CURSOR_RULE_TYPES: ReadonlyArray<{
@@ -69,6 +87,8 @@ export interface LibraryItem {
   /** Present only on `rule` items — the format/scope/folder + format-specific
    *  bits. Absent ⇒ a legacy global general rule. */
   rule_spec?: RuleSpec;
+  /** Present only on `hook` items. Absent ⇒ a legacy hook.json hook. */
+  hook_spec?: HookSpec;
   created_at: string;
   updated_at: string;
   /** Origin: "user" for your own items, or a plugin name. Plugin-contributed
@@ -94,6 +114,14 @@ export interface CreateLibraryItem {
   folder?: string;
   cursor_rule_type?: CursorRuleType;
   globs?: string;
+  // ── Hook-only (ignored for other kinds; scope/folder shared above) ──
+  hook_mode?: HookMode;
+  hook_trigger?: string;
+  hook_events?: string[];
+  hook_matcher?: string;
+  command?: string;
+  timeout?: number;
+  handler_file?: { name: string; content_base64: string };
 }
 
 /** Provider gating per kind — the EXACT id sets the backend accepts. The
@@ -102,7 +130,7 @@ export interface CreateLibraryItem {
  *  validation read the same source of truth. */
 export const PROVIDERS_FOR_KIND: Record<LibraryKind, Provider[]> = {
   skill: ["claude-code", "codex-cli", "gemini-cli", "kimi-code", "opencode", "github-copilot", "cursor-cli", "hermes-agent", "antigravity-cli"],
-  hook: ["claude-code", "cursor-cli", "antigravity-cli", "kimi-code", "github-copilot", "opencode", "hermes-agent"],
+  hook: ["claude-code", "gemini-cli", "codex-cli", "cursor-cli", "kimi-code", "antigravity-cli", "github-copilot", "opencode", "hermes-agent"],
   // Sub-agents need an on-disk `agents/` surface — Kimi/Hermes have none.
   subagent: ["claude-code", "codex-cli", "gemini-cli", "opencode", "github-copilot", "cursor-cli", "antigravity-cli"],
   // The Rule modal's *General* tab — the plain-markdown providers

@@ -203,6 +203,7 @@ mod tests {
                 hook_merge: Vec::new(),
                 rule_merge: Vec::new(),
                 rule_spec: None,
+                hook_spec: None,
                 created_at: "t0".to_string(),
                 updated_at: "t0".to_string(),
             };

@@ -8,10 +8,14 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde::Deserialize;
 
-use super::types::{LibraryItem, LibraryKind, Materialized, RuleFormat, RuleScope, RuleSpec};
+use super::store;
+use super::types::{
+    HookMode, HookScope, HookSpec, LibraryItem, LibraryKind, Materialized, RuleFormat, RuleScope,
+    RuleSpec,
+};
 use crate::services::plugins::hook_merge::{self, HookMergeRecord, NormalizedHook};
 use crate::services::plugins::rule_merge::{self, RuleMergeRecord};
-use crate::services::plugins::{materializers, providers};
+use crate::services::plugins::{hook_triggers, materializers, providers};
 
 /// Everything a materialization produced: standalone file/dir artifacts
 /// (skills/commands/prompts) plus merge-hook reversal records (Claude/Cursor/
@@ -24,9 +28,10 @@ pub struct MaterializeOutcome {
     pub rule_merge: Vec<RuleMergeRecord>,
 }
 
-/// A hook authored in the form: `{ "event": "...", "matcher": "...", "command": "..." }`.
+/// A legacy hook payload: `{ "event": "...", "matcher": "...", "command": "..." }`
+/// (hooks authored before `HookSpec` was persisted on the item).
 #[derive(Deserialize)]
-struct HookSpec {
+struct LegacyHook {
     event: String,
     #[serde(default)]
     matcher: Option<String>,
@@ -62,19 +67,23 @@ pub fn materialize_item(item: &LibraryItem, payload: &Path) -> Result<Materializ
             let shared = materializers::materialize_skill_shared(payload, &item.slug, desc)?;
             push_paths(&mut materialized, &shared.provider, shared.paths);
         }
-        LibraryKind::Hook => {
-            let spec: HookSpec = serde_json::from_str(&std::fs::read_to_string(payload)?)?;
-            for provider in &item.providers {
-                let nh = NormalizedHook {
-                    event: &spec.event,
-                    matcher: spec.matcher.as_deref(),
-                    command: &spec.command,
-                };
-                if let Some(rec) = hook_merge::materialize_hook_item(provider, &nh)? {
-                    hooks.push(rec);
+        LibraryKind::Hook => match &item.hook_spec {
+            Some(spec) => materialize_hook_spec(item, spec, &mut materialized, &mut hooks)?,
+            None => {
+                // Legacy hooks: the hook.json payload holds {event,matcher,command}.
+                let legacy: LegacyHook = serde_json::from_str(&std::fs::read_to_string(payload)?)?;
+                for provider in &item.providers {
+                    let nh = NormalizedHook {
+                        event: &legacy.event,
+                        matcher: legacy.matcher.as_deref(),
+                        command: &legacy.command,
+                    };
+                    if let Some(rec) = hook_merge::materialize_hook_item(provider, &nh)? {
+                        hooks.push(rec);
+                    }
                 }
             }
-        }
+        },
         LibraryKind::Subagent => {
             // A delegate agent file per selected provider's `agents/` dir
             // (Codex gets a `.toml`); name + description ensured.
@@ -175,6 +184,193 @@ pub fn unmaterialize_item(
     }
 }
 
+/// The project folder for a folder-scoped hook, or `None` for global scope.
+fn hook_folder(spec: &HookSpec) -> Option<PathBuf> {
+    if spec.scope == HookScope::Folder {
+        spec.folder
+            .as_deref()
+            .map(str::trim)
+            .filter(|f| !f.is_empty())
+            .map(PathBuf::from)
+    } else {
+        None
+    }
+}
+
+/// Copy `src` → `dest`, creating parent dirs.
+fn copy_into(src: &Path, dest: &Path) -> Result<()> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(src, dest)?;
+    Ok(())
+}
+
+/// Materialize a `HookSpec` to each target provider, dispatching by mode.
+fn materialize_hook_spec(
+    item: &LibraryItem,
+    spec: &HookSpec,
+    materialized: &mut Vec<Materialized>,
+    hooks: &mut Vec<HookMergeRecord>,
+) -> Result<()> {
+    let item_dir = store::item_dir(&item.id);
+    let folder = hook_folder(spec);
+    match spec.mode {
+        HookMode::Plugin => {
+            for provider in &item.providers {
+                if provider != "opencode" {
+                    continue;
+                }
+                let Some(handler) = &spec.handler_file else {
+                    continue;
+                };
+                let Some(dir) = providers::opencode_plugin_dir(folder.as_deref()) else {
+                    continue;
+                };
+                let dest = dir.join(format!("{}.ts", item.slug));
+                copy_into(&item_dir.join(handler), &dest)?;
+                materialized.push(Materialized {
+                    provider: provider.clone(),
+                    path: dest.to_string_lossy().into_owned(),
+                });
+            }
+        }
+        HookMode::Gateway => {
+            for provider in &item.providers {
+                if provider != "hermes-agent" {
+                    continue;
+                }
+                let Some(handler) = &spec.handler_file else {
+                    continue;
+                };
+                if spec.events.is_empty() {
+                    continue;
+                }
+                let Some(home) = providers::provider_home("hermes-agent") else {
+                    continue;
+                };
+                let dir = home.join("hooks").join(&item.slug);
+                std::fs::create_dir_all(&dir)?;
+                std::fs::write(
+                    dir.join("HOOK.yaml"),
+                    gateway_manifest(&item.slug, item.description.as_deref(), &spec.events),
+                )?;
+                std::fs::copy(item_dir.join(handler), dir.join("handler.py"))?;
+                materialized.push(Materialized {
+                    provider: provider.clone(),
+                    path: dir.to_string_lossy().into_owned(),
+                });
+            }
+        }
+        HookMode::Command => {
+            let Some(trigger) = spec.trigger.as_deref() else {
+                return Ok(());
+            };
+            for provider in &item.providers {
+                let Some(native) = hook_triggers::native_event(trigger, provider) else {
+                    continue;
+                };
+                // Resolve the command, copying the handler (if any) into the
+                // provider's hooks dir and substituting ${file} with its path.
+                let command = match &spec.handler_file {
+                    Some(handler) => {
+                        let Some(hdir) = providers::hooks_dir(provider, folder.as_deref()) else {
+                            continue;
+                        };
+                        let dest = hdir.join(&item.slug).join(handler);
+                        copy_into(&item_dir.join(handler), &dest)?;
+                        materialized.push(Materialized {
+                            provider: provider.clone(),
+                            path: hdir.join(&item.slug).to_string_lossy().into_owned(),
+                        });
+                        spec.command
+                            .clone()
+                            .unwrap_or_default()
+                            .replace("${file}", &dest.to_string_lossy())
+                    }
+                    None => spec.command.clone().unwrap_or_default(),
+                };
+                if command.trim().is_empty() {
+                    continue;
+                }
+                if provider == "github-copilot" {
+                    if let Some(path) = write_copilot_hook(
+                        &item.slug,
+                        native,
+                        spec.matcher.as_deref(),
+                        &command,
+                        spec.timeout,
+                        folder.as_deref(),
+                    )? {
+                        materialized.push(Materialized {
+                            provider: provider.clone(),
+                            path,
+                        });
+                    }
+                } else {
+                    let nh = NormalizedHook {
+                        event: native,
+                        matcher: spec.matcher.as_deref(),
+                        command: &command,
+                    };
+                    if let Some(rec) =
+                        hook_merge::materialize_hook_item_at(provider, &nh, folder.as_deref())?
+                    {
+                        hooks.push(rec);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The Hermes gateway `HOOK.yaml` manifest (generated, not parsed).
+fn gateway_manifest(slug: &str, description: Option<&str>, events: &[String]) -> String {
+    let mut s = format!("name: {slug}\n");
+    if let Some(d) = description.map(str::trim).filter(|d| !d.is_empty()) {
+        s.push_str(&format!("description: {d}\n"));
+    }
+    s.push_str("events:\n");
+    for e in events {
+        s.push_str(&format!("  - {e}\n"));
+    }
+    s
+}
+
+/// Write a GitHub Copilot standalone hook file (`<slug>.json`). Global ⇒
+/// `~/.copilot/hooks/`; folder ⇒ `<folder>/.github/hooks/`. Fleetify owns the
+/// file (one per item), so this overwrites and is reversed by deleting it.
+fn write_copilot_hook(
+    slug: &str,
+    event: &str,
+    matcher: Option<&str>,
+    command: &str,
+    timeout: Option<u32>,
+    folder: Option<&Path>,
+) -> Result<Option<String>> {
+    let Some(dir) = providers::copilot_hooks_dir(folder) else {
+        return Ok(None);
+    };
+    std::fs::create_dir_all(&dir)?;
+    let mut handler = serde_json::Map::new();
+    handler.insert("type".into(), serde_json::json!("command"));
+    handler.insert("command".into(), serde_json::json!(command));
+    if let Some(m) = matcher.filter(|m| !m.is_empty()) {
+        handler.insert("matcher".into(), serde_json::json!(m));
+    }
+    if let Some(t) = timeout {
+        handler.insert("timeoutSec".into(), serde_json::json!(t));
+    }
+    let doc = serde_json::json!({
+        "version": 1,
+        "hooks": { event: [serde_json::Value::Object(handler)] }
+    });
+    let file = dir.join(format!("{slug}.json"));
+    std::fs::write(&file, serde_json::to_string_pretty(&doc)?)?;
+    Ok(Some(file.to_string_lossy().into_owned()))
+}
+
 fn push_paths(out: &mut Vec<Materialized>, provider: &str, paths: Vec<String>) {
     for path in paths {
         out.push(Materialized {
@@ -237,7 +433,8 @@ fn prepend_description(description: Option<&str>, body: &str) -> String {
 mod tests {
     use super::super::store;
     use super::super::types::{
-        CursorRuleType, LibraryItem, LibraryKind, RuleFormat, RuleScope, RuleSpec,
+        CursorRuleType, HookMode, HookSpec, LibraryItem, LibraryKind, RuleFormat, RuleScope,
+        RuleSpec,
     };
     use super::*;
     use std::path::Path;
@@ -252,13 +449,17 @@ mod tests {
         // Pin HOME + USERPROFILE (provider_home reads USERPROFILE first) +
         // FLEETIFY_HOME (the library store + prompts) — all to the fake home, so
         // a sibling test that leaked USERPROFILE can't redirect us elsewhere.
-        let saved: Vec<(&str, Option<String>)> = ["HOME", "USERPROFILE", "FLEETIFY_HOME"]
-            .iter()
-            .map(|k| (*k, std::env::var(k).ok()))
-            .collect();
+        let saved: Vec<(&str, Option<String>)> =
+            ["HOME", "USERPROFILE", "FLEETIFY_HOME", "LOCALAPPDATA"]
+                .iter()
+                .map(|k| (*k, std::env::var(k).ok()))
+                .collect();
         std::env::set_var("HOME", home);
         std::env::set_var("USERPROFILE", home);
         std::env::set_var("FLEETIFY_HOME", home.join(".fleetify"));
+        // Hermes resolves its home via %LOCALAPPDATA%\hermes on Windows — pin it
+        // so the gateway test writes under the fake home, not the real one.
+        std::env::set_var("LOCALAPPDATA", home);
         let r = f();
         for (k, v) in saved {
             match v {
@@ -281,6 +482,7 @@ mod tests {
             hook_merge: vec![],
             rule_merge: vec![],
             rule_spec: None,
+            hook_spec: None,
             created_at: "t0".into(),
             updated_at: "t0".into(),
         }
@@ -376,6 +578,108 @@ mod tests {
             )
             .unwrap();
             assert!(v["hooks"].get("PostToolUse").is_none(), "hook un-merged");
+        });
+    }
+
+    #[test]
+    fn hook_spec_command_copies_handler_and_substitutes_file() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join("home");
+        with_test_home(&home, || {
+            let mut it = item(LibraryKind::Hook, "fmt", &["claude-code"]);
+            it.hook_spec = Some(HookSpec {
+                mode: HookMode::Command,
+                trigger: Some("post_tool_use".into()),
+                matcher: Some("Edit".into()),
+                command: Some("python3 ${file}".into()),
+                handler_file: Some("handler.py".into()),
+                ..Default::default()
+            });
+            let dir = store::item_dir(&it.id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("handler.py"), b"print('hi')").unwrap();
+
+            let out = materialize_item(&it, &dir).unwrap();
+            // Handler copied to ~/.claude/hooks/fmt/handler.py (separate joins
+            // so the path is correct on Windows).
+            let copied = home
+                .join(".claude")
+                .join("hooks")
+                .join("fmt")
+                .join("handler.py");
+            assert!(copied.is_file(), "handler copied next to the config");
+            assert!(out.materialized.iter().any(|m| m.path.contains("fmt")));
+            // settings.json command has ${file} replaced with the absolute path.
+            let v: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(home.join(".claude").join("settings.json")).unwrap(),
+            )
+            .unwrap();
+            let cmd = v["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap();
+            assert!(cmd.starts_with("python3 "));
+            assert!(cmd.contains("handler.py") && !cmd.contains("${file}"));
+
+            unmaterialize_item(&out.materialized, &out.hook_merge, &out.rule_merge);
+            assert!(!copied.exists(), "copied handler removed on reverse");
+        });
+    }
+
+    #[test]
+    fn hook_spec_plugin_copies_opencode_ts() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join("home");
+        with_test_home(&home, || {
+            let mut it = item(LibraryKind::Hook, "logger", &["opencode"]);
+            it.hook_spec = Some(HookSpec {
+                mode: HookMode::Plugin,
+                handler_file: Some("plugin.ts".into()),
+                ..Default::default()
+            });
+            let dir = store::item_dir(&it.id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("plugin.ts"), b"export const x = 1;").unwrap();
+            let out = materialize_item(&it, &dir).unwrap();
+            let plugin = home
+                .join(".config")
+                .join("opencode")
+                .join("plugin")
+                .join("logger.ts");
+            assert!(plugin.is_file());
+            unmaterialize_item(&out.materialized, &out.hook_merge, &out.rule_merge);
+            assert!(!plugin.exists());
+        });
+    }
+
+    #[test]
+    fn hook_spec_gateway_writes_hermes_dir() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join("home");
+        with_test_home(&home, || {
+            let mut it = item(LibraryKind::Hook, "audit", &["hermes-agent"]);
+            it.description = Some("Logs activity".into());
+            it.hook_spec = Some(HookSpec {
+                mode: HookMode::Gateway,
+                events: vec!["agent:start".into(), "agent:end".into()],
+                handler_file: Some("handler.py".into()),
+                ..Default::default()
+            });
+            let dir = store::item_dir(&it.id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("handler.py"), b"async def handle(*a): pass").unwrap();
+            let out = materialize_item(&it, &dir).unwrap();
+            // Compute the dir via the same resolver the impl uses (Hermes home is
+            // %LOCALAPPDATA%\hermes on Windows, ~/.hermes elsewhere).
+            let hdir = crate::services::plugins::providers::provider_home("hermes-agent")
+                .unwrap()
+                .join("hooks")
+                .join("audit");
+            let yaml = std::fs::read_to_string(hdir.join("HOOK.yaml")).unwrap();
+            assert!(yaml.contains("name: audit"));
+            assert!(yaml.contains("- agent:start"));
+            assert!(hdir.join("handler.py").is_file());
+            unmaterialize_item(&out.materialized, &out.hook_merge, &out.rule_merge);
+            assert!(!hdir.exists());
         });
     }
 

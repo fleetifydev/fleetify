@@ -109,6 +109,58 @@ pub struct RuleSpec {
     pub globs: Option<String>,
 }
 
+/// Which on-disk shape a `Hook` item produces. `Command` = a trigger+matcher+
+/// command merged into (or written as) the provider's hook config; `Plugin` =
+/// a code file copied to the provider's plugin dir (OpenCode `.ts`); `Gateway`
+/// = a `HOOK.yaml` manifest + `handler.py` dir (Hermes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum HookMode {
+    #[default]
+    Command,
+    Plugin,
+    Gateway,
+}
+
+/// Where a hook is written: the user-global home, or a chosen project folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum HookScope {
+    #[default]
+    Global,
+    Folder,
+}
+
+/// Extra configuration for a `Hook` item. `None` on an item ⇒ a legacy hook
+/// whose `{event,matcher,command}` lives in the `hook.json` payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct HookSpec {
+    #[serde(default)]
+    pub mode: HookMode,
+    /// Canonical trigger id (see `services::plugins::hook_triggers`). `Command` mode only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<String>,
+    /// Native event names. `Gateway` mode only (HOOK.yaml `events:` list).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matcher: Option<String>,
+    /// Shell command; may contain the `${file}` placeholder. `Command` mode only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Timeout in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u32>,
+    /// The attached handler filename stored in the item dir (e.g. `handler.py`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handler_file: Option<String>,
+    #[serde(default)]
+    pub scope: HookScope,
+    /// Absolute folder path when `scope == Folder`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+}
+
 /// A user-authored library item. `slug` is the on-disk id (no plugin prefix);
 /// `materialized` records every path written so delete is a clean reverse.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +188,10 @@ pub struct LibraryItem {
     /// Only present on `Rule` items; `None` ⇒ a legacy global general rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rule_spec: Option<RuleSpec>,
+    /// Extra hook configuration (mode / trigger / matcher / command / handler /
+    /// scope). Only present on `Hook` items; `None` ⇒ a legacy hook.json hook.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_spec: Option<HookSpec>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -179,5 +235,21 @@ mod tests {
         assert!(LibraryKind::Rule.is_provider_scoped());
         assert!(!LibraryKind::Prompt.is_provider_scoped());
         assert!(!LibraryKind::Template.is_provider_scoped());
+    }
+
+    #[test]
+    fn hook_spec_serde_defaults() {
+        let s: HookSpec = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.mode, HookMode::Command);
+        assert_eq!(s.scope, HookScope::Global);
+        assert!(s.events.is_empty());
+        let full = HookSpec {
+            mode: HookMode::Gateway,
+            events: vec!["agent:start".into()],
+            handler_file: Some("handler.py".into()),
+            ..Default::default()
+        };
+        let j = serde_json::to_string(&full).unwrap();
+        assert_eq!(serde_json::from_str::<HookSpec>(&j).unwrap(), full);
     }
 }

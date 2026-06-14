@@ -34,6 +34,7 @@ import { usePluginStore } from "@/stores/plugin-store";
 import { useLibraryStore } from "@/stores/library-store";
 import { CreateItemDialog } from "./library/create-item-dialog";
 import { RuleForm } from "./library/rule-form";
+import { HookForm } from "./library/hook-form";
 import { ProviderLogo, providerName } from "@/components/ui/provider-logo";
 import type { LibraryKind, LibraryItem } from "@/lib/library-api";
 import { useThemeStore } from "@/stores/theme-store";
@@ -402,6 +403,11 @@ export function LibraryPage({ onClose }: Props) {
       <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
       {dialogKind === "rule" ? (
         <RuleForm
+          editing={dialogEditing ?? undefined}
+          onClose={() => { setDialogKind(null); setDialogEditing(null); }}
+        />
+      ) : dialogKind === "hook" ? (
+        <HookForm
           editing={dialogEditing ?? undefined}
           onClose={() => { setDialogKind(null); setDialogEditing(null); }}
         />

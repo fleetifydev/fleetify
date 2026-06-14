@@ -13,7 +13,8 @@ use serde_json::{json, Value};
 
 use crate::routers::{ApiError, AppState};
 use crate::services::library::types::{
-    is_valid_slug, CursorRuleType, LibraryItem, LibraryKind, RuleFormat, RuleScope, RuleSpec,
+    is_valid_slug, CursorRuleType, HookMode, HookScope, HookSpec, LibraryItem, LibraryKind,
+    RuleFormat, RuleScope, RuleSpec,
 };
 use crate::services::library::{enumerate, materialize, store};
 
@@ -115,6 +116,24 @@ struct CreateBody {
     /// Globs — Cursor "specific files" / Copilot `applyTo` (comma-separated).
     #[serde(default)]
     globs: Option<String>,
+    // ── Hook-only fields (ignored for other kinds; scope/folder shared above) ──
+    #[serde(default)]
+    hook_mode: Option<HookMode>,
+    #[serde(default)]
+    hook_trigger: Option<String>,
+    #[serde(default)]
+    hook_events: Vec<String>,
+    #[serde(default)]
+    hook_matcher: Option<String>,
+    /// Shell command; may contain `${file}`.
+    #[serde(default)]
+    command: Option<String>,
+    /// Timeout in seconds.
+    #[serde(default)]
+    timeout: Option<u32>,
+    /// Base64 of an attached handler file + its filename.
+    #[serde(default)]
+    handler_file: Option<HandlerFileInput>,
 }
 
 /// Build a rule's `RuleSpec` from the request (only meaningful for `Rule`).
@@ -157,6 +176,91 @@ fn validate_rule(b: &CreateBody, spec: &RuleSpec) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// A base64-encoded handler file attached to a hook.
+#[derive(Deserialize)]
+struct HandlerFileInput {
+    name: String,
+    content_base64: String,
+}
+
+/// Keep only the basename and a safe charset (block path traversal in an
+/// attached filename). Falls back to `handler` when empty.
+fn sanitize_filename(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let cleaned: String = base
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        .collect();
+    if cleaned.is_empty() {
+        "handler".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// Build a hook's `HookSpec` from the request (`scope`/`folder` reuse the rule
+/// fields). The handler filename is recorded; the bytes are written separately.
+fn build_hook_spec(b: &CreateBody) -> HookSpec {
+    HookSpec {
+        mode: b.hook_mode.unwrap_or_default(),
+        trigger: b.hook_trigger.clone().filter(|t| !t.trim().is_empty()),
+        events: b.hook_events.clone(),
+        matcher: b.hook_matcher.clone().filter(|m| !m.trim().is_empty()),
+        command: b.command.clone().filter(|c| !c.trim().is_empty()),
+        timeout: b.timeout,
+        handler_file: b.handler_file.as_ref().map(|h| sanitize_filename(&h.name)),
+        // `scope`/`folder` are shared with rules (RuleScope on the wire); bridge
+        // the identical-variant enum to HookScope.
+        scope: match b.scope.unwrap_or_default() {
+            RuleScope::Folder => HookScope::Folder,
+            RuleScope::Global => HookScope::Global,
+        },
+        folder: b.folder.clone().filter(|f| !f.trim().is_empty()),
+    }
+}
+
+/// Validate a hook spec. 400s on the per-mode required fields.
+fn validate_hook(spec: &HookSpec) -> Result<(), ApiError> {
+    if spec.scope == HookScope::Folder && spec.folder.is_none() {
+        return Err(ApiError::BadRequest(
+            "a folder-scoped hook needs a folder path".into(),
+        ));
+    }
+    match spec.mode {
+        HookMode::Command => {
+            if spec.trigger.is_none() {
+                return Err(ApiError::BadRequest("a hook needs a trigger".into()));
+            }
+            if spec.command.is_none() && spec.handler_file.is_none() {
+                return Err(ApiError::BadRequest(
+                    "a hook needs a command or a handler file".into(),
+                ));
+            }
+        }
+        HookMode::Plugin => {
+            if spec.handler_file.is_none() {
+                return Err(ApiError::BadRequest(
+                    "an OpenCode plugin hook needs a .ts file".into(),
+                ));
+            }
+        }
+        HookMode::Gateway => {
+            if spec.handler_file.is_none() || spec.events.is_empty() {
+                return Err(ApiError::BadRequest(
+                    "a gateway hook needs a handler file and at least one event".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Decode a base64 handler file.
+fn base64_decode(s: &str) -> anyhow::Result<Vec<u8>> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    Ok(STANDARD.decode(s)?)
+}
+
 async fn create_item(
     State(_st): State<AppState>,
     Json(b): Json<CreateBody>,
@@ -188,12 +292,25 @@ async fn create_item(
     } else {
         None
     };
+    let hook_spec = if kind == LibraryKind::Hook {
+        let spec = build_hook_spec(&b);
+        validate_hook(&spec)?;
+        Some(spec)
+    } else {
+        None
+    };
 
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let dir = store::item_dir(&id);
     let payload =
         write_payload(&dir, kind, &b.body).map_err(|e| ApiError::Internal(e.to_string()))?;
+    if let Some(hf) = &b.handler_file {
+        let bytes = base64_decode(&hf.content_base64)
+            .map_err(|e| ApiError::BadRequest(format!("bad handler_file: {e}")))?;
+        std::fs::write(dir.join(sanitize_filename(&hf.name)), bytes)
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+    }
 
     let mut item = LibraryItem {
         id,
@@ -206,6 +323,7 @@ async fn create_item(
         hook_merge: vec![],
         rule_merge: vec![],
         rule_spec,
+        hook_spec,
         created_at: now.clone(),
         updated_at: now,
     };
@@ -251,12 +369,20 @@ async fn update_item(
     } else {
         None
     };
+    let hook_spec = if item.kind == LibraryKind::Hook {
+        let spec = build_hook_spec(&b);
+        validate_hook(&spec)?;
+        Some(spec)
+    } else {
+        None
+    };
     materialize::unmaterialize_item(&item.materialized, &item.hook_merge, &item.rule_merge);
 
     item.name = b.name;
     item.description = b.description;
     item.providers = b.providers;
     item.rule_spec = rule_spec;
+    item.hook_spec = hook_spec;
     item.updated_at = chrono::Utc::now().to_rfc3339();
 
     let dir = store::item_dir(&id);
@@ -265,6 +391,13 @@ async fn update_item(
     } else {
         write_payload(&dir, item.kind, &b.body).map_err(|e| ApiError::Internal(e.to_string()))?
     };
+    if let Some(hf) = &b.handler_file {
+        std::fs::create_dir_all(&dir).ok();
+        let bytes = base64_decode(&hf.content_base64)
+            .map_err(|e| ApiError::BadRequest(format!("bad handler_file: {e}")))?;
+        std::fs::write(dir.join(sanitize_filename(&hf.name)), bytes)
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+    }
     let out = materialize::materialize_item(&item, &payload)?;
     item.materialized = out.materialized;
     item.hook_merge = out.hook_merge;
@@ -279,7 +412,7 @@ fn existing_payload(dir: &Path, kind: LibraryKind) -> PathBuf {
     match kind {
         LibraryKind::Skill => dir.join("skill"),
         LibraryKind::Prompt => dir.join("prompt.md"),
-        LibraryKind::Hook => dir.join("hook.json"),
+        LibraryKind::Hook => dir.to_path_buf(),
         LibraryKind::Template => dir.join("system_prompt.md"),
         LibraryKind::Subagent => dir.join("subagent.md"),
         LibraryKind::Rule => dir.join("rule.md"),
@@ -303,9 +436,13 @@ fn write_payload(dir: &Path, kind: LibraryKind, body: &str) -> std::io::Result<P
             p
         }
         LibraryKind::Hook => {
-            let p = dir.join("hook.json");
-            std::fs::write(&p, body)?;
-            p
+            // New hooks carry a HookSpec on the item; the payload is the item
+            // dir (the attached handler, if any, is written by the caller).
+            // Legacy callers still send a hook.json body.
+            if !body.is_empty() {
+                std::fs::write(dir.join("hook.json"), body)?;
+            }
+            dir.to_path_buf()
         }
         LibraryKind::Template => {
             // The authored body is the agent preset's system prompt; the rest
@@ -328,4 +465,59 @@ fn write_payload(dir: &Path, kind: LibraryKind, body: &str) -> std::io::Result<P
         }
     };
     Ok(payload)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_filename_strips_paths() {
+        assert_eq!(sanitize_filename("../../etc/passwd"), "passwd");
+        assert_eq!(sanitize_filename("a/b\\c.py"), "c.py");
+        assert_eq!(sanitize_filename("handler.py"), "handler.py");
+        assert_eq!(sanitize_filename("weird name!.sh"), "weirdname.sh");
+        assert_eq!(sanitize_filename("/"), "handler");
+    }
+
+    #[test]
+    fn validate_hook_enforces_per_mode_fields() {
+        let cmd = HookSpec {
+            mode: HookMode::Command,
+            trigger: Some("pre_tool_use".into()),
+            command: Some("x".into()),
+            ..Default::default()
+        };
+        assert!(validate_hook(&cmd).is_ok());
+
+        let no_trigger = HookSpec {
+            mode: HookMode::Command,
+            command: Some("x".into()),
+            ..Default::default()
+        };
+        assert!(validate_hook(&no_trigger).is_err());
+
+        let plugin_no_file = HookSpec {
+            mode: HookMode::Plugin,
+            ..Default::default()
+        };
+        assert!(validate_hook(&plugin_no_file).is_err());
+
+        let gw = HookSpec {
+            mode: HookMode::Gateway,
+            events: vec!["agent:start".into()],
+            handler_file: Some("h.py".into()),
+            ..Default::default()
+        };
+        assert!(validate_hook(&gw).is_ok());
+
+        let folder_no_path = HookSpec {
+            mode: HookMode::Command,
+            trigger: Some("stop".into()),
+            command: Some("x".into()),
+            scope: HookScope::Folder,
+            ..Default::default()
+        };
+        assert!(validate_hook(&folder_no_path).is_err());
+    }
 }
