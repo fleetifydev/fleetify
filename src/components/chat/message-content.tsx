@@ -1979,16 +1979,18 @@ function UserMessage({ content, msgRef }: { content: ContentBlock[]; msgRef?: Re
   );
 }
 
-/* ── Compact summary card ──
+/* ── Compact summary ──
  *
  *  Rendered for the assistant message the compactor persists after a
- *  /compact run. The body is the model's structured summary (Goal /
- *  Decisions / Files / Open questions / Next steps) and the next agent
- *  turn injects the same summary into its system prompt, so what the
- *  user sees in this card IS the continuity context. It collapses by
- *  default after the first paint, on the theory that the user wants
- *  the chat surface back — they can click to expand whenever they
- *  want to re-read the summary. */
+ *  /compact run — this IS the "done" state of compaction (the running
+ *  pill clears itself the moment this lands, and it renders the same way
+ *  live and on reload). Plain, no box: a ✓ "Compacted successfully"
+ *  confirmation in a calm (non-green) tone, with the model's structured
+ *  summary (Goal / Decisions / Files / Open questions / Next steps) shown
+ *  below as a faded peek — like the live "thinking" preview — that expands
+ *  to the full summary on click. The next agent turn injects the same
+ *  summary into its system prompt, so what the user reads here IS the
+ *  continuity context. */
 function CompactSummaryCard({
   summary,
   timestamp,
@@ -1996,7 +1998,9 @@ function CompactSummaryCard({
   summary: string;
   timestamp: string;
 }) {
-  const [open, setOpen] = useState(true);
+  // Peek by default — the summary opens as a short faded teaser; click to
+  // expand it in full (matches the live "thinking" preview behaviour).
+  const [open, setOpen] = useState(false);
   const stamp = useMemo(() => {
     const d = new Date(timestamp);
     if (Number.isNaN(d.getTime())) return null;
@@ -2009,24 +2013,14 @@ function CompactSummaryCard({
     });
   }, [timestamp]);
 
-  // Soft blue that matches the inline "Compacted" pill — gives the
-  // card a visual lineage with the status text the user just saw flip
-  // from running to done.
-  const accent = "rgba(96,165,250,0.85)";
-  const border = "rgba(96,165,250,0.25)";
-  const bg = "rgba(96,165,250,0.045)";
+  // Calm, theme-adaptive foreground — the confirmation reads as a normal
+  // (slightly dimmed) line, not a loud green success badge.
+  const labelColor = "var(--c-low)";
 
   return (
-    <div
-      className="fade-in"
-      style={{
-        margin: "6px 0 18px",
-        border: `1px solid ${border}`,
-        borderRadius: 10,
-        background: bg,
-        overflow: "hidden",
-      }}
-    >
+    <div className="fade-in" style={{ margin: "6px 0 18px" }}>
+      {/* Plain confirmation — no box. Tick on the left, the success line,
+          then the timestamp + disclosure chevron pushed to the right. */}
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
@@ -2035,53 +2029,104 @@ function CompactSummaryCard({
           width: "100%",
           display: "flex",
           alignItems: "center",
-          gap: 8,
-          padding: "8px 12px",
+          gap: 7,
+          padding: "2px 0",
           background: "transparent",
           border: "none",
           cursor: "pointer",
-          color: accent,
-          fontSize: 12.5,
-          fontWeight: 500,
-          letterSpacing: "-0.01em",
           textAlign: "left",
         }}
       >
-        <ChevronRight
-          size={12}
-          style={{
-            transform: open ? "rotate(90deg)" : "rotate(0deg)",
-            transition: "transform 0.15s ease",
-            flexShrink: 0,
-            opacity: 0.85,
-          }}
+        <Check
+          size={14}
+          strokeWidth={2.5}
+          style={{ flexShrink: 0, color: labelColor }}
         />
-        <BookOpen size={13} style={{ flexShrink: 0, opacity: 0.9 }} />
-        <span style={{ flex: 1 }}>Conversation summary</span>
-        {stamp && (
-          <span
-            style={{
-              color: "var(--c-ghost)",
-              fontWeight: 400,
-              fontSize: 11.5,
-              opacity: 0.75,
-            }}
-          >
-            {stamp}
-          </span>
-        )}
-      </button>
-      {open && (
-        <div
+        <span
           style={{
-            padding: "0 14px 12px 14px",
-            borderTop: `1px dashed ${border}`,
-            paddingTop: 10,
+            color: labelColor,
+            fontSize: 12.5,
+            fontWeight: 500,
+            letterSpacing: "-0.01em",
           }}
         >
+          Compacted successfully
+        </span>
+        <span
+          style={{
+            color: "var(--c-dim)",
+            fontSize: 12.5,
+            fontWeight: 450,
+            letterSpacing: "-0.01em",
+          }}
+        >
+          · Compaction summary
+        </span>
+        <span
+          style={{
+            marginLeft: "auto",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            flexShrink: 0,
+          }}
+        >
+          {stamp && (
+            <span
+              style={{
+                color: "var(--c-ghost)",
+                fontWeight: 400,
+                fontSize: 11.5,
+                opacity: 0.8,
+              }}
+            >
+              {stamp}
+            </span>
+          )}
+          <ChevronRight
+            size={12}
+            style={{
+              transform: open ? "rotate(90deg)" : "rotate(0deg)",
+              transition: "transform 0.15s ease",
+              color: "var(--c-ghost)",
+            }}
+          />
+        </span>
+      </button>
+      {/* Body — a faded peek by default (mirrors the live "thinking"
+          preview rail), expands to the full summary on click. */}
+      <div style={{ paddingLeft: 21, paddingTop: 6 }}>
+        {open ? (
           <MarkdownBody text={summary} />
-        </div>
-      )}
+        ) : (
+          <div
+            role="button"
+            tabIndex={0}
+            aria-label="Show full compaction summary"
+            onClick={() => setOpen(true)}
+            onKeyDown={e => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setOpen(true);
+              }
+            }}
+            style={{
+              cursor: "pointer",
+              // A tight peek so the bottom always clips into a fade — the
+              // "misty, rising from the bottom" cue that there's more to
+              // read. Click expands to the full, fog-free summary.
+              maxHeight: 56,
+              overflow: "hidden",
+              maskImage:
+                "linear-gradient(to bottom, black 38%, transparent 100%)",
+              WebkitMaskImage:
+                "linear-gradient(to bottom, black 38%, transparent 100%)",
+            }}
+          >
+            <MarkdownBody text={summary} />
+          </div>
+        )}
+      </div>
     </div>
   );
 }
