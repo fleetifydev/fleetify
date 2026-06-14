@@ -178,6 +178,11 @@ export interface CompactionPill {
   /** Model that produced the summary (e.g. "claude-haiku-4-5"). */
   model?: string | null;
   trigger?: string;
+  /** Live 0–100 progress while state="running", driven by
+   *  compaction_progress events. Undefined until the first event. */
+  pct?: number;
+  /** Current compaction phase ("prepare" | "summarize" | "persist"). */
+  phase?: string;
   /** Wall-clock millis when the pill was inserted — anchors the
    *  relative "Compacting Ns" suffix on the inline status text. */
   startedAt: number;
@@ -362,6 +367,12 @@ interface ChatState {
   startCompactionPill: (
     sessionId: string,
     args: { provider: string; command: string },
+  ) => void;
+  /** Patch the running pill's live progress — fired by ws-manager on each
+   *  `compaction_progress` event. No-op if no pill is running. */
+  updateCompactionProgress: (
+    sessionId: string,
+    args: { pct: number; phase: string },
   ) => void;
   /** Patch the pill to its terminal state when `compaction_done` lands.
    *  The backend now drives the character counts + summary timestamp
@@ -805,9 +816,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
           preMessageCount: null,
           compactAt: null,
           model: null,
+          pct: 0,
+          phase: "prepare",
           startedAt: Date.now(),
         },
       })),
+    ),
+
+  updateCompactionProgress: (sessionId, { pct, phase }) =>
+    set((state) =>
+      patch(state, sessionId, (s) =>
+        s.compactionPill && s.compactionPill.state === "running"
+          ? {
+              compactionPill: {
+                ...s.compactionPill,
+                // Keep the bar monotonic — never let a late event rewind it.
+                pct: Math.max(s.compactionPill.pct ?? 0, pct),
+                phase,
+              },
+            }
+          : {},
+      ),
     ),
 
   finalizeCompactionPill: (

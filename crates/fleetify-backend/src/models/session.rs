@@ -34,6 +34,9 @@ pub struct Session {
     pub compact_summary: Option<String>,
     pub compact_at: Option<String>,
     pub compacted_message_count: Option<i64>,
+    /// Transient: set by the compactor after a /compact so the next turn
+    /// reseeds a fresh provider session seeded with the summary, then cleared.
+    pub compact_reseed_pending: bool,
     /// Which provider/agent account this session uses. NULL ⇒ the synthetic
     /// System account (real HOME for CLI / legacy keychain key for HTTP).
     pub account_id: Option<String>,
@@ -204,5 +207,48 @@ mod tests {
             .expect("fetch after patch");
         assert_eq!(after.sandbox.as_deref(), Some("docker"));
         assert_eq!(after.tool_overrides.as_deref(), Some(matrix));
+    }
+
+    /// Migration 0010 adds compact_reseed_pending (INTEGER NOT NULL DEFAULT 0).
+    /// Verify it defaults to false and round-trips through FromRow as a bool.
+    #[tokio::test]
+    async fn compact_reseed_pending_round_trip() {
+        let pool = crate::db::init_pool("sqlite::memory:")
+            .await
+            .expect("open in-memory db");
+        let id = "test-reseed-rt-01";
+        sqlx::query(
+            "INSERT INTO sessions \
+             (id,title,project_path,group_path,tool,command,status,use_worktree,\
+              permission_mode,session_mode,pinned,order_idx,created_at,budget_used) \
+             VALUES (?,?,'','','claude-code','claude-code','idle',1,'default','new',0,0,\
+                     '2026-01-01T00:00:00Z',0.0)",
+        )
+        .bind(id)
+        .bind("Reseed RT session")
+        .execute(&pool)
+        .await
+        .expect("insert session row");
+
+        // Defaults to false.
+        let before = sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = ?")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .expect("fetch before");
+        assert!(!before.compact_reseed_pending);
+
+        // Compactor sets it to 1.
+        sqlx::query("UPDATE sessions SET compact_reseed_pending = 1 WHERE id = ?")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .expect("set flag");
+        let after = sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = ?")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .expect("fetch after");
+        assert!(after.compact_reseed_pending);
     }
 }

@@ -1495,6 +1495,13 @@ class WSManager {
         }
         break;
       }
+      case "compaction_progress": {
+        // Interim % from the streaming summariser — advance the pill bar.
+        const pct = typeof data.pct === "number" ? data.pct : 0;
+        const phase = typeof data.phase === "string" ? data.phase : "";
+        store.updateCompactionProgress(sessionId, { pct, phase });
+        break;
+      }
       case "compaction_status": {
         // Backend signalled the start of a /compact or /compress flow.
         // Spin up the inline pill — the chat-view renders it between

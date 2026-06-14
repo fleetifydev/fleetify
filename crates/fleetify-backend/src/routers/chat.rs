@@ -932,6 +932,60 @@ fn build_cursor_plan_handler(
     })
 }
 
+/// Run an app-owned compaction end-to-end, streaming compaction_status →
+/// compaction_progress* → compaction_done onto the WS sink. Shared by the
+/// manual /compact path and the auto-compaction gate (trigger = "manual" or
+/// "auto"). Does NOT touch session status or return — the caller decides what
+/// happens next (manual short-circuits the turn; auto continues it).
+async fn run_compaction(
+    st: &AppState,
+    sink: &Sink,
+    sid: &str,
+    provider: &str,
+    command: &str,
+    model: Option<&str>,
+    trigger: &str,
+) {
+    use crate::services::compactor;
+    send_json(
+        sink,
+        compactor::compaction_status_event(sid, provider, command),
+    )
+    .await;
+    // Pump progress events from the (sync) summariser callback onto the async
+    // WS sink via an unbounded channel. The closure owns `tx`, so when
+    // compaction returns the channel closes and the pump task drains.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+    let sink_pump = sink.clone();
+    let pump = tokio::spawn(async move {
+        while let Some(v) = rx.recv().await {
+            send_json(&sink_pump, v).await;
+        }
+    });
+    let sid_cb = sid.to_string();
+    let result = compactor::compact_session_streaming(&st.auth.pool, sid, move |pct, phase| {
+        let _ = tx.send(compactor::compaction_progress_event(&sid_cb, pct, phase));
+    })
+    .await;
+    let _ = pump.await;
+    match result {
+        Ok(r) => {
+            send_json(
+                sink,
+                compactor::compaction_done_event(sid, provider, model, trigger, &r),
+            )
+            .await;
+        }
+        Err(e) => {
+            send_json(
+                sink,
+                compactor::compaction_failed_event(sid, provider, &e.to_string()),
+            )
+            .await;
+        }
+    }
+}
+
 async fn run_send_flow(
     st: AppState,
     sink: Sink,
@@ -942,6 +996,7 @@ async fn run_send_flow(
     interactive_session: Arc<crate::bridges::interactive::InteractiveRequestSession>,
 ) {
     let sid = session.id.clone();
+    let mut session = session;
 
     // Hidden side-channel markers (parity): auto-intro / enhance are not
     // persisted; compaction app-owned path is Phase 3 (we still strip it).
@@ -957,37 +1012,59 @@ async fn run_send_flow(
         }
     }
     if text.starts_with("[fleet:compaction]") {
-        // App-owned compactor: snapshot transcript → Haiku summary →
-        // persist + delete + emit a "Conversation summary" card. The
-        // renderer's compact button hits send with this marker prefix;
-        // we short-circuit BEFORE forwarding to the bridge.
-        match crate::services::compactor::compact_session(&st.auth.pool, &sid).await {
-            Ok(r) => {
-                send_json(
-                    &sink,
-                    json!({
-                        "type": "compact_done",
-                        "session_id": sid,
-                        "summary": r.summary,
-                        "compacted_message_count": r.compacted_message_count,
-                    }),
-                )
-                .await;
-            }
-            Err(e) => {
-                send_json(
-                    &sink,
-                    json!({
-                        "type": "error",
-                        "session_id": sid,
-                        "error": e.to_string(),
-                    }),
-                )
-                .await;
-            }
-        }
+        // App-owned compactor — manual /compact. Streams status → progress* →
+        // done onto the sink, then short-circuits BEFORE forwarding to the
+        // bridge.
+        let provider = session.tool.clone();
+        let command = crate::services::compactor::parse_compaction_command(&text);
+        run_compaction(
+            &st,
+            &sink,
+            &sid,
+            &provider,
+            &command,
+            session.model_name.as_deref(),
+            "manual",
+        )
+        .await;
         let _ = st.sm.update_status(&st.auth.pool, &sid, "idle").await;
         return;
+    }
+
+    // ── Auto-compaction gate ──
+    // If the model's context is near full from prior turns, compact BEFORE
+    // running this turn (Claude-Code-style), then continue on the freed
+    // context. The compactor sets compact_reseed_pending + nulls
+    // claude_session_id, so after a reload the reseed block below seeds this
+    // turn with the summary on a fresh provider session. Skipped when a reseed
+    // is already pending.
+    if !session.compact_reseed_pending {
+        let fill = crate::services::compactor::context_fill(
+            &st.auth.pool,
+            &sid,
+            session.model_name.as_deref(),
+        )
+        .await;
+        if fill.is_some_and(|f| f >= crate::services::compactor::AUTO_COMPACT_THRESHOLD) {
+            let provider = session.tool.clone();
+            run_compaction(
+                &st,
+                &sink,
+                &sid,
+                &provider,
+                "/compact",
+                session.model_name.as_deref(),
+                "auto",
+            )
+            .await;
+            if let Ok(s) = sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = ?")
+                .bind(&sid)
+                .fetch_one(&st.auth.pool)
+                .await
+            {
+                session = s;
+            }
+        }
     }
 
     // ── DIRECT_DISPATCH pre-processing (parity with chat.py:_handle_direct_dispatches) ──
@@ -1126,10 +1203,9 @@ async fn run_send_flow(
         )
         .await
     };
-    // Auto bridge-swap: rebind `session` to the routed (agent, model). If the
+    // Auto bridge-swap: mutate `session` to the routed (agent, model). If the
     // master toggle is off so routing didn't pick (model stays "auto"), fall
     // back to a safe default — never feed a bridge the "auto" sentinel.
-    let mut session = session;
     if is_auto {
         // tool_override carries the chosen execution path (claude / codex /
         // openai / gemini / gemini-api / anthropic); fall back to the agent's
@@ -1142,6 +1218,33 @@ async fn run_send_flow(
         } else {
             Some(resolution.model.clone())
         };
+    }
+
+    // ── Reseed after /compact ──
+    // The compactor nulled claude_session_id (so CLI providers spawn a FRESH
+    // provider session, genuinely freeing the model's context) and set
+    // compact_reseed_pending. Seed that fresh turn with the summary so the
+    // agent keeps continuity, force a fresh start even for continue/resume
+    // sessions, and consume the one-shot flag. Provider-agnostic: the summary
+    // rides on the message text every bridge sends. (Edge case: if this turn
+    // fails before the provider establishes a session, the retry won't carry
+    // the preamble — acceptable for now.)
+    if session.compact_reseed_pending {
+        if let Some(sum) = session
+            .compact_summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            text = format!(
+                "[Continuing after a /compact. The earlier conversation was replaced by this summary — use it as the context for everything that came before:]\n\n{sum}\n\n---\n\n{text}"
+            );
+        }
+        session.session_mode = "new".to_string();
+        let _ = sqlx::query("UPDATE sessions SET compact_reseed_pending = 0 WHERE id = ?")
+            .bind(&sid)
+            .execute(&st.auth.pool)
+            .await;
     }
 
     let agent_cwd = session

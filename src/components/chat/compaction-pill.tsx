@@ -37,6 +37,8 @@ export function CompactionPill({ sessionId }: { sessionId: string }) {
     : Math.max(0, Math.round((Date.now() - pill.startedAt) / 1000));
 
   if (pill.state === "running") {
+    const pct =
+      typeof pill.pct === "number" ? Math.max(0, Math.min(100, pill.pct)) : 0;
     return (
       <Line tone="active">
         <Loader2
@@ -54,9 +56,34 @@ export function CompactionPill({ sessionId }: { sessionId: string }) {
           to   { transform: rotate(360deg); }
         }`}</style>
         <span>Compacting conversation...</span>
-        {elapsedSec >= 2 && (
-          <Elapsed>{elapsedSec}s</Elapsed>
-        )}
+        {/* Live progress bar — fills as the summariser streams tokens. */}
+        <span
+          aria-hidden
+          style={{
+            position: "relative",
+            display: "inline-block",
+            width: 72,
+            height: 4,
+            borderRadius: 2,
+            background: "rgba(96,165,250,0.18)",
+            overflow: "hidden",
+            flex: "none",
+          }}
+        >
+          <span
+            style={{
+              position: "absolute",
+              insetBlock: 0,
+              left: 0,
+              width: `${pct}%`,
+              background: "rgba(96,165,250,0.9)",
+              borderRadius: 2,
+              transition: "width 180ms ease-out",
+            }}
+          />
+        </span>
+        <Elapsed>{pct}%</Elapsed>
+        {elapsedSec >= 2 && <Elapsed>{elapsedSec}s</Elapsed>}
       </Line>
     );
   }

@@ -12,7 +12,7 @@ use std::time::Duration;
 use serde_json::Value;
 use sqlx::SqlitePool;
 
-use super::haiku_client::call_haiku_with_meta_cost;
+use super::haiku_client::call_model_streaming_with_meta_cost;
 
 /// Marker the persisted compact-summary message starts with so the
 /// next /compact run skips it and the renderer can render it with a
@@ -22,14 +22,43 @@ pub const COMPACT_SUMMARY_MARKER: &str = "[fleet:compact-summary]";
 pub const MIN_MESSAGE_COUNT: i64 = 6;
 pub const MIN_CHAR_COUNT: i64 = 4000;
 const MAX_HISTORY_CHARS: usize = 120_000;
-const COMPACT_TIMEOUT: Duration = Duration::from_secs(30);
+const COMPACT_TIMEOUT: Duration = Duration::from_secs(120);
 
-const SYSTEM_PROMPT: &str = "You are a conversation compactor. Your only job: rewrite the transcript below as a dense Markdown summary the next agent turn can use to continue the work seamlessly.\n\nALWAYS respond with a summary — never refuse, never reply with an empty message, never ask clarifying questions. If the transcript is short, write a short summary; if it's long, write a longer one. Never exceed ~600 words.\n\nUse these sections (skip a section only if it has truly nothing):\n## Goal\n## Decisions\n## Files & code\n## Open questions\n## Next steps\n\nStyle:\n- Plain prose. No code fences unless a literal command/path matters.\n- Cite file paths verbatim when the transcript mentions them.\n- Drop pleasantries, tool-call noise, and resolved sub-questions.\n- Do not invent anything the transcript did not say.";
+/// Model used to summarise — Opus 4.8 per the product decision (higher-
+/// quality summaries; the live progress bar covers the extra latency).
+const SUMMARIZER_MODEL: &str = "claude-opus-4-8";
+/// Rough byte budget for a typical (now uncapped, Claude-Code-style)
+/// summary, used only to map streamed output onto the 0–100 % bar. The
+/// bar clamps at 92 % if a summary runs longer, so this only needs to be
+/// in the right ballpark (~1300 words).
+const TARGET_SUMMARY_BYTES: usize = 8000;
+
+/// Auto-compaction fires when a session's context fill reaches this fraction
+/// of the model's window. 0.90 leaves headroom so the triggering turn does not
+/// overflow (waiting for a literal 1.0 would already be too late).
+pub const AUTO_COMPACT_THRESHOLD: f32 = 0.90;
+
+// Modeled on how Claude Code / Anthropic compaction actually summarises
+// (preserve user intent, current state, decisions, files+code, errors,
+// in-flight work, next steps; no tight word cap; keep code that preserves
+// continuity). See docs/superpowers/specs for the analysis.
+const SYSTEM_PROMPT: &str = "You are a conversation compactor for a coding agent. Rewrite the transcript below as a dense Markdown summary that lets the NEXT agent turn continue the work seamlessly after the raw history is gone: it will be replaced by this summary.\n\nALWAYS respond with the summary as plain text only. Never refuse, never reply empty, never ask questions, never call a tool. Preserve continuity above all; keeping a useful detail beats dropping it. There is no tight word limit: scale length to the work, but cut redundancy, pleasantries, and resolved dead ends.\n\nUse these sections (skip one only if it is truly empty):\n## User intent\nThe user's explicit requests and goals, in their own words where it matters; do not lose what they actually asked for.\n## Current state\nWhat has been done so far and the state of the code/task right now.\n## Key decisions and learnings\nArchitectural choices, naming conventions, constraints, and gotchas discovered.\n## Files and code\nFiles created or edited (exact paths) and the specific code under active work; include short snippets or diffs where they are needed to continue.\n## Errors and fixes\nProblems hit and how they were resolved, or that they are still open.\n## In progress and next steps\nExactly what was being worked on when this summary was written, and the immediate next action(s).\n## Open questions\nUnresolved questions or decisions still pending.\n\nRules:\n- Cite file paths, symbols, and commands verbatim.\n- Keep code only where it preserves in-flight work; otherwise describe it.\n- Do not invent anything the transcript did not contain.";
 
 #[derive(Debug, Clone)]
 pub struct CompactionResult {
     pub summary: String,
+    /// New (non-summary) messages folded in — added to sessions.compacted_message_count.
     pub compacted_message_count: i64,
+    /// Total chars of the snapshotted (pre-compaction) transcript.
+    pub pre_chars: i64,
+    /// Chars of the generated summary (post-compaction transcript size).
+    pub post_chars: i64,
+    /// Number of message rows hard-deleted by this run (all snapshot rows).
+    pub pre_message_count: i64,
+    /// RFC3339 timestamp stamped on sessions.compact_at.
+    pub compact_at: String,
+    /// Row id of the persisted summary message.
+    pub summary_message_id: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -146,13 +175,118 @@ fn render_history(rows: &[(String, String, String)]) -> String {
     text
 }
 
+/// Total content chars + row count over a message snapshot. Pure so the
+/// pre/post size numbers the UI shows are unit-testable without a DB.
+fn transcript_metrics(rows: &[(String, String, String)]) -> (i64, i64) {
+    let chars: i64 = rows.iter().map(|(_, _, c)| c.chars().count() as i64).sum();
+    (chars, rows.len() as i64)
+}
+
+/// Map streamed summary bytes onto the summarise-phase band (8→92).
+/// Monotonic and clamped — never 0 (work has started) and never 100
+/// (persist owns the tail). Pure for unit testing.
+fn summarize_pct(bytes: usize, target: usize) -> u32 {
+    let frac = if target == 0 {
+        1.0
+    } else {
+        (bytes as f64 / target as f64).min(1.0)
+    };
+    8 + (84.0 * frac) as u32
+}
+
+/// `compaction_progress` envelope — interim % while the summariser runs.
+/// Field names MUST match `WSCompactionProgress` in `src/types/chat.ts`.
+pub fn compaction_progress_event(session_id: &str, pct: u32, phase: &str) -> Value {
+    serde_json::json!({
+        "type": "compaction_progress",
+        "session_id": session_id,
+        "pct": pct,
+        "phase": phase,
+    })
+}
+
+/// `compaction_status` envelope — emitted the instant the marker is seen,
+/// BEFORE the (potentially slow) summariser runs, so the pill spins up
+/// immediately. Field names MUST match `WSCompactionStatus` in
+/// `src/types/chat.ts`.
+pub fn compaction_status_event(session_id: &str, provider: &str, command: &str) -> Value {
+    serde_json::json!({
+        "type": "compaction_status",
+        "state": "starting",
+        "session_id": session_id,
+        "provider": provider,
+        "command": command,
+    })
+}
+
+/// `compaction_done` success envelope. Field names MUST match
+/// `WSCompactionDone` in `src/types/chat.ts`.
+pub fn compaction_done_event(
+    session_id: &str,
+    provider: &str,
+    model: Option<&str>,
+    trigger: &str,
+    r: &CompactionResult,
+) -> Value {
+    serde_json::json!({
+        "type": "compaction_done",
+        "session_id": session_id,
+        "provider": provider,
+        "pre_chars": r.pre_chars,
+        "post_chars": r.post_chars,
+        "pre_message_count": r.pre_message_count,
+        "compact_at": r.compact_at.as_str(),
+        "model": model,
+        "trigger": trigger,
+        "summary": r.summary.as_str(),
+        "summary_message_id": r.summary_message_id.as_str(),
+        "error": Value::Null,
+    })
+}
+
+/// `compaction_done` failure envelope — same type, non-null `error`, all
+/// size fields null. No message deletion happened; the pill flips to
+/// "Compact failed" and the local hard-delete is skipped.
+pub fn compaction_failed_event(session_id: &str, provider: &str, error: &str) -> Value {
+    serde_json::json!({
+        "type": "compaction_done",
+        "session_id": session_id,
+        "provider": provider,
+        "pre_chars": Value::Null,
+        "post_chars": Value::Null,
+        "pre_message_count": Value::Null,
+        "compact_at": Value::Null,
+        "model": Value::Null,
+        "trigger": "manual",
+        "summary": Value::Null,
+        "summary_message_id": Value::Null,
+        "error": error,
+    })
+}
+
+/// Extract the visible command ("/compact" or "/compress") from a
+/// "[fleet:compaction]…" submit. Defaults to "/compact".
+pub fn parse_compaction_command(text: &str) -> String {
+    let rest = text.trim_start_matches("[fleet:compaction]").trim();
+    if rest.is_empty() {
+        "/compact".to_string()
+    } else {
+        rest.to_string()
+    }
+}
+
 /// Run compaction on `session_id`. Returns the new summary + the
 /// number of messages that were folded in. Errors with a typed
 /// `CompactionError` so the chat handler can render a clean message.
-pub async fn compact_session(
+pub async fn compact_session_streaming<F>(
     pool: &SqlitePool,
     session_id: &str,
-) -> Result<CompactionResult, CompactionError> {
+    mut on_progress: F,
+) -> Result<CompactionResult, CompactionError>
+where
+    F: FnMut(u32, &str),
+{
+    on_progress(0, "prepare");
     // Load the session row's prior_summary first.
     let row: Option<(Option<String>,)> =
         sqlx::query_as("SELECT compact_summary FROM sessions WHERE id = ?")
@@ -174,6 +308,7 @@ pub async fn compact_session(
     if messages.is_empty() {
         return Err(CompactionError::NoMessages);
     }
+    let (pre_chars, pre_message_count) = transcript_metrics(&messages);
 
     // Filter out previous compact-summary rows for the threshold gate;
     // they still get deleted (the new summary supersedes them).
@@ -212,13 +347,16 @@ pub async fn compact_session(
         _ => rendered,
     };
 
-    let summary = match call_haiku_with_meta_cost(
+    on_progress(8, "summarize");
+    let summary = match call_model_streaming_with_meta_cost(
         pool,
         "compactor",
         session_id,
+        SUMMARIZER_MODEL,
         &transcript,
         Some(SYSTEM_PROMPT),
         Some(COMPACT_TIMEOUT),
+        |bytes| on_progress(summarize_pct(bytes, TARGET_SUMMARY_BYTES), "summarize"),
     )
     .await
     {
@@ -231,10 +369,11 @@ pub async fn compact_session(
 
     // Persist + delete in a single transaction.
     let snapshot_ids: Vec<String> = messages.iter().map(|(id, _, _)| id.clone()).collect();
+    on_progress(92, "persist");
     let now = chrono::Utc::now().to_rfc3339();
     let mut tx = pool.begin().await?;
     sqlx::query(
-        "UPDATE sessions SET compact_summary = ?, compact_at = ?, compacted_message_count = COALESCE(compacted_message_count, 0) + ? WHERE id = ?",
+        "UPDATE sessions SET compact_summary = ?, compact_at = ?, compacted_message_count = COALESCE(compacted_message_count, 0) + ?, claude_session_id = NULL, compact_reseed_pending = 1 WHERE id = ?",
     )
     .bind(&summary)
     .bind(&now)
@@ -268,11 +407,54 @@ pub async fn compact_session(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    on_progress(100, "persist");
 
     Ok(CompactionResult {
+        post_chars: summary.chars().count() as i64,
         summary,
         compacted_message_count: msg_count,
+        pre_chars,
+        pre_message_count,
+        compact_at: now,
+        summary_message_id: row_id,
     })
+}
+
+/// Back-compat one-shot wrapper: run compaction discarding progress.
+pub async fn compact_session(
+    pool: &SqlitePool,
+    session_id: &str,
+) -> Result<CompactionResult, CompactionError> {
+    compact_session_streaming(pool, session_id, |_, _| {}).await
+}
+
+/// Current context-window fill for a session as a 0.0-1.0 fraction: the latest
+/// real (non-meta) turn's prompt size (input + cache-read tokens) over the
+/// model's catalog context window. None when the window is unknown or the
+/// session has no usage yet. Drives the auto-compaction gate.
+pub async fn context_fill(
+    pool: &SqlitePool,
+    session_id: &str,
+    model_id: Option<&str>,
+) -> Option<f32> {
+    let window = model_id.and_then(crate::providers::catalog::context_window_tokens)? as f32;
+    if window <= 0.0 {
+        return None;
+    }
+    // Exclude meta-LLM rows (e.g. the compactor's own Opus call, keyed
+    // `<model>/meta-<kind>`) so the fill reflects the real conversation turn.
+    let row: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT input_tokens, cache_read FROM cost_events \
+         WHERE session_id = ? AND model NOT LIKE '%meta-%' \
+         ORDER BY timestamp DESC LIMIT 1",
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await
+    .ok()?;
+    let (input, cache_read) = row?;
+    let used = (input.max(0) + cache_read.max(0)) as f32;
+    Some((used / window).clamp(0.0, 1.0))
 }
 
 #[cfg(test)]
@@ -339,5 +521,98 @@ mod tests {
         )];
         let h = render_history(&rows);
         assert!(h.contains("transcript truncated for compaction"));
+    }
+
+    #[test]
+    fn transcript_metrics_sums_chars_and_counts_rows() {
+        let rows = vec![
+            ("m1".to_string(), "user".to_string(), "hello".to_string()), // 5 chars
+            (
+                "m2".to_string(),
+                "assistant".to_string(),
+                "worldd".to_string(),
+            ), // 6 chars
+        ];
+        let (chars, count) = transcript_metrics(&rows);
+        assert_eq!(chars, 11);
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn compaction_status_event_matches_frontend_contract() {
+        let v = compaction_status_event("s1", "claude-code", "/compact");
+        assert_eq!(v["type"], "compaction_status");
+        assert_eq!(v["state"], "starting");
+        assert_eq!(v["session_id"], "s1");
+        assert_eq!(v["provider"], "claude-code");
+        assert_eq!(v["command"], "/compact");
+    }
+
+    #[test]
+    fn compaction_done_event_has_all_frontend_fields() {
+        let r = CompactionResult {
+            summary: "S".to_string(),
+            compacted_message_count: 7,
+            pre_chars: 4200,
+            post_chars: 1,
+            pre_message_count: 8,
+            compact_at: "2026-06-14T00:00:00Z".to_string(),
+            summary_message_id: "row-1".to_string(),
+        };
+        let v = compaction_done_event("s1", "gemini-cli", Some("gemini-2.5-pro"), "manual", &r);
+        assert_eq!(v["type"], "compaction_done");
+        assert_eq!(v["session_id"], "s1");
+        assert_eq!(v["provider"], "gemini-cli");
+        assert_eq!(v["pre_chars"], 4200);
+        assert_eq!(v["post_chars"], 1);
+        assert_eq!(v["pre_message_count"], 8);
+        assert_eq!(v["compact_at"], "2026-06-14T00:00:00Z");
+        assert_eq!(v["model"], "gemini-2.5-pro");
+        assert_eq!(v["trigger"], "manual");
+        assert_eq!(v["summary"], "S");
+        assert_eq!(v["summary_message_id"], "row-1");
+        assert_eq!(v["error"], Value::Null);
+    }
+
+    #[test]
+    fn compaction_failed_event_carries_error_and_nulls() {
+        let v = compaction_failed_event("s1", "claude-code", "boom");
+        assert_eq!(v["type"], "compaction_done");
+        assert_eq!(v["session_id"], "s1");
+        assert_eq!(v["error"], "boom");
+        assert_eq!(v["summary"], Value::Null);
+        assert_eq!(v["compact_at"], Value::Null);
+        assert_eq!(v["pre_chars"], Value::Null);
+    }
+
+    #[test]
+    fn parse_compaction_command_extracts_provider_command() {
+        assert_eq!(
+            parse_compaction_command("[fleet:compaction]/compact"),
+            "/compact"
+        );
+        assert_eq!(
+            parse_compaction_command("[fleet:compaction]/compress"),
+            "/compress"
+        );
+        assert_eq!(parse_compaction_command("[fleet:compaction]"), "/compact");
+    }
+
+    #[test]
+    fn summarize_pct_is_monotonic_and_clamped() {
+        assert_eq!(summarize_pct(0, 3600), 8);
+        assert_eq!(summarize_pct(3600, 3600), 92);
+        assert_eq!(summarize_pct(7200, 3600), 92); // clamps over target
+        assert!(summarize_pct(1800, 3600) > 8 && summarize_pct(1800, 3600) < 92);
+        assert_eq!(summarize_pct(100, 0), 92); // zero target -> full
+    }
+
+    #[test]
+    fn compaction_progress_event_matches_frontend_contract() {
+        let v = compaction_progress_event("s1", 42, "summarize");
+        assert_eq!(v["type"], "compaction_progress");
+        assert_eq!(v["session_id"], "s1");
+        assert_eq!(v["pct"], 42);
+        assert_eq!(v["phase"], "summarize");
     }
 }

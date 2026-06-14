@@ -489,6 +489,16 @@ export interface WSCompactionStatus {
   command: string;
 }
 
+/** Interim progress while the app-owned summariser streams. `pct` is a
+ *  monotonic 0–100 the inline pill renders as a progress bar; `phase` is
+ *  "prepare" | "summarize" | "persist". Emitted between compaction_status
+ *  and compaction_done. */
+export interface WSCompactionProgress {
+  type: "compaction_progress";
+  pct: number;
+  phase: string;
+}
+
 /** Fired when the app-owned compactor finishes. `pre_chars`/`post_chars`
  *  measure transcript size before/after summarisation (the prior token-
  *  based metric was Claude-only; switching to char counts gives every
@@ -631,6 +641,7 @@ export type WSServerMessage =
   | WSAgentRestarted
   | WSEnhanceDone
   | WSCompactionStatus
+  | WSCompactionProgress
   | WSCompactionDone
   | WSCitation
   | WSSearchResult

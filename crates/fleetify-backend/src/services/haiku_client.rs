@@ -111,6 +111,127 @@ pub async fn call_haiku_with_meta_cost(
     Ok(text)
 }
 
+/// Streaming variant of `call_haiku` that pins an explicit `model` and
+/// reads stdout incrementally, invoking `on_bytes(total_bytes_so_far)`
+/// after each read so the caller can drive a live progress %. Returns
+/// the full trimmed text. The prompt is piped on stdin (same ARG_MAX
+/// dodge as `call_haiku`). Bytes are accumulated raw and decoded once at
+/// the end, so a multi-byte UTF-8 char split across a read boundary is
+/// never corrupted in the returned summary. stderr is discarded (we only
+/// need stdout + the exit status), which also avoids a pipe-fill stall.
+pub async fn call_model_streaming<F>(
+    model: &str,
+    prompt: &str,
+    system: Option<&str>,
+    timeout: Option<Duration>,
+    mut on_bytes: F,
+) -> Result<String>
+where
+    F: FnMut(usize),
+{
+    if !haiku_breaker::is_haiku_available() {
+        return Err(anyhow!("haiku_breaker: open (skipping meta call)"));
+    }
+    let bin = which::which("claude")
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "claude".to_string());
+
+    let mut args: Vec<String> = vec!["--print".into(), "--model".into(), model.to_string()];
+    if let Some(s) = system {
+        args.push("--system-prompt".into());
+        args.push(s.to_string());
+    }
+
+    let mut cmd = tokio::process::Command::new(&bin);
+    cmd.args(&args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            haiku_breaker::record_haiku_failure();
+            return Err(anyhow!("claude CLI spawn failed: {e}"));
+        }
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        let _ = stdin.write_all(prompt.as_bytes()).await;
+        drop(stdin);
+    }
+
+    let mut stdout = match child.stdout.take() {
+        Some(s) => s,
+        None => {
+            haiku_breaker::record_haiku_failure();
+            return Err(anyhow!("claude CLI produced no stdout handle"));
+        }
+    };
+
+    let read_loop = async {
+        use tokio::io::AsyncReadExt;
+        let mut acc: Vec<u8> = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            match stdout.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    acc.extend_from_slice(&buf[..n]);
+                    on_bytes(acc.len());
+                }
+                Err(_) => break,
+            }
+        }
+        acc
+    };
+
+    let acc = match tokio::time::timeout(timeout.unwrap_or(DEFAULT_TIMEOUT), read_loop).await {
+        Ok(a) => a,
+        Err(_) => {
+            haiku_breaker::record_haiku_failure();
+            let _ = child.start_kill();
+            return Err(anyhow!("claude CLI timed out"));
+        }
+    };
+
+    match child.wait().await {
+        Ok(status) if status.success() => {
+            haiku_breaker::record_haiku_success();
+            Ok(String::from_utf8_lossy(&acc).trim().to_string())
+        }
+        Ok(status) => {
+            haiku_breaker::record_haiku_failure();
+            Err(anyhow!("claude CLI exited {}", status.code().unwrap_or(-1)))
+        }
+        Err(e) => {
+            haiku_breaker::record_haiku_failure();
+            Err(anyhow!("claude CLI wait failed: {e}"))
+        }
+    }
+}
+
+/// Streaming call + meta-cost accounting, mirroring
+/// `call_haiku_with_meta_cost`.
+#[allow(clippy::too_many_arguments)]
+pub async fn call_model_streaming_with_meta_cost<F>(
+    pool: &sqlx::SqlitePool,
+    kind: &str,
+    parent_session_id: &str,
+    model: &str,
+    prompt: &str,
+    system: Option<&str>,
+    timeout: Option<Duration>,
+    on_bytes: F,
+) -> Result<String>
+where
+    F: FnMut(usize),
+{
+    let text = call_model_streaming(model, prompt, system, timeout, on_bytes).await?;
+    let _ = meta_cost::track_meta_call(pool, kind, parent_session_id, prompt, &text).await;
+    Ok(text)
+}
+
 /// Extract a `{...}` JSON object from a CLI response that may be
 /// wrapped in ```json … ``` fences or have leading/trailing chatter.
 /// Returns None when no balanced object can be located. Faithful with

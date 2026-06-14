@@ -1710,9 +1710,60 @@ impl ProviderExtras {
     };
 }
 
+/// Parse a human context-window label ("1M", "200K", "128K", "256K") into a
+/// token count. Returns None for an unparseable label.
+pub fn parse_context_window(label: &str) -> Option<u32> {
+    let s = label.trim();
+    let (num, mult): (&str, u64) = if let Some(n) = s.strip_suffix(['M', 'm']) {
+        (n, 1_000_000)
+    } else if let Some(n) = s.strip_suffix(['K', 'k']) {
+        (n, 1_000)
+    } else {
+        (s, 1)
+    };
+    let v: f64 = num.trim().parse().ok()?;
+    if v < 0.0 {
+        return None;
+    }
+    u32::try_from((v * mult as f64) as u64).ok()
+}
+
+/// Numeric context window (tokens) for a model id, resolved from the catalog's
+/// display labels. The CLI providers carry empty `default_models`, but their
+/// model ids match entries in the API providers' arrays, so a flat scan across
+/// every provider's models resolves them. None when the id isn't cataloged.
+pub fn context_window_tokens(model_id: &str) -> Option<u32> {
+    CATALOG
+        .iter()
+        .flat_map(|p| p.default_models.iter())
+        .find(|m| m.id == model_id)
+        .and_then(|m| m.context_window)
+        .and_then(parse_context_window)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_context_window_handles_k_and_m() {
+        assert_eq!(parse_context_window("1M"), Some(1_000_000));
+        assert_eq!(parse_context_window("200K"), Some(200_000));
+        assert_eq!(parse_context_window("128K"), Some(128_000));
+        assert_eq!(parse_context_window("400K"), Some(400_000));
+        assert_eq!(parse_context_window(" 1M "), Some(1_000_000));
+        assert_eq!(parse_context_window("nonsense"), None);
+    }
+
+    #[test]
+    fn context_window_tokens_resolves_known_models() {
+        // A cataloged model resolves to a positive window (claude-opus-4-8 is
+        // "200K" today); claude-sonnet-4-6 exercises the "1M" parse path; a
+        // fake id resolves to None.
+        assert!(context_window_tokens("claude-opus-4-8").is_some_and(|w| w > 0));
+        assert_eq!(context_window_tokens("claude-sonnet-4-6"), Some(1_000_000));
+        assert!(context_window_tokens("does-not-exist-xyz-000").is_none());
+    }
 
     #[test]
     fn catalog_ids_are_unique() {
