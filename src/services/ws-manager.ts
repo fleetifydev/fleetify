@@ -1,6 +1,6 @@
 import { createSessionsWebSocket } from "@/lib/api";
 import { awaitConfigPatch } from "@/lib/session-config-sync";
-import { useChatStore, pushChatAuthRequired, markAuthSignedIn } from "@/stores/chat-store";
+import { useChatStore, pushChatAuthRequired, markAuthSignedIn, pushChatError } from "@/stores/chat-store";
 import { useAppStore } from "@/stores/app-store";
 import type { WSServerMessage, ImageBlock } from "@/types/chat";
 import type { Attachment } from "@/components/chat/chat-input";
@@ -1517,7 +1517,7 @@ class WSManager {
         // The app-owned compactor uniformly reports char counts +
         // message count + the compact_at timestamp the backend stamped
         // on the session row. error!=null means the summariser failed
-        // — flip to the failed state with the reason inline.
+        // — clear the pill and surface the reason via the shared <ChatError>.
         //
         // Compaction takes the short-circuit path on the backend so
         // there's no `status:done` event to release the streaming
@@ -1527,7 +1527,8 @@ class WSManager {
         store.clearStreaming(sessionId);
         const err = typeof data.error === "string" && data.error ? data.error : null;
         if (err) {
-          store.failCompactionPill(sessionId, err);
+          store.clearCompactionPill(sessionId);
+          pushChatError(sessionId, err);
         } else {
           const preChars = typeof data.pre_chars === "number" ? data.pre_chars : null;
           const postChars = typeof data.post_chars === "number" ? data.post_chars : null;
@@ -1652,15 +1653,12 @@ class WSManager {
           store.finalizeAssistantMessage(sessionId, crypto.randomUUID(), current.contentSoFar);
         }
         store.clearStreaming(sessionId);
-        // If the failure interrupted a compaction, flip the pill to
-        // failed so the user sees what happened rather than a dangling
-        // "Compacting…" spinner. The generic error toast still fires
-        // below for visibility.
+        // If the failure interrupted a compaction, clear the running pill
+        // so there's no dangling "Compacting…" spinner — the shared
+        // <ChatError> the generic handler pushes below is the single
+        // visible error.
         if (current?.compactionPill?.state === "running") {
-          store.failCompactionPill(
-            sessionId,
-            typeof data.error === "string" ? data.error : "Compaction failed",
-          );
+          store.clearCompactionPill(sessionId);
         }
         // "Forbidden or not found" is a transient sync error — the
         // backend's WS subscribe fired for a session that wasn't (yet

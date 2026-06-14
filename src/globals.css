@@ -43,6 +43,12 @@
   --c-brd2:  #c7c7c7;            /* border strong: active, focused */
   --c-srf:   #f2f2f2;            /* surface: hover bg, card bg */
   --c-srf2:  #e8e8e8;            /* surface 2: active/selected bg */
+  /* Error / danger — the single source of truth for in-chat error red.
+     Light uses a deeper red (legible on near-white surfaces); dark lifts to
+     a softer red. Consumed by <ChatError> + the failed-state badges. */
+  --c-err:     #dc2626;
+  --c-err-bg:  rgba(220,38,38,0.05);
+  --c-err-brd: rgba(220,38,38,0.22);
   /* Chat input + branch strip surface — now matched to the sidebar so the
      composer reads as the same elevation/family as the left rail. */
   --chat-input-bg: var(--sidebar);
@@ -78,6 +84,10 @@
      #121212 sidebar and #0c0c0c chat surfaces. */
   --c-srf:   #202020;
   --c-srf2:  #2a2a2a;
+  /* Error / danger — softer red on the dark surfaces (red-400 family). */
+  --c-err:     #f87171;
+  --c-err-bg:  rgba(248,113,113,0.10);
+  --c-err-brd: rgba(248,113,113,0.30);
   /* Onboarding CTA flips to white-on-dark in dark themes (was a muted gray
      that read as a disabled/secondary button against the dark surface). */
   --onb-btn-bg: #ffffff;

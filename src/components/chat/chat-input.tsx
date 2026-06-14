@@ -20,7 +20,7 @@ import { BranchStrip, computeBranchName } from "@/components/git/branch-strip";
 import { useVoiceDictation, isVoiceReady } from "@/hooks/use-voice-dictation";
 import { voice } from "@/lib/voice-api";
 import { useAppStore } from "@/stores/app-store";
-import { useChatStore } from "@/stores/chat-store";
+import { useChatStore, pushChatError } from "@/stores/chat-store";
 import { useMCPStore } from "@/stores/mcp-store";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { RoutingChip } from "@/components/settings/routers/routing-chip";
@@ -1781,14 +1781,11 @@ export function ChatInput({
           content: [{ type: "text", text: t }],
           timestamp: new Date().toISOString(),
         });
-        // Surface as a failed compaction pill so the feedback uses the
-        // same surface a real failure would. Start → fail atomically so
-        // the user never sees a fake "Compacting…" beat.
-        useChatStore.getState().startCompactionPill(sessionId, {
-          provider: tool ?? "claude-code",
-          command: t,
-        });
-        useChatStore.getState().failCompactionPill(sessionId, reason);
+        // Surface the rejection through the shared in-chat error surface —
+        // the same <ChatError> a real backend compaction failure routes to,
+        // so command errors look like every other error (and there's no
+        // transient "Compacting…" pill flash for an instant rejection).
+        pushChatError(sessionId, reason);
         setValue(""); setAttachments([]);
         setPendingRefine(null);
         setEnhanceUndo(null); setEnhanceToast(null);

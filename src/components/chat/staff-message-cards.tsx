@@ -1,5 +1,6 @@
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { CheckCircle2, Loader2, AlertTriangle, FileEdit, Terminal, GitBranch, Lightbulb, Webhook, Command, BarChart3, Plug, FileText } from "lucide-react";
+import { ChatError } from "./chat-error";
 
 /* ── Task Routed Card ── */
 export function TaskRoutedCard({ agentName, task, model, project, onView }: {
@@ -436,7 +437,10 @@ export function InitDoneCard({ path, existed }: { path: string; existed: boolean
 
 /* ── Generic info card (for /effort, /permissions, errors) ── */
 export function InfoCard({ title, message, tone = "info" }: { title: string; message: string; tone?: "info" | "warn" | "error" }) {
-  const color = tone === "error" ? "#ef4444" : tone === "warn" ? "#eab308" : "#3b82f6";
+  // Errors render through the shared in-chat error surface so a failed
+  // slash command looks like every other error (and is theme-aware).
+  if (tone === "error") return <ChatError title={title} message={message} />;
+  const color = tone === "warn" ? "#eab308" : "#3b82f6";
   return (
     <div style={{ borderRadius: 10, border: "1px solid var(--border)", padding: "10px 14px", marginBottom: 12, background: "var(--card)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>

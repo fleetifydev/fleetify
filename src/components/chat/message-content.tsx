@@ -13,6 +13,7 @@ import {
 import { CitationCard } from "./citation-card";
 import { AuthRequiredCard } from "./auth-required-card";
 import { SpawnFormCard } from "./spawn-form-card";
+import { ChatError } from "./chat-error";
 import { LogoMark } from "@/components/brand/logo-mark";
 import { ChevronRight, Copy, Check, ArrowRightLeft, CheckCircle2, AlertCircle, Terminal, FileText, Globe, Search, Cpu, CheckSquare, FolderSearch, Pencil, Wrench, Brain, MoveHorizontal, Trash2, FolderOpen, Download, Code2, BarChart2, BookOpen, Image, CornerDownLeft, Send, Bookmark, BookmarkCheck, RotateCcw, X, Clock, ArrowUp, Database } from "lucide-react";
 import { createSessionMemory } from "@/lib/api";
@@ -3272,42 +3273,33 @@ function MessageContentInner({ message, msgRef }: { message: ChatMessage; msgRef
     // can't be missed mid-conversation — the previous styling was so
     // muted the user mistook failed PR attempts for silent no-ops.
     const text = message.content.find(b => b.type === "text")?.text ?? "";
+    // Errors route through the one shared in-chat error surface, so every
+    // failure (WS / provider, git ops, a rejected slash command) looks the
+    // same and adapts to light/dark via the --c-err* tokens.
+    if (text.startsWith("Task failed:")) {
+      return <ChatError message={text.replace(/^Task failed:\s*/, "")} />;
+    }
+    // Non-error system notices (Task complete / branch ops) keep the muted
+    // neutral card.
     const isResult = text.startsWith("Task complete:");
-    const isError = text.startsWith("Task failed:");
-    const icon = isResult ? <CheckCircle2 size={12} /> : isError ? <AlertCircle size={13} /> : <ArrowRightLeft size={12} />;
-    const color = isError ? "rgb(248,113,113)" : "var(--c-dim)";
-    const bg = isError ? "rgba(248,113,113,0.10)" : "var(--c-srf)";
-    const border = isError ? "rgba(248,113,113,0.40)" : "var(--c-brd)";
-    const body = isError && text.startsWith("Task failed:")
-      ? text.replace(/^Task failed:\s*/, "")
-      : text;
+    const icon = isResult ? <CheckCircle2 size={12} /> : <ArrowRightLeft size={12} />;
     return (
       <div className="fade-in" style={{
-        margin: isError ? "8px 0 16px" : "4px 0 14px",
-        padding: isError ? "10px 13px" : "7px 12px",
-        borderRadius: 8, background: bg, border: `1px solid ${border}`,
+        margin: "4px 0 14px",
+        padding: "7px 12px",
+        borderRadius: 8, background: "var(--c-srf)", border: "1px solid var(--c-brd)",
         display: "flex", alignItems: "flex-start", gap: 9,
         overflow: "hidden",
       }}>
-        <span style={{ color, flexShrink: 0, marginTop: isError ? 2 : 1 }}>{icon}</span>
+        <span style={{ color: "var(--c-dim)", flexShrink: 0, marginTop: 1 }}>{icon}</span>
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
-          {isError && (
-            <span style={{
-              fontSize: 11, fontWeight: 600,
-              color,
-              letterSpacing: "0.04em",
-              textTransform: "uppercase",
-            }}>
-              Error
-            </span>
-          )}
           <span style={{
-            fontSize: isError ? 13 : 12.5,
-            color: isError ? "var(--c-fg)" : color,
+            fontSize: 12.5,
+            color: "var(--c-dim)",
             lineHeight: 1.5,
             wordBreak: "break-word", overflowWrap: "anywhere",
           }}>
-            {body}
+            {text}
           </span>
         </div>
       </div>

@@ -389,8 +389,6 @@ interface ChatState {
       trigger?: string;
     },
   ) => void;
-  /** Mark the pill as failed with a reason. */
-  failCompactionPill: (sessionId: string, error: string) => void;
   /** Wipe the pill — called when the user sends a new message after a
    *  finished compaction, or on session reload. */
   clearCompactionPill: (sessionId: string) => void;
@@ -856,22 +854,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 compactAt: compactAt ?? null,
                 model: model ?? null,
                 trigger,
-                endedAt: Date.now(),
-              },
-            }
-          : {},
-      ),
-    ),
-
-  failCompactionPill: (sessionId, error) =>
-    set((state) =>
-      patch(state, sessionId, (s) =>
-        s.compactionPill
-          ? {
-              compactionPill: {
-                ...s.compactionPill,
-                state: "failed",
-                error,
                 endedAt: Date.now(),
               },
             }
