@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::process::Command;
 use tokio::sync::RwLock;
@@ -418,7 +418,7 @@ fn prettify_model_label(id: &str) -> String {
 // than the per-agent cache: the OpenRouter catalog changes slowly and the
 // payload is large.
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct ProviderModel {
     id: String,
     label: String,
@@ -562,6 +562,61 @@ fn remote_catalog_cache() -> &'static RwLock<HashMap<String, (Instant, ProviderM
     REMOTE_CATALOG_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
+/// On-disk persistence of the last successful remote-catalog fetch, under
+/// FLEETIFY_HOME so it survives restarts and is shared across windows. This is
+/// the offline / cold-start fallback that lets us drop the build-time embedded
+/// model lists (see docs/superpowers/specs/2026-06-15-runtime-model-catalog.md).
+fn disk_cache_path(id: &str) -> PathBuf {
+    fleetify_core::fleetify_home()
+        .join("models-cache")
+        .join(format!("{id}.json"))
+}
+
+/// Last-persisted catalog for `id`, or `None` if absent / empty / corrupt.
+fn read_disk_cache(id: &str) -> Option<ProviderModelList> {
+    let body = std::fs::read_to_string(disk_cache_path(id)).ok()?;
+    let models: ProviderModelList = serde_json::from_str(&body).ok()?;
+    if models.is_empty() {
+        None
+    } else {
+        Some(models)
+    }
+}
+
+/// Persist a non-empty fetched catalog (atomic tmp+rename). Best-effort and
+/// never persists an empty list, so a transient offline fetch can't clobber the
+/// last-good lineup.
+fn write_disk_cache(id: &str, models: &ProviderModelList) {
+    if models.is_empty() {
+        return;
+    }
+    let path = disk_cache_path(id);
+    let Some(dir) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let Ok(json) = serde_json::to_string(models) else {
+        return;
+    };
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, json).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
+/// Persist a fresh non-empty fetch, or restore the last-persisted catalog when
+/// the fetch came back empty (offline / both remote sources unreachable).
+fn persist_or_restore(id: &str, fetched: ProviderModelList) -> ProviderModelList {
+    if !fetched.is_empty() {
+        write_disk_cache(id, &fetched);
+        fetched
+    } else {
+        read_disk_cache(id).unwrap_or(fetched)
+    }
+}
+
 /// Base URL of the Fleetify model-catalog serving API. Overridable so dev/CI
 /// can point at a local mock or staging; defaults to prod.
 fn models_api_base() -> String {
@@ -595,7 +650,9 @@ async fn fetch_remote_catalog(id: &str) -> ProviderModelList {
             return models;
         }
     }
-    let models = fetch_remote_catalog_uncached(id).await;
+    // Fetch fresh; persist a good result to disk, or restore the last-persisted
+    // lineup when the fetch came back empty (offline / both sources unreachable).
+    let models = persist_or_restore(id, fetch_remote_catalog_uncached(id).await);
     // Cache even an empty result (negative cache) to bound the fetch fan-out.
     remote_catalog_cache()
         .write()
@@ -1744,6 +1801,73 @@ mod tests {
         assert_eq!(v["installed"], serde_json::json!(false));
         assert_eq!(v["authenticated"], serde_json::json!(false));
         assert!(v["path"].is_null());
+    }
+
+    // ── Remote-catalog disk cache (offline / cold-start fallback) ──
+    fn home_guard<R>(home: &std::path::Path, f: impl FnOnce() -> R) -> R {
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("FLEETIFY_HOME").ok();
+        std::env::set_var("FLEETIFY_HOME", home);
+        let r = f();
+        match prev {
+            Some(v) => std::env::set_var("FLEETIFY_HOME", v),
+            None => std::env::remove_var("FLEETIFY_HOME"),
+        }
+        r
+    }
+
+    fn sample_models() -> ProviderModelList {
+        vec![ProviderModel {
+            id: "claude-opus-4-8".into(),
+            label: "Opus 4.8".into(),
+            ctx: Some("200k".into()),
+            supports_effort: Some(true),
+            group: None,
+            note: None,
+            endpoint: None,
+            effort: None,
+        }]
+    }
+
+    #[test]
+    fn models_disk_cache_write_then_read_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        home_guard(tmp.path(), || {
+            assert!(read_disk_cache("anthropic").is_none());
+            write_disk_cache("anthropic", &sample_models());
+            let got = read_disk_cache("anthropic").unwrap();
+            assert_eq!(got.len(), 1);
+            assert_eq!(got[0].id, "claude-opus-4-8");
+            assert_eq!(got[0].supports_effort, Some(true));
+        });
+    }
+
+    #[test]
+    fn models_disk_cache_empty_not_persisted_corrupt_reads_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        home_guard(tmp.path(), || {
+            write_disk_cache("empty", &Vec::new());
+            assert!(read_disk_cache("empty").is_none());
+            let p = disk_cache_path("bad");
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "not json").unwrap();
+            assert!(read_disk_cache("bad").is_none());
+        });
+    }
+
+    #[test]
+    fn persist_or_restore_round_trips_and_restores_on_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        home_guard(tmp.path(), || {
+            let kept = persist_or_restore("anthropic", sample_models());
+            assert_eq!(kept.len(), 1);
+            let restored = persist_or_restore("anthropic", Vec::new());
+            assert_eq!(restored.len(), 1);
+            assert_eq!(restored[0].id, "claude-opus-4-8");
+            assert!(persist_or_restore("never", Vec::new()).is_empty());
+        });
     }
 
     #[test]
