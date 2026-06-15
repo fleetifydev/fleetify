@@ -1580,6 +1580,18 @@ export function ChatInput({
       return true;
     }
 
+    /* /context ─ render this session's context-window usage as a card from the
+       token figures chat-view already computes (latest-turn input view vs. the
+       model's cap). Fleetify-side — never forwarded to the CLI. */
+    if (head === "/context") {
+      echoUser();
+      const used = contextUsedTokens ?? 0;
+      const max = contextMaxTokens ?? 0;
+      const pct = max > 0 ? Math.round((used / max) * 100) : Math.round((contextPercent ?? 0) * 100);
+      pushCard("context", { used_tokens: used, max_tokens: max, percent: pct });
+      return true;
+    }
+
     /* /usage ─ combines account overview with this session's bulk row */
     if (head === "/usage") {
       echoUser();
@@ -1723,7 +1735,7 @@ export function ChatInput({
     }
 
     return false;
-  }, [sessionId, tool, effort, setEffortLocal, onEffortChange, providerTiles]);
+  }, [sessionId, tool, effort, setEffortLocal, onEffortChange, contextUsedTokens, contextMaxTokens, contextPercent, providerTiles]);
 
   /** `/prompts` — app-owned. No argument opens the picker; `/prompts <slug>`
    *  resolves and sends the prompt's body, or toasts on an unknown slug. Works

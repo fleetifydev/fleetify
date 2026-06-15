@@ -47,6 +47,11 @@ export interface UnifiedModelPickerProps {
   onClose: () => void;
   /** Determines which edge the popover sits flush against. */
   anchor: "top" | "bottom";
+  /** Horizontal edge the popover pins to within its positioned ancestor.
+   *  "left" (default) → `left: 0`, the composer's far-left open. "right" →
+   *  `right: 0` so the menu hangs under a right-aligned trigger (Settings →
+   *  Providers → Sessions Default). */
+  align?: "left" | "right";
   /** Context-window usage — shown as a bar at the foot of the picker
    *  (moved here from the toolbar). All optional; the bar hides when
    *  there's nothing to show. */
@@ -64,6 +69,7 @@ export function UnifiedModelPicker({
   onPickEffort,
   onClose,
   anchor,
+  align = "left",
   contextPercent = 0,
   contextUsedTokens,
   contextMaxTokens,
@@ -198,7 +204,7 @@ export function UnifiedModelPicker({
         ...(anchor === "bottom"
           ? { bottom: "calc(100% + 6px)" }
           : { top: "calc(100% + 6px)" }),
-        left: 0,
+        ...(align === "right" ? { right: 0 } : { left: 0 }),
         zIndex: 60,
         display: "flex",
         flexDirection: "column",

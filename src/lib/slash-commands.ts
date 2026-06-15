@@ -41,6 +41,7 @@ export type SlashIntent =
   | "fleet.compaction"
   | "fleet.mcp"
   | "fleet.prompts"
+  | "fleet.context"
   | "session.compaction"
   | "session.clear"
   | "session.context"
@@ -95,6 +96,12 @@ export const FLEET_CMDS: SlashCmdDef[] = [
   { intent: "fleet.mcp",        cmd: "/mcp",     desc: "Show MCP server status across the fleet",         scope: "fleet" },
   { intent: "fleet.help",       cmd: "/help",    desc: "Show tips and keyboard shortcuts",                scope: "fleet" },
   { intent: "fleet.prompts",    cmd: "/prompts", desc: "Browse & send a saved prompt",                    scope: "fleet" },
+  // /context — provider-agnostic. A single fleet-domain entry makes it available
+  // everywhere: the fleet command center shows it directly, and (via the
+  // fleet→session merge in commandsForContext) every session chat surfaces it
+  // too. Handled Fleetify-side in chat-input's slash pipeline (renders the
+  // context-window card); never forwarded to the CLI.
+  { intent: "fleet.context",    cmd: "/context", desc: "Show context window usage",                       scope: "fleet" },
 ];
 
 export const SESSION_CMDS_BY_TOOL: Record<SessionTool, SlashCmdDef[]> = {
@@ -102,20 +109,23 @@ export const SESSION_CMDS_BY_TOOL: Record<SessionTool, SlashCmdDef[]> = {
     { intent: "session.compaction", cmd: "/compact", desc: "Summarize conversation to free context", scope: "session" },
     { intent: "session.context",    cmd: "/context", desc: "Show context window usage",              scope: "session" },
     { intent: "session.review",     cmd: "/review",  desc: "Review last changes",                    scope: "session" },
-    { intent: "session.model",      cmd: "/model",   desc: "Switch model",                           scope: "session" },
+    // /model commented out per request — model selection now lives in the model picker.
+    // { intent: "session.model",      cmd: "/model",   desc: "Switch model",                           scope: "session" },
   ],
   "codex-cli": [
     { intent: "session.compaction", cmd: "/compact",   desc: "Summarize visible conversation (auto-confirmed)", scope: "session" },
     { intent: "session.clear",      cmd: "/clear",     desc: "Clear the terminal and start a fresh chat",       scope: "session" },
     { intent: "session.context",    cmd: "/status",    desc: "Show session status",                             scope: "session" },
-    { intent: "session.model",      cmd: "/model",     desc: "Switch model",                                    scope: "session" },
+    // /model commented out per request — model selection now lives in the model picker.
+    // { intent: "session.model",      cmd: "/model",     desc: "Switch model",                                    scope: "session" },
     { intent: "session.review",     cmd: "/review",    desc: "Review last changes",                             scope: "session" },
   ],
   "gemini-cli": [
     { intent: "session.compaction", cmd: "/compress", desc: "Replace chat context with a summary", scope: "session", providerCmd: "/compress" },
     { intent: "session.clear",      cmd: "/clear",    desc: "Clear conversation history",          scope: "session" },
     { intent: "session.context",    cmd: "/stats",    desc: "Show session statistics",             scope: "session" },
-    { intent: "session.model",      cmd: "/model",    desc: "Switch model",                        scope: "session" },
+    // /model commented out per request — model selection now lives in the model picker.
+    // { intent: "session.model",      cmd: "/model",    desc: "Switch model",                        scope: "session" },
   ],
 };
 
@@ -136,18 +146,17 @@ export const SESSION_CMDS_COMMON: SlashCmdDef[] = [
   { intent: "session.usage",       cmd: "/usage",       desc: "Show token usage and cost for this session",                                    scope: "session" },
   { intent: "session.permissions", cmd: "/permissions", desc: "Change the session's permission mode",                                          scope: "session" },
   { intent: "session.mcp",         cmd: "/mcp",         desc: "Show MCP server status for this session",                                       scope: "session" },
-  // /effort is meaningless for Gemini (no reasoning-effort knob — Gemini
-  // controls depth via model SKU only). Hide it there.
-  { intent: "session.effort",      cmd: "/effort",      desc: "Change reasoning effort (low/medium/high/extra_high/max)", scope: "session", supportedTools: ["claude-code", "codex-cli"] },
+  // /effort commented out per request — reasoning effort now lives in the model
+  // picker (Providers | Models | Effort), so the slash command is redundant.
+  // { intent: "session.effort",      cmd: "/effort",      desc: "Change reasoning effort (low/medium/high/extra_high/max)", scope: "session", supportedTools: ["claude-code", "codex-cli"] },
   // /prompts surfaces the user's reusable prompts (Library + plugins) in a
-  // searchable picker; the handler lives in chat-input. Tool-agnostic, and
-  // ordered before the Codex `session.commands` `/prompts` alias so the
-  // cmd-dedup in commandsForContext keeps this entry.
+  // searchable picker; the handler lives in chat-input. Tool-agnostic.
   { intent: "session.prompts",     cmd: "/prompts",     desc: "Browse & send a saved prompt",                             scope: "session" },
-  // /commands lists user-defined slash commands. Codex calls them "prompts"
-  // and namespaces them under /prompts:<name>; surface that naming instead.
-  { intent: "session.commands",    cmd: "/commands",    desc: "Browse custom slash commands",                             scope: "session", supportedTools: ["claude-code", "gemini-cli"] },
-  { intent: "session.commands",    cmd: "/prompts",     desc: "Browse custom prompts",                                    scope: "session", supportedTools: ["codex-cli"] },
+  // /commands (the "session.commands" feature — browse custom slash commands)
+  // commented out per request. The Codex variant aliased the same intent to
+  // /prompts; Codex still gets /prompts from the session.prompts entry above.
+  // { intent: "session.commands",    cmd: "/commands",    desc: "Browse custom slash commands",                             scope: "session", supportedTools: ["claude-code", "gemini-cli"] },
+  // { intent: "session.commands",    cmd: "/prompts",     desc: "Browse custom prompts",                                    scope: "session", supportedTools: ["codex-cli"] },
 ];
 
 /**

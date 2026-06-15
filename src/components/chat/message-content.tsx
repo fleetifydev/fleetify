@@ -8,7 +8,7 @@ import type { Components } from "react-markdown";
 import type { ChatMessage, ContentBlock, ArtifactBlock, ResourceCardBlock } from "@/types/chat";
 import {
   SkillsCard, HooksCard, CommandsCard, UsageCard, MCPStatusCard,
-  InitDoneCard, InfoCard,
+  InitDoneCard, InfoCard, ContextCard,
 } from "./staff-message-cards";
 import { CitationCard } from "./citation-card";
 import { AuthRequiredCard } from "./auth-required-card";
@@ -2887,6 +2887,12 @@ function renderResourceCard(block: ResourceCardBlock): React.ReactNode {
       return <CommandsCard items={(data.items as never) || []} provider={String(data.provider ?? "")} kind="prompts" />;
     case "usage":
       return <UsageCard data={data as never} />;
+    case "context":
+      return <ContextCard
+        usedTokens={Number(data.used_tokens ?? 0)}
+        maxTokens={Number(data.max_tokens ?? 0)}
+        percent={Number(data.percent ?? 0)}
+      />;
     case "mcp":
       return <MCPStatusCard servers={(data.servers as never) || []} />;
     case "init_done":

@@ -117,4 +117,33 @@ describe("openComposer — provider/model default precedence", () => {
     expect(c.tool).toBe("claude-code");
     expect(c.modelName).toBe("claude-sonnet-4-6");
   });
+
+  it("seeds composer.effort from the Sessions Default effort when set", async () => {
+    Object.defineProperty(window, "electronAPI", {
+      configurable: true,
+      value: {
+        getConfig: async () => ({
+          sessionDefaultProvider: "openai",
+          sessionDefaultModel: "gpt-5.5",
+          sessionDefaultEffort: "low",
+        }),
+      },
+    });
+    await useAppStore.getState().openComposer();
+    expect(useAppStore.getState().composer.effort).toBe("low");
+  });
+
+  it("defaults composer.effort to high when no Sessions Default effort is set", async () => {
+    Object.defineProperty(window, "electronAPI", {
+      configurable: true,
+      value: {
+        getConfig: async () => ({
+          sessionDefaultProvider: "openai",
+          sessionDefaultModel: "gpt-5.5",
+        }),
+      },
+    });
+    await useAppStore.getState().openComposer();
+    expect(useAppStore.getState().composer.effort).toBe("high");
+  });
 });

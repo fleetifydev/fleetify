@@ -836,6 +836,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Claude Code default they never chose. A real cfg default (below) wins.
     let defaultModel = "auto";
     let defaultProvider: Session["tool"] = "auto";
+    // Default reasoning effort for the new session. The "Sessions Default"
+    // picker (Settings → Providers) can pin one alongside provider+model; else
+    // the composer's long-standing "high" baseline.
+    let defaultEffort: Session["effort"] = "high";
     // Pre-select the user's default workspace folder (Settings → General)
     // so a new chat starts in it instead of showing the empty "Pick
     // folder" state. Empty string keeps the picker prompt when unset.
@@ -850,6 +854,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (cfg?.sessionDefaultProvider) {
         defaultProvider = cfg.sessionDefaultProvider as Session["tool"];
         if (cfg.sessionDefaultModel) defaultModel = cfg.sessionDefaultModel;
+        if (cfg.sessionDefaultEffort) defaultEffort = cfg.sessionDefaultEffort as Session["effort"];
       } else if (cfg?.defaultProvider) {
         defaultProvider = cfg.defaultProvider as Session["tool"];
         if (cfg.defaultModel) defaultModel = cfg.defaultModel;
@@ -891,7 +896,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         modelName: defaultModel,
         permissionMode: "default",
         sandbox: null,
-        effort: "high",
+        effort: defaultEffort,
         toolOverrides: null,
         useWorktree: true,
         title: "New chat",

@@ -148,7 +148,7 @@ export interface ResourceCardBlock {
   type: "resource_card";
   card_kind:
     | "skills" | "hooks" | "commands" | "prompts"
-    | "usage" | "mcp"
+    | "usage" | "mcp" | "context"
     | "init_pending" | "init_done" | "info";
   data: unknown;
 }

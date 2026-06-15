@@ -1,5 +1,5 @@
 import { ProviderLogo } from "@/components/ui/provider-logo";
-import { CheckCircle2, Loader2, AlertTriangle, FileEdit, Terminal, GitBranch, Lightbulb, Webhook, Command, BarChart3, Plug, FileText } from "lucide-react";
+import { CheckCircle2, Loader2, AlertTriangle, FileEdit, Terminal, GitBranch, Lightbulb, Webhook, Command, BarChart3, Plug, FileText, Gauge } from "lucide-react";
 import { ChatError } from "./chat-error";
 
 /* ── Task Routed Card ── */
@@ -333,6 +333,36 @@ export function UsageCard({ data }: { data: UsageData }) {
       icon={<BarChart3 size={14} style={{ color: "#06b6d4" }} />}
       sections={sections}
     />
+  );
+}
+
+/* ── Context window card ──
+   Rendered by the `/context` slash command. Shows the latest turn's context
+   fill (used vs. the model's cap) as a thin bar — mirrors the model picker's
+   context-window footer so the two surfaces read the same. */
+export function ContextCard({ usedTokens, maxTokens, percent }: { usedTokens: number; maxTokens: number; percent: number }) {
+  const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n));
+  const pct = Math.max(0, Math.min(100, Math.round(percent)));
+  const barColor = pct > 90 ? "#ef4444" : pct > 70 ? "#eab308" : "#22c55e";
+  return (
+    <div style={{ borderRadius: 10, border: "1px solid var(--border)", padding: "12px 14px", marginBottom: 12, background: "var(--card)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 9 }}>
+        <Gauge size={14} style={{ color: "#06b6d4" }} />
+        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--foreground)" }}>Context window</span>
+        <span style={{ marginLeft: "auto", fontSize: 12, color: "var(--muted-foreground)", fontFamily: "var(--font-mono)" }}>
+          {maxTokens > 0 ? `${fmt(usedTokens)} / ${fmt(maxTokens)}` : fmt(usedTokens)}
+          <span style={{ marginLeft: 6 }}>{pct}%</span>
+        </span>
+      </div>
+      <div style={{ height: 5, borderRadius: 3, background: "var(--accent)", overflow: "hidden" }}>
+        <div style={{ width: `${pct}%`, height: "100%", background: barColor, borderRadius: 3, transition: "width 0.3s" }} />
+      </div>
+      {maxTokens > 0 && (
+        <div style={{ marginTop: 8, fontSize: 11, color: "var(--muted-foreground)" }}>
+          {fmt(Math.max(0, maxTokens - usedTokens))} tokens free for the next turn.
+        </div>
+      )}
+    </div>
   );
 }
 

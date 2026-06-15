@@ -19,9 +19,25 @@ describe("/prompts in commandsForContext", () => {
     expect(hits).toHaveLength(1);
     expect(hits[0].intent).toBe("fleet.prompts");
   });
-  it("leaves /commands for claude untouched", () => {
+  it("removes /commands from claude (commented out)", () => {
     const all = commandsForContext("session-chat", "claude-code").map((c) => c.cmd);
-    expect(all).toContain("/commands");
+    expect(all).not.toContain("/commands");
+  });
+  it("removes /model and /effort (commented out)", () => {
+    const all = commandsForContext("session-chat", "claude-code").map((c) => c.cmd);
+    expect(all).not.toContain("/model");
+    expect(all).not.toContain("/effort");
+  });
+});
+
+describe("/context in commandsForContext", () => {
+  it("is present in session-chat for every provider", () => {
+    for (const tool of ["claude-code", "codex-cli", "gemini-cli"]) {
+      expect(commandsForContext("session-chat", tool).map((c) => c.cmd)).toContain("/context");
+    }
+  });
+  it("is present in the fleet command center", () => {
+    expect(commandsForContext("fleet", null).map((c) => c.cmd)).toContain("/context");
   });
 });
 

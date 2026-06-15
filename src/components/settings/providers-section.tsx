@@ -4,7 +4,7 @@
  *
  * Layout — one quiet "Sessions Default" card above the tabs:
  *   ┌───────────────────────────────────────────────────────────┐
- *   │ ◍  Sessions Default              [Provider ▾] [Model ▾]    │
+ *   │ ◍  Sessions Default        [◍ Opus 4.8 · High ▾]  [✕]      │
  *   │    Pre-selected when you start a new session.              │
  *   ├──────────────────────────────────────────────────────────┤
  *   │ [Agents]  [Models]                                        │
@@ -12,24 +12,36 @@
  *   │ <tab content — existing AgentsSection / ModelsSection>    │
  *   └───────────────────────────────────────────────────────────┘
  *
- * The card is a `DefaultPairRow` (small provider logo + label/caption, then a
- * provider dropdown + a model dropdown). The provider dropdown lists every
- * enabled tile (`tile.connected === true`) — matching the chat composer's
- * picker filter so a default can always dispatch — and the model dropdown
- * lists that provider's models (the same list the chat picker builds, with
- * CLI fallbacks).
+ * The card is a `DefaultSessionPicker`: a small provider logo + label/caption
+ * on the left, then ONE dropdown-style trigger that opens the very same
+ * three-column `UnifiedModelPicker` the chat composer / session toolbar use
+ * (Providers | Models | Effort). Picking there sets the default provider,
+ * model AND effort in one place — no more two separate native selects. A
+ * reset (✕) button sits beside the trigger and clears the saved default once
+ * one exists.
  *
- * It writes `sessionDefaultProvider` / `sessionDefaultModel`. `openComposer`
- * prefers that pair (then the Fleet `defaultProvider`/`defaultModel` set via
- * the per-tile "Set as default" buttons, then a hardcoded baseline), so new
- * sessions open with a coherent (provider, model) pair. The per-tile default
- * still lives on the Agents/Models cards below; this card is the explicit
- * new-session override.
+ * It writes `sessionDefaultProvider` / `sessionDefaultModel` /
+ * `sessionDefaultEffort`. `openComposer` prefers that triple (then the Fleet
+ * `defaultProvider`/`defaultModel` set via the per-tile "Set as default"
+ * buttons, then a hardcoded baseline), so new sessions open with a coherent
+ * (provider, model, effort) selection. The per-tile default still lives on the
+ * Agents/Models cards below; this card is the explicit new-session override.
  */
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { ChevronDown, X } from "lucide-react";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { ProviderLogo } from "@/components/ui/provider-logo";
-import { buildPickerGroups, type PickerModel } from "@/lib/picker-groups";
+import {
+  buildPickerGroups,
+  resolveModelChip,
+  resolveDispatchTool,
+  type PickerGroup,
+} from "@/lib/picker-groups";
+import { effortLabel, type Effort } from "@/lib/effort";
+import { UnifiedModelPicker } from "@/components/chat/unified-model-picker";
+import { useDiscoveredModelsStore } from "@/stores/discovered-models-store";
+import { useAppStore } from "@/stores/app-store";
+import type { ProviderTile } from "@/lib/providers-api";
 import { AgentsSection } from "./agents-section";
 import { ModelsSection } from "./models-section";
 import { StudioProvidersSection } from "./studio/studio-providers-section";
@@ -41,6 +53,7 @@ import { STUDIO_ENABLED } from "@/lib/feature-flags";
 type DefaultsCfg = {
   sessionDefaultProvider?: string;
   sessionDefaultModel?: string;
+  sessionDefaultEffort?: string;
 };
 function cfgApi() {
   return (
@@ -95,26 +108,41 @@ export function ProvidersSection({ initialSubTab }: { initialSubTab?: ProvidersT
   };
   const { tiles } = useProvidersConfig();
 
+  // The composer's active project path drives the project-scoped live model
+  // probes (opencode/cursor/hermes); reuse it so Settings discovers the same
+  // models the composer would. Empty string when no project is selected.
+  const composerProjectPath = useAppStore((s) => s.composer.projectPath);
+
   // Provider dropdown options: every enabled tile, regardless of kind
-  // (CLI agents, API providers, and Ollama are all eligible).
+  // (CLI agents, API providers, and Ollama are all eligible). Gates the
+  // empty-state hint when nothing is connected yet.
   const eligible = tiles.filter((t) => t.connected);
 
-  // Per-provider model list (with the CLI fallbacks the chat picker uses) so
-  // the model dropdowns offer exactly what a session could dispatch.
-  const groups = useMemo(
-    () =>
-      buildPickerGroups(
-        tiles,
-        tiles.filter((t) => t.spec.kind === "cli" && t.connected).map((t) => t.spec.id),
-      ),
-    [tiles],
-  );
-  const modelsForProvider = useCallback(
-    (id: string): PickerModel[] => groups.find((g) => g.id === id)?.models ?? [],
-    [groups],
-  );
+  // Live, DISCOVERED model catalogs — the SAME source the chat composer's
+  // picker uses, so Settings shows the current lineup (claude/codex/gemini/kimi
+  // via `/agents/{id}/models`, OpenRouter via `/models`, opencode/cursor/hermes
+  // via a live ACP probe) instead of the static CLI_MODELS / catalog fallback.
+  // `hydrate` is single-flight per app run (no-op if the composer already ran
+  // it); `discoverLive` (fired from the picker's onOpen below) adds the
+  // live-probe agents. An absent key just falls back to the curated list.
+  const discoveredModels = useDiscoveredModelsStore((s) => s.models);
+  useEffect(() => {
+    void useDiscoveredModelsStore.getState().hydrate(tiles);
+  }, [tiles]);
 
-  // The Sessions Default pair, read once and written through
+  // The same picker groups the chat composer builds (Auto + CLI agents + the
+  // discovered catalogs + connected HTTP providers), so the default picker
+  // offers exactly what a session could dispatch — with the same up-to-date
+  // model lists.
+  const groups = useMemo(() => {
+    const enabledAgentIds = tiles
+      .filter((t) => t.spec.kind === "cli" && t.connected)
+      .map((t) => t.spec.id);
+    const dyn = Object.keys(discoveredModels).length > 0 ? discoveredModels : undefined;
+    return buildPickerGroups(tiles, enabledAgentIds, dyn);
+  }, [tiles, discoveredModels]);
+
+  // The Sessions Default triple, read once and written through
   // getConfig→merge→setConfig so every other config key is preserved.
   const [cfg, setCfg] = useState<DefaultsCfg>({});
   useEffect(() => {
@@ -126,6 +154,7 @@ export function ProvidersSection({ initialSubTab }: { initialSubTab?: ProvidersT
         setCfg({
           sessionDefaultProvider: c.sessionDefaultProvider,
           sessionDefaultModel: c.sessionDefaultModel,
+          sessionDefaultEffort: c.sessionDefaultEffort,
         });
       })
       .catch(() => {});
@@ -137,6 +166,9 @@ export function ProvidersSection({ initialSubTab }: { initialSubTab?: ProvidersT
     setCfg((prev) => ({ ...prev, ...patch })); // optimistic
     try {
       const cur = (await cfgApi()?.getConfig?.()) ?? {};
+      // `setConfig` fully replaces the on-disk JSON (write-tmp + rename), so an
+      // `undefined` key in the merged object is dropped by JSON serialization —
+      // that's exactly how the reset button clears a default.
       await cfgApi()?.setConfig?.({ ...cur, ...patch });
     } catch {
       /* best effort — the optimistic update keeps the UI responsive */
@@ -145,6 +177,7 @@ export function ProvidersSection({ initialSubTab }: { initialSubTab?: ProvidersT
 
   const sessProvider = cfg.sessionDefaultProvider ?? "";
   const sessModel = cfg.sessionDefaultModel ?? "";
+  const sessEffort = (cfg.sessionDefaultEffort as Effort) ?? "high";
 
   return (
     <>
@@ -158,27 +191,39 @@ export function ProvidersSection({ initialSubTab }: { initialSubTab?: ProvidersT
             borderRadius: 10,
             border: "1px solid var(--c-brd)",
             background: "var(--card)",
-            overflow: "hidden",
+            // visible (not hidden) so the UnifiedModelPicker popover can spill
+            // below the card instead of being clipped by the rounded corners.
+            overflow: "visible",
             marginBottom: 18,
           }}
         >
-          <DefaultPairRow
+          <DefaultSessionPicker
             label="Sessions Default"
             caption="Pre-selected when you start a new session."
             providerId={sessProvider}
             modelId={sessModel}
-            eligible={eligible}
-            modelsForProvider={modelsForProvider}
-            onPickProvider={(id) => {
-              void writeCfg({ sessionDefaultProvider: id, sessionDefaultModel: modelsForProvider(id)[0]?.id });
+            effort={sessEffort}
+            groups={groups}
+            hasEligible={eligible.length > 0}
+            emptyHint="Enable a tile below to pick a session default."
+            tiles={tiles}
+            projectPath={composerProjectPath}
+            onPick={(provider, model) => {
+              void writeCfg({ sessionDefaultProvider: provider, sessionDefaultModel: model });
               void import("@/lib/posthog").then(({ capture }) => {
-                capture("session_default_set", { provider_id: id });
+                capture("session_default_set", { provider_id: provider });
               });
             }}
-            onPickModel={(mid) => {
-              void writeCfg({ sessionDefaultModel: mid });
+            onPickEffort={(e) => {
+              void writeCfg({ sessionDefaultEffort: e });
             }}
-            emptyHint="Enable a tile below to pick a session default."
+            onReset={() => {
+              void writeCfg({
+                sessionDefaultProvider: undefined,
+                sessionDefaultModel: undefined,
+                sessionDefaultEffort: undefined,
+              });
+            }}
           />
         </div>
       )}
@@ -194,198 +239,227 @@ export function ProvidersSection({ initialSubTab }: { initialSubTab?: ProvidersT
   );
 }
 
-// ── Default pair row — provider + model dropdowns for one named default ──
-// Rendered twice (Sessions Default over Fleet Default) inside a single card.
-// A small provider logo + the label/caption on the left, the two dropdowns on
-// the right — kept deliberately plain so the two rows read as one tidy block.
+// ── Default session picker — one dropdown trigger + reset ────────────
+// A small provider logo + label/caption on the left, then a single
+// dropdown-style trigger on the right that opens the shared three-column
+// UnifiedModelPicker (Providers | Models | Effort). The trigger face mirrors
+// the chat composer's model chip (provider logo + model label + effort), and
+// a reset (✕) button beside it clears the saved default once one exists.
 
-function DefaultPairRow({
+function DefaultSessionPicker({
   label,
   caption,
   providerId,
   modelId,
-  eligible,
-  modelsForProvider,
-  onPickProvider,
-  onPickModel,
+  effort,
+  groups,
+  tiles,
+  projectPath,
+  hasEligible,
   emptyHint,
+  onPick,
+  onPickEffort,
+  onReset,
 }: {
   label: string;
   caption: string;
   providerId: string;
   modelId: string;
-  eligible: ReturnType<typeof useProvidersConfig>["tiles"];
-  modelsForProvider: (id: string) => PickerModel[];
-  onPickProvider: (id: string) => void;
-  onPickModel: (id: string) => void;
+  effort: Effort;
+  groups: PickerGroup[];
+  tiles: ProviderTile[];
+  projectPath: string;
+  hasEligible: boolean;
   emptyHint: string;
+  /** (provider, model) — provider is the dispatch tool id; "auto"/"auto" for Auto. */
+  onPick: (provider: string, model: string) => void;
+  onPickEffort: (effort: Effort) => void;
+  onReset: () => void;
 }) {
-  const models = providerId ? modelsForProvider(providerId) : [];
+  const [open, setOpen] = useState(false);
+
+  // Mirror the composer (chat-input.tsx): re-run the project-scoped live model
+  // probes whenever the picker is open and the tiles / project path change, so
+  // the live-probe agents (opencode/cursor/hermes) resolve the same up-to-date
+  // models — instead of a one-shot probe on click that can miss late-loading
+  // tiles or run with no project context.
+  useEffect(() => {
+    if (open) void useDiscoveredModelsStore.getState().discoverLive(tiles, projectPath);
+  }, [open, tiles, projectPath]);
+  const hasSelection = providerId !== "";
+
+  // Chip face — resolved the SAME way as the composer/toolbar chip so the
+  // logo + label always agree with what the picker shows.
+  const chip = resolveModelChip(groups, providerId || "claude-code", modelId || null);
+
+  // Show the effort suffix only when the selected model actually exposes an
+  // effort lever (the picker's Effort column is disabled otherwise) — saves
+  // showing a meaningless "· High" on CLI models that ignore effort.
+  const activeModel = useMemo(
+    () => groups.flatMap((g) => g.models).find((m) => m.id === modelId),
+    [groups, modelId],
+  );
+  const showEffort = hasSelection && providerId !== "auto" && !!activeModel?.supports_effort;
+
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "13px 16px" }}>
-      <ProviderLogo tool={providerId || "claude-code"} size={20} />
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "13px 16px",
+        // Anchor for the absolutely-positioned UnifiedModelPicker popover
+        // (it pins itself to `left: 0` of the nearest positioned ancestor).
+        position: "relative",
+      }}
+    >
+      <ProviderLogo tool={hasSelection ? chip.dispatchTool : "claude-code"} size={20} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 13, fontWeight: 600, color: "var(--c-high)" }}>{label}</div>
         <div style={{ fontSize: 11.5, color: "var(--c-dim)", marginTop: 1 }}>{caption}</div>
       </div>
-      {eligible.length > 0 ? (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-          <DefaultSelect
-            value={providerId}
-            options={eligible.map((t) => ({
-              value: t.spec.id,
-              label: t.spec.display_name,
-              kind: t.spec.kind,
-            }))}
-            onChange={onPickProvider}
-          />
-          <ModelSelect value={modelId} options={models} onChange={onPickModel} />
+
+      {hasEligible ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+          <button
+            // Marks this as the picker's trigger so its outside-click handler
+            // ignores clicks here (otherwise click-to-close races click-to-open).
+            data-model-trigger="1"
+            aria-haspopup="menu"
+            aria-expanded={open}
+            onClick={() => setOpen((v) => !v)}
+            onMouseDown={(e) => e.preventDefault()}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 8,
+              minWidth: 210,
+              maxWidth: 340,
+              boxSizing: "border-box",
+              background: "var(--c-srf)",
+              border: `1px solid ${open ? "var(--c-brd2)" : "var(--c-brd)"}`,
+              borderRadius: 7,
+              padding: "7px 10px",
+              fontSize: 12.5,
+              color: "var(--c-high)",
+              fontFamily: "inherit",
+              cursor: "pointer",
+              outline: "none",
+              transition: "border-color 0.12s",
+            }}
+            onMouseEnter={(e) => {
+              if (!open) e.currentTarget.style.borderColor = "var(--c-brd2)";
+            }}
+            onMouseLeave={(e) => {
+              if (!open) e.currentTarget.style.borderColor = "var(--c-brd)";
+            }}
+          >
+            <span style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+              {hasSelection ? (
+                <>
+                  <ProviderLogo tool={chip.dispatchTool} size={14} />
+                  <span
+                    style={{
+                      color: "var(--c-high)",
+                      fontWeight: 500,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {chip.label}
+                  </span>
+                  {showEffort && (
+                    <>
+                      <span style={{ color: "var(--c-dim)", fontSize: 10, flexShrink: 0 }}>·</span>
+                      <span style={{ color: "var(--c-low)", fontSize: 11, flexShrink: 0 }}>
+                        {effortLabel(effort)}
+                      </span>
+                    </>
+                  )}
+                </>
+              ) : (
+                <span style={{ color: "var(--c-low)" }}>Pick a default…</span>
+              )}
+            </span>
+            <ChevronDown
+              size={13}
+              strokeWidth={2}
+              style={{
+                flexShrink: 0,
+                color: "var(--c-low)",
+                transform: open ? "rotate(180deg)" : "none",
+                transition: "transform 0.15s",
+              }}
+            />
+          </button>
+
+          {/* Reset — only once a default exists. Clears all three keys. */}
+          {hasSelection && (
+            <button
+              title="Clear session default"
+              aria-label="Clear session default"
+              onClick={() => {
+                onReset();
+                setOpen(false);
+              }}
+              onMouseDown={(e) => e.preventDefault()}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 30,
+                height: 30,
+                boxSizing: "border-box",
+                background: "var(--c-srf)",
+                border: "1px solid var(--c-brd)",
+                borderRadius: 7,
+                color: "var(--c-low)",
+                cursor: "pointer",
+                outline: "none",
+                transition: "color 0.12s, border-color 0.12s",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.color = "var(--c-high)";
+                e.currentTarget.style.borderColor = "var(--c-brd2)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.color = "var(--c-low)";
+                e.currentTarget.style.borderColor = "var(--c-brd)";
+              }}
+            >
+              <X size={14} strokeWidth={2} />
+            </button>
+          )}
         </div>
       ) : (
         <span style={{ fontSize: 12, color: "var(--c-low)" }}>{emptyHint}</span>
       )}
-    </div>
-  );
-}
 
-// ── Picker dropdown — native select styled to match settings inputs ──
-
-function DefaultSelect({
-  value,
-  options,
-  onChange,
-}: {
-  value: string;
-  options: { value: string; label: string; kind: "api" | "cli" | "local_http" }[];
-  onChange: (id: string) => void;
-}) {
-  // Group by kind so the dropdown reads like the tab layout below.
-  // optgroup labels mirror the tab names so a user scanning the
-  // dropdown sees the same vocabulary on both surfaces.
-  const cliOptions = options.filter((o) => o.kind === "cli");
-  const apiOptions = options.filter((o) => o.kind === "api");
-  const localOptions = options.filter((o) => o.kind === "local_http");
-  return (
-    <div style={{ position: "relative", minWidth: 200 }}>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        style={{
-          width: "100%",
-          boxSizing: "border-box",
-          appearance: "none",
-          background: "var(--c-srf)",
-          border: "1px solid var(--c-brd)",
-          borderRadius: 7,
-          padding: "7px 28px 7px 12px",
-          fontSize: 12.5,
-          color: "var(--c-high)",
-          fontFamily: "inherit",
-          outline: "none",
-          cursor: "pointer",
-          transition: "border-color 0.12s",
-        }}
-        onFocus={(e) => (e.currentTarget.style.borderColor = "var(--c-brd2)")}
-        onBlur={(e) => (e.currentTarget.style.borderColor = "var(--c-brd)")}
-      >
-        {value === "" && <option value="">Pick a default…</option>}
-        {cliOptions.length > 0 && (
-          <optgroup label="Agents">
-            {cliOptions.map((o) => (
-              <option key={o.value} value={o.value}>{o.label}</option>
-            ))}
-          </optgroup>
-        )}
-        {apiOptions.length > 0 && (
-          <optgroup label="Models">
-            {apiOptions.map((o) => (
-              <option key={o.value} value={o.value}>{o.label}</option>
-            ))}
-          </optgroup>
-        )}
-        {localOptions.length > 0 && (
-          <optgroup label="Local">
-            {localOptions.map((o) => (
-              <option key={o.value} value={o.value}>{o.label}</option>
-            ))}
-          </optgroup>
-        )}
-      </select>
-      <span
-        style={{
-          position: "absolute",
-          right: 10,
-          top: "50%",
-          transform: "translateY(-65%) rotate(45deg)",
-          width: 6,
-          height: 6,
-          borderRight: "1.5px solid var(--c-low)",
-          borderBottom: "1.5px solid var(--c-low)",
-          pointerEvents: "none",
-        }}
-      />
-    </div>
-  );
-}
-
-// ── Model dropdown — the selected provider's models as a flat list ──
-
-function ModelSelect({
-  value,
-  options,
-  onChange,
-}: {
-  value: string;
-  options: PickerModel[];
-  onChange: (id: string) => void;
-}) {
-  const disabled = options.length === 0;
-  return (
-    <div style={{ position: "relative", minWidth: 170 }}>
-      <select
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.value)}
-        style={{
-          width: "100%",
-          boxSizing: "border-box",
-          appearance: "none",
-          background: "var(--c-srf)",
-          border: "1px solid var(--c-brd)",
-          borderRadius: 7,
-          padding: "7px 28px 7px 12px",
-          fontSize: 12.5,
-          color: "var(--c-high)",
-          fontFamily: "inherit",
-          outline: "none",
-          cursor: disabled ? "default" : "pointer",
-          opacity: disabled ? 0.5 : 1,
-          transition: "border-color 0.12s",
-        }}
-        onFocus={(e) => (e.currentTarget.style.borderColor = "var(--c-brd2)")}
-        onBlur={(e) => (e.currentTarget.style.borderColor = "var(--c-brd)")}
-      >
-        {disabled && <option value="">No models</option>}
-        {!disabled && value === "" && <option value="">Pick a model…</option>}
-        {options.map((m) => (
-          <option key={m.id} value={m.id}>
-            {m.label}
-          </option>
-        ))}
-      </select>
-      <span
-        style={{
-          position: "absolute",
-          right: 10,
-          top: "50%",
-          transform: "translateY(-65%) rotate(45deg)",
-          width: 6,
-          height: 6,
-          borderRight: "1.5px solid var(--c-low)",
-          borderBottom: "1.5px solid var(--c-low)",
-          pointerEvents: "none",
-        }}
-      />
+      {/* Popover — the shared three-column picker. Anchored to this row
+          (position: relative above), opens DOWNWARD and right-aligned so it
+          hangs under the right-side trigger instead of the card's far left.
+          Selections don't close it; the trigger / outside-click / Escape do. */}
+      {open && hasEligible && (
+        <UnifiedModelPicker
+          tool={providerId || "claude-code"}
+          model={modelId || null}
+          effort={effort}
+          groups={groups}
+          onPickModel={(groupId, mId) => {
+            if (groupId === "auto") {
+              onPick("auto", "auto");
+              return;
+            }
+            onPick(resolveDispatchTool(groupId), mId);
+          }}
+          onPickEffort={onPickEffort}
+          onClose={() => setOpen(false)}
+          anchor="top"
+          align="right"
+        />
+      )}
     </div>
   );
 }
