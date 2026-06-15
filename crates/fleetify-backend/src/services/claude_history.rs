@@ -20,6 +20,9 @@ const SKIP_PREFIXES: &[&str] = &[
     // them in the resumed chat shows the raw `<local-command-stdout>…` markers.
     "<local-command-stdout>",
     "<local-command-stderr>",
+    // Placeholder assistant turn Claude emits for a slash command that doesn't
+    // request a model response (e.g. `/bg`). Plain text, no marker tags.
+    "No response requested.",
 ];
 
 /// Fleet chat-format message — matches the JSON shape the renderer
@@ -685,10 +688,15 @@ fn assistant_blocks(content_raw: &Value) -> Vec<Value> {
         let btype = obj.get("type").and_then(|x| x.as_str()).unwrap_or("");
         match btype {
             "text" => {
+                // Trim + drop CLI-plumbing placeholders (e.g. the slash-command
+                // "No response requested." turn) so they don't render as empty
+                // assistant bubbles. An assistant message left with no blocks is
+                // skipped entirely by the caller.
                 if let Some(t) = obj
                     .get("text")
                     .and_then(|x| x.as_str())
-                    .filter(|s| !s.is_empty())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty() && !looks_like_skip_prefix(s))
                 {
                     blocks.push(json!({"type": "text", "text": t}));
                 }
