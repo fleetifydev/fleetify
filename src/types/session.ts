@@ -51,6 +51,11 @@ export interface Session {
   model_name: string | null;
   /** Which provider/agent account drives this session (null ⇒ System). */
   account_id?: string | null;
+  /** Provenance. null/undefined ⇒ a normal Fleetify-created session.
+   *  'claude-bg' ⇒ auto-surfaced from a backgrounded Claude Code CLI
+   *  session (`/background`) by the backend poller. The Fleet panel
+   *  badges these so the user knows the row mirrors an external CLI run. */
+  origin?: string | null;
   permission_mode: string;
   session_mode: string;
   order_idx: number;

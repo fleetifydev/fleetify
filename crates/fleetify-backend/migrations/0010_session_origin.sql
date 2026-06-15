@@ -1,0 +1,11 @@
+-- Provenance marker for auto-surfaced sessions.
+--
+-- NULL          ⇒ a normal Fleetify-created session (the default for every
+--                 existing row and every row created through the UI).
+-- 'claude-bg'   ⇒ this row was auto-created by the background-agent poller
+--                 (services::claude_agents) to mirror a Claude Code CLI
+--                 session that the user sent to the background with `/bg`.
+--                 The poller reconciles on (origin='claude-bg', claude_session_id)
+--                 so re-polling never duplicates a row, and adopting/resuming
+--                 one reuses the existing `--resume <claude_session_id>` wiring.
+ALTER TABLE sessions ADD COLUMN origin TEXT;

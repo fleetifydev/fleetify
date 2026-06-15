@@ -541,6 +541,7 @@ pub async fn create(
         use_worktree: spec.use_worktree.unwrap_or(false),
         agent_template: spec.agent_template.clone(),
         account_id: None,
+        origin: None,
     };
 
     let session = st

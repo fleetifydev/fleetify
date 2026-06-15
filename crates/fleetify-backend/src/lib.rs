@@ -375,6 +375,11 @@ pub async fn serve_with_routing_setup(
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
     let agent_scan_cache = state.agent_scan_cache.clone();
+    // Captured before `state` is moved into `app(..)` so the background-agent
+    // poller (spawned below) can reconcile sessions off the same pool / manager.
+    let bg_pool = state.auth.pool.clone();
+    let bg_sm = state.sm;
+    let bg_cfg = state.app_cfg.clone();
     let router = app(state, static_dir);
     tokio::spawn(async move {
         let server = axum::serve(listener, router).with_graceful_shutdown(async {
@@ -397,6 +402,39 @@ pub async fn serve_with_routing_setup(
         // static "Hermes (configured model)" placeholder while discovery runs.
         routers::providers::prewarm_hermes_models().await;
     });
+
+    // Auto-surface backgrounded Claude Code CLI sessions as Fleetify rows.
+    // When a user runs `/background` (`/bg`) in the Claude CLI, the session
+    // detaches under Claude's supervisor; `claude agents --json` lists the live
+    // roster. This poller reconciles `kind=="background"` entries into the
+    // sessions table (origin='claude-bg'), and the renderer's existing ~5 s
+    // session poll surfaces them in the Fleet panel — no broadcast needed.
+    // Opt out with FLEETIFY_CLAUDE_BG_AUTODETECT=0; tune cadence with
+    // FLEETIFY_CLAUDE_BG_POLL_MS (default 5000, floored at 2000).
+    if std::env::var("FLEETIFY_CLAUDE_BG_AUTODETECT").as_deref() != Ok("0") {
+        tokio::spawn(async move {
+            let ms: u64 = std::env::var("FLEETIFY_CLAUDE_BG_POLL_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5000)
+                .max(2000);
+            let mut tick = tokio::time::interval(std::time::Duration::from_millis(ms));
+            loop {
+                tick.tick().await;
+                match crate::services::claude_agents::reconcile_once(
+                    &bg_pool,
+                    bg_sm,
+                    bg_cfg.as_ref(),
+                )
+                .await
+                {
+                    Ok(n) if n > 0 => tracing::debug!("claude bg poller: surfaced {n} session(s)"),
+                    Ok(_) => {}
+                    Err(e) => tracing::debug!("claude bg poller: reconcile error: {e}"),
+                }
+            }
+        });
+    }
 
     // Warm the remote model catalog (fleetify.dev/api → jsDelivr) at boot so the
     // composer's model picker shows the live, up-to-date lineup on first open

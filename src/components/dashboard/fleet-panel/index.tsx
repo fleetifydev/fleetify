@@ -39,7 +39,7 @@ import {
   X, ArrowRight, FileText, Check, ChevronRight, ChevronLeft, GitBranch, HelpCircle,
   ChevronDown, ChevronUp, Loader2,
   Brain, Send, AlertCircle, Sparkles, Archive,
-  StopCircle, Eye, Pencil, Terminal, Globe,
+  StopCircle, Eye, Pencil, Terminal, Globe, Moon,
 } from "lucide-react";
 import { memo, useMemo, useState, useCallback } from "react";
 import { useAppStore } from "@/stores/app-store";
@@ -408,6 +408,11 @@ const SessionRow = memo(function SessionRow({ session, detail, onOpen }: {
         {session.tool && <ProviderLogo tool={session.tool} size={11} />}
         <span style={{ minWidth: 0, maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 13.5, fontWeight: 600, color: "var(--c-high)" }}>{session.title || "Untitled"}</span>
         {isStaff && <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.06em", padding: "2px 6px", borderRadius: 4, background: "rgba(var(--fg-rgb),0.07)", border: "1px solid var(--c-brd)", color: "var(--c-med)", flexShrink: 0 }}>FLEET</span>}
+        {session.origin === "claude-bg" && (
+          <span title="Backgrounded Claude Code CLI session — auto-surfaced from `/background`" style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 9, fontWeight: 700, letterSpacing: "0.06em", padding: "2px 6px", borderRadius: 4, background: "rgba(var(--fg-rgb),0.07)", border: "1px solid var(--c-brd)", color: "var(--c-med)", flexShrink: 0 }}>
+            <Moon size={9} strokeWidth={2.5} />BG
+          </span>
+        )}
         <span style={{ flex: 1 }} />
         <div style={{ textAlign: "right", flexShrink: 0 }}>
           <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", color: statusColor }}>{statusLabel}</div>

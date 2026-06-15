@@ -43,6 +43,10 @@ pub struct Session {
     /// Free-text session rules, materialized as a marked block into the
     /// session's working-directory rule file for its provider. NULL ⇒ none.
     pub session_rules: Option<String>,
+    /// Provenance. NULL ⇒ a normal Fleetify-created session. 'claude-bg' ⇒
+    /// auto-created by the background-agent poller (services::claude_agents)
+    /// to mirror a backgrounded Claude Code CLI session.
+    pub origin: Option<String>,
 }
 
 /// POST /api/sessions body. Defaults mirror `SessionCreate` in Python.
@@ -71,6 +75,10 @@ pub struct SessionCreate {
     pub agent_template: Option<String>,
     #[serde(default)]
     pub account_id: Option<String>,
+    /// Provenance marker (see `Session::origin`). The UI never sets this; only
+    /// the background-agent poller passes 'claude-bg'. NULL for UI creates.
+    #[serde(default)]
+    pub origin: Option<String>,
 }
 
 /// PATCH /api/sessions/{id} body. All optional (partial update).
