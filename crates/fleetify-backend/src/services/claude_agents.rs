@@ -17,7 +17,7 @@
 //! Scope (v1): the default Claude config dir / account. Multi-account daemons
 //! (`~/.claude-2`, …) are not yet polled — noted in the PR.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -75,10 +75,12 @@ impl LiveAgent {
 
 /// Run `claude agents --json` and return the **backgrounded** sessions only.
 ///
-/// Best-effort: a missing `claude` binary, a non-zero exit, a parse failure, or
-/// a timeout all yield an empty list (logged at debug, never panics). The poll
-/// must never take down the server or spam logs every few seconds.
-pub async fn list_background_agents() -> Vec<LiveAgent> {
+/// Returns `Some(list)` ONLY on an authoritative success (the command ran, exited
+/// 0, and parsed). A missing `claude` binary, non-zero exit, timeout, or parse
+/// failure returns `None` — the caller MUST treat `None` as "unknown" and skip
+/// reconciliation, never as "no background sessions". Conflating the two would
+/// let a transient hiccup archive every live row.
+pub async fn list_background_agents() -> Option<Vec<LiveAgent>> {
     let fut = tokio::process::Command::new("claude")
         .args(["agents", "--json"])
         .stdin(std::process::Stdio::null())
@@ -91,26 +93,27 @@ pub async fn list_background_agents() -> Vec<LiveAgent> {
         Ok(Ok(o)) => o,
         Ok(Err(e)) => {
             tracing::debug!("claude agents --json failed to spawn: {e}");
-            return Vec::new();
+            return None;
         }
         Err(_) => {
             tracing::debug!("claude agents --json timed out");
-            return Vec::new();
+            return None;
         }
     };
     if !out.status.success() {
         tracing::debug!("claude agents --json exited {:?}", out.status.code());
-        return Vec::new();
+        return None;
     }
 
     match serde_json::from_slice::<Vec<LiveAgent>>(&out.stdout) {
-        Ok(list) => list
-            .into_iter()
-            .filter(|a| a.is_background() && a.session_id.is_some() && a.cwd.is_some())
-            .collect(),
+        Ok(list) => Some(
+            list.into_iter()
+                .filter(|a| a.is_background() && a.session_id.is_some() && a.cwd.is_some())
+                .collect(),
+        ),
         Err(e) => {
             tracing::debug!("claude agents --json parse error: {e}");
-            Vec::new()
+            None
         }
     }
 }
@@ -125,62 +128,156 @@ fn title_for(cwd: &str) -> String {
         .unwrap_or_else(|| "Background session".to_string())
 }
 
-/// One reconciliation pass: create rows for new background agents, refresh the
-/// status of known ones, and mark vanished ones idle. Returns the number of
-/// rows created (for logging). Errors on individual rows are swallowed so one
-/// bad row never aborts the whole pass.
+/// Extract a 36-char UUID from a transcript path's basename (`<uuid>.jsonl`),
+/// or accept a bare UUID. Returns None for anything not UUID-shaped.
+fn origin_id_from_path(s: &str) -> Option<String> {
+    let stem = std::path::Path::new(s)
+        .file_stem()
+        .map(|x| x.to_string_lossy().to_string())
+        .unwrap_or_else(|| s.to_string());
+    let ok = stem.len() == 36
+        && stem.as_bytes().iter().enumerate().all(|(i, b)| {
+            if i == 8 || i == 13 || i == 18 || i == 23 {
+                *b == b'-'
+            } else {
+                b.is_ascii_hexdigit()
+            }
+        });
+    ok.then_some(stem)
+}
+
+/// Map each live background session id → the ORIGINAL conversation it forked
+/// from, read from Claude's supervisor roster (`~/.claude/daemon/roster.json`).
+///
+/// `/background` mints a *fresh* background session id whose transcript starts
+/// empty, but records the conversation it detached from under
+/// `workers.<id>.dispatch.launch.sessionId` (a path to the original `.jsonl`).
+/// That's the only reliable link back — `claude agents --json` doesn't expose
+/// it. Surfacing the ORIGIN id (not the throwaway fork id) is what makes the
+/// Fleet row load the real prior conversation and resume it where the user left
+/// off, and collapses repeated `/bg` of one conversation into a single row.
+/// Missing/unreadable roster → empty map (callers fall back to the fork id).
+fn origin_conversation_map() -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let roster = fleetify_core::user_home()
+        .join(".claude")
+        .join("daemon")
+        .join("roster.json");
+    let Ok(bytes) = std::fs::read(&roster) else {
+        return map;
+    };
+    let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return map;
+    };
+    let Some(workers) = json.get("workers").and_then(|w| w.as_object()) else {
+        return map;
+    };
+    for worker in workers.values() {
+        let sid = worker.get("sessionId").and_then(|v| v.as_str());
+        let launch = worker.get("dispatch").and_then(|d| d.get("launch"));
+        let mode = launch.and_then(|l| l.get("mode")).and_then(|v| v.as_str());
+        let src = launch
+            .and_then(|l| l.get("sessionId"))
+            .and_then(|v| v.as_str());
+        if let (Some(sid), Some("resume"), Some(src)) = (sid, mode, src) {
+            if let Some(orig) = origin_id_from_path(src) {
+                if orig != sid {
+                    map.insert(sid.to_string(), orig);
+                }
+            }
+        }
+    }
+    map
+}
+
+/// One reconciliation pass. For each ORIGINAL conversation that has a live
+/// background fork, ensure exactly one row exists (keyed on the conversation id,
+/// not the throwaway fork id) so the Fleet row loads the real transcript and
+/// resumes where the user left off. Rows whose conversation no longer has a
+/// live fork are archived. Returns the number of rows created. Per-row errors
+/// are swallowed so one bad row never aborts the pass.
 pub async fn reconcile_once(
     pool: &SqlitePool,
     sm: &'static SessionManager,
     cfg: &AppConfig,
 ) -> anyhow::Result<usize> {
-    let agents = list_background_agents().await;
+    // `None` ⇒ the listing failed (timeout, no binary, parse error). Skip the
+    // whole pass — never archive live rows on a transient hiccup. Only an
+    // authoritative `Some` (possibly empty) drives reconciliation.
+    let Some(agents) = list_background_agents().await else {
+        return Ok(0);
+    };
+    let origins = origin_conversation_map();
 
-    // Every row this module owns (regardless of user, since auto-created rows
-    // are user_id NULL — visible to every local profile on a desktop install).
-    let existing: Vec<Session> = sqlx::query_as::<_, Session>(
-        "SELECT * FROM sessions WHERE origin = 'claude-bg' AND archived_at IS NULL",
-    )
-    .fetch_all(pool)
-    .await?;
+    // Resolve every live fork to the conversation it detached from (fork id →
+    // origin id; bare fork id when unlinked, e.g. a fresh `claude --bg "task"`).
+    // Keying on the origin collapses multiple `/bg` forks of one conversation
+    // into a single row and points it at the real, resumable transcript. When
+    // more than one fork maps to the same conversation, a working fork's status
+    // wins so the row reflects live activity.
+    let mut desired: HashMap<String, &LiveAgent> = HashMap::new();
+    for a in &agents {
+        let Some(sid) = a.session_id.as_deref() else {
+            continue;
+        };
+        let cwd = a.cwd.as_deref().unwrap_or_default();
+        if cwd.is_empty() {
+            continue;
+        }
+        let key = origins.get(sid).cloned().unwrap_or_else(|| sid.to_string());
+        desired
+            .entry(key)
+            .and_modify(|cur| {
+                if cur.fleet_status() != "running" && a.fleet_status() == "running" {
+                    *cur = a;
+                }
+            })
+            .or_insert(a);
+    }
 
-    let live_sids: HashSet<&str> = agents
-        .iter()
-        .filter_map(|a| a.session_id.as_deref())
-        .collect();
+    // Every row this module owns, INCLUDING archived ones, so a conversation
+    // that's backgrounded again is REVIVED (un-archived) rather than blocked by
+    // a stale archived row or duplicated. (user_id is NULL — visible to every
+    // local profile on a desktop install.)
+    let all_bg: Vec<Session> =
+        sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE origin = 'claude-bg'")
+            .fetch_all(pool)
+            .await?;
 
     let mut created = 0usize;
 
-    for a in &agents {
-        let sid = a.session_id.as_deref().unwrap_or_default();
+    for (conv_id, a) in &desired {
         let cwd = a.cwd.as_deref().unwrap_or_default();
-        if sid.is_empty() || cwd.is_empty() {
-            continue;
-        }
         let status = a.fleet_status();
 
-        if let Some(row) = existing
+        if let Some(row) = all_bg
             .iter()
-            .find(|r| r.claude_session_id.as_deref() == Some(sid))
+            .find(|r| r.claude_session_id.as_deref() == Some(conv_id.as_str()))
         {
-            // Known row — only touch the DB when the live status actually moved.
-            if row.status != status {
-                let _ = sqlx::query("UPDATE sessions SET status = ? WHERE id = ?")
-                    .bind(status)
-                    .bind(&row.id)
-                    .execute(pool)
-                    .await;
+            // Known row — ensure it's active (un-archive) and status is current.
+            // Only write when something actually changed.
+            if row.archived_at.is_some() || row.status != status {
+                let _ =
+                    sqlx::query("UPDATE sessions SET archived_at = NULL, status = ? WHERE id = ?")
+                        .bind(status)
+                        .bind(&row.id)
+                        .execute(pool)
+                        .await;
             }
             continue;
         }
 
-        // Don't shadow a session the user already owns for this conversation
-        // (e.g. one they resumed manually via "Resume from Claude CLI").
-        let dup: Option<(String,)> =
-            sqlx::query_as("SELECT id FROM sessions WHERE claude_session_id = ? LIMIT 1")
-                .bind(sid)
-                .fetch_optional(pool)
-                .await?;
+        // Don't shadow a NON-bg session the user already owns for this
+        // conversation (e.g. one resumed manually via "Resume from Claude CLI").
+        // Scoped to non-bg rows so our own archived rows never block creation —
+        // those are handled by the revive branch above.
+        let dup: Option<(String,)> = sqlx::query_as(
+            "SELECT id FROM sessions \
+             WHERE claude_session_id = ? AND (origin IS NULL OR origin <> 'claude-bg') LIMIT 1",
+        )
+        .bind(conv_id)
+        .fetch_optional(pool)
+        .await?;
         if dup.is_some() {
             continue;
         }
@@ -201,7 +298,9 @@ pub async fn reconcile_once(
             model_name: None,
             permission_mode: "default".to_string(),
             session_mode: "new".to_string(),
-            claude_session_id: Some(sid.to_string()),
+            // The ORIGINAL conversation id — its transcript has the full history
+            // and `--resume`ing it continues where the user left off.
+            claude_session_id: Some(conv_id.clone()),
             // Never spin up a worktree — this mirrors a session already running
             // in the user's real working directory.
             use_worktree: false,
@@ -219,22 +318,32 @@ pub async fn reconcile_once(
                     .execute(pool)
                     .await;
                 created += 1;
-                tracing::info!(session_id = %sid, cwd = %cwd, "surfaced backgrounded Claude CLI session");
+                tracing::info!(conversation = %conv_id, cwd = %cwd, "surfaced backgrounded Claude CLI conversation");
             }
-            Err(e) => tracing::warn!("failed to surface background session {sid}: {e}"),
+            Err(e) => {
+                tracing::warn!("failed to surface background conversation {conv_id}: {e}")
+            }
         }
     }
 
-    // A previously-surfaced background session that's no longer in the roster
-    // was foregrounded, stopped, or finished. Keep the row (it stays resumable
-    // and preserves history) but drop its live "running" indicator.
-    for row in &existing {
-        if let Some(sid) = row.claude_session_id.as_deref() {
-            if !live_sids.contains(sid) && row.status == "running" {
-                let _ = sqlx::query("UPDATE sessions SET status = 'idle' WHERE id = ?")
-                    .bind(&row.id)
-                    .execute(pool)
-                    .await;
+    // Archive ACTIVE rows whose conversation no longer has a live background
+    // fork (the listing succeeded, so `desired` is authoritative). This also
+    // retires legacy rows keyed on a throwaway fork id from before origin
+    // resolution landed: the list converges to exactly the conversations
+    // currently backgrounded. The transcript stays on disk, so the user can
+    // still re-open it any time via "Resume from Claude CLI" — and if the
+    // conversation is backgrounded again the revive branch above brings it back.
+    let now = chrono::Utc::now().to_rfc3339();
+    for row in all_bg.iter().filter(|r| r.archived_at.is_none()) {
+        if let Some(cid) = row.claude_session_id.as_deref() {
+            if !desired.contains_key(cid) {
+                let _ = sqlx::query(
+                    "UPDATE sessions SET archived_at = ?, status = 'idle' WHERE id = ?",
+                )
+                .bind(&now)
+                .bind(&row.id)
+                .execute(pool)
+                .await;
             }
         }
     }
@@ -282,5 +391,22 @@ mod tests {
     fn title_is_basename() {
         assert_eq!(title_for("/Users/me/projects/app"), "app");
         assert_eq!(title_for(""), "Background session");
+    }
+
+    #[test]
+    fn origin_id_parses_from_transcript_path_or_bare_uuid() {
+        let uuid = "9277b016-9e92-47a5-9dbd-224598bd21d5";
+        // From a full transcript path (the roster's launch.sessionId shape).
+        assert_eq!(
+            origin_id_from_path(&format!(
+                "/Users/me/.claude/projects/-Users-me-proj/{uuid}.jsonl"
+            )),
+            Some(uuid.to_string())
+        );
+        // From a bare uuid.
+        assert_eq!(origin_id_from_path(uuid), Some(uuid.to_string()));
+        // Non-uuid junk → None.
+        assert_eq!(origin_id_from_path("/tmp/notauuid.jsonl"), None);
+        assert_eq!(origin_id_from_path(""), None);
     }
 }
