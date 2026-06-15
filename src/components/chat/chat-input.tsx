@@ -1447,14 +1447,18 @@ export function ChatInput({
   // plugin-contributed ones; dedupe by cmd. Plugins appear first so a plugin
   // can override a builtin if it ships the same name.
   const builtinCmds = useMemo<Array<{ cmd: string; desc: string; body: null; intent: string; providerCmd?: string }>>(
-    () => commandsForContext("session-chat", tool).map((c: SlashCmdDef) => ({
+    // No active session → this is the Fleet composer / command center, which
+    // surfaces ONLY provider-agnostic fleet commands. Session-only commands
+    // (/init, /review, /plan, /yolo, …) are meaningless without a session, so
+    // they must not leak here even though a default `tool` is selected.
+    () => commandsForContext(sessionId ? "session-chat" : "fleet", tool).map((c: SlashCmdDef) => ({
       cmd: c.cmd,
       desc: c.desc,
       body: null,
       intent: c.intent,
       providerCmd: c.providerCmd,
     })),
-    [tool],
+    [tool, sessionId],
   );
   // ACP agents advertise their slash commands at runtime over ACP
   // (`available_commands_update` — OpenCode, Cursor, Hermes today); ws-manager

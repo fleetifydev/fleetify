@@ -46,6 +46,8 @@ describe("commandsForContext — mode commands", () => {
     const cmds = commandsForContext("fleet");
     expect(cmds.some((c) => c.cmd === "/plan")).toBe(false);
     expect(cmds.some((c) => c.cmd === "/yolo")).toBe(false);
+    expect(cmds.some((c) => c.cmd === "/init")).toBe(false);
+    expect(cmds.some((c) => c.cmd === "/review")).toBe(false);
   });
 
   it("no longer exposes the old codex /approvals entry", () => {
