@@ -60,6 +60,33 @@ type GitContext = {
  *  in the no-remote case where we can't resolve the upstream HEAD. */
 const KNOWN_DEFAULTS = new Set(["main", "master"]);
 
+/** While a conflict-resolution turn is in flight we poll the PR faster
+ *  than the normal 15s status cadence so the squash-merge fires promptly
+ *  once the agent's push clears the conflict. Short-lived (only during an
+ *  active, user-initiated resolve). */
+const RESOLVE_POLL_MS = 2000;
+/** Give up waiting after this long (agent couldn't resolve / push failed)
+ *  so the UI never spins forever; we surface a ChatError and stop. */
+const RESOLVE_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** Claude-Code-idiomatic conflict-resolution prompt. The closing line
+ *  tells the agent NOT to run `gh pr merge` — the app owns the final
+ *  squash-merge (auth-correct), avoiding a double-merge. */
+function buildResolvePrompt(base: string, prNumber: number): string {
+  return [
+    `The current branch has merge conflicts with \`${base}\` that are blocking PR #${prNumber}.`,
+    ``,
+    `Please resolve them directly in this repository:`,
+    `1. \`git fetch origin\``,
+    `2. Merge the base in: \`git merge origin/${base}\` (use a rebase if that's cleaner for this history).`,
+    `3. Resolve every conflict, preserving the intent of both sides — don't discard either branch's changes. If two changes are genuinely incompatible, prefer the safer/more-complete one and say so.`,
+    `4. Stage the resolved files and commit (e.g. "Merge ${base} and resolve conflicts").`,
+    `5. \`git push\`.`,
+    ``,
+    `Once the push lands, PR #${prNumber} becomes mergeable and Fleetify will complete the squash-merge. Don't change unrelated code.`,
+  ].join("\n");
+}
+
 /* ── Copyable branch label ──
    Inline pill that shows a branch name. The body click BUBBLES to the
    enclosing PillTrigger (which opens the branch menu) — the pill itself
@@ -234,7 +261,7 @@ export function computeBranchName(
   return `fleet/${slug}-${sessionId.slice(0, 8)}`;
 }
 
-export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sessionTitle, plannedBranch, isWorktree: _isWorktree }: {
+export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sessionTitle, plannedBranch, isWorktree: _isWorktree, onResolveConflicts, permissionMode }: {
   projectPath?: string | null;
   /** True when the resolved projectPath is a git worktree under
    *  `<source-repo>/.fleetify-worktrees/<session-id>/`. Drives the
@@ -266,6 +293,14 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
    *  the strip can render "main ← fleet/…" as a dimmed placeholder
    *  and the Create PR dispatcher knows which branch to carve. */
   plannedBranch?: string | null;
+  /** Hand a conflict-resolution task to the CURRENT session's agent.
+   *  Wired by ChatInput to its own `onSend`, so the prompt enters the
+   *  live session as a visible turn (the agent resolves in its
+   *  worktree). Absent on surfaces with no agent (control-center). */
+  onResolveConflicts?: (prompt: string) => void;
+  /** Session permission mode. Only consulted to block the resolve flow
+   *  in "plan" mode (which forbids the file edits resolution needs). */
+  permissionMode?: string | null;
 }) {
   const [ctx, setCtx]       = useState<GitContext | null>(null);
   const [pr, setPr]         = useState<PRStatus | null>(null);
@@ -318,6 +353,8 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // exists", which is then silently swallowed.
   const [prStatusLoaded, setPrStatusLoaded] = useState(false);
   const [merging, setMerging] = useState(false);
+  // Set while a conflict-resolution turn is in flight for `prNumber`.
+  const [resolving, setResolving] = useState<{ prNumber: number } | null>(null);
   const [syncing, setSyncing] = useState(false);
   // True between the in-app merge click and the moment we observe
   // `pr.state` flip to MERGED via prStatus poll. Gates the auto-
@@ -716,6 +753,40 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
     return () => { cancelled = true; clearInterval(iv); };
   }, [folder, effectiveSelectedNumber, selectedIsBranchPr]);
 
+  // Live ref to onMerge (defined below the controlCenter early-return and
+  // re-created each render) so the resolve-watcher effect can fire the
+  // latest one without listing it in deps. `.current` is set right after
+  // onMerge is declared.
+  const onMergeRef = useRef<() => void>(() => {});
+
+  // While a resolution turn is in flight, poll the PR faster than the
+  // normal 15s cadence. The moment the agent's push clears the conflict
+  // (mergeable → MERGEABLE) we run the existing squash-merge. A timeout
+  // stops us spinning forever if the agent couldn't finish.
+  useEffect(() => {
+    if (!resolving || !folder) return;
+    let cancelled = false;
+    const target = resolving.prNumber;
+    const check = () => {
+      git.prStatus(folder, target).then(r => {
+        if (cancelled || !r.ok) return;
+        if (r.pr && r.pr.number === target && r.pr.mergeable === "MERGEABLE") {
+          setResolving(null);
+          void onMergeRef.current();
+        }
+      }).catch(() => {});
+    };
+    check();
+    const iv = setInterval(check, RESOLVE_POLL_MS);
+    const to = setTimeout(() => {
+      if (cancelled) return;
+      setResolving(null);
+      const sid = useAppStore.getState().activeSessionId || COMPOSER_CHAT_KEY;
+      pushChatError(sid, "Conflict resolution didn't complete — check the agent's output above, then click Merge.");
+    }, RESOLVE_TIMEOUT_MS);
+    return () => { cancelled = true; clearInterval(iv); clearTimeout(to); };
+  }, [resolving, folder]);
+
   const selectedPr: PRStatus | null = selectedIsBranchPr ? pr : foreignPr;
 
   if (controlCenter) return null;
@@ -840,6 +911,24 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
       const errSid = useAppStore.getState().activeSessionId || COMPOSER_CHAT_KEY;
       pushChatError(errSid, r.error || "Merge failed");
     }
+  };
+  // Keep the resolve-watcher's ref pointed at the current onMerge.
+  onMergeRef.current = onMerge;
+
+  // "Resolve & merge" on a CONFLICTING PR: hand the conflict to the
+  // session's agent (a visible turn in its worktree), then let the
+  // watcher effect above auto-complete the squash-merge once the push
+  // clears it. The app owns the final merge — the agent only resolves.
+  const onResolveAndMerge = () => {
+    if (!folder || !selectedPr || !onResolveConflicts) return;
+    if (permissionMode === "plan") {
+      const sid = useAppStore.getState().activeSessionId || COMPOSER_CHAT_KEY;
+      pushChatError(sid, "Plan mode blocks edits — switch to Accept Edits or Default so the agent can resolve, then click Resolve & merge.");
+      return;
+    }
+    const base = selectedPr.baseRefName || ctx?.baseBranch || "main";
+    onResolveConflicts(buildResolvePrompt(base, selectedPr.number));
+    setResolving({ prNumber: selectedPr.number });
   };
 
   // Post-merge cleanup: switch the SOURCE repo to the base branch
@@ -1440,6 +1529,11 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
       const checksFailing = det ? det.checks.failing > 0 : false;
       const checksPending = det ? det.checks.pending > 0 && det.checks.failing === 0 : false;
       const canMerge = !!det && det.mergeable !== "CONFLICTING" && !checksFailing;
+      // A CONFLICTING PR (but not a failing-checks one — the agent can't
+      // fix red CI from here) becomes an agent-resolve action instead of
+      // a dead disabled button, when a session is wired to resolve it.
+      const canResolve = !!det && det.mergeable === "CONFLICTING" && !checksFailing
+        && !!onResolveConflicts && !!folder;
       const mergeTitle = !det ? "Loading PR status…"
         : !canMerge
           ? (checksFailing ? `${det.checks.failing} check${det.checks.failing > 1 ? "s" : ""} failing`
@@ -1456,11 +1550,21 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
           {/* Hairline-dot separator matches the Review · Create PR rhythm so
               Open and Merge read as two distinct actions, not one run-on. */}
           <span aria-hidden style={{ opacity: 0.4 }}>·</span>
-          <ActionBtn onClick={onMerge} primary accent="purple" disabled={!canMerge || merging} title={mergeTitle}>
-            {merging
-              ? <>Merging… <Loader2 size={11} style={{ animation: "spin 1.2s linear infinite" }} /></>
-              : <>Merge{checksPending ? " (auto)" : ""} <GitMerge size={11} /></>}
-          </ActionBtn>
+          {canResolve ? (
+            <ActionBtn onClick={onResolveAndMerge} primary accent="purple"
+              disabled={!!resolving}
+              title={`Have the session's agent resolve the conflicts with ${det.baseRefName}, then squash + merge #${det.number}`}>
+              {resolving
+                ? <>Resolving… <Loader2 size={11} style={{ animation: "spin 1.2s linear infinite" }} /></>
+                : <>Resolve &amp; merge <GitMerge size={11} /></>}
+            </ActionBtn>
+          ) : (
+            <ActionBtn onClick={onMerge} primary accent="purple" disabled={!canMerge || merging} title={mergeTitle}>
+              {merging
+                ? <>Merging… <Loader2 size={11} style={{ animation: "spin 1.2s linear infinite" }} /></>
+                : <>Merge{checksPending ? " (auto)" : ""} <GitMerge size={11} /></>}
+            </ActionBtn>
+          )}
         </>
       );
     }

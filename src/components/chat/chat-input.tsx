@@ -2581,6 +2581,8 @@ export function ChatInput({
               sessionTitle={sessionTitle}
               plannedBranch={sessionId ? computeBranchName(sessionTitle, sessionId, projectPath) : null}
               isWorktree={!!worktreePath}
+              onResolveConflicts={(p) => onSend(p)}
+              permissionMode={permissionMode}
             />
           </div>
         )}

@@ -1335,3 +1335,93 @@ describe("BranchStrip — PR switcher + repo-wide merge", () => {
     expect(screen.getByRole("button", { name: /^Merge$/i })).toBeDisabled();
   });
 });
+
+describe("BranchStrip — merge-conflict agent resolution", () => {
+  const openPr = {
+    number: 42, url: "https://github.com/u/r/pull/42",
+    state: "OPEN", mergeable: "CONFLICTING", isDraft: false,
+    baseRefName: "main", headRefName: "fleet/x-a1b2c3d4",
+    checks: { passing: 2, failing: 0, pending: 0, total: 2 },
+    commentsCount: 0,
+  };
+  const openRepoPr = {
+    number: 42, state: "OPEN", headRefName: "fleet/x-a1b2c3d4",
+    isDraft: false, mergeable: "CONFLICTING", title: "PR 42", url: "https://github.com/u/r/pull/42",
+  };
+  const ctx = { branch: "fleet/x-a1b2c3d4", baseBranch: "main", plus: 5, minus: 2, remoteHttpsUrl: "https://github.com/u/r" };
+
+  beforeEach(() => {
+    markPRReadyMock.mockResolvedValue({ ok: true });
+    mergePRMock.mockReset();
+    syncMainMock.mockResolvedValue({ ok: true, base: "main", prevBranch: null });
+    carveNextRoundMock.mockResolvedValue({ ok: true, branch: "fleet/x-a1b2c3d4", base: "main" });
+  });
+
+  function seed(prOverrides: Partial<typeof openPr> = {}) {
+    usePrStore.setState({ prs: [openRepoPr] });
+    prListMock.mockResolvedValue({ ok: true, prs: [openRepoPr] });
+    gitContextMock.mockResolvedValue(ctx);
+    prStatusMock.mockResolvedValue({ ok: true, pr: { ...openPr, ...prOverrides } });
+  }
+
+  it("CONFLICTING PR shows an enabled 'Resolve & merge' (not a disabled Merge)", async () => {
+    seed();
+    const onResolveConflicts = vi.fn();
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" onResolveConflicts={onResolveConflicts} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: /Resolve & merge/i })).toBeEnabled());
+    expect(screen.queryByRole("button", { name: /^Merge$/i })).toBeNull();
+  });
+
+  it("Resolve & merge hands the conflict to the agent with base + push + PR# and enters resolving", async () => {
+    seed();
+    const onResolveConflicts = vi.fn();
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" onResolveConflicts={onResolveConflicts} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: /Resolve & merge/i })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: /Resolve & merge/i }));
+    expect(onResolveConflicts).toHaveBeenCalledTimes(1);
+    const prompt = String(onResolveConflicts.mock.calls[0]?.[0] ?? "");
+    expect(prompt).toMatch(/main/);
+    expect(prompt).toMatch(/git push/i);
+    expect(prompt).toMatch(/#42/);
+    await waitFor(() => expect(screen.getByRole("button", { name: /Resolving/i })).toBeInTheDocument());
+  });
+
+  it("plan mode blocks the resolve flow (no agent task sent)", async () => {
+    seed();
+    const onResolveConflicts = vi.fn();
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" permissionMode="plan" onResolveConflicts={onResolveConflicts} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: /Resolve & merge/i })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /Resolve & merge/i }));
+    expect(onResolveConflicts).not.toHaveBeenCalled();
+  });
+
+  it("checks-failing keeps Merge disabled — no Resolve action", async () => {
+    seed({ mergeable: "CONFLICTING", checks: { passing: 1, failing: 1, pending: 0, total: 2 } });
+    const onResolveConflicts = vi.fn();
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" onResolveConflicts={onResolveConflicts} />);
+    await screen.findByRole("button", { name: /^Merge$/i });
+    expect(screen.queryByRole("button", { name: /Resolve & merge/i })).toBeNull();
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Merge$/i })).toBeDisabled());
+  });
+
+  it("auto-completes the squash-merge once the agent's push clears the conflict", { timeout: 10000, retry: 2 }, async () => {
+    usePrStore.setState({ prs: [openRepoPr] });
+    prListMock.mockResolvedValue({ ok: true, prs: [openRepoPr] });
+    gitContextMock.mockResolvedValue(ctx);
+    let mergeable = "CONFLICTING";
+    prStatusMock.mockImplementation(async () => ({ ok: true, pr: { ...openPr, mergeable } }));
+    mergePRMock.mockResolvedValue({ ok: true });
+    const onResolveConflicts = vi.fn();
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" plannedBranch="fleet/x-a1b2c3d4" onResolveConflicts={onResolveConflicts} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: /Resolve & merge/i })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: /Resolve & merge/i }));
+    expect(onResolveConflicts).toHaveBeenCalled();
+    mergeable = "MERGEABLE"; // agent resolved + pushed
+    await waitFor(() => expect(mergePRMock).toHaveBeenCalledWith("/repo", 42, "squash"), { timeout: 8000 });
+  });
+});
