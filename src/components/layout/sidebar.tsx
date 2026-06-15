@@ -445,7 +445,7 @@ function AgentRowImpl({ session, isActive, stats, onClick, onPin, onFork, onStop
       draggable
       onDragStart={onDragStart}
       onDragOver={onDragOver}
-      onDrop={onDrop}
+      onDrop={e => { e.preventDefault(); onDrop(); }}
       onDragEnd={onDragEnd}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -1241,7 +1241,7 @@ export function Sidebar() {
                     <div
                       onDragOver={e => { e.preventDefault(); setDropPinZone(true); }}
                       onDragLeave={() => setDropPinZone(false)}
-                      onDrop={() => handleDropToPin()}
+                      onDrop={e => { e.preventDefault(); handleDropToPin(); }}
                       style={{
                         display: "flex", alignItems: "center", gap: 8,
                         padding: "4px 9px",

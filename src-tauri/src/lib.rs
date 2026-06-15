@@ -247,6 +247,14 @@ pub fn run() {
             // misaligned on wide displays).
             .center()
             .visible(false)
+            // Required for HTML5 drag-and-drop on Windows/WebView2. With Tauri's
+            // OS-level drag-drop handler ENABLED (the default) WebView2 intercepts
+            // every drag over the webview and silently breaks in-page HTML5 DnD —
+            // the sidebar's session reorder / drag-to-pin and the composer's file
+            // drop both rely on HTML5 DnD (e.dataTransfer), NOT Tauri's native
+            // onDragDropEvent. Nothing in the app consumes the native event, so
+            // turning the handler off is safe and restores DnD. (No-op on macOS.)
+            .disable_drag_drop_handler()
             .initialization_script(PRELOAD);
 
             // macOS: keep native traffic lights (close/min/max) with
