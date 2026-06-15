@@ -3,8 +3,10 @@
 //! all empty until the plugin foundation (manifest parser + materialized
 //! components) lands.
 
+use axum::extract::Query;
 use axum::routing::get;
 use axum::{Json, Router};
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::routers::AppState;
@@ -23,8 +25,17 @@ async fn templates() -> Json<Value> {
             .unwrap_or_else(|_| json!([])),
     )
 }
-async fn commands() -> Json<Value> {
-    Json(json!([]))
+/// Query for `/runtime/commands`. `tool` selects the provider-smart skill
+/// payload; the composer also sends `session_id`/`project_path`, which serde
+/// ignores here.
+#[derive(Deserialize)]
+struct CommandsQuery {
+    tool: Option<String>,
+}
+
+async fn commands(Query(q): Query<CommandsQuery>) -> Json<Value> {
+    let items = crate::services::command_catalog::list_commands(q.tool.as_deref());
+    Json(serde_json::to_value(items).unwrap_or_else(|_| json!([])))
 }
 async fn skills() -> Json<Value> {
     Json(json!([]))

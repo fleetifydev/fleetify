@@ -29,6 +29,7 @@ import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { UnifiedModelPicker, type Effort as UMEffort } from "./unified-model-picker";
 import { buildPickerGroups, effortForDiscoveredModel, resolveDispatchTool, resolveModelChip, type PickerModel } from "@/lib/picker-groups";
 import { permissionCapabilityFor, permissionModesFor, defaultPermissionMode, isLoudMode, toolMatrixFor, parseToolOverrides, sandboxOptionsFor } from "@/lib/capabilities";
+import { decideModeCommand } from "@/lib/permission-modes";
 import type { PermMode } from "@/lib/providers-api";
 import { ToolMatrixEditor } from "./tool-matrix-editor";
 import { SandboxControl } from "./sandbox-control";
@@ -1171,6 +1172,7 @@ export function ChatInput({
     if (!sessionId) { setPluginCmds([]); return; }
     const u = new URLSearchParams({ session_id: sessionId });
     if (projectPath) u.set("project_path", projectPath);
+    if (tool) u.set("tool", tool);
     apiFetch(`/api/runtime/commands?${u}`)
       .then(r => r.ok ? r.json() : [])
       .then((cmds: Array<{ name: string; description: string; body: string; args: string[] }>) => {
@@ -1181,7 +1183,7 @@ export function ChatInput({
         })));
       })
       .catch(() => setPluginCmds([]));
-  }, [sessionId, projectPath]);
+  }, [sessionId, projectPath, tool]);
 
   const ref        = useRef<HTMLTextAreaElement>(null);
   const mirrorRef  = useRef<HTMLDivElement>(null);
@@ -1454,22 +1456,23 @@ export function ChatInput({
     })),
     [tool],
   );
-  // OpenCode advertises its slash commands at runtime over ACP
-  // (`available_commands_update`); ws-manager stores them per session. Merge
-  // them in as plain insert-the-text commands (body: null) so the CLI
-  // receives `/<name>` as prompt text.
+  // ACP agents advertise their slash commands at runtime over ACP
+  // (`available_commands_update` — OpenCode, Cursor, Hermes today); ws-manager
+  // stores them per session. Surface them for ANY provider that advertised (the
+  // store is only populated for those that do) as plain insert-the-text commands
+  // (body: null) so the CLI receives `/<name>` as prompt text.
   const dynCmds = useChatStore((s) => (sessionId ? s.dynamicCommands[sessionId] : undefined));
-  const openCodeCmds = useMemo<Array<{ cmd: string; desc: string; body: null }>>(
+  const agentCmds = useMemo<Array<{ cmd: string; desc: string; body: null }>>(
     () =>
-      tool === "opencode" && dynCmds
+      dynCmds
         ? dynCmds.map((c) => ({ cmd: `/${c.name}`, desc: c.description, body: null }))
         : [],
-    [tool, dynCmds],
+    [dynCmds],
   );
   const slashAll = (() => {
     const seen = new Set<string>();
     const out: Array<{ cmd: string; desc: string; body: string | null; args?: string[]; intent?: string; providerCmd?: string }> = [];
-    for (const c of [...pluginCmds, ...builtinCmds, ...openCodeCmds]) {
+    for (const c of [...pluginCmds, ...builtinCmds, ...agentCmds]) {
       if (seen.has(c.cmd)) continue;
       seen.add(c.cmd); out.push(c);
     }
@@ -1697,8 +1700,26 @@ export function ChatInput({
       return true;
     }
 
+    /* /plan, /yolo ─ provider-aware permission-mode switch. Resolves the
+       semantic mode to THIS provider's native id and persists it via the same
+       PATCH path the bottom-left picker uses — never sends "/plan" to the CLI. */
+    if (head === "/plan" || head === "/yolo") {
+      echoUser();
+      const semantic = head === "/plan" ? "plan" : "yolo";
+      const cap = permissionCapabilityFor(providerTiles, tool ?? null);
+      const outcome = decideModeCommand(semantic, cap, tool ?? null);
+      if (outcome.kind === "info") {
+        pushInfo(outcome.title, outcome.message, outcome.tone);
+        return true;
+      }
+      registerConfigPatch(sessionId, apiUpdateSession(sessionId, outcome.patch));
+      useAppStore.getState().updateSession?.(sessionId, outcome.patch);
+      pushInfo(outcome.title, outcome.message, outcome.tone);
+      return true;
+    }
+
     return false;
-  }, [sessionId, tool, effort, setEffortLocal, onEffortChange]);
+  }, [sessionId, tool, effort, setEffortLocal, onEffortChange, providerTiles]);
 
   /** `/prompts` — app-owned. No argument opens the picker; `/prompts <slug>`
    *  resolves and sends the prompt's body, or toasts on an unknown slug. Works

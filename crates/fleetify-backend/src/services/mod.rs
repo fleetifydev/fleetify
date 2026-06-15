@@ -7,6 +7,7 @@ pub mod builtin_templates;
 pub mod claude_history;
 pub mod clone;
 pub mod codex_toml;
+pub mod command_catalog;
 pub mod compactor;
 pub mod dispatch;
 pub mod fleet_brain;

@@ -24,6 +24,12 @@
  * (see chat-input's slashAll merge).
  */
 
+import type { SemanticMode } from "@/lib/permission-modes";
+
+/** How a command is executed. Omitted = legacy behaviour (local handler or raw
+ *  text). See docs/superpowers/specs/2026-06-15-slash-commands-design.md §3. */
+export type SlashMechanism = "local" | "mode" | "passthrough" | "inject" | "picker";
+
 export type SessionTool = "claude-code" | "codex-cli" | "gemini-cli";
 
 export type SlashIntent =
@@ -39,6 +45,7 @@ export type SlashIntent =
   | "session.clear"
   | "session.context"
   | "session.plan"
+  | "session.yolo"
   | "session.model"
   | "session.review"
   | "session.init"
@@ -73,6 +80,10 @@ export type SlashCmdDef = {
    * for Gemini because Gemini has no reasoning-effort knob, and the
    * `/commands` vs `/prompts` split between Claude/Gemini and Codex. */
   supportedTools?: SessionTool[];
+  /** Execution mechanism. Omitted → legacy (local handler or raw-text send). */
+  mechanism?: SlashMechanism;
+  /** For mechanism:"mode" — the provider-neutral mode this command requests. */
+  semantic?: SemanticMode;
 };
 
 export const FLEET_CMDS: SlashCmdDef[] = [
@@ -90,7 +101,6 @@ export const SESSION_CMDS_BY_TOOL: Record<SessionTool, SlashCmdDef[]> = {
   "claude-code": [
     { intent: "session.compaction", cmd: "/compact", desc: "Summarize conversation to free context", scope: "session" },
     { intent: "session.context",    cmd: "/context", desc: "Show context window usage",              scope: "session" },
-    { intent: "session.plan",       cmd: "/plan",    desc: "Switch to plan mode",                    scope: "session" },
     { intent: "session.review",     cmd: "/review",  desc: "Review last changes",                    scope: "session" },
     { intent: "session.model",      cmd: "/model",   desc: "Switch model",                           scope: "session" },
   ],
@@ -98,7 +108,6 @@ export const SESSION_CMDS_BY_TOOL: Record<SessionTool, SlashCmdDef[]> = {
     { intent: "session.compaction", cmd: "/compact",   desc: "Summarize visible conversation (auto-confirmed)", scope: "session" },
     { intent: "session.clear",      cmd: "/clear",     desc: "Clear the terminal and start a fresh chat",       scope: "session" },
     { intent: "session.context",    cmd: "/status",    desc: "Show session status",                             scope: "session" },
-    { intent: "session.plan",       cmd: "/approvals", desc: "Change approval policy",                          scope: "session" },
     { intent: "session.model",      cmd: "/model",     desc: "Switch model",                                    scope: "session" },
     { intent: "session.review",     cmd: "/review",    desc: "Review last changes",                             scope: "session" },
   ],
@@ -141,6 +150,16 @@ export const SESSION_CMDS_COMMON: SlashCmdDef[] = [
   { intent: "session.commands",    cmd: "/prompts",     desc: "Browse custom prompts",                                    scope: "session", supportedTools: ["codex-cli"] },
 ];
 
+/**
+ * Provider-agnostic session commands surfaced for EVERY tool (known or not).
+ * Their effect resolves per-provider at run time (mechanism:"mode" → the
+ * provider's native permission mode). See the design spec §5.2.
+ */
+export const SESSION_CMDS_BASE: SlashCmdDef[] = [
+  { intent: "session.plan", cmd: "/plan", desc: "Switch to plan mode (read-only)", scope: "session", mechanism: "mode", semantic: "plan" },
+  { intent: "session.yolo", cmd: "/yolo", desc: "Bypass approvals (YOLO)",          scope: "session", mechanism: "mode", semantic: "yolo" },
+];
+
 function isKnownTool(t: unknown): t is SessionTool {
   return t === "claude-code" || t === "codex-cli" || t === "gemini-cli";
 }
@@ -166,17 +185,22 @@ export function commandsForContext(
   tool?: string | null,
 ): SlashCmdDef[] {
   if (ctx === "fleet") return FLEET_CMDS;
-  if (!isKnownTool(tool)) return FLEET_CMDS;
-  const perTool = SESSION_CMDS_BY_TOOL[tool];
+
+  // Known tools get their bespoke vocab + the shared commons; unknown/new
+  // tools still get the base session set (mode commands resolve per-provider).
+  const perTool = isKnownTool(tool) ? SESSION_CMDS_BY_TOOL[tool] : [];
+  // Common commands are Fleetify-side (LOCAL) and provider-agnostic, so they
+  // surface for EVERY tool; supportedTools-restricted ones (e.g. /effort) still
+  // only show for the tools that list them.
   const common = SESSION_CMDS_COMMON.filter(
-    (c) => !c.supportedTools || c.supportedTools.includes(tool),
+    (c) => !c.supportedTools || (isKnownTool(tool) && c.supportedTools.includes(tool)),
   );
-  const sessionCmds = new Set([...perTool, ...common].map((c) => c.cmd));
+  const sessionCmds = new Set([...SESSION_CMDS_BASE, ...perTool, ...common].map((c) => c.cmd));
   const fleetSurfaced = FLEET_CMDS.filter((c) => !sessionCmds.has(c.cmd));
-  const merged = [...fleetSurfaced, ...perTool, ...common];
-  // Dedup by literal cmd, keeping the first occurrence. The new universal
-  // `/prompts` is ordered before the Codex `session.commands` `/prompts` alias,
-  // so it wins; all other builtins are already cmd-unique.
+  const merged = [...fleetSurfaced, ...SESSION_CMDS_BASE, ...perTool, ...common];
+  // Dedup by literal cmd, keeping the first occurrence. `/prompts` (session) is
+  // ordered before the Codex `session.commands` `/prompts` alias so it wins;
+  // all other builtins are already cmd-unique.
   const seen = new Set<string>();
   return merged.filter((c) => {
     if (seen.has(c.cmd)) return false;
