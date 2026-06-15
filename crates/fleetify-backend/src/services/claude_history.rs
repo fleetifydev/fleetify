@@ -14,6 +14,12 @@ const SKIP_PREFIXES: &[&str] = &[
     "<local-command-caveat>",
     "<command-name>",
     "<command-message>",
+    "<command-args>",
+    // Slash-command stdout/stderr Claude records when the user runs `/bg`,
+    // `/compact`, etc. These are CLI plumbing, not conversation — surfacing
+    // them in the resumed chat shows the raw `<local-command-stdout>…` markers.
+    "<local-command-stdout>",
+    "<local-command-stderr>",
 ];
 
 /// Fleet chat-format message — matches the JSON shape the renderer
