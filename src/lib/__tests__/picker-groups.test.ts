@@ -175,7 +175,7 @@ describe("buildPickerGroups", () => {
   it("filters CLI agents by enabledAgentIds", () => {
     const tiles = [
       baseTile("claude-code", "Claude Code", "cli"),
-      baseTile("kimi-code", "Kimi Code CLI", "cli"),
+      baseTile("kimi-code", "Kimi Code", "cli"),
     ];
     const groups = buildPickerGroups(tiles, ["claude-code"]);
     const cliIds = groups.filter((g) => g.id !== "ollama").map((g) => g.id);
@@ -307,7 +307,7 @@ describe("buildPickerGroups", () => {
       baseTile("claude-code", "Claude Code", "cli"),
       baseTile("codex-cli", "Codex CLI", "cli"),
       baseTile("gemini-cli", "Gemini CLI", "cli"),
-      baseTile("kimi-code", "Kimi Code CLI", "cli"),
+      baseTile("kimi-code", "Kimi Code", "cli"),
     ];
     const groups = buildPickerGroups(tiles, ["claude-code", "codex-cli", "gemini-cli", "kimi-code"]);
     const claude = groups.find((g) => g.id === "claude-code");
@@ -372,7 +372,7 @@ describe("buildPickerGroups", () => {
     expect(groups.find((g) => g.id === "claude-code")?.label).toBe("Claude Code");
     expect(groups.find((g) => g.id === "codex-cli")?.label).toBe("Codex CLI");
     expect(groups.find((g) => g.id === "gemini-cli")?.label).toBe("Gemini CLI");
-    expect(groups.find((g) => g.id === "kimi-code")?.label).toBe("Kimi Code CLI");
+    expect(groups.find((g) => g.id === "kimi-code")?.label).toBe("Kimi Code");
     expect(groups.find((g) => g.id === "antigravity-cli")?.label).toBe("Antigravity CLI");
     expect(groups.find((g) => g.id === "antigravity-sdk")?.label).toBe("Antigravity SDK");
   });

@@ -193,7 +193,7 @@ const CLI_FALLBACK_LABELS: Record<string, string> = {
   claude:            "Claude Code", // legacy id alias (pre-rename sessions)
   "codex-cli":             "Codex CLI",
   "gemini-cli":            "Gemini CLI",
-  "kimi-code":              "Kimi Code CLI",
+  "kimi-code":              "Kimi Code",
   opencode:          "OpenCode",
   "cursor-cli":            "Cursor CLI",
   "antigravity-cli":               "Antigravity CLI",

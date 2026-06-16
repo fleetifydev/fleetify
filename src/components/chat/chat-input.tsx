@@ -1237,6 +1237,10 @@ export function ChatInput({
   const mirrorRef  = useRef<HTMLDivElement>(null);
   const fileRef    = useRef<HTMLInputElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  // Slash popup scroll container + currently-highlighted row, so ArrowUp/
+  // ArrowDown can keep the selection scrolled into view.
+  const slashListRef = useRef<HTMLDivElement>(null);
+  const activeSlashItemRef = useRef<HTMLButtonElement | null>(null);
 
   /* close dropdowns on outside click */
   useEffect(() => {
@@ -1248,6 +1252,20 @@ export function ChatInput({
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, [openDrop]);
+
+  // Keep the highlighted slash command visible while navigating with the
+  // arrow keys: scroll the active row into view within the capped-height
+  // command list. Runs on selection move and when the filter changes.
+  useEffect(() => {
+    if (!slashOpen) return;
+    const item = activeSlashItemRef.current;
+    const list = slashListRef.current;
+    if (!item || !list) return;
+    const top = item.offsetTop;
+    const bottom = top + item.offsetHeight;
+    if (top < list.scrollTop) list.scrollTop = top;
+    else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
+  }, [slashIndex, slashOpen, slashQuery]);
 
   /* ESC → stop streaming */
   useEffect(() => {
@@ -1537,8 +1555,15 @@ export function ChatInput({
   const checkSlashState = useCallback((text: string, caret: number) => {
     const hit = detectSlash(text, caret);
     if (!hit) { if (slashOpen) setSlashOpen(false); return; }
-    setSlashQuery(hit); setSlashOpen(true); setSlashIndex(0);
-  }, [detectSlash, slashOpen]);
+    // Reset the highlighted row only when the menu is (re)opening or the
+    // filter text changes. Without this guard the keyup that fires right
+    // after an Arrow keydown (same query + caret) would snap the selection
+    // back to the first command — Arrow-down looked like it moved down then
+    // jumped straight back to the top.
+    if (!slashOpen || hit !== slashQuery) setSlashIndex(0);
+    setSlashOpen(true);
+    setSlashQuery(hit);
+  }, [detectSlash, slashOpen, slashQuery]);
 
   const pickSlash = useCallback((cmd: string) => {
     // Plugin-contributed commands have a non-null body — expand it (replacing
@@ -2309,21 +2334,27 @@ export function ChatInput({
             <div style={{ padding: "5px 10px 3px", fontSize: 10.5, color: "var(--c-dim)", fontWeight: 500 }}>
               Commands
             </div>
-            {slashFiltered.map((c, i) => (
-              <button key={c.cmd} onClick={() => pickSlash(c.cmd)}
-                onMouseEnter={() => setSlashIndex(i)}
-                style={{
-                  display: "flex", alignItems: "baseline", gap: 10, width: "100%",
-                  padding: "5px 10px", border: "none", cursor: "pointer", textAlign: "left",
-                  background: i === slashIndex ? "var(--c-srf)" : "none",
-                }}>
-                <span style={{ fontSize: 12.5, fontWeight: 500, color: "var(--c-high)", fontFamily: "'SF Mono','Menlo','Consolas',monospace", flexShrink: 0 }}>
-                  {c.cmd}
-                </span>
-                <span style={{ fontSize: 11.5, color: "var(--c-dim)" }}>{c.desc}</span>
-              </button>
-            ))}
-            <div style={{ height: 3 }} />
+            {/* Scrollable list — capped height so a long command list stays
+                on-screen; the active row is scrolled into view by the effect
+                above as ArrowUp/ArrowDown move the selection. */}
+            <div ref={slashListRef} style={{ maxHeight: 264, overflowY: "auto", position: "relative" }}>
+              {slashFiltered.map((c, i) => (
+                <button key={c.cmd} onClick={() => pickSlash(c.cmd)}
+                  ref={i === slashIndex ? activeSlashItemRef : undefined}
+                  onMouseEnter={() => setSlashIndex(i)}
+                  style={{
+                    display: "flex", alignItems: "baseline", gap: 10, width: "100%",
+                    padding: "5px 10px", border: "none", cursor: "pointer", textAlign: "left",
+                    background: i === slashIndex ? "var(--c-srf)" : "none",
+                  }}>
+                  <span style={{ fontSize: 12.5, fontWeight: 500, color: "var(--c-high)", fontFamily: "'SF Mono','Menlo','Consolas',monospace", flexShrink: 0 }}>
+                    {c.cmd}
+                  </span>
+                  <span style={{ fontSize: 11.5, color: "var(--c-dim)" }}>{c.desc}</span>
+                </button>
+              ))}
+              <div style={{ height: 3 }} />
+            </div>
           </div>
         )}
 

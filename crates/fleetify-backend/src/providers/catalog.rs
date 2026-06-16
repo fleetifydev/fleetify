@@ -1541,7 +1541,7 @@ pub static CATALOG: &[ProviderSpec] = &[
     },
     ProviderSpec {
         id: "kimi-code",
-        display_name: "Kimi Code CLI",
+        display_name: "Kimi Code",
         kind: ProviderKind::Cli,
         default_base_url: "",
         auth: AuthSpec::None,

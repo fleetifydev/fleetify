@@ -34,7 +34,7 @@ interface Props {
 const PROVIDERS: { id: "claude-code" | "codex-cli" | "gemini-cli"; label: string }[] = [
   { id: "claude-code", label: "Claude Code" },
   { id: "codex-cli",  label: "Codex"  },
-  { id: "gemini-cli", label: "Gemini" },
+  { id: "gemini-cli", label: "Gemini CLI" },
 ];
 
 const COMPONENTS: { key: keyof ScaffoldInput["components"]; label: string; hint: string }[] = [

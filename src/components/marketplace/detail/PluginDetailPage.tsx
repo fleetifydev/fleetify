@@ -280,7 +280,7 @@ export function PluginDetailPage({ source_id, plugin_path, onBack }: Props) {
       <div style={{ display: "flex", gap: 18, alignItems: "flex-start" }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           {subTab === "overview"   && <OverviewBody readme={detail.readme_md} description={m.description} />}
-          {subTab === "components" && <ComponentsBody declares={m.declares} />}
+          {subTab === "components" && <ComponentsBody providers={m.providers} declares={m.declares} />}
           {subTab === "scopes"     && <ScopesBody installed={installed ?? null} onAddScope={() => setInstallOpen(true)} />}
           {subTab === "settings"   && <SettingsBody installed={!!installed} requiresSecrets={m.requires_secrets} />}
           {subTab === "changelog"  && <ChangelogBody changelog={detail.changelog_md} />}
@@ -349,42 +349,63 @@ function OverviewBody({ readme, description }: { readme: string | null; descript
   );
 }
 
-function ComponentsBody({ declares }: { declares: PluginDetail["manifest"]["declares"] }) {
-  const rootRows = (["mcp_servers", "templates", "workflows"] as const)
-    .map(k => ({ kind: COMPONENT_LABEL[k], count: declares[k] }))
-    .filter(r => r.count > 0);
+/** A single "N noun" stat, pluralised. `null` when the count is zero so
+ *  empty stats drop out of a provider's line. */
+type CountSeg = { n: number; label: string };
+function countSeg(n: number | undefined, noun: string): CountSeg | null {
+  return n && n > 0 ? { n, label: n === 1 ? noun : `${noun}s` } : null;
+}
 
-  // Per-provider rows: iterate the providers map so every agent the plugin
-  // targets (claude … agy) gets a breakdown. Each provider declares
-  // skills/commands/hooks uniformly; only non-zero rows render.
-  const PROVIDER_LABEL: Record<string, string> = {
-    "claude-code": "Claude Code",
-    codex: "Codex",
-    gemini: "Gemini",
-    kimi: "Kimi",
-    opencode: "OpenCode",
-    "github-copilot": "GitHub Copilot",
-    cursor: "Cursor",
-    hermes: "Hermes",
-    agy: "Antigravity CLI",
-    "antigravity-sdk": "Antigravity SDK",
-  };
-  const providerKinds = ["skills", "hooks"] as const;
-  const providerRows = Object.entries(declares.providers ?? {})
-    .flatMap(([prov, counts]) =>
-      providerKinds.map((k) => ({
-        kind: `${PROVIDER_LABEL[prov] ?? prov} ${COMPONENT_LABEL[k]?.toLowerCase() ?? k}`,
-        count: counts[k],
-      })),
-    )
-    .filter((r) => r.count > 0);
+/** Components tab — one row per agent the plugin targets, each showing that
+ *  agent's own skills/hooks PLUS the plugin-wide components (MCP servers /
+ *  workflows / templates / prompts) repeated on every row. Those globals
+ *  aren't provider-scoped in the manifest, but surfacing them per-agent makes
+ *  each agent's full footprint visible at a glance. */
+function ComponentsBody({
+  providers, declares,
+}: {
+  providers: string[];
+  declares: PluginDetail["manifest"]["declares"];
+}) {
+  // Plugin-wide stats, shared by every provider row.
+  const globalSegs = [
+    countSeg(declares.mcp_servers, "MCP server"),
+    countSeg(declares.workflows, "workflow"),
+    countSeg(declares.templates, "template"),
+    countSeg(declares.prompts, "prompt"),
+  ].filter((s): s is CountSeg => s !== null);
 
-  const rows = [...rootRows, ...providerRows];
+  // Union of explicitly-targeted providers and any that declare components,
+  // preserving the manifest's ordering. Keeps MCP-only agents visible even
+  // when they declare no skills/hooks of their own.
+  const providerIds = Array.from(
+    new Set([...(providers ?? []), ...Object.keys(declares.providers ?? {})]),
+  );
+
+  const rows = providerIds
+    .map((id) => {
+      const pc = declares.providers?.[id];
+      const segs = [
+        countSeg(pc?.skills, "skill"),
+        countSeg(pc?.hooks, "hook"),
+        ...globalSegs,
+      ].filter((s): s is CountSeg => s !== null);
+      return { id, segs };
+    })
+    .filter((r) => r.segs.length > 0);
+
+  // Plugin ships only plugin-wide components and targets no agents (rare):
+  // surface them under a generic row so nothing is silently hidden.
+  if (rows.length === 0 && globalSegs.length > 0) {
+    rows.push({ id: "__all__", segs: globalSegs });
+  }
+
   if (rows.length === 0) {
     return (
       <div style={emptyCard}>This plugin doesn't declare any components yet.</div>
     );
   }
+
   return (
     <div style={{
       borderRadius: 10,
@@ -392,21 +413,54 @@ function ComponentsBody({ declares }: { declares: PluginDetail["manifest"]["decl
       background: "var(--sidebar)",
       overflow: "hidden",
     }}>
-      {rows.map((r, i) => (
-        <div key={r.kind} style={{
-          display: "flex", alignItems: "center",
-          padding: "13px 14px",
-          borderBottom: i === rows.length - 1 ? "none" : "1px solid var(--c-brd)",
-        }}>
-          <span style={{ flex: 1, fontSize: 13, fontWeight: 500, color: "var(--c-high)" }}>
-            {r.kind}
-          </span>
-          <span style={{
-            fontSize: 12, color: "var(--c-dim)",
-            fontFamily: "var(--font-mono)",
-          }}>{r.count}</span>
-        </div>
-      ))}
+      {rows.map((r, i) => {
+        const generic = r.id === "__all__";
+        return (
+          <div key={r.id} style={{
+            display: "flex", alignItems: "center", gap: 12,
+            padding: "12px 14px",
+            borderBottom: i === rows.length - 1 ? "none" : "1px solid var(--c-brd)",
+          }}>
+            {/* Agent identity — icon + display name. Fixed min-width so the
+                stat lines start at the same column across rows. */}
+            <div style={{
+              display: "flex", alignItems: "center", gap: 8,
+              minWidth: 152, flexShrink: 0,
+            }}>
+              {generic
+                ? <Package size={16} style={{ color: "var(--c-dim)" }} />
+                : <ProviderLogo tool={r.id} size={18} />}
+              <span style={{
+                fontSize: 13, fontWeight: 500, color: "var(--c-high)",
+                whiteSpace: "nowrap",
+              }}>
+                {generic ? "All agents" : providerName(r.id)}
+              </span>
+            </div>
+            {/* Stat line — "6 skills · 3 hooks · 3 MCP servers". Wraps as a
+                whole on narrow widths; trailing middots keep wraps clean. */}
+            <div style={{
+              flex: 1, minWidth: 0,
+              display: "flex", flexWrap: "wrap", alignItems: "baseline",
+              columnGap: 6, rowGap: 3,
+              fontSize: 12, color: "var(--c-dim)",
+            }}>
+              {r.segs.map((s, j) => (
+                <span key={s.label} style={{ whiteSpace: "nowrap" }}>
+                  <span style={{
+                    color: "var(--c-med)", fontWeight: 600,
+                    fontFamily: "var(--font-mono)",
+                  }}>{s.n}</span>
+                  {" "}{s.label}
+                  {j < r.segs.length - 1 && (
+                    <span style={{ color: "var(--c-ghost)", marginLeft: 6 }}>·</span>
+                  )}
+                </span>
+              ))}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -894,17 +948,6 @@ function IconTile({ icon, size }: { icon?: string; size: number }) {
     </div>
   );
 }
-
-const COMPONENT_LABEL: Record<string, string> = {
-  mcp_servers: "MCP servers",
-  skills: "Skills",
-  templates: "Templates",
-  // Codex-only — ~/.codex/prompts/*.md auto-loaded by the CLI as
-  // /prompts:<name>.
-  prompts: "Codex prompts",
-  hooks: "Hooks",
-  workflows: "Workflows",
-};
 
 const linkStyle: React.CSSProperties = {
   color: "var(--c-med)",

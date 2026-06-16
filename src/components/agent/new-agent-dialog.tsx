@@ -147,7 +147,7 @@ const PROVIDERS = [
     { id: "gpt-5.4", label: "GPT-5.4", desc: "Balanced", default: true },
     { id: "gpt-5.5", label: "GPT-5.5", desc: "Capable"  },
   ]},
-  { id: "gemini-cli", name: "Gemini", icon: GeminiLogo, models: [
+  { id: "gemini-cli", name: "Gemini CLI", icon: GeminiLogo, models: [
     { id: "gemini-3.1-pro-preview",        label: "3.1 Pro",  desc: "Best",    default: true },
     { id: "gemini-3-flash-preview",        label: "3 Flash",  desc: "Fast"    },
     { id: "gemini-3.1-flash-lite-preview", label: "3.1 Lite", desc: "Fastest" },
@@ -155,7 +155,7 @@ const PROVIDERS = [
   // Kimi Code CLI (Moonshot). Tier mapping aligns with the capability-
   // matrix entry in config/agents.toml — fast → k1.5-preview, balanced
   // → k2-instruct (default), max → k2-thinking.
-  { id: "kimi-code", name: "Kimi", icon: KimiLogo, models: [
+  { id: "kimi-code", name: "Kimi Code", icon: KimiLogo, models: [
     { id: "kimi-k1.5-preview",  label: "K1.5 Preview",  desc: "Fast"     },
     { id: "kimi-k2-instruct",   label: "K2 Instruct",   desc: "Balanced", default: true },
     { id: "kimi-k2-thinking",   label: "K2 Thinking",   desc: "Most capable" },

@@ -27,7 +27,7 @@
  * Installed/Sources live behind header pills, not as sibling tabs.
  */
 import { useEffect, useState } from "react";
-import { PanelLeft, Settings as SettingsIcon, Check, Plus } from "lucide-react";
+import { PanelLeft, Settings as SettingsIcon, Check } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
 import { usesInAppTitleBar } from "@/lib/utils";
 import { usePluginStore } from "@/stores/plugin-store";
@@ -35,7 +35,8 @@ import type { CatalogPlugin } from "@/types/plugin";
 import { BrowseTab } from "./browse/BrowseTab";
 import { InstalledTab } from "./installed/InstalledTab";
 import { SourcesTab } from "./sources/SourcesTab";
-import { PublishView } from "./publish/PublishView";
+// Publish section disabled — uncomment this import + the blocks below to restore.
+// import { PublishView } from "./publish/PublishView";
 import { PluginDetailPage } from "./detail/PluginDetailPage";
 import { InstallDialog } from "./install/InstallDialog";
 
@@ -56,7 +57,7 @@ function readQuery(): QueryState {
   const view: View =
     tab === "installed" ? { kind: "installed" }
     : tab === "sources" ? { kind: "sources" }
-    : tab === "publish" ? { kind: "publish" }
+    // : tab === "publish" ? { kind: "publish" }   // Publish section disabled
     : { kind: "discover" };
 
   const plugin = u.get("plugin");
@@ -73,7 +74,7 @@ function writeQuery(q: QueryState) {
   u.delete("tab"); u.delete("cat");
   if (q.view.kind === "installed") u.set("tab", "installed");
   else if (q.view.kind === "sources") u.set("tab", "sources");
-  else if (q.view.kind === "publish") u.set("tab", "publish");
+  // else if (q.view.kind === "publish") u.set("tab", "publish");   // Publish section disabled
 
   if (q.pluginRoute) u.set("plugin", `${q.pluginRoute.source_id}:${q.pluginRoute.plugin_path}`);
   else u.delete("plugin");
@@ -219,12 +220,15 @@ export function MarketplacePage() {
               </p>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+              {/* Publish section disabled — to restore, uncomment this block and
+                  re-add `Plus` to the lucide-react import at the top of the file.
               <HeaderPill
                 active={state.view.kind === "publish"}
                 onClick={() => setState({ ...state, view: state.view.kind === "publish" ? { kind: "discover" } : { kind: "publish" } })}
                 icon={<Plus size={11} strokeWidth={2.2} />}
                 label="Publish"
               />
+              */}
               <HeaderPill
                 active={state.view.kind === "installed"}
                 onClick={() => setState({ ...state, view: state.view.kind === "installed" ? { kind: "discover" } : { kind: "installed" } })}
@@ -245,9 +249,11 @@ export function MarketplacePage() {
           )}
           {state.view.kind === "installed" && <InstalledTab onOpenDetail={openDetail} />}
           {state.view.kind === "sources"   && <SourcesTab />}
+          {/* Publish section disabled — uncomment this + the PublishView import above to restore.
           {state.view.kind === "publish"   && (
             <PublishView onClose={() => setState({ ...state, view: { kind: "discover" } })} />
           )}
+          */}
         </div>
       </div>
 
