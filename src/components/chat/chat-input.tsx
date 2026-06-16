@@ -1517,14 +1517,25 @@ export function ChatInput({
     // surfaces ONLY provider-agnostic fleet commands. Session-only commands
     // (/review, /plan, /yolo, …) are meaningless without a session, so
     // they must not leak here even though a default `tool` is selected.
-    () => commandsForContext(sessionId ? "session-chat" : "fleet", tool).map((c: SlashCmdDef) => ({
-      cmd: c.cmd,
-      desc: c.desc,
-      body: null,
-      intent: c.intent,
-      providerCmd: c.providerCmd,
-    })),
-    [tool, sessionId],
+    () => {
+      const cmds = commandsForContext(sessionId ? "session-chat" : "fleet", tool);
+      // The Fleet hub chats with the orchestrator over the staff session, so
+      // `sessionId` is set and the session-domain set applies — but the hub
+      // executes no tools, so the tool-execution commands (/plan,
+      // /permissions) are meaningless there. Drop them on the hub; agent
+      // sessions still surface them.
+      const surfaced = controlCenter
+        ? cmds.filter((c) => c.intent !== "session.plan" && c.intent !== "session.permissions")
+        : cmds;
+      return surfaced.map((c: SlashCmdDef) => ({
+        cmd: c.cmd,
+        desc: c.desc,
+        body: null,
+        intent: c.intent,
+        providerCmd: c.providerCmd,
+      }));
+    },
+    [tool, sessionId, controlCenter],
   );
   // ACP agents advertise their slash commands at runtime over ACP
   // (`available_commands_update` — OpenCode, Cursor, Hermes today); ws-manager

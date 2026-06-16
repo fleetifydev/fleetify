@@ -712,9 +712,22 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // Effective selection: explicit pick (while still open) → the working
   // branch's open PR → the newest open PR. The chip + merge cluster
   // target this PR; Create PR stays bound to the working branch.
-  const openPrsList = useOpenPrs();
+  // GitHub connection state from Settings → Integrations — the same
+  // localStorage keys the Create-PR pre-flight and the AuthChoicePopover
+  // already write/read. When NOT connected we surface only branches +
+  // Review + Create PR: no PR data leaks into the strip, even if `gh`
+  // happens to be authed on the machine independently of Settings.
+  const githubConnected = (() => {
+    try {
+      if (localStorage.getItem("fleet:settings:github-enabled") === "0") return false;
+      const m = localStorage.getItem("fleet:github-auth-method");
+      return m === "oauth" || m === "cli";
+    } catch { return false; }
+  })();
+  const openPrsAll = useOpenPrs();
+  const openPrsList = githubConnected ? openPrsAll : [];
   const [selectedPrNumber, setSelectedPrNumber] = useState<number | null>(null);
-  const branchOpenPr = pr && pr.state === "OPEN" ? pr : null;
+  const branchOpenPr = githubConnected && pr && pr.state === "OPEN" ? pr : null;
   const effectiveSelectedNumber =
     selectedPrNumber != null && openPrsList.some(p => p.number === selectedPrNumber)
       ? selectedPrNumber
@@ -804,9 +817,11 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   //   - on default branch with plannedBranch → dispatcher carves
   // Without plannedBranch the bootstrap states can't pick a target
   // branch, so we fall back to hiding the button.
-  const showCreatePR =
-    (!noGit && !onDefaultBranch) ||
-    ((noGit || onDefaultBranch) && !!plannedBranch);
+  // Create PR requires an actual git repo: a non-git session folder shows no
+  // Create PR at all (carving a repo from nothing is out of scope). With a
+  // repo it shows on feature branches, and on the default branch only when a
+  // plannedBranch will be carved.
+  const showCreatePR = !noGit && (!onDefaultBranch || !!plannedBranch);
   // ── Empty-diff gating ──
   // `ctx.plus/minus` already refresh on the 5s git-context poll, so
   // this costs nothing extra. Bootstrap shapes (no git yet, or on the
@@ -1320,7 +1335,7 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // optimistically when it returns). Without this gate the strip
   // showed Create PR for ~2-3s between "poll said no PR" and
   // "auto-PR's optimistic setPr fired."
-  const prCheckedOnce = noGit || onDefaultBranch ? true : prStatusLoaded;
+  const prCheckedOnce = !githubConnected || noGit || onDefaultBranch ? true : prStatusLoaded;
   const checkingPr = !prCheckedOnce || (autoPrInFlight && !pr);
 
   // ── Create slot (left of the merge cluster) ──
@@ -1512,7 +1527,7 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // branch's own PR or a foreign one picked via the switcher chip. The
   // MERGED / CLOSED states stay bound to the working branch's PR.
   let mergeSlot: React.ReactNode = null;
-  if (!checkingPr) {
+  if (!checkingPr && githubConnected) {
     // The selected-PR cluster (Open · #N + purple Merge), targeting the
     // SELECTED repo-wide PR (spec §6). Extracted into a local so the
     // MERGED transitional state can render it ALONGSIDE the Sync-main
@@ -1630,11 +1645,11 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
           width: 18, height: 18, borderRadius: 5,
           display: "inline-flex", alignItems: "center", justifyContent: "center",
           background: "transparent",
-          color: pr?.state === "MERGED" || pr?.state === "CLOSED" ? prIconColor(pr) : "var(--c-low)",
+          color: githubConnected && (pr?.state === "MERGED" || pr?.state === "CLOSED") ? prIconColor(pr) : "var(--c-low)",
           flexShrink: 0,
         }}>
-          {pr?.state === "MERGED" ? <Check size={12} strokeWidth={2.5} />
-            : pr?.state === "CLOSED" ? <X size={12} strokeWidth={2.5} />
+          {githubConnected && pr?.state === "MERGED" ? <Check size={12} strokeWidth={2.5} />
+            : githubConnected && pr?.state === "CLOSED" ? <X size={12} strokeWidth={2.5} />
             : <GitBranch size={12} strokeWidth={1.85} />}
         </span>
 

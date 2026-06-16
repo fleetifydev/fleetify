@@ -108,6 +108,11 @@ async function loadBranchStrip() {
 }
 
 beforeEach(() => {
+  // Default: GitHub connected via Settings → Integrations (CLI method), so the
+  // PR-display tests below see the merge cluster / switcher / merged states.
+  // BranchStrip reads this synchronously to gate PR UI; the "not connected"
+  // cases clear it to assert the branches-only state.
+  try { localStorage.setItem("fleet:github-auth-method", "cli"); } catch { /* jsdom */ }
   // Reset the repo-wide PR store between every test so an empty store is
   // the default — only the switcher describe block seeds it. Without
   // this, a seeded store leaks into later tests and surfaces the chip /
@@ -277,32 +282,16 @@ describe("BranchStrip — planned label + bootstrap Create PR", () => {
     pushNotificationMock.mockReset();
   });
 
-  it("STATE 1 + plannedBranch: renders 'main ← fleet/...' AND a working Create PR button", async () => {
+  it("STATE 1 + plannedBranch: renders 'main ← fleet/...' but NO Create PR (no git repo yet)", async () => {
     gitContextMock.mockResolvedValue({ branch: null, baseBranch: null, plus: 0, minus: 0, remoteHttpsUrl: null });
     const { BranchStrip } = await loadBranchStrip();
     render(<BranchStrip projectPath="/repo" plannedBranch="fleet/my-app-abc12345" />);
     // Both pills surface: dimmed "main" baseline + dimmed planned target
     await waitFor(() => expect(screen.getByText("main")).toBeInTheDocument());
     expect(screen.getByText(/fleet\/my-app-abc12345/)).toBeInTheDocument();
-    // The bootstrap CTA is now exposed (Phase-1 hide is lifted when we have a plannedBranch)
-    expect(screen.getByRole("button", { name: /Create PR/i })).toBeEnabled();
-  });
-
-  it("STATE 1 + plannedBranch: clicking Create PR passes featureBranch to the dispatcher", async () => {
-    gitContextMock.mockResolvedValue({ branch: null, baseBranch: null, plus: 0, minus: 0, remoteHttpsUrl: null });
-    createPRMock.mockResolvedValue({
-      ok: true, prNumber: 1, prUrl: "https://github.com/u/r/pull/1",
-      repoCreated: true, repoUrl: "https://github.com/u/r",
-    });
-    const { BranchStrip } = await loadBranchStrip();
-    render(<BranchStrip projectPath="/repo" plannedBranch="fleet/my-app-abc12345" sessionTitle="My app" />);
-    fireEvent.click(await screen.findByRole("button", { name: /Create PR/i }));
-    await waitFor(() => {
-      expect(createPRMock).toHaveBeenCalledWith(
-        "/repo",
-        expect.objectContaining({ featureBranch: "fleet/my-app-abc12345" }),
-      );
-    });
+    // Create PR requires a real git repo — a non-git folder shows the planned
+    // label only, no bootstrap CTA.
+    expect(screen.queryByRole("button", { name: /Create PR/i })).toBeNull();
   });
 
   it("STATE 3b + plannedBranch: on-default with diff renders the planned target dimmed beside main", async () => {
@@ -1194,12 +1183,12 @@ describe("BranchStrip — empty-diff gating", () => {
     expect(screen.queryByRole("button", { name: /review changes/i })).toBeNull();
   });
 
-  it("bootstrap (no git + plannedBranch) stays clickable with empty diff", async () => {
+  it("no git + plannedBranch shows NO Create PR (a real git repo is required)", async () => {
     gitContextMock.mockResolvedValue({ branch: null, baseBranch: null, plus: 0, minus: 0, remoteHttpsUrl: null });
     const { BranchStrip } = await loadBranchStrip();
     render(<BranchStrip projectPath="/repo" plannedBranch="fleet/my-app-abc12345" />);
-    const btn = await screen.findByRole("button", { name: /^create pr$/i });
-    expect(btn).not.toBeDisabled();
+    await screen.findByText(/fleet\/my-app-abc12345/);
+    expect(screen.queryByRole("button", { name: /^create pr$/i })).toBeNull();
   });
 
 });
@@ -1241,6 +1230,21 @@ describe("BranchStrip — PR switcher + repo-wide merge", () => {
     // …and the blocked create slot (plus Review) is gone, not grayed out.
     await waitFor(() => expect(screen.queryByRole("button", { name: /^create pr$/i })).toBeNull());
     expect(screen.queryByRole("button", { name: /review changes/i })).toBeNull();
+  });
+
+  it("not connected (no Settings GitHub link) → hides the PR chip + merge cluster, shows Create PR + Review", async () => {
+    // Same seeded open-PR state as the connected tests, but with the
+    // Settings → Integrations link cleared. The strip falls back to the
+    // branches-only state: no #5 chip, no Open/Merge cluster — yet Create PR
+    // and Review return (a hidden PR no longer blocks them).
+    localStorage.removeItem("fleet:github-auth-method");
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" />);
+    await screen.findByRole("button", { name: /^create pr$/i });
+    expect(screen.getByRole("button", { name: /review changes/i })).toBeInTheDocument();
+    expect(screen.queryByText("#5")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Open · #5/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /switch pull request/i })).toBeNull();
   });
 
   it("chip popover lists open PRs; picking one retargets Merge", async () => {
