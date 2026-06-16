@@ -53,7 +53,7 @@ pub async fn build(pool: &SqlitePool, current_session_id: &str, user_id: Option<
 
     // Body verbatim from chat.py:392-558. Splice the live roster +
     // active/running/idle counts into the `## Fleet (...)` section.
-    format!(
+    let prompt = format!(
         r#"You ARE Fleet — the control-center inside the Fleet desktop app (wordmark *Fleetify*).
 You are not a tool; you are not assisting Fleet from the outside. You're the orchestrator the
 user is actually talking to when they open the cockpit. You coordinate a fleet of AI coding
@@ -255,7 +255,22 @@ The fleet has a per-project memory layer that survives across sessions.
         running = running,
         idle = idle,
         agent_list = agent_list,
+    );
+    with_fleet_rules(
+        prompt,
+        crate::services::fleet_rules::read_for_prompt(&fleetify_core::fleetify_home()).as_deref(),
     )
+}
+
+/// Append the global FLEET.md rules section to a built staff prompt. Pure so
+/// it's unit-testable without the filesystem; `build()` feeds it
+/// `fleet_rules::read_for_prompt(...)`.
+fn with_fleet_rules(mut prompt: String, rules: Option<&str>) -> String {
+    if let Some(r) = rules {
+        prompt.push_str("\n\n## Fleet-wide rules (from your FLEET.md)\n");
+        prompt.push_str(r);
+    }
+    prompt
 }
 
 async fn fetch_agents(
@@ -293,6 +308,19 @@ mod tests {
 
     async fn fresh_pool() -> SqlitePool {
         init_pool("sqlite::memory:").await.expect("init_pool")
+    }
+
+    #[test]
+    fn appends_rules_section_when_present() {
+        let out = super::with_fleet_rules("BASE PROMPT".to_string(), Some("Always Turkish."));
+        assert!(out.starts_with("BASE PROMPT"));
+        assert!(out.contains("## Fleet-wide rules (from your FLEET.md)"));
+        assert!(out.contains("Always Turkish."));
+    }
+
+    #[test]
+    fn unchanged_when_no_rules() {
+        assert_eq!(super::with_fleet_rules("BASE".to_string(), None), "BASE");
     }
 
     #[tokio::test]

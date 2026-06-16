@@ -12,6 +12,7 @@ pub mod command_catalog;
 pub mod compactor;
 pub mod dispatch;
 pub mod fleet_brain;
+pub mod fleet_rules;
 pub mod haiku_breaker;
 pub mod haiku_client;
 pub mod library;

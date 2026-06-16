@@ -20,15 +20,9 @@ pub fn router() -> Router<AppState> {
         .route("/fleet/rules", get(get_rules).put(set_rules))
 }
 
-/// The Fleet rule file — general, app-level rules for Fleet itself, kept in the
-/// FLEETIFY_HOME root (`~/.fleetify/FLEET.md`). Edited from Settings → Rules.
-fn fleet_rules_path() -> std::path::PathBuf {
-    fleetify_core::fleetify_home().join("FLEET.md")
-}
-
 /// `GET /api/fleet/rules` — the current FLEET.md text (empty when absent).
 async fn get_rules() -> Json<Value> {
-    let content = std::fs::read_to_string(fleet_rules_path()).unwrap_or_default();
+    let content = crate::services::fleet_rules::read_raw(&fleetify_core::fleetify_home());
     Json(json!({ "content": content }))
 }
 
@@ -38,11 +32,10 @@ struct RulesBody {
     content: String,
 }
 
-/// `PUT /api/fleet/rules` — persist FLEET.md (creating `~/.fleetify/` if needed).
+/// `PUT /api/fleet/rules` — persist FLEET.md (creating `~/.fleetify/` if
+/// needed); empty/whitespace content deletes the file (delete-on-empty).
 async fn set_rules(Json(b): Json<RulesBody>) -> Result<Json<Value>, ApiError> {
-    let home = fleetify_core::fleetify_home();
-    std::fs::create_dir_all(&home).map_err(|e| ApiError::Internal(e.to_string()))?;
-    std::fs::write(home.join("FLEET.md"), &b.content)
+    crate::services::fleet_rules::save(&fleetify_core::fleetify_home(), &b.content)
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(json!({ "ok": true, "content": b.content })))
 }
