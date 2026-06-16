@@ -1442,7 +1442,25 @@ async fn run_send_flow(
                 // lifetime. Stale-tree risk is acceptable (file listing
                 // staleness; nothing the model couldn't recover via
                 // list_dir on demand).
-                let system_prompt = crate::agentic::build_system_context(&workspace).await;
+                let is_staff = session.title == "Staff Agent";
+                // Staff orchestrator on a built-in agentic provider: lead with the
+                // Fleet orchestrator prompt (roster + [[DISPATCH]] + FLEET.md)
+                // instead of the generic coding-assistant header; <environment> +
+                // <tool_usage> still follow.
+                let staff = if is_staff {
+                    Some(
+                        crate::services::staff_prompt::build(
+                            &st.auth.pool,
+                            &sid,
+                            session.user_id.as_deref(),
+                        )
+                        .await,
+                    )
+                } else {
+                    None
+                };
+                let system_prompt =
+                    crate::agentic::build_system_context(&workspace, staff.as_deref()).await;
                 AnyBridge::Agentic(Arc::new(
                     crate::bridges::agentic_runner::AgenticBridgeRunner::new(
                         sid.clone(),
@@ -1659,6 +1677,24 @@ async fn run_send_flow(
         }
         "codex-cli" => {
             let is_staff = session.title == "Staff Agent";
+            // Codex's app-server has no system-prompt flag, so the staff
+            // dispatch protocol (or a template prompt) is prepended to the
+            // turn input by the bridge — parity with the antigravity/gemini
+            // arms. Without this the Fleet (staff) Codex agent never learns
+            // the `[[DISPATCH:...]]` protocol and can't delegate.
+            let system_prompt = if is_staff {
+                Some(
+                    crate::services::staff_prompt::build(
+                        &st.auth.pool,
+                        &sid,
+                        session.user_id.as_deref(),
+                    )
+                    .await,
+                )
+            } else {
+                crate::services::templates::resolve(session.agent_template.as_deref())
+                    .map(|tpl| tpl.system_prompt.to_string())
+            };
             let mut b = CodexBridge::new(
                 sid.clone(),
                 agent_cwd.clone(),
@@ -1671,6 +1707,7 @@ async fn run_send_flow(
             // Wire the independent sandbox axis (session.sandbox overrides the
             // approval-derived sandbox; None keeps the derived value).
             b.sandbox = session.sandbox.clone();
+            b.system_prompt = system_prompt;
             // Codex V2 surfaces approvals through `on_approval_request`
             // in every mode except bypass/dontAsk/never. Wire the handler
             // for all ask-like modes (default, acceptEdits, untrusted,
@@ -3104,15 +3141,24 @@ async fn run_dispatched_task(
             }
             AnyBridge::Gemini(std::sync::Arc::new(b))
         }
-        "codex-cli" => AnyBridge::Codex(std::sync::Arc::new(CodexBridge::new(
-            target_id.clone(),
-            target_cwd.clone(),
-            target.permission_mode.clone(),
-            target.model_name.clone(),
-            target.effort.clone().unwrap_or_default(),
-            false, // dispatched tasks always land on non-staff agents
-            target.agent_template.clone(),
-        ))),
+        "codex-cli" => {
+            let mut b = CodexBridge::new(
+                target_id.clone(),
+                target_cwd.clone(),
+                target.permission_mode.clone(),
+                target.model_name.clone(),
+                target.effort.clone().unwrap_or_default(),
+                false, // dispatched tasks always land on non-staff agents
+                target.agent_template.clone(),
+            );
+            // Mirror the Gemini dispatch arm: a dispatched Codex agent
+            // inherits its template's system prompt (e.g. reverse_engineering).
+            if let Some(tpl) = crate::services::templates::resolve(target.agent_template.as_deref())
+            {
+                b.system_prompt = Some(tpl.system_prompt.to_string());
+            }
+            AnyBridge::Codex(std::sync::Arc::new(b))
+        }
         "opencode" => {
             let mut b = crate::bridges::opencode::OpenCodeBridge::new(
                 target_id.clone(),

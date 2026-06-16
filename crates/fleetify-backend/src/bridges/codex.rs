@@ -154,6 +154,11 @@ pub struct CodexBridge {
     /// Builtin template id (e.g. `"reverse_engineering"`) — opts the
     /// session into extra stdio MCPs like `fleet_reveng`.
     pub agent_template: Option<String>,
+    /// Staff dispatch protocol (from `services::staff_prompt::build`, incl. any
+    /// global FLEET.md rules) or a template's system prompt. Codex has no
+    /// system-prompt flag, so when set we prepend it to the turn's input item
+    /// (see `compose_input_text`). None → message unchanged.
+    pub system_prompt: Option<String>,
     /// Optional bridge-out callback for live tool-permission prompts.
     /// When set AND the permission mode requires user approval, the
     /// codex client's `on_approval_request` routes through this handler
@@ -163,6 +168,17 @@ pub struct CodexBridge {
     pub permission_handler: Option<super::permission::PermissionHandler>,
     aborted: Arc<AtomicBool>,
     state: Arc<Mutex<Option<State>>>,
+}
+
+/// Prepend a system prompt (staff dispatch protocol, or a template's system
+/// prompt) to the user message. Codex's app-server has no system-prompt slot —
+/// the input-item text is the only channel — so when set we lead with it,
+/// mirroring the agy/antigravity bridge. Empty/None leaves the message as-is.
+fn compose_input_text(system_prompt: Option<&str>, message: &str) -> String {
+    match system_prompt {
+        Some(sp) if !sp.is_empty() => format!("{sp}\n\n---\n\n{message}"),
+        _ => message.to_string(),
+    }
 }
 
 impl CodexBridge {
@@ -184,6 +200,7 @@ impl CodexBridge {
             sandbox: None,
             is_staff,
             agent_template,
+            system_prompt: None,
             permission_handler: None,
             aborted: Arc::new(AtomicBool::new(false)),
             state: Arc::new(Mutex::new(None)),
@@ -439,6 +456,7 @@ impl CodexBridge {
         let state_mu = self.state.clone();
         let aborted = self.aborted.clone();
         let msg_owned = msg.to_string();
+        let sys_prompt = self.system_prompt.clone();
         let needs_cold_start = state_mu.lock().await.is_none();
         let cold_starter = if needs_cold_start {
             Some(self.cold_start_fut(ctx.base_url_override.clone(), ctx.account_env.clone()))
@@ -684,7 +702,7 @@ impl CodexBridge {
 
             // Send the prompt as a single text input item.
             tracing::info!(target: "codex", session_id = %session_id, "codex: turn/start START");
-            let input_items = json!([{ "type": "text", "text": msg_owned }]);
+            let input_items = json!([{ "type": "text", "text": compose_input_text(sys_prompt.as_deref(), &msg_owned) }]);
             let turn_res = client.turn_start(&thread_id, input_items, None).await;
             tracing::info!(target: "codex", session_id = %session_id, turn_start_ok = turn_res.is_ok(), "codex: turn/start returned — waiting for turn/completed");
 
@@ -768,6 +786,7 @@ impl CodexBridge {
         let sandbox = self.sandbox.clone();
         let is_staff = self.is_staff;
         let agent_template = self.agent_template.clone();
+        let system_prompt = self.system_prompt.clone();
         let state = self.state.clone();
         let permission_handler = self.permission_handler.clone();
         Box::pin(async move {
@@ -780,6 +799,7 @@ impl CodexBridge {
                 sandbox,
                 is_staff,
                 agent_template,
+                system_prompt,
                 aborted: Arc::new(AtomicBool::new(false)),
                 state,
                 permission_handler,
@@ -1088,6 +1108,16 @@ mod tests {
         // No error → None (successful turn: `turn.error` absent or null).
         assert_eq!(extract_codex_error(&json!({ "turn": {} })), None);
         assert_eq!(extract_codex_error(&json!({ "error": null })), None);
+    }
+
+    #[test]
+    fn compose_input_text_prepends_system_prompt() {
+        assert_eq!(
+            super::compose_input_text(Some("RULES"), "hi"),
+            "RULES\n\n---\n\nhi"
+        );
+        assert_eq!(super::compose_input_text(Some(""), "hi"), "hi");
+        assert_eq!(super::compose_input_text(None, "hi"), "hi");
     }
 
     #[test]

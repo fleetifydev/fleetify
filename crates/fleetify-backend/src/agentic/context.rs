@@ -63,9 +63,13 @@ const TREE_MAX_ENTRIES: usize = 200;
 /// Build the full system prompt for a fresh session against `workspace`.
 /// Each section is best-effort: if reading the workspace tree fails or
 /// git isn't installed, that section is omitted but the rest still ships.
-pub async fn build_system_context(workspace: &Workspace) -> String {
+pub async fn build_system_context(workspace: &Workspace, header: Option<&str>) -> String {
     let mut out = String::with_capacity(8_192);
-    out.push_str(SYSTEM_HEADER);
+    let header = header.unwrap_or(SYSTEM_HEADER);
+    out.push_str(header);
+    if !header.ends_with('\n') {
+        out.push_str("\n\n");
+    }
 
     out.push_str("<environment>\n");
     out.push_str(&format!("workspace: {}\n", workspace.root().display()));
@@ -238,7 +242,7 @@ mod tests {
     async fn includes_workspace_path_and_env_block() {
         let dir = tempdir().unwrap();
         let ws = Workspace::new(dir.path()).unwrap();
-        let prompt = build_system_context(&ws).await;
+        let prompt = build_system_context(&ws, None).await;
         assert!(prompt.contains("<environment>"));
         assert!(prompt.contains(&ws.root().to_string_lossy().to_string()));
         assert!(prompt.contains(&format!("os: {}", std::env::consts::OS)));
@@ -250,7 +254,7 @@ mod tests {
         std::fs::write(dir.path().join("CLAUDE.md"), "# Project rules\nUse TDD.\n").unwrap();
         std::fs::write(dir.path().join("README.md"), "# Public\nDon't pick me\n").unwrap();
         let ws = Workspace::new(dir.path()).unwrap();
-        let prompt = build_system_context(&ws).await;
+        let prompt = build_system_context(&ws, None).await;
         assert!(prompt.contains("<CLAUDE.md>"));
         assert!(prompt.contains("Project rules"));
         assert!(!prompt.contains("<README.md>"));
@@ -262,7 +266,7 @@ mod tests {
         let huge = "x".repeat(README_BUDGET + 500);
         std::fs::write(dir.path().join("README.md"), huge).unwrap();
         let ws = Workspace::new(dir.path()).unwrap();
-        let prompt = build_system_context(&ws).await;
+        let prompt = build_system_context(&ws, None).await;
         assert!(prompt.contains("<README.md>"));
         assert!(prompt.contains(&format!("[truncated at {README_BUDGET} chars")));
     }
@@ -275,7 +279,7 @@ mod tests {
         std::fs::create_dir(dir.path().join("node_modules")).unwrap();
         std::fs::write(dir.path().join("node_modules/x.js"), "").unwrap();
         let ws = Workspace::new(dir.path()).unwrap();
-        let prompt = build_system_context(&ws).await;
+        let prompt = build_system_context(&ws, None).await;
         assert!(prompt.contains("<workspace_tree>"));
         assert!(prompt.contains("src/"));
         assert!(prompt.contains("main.rs"));
@@ -286,15 +290,34 @@ mod tests {
     async fn git_state_omitted_for_non_git_dir() {
         let dir = tempdir().unwrap();
         let ws = Workspace::new(dir.path()).unwrap();
-        let prompt = build_system_context(&ws).await;
+        let prompt = build_system_context(&ws, None).await;
         assert!(!prompt.contains("<git>"));
+    }
+
+    #[tokio::test]
+    async fn staff_header_overrides_default_and_keeps_env_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(dir.path()).unwrap();
+        let prompt = build_system_context(&ws, Some("You ARE Fleet — orchestrator.")).await;
+        assert!(prompt.contains("You ARE Fleet"));
+        assert!(!prompt.contains("You are an AI coding assistant"));
+        assert!(prompt.contains("<environment>"));
+        assert!(prompt.contains("<tool_usage>"));
+    }
+
+    #[tokio::test]
+    async fn default_header_used_when_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(dir.path()).unwrap();
+        let prompt = build_system_context(&ws, None).await;
+        assert!(prompt.contains("You are an AI coding assistant"));
     }
 
     #[tokio::test]
     async fn includes_tool_usage_guide() {
         let dir = tempdir().unwrap();
         let ws = Workspace::new(dir.path()).unwrap();
-        let prompt = build_system_context(&ws).await;
+        let prompt = build_system_context(&ws, None).await;
         assert!(prompt.contains("<tool_usage>"));
         assert!(prompt.contains("edit_file"));
         assert!(prompt.contains("grep"));
