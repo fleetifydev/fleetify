@@ -980,6 +980,9 @@ export interface PromptEnhanceResult {
 export async function enhancePrompt(
   prompt: string,
   opts?: {
+    /** Owning session — lets the backend attribute the Haiku meta-cost
+     *  to the right session's budget. Omitted ⇒ unattributed. */
+    sessionId?: string | null;
     projectPath?: string;
     /** Active tool/provider — server uses it to pick the matching
      *  small-tier model (claude→haiku, openai/codex→gpt-5-mini,
@@ -993,6 +996,7 @@ export async function enhancePrompt(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
+      session_id: opts?.sessionId ?? "",
       prompt,
       project_path: opts?.projectPath ?? null,
       tool: opts?.tool ?? null,
@@ -1045,12 +1049,13 @@ export interface FleetChatResult {
  *  of the fleet as context. Stateless; the caller composes the snapshot
  *  client-side (session titles + statuses + recent activity). */
 export async function askFleet(
-  opts: { question: string; fleetSnapshot: string },
+  opts: { question: string; fleetSnapshot: string; sessionId?: string | null },
 ): Promise<FleetChatResult> {
   const res = await apiFetch(`${API_BASE}/fleet/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
+      session_id: opts.sessionId ?? "",
       question: opts.question,
       fleet_snapshot: opts.fleetSnapshot,
     }),
@@ -1066,12 +1071,15 @@ export async function analyzeFleetResponse(
     priorPrompt: string;
     agentText: string;
     projectPath?: string | null;
+    /** Owning session — attributes the analyze meta-cost to its budget. */
+    sessionId?: string | null;
   },
 ): Promise<FleetAnalyzeResult> {
   const res = await apiFetch(`${API_BASE}/fleet/analyze`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
+      session_id: opts.sessionId ?? "",
       prior_prompt: opts.priorPrompt,
       agent_text: opts.agentText,
       project_path: opts.projectPath ?? null,

@@ -23,8 +23,17 @@ use sqlx::SqlitePool;
 
 use super::haiku_client::{call_haiku_with_meta_cost, extract_json_object};
 
-const ANALYZE_TIMEOUT: Duration = Duration::from_secs(8);
-const CHAT_TIMEOUT: Duration = Duration::from_secs(10);
+// Cold-start headroom. An isolated `claude --print` one-shot floors at
+// ~6 s from a neutral cwd (CLI boot + auth + model handshake); analyze
+// adds the 60-line classifier system prompt and generates a JSON object
+// with reasoning, measuring ~10–12 s in practice (more under load). The
+// old 8 s budget timed out every call and tripped the breaker. 25 s
+// matches the proven meta-call budget (`DEFAULT_TIMEOUT`) and absorbs
+// load variance — these run in the background after the agent's reply, so
+// a higher ceiling only delays giving up on a genuine hang (which then
+// fails soft to "degraded → no card").
+const ANALYZE_TIMEOUT: Duration = Duration::from_secs(25);
+const CHAT_TIMEOUT: Duration = Duration::from_secs(25);
 
 const MAX_AGENT_TEXT: usize = 8000;
 const MAX_PRIOR_PROMPT: usize = 600;

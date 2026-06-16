@@ -48,7 +48,10 @@ struct AnalyzeBody {
     prior_prompt: String,
     #[serde(default)]
     agent_text: String,
-    #[serde(default)]
+    // The renderer sends the project path under `project_path`; accept
+    // `project_context` too. Without the alias the brain never received
+    // the project hint (it silently defaulted to None).
+    #[serde(default, alias = "project_path")]
     project_context: Option<String>,
 }
 
@@ -69,7 +72,10 @@ async fn analyze(State(st): State<AppState>, Json(b): Json<AnalyzeBody>) -> Json
 struct ChatBody {
     #[serde(default)]
     session_id: String,
-    #[serde(default)]
+    // The Ask-Fleet UI sends the user's question under `question`; accept
+    // `prompt` too. Without the alias the question defaulted to "" → Haiku
+    // got the fleet snapshot but not the actual question.
+    #[serde(default, alias = "question")]
     prompt: String,
     #[serde(default)]
     fleet_snapshot: String,
@@ -82,5 +88,43 @@ async fn chat(State(st): State<AppState>, Json(b): Json<ChatBody>) -> Json<Value
             "text": format!("Fleet couldn't reply ({e})."),
             "cost_estimate_usd": 0.0,
         })),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression: the renderer posts `project_path`, but the brain reads
+    // `project_context`. Before the alias the project hint was always lost.
+    #[test]
+    fn analyze_body_accepts_renderer_project_path() {
+        let b: AnalyzeBody = serde_json::from_str(
+            r#"{"session_id":"s1","prior_prompt":"add tests","agent_text":"edited parser.rs","project_path":"/repo"}"#,
+        )
+        .expect("renderer analyze payload");
+        assert_eq!(b.prior_prompt, "add tests");
+        assert_eq!(b.agent_text, "edited parser.rs");
+        assert_eq!(b.project_context.as_deref(), Some("/repo"));
+    }
+
+    // Regression: the Ask-Fleet UI posts the question under `question`, but
+    // the handler reads `prompt`. Before the alias the question was dropped
+    // and Haiku only saw the fleet snapshot.
+    #[test]
+    fn chat_body_accepts_renderer_question_field() {
+        let b: ChatBody = serde_json::from_str(
+            r#"{"question":"which session is stuck?","fleet_snapshot":"3 agents..."}"#,
+        )
+        .expect("renderer chat payload");
+        assert_eq!(b.prompt, "which session is stuck?");
+        assert_eq!(b.fleet_snapshot, "3 agents...");
+    }
+
+    #[test]
+    fn chat_body_still_accepts_legacy_prompt_field() {
+        let b: ChatBody =
+            serde_json::from_str(r#"{"prompt":"hi","fleet_snapshot":""}"#).expect("legacy chat");
+        assert_eq!(b.prompt, "hi");
     }
 }

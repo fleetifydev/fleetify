@@ -1578,6 +1578,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     fleet.setStatus(sid, "thinking", "Analyzing response");
 
     analyzeFleetResponse({
+      sessionId: sid,
       priorPrompt: userText,
       agentText: assistantText,
       projectPath: activeSession?.project_path ?? null,

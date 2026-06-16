@@ -15,7 +15,13 @@ use sqlx::SqlitePool;
 
 use super::haiku_client::call_haiku_with_meta_cost;
 
-const ENHANCE_TIMEOUT: Duration = Duration::from_secs(6);
+// Cold-start headroom — an isolated `claude --print` one-shot floors at
+// ~6 s from a neutral cwd (CLI boot + auth + model handshake), so the old
+// 6 s budget timed out on the first refine of a session and tripped the
+// breaker. 20 s clears a cold start with generous margin; refine still
+// fails soft (sends the original draft) if it somehow runs slower, so the
+// user is never blocked.
+const ENHANCE_TIMEOUT: Duration = Duration::from_secs(20);
 const NOOP_SENTINEL: &str = "__NOOP__";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

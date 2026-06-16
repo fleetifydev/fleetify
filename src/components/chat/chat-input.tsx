@@ -1964,6 +1964,7 @@ export function ChatInput({
     const snapshotAtts = attachments;
     setRefining(true);
     enhancePrompt(t, {
+      sessionId: sessionId ?? null,
       projectPath: projectPath ?? undefined,
       tool: tool ?? null,
       model: model ?? null,

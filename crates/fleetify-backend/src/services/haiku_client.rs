@@ -42,7 +42,26 @@ pub async fn call_haiku(
     // model id, `--system-prompt` (if provided) is sent as the system
     // message. The prompt itself is piped on stdin to avoid the 32 KB
     // ARG_MAX cliff on Windows.
-    let mut args: Vec<String> = vec!["--print".into(), "--model".into(), DEFAULT_MODEL.into()];
+    //
+    // ISOLATION (mirrors `call_model_streaming`): without these flags a
+    // cold one-shot call inherits the backend's project cwd and the
+    // user's full Claude config — it auto-discovers the project CLAUDE.md,
+    // loads every MCP server, and runs the SessionStart hooks (the
+    // superpowers hook alone injects ~19k tokens). That pushed each call
+    // past the 8 s analyze budget (measured ~14 s from a project dir vs
+    // ~7 s isolated), so every analyze timed out and tripped the breaker.
+    // `--strict-mcp-config` drops MCP servers, `--setting-sources
+    // project,local` skips the user's settings/hooks, and a neutral cwd
+    // (set below) avoids project CLAUDE.md auto-discovery. OAuth still
+    // works — only `--bare` disables keychain auth, which we don't pass.
+    let mut args: Vec<String> = vec![
+        "--print".into(),
+        "--strict-mcp-config".into(),
+        "--setting-sources".into(),
+        "project,local".into(),
+        "--model".into(),
+        DEFAULT_MODEL.into(),
+    ];
     if let Some(s) = system {
         args.push("--system-prompt".into());
         args.push(s.to_string());
@@ -50,6 +69,7 @@ pub async fn call_haiku(
 
     let mut cmd = tokio::process::Command::new(&bin);
     cmd.args(&args)
+        .current_dir(std::env::temp_dir())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
