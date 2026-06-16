@@ -1045,7 +1045,14 @@ async fn run_send_flow(
             session.model_name.as_deref(),
         )
         .await;
-        if fill.is_some_and(|f| f >= crate::services::compactor::AUTO_COMPACT_THRESHOLD) {
+        // Only auto-fire when the context is near full AND the conversation is
+        // actually compactable. Without the second guard a near-full but very
+        // short conversation (e.g. one huge pasted blob) would trigger a
+        // compaction that immediately fails MIN_MESSAGE_COUNT and surfaces a
+        // "too short to compact" error the user never asked for.
+        if fill.is_some_and(|f| f >= crate::services::compactor::AUTO_COMPACT_THRESHOLD)
+            && crate::services::compactor::is_compactable(&st.auth.pool, &sid).await
+        {
             let provider = session.tool.clone();
             run_compaction(
                 &st,

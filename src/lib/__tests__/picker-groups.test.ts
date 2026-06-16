@@ -1,6 +1,36 @@
 import { describe, it, expect } from "vitest";
-import { buildPickerGroups, effortForDiscoveredModel, resolveDispatchTool, resolveModelChip, modelsForTile, resolveStartupDefault, hermesProviders, hermesHealModel } from "../picker-groups";
+import { buildPickerGroups, effortForDiscoveredModel, resolveDispatchTool, resolveModelChip, modelsForTile, resolveStartupDefault, hermesProviders, hermesHealModel, parseContextWindow, contextWindowForModel } from "../picker-groups";
 import type { ProviderTile, ProviderSpec } from "@/lib/providers-api";
+
+describe("parseContextWindow", () => {
+  it("parses M / K / plain / comma forms; rejects junk", () => {
+    expect(parseContextWindow("1M")).toBe(1_000_000);
+    expect(parseContextWindow("200K")).toBe(200_000);
+    expect(parseContextWindow("128k")).toBe(128_000);
+    expect(parseContextWindow("1000000")).toBe(1_000_000);
+    expect(parseContextWindow("200,000")).toBe(200_000);
+    expect(parseContextWindow(null)).toBeNull();
+    expect(parseContextWindow("")).toBeNull();
+    expect(parseContextWindow("abc")).toBeNull();
+  });
+});
+
+describe("contextWindowForModel", () => {
+  it("reads an explicit [1m] / context= hint from the id", () => {
+    expect(contextWindowForModel("claude-opus-4-8[1m]", [])).toBe(1_000_000);
+    expect(
+      contextWindowForModel("claude-sonnet-4-5[thinking=true,context=200k]", []),
+    ).toBe(200_000);
+  });
+  it("falls back to the static catalog ctx by id", () => {
+    expect(contextWindowForModel("claude-fable-5", [])).toBe(1_000_000);
+    expect(contextWindowForModel("claude-opus-4-8", [])).toBe(200_000);
+  });
+  it("defaults to 200K for unknown / empty model", () => {
+    expect(contextWindowForModel("totally-unknown", [])).toBe(200_000);
+    expect(contextWindowForModel(null, [])).toBe(200_000);
+  });
+});
 
 const baseTile = (
   id: string,

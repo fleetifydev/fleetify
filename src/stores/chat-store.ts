@@ -487,6 +487,24 @@ interface ChatState {
 }
 
 // Deep-patch a single session entry immutably so React re-renders pick up the change.
+/** Structural equality for the fields <MessageContent>'s memo compares (id,
+ *  content, cost, duration, usage). Lets `setMessages` reuse a prior object
+ *  reference when a re-fetched message is unchanged, so the memo bails instead
+ *  of re-parsing its markdown. Content/usage are compared by value because the
+ *  fetch path rebuilds them fresh each time. */
+function sameMessage(a: ChatMessage, b: ChatMessage): boolean {
+  if (a.id !== b.id) return false;
+  if (a.cost_usd !== b.cost_usd) return false;
+  if (a.duration_ms !== b.duration_ms) return false;
+  if (a.content !== b.content) {
+    if (JSON.stringify(a.content) !== JSON.stringify(b.content)) return false;
+  }
+  if (a.usage !== b.usage) {
+    if (JSON.stringify(a.usage) !== JSON.stringify(b.usage)) return false;
+  }
+  return true;
+}
+
 const patch = (
   state: ChatState,
   sessionId: string,
@@ -611,9 +629,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const targetId = m.id.slice("pending-".length);
         return state.dispatchPreviews[targetId] !== undefined;
       });
+      // Reference-stabilise unchanged messages. chat-view re-fetches + re-parses
+      // on every session open, handing us fresh objects with identical content;
+      // because <MessageContent>'s memo compares `content` by REFERENCE, those
+      // fresh arrays defeat it and every message re-parses its markdown (~10ms
+      // each → a few hundred ms per open, 2-3× over). Reusing the prior object
+      // when nothing changed lets the memo bail, so an open re-parses at most
+      // once. The equality check runs a handful of times per open (cheap), not
+      // per render.
+      const prevById = new Map(cur.messages.map((m) => [m.id, m]));
+      const stabilized = messages.map((m) => {
+        const old = prevById.get(m.id);
+        return old && sameMessage(old, m) ? old : m;
+      });
       // Pending blocks are stamped at dispatch_ack time (now) so they're
       // always newer than fetched DB rows — appending keeps chronology.
-      const merged = carryOver.length === 0 ? messages : [...messages, ...carryOver];
+      const merged = carryOver.length === 0 ? stabilized : [...stabilized, ...carryOver];
       return patch(state, sessionId, () => ({ messages: merged }));
     }),
 

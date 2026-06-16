@@ -396,10 +396,22 @@ async fn delete_session(
     if let Some(wt) = s.worktree_path.as_deref() {
         let _ = crate::services::worktree::remove_worktree(&s.project_path, wt).await;
     }
-    sqlx::query("DELETE FROM sessions WHERE id = ?")
-        .bind(&id)
-        .execute(&st.auth.pool)
-        .await?;
+    if s.origin.as_deref() == Some("claude-bg") {
+        // Auto-surfaced background session: ARCHIVE instead of hard-deleting so
+        // a tombstone remains. The background-agent poller respects an archived
+        // bg row and never re-surfaces that conversation — otherwise deleting it
+        // while its Claude agent is still alive would just spawn the row back.
+        sqlx::query("UPDATE sessions SET archived_at = ? WHERE id = ?")
+            .bind(chrono::Utc::now().to_rfc3339())
+            .bind(&id)
+            .execute(&st.auth.pool)
+            .await?;
+    } else {
+        sqlx::query("DELETE FROM sessions WHERE id = ?")
+            .bind(&id)
+            .execute(&st.auth.pool)
+            .await?;
+    }
     // Cloud telemetry — record the session stop.
     let sid_owned = s.id.clone();
     let tool_owned = s.tool.clone();

@@ -17,7 +17,7 @@
 //! Scope (v1): the default Claude config dir / account. Multi-account daemons
 //! (`~/.claude-2`, …) are not yet polled — noted in the PR.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -190,6 +190,41 @@ fn origin_conversation_map() -> HashMap<String, String> {
     map
 }
 
+/// Session ids of daemon SPARE workers — pre-warmed `claude --bg-spare`
+/// processes Claude keeps in a pool to instantly claim the next `/bg`. They
+/// appear in `claude agents --json` as `kind:"background"` but are NOT real
+/// conversations (roster `dispatch.source == "spare"`, name is just their own
+/// id). Without excluding them the poller surfaces phantom rows that look like
+/// they spawned themselves.
+fn spare_session_ids() -> HashSet<String> {
+    let mut set = HashSet::new();
+    let roster = fleetify_core::user_home()
+        .join(".claude")
+        .join("daemon")
+        .join("roster.json");
+    let Ok(bytes) = std::fs::read(&roster) else {
+        return set;
+    };
+    let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return set;
+    };
+    let Some(workers) = json.get("workers").and_then(|w| w.as_object()) else {
+        return set;
+    };
+    for worker in workers.values() {
+        let source = worker
+            .get("dispatch")
+            .and_then(|d| d.get("source"))
+            .and_then(|v| v.as_str());
+        if source == Some("spare") {
+            if let Some(sid) = worker.get("sessionId").and_then(|v| v.as_str()) {
+                set.insert(sid.to_string());
+            }
+        }
+    }
+    set
+}
+
 /// One reconciliation pass. For each ORIGINAL conversation that has a live
 /// background fork, ensure exactly one row exists (keyed on the conversation id,
 /// not the throwaway fork id) so the Fleet row loads the real transcript and
@@ -208,6 +243,7 @@ pub async fn reconcile_once(
         return Ok(0);
     };
     let origins = origin_conversation_map();
+    let spares = spare_session_ids();
 
     // Resolve every live fork to the conversation it detached from (fork id →
     // origin id; bare fork id when unlinked, e.g. a fresh `claude --bg "task"`).
@@ -220,6 +256,11 @@ pub async fn reconcile_once(
         let Some(sid) = a.session_id.as_deref() else {
             continue;
         };
+        // Skip daemon spare workers — pre-warmed pool processes, not real
+        // conversations. Surfacing them looks like sessions spawning on their own.
+        if spares.contains(sid) {
+            continue;
+        }
         let cwd = a.cwd.as_deref().unwrap_or_default();
         if cwd.is_empty() {
             continue;
@@ -250,20 +291,34 @@ pub async fn reconcile_once(
         let cwd = a.cwd.as_deref().unwrap_or_default();
         let status = a.fleet_status();
 
-        if let Some(row) = all_bg
-            .iter()
-            .find(|r| r.claude_session_id.as_deref() == Some(conv_id.as_str()))
-        {
-            // Known row — ensure it's active (un-archive) and status is current.
-            // Only write when something actually changed.
-            if row.archived_at.is_some() || row.status != status {
-                let _ =
-                    sqlx::query("UPDATE sessions SET archived_at = NULL, status = ? WHERE id = ?")
-                        .bind(status)
-                        .bind(&row.id)
-                        .execute(pool)
-                        .await;
+        // An ACTIVE row already mirrors this conversation → just refresh status.
+        if let Some(row) = all_bg.iter().find(|r| {
+            r.archived_at.is_none() && r.claude_session_id.as_deref() == Some(conv_id.as_str())
+        }) {
+            // Never clobber a 'running' row: when the user adopts a surfaced
+            // session and dispatches a turn, Fleetify's own dispatch lifecycle
+            // owns that status (it sets 'running' on start, 'idle' on finish).
+            // The daemon fork being idle doesn't mean the conversation is idle,
+            // so syncing the daemon's status here would kill the sidebar's
+            // working animation mid-turn. Only sync away from non-running states.
+            if row.status != status && row.status != "running" {
+                let _ = sqlx::query("UPDATE sessions SET status = ? WHERE id = ?")
+                    .bind(status)
+                    .bind(&row.id)
+                    .execute(pool)
+                    .await;
             }
+            continue;
+        }
+
+        // An ARCHIVED row for this conversation means it was DISMISSED — the
+        // user deleted it (delete archives bg rows) or a prior pass retired it.
+        // Respect that: never resurface a conversation the user closed, even
+        // while its background agent is still alive. (This is the fix for "it
+        // keeps respawning as I delete it".)
+        if all_bg.iter().any(|r| {
+            r.archived_at.is_some() && r.claude_session_id.as_deref() == Some(conv_id.as_str())
+        }) {
             continue;
         }
 
@@ -326,25 +381,30 @@ pub async fn reconcile_once(
         }
     }
 
-    // Archive ACTIVE rows whose conversation no longer has a live background
-    // fork (the listing succeeded, so `desired` is authoritative). This also
-    // retires legacy rows keyed on a throwaway fork id from before origin
-    // resolution landed: the list converges to exactly the conversations
-    // currently backgrounded. The transcript stays on disk, so the user can
-    // still re-open it any time via "Resume from Claude CLI" — and if the
-    // conversation is backgrounded again the revive branch above brings it back.
+    // Archive ACTIVE rows that should no longer be shown (the listing succeeded,
+    // so `desired` is authoritative). Two cases collapse here:
+    //   1. No live fork maps to this conversation any more (it was foregrounded,
+    //      stopped, or finished) — includes legacy rows keyed on a throwaway
+    //      fork id from before origin resolution landed.
+    //   2. It's a DUPLICATE — another active row already owns this conversation
+    //      id. Keep the first, retire the rest (one row per conversation).
+    // The transcript stays on disk, so the user can re-open it via "Resume from
+    // Claude CLI"; a re-backgrounded conversation is brought back by the revive
+    // branch above.
     let now = chrono::Utc::now().to_rfc3339();
+    let mut kept_cids: HashSet<String> = HashSet::new();
     for row in all_bg.iter().filter(|r| r.archived_at.is_none()) {
-        if let Some(cid) = row.claude_session_id.as_deref() {
-            if !desired.contains_key(cid) {
-                let _ = sqlx::query(
-                    "UPDATE sessions SET archived_at = ?, status = 'idle' WHERE id = ?",
-                )
-                .bind(&now)
-                .bind(&row.id)
-                .execute(pool)
-                .await;
-            }
+        let cid = row.claude_session_id.as_deref().unwrap_or_default();
+        // Keep only the first active row for a conversation that still has a
+        // live fork; everything else is archived.
+        let keep = desired.contains_key(cid) && kept_cids.insert(cid.to_string());
+        if !keep {
+            let _ =
+                sqlx::query("UPDATE sessions SET archived_at = ?, status = 'idle' WHERE id = ?")
+                    .bind(&now)
+                    .bind(&row.id)
+                    .execute(pool)
+                    .await;
         }
     }
 

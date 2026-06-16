@@ -524,13 +524,47 @@ pub fn first_user_text(jsonl_path: &Path) -> Option<String> {
     None
 }
 
+/// Tail size read when hydrating a transcript. Comfortably holds the last
+/// `MAX_RETURNED` (120) messages for any normal conversation while keeping the
+/// parse bounded — a 36 MB history would otherwise take seconds to decode.
+const PARSE_TAIL_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Read at most the last `max_bytes` of a file as text. For files <= `max_bytes`
+/// the whole file is returned; for larger files we seek to the tail and drop the
+/// first (almost certainly partial) line so parsing starts on a clean boundary.
+/// UTF-8 is decoded lossily since the seek may split a multibyte char.
+fn read_tail(path: &Path, max_bytes: u64) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    if len <= max_bytes {
+        let mut s = String::new();
+        f.read_to_string(&mut s).ok()?;
+        return Some(s);
+    }
+    f.seek(SeekFrom::Start(len - max_bytes)).ok()?;
+    let mut buf = Vec::with_capacity(max_bytes as usize);
+    f.take(max_bytes).read_to_end(&mut buf).ok()?;
+    // Drop everything up to and including the first newline (the partial line).
+    let start = buf
+        .iter()
+        .position(|&b| b == b'\n')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    Some(String::from_utf8_lossy(&buf[start..]).into_owned())
+}
+
 /// Parse a `<sid>.jsonl` transcript and return the last 120 Fleet-
 /// shaped messages. Best-effort: malformed lines / files are silently
 /// skipped — empty result on any catastrophic failure matches the
 /// Python behaviour. Heavy disk I/O — call from a blocking task or
 /// via `tokio::task::spawn_blocking` to avoid stalling the runtime.
 pub fn parse_jsonl(jsonl_file: &Path) -> Vec<HistoryMessage> {
-    let Ok(text) = std::fs::read_to_string(jsonl_file) else {
+    // Only the LAST MAX_RETURNED messages are kept, so reading + JSON-parsing a
+    // multi-MB transcript end-to-end is pure waste — the 36 MB canadiantire
+    // history took several seconds and stalled the chat on open. Read just the
+    // tail (enough to comfortably hold 120 messages) and parse that.
+    let Some(text) = read_tail(jsonl_file, PARSE_TAIL_BYTES) else {
         return Vec::new();
     };
     let mut messages: Vec<HistoryMessage> = Vec::new();

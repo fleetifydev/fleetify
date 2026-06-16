@@ -911,6 +911,15 @@ interface ChatInputProps {
   askQuestion?: import("@/stores/chat-store").AskQuestion | null;
   onAnswerQuestion?: (id: string, answers: Array<{ header?: string; question: string; selected: string[] }>) => void;
   onSkipQuestion?: (id: string) => void;
+  /** Active permission request (Bash / Edit / Read / … tool gate). When
+   *  set, the composer GROWS to host the permission card inline above the
+   *  textarea — same animated open/close as AskUserQuestion, so the box
+   *  itself becomes the approval surface. Cleared by the parent once the
+   *  user allows/denies → the box shrinks back. */
+  permissionRequest?: import("@/stores/chat-store").PermissionRequest | null;
+  onPermissionAllow?: (id: string, toolName: string) => void;
+  onPermissionAllowAlways?: (id: string, toolName: string) => void;
+  onPermissionDeny?: (id: string, toolName: string) => void;
   /** True on the Fleet / staff / control-center chat. Suppresses the
    *  BranchStrip — PR/branch context doesn't apply to the orchestrator
    *  conversation, only to agent sessions bound to a worktree. */
@@ -977,6 +986,10 @@ export function ChatInput({
   askQuestion,
   onAnswerQuestion,
   onSkipQuestion,
+  permissionRequest,
+  onPermissionAllow,
+  onPermissionAllowAlways,
+  onPermissionDeny,
   controlCenter,
   permissionMode,
   sandbox,
@@ -997,6 +1010,41 @@ export function ChatInput({
   const askIsLast = askStep >= askCount - 1;
   const askStepAnswered = (askSelected[askStep] ?? []).length > 0 || value.trim().length > 0;
   const askActive = !!askQuestion;
+
+  /* ── Inline permission gate ── mirrors the AskUserQuestion pattern: the
+   *  composer grows to host the Allow/Deny card above the textarea. */
+  const permActive = !!permissionRequest;
+  const permTool = permissionRequest?.tool_name ?? "";
+  const permIsPlan = permTool === "ExitPlanMode" || permTool === "EnterPlanMode";
+  const PERM_VERB: Record<string, string> = useMemo(() => ({
+    Bash: "run a shell command", PowerShell: "run a shell command",
+    Read: "read a file", Write: "create a new file", Edit: "edit a file",
+    MultiEdit: "edit multiple files", Glob: "search for files", Grep: "search the code",
+    Agent: "dispatch a subagent", WebFetch: "fetch a URL", WebSearch: "search the web",
+    TodoWrite: "update the task list", NotebookEdit: "edit a notebook", NotebookRead: "read a notebook",
+    EnterPlanMode: "switch to planning mode", ExitPlanMode: "exit planning mode and begin execution",
+  }), []);
+  const permVerb = permissionRequest
+    ? (permissionRequest.tool_description ?? PERM_VERB[permTool] ?? permTool.toLowerCase())
+    : "";
+  // Keyboard: Esc → deny, ⌘↵ → allow, ⌘⇧↵ → always allow. Active-session
+  // guarded so a dialog on agent A isn't actioned while viewing agent B.
+  useEffect(() => {
+    if (!permissionRequest) return;
+    const handler = (e: KeyboardEvent) => {
+      const active = useAppStore.getState().activeSessionId;
+      if (active && sessionId && active !== sessionId) return;
+      if (e.key === "Escape") {
+        e.preventDefault(); onPermissionDeny?.(permissionRequest.id, permissionRequest.tool_name);
+      } else if (e.key === "Enter" && e.metaKey && e.shiftKey) {
+        e.preventDefault(); onPermissionAllowAlways?.(permissionRequest.id, permissionRequest.tool_name);
+      } else if (e.key === "Enter" && e.metaKey) {
+        e.preventDefault(); onPermissionAllow?.(permissionRequest.id, permissionRequest.tool_name);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [permissionRequest, sessionId, onPermissionAllow, onPermissionAllowAlways, onPermissionDeny]);
   const askAnyPicked = askActive && (askQuestion?.questions ?? []).some((_, i) => (askSelected[i] ?? []).length > 0);
   const toggleAskOption = useCallback((qIdx: number, label: string, multi: boolean) => {
     setAskSelected(prev => {
@@ -2794,6 +2842,114 @@ export function ChatInput({
                 </div>
                 );
               })()}
+            </div>
+          </div>
+
+          {/* ── Inline permission gate ── Same grow/shrink the composer does
+              for AskUserQuestion: the box itself expands to host the
+              Allow/Deny card above the textarea. Fully monochrome — app
+              design tokens, no rainbow accents. */}
+          <div style={{
+            display: "grid",
+            gridTemplateRows: permActive ? "1fr" : "0fr",
+            transition: "grid-template-rows 0.24s cubic-bezier(0.22,1,0.36,1)",
+            // The composer sets pointerEvents:none on its whole body while
+            // `locked` (a permission request locks it). Re-enable here so the
+            // Allow/Deny controls inside actually receive clicks.
+            pointerEvents: "auto",
+          }}>
+            <div style={{ overflow: "hidden" }}>
+              {permissionRequest && (
+                <div style={{ padding: "12px 13px 4px" }}>
+                  {/* Eyebrow — PERMISSION · TOOL. Same sans treatment as the
+                      AskUserQuestion "Question" eyebrow (no mono) so the two
+                      cards read identically. */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 7 }}>
+                    <span style={{
+                      fontSize: 10, fontWeight: 600, letterSpacing: "0.3px", textTransform: "uppercase",
+                      color: "var(--c-dim)",
+                    }}>{permIsPlan ? "Plan" : "Permission"}</span>
+                    <span style={{ color: "var(--c-ghost)" }}>·</span>
+                    <span style={{
+                      fontSize: 10, fontWeight: 600, letterSpacing: "0.3px", textTransform: "uppercase",
+                      color: "var(--c-low)",
+                    }}>{permissionRequest.tool_name}</span>
+                  </div>
+
+                  {/* Prompt line */}
+                  <div style={{
+                    fontSize: 13.5, fontWeight: 600, color: "var(--c-high)", lineHeight: 1.4,
+                    marginBottom: permissionRequest.command ? 8 : 9,
+                  }}>
+                    Allow this agent to <span>{permVerb}</span>?
+                  </div>
+
+                  {/* Command / target preview — inset surface, mono, scroll-capped */}
+                  {permissionRequest.command && (
+                    <div style={{
+                      padding: "8px 11px",
+                      background: "rgba(var(--fg-rgb),0.04)",
+                      border: "1px solid var(--c-brd)",
+                      borderRadius: 7,
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 11.5, lineHeight: 1.55,
+                      color: "var(--c-med)",
+                      maxHeight: 168, overflowY: "auto",
+                      whiteSpace: "pre-wrap", wordBreak: "break-word",
+                      marginBottom: 9,
+                    }}>
+                      {permissionRequest.command}
+                    </div>
+                  )}
+
+                  {/* Actions — compact button row (Deny / Allow / Always allow),
+                      right-aligned. The composer still GROWS open; only the
+                      controls are buttons, not stacked rows. */}
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6 }}>
+                    <button
+                      onClick={() => onPermissionDeny?.(permissionRequest.id, permissionRequest.tool_name)}
+                      onMouseDown={e => e.preventDefault()}
+                      onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(var(--fg-rgb),0.05)"; (e.currentTarget as HTMLButtonElement).style.color = "var(--c-high)"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; (e.currentTarget as HTMLButtonElement).style.color = "var(--c-dim)"; }}
+                      style={{
+                        display: "inline-flex", alignItems: "center", gap: 6,
+                        height: 26, padding: "0 10px", background: "transparent", border: "none",
+                        borderRadius: 6, color: "var(--c-dim)", fontSize: 12, fontWeight: 500,
+                        cursor: "pointer", fontFamily: "inherit", transition: "color 0.12s, background 0.12s",
+                      }}
+                    >Deny<kbd style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, opacity: 0.55 }}>Esc</kbd></button>
+
+                    <button
+                      onClick={() => onPermissionAllow?.(permissionRequest.id, permissionRequest.tool_name)}
+                      onMouseDown={e => e.preventDefault()}
+                      onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(var(--fg-rgb),0.12)"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(var(--fg-rgb),0.07)"; }}
+                      style={{
+                        display: "inline-flex", alignItems: "center", gap: 6,
+                        height: 26, padding: "0 11px",
+                        background: "rgba(var(--fg-rgb),0.07)", border: "1px solid var(--c-brd2)",
+                        borderRadius: 6, color: "var(--c-high)", fontSize: 12, fontWeight: 600,
+                        cursor: "pointer", fontFamily: "inherit", transition: "background 0.12s",
+                      }}
+                    >Allow<kbd style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, opacity: 0.55 }}>⌘↵</kbd></button>
+
+                    <button
+                      onClick={() => onPermissionAllowAlways?.(permissionRequest.id, permissionRequest.tool_name)}
+                      onMouseDown={e => e.preventDefault()}
+                      onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.opacity = "0.85"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.opacity = "1"; }}
+                      style={{
+                        display: "inline-flex", alignItems: "center", gap: 6,
+                        height: 26, padding: "0 11px",
+                        background: "var(--c-high)", border: "1px solid var(--c-high)",
+                        borderRadius: 6, color: "var(--background)", fontSize: 12, fontWeight: 600,
+                        cursor: "pointer", fontFamily: "inherit", transition: "opacity 0.12s",
+                      }}
+                    >Always allow<kbd style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, opacity: 0.55, color: "var(--background)" }}>⌘⇧↵</kbd></button>
+                  </div>
+                  <div style={{ height: 1, background: "var(--c-brd)", margin: "9px -13px 0" }} />
+                </div>
+              )}
             </div>
           </div>
 

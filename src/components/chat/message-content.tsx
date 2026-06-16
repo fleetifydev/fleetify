@@ -1999,9 +1999,9 @@ function CompactSummaryCard({
   summary: string;
   timestamp: string;
 }) {
-  // Peek by default — the summary opens as a short faded teaser; click to
-  // expand it in full (matches the live "thinking" preview behaviour).
-  const [open, setOpen] = useState(false);
+  // Expanded by default — the full summary shows on arrival; click the chevron
+  // to collapse it (it animates open/closed via the grid-rows transition).
+  const [open, setOpen] = useState(true);
   const stamp = useMemo(() => {
     const d = new Date(timestamp);
     if (Number.isNaN(d.getTime())) return null;
@@ -2019,9 +2019,10 @@ function CompactSummaryCard({
   const labelColor = "var(--c-low)";
 
   return (
-    <div className="fade-in" style={{ margin: "6px 0 18px" }}>
-      {/* Plain confirmation — no box. Tick on the left, the success line,
-          then the timestamp + disclosure chevron pushed to the right. */}
+    <div className="fade-in" style={{ margin: "6px 0 14px" }}>
+      {/* Plain inline row — no box. Fleetify mark + the done line, then the
+          timestamp + disclosure chevron on the right. Mirrors the live
+          "thinking"/"Compacting…" treatment; click expands the summary. */}
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
@@ -2038,11 +2039,7 @@ function CompactSummaryCard({
           textAlign: "left",
         }}
       >
-        <Check
-          size={14}
-          strokeWidth={2.5}
-          style={{ flexShrink: 0, color: labelColor }}
-        />
+        <LogoMark size={14} style={{ flexShrink: 0 }} />
         <span
           style={{
             color: labelColor,
@@ -2096,37 +2093,21 @@ function CompactSummaryCard({
       </button>
       {/* Body — a faded peek by default (mirrors the live "thinking"
           preview rail), expands to the full summary on click. */}
-      <div style={{ paddingLeft: 21, paddingTop: 6 }}>
-        {open ? (
-          <MarkdownBody text={summary} />
-        ) : (
-          <div
-            role="button"
-            tabIndex={0}
-            aria-label="Show full compaction summary"
-            onClick={() => setOpen(true)}
-            onKeyDown={e => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                setOpen(true);
-              }
-            }}
-            style={{
-              cursor: "pointer",
-              // A tight peek so the bottom always clips into a fade — the
-              // "misty, rising from the bottom" cue that there's more to
-              // read. Click expands to the full, fog-free summary.
-              maxHeight: 56,
-              overflow: "hidden",
-              maskImage:
-                "linear-gradient(to bottom, black 38%, transparent 100%)",
-              WebkitMaskImage:
-                "linear-gradient(to bottom, black 38%, transparent 100%)",
-            }}
-          >
+      {/* Collapsed by default — no peek. Click the chevron to reveal the full
+          summary, which grows open with an animated grid-rows expand (the same
+          smooth open/close used elsewhere), like the "Thought" disclosure. */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateRows: open ? "1fr" : "0fr",
+          transition: "grid-template-rows 0.26s cubic-bezier(0.22,1,0.36,1)",
+        }}
+      >
+        <div style={{ overflow: "hidden" }}>
+          <div style={{ paddingLeft: 21, paddingTop: open ? 6 : 0, transition: "padding-top 0.26s" }}>
             <MarkdownBody text={summary} />
           </div>
-        )}
+        </div>
       </div>
     </div>
   );

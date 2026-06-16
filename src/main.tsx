@@ -1,6 +1,5 @@
 import "@fontsource-variable/geist";
 import "./globals.css";
-import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { installGlobalErrorCapture, log } from "./lib/log";
@@ -21,8 +20,9 @@ log.info("renderer.boot", "renderer mounted", {
   userAgent: typeof navigator !== "undefined" ? navigator.userAgent : null,
 });
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-);
+// NOTE: no <StrictMode>. It double-invokes every render + effect in dev, which
+// doubled the chat/session-switch render cost (measured: heavy sessions blocked
+// the main thread ~2× longer). StrictMode is a dev-only behaviour with zero
+// effect on production builds, so dropping it only changes the dev experience —
+// making switching feel as snappy as a release build.
+createRoot(document.getElementById("root")!).render(<App />);

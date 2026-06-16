@@ -40,37 +40,33 @@ export function CompactionPill({ sessionId }: { sessionId: string }) {
   // overlays a ::after whose content is attr(data-label).
   const label = "Compacting conversation…";
 
+  const MONO = "var(--font-mono, ui-monospace, SFMono-Regular, monospace)";
+
   return (
     <div
       role="status"
+      className="fade-in"
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 7,
+        gap: 8,
         margin: "8px 2px",
-        fontSize: 12.5,
-        fontWeight: 450,
-        letterSpacing: "-0.015em",
-        color: "rgba(96,165,250,0.9)",
       }}
     >
-      {/* Glowing Fleetify mark — the same node the live "thinking" indicator
-          uses, keyed to compaction's soft-blue. */}
-      <LogoMark
-        size={13}
-        glow
-        style={{ flexShrink: 0, color: "rgba(96,165,250,0.95)" }}
-      />
-      {/* Shimmer label. .status-sheen keeps currentColor (so it stays
-          soft-blue) while a bright band sweeps across — the animated
-          "thinking" feel, without hard-coding the ghost/high tones. */}
+      {/* Plain Fleetify mark — its natural colour, no accent/glow. The shimmer
+          label carries the live "working" motion. */}
+      <LogoMark size={14} style={{ flexShrink: 0 }} />
+      {/* Shimmer label — neutral foreground with a bright band sweeping across
+          (same .status-sheen as the "thinking" indicator). Monochrome. */}
       <span
         className="status-sheen"
         data-label={label}
         style={{
-          color: "rgba(96,165,250,0.92)",
-          fontSize: 12,
-          fontWeight: 500,
+          // Dim base so the .status-sheen sweep (a band toward --c-high) reads
+          // as a clear travelling glow across the label.
+          color: "var(--c-low)",
+          fontSize: 12.5,
+          fontWeight: 550,
           fontFamily: "var(--font-sans)",
           letterSpacing: "-0.01em",
           whiteSpace: "nowrap",
@@ -78,62 +74,25 @@ export function CompactionPill({ sessionId }: { sessionId: string }) {
       >
         {label}
       </span>
-      {/* Progress group — bar + percent, pushed to the right edge. */}
+      {/* Progress — a soft middot separator + percent, with the elapsed time
+          trailing even softer. The middot ties it to the label so it reads as
+          one quiet status line, not a bare numeric readout. */}
       <span
         style={{
-          marginLeft: "auto",
           display: "flex",
-          alignItems: "center",
-          gap: 8,
+          alignItems: "baseline",
+          gap: 6,
           flexShrink: 0,
+          fontFamily: MONO,
+          fontSize: 11,
         }}
       >
-        {/* Live progress bar — fills as the summariser streams tokens. */}
-        <span
-          aria-hidden
-          style={{
-            position: "relative",
-            display: "inline-block",
-            width: 80,
-            height: 4,
-            borderRadius: 2,
-            background: "rgba(96,165,250,0.18)",
-            overflow: "hidden",
-          }}
-        >
-          <span
-            style={{
-              position: "absolute",
-              insetBlock: 0,
-              left: 0,
-              width: `${pct}%`,
-              background: "rgba(96,165,250,0.9)",
-              borderRadius: 2,
-              transition: "width 180ms ease-out",
-            }}
-          />
-        </span>
-        <span
-          style={{
-            fontFamily:
-              "var(--font-mono, ui-monospace, SFMono-Regular, monospace)",
-            fontSize: 11,
-            color: "rgba(96,165,250,0.92)",
-            minWidth: 30,
-            textAlign: "right",
-          }}
-        >
+        <span aria-hidden style={{ color: "var(--c-ghost)" }}>·</span>
+        <span style={{ color: "var(--c-dim)", fontVariantNumeric: "tabular-nums" }}>
           {pct}%
         </span>
         {elapsedSec >= 2 && (
-          <span
-            style={{
-              fontFamily:
-                "var(--font-mono, ui-monospace, SFMono-Regular, monospace)",
-              fontSize: 11,
-              color: "var(--c-ghost)",
-            }}
-          >
+          <span style={{ color: "var(--c-ghost)", fontSize: 10.5 }}>
             {elapsedSec}s
           </span>
         )}

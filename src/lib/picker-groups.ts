@@ -267,6 +267,59 @@ function modelFromSpec(
   };
 }
 
+/** Parse a human context-window label ("1M", "200K", "128k", "1000000",
+ *  "200,000") into a token count. Returns null for unparseable input. */
+export function parseContextWindow(ctx?: string | null): number | null {
+  if (!ctx) return null;
+  const s = String(ctx).trim().toLowerCase().replace(/[,_ ]/g, "");
+  const m = s.match(/^([\d.]+)([mk]?)/);
+  if (!m || !m[1]) return null;
+  const n = parseFloat(m[1]);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  if (m[2] === "m") return Math.round(n * 1_000_000);
+  if (m[2] === "k") return Math.round(n * 1_000);
+  return Math.round(n);
+}
+
+/** The real context-window size (tokens) for a model id, resolved from the SAME
+ *  source the picker shows: an explicit hint baked into the id (`[1m]`,
+ *  `[context=200k]`), then the provider catalog's `context_window`, falling back
+ *  to 200K. Replaces the old `id.includes("1m") ? 1M : 200K` guess so the
+ *  context-window bar's denominator matches the model's actual window. */
+export function contextWindowForModel(
+  modelId: string | null | undefined,
+  tiles: ProviderTile[],
+): number {
+  const DEFAULT = 200_000;
+  if (!modelId) return DEFAULT;
+  const id = modelId.trim();
+  const lower = id.toLowerCase();
+  // 1. Explicit hint in the id (variant suffixes win over the catalog).
+  const tagged = parseContextWindow(lower.match(/context=([\d.]+\s*[mk]?)/)?.[1]);
+  if (tagged) return tagged;
+  if (/\[1m\]/.test(lower)) return 1_000_000;
+  // 2. Catalog context_window (strip any [..] variant suffix to match).
+  const bareId = id.replace(/\[[^\]]*\]\s*$/, "");
+  for (const t of tiles ?? []) {
+    for (const m of t.spec?.default_models ?? []) {
+      if (m.id === id || m.id === bareId) {
+        const n = parseContextWindow(m.context_window);
+        if (n) return n;
+      }
+    }
+  }
+  // 3. Static fallback catalog (used when providerTiles is empty).
+  for (const list of Object.values(CLI_MODELS)) {
+    for (const m of list) {
+      if (m.id === id || m.id === bareId) {
+        const n = parseContextWindow(m.ctx);
+        if (n) return n;
+      }
+    }
+  }
+  return DEFAULT;
+}
+
 /** Friendly labels for Hermes' provider slugs (the `provider:` prefix on its
  *  model ids). Falls back to a capitalized slug for anything unlisted. */
 const HERMES_PROVIDER_LABELS: Record<string, string> = {

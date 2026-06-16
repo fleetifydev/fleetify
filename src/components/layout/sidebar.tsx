@@ -436,7 +436,14 @@ function AgentRowImpl({ session, isActive, stats, onClick, onPin, onFork, onStop
     ? cost < 0.01 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(2)}`
     : null;
 
-  const isRunning = session.status === "running";
+  // Live streaming signal from the chat store — authoritative for "is this
+  // session working RIGHT NOW", independent of the DB `status` column (which a
+  // background poller can momentarily reset for auto-surfaced sessions). When
+  // streaming, force the running indicator so the sidebar always animates while
+  // the agent is actually producing output.
+  const isStreaming = useChatStore(s => s.sessions[session.id]?.isStreaming ?? false);
+  const effectiveStatus = isStreaming && session.status !== "running" ? "running" : session.status;
+  const isRunning = effectiveStatus === "running";
   const bgColor = isActive ? "var(--c-srf2)" : hovered ? "var(--c-srf)" : "transparent";
   const timeLabel = timeAgo(session.last_accessed ?? session.created_at);
 
@@ -471,7 +478,7 @@ function AgentRowImpl({ session, isActive, stats, onClick, onPin, onFork, onStop
       >
         {/* Status indicator — the only visual ‘state’ signal. The active
             row carries it via background; nothing else needs to compete. */}
-        <AgentStatusIcon status={session.status} size={11} />
+        <AgentStatusIcon status={effectiveStatus} size={11} />
 
         {/* Title — single line, ellipsis. Active OR running uses --c-high;
             everything else stays at --c-med so the live work stands out. */}

@@ -439,6 +439,33 @@ pub async fn compact_session(
 /// real (non-meta) turn's prompt size (input + cache-read tokens) over the
 /// model's catalog context window. None when the window is unknown or the
 /// session has no usage yet. Drives the auto-compaction gate.
+/// Cheap pre-flight: would compaction pass its size guards? Mirrors the
+/// `MIN_MESSAGE_COUNT` / `MIN_CHAR_COUNT` gate inside
+/// `compact_session_streaming` without doing the expensive summarisation.
+///
+/// Used to skip an AUTO-triggered compaction on a too-short conversation so the
+/// user never sees a "too short to compact" error they didn't ask for (an
+/// explicit `/compact` still surfaces it — they requested it). Any DB error is
+/// treated as "not compactable" (fail safe: don't auto-fire).
+pub async fn is_compactable(pool: &SqlitePool, session_id: &str) -> bool {
+    let Ok(messages) = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT id, role, content FROM messages WHERE session_id = ? ORDER BY timestamp ASC",
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await
+    else {
+        return false;
+    };
+    let new_messages: Vec<&(String, String, String)> = messages
+        .iter()
+        .filter(|(_, role, content)| !is_compact_summary_message(role, content))
+        .collect();
+    let msg_count = new_messages.len() as i64;
+    let char_count: i64 = new_messages.iter().map(|(_, _, c)| c.len() as i64).sum();
+    msg_count >= MIN_MESSAGE_COUNT && char_count >= MIN_CHAR_COUNT
+}
+
 pub async fn context_fill(
     pool: &SqlitePool,
     session_id: &str,

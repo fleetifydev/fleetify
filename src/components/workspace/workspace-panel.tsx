@@ -3785,8 +3785,11 @@ function WorkspaceGrid({ views }: { views: WorkspaceView[] }) {
     setColWidths(prev => prev.length === numCols ? prev : Array(numCols).fill(1));
   }, [numCols]);
 
-  // Per-column row splits. Index = column index; only used for 2-row columns.
-  const [rowSplits, setRowSplits] = useState<number[]>([0.5, 0.5, 0.5]);
+  // Per-column row flex weights: rowSplits[colIdx][rowIdx] = weight of that row
+  // (default 1 = equal). Generalised from a single 2-row split so ANY number of
+  // stacked panes (incl. the narrow single-column layout) gets a gap + a
+  // draggable divider between every adjacent pair.
+  const [rowSplits, setRowSplits] = useState<number[][]>([]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -3855,18 +3858,40 @@ function WorkspaceGrid({ views }: { views: WorkspaceView[] }) {
     document.body.style.userSelect = "none";
   };
 
-  // Row: only this column's two rows resize; other columns are unaffected.
-  const startRowResize = (colIdx: number, e: React.MouseEvent) => {
+  // Row: drag the divider above `rowIdx` to redistribute height between that
+  // row and the one above it; the column's other rows stay fixed. Works for any
+  // row count (weights are relative, so only the two adjacent panes change).
+  const startRowResize = (colIdx: number, rowIdx: number, rowCount: number, e: React.MouseEvent) => {
     e.preventDefault();
     const col = colRefs.current[colIdx];
-    if (!col) return;
+    if (!col || rowIdx < 1) return;
     const totalHeight = col.getBoundingClientRect().height;
     const startY = e.clientY;
-    const startSplit = rowSplits[colIdx] ?? 0.5;
+    const seed = rowSplits[colIdx];
+    const startWeights =
+      seed && seed.length === rowCount ? [...seed] : Array(rowCount).fill(1);
+    const totalFlex = startWeights.reduce((s, x) => s + x, 0) || rowCount;
+    const a0 = startWeights[rowIdx - 1];
+    const b0 = startWeights[rowIdx];
+    const pair = a0 + b0;
+    const min = totalFlex * 0.08; // each pane keeps ≥8% of the column
     const onMove = (mv: MouseEvent) => {
-      const delta = (mv.clientY - startY) / totalHeight;
-      const newVal = Math.max(0.12, Math.min(0.88, startSplit + delta));
-      setRowSplits(prev => { const next = [...prev]; next[colIdx] = newVal; return next; });
+      // Pixel delta → weight delta (height = weight / totalFlex * totalHeight).
+      const dW = ((mv.clientY - startY) / totalHeight) * totalFlex;
+      let a = a0 + dW;
+      let b = b0 - dW;
+      if (a < min) { a = min; b = pair - min; }
+      if (b < min) { b = min; a = pair - min; }
+      setRowSplits(prev => {
+        const next = prev.map(c => [...c]);
+        while (next.length <= colIdx) next.push([]);
+        const cur = next[colIdx] ?? [];
+        const w = cur.length === rowCount ? [...cur] : Array(rowCount).fill(1);
+        w[rowIdx - 1] = a;
+        w[rowIdx] = b;
+        next[colIdx] = w;
+        return next;
+      });
     };
     const onUp = () => {
       document.removeEventListener("mousemove", onMove);
@@ -3906,20 +3931,23 @@ function WorkspaceGrid({ views }: { views: WorkspaceView[] }) {
 
     const colRows: React.ReactNode[] = [];
     col.forEach((v, ri) => {
-      if (ri > 0 && !narrow && col.length === 2) {
+      // Draggable divider above every row after the first — gives both the gap
+      // between stacked panes AND the resize affordance, for any pane count.
+      if (ri > 0) {
         colRows.push(
           <div
             key={`rh-${ci}-${ri}`}
             style={handleStyle("row")}
-            onMouseDown={(e) => startRowResize(ci, e)}
+            onMouseDown={(e) => startRowResize(ci, ri, col.length, e)}
             onMouseEnter={e => { e.currentTarget.style.background = "rgba(167,139,250,0.18)"; }}
             onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
           />
         );
       }
 
-      const rs = rowSplits[ci] ?? 0.5;
-      const flexVal = col.length !== 2 ? 1 : ri === 0 ? rs : 1 - rs;
+      const weights = rowSplits[ci];
+      const flexVal =
+        weights && weights.length === col.length ? (weights[ri] ?? 1) : 1;
 
       colRows.push(
         <div

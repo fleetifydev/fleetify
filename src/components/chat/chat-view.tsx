@@ -14,7 +14,7 @@ import { fetchMessages, fetchClaudeHistory, createSession, clearSessionMessages,
 import { registerConfigPatch } from "@/lib/session-config-sync";
 import { usesInAppTitleBar, folderName } from "@/lib/utils";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
-import { resolveStartupDefault, hermesHealModel, HERMES_DEFAULT_SENTINEL } from "@/lib/picker-groups";
+import { resolveStartupDefault, hermesHealModel, HERMES_DEFAULT_SENTINEL, contextWindowForModel } from "@/lib/picker-groups";
 import { FleetDecisionCard } from "./fleet-decision-card";
 import { useFleetStore, AUTO_CHAIN_CAP } from "@/stores/fleet-store";
 import { LogoMark } from "@/components/brand/logo-mark";
@@ -40,7 +40,13 @@ import type { WorkspaceView } from "@/stores/app-store";
  *  markdown + Shiki code blocks — which bloats layout/paint and makes scroll
  *  + streaming janky. We cap the live window and let the user reveal older
  *  ones in chunks (the common case is reading the tail of a conversation). */
-const MESSAGE_WINDOW = 60;
+// Keep the initial render small so switching sessions stays smooth — each
+// message runs a heavy markdown pipeline (react-markdown + KaTeX + Shiki) and
+// the list remounts (keyed per session) on every switch, so rendering ~60
+// synchronously stalled the main thread. The "Show earlier" button + scroll-up
+// load older history on demand. No progressive expand (that prepended content
+// and visibly shifted the scroll).
+const MESSAGE_WINDOW = 12;
 const MESSAGE_WINDOW_STEP = 80;
 
 const MessageList = memo(function MessageList({
@@ -87,11 +93,23 @@ const MessageList = memo(function MessageList({
         </button>
       )}
       {shown.map((m, i) => (
-        <MessageContent
+        // Native virtualization: off-screen messages skip layout + paint
+        // entirely (content-visibility: auto), so scroll + initial layout cost
+        // stay flat no matter how long the chat is. `contain-intrinsic-size`
+        // reserves an estimated height for unrendered rows (the browser then
+        // remembers each real size once measured), keeping the scrollbar stable.
+        <div
           key={m.id}
-          message={m}
-          msgRef={i === lastUserIdx ? latestUserMsgRef : undefined}
-        />
+          style={{
+            contentVisibility: "auto",
+            containIntrinsicSize: "auto 140px",
+          } as React.CSSProperties}
+        >
+          <MessageContent
+            message={m}
+            msgRef={i === lastUserIdx ? latestUserMsgRef : undefined}
+          />
+        </div>
       ))}
     </>
   );
@@ -304,6 +322,9 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   // content renders — avoids the race where we scroll before DOM is ready.
   const shouldRestorePosition = useRef(false);
   const positionToRestore = useRef(0);
+  // Set on session switch: the chat must open at the latest message, and the
+  // pin must survive late-rendering content (markdown / images / code).
+  const pinBottomOnLoad = useRef(true);
   const bottomRef = useRef<HTMLDivElement>(null);
   const latestUserMsgRef = useRef<HTMLDivElement>(null);
   const staffIdRef = useRef(staffSessionId);
@@ -534,6 +555,21 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
       // New/unvisited session — pin to bottom (latest messages).
       const el = scrollRef.current;
       if (el) el.scrollTop = el.scrollHeight;
+      if (pinBottomOnLoad.current) {
+        // Just opened this chat: re-assert the bottom across a few frames so
+        // late-rendering markdown / images / code highlighting (which grows the
+        // content height AFTER this sync set) don't leave us above the last
+        // message. Bails the moment the user scrolls up.
+        pinBottomOnLoad.current = false;
+        const pin = () => {
+          const e = scrollRef.current;
+          if (e && !userScrolledUp.current && !pinnedToExchange.current) {
+            e.scrollTop = e.scrollHeight;
+          }
+        };
+        requestAnimationFrame(pin);
+        setTimeout(pin, 160);
+      }
     }
   }, [messages]);
 
@@ -635,19 +671,13 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   // restore AFTER content has rendered, avoiding the race where we scroll
   // before Lenis knows the new content height.
   useEffect(() => {
-    const sid = effectiveSessionId;
-    const savedPos = sid ? sessionScrollPositions.current.get(sid) : undefined;
-
-    if (savedPos !== undefined && savedPos > 0) {
-      // Returning to a visited session — flag the messages effect to restore.
-      shouldRestorePosition.current = true;
-      positionToRestore.current = savedPos;
-      userScrolledUp.current = true; // prevent premature auto-bottom
-    } else {
-      // New or unvisited session — scroll to bottom once messages load.
-      shouldRestorePosition.current = false;
-      userScrolledUp.current = false;
-    }
+    // Always open a chat at the LATEST message (standard chat UX). We used to
+    // restore the mid-scroll position the user last left at, but that landed on
+    // older messages and forced a manual scroll down every switch. Streaming /
+    // new-message follow still works once the user is in the chat.
+    shouldRestorePosition.current = false;
+    userScrolledUp.current = false;
+    pinBottomOnLoad.current = true;
 
     pinnedToExchange.current = false;
     scrollToUserMsg.current = false;
@@ -2176,6 +2206,10 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
           askQuestion={askQuestion}
           onAnswerQuestion={effectiveSessionId ? (id, answers) => wsManager.sendAskQuestionResponse(effectiveSessionId, id, true, answers) : undefined}
           onSkipQuestion={effectiveSessionId ? (id) => wsManager.sendAskQuestionResponse(effectiveSessionId, id, false, []) : undefined}
+          permissionRequest={permissionRequest && permissionRequest.tool_name !== "AskUserQuestion" ? permissionRequest : null}
+          onPermissionAllow={effectiveSessionId ? (id, toolName) => wsManager.sendPermissionResponse(effectiveSessionId, id, true, false, toolName) : undefined}
+          onPermissionAllowAlways={effectiveSessionId ? (id, toolName) => wsManager.sendPermissionResponse(effectiveSessionId, id, true, true, toolName) : undefined}
+          onPermissionDeny={effectiveSessionId ? (id, toolName) => wsManager.sendPermissionResponse(effectiveSessionId, id, false, false, toolName) : undefined}
           placeholder={
             askQuestion
               ? "Type a custom answer…  or pick an option above"
@@ -2239,7 +2273,23 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
             let cacheReadTotal = 0, cacheWriteTotal = 0;
             let turns = 0;
             let lastUsage: typeof messages[number]["usage"] = undefined;
+            // Pull a message's plain text out of its string|blocks content so we
+            // can spot the compaction boundary marker.
+            const textOf = (c: typeof messages[number]["content"]): string =>
+              typeof c === "string"
+                ? c
+                : Array.isArray(c)
+                  ? c.map(b => (b && typeof b === "object" && "text" in b ? String((b as { text?: unknown }).text ?? "") : "")).join("")
+                  : "";
             for (const msg of messages) {
+              // A /compact boundary frees the model's context: everything before
+              // it was replaced by the summary. Reset the "last turn" view so the
+              // context arc reflects the post-compact state, not the pre-compact
+              // peak (otherwise it stays pinned at the old 277k/200k reading).
+              if (textOf(msg.content).includes("[fleet:compact-summary]")) {
+                lastUsage = undefined;
+                continue;
+              }
               if (msg.role !== "assistant" || !msg.usage) continue;
               const mu = msg.usage;
               inputTotal       += mu.input_tokens       ?? 0;
@@ -2257,10 +2307,10 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                 + (lastUsage.cache_read_tokens ?? 0)
                 + (lastUsage.cache_write_tokens ?? 0)
               : 0;
-            const m = (activeSession?.model_name ?? "").toLowerCase();
-            // 1M for Gemini Pro / models tagged 1M, 200K everywhere
-            // else. Claude Opus 4.8's 1M variant gets the wide cap.
-            const max = m.includes("gemini-cli") || m.includes("1m") ? 1_000_000 : 200_000;
+            // Real context window for the active model, resolved from the same
+            // catalog the picker shows (explicit id hint → provider
+            // context_window → 200K default) instead of a brittle string guess.
+            const max = contextWindowForModel(activeSession?.model_name, providerTiles);
             return {
               contextPercent: lastInputView / max,
               contextUsedTokens: lastInputView,
@@ -2317,7 +2367,11 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
           controlCenter={isControlCenter}
           slotAbove={
             <>
-              {permissionRequest && effectiveSessionId ? (
+              {/* Non-AskUserQuestion permission gates (Bash, Edit, Read, …)
+                  now render INLINE inside the composer (it grows to host the
+                  Allow/Deny card). See ChatInput's permissionRequest prop.
+                  Only the AskUserQuestion variant keeps the attached card. */}
+              {permissionRequest && permissionRequest.tool_name === "AskUserQuestion" && effectiveSessionId ? (
                 <PermissionDialog
                   request={permissionRequest}
                   sessionId={effectiveSessionId}

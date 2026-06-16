@@ -20,11 +20,16 @@ export function ChatError({
       role="alert"
       className="fade-in"
       style={{
+        // Same neutral card shell as the compaction / permission cards (border
+        // + surface + radius + inset highlight) so every in-chat surface reads
+        // as one family. The error signal is a single restrained red icon, not
+        // a loud red block.
         margin: "8px 0 16px",
-        padding: "10px 13px",
-        borderRadius: 8,
-        background: "var(--c-err-bg)",
-        border: "1px solid var(--c-err-brd)",
+        padding: "9px 12px",
+        borderRadius: 11,
+        background: "var(--chat-input-bg)",
+        border: "1px solid var(--c-brd)",
+        boxShadow: "inset 0 1px 0 rgba(var(--fg-rgb),0.03)",
         display: "flex",
         alignItems: "flex-start",
         gap: 9,
@@ -48,10 +53,11 @@ export function ChatError({
         {title && (
           <span
             style={{
-              fontSize: 11,
+              fontSize: 10,
               fontWeight: 600,
-              color: "var(--c-err)",
-              letterSpacing: "0.03em",
+              textTransform: "uppercase",
+              letterSpacing: "0.3px",
+              color: "var(--c-dim)",
             }}
           >
             {title}
@@ -60,7 +66,7 @@ export function ChatError({
         <span
           style={{
             fontSize: 13,
-            color: "var(--c-fg)",
+            color: "var(--c-high)",
             lineHeight: 1.5,
             whiteSpace: "pre-wrap",
             wordBreak: "break-word",
