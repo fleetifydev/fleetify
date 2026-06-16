@@ -40,6 +40,30 @@ pub fn materialize_mcp(install_path: &Path, secrets: &BTreeMap<String, String>) 
     res
 }
 
+/// Like `materialize_mcp`, but OVERWRITES an existing registry entry of the
+/// same name instead of skipping it. Used when a plugin's secrets are edited
+/// post-install: re-read `mcp.json`, re-substitute `${secret:KEY}` from the
+/// (now-updated) secret map, and update the live registry config.
+pub fn rematerialize_mcp(install_path: &Path, secrets: &BTreeMap<String, String>) -> McpResult {
+    let mut res = McpResult::default();
+    let Some(servers) = read_plugin_mcp(install_path) else {
+        return res;
+    };
+    for (name, mut cfg) in servers {
+        resolve_secrets(&mut cfg, secrets);
+        let r = if crate::services::mcp_registry::get(&name).is_some() {
+            crate::services::mcp_registry::update(&name, cfg)
+        } else {
+            crate::services::mcp_registry::add(&name, cfg)
+        };
+        match r {
+            Ok(()) => res.added.push(name),
+            Err(_) => res.skipped.push(name),
+        }
+    }
+    res
+}
+
 /// Remove the MCP servers a plugin declared. Re-reads the plugin's
 /// `mcp.json` (still on disk at uninstall time) to know which names to drop.
 pub fn unmaterialize_mcp(install_path: &Path) {
@@ -137,5 +161,39 @@ mod tests {
         assert_eq!(cfg["env"]["TOKEN"], "v");
         assert_eq!(cfg["env"]["OTHER"], "x");
         assert_eq!(cfg["args"][1], "v");
+    }
+
+    #[test]
+    fn rematerialize_overwrites_existing_server_value() {
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("FLEETIFY_HOME", dir.path());
+
+        // A fake install dir whose mcp.json has a ${secret:TOK} placeholder.
+        let install = dir.path().join("plugins").join("p");
+        std::fs::create_dir_all(&install).unwrap();
+        std::fs::write(
+            install.join("mcp.json"),
+            r#"{ "mcpServers": { "p_srv": { "type": "stdio", "command": "x",
+                "env": { "TOK": "${secret:TOK}" } } } }"#,
+        )
+        .unwrap();
+
+        let mut s1 = std::collections::BTreeMap::new();
+        s1.insert("TOK".to_string(), "old".to_string());
+        materialize_mcp(&install, &s1);
+        let got = crate::services::mcp_registry::get("p_srv").unwrap();
+        assert_eq!(got["env"]["TOK"], "old");
+
+        let mut s2 = std::collections::BTreeMap::new();
+        s2.insert("TOK".to_string(), "new".to_string());
+        let res = rematerialize_mcp(&install, &s2);
+        assert!(res.added.contains(&"p_srv".to_string()));
+        let got = crate::services::mcp_registry::get("p_srv").unwrap();
+        assert_eq!(got["env"]["TOK"], "new");
+
+        std::env::remove_var("FLEETIFY_HOME");
     }
 }

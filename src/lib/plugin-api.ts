@@ -2,7 +2,7 @@
 import { apiFetch } from "./api";
 import type {
   AddSourceResult, CatalogPlugin, MarketplaceSource, PluginDetail,
-  PluginInstall, ScopeType, UpdatePreview,
+  PluginInstall, ScopeType, SecretStatus, UpdatePreview,
 } from "@/types/plugin";
 
 export class HttpError extends Error {
@@ -128,6 +128,18 @@ export const setAutoUpdate = (id: string, auto_update: boolean): Promise<void> =
     method: "PATCH",
     body: JSON.stringify({ auto_update }),
   });
+
+export const getPluginSecrets = (id: string): Promise<SecretStatus[]> =>
+  http<{ secrets: SecretStatus[] }>(`/api/plugins/${encodeURIComponent(id)}/secrets`)
+    .then(r => r.secrets);
+
+export const setPluginSecrets = (
+  id: string, secrets: Record<string, string>,
+): Promise<SecretStatus[]> =>
+  http<{ secrets: SecretStatus[] }>(`/api/plugins/${encodeURIComponent(id)}/secrets`, {
+    method: "PUT",
+    body: JSON.stringify({ secrets }),
+  }).then(r => r.secrets);
 
 /** Master enable / disable. With ``enabled=false`` the backend tears
  *  down every scope's materialised state (skill dirs, hook entries,

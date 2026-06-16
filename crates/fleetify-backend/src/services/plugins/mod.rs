@@ -27,6 +27,7 @@ pub mod manifest;
 pub mod marketplace_fetch;
 pub mod materializers;
 pub mod mcp_materialize;
+pub mod plugin_secrets;
 pub mod providers;
 pub mod rule_merge;
 pub mod state;

@@ -16,6 +16,7 @@ import { useAppStore } from "@/stores/app-store";
 import { usePluginStore } from "@/stores/plugin-store";
 import { InstallDialog } from "../install/InstallDialog";
 import { UninstallDialog } from "../install/UninstallDialog";
+import { SecretsEditor } from "./SecretsEditor";
 import { ProviderLogo, providerName } from "@/components/ui/provider-logo";
 import type { PluginDetail, PluginInstall } from "@/types/plugin";
 import { pluginLabel } from "@/types/plugin";
@@ -282,7 +283,7 @@ export function PluginDetailPage({ source_id, plugin_path, onBack }: Props) {
           {subTab === "overview"   && <OverviewBody readme={detail.readme_md} description={m.description} />}
           {subTab === "components" && <ComponentsBody providers={m.providers} declares={m.declares} />}
           {subTab === "scopes"     && <ScopesBody installed={installed ?? null} onAddScope={() => setInstallOpen(true)} />}
-          {subTab === "settings"   && <SettingsBody installed={!!installed} requiresSecrets={m.requires_secrets} />}
+          {subTab === "settings"   && <SettingsBody installed={!!installed} installId={installed?.id ?? null} requiresSecrets={m.requires_secrets} />}
           {subTab === "changelog"  && <ChangelogBody changelog={detail.changelog_md} />}
         </div>
         <InfoCard
@@ -663,30 +664,19 @@ function ScopesBody({
   );
 }
 
-function SettingsBody({ installed, requiresSecrets }: {
-  installed: boolean; requiresSecrets: PluginDetail["manifest"]["requires_secrets"];
+function SettingsBody({ installed, installId, requiresSecrets }: {
+  installed: boolean;
+  installId: string | null;
+  requiresSecrets: PluginDetail["manifest"]["requires_secrets"];
 }) {
-  if (!installed) {
+  if (!installed || !installId) {
     return (
       <div style={emptyCard}>
-        Install this plugin to manage its settings + scope.
+        Install this plugin to manage its secrets + scope.
       </div>
     );
   }
-  return (
-    <div style={{
-      padding: "16px 18px",
-      borderRadius: 10,
-      border: "1px solid var(--sidebar-border)",
-      background: "var(--sidebar)",
-      fontSize: 12.5, color: "var(--c-med)",
-      lineHeight: 1.6,
-    }}>
-      Auto-update + master toggle controls live in the <strong>Installed</strong> tab.
-      Required secrets ({requiresSecrets.length}) can be updated from there too.
-      Use the <strong>Scopes</strong> tab to add or remove project / global bindings.
-    </div>
-  );
+  return <SecretsEditor installId={installId} requiresSecrets={requiresSecrets} />;
 }
 
 function ChangelogBody({ changelog }: { changelog: string | null }) {

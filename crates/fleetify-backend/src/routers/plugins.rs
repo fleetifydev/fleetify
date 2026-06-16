@@ -25,6 +25,10 @@ pub fn router() -> Router<AppState> {
         .route("/plugins/{install_id}", patch(patch_install))
         .route("/plugins/{install_id}/enabled", post(set_enabled))
         .route("/plugins/{install_id}/scope", post(set_scope))
+        .route(
+            "/plugins/{install_id}/secrets",
+            get(secrets_get).put(secrets_put),
+        )
 }
 
 fn deferred(name: &str) -> Value {
@@ -296,6 +300,69 @@ async fn set_scope(Path(install_id): Path<String>, Json(b): Json<ScopeBody>) -> 
     }
 }
 
+#[derive(Deserialize)]
+struct SecretsBody {
+    #[serde(default)]
+    secrets: std::collections::BTreeMap<String, String>,
+}
+
+/// Resolve an install dir from an id, rejecting path-escape attempts and
+/// missing installs. Returns the plugin dir under `<home>/plugins/<id>`.
+fn install_dir(id: &str) -> Result<std::path::PathBuf, ApiError> {
+    if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
+        return Err(ApiError::BadRequest(format!("invalid plugin id {id:?}")));
+    }
+    let dir = fleetify_core::fleetify_home().join("plugins").join(id);
+    if !dir.is_dir() {
+        return Err(ApiError::NotFound(format!("plugin {id} not installed")));
+    }
+    Ok(dir)
+}
+
+/// Declared secrets enriched with set-status (NO values). Source of truth
+/// for the editor.
+fn secret_status_list(id: &str) -> Result<Value, ApiError> {
+    use crate::services::plugins::{manifest, plugin_secrets};
+    let dir = install_dir(id)?;
+    let m = manifest::parse_plugin(&dir).map_err(|e| ApiError::Internal(e.to_string()))?;
+    let keys: Vec<String> = m.requires_secrets.iter().map(|s| s.key.clone()).collect();
+    let home = fleetify_core::fleetify_home();
+    let set: std::collections::BTreeMap<String, bool> = plugin_secrets::status(&home, id, &keys)
+        .into_iter()
+        .collect();
+    let items: Vec<Value> = m
+        .requires_secrets
+        .iter()
+        .map(|s| {
+            json!({
+                "key": s.key,
+                "label": s.label,
+                "url": s.url,
+                "set": set.get(&s.key).copied().unwrap_or(false),
+            })
+        })
+        .collect();
+    Ok(json!({ "secrets": items }))
+}
+
+async fn secrets_get(Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
+    Ok(Json(secret_status_list(&id)?))
+}
+
+async fn secrets_put(
+    Path(id): Path<String>,
+    Json(b): Json<SecretsBody>,
+) -> Result<Json<Value>, ApiError> {
+    use crate::services::plugins::{mcp_materialize, plugin_secrets};
+    let dir = install_dir(&id)?;
+    let home = fleetify_core::fleetify_home();
+    plugin_secrets::merge(&home, &id, &b.secrets).map_err(ApiError::Internal)?;
+    // Re-apply the full (updated) secret map into the registry so the
+    // plugin's MCP servers pick up the new values on next spawn.
+    mcp_materialize::rematerialize_mcp(&dir, &plugin_secrets::get(&home, &id));
+    Ok(Json(secret_status_list(&id)?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,5 +408,60 @@ mod tests {
         }))
         .is_err());
         assert!(serde_json::from_value::<InstallBody>(json!({ "source_id": "s1" })).is_err());
+    }
+
+    fn write_install(home: &std::path::Path, id: &str, requires: &str) {
+        let pdir = home.join("plugins").join(id).join(".fleetify-plugin");
+        std::fs::create_dir_all(&pdir).unwrap();
+        std::fs::write(
+            pdir.join("plugin.json"),
+            format!(
+                r#"{{ "name": "{id}", "version": "0.1.0", "providers": ["claude-code"],
+                    "requires_secrets": {requires}, "declares": {{ "mcp_servers": 0,
+                    "templates": 0, "workflows": 0, "prompts": 0, "providers": {{}} }} }}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn secret_status_reports_set_without_values() {
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("FLEETIFY_HOME", dir.path());
+        write_install(
+            dir.path(),
+            "p",
+            r#"[{"key":"A","label":"Token A"},{"key":"B","label":"Token B"}]"#,
+        );
+        let v = secret_status_list("p").unwrap();
+        let arr = v["secrets"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["key"], "A");
+        assert_eq!(arr[0]["set"], false);
+        let mut patch = std::collections::BTreeMap::new();
+        patch.insert("A".to_string(), "secret-val".to_string());
+        crate::services::plugins::plugin_secrets::merge(dir.path(), "p", &patch).unwrap();
+        let v = secret_status_list("p").unwrap();
+        let arr = v["secrets"].as_array().unwrap();
+        assert_eq!(arr[0]["set"], true);
+        assert_eq!(arr[1]["set"], false);
+        assert!(arr[0].get("value").is_none(), "must never return values");
+        assert!(!serde_json::to_string(&v).unwrap().contains("secret-val"));
+        std::env::remove_var("FLEETIFY_HOME");
+    }
+
+    #[test]
+    fn install_dir_rejects_escape_and_missing() {
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("FLEETIFY_HOME", dir.path());
+        assert!(matches!(install_dir("../x"), Err(ApiError::BadRequest(_))));
+        assert!(matches!(install_dir("ghost"), Err(ApiError::NotFound(_))));
+        std::env::remove_var("FLEETIFY_HOME");
     }
 }

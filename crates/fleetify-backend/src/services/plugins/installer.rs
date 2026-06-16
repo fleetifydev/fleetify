@@ -181,6 +181,15 @@ pub async fn install_from_git(
     // user didn't supply stays literal (never blanked).
     let mcp_res = mcp_materialize::materialize_mcp(&install_path, secrets);
 
+    // Persist the entered secrets so they can be viewed/edited later and
+    // preserved across updates (the install-time map is otherwise lost
+    // once it's been inlined into the registry).
+    if let Err(e) =
+        super::plugin_secrets::set_all(&fleetify_core::fleetify_home(), &m.name, secrets)
+    {
+        tracing::warn!(target: "plugins.installer", "secret persist failed for {}: {e}", m.name);
+    }
+
     let mut manifest_value = serde_json::to_value(&m).unwrap_or(Value::Null);
     if let Some(obj) = manifest_value.as_object_mut() {
         obj.insert("materialization".into(), Value::Object(materialization));
@@ -224,6 +233,7 @@ pub fn uninstall(install_id: &str) -> Result<(), InstallError> {
     // Drop this plugin's MCP servers from the shared registry (re-reads the
     // still-on-disk mcp.json to know which names it owns).
     mcp_materialize::unmaterialize_mcp(&dir);
+    super::plugin_secrets::delete(&fleetify_core::fleetify_home(), install_id);
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

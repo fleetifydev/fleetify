@@ -24,6 +24,16 @@ export interface SecretRequirement {
   url?: string;
 }
 
+/** Per-declared-secret edit status for the post-install Settings editor.
+ *  `set` = a non-empty value is stored; the value itself is never sent
+ *  to the renderer. */
+export interface SecretStatus {
+  key: string;
+  label: string;
+  url?: string;
+  set: boolean;
+}
+
 /** Per-provider component counts. `commands` only applies to agents with
  *  a /command surface (Claude / Gemini / OpenCode); Codex materializes the
  *  same markdown into `~/.codex/prompts/`. Providers without a command
