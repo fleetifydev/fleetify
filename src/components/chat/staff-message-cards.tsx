@@ -423,48 +423,6 @@ export function MCPStatusCard({ servers }: { servers: McpServerRow[] }) {
   );
 }
 
-/* ── Init confirmation / outcome cards ── */
-export function InitPendingCard({ filename, projectPath, alreadyExists, onConfirm, onCancel }: {
-  filename: string; projectPath: string; alreadyExists: boolean;
-  onConfirm: () => void; onCancel: () => void;
-}) {
-  return (
-    <div style={{ borderRadius: 10, border: "1px solid var(--border)", padding: "14px 16px", marginBottom: 12, background: "var(--card)" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
-        <FileEdit size={14} style={{ color: alreadyExists ? "#eab308" : "#22c55e" }} />
-        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--foreground)" }}>
-          {alreadyExists ? `Overwrite ${filename}?` : `Create ${filename}?`}
-        </span>
-      </div>
-      <div style={{ fontSize: 12, color: "var(--muted-foreground)", marginBottom: 10, fontFamily: "var(--font-mono)" }}>
-        {projectPath}
-      </div>
-      {alreadyExists && (
-        <div style={{ fontSize: 11, color: "#eab308", marginBottom: 10 }}>
-          A file with this name already exists. Confirming will replace it with the Fleetify starter template.
-        </div>
-      )}
-      <div style={{ display: "flex", gap: 6 }}>
-        <CardBtn label={alreadyExists ? "Overwrite" : "Create"} onClick={onConfirm} primary />
-        <CardBtn label="Cancel" onClick={onCancel} />
-      </div>
-    </div>
-  );
-}
-
-export function InitDoneCard({ path, existed }: { path: string; existed: boolean }) {
-  return (
-    <div style={{ borderRadius: 10, border: "1px solid var(--border)", padding: "12px 14px", marginBottom: 12, background: "var(--card)" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <CheckCircle2 size={14} style={{ color: "#22c55e" }} />
-        <span style={{ fontSize: 12, fontWeight: 500, color: "var(--foreground)" }}>
-          {existed ? "Replaced" : "Created"} {path}
-        </span>
-      </div>
-    </div>
-  );
-}
-
 /* ── Generic info card (for /effort, /permissions, errors) ── */
 export function InfoCard({ title, message, tone = "info" }: { title: string; message: string; tone?: "info" | "warn" | "error" }) {
   // Errors render through the shared in-chat error surface so a failed

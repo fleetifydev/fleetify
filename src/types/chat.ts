@@ -138,7 +138,7 @@ export interface ArtifactBlock {
 }
 
 /** Staff-message card produced by an in-app slash command (/skills,
- *  /hooks, /commands, /prompts, /usage, /mcp, /init, /effort,
+ *  /hooks, /commands, /prompts, /usage, /mcp, /effort,
  *  /permissions). These never round-trip through the underlying CLI —
  *  the data is fetched from Fleetify's own API and the message is
  *  pushed straight into the local chat-store transcript so the user
@@ -149,7 +149,7 @@ export interface ResourceCardBlock {
   card_kind:
     | "skills" | "hooks" | "commands" | "prompts"
     | "usage" | "mcp" | "context"
-    | "init_pending" | "init_done" | "info";
+    | "info";
   data: unknown;
 }
 

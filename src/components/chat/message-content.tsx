@@ -8,7 +8,7 @@ import type { Components } from "react-markdown";
 import type { ChatMessage, ContentBlock, ArtifactBlock, ResourceCardBlock } from "@/types/chat";
 import {
   SkillsCard, HooksCard, CommandsCard, UsageCard, MCPStatusCard,
-  InitDoneCard, InfoCard, ContextCard,
+  InfoCard, ContextCard,
 } from "./staff-message-cards";
 import { CitationCard } from "./citation-card";
 import { AuthRequiredCard } from "./auth-required-card";
@@ -2895,19 +2895,12 @@ function renderResourceCard(block: ResourceCardBlock): React.ReactNode {
       />;
     case "mcp":
       return <MCPStatusCard servers={(data.servers as never) || []} />;
-    case "init_done":
-      return <InitDoneCard path={String(data.path ?? "")} existed={Boolean(data.existed)} />;
     case "info":
       return <InfoCard
         title={String(data.title ?? "")}
         message={String(data.message ?? "")}
         tone={(data.tone as "info" | "warn" | "error" | undefined) ?? "info"}
       />;
-    case "init_pending":
-      // Sprint 2 uses window.confirm() for the overwrite branch instead
-      // of a card-rendered dialog. The block kind stays in the schema
-      // so a future renderer can flip back without a migration.
-      return null;
     default:
       return null;
   }

@@ -49,7 +49,6 @@ export type SlashIntent =
   | "session.yolo"
   | "session.model"
   | "session.review"
-  | "session.init"
   | "session.hooks"
   | "session.skills"
   | "session.effort"
@@ -140,7 +139,6 @@ export const SESSION_CMDS_BY_TOOL: Record<SessionTool, SlashCmdDef[]> = {
  * session). The handlers live in chat-view's slash submit pipeline.
  */
 export const SESSION_CMDS_COMMON: SlashCmdDef[] = [
-  { intent: "session.init",        cmd: "/init",        desc: "Generate the project's agent context file (CLAUDE.md / GEMINI.md / AGENTS.md)", scope: "session" },
   { intent: "session.hooks",       cmd: "/hooks",       desc: "Show configured lifecycle hooks for this session",                              scope: "session" },
   { intent: "session.skills",      cmd: "/skills",      desc: "Show installed skills available to this session",                               scope: "session" },
   { intent: "session.usage",       cmd: "/usage",       desc: "Show token usage and cost for this session",                                    scope: "session" },

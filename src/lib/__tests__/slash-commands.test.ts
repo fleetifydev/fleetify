@@ -75,7 +75,7 @@ describe("commandsForContext — mode commands", () => {
     const cmds = commandsForContext("session-chat", "cursor-cli").map((c) => c.cmd);
     expect(cmds).toContain("/skills");
     expect(cmds).toContain("/usage");
-    expect(cmds).toContain("/init");
+    expect(cmds).not.toContain("/init");
     expect(cmds).toContain("/prompts");
     expect(cmds).not.toContain("/effort"); // supportedTools: claude-code + codex-cli only
   });

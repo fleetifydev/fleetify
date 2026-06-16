@@ -1449,7 +1449,7 @@ export function ChatInput({
   const builtinCmds = useMemo<Array<{ cmd: string; desc: string; body: null; intent: string; providerCmd?: string }>>(
     // No active session → this is the Fleet composer / command center, which
     // surfaces ONLY provider-agnostic fleet commands. Session-only commands
-    // (/init, /review, /plan, /yolo, …) are meaningless without a session, so
+    // (/review, /plan, /yolo, …) are meaningless without a session, so
     // they must not leak here even though a default `tool` is selected.
     () => commandsForContext(sessionId ? "session-chat" : "fleet", tool).map((c: SlashCmdDef) => ({
       cmd: c.cmd,
@@ -1628,39 +1628,6 @@ export function ChatInput({
       }));
       pushCard("mcp", { servers: mapped });
       useMCPStore.getState().refresh().catch(() => {});
-      return true;
-    }
-
-    /* /init ─ writes CLAUDE.md / GEMINI.md / AGENTS.md from a Fleetify
-       template. window.confirm for the overwrite branch. */
-    if (head === "/init") {
-      echoUser();
-      void (async () => {
-        const post = (overwrite: boolean) => apiFetch(`/api/sessions/${sessionId}/init-context`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ overwrite }),
-        });
-        let res = await post(false);
-        if (res.status === 409) {
-          const body = await res.json().catch(() => ({}));
-          const detail = (body as { detail?: { path?: string } }).detail;
-          const filename = detail?.path?.split(/[\\/]/).pop() ?? "the agent context file";
-          const ok = window.confirm(`${filename} already exists. Overwrite with the Fleetify starter template?`);
-          if (!ok) {
-            pushInfo("Cancelled", "Existing file kept.", "info");
-            return;
-          }
-          res = await post(true);
-        }
-        if (!res.ok) {
-          const err = await res.text().catch(() => `HTTP ${res.status}`);
-          pushInfo("Init failed", err, "error");
-          return;
-        }
-        const data = await res.json();
-        pushCard("init_done", data);
-      })();
       return true;
     }
 
