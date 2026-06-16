@@ -1531,9 +1531,19 @@ export function ChatInput({
    *  transcript as a ResourceCardBlock — see message-content's
    *  renderResourceCard for the dispatch. */
   const handleSlashIntent = useCallback((t: string): boolean => {
-    if (!sessionId || !tool) return false;
     if (!t.startsWith("/")) return false;
     const head = t.split(/\s+/)[0] ?? "";
+
+    // /model opens the existing model picker. Handle it BEFORE the session
+    // gate so it also works in the Fleet control-center, where no session
+    // exists yet (sessionId === null) but a tool/default is set.
+    if (head === "/model") {
+      if (!tool) return false;
+      setOpenDrop("model");
+      return true;
+    }
+
+    if (!sessionId || !tool) return false;
 
     const push = (
       role: "user" | "assistant",
@@ -1702,7 +1712,7 @@ export function ChatInput({
     }
 
     return false;
-  }, [sessionId, tool, effort, setEffortLocal, onEffortChange, contextUsedTokens, contextMaxTokens, contextPercent, providerTiles]);
+  }, [sessionId, tool, effort, setEffortLocal, onEffortChange, contextUsedTokens, contextMaxTokens, contextPercent, providerTiles, setOpenDrop]);
 
   /** `/prompts` — app-owned. No argument opens the picker; `/prompts <slug>`
    *  resolves and sends the prompt's body, or toasts on an unknown slug. Works

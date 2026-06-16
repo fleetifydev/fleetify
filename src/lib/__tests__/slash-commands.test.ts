@@ -23,9 +23,9 @@ describe("/prompts in commandsForContext", () => {
     const all = commandsForContext("session-chat", "claude-code").map((c) => c.cmd);
     expect(all).not.toContain("/commands");
   });
-  it("removes /model and /effort (commented out)", () => {
+  it("offers /model but keeps /effort removed (commented out)", () => {
     const all = commandsForContext("session-chat", "claude-code").map((c) => c.cmd);
-    expect(all).not.toContain("/model");
+    expect(all).toContain("/model");
     expect(all).not.toContain("/effort");
   });
 });

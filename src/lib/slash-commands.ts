@@ -101,6 +101,10 @@ export const FLEET_CMDS: SlashCmdDef[] = [
   // too. Handled Fleetify-side in chat-input's slash pipeline (renders the
   // context-window card); never forwarded to the CLI.
   { intent: "fleet.context",    cmd: "/context", desc: "Show context window usage",                       scope: "fleet" },
+  // /model — surfaced in the fleet command center so it autocompletes there too
+  // (the control-center passes ctx "fleet", not "session-chat"). The handler in
+  // chat-input opens the UnifiedModelPicker; works with no active session.
+  { intent: "session.model",    cmd: "/model",   desc: "Switch model — opens the model picker",           scope: "fleet" },
 ];
 
 export const SESSION_CMDS_BY_TOOL: Record<SessionTool, SlashCmdDef[]> = {
@@ -108,23 +112,17 @@ export const SESSION_CMDS_BY_TOOL: Record<SessionTool, SlashCmdDef[]> = {
     { intent: "session.compaction", cmd: "/compact", desc: "Summarize conversation to free context", scope: "session" },
     { intent: "session.context",    cmd: "/context", desc: "Show context window usage",              scope: "session" },
     { intent: "session.review",     cmd: "/review",  desc: "Review last changes",                    scope: "session" },
-    // /model commented out per request — model selection now lives in the model picker.
-    // { intent: "session.model",      cmd: "/model",   desc: "Switch model",                           scope: "session" },
   ],
   "codex-cli": [
     { intent: "session.compaction", cmd: "/compact",   desc: "Summarize visible conversation (auto-confirmed)", scope: "session" },
     { intent: "session.clear",      cmd: "/clear",     desc: "Clear the terminal and start a fresh chat",       scope: "session" },
     { intent: "session.context",    cmd: "/status",    desc: "Show session status",                             scope: "session" },
-    // /model commented out per request — model selection now lives in the model picker.
-    // { intent: "session.model",      cmd: "/model",     desc: "Switch model",                                    scope: "session" },
     { intent: "session.review",     cmd: "/review",    desc: "Review last changes",                             scope: "session" },
   ],
   "gemini-cli": [
     { intent: "session.compaction", cmd: "/compress", desc: "Replace chat context with a summary", scope: "session", providerCmd: "/compress" },
     { intent: "session.clear",      cmd: "/clear",    desc: "Clear conversation history",          scope: "session" },
     { intent: "session.context",    cmd: "/stats",    desc: "Show session statistics",             scope: "session" },
-    // /model commented out per request — model selection now lives in the model picker.
-    // { intent: "session.model",      cmd: "/model",    desc: "Switch model",                        scope: "session" },
   ],
 };
 
@@ -144,6 +142,10 @@ export const SESSION_CMDS_COMMON: SlashCmdDef[] = [
   { intent: "session.usage",       cmd: "/usage",       desc: "Show token usage and cost for this session",                                    scope: "session" },
   { intent: "session.permissions", cmd: "/permissions", desc: "Change the session's permission mode",                                          scope: "session" },
   { intent: "session.mcp",         cmd: "/mcp",         desc: "Show MCP server status for this session",                                       scope: "session" },
+  // /model re-enabled — opens the existing UnifiedModelPicker (Providers | Models
+  // | Effort). Tool-agnostic; the handler in chat-input opens the picker rather
+  // than forwarding "/model" to the CLI.
+  { intent: "session.model",       cmd: "/model",       desc: "Switch model — opens the model picker",                                         scope: "session" },
   // /effort commented out per request — reasoning effort now lives in the model
   // picker (Providers | Models | Effort), so the slash command is redundant.
   // { intent: "session.effort",      cmd: "/effort",      desc: "Change reasoning effort (low/medium/high/extra_high/max)", scope: "session", supportedTools: ["claude-code", "codex-cli"] },
