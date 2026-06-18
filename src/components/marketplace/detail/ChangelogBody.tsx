@@ -2,16 +2,17 @@
  * Structured changelog renderer for the plugin detail page.
  *
  * Parses the plugin's Keep a Changelog markdown into versioned sections
- * (see `@/lib/changelog`) and renders each release with a version pill,
- * a formatted date, an optional "Installed" badge, and category-grouped
- * bullets. Boilerplate intro is stripped by the parser. A changelog that
- * doesn't follow the format (no `## version` headings) falls back to the
- * previous raw-markdown rendering so nothing regresses.
+ * (see `@/lib/changelog`) and renders each release in a flat, boxless
+ * layout that mirrors the detail page's own header vocabulary: a mono
+ * version label, a muted date with a `·` separator, an optional
+ * "Installed" marker, and category-grouped bullets. Versions are split by
+ * a faint hairline. A changelog that doesn't follow the format falls back
+ * to raw-markdown rendering so nothing regresses.
  */
 import type { CSSProperties } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { parseChangelog, type ChangelogCategory, type ChangelogEntry } from "@/lib/changelog";
+import { parseChangelog, type ChangelogEntry } from "@/lib/changelog";
 import { semverEq } from "@/lib/semver";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -25,19 +26,6 @@ function formatDate(iso: string | null): string | null {
   const mon = MONTHS[Number(m[2]) - 1];
   return mon ? `${Number(m[3])} ${mon} ${m[1]}` : iso;
 }
-
-/** Small, calm category accent. Destructive kinds reuse the theme's error
- *  token (already light/dark aware); the rest are low-saturation mid-tones
- *  that read on both themes. Kept muted on purpose — these are 6px dots. */
-const DOT: Record<ChangelogCategory, string> = {
-  Added: "#5b9279",
-  Changed: "#5a82c2",
-  Fixed: "#7c79c2",
-  Removed: "var(--c-err)",
-  Deprecated: "#b0894a",
-  Security: "var(--c-err)",
-  Other: "var(--c-dim)",
-};
 
 export function ChangelogBody({
   changelog,
@@ -63,38 +51,50 @@ export function ChangelogBody({
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
+    <div style={{ display: "flex", flexDirection: "column" }}>
       {entries.map((e, i) => (
         <VersionBlock
           key={`${e.version}-${i}`}
           entry={e}
           installed={!!installedVersion && semverEq(e.version, installedVersion)}
+          first={i === 0}
         />
       ))}
     </div>
   );
 }
 
-function VersionBlock({ entry, installed }: { entry: ChangelogEntry; installed: boolean }) {
+function VersionBlock({ entry, installed, first }: { entry: ChangelogEntry; installed: boolean; first: boolean }) {
   const date = formatDate(entry.date);
   return (
-    <section>
-      <header style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 10 }}>
-        <span style={versionPill}>{entry.rawVersion || entry.version}</span>
-        {installed && <span style={installedChip}>Installed</span>}
+    <section
+      style={{
+        paddingTop: first ? 0 : 18,
+        marginTop: first ? 0 : 18,
+        borderTop: first ? undefined : "1px solid var(--sidebar-border)",
+      }}
+    >
+      <header style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+        <span style={versionText}>v{entry.rawVersion || entry.version}</span>
+        {date && (
+          <>
+            <span style={dotSep}>·</span>
+            <span style={dateText}>{date}</span>
+          </>
+        )}
         <span style={{ flex: 1 }} />
-        {date && <span style={dateText}>{date}</span>}
+        {installed && (
+          <span style={installedTag}>
+            <span style={installedDot} />
+            Installed
+          </span>
+        )}
       </header>
 
-      <div style={sectionStack}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         {entry.sections.map((s, j) => (
           <div key={j}>
-            {s.label && (
-              <div style={categoryLabel}>
-                <span style={{ ...dot, background: DOT[s.kind] }} />
-                {s.label}
-              </div>
-            )}
+            {s.label && <div style={categoryLabel}>{s.label}</div>}
             <ul style={list}>
               {s.items.map((it, k) => (
                 <li key={k} style={listItem}>
@@ -137,62 +137,48 @@ const rawCard: CSSProperties = {
   lineHeight: 1.6,
 };
 
-const versionPill: CSSProperties = {
-  fontSize: 12.5,
+const versionText: CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontSize: 13.5,
   fontWeight: 600,
   color: "var(--c-high)",
-  padding: "2px 9px",
-  borderRadius: 7,
-  border: "1px solid var(--sidebar-border)",
-  background: "var(--card)",
   letterSpacing: 0.2,
-  fontVariantNumeric: "tabular-nums",
 };
 
-const installedChip: CSSProperties = {
-  fontSize: 10,
-  fontWeight: 600,
-  textTransform: "uppercase",
-  letterSpacing: 0.5,
-  color: "var(--c-low)",
-  padding: "2px 7px",
-  borderRadius: 6,
-  border: "1px solid var(--sidebar-border)",
-  background: "var(--accent)",
+const dotSep: CSSProperties = {
+  color: "var(--c-ghost)",
+  fontSize: 12,
 };
 
 const dateText: CSSProperties = {
   fontSize: 12,
   color: "var(--c-dim)",
-  fontVariantNumeric: "tabular-nums",
 };
 
-const sectionStack: CSSProperties = {
-  borderTop: "1px solid var(--sidebar-border)",
-  paddingTop: 12,
-  display: "flex",
-  flexDirection: "column",
-  gap: 14,
+const installedTag: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 5,
+  fontSize: 11,
+  color: "var(--c-low)",
+};
+
+const installedDot: CSSProperties = {
+  width: 5,
+  height: 5,
+  borderRadius: 99,
+  background: "var(--c-official)",
+  display: "inline-block",
+  flex: "0 0 auto",
 };
 
 const categoryLabel: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 7,
-  fontSize: 11,
+  fontSize: 10.5,
   fontWeight: 600,
   textTransform: "uppercase",
-  letterSpacing: 0.6,
-  color: "var(--c-dim)",
-  marginBottom: 7,
-};
-
-const dot: CSSProperties = {
-  width: 6,
-  height: 6,
-  borderRadius: 99,
-  display: "inline-block",
-  flex: "0 0 auto",
+  letterSpacing: 0.7,
+  color: "var(--c-low)",
+  marginBottom: 6,
 };
 
 const list: CSSProperties = {
@@ -201,7 +187,7 @@ const list: CSSProperties = {
   padding: 0,
   display: "flex",
   flexDirection: "column",
-  gap: 5,
+  gap: 4,
 };
 
 const listItem: CSSProperties = {
@@ -209,12 +195,12 @@ const listItem: CSSProperties = {
   gap: 8,
   fontSize: 13,
   color: "var(--c-med)",
-  lineHeight: 1.55,
+  lineHeight: 1.5,
   alignItems: "baseline",
 };
 
 const bulletMark: CSSProperties = {
-  color: "var(--c-dim)",
+  color: "var(--c-ghost)",
   flex: "0 0 auto",
   userSelect: "none",
 };

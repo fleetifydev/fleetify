@@ -32,8 +32,8 @@ All notable changes to this plugin are documented in this file.
 describe("ChangelogBody", () => {
   it("renders a header + formatted date for each version", () => {
     render(<ChangelogBody changelog={SAMPLE} />);
-    expect(screen.getByText("0.2.0")).toBeTruthy();
-    expect(screen.getByText("0.1.0")).toBeTruthy();
+    expect(screen.getByText("v0.2.0")).toBeTruthy();
+    expect(screen.getByText("v0.1.0")).toBeTruthy();
     expect(screen.getByText("18 Jun 2026")).toBeTruthy();
     expect(screen.getByText("17 Jun 2026")).toBeTruthy();
   });
@@ -59,8 +59,8 @@ describe("ChangelogBody", () => {
   it("falls back to raw markdown when the format is not recognized", () => {
     render(<ChangelogBody changelog="Some freeform notes without versions." />);
     expect(screen.getByText("Some freeform notes without versions.")).toBeTruthy();
-    // no version pill rendered
-    expect(screen.queryByText("0.2.0")).toBeNull();
+    // no version header rendered
+    expect(screen.queryByText("v0.2.0")).toBeNull();
   });
 
   it("shows an empty state when there is no changelog", () => {
