@@ -24,3 +24,17 @@ export function isMajorBump(from: string, to: string): boolean {
   if (!pf || !pt) return false;
   return (pt[0] ?? 0) > (pf[0] ?? 0);
 }
+
+/** Strip a leading "v", surrounding brackets, and whitespace so versions
+ *  compare cleanly ("[v0.1.0]" → "0.1.0"). Non-semver tokens such as
+ *  "Unreleased" pass through trimmed. */
+export function normalizeVersion(v: string): string {
+  return v.trim().replace(/^\[|\]$/g, "").replace(/^v/i, "").trim();
+}
+
+/** True when two version strings denote the same release, ignoring a
+ *  leading "v"/brackets. Empty / whitespace inputs never match. */
+export function semverEq(a: string, b: string): boolean {
+  const na = normalizeVersion(a);
+  return na.length > 0 && na === normalizeVersion(b);
+}

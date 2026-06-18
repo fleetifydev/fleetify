@@ -17,6 +17,7 @@ import { usePluginStore } from "@/stores/plugin-store";
 import { InstallDialog } from "../install/InstallDialog";
 import { UninstallDialog } from "../install/UninstallDialog";
 import { SecretsEditor } from "./SecretsEditor";
+import { ChangelogBody } from "./ChangelogBody";
 import { ProviderLogo, providerName } from "@/components/ui/provider-logo";
 import { computeUpdateInfo } from "@/lib/plugin-update";
 import type { CatalogPlugin, PluginDetail, PluginInstall } from "@/types/plugin";
@@ -309,7 +310,7 @@ export function PluginDetailPage({ source_id, plugin_path, onBack }: Props) {
           {subTab === "components" && <ComponentsBody providers={m.providers} declares={m.declares} />}
           {subTab === "scopes"     && <ScopesBody installed={installed ?? null} onAddScope={() => setInstallOpen(true)} />}
           {subTab === "settings"   && <SettingsBody installed={!!installed} installId={installed?.id ?? null} requiresSecrets={m.requires_secrets} />}
-          {subTab === "changelog"  && <ChangelogBody changelog={detail.changelog_md} />}
+          {subTab === "changelog"  && <ChangelogBody changelog={detail.changelog_md} installedVersion={installed?.version ?? null} />}
         </div>
         <InfoCard
           repoUrl={safeRepo}
@@ -731,24 +732,6 @@ function AutoUpdateToggle({ installId }: { installId: string }) {
       />
       Auto-update this plugin (safe updates apply automatically)
     </label>
-  );
-}
-
-function ChangelogBody({ changelog }: { changelog: string | null }) {
-  if (!changelog || !changelog.trim()) {
-    return <div style={emptyCard}>No changelog published.</div>;
-  }
-  return (
-    <div style={{
-      padding: "16px 18px",
-      borderRadius: 10,
-      border: "1px solid var(--sidebar-border)",
-      background: "var(--sidebar)",
-      fontSize: 13, color: "var(--c-med)",
-      lineHeight: 1.6,
-    }} className="md-detail">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{changelog}</ReactMarkdown>
-    </div>
   );
 }
 
