@@ -1205,7 +1205,9 @@ async fn check_claude_cli() -> Value {
 }
 
 async fn check_gemini_cli() -> Value {
-    let Some(p) = cli_path("gemini-cli").await else {
+    // Binary is `gemini`, not `gemini-cli` — the old name never resolved, so an
+    // installed Gemini CLI was always reported as not-installed in onboarding.
+    let Some(p) = cli_path("gemini").await else {
         return json!({ "installed": false, "authenticated": false, "path": null });
     };
     let authed = home().join(".gemini/oauth_creds.json").exists()
@@ -1215,7 +1217,8 @@ async fn check_gemini_cli() -> Value {
 }
 
 async fn check_codex_cli() -> Value {
-    let Some(p) = cli_path("codex-cli").await else {
+    // Binary is `codex`, not `codex-cli` — see check_gemini_cli.
+    let Some(p) = cli_path("codex").await else {
         return json!({ "installed": false, "authenticated": false, "path": null });
     };
     let authed =

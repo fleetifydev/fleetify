@@ -23,6 +23,8 @@ import remarkGfm from "remark-gfm";
 import {
   ArrowRight,
   Check,
+  Download,
+  KeyRound,
   Loader2,
   X,
   Github,
@@ -688,7 +690,7 @@ export function OnboardingChat({ user, onDone }: Props) {
     (async () => {
       await pushAssistant(`Welcome aboard, ${firstName}.`);
       await pushAssistant(
-        "Fleet is a single cockpit for every AI coding agent — Claude Code, Codex, Gemini, Ollama, and the API providers behind them. Shared memory, real cost control, one sidebar.",
+        "Fleet is a single cockpit for every AI coding agent — Claude Code, Codex, Gemini, Cursor, Kimi, OpenCode, GitHub Copilot, Antigravity, Ollama — plus 10+ API providers (OpenAI, Anthropic, Gemini, DeepSeek, Grok, and more). Shared memory, real cost control, one sidebar.",
       );
       await pushAssistant(
         "Let's set you up — start with your **workspace** agents and API providers. Pick one or more and I'll verify each is installed and signed in. You can edit any of this later from **Settings**.",
@@ -1257,37 +1259,65 @@ function ProvidersWidget({
   // Reveal stagger walks this phase's providers (Providers → API) in order.
   const indexById = new Map(phaseProviders.map((p, i) => [p.id, i]));
 
-  const renderSection = (title: string, list: ProviderDef[]) => (
-    <div style={{ display: "flex", flexDirection: "column" }}>
-      <div
-        style={{
-          padding: "10px 10px 4px",
-          fontSize: 9.5,
-          fontWeight: 600,
-          letterSpacing: "0.08em",
-          textTransform: "uppercase",
-          color: "var(--m-text-3)",
-        }}
-      >
-        {title}
+  // Split the CLI agents into "installed on this device" vs "installable" so the
+  // picker reads like a real setup screen (cards for what's ready, a list for
+  // what you can add) instead of one flat roster.
+  const isInstalled = (p: ProviderDef) =>
+    !!(p.scanKey && scan && scan[p.scanKey]?.installed);
+  const installedCli = providerKind.filter(isInstalled);
+  const installableCli = providerKind.filter((p) => !isInstalled(p));
+  const selectAll = (list: ProviderDef[]) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      list.forEach((p) => next.add(p.id));
+      return next;
+    });
+
+  const renderSection = (opts: {
+    icon: typeof Check;
+    title: string;
+    list: ProviderDef[];
+    variant: "card" | "row";
+    actionFor?: (p: ProviderDef) => { label: string; kind: "install" | "key" } | null;
+    showSelectAll?: boolean;
+  }) => {
+    if (opts.list.length === 0) return null;
+    const { icon: Icon, title, list, variant, actionFor } = opts;
+    return (
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "12px 8px 6px" }}>
+          <Icon size={11} strokeWidth={2.4} style={{ color: "var(--m-text-3)", flexShrink: 0 }} />
+          <span style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--m-text-3)" }}>
+            {title}
+          </span>
+          <span style={{ fontSize: 10.5, fontWeight: 500, color: "var(--m-text-3)" }}>{list.length}</span>
+          {opts.showSelectAll && (
+            <button
+              type="button"
+              onClick={() => selectAll(list)}
+              style={{ marginLeft: "auto", fontSize: 11, fontWeight: 500, color: "var(--m-text-2)", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+            >
+              Select all
+            </button>
+          )}
+        </div>
+        {list.map((p) => {
+          const idx = indexById.get(p.id) ?? 0;
+          return (
+            <ProviderRow
+              key={p.id}
+              provider={p}
+              visible={idx < revealed}
+              selected={selected.has(p.id)}
+              variant={variant}
+              action={actionFor ? actionFor(p) : null}
+              onToggle={() => toggle(p.id)}
+            />
+          );
+        })}
       </div>
-      {list.map((p) => {
-        const idx = indexById.get(p.id) ?? 0;
-        const visible = idx < revealed;
-        const isSelected = selected.has(p.id);
-        return (
-          <ProviderRow
-            key={p.id}
-            provider={p}
-            visible={visible}
-            selected={isSelected}
-            scan={scan}
-            onToggle={() => toggle(p.id)}
-          />
-        );
-      })}
-    </div>
-  );
+    );
+  };
 
   return (
     <div
@@ -1301,9 +1331,48 @@ function ProvidersWidget({
         overflow: "hidden",
       }}
     >
-      <div style={{ padding: "0 4px 6px", display: "flex", flexDirection: "column" }}>
-        {providerKind.length > 0 && renderSection("Providers", providerKind)}
-        {apiKind.length > 0 && renderSection("API", apiKind)}
+      <style>{`
+        .onb-list { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+        .onb-list:hover { scrollbar-color: rgba(var(--fg-rgb),0.18) transparent; }
+        .onb-list::-webkit-scrollbar { width: 6px; }
+        .onb-list::-webkit-scrollbar-track { background: transparent; }
+        .onb-list::-webkit-scrollbar-thumb { background: transparent; border-radius: 99px; }
+        .onb-list:hover::-webkit-scrollbar-thumb { background: rgba(var(--fg-rgb),0.16); }
+      `}</style>
+      <div
+        className="onb-list"
+        style={{
+          padding: "4px 8px 8px",
+          display: "flex",
+          flexDirection: "column",
+          // Cap the list so a full catalog (~20 providers) scrolls INSIDE the
+          // card instead of growing the whole screen; the footer + Continue
+          // stay pinned and visible.
+          maxHeight: "46vh",
+          overflowY: "auto",
+        }}
+      >
+        {renderSection({
+          icon: Check,
+          title: "Installed on this device",
+          list: installedCli,
+          variant: "card",
+          showSelectAll: true,
+        })}
+        {renderSection({
+          icon: Download,
+          title: "Installable",
+          list: installableCli,
+          variant: "row",
+          actionFor: () => ({ label: "Install", kind: "install" }),
+        })}
+        {renderSection({
+          icon: KeyRound,
+          title: "API",
+          list: apiKind,
+          variant: "row",
+          actionFor: () => ({ label: "Add key", kind: "key" }),
+        })}
       </div>
 
       {/* Footer — hairline + counter + Continue */}
@@ -1363,22 +1432,22 @@ function ProviderRow({
   provider,
   visible,
   selected,
-  scan,
+  variant,
+  action,
   onToggle,
 }: {
   provider: ProviderDef;
   visible: boolean;
   selected: boolean;
-  /** Pre-fetched scan snapshot. When non-null we render a small
-   *  "Installed" / "Not installed" / "Key found" / "Add key" hint
-   *  next to the row name so the user knows up front what they're
-   *  signing up for — no surprise during the verification step. */
-  scan: ProviderScan | null;
+  /** "card" = installed-on-device (bordered, elevated). "row" = installable /
+   *  API (flatter, with a right-side action affordance). */
+  variant: "card" | "row";
+  /** Right-side affordance for non-installed rows: Install or Add key. */
+  action?: { label: string; kind: "install" | "key" } | null;
   onToggle: () => void;
 }) {
   const [hover, setHover] = useState(false);
-  const showSurface = selected || hover;
-  const installInfo = scan ? getInstallInfo(provider, scan) : null;
+  const isCard = variant === "card";
 
   return (
     <button
@@ -1390,113 +1459,95 @@ function ProviderRow({
         display: "flex",
         alignItems: "center",
         gap: 9,
-        padding: "0 10px",
-        height: 28,
-        margin: "1px 0",
-        borderRadius: 5,
-        background: showSurface ? "var(--secondary)" : "transparent",
-        border: "none",
+        width: "100%",
+        padding: isCard ? "6px 9px" : "5px 9px",
+        margin: isCard ? "2px 0" : "0",
+        borderRadius: isCard ? 7 : 6,
+        background: selected
+          ? "rgba(var(--fg-rgb),0.06)"
+          : isCard || hover ? "var(--secondary)" : "transparent",
+        border: isCard
+          ? `1px solid ${selected ? "var(--c-brd2)" : "var(--c-brd)"}`
+          : `1px solid ${selected ? "var(--c-brd2)" : "transparent"}`,
         color: "var(--m-text)",
         cursor: visible ? "pointer" : "default",
         textAlign: "left",
         opacity: visible ? 1 : 0,
         transform: visible ? "translateY(0)" : "translateY(2px)",
         transition:
-          "opacity 0.22s ease, transform 0.22s ease, background 0.12s ease",
+          "opacity 0.22s ease, transform 0.22s ease, background 0.12s ease, border-color 0.12s ease",
       }}
     >
-      <ProviderLogo tool={provider.logo} size={12} />
+      {/* Multi-select checkbox — empty rounded box → filled accent + check. */}
       <span
+        aria-hidden
         style={{
-          fontSize: 12,
-          fontWeight: 500,
-          lineHeight: 1,
-          color: "var(--c-high)",
-          flex: 1,
+          width: 14,
+          height: 14,
+          flexShrink: 0,
+          borderRadius: 4,
+          border: selected
+            ? "1px solid var(--c-high)"
+            : "1px solid rgba(var(--fg-rgb),0.18)",
+          background: selected ? "var(--c-high)" : "transparent",
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          transition: "background 0.12s, border-color 0.12s",
         }}
       >
-        {provider.label}
+        {selected && (
+          <Check size={9.5} strokeWidth={3.2} style={{ color: "var(--background)" }} />
+        )}
       </span>
-      {installInfo && (
+      {/* Bare logo — no tile, sits inline like a favicon next to the name. */}
+      <span aria-hidden style={{ flexShrink: 0, display: "inline-flex", lineHeight: 0 }}>
+        <ProviderLogo tool={provider.logo} size={16} />
+      </span>
+      {/* Name + one-line description */}
+      <span style={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0, flex: 1 }}>
+        <span style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.25, color: "var(--c-high)" }}>
+          {provider.label}
+        </span>
         <span
           style={{
             fontSize: 10.5,
-            fontWeight: 500,
-            lineHeight: 1,
-            // Green dot for present, dim grey for missing — same
-            // colour language the StatusPill uses below the row,
-            // so the picker and the verifier feel like one system.
-            color: installInfo.ready ? "rgba(74, 222, 128, 0.92)" : "var(--m-text-3)",
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 5,
-            flexShrink: 0,
+            lineHeight: 1.2,
+            color: "var(--m-text-3)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
           }}
         >
-          <span
-            aria-hidden
-            style={{
-              width: 5,
-              height: 5,
-              borderRadius: "50%",
-              background: installInfo.ready ? "rgba(74, 222, 128, 0.92)" : "var(--m-text-3)",
-              opacity: installInfo.ready ? 1 : 0.7,
-              flexShrink: 0,
-            }}
-          />
-          {installInfo.label}
+          {provider.hint}
         </span>
-      )}
-      {/* Selected-only check on the right; nothing reserved when unpicked
-          so the row reads cleaner. */}
-      {selected && (
-        <Check
-          size={11}
-          strokeWidth={2.6}
-          style={{ color: "var(--m-text)", flexShrink: 0 }}
-        />
+      </span>
+      {/* Right-side affordance — only for installable / API rows. Installed
+          cards need nothing: the section + the card treatment already say it. */}
+      {action && (
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
+            flexShrink: 0,
+            fontSize: 10.5,
+            fontWeight: 500,
+            color: "var(--m-text-3)",
+          }}
+        >
+          {action.kind === "key" ? (
+            <KeyRound size={11} strokeWidth={2} />
+          ) : (
+            <Download size={11} strokeWidth={2} />
+          )}
+          {action.label}
+        </span>
       )}
     </button>
   );
 }
 
-// Computes the "Installed / Not installed" hint shown next to each
-// provider name in the picker. Different providers have different
-// notions of "ready":
-//   • CLI tools          → binary is on PATH (scan.<key>.installed)
-//   • Ollama             → daemon answers at localhost:11434 (running)
-//   • API key (legacy)   → matching env var is set (anthropic / openai /
-//                          gemini / groq buckets baked into the probe)
-//   • API key (catalog)  → no env-var probe (DeepSeek / Grok / Kimi
-//                          API / Perplexity / NVIDIA NIM). The picker
-//                          still wants an "Add key" hint so the user
-//                          knows the row will prompt for input in the
-//                          verify step.
-function getInstallInfo(p: ProviderDef, scan: ProviderScan): { ready: boolean; label: string } {
-  if (p.scanKey) {
-    const s = scan[p.scanKey];
-    return s.installed
-      ? { ready: true,  label: "Installed" }
-      : { ready: false, label: "Not installed" };
-  }
-  if (p.ollama) {
-    return scan.ollama.running
-      ? { ready: true,  label: "Running" }
-      : { ready: false, label: "Not installed" };
-  }
-  if (p.envKey) {
-    return scan.env_keys[p.envKey]
-      ? { ready: true,  label: "Key found" }
-      : { ready: false, label: "Add key" };
-  }
-  if (p.kind === "api") {
-    return { ready: false, label: "Add key" };
-  }
-  // Probe-less CLI rows (opencode / cursor / github-copilot): no install
-  // probe, but show a hint so the row isn't a bare dot in the picker.
-  if (p.kind === "cli") return { ready: false, label: "Set up in Settings" };
-  return { ready: false, label: "" };
-}
 
 /* ── Scan widget — sequential per-provider verification ────
    One row per chosen provider. While a provider is verifying,
@@ -2246,16 +2297,18 @@ function ScanRow({
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 10,
-        padding: "0 10px",
-        height: 34,
+        gap: 9,
+        padding: "0 9px",
+        height: 30,
         borderRadius: 6,
         opacity: state.status === "pending" ? 0.4 : 1,
         transition: "opacity 0.3s ease",
       }}
     >
-      <ProviderLogo tool={provider.logo} size={13} />
-      <span style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1, color: "var(--c-high)" }}>
+      <span aria-hidden style={{ flexShrink: 0, display: "inline-flex", lineHeight: 0 }}>
+        <ProviderLogo tool={provider.logo} size={16} />
+      </span>
+      <span style={{ fontSize: 12, fontWeight: 600, lineHeight: 1, color: "var(--c-high)" }}>
         {provider.label}
       </span>
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
@@ -2340,7 +2393,9 @@ function StatusPill({
       {reopenUrl
         ? <ReopenAuthButton url={reopenUrl} />
         : <StatusDot status={status} />}
-      <span>{label}</span>
+      {/* Ready needs no words — the green check says it, matching the picker.
+          Other states keep their explanatory detail. */}
+      {status !== "ok" && <span>{label}</span>}
     </span>
   );
 }
@@ -2389,7 +2444,6 @@ function ReopenAuthButton({ url }: { url: string }) {
 function StatusDot({ status }: { status: ScanStatus }) {
   // The icon is the only thing that carries colour. Tones are muted
   // (≈ 0.85 alpha equivalent) so the row doesn't look like a CI dashboard.
-  const okColor   = "rgba(74, 222, 128, 0.92)";
   const warnColor = "rgba(245, 158, 11, 0.92)";
   const failColor = "rgba(248, 113, 113, 0.92)";
 
@@ -2406,7 +2460,8 @@ function StatusDot({ status }: { status: ScanStatus }) {
     );
   }
   if (status === "ok") {
-    return <Check size={11} strokeWidth={2.8} style={{ color: okColor, flexShrink: 0 }} />;
+    // Same naked green check as the picker.
+    return <Check size={15} strokeWidth={2.5} style={{ color: "#43c97f", flexShrink: 0 }} />;
   }
   if (status === "fail") {
     return <X size={10} strokeWidth={2.8} style={{ color: failColor, flexShrink: 0 }} />;
