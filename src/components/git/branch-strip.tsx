@@ -440,6 +440,17 @@ export function resolveGithubConnected(opts: { disabled: boolean; flagConnected:
   return !opts.disabled && (opts.flagConnected || opts.ghCliAuthed);
 }
 
+/** PR-op result codes that mean the GitHub auth is genuinely no longer valid
+ *  (logged out / token expired), as opposed to a transient failure. The
+ *  backend returns one of these after invalidating its own auth cache; the
+ *  strip reacts by RESETTING its GitHub connection state. */
+const AUTH_FAILURE_CODES = ["AUTH_FAILED", "NO_AUTH", "AUTH_EXPIRED"] as const;
+/** Whether a PR-op failure code means the GitHub auth is no longer valid
+ *  (logged out / expired), as opposed to a transient network error. */
+export function isAuthFailureCode(code: string | undefined | null): boolean {
+  return !!code && (AUTH_FAILURE_CODES as readonly string[]).includes(code);
+}
+
 export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sessionId, sessionTitle, plannedBranch, isWorktree = false, onResolveConflicts, permissionMode }: {
   projectPath?: string | null;
   /** True when the resolved projectPath is a git worktree under
@@ -570,6 +581,11 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // focus/visibility re-poll below so rapid alt-tabbing can't hammer `gh` —
   // a foreground event within 3s of the previous poll is ignored.
   const lastPrPollAtRef = useRef(0);
+  // Timestamp (ms) of the last gh-CLI auth probe (`git.hasGhCli`). gh auth
+  // state changes rarely, so the foreground re-probe is throttled to 30s — a
+  // foreground event within that window is ignored. The mount probe is always
+  // immediate. Mirrors `lastPrPollAtRef`'s 3s pattern with a wider window.
+  const lastGhProbeAtRef = useRef(0);
   // Live ref to doWorktreeNextRound (declared far below the controlCenter
   // early-return and re-created each render). The PR poll + auto-cleanup
   // effects are HOISTED above that declaration to keep the hook count stable,
@@ -602,6 +618,13 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // falls back to gh for PR ops. Seeded false so the strip stays branches-only
   // until the probe confirms auth.
   const [ghCliAuthed, setGhCliAuthed] = useState(false);
+  // Bumped by `resetGithubConnection` to force `githubConnected` (which reads
+  // the localStorage auth flag NON-reactively below) to recompute after the
+  // flag is cleared. Needed because when the OAuth/Settings flag — not gh CLI —
+  // was the live connection, `setGhCliAuthed(false)` is a no-op (already false)
+  // and wouldn't re-render; without this nonce the strip would keep showing the
+  // stale connected state until the next incidental render.
+  const [authFlagNonce, setAuthFlagNonce] = useState(0);
 
   // GitHub connection state. Connected when NOT explicitly disabled in
   // Settings → Integrations AND either the Fleetify OAuth/Settings link is set
@@ -611,8 +634,10 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // Create PR / Review / auto-PR / PR-status polling are all gated off (see
   // prAffordancesEnabled + the effects below). Derived here (above the
   // PR-status poll + auto-PR effects) so those effects can list it in their
-  // dependency arrays without a TDZ.
+  // dependency arrays without a TDZ. Reads localStorage live; `authFlagNonce`
+  // is referenced so a reset (which clears the flag) re-runs this derivation.
   const githubConnected = (() => {
+    void authFlagNonce;
     let disabled = false;
     let flagConnected = false;
     try {
@@ -631,13 +656,40 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   useEffect(() => {
     let cancelled = false;
     const probe = () => {
+      lastGhProbeAtRef.current = Date.now();
       git.hasGhCli().then(r => { if (!cancelled) setGhCliAuthed(!!(r && r.ok && r.authed)); }).catch(() => {});
     };
     probe();
-    const onForeground = () => { if (document.visibilityState !== "hidden") probe(); };
+    // gh auth state changes rarely; throttle the foreground re-probe to 30s so
+    // rapid alt-tabbing can't hammer `gh auth status`. The mount probe above is
+    // unthrottled.
+    const onForeground = () => {
+      if (document.visibilityState === "hidden") return;
+      if (Date.now() - lastGhProbeAtRef.current < 30000) return;
+      probe();
+    };
     window.addEventListener("focus", onForeground);
     document.addEventListener("visibilitychange", onForeground);
     return () => { cancelled = true; window.removeEventListener("focus", onForeground); document.removeEventListener("visibilitychange", onForeground); };
+  }, []);
+
+  // Disconnect the strip's GitHub state. Called when a PR op returns an
+  // auth-failure code (the backend logged us out / the token expired): clears
+  // BOTH connection signals — the persisted Settings auth flag AND the probed
+  // gh-CLI auth — so `githubConnected` (= !disabled && (flagConnected ||
+  // ghCliAuthed)) flips to false. The strip then falls back to branches-only
+  // and the PR poll early-returns. Reconnection self-heals: a later
+  // `gh auth login` is re-detected by the throttled probe; OAuth users
+  // reconnect via Settings. `setGhCliAuthed(false)` covers the case where gh
+  // auth (not the OAuth link) was the live connection — without it, the next
+  // probe could re-flip ghCliAuthed and undo the reset.
+  const resetGithubConnection = useCallback(() => {
+    try { localStorage.removeItem("fleet:github-auth-method"); } catch { /* ignore */ }
+    setGhCliAuthed(false);
+    // Force `githubConnected` to recompute even when gh CLI wasn't the live
+    // connection (so setGhCliAuthed(false) above is a no-op) — otherwise the
+    // cleared localStorage flag wouldn't be re-read until the next render.
+    setAuthFlagNonce(n => n + 1);
   }, []);
 
   // Close the Create-PR dropdown when clicking outside it.
@@ -762,7 +814,15 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
         // network blip, rate limit, or default-repo-not-set hiccup —
         // none of which mean the PR went away. The next interval poll
         // retries; keep the strip on whatever state we already had.
+        //
+        // EXCEPTION: an auth-failure code (AUTH_FAILED / NO_AUTH /
+        // AUTH_EXPIRED) means the backend invalidated its auth cache — we're
+        // genuinely logged out / expired, not blipping. Reset the strip's
+        // GitHub connection so it honestly falls back to branches-only and
+        // stops polling a dead auth, instead of showing a connected strip
+        // where every op fails. Generic failures stay tolerated (state kept).
         if (!r.ok) {
+          if (isAuthFailureCode(r.code)) resetGithubConnection();
           setPrStatusLoaded(true);
           return;
         }
@@ -831,7 +891,7 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
       window.removeEventListener("focus", onForeground);
       document.removeEventListener("visibilitychange", onForeground);
     };
-  }, [folder, ctx?.branch, ctx?.baseBranch, autoCreating, isWorktree, syncing, isStreaming, githubConnected]);
+  }, [folder, ctx?.branch, ctx?.baseBranch, autoCreating, isWorktree, syncing, isStreaming, githubConnected, resetGithubConnection]);
 
   // ── Auto-create draft PR ──
   // First time we see actual diff on a feature branch with no PR
@@ -1256,6 +1316,10 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
       // Surface the failure as a red bubble so the user sees it
       // without having to dig through devtools.
       justMergedRef.current = false;
+      // If the rejection is an auth failure (logged out / expired), reset the
+      // strip's GitHub connection too — same self-healing fallback the PR poll
+      // applies, so a dead-auth merge doesn't leave a connected-looking strip.
+      if (isAuthFailureCode(r.code)) resetGithubConnection();
       const errSid = useAppStore.getState().activeSessionId || COMPOSER_CHAT_KEY;
       pushChatError(errSid, r.error || "Merge failed");
     }

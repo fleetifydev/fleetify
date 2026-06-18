@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveStripSelection, shouldAutoNextRound, isEmptyDiffBlocked, prAffordancesEnabled, resolveGithubConnected } from "../branch-strip";
+import { resolveStripSelection, shouldAutoNextRound, isEmptyDiffBlocked, prAffordancesEnabled, resolveGithubConnected, isAuthFailureCode } from "../branch-strip";
 import type { PRStatus } from "@/lib/git-api";
 
 /** Minimal PRStatus fixture — only the fields the strip selection reads. */
@@ -309,5 +309,30 @@ describe("resolveGithubConnected", () => {
 
   it("explicitly disabled wins even when both signals are present", () => {
     expect(resolveGithubConnected({ disabled: true, flagConnected: true, ghCliAuthed: true })).toBe(false);
+  });
+});
+
+describe("isAuthFailureCode", () => {
+  // The classifier that decides whether a PR-op failure means the GitHub auth
+  // is genuinely dead (logged out / expired) — in which case the strip resets
+  // its connection state — versus a transient blip (network/HTTP/merge-blocked)
+  // that must be tolerated so a momentary failure never tears down a valid
+  // connection. ONLY the three auth-failure codes return true.
+  it("returns true for the three auth-failure codes", () => {
+    expect(isAuthFailureCode("AUTH_FAILED")).toBe(true);
+    expect(isAuthFailureCode("NO_AUTH")).toBe(true);
+    expect(isAuthFailureCode("AUTH_EXPIRED")).toBe(true);
+  });
+
+  it("returns false for transient / non-auth codes", () => {
+    expect(isAuthFailureCode("NETWORK")).toBe(false);
+    expect(isAuthFailureCode("HTTP")).toBe(false);
+    expect(isAuthFailureCode("MERGE_BLOCKED")).toBe(false);
+  });
+
+  it("returns false for undefined / null / empty (no code → not an auth failure)", () => {
+    expect(isAuthFailureCode(undefined)).toBe(false);
+    expect(isAuthFailureCode(null)).toBe(false);
+    expect(isAuthFailureCode("")).toBe(false);
   });
 });

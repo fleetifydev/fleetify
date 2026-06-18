@@ -940,6 +940,8 @@ pub async fn github_begin_oauth(app: tauri::AppHandle, mode: Option<String>) -> 
     let r = github_link::begin_oauth(app, &mode).await;
     // Refresh the backend clone token now that a link may exist.
     github_link::push_clone_token().await;
+    // A link may now exist → the auto-detected PR-auth backend can change.
+    crate::shell::integrations_cache::invalidate_auth_method();
     r
 }
 
@@ -952,6 +954,8 @@ pub async fn github_cancel_oauth() -> serde_json::Value {
 pub async fn github_refresh_link(app: tauri::AppHandle) -> serde_json::Value {
     let r = github_link::refresh_link(app).await;
     github_link::push_clone_token().await;
+    // Token rotated — re-resolve the PR-auth backend on the next op.
+    crate::shell::integrations_cache::invalidate_auth_method();
     r
 }
 
@@ -960,6 +964,8 @@ pub async fn github_disconnect(app: tauri::AppHandle) -> serde_json::Value {
     github_link::disconnect(app).await;
     // Clear the backend clone token — no link anymore.
     github_link::push_clone_token().await;
+    // Link gone → drop the cached auth method so PR ops re-resolve.
+    crate::shell::integrations_cache::invalidate_auth_method();
     serde_json::json!({ "ok": true })
 }
 
@@ -1350,9 +1356,11 @@ pub async fn gh_auth_login_capture(app: tauri::AppHandle) -> serde_json::Value {
     );
 
     // Auth state changed — drop the cached gh-cli snapshot so the next
-    // `git_has_gh_cli` re-probes and reflects the new authed/login pair.
+    // `git_has_gh_cli` re-probes and reflects the new authed/login pair, and
+    // drop the auth-resolution cache so PR ops re-resolve the backend.
     if ok {
         crate::shell::integrations_cache::invalidate_gh_cli();
+        crate::shell::integrations_cache::invalidate_auth_method();
     }
 
     if ok {

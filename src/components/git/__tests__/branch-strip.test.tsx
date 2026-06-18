@@ -1413,6 +1413,108 @@ describe("BranchStrip — re-poll PR status on window focus", () => {
   });
 });
 
+describe("BranchStrip — auth-failure connection reset", () => {
+  // The working-branch PR-status poll early-returns on a generic `!r.ok`
+  // (transient blip — state preserved). But when the failure carries an
+  // AUTH-FAILURE code (gh logout / expired token) the strip must RESET its
+  // GitHub connection: clear the localStorage auth flag + ghCliAuthed so
+  // `githubConnected` flips false and the UI honestly falls back to
+  // branches-only instead of showing a connected strip where every op fails.
+  const openRepoPr = {
+    number: 42, state: "OPEN", headRefName: "fleet/x-a1b2c3d4",
+    isDraft: false, mergeable: "MERGEABLE", title: "PR 42", url: "https://github.com/u/r/pull/42",
+  };
+  const openPr = {
+    number: 42, url: "https://github.com/u/r/pull/42",
+    state: "OPEN", mergeable: "MERGEABLE", isDraft: false,
+    baseRefName: "main", headRefName: "fleet/x-a1b2c3d4",
+    checks: { passing: 1, failing: 0, pending: 0, total: 1 },
+    commentsCount: 0,
+  };
+
+  function seedOpen() {
+    // Connected via the Settings flag; the merge cluster reads the store, so
+    // seed + echo it. gh CLI reports NOT authed so the mount probe can't keep
+    // `githubConnected` alive through ghCliAuthed once the flag is cleared
+    // (otherwise the reset's localStorage clear wouldn't disconnect the strip).
+    localStorage.setItem("fleet:github-auth-method", "cli");
+    hasGhCliMock.mockResolvedValue({ ok: true, version: "2.55.0", authed: false, ghLogin: null });
+    usePrStore.setState({ prs: [openRepoPr] });
+    prListMock.mockResolvedValue({ ok: true, prs: [openRepoPr] });
+    gitContextMock.mockResolvedValue({
+      branch: "fleet/x-a1b2c3d4", baseBranch: "main",
+      plus: 5, minus: 2, remoteHttpsUrl: "https://github.com/u/r",
+    });
+  }
+
+  it("AUTH_FAILED on the next poll RESETS the connection: clears the auth flag + drops the PR UI to branches-only", { timeout: 10000 }, async () => {
+    seedOpen();
+    // First no-number poll → OPEN (strip connects, shows Open · #42 + Merge);
+    // every subsequent no-number poll → an AUTH_FAILED failure. Number-
+    // addressable polls (post-create refine etc.) stay OK so they can't
+    // interfere with this branch poll's classification.
+    let branchPolls = 0;
+    prStatusMock.mockImplementation(async (_f: string, num?: number) => {
+      if (num !== undefined) return { ok: true, pr: openPr };
+      branchPolls += 1;
+      return branchPolls <= 1
+        ? { ok: true, pr: openPr }
+        : { ok: false, code: "AUTH_FAILED", error: "gh: authentication failed" };
+    });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" />);
+
+    // Connected: the working branch's open PR surfaces (Open · #42 + Merge).
+    await screen.findByText("fleet/x-a1b2c3d4");
+    await waitFor(() => expect(screen.getByRole("button", { name: /Open · #42/i })).toBeInTheDocument());
+    expect(localStorage.getItem("fleet:github-auth-method")).toBe("cli");
+
+    // Wait past the 3s focus-refresh throttle, then refocus to fire the next
+    // poll immediately (it now returns AUTH_FAILED). Mirrors the focus-repoll
+    // test's throttle handling.
+    await new Promise(resolve => setTimeout(resolve, 3100));
+    window.dispatchEvent(new Event("focus"));
+
+    // The reset fires: the localStorage auth flag is cleared…
+    await waitFor(() => expect(localStorage.getItem("fleet:github-auth-method")).toBeNull());
+    // …and the PR UI collapses to branches-only — no Open/Merge cluster, and
+    // Create PR does NOT reappear (prAffordancesEnabled is false now).
+    await waitFor(() => expect(screen.queryByRole("button", { name: /Open · #42/i })).toBeNull());
+    expect(screen.queryByRole("button", { name: /^Merge$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^create pr$/i })).toBeNull();
+    // The branch pill still renders — the strip fell back to branches-only,
+    // it didn't unmount.
+    expect(screen.getByText("fleet/x-a1b2c3d4")).toBeInTheDocument();
+  });
+
+  it("NETWORK (transient) on the next poll does NOT reset: PR UI stays, auth flag untouched", { timeout: 10000 }, async () => {
+    seedOpen();
+    let branchPolls = 0;
+    prStatusMock.mockImplementation(async (_f: string, num?: number) => {
+      if (num !== undefined) return { ok: true, pr: openPr };
+      branchPolls += 1;
+      return branchPolls <= 1
+        ? { ok: true, pr: openPr }
+        : { ok: false, code: "NETWORK", error: "network unreachable" };
+    });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" />);
+
+    await screen.findByText("fleet/x-a1b2c3d4");
+    await waitFor(() => expect(screen.getByRole("button", { name: /Open · #42/i })).toBeInTheDocument());
+
+    await new Promise(resolve => setTimeout(resolve, 3100));
+    window.dispatchEvent(new Event("focus"));
+    // Give the transient-failure poll time to land + be tolerated.
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    // Transient failure is tolerated: the flag is untouched and the merge
+    // cluster (Open · #42) is still present — the strip stays connected.
+    expect(localStorage.getItem("fleet:github-auth-method")).toBe("cli");
+    expect(screen.getByRole("button", { name: /Open · #42/i })).toBeInTheDocument();
+  });
+});
+
 describe("BranchStrip — merge-conflict agent resolution", () => {
   const openPr = {
     number: 42, url: "https://github.com/u/r/pull/42",

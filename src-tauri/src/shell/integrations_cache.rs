@@ -17,6 +17,7 @@
 //! "no snapshot taken yet"; consumers fall back to a live probe.
 
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -34,6 +35,62 @@ pub fn set_gh_cli(snapshot: Value) {
 
 pub fn invalidate_gh_cli() {
     if let Ok(mut g) = GH_CLI_CACHE.lock() {
+        *g = None;
+    }
+}
+
+// ── Auth-resolution cache (PR status/list hot path) ──────────────
+//
+// `git_host::resolve_auth_method`'s auto-detect branch spawns
+// `gh auth status` to learn whether the gh CLI is usable. That probe
+// is GLOBAL — `gh auth status` reads the cwd-independent global
+// `hosts.yml`, and the OAuth link is a per-user keychain entry — so
+// the auto-detected `AuthMethod` does not vary by repo folder and can
+// be memoised process-wide. PR polling fires several times per ~10s
+// window, so without a cache each poll re-pays the spawn.
+//
+// We cache the resolved method behind a short TTL so a stale result
+// self-heals within `AUTH_TTL` even if an invalidation hook is missed,
+// and we hard-invalidate on every auth-state change (gh login, OAuth
+// connect/refresh/disconnect) so opt-in/opt-out is reflected at once.
+// `None` (no usable auth) is intentionally NOT cached — a user who
+// just signed in must see the new method on their very next poll
+// rather than waiting out the TTL on a "no auth" answer.
+
+const AUTH_TTL: Duration = Duration::from_secs(30);
+
+static AUTH_METHOD_CACHE: Mutex<Option<(Instant, u8)>> = Mutex::new(None);
+
+/// Read the cached auto-detected auth method if it's still within TTL.
+/// `Some(code)` is the cached method discriminant (see
+/// [`set_auth_method`]); `None` means cold or expired — the caller must
+/// re-probe.
+pub fn get_auth_method() -> Option<u8> {
+    let mut g = AUTH_METHOD_CACHE.lock().ok()?;
+    match *g {
+        Some((at, code)) if at.elapsed() < AUTH_TTL => Some(code),
+        Some(_) => {
+            // Expired: drop it so we don't keep checking the clock.
+            *g = None;
+            None
+        }
+        None => None,
+    }
+}
+
+/// Cache an auto-detected auth method (caller encodes the variant as a
+/// small `u8` discriminant). Stamped with `Instant::now()` for the TTL.
+pub fn set_auth_method(code: u8) {
+    if let Ok(mut g) = AUTH_METHOD_CACHE.lock() {
+        *g = Some((Instant::now(), code));
+    }
+}
+
+/// Drop the cached auth method. Called from every auth-state-change site
+/// (alongside [`invalidate_gh_cli`]) so a connect/disconnect is reflected
+/// on the next PR poll instead of after the TTL.
+pub fn invalidate_auth_method() {
+    if let Ok(mut g) = AUTH_METHOD_CACHE.lock() {
         *g = None;
     }
 }
@@ -64,5 +121,33 @@ mod tests {
 
         invalidate_gh_cli();
         assert!(get_gh_cli().is_none(), "invalidate should clear");
+    }
+
+    #[test]
+    fn auth_method_round_trip_set_get_invalidate() {
+        // Process-global cache: isolate by invalidating first.
+        invalidate_auth_method();
+        assert!(get_auth_method().is_none(), "cold cache should be None");
+
+        set_auth_method(7);
+        assert_eq!(get_auth_method(), Some(7), "fresh value within TTL");
+
+        invalidate_auth_method();
+        assert!(get_auth_method().is_none(), "invalidate should clear");
+    }
+
+    #[test]
+    fn auth_method_expires_after_ttl() {
+        // Stamp an entry older than the TTL and confirm it reads as cold.
+        invalidate_auth_method();
+        {
+            let mut g = AUTH_METHOD_CACHE.lock().unwrap();
+            *g = Some((Instant::now() - AUTH_TTL - Duration::from_secs(1), 3));
+        }
+        assert!(
+            get_auth_method().is_none(),
+            "entry older than TTL must read as expired"
+        );
+        invalidate_auth_method();
     }
 }

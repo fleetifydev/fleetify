@@ -58,11 +58,11 @@ export type PRStatus = {
   checks: { passing: number; failing: number; pending: number; total: number };
   commentsCount: number;
 };
-type PRStatusResult  = { ok: true; pr: PRStatus | null } | { ok: false; error: string };
+type PRStatusResult  = { ok: true; pr: PRStatus | null } | { ok: false; code?: string; error: string };
 type CreatePRResult =
   | { ok: true; prNumber: number | null; prUrl: string; existed?: boolean; repoCreated?: boolean; repoUrl?: string }
   | { ok: false; code?: string; error: string };
-type MergeResult     = { ok: true } | { ok: false; error: string };
+type MergeResult     = { ok: true } | { ok: false; code?: string; error: string };
 type SyncMainResult  = { ok: true; base: string; prevBranch: string | null } | { ok: false; error: string };
 type CarveNextRoundResult = { ok: true; branch: string; base: string } | { ok: false; error: string };
 
