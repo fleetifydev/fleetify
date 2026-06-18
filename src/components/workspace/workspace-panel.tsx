@@ -8,7 +8,7 @@ import {
   RefreshCw, X, Search, FilePlus, FolderPlus, Trash2, Pencil,
   FileCode, FileText, FileJson, Check, Copy, FolderOpen,
   AlertTriangle, AlertCircle, CheckCircle2, Eye, CheckSquare, Layers, Folder,
-  Plus, ArrowRight,
+  Plus, ArrowRight, ArrowLeft,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -16,7 +16,7 @@ import { useAppStore, type WorkspaceView } from "@/stores/app-store";
 import { usePaneSessionId, useIsInPane } from "@/components/chat/pane-session-context";
 import {
   fetchSessionMemory, createSessionMemory, deleteSessionMemory,
-  fetchMessages,
+  fetchMessages, createBrowserWebSocket,
   type SessionMemoryItem,
 } from "@/lib/api";
 import { XtermShell } from "@/components/workspace/xterm-shell";
@@ -4099,6 +4099,7 @@ function DraggableHandleScope({
    button so the user can still remove them from the grid. */
 function WorkspacePane({ view }: { view: WorkspaceView }) {
   if (view === "terminal")  return <TerminalView />;
+  if (view === "browser")   return <BrowserView />;
   if (view === "diff")      return <DiffView />;
   if (view === "files")     return <FilesView />;
   if (view === "file")      return <FileView />;
@@ -4126,10 +4127,129 @@ function TasksPaneRouter() {
   return <TaskCardsWorkspace sessionId={sid} />;
 }
 
+/* ── Browser pane ──
+   Interactive, SHARED browser (Cursor-style). Connects to /ws/browser:
+   live JPEG frames stream down; user input (URL nav, back/forward/reload,
+   click, scroll, type, keys) goes up over the same socket. The agent
+   drives the SAME backend-owned page via its tools, so both control one
+   browser. Mouse coords are scaled from the on-screen frame back into the
+   page's logical 1280×800 viewport. */
+const BROWSER_VIEW_W = 1280;
+const BROWSER_VIEW_H = 800;
+function BrowserView() {
+  const requestClose = useContext(PaneCloseContext);
+  const [editUrl, setEditUrl] = useState("");
+  const [frameSrc, setFrameSrc] = useState<string | null>(null);
+  const [connected, setConnected] = useState(false);
+  const wsRef = useRef<WebSocket | null>(null);
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  const objUrlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const ws = createBrowserWebSocket();
+    ws.binaryType = "arraybuffer";
+    wsRef.current = ws;
+    ws.onopen = () => setConnected(true);
+    ws.onclose = () => setConnected(false);
+    ws.onmessage = (e) => {
+      if (typeof e.data === "string") return;
+      const blob = new Blob([e.data as ArrayBuffer], { type: "image/jpeg" });
+      const u = URL.createObjectURL(blob);
+      if (objUrlRef.current) URL.revokeObjectURL(objUrlRef.current);
+      objUrlRef.current = u;
+      setFrameSrc(u);
+    };
+    return () => {
+      ws.close();
+      if (objUrlRef.current) URL.revokeObjectURL(objUrlRef.current);
+    };
+  }, []);
+
+  const send = useCallback((obj: Record<string, unknown>) => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+  }, []);
+
+  const go = useCallback((raw: string) => {
+    let target = raw.trim();
+    if (!target) return;
+    if (!/^https?:\/\//i.test(target)) target = "https://" + target;
+    setEditUrl(target);
+    send({ type: "navigate", url: target });
+  }, [send]);
+
+  // Translate a mouse event on the displayed frame into page viewport coords.
+  const toViewport = (e: React.MouseEvent) => {
+    const img = imgRef.current;
+    if (!img) return null;
+    const r = img.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return null;
+    return {
+      x: ((e.clientX - r.left) / r.width) * BROWSER_VIEW_W,
+      y: ((e.clientY - r.top) / r.height) * BROWSER_VIEW_H,
+    };
+  };
+
+  const SPECIAL_KEYS = ["Enter", "Backspace", "Tab", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      {/* Toolbar: drag handle · nav · URL bar · close */}
+      <div style={{ height: 44, flexShrink: 0, display: "flex", alignItems: "center", padding: "0 8px 2px 8px", gap: 4 }}>
+        <span data-pane-handle="true" title="Browser" style={{ flexShrink: 0, display: "inline-flex", color: "#9a9a9a", cursor: "grab", marginRight: 2 }}>
+          <Globe size={13} />
+        </span>
+        <TermActionBtn title="Back" onClick={() => send({ type: "back" })}><ArrowLeft size={13} /></TermActionBtn>
+        <TermActionBtn title="Forward" onClick={() => send({ type: "forward" })}><ArrowRight size={13} /></TermActionBtn>
+        <TermActionBtn title="Reload" onClick={() => send({ type: "reload" })}><RefreshCw size={12} /></TermActionBtn>
+        <input
+          value={editUrl}
+          onChange={(e) => setEditUrl(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); go(editUrl); } }}
+          placeholder="Enter a URL and press Enter…"
+          spellCheck={false}
+          style={{
+            flex: 1, minWidth: 0, height: 26, margin: "0 4px",
+            background: "rgba(255,255,255,0.05)", border: "1px solid var(--c-brd, rgba(255,255,255,0.1))",
+            borderRadius: 6, padding: "0 9px", color: "#e6e6e6",
+            fontFamily: "var(--font-mono)", fontSize: 11.5, outline: "none",
+          }}
+        />
+        <TermActionBtn title="Close pane" onClick={() => requestClose?.("browser")}><X size={13} /></TermActionBtn>
+      </div>
+
+      {/* Live, interactive frame */}
+      <div style={{ flex: 1, overflow: "hidden", background: "#0b0b0b", display: "flex" }}>
+        {frameSrc ? (
+          <div
+            tabIndex={0}
+            onMouseDown={(e) => { const p = toViewport(e); if (p) send({ type: "click", x: p.x, y: p.y }); (e.currentTarget as HTMLDivElement).focus(); }}
+            onWheel={(e) => { const p = toViewport(e); if (p) send({ type: "scroll", x: p.x, y: p.y, dy: e.deltaY }); }}
+            onKeyDown={(e) => {
+              if (e.metaKey || e.ctrlKey) return;
+              if (SPECIAL_KEYS.includes(e.key)) { send({ type: "key", key: e.key }); e.preventDefault(); }
+              else if (e.key.length === 1) { send({ type: "type", text: e.key }); e.preventDefault(); }
+            }}
+            style={{ margin: "auto", maxWidth: "100%", maxHeight: "100%", outline: "none", cursor: "default", lineHeight: 0 }}
+          >
+            <img ref={imgRef} src={frameSrc} alt="browser" draggable={false} style={{ maxWidth: "100%", maxHeight: "100%", display: "block", userSelect: "none" }} />
+          </div>
+        ) : (
+          <div style={{ margin: "auto", color: "#7a7a7a", fontSize: 12, fontFamily: SANS, textAlign: "center", padding: 24, lineHeight: 1.6 }}>
+            {connected ? "Type a URL above, or ask the agent to browse." : "Connecting to browser…"}
+            <br />
+            The agent and you share this browser.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function PlaceholderView({ view }: { view: WorkspaceView }) {
   const requestClose = useContext(PaneCloseContext);
   const labels: Record<WorkspaceView, string> = {
-    preview: "Preview", diff: "Diff", terminal: "Terminal",
+    preview: "Preview", browser: "Browser", diff: "Diff", terminal: "Terminal",
     files: "Files", file: "File", tasks: "Tasks",
     memories: "Memories",
     process: "Agent",

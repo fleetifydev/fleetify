@@ -849,7 +849,7 @@ async fn providers_warm_health(
 
 /// Constant-time byte-slice equality. Tiny implementation — fine for
 /// 32-byte secrets like the loopback token.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }

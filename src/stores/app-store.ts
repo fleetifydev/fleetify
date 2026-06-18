@@ -55,6 +55,7 @@ function retypeComposerWelcome(projectPath: string): void {
 // it didn't fit the design language.
 export type WorkspaceView =
   | "preview"
+  | "browser"   // live mirror of the agent's fleet-browser-mcp Chromium
   | "diff"
   | "terminal"
   | "files"

@@ -1091,6 +1091,16 @@ export async function analyzeFleetResponse(
   return res.json();
 }
 
+/** Connect to the shared interactive browser stream. Binary messages are
+ *  live JPEG frames (DOWN); JSON text messages are user input (UP) —
+ *  `{type:"navigate"|"click"|"scroll"|"type"|"key"|"back"|"forward"|"reload", …}`.
+ *  Unauthenticated (loopback) for now; the page content is just the agent's
+ *  browser viewport. */
+export function createBrowserWebSocket(): WebSocket {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return new WebSocket(`${protocol}//${window.location.host}/ws/browser`);
+}
+
 export async function createChatWebSocket(sessionId: string): Promise<WebSocket> {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const host = window.location.host;

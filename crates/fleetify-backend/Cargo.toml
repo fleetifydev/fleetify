@@ -26,6 +26,7 @@ uuid = { version = "1", features = ["v4"] }
 async-stream = "0.3"
 async-trait = "0.1"
 futures-util = "0.3"
+chromiumoxide = "0.9"
 http = "1"
 regex = "1"
 open = "5"

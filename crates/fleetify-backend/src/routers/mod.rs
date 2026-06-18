@@ -3,6 +3,7 @@
 
 pub mod accounts;
 pub mod auth;
+pub mod browser;
 pub mod chat;
 pub mod docker;
 pub mod events;

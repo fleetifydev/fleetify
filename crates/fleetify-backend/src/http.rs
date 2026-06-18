@@ -7,9 +7,9 @@ use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
 use crate::routers::{
-    accounts, auth as auth_router, chat, docker, events, fleet, fs, groups, internal, library,
-    marketplace, mcp, messages, plugins, prompt, prompts, providers, runtime, sessions, ssh,
-    workflows, workspace, AppState,
+    accounts, auth as auth_router, browser, chat, docker, events, fleet, fs, groups, internal,
+    library, marketplace, mcp, messages, plugins, prompt, prompts, providers, runtime, sessions,
+    ssh, workflows, workspace, AppState,
 };
 
 /// Build the axum app. Single origin: `/healthz`, `/api/*` (auth'd),
@@ -60,7 +60,7 @@ pub fn app(state: AppState, static_dir: Option<PathBuf>) -> Router {
     // X-Fleet-Internal header is the only authenticator). Kept off
     // `/api` so a renderer hitting it without the header just gets
     // 404 instead of a misleading 401.
-    let internal_api = internal::router();
+    let internal_api = internal::router().merge(browser::internal_router());
 
     let routed = Router::new()
         .route("/healthz", get(healthz))
@@ -68,6 +68,7 @@ pub fn app(state: AppState, static_dir: Option<PathBuf>) -> Router {
         .nest("/api/internal", internal_api)
         .merge(events::router())
         .merge(chat::router())
+        .merge(browser::ws_router())
         .with_state(state)
         .layer(cors);
 

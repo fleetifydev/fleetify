@@ -81,7 +81,12 @@ pub fn get(name: &str) -> Option<Value> {
 /// `app.services.{memory,dispatch,reveng}_mcp.py` registered in the
 /// Python build — `mcp__fleet_memory__<tool>` namespaces stay
 /// identical on the renderer side.
-pub const FLEET_BUILTIN_NAMES: &[&str] = &["fleet_memory", "fleet_dispatch", "fleet_reveng"];
+pub const FLEET_BUILTIN_NAMES: &[&str] = &[
+    "fleet_memory",
+    "fleet_dispatch",
+    "fleet_reveng",
+    "fleet_browser",
+];
 
 // `services::mcp_dispatch::builtin_mcp_config` now owns the basename→binary
 // mapping. Older versions exposed `builtin_basename` here for

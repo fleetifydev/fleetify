@@ -719,6 +719,17 @@ impl ClaudeBridge {
         }
         if !self.is_staff {
             names.push("mcp__fleet_dispatch__dispatch_to_agent");
+            names.extend([
+                "mcp__fleet_browser__navigate",
+                "mcp__fleet_browser__read_page",
+                "mcp__fleet_browser__click",
+                "mcp__fleet_browser__fill",
+                "mcp__fleet_browser__back",
+                "mcp__fleet_browser__forward",
+                "mcp__fleet_browser__reload",
+                "mcp__fleet_browser__screenshot",
+                "mcp__fleet_browser__eval",
+            ]);
         }
         if crate::services::templates::resolve(self.agent_template.as_deref())
             .is_some_and(|t| t.extra_mcp_servers.iter().any(|s| s == "fleet_reveng"))

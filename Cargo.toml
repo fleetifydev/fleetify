@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+  "crates/browser-mcp",
   "crates/dispatch-mcp",
   "crates/fleet-wipe",
   "crates/fleetify-core",

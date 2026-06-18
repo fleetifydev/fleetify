@@ -3024,6 +3024,7 @@ const PANEL_VIEWS: {
   shortcut?: string[];
 }[] = [
   { id: "preview",  label: "Preview",  Icon: Play,             shortcut: ["⇧", "⌘", "P"] },
+  { id: "browser",  label: "Browser",  Icon: Globe,            shortcut: ["⇧", "⌘", "B"] },
   { id: "diff",     label: "Diff",     Icon: GitCompareArrows, shortcut: ["⇧", "⌘", "D"] },
   { id: "terminal", label: "Terminal", Icon: TerminalIcon,     shortcut: ["⌃", "`"] },
   { id: "files",    label: "Files",    Icon: FolderOpen,       shortcut: ["⇧", "⌘", "F"] },

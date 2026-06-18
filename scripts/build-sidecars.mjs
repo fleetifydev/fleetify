@@ -37,6 +37,7 @@ const SIDECARS = [
   { pkg: 'memory-mcp', bin: 'fleet-memory-mcp' },
   { pkg: 'dispatch-mcp', bin: 'fleet-dispatch-mcp' },
   { pkg: 'reveng-mcp', bin: 'fleet-reveng-mcp' },
+  { pkg: 'browser-mcp', bin: 'fleet-browser-mcp' },
 ];
 
 const release = process.argv.includes('--release');

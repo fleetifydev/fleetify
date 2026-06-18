@@ -43,6 +43,7 @@ pub fn builtin_mcp_config(name: &str, session_id: &str) -> Option<Value> {
         "fleet_memory" => "fleet-memory-mcp",
         "fleet_dispatch" => "fleet-dispatch-mcp",
         "fleet_reveng" => "fleet-reveng-mcp",
+        "fleet_browser" => "fleet-browser-mcp",
         _ => return None,
     };
     let command = mcp_registry::resolve_builtin_path(basename);
@@ -77,6 +78,10 @@ pub fn builtin_names_for(is_staff: bool, agent_template: Option<&str>) -> Vec<&'
     let mut names = vec!["fleet_memory"];
     if !is_staff {
         names.push("fleet_dispatch");
+        // The browser sidecar is lazy — Chromium only launches on the first
+        // browse call — so mounting it on every worker session is free until
+        // actually used, and saves the user from a template opt-in.
+        names.push("fleet_browser");
     }
     // A template (builtin/plugin/library) can request fleet built-in MCPs by
     // name; user-registry MCPs are mounted separately for every session.
