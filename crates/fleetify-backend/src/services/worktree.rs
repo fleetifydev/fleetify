@@ -37,6 +37,32 @@ pub fn compute_branch_name(label: Option<&str>, session_id: &str) -> String {
     format!("fleet/{}-{}", slug(label.unwrap_or(session_id)), id_short)
 }
 
+/// Read the round number off a branch's trailing `-r<N>` suffix.
+/// Round-1 branches carry no suffix, so an absent/garbage suffix → 1.
+pub fn parse_round(branch: &str) -> u32 {
+    if let Some(idx) = branch.rfind("-r") {
+        let tail = &branch[idx + 2..];
+        if !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()) {
+            if let Ok(n) = tail.parse::<u32>() {
+                if n >= 1 {
+                    return n;
+                }
+            }
+        }
+    }
+    1
+}
+
+/// `fleet/<slug>-<sid8>` for round 1; `…-r<N>` for round N≥2.
+pub fn compute_round_branch(label: Option<&str>, session_id: &str, round: u32) -> String {
+    let base = compute_branch_name(label, session_id);
+    if round <= 1 {
+        base
+    } else {
+        format!("{base}-r{round}")
+    }
+}
+
 async fn git(args: &[&str], cwd: &str) -> (i32, String, String) {
     let out = Command::new("git")
         .args(args)
@@ -372,6 +398,120 @@ pub async fn remove_worktree(source_path: &str, worktree_path: &str) -> bool {
     true
 }
 
+/// Delete a local branch (`git branch -D`). Idempotent at the call site:
+/// returns true on success; a missing branch returns false but is harmless
+/// to the caller (best-effort teardown).
+pub async fn delete_local_branch(repo_root: &str, branch: &str) -> bool {
+    if branch.is_empty() {
+        return true;
+    }
+    let (rc, _, _) = git(&["branch", "-D", branch], repo_root).await;
+    rc == 0
+}
+
+/// Carve the NEXT round's worktree: a fresh, pristine checkout at
+/// `<repo_root>/.fleetify-worktrees/<session_id>-r<N>` on a new branch
+/// `fleet/<slug>-<sid8>-r<N>`, off the freshest `origin/<base>` (local
+/// `<base>` fallback when offline). Create-before-remove — the caller
+/// removes the old worktree AFTER repointing the session. Pristine, so the
+/// untracked-file collision that aborts an in-place `checkout -b` cannot
+/// happen.
+pub async fn carve_next_round_worktree(
+    project_path: &str,
+    session_id: &str,
+    label: Option<&str>,
+    current_branch: Option<&str>,
+    base_branch: Option<&str>,
+) -> Result<(String, String), WorktreeError> {
+    ensure_git_repo(project_path).await;
+    if !is_git_repo(project_path).await {
+        return Err(WorktreeError(format!(
+            "{project_path:?} is not a git repository"
+        )));
+    }
+    let (rc, root_out, err) = git(&["rev-parse", "--show-toplevel"], project_path).await;
+    if rc != 0 {
+        return Err(WorktreeError(format!("git rev-parse failed: {err}")));
+    }
+    let repo_root = PathBuf::from(&root_out);
+    let cwd = repo_root.to_string_lossy().to_string();
+    ensure_worktrees_ignored(&repo_root);
+
+    let base = match base_branch {
+        Some(b) => b.to_string(),
+        None => resolve_base(project_path).await?,
+    };
+    // Refresh origin/<base> so the new round starts current; failure is
+    // non-fatal (offline / no remote) — we fall back to the local base.
+    let _ = git(&["fetch", "origin", &base], &cwd).await;
+    let from = {
+        let (rc_ref, _, _) = git(
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/remotes/origin/{base}"),
+            ],
+            project_path,
+        )
+        .await;
+        if rc_ref == 0 {
+            format!("origin/{base}")
+        } else {
+            base.clone()
+        }
+    };
+
+    let cur_round = current_branch.map(parse_round).unwrap_or(1);
+    let mut n = cur_round + 1;
+    let ceiling = cur_round + 100;
+    loop {
+        if n > ceiling {
+            return Err(WorktreeError("could not find a free round slot".into()));
+        }
+        let new_dir = repo_root
+            .join(WORKTREES_DIRNAME)
+            .join(format!("{session_id}-r{n}"));
+        let new_branch = compute_round_branch(label, session_id, n);
+        let dir_taken = new_dir.exists();
+        let (rc_b, _, _) = git(
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{new_branch}"),
+            ],
+            project_path,
+        )
+        .await;
+        if dir_taken || rc_b == 0 {
+            n += 1;
+            continue;
+        }
+        if let Some(parent) = new_dir.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let wt_str = new_dir.to_string_lossy().to_string();
+        let (rc_add, _, err_add) = git(
+            &[
+                "worktree",
+                "add",
+                "--no-track",
+                "-b",
+                &new_branch,
+                &wt_str,
+                &from,
+            ],
+            &cwd,
+        )
+        .await;
+        if rc_add != 0 {
+            return Err(WorktreeError(format!("git worktree add failed: {err_add}")));
+        }
+        return Ok((wt_str, new_branch));
+    }
+}
+
 pub async fn ensure_worktree(
     project_path: &str,
     session_id: &str,
@@ -480,6 +620,32 @@ mod tests {
     }
 
     #[test]
+    fn parse_round_reads_trailing_suffix() {
+        assert_eq!(parse_round("fleet/auth-abcdef12"), 1); // no suffix → round 1
+        assert_eq!(parse_round("fleet/auth-abcdef12-r2"), 2);
+        assert_eq!(parse_round("fleet/auth-abcdef12-r17"), 17);
+        assert_eq!(parse_round("fleet/my-repo-abcdef12"), 1); // "-r" inside slug, not a round
+        assert_eq!(parse_round("fleet/foo-r5-abcdef12"), 1); // "-r5" not at the end
+    }
+
+    #[test]
+    fn compute_round_branch_appends_only_for_round_2_plus() {
+        let sid = "abcdef1234567890";
+        assert_eq!(
+            compute_round_branch(Some("auth"), sid, 1),
+            "fleet/auth-abcdef12"
+        );
+        assert_eq!(
+            compute_round_branch(Some("auth"), sid, 2),
+            "fleet/auth-abcdef12-r2"
+        );
+        assert_eq!(
+            compute_round_branch(Some("auth"), sid, 3),
+            "fleet/auth-abcdef12-r3"
+        );
+    }
+
+    #[test]
     fn is_under_detects_managed_clone_paths() {
         let root = Path::new("/home/u/.fleetify/clones");
         assert!(is_under("/home/u/.fleetify/clones/github.com/o/r", root));
@@ -557,5 +723,52 @@ mod tests {
             .await
             .expect("idempotent");
         assert_eq!(b2, b1);
+    }
+
+    #[tokio::test]
+    async fn carve_next_round_makes_a_pristine_sibling_worktree() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().to_string_lossy().to_string();
+        clean_repo(&p).await;
+        let sid = "abcdef1234567890";
+        // round 1
+        let (wt1, b1) = ensure_worktree(&p, sid, Some("auth"), None)
+            .await
+            .expect("r1");
+        assert!(std::path::Path::new(&wt1).is_dir());
+        assert_eq!(b1, "fleet/auth-abcdef12");
+        // a leftover UNTRACKED file in the round-1 worktree must NOT break the next round
+        std::fs::write(std::path::Path::new(&wt1).join("scratch.txt"), "junk").unwrap();
+        // round 2
+        let (wt2, b2) = carve_next_round_worktree(&p, sid, Some("auth"), Some(&b1), None)
+            .await
+            .expect("r2");
+        assert_eq!(b2, "fleet/auth-abcdef12-r2");
+        assert!(wt2.ends_with(&format!("{sid}-r2")), "got {wt2}");
+        assert!(std::path::Path::new(&wt2).is_dir());
+        assert_ne!(wt1, wt2, "round 2 must be a NEW directory");
+    }
+
+    #[tokio::test]
+    async fn delete_local_branch_is_idempotent() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().to_string_lossy().to_string();
+        clean_repo(&p).await;
+        let _ = git(&["branch", "throwaway"], &p).await;
+        assert!(delete_local_branch(&p, "throwaway").await);
+        // second delete (already gone) is harmless
+        let _ = delete_local_branch(&p, "throwaway").await;
+        let (rc, _, _) = git(
+            &["rev-parse", "--verify", "--quiet", "refs/heads/throwaway"],
+            &p,
+        )
+        .await;
+        assert_ne!(rc, 0, "branch should no longer exist");
     }
 }

@@ -1232,19 +1232,47 @@ describe("BranchStrip — PR switcher + repo-wide merge", () => {
     expect(screen.queryByRole("button", { name: /review changes/i })).toBeNull();
   });
 
-  it("not connected (no Settings GitHub link) → hides the PR chip + merge cluster, shows Create PR + Review", async () => {
-    // Same seeded open-PR state as the connected tests, but with the
-    // Settings → Integrations link cleared. The strip falls back to the
-    // branches-only state: no #5 chip, no Open/Merge cluster — yet Create PR
-    // and Review return (a hidden PR no longer blocks them).
+  it("not connected (no Settings GitHub link, no gh CLI auth) → branches-only: hides the PR chip, merge cluster, Create PR AND Review", async () => {
+    // Same seeded open-PR state as the connected tests, but with BOTH
+    // connection signals absent: the Settings → Integrations link is cleared
+    // AND the gh CLI reports not-authed. The strip falls back to the
+    // branches-only state: ALL PR affordances are gated off — no #5 chip, no
+    // Open/Merge cluster, and (per prAffordancesEnabled) no Create PR or
+    // Review either. Only the branch pills remain.
     localStorage.removeItem("fleet:github-auth-method");
+    // The default beforeEach mocks gh as authed; override it here so the
+    // async ghCliAuthed probe resolves false and `githubConnected` stays false
+    // (without this, recognizing gh-CLI auth would now flip the strip to
+    // connected and surface the PR UI this test asserts is hidden).
+    hasGhCliMock.mockResolvedValue({ ok: true, version: "2.55.0", authed: false, ghLogin: null });
     const { BranchStrip } = await loadBranchStrip();
     render(<BranchStrip projectPath="/repo" />);
-    await screen.findByRole("button", { name: /^create pr$/i });
-    expect(screen.getByRole("button", { name: /review changes/i })).toBeInTheDocument();
+    // The branch pill still renders (proves the strip mounted) — wait for it,
+    // then assert every PR affordance is absent.
+    await screen.findByText("fleet/x-a1b2c3d4");
+    expect(screen.queryByRole("button", { name: /^create pr$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /review changes/i })).toBeNull();
     expect(screen.queryByText("#5")).toBeNull();
     expect(screen.queryByRole("button", { name: /Open · #5/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /switch pull request/i })).toBeNull();
+  });
+
+  it("no Settings link but gh CLI authed → PR affordances appear (gh-CLI auth alone connects the strip)", async () => {
+    // The new behavior: a user who ran `gh auth login` but never linked GitHub
+    // in Fleetify Settings still gets the PR UI. The Settings flag is cleared,
+    // but the async ghCliAuthed probe resolves authed → `githubConnected` true
+    // via resolveGithubConnected, so the merge cluster + chip surface (same
+    // seeded #5 open-PR state as the connected tests). Proves the backend's gh
+    // fallback no longer requires a redundant second Fleetify connection.
+    localStorage.removeItem("fleet:github-auth-method");
+    hasGhCliMock.mockResolvedValue({ ok: true, version: "2.55.0", authed: true, ghLogin: "test" });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" />);
+    // The working branch's open PR surfaces in the merge cluster (Open · #5)
+    // and the switcher chip (#5) — both gated on githubConnected, so their
+    // presence proves gh-CLI auth alone enabled the strip's PR UI.
+    await waitFor(() => expect(screen.getByRole("button", { name: /Open · #5/i })).toBeInTheDocument());
+    expect(screen.getByText("#5")).toBeInTheDocument();
   });
 
   it("chip popover lists open PRs; picking one retargets Merge", async () => {
@@ -1337,6 +1365,51 @@ describe("BranchStrip — PR switcher + repo-wide merge", () => {
       expect(screen.getByRole("button", { name: /^Merge$/i }))
         .toHaveAttribute("title", expect.stringMatching(/2 checks failing/i)));
     expect(screen.getByRole("button", { name: /^Merge$/i })).toBeDisabled();
+  });
+});
+
+describe("BranchStrip — re-poll PR status on window focus", () => {
+  const openPr = {
+    number: 42, url: "https://github.com/u/r/pull/42",
+    state: "OPEN", mergeable: "MERGEABLE", isDraft: false,
+    baseRefName: "main", headRefName: "fleet/x-a1b2c3d4",
+    checks: { passing: 1, failing: 0, pending: 0, total: 1 },
+    commentsCount: 0,
+  };
+
+  // The working-branch PR-status poll runs `git.prStatus(folder)` with NO PR
+  // number — which reaches the mock as `getPRStatus(folder, undefined)`. The
+  // number-addressable forms (foreign detail poll, post-create refine, resolve
+  // watcher) always pass a real number. Counting only the undefined-number
+  // calls isolates THIS poll from the others.
+  const noNumberCalls = () =>
+    prStatusMock.mock.calls.filter(c => c[1] === undefined).length;
+
+  it("re-polls (no-number form) the instant the window regains focus, after the throttle window", { timeout: 10000 }, async () => {
+    gitContextMock.mockResolvedValue({
+      branch: "fleet/x-a1b2c3d4", baseBranch: "main",
+      plus: 5, minus: 2, remoteHttpsUrl: "https://github.com/u/r",
+    });
+    prStatusMock.mockResolvedValue({ ok: true, pr: openPr });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" />);
+
+    // Initial poll resolves exactly once (no-number form).
+    await waitFor(() => expect(noNumberCalls()).toBe(1));
+    const before = noNumberCalls();
+
+    // Wait past the 3s focus-refresh throttle so the listener isn't a no-op,
+    // but well under the 10s interval so the extra call can only come from the
+    // focus handler (not a scheduled tick).
+    await new Promise(resolve => setTimeout(resolve, 3100));
+    const afterWait = noNumberCalls();
+
+    // The window regains focus (user merged the PR on GitHub, tabbed back).
+    window.dispatchEvent(new Event("focus"));
+
+    // The focus handler fires an immediate extra no-number poll.
+    await waitFor(() => expect(noNumberCalls()).toBe(afterWait + 1));
+    expect(afterWait + 1).toBeGreaterThan(before);
   });
 });
 

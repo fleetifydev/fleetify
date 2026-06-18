@@ -2646,6 +2646,7 @@ export function ChatInput({
               sourcePath={projectPath}
               tool={tool}
               controlCenter={controlCenter}
+              sessionId={sessionId}
               sessionTitle={sessionTitle}
               plannedBranch={sessionId ? computeBranchName(sessionTitle, sessionId, projectPath) : null}
               isWorktree={!!worktreePath}

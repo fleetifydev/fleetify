@@ -634,6 +634,22 @@ pub async fn git_merge_pr(
 }
 
 #[tauri::command]
+pub async fn git_delete_remote_branch(
+    folder: String,
+    branch: String,
+    auth_method: Option<String>,
+    auth_stored: Option<String>,
+) -> serde_json::Value {
+    crate::shell::git_host::host_delete_remote_branch(
+        &PathBuf::from(folder),
+        auth_method.as_deref(),
+        auth_stored.as_deref(),
+        &branch,
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn git_pr_ready(
     folder: String,
     pr_number: u64,

@@ -423,6 +423,19 @@ export async function updateSession(
   return res.json();
 }
 
+/** Advance a worktree session to its next round (server carves the new
+ *  worktree, repoints the session, tears down the old one). Returns the
+ *  updated session + the branch that was removed (for remote cleanup). */
+export async function sessionNextRoundWorktree(id: string, base?: string) {
+  const res = await apiFetch(`${API_BASE}/sessions/${id}/worktree/next-round`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(base ? { base } : {}),
+  });
+  if (!res.ok) throw new Error("Failed to start next round");
+  return res.json() as Promise<{ ok: boolean; session?: import("@/types/session").Session; removedBranch?: string }>;
+}
+
 /** Fetch the session's per-session rules text (empty string when none). The
  *  rules are materialized into the session's working-dir rule file so the CLI
  *  reads them automatically — this just returns the stored source text. */

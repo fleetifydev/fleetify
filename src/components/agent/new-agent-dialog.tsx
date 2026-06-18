@@ -195,8 +195,8 @@ export function NewAgentView({ onClose }: Props) {
   const [name,      setName]      = useState("");
   // Per-session git isolation. Default mirrors the app-store default
   // (`use_worktree=true`) so parallel sessions don't stomp on each other.
-  // Task 14 wires this into the createSession payload and adds a
-  // `folderInGit` pre-check; for now the value is local state only.
+  // Sent to createSession as `use_worktree`; WorktreeToggle gates it on git
+  // presence (forces off when git is absent) and shows a `folderInGit` hint.
   const [useWorktree, setUseWorktree] = useState(true);
   // Built-in template grid selection. "custom" = no template applied.
   const [selectedTemplate, setSelectedTemplate] = useState<TemplateId>("custom");

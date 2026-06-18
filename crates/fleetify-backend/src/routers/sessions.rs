@@ -41,6 +41,10 @@ pub fn router() -> Router<AppState> {
         .route("/sessions/{id}/archive", post(archive_session))
         .route("/sessions/{id}/unarchive", post(unarchive_session))
         .route("/sessions/{id}/fork", post(fork_session))
+        .route(
+            "/sessions/{id}/worktree/next-round",
+            post(next_round_worktree),
+        )
         .route("/sessions/{id}/budget", patch(set_budget))
         .route("/sessions/{id}/activity", get(get_activity))
         .route("/sessions/{id}/files", get(get_files))
@@ -379,6 +383,79 @@ async fn update_session(
         .fetch_one(&st.auth.pool)
         .await?;
     Ok(Json(updated))
+}
+
+#[derive(Deserialize, Default)]
+struct NextRoundReq {
+    /// Base branch to carve the next round from; None → resolved server-side.
+    base: Option<String>,
+}
+
+/// `POST /api/sessions/{id}/worktree/next-round` — advance a worktree session
+/// to its next round: carve a fresh pristine worktree on a new `-r<N>` branch
+/// off `origin/<base>` (local `<base>` fallback when offline), repoint the
+/// session (its cwd follows on the next turn), then tear down the merged
+/// round's worktree + its local branch. Repoint happens BEFORE teardown so the
+/// session is never pointing at a missing directory (create-before-remove —
+/// zero window). LOCAL git + DB only; remote-branch deletion is the renderer's
+/// best-effort job (auth lives in the Tauri shell).
+async fn next_round_worktree(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+    Json(req): Json<NextRoundReq>,
+) -> Result<Json<Value>, ApiError> {
+    use crate::services::worktree;
+    let s = owned(&st, &id, &user.id).await?;
+    if !s.use_worktree {
+        return Err(ApiError::BadRequest(
+            "session is not in worktree mode".into(),
+        ));
+    }
+    let Some(old_path) = s.worktree_path.clone().filter(|p| !p.is_empty()) else {
+        return Err(ApiError::BadRequest(
+            "session has no worktree to advance".into(),
+        ));
+    };
+    let label = if s.title.trim().is_empty() {
+        "session".to_string()
+    } else {
+        s.title.clone()
+    };
+    let (new_path, new_branch) = worktree::carve_next_round_worktree(
+        &s.project_path,
+        &s.id,
+        Some(&label),
+        s.worktree_branch.as_deref(),
+        req.base.as_deref(),
+    )
+    .await
+    .map_err(|e| ApiError::Internal(e.0))?;
+
+    // Repoint BEFORE teardown so the session is never pointing at a missing dir.
+    sqlx::query("UPDATE sessions SET worktree_path = ?, worktree_branch = ? WHERE id = ?")
+        .bind(&new_path)
+        .bind(&new_branch)
+        .bind(&s.id)
+        .execute(&st.auth.pool)
+        .await?;
+
+    // Best-effort teardown of the merged round (local only).
+    let old_branch = s.worktree_branch.clone().unwrap_or_default();
+    let _ = worktree::remove_worktree(&s.project_path, &old_path).await;
+    if !old_branch.is_empty() && old_branch != new_branch {
+        let _ = worktree::delete_local_branch(&s.project_path, &old_branch).await;
+    }
+
+    let updated = sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = ?")
+        .bind(&s.id)
+        .fetch_one(&st.auth.pool)
+        .await?;
+    tracing::info!(session_id=%s.id, %new_path, %new_branch, removed=%old_branch,
+        "session.worktree.next_round");
+    Ok(Json(
+        json!({ "ok": true, "session": updated, "removedBranch": old_branch }),
+    ))
 }
 
 async fn delete_session(

@@ -27,8 +27,9 @@ import { git, type PRStatus, defaultPRTitle, defaultPRBody } from "@/lib/git-api
 import { github } from "@/lib/github-link-api";
 import { glog } from "@/lib/git-log";
 import { useAppStore, COMPOSER_CHAT_KEY } from "@/stores/app-store";
-import { pushChatError } from "@/stores/chat-store";
-import { useRepoPrs, useOpenPrs, usePrStore } from "@/stores/pr-store";
+import { pushChatError, useChatStore, selectSession } from "@/stores/chat-store";
+import { sessionNextRoundWorktree } from "@/lib/api";
+import { useRepoPrs, useOpenPrs, usePrStore, type RepoPr } from "@/stores/pr-store";
 import { PrSwitcherChip, prIconColor } from "@/components/git/pr-switcher-chip";
 /* ── BranchStrip ──
    The Claude-Code-style git context strip that sits ABOVE the chat
@@ -261,7 +262,185 @@ export function computeBranchName(
   return `fleet/${slug}-${sessionId.slice(0, 8)}`;
 }
 
-export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sessionTitle, plannedBranch, isWorktree: _isWorktree, onResolveConflicts, permissionMode }: {
+/** Inputs to {@link resolveStripSelection} — the already-computed repo-wide
+ *  selection (`effectiveSelectedNumber` / `selectedIsBranchPr` /
+ *  `selectedRepoPr`) plus the working-branch PR (`pr` / `branchOpenPr`), the
+ *  foreign-PR detail poll, and the `isWorktree` flag. */
+export interface StripSelectionInput {
+  isWorktree: boolean;
+  /** The working branch's PR (any state), or null. */
+  pr: PRStatus | null;
+  /** `pr` iff it's OPEN and GitHub is connected, else null. */
+  branchOpenPr: PRStatus | null;
+  /** Repo-wide effective selection number (explicit pick → branch PR →
+   *  newest open). The worktree override ignores this entirely. */
+  effectiveSelectedNumber: number | null;
+  /** Whether the repo-wide selection is the working branch's own PR. */
+  selectedIsBranchPr: boolean;
+  /** The repo-wide open-PR store entry for the current selection (the chip's
+   *  source PR; may be a FOREIGN PR). Sourced from `openPrsList` so it's a
+   *  `RepoPr`; a `PRStatus` (the branch PR) is structurally assignable too. */
+  selectedRepoPr: RepoPr | null;
+  /** The foreign-PR detail-poll result (null in worktree mode — its poll is
+   *  short-circuited). */
+  foreignPr: PRStatus | null;
+}
+
+/** The strip's *effective* selection after the worktree override. */
+export interface StripSelection {
+  /** Number the merge/open/resolve paths act on. */
+  effSelectedNumber: number | null;
+  /** Whether the effective selection is the working branch's own PR. */
+  effSelectedIsBranchPr: boolean;
+  /** Full PRStatus the merge cluster reads (`det`). */
+  effSelectedPr: PRStatus | null;
+  /** The gate the merge cluster renders on (replaces `selectedRepoPr`).
+   *  `RepoPr` off-worktree (the store entry); the branch `PRStatus` in
+   *  worktree mode, which is structurally assignable to `RepoPr`. */
+  effSelectedRepoPr: RepoPr | null;
+  /** Whether the repo-wide PR switcher chip may render. Always false in
+   *  worktree mode. */
+  showSwitcher: boolean;
+}
+
+/**
+ * Worktree-mode PR-selection lock (pure, unit-tested without React).
+ *
+ * Off-worktree the strip targets the repo-wide selection (spec §6): the
+ * switcher chip + merge cluster follow whatever PR the user picked, falling
+ * back to the working branch's PR then the newest open PR. That fallback can
+ * resolve to a FOREIGN PR.
+ *
+ * In worktree mode one session ↔ one branch ↔ one PR. We ignore the repo-wide
+ * selection entirely and bind the strip to THIS branch's own PR (`pr`), so a
+ * foreign PR in `openPrsList` can never become the merge/Resolve target, and
+ * the repo-wide switcher is hidden. When the branch has no PR yet, the
+ * effective selection collapses to "nothing" (never a foreign PR).
+ *
+ * Off-worktree the return is byte-identical to the inline values it replaces.
+ */
+export function resolveStripSelection(input: StripSelectionInput): StripSelection {
+  const {
+    isWorktree, pr, branchOpenPr, effectiveSelectedNumber,
+    selectedIsBranchPr, selectedRepoPr, foreignPr,
+  } = input;
+
+  if (isWorktree) {
+    // Bind to the working branch's own PR; ignore the repo-wide selection.
+    // `effSelectedRepoPr` is the merge-cluster gate and MUST stay OPEN-only
+    // (mirroring the off-worktree `selectedRepoPr`, sourced from openPrsList) —
+    // so a CLOSED/MERGED branch PR still falls through to the Sync-main /
+    // Closed states instead of rendering a dead Open·#N + Merge pair.
+    // `branchOpenPr` is `pr` iff it's OPEN, so it is exactly that gate.
+    const effSelectedRepoPr = branchOpenPr;
+    return {
+      // The hidden switcher would read this; the `pr?.number` fallback keeps it
+      // non-null for a CLOSED/MERGED own PR without affecting the cluster.
+      effSelectedNumber: branchOpenPr?.number ?? pr?.number ?? null,
+      effSelectedIsBranchPr: true,
+      // `det`/onMerge target — the branch's own PR, never the foreign poll.
+      effSelectedPr: pr,
+      effSelectedRepoPr,
+      showSwitcher: false,
+    };
+  }
+
+  // Off-worktree: preserve the existing repo-wide behaviour exactly.
+  return {
+    effSelectedNumber: effectiveSelectedNumber,
+    effSelectedIsBranchPr: selectedIsBranchPr,
+    effSelectedPr: selectedIsBranchPr ? pr : foreignPr,
+    effSelectedRepoPr: selectedRepoPr,
+    showSwitcher: effectiveSelectedNumber != null,
+  };
+}
+
+/** Inputs to {@link shouldAutoNextRound} — a snapshot of the PR poll's state
+ *  at the moment it computes `incoming`, plus the worktree/idle gates. */
+export interface AutoNextRoundInput {
+  /** Worktree-mode sessions only. Off-worktree keeps the Sync-main path. */
+  isWorktree: boolean;
+  /** The PR state observed on the PREVIOUS poll tick (`prevPrStateRef`). */
+  prevState: string | null;
+  /** The PR state this tick (`incoming.state`). */
+  incomingState: string | null;
+  /** This tick's PR head ref — must equal `ctxBranch` for it to be OUR PR. */
+  incomingHeadRef: string | null;
+  /** The session's current working branch (`ctx.branch`). */
+  ctxBranch: string | null;
+  /** A sync/carve (app-merge or a prior external) is already in flight. */
+  syncing: boolean;
+  /** An app-merge's own-branch carve is already running (`justMergedRef`). */
+  justMerged: boolean;
+  /** The session is mid-turn — the idle gate blocks auto-advance. */
+  isStreaming: boolean;
+}
+
+/**
+ * Decide whether the PR poll should auto-advance a worktree session to a fresh
+ * round on a LIVE external merge (pure; unit-tested without React).
+ *
+ * Fires only when ALL hold:
+ *   - worktree mode (off-worktree uses Sync-main, unchanged);
+ *   - we observed the flip THIS session — `prevState === "OPEN"` and
+ *     `incomingState === "MERGED"`. Boot-into-merged (no prior OPEN) is
+ *     deliberately excluded: there's no flip to detect, so the manual
+ *     "Start next round" button owns that case;
+ *   - the merged PR is OUR working branch (`incomingHeadRef === ctxBranch`,
+ *     both non-null) — a foreign PR merging never advances this session;
+ *   - we're not already carving (`!syncing`, `!justMerged` — the latter means
+ *     onMerge's own-branch path already triggered the carve directly);
+ *   - the session is idle (`!isStreaming`).
+ */
+export function shouldAutoNextRound(input: AutoNextRoundInput): boolean {
+  const {
+    isWorktree, prevState, incomingState, incomingHeadRef, ctxBranch,
+    syncing, justMerged, isStreaming,
+  } = input;
+  return (
+    isWorktree &&
+    prevState === "OPEN" &&
+    incomingState === "MERGED" &&
+    incomingHeadRef != null &&
+    incomingHeadRef === ctxBranch &&
+    !syncing &&
+    !justMerged &&
+    !isStreaming
+  );
+}
+
+/** Whether the Create-PR/Review slot should be empty-diff-blocked. Worktree
+ *  sessions live on a dedicated fleet/… branch that exists to become a PR, so
+ *  they show Create PR/Review optimistically even before the first committed
+ *  diff — parity with the off-worktree bootstrap path on the default branch.
+ *  (The backend surfaces NO_COMMITS gracefully if there is truly nothing to
+ *  commit, exactly as the bootstrap path already relies on.) */
+export function isEmptyDiffBlocked(opts: {
+  isBootstrapShape: boolean;
+  isWorktree: boolean;
+  plus: number;
+  minus: number;
+}): boolean {
+  if (opts.isBootstrapShape || opts.isWorktree) return false;
+  return opts.plus + opts.minus === 0;
+}
+
+/** PR affordances (Create PR, Review, auto-PR, PR status) require BOTH a git
+ *  context AND a Fleetify GitHub connection. Without git → nothing; with git
+ *  but no GitHub connection → only branches (no PR UI); with both → full. */
+export function prAffordancesEnabled(githubConnected: boolean, noGit: boolean): boolean {
+  return githubConnected && !noGit;
+}
+
+/** GitHub is "connected" for the strip when it isn't explicitly disabled and
+ *  EITHER the Fleetify OAuth/Settings link is set OR the gh CLI is authed
+ *  locally. Recognizing gh-CLI auth avoids forcing a redundant second
+ *  connection — the backend already falls back to gh for PR ops. */
+export function resolveGithubConnected(opts: { disabled: boolean; flagConnected: boolean; ghCliAuthed: boolean }): boolean {
+  return !opts.disabled && (opts.flagConnected || opts.ghCliAuthed);
+}
+
+export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sessionId, sessionTitle, plannedBranch, isWorktree = false, onResolveConflicts, permissionMode }: {
   projectPath?: string | null;
   /** True when the resolved projectPath is a git worktree under
    *  `<source-repo>/.fleetify-worktrees/<session-id>/`. Drives the
@@ -283,6 +462,12 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
    *  hooks (below) to satisfy the rules of hooks; we use it as the
    *  first render-condition gate. */
   controlCenter?: boolean;
+  /** The session this strip is bound to. Required for the worktree
+   *  next-round flow: `sessionNextRoundWorktree(sessionId, base)` asks the
+   *  backend to carve a fresh pristine worktree on a new `-r<N>` branch and
+   *  repoint THIS session. Absent on the compose-mode / control-center
+   *  surfaces (no session yet), where the next-round paths are no-ops. */
+  sessionId?: string | null;
   /** Session title — used as the auto-generated PR title when we
    *  open a draft PR on the user's behalf. Falls back to the branch
    *  name when absent. */
@@ -372,6 +557,26 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // null and MERGED, the Sync main button keeps reappearing, and
   // re-clicking it just re-runs the cleanup with no visible change.
   const postMergeCleanedRef = useRef(false);
+  // The PR state observed on the PREVIOUS poll tick. Drives the live
+  // external-merge detector in the poll: we only auto-advance a worktree
+  // session when we WATCH the flip from OPEN → MERGED this session. Seeded
+  // null so a boot-into-merged session (first poll already MERGED) is NOT a
+  // detected flip — that case is owned by the manual "Start next round"
+  // button instead. (postMergeCleanedRef swallows the MERGED tick on the
+  // very next poll, so the flip must be caught right where `incoming` is
+  // computed, before setPr.)
+  const prevPrStateRef = useRef<string | null>(null);
+  // Timestamp (ms) of the last working-branch PR-status poll. Throttles the
+  // focus/visibility re-poll below so rapid alt-tabbing can't hammer `gh` —
+  // a foreground event within 3s of the previous poll is ignored.
+  const lastPrPollAtRef = useRef(0);
+  // Live ref to doWorktreeNextRound (declared far below the controlCenter
+  // early-return and re-created each render). The PR poll + auto-cleanup
+  // effects are HOISTED above that declaration to keep the hook count stable,
+  // so they call the latest runner through this ref instead of closing over a
+  // TDZ const. `.current` is set right after doWorktreeNextRound is declared.
+  // Mirrors the onMergeRef pattern already used for the resolve-watcher.
+  const doWorktreeNextRoundRef = useRef<(base: string) => void>(() => {});
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const createMenuRef = useRef<HTMLDivElement>(null);
   // Auto-create flow state — true while we're drafting + submitting
@@ -379,6 +584,61 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // dialog). The button label flips to "Creating…" and the click
   // is no-op'd until the in-flight call completes.
   const [autoCreating, setAutoCreating] = useState(false);
+
+  // Reactive idle gate. The next-round auto-advance (and the manual button)
+  // must not fire mid-turn — carving a fresh worktree under a streaming agent
+  // would yank its cwd out from under an in-flight tool call. We read the
+  // ACTIVE session's stream flag (matching how the rest of this file resolves
+  // the session for pushChatError) via a hook selector so the gate is
+  // reactive: when the turn ends the strip re-renders and the button enables.
+  // `selectSession` returns a stable frozen EMPTY_SESSION when the id isn't in
+  // the store, so this is hooks-order-safe (always one selector call).
+  const activeSid = useAppStore.getState().activeSessionId || COMPOSER_CHAT_KEY;
+  const isStreaming = useChatStore(selectSession(sessionId ?? activeSid)).isStreaming;
+
+  // Whether a locally-authed `gh` CLI is available. Probed asynchronously
+  // (below) via git.hasGhCli() so a user who ran `gh auth login` counts as
+  // connected WITHOUT a separate Fleetify Settings link — the backend already
+  // falls back to gh for PR ops. Seeded false so the strip stays branches-only
+  // until the probe confirms auth.
+  const [ghCliAuthed, setGhCliAuthed] = useState(false);
+
+  // GitHub connection state. Connected when NOT explicitly disabled in
+  // Settings → Integrations AND either the Fleetify OAuth/Settings link is set
+  // (the same localStorage keys the Create-PR pre-flight + AuthChoicePopover
+  // write/read) OR the gh CLI is authed locally (`ghCliAuthed`, probed below).
+  // When NOT connected the strip shows only branches: no PR data leaks in and
+  // Create PR / Review / auto-PR / PR-status polling are all gated off (see
+  // prAffordancesEnabled + the effects below). Derived here (above the
+  // PR-status poll + auto-PR effects) so those effects can list it in their
+  // dependency arrays without a TDZ.
+  const githubConnected = (() => {
+    let disabled = false;
+    let flagConnected = false;
+    try {
+      disabled = localStorage.getItem("fleet:settings:github-enabled") === "0";
+      const m = localStorage.getItem("fleet:github-auth-method");
+      flagConnected = m === "oauth" || m === "cli";
+    } catch { /* ignore */ }
+    return resolveGithubConnected({ disabled, flagConnected, ghCliAuthed });
+  })();
+
+  // Probe the local gh CLI's auth state on mount + whenever the app returns to
+  // the foreground (the user may have run `gh auth login` in a terminal while
+  // away). A successful authed probe flips `ghCliAuthed`, which re-derives
+  // `githubConnected` above and surfaces the PR UI without a Fleetify Settings
+  // connection. Failures are swallowed — absent/erroring gh just stays false.
+  useEffect(() => {
+    let cancelled = false;
+    const probe = () => {
+      git.hasGhCli().then(r => { if (!cancelled) setGhCliAuthed(!!(r && r.ok && r.authed)); }).catch(() => {});
+    };
+    probe();
+    const onForeground = () => { if (document.visibilityState !== "hidden") probe(); };
+    window.addEventListener("focus", onForeground);
+    document.addEventListener("visibilitychange", onForeground);
+    return () => { cancelled = true; window.removeEventListener("focus", onForeground); document.removeEventListener("visibilitychange", onForeground); };
+  }, []);
 
   // Close the Create-PR dropdown when clicking outside it.
   useEffect(() => {
@@ -462,6 +722,11 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // branch (no PR can exist).
   useEffect(() => {
     setPrStatusLoaded(false);
+    // GitHub connection gate (Settings → Integrations). Without it we never
+    // poll `gh pr status` — the strip shows only branches, no PR state leaks
+    // in even if `gh` is authed independently of Settings. Mirrors the
+    // openPrsList / branchOpenPr gating already keyed on githubConnected.
+    if (!githubConnected) { setPr(null); return; }
     if (!folder || !ctx?.branch || ctx.branch === ctx.baseBranch) {
       setPr(null);
       return;
@@ -477,6 +742,7 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
     if (autoCreating) return;
     let cancelled = false;
     const load = () => {
+      lastPrPollAtRef.current = Date.now();
       git.prStatus(folder).then(r => {
         if (cancelled) return;
         // Diagnostic so we can see, in DevTools, exactly what each
@@ -515,6 +781,28 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
         if (incoming && incoming.state === "OPEN") {
           postMergeCleanedRef.current = false;
         }
+        // Live external-merge detection (worktree only). We compare against
+        // the PREVIOUS tick's state and act the instant we WATCH the flip
+        // OPEN → MERGED on our own branch. This must run here — before
+        // setPr — because the next poll's stale MERGED tick is swallowed by
+        // the postMergeCleanedRef filter above, so the flip is only
+        // observable once. Boot-into-merged (prevState null) is intentionally
+        // skipped; the manual "Start next round" button owns that case.
+        const prevState = prevPrStateRef.current;
+        prevPrStateRef.current = incoming?.state ?? null;
+        if (shouldAutoNextRound({
+          isWorktree,
+          prevState,
+          incomingState: incoming?.state ?? null,
+          incomingHeadRef: incoming?.headRefName ?? null,
+          ctxBranch: ctx?.branch ?? null,
+          syncing,
+          justMerged: justMergedRef.current,
+          isStreaming,
+        })) {
+          glog("ui", "next-round.external", { prNumber: incoming?.number });
+          doWorktreeNextRoundRef.current(incoming!.baseRefName || ctx?.baseBranch || "main");
+        }
         setPr(incoming);
         setPrStatusLoaded(true);
       }).catch(() => {
@@ -525,9 +813,25 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
       });
     };
     load();
-    const iv = setInterval(load, 15000);
-    return () => { cancelled = true; clearInterval(iv); };
-  }, [folder, ctx?.branch, ctx?.baseBranch, autoCreating]);
+    const iv = setInterval(load, 10000);
+    // Near-real-time external-merge detection: re-poll the instant the app
+    // regains focus or becomes visible (e.g. the user merged the PR on GitHub
+    // in a browser and tabbed back) instead of waiting up to one interval.
+    // Throttled so rapid alt-tabbing can't hammer `gh`.
+    const onForeground = () => {
+      if (document.visibilityState === "hidden") return;
+      if (Date.now() - lastPrPollAtRef.current < 3000) return;
+      load();
+    };
+    window.addEventListener("focus", onForeground);
+    document.addEventListener("visibilitychange", onForeground);
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+      window.removeEventListener("focus", onForeground);
+      document.removeEventListener("visibilitychange", onForeground);
+    };
+  }, [folder, ctx?.branch, ctx?.baseBranch, autoCreating, isWorktree, syncing, isStreaming, githubConnected]);
 
   // ── Auto-create draft PR ──
   // First time we see actual diff on a feature branch with no PR
@@ -543,6 +847,11 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   //   2. autoPrFiredRef — per-folder one-shot, with retry-on-fail.
   //   3. ctx.plus + ctx.minus > 0 — no PR for an empty diff.
   useEffect(() => {
+    // GitHub connection gate (Settings → Integrations). Without it the strip
+    // shows only branches; auto-creating a PR here would surface PR
+    // affordances the user never connected for (and could race a `gh` that's
+    // authed independently of Settings). Mirrors showCreatePR/showReview.
+    if (!githubConnected) return;
     // Diagnostic: every state change emits a one-liner so the user
     // can see exactly which guard is currently holding the auto-PR
     // back. Open devtools console and look for "[auto-PR] check".
@@ -673,7 +982,7 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
       console.warn("[auto-PR] threw (sync)", e);
       autoPrFiredRef.current.delete(folder);
     }
-  }, [folder, ctx?.branch, ctx?.baseBranch, ctx?.plus, ctx?.minus, pr, prStatusLoaded, autoCreating, sessionTitle]);
+  }, [folder, ctx?.branch, ctx?.baseBranch, ctx?.plus, ctx?.minus, pr, prStatusLoaded, autoCreating, sessionTitle, githubConnected]);
 
   // Auto-cleanup after merge. When prStatus poll observes the PR
   // flip to MERGED AND we were the ones who triggered the merge
@@ -699,8 +1008,13 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
     if (controlCenter) return;
     if (pr?.state !== "MERGED") return;
     if (!justMergedRef.current) return;
-    glog("ui", "auto-cleanup.fire", { prNumber: pr.number });
-    void onSyncMain();
+    glog("ui", "auto-cleanup.fire", { prNumber: pr.number, isWorktree });
+    // Worktree sessions advance to a fresh round; off-worktree keeps the
+    // in-place Sync-main. (onMerge's own-branch path fires the same runner
+    // directly; whichever wins, doWorktreeNextRound/doSyncAndCarve clears
+    // justMergedRef up front so the loser no-ops on the same MERGED tick.)
+    if (isWorktree) doWorktreeNextRoundRef.current(pr.baseRefName || ctx?.baseBranch || "main");
+    else void onSyncMain();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pr?.state, controlCenter]);
 
@@ -712,18 +1026,8 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // Effective selection: explicit pick (while still open) → the working
   // branch's open PR → the newest open PR. The chip + merge cluster
   // target this PR; Create PR stays bound to the working branch.
-  // GitHub connection state from Settings → Integrations — the same
-  // localStorage keys the Create-PR pre-flight and the AuthChoicePopover
-  // already write/read. When NOT connected we surface only branches +
-  // Review + Create PR: no PR data leaks into the strip, even if `gh`
-  // happens to be authed on the machine independently of Settings.
-  const githubConnected = (() => {
-    try {
-      if (localStorage.getItem("fleet:settings:github-enabled") === "0") return false;
-      const m = localStorage.getItem("fleet:github-auth-method");
-      return m === "oauth" || m === "cli";
-    } catch { return false; }
-  })();
+  // (`githubConnected` is derived near the top of the component so the
+  // PR-status poll + auto-PR effects above can gate their deps on it.)
   const openPrsAll = useOpenPrs();
   const openPrsList = githubConnected ? openPrsAll : [];
   const [selectedPrNumber, setSelectedPrNumber] = useState<number | null>(null);
@@ -749,9 +1053,11 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // Foreign-PR detail poll — checks/mergeable/draft gating for a selected
   // PR that ISN'T the working branch's. Same 15s cadence as the branch
   // poll; `git.prStatus(folder, number)` is already number-addressable.
+  // Skipped entirely in worktree mode: the strip is locked to the working
+  // branch's own PR there, so there is no foreign selection to detail-poll.
   const [foreignPr, setForeignPr] = useState<PRStatus | null>(null);
   useEffect(() => {
-    if (!folder || effectiveSelectedNumber == null || selectedIsBranchPr) {
+    if (!folder || isWorktree || effectiveSelectedNumber == null || selectedIsBranchPr) {
       setForeignPr(null);
       return;
     }
@@ -764,7 +1070,7 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
     load();
     const iv = setInterval(load, 15000);
     return () => { cancelled = true; clearInterval(iv); };
-  }, [folder, effectiveSelectedNumber, selectedIsBranchPr]);
+  }, [folder, isWorktree, effectiveSelectedNumber, selectedIsBranchPr]);
 
   // Live ref to onMerge (defined below the controlCenter early-return and
   // re-created each render) so the resolve-watcher effect can fire the
@@ -800,7 +1106,27 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
     return () => { cancelled = true; clearInterval(iv); clearTimeout(to); };
   }, [resolving, folder]);
 
-  const selectedPr: PRStatus | null = selectedIsBranchPr ? pr : foreignPr;
+  // Effective selection (worktree-mode lock applied). Off-worktree this is
+  // byte-identical to the prior inline values: { effSelectedIsBranchPr,
+  // effSelectedPr, effSelectedRepoPr } ≡ { selectedIsBranchPr,
+  // (selectedIsBranchPr ? pr : foreignPr), selectedRepoPr }. In worktree mode
+  // they collapse to the working branch's own PR (`pr`) and the switcher is
+  // hidden — a foreign PR in openPrsList can never become the merge/Resolve
+  // target. (`effSelectedNumber` is part of the helper's contract but the
+  // cluster reads `effSelectedRepoPr.number` directly, mirroring the prior
+  // `selectedRepoPr.number`, so it isn't destructured here.)
+  const {
+    effSelectedIsBranchPr, effSelectedPr, effSelectedRepoPr, showSwitcher,
+  } = resolveStripSelection({
+    isWorktree,
+    pr,
+    branchOpenPr,
+    effectiveSelectedNumber,
+    selectedIsBranchPr,
+    selectedRepoPr,
+    foreignPr,
+  });
+  const selectedPr: PRStatus | null = effSelectedPr;
 
   if (controlCenter) return null;
 
@@ -821,7 +1147,7 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // Create PR at all (carving a repo from nothing is out of scope). With a
   // repo it shows on feature branches, and on the default branch only when a
   // plannedBranch will be carved.
-  const showCreatePR = !noGit && (!onDefaultBranch || !!plannedBranch);
+  const showCreatePR = prAffordancesEnabled(githubConnected, noGit) && (!onDefaultBranch || !!plannedBranch);
   // ── Empty-diff gating ──
   // `ctx.plus/minus` already refresh on the 5s git-context poll, so
   // this costs nothing extra. Bootstrap shapes (no git yet, or on the
@@ -830,8 +1156,12 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // bootstraps it. The ≤5s staleness window is backstopped by the
   // backend's NO_COMMITS error surfacing through the recovery path.
   const isBootstrapShape = (noGit || onDefaultBranch) && !!plannedBranch;
-  const emptyDiffBlocked =
-    !isBootstrapShape && ((ctx?.plus ?? 0) + (ctx?.minus ?? 0)) === 0;
+  const emptyDiffBlocked = isEmptyDiffBlocked({
+    isBootstrapShape,
+    isWorktree,
+    plus: ctx?.plus ?? 0,
+    minus: ctx?.minus ?? 0,
+  });
   // Create-slot gating. When the slot can't act — the working branch
   // already has an open PR (a second create would just race "a PR
   // already exists"), or the diff is empty — Create PR and Review are
@@ -850,7 +1180,7 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // button stays hidden until bootstrap. (Conductor's parity: their
   // Review action is only useful once there's a workspace state.)
   // Hidden alongside Create PR whenever that slot is blocked.
-  const showReview = !!folder && !noGit && !createBlocked;
+  const showReview = prAffordancesEnabled(githubConnected, noGit) && !!folder && !createBlocked;
 
   // noGit may be true here; we render <NoGitPill /> from the unified
   // JSX path below. The legacy non-noGit render uses ctxR.branch /
@@ -913,9 +1243,12 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
         // time our poll runs again the state has skipped from OPEN
         // straight to null (no PR for main). The useEffect waiting on
         // state===MERGED would never fire. Running it directly here is
-        // deterministic.
+        // deterministic. Worktree sessions advance to a fresh round (new
+        // `-r<N>` worktree + branch); off-worktree keeps the in-place
+        // sync+carve of the same branch.
         setPr(null);
-        void doSyncAndCarve(baseBranch);
+        if (isWorktree) void doWorktreeNextRound(baseBranch);
+        else void doSyncAndCarve(baseBranch);
       }
     } else {
       // mergePR rejected (checks failing, auth, …) — wasn't really
@@ -956,6 +1289,48 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // the post-merge auto-trigger (onMerge done-ok, where `pr` may
   // already have been cleared and we pass `base` explicitly). Runs
   // source pull-ff-only + worktree branch reset to origin/<base>.
+  // ── Worktree next round ──
+  // The worktree-mode analogue of doSyncAndCarve. Instead of pulling the base
+  // into the user's source checkout and resetting the SAME branch, the server
+  // carves a fresh PRISTINE worktree on a new `-r<N>` branch, repoints THIS
+  // session at it (the cwd follows on the next turn), and tears down the old
+  // worktree + local branch. We then refresh the in-memory session so the
+  // strip's worktree path/branch track the new round, and best-effort delete
+  // the old REMOTE branch (auth lives in the Tauri shell, so this is a
+  // fire-and-forget — failure just leaves a stale remote branch, not a broken
+  // session). Mirrors doSyncAndCarve's flag handling: clear justMergedRef up
+  // front, set postMergeCleanedRef so the next poll's stale MERGED tick is
+  // swallowed, and clear `pr`.
+  const doWorktreeNextRound = async (base: string) => {
+    if (!sessionId) return;
+    justMergedRef.current = false;
+    setSyncing(true);
+    try {
+      const r = await sessionNextRoundWorktree(sessionId, base);
+      if (!r.ok || !r.session) {
+        const sid = useAppStore.getState().activeSessionId || COMPOSER_CHAT_KEY;
+        pushChatError(sid, "Couldn't start the next round — see the agent output, then retry.");
+        return;
+      }
+      useAppStore.getState().updateSession(sessionId, {
+        worktree_path: r.session.worktree_path,
+        worktree_branch: r.session.worktree_branch,
+      });
+      if (r.removedBranch && sourcePath) {
+        void git.deleteRemoteBranch(sourcePath, r.removedBranch);
+      }
+      postMergeCleanedRef.current = true;
+      setPr(null);
+    } catch (e) {
+      const sid = useAppStore.getState().activeSessionId || COMPOSER_CHAT_KEY;
+      pushChatError(sid, e instanceof Error ? e.message : "Couldn't start the next round — see the agent output, then retry.");
+    } finally {
+      setSyncing(false);
+    }
+  };
+  // Keep the poll + auto-cleanup effects' ref pointed at the current runner.
+  doWorktreeNextRoundRef.current = doWorktreeNextRound;
+
   const doSyncAndCarve = async (base: string) => {
     const sourceTarget = sourcePath || folder;
     if (!sourceTarget) return;
@@ -1012,14 +1387,14 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // branch's) we open its own url directly — `git.openPR(folder)`
   // resolves the working branch's PR, which would open the wrong one.
   const onOpenSelected = () => {
-    if (selectedRepoPr && !selectedIsBranchPr && selectedRepoPr.url) {
+    if (effSelectedRepoPr && !effSelectedIsBranchPr && effSelectedRepoPr.url) {
       const w = window as unknown as { electronAPI?: { openExternal?: (url: string) => Promise<unknown> } };
-      void w.electronAPI?.openExternal?.(selectedRepoPr.url);
+      void w.electronAPI?.openExternal?.(effSelectedRepoPr.url);
       return;
     }
     // Branch-own selection: prefer the selected entry's number — `pr`
     // can lag a poll behind right after creation.
-    if (folder) void git.openPR(folder, selectedRepoPr?.number ?? pr?.number);
+    if (folder) void git.openPR(folder, effSelectedRepoPr?.number ?? pr?.number);
   };
 
   // ── Create PR pipeline ──
@@ -1534,7 +1909,7 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
     // pair — otherwise the chip can point at a PR with no merge cluster.
     // null when there's no open PR to select.
     let foreignCluster: React.ReactNode = null;
-    if (selectedRepoPr) {
+    if (effSelectedRepoPr) {
       // `det` is the full PRStatus for the selected PR (the working
       // branch's own pr, or the foreign-PR poll). The mergeable / draft /
       // conflicts logic decides whether Merge is enabled. Pending checks
@@ -1559,8 +1934,8 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
           : `Squash + merge #${det.number} into ${det.baseRefName}`;
       foreignCluster = (
         <>
-          <ActionBtn onClick={onOpenSelected} title={`Open #${selectedRepoPr.number} on GitHub`}>
-            Open · #{selectedRepoPr.number} <ExternalLink size={11} strokeWidth={1.85} />
+          <ActionBtn onClick={onOpenSelected} title={`Open #${effSelectedRepoPr.number} on GitHub`}>
+            Open · #{effSelectedRepoPr.number} <ExternalLink size={11} strokeWidth={1.85} />
           </ActionBtn>
           {/* Hairline-dot separator matches the Review · Create PR rhythm so
               Open and Merge read as two distinct actions, not one run-on. */}
@@ -1597,23 +1972,38 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
           <ActionBtn onClick={onOpenPR} title={`Open #${pr.number} on GitHub`}>
             Open · #{pr.number} <ExternalLink size={11} strokeWidth={1.85} />
           </ActionBtn>
-          <ActionBtn onClick={onSyncMain} primary disabled={syncing}
-            title={`Checkout ${pr.baseRefName || "main"} on the source repo and pull --ff-only`}>
-            {syncing
-              ? <><Loader2 size={11} style={{ animation: "spin 1.2s linear infinite" }} /> Syncing…</>
-              : <><Check size={11} /> Sync {pr.baseRefName || "main"}</>}
-          </ActionBtn>
+          {isWorktree ? (
+            // Worktree boot-into-merged affordance. When the app opens a
+            // session whose PR was already merged (no live OPEN→MERGED flip
+            // observed this session, so the poll's auto-advance never fired),
+            // this is the manual trigger to carve the next round. Idle-gated:
+            // a streaming turn must finish before we repoint the worktree.
+            <ActionBtn onClick={() => doWorktreeNextRound(pr.baseRefName || ctx?.baseBranch || "main")}
+              primary disabled={syncing || isStreaming}
+              title={isStreaming ? "Wait for the current turn to finish" : "Carve a fresh worktree for the next round"}>
+              {syncing
+                ? <><Loader2 size={11} style={{ animation: "spin 1.2s linear infinite" }} /> Starting…</>
+                : <><Check size={11} /> Start next round</>}
+            </ActionBtn>
+          ) : (
+            <ActionBtn onClick={onSyncMain} primary disabled={syncing}
+              title={`Checkout ${pr.baseRefName || "main"} on the source repo and pull --ff-only`}>
+              {syncing
+                ? <><Loader2 size={11} style={{ animation: "spin 1.2s linear infinite" }} /> Syncing…</>
+                : <><Check size={11} /> Sync {pr.baseRefName || "main"}</>}
+            </ActionBtn>
+          )}
           {foreignCluster != null && <span aria-hidden style={{ opacity: 0.4 }}>·</span>}
           {foreignCluster}
         </>
       );
-    } else if (pr && pr.state === "CLOSED" && !selectedRepoPr) {
+    } else if (pr && pr.state === "CLOSED" && !effSelectedRepoPr) {
       mergeSlot = (
         <ActionBtn onClick={onOpenPR} title={`Closed · #${pr.number}`}>
           <X size={11} /> Closed · #{pr.number}
         </ActionBtn>
       );
-    } else if (selectedRepoPr) {
+    } else if (effSelectedRepoPr) {
       // OPEN, repo-wide — the common case.
       mergeSlot = foreignCluster;
     }
@@ -1655,12 +2045,15 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
 
         {/* PR switcher — right of the glyph: selected open PR + status
             dot, popover lists every open PR in the repo (spec §6). Only
-            surfaces once the repo-wide poll has open PRs. */}
-        {openPrsList.length > 0 && effectiveSelectedNumber != null && (
+            surfaces once the repo-wide poll has open PRs. Hidden entirely in
+            worktree mode (`showSwitcher` is false there): one session ↔ one
+            branch ↔ one PR, so the repo-wide cross-PR switcher is noise and a
+            foreign pick must never become the merge target. */}
+        {showSwitcher && openPrsList.length > 0 && effectiveSelectedNumber != null && (
           <PrSwitcherChip
             openPrs={openPrsList}
             selectedNumber={effectiveSelectedNumber}
-            selectedStatus={selectedPr}
+            selectedStatus={effSelectedPr}
             onSelect={setSelectedPrNumber}
             onOpenUrl={(p) => {
               const w = window as unknown as { electronAPI?: { openExternal?: (url: string) => Promise<unknown> } };

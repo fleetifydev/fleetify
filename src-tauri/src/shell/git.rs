@@ -32,6 +32,39 @@ async fn git(args: &[&str], cwd: &Path) -> (i32, String, String) {
     run("git", args, cwd, Duration::from_secs(8)).await
 }
 
+/// The MAIN repo working-tree root for `folder`. For a linked git worktree
+/// this is the PRIMARY checkout (resolved via the shared common git dir),
+/// never the worktree — repo-level bootstrap (gh repo create, repo naming,
+/// origin setup) must target it, because a worktree's `.git` is a file pointer
+/// that `gh repo create --source` rejects. For a normal checkout it returns
+/// `folder` unchanged.
+pub async fn main_worktree_root(folder: &Path) -> std::path::PathBuf {
+    let (rc, out, _) = git(
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        folder,
+    )
+    .await;
+    if rc == 0 {
+        let common = out.trim();
+        if !common.is_empty() {
+            if let Some(parent) = std::path::Path::new(common).parent() {
+                if !parent.as_os_str().is_empty() {
+                    return parent.to_path_buf();
+                }
+            }
+        }
+    }
+    folder.to_path_buf()
+}
+
+/// True when `folder` is a LINKED git worktree (its `.git` is a file pointer)
+/// rather than a primary checkout (`.git` is a directory). Used to skip
+/// post-merge local base-checkout/branch-delete that fails in a worktree
+/// because the base branch is checked out in the main repo.
+pub fn is_linked_worktree(folder: &Path) -> bool {
+    folder.join(".git").is_file()
+}
+
 /// Resolve `git` to an absolute path. Used as a fallback by `has_git`
 /// when the bare `Command::new("git")` spawn fails (host PATH stripped,
 /// per-user install, scoop / choco shim, …). Walks PATH+PATHEXT first,
@@ -1467,9 +1500,17 @@ pub async fn create_pr_via_gh(
         },
     );
     if !has_remote {
-        // Derive a repo name from the folder basename — clamp to a
+        // Repo-level bootstrap (repo name + `gh repo create` + origin) must
+        // target the MAIN checkout, never a linked worktree — a worktree's
+        // `.git` is a file pointer that `gh repo create --source` rejects, and
+        // its basename is a UUID, not the project name. Branch/commit/push
+        // below stay on `folder` (the worktree); origin is shared via the
+        // common `.git`, so the push from the worktree still works. No-op for
+        // a normal checkout (bootstrap_dir == folder).
+        let bootstrap_dir = main_worktree_root(folder).await;
+        // Derive a repo name from the bootstrap-dir basename — clamp to a
         // safe charset + length.
-        let basename = folder
+        let basename = bootstrap_dir
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("fleet-project");
@@ -1497,7 +1538,7 @@ pub async fn create_pr_via_gh(
             let base_name = repo_name.clone();
             let mut attempt = 0u32;
             loop {
-                let (view_rc, _, _) = gh(&["repo", "view", &repo_name], folder).await;
+                let (view_rc, _, _) = gh(&["repo", "view", &repo_name], &bootstrap_dir).await;
                 if view_rc != 0 {
                     break; // doesn't exist → free to create
                 }
@@ -1520,7 +1561,7 @@ pub async fn create_pr_via_gh(
                 "--remote",
                 "origin",
             ],
-            folder,
+            &bootstrap_dir,
         )
         .await;
         note(
@@ -1913,13 +1954,16 @@ pub async fn pr_ready(folder: &Path, pr_number: u64) -> Value {
     let n = pr_number.to_string();
     let (rc, _o, err) = gh(&["pr", "ready", &n], folder).await;
     if rc == 0 {
+        tracing::info!(target: "merge/gh", "ok · gh pr ready · #{n}");
         return json!({ "ok": true });
     }
     let e = err.trim();
     let lower = e.to_lowercase();
     if lower.contains("ready for review") || lower.contains("already") {
+        tracing::info!(target: "merge/gh", "ok · gh pr ready · #{n} (already ready)");
         return json!({ "ok": true, "noop": true });
     }
+    tracing::info!(target: "merge/gh", "FAIL · gh pr ready · #{n} · {e}");
     json!({ "ok": false, "error": e })
 }
 
@@ -1930,8 +1974,46 @@ pub async fn merge_pr(folder: &Path, pr_number: u64, method: &str) -> Value {
         _ => "--merge",
     };
     let n = pr_number.to_string();
-    let (rc, _o, err) = gh(&["pr", "merge", &n, flag, "--delete-branch"], folder).await;
+    let worktree = is_linked_worktree(folder);
+    let mut args: Vec<&str> = vec!["pr", "merge", n.as_str(), flag];
+    if !worktree {
+        args.push("--delete-branch");
+    }
+    tracing::info!(
+        target: "merge/gh",
+        "ok · merge · #{n} {flag}{}",
+        if worktree {
+            " (worktree → no --delete-branch; next-round cleans up)"
+        } else {
+            " --delete-branch"
+        }
+    );
+    let (rc, _o, err) = gh(&args, folder).await;
     if rc == 0 {
+        tracing::info!(target: "merge/gh", "ok · gh pr merge · merged #{n}");
+        json!({ "ok": true })
+    } else {
+        tracing::info!(target: "merge/gh", "FAIL · gh pr merge · {}", err.trim());
+        json!({ "ok": false, "error": err.trim() })
+    }
+}
+
+/// True when a remote-branch delete failed only because the ref was already
+/// gone — the desired end state, so treat it as success (idempotent).
+pub fn remote_delete_is_noop(stderr: &str) -> bool {
+    let s = stderr.to_lowercase();
+    s.contains("remote ref does not exist") || s.contains("couldn't find remote ref")
+}
+
+/// Delete a remote branch for gh / credential-helper users. Plain `git push
+/// origin --delete` (gh configures git's credential helper at `gh auth
+/// login`). Idempotent: an already-deleted ref is success.
+pub async fn delete_remote_branch_gh(folder: &Path, branch: &str) -> Value {
+    if branch.trim().is_empty() {
+        return json!({ "ok": true, "noop": true });
+    }
+    let (rc, _o, err) = git(&["push", "origin", "--delete", branch], folder).await;
+    if rc == 0 || remote_delete_is_noop(&err) {
         json!({ "ok": true })
     } else {
         json!({ "ok": false, "error": err.trim() })
@@ -2234,6 +2316,100 @@ mod tests {
         let _ = git(&["config", "user.email", "t@x"], p).await;
         let _ = git(&["config", "user.name", "T"], p).await;
         let _ = git(&["commit", "-m", "init", "--allow-empty"], p).await;
+    }
+
+    #[tokio::test]
+    async fn main_worktree_root_resolves_primary_checkout_from_worktree() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let main_repo = tmp.path().join("main");
+        std::fs::create_dir_all(&main_repo).unwrap();
+        fresh_repo(&main_repo).await;
+
+        // Carve a linked worktree whose `.git` is a file pointer.
+        let wt = main_repo.join(".fleetify-worktrees").join("sid");
+        let (rc, _, err) = git(
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feat/x",
+                &wt.to_string_lossy(),
+                "main",
+            ],
+            &main_repo,
+        )
+        .await;
+        assert_eq!(rc, 0, "worktree add failed: {err}");
+
+        // From the worktree, the bootstrap root must be the PRIMARY checkout.
+        let resolved = main_worktree_root(&wt).await;
+        assert_eq!(
+            std::fs::canonicalize(&resolved).unwrap(),
+            std::fs::canonicalize(&main_repo).unwrap(),
+            "worktree should resolve to the main checkout, not itself"
+        );
+
+        // From a normal checkout, it's the repo itself (no-op).
+        let resolved_main = main_worktree_root(&main_repo).await;
+        assert_eq!(
+            std::fs::canonicalize(&resolved_main).unwrap(),
+            std::fs::canonicalize(&main_repo).unwrap(),
+            "normal checkout should return itself unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn is_linked_worktree_distinguishes_worktree_from_primary_checkout() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let main_repo = tmp.path().join("main");
+        std::fs::create_dir_all(&main_repo).unwrap();
+        fresh_repo(&main_repo).await;
+
+        // Carve a linked worktree whose `.git` is a FILE pointer (not a dir).
+        let wt = main_repo.join(".fleetify-worktrees").join("sid");
+        let (rc, _, err) = git(
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feat/x",
+                &wt.to_string_lossy(),
+                "main",
+            ],
+            &main_repo,
+        )
+        .await;
+        assert_eq!(rc, 0, "worktree add failed: {err}");
+
+        assert!(
+            is_linked_worktree(&wt),
+            "a linked worktree (.git is a file) must be detected as linked"
+        );
+        assert!(
+            !is_linked_worktree(&main_repo),
+            "the primary checkout (.git is a directory) must NOT be linked"
+        );
+    }
+
+    #[test]
+    fn remote_delete_noop_recognizes_already_gone() {
+        assert!(remote_delete_is_noop(
+            "error: unable to delete 'x': remote ref does not exist"
+        ));
+        assert!(remote_delete_is_noop("remote ref does not exist"));
+        assert!(remote_delete_is_noop(
+            "fatal: couldn't find remote ref refs/heads/x"
+        ));
+        assert!(!remote_delete_is_noop("fatal: Authentication failed"));
+        assert!(!remote_delete_is_noop(
+            "error: failed to push some refs: permission denied"
+        ));
     }
 
     #[test]

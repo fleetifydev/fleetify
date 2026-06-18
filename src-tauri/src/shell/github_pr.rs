@@ -419,8 +419,6 @@ pub async fn create_pr_via_link(
     base: Option<&str>,
     draft: bool,
 ) -> Value {
-    let folder_str = folder.to_string_lossy().to_string();
-
     // 1. Origin: parse existing or create the GitHub repo + add remote.
     let (rc, remote_out, _) = run(
         "git",
@@ -438,14 +436,20 @@ pub async fn create_pr_via_link(
         }
         (o, false)
     } else {
-        let base_name = sanitize_repo_name(&folder_str);
+        // Repo-level bootstrap (repo name + create_user_repo + origin) must
+        // target the MAIN checkout, never a linked worktree — its basename is a
+        // UUID, not the project name. Branch-resolve + push below stay on
+        // `folder` (the worktree); origin is shared via the common `.git`. No-op
+        // for a normal checkout (bootstrap_dir == folder).
+        let bootstrap_dir = super::git::main_worktree_root(folder).await;
+        let base_name = sanitize_repo_name(&bootstrap_dir.to_string_lossy());
         let created = create_user_repo(token, &base_name).await;
         if created.get("ok").and_then(|v| v.as_bool()) != Some(true) {
             return created;
         }
         let owner = created.get("owner").and_then(|v| v.as_str()).unwrap_or("");
         let repo = created.get("repo").and_then(|v| v.as_str()).unwrap_or("");
-        let added = add_origin_remote(folder, owner, repo).await;
+        let added = add_origin_remote(&bootstrap_dir, owner, repo).await;
         if added.get("ok").and_then(|v| v.as_bool()) != Some(true) {
             return added;
         }
@@ -838,6 +842,7 @@ pub fn build_delete_ref_request(o: &Origin, branch: &str) -> (&'static str, Stri
 /// Sender: squash-merge → delete remote branch → local cleanup (REST doesn't
 /// switch the checkout, so checkout base + delete the local branch).
 pub async fn merge_pr_rest(folder: &Path, token: &str, pr_number: u64, method: &str) -> Value {
+    let worktree = super::git::is_linked_worktree(folder);
     let Some(o) = resolve_origin(folder).await else {
         return fail("NO_ORIGIN", "no origin remote");
     };
@@ -868,38 +873,85 @@ pub async fn merge_pr_rest(folder: &Path, token: &str, pr_number: u64, method: &
         .send()
         .await
     {
-        Ok(r) if r.status().is_success() => {}
+        Ok(r) if r.status().is_success() => {
+            tracing::info!(target: "merge/rest", "ok · PUT merge · merged #{pr_number} ({method})");
+        }
         Ok(r) => {
             let code = r.status();
             let txt = r.text().await.unwrap_or_default();
+            tracing::info!(target: "merge/rest", "FAIL · PUT merge · #{pr_number} · {code}");
             return fail(
                 "MERGE_BLOCKED",
                 &format!("{code}: {}", txt.chars().take(200).collect::<String>()),
             );
         }
-        Err(e) => return fail("NET", &e.to_string()),
+        Err(e) => {
+            tracing::info!(target: "merge/rest", "FAIL · PUT merge · #{pr_number} · net {e}");
+            return fail("NET", &e.to_string());
+        }
     }
     if let Some(branch) = &head_ref {
         let (_, del_url) = build_delete_ref_request(&o, branch);
         let _ = client.delete(&del_url).headers(headers).send().await;
+        tracing::info!(target: "merge/rest", "ok · DELETE ref · remote {branch}");
     }
-    let _ = run(
-        "git",
-        &["checkout", &base_ref],
-        folder,
-        Duration::from_secs(20),
-    )
-    .await;
-    if let Some(branch) = &head_ref {
+    if worktree {
+        // The next-round flow owns local cleanup (removes the worktree + git
+        // branch -D). A local `git checkout <base>` here would fail anyway —
+        // base is checked out in the main repo — so skip it entirely.
+        tracing::info!(
+            target: "merge/rest",
+            "ok · skip local cleanup · #{pr_number} (worktree → next-round cleans up)"
+        );
+    } else {
         let _ = run(
             "git",
-            &["branch", "-D", branch],
+            &["checkout", &base_ref],
             folder,
-            Duration::from_secs(10),
+            Duration::from_secs(20),
         )
         .await;
+        if let Some(branch) = &head_ref {
+            let _ = run(
+                "git",
+                &["branch", "-D", branch],
+                folder,
+                Duration::from_secs(10),
+            )
+            .await;
+        }
+        tracing::info!(target: "merge/rest", "ok · local cleanup · checkout {base_ref} + branch -D");
     }
     json!({ "ok": true })
+}
+
+/// Delete a remote branch via REST `DELETE /git/refs/heads/<branch>`.
+/// Idempotent: 404/422 (ref already gone) is success.
+pub async fn delete_remote_branch_rest(folder: &Path, token: &str, branch: &str) -> Value {
+    if branch.trim().is_empty() {
+        return json!({ "ok": true, "noop": true });
+    }
+    let Some(o) = resolve_origin(folder).await else {
+        return fail("NO_ORIGIN", "no origin remote");
+    };
+    let client = reqwest::Client::new();
+    let headers = auth_headers(token).await;
+    let (_, del_url) = build_delete_ref_request(&o, branch);
+    match client.delete(&del_url).headers(headers).send().await {
+        Ok(r) if r.status().is_success() => json!({ "ok": true }),
+        Ok(r) if r.status().as_u16() == 404 || r.status().as_u16() == 422 => {
+            json!({ "ok": true, "noop": true })
+        }
+        Ok(r) => {
+            let code = r.status();
+            let txt = r.text().await.unwrap_or_default();
+            fail(
+                "DELETE_FAILED",
+                &format!("{code}: {}", txt.chars().take(200).collect::<String>()),
+            )
+        }
+        Err(e) => fail("NET", &e.to_string()),
+    }
 }
 
 #[cfg(test)]

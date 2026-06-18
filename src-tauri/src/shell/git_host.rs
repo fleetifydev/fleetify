@@ -142,13 +142,37 @@ pub async fn host_merge_pr(
     n: u64,
     method: &str,
 ) -> Value {
-    match resolve_auth_method(folder, requested, stored).await {
+    let auth = resolve_auth_method(folder, requested, stored).await;
+    let backend = match auth {
+        Some(AuthMethod::Gh) => "gh",
+        Some(AuthMethod::Rest) => "rest",
+        None => "no-auth",
+    };
+    tracing::info!(target: "merge", "dispatch · {backend} · #{n}");
+    match auth {
         Some(AuthMethod::Gh) => super::git::merge_pr(folder, n, method).await,
         Some(AuthMethod::Rest) => match oauth_token().await {
             Some(t) => super::github_pr::merge_pr_rest(folder, &t, n, method).await,
             None => no_auth(),
         },
         None => no_auth(),
+    }
+}
+
+pub async fn host_delete_remote_branch(
+    folder: &Path,
+    requested: Option<&str>,
+    stored: Option<&str>,
+    branch: &str,
+) -> Value {
+    match resolve_auth_method(folder, requested, stored).await {
+        Some(AuthMethod::Gh) => super::git::delete_remote_branch_gh(folder, branch).await,
+        Some(AuthMethod::Rest) => match oauth_token().await {
+            Some(t) => super::github_pr::delete_remote_branch_rest(folder, &t, branch).await,
+            None => no_auth(),
+        },
+        // No auth → the branch may already be gone via the merge; not fatal.
+        None => json!({ "ok": true, "noop": true, "code": "NO_AUTH" }),
     }
 }
 

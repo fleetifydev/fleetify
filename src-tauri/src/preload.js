@@ -503,6 +503,14 @@ document.addEventListener("mousedown", function (e) {
           authStored: authStored || null,
         });
       },
+      deleteRemoteBranch: function (folder, branch, authMethod, authStored) {
+        return invoke("git_delete_remote_branch", {
+          folder: String(folder || ""),
+          branch: String(branch || ""),
+          authMethod: authMethod || null,
+          authStored: authStored || null,
+        });
+      },
       markPRReady: function (folder, prNumber, authMethod, authStored) {
         return invoke("git_pr_ready", {
           folder: String(folder || ""),

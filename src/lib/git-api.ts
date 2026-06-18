@@ -95,6 +95,10 @@ interface GitAPI {
     error?: string;
   }>;
   mergePR(folder: string, prNumber: number | null, method: "squash" | "merge" | "rebase", authMethod?: string, authStored?: string): Promise<MergeResult>;
+  /** `git push origin --delete <branch>` (gh-routed or REST), idempotent —
+   *  used to clean up a session's merged feature branch on next round.
+   *  Auth-routed the same way as the PR IPCs (see git_host::resolve_auth_method). */
+  deleteRemoteBranch?(folder: string, branch: string, authMethod?: string, authStored?: string): Promise<{ ok: boolean; error?: string }>;
   /** `gh pr ready <number>` — converts a draft PR to "ready for
    *  review". Used by the Merge button so one click un-drafts +
    *  squash-merges in sequence. */
@@ -145,6 +149,7 @@ function api(): GitAPI {
     openPR:        async () => ({ ok: false, error: "electron unavailable" }),
     syncMain:      async () => FAIL("electron unavailable"),
     carveNextRound: async () => FAIL("electron unavailable"),
+    deleteRemoteBranch: async () => FAIL("electron unavailable"),
   };
 }
 
@@ -208,6 +213,11 @@ export const git = {
    *  starts from a fresh, up-to-date branch. */
   carveNextRound: (folder: string, branch: string, baseBranch?: string) =>
                     api().carveNextRound(folder, branch, baseBranch),
+  /** Delete a remote branch, auth-routed (gh vs REST) and idempotent —
+   *  used to clean up a session's merged branch on next round. */
+  deleteRemoteBranch: (folder: string, branch: string) =>
+                        api().deleteRemoteBranch?.(folder, branch, undefined, storedAuthMethod())
+                        ?? Promise.resolve({ ok: false, error: "electron unavailable" }),
   /** "Create new main branch" — pins `branch` as this clone's logical
    *  base via `git config fleetify.baseBranch`, carving it from the
    *  current base when it doesn't already exist. Nondestructive: does
