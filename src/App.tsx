@@ -1,10 +1,11 @@
-import { useState, useCallback, useEffect, lazy, Suspense } from "react";
+import { useState, useCallback, useEffect, useRef, lazy, Suspense } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/app-shell";
 import { SplashScreen } from "@/components/onboarding/splash-screen";
 import { WelcomeScreen } from "@/components/onboarding/welcome-screen";
 import { SetupScreen } from "@/components/onboarding/setup-screen";
 import { useAppStore } from "@/stores/app-store";
+import { usePluginStore } from "@/stores/plugin-store";
 import { clearToken, type AuthUser } from "@/lib/api";
 import { identifyUser, initPostHog, pageview } from "@/lib/posthog";
 
@@ -79,6 +80,25 @@ export function App() {
   // coherent across splash → welcome → setup → onboarding-chat → main.
   useEffect(() => {
     pageview(`/${screen}`, screen);
+  }, [screen]);
+
+  // Auto-update sweep, once per launch, the first time we reach the
+  // authenticated shell (`screen === "main"`). The sweep talks to the
+  // installs + catalog endpoints, which are only meaningful post-auth —
+  // firing it earlier (splash/welcome) would hit them before sign-in and
+  // no-op or 401. Gating on "main" + a ref guard means it runs exactly
+  // once even if the user logs out and back in within the same session.
+  // `usePluginStore.getState()` (not a hook subscription) keeps this off
+  // the store's selector graph so it never re-subscribes / re-fires.
+  const launchSweepDone = useRef(false);
+  useEffect(() => {
+    if (screen !== "main" || launchSweepDone.current) return;
+    launchSweepDone.current = true;
+    void (async () => {
+      const store = usePluginStore.getState();
+      await Promise.all([store.refreshInstalls(), store.refreshCatalog({ refresh: true })]);
+      void usePluginStore.getState().autoUpdateSweep();
+    })();
   }, [screen]);
 
   // Size the window to match the active screen mode. Onboarding screens

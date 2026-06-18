@@ -221,17 +221,6 @@ export interface PluginInstall {
   enablements: PluginEnablement[];
 }
 
-export interface UpdatePreview {
-  current_version: string;
-  new_version: string;
-  declares_changed: boolean;
-  secrets_changed: boolean;
-  old_declares: Declares;
-  new_declares: Declares;
-  new_requires_secrets: SecretRequirement[];
-  old_version: string;
-}
-
 export interface PluginDetail {
   source_id: string;
   source_name: string;

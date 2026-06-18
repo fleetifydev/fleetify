@@ -52,6 +52,10 @@ fn default_true() -> bool {
 pub struct PluginState {
     #[serde(default = "default_true")]
     pub master_enabled: bool,
+    /// Whether this plugin participates in the automatic update sweep.
+    /// Defaults on — every plugin auto-updates unless the user opts out.
+    #[serde(default = "default_true")]
+    pub auto_update: bool,
     #[serde(default)]
     pub scopes: Vec<ScopeEntry>,
     /// Marketplace provenance recorded at install time so the Installed
@@ -72,6 +76,7 @@ impl Default for PluginState {
     fn default() -> Self {
         Self {
             master_enabled: true,
+            auto_update: true,
             scopes: Vec::new(),
             source_id: None,
             plugin_path: None,
@@ -108,6 +113,14 @@ pub fn set_master_enabled(install_id: &str, enabled: bool) -> std::io::Result<()
     let mut doc = load();
     let entry = doc.plugins.entry(install_id.to_string()).or_default();
     entry.master_enabled = enabled;
+    save(&doc)
+}
+
+/// Opt a plugin in/out of the automatic update sweep.
+pub fn set_auto_update(install_id: &str, auto_update: bool) -> std::io::Result<()> {
+    let mut doc = load();
+    let entry = doc.plugins.entry(install_id.to_string()).or_default();
+    entry.auto_update = auto_update;
     save(&doc)
 }
 
@@ -231,6 +244,48 @@ mod tests {
             assert!(s.scopes.is_empty());
             assert!(s.source_id.is_none());
             assert!(s.plugin_path.is_none());
+        });
+    }
+
+    #[test]
+    fn auto_update_defaults_true_and_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), || {
+            // A plugin with no state entry → default on.
+            assert!(get("p").auto_update, "auto_update must default to true");
+            // Opt out persists.
+            set_auto_update("p", false).unwrap();
+            assert!(!get("p").auto_update);
+            set_auto_update("p", true).unwrap();
+            assert!(get("p").auto_update);
+        });
+    }
+
+    #[test]
+    fn auto_update_absent_field_deserializes_true() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), || {
+            // Simulate a pre-feature on-disk entry (no auto_update key).
+            // master_enabled is deliberately `false` here: it differs from
+            // PluginState::default()'s `true`, so the asserts below can only
+            // pass if the entry was genuinely deserialized off disk. If the
+            // `#[serde(default)]` on auto_update were missing, the whole doc
+            // would fail to parse and `load()`'s unwrap_or_default() would
+            // hand back an empty doc — `get("p")` would then return the
+            // all-defaults state (master_enabled == true), tripping the
+            // first assert. This keeps the test honest about what it proves.
+            std::fs::create_dir_all(state_path().parent().unwrap()).unwrap();
+            std::fs::write(
+                state_path(),
+                r#"{"p":{"master_enabled":false,"scopes":[]}}"#,
+            )
+            .unwrap();
+            let s = get("p");
+            assert!(
+                !s.master_enabled,
+                "on-disk entry must actually deserialize (not fall back to default doc)"
+            );
+            assert!(s.auto_update, "missing field must default true");
         });
     }
 

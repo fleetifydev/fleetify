@@ -88,6 +88,7 @@ export function MarketplacePage() {
   const [quickInstall, setQuickInstall] = useState<CatalogPlugin | null>(null);
   const refreshAll = usePluginStore(s => s.refreshAll);
   const refreshCatalog = usePluginStore(s => s.refreshCatalog);
+  const autoUpdateSweep = usePluginStore(s => s.autoUpdateSweep);
   const installs = usePluginStore(s => s.installs);
   const sources = usePluginStore(s => s.sources);
   const sidebarCollapsed = useAppStore(s => s.sidebarCollapsed);
@@ -99,11 +100,16 @@ export function MarketplacePage() {
   // Opening the Marketplace force-refreshes the catalog from GitHub
   // (bypassing the backend disk-cache TTL) so newly-published or updated
   // plugins are visible immediately — the cache stays as a fast-paint /
-  // offline fallback, not a staleness window.
+  // offline fallback, not a staleness window. Once installs + catalog are
+  // in, run the auto-update sweep so auto-on plugins pick up safe updates
+  // the moment the user lands here (the sweep needs both lists loaded to
+  // diff installed versions against the fresh catalog).
   useEffect(() => {
-    refreshAll();
-    refreshCatalog({ refresh: true });
-  }, [refreshAll, refreshCatalog]);
+    void (async () => {
+      await Promise.all([refreshAll(), refreshCatalog({ refresh: true })]);
+      void autoUpdateSweep();
+    })();
+  }, [refreshAll, refreshCatalog, autoUpdateSweep]);
 
   const setState = (next: QueryState) => {
     setStateRaw(next);

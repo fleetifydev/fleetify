@@ -18,7 +18,8 @@ import { InstallDialog } from "../install/InstallDialog";
 import { UninstallDialog } from "../install/UninstallDialog";
 import { SecretsEditor } from "./SecretsEditor";
 import { ProviderLogo, providerName } from "@/components/ui/provider-logo";
-import type { PluginDetail, PluginInstall } from "@/types/plugin";
+import { computeUpdateInfo } from "@/lib/plugin-update";
+import type { CatalogPlugin, PluginDetail, PluginInstall } from "@/types/plugin";
 import { pluginLabel } from "@/types/plugin";
 import { safeExternalUrl, usesInAppTitleBar } from "@/lib/utils";
 
@@ -64,6 +65,7 @@ function localDetailFromInstall(install: PluginInstall, plugin_path: string): Pl
 
 export function PluginDetailPage({ source_id, plugin_path, onBack }: Props) {
   const installs = usePluginStore(s => s.installs);
+  const applyUpdate = usePluginStore(s => s.applyUpdate);
   const [detail, setDetail] = useState<PluginDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -134,6 +136,21 @@ export function PluginDetailPage({ source_id, plugin_path, onBack }: Props) {
   const installed = installs.find(i => i.plugin_name === m.name);
   const safeHomepage = m.homepage ? (safeExternalUrl(m.homepage) ?? null) : null;
   const safeRepo = safeExternalUrl(detail.repo_url) ?? null;
+
+  // `detail.manifest` carries the LATEST (catalog) version, so comparing the
+  // active install against it yields the update banner. computeUpdateInfo only
+  // reads `catalog.manifest.{version,requires_secrets}`, but we hand it a real
+  // CatalogPlugin built from `detail` — every field is present except
+  // `featured`, which is marketplace-card-only and irrelevant here.
+  const catalogFromDetail: CatalogPlugin = {
+    source_id: detail.source_id,
+    source_name: detail.source_name,
+    source_is_official: detail.source_is_official,
+    path: detail.path,
+    featured: false,
+    manifest: m,
+  };
+  const update = installed ? computeUpdateInfo(installed, catalogFromDetail) : null;
 
   // Uninstall now opens a scope picker — choose to remove everything,
   // just the user-scope, or one specific project. Replaces the old
@@ -212,12 +229,20 @@ export function PluginDetailPage({ source_id, plugin_path, onBack }: Props) {
         <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
           {installed ? (
             <>
+              {update?.updateAvailable && (
+                <button
+                  onClick={async () => { await applyUpdate(installed.id); }}
+                  style={primaryBtn}
+                >
+                  Update to v{update.newVersion}
+                </button>
+              )}
               {/* Open the same install dialog in add-scope mode so the
                   user can layer additional scopes (project / global)
                   without going back to the marketplace cards. */}
               <button
                 onClick={() => setInstallOpen(true)}
-                style={primaryBtn}
+                style={update?.updateAvailable ? ghostBtn : primaryBtn}
               >
                 Add scope
               </button>
@@ -676,7 +701,37 @@ function SettingsBody({ installed, installId, requiresSecrets }: {
       </div>
     );
   }
-  return <SecretsEditor installId={installId} requiresSecrets={requiresSecrets} />;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <AutoUpdateToggle installId={installId} />
+      <SecretsEditor installId={installId} requiresSecrets={requiresSecrets} />
+    </div>
+  );
+}
+
+/** Per-plugin auto-update switch. Reads the install's `auto_update` flag from
+ *  the store (defaulting ON when the install can't be found mid-refresh) and
+ *  writes through `setAutoUpdate`. When ON, the launch sweep silently applies
+ *  *safe* updates (non-major, no newly-required secret); major / secret-adding
+ *  updates always wait for an explicit click regardless of this flag. */
+function AutoUpdateToggle({ installId }: { installId: string }) {
+  const installs = usePluginStore(s => s.installs);
+  const setAutoUpdate = usePluginStore(s => s.setAutoUpdate);
+  const inst = installs.find(i => i.id === installId);
+  const on = inst?.auto_update ?? true;
+  return (
+    <label style={{
+      display: "flex", alignItems: "center", gap: 8,
+      fontSize: 12.5, color: "var(--c-med)", cursor: "pointer",
+    }}>
+      <input
+        type="checkbox"
+        checked={on}
+        onChange={e => void setAutoUpdate(installId, e.target.checked)}
+      />
+      Auto-update this plugin (safe updates apply automatically)
+    </label>
+  );
 }
 
 function ChangelogBody({ changelog }: { changelog: string | null }) {

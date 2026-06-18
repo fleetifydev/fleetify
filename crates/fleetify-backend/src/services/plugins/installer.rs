@@ -26,7 +26,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{manifest, mcp_materialize, providers};
+use super::{manifest, materializers, mcp_materialize, providers};
 
 #[derive(Debug, thiserror::Error)]
 pub enum InstallError {
@@ -154,25 +154,7 @@ pub async fn install_from_git(
     // ~/.codex/ for every provider the manifest declares. Best-effort —
     // a single provider's materialization failure (missing home dir,
     // permission error) logs + continues so the install still completes.
-    let mut materialization: serde_json::Map<String, Value> = serde_json::Map::new();
-    for provider in &m.providers {
-        match super::materializers::materialize(&m.name, &install_path, provider) {
-            Ok(r) => {
-                materialization.insert(
-                    provider.clone(),
-                    serde_json::to_value(r).unwrap_or(Value::Null),
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    target: "plugins.installer",
-                    "materialize.{} failed for {}: {e}",
-                    provider,
-                    m.name
-                );
-            }
-        }
-    }
+    let materialization = materialize_providers(&m.name, &install_path, &m.providers);
 
     // Materialize MCP servers into the shared registry — the per-bridge
     // emitters fan them out to every agent at spawn, so this one write
@@ -189,6 +171,135 @@ pub async fn install_from_git(
     {
         tracing::warn!(target: "plugins.installer", "secret persist failed for {}: {e}", m.name);
     }
+
+    let mut manifest_value = serde_json::to_value(&m).unwrap_or(Value::Null);
+    if let Some(obj) = manifest_value.as_object_mut() {
+        obj.insert("materialization".into(), Value::Object(materialization));
+        obj.insert(
+            "mcp".into(),
+            serde_json::to_value(&mcp_res).unwrap_or(Value::Null),
+        );
+    }
+    Ok(InstallResult {
+        install_id: m.name.clone(),
+        install_path: install_path.to_string_lossy().into_owned(),
+        manifest: manifest_value,
+    })
+}
+
+/// Materialize every provider component the manifest declares. Best-effort:
+/// a single provider failure logs + continues. Returns the per-provider map
+/// for the install/update response.
+fn materialize_providers(
+    plugin_name: &str,
+    install_path: &std::path::Path,
+    providers: &[String],
+) -> serde_json::Map<String, Value> {
+    let mut materialization: serde_json::Map<String, Value> = serde_json::Map::new();
+    for provider in providers {
+        match materializers::materialize(plugin_name, install_path, provider) {
+            Ok(r) => {
+                materialization.insert(
+                    provider.clone(),
+                    serde_json::to_value(r).unwrap_or(Value::Null),
+                );
+            }
+            Err(e) => {
+                tracing::warn!(target: "plugins.installer", "materialize.{provider} failed for {plugin_name}: {e}");
+            }
+        }
+    }
+    materialization
+}
+
+/// Update an installed plugin in place: re-clone the source at HEAD,
+/// unmaterialize the OLD components/MCP, swap the install dir, then
+/// re-materialize and re-apply the PRESERVED secrets. Does NOT touch the
+/// secret store or plugin_state (scopes/auto_update survive). Unlike
+/// `uninstall`, secrets are kept; unlike `install_from_git`, an existing
+/// install dir is expected (overwritten).
+pub async fn update_from_git(
+    install_id: &str,
+    repo_url: &str,
+    plugin_path: &str,
+) -> Result<InstallResult, InstallError> {
+    let plugins = plugins_dir();
+    let install_path = plugins.join(install_id);
+    let secrets = super::plugin_secrets::get(&fleetify_core::fleetify_home(), install_id);
+
+    // 1. Clone to staging FIRST — only touch the installed dir after success.
+    std::fs::create_dir_all(&plugins)?;
+    let tmp = plugins.join(format!(".staging-{}", uuid::Uuid::new_v4()));
+    let clone_res = run_cmd(
+        "git",
+        &[
+            "clone",
+            "--depth",
+            "1",
+            "--single-branch",
+            repo_url,
+            tmp.to_str().unwrap(),
+        ],
+        None,
+        Duration::from_secs(90),
+    )
+    .await;
+    if !clone_res.ok {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(InstallError::Clone(format!(
+            "git clone {repo_url} failed: {}",
+            clone_res.stderr.trim()
+        )));
+    }
+    let plugin_root = match plugin_subdir(&tmp, plugin_path) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(e);
+        }
+    };
+    let m = match manifest::parse_plugin(&plugin_root) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(InstallError::Manifest(e.to_string()));
+        }
+    };
+    if m.name != install_id {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(InstallError::Manifest(format!(
+            "plugin renamed ({install_id} -> {}); reinstall to apply",
+            m.name
+        )));
+    }
+
+    // 2. Unmaterialize the OLD install (components + MCP), preserving secrets.
+    if let Ok(old) = manifest::parse_plugin(&install_path) {
+        for provider in &old.providers {
+            unmaterialize_by_prefix(provider, install_id);
+        }
+    }
+    mcp_materialize::unmaterialize_mcp(&install_path);
+
+    // 3. Swap the dir: drop old, place new subtree.
+    let _ = std::fs::remove_dir_all(&install_path);
+    if plugin_path.trim_matches('/').is_empty() {
+        if std::fs::rename(&tmp, &install_path).is_err() {
+            copy_dir_recursive(&tmp, &install_path)?;
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+    } else {
+        let copy_res = copy_dir_recursive(&plugin_root, &install_path);
+        let _ = std::fs::remove_dir_all(&tmp);
+        copy_res?;
+    }
+
+    // 4. Re-materialize the NEW install + re-apply preserved secrets. The MCP
+    //    re-add OVERWRITES (rematerialize_mcp) rather than skips: step 2
+    //    dropped the old servers, but rematerialize is name-idempotent so a
+    //    server kept across versions still lands with the preserved secret.
+    let materialization = materialize_providers(&m.name, &install_path, &m.providers);
+    let mcp_res = mcp_materialize::rematerialize_mcp(&install_path, &secrets);
 
     let mut manifest_value = serde_json::to_value(&m).unwrap_or(Value::Null);
     if let Some(obj) = manifest_value.as_object_mut() {
@@ -408,6 +519,110 @@ mod tests {
     fn uninstall_missing_dir_is_idempotent_ok() {
         let r = uninstall("definitely-not-an-installed-plugin-xyzzy");
         assert!(r.is_ok());
+    }
+
+    /// Run `git <args>` in `cwd` with author/committer identity pinned so
+    /// commits succeed on a CI box that has no global git config.
+    fn git(cwd: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("spawn git");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Write a minimal-but-valid demo plugin at `<root>/demo` for `version`.
+    /// Manifest carries the required `declares` (one MCP server) and an
+    /// `mcp.json` whose `demo_srv` env `TOK` is a `${secret:TOK}` placeholder
+    /// — so a preserved secret is observable in the materialized registry.
+    fn write_demo_plugin(root: &std::path::Path, version: &str) {
+        let plugin = root.join("demo");
+        let meta = plugin.join(".fleetify-plugin");
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(
+            meta.join("plugin.json"),
+            format!(
+                r#"{{
+                    "name": "demo",
+                    "version": "{version}",
+                    "providers": ["claude-code"],
+                    "declares": {{ "mcp_servers": 1 }}
+                }}"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            plugin.join("mcp.json"),
+            r#"{ "mcpServers": { "demo_srv": { "type": "stdio", "command": "x",
+                "env": { "TOK": "${secret:TOK}" } } } }"#,
+        )
+        .unwrap();
+    }
+
+    // Holds the home_lock across the install/update awaits on purpose: it
+    // serialises FLEETIFY_HOME mutation against sibling tests, and the awaited
+    // git/fs work never contends on the lock itself.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn update_from_git_bumps_version_and_preserves_secret() {
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("FLEETIFY_HOME", home.path());
+
+        // Build a v0.1.0 plugin in a git repo, served over file://.
+        let src = tempfile::tempdir().unwrap();
+        write_demo_plugin(src.path(), "0.1.0");
+        git(src.path(), &["init", "-q"]);
+        git(src.path(), &["add", "-A"]);
+        git(src.path(), &["commit", "-q", "-m", "v0.1.0"]);
+        let repo_url = format!("file://{}", src.path().display());
+
+        // Install with a secret; this proves the manifest + mcp.json are valid.
+        let mut secrets = std::collections::BTreeMap::new();
+        secrets.insert("TOK".to_string(), "sekret".to_string());
+        install_from_git(&repo_url, "demo", &secrets).await.unwrap();
+        // Sanity: the secret resolved into the registry on install.
+        let installed_mcp = crate::services::mcp_registry::get("demo_srv").unwrap();
+        assert_eq!(installed_mcp["env"]["TOK"], "sekret");
+
+        // Bump the source to 0.2.0 and commit.
+        write_demo_plugin(src.path(), "0.2.0");
+        git(src.path(), &["add", "-A"]);
+        git(src.path(), &["commit", "-q", "-m", "v0.2.0"]);
+
+        // Update WITHOUT re-passing secrets — they must be preserved.
+        update_from_git("demo", &repo_url, "demo").await.unwrap();
+
+        // (a) on-disk version bumped.
+        let installed = manifest::parse_plugin(&plugins_dir().join("demo")).unwrap();
+        assert_eq!(installed.version, "0.2.0", "version bumped on disk");
+        // (b) PRIMARY proof: the stored secret survived the update.
+        assert_eq!(
+            crate::services::plugins::plugin_secrets::get(home.path(), "demo")
+                .get("TOK")
+                .map(String::as_str),
+            Some("sekret")
+        );
+        // BONUS proof: the re-materialized MCP env still resolves to the secret.
+        let after = crate::services::mcp_registry::get("demo_srv").unwrap();
+        assert_eq!(
+            after["env"]["TOK"], "sekret",
+            "secret re-applied to registry"
+        );
+
+        std::env::remove_var("FLEETIFY_HOME");
     }
 
     #[test]

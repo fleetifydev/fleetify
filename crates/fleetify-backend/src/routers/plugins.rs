@@ -20,7 +20,6 @@ pub fn router() -> Router<AppState> {
         .route("/plugins", get(list_installed).post(install_unsupported))
         .route("/plugins/install", post(install))
         .route("/plugins/{install_id}/uninstall", post(uninstall))
-        .route("/plugins/{install_id}/update/preview", get(update_preview))
         .route("/plugins/{install_id}/update", post(update))
         .route("/plugins/{install_id}", patch(patch_install))
         .route("/plugins/{install_id}/enabled", post(set_enabled))
@@ -136,6 +135,8 @@ async fn list_installed() -> Json<Value> {
                     "version": version,
                     "scope": scope_summary,
                     "master_enabled": ps.master_enabled,
+                    "auto_update": ps.auto_update,
+                    "commit_sha": "",
                     "install_path": path.to_string_lossy(),
                     "installed_at": installed_at.as_ref().map(|t| t.to_rfc3339()),
                     "last_updated_at": last_updated_at.as_ref().map(|t| t.to_rfc3339()),
@@ -237,17 +238,65 @@ async fn uninstall(Path(id): Path<String>) -> Json<Value> {
         Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
     }
 }
-async fn update_preview(Path(_id): Path<String>) -> Json<Value> {
-    Json(json!({
-        "declares_changed": false,
-        "secrets_changed": false,
-        "version_changed": false
-    }))
+/// Resolve the recorded marketplace source for an installed plugin.
+/// Errors if the install dir is missing/escaping or the plugin has no
+/// recorded provenance (e.g. a pre-provenance install) — there's no
+/// `source_id` to look up a clone URL for, so an update is impossible.
+fn update_source_for(id: &str) -> Result<(String, String), ApiError> {
+    let _dir = install_dir(id)?; // path-escape + existence guard
+    let ps = crate::services::plugins::state::get(id);
+    let source_id = ps.source_id.ok_or_else(|| {
+        ApiError::BadRequest(format!(
+            "{id}: no marketplace source recorded — reinstall to enable updates"
+        ))
+    })?;
+    Ok((source_id, ps.plugin_path.unwrap_or_default()))
 }
-async fn update(Path(_id): Path<String>) -> Json<Value> {
-    Json(deferred("update"))
+
+async fn update(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    // Resolve the install's recorded provenance, then re-resolve the source
+    // row to its clone URL — scoped to the caller, the same lookup `install`
+    // uses. update_from_git then re-clones + re-materializes in place.
+    let (source_id, plugin_path) = update_source_for(&id)?;
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT repo_url FROM marketplace_sources WHERE id = ? AND user_id = ?")
+            .bind(&source_id)
+            .bind(&user.id)
+            .fetch_optional(&st.auth.pool)
+            .await?;
+    let Some((repo_url,)) = row else {
+        return Err(ApiError::NotFound(format!("source {source_id} not found")));
+    };
+    let result = crate::services::plugins::installer::update_from_git(&id, &repo_url, &plugin_path)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let version = result
+        .manifest
+        .get("version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok(Json(json!({
+        "ok": true,
+        "plugin_name": result.install_id,
+        "version": version,
+    })))
 }
-async fn patch_install(Path(_id): Path<String>) -> Json<Value> {
+#[derive(Deserialize)]
+struct PatchInstallBody {
+    auto_update: Option<bool>,
+}
+
+async fn patch_install(Path(id): Path<String>, Json(b): Json<PatchInstallBody>) -> Json<Value> {
+    if let Some(v) = b.auto_update {
+        if let Err(e) = crate::services::plugins::state::set_auto_update(&id, v) {
+            return Json(json!({ "ok": false, "error": e.to_string() }));
+        }
+    }
     Json(json!({ "ok": true }))
 }
 #[derive(Deserialize)]
@@ -462,6 +511,70 @@ mod tests {
         std::env::set_var("FLEETIFY_HOME", dir.path());
         assert!(matches!(install_dir("../x"), Err(ApiError::BadRequest(_))));
         assert!(matches!(install_dir("ghost"), Err(ApiError::NotFound(_))));
+        std::env::remove_var("FLEETIFY_HOME");
+    }
+
+    #[test]
+    fn update_rejects_install_without_source() {
+        // An install with no recorded marketplace provenance can't be
+        // updated — there's no source_id to resolve to a repo_url. The
+        // helper must reject it with a 400, not silently proceed. (write_install
+        // creates the dir + plugin.json but never writes a plugin_state.json
+        // origin, so state::get(id).source_id == None.)
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("FLEETIFY_HOME", dir.path());
+        write_install(dir.path(), "p", "[]");
+        let err = update_source_for("p").unwrap_err();
+        assert!(matches!(err, ApiError::BadRequest(_)));
+        std::env::remove_var("FLEETIFY_HOME");
+    }
+
+    #[test]
+    fn patch_install_persists_auto_update() {
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("FLEETIFY_HOME", dir.path());
+        // default on
+        assert!(crate::services::plugins::state::get("p").auto_update);
+        crate::services::plugins::state::set_auto_update("p", false).unwrap();
+        assert!(!crate::services::plugins::state::get("p").auto_update);
+        std::env::remove_var("FLEETIFY_HOME");
+    }
+
+    #[test]
+    fn list_installed_emits_auto_update_and_commit_sha() {
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("FLEETIFY_HOME", dir.path());
+        write_install(dir.path(), "p", "[]");
+        // Opt this install out of auto-update; the emitted JSON must reflect it.
+        crate::services::plugins::state::set_auto_update("p", false).unwrap();
+
+        // `list_installed` is async but does only synchronous fs work; drive it
+        // on a current-thread runtime so we keep FLEETIFY_HOME isolated for the
+        // whole read without holding the std Mutex guard across a `.await`.
+        let Json(v) = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(list_installed());
+        let arr = v.as_array().expect("list_installed returns a JSON array");
+        let row = arr
+            .iter()
+            .find(|r| r["id"] == "p")
+            .expect("installed plugin p present in list");
+        assert_eq!(
+            row["auto_update"], false,
+            "auto_update opt-out must be emitted"
+        );
+        assert_eq!(row["commit_sha"], "", "commit_sha must be an empty string");
+
         std::env::remove_var("FLEETIFY_HOME");
     }
 }

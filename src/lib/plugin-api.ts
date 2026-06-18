@@ -2,7 +2,7 @@
 import { apiFetch } from "./api";
 import type {
   AddSourceResult, CatalogPlugin, MarketplaceSource, PluginDetail,
-  PluginInstall, ScopeType, SecretStatus, UpdatePreview,
+  PluginInstall, ScopeType, SecretStatus,
 } from "@/types/plugin";
 
 export class HttpError extends Error {
@@ -117,11 +117,8 @@ export const uninstallScope = (
   );
 };
 
-export const previewUpdate = (id: string): Promise<UpdatePreview> =>
-  http(`/api/plugins/${encodeURIComponent(id)}/update/preview`);
-
-export const applyUpdate = (id: string, confirmed?: boolean): Promise<any> =>
-  http(`/api/plugins/${encodeURIComponent(id)}/update?confirmed=${!!confirmed}`, { method: "POST" });
+export const applyUpdate = (id: string): Promise<{ ok: boolean; version: string }> =>
+  http(`/api/plugins/${encodeURIComponent(id)}/update`, { method: "POST" });
 
 export const setAutoUpdate = (id: string, auto_update: boolean): Promise<void> =>
   http(`/api/plugins/${encodeURIComponent(id)}`, {

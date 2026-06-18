@@ -12,7 +12,8 @@
  */
 import { useMemo, useState } from "react";
 import { Loader2, Package, Plus, Settings as SettingsIcon, Trash2, X } from "lucide-react";
-import { usePluginStore } from "@/stores/plugin-store";
+import { usePluginStore, updatesFor } from "@/stores/plugin-store";
+import type { UpdateInfo } from "@/lib/plugin-update";
 import type { PluginInstall } from "@/types/plugin";
 import { pluginLabel, totalDeclaredComponents } from "@/types/plugin";
 import { InstallDialog } from "../install/InstallDialog";
@@ -25,6 +26,10 @@ interface Props {
 export function InstalledTab({ onOpenDetail }: Props) {
   const installs = usePluginStore(s => s.installs);
   const loading = usePluginStore(s => s.loadingInstalls);
+  const catalog = usePluginStore(s => s.catalog);
+  const applyUpdate = usePluginStore(s => s.applyUpdate);
+  const updates = useMemo(() => updatesFor(installs, catalog), [installs, catalog]);
+  const updatableIds = useMemo(() => [...updates.keys()], [updates]);
 
   if (loading && installs.length === 0) {
     return (
@@ -49,12 +54,31 @@ export function InstalledTab({ onOpenDetail }: Props) {
       background: "var(--sidebar)",
       overflow: "hidden",
     }}>
+      {updatableIds.length > 0 && (
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "10px 14px", borderBottom: "1px solid var(--sidebar-border)",
+          fontSize: 12.5, color: "var(--c-med)",
+        }}>
+          <span>{updatableIds.length} update{updatableIds.length === 1 ? "" : "s"} available</span>
+          <button
+            onClick={async () => {
+              for (const id of updatableIds) {
+                try { await applyUpdate(id); } catch { /* per-row failures are non-fatal */ }
+              }
+            }}
+            style={updateAllBtn}
+          >Update all</button>
+        </div>
+      )}
       {installs.map((p, i, arr) => (
         <InstalledRow
           key={p.id}
           install={p}
           last={i === arr.length - 1}
           onOpenDetail={onOpenDetail}
+          update={updates.get(p.id)}
+          onUpdate={() => applyUpdate(p.id)}
         />
       ))}
     </div>
@@ -62,11 +86,13 @@ export function InstalledTab({ onOpenDetail }: Props) {
 }
 
 function InstalledRow({
-  install, last, onOpenDetail,
+  install, last, onOpenDetail, update, onUpdate,
 }: {
   install: PluginInstall;
   last: boolean;
   onOpenDetail: (source_id: string, plugin_path: string) => void;
+  update?: UpdateInfo;
+  onUpdate: () => void;
 }) {
   const setMasterEnabled = usePluginStore(s => s.setMasterEnabled);
   const sources = usePluginStore(s => s.sources);
@@ -166,6 +192,11 @@ function InstalledRow({
         }}>
           {totalComponents} component{totalComponents === 1 ? "" : "s"}
           {" · v"}{install.version}
+          {update && (
+            <span style={{ marginLeft: 8, fontSize: 11, color: "rgb(72 199 142)" }}>
+              v{install.version} → v{update.newVersion}
+            </span>
+          )}
         </div>
       </div>
 
@@ -182,6 +213,13 @@ function InstalledRow({
         }}
       />
 
+      {update && (
+        <button
+          onClick={(e) => { e.stopPropagation(); void onUpdate(); }}
+          title={update.isMajor || update.addsSecret ? "Review & update" : "Update"}
+          style={updateRowBtn}
+        >Update</button>
+      )}
       <button
         onClick={(e) => { e.stopPropagation(); onOpenDetail(install.source_id, install.plugin_path || install.plugin_name); }}
         title="Open detail"
@@ -426,6 +464,29 @@ const iconBtn: React.CSSProperties = {
   display: "flex", alignItems: "center", justifyContent: "center",
   background: "none", border: "none", cursor: "pointer",
   color: "var(--c-dim)",
+  flexShrink: 0,
+};
+
+// Small "Update all" pill in the banner — primary recipe (high-contrast
+// fill) matching the detail page's primaryBtn, sized down for the row.
+const updateAllBtn: React.CSSProperties = {
+  padding: "4px 12px",
+  background: "var(--c-high)",
+  color: "var(--card)",
+  border: "none", borderRadius: 6,
+  fontSize: 11.5, fontWeight: 600,
+  cursor: "pointer",
+};
+
+// Per-row Update affordance — quiet green-outline text button so it reads
+// as a positive action without competing with the master toggle / trash.
+const updateRowBtn: React.CSSProperties = {
+  padding: "3px 9px", borderRadius: 5,
+  background: "none",
+  border: "1px solid rgba(72, 199, 142, 0.45)",
+  color: "rgb(72 199 142)",
+  fontSize: 11, fontWeight: 600,
+  cursor: "pointer",
   flexShrink: 0,
 };
 
