@@ -270,6 +270,30 @@ pub async fn window_close(app: tauri::AppHandle) -> serde_json::Value {
     serde_json::json!({ "ok": true })
 }
 
+/// Logical top-left that centers a `width`×`height` window on a monitor whose
+/// logical origin is (`mon_x`,`mon_y`) and logical size is (`mon_w`,`mon_h`).
+///
+/// Centers using the **target** size, not the window's current size. On
+/// Linux/X11 `set_size()` is asynchronous, so a `WebviewWindow::center()`
+/// issued immediately after a resize reads the still-stale outer size and
+/// places a just-grown window to the bottom-right. Computing placement from
+/// the size we're about to apply makes it correct regardless of when the GTK
+/// resize lands. Clamps non-negative so a window larger than the monitor pins
+/// to the monitor origin rather than running off the top-left.
+fn centered_top_left(
+    mon_x: f64,
+    mon_y: f64,
+    mon_w: f64,
+    mon_h: f64,
+    width: f64,
+    height: f64,
+) -> (f64, f64) {
+    (
+        mon_x + ((mon_w - width) / 2.0).max(0.0),
+        mon_y + ((mon_h - height) / 2.0).max(0.0),
+    )
+}
+
 #[tauri::command]
 pub async fn window_set_size(
     app: tauri::AppHandle,
@@ -279,13 +303,44 @@ pub async fn window_set_size(
 ) -> serde_json::Value {
     if let Some(w) = main_window(&app) {
         let _ = w.set_size(tauri::LogicalSize::new(width, height));
-        // Each screen mode has its own size (760×740 onboarding vs
-        // 1500×960 main). Without recentering, shrinking from main to
-        // onboarding leaves the smaller window pinned to the previous
-        // top-left, so onboarding appears anchored to the left edge
-        // instead of centered like the cold-start window was.
+        // Each screen mode has its own size (760×740 onboarding vs 1500×960
+        // main), so the window must recenter on every resize or it stays
+        // pinned to its previous top-left.
         if center.unwrap_or(false) {
-            let _ = w.center();
+            // macOS keeps decorations (custom traffic lights) and isn't
+            // subject to the async-resize race below, so its built-in
+            // center() — which accounts for the title bar — stays.
+            #[cfg(target_os = "macos")]
+            {
+                let _ = w.center();
+            }
+            // Linux/Windows run decorationless (inner == outer). On Linux/X11
+            // set_size() above is async, so w.center() would read the stale
+            // pre-resize size and shove the grown window into the bottom-right
+            // corner. Center on the current monitor using the TARGET size.
+            #[cfg(not(target_os = "macos"))]
+            {
+                match w.current_monitor() {
+                    Ok(Some(monitor)) => {
+                        let scale = monitor.scale_factor();
+                        let mpos = monitor.position().to_logical::<f64>(scale);
+                        let msize = monitor.size().to_logical::<f64>(scale);
+                        let (x, y) = centered_top_left(
+                            mpos.x,
+                            mpos.y,
+                            msize.width,
+                            msize.height,
+                            width,
+                            height,
+                        );
+                        let _ = w.set_position(tauri::LogicalPosition::new(x, y));
+                    }
+                    // No monitor info (rare) — fall back to the built-in.
+                    _ => {
+                        let _ = w.center();
+                    }
+                }
+            }
         }
     }
     serde_json::json!({ "ok": true })
@@ -2986,6 +3041,33 @@ mod tests {
         assert_eq!(extension_no_dot(std::path::Path::new("a.tsx")), "tsx");
         assert_eq!(extension_no_dot(std::path::Path::new("Cargo.toml")), "toml");
         assert_eq!(extension_no_dot(std::path::Path::new("noext")), "");
+    }
+
+    #[test]
+    fn centered_top_left_uses_target_size_and_clamps() {
+        // 1920×1080 monitor at origin, centering the 1500×960 main window.
+        assert_eq!(
+            centered_top_left(0.0, 0.0, 1920.0, 1080.0, 1500.0, 960.0),
+            (210.0, 60.0)
+        );
+        // A second monitor offset (logical origin x=1920) is respected.
+        let (x, _) = centered_top_left(1920.0, 0.0, 1920.0, 1080.0, 1500.0, 960.0);
+        assert_eq!(x, 2130.0);
+        // A window larger than the monitor clamps to the origin (never negative).
+        assert_eq!(
+            centered_top_left(0.0, 0.0, 1000.0, 800.0, 1500.0, 960.0),
+            (0.0, 0.0)
+        );
+        // Regression for the Linux bottom-right bug: placement must use the
+        // TARGET width (1500 → x=210), NOT the stale pre-resize width (760 →
+        // x=580), which let the grown window spill off toward the right.
+        let (stale_x, _) = centered_top_left(0.0, 0.0, 1920.0, 1080.0, 760.0, 740.0);
+        let (correct_x, _) = centered_top_left(0.0, 0.0, 1920.0, 1080.0, 1500.0, 960.0);
+        assert_eq!(stale_x, 580.0);
+        assert!(
+            correct_x < stale_x,
+            "centering the target size must sit left of the stale-size placement"
+        );
     }
 
     #[test]

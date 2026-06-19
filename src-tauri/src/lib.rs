@@ -63,6 +63,23 @@ pub fn run() {
     // by `logging::init` is `app.manage()`-d to keep the non-blocking
     // writer's flush thread alive for the process lifetime.
 
+    // GNOME and other native-Wayland sessions forbid a client from
+    // positioning its own toplevel — set_position()/center() are silently
+    // ignored by the compositor. That left the post-onboarding resize
+    // (760×740 → 1500×960) anchored to its old top-left, stranding the grown
+    // window in the bottom-right corner with no way to recenter. Run under
+    // Xwayland on Linux, where window positioning works so the recenter in
+    // `window_set_size` takes effect. Must be set before GTK initialises
+    // (i.e. before the Tauri builder). Respects an explicit override, so
+    // `GDK_BACKEND=wayland npm run …` still opts back into native Wayland.
+    #[cfg(target_os = "linux")]
+    if std::env::var("GDK_BACKEND")
+        .map(|v| v.is_empty())
+        .unwrap_or(true)
+    {
+        std::env::set_var("GDK_BACKEND", "x11");
+    }
+
     let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
 
     // macOS 13–15 (Ventura–Sequoia): WKWebView caps requestAnimationFrame
