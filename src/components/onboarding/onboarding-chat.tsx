@@ -38,6 +38,7 @@ import { providers as providersApi } from "@/lib/providers-api";
 import type { ProviderTile } from "@/lib/providers-api";
 import { modelsForTile } from "@/lib/picker-groups";
 import type { PickerModel } from "@/lib/picker-groups";
+import { useDiscoveredModelsStore } from "@/stores/discovered-models-store";
 import { buildSelectionPersist } from "@/components/onboarding/provider-selection";
 import { STUDIO_ENABLED } from "@/lib/feature-flags";
 import { useThemeStore } from "@/stores/theme-store";
@@ -287,6 +288,17 @@ export function OnboardingChat({ user, onDone }: Props) {
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, [messages]);
 
+  // Pre-warm the discovered-model catalogs the moment the provider tiles land,
+  // so the fleet-default picker (and the single-ready auto-default below) read
+  // the SAME live `/agents/{id}/models` lineup as the in-app pickers instead of
+  // the static CLI_MODELS fallback. `hydrate` is single-flight and spawns no
+  // local CLI — it only covers remote-catalog agents + connected HTTP providers.
+  useEffect(() => {
+    if (selections.tiles && selections.tiles.length > 0) {
+      void useDiscoveredModelsStore.getState().hydrate(selections.tiles);
+    }
+  }, [selections.tiles]);
+
   const pushAssistant = (
     text: string,
     widget?: WidgetKind,
@@ -480,7 +492,11 @@ export function OnboardingChat({ user, onDone }: Props) {
       const only = readyProviders[0]!;
       setSelections((s) => ({ ...s, defaultProvider: only }));
       const onlyTile = selectionsRef.current.tiles?.find((t) => t.spec.id === only.id);
-      const onlyModel = onlyTile ? modelsForTile(onlyTile)[0]?.id : undefined;
+      // Same live catalog the picker uses — resolve the default model from the
+      // discovered lineup (the `hydrate` above has typically landed by now),
+      // not the static CLI_MODELS fallback, so the persisted default isn't stale.
+      const onlyDynamic = useDiscoveredModelsStore.getState().models[only.id];
+      const onlyModel = onlyTile ? modelsForTile(onlyTile, onlyDynamic)[0]?.id : undefined;
       try {
         await providersApi.setDefault(only.id, onlyModel ?? null);
       } catch { /* best-effort */ }
@@ -3158,7 +3174,7 @@ function groupedNeeds(needs: { p: ProviderDef; st: ProviderState }[]): string {
 
 /* ── GitHub widget — same panel chrome as providers/scan ─── */
 /* ── Main-agent widget — single-select radio list ────────── */
-function MainAgentWidget({
+export function MainAgentWidget({
   providers,
   tiles,
   onPick,
@@ -3173,9 +3189,24 @@ function MainAgentWidget({
   // entry skips straight to onPick — no needless second click.
   const [picked, setPicked] = useState<ProviderDef | null>(null);
 
+  // Live model catalogs — the SAME app-wide store the in-app composer / Fleet /
+  // Settings pickers read. Without it this picker fell back to the static
+  // CLI_MODELS list (CLI agents ship empty catalog `default_models`), so it
+  // showed stale models while every other picker showed the current lineup.
+  // `hydrate` (fired from OnboardingChat once the tiles land) covers the
+  // remote-catalog agents with no local CLI spawn; `discoverLive` here adds the
+  // live-probe agents (opencode / cursor / hermes) when the picker mounts,
+  // mirroring chat-input's discover-on-picker-open.
+  const discovered = useDiscoveredModelsStore((s) => s.models);
+  useEffect(() => {
+    if (tiles && tiles.length > 0) {
+      void useDiscoveredModelsStore.getState().discoverLive(tiles, "");
+    }
+  }, [tiles]);
+
   const modelsFor = (p: ProviderDef): PickerModel[] => {
     const tile = tiles?.find((t) => t.spec.id === p.id);
-    return tile ? modelsForTile(tile) : [];
+    return tile ? modelsForTile(tile, discovered[p.id]) : [];
   };
 
   const choose = (p: ProviderDef) => {
@@ -3514,7 +3545,11 @@ function GithubWidget({
   };
 
   // Choice-row button — single-line, icon-left, title centered. Two
-  // variants: "white" (Connect with GitHub) and "black" (Use GitHub CLI).
+  // variants: "white" (Connect with GitHub, raised) and "black" (Use GitHub
+  // CLI — recessed: the fill drops to the page color so it reads as an inset
+  // field against the slightly-lighter card, with a crisp --c-brd2 border and
+  // a hover-lift to --secondary. Was var(--secondary) which sat ~3 levels off
+  // the card in dark theme, so the row looked like flat, dead space.)
   // A "Not Installed" badge floats on the right when the gh CLI isn't
   // available; otherwise the row is pure icon + centered title.
   const ChoiceRow = ({
@@ -3536,12 +3571,14 @@ function GithubWidget({
   }) => {
     const isWhite = variant === "white";
     const isBlack = variant === "black";
-    const baseBg = isWhite ? ONB_BTN_BG : isBlack ? "var(--secondary)" : "rgba(255,255,255,0.025)";
+    // Recessed "black" variant: base fill = page color (darker than the card),
+    // hover lifts to --secondary so the row has real interactive feedback.
+    const baseBg = isWhite ? ONB_BTN_BG : isBlack ? "var(--background)" : "rgba(255,255,255,0.025)";
     const hoverBg = isWhite ? ONB_BTN_BG : isBlack ? "var(--secondary)" : "rgba(255,255,255,0.08)";
     const baseBorder = isWhite
       ? "transparent"
       : isBlack
-        ? "var(--c-brd)"
+        ? "var(--c-brd2)"
         : "rgba(255,255,255,0.08)";
     const hoverBorder = isWhite
       ? "transparent"
