@@ -34,6 +34,7 @@ import type { PermMode } from "@/lib/providers-api";
 import { ToolMatrixEditor } from "./tool-matrix-editor";
 import { SandboxControl } from "./sandbox-control";
 import { PromptsPicker } from "./prompts-picker";
+import { HelpDialog } from "./help-dialog";
 import { listPrompts, resolvePromptArg } from "@/lib/prompts-api";
 
 /* ─────────────────── constants ─────────────────── */
@@ -1215,6 +1216,8 @@ export function ChatInput({
   const [pluginCmds, setPluginCmds] = useState<Array<{ cmd: string; desc: string; body: string | null; args: string[] }>>([]);
   // /prompts picker open state (the no-arg `/prompts` dialog).
   const [promptsOpen, setPromptsOpen] = useState(false);
+  // /help dialog open state (the `/help` command surface).
+  const [helpOpen, setHelpOpen] = useState(false);
   // Fetch plugin slash commands for the active session
   useEffect(() => {
     if (!sessionId) { setPluginCmds([]); return; }
@@ -1819,6 +1822,15 @@ export function ChatInput({
     })();
   }, [onSend]);
 
+  /** `/help` — app-owned. Opens the help dialog (shortcuts + command reference)
+   *  and clears the composer; never forwarded to the CLI. Works in both the
+   *  Fleet composer and a session. */
+  const handleHelpCommand = useCallback(() => {
+    setValue(""); setAttachments([]);
+    if (ref.current) ref.current.style.height = "0px";
+    setHelpOpen(true);
+  }, []);
+
   /** Dispatches the actual send. Bypasses Fleet refine — used both
    *  by the post-refine "Send refined" / "Send original" buttons and
    *  by the direct submit path when Fleet is off / control-center /
@@ -1946,6 +1958,13 @@ export function ChatInput({
       return;
     }
 
+    // /help is app-owned — open the help dialog. Handled before the Fleet
+    // refine branch so it is never rewritten or sent to the agent.
+    if (t.split(/\s+/)[0] === "/help") {
+      handleHelpCommand();
+      return;
+    }
+
     if (!fleetActive) {
       dispatchSend(t, attachments);
       return;
@@ -1992,7 +2011,7 @@ export function ChatInput({
         dispatchSend(t, snapshotAtts);
       })
       .finally(() => setRefining(false));
-  }, [value, disabled, streaming, locked, onStop, attachments, fleetActive, refining, pendingRefine, dispatchSend, projectPath, tool, model, sessionId, recordCost, askQuestion, advanceAsk, handlePromptsCommand]);
+  }, [value, disabled, streaming, locked, onStop, attachments, fleetActive, refining, pendingRefine, dispatchSend, projectPath, tool, model, sessionId, recordCost, askQuestion, advanceAsk, handlePromptsCommand, handleHelpCommand]);
 
   /* Refine-card actions */
   const confirmRefined = useCallback(() => {
@@ -2448,6 +2467,8 @@ export function ChatInput({
           onClose={() => setPromptsOpen(false)}
           onPick={(p) => { setPromptsOpen(false); onSend(p.body); }}
         />
+
+        <HelpDialog open={helpOpen} onClose={() => setHelpOpen(false)} />
 
         {slotAbove}
 

@@ -18,7 +18,7 @@ import { resolveStartupDefault, hermesHealModel, HERMES_DEFAULT_SENTINEL, contex
 import { FleetDecisionCard } from "./fleet-decision-card";
 import { useFleetStore, AUTO_CHAIN_CAP } from "@/stores/fleet-store";
 import { LogoMark } from "@/components/brand/logo-mark";
-import { PanelLeft, PanelRight, Trash2, X, Check, GitCompareArrows, ListTodo, Terminal as TerminalIcon, Keyboard, Play, FolderOpen, Layers, Monitor, Github, Server, Box, ArrowRight, Copy, GitBranch, Sparkles, HelpCircle, Globe, Scissors } from "lucide-react";
+import { PanelLeft, PanelRight, Trash2, X, Check, GitCompareArrows, ListTodo, Terminal as TerminalIcon, Play, FolderOpen, Layers, Monitor, Github, Server, Box, ArrowRight, Copy, GitBranch, Sparkles, HelpCircle, Globe, Scissors } from "lucide-react";
 import type { ContentBlock, ChatMessage } from "@/types/chat";
 import type { Session } from "@/types/session";
 import type { WorkspaceView } from "@/stores/app-store";
@@ -2016,7 +2016,6 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                 <Trash2 size={14} />
               </IBtn>
             )}
-            {isControlCenter && <ShortcutsPopover />}
             {/* Agent run-state controls (Stop / Restart) removed
                 from the header — the chat-input's own send button
                 already flips into a Stop affordance while
@@ -3183,112 +3182,6 @@ function PanelViewMenu({
   );
 }
 
-
-/* ── Keyboard shortcuts popover ── */
-const SHORTCUT_GROUPS = [
-  {
-    label: "Navigation",
-    items: [
-      { keys: ["⌘", "1–9"], desc: "Switch to agent by number" },
-      { keys: ["⌘⇧", "F"], desc: "Go to Fleet overview" },
-      { keys: ["Esc"], desc: "Back to Fleet (when not streaming)" },
-    ],
-  },
-  {
-    label: "Interface",
-    items: [
-      { keys: ["⌘⇧", "S"], desc: "Toggle sidebar" },
-      { keys: ["⌘⇧", "."], desc: "Toggle right panel" },
-      { keys: ["⌘⇧", "N"], desc: "New agent" },
-    ],
-  },
-  {
-    label: "Fleetify",
-    items: [
-      { keys: ["⌘⇧", "A"], desc: "Abort all running agents" },
-    ],
-  },
-];
-
-function ShortcutsPopover() {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const h = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
-  }, [open]);
-
-  return (
-    <div ref={ref} style={{ position: "relative" }}>
-      <button
-        onClick={() => setOpen(v => !v)}
-        title="Keyboard shortcuts"
-        style={{
-          width: 22, height: 22, borderRadius: 5,
-          display: "flex", alignItems: "center", justifyContent: "center",
-          background: open ? "var(--c-brd)" : "none", border: "none", outline: "none",
-          color: open ? "var(--c-med)" : "var(--c-dim)", cursor: "pointer",
-          transition: "background 0.1s, color 0.1s",
-        }}
-        onMouseEnter={e => { e.currentTarget.style.background = "var(--c-brd)"; e.currentTarget.style.color = "var(--c-med)"; }}
-        onMouseLeave={e => {
-          if (!open) { e.currentTarget.style.background = "none"; e.currentTarget.style.color = "var(--c-dim)"; }
-        }}
-      >
-        <Keyboard size={14} />
-      </button>
-
-      {open && (
-        <div style={{
-          position: "absolute", right: 0, top: 34, zIndex: 9999,
-          width: 260, borderRadius: 10, padding: "8px",
-          background: "var(--popover)",
-          border: "1px solid var(--c-brd2)",
-          boxShadow: "0 8px 28px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.2)",
-        }}>
-          <div style={{ fontSize: 10.5, fontWeight: 700, color: "var(--c-ghost)", letterSpacing: "0.07em", textTransform: "uppercase", padding: "2px 4px 8px" }}>
-            Keyboard shortcuts
-          </div>
-          {SHORTCUT_GROUPS.map(group => (
-            <div key={group.label} style={{ marginBottom: 8 }}>
-              <div style={{ fontSize: 9.5, fontWeight: 700, color: "var(--c-ghost)", letterSpacing: "0.06em", textTransform: "uppercase", padding: "2px 4px 4px", opacity: 0.6 }}>
-                {group.label}
-              </div>
-              {group.items.map(item => (
-                <div key={item.desc} style={{
-                  display: "flex", alignItems: "center", justifyContent: "space-between",
-                  padding: "4px 4px", borderRadius: 5,
-                  gap: 8,
-                }}>
-                  <span style={{ fontSize: 11.5, color: "var(--c-low)", flex: 1 }}>{item.desc}</span>
-                  <div style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0 }}>
-                    {item.keys.map((k, ki) => (
-                      <span key={ki} style={{
-                        fontSize: 10, fontFamily: "var(--font-mono, monospace)",
-                        color: "var(--c-dim)",
-                        background: "var(--c-srf)",
-                        border: "1px solid var(--c-brd2)",
-                        borderRadius: 4, padding: "1px 5px",
-                        lineHeight: "16px",
-                      }}>
-                        {k}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function IBtn({ children, onClick, title, style }: { children: React.ReactNode; onClick?: () => void; title?: string; style?: React.CSSProperties }) {
   return (
