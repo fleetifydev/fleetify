@@ -273,6 +273,13 @@ async fn discover_agent_models(id: &str, cwd: &str) -> (ModelList, Option<String
                 .unwrap_or_default(),
             None,
         ),
+        "grok-cli" => (
+            crate::bridges::grok_cli::list_models(cwd)
+                .await
+                .map(|ms| ms.into_iter().map(|m| (m.id, m.name)).collect())
+                .unwrap_or_default(),
+            None,
+        ),
         "github-copilot" => (
             crate::bridges::github_copilot::list_models(cwd)
                 .await
@@ -326,7 +333,13 @@ pub async fn prewarm_hermes_models() {
 /// in [`discover_agent_models`]) rather than the remote catalog. Excluded from
 /// the remote-catalog prewarm — there is nothing on fleetify.dev/api to warm for
 /// them (`hermes` is prewarmed separately via [`prewarm_hermes_models`]).
-const LIVE_PROBE_AGENTS: &[&str] = &["opencode", "cursor-cli", "github-copilot", "hermes-agent"];
+const LIVE_PROBE_AGENTS: &[&str] = &[
+    "opencode",
+    "cursor-cli",
+    "grok-cli",
+    "github-copilot",
+    "hermes-agent",
+];
 
 /// Provider/agent ids whose model lineup is sourced from the remote catalog
 /// (fleetify.dev/api → jsDelivr): every [`crate::providers::catalog::CATALOG`]
@@ -980,6 +993,13 @@ enum ScanProbe {
     /// installers write to without updating a GUI's PATH. Shares the bridge's
     /// `resolve_hermes_bin` so detection and spawn agree.
     HermesCli,
+    /// Grok Build CLI: PATH lookup OR the off-PATH `~/.local/bin/grok` the
+    /// installer writes to without updating a GUI's PATH. Shares the bridge's
+    /// `resolve_grok_bin` so detection and spawn agree. Auth is special: the
+    /// bridge injects the keyring-stored shared xAI key (`keys::get_key("grok")`)
+    /// into the subprocess env, so the scan OR-s that keyring check on top of the
+    /// catalog's `XAI_API_KEY` env indicator.
+    GrokCli,
 }
 
 /// Map a catalog id to the probe strategy used by `scan_all_agents`.
@@ -994,6 +1014,7 @@ fn scan_probe_for(id: &'static str, bin: &'static str) -> ScanProbe {
         "cursor-cli" => ScanProbe::CursorCli,
         "github-copilot" => ScanProbe::GitHubCopilotCli,
         "hermes-agent" => ScanProbe::HermesCli,
+        "grok-cli" => ScanProbe::GrokCli,
         _ => ScanProbe::BinOnly { bin },
     }
 }
@@ -1026,9 +1047,16 @@ pub async fn scan_all_agents() -> HashMap<String, Value> {
             ScanProbe::CursorCli => crate::bridges::cursor::resolve_cursor_bin(),
             ScanProbe::HermesCli => crate::bridges::hermes::resolve_hermes_bin(),
             ScanProbe::GitHubCopilotCli => crate::bridges::github_copilot::resolve_copilot_bin(),
+            ScanProbe::GrokCli => crate::bridges::grok_cli::resolve_grok_bin(),
         };
         let installed = path.is_some();
-        let authenticated = installed && indicators_authenticated(&home(), spec.auth_indicators);
+        // Grok Build authenticates off the keyring-stored shared xAI key (the
+        // bridge injects it as `XAI_API_KEY`), which the catalog's env-var
+        // indicator can't see — OR it in on top of the on-disk/env indicators.
+        let keyring_authed = matches!(probe, ScanProbe::GrokCli)
+            && crate::providers::keys::get_key("grok").is_some();
+        let authenticated = installed
+            && (keyring_authed || indicators_authenticated(&home(), spec.auth_indicators));
         crate::services::telemetry::emitters::emit_agent_detected(
             spec.id,
             installed,
@@ -1554,6 +1582,25 @@ fn cli_agent_scan(id: &str, path: Option<String>) -> Value {
     json!({ "installed": true, "authenticated": authed, "path": p })
 }
 
+/// Grok Build's `{installed, authenticated, path}` bucket. Identical shape to
+/// `cli_agent_scan`, but auth OR-s the keyring-stored shared xAI key on top of
+/// the catalog's `auth_indicators` — mirroring `scan_all_agents`'
+/// `ScanProbe::GrokCli` branch verbatim so `/providers/scan` (onboarding) and
+/// `/agents/scan` (Settings) agree on whether grok-cli is authenticated.
+fn cli_agent_scan_grok(path: Option<String>) -> Value {
+    let Some(p) = path else {
+        return json!({ "installed": false, "authenticated": false, "path": null });
+    };
+    let keyring_authed = crate::providers::keys::get_key("grok").is_some();
+    let authed = keyring_authed
+        || crate::providers::list_cli_agents()
+            .into_iter()
+            .find(|s| s.id == "grok-cli")
+            .map(|spec| indicators_authenticated(&home(), spec.auth_indicators))
+            .unwrap_or(false);
+    json!({ "installed": true, "authenticated": authed, "path": p })
+}
+
 async fn scan_providers() -> Json<Value> {
     // The legacy scan endpoint doesn't have access to ProvidersConfig
     // (it lives in the Tauri shell's fleet.config.json, not the
@@ -1581,6 +1628,7 @@ async fn scan_providers() -> Json<Value> {
         crate::bridges::github_copilot::resolve_copilot_bin(),
     );
     let hermes = cli_agent_scan("hermes-agent", crate::bridges::hermes::resolve_hermes_bin());
+    let grok = cli_agent_scan_grok(crate::bridges::grok_cli::resolve_grok_bin());
     Json(json!({
         "claude_cli": claude,
         "gemini_cli": gemini,
@@ -1592,6 +1640,7 @@ async fn scan_providers() -> Json<Value> {
         "cursor_cli": cursor,
         "github_copilot_cli": github_copilot,
         "hermes_cli": hermes,
+        "grok_cli": grok,
         "ollama": ollama,
         "env_keys": {
             "anthropic": std::env::var("ANTHROPIC_API_KEY").is_ok(),
@@ -1941,7 +1990,13 @@ mod tests {
         // Live-probe CLI agents resolve their lineup from a local CLI/ACP call
         // (the match arms in `discover_agent_models`), not fleetify.dev/api — so
         // they must NOT be in the remote-catalog prewarm set.
-        for a in ["opencode", "cursor-cli", "github-copilot", "hermes-agent"] {
+        for a in [
+            "opencode",
+            "cursor-cli",
+            "grok-cli",
+            "github-copilot",
+            "hermes-agent",
+        ] {
             assert!(
                 !ids.contains(&a),
                 "{a} is discovered via a live probe and must be excluded from the remote prewarm"
@@ -1977,6 +2032,7 @@ mod tests {
             "cursor_cli",
             "github_copilot_cli",
             "hermes_cli",
+            "grok_cli",
         ] {
             let bucket = v.get(key).unwrap_or_else(|| panic!("missing bucket {key}"));
             assert!(
@@ -2014,6 +2070,7 @@ mod tests {
                 }
                 ("cursor-cli", ScanProbe::CursorCli) => {}
                 ("hermes-agent", ScanProbe::HermesCli) => {}
+                ("grok-cli", ScanProbe::GrokCli) => {}
                 (other, _) => panic!("unmapped CLI id in scan_probe_for: {other}"),
             }
         }
@@ -2043,6 +2100,15 @@ mod tests {
         assert!(
             matches!(probe, ScanProbe::HermesCli),
             "hermes must use HermesCli probe (binary is off-PATH on Windows)"
+        );
+    }
+
+    #[tokio::test]
+    async fn scan_probe_for_grok_uses_grok_cli_variant() {
+        let probe = scan_probe_for("grok-cli", "grok");
+        assert!(
+            matches!(probe, ScanProbe::GrokCli),
+            "grok must use GrokCli probe (binary off-PATH at ~/.local/bin, keyring auth)"
         );
     }
 

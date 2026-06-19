@@ -14,6 +14,7 @@ pub mod codex_client;
 pub mod cursor;
 pub mod gemini;
 pub mod github_copilot;
+pub mod grok_cli;
 pub mod hermes;
 pub mod interactive;
 pub mod kimi;
@@ -101,6 +102,11 @@ pub enum AnyBridge {
     /// answers Cursor's blocking `cursor/ask_question` / `cursor/create_plan`
     /// extension methods (routed to a renderer card via the chat router).
     Cursor(Arc<cursor::CursorBridge>),
+    /// Grok Build CLI over ACP (`grok agent stdio`). Forked from the Cursor
+    /// bridge — same live model/config switching + session resume. Auth is via
+    /// an injected `XAI_API_KEY` env (no ACP `authenticate`); MCP is filtered to
+    /// http/sse only (grok rejects stdio MCP entries).
+    GrokCli(Arc<grok_cli::GrokCliBridge>),
     /// Antigravity (`agy`) CLI — Google's terminal coding agent.
     /// Headless `-p` mode with `--conversation <uuid>` resume; no
     /// streaming until upstream adds a `stream-json` mode.
@@ -140,6 +146,7 @@ impl AnyBridge {
             AnyBridge::OpenCode(b) => b.send_message(msg, ctx).await,
             AnyBridge::Hermes(b) => b.send_message(msg, ctx).await,
             AnyBridge::Cursor(b) => b.send_message(msg, ctx).await,
+            AnyBridge::GrokCli(b) => b.send_message(msg, ctx).await,
             AnyBridge::Antigravity(b) => b.send_message(msg, ctx).await,
             AnyBridge::AntigravitySdk(b) => b.send_message(msg, ctx).await,
             AnyBridge::Agentic(b) => b.send_message(msg, ctx).await,
@@ -158,6 +165,7 @@ impl AnyBridge {
             AnyBridge::OpenCode(b) => b.abort().await,
             AnyBridge::Hermes(b) => b.abort().await,
             AnyBridge::Cursor(b) => b.abort().await,
+            AnyBridge::GrokCli(b) => b.abort().await,
             AnyBridge::Antigravity(b) => b.abort().await,
             AnyBridge::AntigravitySdk(b) => b.abort().await,
             AnyBridge::Agentic(b) => b.abort().await,
@@ -200,6 +208,10 @@ impl AnyBridge {
                 let models = b.set_model(model_id).await?;
                 Ok(cursor::models_to_json(&models))
             }
+            AnyBridge::GrokCli(b) => {
+                let models = b.set_model(model_id).await?;
+                Ok(grok_cli::models_to_json(&models))
+            }
             AnyBridge::Hermes(b) => {
                 let models = b.set_model(model_id).await?;
                 Ok(hermes::models_to_json(&models))
@@ -221,6 +233,10 @@ impl AnyBridge {
             AnyBridge::Cursor(b) => {
                 let models = b.set_config(config_id, value).await?;
                 Ok(cursor::models_to_json(&models))
+            }
+            AnyBridge::GrokCli(b) => {
+                let models = b.set_config(config_id, value).await?;
+                Ok(grok_cli::models_to_json(&models))
             }
             AnyBridge::Hermes(b) => {
                 let models = b.set_config(config_id, value).await?;

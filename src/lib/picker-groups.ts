@@ -170,6 +170,22 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
     { id: "gpt-5.3-codex[reasoning=medium,fast=false]",                           label: "GPT-5.3 Codex",     effort: EFFORT_NONE, supports_effort: false },
     { id: "gemini-3.1-pro[]",                                                     label: "Gemini 3.1 Pro",    effort: EFFORT_NONE, supports_effort: false },
   ],
+  // Grok Build — xAI's ACP agent. Reuses the curated GROK_MODELS lineup the
+  // backend ships (shared with the Grok HTTP provider) so the rail isn't empty
+  // before live discovery lands. grok-4.3 exposes configurable reasoning
+  // (none/low/medium/high); grok-build-0.1 has no effort lever.
+  "grok-cli": [
+    {
+      id: "grok-build-0.1", label: "Grok Build 0.1", ctx: "256K",
+      effort: EFFORT_NONE,
+      supports_effort: false,
+    },
+    {
+      id: "grok-4.3", label: "Grok 4.3", ctx: "1M",
+      effort: { kind: "levels", levels: ["none", "low", "medium", "high"], default: "low" },
+      supports_effort: true,
+    },
+  ],
   // Hermes sources its model list LIVE from the ACP session (catalog
   // default_models is empty): both the lazy toolbar/composer probe
   // (`/agents/hermes/models`, a transient `session/new`) and the running
@@ -196,6 +212,7 @@ const CLI_FALLBACK_LABELS: Record<string, string> = {
   "kimi-code":              "Kimi Code",
   opencode:          "OpenCode",
   "cursor-cli":            "Cursor CLI",
+  "grok-cli":              "Grok Build",
   "antigravity-cli":               "Antigravity CLI",
   "antigravity-sdk": "Antigravity SDK",
   "hermes-agent":            "Hermes Agent",

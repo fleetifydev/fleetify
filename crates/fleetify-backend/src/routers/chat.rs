@@ -1855,6 +1855,40 @@ async fn run_send_flow(
             }
             AnyBridge::Cursor(Arc::new(b))
         }
+        "grok-cli" => {
+            let is_staff = session.title == "Staff Agent";
+            let mut b = crate::bridges::grok_cli::GrokCliBridge::new(
+                sid.clone(),
+                agent_cwd.clone(),
+                session.permission_mode.clone(),
+                session.model_name.clone(),
+                session.effort.clone(),
+                is_staff,
+                session.agent_template.clone(),
+            );
+            b.tool_overrides =
+                crate::bridges::parse_tool_overrides(session.tool_overrides.as_deref());
+            // Resume the prior Grok ACP session if we persisted one (our Init
+            // event stamped it into session.claude_session_id).
+            b.resume_session_id = session.claude_session_id.clone();
+            // Grok routes tool approvals over ACP `session/request_permission`
+            // in every mode except the bypass modes — wire the dialog whenever
+            // the user-facing mode could ask (mirrors the Cursor gate). Grok has
+            // no blocking extension methods (no with_cursor_request_handlers).
+            if !is_staff
+                && !matches!(
+                    session.permission_mode.as_str(),
+                    "bypassPermissions" | "dontAsk"
+                )
+            {
+                b = b.with_permission_handler(build_permission_handler(
+                    &permission_session,
+                    &sink,
+                    &sid,
+                ));
+            }
+            AnyBridge::GrokCli(Arc::new(b))
+        }
         "github-copilot" => {
             let mut b = crate::bridges::github_copilot::GitHubCopilotBridge::new(
                 sid.clone(),
@@ -3213,6 +3247,21 @@ async fn run_dispatched_task(
                 crate::bridges::parse_tool_overrides(target.tool_overrides.as_deref());
             b.resume_session_id = target.claude_session_id.clone();
             AnyBridge::Cursor(std::sync::Arc::new(b))
+        }
+        "grok-cli" => {
+            let mut b = crate::bridges::grok_cli::GrokCliBridge::new(
+                target_id.clone(),
+                target_cwd.clone(),
+                target.permission_mode.clone(),
+                target.model_name.clone(),
+                target.effort.clone(),
+                false, // dispatched tasks always land on non-staff agents
+                target.agent_template.clone(),
+            );
+            b.tool_overrides =
+                crate::bridges::parse_tool_overrides(target.tool_overrides.as_deref());
+            b.resume_session_id = target.claude_session_id.clone();
+            AnyBridge::GrokCli(std::sync::Arc::new(b))
         }
         "github-copilot" => {
             let mut b = crate::bridges::github_copilot::GitHubCopilotBridge::new(

@@ -289,6 +289,7 @@ export interface ProviderScan {
   // Copilot / Hermes resolve off-PATH via their backend bridge helpers.
   opencode_cli:       { installed: boolean; authenticated: boolean; path: string | null };
   cursor_cli:         { installed: boolean; authenticated: boolean; path: string | null };
+  grok_cli:           { installed: boolean; authenticated: boolean; path: string | null };
   github_copilot_cli: { installed: boolean; authenticated: boolean; path: string | null };
   hermes_cli:         { installed: boolean; authenticated: boolean; path: string | null };
   ollama: { running: boolean; models: string[] };

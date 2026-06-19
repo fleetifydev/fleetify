@@ -926,6 +926,13 @@ const CURSOR_CLI_INDICATORS: &[AuthIndicator] = &[
     },
 ];
 
+// Grok Build CLI — ACP agent that auths out-of-band via an injected
+// `XAI_API_KEY` (the bridge passes it through to the subprocess env).
+// Presence of that env var is the only on-disk-free login signal.
+const GROK_CLI_INDICATORS: &[AuthIndicator] = &[AuthIndicator::EnvVar {
+    name: "XAI_API_KEY",
+}];
+
 // Antigravity CLI's auth state lives in `~/.gemini/oauth_creds.json`.
 // The file's `expiry_date` (Unix millis) is the only on-disk signal
 // we can read without spawning agy — agy's CLI has no `auth status`
@@ -1650,6 +1657,24 @@ pub static CATALOG: &[ProviderSpec] = &[
         }),
         login_hint: "cursor-agent login",
     },
+    // Grok Build — xAI's ACP agent (`grok`). Auth is out-of-band: the bridge
+    // injects `XAI_API_KEY` into the subprocess env (so `AuthSpec::None` here,
+    // with an `EnvVar` auth indicator). Reuses the curated `GROK_MODELS` list
+    // (shared with the Grok HTTP provider) so the picker isn't empty.
+    ProviderSpec {
+        id: "grok-cli",
+        display_name: "Grok Build",
+        kind: ProviderKind::Cli,
+        default_base_url: "",
+        auth: AuthSpec::None,
+        default_models: GROK_MODELS,
+        extras: ProviderExtras::DEFAULT,
+        bin: "grok",
+        auth_indicators: GROK_CLI_INDICATORS,
+        install_hint: "curl -fsSL https://x.ai/cli/install.sh | bash",
+        install_hints: None,
+        login_hint: "Run `grok` to sign in, or set XAI_API_KEY",
+    },
     // Hermes Agent — Nous Research's self-improving agent, driven over ACP
     // (`hermes acp`). A meta-provider: the model is whatever the user
     // configured inside Hermes (`hermes model`), so no key is stored and the
@@ -1833,13 +1858,13 @@ mod tests {
             .count();
         // 10 cloud HTTP providers (OpenAI, Anthropic, DeepSeek, Grok, NVIDIA NIM,
         // Kimi, Gemini API, Perplexity, OpenRouter, Cloudflare Workers AI) + 1
-        // local (ollama) + 10 CLI agents (Claude, Codex, Gemini, Kimi, OpenCode,
-        // GitHub Copilot, Cursor, Antigravity CLI, Antigravity SDK, Hermes). If you
-        // intentionally added/removed a provider, update these constants with
-        // the catalog.
+        // local (ollama) + 11 CLI agents (Claude, Codex, Gemini, Kimi, OpenCode,
+        // GitHub Copilot, Cursor, Grok Build, Antigravity CLI, Antigravity SDK,
+        // Hermes). If you intentionally added/removed a provider, update these
+        // constants with the catalog.
         assert_eq!(api, 10, "expected 10 Api providers, got {api}");
         assert_eq!(local, 1, "expected 1 LocalHttp provider, got {local}");
-        assert_eq!(cli, 10, "expected 10 Cli agents, got {cli}");
+        assert_eq!(cli, 11, "expected 11 Cli agents, got {cli}");
     }
 
     #[test]

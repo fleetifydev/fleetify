@@ -32,7 +32,7 @@ export const REMOTE_CATALOG_AGENTS = ["claude-code", "codex-cli", "gemini-cli", 
  *  lazily (picker open) to avoid spawning processes at app mount. Their
  *  running sessions also push `available_models_update`, which heals the
  *  per-session list independently of this store. */
-export const LIVE_PROBE_AGENTS = ["opencode", "cursor-cli", "github-copilot", "hermes-agent"] as const;
+export const LIVE_PROBE_AGENTS = ["opencode", "cursor-cli", "grok-cli", "github-copilot", "hermes-agent"] as const;
 
 function toPickerModels(
   providerId: string,

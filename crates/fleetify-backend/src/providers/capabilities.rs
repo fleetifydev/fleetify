@@ -140,6 +140,29 @@ const CURSOR_MODES: &[PermMode] = &[
         label: "Ask (read-only)",
     },
 ];
+// Grok Build's ACP permission tiers. Mirrors the Claude four — grok's bridge
+// maps these onto its `--permission-mode` surface (plan → ACP `plan` mode;
+// bypassPermissions/dontAsk/agent auto-allow via `grok_is_bypass`). The bridge
+// also recognises `auto`/`dontAsk` bypass aliases, but they aren't distinct UI
+// tiers, so the picker exposes the four that map cleanly.
+const GROK_MODES: &[PermMode] = &[
+    PermMode {
+        id: "default",
+        label: "Ask permissions",
+    },
+    PermMode {
+        id: "acceptEdits",
+        label: "Accept edits",
+    },
+    PermMode {
+        id: "plan",
+        label: "Plan mode",
+    },
+    PermMode {
+        id: "bypassPermissions",
+        label: "Bypass permissions",
+    },
+];
 const COPILOT_MODES: &[PermMode] = &[
     PermMode {
         id: "ask",
@@ -232,6 +255,10 @@ pub fn permission_capability(provider_id: &str) -> PermissionCapability {
             modes: CURSOR_MODES,
             sandbox: None,
         },
+        "grok-cli" => PermissionCapability::Modes {
+            modes: GROK_MODES,
+            sandbox: None,
+        },
         "github-copilot" => PermissionCapability::Modes {
             modes: COPILOT_MODES,
             sandbox: None,
@@ -302,7 +329,7 @@ pub fn effort_capability(provider_id: &str, model_id: &str) -> EffortCapability 
 /// When permission/effort changes apply for a provider's bridge (§8).
 pub fn config_timing(provider_id: &str) -> ConfigTiming {
     match provider_id {
-        "opencode" | "cursor-cli" | "hermes-agent" => ConfigTiming {
+        "opencode" | "cursor-cli" | "grok-cli" | "hermes-agent" => ConfigTiming {
             permission: Apply::Live,
             effort: Apply::Live,
         },
@@ -452,6 +479,13 @@ mod tests {
             }
         );
         assert_eq!(
+            config_timing("grok-cli"),
+            ConfigTiming {
+                permission: Apply::Live,
+                effort: Apply::Live
+            }
+        );
+        assert_eq!(
             config_timing("hermes-agent"),
             ConfigTiming {
                 permission: Apply::Live,
@@ -544,6 +578,17 @@ mod tests {
                 assert!(modes.iter().any(|m| m.id == "yolo"));
             }
             _ => panic!("gemini must be Modes"),
+        }
+        // Grok Build: the Claude-style four (default/acceptEdits/plan/
+        // bypassPermissions), no sandbox.
+        match permission_capability("grok-cli") {
+            PermissionCapability::Modes { modes, sandbox } => {
+                assert_eq!(modes.len(), 4);
+                assert!(modes.iter().any(|m| m.id == "plan"));
+                assert!(modes.iter().any(|m| m.id == "bypassPermissions"));
+                assert!(sandbox.is_none());
+            }
+            _ => panic!("grok-cli must be Modes"),
         }
         // HTTP-tier providers (incl. the *-api siblings of CLI agents) fall to the agentic tiers.
         assert_eq!(

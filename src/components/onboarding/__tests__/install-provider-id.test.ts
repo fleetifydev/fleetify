@@ -102,10 +102,10 @@ describe("OnboardingChat install IPC", () => {
     expect(ids).not.toContain("googleai");
     expect(ids).toContain("gemini-api");
 
-    // The full workspace catalog (21 ids — must match providers::CATALOG).
+    // The full workspace catalog (22 ids — must match providers::CATALOG).
     const catalog = [
       "claude-code", "codex-cli", "gemini-cli", "kimi-code", "opencode", "github-copilot",
-      "cursor-cli", "hermes-agent", "antigravity-cli", "antigravity-sdk",
+      "cursor-cli", "grok-cli", "hermes-agent", "antigravity-cli", "antigravity-sdk",
       "openai", "anthropic", "deepseek", "grok", "nvidia-nim", "kimi-api",
       "gemini-api", "perplexity", "openrouter", "cloudflare-workers-ai",
       "ollama",
@@ -228,6 +228,25 @@ describe("OnboardingChat install IPC", () => {
     expect(scanKeyById.get("hermes-agent")).toBe("hermes_cli");
     // The Install / Sign-in buttons are wired only when a row has a scanKey.
     expect(onboardingSrc).toMatch(/onInstall=\{!frozen && p\.scanKey \? \(\) => handleInstall\(p\)/);
+  });
+
+  it("surfaces the Grok Build CLI tile (grok logo, grok_cli scanKey, CLI bucket)", () => {
+    // Grok Build is xAI's ACP agent — a CLI tile mirroring cursor-cli. It must
+    // land in the workspace CLI section so the picker's Installed/Installable
+    // split + ScanRow pick it up with no bespoke dispatch. The logo REUSES the
+    // existing `grok` brand mark (provider-logo.tsx already has a `grok` case);
+    // no new asset is added.
+    const block = onboardingSrc.match(/const PROVIDERS:\s*ProviderDef\[\]\s*=\s*\[([\s\S]*?)\];/);
+    expect(block).not.toBeNull();
+    const rows = block![1].split(/},\s*/);
+    const grokRow = rows.find((r) => /id:\s*"grok-cli"/.test(r));
+    expect(grokRow, "grok-cli tile not found in PROVIDERS").toBeDefined();
+    expect(grokRow!).toMatch(/label:\s*"Grok Build"/);
+    expect(grokRow!).toMatch(/logo:\s*"grok"/);
+    expect(grokRow!).toMatch(/kind:\s*"cli"/);
+    expect(grokRow!).toMatch(/scanKey:\s*"grok_cli"/);
+    // No `category` field → it stays a workspace (catalog) provider, not Studio.
+    expect(grokRow!).not.toMatch(/category:/);
   });
 
   it("fleet step persists an explicit (provider, model) via setDefault", () => {

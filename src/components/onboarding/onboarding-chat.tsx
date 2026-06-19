@@ -106,6 +106,7 @@ interface ProviderDef {
     | "antigravity_sdk"
     | "opencode_cli"
     | "cursor_cli"
+    | "grok_cli"
     | "github_copilot_cli"
     | "hermes_cli"
   >;
@@ -176,6 +177,10 @@ const PROVIDERS: ProviderDef[] = [
   // flipping to Sign-in / Ready.
   { id: "opencode",       label: "OpenCode",          logo: "opencode", kind: "cli", scanKey: "opencode_cli",                 hint: "CLI agent" },
   { id: "cursor-cli",         label: "Cursor CLI",        logo: "cursor-cli", kind: "cli", scanKey: "cursor_cli",                     hint: "CLI agent" },
+  // Grok Build — xAI's ACP agent (`grok`). Auth is out-of-band (the bridge
+  // injects XAI_API_KEY); detected via the scan probe like the CLIs above.
+  // Reuses the existing `grok` brand mark.
+  { id: "grok-cli",           label: "Grok Build",        logo: "grok",   kind: "cli", scanKey: "grok_cli",                         hint: "CLI agent" },
   { id: "github-copilot", label: "GitHub Copilot",    logo: "github-copilot", kind: "cli", scanKey: "github_copilot_cli",    hint: "CLI agent" },
   // Hermes Agent — one CLI that fans out across whichever providers the user's
   // `hermes model` config has authenticated (Copilot, Anthropic, ...). Installs
