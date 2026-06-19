@@ -156,6 +156,51 @@ const PRICING: &[(&str, Prices)] = &[
             cache_write: 0.0,
         },
     ),
+    (
+        "grok-4.3",
+        Prices {
+            input: 1.25,
+            output: 2.5,
+            cache_read: 0.2,
+            cache_write: 0.0,
+        },
+    ),
+    (
+        "grok-4.20-0309-reasoning",
+        Prices {
+            input: 1.25,
+            output: 2.5,
+            cache_read: 0.2,
+            cache_write: 0.0,
+        },
+    ),
+    (
+        "grok-4.20-0309-non-reasoning",
+        Prices {
+            input: 1.25,
+            output: 2.5,
+            cache_read: 0.2,
+            cache_write: 0.0,
+        },
+    ),
+    (
+        "grok-4.20-multi-agent-0309",
+        Prices {
+            input: 1.25,
+            output: 2.5,
+            cache_read: 0.2,
+            cache_write: 0.0,
+        },
+    ),
+    (
+        "grok-build-0.1",
+        Prices {
+            input: 1.0,
+            output: 2.0,
+            cache_read: 0.0,
+            cache_write: 0.0,
+        },
+    ),
 ];
 
 fn lookup(model: &str) -> Option<Prices> {
@@ -217,5 +262,21 @@ mod tests {
     fn gpt_4o_with_cache_read() {
         let c = calculate_cost("gpt-4o", 0, 0, 1_000_000, 0);
         assert!((c - 1.25).abs() < 1e-6, "got {c}");
+    }
+
+    #[test]
+    fn grok_pricing_is_set() {
+        // grok-4.3: 1M in + 1M out = $1.25 + $2.50.
+        let c = calculate_cost("grok-4.3", 1_000_000, 1_000_000, 0, 0);
+        assert!((c - (1.25 + 2.5)).abs() < 1e-6, "got {c}");
+        // cached input billed at $0.20 / 1M.
+        let cr = calculate_cost("grok-4.3", 0, 0, 1_000_000, 0);
+        assert!((cr - 0.2).abs() < 1e-6, "got {cr}");
+        // grok-build-0.1 coding rates: $1.00 in / $2.00 out.
+        let b = calculate_cost("grok-build-0.1", 1_000_000, 1_000_000, 0, 0);
+        assert!((b - (1.0 + 2.0)).abs() < 1e-6, "got {b}");
+        // an alias variant prices via the substring fallback.
+        let alias = calculate_cost("grok-4.3-latest", 1_000_000, 0, 0, 0);
+        assert!((alias - 1.25).abs() < 1e-6, "got {alias}");
     }
 }

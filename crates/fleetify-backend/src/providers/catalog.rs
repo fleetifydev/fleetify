@@ -322,19 +322,58 @@ const DEEPSEEK_MODELS: &[ModelSpec] = &[
     },
 ];
 
-// Verified against docs.x.ai/developers/models (2026-05-25, last updated May 15 2026).
-// Only ONE text model listed: grok-4.3 with 1M context and configurable reasoning.
-// grok-4.1-fast is an ALIAS of grok-4.3 per the Aliases table — not a real model.
-// grok-4.20-* variants appear via Perplexity Agent API (separate route).
-const GROK_MODELS: &[ModelSpec] = &[ModelSpec {
-    id: "grok-4.3",
-    label: "Grok 4.3",
-    context_window: Some("1M"),
-    note: None,
-    group: None,
-    endpoint: None,
-    supports_effort: true,
-}];
+// Baked offline fallback for the xAI provider. The live lineup comes from
+// discover_grok_models (xAI GET /v1/models) → the fleetifydev/models remote
+// catalog → this. Per-model effort lives in models-snapshot.json (see
+// catalog_snapshot), NOT here. Verified against docs.x.ai/developers/models
+// + the live /v1/models endpoint (2026-06-19).
+const GROK_MODELS: &[ModelSpec] = &[
+    ModelSpec {
+        id: "grok-4.3",
+        label: "Grok 4.3",
+        context_window: Some("1M"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "grok-4.20-0309-reasoning",
+        label: "Grok 4.20 (Reasoning)",
+        context_window: Some("2M"),
+        note: Some("Reasoning"),
+        group: None,
+        endpoint: None,
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "grok-4.20-0309-non-reasoning",
+        label: "Grok 4.20 (Non-Reasoning)",
+        context_window: Some("2M"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "grok-4.20-multi-agent-0309",
+        label: "Grok 4.20 (Multi-Agent)",
+        context_window: Some("2M"),
+        note: Some("Multi-agent"),
+        group: None,
+        endpoint: None,
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "grok-build-0.1",
+        label: "Grok Build 0.1",
+        context_window: Some("256K"),
+        note: Some("Coding"),
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+];
 
 /// NVIDIA NIM curated subset of build.nvidia.com — keep ~10 to avoid
 /// drowning the picker. Provider-prefixed ids (`vendor/model`) are
@@ -2014,19 +2053,28 @@ mod tests {
     }
 
     #[test]
-    fn grok_lineup_is_single_4_3() {
+    fn grok_lineup_current() {
         let p = CATALOG.iter().find(|p| p.id == "grok").unwrap();
         let ids: Vec<&str> = p.default_models.iter().map(|m| m.id).collect();
-        // docs.x.ai/developers/models (2026-05-25): one text model listed.
-        // grok-4.1-fast is an alias of grok-4.3 — not a separate model.
-        for stale in ["grok-3", "grok-3-mini", "grok-4.1-fast"] {
+        // Stale / alias ids must not appear (grok-3* retired; grok-4.1-fast is an
+        // alias of grok-4.3; grok-code-fast-1 retired → grok-build-0.1).
+        for stale in ["grok-3", "grok-3-mini", "grok-4.1-fast", "grok-code-fast-1"] {
             assert!(
                 !ids.contains(&stale),
                 "stale/alias Grok id in catalog: {stale}"
             );
         }
-        assert!(ids.contains(&"grok-4.3"));
-        assert_eq!(ids.len(), 1, "xAI docs list exactly 1 text model");
+        // Current baked fallback lineup (live /v1/models + remote catalog override this).
+        for cur in [
+            "grok-4.3",
+            "grok-4.20-0309-reasoning",
+            "grok-4.20-0309-non-reasoning",
+            "grok-4.20-multi-agent-0309",
+            "grok-build-0.1",
+        ] {
+            assert!(ids.contains(&cur), "missing Grok model: {cur}");
+        }
+        assert_eq!(ids.len(), 5);
     }
 
     #[test]
@@ -2223,8 +2271,11 @@ mod tests {
     fn grok_reasoning_models_support_effort() {
         let p = CATALOG.iter().find(|p| p.id == "grok").unwrap();
         let by_id = |id: &str| p.default_models.iter().find(|m| m.id == id).unwrap();
-        // grok-4.3 supports configurable reasoning (none/low/med/high).
         assert!(by_id("grok-4.3").supports_effort);
+        assert!(by_id("grok-4.20-0309-reasoning").supports_effort);
+        assert!(by_id("grok-4.20-multi-agent-0309").supports_effort);
+        assert!(!by_id("grok-4.20-0309-non-reasoning").supports_effort);
+        assert!(!by_id("grok-build-0.1").supports_effort);
     }
 
     #[test]
@@ -2363,8 +2414,12 @@ mod tests {
             // ── DeepSeek (api-docs.deepseek.com 2026-05-25) ────────────────
             "deepseek-v4-pro",
             "deepseek-v4-flash",
-            // ── xAI Grok (docs.x.ai 2026-05-25) ───────────────────────────
+            // ── xAI Grok (docs.x.ai + live /v1/models, 2026-06-19) ─────────
             "grok-4.3",
+            "grok-4.20-0309-reasoning",
+            "grok-4.20-0309-non-reasoning",
+            "grok-4.20-multi-agent-0309",
+            "grok-build-0.1",
             // ── NVIDIA NIM (build.nvidia.com 2026-05-25) ───────────────────
             "deepseek-ai/deepseek-v4-pro",
             "deepseek-ai/deepseek-v4-flash",

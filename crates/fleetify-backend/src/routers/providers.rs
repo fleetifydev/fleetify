@@ -531,6 +531,7 @@ async fn discover_provider_models(id: &str) -> ProviderModelList {
     let live = match id {
         "openrouter" => discover_openrouter_models().await,
         "cloudflare-workers-ai" => discover_cloudflare_models().await,
+        "grok" => discover_grok_models().await,
         _ => Vec::new(),
     };
     if !live.is_empty() {
@@ -803,6 +804,57 @@ fn parse_openrouter_models(body: &Value) -> ProviderModelList {
                 .get("context_length")
                 .and_then(|x| x.as_u64())
                 .map(humanize_context);
+            Some(ProviderModel::basic(id, label, ctx))
+        })
+        .collect();
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
+}
+
+/// Fetch xAI's `GET {base}/models` (OpenAI-shaped: `data: [{ id, context_length }]`).
+/// Unlike OpenRouter, the xAI catalog is account-scoped and REQUIRES the key, so a
+/// missing key → empty list and the renderer falls back to the remote catalog /
+/// baked `GROK_MODELS`. Network / parse failures also degrade to empty.
+async fn discover_grok_models() -> ProviderModelList {
+    let Some(key) = crate::providers::keys::get_key("grok") else {
+        return Vec::new();
+    };
+    let base = crate::providers::find_provider("grok")
+        .map(|s| s.default_base_url)
+        .unwrap_or("https://api.x.ai/v1");
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let url = format!("{base}/models");
+    let body: Value = match client.get(&url).bearer_auth(&key).send().await {
+        Ok(r) if r.status().is_success() => match r.json().await {
+            Ok(v) => v,
+            Err(_) => return Vec::new(),
+        },
+        _ => return Vec::new(),
+    };
+    parse_grok_models(&body)
+}
+
+/// Map xAI's OpenAI-compatible `GET /v1/models` payload (`data: [{id, context_length}]`)
+/// into our `ProviderModel`s, sorted by id. Pure — unit-tested without a network call.
+fn parse_grok_models(body: &Value) -> ProviderModelList {
+    let Some(arr) = body.get("data").and_then(|d| d.as_array()) else {
+        return Vec::new();
+    };
+    let mut out: ProviderModelList = arr
+        .iter()
+        .filter_map(|m| {
+            let id = m.get("id").and_then(|x| x.as_str())?.to_string();
+            let ctx = m
+                .get("context_length")
+                .and_then(|x| x.as_u64())
+                .map(humanize_context);
+            let label = id.clone();
             Some(ProviderModel::basic(id, label, ctx))
         })
         .collect();
@@ -2206,6 +2258,24 @@ mod tests {
         assert!(parse_openrouter_models(&json!({ "data": "nope" })).is_empty());
         // An entry without an id is skipped.
         assert!(parse_openrouter_models(&json!({ "data": [{ "name": "x" }] })).is_empty());
+    }
+
+    #[test]
+    fn parse_grok_models_maps_id_and_context() {
+        let body = serde_json::json!({
+            "object": "list",
+            "data": [
+                { "id": "grok-4.3", "object": "model", "owned_by": "xai", "context_length": 1_000_000 },
+                { "id": "grok-build-0.1", "object": "model", "owned_by": "xai", "context_length": 256_000 }
+            ]
+        });
+        let out = parse_grok_models(&body);
+        assert_eq!(out.len(), 2);
+        // sorted by id → grok-4.3, then grok-build-0.1
+        assert_eq!(out[0].id, "grok-4.3");
+        assert_eq!(out[0].ctx.as_deref(), Some("1M"));
+        assert_eq!(out[1].id, "grok-build-0.1");
+        assert_eq!(out[1].ctx.as_deref(), Some("256K"));
     }
 
     #[test]
