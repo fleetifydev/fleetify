@@ -37,8 +37,8 @@ describe("/help command", () => {
     // Enter actually submits, hitting ChatInput's `submit` interception.
     fireEvent.keyDown(ta, { key: "Enter" });
     fireEvent.keyDown(ta, { key: "Enter" });
-    // Dialog opened (its header is unique to HelpDialog).
-    expect(screen.getByText("Keyboard shortcuts")).toBeInTheDocument();
+    // Dialog opened — its "Keyboard Shortcuts" tab is unique to HelpDialog.
+    expect(screen.getByRole("tab", { name: "Keyboard Shortcuts" })).toBeInTheDocument();
     // Never forwarded to the agent.
     expect(onSend).not.toHaveBeenCalled();
   });
