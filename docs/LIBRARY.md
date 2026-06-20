@@ -131,7 +131,8 @@ under the synthetic provider id `"agents"`):
 | `cursor-cli` | `~/.cursor/skills/` |
 | `hermes-agent` | `~/.hermes/skills/` (`%LOCALAPPDATA%\hermes\skills` on Windows) |
 | `antigravity-cli` (Antigravity) | `~/.gemini/antigravity-cli/skills/` |
-| *(shared)* | `~/.agents/skills/` — read by Codex (its **only** USER scope), Gemini, Copilot, Cursor and Kimi |
+| `grok-build` (Grok Build) | `~/.grok/skills/` |
+| *(shared)* | `~/.agents/skills/` — read by Codex (its **only** USER scope), Gemini, Copilot, Cursor, Kimi and Grok Build |
 
 > **Why the shared dir matters.** **Codex's USER skill scope is `~/.agents/skills`,
 > not `~/.codex/skills`** — it never reads the latter. Writing the shared copy is
@@ -205,7 +206,7 @@ The block looks like:
 |---|---|
 | `claude-code` | `~/.claude/CLAUDE.md` |
 | `gemini-cli` | `~/.gemini/GEMINI.md` |
-| `codex-cli` / `kimi-code` / `opencode` / `antigravity-cli` | `<home>/AGENTS.md` (the dominant cross-tool standard) |
+| `codex-cli` / `kimi-code` / `opencode` / `antigravity-cli` / `grok-build` | `<home>/AGENTS.md` (the dominant cross-tool standard) |
 | `github-copilot` | `~/.copilot/copilot-instructions.md` |
 | `cursor-cli` | `~/.cursor/rules/<slug>.mdc` — **standalone file**, not a merge (Cursor's per-rule format with `description` + `alwaysApply: true` frontmatter) |
 

@@ -111,7 +111,8 @@ format-specific emitter:
 | **Codex** (`bridges/codex.rs`) | `build_merged_map` → `to_codex_cli_args` → `-c mcp_servers.…` flags on `codex app-server`. |
 | **Antigravity CLI** (`bridges/antigravity.rs`) | `build_merged_map` → `to_antigravity_cli_json` → writes `~/.gemini/config/mcp_config.json`; cleans up its own keys after the turn (preserves user entries). |
 | **Antigravity SDK** (`bridges/antigravity_sdk.rs`) | `build_merged_map` → `to_sdk_mcp_servers` → Python SDK `mcp_servers` list. |
-| **HTTP-only** — OpenAI/DeepSeek/Grok/… , Perplexity, Kimi-API, Ollama | No MCP path (REST chat only). |
+| **Grok Build** (`bridges/grok_cli.rs`) | `build_merged_map` → `to_acp_servers` → `grok_acceptable_mcp` → sent in the ACP `session/new` `mcpServers`. **http/sse only** — Grok's ACP rejects stdio entries (`-32602`), so `grok_acceptable_mcp` drops any server carrying a `command`; `ensure_stdio_env` is intentionally NOT called (Grok also rejects stdio `env`). |
+| **HTTP-only** — OpenAI/DeepSeek/**Grok (REST API)**/… , Perplexity, Kimi-API, Ollama | No MCP path (REST chat only). The `grok-build` *CLI agent* is separate — see the Grok Build row above. |
 
 Hermes specifically mounts the merged map over ACP and relies on
 `ensure_stdio_env` for the `fleet_*` stdio entries — see

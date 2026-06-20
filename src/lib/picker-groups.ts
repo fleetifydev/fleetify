@@ -174,7 +174,7 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
   // backend ships (shared with the Grok HTTP provider) so the rail isn't empty
   // before live discovery lands. grok-4.3 exposes configurable reasoning
   // (none/low/medium/high); grok-build-0.1 has no effort lever.
-  "grok-cli": [
+  "grok-build": [
     {
       id: "grok-build-0.1", label: "Grok Build 0.1", ctx: "256K",
       effort: EFFORT_NONE,
@@ -212,7 +212,7 @@ const CLI_FALLBACK_LABELS: Record<string, string> = {
   "kimi-code":              "Kimi Code",
   opencode:          "OpenCode",
   "cursor-cli":            "Cursor CLI",
-  "grok-cli":              "Grok Build",
+  "grok-build":            "Grok Build",
   "antigravity-cli":               "Antigravity CLI",
   "antigravity-sdk": "Antigravity SDK",
   "hermes-agent":            "Hermes Agent",

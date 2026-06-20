@@ -1662,7 +1662,7 @@ pub static CATALOG: &[ProviderSpec] = &[
     // with an `EnvVar` auth indicator). Reuses the curated `GROK_MODELS` list
     // (shared with the Grok HTTP provider) so the picker isn't empty.
     ProviderSpec {
-        id: "grok-cli",
+        id: "grok-build",
         display_name: "Grok Build",
         kind: ProviderKind::Cli,
         default_base_url: "",

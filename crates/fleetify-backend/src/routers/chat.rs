@@ -1855,7 +1855,7 @@ async fn run_send_flow(
             }
             AnyBridge::Cursor(Arc::new(b))
         }
-        "grok-cli" => {
+        "grok-build" => {
             let is_staff = session.title == "Staff Agent";
             let mut b = crate::bridges::grok_cli::GrokCliBridge::new(
                 sid.clone(),
@@ -3248,7 +3248,7 @@ async fn run_dispatched_task(
             b.resume_session_id = target.claude_session_id.clone();
             AnyBridge::Cursor(std::sync::Arc::new(b))
         }
-        "grok-cli" => {
+        "grok-build" => {
             let mut b = crate::bridges::grok_cli::GrokCliBridge::new(
                 target_id.clone(),
                 target_cwd.clone(),

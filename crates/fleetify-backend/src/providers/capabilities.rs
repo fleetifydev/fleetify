@@ -255,7 +255,7 @@ pub fn permission_capability(provider_id: &str) -> PermissionCapability {
             modes: CURSOR_MODES,
             sandbox: None,
         },
-        "grok-cli" => PermissionCapability::Modes {
+        "grok-build" => PermissionCapability::Modes {
             modes: GROK_MODES,
             sandbox: None,
         },
@@ -329,7 +329,7 @@ pub fn effort_capability(provider_id: &str, model_id: &str) -> EffortCapability 
 /// When permission/effort changes apply for a provider's bridge (§8).
 pub fn config_timing(provider_id: &str) -> ConfigTiming {
     match provider_id {
-        "opencode" | "cursor-cli" | "grok-cli" | "hermes-agent" => ConfigTiming {
+        "opencode" | "cursor-cli" | "grok-build" | "hermes-agent" => ConfigTiming {
             permission: Apply::Live,
             effort: Apply::Live,
         },
@@ -479,7 +479,7 @@ mod tests {
             }
         );
         assert_eq!(
-            config_timing("grok-cli"),
+            config_timing("grok-build"),
             ConfigTiming {
                 permission: Apply::Live,
                 effort: Apply::Live
@@ -581,14 +581,14 @@ mod tests {
         }
         // Grok Build: the Claude-style four (default/acceptEdits/plan/
         // bypassPermissions), no sandbox.
-        match permission_capability("grok-cli") {
+        match permission_capability("grok-build") {
             PermissionCapability::Modes { modes, sandbox } => {
                 assert_eq!(modes.len(), 4);
                 assert!(modes.iter().any(|m| m.id == "plan"));
                 assert!(modes.iter().any(|m| m.id == "bypassPermissions"));
                 assert!(sandbox.is_none());
             }
-            _ => panic!("grok-cli must be Modes"),
+            _ => panic!("grok-build must be Modes"),
         }
         // HTTP-tier providers (incl. the *-api siblings of CLI agents) fall to the agentic tiers.
         assert_eq!(

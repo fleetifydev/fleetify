@@ -273,7 +273,7 @@ async fn discover_agent_models(id: &str, cwd: &str) -> (ModelList, Option<String
                 .unwrap_or_default(),
             None,
         ),
-        "grok-cli" => (
+        "grok-build" => (
             crate::bridges::grok_cli::list_models(cwd)
                 .await
                 .map(|ms| ms.into_iter().map(|m| (m.id, m.name)).collect())
@@ -336,7 +336,7 @@ pub async fn prewarm_hermes_models() {
 const LIVE_PROBE_AGENTS: &[&str] = &[
     "opencode",
     "cursor-cli",
-    "grok-cli",
+    "grok-build",
     "github-copilot",
     "hermes-agent",
 ];
@@ -1014,7 +1014,7 @@ fn scan_probe_for(id: &'static str, bin: &'static str) -> ScanProbe {
         "cursor-cli" => ScanProbe::CursorCli,
         "github-copilot" => ScanProbe::GitHubCopilotCli,
         "hermes-agent" => ScanProbe::HermesCli,
-        "grok-cli" => ScanProbe::GrokCli,
+        "grok-build" => ScanProbe::GrokCli,
         _ => ScanProbe::BinOnly { bin },
     }
 }
@@ -1586,7 +1586,7 @@ fn cli_agent_scan(id: &str, path: Option<String>) -> Value {
 /// `cli_agent_scan`, but auth OR-s the keyring-stored shared xAI key on top of
 /// the catalog's `auth_indicators` — mirroring `scan_all_agents`'
 /// `ScanProbe::GrokCli` branch verbatim so `/providers/scan` (onboarding) and
-/// `/agents/scan` (Settings) agree on whether grok-cli is authenticated.
+/// `/agents/scan` (Settings) agree on whether grok-build is authenticated.
 fn cli_agent_scan_grok(path: Option<String>) -> Value {
     let Some(p) = path else {
         return json!({ "installed": false, "authenticated": false, "path": null });
@@ -1595,7 +1595,7 @@ fn cli_agent_scan_grok(path: Option<String>) -> Value {
     let authed = keyring_authed
         || crate::providers::list_cli_agents()
             .into_iter()
-            .find(|s| s.id == "grok-cli")
+            .find(|s| s.id == "grok-build")
             .map(|spec| indicators_authenticated(&home(), spec.auth_indicators))
             .unwrap_or(false);
     json!({ "installed": true, "authenticated": authed, "path": p })
@@ -1993,7 +1993,7 @@ mod tests {
         for a in [
             "opencode",
             "cursor-cli",
-            "grok-cli",
+            "grok-build",
             "github-copilot",
             "hermes-agent",
         ] {
@@ -2070,7 +2070,7 @@ mod tests {
                 }
                 ("cursor-cli", ScanProbe::CursorCli) => {}
                 ("hermes-agent", ScanProbe::HermesCli) => {}
-                ("grok-cli", ScanProbe::GrokCli) => {}
+                ("grok-build", ScanProbe::GrokCli) => {}
                 (other, _) => panic!("unmapped CLI id in scan_probe_for: {other}"),
             }
         }
@@ -2105,7 +2105,7 @@ mod tests {
 
     #[tokio::test]
     async fn scan_probe_for_grok_uses_grok_cli_variant() {
-        let probe = scan_probe_for("grok-cli", "grok");
+        let probe = scan_probe_for("grok-build", "grok");
         assert!(
             matches!(probe, ScanProbe::GrokCli),
             "grok must use GrokCli probe (binary off-PATH at ~/.local/bin, keyring auth)"

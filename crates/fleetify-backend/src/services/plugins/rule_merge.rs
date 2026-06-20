@@ -33,7 +33,7 @@ pub fn rule_file(provider: &str) -> Option<PathBuf> {
     let name = match provider {
         "claude-code" => "CLAUDE.md",
         "gemini-cli" => "GEMINI.md",
-        "codex-cli" | "kimi-code" | "opencode" | "antigravity-cli" => "AGENTS.md",
+        "codex-cli" | "kimi-code" | "opencode" | "antigravity-cli" | "grok-build" => "AGENTS.md",
         "github-copilot" => "copilot-instructions.md",
         _ => return None,
     };
@@ -50,7 +50,9 @@ pub fn project_rule_file(provider: &str, dir: &Path) -> Option<PathBuf> {
     let p = match provider {
         "claude-code" => dir.join("CLAUDE.md"),
         "gemini-cli" => dir.join("GEMINI.md"),
-        "codex-cli" | "kimi-code" | "opencode" | "antigravity-cli" => dir.join("AGENTS.md"),
+        "codex-cli" | "kimi-code" | "opencode" | "antigravity-cli" | "grok-build" => {
+            dir.join("AGENTS.md")
+        }
         "github-copilot" => dir.join(".github").join("copilot-instructions.md"),
         _ => return None,
     };

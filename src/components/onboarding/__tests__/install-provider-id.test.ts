@@ -105,7 +105,7 @@ describe("OnboardingChat install IPC", () => {
     // The full workspace catalog (22 ids — must match providers::CATALOG).
     const catalog = [
       "claude-code", "codex-cli", "gemini-cli", "kimi-code", "opencode", "github-copilot",
-      "cursor-cli", "grok-cli", "hermes-agent", "antigravity-cli", "antigravity-sdk",
+      "cursor-cli", "grok-build", "hermes-agent", "antigravity-cli", "antigravity-sdk",
       "openai", "anthropic", "deepseek", "grok", "nvidia-nim", "kimi-api",
       "gemini-api", "perplexity", "openrouter", "cloudflare-workers-ai",
       "ollama",
@@ -239,8 +239,8 @@ describe("OnboardingChat install IPC", () => {
     const block = onboardingSrc.match(/const PROVIDERS:\s*ProviderDef\[\]\s*=\s*\[([\s\S]*?)\];/);
     expect(block).not.toBeNull();
     const rows = block![1].split(/},\s*/);
-    const grokRow = rows.find((r) => /id:\s*"grok-cli"/.test(r));
-    expect(grokRow, "grok-cli tile not found in PROVIDERS").toBeDefined();
+    const grokRow = rows.find((r) => /id:\s*"grok-build"/.test(r));
+    expect(grokRow, "grok-build tile not found in PROVIDERS").toBeDefined();
     expect(grokRow!).toMatch(/label:\s*"Grok Build"/);
     expect(grokRow!).toMatch(/logo:\s*"grok"/);
     expect(grokRow!).toMatch(/kind:\s*"cli"/);

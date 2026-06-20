@@ -416,11 +416,11 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
     case "openai":     return <OpenAILogo size={size} />;
     case "groq":       return <GroqLogo size={size} />;
     case "deepseek":   return <ImgIcon src={deepseekIcon} size={size} label="DeepSeek" />;
-    // Grok Build (the `grok-cli` ACP agent) is xAI's coding agent — reuse the
+    // Grok Build (the `grok-build` ACP agent) is xAI's coding agent — reuse the
     // Grok API provider's mark so it's consistent across Settings, the model
     // picker, and the toolbar.
     case "grok":
-    case "grok-cli":   return <ThemedImgIcon light={grokIcon} dark={grokDarkIcon} size={size} label="Grok" />;
+    case "grok-build": return <ThemedImgIcon light={grokIcon} dark={grokDarkIcon} size={size} label="Grok" />;
     case "nvidia-nim": return <ImgIcon src={nvidiaIcon} size={size} label="NVIDIA" />;
     case "perplexity": return <ImgIcon src={perplexityIcon} size={size} label="Perplexity" />;
     case "gemini-api": return <ImgIcon src={geminiIcon} size={size} label="Gemini" />;
@@ -446,6 +446,7 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
 export function providerName(tool: string): string {
   const names: Record<string, string> = {
     "claude-code": "Claude Code", "codex-cli": "Codex", "cursor-cli": "Cursor", "gemini-cli": "Gemini CLI",
+    "grok-build": "Grok Build",
     ollama: "Ollama", "kimi-code": "Kimi Code", "antigravity-cli": "Antigravity CLI",
     "antigravity-sdk": "Antigravity SDK",
     opencode: "OpenCode", "github-copilot": "GitHub Copilot", aider: "Aider",

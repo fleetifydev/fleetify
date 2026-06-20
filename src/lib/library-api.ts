@@ -132,14 +132,19 @@ export interface CreateLibraryItem {
  *  it carries no picker. Kept here (next to the types) so the dialog and any
  *  validation read the same source of truth. */
 export const PROVIDERS_FOR_KIND: Record<LibraryKind, Provider[]> = {
-  skill: ["claude-code", "codex-cli", "gemini-cli", "kimi-code", "opencode", "github-copilot", "cursor-cli", "hermes-agent", "antigravity-cli"],
+  skill: ["claude-code", "codex-cli", "gemini-cli", "kimi-code", "opencode", "github-copilot", "cursor-cli", "hermes-agent", "antigravity-cli", "grok-build"],
+  // Grok Build's native hook DEFINITION format (`~/.grok/hooks/`) is documented
+  // in-app only, so it's omitted here pending schema confirmation — Grok already
+  // reads Claude Code hooks via its zero-config compatibility in the meantime.
   hook: ["claude-code", "gemini-cli", "codex-cli", "cursor-cli", "kimi-code", "antigravity-cli", "github-copilot", "opencode", "hermes-agent"],
-  // Sub-agents need an on-disk `agents/` surface — Kimi/Hermes have none.
+  // Sub-agents need an on-disk `agents/` surface — Kimi/Hermes have none, and
+  // Grok's native subagent dir/format isn't publicly documented yet.
   subagent: ["claude-code", "codex-cli", "gemini-cli", "opencode", "github-copilot", "cursor-cli", "antigravity-cli"],
   // The Rule modal's *General* tab — the plain-markdown providers
   // (CLAUDE.md / GEMINI.md / AGENTS.md). Cursor + GitHub Copilot have their own
-  // tabs (distinct on-disk formats), so they're not in this multi-select.
-  rule: ["claude-code", "gemini-cli", "codex-cli", "kimi-code", "opencode", "antigravity-cli"],
+  // tabs (distinct on-disk formats), so they're not in this multi-select. Grok
+  // Build reads the AGENTS.md family (`~/.grok/AGENTS.md`).
+  rule: ["claude-code", "gemini-cli", "codex-cli", "kimi-code", "opencode", "antigravity-cli", "grok-build"],
   prompt: [],
   template: [],
 };

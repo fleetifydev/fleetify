@@ -30,6 +30,7 @@ pub const COMPONENT_PROVIDERS: &[&str] = &[
     "cursor-cli",
     "hermes-agent",
     "antigravity-cli",
+    "grok-build",
 ];
 
 /// How a provider consumes lifecycle hooks. Drives the materializer's
@@ -83,6 +84,11 @@ pub fn provider_home(provider: &str) -> Option<PathBuf> {
         "hermes-agent" => hermes_home(&h),
         // Antigravity CLI stages everything under the Gemini namespace.
         "antigravity-cli" => h.join(".gemini").join("antigravity-cli"),
+        // Grok Build reads skills from `~/.grok/skills/` and instruction files
+        // (the AGENTS.md family) from `~/.grok/` — xAI docs: "Skills, Plugins &
+        // Marketplaces". Routing id is `grok-build`; vendor dotdir is `.grok`
+        // (see `component_basename`).
+        "grok-build" => h.join(".grok"),
         _ => return None,
     };
     Some(p)
@@ -104,6 +110,9 @@ pub fn component_basename(provider: &str) -> &str {
         "cursor-cli" => "cursor",
         "hermes-agent" => "hermes",
         "antigravity-cli" => "agy",
+        // Routing id `grok-build` → vendor dotdir `.grok` (xAI ships skills under
+        // `.grok/skills/`, matching the agent's on-disk read path).
+        "grok-build" => "grok",
         other => other,
     }
 }
@@ -358,6 +367,21 @@ mod tests {
             assert!(provider_home("antigravity-cli")
                 .unwrap()
                 .ends_with("antigravity-cli"));
+        });
+    }
+
+    #[test]
+    fn grok_build_materializes_to_dot_grok() {
+        with_home(|| {
+            // Routing id `grok-build` → on-disk vendor dir `.grok` (xAI docs:
+            // skills live in `~/.grok/skills/`, instructions in `~/.grok/`).
+            assert!(provider_home("grok-build").unwrap().ends_with(".grok"));
+            assert_eq!(component_basename("grok-build"), "grok");
+            assert!(skills_dir("grok-build").unwrap().ends_with(".grok/skills"));
+            // Hooks are deferred — Grok's native `~/.grok/hooks/` definition
+            // format is documented in-app only, so the strategy stays Unsupported
+            // (Grok still reads Claude Code hooks via zero-config compatibility).
+            assert_eq!(hook_strategy("grok-build"), HookStrategy::Unsupported);
         });
     }
 

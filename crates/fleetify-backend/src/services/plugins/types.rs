@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// Every provider id a manifest's `providers` array may name. The first
-/// nine are CLI agents whose components materialize to an on-disk home
+/// ten are CLI agents whose components materialize to an on-disk home
 /// (see `plugins::providers`); `antigravity-sdk` is MCP-only (no home),
 /// valid in `providers` so MCP-only plugins can target it.
 pub const KNOWN_PROVIDERS: &[&str] = &[
@@ -24,6 +24,7 @@ pub const KNOWN_PROVIDERS: &[&str] = &[
     "cursor-cli",
     "hermes-agent",
     "antigravity-cli",
+    "grok-build",
     "antigravity-sdk",
 ];
 
