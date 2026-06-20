@@ -416,7 +416,11 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
     case "openai":     return <OpenAILogo size={size} />;
     case "groq":       return <GroqLogo size={size} />;
     case "deepseek":   return <ImgIcon src={deepseekIcon} size={size} label="DeepSeek" />;
-    case "grok":       return <ThemedImgIcon light={grokIcon} dark={grokDarkIcon} size={size} label="Grok" />;
+    // Grok Build (the `grok-cli` ACP agent) is xAI's coding agent — reuse the
+    // Grok API provider's mark so it's consistent across Settings, the model
+    // picker, and the toolbar.
+    case "grok":
+    case "grok-cli":   return <ThemedImgIcon light={grokIcon} dark={grokDarkIcon} size={size} label="Grok" />;
     case "nvidia-nim": return <ImgIcon src={nvidiaIcon} size={size} label="NVIDIA" />;
     case "perplexity": return <ImgIcon src={perplexityIcon} size={size} label="Perplexity" />;
     case "gemini-api": return <ImgIcon src={geminiIcon} size={size} label="Gemini" />;

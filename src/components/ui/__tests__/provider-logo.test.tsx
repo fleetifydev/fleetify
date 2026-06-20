@@ -103,6 +103,8 @@ describe("ProviderLogo — model-provider brand icons", () => {
 
   it.each([
     ["grok", "Grok"],
+    // Grok Build (the `grok-cli` ACP agent) reuses the Grok API provider's mark.
+    ["grok-cli", "Grok"],
     ["opencode", "OpenCode"],
   ])("swaps %s between a light and dark asset by theme", (tool, label) => {
     const { setTheme } = useThemeStore.getState();
