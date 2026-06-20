@@ -20,14 +20,18 @@ import {
   SESSION_CMDS_COMMON,
   type SlashCmdDef,
 } from "@/lib/slash-commands";
+import { ProviderLogo } from "@/components/ui/provider-logo";
 
 const SHORTCUT_ORDER: ShortcutGroup[] = ["Navigation", "Layout & panels", "Git & PRs", "Agents"];
 
-const SESSION_GROUPS: { label: string; cmds: SlashCmdDef[] }[] = [
+// Session commands grouped by provider. `tool` is the ProviderLogo id whose
+// brand mark renders left of the header; "Common" is provider-agnostic, so it
+// carries none.
+const SESSION_GROUPS: { label: string; tool?: string; cmds: SlashCmdDef[] }[] = [
   { label: "Common", cmds: [...SESSION_CMDS_BASE, ...SESSION_CMDS_COMMON] },
-  { label: "Claude Code", cmds: SESSION_CMDS_BY_TOOL["claude-code"] },
-  { label: "Codex CLI", cmds: SESSION_CMDS_BY_TOOL["codex-cli"] },
-  { label: "Gemini CLI", cmds: SESSION_CMDS_BY_TOOL["gemini-cli"] },
+  { label: "Claude Code", tool: "claude-code", cmds: SESSION_CMDS_BY_TOOL["claude-code"] },
+  { label: "Codex CLI", tool: "codex-cli", cmds: SESSION_CMDS_BY_TOOL["codex-cli"] },
+  { label: "Gemini CLI", tool: "gemini-cli", cmds: SESSION_CMDS_BY_TOOL["gemini-cli"] },
 ];
 
 type TabKey = "shortcuts" | "fleet" | "session";
@@ -114,7 +118,7 @@ export function HelpDialog({ open, onClose }: { open: boolean; onClose: () => vo
             SESSION_GROUPS.map((g) =>
               g.cmds.length === 0 ? null : (
                 <div key={g.label} style={{ marginBottom: 10 }}>
-                  <SubHeader text={g.label} />
+                  <SubHeader text={g.label} tool={g.tool} />
                   {g.cmds.map((c) => <CmdRow key={`${g.label}:${c.cmd}`} cmd={c.cmd} desc={c.desc} />)}
                 </div>
               ),
@@ -125,8 +129,17 @@ export function HelpDialog({ open, onClose }: { open: boolean; onClose: () => vo
   );
 }
 
-function SubHeader({ text }: { text: string }) {
-  return <div style={subHeader}>{text}</div>;
+function SubHeader({ text, tool }: { text: string; tool?: string }) {
+  if (!tool) return <div style={subHeader}>{text}</div>;
+  // Provider groups carry their brand mark left of the label. The icon keeps
+  // its own colour (it's not subject to the header's ghost fill), but inherits
+  // the header's faded opacity so it reads as part of the same quiet label.
+  return (
+    <div style={subHeaderWithIcon}>
+      <ProviderLogo tool={tool} size={13} />
+      {text}
+    </div>
+  );
 }
 
 function CmdRow({ cmd, desc }: { cmd: string; desc: string }) {
@@ -146,6 +159,7 @@ const tabBar: React.CSSProperties = { display: "flex", alignItems: "center", gap
 const closeBtn: React.CSSProperties = { background: "none", border: "none", cursor: "pointer", color: "var(--c-dim)", display: "flex", flexShrink: 0, marginLeft: "auto" };
 const body: React.CSSProperties = { flex: 1, minHeight: 0, overflowY: "auto", padding: "12px 14px" };
 const subHeader: React.CSSProperties = { fontSize: 9.5, fontWeight: 700, color: "var(--c-ghost)", letterSpacing: "0.06em", textTransform: "uppercase", padding: "2px 2px 4px", opacity: 0.6 };
+const subHeaderWithIcon: React.CSSProperties = { ...subHeader, display: "flex", alignItems: "center", gap: 6 };
 const rowStyle: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "4px 2px" };
 const rowDesc: React.CSSProperties = { fontSize: 12.5, color: "var(--c-low)", flex: 1, minWidth: 0 };
 const cmdName: React.CSSProperties = { fontSize: 12, fontFamily: "var(--font-mono)", color: "var(--c-med)", flexShrink: 0 };

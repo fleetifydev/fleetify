@@ -34,6 +34,17 @@ describe("HelpDialog", () => {
     expect(screen.queryByText("/new")).not.toBeInTheDocument();
   });
 
+  it("shows a provider icon beside each provider header on the Session tab", () => {
+    render(<HelpDialog open onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Session Commands" }));
+
+    // Each provider group renders its brand mark left of the header. The
+    // "Common" group has no provider, so it carries no icon.
+    expect(screen.getByAltText("Claude Code")).toBeInTheDocument();
+    expect(screen.getByAltText("Codex")).toBeInTheDocument();
+    expect(screen.getByAltText("Gemini")).toBeInTheDocument();
+  });
+
   it("closes on Escape and on overlay click", () => {
     const onClose = vi.fn();
     const { container } = render(<HelpDialog open onClose={onClose} />);
