@@ -564,6 +564,12 @@ body {
 @keyframes spin { to { transform: rotate(360deg); } }
 .spin { animation: spin 0.9s linear infinite; }
 
+/* Indeterminate loading bar (embedded browser page-load) */
+@keyframes fleet-indeterminate {
+  0%   { left: -35%; }
+  100% { left: 100%; }
+}
+
 /* Prompt-enhance border-trace.
    While the wand is generating a rewrite, an SVG <rect> overlays
    the chat input wrapper with a soft white segment that drifts
@@ -849,6 +855,11 @@ body {
 }
 .msg-in { animation: msg-in 0.14s cubic-bezier(0.22, 1, 0.36, 1) both; }
 
+/* Browser pane address bar — clear, legible placeholder on the borderless
+   (bar-coloured) URL field so it reads as an address bar without any box. */
+.browser-url-input::placeholder { color: #8a8a8a; opacity: 1; }
+.browser-url-input::-webkit-input-placeholder { color: #8a8a8a; opacity: 1; }
+
 /* ─── Scrollbar — global (hidden by default, appear on hover) ─── */
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -871,6 +882,28 @@ pre *::selection, code *::selection,
 td *::selection, th *::selection {
   background: var(--selection-bg-soft);
   color: var(--selection-fg);
+}
+
+/* ─── Selection discipline (native-app feel) ───
+   By DEFAULT nothing is selectable — UI chrome (toolbars, pills, labels,
+   icons, the composer frame, gaps between bubbles) never smears a drag
+   highlight. Only REAL text opts back in: editable fields and content prose
+   (paragraphs, lists, code, tables, headings, quotes, links). The chat's
+   right-click "quote selection" menu still works because message text stays
+   selectable. */
+body { user-select: none; -webkit-user-select: none; }
+input, textarea, select, [contenteditable], [contenteditable] *,
+p, li, pre, code, kbd, samp, dd, dt, figcaption,
+h1, h2, h3, h4, h5, h6, blockquote, a,
+.markdown, .markdown *, .selectable, .selectable * {
+  user-select: text; -webkit-user-select: text;
+}
+/* Native table selection fills whole cells (padding + chrome) as solid
+   blocks — not "just the text". Keep tables OUT of selection so a drag stays
+   clean; the message-level copy still grabs the table content. */
+table, thead, tbody, tr, td, th,
+.markdown table, .markdown td, .markdown th {
+  user-select: none; -webkit-user-select: none;
 }
 
 /* ─── Electron drag ─── */

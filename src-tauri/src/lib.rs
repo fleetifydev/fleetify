@@ -107,6 +107,14 @@ pub fn run() {
             shell::ipc::shell_open_external,
             shell::ipc::shell_show_item_in_folder,
             shell::ipc::clipboard_write,
+            shell::ipc::browser_embed_create,
+            shell::ipc::browser_embed_navigate,
+            shell::ipc::browser_embed_set_bounds,
+            shell::ipc::browser_embed_set_select,
+            shell::ipc::browser_embed_nav,
+            shell::ipc::browser_embed_devtools,
+            shell::ipc::browser_embed_clear_data,
+            shell::ipc::browser_embed_close,
             shell::ipc::window_start_dragging,
             shell::ipc::window_minimize,
             shell::ipc::window_maximize,
@@ -340,6 +348,23 @@ pub fn run() {
                     }
                 }
             });
+
+            // Let the backend's agent `read_page` read the OPEN panel page
+            // straight from the native webview (what the user sees), instead of
+            // the separate headless CDP page. The backend stays Tauri-agnostic;
+            // it just calls this boxed closure.
+            {
+                let reader_handle = app.handle().clone();
+                fleetify_backend::services::browser::set_embedded_reader(Box::new(move || {
+                    let app = reader_handle.clone();
+                    Box::pin(crate::shell::ipc::read_embedded_page(app))
+                }));
+                let nav_handle = app.handle().clone();
+                fleetify_backend::services::browser::set_embedded_navigator(Box::new(move |url| {
+                    let app = nav_handle.clone();
+                    Box::pin(crate::shell::ipc::navigate_embedded_page(app, url))
+                }));
+            }
 
             // Boot-time providers warm-up: hydrate PROVIDER_KEYS from
             // the keychain and prime HttpHealthCache so the first chat

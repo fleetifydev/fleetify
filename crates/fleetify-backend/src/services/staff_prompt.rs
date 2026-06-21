@@ -256,9 +256,117 @@ The fleet has a per-project memory layer that survives across sessions.
         idle = idle,
         agent_list = agent_list,
     );
+    // Append the personal-assistant layer: who the user is, what Fleet knows
+    // about them, their projects/activity, and the companion-mode guidance that
+    // lets Fleet answer non-coding talk directly (scopes the "you don't do the
+    // work yourself" dispatch rules to project/code work only).
+    let prompt = format!("{prompt}{}", personal_context(pool, user_id).await);
     with_fleet_rules(
         prompt,
         crate::services::fleet_rules::read_for_prompt(&fleetify_core::fleetify_home()).as_deref(),
+    )
+}
+
+/// Build the personal-assistant + companion section appended to the staff
+/// prompt. Empty-safe: with no user it still emits the companion guidance so
+/// non-coding talk is handled directly.
+async fn personal_context(pool: &SqlitePool, user_id: Option<&str>) -> String {
+    let uid = match user_id {
+        Some(u) => u,
+        None => return String::new(),
+    };
+
+    // Name (fall back to a neutral address).
+    let name: String =
+        sqlx::query_as::<_, (Option<String>,)>("SELECT name FROM users WHERE id = ?")
+            .bind(uid)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|(n,)| n)
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| "the user".to_string());
+
+    // Personal memory.
+    let memory = crate::services::user_memory::top_for_prompt(pool, uid, 25).await;
+    let memory_block = if memory.trim().is_empty() {
+        "Nothing saved yet — learn about them as you go.".to_string()
+    } else {
+        memory
+    };
+
+    // Projects.
+    let projects = crate::services::spawn::known_project_paths(pool, Some(uid)).await;
+    let projects_block = if projects.is_empty() {
+        "  (no projects yet)".to_string()
+    } else {
+        projects
+            .iter()
+            .map(|p| format!("  - {p}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    // Recent cross-project activity (last 15 across all the user's sessions).
+    let activity: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT a.kind, a.summary, a.ts FROM session_activity a \
+         JOIN sessions s ON s.id = a.session_id \
+         WHERE s.user_id = ? ORDER BY a.ts DESC LIMIT 15",
+    )
+    .bind(uid)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let activity_block = if activity.is_empty() {
+        "  (no recent activity)".to_string()
+    } else {
+        activity
+            .iter()
+            .map(|(kind, summary, _ts)| format!("  - [{kind}] {summary}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    format!(
+        r#"
+
+---
+
+## Beyond the fleet — you're {name}'s assistant & companion
+You're not ONLY the orchestrator. To {name} you're a personal assistant and a
+close, trusted friend who happens to also run their engineering shop. So:
+
+- **Code / project work → orchestrate.** The "you DO NOT do the work yourself,
+  you DISPATCH" rules above apply ONLY to work on a codebase or project. There,
+  dispatch as instructed.
+- **Everything else → just talk.** Personal questions, advice, planning,
+  brainstorming, life, how their day is going, questions about Fleet itself —
+  answer DIRECTLY, warmly, in your own voice. Do NOT dispatch an agent for
+  these, and the "don't answer with your own analysis" rule does NOT apply.
+- Use what you know about {name} (below) to be genuinely helpful and personal.
+  Pick up the threads of their work and life; remember where you left off.
+- When {name} shares something durable worth keeping (a preference, goal, fact
+  about them, or says "remember…"), emit a token in your reply:
+  `[[REMEMBER_USER:kind|title|content]]`
+  kind ∈ preference, stack, goal, working_style, interest, life_context, thread,
+  fact. One token per fact, short title, one-sentence content. Then carry on
+  naturally — don't make a fuss about saving it.
+
+### You're talking to {name}.
+
+### What you know about {name}
+{memory_block}
+
+### {name}'s projects
+{projects_block}
+
+### Recent activity across the fleet
+{activity_block}"#,
+        name = name,
+        memory_block = memory_block,
+        projects_block = projects_block,
+        activity_block = activity_block,
     )
 }
 

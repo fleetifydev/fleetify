@@ -7,7 +7,7 @@
  * dot, per-row external-open. Selection is owned by BranchStrip.
  */
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, ExternalLink } from "lucide-react";
+import { Check, ChevronDown, ExternalLink, GitPullRequest } from "lucide-react";
 import type { RepoPr } from "@/stores/pr-store";
 import type { PRStatus } from "@/lib/git-api";
 
@@ -27,6 +27,22 @@ export function prIconColor(pr: PRStatus | null): string {
   return "rgb(64,180,120)";
 }
 
+/** Labeled status for the chip pill: a state WORD + its text colour + a
+ *  faint matching background tint. Replaces the bare 6px coloured dot —
+ *  the word spells out what the colour meant ("Open", "Draft", "Conflict",
+ *  …) so the PR's state reads at a glance instead of decoding a dot. */
+export type PrStateLabel = { word: string; color: string; tint: string };
+export function prStateLabel(pr: PRStatus | null): PrStateLabel {
+  if (!pr) return { word: "PR", color: "var(--c-low)", tint: "rgba(var(--fg-rgb),0.06)" };
+  if (pr.state === "MERGED") return { word: "Merged", color: "#a78bfa", tint: "rgba(167,139,250,0.13)" };
+  if (pr.state === "CLOSED") return { word: "Closed", color: "#f87171", tint: "rgba(248,113,113,0.13)" };
+  if (pr.isDraft) return { word: "Draft", color: "var(--c-dim)", tint: "rgba(var(--fg-rgb),0.06)" };
+  if (pr.checks.failing > 0) return { word: "Failing", color: "#f87171", tint: "rgba(248,113,113,0.13)" };
+  if (pr.mergeable === "CONFLICTING") return { word: "Conflict", color: "#fb923c", tint: "rgba(251,146,60,0.13)" };
+  if (pr.checks.pending > 0) return { word: "Pending", color: "#fbbf24", tint: "rgba(251,191,36,0.13)" };
+  return { word: "Open", color: "rgb(64,180,120)", tint: "rgba(64,180,120,0.13)" };
+}
+
 export function PrSwitcherChip({ openPrs, selectedNumber, selectedStatus, onSelect, onOpenUrl }: {
   openPrs: RepoPr[];
   selectedNumber: number;
@@ -38,15 +54,20 @@ export function PrSwitcherChip({ openPrs, selectedNumber, selectedStatus, onSele
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
 
-  // Chip dot — the detailed PRStatus drives it once loaded; until then
-  // fall back to the prList entry so a draft still reads gray (not the
-  // "unknown" low-gray) during the first detail-poll window.
+  // Chip label — the detailed PRStatus drives the state word + colour
+  // once loaded; until then fall back to the prList entry so a draft
+  // still reads "Draft" (not the "unknown" low-gray) during the first
+  // detail-poll window.
   const selectedRepo = openPrs.find(p => p.number === selectedNumber) ?? null;
-  const dotColor = selectedStatus
-    ? prIconColor(selectedStatus)
+  const label: PrStateLabel = selectedStatus
+    ? prStateLabel(selectedStatus)
     : selectedRepo
-      ? (selectedRepo.isDraft ? DRAFT_DOT : "rgb(64,180,120)")
-      : "var(--c-low)";
+      ? (selectedRepo.isDraft
+          ? { word: "Draft", color: "var(--c-dim)", tint: "rgba(var(--fg-rgb),0.06)" }
+          : selectedRepo.mergeable === "CONFLICTING"
+            ? { word: "Conflict", color: "#fb923c", tint: "rgba(251,146,60,0.13)" }
+            : { word: "Open", color: "rgb(64,180,120)", tint: "rgba(64,180,120,0.13)" })
+      : { word: "PR", color: "var(--c-low)", tint: "rgba(var(--fg-rgb),0.06)" };
 
   useEffect(() => {
     if (!open) return;
@@ -63,27 +84,32 @@ export function PrSwitcherChip({ openPrs, selectedNumber, selectedStatus, onSele
         onClick={() => setOpen(o => !o)}
         onMouseDown={e => e.preventDefault()}
         aria-label="Switch pull request"
-        title={`${openPrs.length} open PR${openPrs.length > 1 ? "s" : ""} — click to switch`}
+        title={`#${selectedNumber} · ${label.word} — ${openPrs.length} open PR${openPrs.length > 1 ? "s" : ""}, click to switch`}
         style={{
-          // Flat inline trigger — no pill/box (per user request). Matches
-          // the strip's quiet breadcrumb language: dot + mono #N + chevron;
-          // hover brightens the text like the other inline actions.
-          display: "inline-flex", alignItems: "center", gap: 5,
-          padding: 0,
-          background: "transparent",
-          border: "none",
+          // Labeled status pill — a tinted rounded chip carrying the PR
+          // icon, #N, and the spelled-out state word (coloured by state).
+          // Replaces the bare dot + #N: the word explains the colour, and
+          // the single chip consolidates the PR identity so the merge
+          // cluster on the right no longer needs to repeat #N.
+          display: "inline-flex", alignItems: "center", gap: 4,
+          padding: "1.5px 7px",
+          background: label.tint,
+          border: "1px solid transparent",
+          borderRadius: 999,
           color: "var(--c-med)", cursor: "pointer",
           fontSize: 11.5, fontWeight: 500, fontFamily: "var(--font-mono)",
           outline: "none",
-          transition: "color 0.12s",
+          transition: "filter 0.12s",
         }}
-        onMouseEnter={e => { e.currentTarget.style.color = "var(--c-high)"; }}
-        onMouseLeave={e => { e.currentTarget.style.color = "var(--c-med)"; }}
+        onMouseEnter={e => { e.currentTarget.style.filter = "brightness(1.18)"; }}
+        onMouseLeave={e => { e.currentTarget.style.filter = "none"; }}
       >
-        <span style={{ width: 6, height: 6, borderRadius: 999, background: dotColor, flexShrink: 0 }} />
-        #{selectedNumber}
+        <GitPullRequest size={11} strokeWidth={2} style={{ color: label.color, flexShrink: 0 }} />
+        <span style={{ color: "var(--c-med)" }}>#{selectedNumber}</span>
+        <span aria-hidden style={{ opacity: 0.4 }}>·</span>
+        <span style={{ color: label.color, fontWeight: 600 }}>{label.word}</span>
         <ChevronDown size={10} strokeWidth={2.25} style={{
-          opacity: 0.7,
+          opacity: 0.6,
           transform: open ? "rotate(180deg)" : "none",
           transition: "transform 0.15s",
         }} />

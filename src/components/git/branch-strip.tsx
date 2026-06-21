@@ -2002,7 +2002,9 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
             Open · #{effSelectedRepoPr.number} <ExternalLink size={11} strokeWidth={1.85} />
           </ActionBtn>
           {/* Hairline-dot separator matches the Review · Create PR rhythm so
-              Open and Merge read as two distinct actions, not one run-on. */}
+              View and Merge read as two distinct actions, not one run-on.
+              #N is dropped here — the status pill on the left already shows
+              it, so repeating it on the right was redundant noise. */}
           <span aria-hidden style={{ opacity: 0.4 }}>·</span>
           {canResolve ? (
             <ActionBtn onClick={onResolveAndMerge} primary accent="purple"
@@ -2034,7 +2036,7 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
       mergeSlot = (
         <>
           <ActionBtn onClick={onOpenPR} title={`Open #${pr.number} on GitHub`}>
-            Open · #{pr.number} <ExternalLink size={11} strokeWidth={1.85} />
+            View <ExternalLink size={11} strokeWidth={1.85} />
           </ActionBtn>
           {isWorktree ? (
             // Worktree boot-into-merged affordance. When the app opens a
@@ -2091,21 +2093,26 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
         color: "var(--c-low)",
         fontSize: 12,
       }}>
-        {/* Branch glyph — FAR LEFT (per user request); small, transparent
-            chip; the icon itself carries the leading-status signal.
-            Colour shifts with PR state so MERGED / CLOSED stay legible
-            at a glance. */}
-        <span style={{
-          width: 18, height: 18, borderRadius: 5,
-          display: "inline-flex", alignItems: "center", justifyContent: "center",
-          background: "transparent",
-          color: githubConnected && (pr?.state === "MERGED" || pr?.state === "CLOSED") ? prIconColor(pr) : "var(--c-low)",
-          flexShrink: 0,
-        }}>
-          {githubConnected && pr?.state === "MERGED" ? <Check size={12} strokeWidth={2.5} />
-            : githubConnected && pr?.state === "CLOSED" ? <X size={12} strokeWidth={2.5} />
-            : <GitBranch size={12} strokeWidth={1.85} />}
-        </span>
+        {/* Branch glyph — FAR LEFT; small, transparent chip. Suppressed
+            when the labeled PR pill is shown (below): the pill already
+            carries a PR icon + the state colour, so a second standalone
+            glyph next to it just doubled up. We keep the glyph only when
+            there's no pill (no open PR, or the branch PR is MERGED/CLOSED
+            and not in the open-PR list) so that state still reads at a
+            glance. */}
+        {!(openPrsList.length > 0 && effectiveSelectedNumber != null) && (
+          <span style={{
+            width: 18, height: 18, borderRadius: 5,
+            display: "inline-flex", alignItems: "center", justifyContent: "center",
+            background: "transparent",
+            color: githubConnected && (pr?.state === "MERGED" || pr?.state === "CLOSED") ? prIconColor(pr) : "var(--c-low)",
+            flexShrink: 0,
+          }}>
+            {githubConnected && pr?.state === "MERGED" ? <Check size={12} strokeWidth={2.5} />
+              : githubConnected && pr?.state === "CLOSED" ? <X size={12} strokeWidth={2.5} />
+              : <GitBranch size={12} strokeWidth={1.85} />}
+          </span>
+        )}
 
         {/* PR switcher — right of the glyph: selected open PR + status
             dot, popover lists every open PR in the repo (spec §6). Only

@@ -18,8 +18,8 @@ import { useChatStore } from "@/stores/chat-store";
 export function CompactionPill({ sessionId }: { sessionId: string }) {
   const pill = useChatStore(s => s.sessions[sessionId]?.compactionPill ?? null);
 
-  // Tick once a second while running so the elapsed-seconds suffix stays
-  // current without re-rendering at 60Hz.
+  // Tick every second while running so the 5-second elapsed step lands
+  // promptly; the displayed value only changes on each 5s boundary.
   const [, force] = useState(0);
   useEffect(() => {
     if (!pill || pill.state !== "running") return;
@@ -30,73 +30,47 @@ export function CompactionPill({ sessionId }: { sessionId: string }) {
   // Only the running state renders here.
   if (!pill || pill.state !== "running") return null;
 
-  const elapsedSec = Math.max(
-    0,
-    Math.round((Date.now() - pill.startedAt) / 1000),
-  );
-  const pct =
-    typeof pill.pct === "number" ? Math.max(0, Math.min(100, pill.pct)) : 0;
-  // Same string in the node and in data-label — the .status-sheen sweep
-  // overlays a ::after whose content is attr(data-label).
+  const elapsed = Math.max(0, Date.now() - pill.startedAt);
   const label = "Compacting conversation…";
 
-  const MONO = "var(--font-mono, ui-monospace, SFMono-Regular, monospace)";
-
+  // Same row as the live "Thinking…" indicator: glowing Fleetify mark +
+  // shimmer label + a soft elapsed time that steps every 5s (no percent).
   return (
-    <div
-      role="status"
-      className="fade-in"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        margin: "8px 2px",
-      }}
-    >
-      {/* Plain Fleetify mark — its natural colour, no accent/glow. The shimmer
-          label carries the live "working" motion. */}
-      <LogoMark size={14} style={{ flexShrink: 0 }} />
-      {/* Shimmer label — neutral foreground with a bright band sweeping across
-          (same .status-sheen as the "thinking" indicator). Monochrome. */}
-      <span
-        className="status-sheen"
-        data-label={label}
+    <div className="fade-in" style={{ margin: "8px 0", maxWidth: 640 }}>
+      <div
+        role="status"
         style={{
-          // Dim base so the .status-sheen sweep (a band toward --c-high) reads
-          // as a clear travelling glow across the label.
-          color: "var(--c-low)",
-          fontSize: 12.5,
-          fontWeight: 550,
-          fontFamily: "var(--font-sans)",
-          letterSpacing: "-0.01em",
-          whiteSpace: "nowrap",
+          display: "inline-flex", alignItems: "center", gap: 7,
         }}
       >
-        {label}
-      </span>
-      {/* Progress — a soft middot separator + percent, with the elapsed time
-          trailing even softer. The middot ties it to the label so it reads as
-          one quiet status line, not a bare numeric readout. */}
-      <span
-        style={{
-          display: "flex",
-          alignItems: "baseline",
-          gap: 6,
-          flexShrink: 0,
-          fontFamily: MONO,
-          fontSize: 11,
-        }}
-      >
-        <span aria-hidden style={{ color: "var(--c-ghost)" }}>·</span>
-        <span style={{ color: "var(--c-dim)", fontVariantNumeric: "tabular-nums" }}>
-          {pct}%
+        <LogoMark size={13} glow style={{ flexShrink: 0, color: "var(--c-high)" }} />
+        <span
+          className="thinking-shimmer-text"
+          data-label={label}
+          style={{
+            fontSize: 12, fontWeight: 500,
+            fontFamily: "var(--font-sans)", letterSpacing: "-0.01em",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {label}
         </span>
-        {elapsedSec >= 2 && (
-          <span style={{ color: "var(--c-ghost)", fontSize: 10.5 }}>
-            {elapsedSec}s
+        {elapsed >= 5000 && (
+          <span style={{
+            fontSize: 9.5, color: "var(--c-ghost)", opacity: 0.5,
+            fontFamily: "var(--font-mono)", letterSpacing: 0,
+          }}>
+            {fmtDuration(Math.floor(elapsed / 5000) * 5000)}
           </span>
         )}
-      </span>
+      </div>
     </div>
   );
+}
+
+function fmtDuration(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60), rs = s % 60;
+  return rs > 0 ? `${m}m ${rs}s` : `${m}m`;
 }

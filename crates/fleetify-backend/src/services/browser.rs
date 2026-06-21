@@ -32,8 +32,17 @@ use tokio::sync::{broadcast, Mutex};
 pub const VIEW_W: u32 = 1280;
 pub const VIEW_H: u32 = 800;
 
-/// ~5.5 fps — smooth enough for a control panel without pinning a core.
-const FRAME_INTERVAL: Duration = Duration::from_millis(180);
+
+/// ~20 fps — smooth-enough scroll/typing while keeping retina-sharp
+/// screenshots cheap on localhost. Skipped entirely when no panel watches.
+const FRAME_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Real desktop-Chrome UA. The backend browser IS Chrome, but new-headless
+/// stamps "HeadlessChrome" into the UA, which sites read as a bot and serve
+/// the stripped page to. Overriding with the matching non-headless Chrome
+/// string (engine + UA agree, so no fingerprint mismatch) gets the full
+/// modern site.
+const CHROME_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36";
 
 struct Inner {
     #[allow(dead_code)]
@@ -43,6 +52,8 @@ struct Inner {
     handler: tokio::task::JoinHandle<()>,
     #[allow(dead_code)]
     frames: tokio::task::JoinHandle<()>,
+    #[allow(dead_code)]
+    urls: tokio::task::JoinHandle<()>,
 }
 
 fn state() -> &'static Mutex<Option<Inner>> {
@@ -58,6 +69,111 @@ fn frame_tx() -> &'static broadcast::Sender<Arc<Vec<u8>>> {
 /// Subscribe to the live JPEG frame stream (panel WS).
 pub fn subscribe() -> broadcast::Receiver<Arc<Vec<u8>>> {
     frame_tx().subscribe()
+}
+
+/// Current-URL change broadcast — drives the panel's native-webview URL
+/// mirroring (agent navigates the CDP page ⇒ panel follows, and vice versa).
+fn url_tx() -> &'static broadcast::Sender<String> {
+    static U: OnceLock<broadcast::Sender<String>> = OnceLock::new();
+    U.get_or_init(|| broadcast::channel(16).0)
+}
+
+/// Subscribe to current-URL changes.
+pub fn subscribe_url() -> broadcast::Receiver<String> {
+    url_tx().subscribe()
+}
+
+/// Current page URL IF the browser is already launched — never launches it
+/// (so a panel polling for the URL doesn't spin up Chromium unprompted).
+pub async fn current_url_opt() -> Option<String> {
+    let p = { state().lock().await.as_ref()?.page.clone() };
+    p.url().await.ok().flatten()
+}
+
+/// A snapshot read from the panel's NATIVE webview — the exact page the user
+/// is looking at. The Tauri shell supplies the reader (it owns the webview);
+/// the backend stays Tauri-agnostic and just calls the boxed closure.
+#[derive(Clone)]
+pub struct EmbeddedPage {
+    pub url: String,
+    pub title: String,
+    pub text: String,
+}
+type EmbeddedReader =
+    Box<dyn Fn() -> futures_util::future::BoxFuture<'static, Option<EmbeddedPage>> + Send + Sync>;
+fn embedded_reader() -> &'static OnceLock<EmbeddedReader> {
+    static R: OnceLock<EmbeddedReader> = OnceLock::new();
+    &R
+}
+/// Register the shell-provided reader for the native panel webview.
+pub fn set_embedded_reader(r: EmbeddedReader) {
+    let _ = embedded_reader().set(r);
+}
+async fn read_embedded() -> Option<EmbeddedPage> {
+    let r = embedded_reader().get()?;
+    let p = r().await?;
+    if p.text.trim().is_empty() {
+        return None;
+    }
+    Some(p)
+}
+
+/// Navigate the panel's NATIVE webview (the shell drives it; returns the loaded
+/// URL + title). Lets the agent browse like the user — a real browser engine,
+/// so it reaches pages a headless Chromium gets WAF-blocked on.
+type EmbeddedNavigator = Box<
+    dyn Fn(String) -> futures_util::future::BoxFuture<'static, Option<(String, String)>>
+        + Send
+        + Sync,
+>;
+fn embedded_navigator() -> &'static OnceLock<EmbeddedNavigator> {
+    static N: OnceLock<EmbeddedNavigator> = OnceLock::new();
+    &N
+}
+pub fn set_embedded_navigator(n: EmbeddedNavigator) {
+    let _ = embedded_navigator().set(n);
+}
+async fn navigate_embedded(url: &str) -> Option<(String, String)> {
+    let n = embedded_navigator().get()?;
+    n(url.to_string()).await
+}
+
+/// Last frame seen — sent to a panel the moment it connects so it shows the
+/// current page immediately instead of waiting for the next paint.
+fn last_frame() -> &'static Mutex<Option<Arc<Vec<u8>>>> {
+    static LF: OnceLock<Mutex<Option<Arc<Vec<u8>>>>> = OnceLock::new();
+    LF.get_or_init(|| Mutex::new(None))
+}
+
+/// Snapshot of the most recent frame, if any.
+pub async fn last_frame_snapshot() -> Option<Arc<Vec<u8>>> {
+    last_frame().lock().await.clone()
+}
+
+/// Match the page's render size to the panel's on-screen size (CSS px) at
+/// the display's pixel ratio. This makes the frame FILL the panel (no
+/// letterbox) and capture at retina resolution (sharp, not the blurry
+/// downscale of a fixed 1280×800). Mouse coords from the panel are then in
+/// this same CSS space, so they map 1:1.
+pub async fn set_viewport(width: u32, height: u32, dpr: f64) -> Result<()> {
+    if width < 2 || height < 2 {
+        return Ok(());
+    }
+    ensure().await?;
+    let g = state().lock().await;
+    if let Some(inner) = g.as_ref() {
+        use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
+        if let Ok(p) = SetDeviceMetricsOverrideParams::builder()
+            .width(width as i64)
+            .height(height as i64)
+            .device_scale_factor(dpr.clamp(1.0, 3.0))
+            .mobile(false)
+            .build()
+        {
+            let _ = inner.page.execute(p).await;
+        }
+    }
+    Ok(())
 }
 
 /// Launch Chromium on first use + start the frame loop. Idempotent.
@@ -95,31 +211,85 @@ async fn ensure() -> Result<()> {
         .await
         .map_err(|e| anyhow!("open page: {e}"))?;
 
-    // Frame loop — only screenshots while at least one panel is attached.
+    // Present as dark + non-automated: emulate prefers-color-scheme:dark so
+    // sites with a dark theme (Google, GitHub, …) render dark like Cursor's
+    // browser, and scrub the residual `navigator.webdriver` flag on every
+    // document. Both are best-effort — a failure here just means a lighter /
+    // slightly more bot-detectable page, never a broken browser.
+    {
+        use chromiumoxide::cdp::browser_protocol::emulation::{
+            MediaFeature, SetEmulatedMediaParams,
+        };
+        use chromiumoxide::cdp::browser_protocol::page::AddScriptToEvaluateOnNewDocumentParams;
+        let _ = page
+            .execute(
+                SetEmulatedMediaParams::builder()
+                    .features(vec![MediaFeature {
+                        name: "prefers-color-scheme".to_string(),
+                        value: "dark".to_string(),
+                    }])
+                    .build(),
+            )
+            .await;
+        if let Ok(p) = AddScriptToEvaluateOnNewDocumentParams::builder()
+            .source("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
+            .build()
+        {
+            let _ = page.execute(p).await;
+        }
+    }
+
+    // Sharp retina frames: screenshot the page at its panel-matched device
+    // surface (× dpr). A CDP screencast only streams CSS-px frames, which the
+    // retina panel then upscales × dpr → blurry; a screenshot captures the
+    // full device-pixel surface → crisp, and fills the panel (the device
+    // metrics already match the panel aspect). ~20 fps keeps scroll/typing
+    // reasonably smooth; idle ticks (no panel watching) are skipped.
     let fpage = page.clone();
     let frames = tokio::spawn(async move {
         loop {
             tokio::time::sleep(FRAME_INTERVAL).await;
-            let tx = frame_tx();
-            if tx.receiver_count() == 0 {
+            if frame_tx().receiver_count() == 0 {
                 continue;
             }
-            // The very first capture after launch can hang until the page
-            // paints its first frame; the timeout keeps the loop alive so
-            // it recovers on the next tick instead of wedging forever.
+            // The first capture after launch can hang until the first paint;
+            // the timeout keeps the loop alive instead of wedging forever.
             let shot = tokio::time::timeout(
                 Duration::from_secs(3),
                 fpage.screenshot(
                     ScreenshotParams::builder()
                         .format(CaptureScreenshotFormat::Jpeg)
-                        .quality(55)
+                        .quality(88)
                         .capture_beyond_viewport(false)
                         .build(),
                 ),
             )
             .await;
             if let Ok(Ok(bytes)) = shot {
-                let _ = tx.send(Arc::new(bytes));
+                let b = Arc::new(bytes);
+                *last_frame().lock().await = Some(b.clone());
+                let _ = frame_tx().send(b);
+            }
+        }
+    });
+
+    // URL poller — broadcasts whenever the page's URL changes (agent
+    // navigate / link click / redirect) so the panel can mirror it. Runs
+    // even when no frames are watched.
+    let upage = page.clone();
+    let urls = tokio::spawn(async move {
+        let mut last = String::new();
+        loop {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if let Ok(Some(mut u)) = upage.url().await {
+                // Defensive: never broadcast a panel-internal sentinel fragment.
+                if let Some(i) = u.find("#__fleet") {
+                    u.truncate(i);
+                }
+                if !u.is_empty() && u != "about:blank" && u != last {
+                    last = u.clone();
+                    let _ = url_tx().send(u);
+                }
             }
         }
     });
@@ -129,6 +299,7 @@ async fn ensure() -> Result<()> {
         page,
         handler,
         frames,
+        urls,
     });
     Ok(())
 }
@@ -148,6 +319,13 @@ async fn snapshot(p: &Page) -> Value {
 
 pub async fn navigate(url: &str) -> Result<Value> {
     tracing::info!(target: "browser", "navigate -> {url}");
+    // Prefer the panel's native webview (real engine ⇒ reaches WAF-protected
+    // pages a headless Chromium is blocked on). Falls back to CDP when no
+    // panel page is open.
+    if let Some((u, t)) = navigate_embedded(url).await {
+        tracing::info!(target: "browser", "navigated (panel): {u}");
+        return Ok(json!({ "url": u, "title": t, "source": "panel" }));
+    }
     let p = page().await?;
     p.goto(url).await.map_err(|e| {
         tracing::error!(target: "browser", "goto failed: {e}");
@@ -182,6 +360,25 @@ pub async fn reload() -> Result<Value> {
 }
 
 pub async fn read(format: &str) -> Result<Value> {
+    // Prefer the page the USER actually has open in the panel (native
+    // webview). It's a real browser engine, so it has whatever the user
+    // loaded — including pages a headless Chromium would be WAF-blocked on.
+    // Falls through to the CDP page when no panel page is open.
+    if format != "html" {
+        if let Some(ep) = read_embedded().await {
+            let raw = ep.text;
+            let content: String = raw.chars().take(40_000).collect();
+            let truncated = content.len() < raw.len();
+            return Ok(json!({
+                "format": "text",
+                "content": content,
+                "truncated": truncated,
+                "url": ep.url,
+                "title": ep.title,
+                "source": "panel",
+            }));
+        }
+    }
     let p = page().await?;
     let raw = if format == "html" {
         p.content().await.map_err(|e| anyhow!("content: {e}"))?
@@ -194,7 +391,7 @@ pub async fn read(format: &str) -> Result<Value> {
     };
     let content: String = raw.chars().take(40_000).collect();
     let truncated = content.len() < raw.len();
-    Ok(json!({ "format": format, "content": content, "truncated": truncated }))
+    Ok(json!({ "format": format, "content": content, "truncated": truncated, "source": "cdp" }))
 }
 
 pub async fn click_selector(selector: &str) -> Result<Value> {
@@ -218,6 +415,60 @@ pub async fn fill_selector(selector: &str, value: &str) -> Result<Value> {
     el.type_str(value).await.map_err(|e| anyhow!("type: {e}"))?;
     Ok(json!({ "filled": selector }))
 }
+
+/// Inspector hover: the element under (x, y) in CSS-viewport coords →
+/// `{ selector, tag, rect }`. The panel draws a highlight box from `rect`.
+pub async fn hover_at(x: f64, y: f64) -> Result<Value> {
+    let p = page().await?;
+    let js = format!("{}({x},{y})", INSPECT_FN);
+    let v = p
+        .evaluate(js)
+        .await
+        .map_err(|e| anyhow!("hover: {e}"))?
+        .into_value::<Value>()
+        .unwrap_or(Value::Null);
+    Ok(v)
+}
+
+/// Inspector pick: like `hover_at` but also returns the element's text/HTML
+/// so the picked element can be handed to the agent as context.
+pub async fn pick_at(x: f64, y: f64) -> Result<Value> {
+    let p = page().await?;
+    let js = format!("{}({x},{y},true)", INSPECT_FN);
+    let v = p
+        .evaluate(js)
+        .await
+        .map_err(|e| anyhow!("pick: {e}"))?
+        .into_value::<Value>()
+        .unwrap_or(Value::Null);
+    Ok(v)
+}
+
+/// In-page helper: resolve the element at a point to a stable-ish CSS
+/// selector + bounding rect (+ text/html when `full`). Kept as one string so
+/// hover and pick share identical selector logic.
+const INSPECT_FN: &str = r#"(function(x,y,full){
+  var el=document.elementFromPoint(x,y);
+  if(!el)return null;
+  function sel(e){
+    if(e.id)return e.tagName.toLowerCase()+'#'+e.id;
+    var c='';
+    if(e.classList&&e.classList.length)c='.'+Array.prototype.slice.call(e.classList,0,2).join('.');
+    var t=e.tagName.toLowerCase()+c;
+    if(e.parentElement&&document.querySelectorAll(t).length>1){
+      var sibs=Array.prototype.filter.call(e.parentElement.children,function(s){return s.tagName===e.tagName;});
+      if(sibs.length>1)t+=':nth-of-type('+(sibs.indexOf(e)+1)+')';
+    }
+    return t;
+  }
+  var r=el.getBoundingClientRect();
+  var out={selector:sel(el),tag:el.tagName.toLowerCase(),rect:{x:r.left,y:r.top,w:r.width,h:r.height}};
+  if(full){
+    out.text=(el.innerText||el.value||'').trim().slice(0,500);
+    out.html=(el.outerHTML||'').slice(0,1200);
+  }
+  return out;
+})"#;
 
 pub async fn eval(script: &str) -> Result<Value> {
     let p = page().await?;

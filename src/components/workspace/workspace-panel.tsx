@@ -8,7 +8,8 @@ import {
   RefreshCw, X, Search, FilePlus, FolderPlus, Trash2, Pencil,
   FileCode, FileText, FileJson, Check, Copy, FolderOpen,
   AlertTriangle, AlertCircle, CheckCircle2, Eye, CheckSquare, Layers, Folder,
-  Plus, ArrowRight, ArrowLeft,
+  Plus, ArrowRight, ArrowLeft, SquareMousePointer,
+  List, Star, MoreHorizontal, ExternalLink,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -16,7 +17,7 @@ import { useAppStore, type WorkspaceView } from "@/stores/app-store";
 import { usePaneSessionId, useIsInPane } from "@/components/chat/pane-session-context";
 import {
   fetchSessionMemory, createSessionMemory, deleteSessionMemory,
-  fetchMessages, createBrowserWebSocket,
+  fetchMessages,
   type SessionMemoryItem,
 } from "@/lib/api";
 import { XtermShell } from "@/components/workspace/xterm-shell";
@@ -4128,121 +4129,575 @@ function TasksPaneRouter() {
 }
 
 /* ── Browser pane ──
-   Interactive, SHARED browser (Cursor-style). Connects to /ws/browser:
-   live JPEG frames stream down; user input (URL nav, back/forward/reload,
-   click, scroll, type, keys) goes up over the same socket. The agent
-   drives the SAME backend-owned page via its tools, so both control one
-   browser. Mouse coords are scaled from the on-screen frame back into the
-   page's logical 1280×800 viewport. */
-const BROWSER_VIEW_W = 1280;
-const BROWSER_VIEW_H = 800;
+   Address bar + a slot that hosts a REAL native child webview overlaid
+   INSIDE this panel (same window — no separate OS window). A non-headless
+   engine ⇒ sharp on retina, fast, and no bot captcha. We report the slot's
+   logical rect to the shell, which positions the native webview there and we
+   keep it glued on resize/layout changes. Known cost: dragging the whole app
+   window repaints the child webview a beat late — inherent to native child
+   webviews on macOS, the price of an embedded real browser. */
+type TauriInvoke = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+function tauriInvoke(cmd: string, args?: Record<string, unknown>): Promise<unknown> {
+  const inv = (window as unknown as { __TAURI__?: { core?: { invoke?: TauriInvoke } } }).__TAURI__?.core?.invoke;
+  return inv ? inv(cmd, args) : Promise.reject(new Error("Tauri invoke unavailable"));
+}
+
+type HistEntry = { url: string; title: string; ts: number };
+function faviconFor(url: string): string {
+  try { return `https://www.google.com/s2/favicons?domain=${new URL(url).host}&sz=64`; } catch { return ""; }
+}
+function looksLikeUrl(s: string): boolean {
+  const t = s.trim();
+  if (/^https?:\/\//i.test(t)) return true;
+  if (/\s/.test(t)) return false;
+  if (/^localhost(:\d+)?(\/|$)/i.test(t)) return true;
+  return /^[^\s./]+\.[^\s]{2,}/.test(t); // host.tld[/...]
+}
+function resolveTarget(raw: string): string {
+  const t = raw.trim();
+  if (looksLikeUrl(t)) return /^https?:\/\//i.test(t) ? t : "https://" + t;
+  return "https://www.google.com/search?q=" + encodeURIComponent(t);
+}
+function hostOf(url: string): string { try { return new URL(url).host; } catch { return url; } }
+
 function BrowserView() {
   const requestClose = useContext(PaneCloseContext);
   const [editUrl, setEditUrl] = useState("");
-  const [frameSrc, setFrameSrc] = useState<string | null>(null);
-  const [connected, setConnected] = useState(false);
-  const wsRef = useRef<WebSocket | null>(null);
-  const imgRef = useRef<HTMLImageElement | null>(null);
-  const objUrlRef = useRef<string | null>(null);
+  const [active, setActive] = useState(false);
+  const [selecting, setSelecting] = useState(false);
+  const [urlFocused, setUrlFocused] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [history, setHistory] = useState<HistEntry[]>([]);
+  const [histOpen, setHistOpen] = useState(false);
+  const [histQuery, setHistQuery] = useState("");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [typing, setTyping] = useState(false);
+  const [bookmarks, setBookmarks] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem("fleet:browser-bookmarks") || "[]") as string[]; } catch { return []; }
+  });
+  const [showBookmarkBar, setShowBookmarkBar] = useState<boolean>(() => {
+    try { return localStorage.getItem("fleet:browser-bookmark-bar") === "1"; } catch { return false; }
+  });
+  const slotRef = useRef<HTMLDivElement | null>(null);
+  const activeRef = useRef(false);
+  const lastRect = useRef("");
+  // The native webview renders ABOVE the DOM, so it would occlude our
+  // toolbar popovers. While one is open we tuck the webview away.
+  const popoverOpenRef = useRef(false);
+  // URL mirroring with the agent's backend CDP browser.
+  const mirrorWsRef = useRef<WebSocket | null>(null);
+  const lastMirror = useRef("");
 
-  useEffect(() => {
-    const ws = createBrowserWebSocket();
-    ws.binaryType = "arraybuffer";
-    wsRef.current = ws;
-    ws.onopen = () => setConnected(true);
-    ws.onclose = () => setConnected(false);
-    ws.onmessage = (e) => {
-      if (typeof e.data === "string") return;
-      const blob = new Blob([e.data as ArrayBuffer], { type: "image/jpeg" });
-      const u = URL.createObjectURL(blob);
-      if (objUrlRef.current) URL.revokeObjectURL(objUrlRef.current);
-      objUrlRef.current = u;
-      setFrameSrc(u);
-    };
-    return () => {
-      ws.close();
-      if (objUrlRef.current) URL.revokeObjectURL(objUrlRef.current);
-    };
+  const measure = useCallback(() => {
+    const el = slotRef.current;
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(r.left), y: Math.round(r.top), width: Math.max(1, Math.round(r.width)), height: Math.max(1, Math.round(r.height)) };
   }, []);
 
-  const send = useCallback((obj: Record<string, unknown>) => {
-    const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
-  }, []);
+  // Keep the native webview glued to the slot rect; only push when it moved.
+  const syncBounds = useCallback(() => {
+    if (!activeRef.current) return;
+    if (popoverOpenRef.current) {
+      // Tuck the native webview to a 1px corner so the DOM popover shows.
+      if (lastRect.current !== "hidden") {
+        lastRect.current = "hidden";
+        void tauriInvoke("browser_embed_set_bounds", { x: 0, y: 0, width: 1, height: 1 });
+      }
+      return;
+    }
+    const b = measure();
+    if (!b) return;
+    const key = `${b.x},${b.y},${b.width},${b.height}`;
+    if (key === lastRect.current) return;
+    lastRect.current = key;
+    void tauriInvoke("browser_embed_set_bounds", b);
+  }, [measure]);
+
+  // Create the embedded webview if needed, else navigate the existing one.
+  const openOrNavigate = useCallback((url: string) => {
+    if (activeRef.current) {
+      void tauriInvoke("browser_embed_navigate", { url });
+      return;
+    }
+    const b = measure() ?? { x: 0, y: 0, width: 800, height: 600 };
+    lastRect.current = `${b.x},${b.y},${b.width},${b.height}`;
+    void tauriInvoke("browser_embed_create", { url, ...b })
+      .then((res) => {
+        const ok = (res as { ok?: boolean } | undefined)?.ok;
+        if (ok === false) { setErr((res as { error?: string }).error ?? "open failed"); return; }
+        setErr(null); setActive(true); activeRef.current = true;
+      })
+      .catch((e) => setErr(String(e)));
+  }, [measure]);
 
   const go = useCallback((raw: string) => {
-    let target = raw.trim();
-    if (!target) return;
-    if (!/^https?:\/\//i.test(target)) target = "https://" + target;
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    const target = resolveTarget(trimmed);
     setEditUrl(target);
-    send({ type: "navigate", url: target });
-  }, [send]);
+    setTyping(false);
+    setHistOpen(false);
+    openOrNavigate(target);
+  }, [openOrNavigate]);
 
-  // Translate a mouse event on the displayed frame into page viewport coords.
-  const toViewport = (e: React.MouseEvent) => {
-    const img = imgRef.current;
-    if (!img) return null;
-    const r = img.getBoundingClientRect();
-    if (r.width === 0 || r.height === 0) return null;
-    return {
-      x: ((e.clientX - r.left) / r.width) * BROWSER_VIEW_W,
-      y: ((e.clientY - r.top) / r.height) * BROWSER_VIEW_H,
+  // Track layout while open; tear the native webview down on unmount.
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => { syncBounds(); raf = requestAnimationFrame(tick); };
+    raf = requestAnimationFrame(tick);
+    const onResize = () => syncBounds();
+    window.addEventListener("resize", onResize);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", onResize);
+      activeRef.current = false;
+      void tauriInvoke("browser_embed_close");
     };
-  };
+  }, [syncBounds]);
 
-  const SPECIAL_KEYS = ["Enter", "Backspace", "Tab", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"];
+  // Mirror the embedded page's current URL into the address bar.
+  useEffect(() => {
+    const listen = (window as unknown as { __TAURI__?: { event?: { listen?: (n: string, cb: (e: { payload: unknown }) => void) => Promise<() => void> } } }).__TAURI__?.event?.listen;
+    if (!listen) return;
+    let un: (() => void) | undefined;
+    void listen("browser-embed:url", (e) => {
+      if (typeof e.payload !== "string") return;
+      const u = e.payload;
+      setEditUrl(u);
+      setHistory((h) => {
+        const prev = h.find((en) => en.url === u);
+        const rest = h.filter((en) => en.url !== u);
+        return [...rest, { url: u, title: prev?.title || hostOf(u), ts: Date.now() }].slice(-200);
+      });
+      // Panel → agent CDP: keep the agent's browser on the page the user views.
+      if (u && u !== lastMirror.current) {
+        lastMirror.current = u;
+        const ws = mirrorWsRef.current;
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "navigate", url: u }));
+      }
+    }).then((f) => { un = f; });
+    return () => { un?.(); };
+  }, []);
+
+  // Agent CDP → panel: mirror the backend browser's URL into the native webview.
+  useEffect(() => {
+    let ws: WebSocket | null = null;
+    try {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      ws = new WebSocket(`${proto}//${location.host}/ws/browser-url`);
+      mirrorWsRef.current = ws;
+      ws.onmessage = (ev) => {
+        try {
+          const m = JSON.parse(typeof ev.data === "string" ? ev.data : "") as { type?: string; url?: string };
+          if (m.type === "url" && typeof m.url === "string" && m.url && m.url !== lastMirror.current) {
+            lastMirror.current = m.url;
+            setEditUrl(m.url);
+            openOrNavigate(m.url);
+          }
+        } catch { /* ignore */ }
+      };
+      ws.onclose = () => { if (mirrorWsRef.current === ws) mirrorWsRef.current = null; };
+    } catch { /* no mirroring */ }
+    return () => { ws?.close(); if (mirrorWsRef.current === ws) mirrorWsRef.current = null; };
+  }, [openOrNavigate]);
+
+  // Page titles arrive separately (content script → meta channel) — fold them
+  // into the matching history entry.
+  useEffect(() => {
+    const listen = (window as unknown as { __TAURI__?: { event?: { listen?: (n: string, cb: (e: { payload: unknown }) => void) => Promise<() => void> } } }).__TAURI__?.event?.listen;
+    if (!listen) return;
+    let un: (() => void) | undefined;
+    void listen("browser-embed:meta", (e) => {
+      if (typeof e.payload !== "string") return;
+      try {
+        const m = JSON.parse(decodeURIComponent(e.payload)) as { title?: string; url?: string };
+        if (!m.url || !m.title) return;
+        setHistory((h) => h.map((en) => (en.url === m.url ? { ...en, title: m.title as string } : en)));
+      } catch { /* ignore */ }
+    }).then((f) => { un = f; });
+    return () => { un?.(); };
+  }, []);
+
+  // Bookmarks (persisted) + the overflow / history popovers.
+  const isBookmarked = bookmarks.includes(editUrl);
+  const toggleBookmark = useCallback(() => {
+    if (!editUrl) return;
+    setBookmarks((prev) => {
+      const next = prev.includes(editUrl) ? prev.filter((u) => u !== editUrl) : [editUrl, ...prev].slice(0, 50);
+      try { localStorage.setItem("fleet:browser-bookmarks", JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }, [editUrl]);
+
+  // Responsive toolbar — collapse low-priority controls when the pane is narrow.
+  const barRef = useRef<HTMLDivElement | null>(null);
+  const [barW, setBarW] = useState(9999);
+  useEffect(() => {
+    const el = barRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => { for (const e of entries) setBarW(e.contentRect.width); });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const compact = barW < 440;   // drop the "Select" label + devtools
+  const ultra = barW < 330;     // also drop history + bookmark star
+
+  // Suggestions show while the user is actively typing a query/URL.
+  const showSuggest = urlFocused && typing && editUrl.trim().length > 0;
+
+  // Keep the webview-hide flag in sync with any open overlay (popover or
+  // suggestions) — the native webview renders above the DOM.
+  useEffect(() => { popoverOpenRef.current = histOpen || menuOpen || showSuggest; }, [histOpen, menuOpen, showSuggest]);
+
+  // Close the popovers on an outside click / Escape.
+  useEffect(() => {
+    if (!histOpen && !menuOpen) return;
+    const close = () => { setHistOpen(false); setMenuOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("mousedown", close); window.removeEventListener("keydown", onKey); };
+  }, [histOpen, menuOpen]);
+
+  // Toggle the in-page element picker (content script highlights + posts back).
+  const toggleSelect = useCallback(() => {
+    if (!activeRef.current) return;
+    setSelecting((prev) => {
+      const next = !prev;
+      void tauriInvoke("browser_embed_set_select", { on: next });
+      return next;
+    });
+  }, []);
+
+  // A picked element arrives as a URL-encoded JSON payload → drop it into the composer.
+  useEffect(() => {
+    const listen = (window as unknown as { __TAURI__?: { event?: { listen?: (n: string, cb: (e: { payload: unknown }) => void) => Promise<() => void> } } }).__TAURI__?.event?.listen;
+    if (!listen) return;
+    let un: (() => void) | undefined;
+    void listen("browser-embed:pick", (e) => {
+      if (typeof e.payload !== "string") return;
+      setSelecting(false);
+      try {
+        const info = JSON.parse(decodeURIComponent(e.payload)) as { selector?: string; tag?: string; text?: string; url?: string };
+        window.dispatchEvent(new CustomEvent("fleet:add-element-ref", {
+          detail: { selector: info.selector || info.tag || "element", text: info.text || "", url: info.url || "" },
+        }));
+      } catch { /* ignore malformed payloads */ }
+    }).then((f) => { un = f; });
+    return () => { un?.(); };
+  }, []);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      {/* Toolbar: drag handle · nav · URL bar · close */}
-      <div style={{ height: 44, flexShrink: 0, display: "flex", alignItems: "center", padding: "0 8px 2px 8px", gap: 4 }}>
-        <span data-pane-handle="true" title="Browser" style={{ flexShrink: 0, display: "inline-flex", color: "#9a9a9a", cursor: "grab", marginRight: 2 }}>
-          <Globe size={13} />
-        </span>
-        <TermActionBtn title="Back" onClick={() => send({ type: "back" })}><ArrowLeft size={13} /></TermActionBtn>
-        <TermActionBtn title="Forward" onClick={() => send({ type: "forward" })}><ArrowRight size={13} /></TermActionBtn>
-        <TermActionBtn title="Reload" onClick={() => send({ type: "reload" })}><RefreshCw size={12} /></TermActionBtn>
-        <input
-          value={editUrl}
-          onChange={(e) => setEditUrl(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); go(editUrl); } }}
-          placeholder="Enter a URL and press Enter…"
-          spellCheck={false}
+      {/* Toolbar — flat, panel-coloured, borderless two-tone URL (Cursor-style).
+          The whole bar is a drag handle; the URL field opts out so text
+          selection still works. */}
+      <div
+        ref={barRef}
+        data-pane-handle="true"
+        style={{
+          height: 40, flexShrink: 0, display: "flex", alignItems: "center",
+          padding: "0 6px", gap: 1, cursor: "grab", position: "relative",
+          background: "var(--sidebar)", borderBottom: "1px solid var(--sidebar-border)",
+        }}
+      >
+        {/* History / reading-list popover toggle */}
+        {!ultra && <BrowserNavBtn title="History & bookmarks" active={histOpen} onClick={() => { setHistOpen((v) => !v); setMenuOpen(false); }}><List size={14} /></BrowserNavBtn>}
+        <BrowserNavBtn title="Back" disabled={!active} onClick={() => void tauriInvoke("browser_embed_nav", { action: "back" })}><ArrowLeft size={14} /></BrowserNavBtn>
+        <BrowserNavBtn title="Forward" disabled={!active} onClick={() => void tauriInvoke("browser_embed_nav", { action: "forward" })}><ArrowRight size={14} /></BrowserNavBtn>
+        <BrowserNavBtn title="Reload" onClick={() => { if (activeRef.current) void tauriInvoke("browser_embed_nav", { action: "reload" }); else go(editUrl); }}><RefreshCw size={13} /></BrowserNavBtn>
+        {!ultra && (
+          <BrowserNavBtn title={isBookmarked ? "Remove bookmark" : "Bookmark"} disabled={!editUrl} active={isBookmarked} onClick={toggleBookmark}>
+            <Star size={13} fill={isBookmarked ? "currentColor" : "none"} />
+          </BrowserNavBtn>
+        )}
+
+        {/* URL — borderless, same colour as the bar; two-tone (host bright,
+            scheme/path dim) until focused. Placeholder is a clear grey so the
+            field reads as an address bar without any box. */}
+        <div style={{ flex: 1, minWidth: 0, position: "relative", height: 28, display: "flex", alignItems: "center", margin: "0 4px" }}>
+          {!urlFocused && !!editUrl && (
+            <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", padding: "0 8px", fontFamily: "var(--font-mono)", fontSize: 12.5, pointerEvents: "none", overflow: "hidden", whiteSpace: "nowrap" }}>
+              <UrlText url={editUrl} />
+            </div>
+          )}
+          <input
+            className="browser-url-input"
+            value={editUrl}
+            onChange={(e) => { setEditUrl(e.target.value); setTyping(true); }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onFocus={(e) => { setUrlFocused(true); setTyping(false); e.target.select(); }}
+            onBlur={() => { setUrlFocused(false); setTyping(false); }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur(); go(editUrl); }
+              else if (e.key === "Escape") { setTyping(false); (e.target as HTMLInputElement).blur(); }
+            }}
+            placeholder="Search or enter URL"
+            spellCheck={false}
+            style={{
+              width: "100%", height: 28, padding: "0 8px",
+              background: "transparent", border: "none", outline: "none",
+              color: urlFocused ? "#e6e6e6" : "transparent", caretColor: "#e6e6e6",
+              fontFamily: "var(--font-mono)", fontSize: 12.5,
+            }}
+          />
+        </div>
+
+        {/* Element-select — right-side pill (Cursor's "Design"). */}
+        <button
+          title={selecting ? "Cancel select" : "Select an element → composer"}
+          disabled={!active}
+          onClick={toggleSelect}
+          onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
           style={{
-            flex: 1, minWidth: 0, height: 26, margin: "0 4px",
-            background: "rgba(255,255,255,0.05)", border: "1px solid var(--c-brd, rgba(255,255,255,0.1))",
-            borderRadius: 6, padding: "0 9px", color: "#e6e6e6",
-            fontFamily: "var(--font-mono)", fontSize: 11.5, outline: "none",
+            height: 26, padding: "0 9px", borderRadius: 7, flexShrink: 0, marginRight: 2,
+            display: "inline-flex", alignItems: "center", gap: 5,
+            background: selecting ? "rgba(76,141,255,0.18)" : "transparent",
+            border: "none", outline: "none",
+            color: !active ? "#4a4a4a" : selecting ? "#4c8dff" : "#9a9a9a",
+            cursor: active ? "pointer" : "default",
+            fontFamily: SANS, fontSize: 12.5, fontWeight: 500,
           }}
-        />
-        <TermActionBtn title="Close pane" onClick={() => requestClose?.("browser")}><X size={13} /></TermActionBtn>
+          onMouseEnter={(e) => { if (active && !selecting) e.currentTarget.style.background = "rgba(255,255,255,0.07)"; }}
+          onMouseLeave={(e) => { if (!selecting) e.currentTarget.style.background = "transparent"; }}
+        >
+          <SquareMousePointer size={13} />
+          {!compact && <span>Select</span>}
+          {selecting && <X size={12} style={{ opacity: 0.8 }} />}
+        </button>
+        {!compact && <BrowserNavBtn title="Developer tools" disabled={!active} onClick={() => void tauriInvoke("browser_embed_devtools")}><TerminalIcon size={13} /></BrowserNavBtn>}
+        <BrowserNavBtn title="More" active={menuOpen} onClick={() => { setMenuOpen((v) => !v); setHistOpen(false); }}><MoreHorizontal size={14} /></BrowserNavBtn>
+
+        {/* Address suggestions while typing (Search Google for… / history matches) */}
+        {showSuggest && (() => {
+          const q = editUrl.trim();
+          const isUrl = looksLikeUrl(q);
+          const ql = q.toLowerCase();
+          const matches = history
+            .filter((e) => e.url.toLowerCase().includes(ql) || e.title.toLowerCase().includes(ql))
+            .slice(-6).reverse();
+          return (
+            <BrowserPopover left={150} right={150}>
+              <BrowserPopItem onClick={() => go(q)}>
+                {isUrl ? <Globe size={15} style={{ color: "#9a9a9a", flexShrink: 0 }} /> : <Search size={15} style={{ color: "#9a9a9a", flexShrink: 0 }} />}
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {isUrl ? <>Go to <span style={{ color: "#4c8dff" }}>{q}</span></> : <>Search Google for <span style={{ color: "#4c8dff" }}>{q}</span></>}
+                </span>
+              </BrowserPopItem>
+              {matches.map((e, i) => (
+                <BrowserPopItem key={`sg-${i}-${e.url}`} onClick={() => go(e.url)}>
+                  <img src={faviconFor(e.url)} width={15} height={15} style={{ borderRadius: 3, flexShrink: 0 }} alt="" />
+                  <span style={POP_URL}>{e.title || hostOf(e.url)}</span>
+                  <span style={{ ...POP_URL, color: "#5f5f5f", marginLeft: "auto", paddingLeft: 10 }}>{hostOf(e.url)}</span>
+                </BrowserPopItem>
+              ))}
+            </BrowserPopover>
+          );
+        })()}
+
+        {/* History + bookmarks popover (favicon · title · search · time-grouped) */}
+        {histOpen && (() => {
+          const q = histQuery.trim().toLowerCase();
+          const all = [...history].reverse().filter((e) => !q || e.title.toLowerCase().includes(q) || e.url.toLowerCase().includes(q));
+          const now = Date.now();
+          const recent = all.filter((e) => now - e.ts < 7 * 864e5);
+          const older = all.filter((e) => now - e.ts >= 7 * 864e5);
+          const row = (e: HistEntry, i: number) => (
+            <BrowserPopItem key={`h-${i}-${e.url}`} onClick={() => { setHistOpen(false); go(e.url); }}>
+              <img src={faviconFor(e.url)} width={16} height={16} style={{ borderRadius: 3, flexShrink: 0 }} alt="" />
+              <span style={POP_URL}>{e.title || hostOf(e.url)}</span>
+            </BrowserPopItem>
+          );
+          return (
+            <BrowserPopover left={6}>
+              <input
+                value={histQuery}
+                onChange={(ev) => setHistQuery(ev.target.value)}
+                onMouseDown={(ev) => ev.stopPropagation()}
+                placeholder="Search"
+                spellCheck={false}
+                style={{ width: "100%", height: 28, margin: "2px 0 6px", padding: "0 10px", background: "rgba(255,255,255,0.05)", border: "1px solid var(--sidebar-border)", borderRadius: 6, color: "#e6e6e6", outline: "none", fontFamily: SANS, fontSize: 12.5, boxSizing: "border-box" }}
+              />
+              {bookmarks.filter((u) => !q || u.toLowerCase().includes(q)).length > 0 && <div style={POP_HEADER}>Bookmarks</div>}
+              {bookmarks.filter((u) => !q || u.toLowerCase().includes(q)).map((u, i) => (
+                <BrowserPopItem key={`bm-${i}-${u}`} onClick={() => { setHistOpen(false); go(u); }}>
+                  <Star size={13} fill="currentColor" style={{ color: "#e0b341", flexShrink: 0 }} />
+                  <span style={POP_URL}>{u}</span>
+                </BrowserPopItem>
+              ))}
+              {recent.length > 0 && <div style={POP_HEADER}>Last 7 days</div>}
+              {recent.map(row)}
+              {older.length > 0 && <div style={POP_HEADER}>Older</div>}
+              {older.map(row)}
+              {all.length === 0 && <div style={{ padding: "8px 10px", color: "#6a6a6a", fontFamily: SANS, fontSize: 12 }}>No history yet</div>}
+            </BrowserPopover>
+          );
+        })()}
+
+        {/* Overflow menu */}
+        {menuOpen && (
+          <BrowserPopover right={6}>
+            <BrowserPopItem disabled={!active} onClick={() => { setMenuOpen(false); if (activeRef.current) void tauriInvoke("browser_embed_nav", { action: "reload" }); }}>
+              <RefreshCw size={13} style={{ flexShrink: 0 }} /><span>Hard Reload</span>
+            </BrowserPopItem>
+            <BrowserPopItem disabled={!editUrl} onClick={() => { setMenuOpen(false); if (editUrl) void navigator.clipboard?.writeText(editUrl); }}>
+              <Copy size={13} style={{ flexShrink: 0 }} /><span>Copy Current URL</span>
+            </BrowserPopItem>
+            <BrowserPopItem disabled={!editUrl} onClick={() => { setMenuOpen(false); if (editUrl) void tauriInvoke("shell_open_external", { url: editUrl }); }}>
+              <ExternalLink size={13} style={{ flexShrink: 0 }} /><span>Open in System Browser</span>
+            </BrowserPopItem>
+            <div style={{ height: 1, background: "var(--sidebar-border)", margin: "4px 0" }} />
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", color: "#c8c8c8", fontFamily: SANS, fontSize: 12.5 }} onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+              <span style={{ flex: 1 }}>Show Bookmark Bar</span>
+              <button
+                onClick={() => setShowBookmarkBar((v) => { const nv = !v; try { localStorage.setItem("fleet:browser-bookmark-bar", nv ? "1" : "0"); } catch { /* ignore */ } return nv; })}
+                style={{ width: 34, height: 18, borderRadius: 10, border: "none", cursor: "pointer", background: showBookmarkBar ? "#4c8dff" : "rgba(255,255,255,0.18)", position: "relative", transition: "background .12s", flexShrink: 0 }}
+              >
+                <span style={{ position: "absolute", top: 2, left: showBookmarkBar ? 18 : 2, width: 14, height: 14, borderRadius: "50%", background: "#fff", transition: "left .12s" }} />
+              </button>
+            </div>
+            <div style={{ height: 1, background: "var(--sidebar-border)", margin: "4px 0" }} />
+            <BrowserPopItem onClick={() => { setMenuOpen(false); setHistory([]); }}>
+              <Trash2 size={13} style={{ flexShrink: 0 }} /><span>Clear Browsing History</span>
+            </BrowserPopItem>
+            <BrowserPopItem disabled={!active} onClick={() => { setMenuOpen(false); void tauriInvoke("browser_embed_clear_data"); }}>
+              <Trash2 size={13} style={{ flexShrink: 0 }} /><span>Clear Cookies</span>
+            </BrowserPopItem>
+            <BrowserPopItem disabled={!active} onClick={() => { setMenuOpen(false); void tauriInvoke("browser_embed_clear_data"); }}>
+              <Trash2 size={13} style={{ flexShrink: 0 }} /><span>Clear Cache</span>
+            </BrowserPopItem>
+            <div style={{ height: 1, background: "var(--sidebar-border)", margin: "4px 0" }} />
+            <BrowserPopItem onClick={() => { setMenuOpen(false); requestClose?.("browser"); }}>
+              <X size={13} style={{ flexShrink: 0 }} /><span>Close Browser</span>
+            </BrowserPopItem>
+          </BrowserPopover>
+        )}
       </div>
 
-      {/* Live, interactive frame */}
-      <div style={{ flex: 1, overflow: "hidden", background: "#0b0b0b", display: "flex" }}>
-        {frameSrc ? (
-          <div
-            tabIndex={0}
-            onMouseDown={(e) => { const p = toViewport(e); if (p) send({ type: "click", x: p.x, y: p.y }); (e.currentTarget as HTMLDivElement).focus(); }}
-            onWheel={(e) => { const p = toViewport(e); if (p) send({ type: "scroll", x: p.x, y: p.y, dy: e.deltaY }); }}
-            onKeyDown={(e) => {
-              if (e.metaKey || e.ctrlKey) return;
-              if (SPECIAL_KEYS.includes(e.key)) { send({ type: "key", key: e.key }); e.preventDefault(); }
-              else if (e.key.length === 1) { send({ type: "type", text: e.key }); e.preventDefault(); }
-            }}
-            style={{ margin: "auto", maxWidth: "100%", maxHeight: "100%", outline: "none", cursor: "default", lineHeight: 0 }}
-          >
-            <img ref={imgRef} src={frameSrc} alt="browser" draggable={false} style={{ maxWidth: "100%", maxHeight: "100%", display: "block", userSelect: "none" }} />
-          </div>
-        ) : (
-          <div style={{ margin: "auto", color: "#7a7a7a", fontSize: 12, fontFamily: SANS, textAlign: "center", padding: 24, lineHeight: 1.6 }}>
-            {connected ? "Type a URL above, or ask the agent to browse." : "Connecting to browser…"}
-            <br />
-            The agent and you share this browser.
+      {/* Bookmark bar (toggle via overflow menu) */}
+      {showBookmarkBar && (
+        <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 2, padding: "4px 8px", overflowX: "auto", background: "var(--sidebar)", borderBottom: "1px solid var(--sidebar-border)" }}>
+          {bookmarks.length === 0
+            ? <span style={{ color: "#6a6a6a", fontSize: 11.5, fontFamily: SANS, padding: "2px 4px" }}>No bookmarks yet — click the ☆ to add this page</span>
+            : bookmarks.map((u, i) => (
+              <button
+                key={`bb-${i}-${u}`} title={u} onClick={() => go(u)} onMouseDown={(e) => e.stopPropagation()}
+                style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 8px", borderRadius: 5, border: "none", background: "transparent", color: "#b0b0b0", cursor: "pointer", fontFamily: SANS, fontSize: 11.5, whiteSpace: "nowrap", flexShrink: 0 }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+              >
+                <img src={faviconFor(u)} width={13} height={13} style={{ borderRadius: 2 }} alt="" />
+                <span>{hostOf(u)}</span>
+              </button>
+            ))}
+        </div>
+      )}
+
+      {/* The native child webview is overlaid on top of this slot by the shell. */}
+      <div ref={slotRef} style={{ flex: 1, overflow: "hidden", background: "var(--card)", position: "relative" }}>
+        {!active && (
+          <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", gap: 12, alignItems: "center", justifyContent: "center", color: err ? "#f87171" : "#9a9a9a", fontSize: 12.5, fontFamily: SANS, textAlign: "center", padding: 24, lineHeight: 1.6 }}>
+            <Globe size={26} strokeWidth={1.5} style={{ color: "#5a5a5a" }} />
+            {err ? `Couldn't open the browser: ${err}` : "Type a URL above and press Enter — a real browser loads right here."}
           </div>
         )}
       </div>
     </div>
+  );
+}
+
+/* Ghost icon button for the browser toolbar — flat, panel-coloured, with a
+   blue tint when `active` (the element-select toggle). Stops mousedown so a
+   click never arms the pane-drag handle on the bar behind it. */
+function BrowserNavBtn({
+  title, onClick, disabled, active, children,
+}: {
+  title: string;
+  onClick?: () => void;
+  disabled?: boolean;
+  active?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      title={title}
+      disabled={disabled}
+      onClick={disabled ? undefined : onClick}
+      onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+      style={{
+        width: 25, height: 25, borderRadius: 6, flexShrink: 0,
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        background: active ? "rgba(76,141,255,0.18)" : "transparent",
+        border: "none", outline: "none",
+        color: disabled ? "#4a4a4a" : active ? "#4c8dff" : "#9a9a9a",
+        cursor: disabled ? "default" : "pointer",
+      }}
+      onMouseEnter={(e) => { if (!disabled && !active) { e.currentTarget.style.background = "rgba(255,255,255,0.07)"; e.currentTarget.style.color = "#e0e0e0"; } }}
+      onMouseLeave={(e) => { if (!active) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = disabled ? "#4a4a4a" : "#9a9a9a"; } }}
+    >
+      {children}
+    </button>
+  );
+}
+
+/* Two-tone URL display (Cursor-style): scheme + path dimmed, host bright. */
+function UrlText({ url }: { url: string }) {
+  let scheme = "", host = "", rest = "";
+  try {
+    const u = new URL(/^https?:\/\//i.test(url) ? url : "https://" + url);
+    scheme = u.protocol + "//";
+    host = u.host;
+    rest = u.pathname + u.search + u.hash;
+  } catch {
+    host = url;
+  }
+  return (
+    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+      <span style={{ color: "#5f5f5f" }}>{scheme}</span>
+      <span style={{ color: "#e6e6e6" }}>{host}</span>
+      <span style={{ color: "#5f5f5f" }}>{rest}</span>
+    </span>
+  );
+}
+
+/* Dropdown panel anchored under the browser toolbar (history / overflow). */
+const POP_HEADER: React.CSSProperties = { padding: "6px 10px 3px", fontSize: 10, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: "#6a6a6a", fontFamily: SANS };
+const POP_URL: React.CSSProperties = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "var(--font-mono)", fontSize: 11.5 };
+
+function BrowserPopover({ left, right, children }: { left?: number; right?: number; children: React.ReactNode }) {
+  return (
+    <div
+      onMouseDown={(e) => e.stopPropagation()}
+      style={{
+        position: "absolute", top: 42, left, right, zIndex: 50,
+        minWidth: 248, maxWidth: 440, maxHeight: 360, overflowY: "auto",
+        background: "var(--sidebar)", border: "1px solid var(--sidebar-border)",
+        borderRadius: 8, padding: 4, boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function BrowserPopItem({ onClick, disabled, children }: { onClick?: () => void; disabled?: boolean; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={disabled ? undefined : onClick}
+      onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+      disabled={disabled}
+      style={{
+        width: "100%", display: "flex", alignItems: "center", gap: 8,
+        padding: "6px 10px", borderRadius: 6, border: "none", background: "transparent",
+        color: disabled ? "#5a5a5a" : "#c8c8c8", cursor: disabled ? "default" : "pointer",
+        fontFamily: SANS, fontSize: 12.5, textAlign: "left",
+      }}
+      onMouseEnter={(e) => { if (!disabled) e.currentTarget.style.background = "rgba(255,255,255,0.07)"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+    >
+      {children}
+    </button>
   );
 }
 

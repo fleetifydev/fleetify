@@ -24,6 +24,7 @@ import { useAppStore } from "@/stores/app-store";
 import { useTypewriter } from "@/hooks/use-typewriter";
 import { highlightToHtml, highlightLines, langFromPath } from "@/lib/shiki";
 import { folderName } from "@/lib/utils";
+import { humanizeToolName } from "@/lib/tool-names";
 
 /* ── Shiki-backed highlighter hook ──
    Streams plain text through Shiki on mount → returns HTML string the
@@ -106,6 +107,10 @@ const DIRECT_DISPATCH_RE   = /\[\[DIRECT_DISPATCH:[a-f0-9-]+\|[^\]]+\]\]/gi;
 // — guard the renderer in case a row sneaks through with the raw form.
 const READ_AGENT_RE        = /\[\[READ_AGENT:[a-f0-9-]+\|\d+\]\]/gi;
 const DISPATCH_RAW_RE      = /\[\[DISPATCH:[^\]]+\]\]/gi;
+// Personal-memory save token — Fleet emits it to persist a durable fact about
+// the user; the backend acts on it, the user shouldn't see the raw syntax.
+const REMEMBER_USER_RE     = /\[\[REMEMBER_USER:[\s\S]*?\]\]/gi;
+const REMEMBER_USER_PARTIAL_RE = /\[\[REMEMBER_USER:[\s\S]*$/i;
 // Spawn directives — the payload is JSON (may span lines), captured up to
 // the first "]]" to mirror the backend token grammar. The PARTIAL form
 // masks a token still streaming in (no closing "]]" yet) so raw JSON never
@@ -125,6 +130,7 @@ function cleanUserText(text: string): string {
   out = out.replace(AUTO_PLAN_PREFIX_RE, "");
   out = out.replace(AUTO_MODE_PREFIX_RE, "");
   out = out.replace(DIRECT_DISPATCH_RE, "");
+  out = out.replace(REMEMBER_USER_RE, "");
   out = out.replace(FLEET_TAG_RE, "");
   // Collapse the blank-line gulf that the deletions can leave behind.
   out = out.replace(/\n{3,}/g, "\n\n").trim();
@@ -295,6 +301,19 @@ function prettyFilePath(full: string): { dir: string; name: string } {
  *    Agent      → "Dispatched: refactor auth flow"
  */
 export function rowSummary(toolName: string, input: Record<string, unknown>): string {
+  // MCP tools (e.g. mcp__fleet_browser__read_page) get a friendly label —
+  // "Browser read page" — plus a key arg, instead of the raw id. Handled
+  // first so a browser-navigate's `url` doesn't fall into the "Fetched …" path.
+  if (toolName.startsWith("mcp__")) {
+    const label = humanizeToolName(toolName);
+    const url = input?.url;
+    if (typeof url === "string" && url) {
+      try { return `${label} ${new URL(url).host}`; } catch { return label; }
+    }
+    const sel = input?.selector;
+    if (typeof sel === "string" && sel) return `${label} ${sel.slice(0, 40)}`;
+    return label;
+  }
   // Bash family — describeShellCommand already returns a past-tense
   // verb phrase, so just prefix the right action word.
   if ("command" in input) {
@@ -1146,6 +1165,8 @@ function stripInternalTokens(text: string): string {
     .replace(DISPATCH_RAW_RE, "")
     .replace(SPAWN_RAW_RE, "")
     .replace(SPAWN_PARTIAL_RE, "")
+    .replace(REMEMBER_USER_RE, "")
+    .replace(REMEMBER_USER_PARTIAL_RE, "")
     .replace(/\n{3,}/g, "\n\n");
 }
 
@@ -3353,8 +3374,7 @@ function liveVerb(name: string, input: Record<string, unknown> | undefined): str
   if (n.includes("build") || n.includes("compile")) return "building";
   if (n.includes("install")) return "installing packages";
   if (n.startsWith("mcp__")) {
-    const tail = name.split("__").pop() || "";
-    return tail ? `using ${tail.replace(/_/g, " ")}` : "using a tool";
+    return `using ${humanizeToolName(name).toLowerCase()}`;
   }
   return name ? `running ${name}` : "working";
 }

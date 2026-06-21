@@ -229,6 +229,375 @@ pub async fn clipboard_write(text: String) -> serde_json::Value {
     }
 }
 
+// ── browser EMBED (native child webview, IN-PANEL) ──────────────────
+// A real native WKWebView overlaid INSIDE the main window at the Browser
+// panel's rectangle. Same window — no separate OS window. A real (non-
+// headless) engine ⇒ sharp on retina, fast, and no bot captcha. The React
+// panel reports its slot's logical rect; we position the child webview
+// there and keep it in sync on scroll / resize. Login state + a site's
+// remembered theme PERSIST across launches via a fixed profile id.
+const BROWSER_EMBED_LABEL: &str = "browser-embed";
+const BROWSER_EMBED_PROFILE: [u8; 16] = *b"fleetbrowser0001";
+// A CURRENT Safari UA so sites (Google) serve their MODERN layout instead of
+// the legacy fallback the bare WKWebView UA gets. Kept as Safari (NOT Chrome)
+// so it matches the real WKWebView engine — no fingerprint mismatch, no bot
+// captcha.
+const BROWSER_EMBED_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15";
+// URL-fragment marker the content script uses to hand a picked element back to
+// the app (read in on_navigation, never via page IPC).
+// The content script hands data back by navigating to `https://fleet.internal/
+// <kind>/<payload>`; on_navigation matches the marker, reads the payload, and
+// cancels the navigation. A full navigation reliably fires the navigation
+// delegate (WKWebView does NOT fire it for same-document hash changes).
+const PICK_MARKER: &str = "fleet.internal/pick/";
+const META_MARKER: &str = "fleet.internal/meta/";
+const READ_MARKER: &str = "fleet.internal/read/";
+// Element-select overlay, injected at document-start on every page. Exposes
+// window.__fleetStartSelect()/__fleetStopSelect(); on click while active it
+// highlights the hovered element and posts {selector,tag,text,url} back via
+// the fragment sentinel.
+const SELECT_JS: &str = r#"(function () {
+  if (window.__fleetSelInit) return; window.__fleetSelInit = true;
+  var active = false, box = null, last = null;
+  function ensureBox() {
+    if (box) return box;
+    box = document.createElement('div');
+    box.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;border:2px solid #4c8dff;background:rgba(76,141,255,0.18);border-radius:3px;transition:left .08s ease,top .08s ease,width .08s ease,height .08s ease;display:none;left:0;top:0;width:0;height:0;box-shadow:0 0 0 1px rgba(76,141,255,0.5);';
+    (document.documentElement || document.body).appendChild(box);
+    return box;
+  }
+  function cssPath(el) {
+    if (!el) return '';
+    if (el.id) return '#' + el.id;
+    var parts = [];
+    while (el && el.nodeType === 1 && parts.length < 5) {
+      var sel = el.nodeName.toLowerCase();
+      if (el.className && typeof el.className === 'string') {
+        var c = el.className.trim().split(/\s+/).slice(0, 2).join('.');
+        if (c) sel += '.' + c;
+      }
+      var p = el.parentNode;
+      if (p && p.children) {
+        var sibs = Array.prototype.filter.call(p.children, function (s) { return s.nodeName === el.nodeName; });
+        if (sibs.length > 1) sel += ':nth-of-type(' + (sibs.indexOf(el) + 1) + ')';
+      }
+      parts.unshift(sel);
+      el = el.parentNode;
+    }
+    return parts.join(' > ');
+  }
+  function onMove(e) {
+    if (!active) return;
+    var el = document.elementFromPoint(e.clientX, e.clientY);
+    if (!el || el === last) return;
+    last = el;
+    var r = el.getBoundingClientRect(), b = ensureBox();
+    b.style.display = 'block';
+    b.style.left = r.left + 'px'; b.style.top = r.top + 'px';
+    b.style.width = r.width + 'px'; b.style.height = r.height + 'px';
+  }
+  function onClick(e) {
+    if (!active) return;
+    e.preventDefault(); e.stopPropagation();
+    var el = last || document.elementFromPoint(e.clientX, e.clientY);
+    var info = { selector: cssPath(el), tag: el ? el.nodeName.toLowerCase() : '', text: el ? (el.innerText || el.textContent || '').trim().slice(0, 2000) : '', url: location.href, t: Date.now() };
+    stop();
+    try { location.href = 'https://fleet.internal/pick/' + encodeURIComponent(JSON.stringify(info)); } catch (_) {}
+  }
+  function start() {
+    if (active) return; active = true;
+    document.addEventListener('mousemove', onMove, true);
+    document.addEventListener('click', onClick, true);
+    if (document.body) document.body.style.cursor = 'crosshair';
+  }
+  function stop() {
+    active = false; last = null;
+    document.removeEventListener('mousemove', onMove, true);
+    document.removeEventListener('click', onClick, true);
+    if (box) box.style.display = 'none';
+    if (document.body) document.body.style.cursor = '';
+  }
+  window.__fleetStartSelect = start;
+  window.__fleetStopSelect = stop;
+  var metaSent = false;
+  function postMeta() {
+    if (metaSent) return; metaSent = true;
+    try {
+      location.href = 'https://fleet.internal/meta/' + encodeURIComponent(JSON.stringify({ title: document.title || '', url: location.href }));
+    } catch (e) {}
+  }
+  if (document.readyState === 'complete') postMeta();
+  else window.addEventListener('load', postMeta);
+})();"#;
+
+#[tauri::command]
+pub async fn browser_embed_create(
+    app: tauri::AppHandle,
+    url: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> serde_json::Value {
+    use tauri::{
+        webview::WebviewBuilder, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl,
+    };
+    let pos = LogicalPosition::new(x, y);
+    let size = LogicalSize::new(width.max(1.0), height.max(1.0));
+    // Reuse if already present → just navigate + reposition.
+    if let Some(wv) = app.get_webview(BROWSER_EMBED_LABEL) {
+        if let Ok(u) = url.parse() {
+            let _ = wv.navigate(u);
+        }
+        let _ = wv.set_position(pos);
+        let _ = wv.set_size(size);
+        return serde_json::json!({ "ok": true, "reused": true });
+    }
+    let parsed = match url.parse() {
+        Ok(u) => u,
+        Err(e) => return serde_json::json!({ "ok": false, "error": format!("bad url: {e}") }),
+    };
+    let window = match app.get_window("main") {
+        Some(w) => w,
+        None => return serde_json::json!({ "ok": false, "error": "no main window" }),
+    };
+    let app_nav = app.clone();
+    let app_pick = app.clone();
+    let builder = WebviewBuilder::new(BROWSER_EMBED_LABEL, WebviewUrl::External(parsed))
+        .data_store_identifier(BROWSER_EMBED_PROFILE)
+        .user_agent(BROWSER_EMBED_UA)
+        // Element-select content script (see SELECT_JS). Runs at document
+        // start on every page; the picked element is handed back via a URL
+        // fragment sentinel which we read in on_navigation below — so the
+        // visited site is NEVER granted IPC access to the app.
+        .initialization_script(SELECT_JS)
+        .on_navigation(move |url| {
+            // The content script hands data back by NAVIGATING to a sentinel
+            // host; we read it here and CANCEL the navigation (return false) so
+            // the page never actually changes. A full navigation reliably fires
+            // this delegate — same-document hash changes do NOT on WKWebView.
+            let s = url.as_str();
+            for (marker, event) in [
+                (PICK_MARKER, "browser-embed:pick"),
+                (META_MARKER, "browser-embed:meta"),
+                (READ_MARKER, "browser-embed:read"),
+            ] {
+                if let Some(idx) = s.find(marker) {
+                    let enc = &s[idx + marker.len()..];
+                    let _ = app_pick.emit(event, enc.to_string());
+                    return false;
+                }
+            }
+            true
+        })
+        .on_page_load(move |wv, _payload| {
+            if let Ok(u) = wv.url() {
+                // Strip our internal sentinel fragments so they never reach the
+                // URL bar / history / agent-browser mirror.
+                let mut s = u.to_string();
+                if let Some(i) = s.find("#__fleet") {
+                    s.truncate(i);
+                }
+                let _ = app_nav.emit("browser-embed:url", s);
+            }
+        });
+    match window.add_child(builder, pos, size) {
+        Ok(_) => serde_json::json!({ "ok": true }),
+        Err(e) => serde_json::json!({ "ok": false, "error": format!("add_child: {e}") }),
+    }
+}
+
+#[tauri::command]
+pub async fn browser_embed_navigate(app: tauri::AppHandle, url: String) -> serde_json::Value {
+    use tauri::Manager;
+    if let Some(wv) = app.get_webview(BROWSER_EMBED_LABEL) {
+        match url.parse() {
+            Ok(u) => {
+                let _ = wv.navigate(u);
+                serde_json::json!({ "ok": true })
+            }
+            Err(e) => serde_json::json!({ "ok": false, "error": format!("bad url: {e}") }),
+        }
+    } else {
+        serde_json::json!({ "ok": false, "error": "no embed webview" })
+    }
+}
+
+#[tauri::command]
+pub async fn browser_embed_set_bounds(
+    app: tauri::AppHandle,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> serde_json::Value {
+    use tauri::{LogicalPosition, LogicalSize, Manager};
+    if let Some(wv) = app.get_webview(BROWSER_EMBED_LABEL) {
+        let _ = wv.set_position(LogicalPosition::new(x, y));
+        let _ = wv.set_size(LogicalSize::new(width.max(1.0), height.max(1.0)));
+    }
+    serde_json::json!({ "ok": true })
+}
+
+/// Read the OPEN panel page's rendered text straight from the native webview —
+/// the exact page the user sees (a real browser engine, so it has whatever the
+/// user loaded). Returns None if no page is open or it doesn't answer in time.
+/// The backend's `read_page` calls this (via `set_embedded_reader`) so the
+/// agent reads what's actually on screen, not the separate headless CDP page.
+pub async fn read_embedded_page(
+    app: tauri::AppHandle,
+) -> Option<fleetify_backend::services::browser::EmbeddedPage> {
+    use base64::Engine as _;
+    use tauri::{Listener, Manager};
+    let wv = app.get_webview(BROWSER_EMBED_LABEL)?;
+    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+    let tx = std::sync::Mutex::new(Some(tx));
+    let id = app.once("browser-embed:read", move |event| {
+        if let Ok(mut g) = tx.lock() {
+            if let Some(tx) = g.take() {
+                let _ = tx.send(event.payload().to_string());
+            }
+        }
+    });
+    // Capture innerText, UTF-8-safe + URL-safe base64 it (btoa alone chokes on
+    // non-Latin1 like Chinese; +/ would get mangled in a URL fragment), and
+    // hand it back through the swallowed-hash channel read in on_navigation.
+    let js = "(function(){try{var t=document.body?(document.body.innerText||''):'';\
+var d={url:location.href,title:document.title||'',text:t.slice(0,30000)};\
+var b=btoa(unescape(encodeURIComponent(JSON.stringify(d)))).replace(/\\+/g,'-').replace(/\\//g,'_');\
+location.href='https://fleet.internal/read/'+b;\
+}catch(e){}})()";
+    if wv.eval(js).is_err() {
+        app.unlisten(id);
+        return None;
+    }
+    let payload = match tokio::time::timeout(std::time::Duration::from_secs(4), rx).await {
+        Ok(Ok(p)) => p,
+        _ => {
+            app.unlisten(id);
+            return None;
+        }
+    };
+    app.unlisten(id);
+    // event.payload() is the emitted value JSON-serialized → a quoted string.
+    let b64: String = serde_json::from_str(&payload).unwrap_or(payload);
+    let bytes = base64::engine::general_purpose::URL_SAFE
+        .decode(b64.trim())
+        .ok()?;
+    let json = String::from_utf8(bytes).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&json).ok()?;
+    Some(fleetify_backend::services::browser::EmbeddedPage {
+        url: v.get("url").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        title: v.get("title").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        text: v.get("text").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+    })
+}
+
+/// Navigate the OPEN panel webview and wait for it to load — lets the agent's
+/// `navigate` browse like the user (real engine, no WAF block). Returns the
+/// loaded URL + title, or None if no page is open / it doesn't load in time.
+pub async fn navigate_embedded_page(
+    app: tauri::AppHandle,
+    url: String,
+) -> Option<(String, String)> {
+    use tauri::{Listener, Manager};
+    let parsed: tauri::Url = url.parse().ok()?;
+    let wv = app.get_webview(BROWSER_EMBED_LABEL)?;
+    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+    let tx = std::sync::Mutex::new(Some(tx));
+    let id = app.once("browser-embed:url", move |event| {
+        if let Ok(mut g) = tx.lock() {
+            if let Some(tx) = g.take() {
+                let _ = tx.send(event.payload().to_string());
+            }
+        }
+    });
+    if wv.navigate(parsed).is_err() {
+        app.unlisten(id);
+        return None;
+    }
+    let loaded = tokio::time::timeout(std::time::Duration::from_secs(8), rx)
+        .await
+        .ok()
+        .and_then(|r| r.ok());
+    app.unlisten(id);
+    // The browser-embed:url payload is a JSON-serialized string.
+    let loaded_url = loaded
+        .and_then(|p| serde_json::from_str::<String>(&p).ok())
+        .unwrap_or(url);
+    // Give late-rendering pages a moment before a follow-up read.
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    Some((loaded_url, String::new()))
+}
+
+#[tauri::command]
+pub async fn browser_embed_set_select(app: tauri::AppHandle, on: bool) -> serde_json::Value {
+    use tauri::Manager;
+    if let Some(wv) = app.get_webview(BROWSER_EMBED_LABEL) {
+        let js = if on {
+            "window.__fleetStartSelect && window.__fleetStartSelect()"
+        } else {
+            "window.__fleetStopSelect && window.__fleetStopSelect()"
+        };
+        let _ = wv.eval(js);
+    }
+    serde_json::json!({ "ok": true })
+}
+
+/// Browser history / reload controls. `action` ∈ "back" | "forward" |
+/// "reload". Driven through the page's own history so it works across origins
+/// (the webview's session history list).
+#[tauri::command]
+pub async fn browser_embed_nav(app: tauri::AppHandle, action: String) -> serde_json::Value {
+    use tauri::Manager;
+    let js = match action.as_str() {
+        "back" => "window.history.back()",
+        "forward" => "window.history.forward()",
+        "reload" => "window.location.reload()",
+        other => return serde_json::json!({ "ok": false, "error": format!("bad action: {other}") }),
+    };
+    if let Some(wv) = app.get_webview(BROWSER_EMBED_LABEL) {
+        let _ = wv.eval(js);
+    }
+    serde_json::json!({ "ok": true })
+}
+
+/// Open the embedded webview's developer tools (dev/debug builds only).
+#[tauri::command]
+pub async fn browser_embed_devtools(app: tauri::AppHandle) -> serde_json::Value {
+    use tauri::Manager;
+    if let Some(wv) = app.get_webview(BROWSER_EMBED_LABEL) {
+        #[cfg(any(debug_assertions, feature = "devtools"))]
+        wv.open_devtools();
+        #[cfg(not(any(debug_assertions, feature = "devtools")))]
+        let _ = wv;
+    }
+    serde_json::json!({ "ok": true })
+}
+
+/// Clear the embedded webview's cookies + cache + local storage.
+#[tauri::command]
+pub async fn browser_embed_clear_data(app: tauri::AppHandle) -> serde_json::Value {
+    use tauri::Manager;
+    if let Some(wv) = app.get_webview(BROWSER_EMBED_LABEL) {
+        match wv.clear_all_browsing_data() {
+            Ok(_) => serde_json::json!({ "ok": true }),
+            Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+        }
+    } else {
+        serde_json::json!({ "ok": false, "error": "no embed webview" })
+    }
+}
+
+#[tauri::command]
+pub async fn browser_embed_close(app: tauri::AppHandle) -> serde_json::Value {
+    use tauri::Manager;
+    if let Some(wv) = app.get_webview(BROWSER_EMBED_LABEL) {
+        let _ = wv.close();
+    }
+    serde_json::json!({ "ok": true })
+}
+
 // ── window controls ──────────────────────────────────────────────
 fn main_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
     app.get_webview_window("main")

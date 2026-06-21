@@ -5,9 +5,10 @@ import {
   Plus, Loader2,
   AlignLeft,
   Sparkles, Undo2, Wand2, MoreHorizontal,
-  Plug, RefreshCw, ArrowUp,
+  Plug, RefreshCw, ArrowUp, SquareMousePointer,
 } from "lucide-react";
 import { folderName } from "@/lib/utils";
+import { humanizeToolName } from "@/lib/tool-names";
 import { searchProjectFiles, apiFetch, type FileSearchEntry, updateSession as apiUpdateSession, enhancePrompt } from "@/lib/api";
 import { registerConfigPatch } from "@/lib/session-config-sync";
 import { useDiscoveredModelsStore } from "@/stores/discovered-models-store";
@@ -1020,7 +1021,7 @@ export function ChatInput({
     EnterPlanMode: "switch to planning mode", ExitPlanMode: "exit planning mode and begin execution",
   }), []);
   const permVerb = permissionRequest
-    ? (permissionRequest.tool_description ?? PERM_VERB[permTool] ?? permTool.toLowerCase())
+    ? (permissionRequest.tool_description ?? PERM_VERB[permTool] ?? humanizeToolName(permTool).toLowerCase())
     : "";
   // Keyboard: Esc → deny, ⌘↵ → allow, ⌘⇧↵ → always allow. Active-session
   // guarded so a dialog on agent A isn't actioned while viewing agent B.
@@ -1165,6 +1166,21 @@ export function ChatInput({
   const draftRef      = useRef("");   // saved draft before navigating
   const [dragging, setDragging] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // Element references picked from the in-panel browser ("Select" tool). Shown
+  // as removable chips and prepended as context when the message is sent.
+  const [elementRefs, setElementRefs] = useState<{ id: string; selector: string; text: string; url: string }[]>([]);
+  const elementRefsRef = useRef<{ id: string; selector: string; text: string; url: string }[]>([]);
+  useEffect(() => { elementRefsRef.current = elementRefs; }, [elementRefs]);
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const d = (e as CustomEvent<{ selector?: string; text?: string; url?: string }>).detail;
+      if (!d) return;
+      setElementRefs((prev) => (prev.length >= 8 ? prev : [...prev, { id: crypto.randomUUID(), selector: d.selector || "element", text: d.text || "", url: d.url || "" }]));
+      requestAnimationFrame(() => ref.current?.focus());
+    };
+    window.addEventListener("fleet:add-element-ref", handler);
+    return () => window.removeEventListener("fleet:add-element-ref", handler);
+  }, []);
 
   // Names the user has actually picked from a @mention popover this
   // session. Used by buildMentionHtml to decide whether a token earns
@@ -1833,7 +1849,7 @@ export function ChatInput({
    *  the refine call no-op'd. */
   const dispatchSend = useCallback((text: string, atts: Attachment[]) => {
     const t = text.trim();
-    if (!t && atts.length === 0) return;
+    if (!t && atts.length === 0 && elementRefsRef.current.length === 0) return;
     // App-owned slash commands intercepted before they hit the CLI.
     // handleSlashIntent returns true when it handled the command — we
     // clear the input and exit without invoking onSend.
@@ -1911,9 +1927,17 @@ export function ChatInput({
           useChatStore.getState().clearCompactionPill(sessionId);
         }
       }
-      onSend(t, atts.length > 0 ? atts : undefined);
+      const refs = elementRefsRef.current;
+      let outText = t;
+      if (refs.length) {
+        const block = refs
+          .map((r) => `> Selected element \`${r.selector}\`${r.url ? ` (${r.url})` : ""}${r.text ? `: "${r.text.slice(0, 500)}"` : ""}`)
+          .join("\n");
+        outText = t ? `${block}\n\n${t}` : block;
+      }
+      onSend(outText, atts.length > 0 ? atts : undefined);
     }
-    setValue(""); setAttachments([]);
+    setValue(""); setAttachments([]); setElementRefs([]);
     setPendingRefine(null);
     setEnhanceUndo(null); setEnhanceToast(null);
     if (ref.current) ref.current.style.height = "0px";
@@ -2197,7 +2221,7 @@ export function ChatInput({
   // option is picked OR the user typed a custom answer.
   const canSend    = askActive
     ? (askAnyPicked || hasText) && !streaming
-    : (hasText || attachments.length > 0) && !disabled && !streaming && !locked;
+    : (hasText || attachments.length > 0 || elementRefs.length > 0) && !disabled && !streaming && !locked;
   const btnActive  = streaming || canSend;
   // Resolve the chip face (provider icon + label) via the shared resolver
   // against the SAME groups the dropdown uses — identical logic to the
@@ -2751,6 +2775,28 @@ export function ChatInput({
             </div>
           )}
 
+          {/* Selected element references (from the in-panel browser) */}
+          {elementRefs.length > 0 && (
+            <div style={{ padding: "10px 12px 0", display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {elementRefs.map((r) => (
+                <div key={r.id} title={`${r.selector}${r.url ? ` · ${r.url}` : ""}`} style={{
+                  display: "flex", alignItems: "center", gap: 6,
+                  padding: "4px 8px", borderRadius: 7,
+                  border: "1px solid rgba(var(--fg-rgb),0.1)", background: "rgba(var(--fg-rgb),0.05)",
+                }}>
+                  <SquareMousePointer size={12} style={{ color: "var(--c-dim)", flexShrink: 0 }} />
+                  <span style={{ fontSize: 12, color: "var(--c-low)", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {r.text ? r.text.slice(0, 40) : r.selector}
+                  </span>
+                  <button onClick={() => setElementRefs((prev) => prev.filter((x) => x.id !== r.id))}
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "var(--c-ghost)", display: "flex", padding: 0 }}>
+                    <X size={11} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Drag overlay */}
           {dragging && (
             <div style={{ padding: "16px", textAlign: "center", fontSize: 13, color: "var(--c-low)", borderRadius: 9, margin: "8px", border: `1.5px dashed rgba(var(--fg-rgb),0.18)` }}>
@@ -2934,7 +2980,7 @@ export function ChatInput({
                     <span style={{
                       fontSize: 10, fontWeight: 600, letterSpacing: "0.3px", textTransform: "uppercase",
                       color: "var(--c-low)",
-                    }}>{permissionRequest.tool_name}</span>
+                    }}>{humanizeToolName(permissionRequest.tool_name)}</span>
                   </div>
 
                   {/* Prompt line */}

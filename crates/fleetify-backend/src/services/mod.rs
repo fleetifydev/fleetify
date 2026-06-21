@@ -43,5 +43,7 @@ pub mod staff_prompt;
 pub mod task_enricher;
 pub mod telemetry;
 pub mod templates;
+pub mod user_extractor;
+pub mod user_memory;
 pub mod workflows;
 pub mod worktree;

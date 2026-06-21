@@ -574,15 +574,21 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   }, [messages]);
 
   useEffect(() => {
-    if (!isStreaming && scrollSpacer > 0) {
-      setScrollSpacer(0);
-      pinnedToExchange.current = false;
-      // Instant jump to bottom — smooth scroll here feels slow and anticlimactic
-      requestAnimationFrame(() => {
-        const el = scrollRef.current;
-        if (el) el.scrollTop = el.scrollHeight;
-      });
-    }
+    if (isStreaming) return;
+    if (scrollSpacer > 0) setScrollSpacer(0);
+    pinnedToExchange.current = false;
+    // Snap to the TRUE bottom once streaming ends. We re-snap a few times
+    // because late work (syntax highlighting, table/markdown layout, images)
+    // grows the content height AFTER the first jump — a single jump would
+    // then rest a little above the real bottom. Bails if the user scrolled up.
+    const snap = () => {
+      const el = scrollRef.current;
+      if (el && !userScrolledUp.current) el.scrollTop = el.scrollHeight;
+    };
+    const r = requestAnimationFrame(snap);
+    const t1 = setTimeout(snap, 90);
+    const t2 = setTimeout(snap, 240);
+    return () => { cancelAnimationFrame(r); clearTimeout(t1); clearTimeout(t2); };
   }, [isStreaming, scrollSpacer]);
 
   // Smooth streaming auto-follow. Instead of hard-jumping scrollTop to the

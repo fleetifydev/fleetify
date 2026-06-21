@@ -2353,6 +2353,20 @@ async fn run_send_flow(
         sid.clone(),
         project_for_distill,
     );
+
+    // Staff (Fleet) session: also extract durable PERSONAL facts about the user
+    // into user_memory so Fleet keeps learning who they are. Same end-of-turn,
+    // cooldown-gated, cheap-Haiku pattern as distillation; non-staff sessions
+    // never run this (their project memory is handled above).
+    if session.title == "Staff Agent" {
+        if let Some(uid) = session.user_id.clone() {
+            crate::services::user_extractor::schedule_user_extract(
+                st.auth.pool.clone(),
+                uid,
+                sid.clone(),
+            );
+        }
+    }
 }
 
 /// Resolve + dispatch every `[[DIRECT_DISPATCH:id|task]]` token the
@@ -2559,8 +2573,28 @@ async fn handle_staff_dispatch_tokens(
     text: &str,
 ) {
     use crate::services::dispatch::{
-        parse_dispatches, parse_read_agents, parse_restarts, parse_stops,
+        parse_dispatches, parse_read_agents, parse_remember_user, parse_restarts, parse_stops,
     };
+
+    // ── REMEMBER_USER ── persist durable personal facts the user shared, so
+    // Fleet knows them next time (USER-scoped memory, not project memory).
+    if let Some(uid) = staff_user_id {
+        for (kind, title, content) in parse_remember_user(text) {
+            if title.is_empty() || content.is_empty() {
+                continue;
+            }
+            let _ = crate::services::user_memory::create(
+                &st.auth.pool,
+                uid,
+                &kind,
+                &title,
+                &content,
+                4,
+                "explicit",
+            )
+            .await;
+        }
+    }
 
     // ── READ_AGENT ──
     let read_matches = parse_read_agents(text);

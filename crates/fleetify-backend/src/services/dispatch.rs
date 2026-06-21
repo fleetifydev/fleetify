@@ -144,6 +144,29 @@ pub fn parse_restarts(text: &str) -> Vec<String> {
         .collect()
 }
 
+fn remember_user_re() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| {
+        Regex::new(r"(?is)\[\[REMEMBER_USER:([^|\]]+)\|([^|\]]+)\|(.+?)\]\]")
+            .expect("REMEMBER_USER_RE")
+    })
+}
+
+/// Parse every `[[REMEMBER_USER:kind|title|content]]` token Fleet emits to save
+/// a durable personal fact about the user. Returns `(kind, title, content)`.
+pub fn parse_remember_user(text: &str) -> Vec<(String, String, String)> {
+    remember_user_re()
+        .captures_iter(text)
+        .map(|c| {
+            (
+                c[1].trim().to_string(),
+                c[2].trim().to_string(),
+                c[3].trim().to_string(),
+            )
+        })
+        .collect()
+}
+
 /// Raw JSON payloads from every `[[SPAWN:{…}]]` token, in document order.
 /// The semantic parse (into `services::spawn::RawSpawn`) lives in
 /// `services::spawn::parse_spawns`; this just owns the token grammar.

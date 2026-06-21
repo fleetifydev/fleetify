@@ -75,7 +75,12 @@ fn strip_frontmatter(text: &str) -> String {
 
 /// The text a `/namespace:skill` command sends for `tool`: a directive for
 /// native-skill agents, else the skill body.
-fn skill_body(tool: Option<&str>, label: &str, description: &Option<String>, skill_md: &str) -> String {
+fn skill_body(
+    tool: Option<&str>,
+    label: &str,
+    description: &Option<String>,
+    skill_md: &str,
+) -> String {
     let native = tool.map(native_skills).unwrap_or(false);
     if native {
         match description {
@@ -108,7 +113,10 @@ fn library_skills(tool: Option<&str>, seen: &mut BTreeSet<String>, out: &mut Vec
             out,
             CommandSummary {
                 name: format!("{ns}:{ns}"),
-                description: item.description.clone().unwrap_or_else(|| item.name.clone()),
+                description: item
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| item.name.clone()),
                 body,
                 args: Vec::new(),
             },
@@ -119,14 +127,21 @@ fn library_skills(tool: Option<&str>, seen: &mut BTreeSet<String>, out: &mut Vec
 /// Plugin-shipped skills (`/plugin:skill`) + commands (`/plugin:command`).
 /// Mirrors the materializer layout (`.<vendor>/skills/<name>/SKILL.md`,
 /// `.<vendor>/commands/*.md`, Codex `prompts`), deduped across vendor copies.
-fn plugin_components(tool: Option<&str>, seen: &mut BTreeSet<String>, out: &mut Vec<CommandSummary>) {
+fn plugin_components(
+    tool: Option<&str>,
+    seen: &mut BTreeSet<String>,
+    out: &mut Vec<CommandSummary>,
+) {
     let Ok(rd) = std::fs::read_dir(fleetify_core::fleetify_home().join("plugins")) else {
         return;
     };
     let mut plugin_dirs: Vec<_> = rd.flatten().map(|e| e.path()).collect();
     plugin_dirs.sort();
 
-    let mut vendors: Vec<&str> = COMPONENT_PROVIDERS.iter().map(|p| component_basename(p)).collect();
+    let mut vendors: Vec<&str> = COMPONENT_PROVIDERS
+        .iter()
+        .map(|p| component_basename(p))
+        .collect();
     vendors.sort_unstable();
     vendors.dedup();
 
@@ -171,7 +186,11 @@ fn plugin_components(tool: Option<&str>, seen: &mut BTreeSet<String>, out: &mut 
                 }
             }
             // Commands: .<vendor>/commands/*.md (Codex: prompts/*.md)
-            let sub = if *vendor == "codex" { "prompts" } else { "commands" };
+            let sub = if *vendor == "codex" {
+                "prompts"
+            } else {
+                "commands"
+            };
             if let Ok(entries) = std::fs::read_dir(root.join(format!(".{vendor}")).join(sub)) {
                 let mut files: Vec<_> = entries.flatten().map(|e| e.path()).collect();
                 files.sort();
@@ -234,7 +253,14 @@ mod tests {
         r
     }
 
-    fn write_library_skill(home: &std::path::Path, id: &str, slug: &str, name: &str, desc: &str, body: &str) {
+    fn write_library_skill(
+        home: &std::path::Path,
+        id: &str,
+        slug: &str,
+        name: &str,
+        desc: &str,
+        body: &str,
+    ) {
         let dir = home.join("library/items").join(id);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -250,7 +276,11 @@ mod tests {
     }
 
     fn write_plugin_skill(home: &std::path::Path, plugin: &str, name: &str, md: &str) {
-        let dir = home.join("plugins").join(plugin).join(".claude/skills").join(name);
+        let dir = home
+            .join("plugins")
+            .join(plugin)
+            .join(".claude/skills")
+            .join(name);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("SKILL.md"), md).unwrap();
     }
@@ -265,7 +295,14 @@ mod tests {
     fn library_skill_is_namespaced_slug_slug_with_body_for_non_native() {
         let tmp = tempdir().unwrap();
         with_home(tmp.path(), || {
-            write_library_skill(tmp.path(), "id-rev", "reviewer", "Reviewer", "reviews code", "Do a review.");
+            write_library_skill(
+                tmp.path(),
+                "id-rev",
+                "reviewer",
+                "Reviewer",
+                "reviews code",
+                "Do a review.",
+            );
             let list = list_commands(Some("cursor-cli"));
             let c = list.iter().find(|c| c.name == "reviewer:reviewer").unwrap();
             assert_eq!(c.body, "Do a review.");
@@ -277,7 +314,14 @@ mod tests {
     fn native_provider_gets_directive_not_body() {
         let tmp = tempdir().unwrap();
         with_home(tmp.path(), || {
-            write_library_skill(tmp.path(), "id-rev", "reviewer", "Reviewer", "reviews code", "Long skill body");
+            write_library_skill(
+                tmp.path(),
+                "id-rev",
+                "reviewer",
+                "Reviewer",
+                "reviews code",
+                "Long skill body",
+            );
             let list = list_commands(Some("claude-code"));
             let c = list.iter().find(|c| c.name == "reviewer:reviewer").unwrap();
             assert!(c.body.contains("Use the"));
@@ -290,8 +334,18 @@ mod tests {
     fn plugin_skill_and_command_are_namespaced() {
         let tmp = tempdir().unwrap();
         with_home(tmp.path(), || {
-            write_plugin_skill(tmp.path(), "xyz", "abc", "---\ndescription: does abc\n---\nabc body");
-            write_plugin_command(tmp.path(), "xyz", "deploy", "---\ndescription: ship it\n---\nRun the deploy.");
+            write_plugin_skill(
+                tmp.path(),
+                "xyz",
+                "abc",
+                "---\ndescription: does abc\n---\nabc body",
+            );
+            write_plugin_command(
+                tmp.path(),
+                "xyz",
+                "deploy",
+                "---\ndescription: ship it\n---\nRun the deploy.",
+            );
             let list = list_commands(Some("cursor-cli"));
             assert!(list.iter().any(|c| c.name == "xyz:abc"));
             let dep = list.iter().find(|c| c.name == "xyz:deploy").unwrap();

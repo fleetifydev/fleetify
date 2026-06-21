@@ -22,6 +22,7 @@ pub mod providers;
 pub mod runtime;
 pub mod sessions;
 pub mod ssh;
+pub mod user;
 pub mod workflows;
 pub mod workspace;
 

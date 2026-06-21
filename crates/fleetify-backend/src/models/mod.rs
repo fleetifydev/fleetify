@@ -10,3 +10,4 @@ pub mod message;
 pub mod plugin;
 pub mod session;
 pub mod user;
+pub mod user_memory;

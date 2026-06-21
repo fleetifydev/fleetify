@@ -39,14 +39,14 @@ import {
   X, ArrowRight, FileText, Check, ChevronRight, ChevronLeft, GitBranch, HelpCircle,
   ChevronDown, ChevronUp, Loader2,
   Brain, Send, AlertCircle, Sparkles, Archive,
-  StopCircle, Eye, Pencil, Terminal, Globe, Moon,
+  StopCircle, Eye, Pencil, Terminal, Globe, Moon, Trash2, Plus,
 } from "lucide-react";
-import { memo, useMemo, useState, useCallback } from "react";
+import { memo, useMemo, useState, useCallback, useEffect } from "react";
 import { useAppStore } from "@/stores/app-store";
 import { useChatStore } from "@/stores/chat-store";
 import { useFleetStore, type FleetReport, type FleetDecision } from "@/stores/fleet-store";
 import { useFleetData, type FleetActivityRow } from "./hooks/use-fleet-data";
-import { askFleet, stopSession, archiveSession, type SessionDetail, type SessionActivityItem } from "@/lib/api";
+import { askFleet, stopSession, archiveSession, listUserMemory, createUserMemory, deleteUserMemory, type SessionDetail, type SessionActivityItem, type UserMemory } from "@/lib/api";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import type { Session } from "@/types/session";
 import { folderName } from "@/lib/utils";
@@ -782,6 +782,127 @@ function AskFleetCard({ buildSnapshot, initialOpen, initialQuestion }: {
   );
 }
 
+/* ── What Fleet knows about you ─────────────────────────────────
+   The user-scoped personal memory Fleet draws on. Read + add + delete;
+   `auto` rows (Fleet learned them) are badged so the user can prune. */
+function FleetMemoryCard() {
+  const [open, setOpen] = useState(false);
+  const [rows, setRows] = useState<UserMemory[] | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [draftContent, setDraftContent] = useState("");
+
+  const refresh = useCallback(() => {
+    listUserMemory().then(setRows).catch(() => setRows([]));
+  }, []);
+  useEffect(() => { if (open && rows === null) refresh(); }, [open, rows, refresh]);
+
+  const add = useCallback(async () => {
+    const title = draftTitle.trim(), content = draftContent.trim();
+    if (!title || !content) return;
+    try {
+      await createUserMemory({ title, content, kind: "fact", importance: 4 });
+      setDraftTitle(""); setDraftContent(""); setAdding(false); refresh();
+    } catch { /* ignore */ }
+  }, [draftTitle, draftContent, refresh]);
+
+  const remove = useCallback(async (id: string) => {
+    setRows(prev => prev?.filter(r => r.id !== id) ?? null);
+    try { await deleteUserMemory(id); } catch { refresh(); }
+  }, [refresh]);
+
+  const count = rows?.length ?? 0;
+
+  return (
+    <div style={{ borderBottom: "1px solid var(--c-brd)", padding: "10px 14px" }}>
+      <button
+        onClick={() => setOpen(v => !v)}
+        style={{
+          display: "flex", alignItems: "center", gap: 8, padding: 0, width: "100%",
+          background: "transparent", border: "none", cursor: "pointer",
+          fontFamily: "inherit", textAlign: "left", color: "var(--c-high)",
+        }}
+      >
+        <Sparkles size={12} strokeWidth={2.2} style={{ color: C_BLUE }} />
+        <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: "var(--c-high)" }}>What Fleet knows about you</span>
+        {count > 0 && <span style={{ fontSize: 10, color: "var(--c-ghost)", fontVariantNumeric: "tabular-nums" }}>{count}</span>}
+        {open ? <ChevronUp size={11} style={{ color: "var(--c-ghost)" }} /> : <ChevronDown size={11} style={{ color: "var(--c-ghost)" }} />}
+      </button>
+
+      {open && (
+        <div style={{ marginTop: 9, display: "flex", flexDirection: "column", gap: 7 }}>
+          {rows === null ? (
+            <span style={{ fontSize: 11, color: "var(--c-ghost)" }}>Loading…</span>
+          ) : rows.length === 0 ? (
+            <span style={{ fontSize: 11.5, color: "var(--c-ghost)", lineHeight: 1.5 }}>
+              Nothing yet. Tell Fleet about yourself in chat ("remember that…") or add a note below.
+            </span>
+          ) : (
+            rows.map(m => (
+              <div key={m.id} style={{
+                display: "flex", alignItems: "flex-start", gap: 8,
+                padding: "7px 9px", borderRadius: 7,
+                background: "rgba(var(--fg-rgb),0.03)", border: "1px solid var(--c-brd)",
+              }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                    <span style={{ fontSize: 11.5, fontWeight: 600, color: "var(--c-high)" }}>{m.title}</span>
+                    <span style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--c-ghost)", border: "1px solid var(--c-brd)", borderRadius: 4, padding: "0 4px" }}>{m.kind}</span>
+                    {m.source === "auto" && (
+                      <span title="Fleet learned this automatically" style={{ display: "inline-flex", alignItems: "center", gap: 2, fontSize: 8.5, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: C_BLUE }}>
+                        <Sparkles size={8} /> auto
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--c-low)", lineHeight: 1.45 }}>{m.content}</div>
+                </div>
+                <button
+                  onClick={() => remove(m.id)}
+                  title="Forget this"
+                  style={{ flexShrink: 0, background: "transparent", border: "none", cursor: "pointer", color: "var(--c-ghost)", padding: 2, display: "inline-flex" }}
+                  onMouseEnter={e => (e.currentTarget.style.color = "var(--c-err)")}
+                  onMouseLeave={e => (e.currentTarget.style.color = "var(--c-ghost)")}
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
+            ))
+          )}
+
+          {adding ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 2 }}>
+              <input
+                value={draftTitle}
+                onChange={e => setDraftTitle(e.target.value)}
+                placeholder="Title (e.g. Prefers Rust)"
+                style={{ padding: "6px 9px", fontSize: 11.5, borderRadius: 6, border: "1px solid var(--c-brd)", background: "rgba(255,255,255,0.04)", color: "var(--c-high)", outline: "none", fontFamily: "inherit" }}
+              />
+              <input
+                value={draftContent}
+                onChange={e => setDraftContent(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") add(); }}
+                placeholder="Detail (one sentence)"
+                style={{ padding: "6px 9px", fontSize: 11.5, borderRadius: 6, border: "1px solid var(--c-brd)", background: "rgba(255,255,255,0.04)", color: "var(--c-high)", outline: "none", fontFamily: "inherit" }}
+              />
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={add} style={{ padding: "5px 11px", fontSize: 11, fontWeight: 600, borderRadius: 6, border: "none", background: C_BLUE, color: "#0a0a0a", cursor: "pointer" }}>Save</button>
+                <button onClick={() => { setAdding(false); setDraftTitle(""); setDraftContent(""); }} style={{ padding: "5px 11px", fontSize: 11, borderRadius: 6, border: "1px solid var(--c-brd)", background: "transparent", color: "var(--c-low)", cursor: "pointer" }}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setAdding(true)}
+              style={{ display: "inline-flex", alignItems: "center", gap: 5, alignSelf: "flex-start", marginTop: 2, padding: "4px 8px", fontSize: 11, borderRadius: 6, border: "1px dashed var(--c-brd)", background: "transparent", color: "var(--c-low)", cursor: "pointer" }}
+            >
+              <Plus size={11} /> Add a memory
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── Activity feed row ─────────────────────────────────────────── */
 
 function ActivityFeedRow({ row }: { row: FleetActivityRow }) {
@@ -1233,6 +1354,8 @@ export function FleetPanel({ sessions, onSelectAgent }: Props) {
                 initialQuestion={askInitial?.q}
               />
             )}
+
+            <FleetMemoryCard />
 
             <SectionLabel count={agents.length}>Sessions</SectionLabel>
             {sortedAgents.map((s) => (

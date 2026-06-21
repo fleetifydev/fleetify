@@ -483,15 +483,20 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
         transition: "none",
         position: "relative",
       }}>
-        {/* Right resize handle — sits on the LEFT inner edge of the card.
-            Slightly inset so it doesn't paint over the rounded corner. */}
+        {/* Right resize handle — lives in the 8px margin gap to the LEFT of the
+            card, NOT over it. A pane may host a native child webview (the
+            in-panel browser) that renders above the DOM and would otherwise
+            occlude a handle painted over the card, making the panel
+            un-resizable. Keeping the grab zone in the gap dodges that. */}
         {rightPanelOpen && (
           <div
             onMouseDown={onRightDrag}
             style={{
-              position: "absolute", top: 0, left: -4, bottom: 0,
-              width: 8, cursor: "col-resize", zIndex: 10,
+              position: "absolute", top: 0, left: -9, bottom: 0,
+              width: 12, cursor: "col-resize", zIndex: 30,
             }}
+            onMouseEnter={e => (e.currentTarget.style.background = "var(--c-brd)")}
+            onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
           />
         )}
 

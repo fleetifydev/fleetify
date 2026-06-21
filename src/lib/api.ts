@@ -1073,6 +1073,55 @@ export async function askFleet(
   return res.json();
 }
 
+/** A row of Fleet's personal memory about the user. */
+export interface UserMemory {
+  id: string;
+  user_id: string;
+  kind: string;
+  title: string;
+  content: string;
+  importance: number;
+  source: "explicit" | "auto";
+  created_at: string;
+  updated_at: string | null;
+}
+
+export async function listUserMemory(limit = 200): Promise<UserMemory[]> {
+  const res = await apiFetch(`${API_BASE}/user/memory?limit=${limit}`);
+  if (!res.ok) throw new Error(`List memory failed: ${res.status}`);
+  return res.json();
+}
+
+export async function createUserMemory(
+  m: { title: string; content: string; kind?: string; importance?: number },
+): Promise<UserMemory> {
+  const res = await apiFetch(`${API_BASE}/user/memory`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(m),
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Create memory failed: ${res.status}`);
+  return res.json();
+}
+
+export async function updateUserMemory(
+  id: string,
+  patch: { title?: string; content?: string; kind?: string; importance?: number },
+): Promise<UserMemory> {
+  const res = await apiFetch(`${API_BASE}/user/memory/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error(`Update memory failed: ${res.status}`);
+  return res.json();
+}
+
+export async function deleteUserMemory(id: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/user/memory/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Delete memory failed: ${res.status}`);
+}
+
 export async function analyzeFleetResponse(
   opts: {
     priorPrompt: string;
