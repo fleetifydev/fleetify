@@ -1937,12 +1937,11 @@ function UserMessage({ content, msgRef }: { content: ContentBlock[]; msgRef?: Re
         // Smaller corner on the bottom-right so the bubble visually
         // "points" back to the input below — tiny detail, big polish.
         borderBottomRightRadius: 6,
-        // Slash commands get a blue-tinted surface so they read as
-        // "directive to the system" instead of "thing said to the
-        // agent". Regular prose keeps the neutral hover surface.
-        background: isSlashCommand
-          ? "rgba(96,165,250,0.12)"
-          : "var(--secondary)",
+        // The bubble keeps the normal neutral surface for every message —
+        // the blue, mono command text below is what marks a slash command
+        // as a "directive to the system", so the container itself shouldn't
+        // also tint (it read as a different kind of message).
+        background: "var(--secondary)",
         overflow: "hidden",
       }}>
         {images.length > 0 && (

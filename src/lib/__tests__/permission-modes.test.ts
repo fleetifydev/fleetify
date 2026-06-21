@@ -60,7 +60,8 @@ describe("decideModeCommand", () => {
       patch: { permission_mode: "plan" },
       title: "Plan mode",
       tone: "info",
-      message: "claude-code → plan.",
+      message:
+        "Session mode switched to Plan mode. The agent plans first and won't make changes until you approve.",
     });
   });
 
@@ -70,7 +71,7 @@ describe("decideModeCommand", () => {
     expect(out.tone).toBe("warn");
   });
 
-  it("adds the respawn hint for codex/gemini and includes sandbox", () => {
+  it("adds the respawn hint for codex/gemini and keeps the sandbox in the patch", () => {
     const out = decideModeCommand("yolo", codexCap, "codex-cli");
     expect(out).toMatchObject({
       kind: "apply",
@@ -78,7 +79,7 @@ describe("decideModeCommand", () => {
       tone: "warn",
     });
     if (out.kind !== "apply") throw new Error("expected apply outcome");
-    expect(out.message).toContain("danger-full-access");
+    expect(out.message).toContain("YOLO mode");
     expect(out.message).toContain("next spawn");
   });
 });

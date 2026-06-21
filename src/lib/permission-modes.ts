@@ -73,14 +73,17 @@ export function decideModeCommand(
     };
   }
   const spawnHint = tool && SPAWN_HINT_TOOLS.has(tool)
-    ? " Codex/Gemini apply this on the next spawn — restart the session to apply now."
+    ? " Applies on the next spawn — restart the session to apply now."
     : "";
-  const sandboxStr = patch.sandbox ? ` / ${patch.sandbox}` : "";
+  const label = semantic === "plan" ? "Plan mode" : "YOLO mode";
+  const blurb = semantic === "plan"
+    ? "The agent plans first and won't make changes until you approve."
+    : "Tool approvals are bypassed — the agent runs without asking.";
   return {
     kind: "apply",
     patch,
-    title: semantic === "plan" ? "Plan mode" : "YOLO mode",
-    message: `${tool ?? "provider"} → ${patch.permission_mode}${sandboxStr}.${spawnHint}`,
+    title: label,
+    message: `Session mode switched to ${label}. ${blurb}${spawnHint}`,
     tone: semantic === "plan" ? "info" : "warn",
   };
 }
