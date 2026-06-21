@@ -1778,21 +1778,33 @@ pub async fn create_pr_via_gh(
     json!({ "ok": true, "prNumber": pr_number, "prUrl": url })
 }
 
-/// `gh pr list --json number,state,headRefName --limit N`. Lets the
-/// BranchPickerMenu show "PR #N · OPEN/MERGED" badges per local
-/// branch without paying for one `gh pr view` per row.
-pub async fn list_prs(folder: &Path, limit: u32) -> Value {
-    let limit_str = limit.to_string();
-    let argv: Vec<&str> = vec![
+/// Build the `gh pr list` argv for the repo-wide OPEN-PR store (`pr-store.ts` —
+/// the Merge-box cross-PR switcher + branch-picker badges). State is **open**,
+/// NOT `all`: the store only ever DISPLAYS open PRs (`openPrs`), and `--state
+/// all` spends the `--limit` budget on closed/merged PRs first (gh sorts
+/// newest-created first), so in a repo with a long PR history the older OPEN
+/// PRs fall outside the newest-N window and silently never reach the switcher
+/// (e.g. with 200+ total PRs and `--limit 100`, open PR #2 is dropped). Mirrors
+/// the REST path's `state=open` (`github_pr::build_list_prs_request`).
+fn list_prs_argv(limit_str: &str) -> Vec<&str> {
+    vec![
         "pr",
         "list",
         "--state",
-        "all",
+        "open",
         "--limit",
-        &limit_str,
+        limit_str,
         "--json",
         "number,state,headRefName,isDraft,mergeable",
-    ];
+    ]
+}
+
+/// `gh pr list --state open --limit N`. Feeds the repo-wide open-PR store so the
+/// Merge-box switcher + branch-picker badges see EVERY open PR, not just the
+/// newest N across all states (which silently dropped older open PRs).
+pub async fn list_prs(folder: &Path, limit: u32) -> Value {
+    let limit_str = limit.to_string();
+    let argv = list_prs_argv(&limit_str);
     let (rc, out, err) = gh(&argv, folder).await;
     if rc != 0 {
         return json!({ "ok": false, "error": err.trim() });
@@ -2316,6 +2328,30 @@ mod tests {
         let _ = git(&["config", "user.email", "t@x"], p).await;
         let _ = git(&["config", "user.name", "T"], p).await;
         let _ = git(&["commit", "-m", "init", "--allow-empty"], p).await;
+    }
+
+    #[test]
+    fn list_prs_argv_fetches_open_not_all_state() {
+        // Regression: the open-PR store (pr-store.ts) displays open PRs only, so
+        // the gh fetch must use `--state open`. `--state all` spent the `--limit`
+        // budget on closed/merged PRs first (gh sorts newest-created first), so
+        // with a long PR history older OPEN PRs (e.g. #2/#69 behind 200+ total
+        // PRs) fell outside the newest-N window and never reached the switcher.
+        let argv = list_prs_argv("100");
+        let i = argv
+            .iter()
+            .position(|a| *a == "--state")
+            .expect("has --state");
+        assert_eq!(argv[i + 1], "open", "must fetch open PRs, not all states");
+        let j = argv
+            .iter()
+            .position(|a| *a == "--limit")
+            .expect("has --limit");
+        assert_eq!(argv[j + 1], "100");
+        assert!(
+            argv.iter().any(|a| a.contains("isDraft")),
+            "keeps the json field set"
+        );
     }
 
     #[tokio::test]

@@ -6,7 +6,7 @@ is driven by the single static catalog in
 [`PROVIDER_ARCHITECTURE.md`](PROVIDER_ARCHITECTURE.md) for *how* it all connects,
 and [`AGENTS.md`](AGENTS.md) for the CLI-agent details.
 
-The catalog currently ships **21 providers**: **10 CLI agents**, **10 cloud HTTP
+The catalog currently ships **22 providers**: **11 CLI agents**, **10 cloud HTTP
 APIs**, and **1 local HTTP** (Ollama).
 
 ---
@@ -19,15 +19,16 @@ holds the credential. Surface in Settings → Agents via `/api/agents/scan`.
 
 | Agent | Catalog id | Binary | What it is | Install / Login |
 |---|---|---|---|---|
-| Claude Code | `claude` | `claude` | Anthropic's agentic CLI; Fleetify's default agent. | `npm i -g @anthropic-ai/claude-code` · `claude login` |
-| Codex CLI | `codex` | `codex` | OpenAI's coding agent (ChatGPT/Codex models). | `npm i -g @openai/codex` · `codex login` |
-| Gemini CLI | `gemini` | `gemini` | Google's terminal agent (Gemini models, OAuth). | `npm i -g @google/gemini-cli` · `gemini` |
-| Kimi Code CLI | `kimi` | `kimi` | Moonshot's coding agent. | `npm i -g @moonshot-ai/kimi-code` · `kimi login` |
+| Claude Code | `claude-code` | `claude` | Anthropic's agentic CLI; Fleetify's default agent. | `npm i -g @anthropic-ai/claude-code` · `claude login` |
+| Codex CLI | `codex-cli` | `codex` | OpenAI's coding agent (ChatGPT/Codex models). | `npm i -g @openai/codex` · `codex login` |
+| Gemini CLI | `gemini-cli` | `gemini` | Google's terminal agent (Gemini models, OAuth). | `npm i -g @google/gemini-cli` · `gemini` |
+| Kimi Code CLI | `kimi-code` | `kimi` | Moonshot's coding agent. | `npm i -g @moonshot-ai/kimi-code` · `kimi login` |
 | OpenCode | `opencode` | `opencode` | Open-source multi-model agent; free `opencode/*` models work with no key. **ACP.** | `npm i -g opencode-ai` · `opencode auth login` |
-| Cursor CLI | `cursor` | `cursor-agent` | Cursor's terminal agent. **ACP.** | shell installer · `cursor-agent login` |
+| Cursor CLI | `cursor-cli` | `cursor-agent` | Cursor's terminal agent. **ACP.** | shell installer · `cursor-agent login` |
 | GitHub Copilot CLI | `github-copilot` | `copilot` | GitHub Copilot subscription (GPT-5.x, Claude, Gemini). **ACP.** | `npm i -g @github/copilot` · `copilot login` |
-| Hermes Agent | `hermes` | `hermes` | Nous Research's agent; **fans one agent across every provider you've authenticated** (Copilot, Anthropic, OpenRouter, Nous, …). **ACP.** | `pip install "hermes-agent[acp]"` · `hermes model` |
-| Antigravity CLI | `agy` | `agy` | Google's Antigravity terminal agent (OAuth, print-mode). | shell installer · `agy` |
+| Grok Build | `grok-build` | `grok` | xAI's Grok Build coding agent; auths with your xAI key (`XAI_API_KEY`, shared with `grok`) or `grok login`. **ACP.** | shell installer · `grok login` |
+| Hermes Agent | `hermes-agent` | `hermes` | Nous Research's agent; **fans one agent across every provider you've authenticated** (Copilot, Anthropic, OpenRouter, Nous, …). **ACP.** | `pip install "hermes-agent[acp]"` · `hermes model` |
+| Antigravity CLI | `antigravity-cli` | `agy` | Google's Antigravity terminal agent (OAuth, print-mode). | shell installer · `agy` |
 | Antigravity SDK | `antigravity-sdk` | `python3` | Python SDK wrapping `google.antigravity`; uses a `GEMINI_API_KEY`. | `pip install` · set `GEMINI_API_KEY` |
 
 > Hermes is unusual: a single agent that dispatches to whatever model provider its
@@ -62,6 +63,10 @@ so they get real tool calls, not just chat — see [`AGENT_BRIDGES.md`](AGENT_BR
   static catalog ships only a small curated fallback.
 - **Cloudflare Workers AI** uses a base-URL template with `{account_id}`,
   substituted at dispatch from the saved account id.
+- **Grok (xAI)** shares its key and model lineup with the **Grok Build** CLI agent
+  (above): the `XAI_API_KEY` you save here is the same key the `grok-build` bridge
+  injects into its subprocess, and both draw from the same curated Grok lineup
+  (discovered live from `GET /v1/models` → remote catalog → baked fallback).
 
 ---
 
@@ -84,7 +89,7 @@ the user's OIDC `sub`). `fleet.config.json` carries only non-secret state:
     "connected": { "openai": true, "perplexity": true },
     "enabled_models": { "openai": ["gpt-5.5"] },
     "ollama_base_url": "http://192.168.1.50:11434",
-    "enabled_agents": ["claude", "codex", "hermes"]
+    "enabled_agents": ["claude-code", "codex-cli", "hermes-agent"]
   }
 }
 ```

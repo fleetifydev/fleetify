@@ -1,6 +1,6 @@
 # Agents (CLI)
 
-Fleetify ships **ten CLI agents** — local subprocesses that run against your
+Fleetify ships **eleven CLI agents** — local subprocesses that run against your
 machine. They're discovered via `providers::list_cli_agents()` and surface in
 Settings → Agents as cards driven by `/api/agents/scan`.
 
@@ -8,7 +8,7 @@ Settings → Agents as cards driven by `/api/agents/scan`.
 > into the system, [`AGENT_BRIDGES.md`](AGENT_BRIDGES.md) for the transport per
 > agent, and [`PROVIDERS.md`](PROVIDERS.md) for the full provider list.
 
-## The ten agents
+## The eleven agents
 
 | Agent | Catalog id | Binary | Transport | Install / Login |
 |---|---|---|---|---|
@@ -19,6 +19,7 @@ Settings → Agents as cards driven by `/api/agents/scan`.
 | OpenCode | `opencode` | `opencode` | ACP (`opencode acp`) | `npm i -g opencode-ai` · `opencode auth login` |
 | Cursor CLI | `cursor-cli` | `cursor-agent` | ACP (`cursor-agent acp`) + `cursor/*` extensions | shell installer · `cursor-agent login` |
 | GitHub Copilot CLI | `github-copilot` | `copilot` | ACP (`copilot --acp`) | `npm i -g @github/copilot` · `copilot login` |
+| Grok Build | `grok-build` | `grok` | ACP (`grok agent stdio`) | shell installer · `grok login` |
 | Hermes Agent | `hermes-agent` | `hermes` | ACP (`hermes acp`), multi-provider | `pip install "hermes-agent[acp]"` · `hermes model` |
 | Antigravity CLI | `antigravity-cli` | `agy` | PTY `agy -p` (print mode) | shell installer · `agy` |
 | Antigravity SDK | `antigravity-sdk` | `python3` | Python sidecar (NDJSON) | `pip install` · set `GEMINI_API_KEY` |
@@ -33,7 +34,7 @@ provider configured. Run `hermes model`…"* until a provider is set up.
 
 Each agent declares its `auth_indicators` in the catalog. The scan endpoint
 reports `installed=true` when the binary is found (PATH, or known off-PATH install
-dirs for Cursor/Copilot/Hermes — see the `ScanProbe` strategies), and
+dirs for Cursor/Copilot/Hermes/Grok Build — see the `ScanProbe` strategies), and
 `authenticated=true` when the first matching indicator fires:
 
 ```rust
@@ -49,6 +50,13 @@ OAuth agents (Gemini, Antigravity CLI) use `JsonExpiry` indicators so an expired
 token reads as "not authenticated" without launching the agent. When you run
 `<bin> login` and the indicator appears, the Settings tile flips to "Detected" on
 the next scan (tile expand or the Refresh button).
+
+**Grok Build is the exception.** It authenticates off the **shared xAI key** you
+save for the `grok` API provider — the bridge injects it as `XAI_API_KEY`, so the
+scan OR-s a keyring check on top of the catalog's `XAI_API_KEY` env indicator. Set
+the key once in Settings → Models and the agent reads as authenticated; `grok
+login` (device-OAuth) also works, and the in-chat login-recovery flow runs it for
+you when a turn hits *"Authentication required"*.
 
 ## Why install commands aren't auto-run
 
