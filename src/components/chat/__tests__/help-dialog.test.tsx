@@ -35,27 +35,36 @@ describe("HelpDialog", () => {
     expect(screen.queryByText("/new")).not.toBeInTheDocument();
   });
 
-  it("Session tab shows only the universal group when the agent advertises no commands", () => {
-    // Claude drives non-interactively and advertises no ACP commands, so the
-    // Session tab carries just the universal group — no provider sub-group/icon.
-    render(<HelpDialog open onClose={vi.fn()} tool="claude-code" sessionId="s-none" />);
+  it("lists EVERY provider's native commands (not just the active agent)", () => {
+    // Session-agnostic: all provider groups + their commands show with no
+    // active session at all. Provider headers carry their brand mark.
+    render(<HelpDialog open onClose={vi.fn()} />);
     fireEvent.click(screen.getByRole("tab", { name: "Session Commands" }));
     expect(screen.getByText("Works in every agent")).toBeInTheDocument();
-    expect(screen.getByText("/plan")).toBeInTheDocument();
-    expect(screen.queryByAltText("Claude Code")).not.toBeInTheDocument();
+    // Provider group headers (label + icon) for the advertised/wired agents.
+    expect(screen.getByText("Grok Build")).toBeInTheDocument();
+    expect(screen.getByText("GitHub Copilot")).toBeInTheDocument();
+    expect(screen.getByText("OpenCode")).toBeInTheDocument();
+    expect(screen.getByText("Codex")).toBeInTheDocument();
+    expect(screen.getByAltText("Grok")).toBeInTheDocument();
+    // A representative native command from a couple of providers.
+    expect(screen.getByText("/security-review")).toBeInTheDocument(); // Copilot
+    expect(screen.getByText("/dream")).toBeInTheDocument();           // Grok
   });
 
-  it("shows the active agent's LIVE ACP-advertised commands with its brand mark", () => {
-    // Agents that push `available_commands_update` (Grok/OpenCode/Hermes/Cursor/
-    // Copilot) get a live, brand-marked group of their real command set.
+  it("merges the active session's LIVE commands into that provider's group", () => {
+    // The active provider additionally gets its live-advertised set (skills +
+    // version extras) on top of its static core, deduped.
     useChatStore.setState({
-      dynamicCommands: { "s-grok": [{ name: "rewind", description: "Rewind the session" }] },
+      dynamicCommands: { "s-grok": [{ name: "my-custom-skill", description: "A user skill" }] },
     });
     render(<HelpDialog open onClose={vi.fn()} tool="grok-build" sessionId="s-grok" />);
     fireEvent.click(screen.getByRole("tab", { name: "Session Commands" }));
-    expect(screen.getByText("/rewind")).toBeInTheDocument();
-    expect(screen.getByText("Rewind the session")).toBeInTheDocument();
-    expect(screen.getByAltText("Grok")).toBeInTheDocument();
+    // Static core still there (/dream is grok-only)...
+    expect(screen.getByText("/dream")).toBeInTheDocument();
+    // ...plus the live skill merged into the Grok group.
+    expect(screen.getByText("/my-custom-skill")).toBeInTheDocument();
+    expect(screen.getByText("A user skill")).toBeInTheDocument();
   });
 
   it("closes on Escape and on overlay click", () => {

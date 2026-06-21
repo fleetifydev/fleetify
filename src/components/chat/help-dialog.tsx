@@ -1,13 +1,14 @@
 /**
  * Help dialog — the `/help` command surface. A read-only reference split into
  * three tabs — Keyboard Shortcuts, Fleet Commands, and Session Commands. The
- * Session tab shows the commands that ACTUALLY work for the active agent: a
- * universal group (Fleetify handles these for every provider) plus, when the
- * active session's agent advertises native commands over ACP
- * (`available_commands_update` — Grok / OpenCode / Hermes / Cursor / Copilot),
- * a live group of that agent's real, executable command set. Agents that
- * advertise nothing (Claude / Codex / Antigravity drive non-interactively, so
- * their TUI slash commands never reach them) show only the universal group.
+ * Session tab lists, for EVERY provider (not just the active one), the commands
+ * that actually work: a universal group Fleetify handles for all agents, then
+ * one group per provider carrying that agent's real native commands
+ * (PROVIDER_NATIVE_CMDS — probe-verified ACP-advertised / method-wired). The
+ * active session's agent additionally gets its LIVE-advertised set (incl.
+ * per-user skills) merged into its group. Agents that run nothing extra over
+ * their transport (Claude Code, Antigravity) have no provider group — their
+ * working commands are the universal set.
  */
 import { useEffect, useState } from "react";
 import { X } from "lucide-react";
@@ -21,11 +22,23 @@ import {
   FLEET_CMDS,
   SESSION_CMDS_BASE,
   SESSION_CMDS_COMMON,
+  PROVIDER_NATIVE_CMDS,
 } from "@/lib/slash-commands";
 import { ProviderLogo, providerName } from "@/components/ui/provider-logo";
 import { useChatStore } from "@/stores/chat-store";
 
 const SHORTCUT_ORDER: ShortcutGroup[] = ["Navigation", "Layout & panels", "Git & PRs", "Agents"];
+
+// Provider groups on the Session tab, in display order. Each maps to a
+// PROVIDER_NATIVE_CMDS entry; the label/icon come from providerName/ProviderLogo.
+const PROVIDER_ORDER = [
+  "grok-build",
+  "github-copilot",
+  "opencode",
+  "cursor-cli",
+  "hermes-agent",
+  "codex-cli",
+] as const;
 
 type TabKey = "shortcuts" | "fleet" | "session";
 const TABS: { key: TabKey; label: string }[] = [
@@ -75,24 +88,34 @@ export function HelpDialog({
   if (!open) return null;
   const mac = isMac();
 
-  // The universal group (Fleetify intercepts these for EVERY agent) + the active
-  // agent's live ACP-advertised commands. Non-working TUI-only commands are
-  // intentionally not listed — an agent's real command set is exactly what it
-  // advertises over the wire.
+  // 1) the universal group Fleetify intercepts for EVERY agent, then 2) one
+  // group per provider carrying its real native commands (PROVIDER_NATIVE_CMDS).
+  // For the active session's provider we merge its LIVE-advertised set on top
+  // (deduped) so per-user skills + version-specific commands show too. Agents
+  // with no native set (Claude Code, Antigravity) simply have no group here.
+  const universal = [...SESSION_CMDS_BASE, ...SESSION_CMDS_COMMON].map((c) => ({ cmd: c.cmd, desc: c.desc }));
+  // Commands already shown under "Works in every agent" — dropped from each
+  // provider group so a universal command (e.g. /plan, /model) isn't repeated.
+  const universalCmds = new Set(universal.map((c) => c.cmd));
   const sessionGroups: { label: string; tool?: string; rows: { cmd: string; desc: string }[] }[] = [
-    {
-      label: "Works in every agent",
-      rows: [...SESSION_CMDS_BASE, ...SESSION_CMDS_COMMON].map((c) => ({ cmd: c.cmd, desc: c.desc })),
-    },
-    ...(tool && liveCmds && liveCmds.length > 0
-      ? [
-          {
-            label: `${providerName(tool)} — this session`,
-            tool,
-            rows: liveCmds.map((c) => ({ cmd: `/${c.name}`, desc: c.description })),
-          },
-        ]
-      : []),
+    { label: "Works in every agent", rows: universal },
+    ...PROVIDER_ORDER.map((p) => {
+      const base = PROVIDER_NATIVE_CMDS[p] ?? [];
+      // The active provider's live-advertised commands (skills + version extras)
+      // merged on top of its static core.
+      const live =
+        tool === p && liveCmds
+          ? liveCmds.map((c) => ({ cmd: `/${c.name}`, desc: c.description }))
+          : [];
+      // Dedup by command text AND drop anything already in the universal group.
+      const seen = new Set<string>();
+      const rows = [...base, ...live].filter((r) => {
+        if (universalCmds.has(r.cmd) || seen.has(r.cmd)) return false;
+        seen.add(r.cmd);
+        return true;
+      });
+      return { label: providerName(p), tool: p, rows };
+    }),
   ];
 
   return (

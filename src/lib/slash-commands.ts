@@ -164,6 +164,83 @@ export const SESSION_CMDS_BASE: SlashCmdDef[] = [
   { intent: "session.yolo", cmd: "/yolo", desc: "Bypass approvals (YOLO)",          scope: "session", mechanism: "mode", semantic: "yolo" },
 ];
 
+/**
+ * Native commands each agent ACTUALLY runs, grouped by provider for the /help
+ * "Session Commands" tab. Every entry is a command the agent recognises over
+ * its real transport — verified by live-probing each agent's wire protocol:
+ *
+ *   - ACP agents (Grok / Copilot / OpenCode / Hermes / Cursor) advertise these
+ *     over `available_commands_update`; sending the `/cmd` text runs it.
+ *   - Codex (app-server) has no prompt-text commands — `/review` is wired to
+ *     the `review/start` method by the bridge.
+ *
+ * Builtin core only: per-user **skills** (which also surface as `/<name>`) are
+ * dynamic, so they're NOT hard-coded here — the help dialog merges the active
+ * session's live-advertised set on top. Agents driven non-interactively that
+ * advertise nothing (Claude Code `claude -p`, Antigravity print mode) have NO
+ * entry: their only working commands are the universal set, shown separately.
+ *
+ * Keyed by Fleetify provider id (see providerName() for the display label).
+ */
+export const PROVIDER_NATIVE_CMDS: Record<string, { cmd: string; desc: string }[]> = {
+  "grok-build": [
+    { cmd: "/compact",        desc: "Compact the conversation history" },
+    { cmd: "/context",        desc: "View context-window usage" },
+    { cmd: "/memory",         desc: "Search and edit persistent memory" },
+    { cmd: "/flush",          desc: "Flush conversation memory to disk now" },
+    { cmd: "/dream",          desc: "Trigger an offline memory-consolidation pass" },
+    { cmd: "/hooks",          desc: "Manage lifecycle hooks" },
+    { cmd: "/plugins",        desc: "Manage plugins" },
+    { cmd: "/session-info",   desc: "Show session info" },
+    { cmd: "/imagine",        desc: "Generate an image from text" },
+    { cmd: "/always-approve", desc: "Toggle always-approve mode" },
+    { cmd: "/feedback",       desc: "Send feedback about the session" },
+  ],
+  "github-copilot": [
+    { cmd: "/compact",         desc: "Summarize history to reduce context" },
+    { cmd: "/context",         desc: "Show context-window usage" },
+    { cmd: "/init",            desc: "Initialize Copilot custom instructions" },
+    { cmd: "/model",           desc: "Select the AI model" },
+    { cmd: "/plan",            desc: "Create an implementation plan" },
+    { cmd: "/mcp",             desc: "Manage MCP servers" },
+    { cmd: "/memory",          desc: "Configure memory use" },
+    { cmd: "/research",        desc: "Deep-research investigation" },
+    { cmd: "/review",          desc: "Run the code-review agent" },
+    { cmd: "/security-review", desc: "Analyze pending changes for vulnerabilities" },
+    { cmd: "/sandbox",         desc: "Configure shell-command sandboxing" },
+    { cmd: "/session",         desc: "Show / manage sessions" },
+    { cmd: "/skills",          desc: "Manage skills" },
+    { cmd: "/usage",           desc: "Display session usage metrics" },
+    { cmd: "/add-dir",         desc: "Add a directory to the file-access allowlist" },
+  ],
+  "opencode": [
+    { cmd: "/init",    desc: "Create or update AGENTS.md" },
+    { cmd: "/review",  desc: "Review changes" },
+    { cmd: "/compact", desc: "Compact the current session" },
+  ],
+  "hermes-agent": [
+    { cmd: "/model",   desc: "Switch the active model" },
+    { cmd: "/tools",   desc: "List available tools" },
+    { cmd: "/context", desc: "Show context usage" },
+    { cmd: "/compact", desc: "Compress the conversation context" },
+    { cmd: "/steer",   desc: "Steer the running agent" },
+    { cmd: "/queue",   desc: "Queue a follow-up message" },
+    { cmd: "/reset",   desc: "Start a new session" },
+    { cmd: "/version", desc: "Show version info" },
+  ],
+  "cursor-cli": [
+    { cmd: "/model",     desc: "Select a model" },
+    { cmd: "/plan",      desc: "Switch to Plan mode" },
+    { cmd: "/ask",       desc: "Toggle Ask mode (read-only questions)" },
+    { cmd: "/summarize", desc: "Summarize the conversation to reduce context" },
+    { cmd: "/context",   desc: "Show what's consuming the context window" },
+    { cmd: "/rewind",    desc: "Jump back to a previous message" },
+  ],
+  "codex-cli": [
+    { cmd: "/review", desc: "Review your uncommitted changes" },
+  ],
+};
+
 function isKnownTool(t: unknown): t is SessionTool {
   return t === "claude-code" || t === "codex-cli";
 }
