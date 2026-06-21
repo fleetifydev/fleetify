@@ -1,6 +1,6 @@
 import { createSessionsWebSocket } from "@/lib/api";
 import { awaitConfigPatch } from "@/lib/session-config-sync";
-import { useChatStore, pushChatAuthRequired, markAuthSignedIn, pushChatError } from "@/stores/chat-store";
+import { useChatStore, pushChatAuthRequired, markAuthSignedIn, pushChatError, pushGrokLogin } from "@/stores/chat-store";
 import { useAppStore } from "@/stores/app-store";
 import type { WSServerMessage, ImageBlock } from "@/types/chat";
 import type { Attachment } from "@/components/chat/chat-input";
@@ -1608,6 +1608,28 @@ class WSManager {
         break;
       }
 
+      case "login_required": {
+        // The agent isn't signed in and recovery is a CLI login (Grok).
+        // Show the in-chat login card, which runs `<bin> login` and resumes
+        // the stashed prompt on success. The backend sends `status:done`
+        // right after, which clears streaming — do it here too defensively
+        // so the composer never stays locked behind a card.
+        this.flushDelta(sessionId);
+        store.clearStreaming(sessionId);
+        // One-shot guard: a 2nd login_required for this same turn means the
+        // login+resume didn't fix auth — surface a normal error, don't loop.
+        if (this.loginRetried.has(sessionId)) {
+          this.loginRetried.delete(sessionId);
+          pushChatError(
+            sessionId,
+            "Grok sign-in didn't resolve the authentication error. Please try again.",
+          );
+          break;
+        }
+        pushGrokLogin(sessionId, String(data.provider ?? "grok-build"));
+        break;
+      }
+
       case "error": {
         this.flushDelta(sessionId); // Commit any buffered text before clearing
         const current = store.sessions[sessionId];
@@ -1727,9 +1749,22 @@ class WSManager {
     }
   }
 
+  /** Last user prompt per session, captured at send time so the in-chat Grok
+   *  login flow can re-send it verbatim once `grok login` succeeds. */
+  private pendingLoginPrompt = new Map<string, { text: string; attachments?: Attachment[] }>();
+  /** Sessions whose current turn already went through one login→resume cycle.
+   *  Guards against an infinite login loop if login doesn't actually fix auth:
+   *  a 2nd `login_required` for the same turn surfaces a normal error instead.
+   *  Cleared on the next user-initiated `send`. */
+  private loginRetried = new Set<string>();
+
   async send(sessionId: string, text: string, attachments?: Attachment[]) {
     const store = useChatStore.getState();
     store.ensureSession(sessionId);
+    // Remember this prompt for Grok login-recovery resume, and reset the
+    // one-shot login guard — each fresh user message gets one auto-login try.
+    this.pendingLoginPrompt.set(sessionId, { text, attachments });
+    this.loginRetried.delete(sessionId);
 
     // PostHog signal — captures intent (not the message body). The
     // backend's `session_start` / `cost` events already cover the
@@ -1975,6 +2010,18 @@ class WSManager {
       useChatStore.getState().clearStreaming(sessionId);
       throw err;
     }
+  }
+
+  /** Re-send the prompt that failed with `login_required`, once the in-chat
+   *  `<bin> login` flow reported success. Uses `sendInternal` so no second
+   *  user bubble is added — the original optimistic bubble is still on screen.
+   *  Sets the one-shot guard so a repeat auth failure surfaces an error rather
+   *  than looping back into another login card. */
+  async resumeAfterLogin(sessionId: string): Promise<void> {
+    const pending = this.pendingLoginPrompt.get(sessionId);
+    if (!pending) return;
+    this.loginRetried.add(sessionId);
+    await this.sendInternal(sessionId, pending.text, pending.attachments);
   }
 
   async sendPermissionResponse(

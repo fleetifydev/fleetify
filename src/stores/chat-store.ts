@@ -1234,6 +1234,29 @@ export function pushChatAuthRequired(
 }
 
 /**
+ * Push a CLI-login recovery card into the session's transcript. Used when the
+ * bridge emits `login_required` (e.g. Grok's `session/new` `-32000
+ * Authentication required`). The renderer's GrokLoginCard looks for
+ * ContentBlock.type === "grok_login", runs `<bin> login` in a PTY, and resumes
+ * the original prompt on success. De-dupes: a still-pending card for the same
+ * session is left in place rather than stacking a second one.
+ */
+export function pushGrokLogin(sessionId: string, provider: string): void {
+  if (!sessionId) return;
+  const messages = useChatStore.getState().sessions[sessionId]?.messages;
+  const hasPending = messages?.some((m) =>
+    m.content.some((c) => c.type === "grok_login"),
+  );
+  if (hasPending) return;
+  useChatStore.getState().addMessage(sessionId, {
+    id: `grok-login-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    role: "system",
+    content: [{ type: "grok_login", provider, session_id: sessionId }],
+    timestamp: new Date().toISOString(),
+  });
+}
+
+/**
  * Mark any pending sign-in card in a session as completed. Called when
  * the bridge delivers a reply (a sign-in that produced an answer must
  * have succeeded), so the AuthRequiredCard can flip from its in-progress

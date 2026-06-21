@@ -194,6 +194,21 @@ export interface AuthRequiredBlock {
   signed_in?: boolean;
 }
 
+/**
+ * Surfaces when a CLI agent failed to start because it isn't signed in and
+ * recovery is a `<bin> login` command (not an in-chat OOB code). The renderer's
+ * GrokLoginCard runs that login in a PTY, shows its device-flow progress, and
+ * re-sends the user's original prompt once login succeeds. Pushed by
+ * `pushGrokLogin` on the backend's `login_required` event.
+ */
+export interface GrokLoginBlock {
+  type: "grok_login";
+  /** Logical provider id (`"grok-build"`) — selects the login command + brand. */
+  provider: string;
+  /** Session whose prompt resumes after login completes. */
+  session_id: string;
+}
+
 export type ContentBlock =
   | TextBlock
   | ThinkingBlock
@@ -208,6 +223,7 @@ export type ContentBlock =
   | ResourceCardBlock
   | CitationBlock
   | AuthRequiredBlock
+  | GrokLoginBlock
   | SpawnFormBlock;
 
 export interface ChatMessage {
@@ -330,6 +346,14 @@ export interface WSAuthRequired {
   provider: string;
   url: string;
   opened_in_browser: boolean;
+}
+
+/** Agent failed to start because it isn't signed in and recovery is a CLI
+ *  login command (Grok). The renderer shows GrokLoginCard, which runs the
+ *  login PTY and resumes the prompt on success. */
+export interface WSLoginRequired {
+  type: "login_required";
+  provider: string;
 }
 
 export interface WSDispatchAck {
@@ -651,4 +675,5 @@ export type WSServerMessage =
   | WSAskUserQuestion
   | WSCursorCreatePlan
   | WSAuthRequired
+  | WSLoginRequired
   | WSSpawnForm;

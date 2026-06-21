@@ -50,25 +50,62 @@ fn grok_acceptable_mcp(servers: &serde_json::Value) -> Vec<serde_json::Value> {
         .unwrap_or_default()
 }
 
-/// Resolve the Grok Build CLI binary path. Grok's installer writes
-/// `~/.local/bin/grok`, which a GUI-launched app's inherited PATH often lacks,
-/// so we prefer that absolute path, then fall back to PATH (`which grok`),
-/// then the bare name `"grok"` (handled by the caller's spawn). Returns an
-/// absolute path when found, else `None` (the caller surfaces an install hint).
+/// Grok's ACP returns a bare `-32603 Internal error` (no `data.details`) for a
+/// few server-side conditions — most often the selected model not being enabled
+/// on the account/plan, but also a rejected request or a transient backend
+/// fault. When the formatted error carries no actionable detail, append a short,
+/// non-asserting hint so the chat isn't a dead end. If Grok DID send a detail
+/// (surfaced as `… — <detail>` by `format_acp_error`), leave it untouched.
+fn enrich_grok_prompt_error(formatted: &str) -> String {
+    let opaque = formatted.contains("-32603") && !formatted.contains(" — ");
+    if opaque {
+        format!(
+            "{formatted}. Grok returned no detail — the selected model may not be \
+             enabled on your xAI plan, or the request was rejected server-side. \
+             Try a different Grok model, or check your account at https://console.x.ai."
+        )
+    } else {
+        formatted.to_string()
+    }
+}
+
+/// Resolve the Grok Build CLI binary path across operating systems. xAI's
+/// installer targets differ: the native installer writes `~/.grok/bin/grok`
+/// (`grok.exe` on Windows), while the `curl … | bash` path writes
+/// `~/.local/bin/grok`. A GUI-launched app's inherited PATH often lacks both
+/// dirs, so we probe the known install locations first, then fall back to PATH
+/// (`which grok`), then the bare name `"grok"` (handled by the caller's spawn).
+/// Returns an absolute path when found, else `None` (caller surfaces a hint).
 pub fn resolve_grok_bin() -> Option<String> {
     if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
-        let p = std::path::Path::new(&home)
-            .join(".local")
-            .join("bin")
-            .join("grok");
-        if p.exists() {
-            return Some(p.to_string_lossy().into_owned());
+        let home = std::path::Path::new(&home);
+        let exe = if cfg!(windows) { "grok.exe" } else { "grok" };
+        // `.grok/bin` (current native installer, incl. Windows) before the
+        // legacy `.local/bin` (curl|bash) target.
+        for dir in [home.join(".grok").join("bin"), home.join(".local").join("bin")] {
+            let p = dir.join(exe);
+            if p.exists() {
+                return Some(p.to_string_lossy().into_owned());
+            }
         }
     }
     if let Ok(p) = which::which("grok") {
         return Some(p.to_string_lossy().into_owned());
     }
     None
+}
+
+/// True when a `cold_start` failure is grok's "not signed in" case — i.e. the
+/// renderer should run `grok login` and resume, rather than show a hard error.
+/// grok returns JSON-RPC `-32000 "Authentication required — no auth method id
+/// provided"` on `session/new` when neither `XAI_API_KEY` nor an on-disk OAuth
+/// login is present (see the module header). We key off the message text, not
+/// the bare `-32000` code, because Fleetify reuses `-32000` for its own inbound
+/// ACP handler errors — only the auth message should trigger the login flow.
+fn is_auth_required_error(err: &anyhow::Error) -> bool {
+    err.to_string()
+        .to_ascii_lowercase()
+        .contains("authentication required")
 }
 
 /// Discover Grok's model catalog WITHOUT starting a chat turn: spawn
@@ -849,11 +886,19 @@ impl GrokCliBridge {
         tokio::spawn(async move {
             if let Some(fut) = cold_starter {
                 if let Err(e) = fut.await {
-                    let _ = bridge_tx
-                        .send(BridgeEvent::Error {
+                    // Not signed in → ask the renderer to run `grok login` and
+                    // resume, instead of surfacing a dead-end error. Any other
+                    // failure stays a hard error.
+                    let ev = if is_auth_required_error(&e) {
+                        BridgeEvent::LoginRequired {
+                            provider: "grok-build".into(),
+                        }
+                    } else {
+                        BridgeEvent::Error {
                             error: format!("Grok start-up failed: {e}"),
-                        })
-                        .await;
+                        }
+                    };
+                    let _ = bridge_tx.send(ev).await;
                     let _ = bridge_tx
                         .send(BridgeEvent::Status {
                             status: "done".into(),
@@ -955,9 +1000,14 @@ impl GrokCliBridge {
             }
 
             if let Err(e) = prompt_res {
+                let formatted = format!("Grok prompt failed: {e}");
+                // Log at ERROR with session context — the raw JSON-RPC error was
+                // already logged by the ACP layer (`target: "acp"`); this gives
+                // the grok-attributed, human-readable line in the backend log.
+                tracing::error!(target: "grok", session = %session_id, "{formatted}");
                 let _ = bridge_tx
                     .send(BridgeEvent::Error {
-                        error: format!("Grok prompt failed: {e}"),
+                        error: enrich_grok_prompt_error(&formatted),
                     })
                     .await;
             }
@@ -1138,6 +1188,56 @@ async fn translate_session_update(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn auth_required_detected_from_session_new_error() {
+        // The exact chain cold_start produces: format_acp_error → session/new
+        // failed → (would be) "Grok start-up failed". Match is case-insensitive.
+        let e = anyhow!(
+            "session/new failed: ACP error -32000: Authentication required — no auth method id provided"
+        );
+        assert!(is_auth_required_error(&e));
+    }
+
+    #[test]
+    fn non_auth_errors_are_not_login_required() {
+        // A different -32000 (Fleetify's own handler error) and a plain failure
+        // must NOT trigger the login flow.
+        assert!(!is_auth_required_error(&anyhow!(
+            "session/new failed: ACP error -32000: Invalid params"
+        )));
+        assert!(!is_auth_required_error(&anyhow!(
+            "Grok CLI not found. Install: …"
+        )));
+    }
+
+    #[test]
+    fn enrich_adds_hint_only_for_opaque_internal_error() {
+        // Opaque -32603 (no detail) gets the actionable, non-asserting hint.
+        let opaque =
+            enrich_grok_prompt_error("Grok prompt failed: ACP error -32603: Internal error");
+        assert!(
+            opaque.contains("xAI plan"),
+            "opaque error gets a hint: {opaque}"
+        );
+        assert!(opaque.contains("console.x.ai"));
+        // A -32603 that already carries a surfaced detail is left untouched.
+        let with_detail = enrich_grok_prompt_error(
+            "Grok prompt failed: ACP error -32603: Internal error — model not enabled",
+        );
+        assert_eq!(
+            with_detail,
+            "Grok prompt failed: ACP error -32603: Internal error — model not enabled"
+        );
+        // Other codes are left untouched.
+        let other = enrich_grok_prompt_error(
+            "Grok prompt failed: ACP error -32000: Authentication required",
+        );
+        assert_eq!(
+            other,
+            "Grok prompt failed: ACP error -32000: Authentication required"
+        );
+    }
 
     #[test]
     fn mcp_filter_drops_stdio_keeps_http_sse() {

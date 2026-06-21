@@ -503,6 +503,16 @@ pub enum BridgeEvent {
         /// open. Bridge always emits false.
         opened_in_browser: bool,
     },
+    /// The agent failed to start because it isn't signed in, and recovery
+    /// is a CLI login command (not an in-chat OOB code like `AuthRequired`).
+    /// Emitted instead of `Error` for that specific case. The renderer runs
+    /// the provider's `<bin> login` in a PTY, surfaces its device-flow output
+    /// as a card, and re-sends the user's prompt once login succeeds.
+    LoginRequired {
+        /// Logical provider id (`"grok-build"` today) — selects the login
+        /// command + branding on the renderer.
+        provider: String,
+    },
 }
 
 impl BridgeEvent {
@@ -606,6 +616,10 @@ impl BridgeEvent {
                 "url": url,
                 "opened_in_browser": opened_in_browser,
             }),
+            BridgeEvent::LoginRequired { provider } => json!({
+                "type": "login_required",
+                "provider": provider,
+            }),
         }
     }
 }
@@ -619,6 +633,17 @@ impl serde::Serialize for BridgeEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn login_required_serialises_to_wire_shape() {
+        let ev = BridgeEvent::LoginRequired {
+            provider: "grok-build".into(),
+        };
+        assert_eq!(
+            ev.to_json(),
+            serde_json::json!({"type": "login_required", "provider": "grok-build"})
+        );
+    }
 
     // ── canonical PATH assembly (Windows: see apply_clean_path) ──────────────
 

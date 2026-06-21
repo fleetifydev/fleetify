@@ -272,6 +272,12 @@ document.addEventListener("mousedown", function (e) {
             accountId: String(accountId || ""),
           });
         },
+        // Log in to the agent's REAL home (System/default account) — the
+        // in-chat login-recovery flow (e.g. `grok login`). No per-account
+        // HOME isolation, unlike openAccountLogin.
+        startAgentLogin: function (id) {
+          return invoke("agent_login_default", { id: String(id || "") });
+        },
         setEnabled:       function (id, enabled) {
           return invoke("providers_set_enabled", {
             id: String(id || ""),
@@ -542,6 +548,7 @@ document.addEventListener("mousedown", function (e) {
       ptyWrite: function (id, data) { return invoke("pty_write", { id: String(id), data: String(data) }); },
       ptyResize: function (id, cols, rows) { return invoke("pty_resize", { id: String(id), cols: Number(cols) | 0, rows: Number(rows) | 0 }); },
       ptyKill: function (id) { return invoke("pty_kill", { id: String(id) }); },
+      ptyBuffer: function (id) { return invoke("pty_buffer", { id: String(id) }); },
       onPtyData: function (id, cb) {
         var un = null;
         var e = ev();

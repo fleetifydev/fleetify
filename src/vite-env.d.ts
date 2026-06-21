@@ -289,6 +289,9 @@ interface Window {
     ptyWrite:  (id: string, data: string) => Promise<boolean>;
     ptyResize: (id: string, cols: number, rows: number) => Promise<boolean>;
     ptyKill:   (id: string) => Promise<boolean>;
+    /** Full output a PTY has emitted so far (capped tail) — used to recover
+     *  early output dropped by an async `pty:data` listener registration. */
+    ptyBuffer: (id: string) => Promise<{ ok: boolean; data: string }>;
 
     // ── Git branch picker ──
     listGitBranches: (folder: string) => Promise<{

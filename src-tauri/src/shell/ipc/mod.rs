@@ -1845,6 +1845,18 @@ pub async fn pty_kill(id: String) -> serde_json::Value {
     serde_json::json!({ "ok": true })
 }
 
+/// All output a PTY has emitted so far. The in-chat login card polls this to
+/// recover the device-OAuth URL/code that a child prints in the first few ms —
+/// before an async `pty:data:<id>` listener has finished registering, so those
+/// events would otherwise be dropped. `ok:false` once the child has exited.
+#[tauri::command]
+pub async fn pty_buffer(id: String) -> serde_json::Value {
+    match pty::snapshot(&id) {
+        Some(data) => serde_json::json!({ "ok": true, "data": data }),
+        None => serde_json::json!({ "ok": false, "data": "" }),
+    }
+}
+
 // ── dialog ───────────────────────────────────────────────────────
 // `window.electronAPI.openFolderDialog()` → `Promise<string | null>`.
 // Renderer (new-agent-dialog.tsx, session-toolbar.tsx) treats the
@@ -2613,6 +2625,60 @@ pub async fn providers_open_account_login(
         None,
         None,
     ) {
+        Ok(pty_id) => serde_json::json!({ "ok": true, "pty_id": pty_id }),
+        Err(e) => serde_json::json!({ "ok": false, "code": "SPAWN", "error": e }),
+    }
+}
+
+/// Launch a CLI agent's own login flow against the user's REAL home — the
+/// System/default credential store. Unlike [`providers_open_account_login`]
+/// (which relocates HOME to an isolated per-account dir for the Settings
+/// "add account" flow), this inherits the real environment, so the agent
+/// writes its credentials exactly where the chat bridge will read them
+/// (`accounts::resolve_env` returns an empty env for the System account, i.e.
+/// the bridge runs in the real HOME too). Powers the in-chat login-recovery
+/// card: e.g. Grok's `session/new` `-32000 Authentication required` triggers
+/// `grok login` here, then the original prompt resumes once login succeeds.
+/// Returns a `pty_id` the renderer binds to via `pty:data`/`pty:exit`.
+#[tauri::command]
+pub async fn agent_login_default(app: tauri::AppHandle, id: String) -> serde_json::Value {
+    let Some(spec) = fleetify_backend::providers::find_agent(&id) else {
+        return serde_json::json!({ "ok": false, "code": "NOT_CLI_AGENT", "error": format!("{id} is not a CLI agent") });
+    };
+    // The login command comes from the catalog's login_hint (e.g. "grok login",
+    // "claude login"). Empty ⇒ the interactive bin itself.
+    let tokens: Vec<String> = if spec.login_hint.trim().is_empty() {
+        vec![spec.bin.to_string()]
+    } else {
+        spec.login_hint
+            .split_whitespace()
+            .map(String::from)
+            .collect()
+    };
+    if tokens.is_empty() {
+        return serde_json::json!({ "ok": false, "code": "NO_LOGIN", "error": "no login command for this agent" });
+    }
+    // Resolve the binary to an absolute path, sharing the bridges' per-agent
+    // resolvers so off-PATH installs are found (grok writes ~/.local/bin/grok).
+    let program = match spec.id {
+        "grok-build" => fleetify_backend::bridges::grok_cli::resolve_grok_bin(),
+        "cursor-cli" => fleetify_backend::bridges::cursor::resolve_cursor_bin(),
+        "hermes-agent" => fleetify_backend::bridges::hermes::resolve_hermes_bin(),
+        "github-copilot" => fleetify_backend::bridges::github_copilot::resolve_copilot_bin(),
+        _ => which::which(&tokens[0])
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned()),
+    }
+    .unwrap_or_else(|| tokens[0].clone());
+    let args: Vec<String> = tokens[1..].to_vec();
+    let cwd = fleetify_core::user_home().to_string_lossy().into_owned();
+
+    // Piped (NOT a PTY): a device-OAuth login writes its URL/code to stderr and
+    // needs no TTY, and piped output is clean — a ConPTY wraps it in cursor
+    // escape codes that mangle the URL. `env: None` ⇒ inherit the real
+    // environment (real HOME/PATH); NO per-account HOME override, so the login
+    // and the chat bridge share one credential store.
+    match pty::spawn_piped(app, program, args, Some(cwd), None) {
         Ok(pty_id) => serde_json::json!({ "ok": true, "pty_id": pty_id }),
         Err(e) => serde_json::json!({ "ok": false, "code": "SPAWN", "error": e }),
     }

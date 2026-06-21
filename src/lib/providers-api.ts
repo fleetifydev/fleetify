@@ -211,6 +211,9 @@ interface ProvidersAPI {
   getAccountKeyPreview: (id: string, accountId: string) => Promise<ProvidersKeyPreviewResult>;
   deleteAccountKey: (id: string, accountId: string) => Promise<ProvidersMutationResult>;
   openAccountLogin: (id: string, accountId: string) => Promise<ProvidersOpenLoginResult>;
+  /** Log in to the agent's real HOME (System/default account) — the in-chat
+   *  login-recovery flow (e.g. `grok login`). Returns a PTY id to bind to. */
+  startAgentLogin: (id: string) => Promise<ProvidersOpenLoginResult>;
   setEnabled: (id: string, enabled: boolean) => Promise<ProvidersMutationResult>;
   setDefault: (id: string, model?: string | null) => Promise<ProvidersMutationResult & { default_model?: string | null }>;
   setConnectedBulk: (
@@ -248,6 +251,7 @@ function api(): ProvidersAPI {
       getAccountKeyPreview: async () => ({ ok: true, preview: null }),
       deleteAccountKey: async () => ({ ok: false, error: "electron unavailable" }),
       openAccountLogin: async () => ({ ok: false, error: "electron unavailable" }),
+      startAgentLogin: async () => ({ ok: false, error: "electron unavailable" }),
       setEnabled: async () => ({ ok: false, error: "electron unavailable" }),
       setDefault: async (_id: string, _model?: string | null) => ({ ok: false, error: "electron unavailable" }),
       setConnectedBulk: async () => ({ ok: false, error: "electron unavailable" }),
@@ -383,6 +387,7 @@ export const providers = {
     api().getAccountKeyPreview(id, accountId),
   deleteAccountKey: (id: string, accountId: string) => api().deleteAccountKey(id, accountId),
   openAccountLogin: (id: string, accountId: string) => api().openAccountLogin(id, accountId),
+  startAgentLogin: (id: string) => api().startAgentLogin(id),
   setEnabled: (id: string, enabled: boolean) => api().setEnabled(id, enabled),
   setDefault: (id: string, model?: string | null) => api().setDefault(id, model ?? null),
   setConnectedBulk: (connected: Record<string, boolean>, enabledAgents?: string[] | null) =>

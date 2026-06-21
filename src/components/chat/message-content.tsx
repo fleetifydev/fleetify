@@ -12,6 +12,7 @@ import {
 } from "./staff-message-cards";
 import { CitationCard } from "./citation-card";
 import { AuthRequiredCard } from "./auth-required-card";
+import { GrokLoginCard } from "./grok-login-card";
 import { SpawnFormCard } from "./spawn-form-card";
 import { ChatError } from "./chat-error";
 import { LogoMark } from "@/components/brand/logo-mark";
@@ -3247,6 +3248,11 @@ function MessageContentInner({ message, msgRef }: { message: ChatMessage; msgRef
     // OAuth / bridge auth-required info card — amber, non-blocking.
     const authBlock = message.content.find(b => b.type === "auth_required") as import("@/types/chat").AuthRequiredBlock | undefined;
     if (authBlock) return <AuthRequiredCard block={authBlock} />;
+
+    // CLI login-recovery card (Grok "not signed in") — runs `<bin> login` and
+    // resumes the prompt on success.
+    const grokLoginBlock = message.content.find(b => b.type === "grok_login") as import("@/types/chat").GrokLoginBlock | undefined;
+    if (grokLoginBlock) return <GrokLoginCard block={grokLoginBlock} />;
 
     // Legacy text-based system messages. Errors get a more prominent
     // card so failures in Create PR / branch ops / WS / agent runs

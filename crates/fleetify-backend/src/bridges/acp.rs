@@ -333,14 +333,41 @@ async fn read_loop(
     }
 }
 
+/// Pull the most actionable string out of a JSON-RPC `error.data`.
+///
+/// ACP agents vary: most put the explanation in `data.details` or a bare-string
+/// `data`, but some use `error` / `reason` / `message` / `description`. Returns
+/// the first non-empty string. An unrecognised *object* shape is intentionally
+/// NOT dumped into chat — the raw error is logged (`tracing`, see `dispatch`)
+/// for diagnosis instead, so the chat message stays clean.
+fn extract_error_detail(data: &Value) -> Option<&str> {
+    if let Some(s) = data.as_str() {
+        return (!s.trim().is_empty()).then_some(s);
+    }
+    [
+        "details",
+        "error",
+        "reason",
+        "message",
+        "error_description",
+        "description",
+    ]
+    .into_iter()
+    .find_map(|k| {
+        data.get(k)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+    })
+}
+
 /// Format a JSON-RPC `error` object into a human-readable string.
 ///
 /// ACP agents routinely keep the top-level `message` generic ("Internal
-/// error") and put the *actionable* explanation in `error.data.details`
-/// (Hermes: "No LLM provider configured. Run `hermes model`…") or directly in
-/// `error.data` as a string. Surfacing that detail turns an opaque
-/// "ACP error -32603: Internal error" into something the user can act on, for
-/// every ACP bridge (Gemini / OpenCode / Cursor / GitHub Copilot / Hermes).
+/// error") and put the *actionable* explanation in `error.data` (Hermes:
+/// "No LLM provider configured. Run `hermes model`…"). Surfacing that detail
+/// turns an opaque "ACP error -32603: Internal error" into something the user
+/// can act on, for every ACP bridge (Gemini / OpenCode / Cursor / GitHub
+/// Copilot / Hermes / Grok).
 fn format_acp_error(err: &Value) -> String {
     let code = err.get("code").and_then(|v| v.as_i64()).unwrap_or(0);
     let message = err
@@ -348,15 +375,11 @@ fn format_acp_error(err: &Value) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .trim();
-    // Prefer `data.details` (object form), fall back to `data` as a bare
-    // string. Drop it when empty or identical to `message` (no value added).
+    // Surface `error.data` (in any of the shapes agents use), dropping it when
+    // empty or identical to `message` (no value added).
     let detail = err
         .get("data")
-        .and_then(|data| {
-            data.get("details")
-                .and_then(|v| v.as_str())
-                .or_else(|| data.as_str())
-        })
+        .and_then(extract_error_detail)
         .map(str::trim)
         .filter(|d| !d.is_empty() && *d != message);
     let base = if message.is_empty() {
@@ -385,6 +408,12 @@ async fn dispatch(
         if has_result_or_error {
             if let Some(tx) = pending.lock().await.remove(&req_id) {
                 if let Some(err) = msg.get("error") {
+                    // Log the COMPLETE raw JSON-RPC error (code + message + data,
+                    // verbatim) before it's collapsed to a display string. ACP
+                    // agents often return a bare `-32603 Internal error` whose
+                    // real cause lives in a `data` shape we don't surface to chat
+                    // — this is the only place that cause is recoverable.
+                    tracing::warn!(target: "acp", req_id, raw = %err, "ACP request failed");
                     let _ = tx.send(Err(anyhow!("{}", format_acp_error(err))));
                 } else {
                     let r = msg.get("result").cloned().unwrap_or(Value::Null);
@@ -688,5 +717,34 @@ mod tests {
     fn format_acp_error_handles_empty_message_with_detail() {
         let s = format_acp_error(&json!({ "code": -32603, "data": { "details": "why it broke" } }));
         assert_eq!(s, "ACP error -32603 — why it broke");
+    }
+
+    #[test]
+    fn format_acp_error_surfaces_alternative_data_keys() {
+        // Some agents put the cause under `data.error` / `data.reason`, not
+        // `data.details`. Surface those too instead of dropping them.
+        let s = format_acp_error(&json!({
+            "code": -32603, "message": "Internal error",
+            "data": { "error": "model not enabled for this account" }
+        }));
+        assert!(s.contains("-32603"), "keeps the code: {s}");
+        assert!(
+            s.contains("model not enabled for this account"),
+            "surfaces data.error: {s}"
+        );
+        let r = format_acp_error(&json!({
+            "code": -32000, "message": "bad", "data": { "reason": "rate limited" }
+        }));
+        assert_eq!(r, "ACP error -32000: bad — rate limited");
+    }
+
+    #[test]
+    fn format_acp_error_drops_unrecognised_object_data() {
+        // An object with no known string key isn't dumped into chat (the full
+        // raw error is logged for diagnosis instead).
+        let s = format_acp_error(&json!({
+            "code": -32603, "message": "Internal error", "data": { "trace_id": "abc123" }
+        }));
+        assert_eq!(s, "ACP error -32603: Internal error");
     }
 }

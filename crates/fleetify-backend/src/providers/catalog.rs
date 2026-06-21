@@ -1673,7 +1673,10 @@ pub static CATALOG: &[ProviderSpec] = &[
         auth_indicators: GROK_CLI_INDICATORS,
         install_hint: "curl -fsSL https://x.ai/cli/install.sh | bash",
         install_hints: None,
-        login_hint: "Run `grok` to sign in, or set XAI_API_KEY",
+        // The actual login command (device-OAuth flow). Must be a tokenizable
+        // command, not prose: the Settings login PTY and the in-chat
+        // login-recovery flow both spawn `login_hint` verbatim.
+        login_hint: "grok login",
     },
     // Hermes Agent — Nous Research's self-improving agent, driven over ACP
     // (`hermes acp`). A meta-provider: the model is whatever the user
