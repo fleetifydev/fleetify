@@ -120,7 +120,6 @@ pub fn resolve_tool(hint: &str) -> Option<&'static str> {
         "claudecode" | "cc" => Some("claude-code"),
         "gpt" | "chatgpt" => Some("openai"),
         "codexcli" => Some("codex-cli"),
-        "geminicli" => Some("gemini-cli"),
         _ => None,
     };
     if alias.is_some() {
@@ -169,7 +168,7 @@ fn scan_models(providers: &[&'static crate::providers::ProviderSpec], n: &str) -
 }
 
 /// Fuzzy-match a model hint to a catalog model id. Tries the scoped provider
-/// first, then falls back to a global scan. CLI agents (claude/codex/gemini)
+/// first, then falls back to a global scan. CLI agents (claude/codex)
 /// carry empty `default_models` in the backend catalog — their picker lists
 /// live frontend-side — but the canonical dash-form ids (exactly what the CLI
 /// dispatches, e.g. `claude-opus-4-8`) live on the API-provider consts, so the
@@ -269,16 +268,11 @@ pub fn resolve_template(hint: &str) -> Option<&'static str> {
 
 /// Default model id for a CLI agent spawned WITHOUT an explicit model, so the
 /// agent starts on a concrete, real model from its available lineup instead of
-/// the CLI's own opaque "auto" default. Only agents we deliberately pin live
-/// here; `None` keeps the agent on its built-in default (the prior behaviour).
-pub fn default_model_for(tool: &str) -> Option<&'static str> {
-    match tool {
-        // gemini-cli's `--model` default is `auto-gemini-3`; pin the top
-        // concrete model from its ACP `availableModels` so a no-model spawn is
-        // deterministic (`gemini-3.1-pro-preview`, matching the picker's lead).
-        "gemini-cli" => Some("gemini-3.1-pro-preview"),
-        _ => None,
-    }
+/// the CLI's own opaque "auto" default. Only agents we deliberately pin return
+/// `Some`; `None` keeps the agent on its built-in default (the prior
+/// behaviour). No agent is currently pinned.
+pub fn default_model_for(_tool: &str) -> Option<&'static str> {
+    None
 }
 
 /// Map an effort hint to a canonical level. Optional field (never a gap).
@@ -515,9 +509,9 @@ pub async fn create(
         Some(t) => t,
         None => auto_pick_tool(st).await,
     };
-    // No explicit model → pin the agent's concrete default (gemini lands on a
-    // real model instead of its opaque "auto"); agents without a pin keep their
-    // own built-in default. An explicit model is always honoured.
+    // No explicit model → pin the agent's concrete default when one is
+    // configured; agents without a pin keep their own built-in default. An
+    // explicit model is always honoured.
     let model_name = spec
         .model_name
         .clone()
@@ -717,15 +711,11 @@ mod tests {
     }
 
     #[test]
-    fn default_model_for_gemini_picks_a_real_model() {
-        // Spawning gemini with no model must land on a concrete available model
-        // (not gemini-cli's opaque "auto" default). Other agents keep their own
-        // built-in default — None here means "don't pin".
-        assert_eq!(
-            default_model_for("gemini-cli"),
-            Some("gemini-3.1-pro-preview")
-        );
+    fn default_model_for_pins_nothing_by_default() {
+        // No agent is currently pinned — every tool keeps its own built-in
+        // default, so `None` ("don't pin") is returned across the board.
         assert_eq!(default_model_for("claude-code"), None);
+        assert_eq!(default_model_for("codex-cli"), None);
         assert_eq!(default_model_for("totally-unknown"), None);
     }
 
@@ -791,14 +781,14 @@ mod tests {
         // any confirmation form.
         let known = vec!["/home/u/test_a".to_string()];
         let r = resolve(
-            &raw(r#"{"title":"gemini-test_a","project":"test_a","tool":"gemini-cli"}"#),
+            &raw(r#"{"title":"codex-test_a","project":"test_a","tool":"codex-cli"}"#),
             &known,
         );
         assert!(r.gaps.is_empty(), "expected no gaps, got {:?}", r.gaps);
         assert_eq!(r.spec.first_task, None);
         // Whitespace-only task normalises to None the same way.
         let r = resolve(
-            &raw(r#"{"project":"test_a","tool":"gemini-cli","task":"   "}"#),
+            &raw(r#"{"project":"test_a","tool":"codex-cli","task":"   "}"#),
             &known,
         );
         assert!(r.gaps.is_empty());
@@ -826,12 +816,12 @@ mod tests {
     fn resolve_passes_worktree_through() {
         let known = vec!["/home/u/test_a".to_string()];
         let r = resolve(
-            &raw(r#"{"project":"test_a","tool":"gemini-cli","task":"do x","worktree":true}"#),
+            &raw(r#"{"project":"test_a","tool":"codex-cli","task":"do x","worktree":true}"#),
             &known,
         );
         assert_eq!(r.spec.use_worktree, Some(true));
         let r = resolve(
-            &raw(r#"{"project":"test_a","tool":"gemini-cli","task":"do x","worktree":false}"#),
+            &raw(r#"{"project":"test_a","tool":"codex-cli","task":"do x","worktree":false}"#),
             &known,
         );
         assert_eq!(r.spec.use_worktree, Some(false));

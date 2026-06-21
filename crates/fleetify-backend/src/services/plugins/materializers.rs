@@ -2,7 +2,7 @@
 //! each target agent's config home so live sessions discover them.
 //!
 //! Covers **skills** (universal Agent-Skills format), **commands/prompts**
-//! (Claude/Gemini/OpenCode commands, Codex prompts), and **sub-agents**
+//! (Claude/OpenCode commands, Codex prompts), and **sub-agents**
 //! (Claude/OpenCode/agy `.md`, GitHub Copilot `.agent.md`). MCP servers are
 //! handled separately by `mcp_materialize` (one shared registry, fanned out
 //! per-bridge at spawn). Hooks land in the `hooks` settings merger.
@@ -170,7 +170,7 @@ pub fn materialize_skill_item(
 }
 
 /// Write a library-authored skill to the shared `~/.agents/skills/<slug>/`
-/// open-standard location read by Codex, Gemini, Copilot, Cursor and Kimi, so
+/// open-standard location read by Codex, Copilot, Cursor and Kimi, so
 /// the skill is discoverable cross-tool regardless of which providers were
 /// selected. Recorded under the synthetic provider id `"agents"` so deletion
 /// reverses it like any other artifact.
@@ -783,12 +783,12 @@ mod tests {
     fn unmaterialize_removes_recorded_paths() {
         let tmp = tempdir().unwrap();
         let install = tmp.path().join("install/q");
-        std::fs::create_dir_all(install.join(".gemini/commands")).unwrap();
-        std::fs::write(install.join(".gemini/commands/x.md"), b"# x").unwrap();
+        std::fs::create_dir_all(install.join(".claude/commands")).unwrap();
+        std::fs::write(install.join(".claude/commands/x.md"), b"# x").unwrap();
         let home = tmp.path().join("home");
         with_home(&home, || {
-            let r = materialize("q", &install, "gemini-cli").unwrap();
-            let written = home.join(".gemini/commands/q-x.md");
+            let r = materialize("q", &install, "claude-code").unwrap();
+            let written = home.join(".claude/commands/q-x.md");
             assert!(written.is_file());
             unmaterialize(&r).unwrap();
             assert!(!written.exists());

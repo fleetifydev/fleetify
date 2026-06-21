@@ -43,10 +43,6 @@ control (only the first two render a level picker in v1):
 | | Opus 4.5 | Levels | `low · medium · high` | `high` |
 | | Haiku 4.5 | None | — | — |
 | Codex CLI (`codex-cli`) | all (GPT-5.x-codex) | Levels | `low · medium · high · xhigh` | `medium` |
-| Gemini CLI (`gemini-cli`) | 3.x (3.1 Pro, 3 Flash) | ThinkingLevel | `low · high` | `high` |
-| | 2.5 Flash | Budget | `0 – 24576` tokens, dynamic, can disable | dynamic (`-1`) |
-| | 2.5 Pro | Budget | `128 – 32768` tokens, dynamic | dynamic (`-1`) |
-| | other (incl. 3.x Lite) | None | — | — |
 | GitHub Copilot CLI (`github-copilot`) | all | Levels | `low · medium · high · xhigh` | `medium` |
 | Kimi Code CLI (`kimi-code`) | `*-thinking` | Toggle | on / off | on |
 | | other | None | — | — |
@@ -72,7 +68,8 @@ chosen by picking the model, not a separate lever.
 | | Grok 3-mini | Levels | `low · high` | `low` |
 | | Grok 4 / 3 / code-fast | None (reasoning-always) | — | — |
 | Gemini API (`gemini-api`) | 3.x | ThinkingLevel | `low · high` | `high` |
-| | 2.5 Flash / Pro | Budget | see Gemini CLI above | dynamic |
+| | 2.5 Flash | Budget | `0 – 24576` tokens, dynamic, can disable | dynamic (`-1`) |
+| | 2.5 Pro | Budget | `128 – 32768` tokens, dynamic | dynamic (`-1`) |
 | Kimi API (`kimi-api`) | `*-thinking` | Toggle | on / off | on |
 | DeepSeek (`deepseek`) | reasoner, V3.2 | Toggle | on / off | on |
 | Perplexity (`perplexity`) | `*deep-research*` | Levels | `low · medium · high` | `medium` |
@@ -118,7 +115,7 @@ Where the chosen effort is actually sent:
 | GitHub Copilot | `--effort=<level>` | ✅ |
 | OpenAI / Grok / Perplexity (HTTP) | `reasoning_effort` in the request — **gated to `Levels` models** so non-reasoning models never 400 | ✅ |
 | Cursor / OpenCode | ACP `set_config_option(effort)` (no catalogued effort models today) | ✅ (live) |
-| Gemini CLI / Kimi CLI | thinking is **model-selected** (the model id is the thinking variant); Budget/Toggle controls are a follow-up | ⏳ |
+| Kimi CLI | thinking is **model-selected** (the model id is the thinking variant); Toggle control is a follow-up | ⏳ |
 | Hermes | no effort lever | n/a |
 
 ---

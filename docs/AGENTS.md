@@ -1,6 +1,6 @@
 # Agents (CLI)
 
-Fleetify ships **eleven CLI agents** — local subprocesses that run against your
+Fleetify ships **ten CLI agents** — local subprocesses that run against your
 machine. They're discovered via `providers::list_cli_agents()` and surface in
 Settings → Agents as cards driven by `/api/agents/scan`.
 
@@ -8,13 +8,12 @@ Settings → Agents as cards driven by `/api/agents/scan`.
 > into the system, [`AGENT_BRIDGES.md`](AGENT_BRIDGES.md) for the transport per
 > agent, and [`PROVIDERS.md`](PROVIDERS.md) for the full provider list.
 
-## The eleven agents
+## The ten agents
 
 | Agent | Catalog id | Binary | Transport | Install / Login |
 |---|---|---|---|---|
 | Claude Code | `claude-code` | `claude` | subprocess `--output-format stream-json` | `npm i -g @anthropic-ai/claude-code` · `claude login` |
 | Codex CLI | `codex-cli` | `codex` | `codex app-server` (JSON-RPC/stdio) | `npm i -g @openai/codex` · `codex login` |
-| Gemini CLI | `gemini-cli` | `gemini` | ACP (`gemini --acp`) | `npm i -g @google/gemini-cli` · `gemini` |
 | Kimi Code CLI | `kimi-code` | `kimi` | (bridge present) | `npm i -g @moonshot-ai/kimi-code` · `kimi login` |
 | OpenCode | `opencode` | `opencode` | ACP (`opencode acp`) | `npm i -g opencode-ai` · `opencode auth login` |
 | Cursor CLI | `cursor-cli` | `cursor-agent` | ACP (`cursor-agent acp`) + `cursor/*` extensions | shell installer · `cursor-agent login` |
@@ -46,7 +45,7 @@ const CLAUDE_INDICATORS: &[AuthIndicator] = &[
 ];
 ```
 
-OAuth agents (Gemini, Antigravity CLI) use `JsonExpiry` indicators so an expired
+OAuth agents (Antigravity CLI) use `JsonExpiry` indicators so an expired
 token reads as "not authenticated" without launching the agent. When you run
 `<bin> login` and the indicator appears, the Settings tile flips to "Detected" on
 the next scan (tile expand or the Refresh button).

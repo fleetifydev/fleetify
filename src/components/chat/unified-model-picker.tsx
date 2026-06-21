@@ -638,13 +638,12 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
 // category grouping: all CLI agents share one block, so the divider only
 // falls between CLI and the HTTP/API rail — NOT between, say, Kimi and
 // GitHub Copilot. Must stay in sync with the CLI ProviderSpecs in the
-// backend catalog (claude, codex, gemini, kimi, opencode, cursor,
+// backend catalog (claude, codex, kimi, opencode, cursor,
 // github-copilot, agy, antigravity-sdk); a missing id here mis-buckets that
 // agent as HTTP and splits it off below the divider.
 const CLI_IDS = new Set([
   "claude-code",
   "codex-cli",
-  "gemini-cli",
   "kimi-code",
   "opencode",
   "cursor-cli",

@@ -1,5 +1,5 @@
 //! Agent bridges. Phase 1d: ClaudeBridge (subprocess `claude
-//! --output-format stream-json`). Gemini/Codex/OpenAI/SDK bridges are
+//! --output-format stream-json`). Codex/OpenAI/SDK bridges are
 //! Phase 2 (spec II.6). The normalized `BridgeEvent` is the exact wire
 //! shape the `/ws/sessions` handler forwards (unchanged React client).
 
@@ -12,7 +12,6 @@ pub mod claude;
 pub mod codex;
 pub mod codex_client;
 pub mod cursor;
-pub mod gemini;
 pub mod github_copilot;
 pub mod grok_cli;
 pub mod hermes;
@@ -44,8 +43,8 @@ pub struct BridgeContext {
     /// (CLIs negotiate their own auth).
     pub extra_headers: HeaderMap,
     /// Overrides the bridge's model selection. HTTP bridges substitute
-    /// into the request body; Claude CLI passes via `--model`. Codex/
-    /// Gemini CLIs may not honour runtime model override — flag as a
+    /// into the request body; Claude CLI passes via `--model`. The Codex
+    /// CLI may not honour runtime model override — flag as a
     /// known limitation but don't block.
     pub model_override: Option<String>,
     /// Multi-account: HOME path for the selected account. Used ONLY by the
@@ -64,14 +63,13 @@ pub struct BridgeContext {
 }
 
 /// Tool-dispatch wrapper used by the `/ws/sessions` send flow (parity
-/// with chat.py picking ClaudeBridge / SdkBridge / OpenAIBridge / Gemini
-/// / Codex by `session.tool`). Gemini + Codex are honest deferred stubs
-/// (Phase 2 follow-up) that emit a clear "not implemented" + done.
+/// with chat.py picking ClaudeBridge / SdkBridge / OpenAIBridge / Codex
+/// by `session.tool`). Codex is an honest deferred stub (Phase 2
+/// follow-up) that emits a clear "not implemented" + done.
 #[derive(Clone)]
 pub enum AnyBridge {
     Claude(Arc<claude::ClaudeBridge>),
     OpenAI(Arc<openai::OpenAIBridge>),
-    Gemini(Arc<gemini::GeminiBridge>),
     Codex(Arc<codex::CodexBridge>),
     /// Shared driver for every OpenAI-compatible cloud provider in the
     /// catalog (DeepSeek, Grok, NVIDIA NIM, Kimi-API, Gemini-API,
@@ -90,7 +88,7 @@ pub enum AnyBridge {
     /// `/login`), and attaches MCP over `session/new`.
     Kimi(Arc<kimi::KimiBridge>),
     /// OpenCode CLI over ACP (`opencode acp`). Shares the `AcpClient` with
-    /// the Gemini bridge; skips the ACP `authenticate` step and supports
+    /// the other ACP bridges; skips the ACP `authenticate` step and supports
     /// runtime model switching via `session/set_config_option`.
     OpenCode(Arc<opencode::OpenCodeBridge>),
     /// Hermes Agent over ACP (`hermes acp`). Forked from the OpenCode bridge;
@@ -124,8 +122,8 @@ pub enum AnyBridge {
     /// tool use via `permission_mode = "acceptEdits"` (Chat-mode tools)
     /// or `"bypassPermissions"` (Autonomous tools).
     Agentic(Arc<agentic_runner::AgenticBridgeRunner>),
-    /// GitHub Copilot CLI — ACP bridge (mirrors Gemini). Spawns
-    /// `copilot --acp --stdio` and drives the shared AcpClient.
+    /// GitHub Copilot CLI — ACP bridge (mirrors the other ACP agents).
+    /// Spawns `copilot --acp --stdio` and drives the shared AcpClient.
     GitHubCopilot(Arc<github_copilot::GitHubCopilotBridge>),
 }
 
@@ -138,7 +136,6 @@ impl AnyBridge {
         match self {
             AnyBridge::Claude(b) => b.send_message(msg, ctx).await,
             AnyBridge::OpenAI(b) => b.send_message(msg, ctx).await,
-            AnyBridge::Gemini(b) => b.send_message(msg, ctx).await,
             AnyBridge::Codex(b) => b.send_message(msg, ctx).await,
             AnyBridge::OpenAICompat(b) => b.send_message(msg, ctx).await,
             AnyBridge::Perplexity(b) => b.send_message(msg, ctx).await,
@@ -157,7 +154,6 @@ impl AnyBridge {
         match self {
             AnyBridge::Claude(b) => b.abort().await,
             AnyBridge::OpenAI(b) => b.abort().await,
-            AnyBridge::Gemini(b) => b.abort().await,
             AnyBridge::Codex(b) => b.abort().await,
             AnyBridge::OpenAICompat(b) => b.abort().await,
             AnyBridge::Perplexity(b) => b.abort().await,

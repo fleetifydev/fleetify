@@ -17,7 +17,6 @@ vi.mock("@/lib/api", async () => {
     ...actual,
     createSession: createSessionMock,
     fetchClaudeSessions: async () => [],
-    fetchGeminiSessions: async () => [],
     fetchCodexSessions: async () => [],
     apiFetch: async () => ({ ok: true, json: async () => ({}) }),
   };

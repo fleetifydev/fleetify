@@ -37,7 +37,7 @@ pub struct CommandSummary {
 fn native_skills(tool: &str) -> bool {
     matches!(
         tool,
-        "claude-code" | "codex-cli" | "gemini-cli" | "antigravity-cli" | "antigravity-sdk"
+        "claude-code" | "codex-cli" | "antigravity-cli" | "antigravity-sdk"
     )
 }
 

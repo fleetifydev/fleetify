@@ -17,7 +17,6 @@ use serde::{Deserialize, Serialize};
 pub const KNOWN_PROVIDERS: &[&str] = &[
     "claude-code",
     "codex-cli",
-    "gemini-cli",
     "kimi-code",
     "opencode",
     "github-copilot",
@@ -97,7 +96,7 @@ pub fn derive_provides(declares: &Declares) -> Vec<String> {
         out.push("skills".into());
     }
     // `commands` = slash-command authoring for the agent CLIs that have a
-    // /command surface (Claude / Gemini / OpenCode). Counted across every
+    // /command surface (Claude / OpenCode). Counted across every
     // provider in the map; providers without a command surface simply
     // never carry a non-zero `commands`.
     if p.values().any(|d| d.commands > 0) {
@@ -294,7 +293,7 @@ mod tests {
             },
         );
         d.providers.insert(
-            "gemini-cli".into(),
+            "opencode".into(),
             ProviderDeclares {
                 commands: 1,
                 ..Default::default()

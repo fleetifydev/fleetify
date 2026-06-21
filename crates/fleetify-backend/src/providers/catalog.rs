@@ -20,8 +20,8 @@ pub enum ProviderKind {
     /// Local HTTP daemon (Ollama). Same dispatch shape as `Api` minus the
     /// keychain entry; renderer surfaces a base-URL input instead of a key.
     LocalHttp,
-    /// Subprocess agent driven over ACP / stdio (claude / codex / gemini /
-    /// kimi). Not a chat provider — appears in Settings → Agents only.
+    /// Subprocess agent driven over ACP / stdio (claude / codex / kimi).
+    /// Not a chat provider — appears in Settings → Agents only.
     Cli,
 }
 
@@ -854,18 +854,6 @@ const CLAUDE_INDICATORS: &[AuthIndicator] = &[
     },
 ];
 
-const GEMINI_CLI_INDICATORS: &[AuthIndicator] = &[
-    AuthIndicator::HomeDir {
-        path: ".gemini/oauth_creds.json",
-    },
-    AuthIndicator::EnvVar {
-        name: "GEMINI_API_KEY",
-    },
-    AuthIndicator::EnvVar {
-        name: "GOOGLE_API_KEY",
-    },
-];
-
 const CODEX_INDICATORS: &[AuthIndicator] = &[
     AuthIndicator::HomeDir {
         path: ".codex/auth.json",
@@ -1425,7 +1413,7 @@ pub static CATALOG: &[ProviderSpec] = &[
         id: "gemini-api",
         display_name: "Gemini (Google API)",
         kind: ProviderKind::Api,
-        // OpenAI-compat shim — different from the native gemini-cli endpoint.
+        // OpenAI-compat shim for Google's Generative Language API.
         default_base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
         auth: AuthSpec::Bearer {
             env_hint: Some("GEMINI_API_KEY"),
@@ -1570,20 +1558,6 @@ pub static CATALOG: &[ProviderSpec] = &[
         install_hint: "npm install -g @openai/codex",
         install_hints: None,
         login_hint: "codex login",
-    },
-    ProviderSpec {
-        id: "gemini-cli",
-        display_name: "Gemini CLI",
-        kind: ProviderKind::Cli,
-        default_base_url: "",
-        auth: AuthSpec::None,
-        default_models: &[],
-        extras: ProviderExtras::DEFAULT,
-        bin: "gemini",
-        auth_indicators: GEMINI_CLI_INDICATORS,
-        install_hint: "npm install -g @google/gemini-cli",
-        install_hints: None,
-        login_hint: "gemini",
     },
     ProviderSpec {
         id: "kimi-code",
@@ -1861,13 +1835,13 @@ mod tests {
             .count();
         // 10 cloud HTTP providers (OpenAI, Anthropic, DeepSeek, Grok, NVIDIA NIM,
         // Kimi, Gemini API, Perplexity, OpenRouter, Cloudflare Workers AI) + 1
-        // local (ollama) + 11 CLI agents (Claude, Codex, Gemini, Kimi, OpenCode,
+        // local (ollama) + 10 CLI agents (Claude, Codex, Kimi, OpenCode,
         // GitHub Copilot, Cursor, Grok Build, Antigravity CLI, Antigravity SDK,
         // Hermes). If you intentionally added/removed a provider, update these
         // constants with the catalog.
         assert_eq!(api, 10, "expected 10 Api providers, got {api}");
         assert_eq!(local, 1, "expected 1 LocalHttp provider, got {local}");
-        assert_eq!(cli, 11, "expected 11 Cli agents, got {cli}");
+        assert_eq!(cli, 10, "expected 10 Cli agents, got {cli}");
     }
 
     #[test]
@@ -2184,7 +2158,7 @@ mod tests {
         // Antigravity is the exception — its installer is a per-OS shell
         // script (curl/irm), so it populates `install_hints` instead. See
         // `agy_has_per_os_install_hints` below for that side of the contract.
-        const NPM_CLI_IDS: &[&str] = &["claude-code", "codex-cli", "gemini-cli", "kimi-code"];
+        const NPM_CLI_IDS: &[&str] = &["claude-code", "codex-cli", "kimi-code"];
         for p in CATALOG
             .iter()
             .filter(|p| matches!(p.kind, ProviderKind::Cli))

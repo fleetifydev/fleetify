@@ -55,13 +55,14 @@ describe("resolveSemanticMode", () => {
 describe("decideModeCommand", () => {
   it("returns an apply outcome for a supported plan switch", () => {
     const out = decideModeCommand("plan", claudeCap, "claude-code");
+    // The notice ("Session mode switched to <b>Plan</b> mode.") is built by
+    // ModeNoticeCard from `mode`; claude-code needs no respawn note.
     expect(out).toEqual({
       kind: "apply",
       patch: { permission_mode: "plan" },
-      title: "Plan mode",
+      mode: "Plan",
+      note: "",
       tone: "info",
-      message:
-        "Session mode switched to Plan mode. The agent plans first and won't make changes until you approve.",
     });
   });
 
@@ -76,10 +77,10 @@ describe("decideModeCommand", () => {
     expect(out).toMatchObject({
       kind: "apply",
       patch: { permission_mode: "never", sandbox: "danger-full-access" },
+      mode: "YOLO",
       tone: "warn",
     });
     if (out.kind !== "apply") throw new Error("expected apply outcome");
-    expect(out.message).toContain("YOLO mode");
-    expect(out.message).toContain("next spawn");
+    expect(out.note).toContain("next spawn");
   });
 });

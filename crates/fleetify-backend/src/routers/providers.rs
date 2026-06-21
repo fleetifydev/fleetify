@@ -1,5 +1,5 @@
 //! Faithful port of `app/routers/providers.py` — model catalog and
-//! provider/CLI scan (claude/gemini/codex CLI presence + auth indicators,
+//! provider/CLI scan (claude/codex CLI presence + auth indicators,
 //! ollama HTTP probe, env-key inventory).
 
 use std::collections::HashMap;
@@ -242,7 +242,7 @@ async fn list_agent_models(Path(id): Path<String>, Query(q): Query<ModelsQuery>)
         return Json(models_json(&id, &models, &current));
     }
     // No live ACP/CLI discovery — either the agent is offline, or it's a
-    // baked-lineup agent with no probe (claude/codex/gemini/kimi/agy). Fall
+    // baked-lineup agent with no probe (claude/codex/kimi/agy). Fall
     // back to the remote catalog so the picker sources the real lineup instead
     // of the renderer's last-ditch CLI_MODELS. Rich shape (ctx + effort).
     let remote = fetch_remote_catalog(&id).await;
@@ -1240,13 +1240,13 @@ pub async fn python_module_installed(module: &str) -> PythonProbe {
 
 /// Resolve `<bin>` on PATH and return its absolute path. Uses the
 /// `which` crate so Windows `.cmd` / `.bat` / `.ps1` shims (which
-/// `npm install -g` creates for gemini / codex / claude) resolve via
-/// PATHEXT — `tokio::process::Command::new("gemini-cli")` otherwise fails
+/// `npm install -g` creates for codex / claude) resolve via
+/// PATHEXT — `tokio::process::Command::new("codex-cli")` otherwise fails
 /// on Windows because it doesn't honour PATHEXT for bare names. This
 /// is exactly the "Not Installed" symptom users hit when the CLI is
 /// installed but the renderer claims otherwise.
 async fn cli_path(bin: &str) -> Option<String> {
-    // 1. `which` honours PATHEXT — finds gemini.cmd / codex.cmd / etc.
+    // 1. `which` honours PATHEXT — finds codex.cmd / claude.cmd / etc.
     if let Ok(p) = which::which(bin) {
         // 2. Verify with `--version` against the absolute path so we
         //    don't claim "installed" for a broken shim. Best-effort:
@@ -1284,20 +1284,9 @@ async fn check_claude_cli() -> Value {
     json!({ "installed": true, "authenticated": authed, "path": p })
 }
 
-async fn check_gemini_cli() -> Value {
-    // Binary is `gemini`, not `gemini-cli` — the old name never resolved, so an
-    // installed Gemini CLI was always reported as not-installed in onboarding.
-    let Some(p) = cli_path("gemini").await else {
-        return json!({ "installed": false, "authenticated": false, "path": null });
-    };
-    let authed = home().join(".gemini/oauth_creds.json").exists()
-        || std::env::var("GEMINI_API_KEY").is_ok()
-        || std::env::var("GOOGLE_API_KEY").is_ok();
-    json!({ "installed": true, "authenticated": authed, "path": p })
-}
-
 async fn check_codex_cli() -> Value {
-    // Binary is `codex`, not `codex-cli` — see check_gemini_cli.
+    // Binary is `codex`, not `codex-cli` — the renderer keys the scan by
+    // provider id, but the CLI resolves under its own binary name.
     let Some(p) = cli_path("codex").await else {
         return json!({ "installed": false, "authenticated": false, "path": null });
     };
@@ -1607,9 +1596,8 @@ async fn scan_providers() -> Json<Value> {
     // backend's AppState), so we fall back to the localhost default
     // here. The new `providers_ollama_probe` IPC honours the user's
     // configured URL for the Settings surface.
-    let (claude, gemini, codex, kimi, agy, agy_sdk, ollama, opencode_path) = tokio::join!(
+    let (claude, codex, kimi, agy, agy_sdk, ollama, opencode_path) = tokio::join!(
         check_claude_cli(),
-        check_gemini_cli(),
         check_codex_cli(),
         check_kimi_cli(),
         check_agy_cli(),
@@ -1631,7 +1619,6 @@ async fn scan_providers() -> Json<Value> {
     let grok = cli_agent_scan_grok(crate::bridges::grok_cli::resolve_grok_bin());
     Json(json!({
         "claude_cli": claude,
-        "gemini_cli": gemini,
         "codex_cli": codex,
         "kimi_cli": kimi,
         "agy_cli": agy,
@@ -1645,9 +1632,6 @@ async fn scan_providers() -> Json<Value> {
         "env_keys": {
             "anthropic": std::env::var("ANTHROPIC_API_KEY").is_ok(),
             "openai": std::env::var("OPENAI_API_KEY").is_ok(),
-            "gemini-cli":
-                std::env::var("GEMINI_API_KEY").is_ok()
-                    || std::env::var("GOOGLE_API_KEY").is_ok(),
             "groq": std::env::var("GROQ_API_KEY").is_ok(),
         },
     }))
@@ -1698,21 +1682,6 @@ async fn list_models() -> Json<Value> {
                     {"id": "gpt-4-turbo", "label": "GPT-4 Turbo", "ctx": "128K", "note": "Legacy"},
                     {"id": "gpt-4",       "label": "GPT-4",       "ctx": "8K",   "note": "Legacy"},
                     {"id": "gpt-3.5-turbo","label": "GPT-3.5 Turbo","ctx":"16K", "note": "Legacy"},
-                ]
-            },
-            {
-                "id": "gemini-cli",
-                "label": "Gemini",
-                "models": [
-                    {"id": "gemini-3.1-pro-preview",        "label": "3.1 Pro",  "ctx": "1M", "note": "Preview"},
-                    {"id": "gemini-3-flash-preview",        "label": "3 Flash",  "ctx": "1M", "note": "Preview"},
-                    {"id": "gemini-3.1-flash-lite-preview", "label": "3.1 Lite", "ctx": "1M", "note": "Preview"},
-                    {"id": "gemini-2.5-pro",                "label": "2.5 Pro",  "ctx": "1M"},
-                    {"id": "gemini-2.5-flash",              "label": "2.5 Flash","ctx": "1M"},
-                    {"id": "gemini-2.0-flash",              "label": "2.0 Flash","ctx": "1M", "note": "Legacy"},
-                    {"id": "gemini-2.0-flash-lite",         "label": "2.0 Flash Lite","ctx":"1M","note":"Legacy"},
-                    {"id": "gemini-1.5-pro",                "label": "1.5 Pro",  "ctx": "2M", "note": "Legacy"},
-                    {"id": "gemini-1.5-flash",              "label": "1.5 Flash","ctx": "1M", "note": "Legacy"},
                 ]
             }
         ]
@@ -2008,7 +1977,6 @@ mod tests {
         for p in [
             "claude-code",
             "codex-cli",
-            "gemini-cli",
             "kimi-code",
             "antigravity-cli",
             "openai",
@@ -2060,7 +2028,6 @@ mod tests {
             match (id, probe) {
                 ("claude-code", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "claude"),
                 ("codex-cli", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "codex"),
-                ("gemini-cli", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "gemini"),
                 ("kimi-code", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "kimi"),
                 ("opencode", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "opencode"),
                 ("github-copilot", ScanProbe::GitHubCopilotCli) => {}

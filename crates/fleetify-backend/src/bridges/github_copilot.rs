@@ -179,6 +179,18 @@ fn translate_session_update(notif: &Value) -> Option<BridgeEvent> {
             let input = update.get("rawInput").cloned().unwrap_or(Value::Null);
             Some(BridgeEvent::ToolUpdate { tool_id, input })
         }
+        "available_commands_update" => {
+            // Copilot CLI advertises its native slash commands over ACP
+            // (verified live: ~33 — compact / plan / review / model / research /
+            // skills / security-review / …). Surface them like OpenCode/Grok/
+            // Hermes/Cursor do, so the composer's slash menu offers the live,
+            // provider-native set instead of dropping it.
+            let commands = update
+                .get("availableCommands")
+                .cloned()
+                .unwrap_or(Value::Array(Vec::new()));
+            Some(BridgeEvent::SlashCommands { commands })
+        }
         _ => None,
     }
 }
@@ -1013,6 +1025,34 @@ mod tests {
         });
         let ev = translate_session_update(&notif).expect("should emit event");
         assert!(matches!(ev, BridgeEvent::MessageDelta { ref text } if text == "Hello world"));
+    }
+
+    #[test]
+    fn translate_available_commands_emits_slash_commands() {
+        // Copilot advertises its native slash commands over ACP — surface them.
+        let notif = json!({
+            "sessionId": "s1",
+            "update": {
+                "sessionUpdate": "available_commands_update",
+                "availableCommands": [
+                    { "name": "compact", "description": "Summarize history" },
+                    { "name": "review", "description": "Review changes" }
+                ]
+            }
+        });
+        let ev = translate_session_update(&notif).expect("should emit event");
+        match ev {
+            BridgeEvent::SlashCommands { commands } => {
+                let names: Vec<&str> = commands
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|c| c.get("name").and_then(|n| n.as_str()))
+                    .collect();
+                assert_eq!(names, vec!["compact", "review"]);
+            }
+            _ => panic!("expected SlashCommands"),
+        }
     }
 
     #[test]

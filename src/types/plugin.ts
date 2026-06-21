@@ -1,12 +1,11 @@
 // Plugin foundation — shared TypeScript types mirroring backend Pydantic models.
 
-/** Every CLI agent a plugin can target. The first ten materialize
+/** Every CLI agent a plugin can target. The first nine materialize
  *  components to an on-disk home; `antigravity-sdk` is MCP-only (no home).
  *  Mirrors the backend `KNOWN_PROVIDERS`. */
 export type Provider =
   | "claude-code"
   | "codex-cli"
-  | "gemini-cli"
   | "kimi-code"
   | "opencode"
   | "github-copilot"

@@ -32,7 +32,6 @@ pub fn rule_file(provider: &str) -> Option<PathBuf> {
     let h = super::providers::provider_home(provider)?;
     let name = match provider {
         "claude-code" => "CLAUDE.md",
-        "gemini-cli" => "GEMINI.md",
         "codex-cli" | "kimi-code" | "opencode" | "antigravity-cli" | "grok-build" => "AGENTS.md",
         "github-copilot" => "copilot-instructions.md",
         _ => return None,
@@ -49,7 +48,6 @@ pub fn rule_file(provider: &str) -> Option<PathBuf> {
 pub fn project_rule_file(provider: &str, dir: &Path) -> Option<PathBuf> {
     let p = match provider {
         "claude-code" => dir.join("CLAUDE.md"),
-        "gemini-cli" => dir.join("GEMINI.md"),
         "codex-cli" | "kimi-code" | "opencode" | "antigravity-cli" | "grok-build" => {
             dir.join("AGENTS.md")
         }
@@ -181,7 +179,6 @@ mod tests {
         // provider_home reads USERPROFILE/HOME; just assert the file name logic.
         std::env::set_var("USERPROFILE", "/tmp/fakehome");
         assert!(rule_file("claude-code").unwrap().ends_with("CLAUDE.md"));
-        assert!(rule_file("gemini-cli").unwrap().ends_with("GEMINI.md"));
         assert!(rule_file("codex-cli").unwrap().ends_with("AGENTS.md"));
         assert!(rule_file("github-copilot")
             .unwrap()

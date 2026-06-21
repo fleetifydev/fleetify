@@ -32,7 +32,7 @@ pub struct PermMode {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PermissionCapability {
     /// A single mode enum, optionally with an independent OS-sandbox
-    /// toggle (Gemini/Antigravity/Qwen). `sandbox` is the list of
+    /// toggle (Antigravity/Qwen). `sandbox` is the list of
     /// sandbox values, or `None` when the provider has no sandbox axis.
     Modes {
         modes: &'static [PermMode],
@@ -105,24 +105,6 @@ const CLAUDE_MODES: &[PermMode] = &[
     },
     PermMode {
         id: "bypassPermissions",
-        label: "Bypass permissions",
-    },
-];
-const GEMINI_MODES: &[PermMode] = &[
-    PermMode {
-        id: "default",
-        label: "Ask permissions",
-    },
-    PermMode {
-        id: "auto_edit",
-        label: "Accept edits",
-    },
-    PermMode {
-        id: "plan",
-        label: "Plan mode",
-    },
-    PermMode {
-        id: "yolo",
         label: "Bypass permissions",
     },
 ];
@@ -245,10 +227,6 @@ pub fn permission_capability(provider_id: &str) -> PermissionCapability {
         },
         "antigravity-cli" | "antigravity-sdk" => PermissionCapability::Modes {
             modes: ANTIGRAVITY_MODES,
-            sandbox: Some(SANDBOX_TOGGLE),
-        },
-        "gemini-cli" => PermissionCapability::Modes {
-            modes: GEMINI_MODES,
             sandbox: Some(SANDBOX_TOGGLE),
         },
         "cursor-cli" => PermissionCapability::Modes {
@@ -570,14 +548,6 @@ mod tests {
                 assert!(sandbox.is_none());
             }
             _ => panic!("openai must be Modes"),
-        }
-        // Gemini CLI uses its native approval ids.
-        match permission_capability("gemini-cli") {
-            PermissionCapability::Modes { modes, .. } => {
-                assert!(modes.iter().any(|m| m.id == "auto_edit"));
-                assert!(modes.iter().any(|m| m.id == "yolo"));
-            }
-            _ => panic!("gemini must be Modes"),
         }
         // Grok Build: the Claude-style four (default/acceptEdits/plan/
         // bypassPermissions), no sandbox.

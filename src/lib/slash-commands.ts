@@ -7,9 +7,8 @@
  *                to the underlying CLI.
  *   - session  : Commands meaningful inside a running agent session. The set
  *                surfaced to the user depends on the provider (`Session.tool`),
- *                because Claude, Codex, and Gemini each have their own slash
- *                vocabularies. The compaction command in particular is
- *                `/compact` for Claude+Codex but `/compress` for Gemini.
+ *                because Claude and Codex each have their own slash
+ *                vocabularies (e.g. Codex adds `/clear` + `/status`).
  *
  * The session-chat input surfaces BOTH domains (fleet commands stay useful
  * while inside a session — e.g. /new, /status). The dedicated fleet command
@@ -30,7 +29,7 @@ import type { SemanticMode } from "@/lib/permission-modes";
  *  text). See docs/superpowers/specs/2026-06-15-slash-commands-design.md §3. */
 export type SlashMechanism = "local" | "mode" | "passthrough" | "inject" | "picker";
 
-export type SessionTool = "claude-code" | "codex-cli" | "gemini-cli";
+export type SessionTool = "claude-code" | "codex-cli";
 
 export type SlashIntent =
   | "fleet.new"
@@ -69,16 +68,15 @@ export type SlashCmdDef = {
   desc: string;
   /** What actually gets sent to the CLI when the user submits this command.
    * Defaults to `cmd` when omitted. Diverges from `cmd` only when the visible
-   * name and the underlying provider command differ (today: none — `/compress`
-   * is what Gemini accepts and what we show). Kept as an explicit field so a
-   * future "translate intent → provider cmd" rewrite has a single source. */
+   * name and the underlying provider command differ (today: none). Kept as an
+   * explicit field so a future "translate intent → provider cmd" rewrite has a
+   * single source. */
   providerCmd?: string;
   scope: SlashScope;
   /** Restricts the command to a subset of providers. When omitted, the
    * command is available for all known tools. Used for session-domain
-   * entries that don't make sense in every CLI — e.g. `/effort` is hidden
-   * for Gemini because Gemini has no reasoning-effort knob, and the
-   * `/commands` vs `/prompts` split between Claude/Gemini and Codex. */
+   * entries that don't make sense in every CLI — e.g. the `/commands` vs
+   * `/prompts` split between Claude and Codex. */
   supportedTools?: SessionTool[];
   /** Execution mechanism. Omitted → legacy (local handler or raw-text send). */
   mechanism?: SlashMechanism;
@@ -107,29 +105,26 @@ export const FLEET_CMDS: SlashCmdDef[] = [
   { intent: "session.model",    cmd: "/model",   desc: "Switch model — opens the model picker",           scope: "fleet" },
 ];
 
+// Provider-specific session commands that Fleetify actually executes (the
+// compaction command routes through the app-owned compactor; /context renders
+// the context card). Native TUI commands that DON'T run over the agent's
+// non-interactive transport are intentionally omitted — Claude's /review and
+// Codex's /clear, /status are TUI-only, and Codex's /review is now surfaced
+// dynamically by its bridge (mapped to the `review/start` app-server method).
 export const SESSION_CMDS_BY_TOOL: Record<SessionTool, SlashCmdDef[]> = {
   "claude-code": [
     { intent: "session.compaction", cmd: "/compact", desc: "Summarize conversation to free context", scope: "session" },
     { intent: "session.context",    cmd: "/context", desc: "Show context window usage",              scope: "session" },
-    { intent: "session.review",     cmd: "/review",  desc: "Review last changes",                    scope: "session" },
   ],
   "codex-cli": [
-    { intent: "session.compaction", cmd: "/compact",   desc: "Summarize visible conversation (auto-confirmed)", scope: "session" },
-    { intent: "session.clear",      cmd: "/clear",     desc: "Clear the terminal and start a fresh chat",       scope: "session" },
-    { intent: "session.context",    cmd: "/status",    desc: "Show session status",                             scope: "session" },
-    { intent: "session.review",     cmd: "/review",    desc: "Review last changes",                             scope: "session" },
-  ],
-  "gemini-cli": [
-    { intent: "session.compaction", cmd: "/compress", desc: "Replace chat context with a summary", scope: "session", providerCmd: "/compress" },
-    { intent: "session.clear",      cmd: "/clear",    desc: "Clear conversation history",          scope: "session" },
-    { intent: "session.context",    cmd: "/stats",    desc: "Show session statistics",             scope: "session" },
+    { intent: "session.compaction", cmd: "/compact", desc: "Summarize visible conversation (auto-confirmed)", scope: "session" },
   ],
 };
 
 /**
- * Provider-aware commands that share a single intent across the three CLIs.
- * Filtered by `supportedTools` in commandsForContext so Gemini doesn't see
- * `/effort` and only Codex sees `/prompts` (its CLI doesn't have `/commands`).
+ * Provider-aware commands that share a single intent across the CLIs.
+ * Filtered by `supportedTools` in commandsForContext for entries that only
+ * make sense for a subset of providers.
  *
  * Each entry routes to a Fleetify-side handler — none of these are forwarded
  * to the underlying CLI as raw text (skills/hooks/usage/etc. would just open
@@ -155,7 +150,7 @@ export const SESSION_CMDS_COMMON: SlashCmdDef[] = [
   // /commands (the "session.commands" feature — browse custom slash commands)
   // commented out per request. The Codex variant aliased the same intent to
   // /prompts; Codex still gets /prompts from the session.prompts entry above.
-  // { intent: "session.commands",    cmd: "/commands",    desc: "Browse custom slash commands",                             scope: "session", supportedTools: ["claude-code", "gemini-cli"] },
+  // { intent: "session.commands",    cmd: "/commands",    desc: "Browse custom slash commands",                             scope: "session", supportedTools: ["claude-code"] },
   // { intent: "session.commands",    cmd: "/prompts",     desc: "Browse custom prompts",                                    scope: "session", supportedTools: ["codex-cli"] },
 ];
 
@@ -170,7 +165,7 @@ export const SESSION_CMDS_BASE: SlashCmdDef[] = [
 ];
 
 function isKnownTool(t: unknown): t is SessionTool {
-  return t === "claude-code" || t === "codex-cli" || t === "gemini-cli";
+  return t === "claude-code" || t === "codex-cli";
 }
 
 /**

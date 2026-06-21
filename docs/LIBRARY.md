@@ -124,7 +124,6 @@ under the synthetic provider id `"agents"`):
 |---|---|
 | `claude-code` | `~/.claude/skills/` |
 | `codex-cli` | `~/.codex/skills/` *(written, but Codex reads the shared dir — see below)* |
-| `gemini-cli` | `~/.gemini/skills/` |
 | `kimi-code` | `~/.kimi/skills/` |
 | `opencode` | `~/.config/opencode/skills/` |
 | `github-copilot` | `~/.copilot/skills/` |
@@ -132,7 +131,7 @@ under the synthetic provider id `"agents"`):
 | `hermes-agent` | `~/.hermes/skills/` (`%LOCALAPPDATA%\hermes\skills` on Windows) |
 | `antigravity-cli` (Antigravity) | `~/.gemini/antigravity-cli/skills/` |
 | `grok-build` (Grok Build) | `~/.grok/skills/` |
-| *(shared)* | `~/.agents/skills/` — read by Codex (its **only** USER scope), Gemini, Copilot, Cursor, Kimi and Grok Build |
+| *(shared)* | `~/.agents/skills/` — read by Codex (its **only** USER scope), Copilot, Cursor, Kimi and Grok Build |
 
 > **Why the shared dir matters.** **Codex's USER skill scope is `~/.agents/skills`,
 > not `~/.codex/skills`** — it never reads the latter. Writing the shared copy is
@@ -156,7 +155,6 @@ format is per-provider:
 |---|---|
 | `claude-code` | `~/.claude/agents/<slug>.md` |
 | `codex-cli` | `~/.codex/agents/<slug>.toml` — converted to TOML (`name` / `description` / `developer_instructions`) |
-| `gemini-cli` | `~/.gemini/agents/<slug>.md` |
 | `opencode` | `~/.config/opencode/agents/<slug>.md` |
 | `github-copilot` | `~/.copilot/agents/<slug>.agent.md` (Copilot's compound extension) |
 | `cursor-cli` | `~/.cursor/agents/<slug>.md` |
@@ -205,7 +203,6 @@ The block looks like:
 | Provider id | Global rule file |
 |---|---|
 | `claude-code` | `~/.claude/CLAUDE.md` |
-| `gemini-cli` | `~/.gemini/GEMINI.md` |
 | `codex-cli` / `kimi-code` / `opencode` / `antigravity-cli` / `grok-build` | `<home>/AGENTS.md` (the dominant cross-tool standard) |
 | `github-copilot` | `~/.copilot/copilot-instructions.md` |
 | `cursor-cli` | `~/.cursor/rules/<slug>.mdc` — **standalone file**, not a merge (Cursor's per-rule format with `description` + `alwaysApply: true` frontmatter) |

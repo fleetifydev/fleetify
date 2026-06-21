@@ -134,18 +134,6 @@ describe("buildPickerGroups", () => {
     expect(haiku?.supports_effort).toBe(false);
   });
 
-  it("gemini CLI fallback models keep their id/label/ctx with no effort", () => {
-    const groups = buildPickerGroups([], []);
-    const gemini = groups.find((g) => g.id === "gemini-cli");
-    const pro = gemini?.models.find((m) => m.id === "gemini-3.1-pro-preview");
-    expect(pro?.label).toBe("3.1 Pro");
-    expect(pro?.ctx).toBe("1M");
-    expect(pro?.effort.kind).toBe("none");
-    expect(pro?.supports_effort).toBe(false);
-    const lite = gemini?.models.find((m) => m.id === "gemini-3.1-flash-lite-preview");
-    expect(lite?.effort.kind).toBe("none");
-    expect(lite?.supports_effort).toBe(false);
-  });
 
   it("buildPickerGroups joins model_efforts from tile capabilities for HTTP providers", () => {
     const tiles = [
@@ -306,19 +294,15 @@ describe("buildPickerGroups", () => {
     const tiles = [
       baseTile("claude-code", "Claude Code", "cli"),
       baseTile("codex-cli", "Codex CLI", "cli"),
-      baseTile("gemini-cli", "Gemini CLI", "cli"),
       baseTile("kimi-code", "Kimi Code", "cli"),
     ];
-    const groups = buildPickerGroups(tiles, ["claude-code", "codex-cli", "gemini-cli", "kimi-code"]);
+    const groups = buildPickerGroups(tiles, ["claude-code", "codex-cli", "kimi-code"]);
     const claude = groups.find((g) => g.id === "claude-code");
     expect(claude?.models.length).toBeGreaterThan(0);
     expect(claude?.models.some((m) => m.id.startsWith("claude-"))).toBe(true);
     const codex = groups.find((g) => g.id === "codex-cli");
     expect(codex?.models.length).toBeGreaterThan(0);
     expect(codex?.models.some((m) => m.id.startsWith("gpt-5"))).toBe(true);
-    const gemini = groups.find((g) => g.id === "gemini-cli");
-    expect(gemini?.models.length).toBeGreaterThan(0);
-    expect(gemini?.models.some((m) => m.id.startsWith("gemini-"))).toBe(true);
     const kimi = groups.find((g) => g.id === "kimi-code");
     expect(kimi?.models.length).toBeGreaterThan(0);
     expect(kimi?.models.some((m) => m.id.startsWith("kimi-") || m.id.startsWith("moonshot"))).toBe(true);
@@ -359,9 +343,9 @@ describe("buildPickerGroups", () => {
     const groups = buildPickerGroups([], []);
     const ids = groups.map((g) => g.id);
     expect(ids).toEqual(
-      expect.arrayContaining(["claude-code", "codex-cli", "gemini-cli", "kimi-code", "antigravity-cli", "antigravity-sdk"]),
+      expect.arrayContaining(["claude-code", "codex-cli", "kimi-code", "antigravity-cli", "antigravity-sdk"]),
     );
-    for (const id of ["claude-code", "codex-cli", "gemini-cli", "kimi-code", "antigravity-cli", "antigravity-sdk"]) {
+    for (const id of ["claude-code", "codex-cli", "kimi-code", "antigravity-cli", "antigravity-sdk"]) {
       const g = groups.find((gg) => gg.id === id);
       expect(g?.models.length ?? 0).toBeGreaterThan(0);
     }
@@ -371,7 +355,6 @@ describe("buildPickerGroups", () => {
     const groups = buildPickerGroups([], []);
     expect(groups.find((g) => g.id === "claude-code")?.label).toBe("Claude Code");
     expect(groups.find((g) => g.id === "codex-cli")?.label).toBe("Codex CLI");
-    expect(groups.find((g) => g.id === "gemini-cli")?.label).toBe("Gemini CLI");
     expect(groups.find((g) => g.id === "kimi-code")?.label).toBe("Kimi Code");
     expect(groups.find((g) => g.id === "antigravity-cli")?.label).toBe("Antigravity CLI");
     expect(groups.find((g) => g.id === "antigravity-sdk")?.label).toBe("Antigravity SDK");

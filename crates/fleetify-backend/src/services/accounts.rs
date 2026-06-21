@@ -2,7 +2,7 @@
 //!
 //! A provider/agent can have several identities. Two flavors:
 //!
-//! * **CLI agent** (`claude`, `codex`, `gemini`, …): isolated by pointing the
+//! * **CLI agent** (`claude`, `codex`, `kimi`, …): isolated by pointing the
 //!   spawned subprocess at a private fake HOME via [`account_env`]. Each
 //!   account's credentials live under
 //!   `fleetify_home()/accounts/<provider_id>/<account_id>/`, written there by
@@ -599,8 +599,8 @@ mod tests {
             Some(("CLAUDE_CONFIG_DIR", ".claude"))
         );
         assert_eq!(config_dir_spec("codex-cli"), Some(("CODEX_HOME", ".codex")));
-        // Gemini/kimi/agy isolate via HOME, not a config-dir env var.
-        assert!(config_dir_spec("gemini-cli").is_none());
+        // Kimi/agy isolate via HOME, not a config-dir env var.
+        assert!(config_dir_spec("kimi-code").is_none());
         assert!(config_dir_spec("antigravity-cli").is_none());
     }
 

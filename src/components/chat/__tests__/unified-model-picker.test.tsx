@@ -163,7 +163,7 @@ describe("UnifiedModelPicker", () => {
     const cliGroups: PickerGroup[] = [
       { id: "claude-code", label: "Claude Code", models: [{ id: "claude-opus-4-7", label: "Opus 4.7", effort: LEVELS_EFFORT, supports_effort: true }] },
       { id: "codex-cli", label: "Codex CLI", models: [{ id: "gpt-5.5", label: "GPT-5.5", effort: LEVELS_EFFORT, supports_effort: true }] },
-      { id: "gemini-cli", label: "Gemini CLI", models: [{ id: "gemini-3.1-pro-preview", label: "3.1 Pro", effort: LEVELS_EFFORT, supports_effort: true }] },
+      { id: "cursor-cli", label: "Cursor CLI", models: [{ id: "composer-2.5", label: "Composer 2.5", effort: LEVELS_EFFORT, supports_effort: true }] },
       { id: "kimi-code", label: "Kimi Code CLI", models: [{ id: "kimi-k2.6", label: "Kimi K2.6", effort: NONE_EFFORT, supports_effort: false }] },
       { id: "opencode", label: "OpenCode", models: [{ id: "oc-1", label: "OC", effort: NONE_EFFORT, supports_effort: false }] },
       { id: "github-copilot", label: "GitHub Copilot CLI", models: [{ id: "gh-1", label: "GH", effort: NONE_EFFORT, supports_effort: false }] },
@@ -272,13 +272,13 @@ describe("UnifiedModelPicker", () => {
   it("renders no effort buttons for a none-effort model", () => {
     const noneGroups: PickerGroup[] = [
       {
-        id: "gemini-cli",
-        label: "Gemini CLI",
+        id: "kimi-code",
+        label: "Kimi Code",
         models: [
           {
-            id: "gemini-3.1-flash-lite-preview",
-            label: "3.1 Lite",
-            ctx: "1M",
+            id: "kimi-k2.6",
+            label: "Kimi K2.6",
+            ctx: "256K",
             effort: { kind: "none" },
             supports_effort: false,
           },
@@ -287,8 +287,8 @@ describe("UnifiedModelPicker", () => {
     ];
     const { container } = render(
       <UnifiedModelPicker
-        tool="gemini-cli"
-        model="gemini-3.1-flash-lite-preview"
+        tool="kimi-code"
+        model="kimi-k2.6"
         effort="medium"
         groups={noneGroups}
         onPickModel={vi.fn()}
@@ -303,15 +303,15 @@ describe("UnifiedModelPicker", () => {
     expect(buttons?.length ?? 0).toBe(0);
   });
 
-  it("renders thinking_level effort buttons (low, high) for a gemini thinking model", () => {
-    const geminiGroups: PickerGroup[] = [
+  it("renders thinking_level effort buttons (low, high) for a thinking_level model", () => {
+    const thinkingGroups: PickerGroup[] = [
       {
-        id: "gemini-cli",
-        label: "Gemini CLI",
+        id: "cursor-cli",
+        label: "Cursor CLI",
         models: [
           {
-            id: "gemini-3.1-pro-preview",
-            label: "3.1 Pro",
+            id: "composer-2.5",
+            label: "Composer 2.5",
             ctx: "1M",
             effort: { kind: "thinking_level", levels: ["low", "high"], default: "high" },
             supports_effort: true,
@@ -321,10 +321,10 @@ describe("UnifiedModelPicker", () => {
     ];
     render(
       <UnifiedModelPicker
-        tool="gemini-cli"
-        model="gemini-3.1-pro-preview"
+        tool="cursor-cli"
+        model="composer-2.5"
         effort="high"
-        groups={geminiGroups}
+        groups={thinkingGroups}
         onPickModel={vi.fn()}
         onPickEffort={vi.fn()}
         onClose={vi.fn()}

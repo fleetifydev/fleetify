@@ -5,7 +5,6 @@ import { useProviderHealth } from "../use-provider-health";
 vi.mock("@/lib/api", () => ({
   apiScanProviders: vi.fn(async () => ({
     claude_cli: { installed: false, authenticated: false, path: null },
-    gemini_cli: { installed: false, authenticated: false, path: null },
     codex_cli:  { installed: false, authenticated: false, path: null },
     agy_cli:    { installed: false, authenticated: false, path: null },
     antigravity_sdk: { installed: false, authenticated: false, path: null },
@@ -66,8 +65,7 @@ describe("useProviderHealth", () => {
     const { apiScanProviders } = await import("@/lib/api");
     (apiScanProviders as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       claude_cli: { installed: false, authenticated: false, path: null },
-      gemini_cli: { installed: false, authenticated: false, path: null },
-      codex_cli:  { installed: false, authenticated: false, path: null },
+        codex_cli:  { installed: false, authenticated: false, path: null },
       ollama:     { running: true, models: ["llama3", "qwen2"] },
       env_keys:   { anthropic: false, openai: false, gemini: false, groq: false },
     });
@@ -117,16 +115,14 @@ describe("useProviderHealth", () => {
     (apiScanProviders as ReturnType<typeof vi.fn>)
       .mockResolvedValueOnce({
         claude_cli: { installed: false, authenticated: false, path: null },
-        gemini_cli: { installed: false, authenticated: false, path: null },
-        codex_cli:  { installed: false, authenticated: false, path: null },
+            codex_cli:  { installed: false, authenticated: false, path: null },
         ollama:     { running: false, models: [] },
         env_keys:   { anthropic: false, openai: false, gemini: false, groq: false },
       })
       // Poll after install — running.
       .mockResolvedValueOnce({
         claude_cli: { installed: false, authenticated: false, path: null },
-        gemini_cli: { installed: false, authenticated: false, path: null },
-        codex_cli:  { installed: false, authenticated: false, path: null },
+            codex_cli:  { installed: false, authenticated: false, path: null },
         ollama:     { running: true, models: ["llama3"] },
         env_keys:   { anthropic: false, openai: false, gemini: false, groq: false },
       });
@@ -146,8 +142,7 @@ describe("useProviderHealth", () => {
     };
     (apiScanProviders as ReturnType<typeof vi.fn>).mockResolvedValue({
       claude_cli: { installed: false, authenticated: false, path: null },
-      gemini_cli: { installed: false, authenticated: false, path: null },
-      codex_cli:  { installed: false, authenticated: false, path: null },
+        codex_cli:  { installed: false, authenticated: false, path: null },
       ollama:     { running: false, models: [] },
       env_keys:   { anthropic: false, openai: false, gemini: false, groq: false },
     });
@@ -190,8 +185,7 @@ describe("useProviderHealth", () => {
     const { apiScanProviders } = await import("@/lib/api");
     (apiScanProviders as ReturnType<typeof vi.fn>).mockResolvedValue({
       claude_cli: { installed: false, authenticated: false, path: null },
-      gemini_cli: { installed: false, authenticated: false, path: null },
-      codex_cli:  { installed: false, authenticated: false, path: null },
+        codex_cli:  { installed: false, authenticated: false, path: null },
       ollama:     { running: false, models: [] },
       env_keys:   { anthropic: false, openai: false, gemini: false, groq: false },
     });

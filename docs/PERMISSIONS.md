@@ -11,7 +11,7 @@ Everything here is driven by the single lookup in
 spawn/turn time. See [`EFFORTS.md`](EFFORTS.md) for the sibling effort system and
 [`PROVIDERS.md`](PROVIDERS.md) for the provider list.
 
-> **Each provider exposes its OWN native modes**, verbatim. Gemini shows `auto_edit`/`yolo`,
+> **Each provider exposes its OWN native modes**, verbatim. Copilot shows `ask`/`autopilot`,
 > Codex shows approval *tiers*, OpenCode shows `build`/`plan` — not one Claude-style list for
 > everyone. A provider's stored `permission_mode` is one of *its* ids; bridges also still
 > accept the legacy Fleet-canonical ids for backward compatibility.
@@ -24,14 +24,14 @@ A provider's permission surface is one of three shapes:
 
 | Family | Shape | Used by |
 |---|---|---|
-| **Modes** | a single mode enum, optionally with an independent **sandbox** toggle | Claude, Gemini, Cursor, Copilot, OpenCode, Kimi, Hermes, Antigravity, all HTTP |
+| **Modes** | a single mode enum, optionally with an independent **sandbox** toggle | Claude, Cursor, Copilot, OpenCode, Kimi, Hermes, Antigravity, all HTTP |
 | **ApprovalSandbox** | two orthogonal axes — *approval policy* × *sandbox tier* (a true cross-product) | Codex only |
 | **None** | no tool-authorization concept | Perplexity |
 
 Two overlays sit on top of the family:
 
-- **Sandbox axis** — an OS-sandbox control independent of the mode. Gemini & Antigravity
-  carry an `off`/`on` toggle; Codex's sandbox is one of its two axes (below).
+- **Sandbox axis** — an OS-sandbox control independent of the mode. Antigravity
+  carries an `off`/`on` toggle; Codex's sandbox is one of its two axes (below).
 - **Tool matrix** — a per-tool allow/ask/deny override for the agents that support one
   (OpenCode, Cursor, Copilot, Kimi). Edited via the composer's **Tools** button → persisted to
   `session.tool_overrides`.
@@ -46,7 +46,6 @@ Two overlays sit on top of the family:
 |---|---|---|---|
 | Claude Code (`claude`) | Modes | `default` → Ask permissions · `acceptEdits` → Accept edits · `plan` → Plan mode · `bypassPermissions` → Bypass permissions | — |
 | Codex CLI (`codex`) | ApprovalSandbox | **approval:** `untrusted` · `on-request` · `never` | **sandbox:** `read-only` · `workspace-write` · `danger-full-access` |
-| Gemini CLI (`gemini`) | Modes + sandbox | `default` → Ask permissions · `auto_edit` → Accept edits · `plan` → Plan mode · `yolo` → Bypass permissions | `off` / `on` (`--sandbox`) |
 | GitHub Copilot CLI (`github-copilot`) | Modes | `ask` → Ask permissions · `plan` → Plan mode · `autopilot` → Autopilot | — |
 | OpenCode (`opencode`) | Modes | `build` → Build · `plan` → Plan | — |
 | Cursor CLI (`cursor`) | Modes | `agent` → Agent · `plan` → Plan · `ask` → Ask (read-only) | — |
@@ -97,7 +96,7 @@ applies mid-session:
 |---|---|---|
 | **Live** (ACP `set_config_option`) | **Live** | OpenCode, Cursor, Hermes |
 | **Spawn** (next message) | **Live** | GitHub Copilot |
-| **Spawn** | **Spawn** | everyone else (Claude, Codex, Gemini, Kimi, Antigravity, all HTTP) |
+| **Spawn** | **Spawn** | everyone else (Claude, Codex, Kimi, Antigravity, all HTTP) |
 
 ---
 

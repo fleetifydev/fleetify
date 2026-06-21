@@ -2,7 +2,7 @@
 //!
 //! A library hook is authored against a *semantic* trigger (e.g. `pre_tool_use`);
 //! each provider's writer resolves it to that vendor's native event name (Claude
-//! `PreToolUse`, Gemini `BeforeTool`, Cursor `preToolUse`, …). Providers absent
+//! `PreToolUse`, Cursor `preToolUse`, …). Providers absent
 //! from a trigger's `natives` don't support it. The frontend mirrors this table
 //! (`src/lib/hook-triggers.ts`) to drive the picker.
 
@@ -23,7 +23,6 @@ pub const TRIGGERS: &[Trigger] = &[
         tool_scoped: true,
         natives: &[
             ("claude-code", "PreToolUse"),
-            ("gemini-cli", "BeforeTool"),
             ("codex-cli", "PreToolUse"),
             ("cursor-cli", "preToolUse"),
             ("kimi-code", "PreToolUse"),
@@ -37,7 +36,6 @@ pub const TRIGGERS: &[Trigger] = &[
         tool_scoped: true,
         natives: &[
             ("claude-code", "PostToolUse"),
-            ("gemini-cli", "AfterTool"),
             ("codex-cli", "PostToolUse"),
             ("cursor-cli", "postToolUse"),
             ("kimi-code", "PostToolUse"),
@@ -51,7 +49,6 @@ pub const TRIGGERS: &[Trigger] = &[
         tool_scoped: false,
         natives: &[
             ("claude-code", "UserPromptSubmit"),
-            ("gemini-cli", "BeforeAgent"),
             ("codex-cli", "UserPromptSubmit"),
             ("cursor-cli", "beforeSubmitPrompt"),
             ("kimi-code", "UserPromptSubmit"),
@@ -64,7 +61,6 @@ pub const TRIGGERS: &[Trigger] = &[
         tool_scoped: false,
         natives: &[
             ("claude-code", "SessionStart"),
-            ("gemini-cli", "SessionStart"),
             ("codex-cli", "SessionStart"),
             ("cursor-cli", "sessionStart"),
             ("kimi-code", "SessionStart"),
@@ -77,7 +73,6 @@ pub const TRIGGERS: &[Trigger] = &[
         tool_scoped: false,
         natives: &[
             ("claude-code", "SessionEnd"),
-            ("gemini-cli", "SessionEnd"),
             ("cursor-cli", "sessionEnd"),
             ("kimi-code", "SessionEnd"),
             ("github-copilot", "sessionEnd"),
@@ -89,7 +84,6 @@ pub const TRIGGERS: &[Trigger] = &[
         tool_scoped: false,
         natives: &[
             ("claude-code", "Stop"),
-            ("gemini-cli", "AfterAgent"),
             ("codex-cli", "Stop"),
             ("cursor-cli", "stop"),
             ("kimi-code", "Stop"),
@@ -101,19 +95,13 @@ pub const TRIGGERS: &[Trigger] = &[
         id: "before_model",
         label: "Before model call",
         tool_scoped: false,
-        natives: &[
-            ("gemini-cli", "BeforeModel"),
-            ("antigravity-cli", "PreInvocation"),
-        ],
+        natives: &[("antigravity-cli", "PreInvocation")],
     },
     Trigger {
         id: "after_model",
         label: "After model call",
         tool_scoped: false,
-        natives: &[
-            ("gemini-cli", "AfterModel"),
-            ("antigravity-cli", "PostInvocation"),
-        ],
+        natives: &[("antigravity-cli", "PostInvocation")],
     },
     Trigger {
         id: "pre_compact",
@@ -121,7 +109,6 @@ pub const TRIGGERS: &[Trigger] = &[
         tool_scoped: false,
         natives: &[
             ("claude-code", "PreCompact"),
-            ("gemini-cli", "PreCompress"),
             ("codex-cli", "PreCompact"),
             ("cursor-cli", "preCompact"),
             ("kimi-code", "PreCompact"),
@@ -134,7 +121,6 @@ pub const TRIGGERS: &[Trigger] = &[
         tool_scoped: false,
         natives: &[
             ("claude-code", "Notification"),
-            ("gemini-cli", "Notification"),
             ("kimi-code", "Notification"),
             ("github-copilot", "notification"),
         ],
@@ -172,10 +158,6 @@ mod tests {
             Some("PreToolUse")
         );
         assert_eq!(
-            native_event("pre_tool_use", "gemini-cli"),
-            Some("BeforeTool")
-        );
-        assert_eq!(
             native_event("pre_tool_use", "cursor-cli"),
             Some("preToolUse")
         );
@@ -188,8 +170,8 @@ mod tests {
 
     #[test]
     fn providers_for_trigger_is_the_support_set() {
+        // before_model is an Antigravity-only trigger (gemini-CLI was removed).
         let p = providers_for("before_model");
-        assert!(p.contains(&"gemini-cli"));
         assert!(p.contains(&"antigravity-cli"));
         assert!(!p.contains(&"claude-code"));
     }

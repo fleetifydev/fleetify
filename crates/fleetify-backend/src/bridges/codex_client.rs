@@ -275,6 +275,18 @@ impl CodexClient {
         self.call("turn/start", Value::Object(params)).await
     }
 
+    /// Start a code review (the app-server equivalent of the TUI `/review`).
+    /// `target` is an internally-tagged `ReviewTarget`, e.g.
+    /// `{ "type": "uncommittedChanges" }` — verified against a live
+    /// `codex app-server`. Returns a `turn` that streams like any other turn.
+    pub async fn review_start(&self, thread_id: &str, target: Value) -> Result<Value> {
+        self.call(
+            "review/start",
+            json!({ "threadId": thread_id, "target": target }),
+        )
+        .await
+    }
+
     pub async fn thread_list(&self, cwd: Option<&str>) -> Result<Vec<Value>> {
         let params = match cwd {
             Some(c) => json!({ "cwd": c }),

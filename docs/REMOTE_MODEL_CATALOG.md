@@ -38,7 +38,7 @@ runtime via `fleetify.dev/api`. New models then ship **without an app release**.
 - **`src/lib/api.ts`** — `DiscoveredModel` carries the richer fields;
   `fetchAgentModels` / `fetchProviderModels` return it.
 - **`session-toolbar.tsx` / `chat-input.tsx`** — discover every CLI agent
-  (incl. the baked claude/codex/gemini/kimi/agy) and every connected HTTP
+  (incl. the baked claude/codex/kimi/agy) and every connected HTTP
   provider, mapping `supports_effort` through instead of hard-coding `false`.
 
 **Resolution chain (per `docs/MODEL_DISCOVERY.md`):** live agent/HTTP discovery
@@ -71,7 +71,6 @@ app tile.
 | `cloudflare-workers-ai` | `cloudflare-workers-ai` | api | **new** | developers.cloudflare.com/workers-ai/models |
 | `claude` | `claude` | cli | **new** (`extends` anthropic) | catalog.rs + Claude Code |
 | `codex` | `codex` | cli | **new** (standalone) | **developers.openai.com/codex/models** |
-| `gemini` | `gemini` | cli | **new** (`extends` google) | Gemini CLI |
 | `kimi` | `kimi` | cli | **new** (`extends` kimi-api) | Kimi CLI |
 | `agy` | `agy` | cli | **new** (single "Auto" passthrough) | app behaviour (print mode) |
 | `github-copilot` | `github-copilot` | cli | **new** (standalone) | docs.github.com/copilot |
@@ -105,7 +104,6 @@ duplicate `catalog_id`s.
   CLI-specific id (filename) + `[fleetify].label`; inherit cost/limit/modalities:
   - `claude/*` → `extends` `anthropic/*` (e.g. CLI `claude-haiku-4-5-20251001`
     extends `anthropic/claude-haiku-4-5`).
-  - `gemini/*` → `extends` `google/*`.
   - `kimi/*` → `extends` `kimi-api/*`.
 - **Standalone where the agent exposes vendor-specific variants:** `codex`
   (`gpt-5.x-codex`), `github-copilot`, `antigravity-sdk` (effort-suffixed

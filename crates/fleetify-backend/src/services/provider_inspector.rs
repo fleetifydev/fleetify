@@ -1,6 +1,6 @@
 //! Faithful subset of `app/services/provider_inspector.py`: Claude skills
 //! scanner over `~/.claude/skills/<name>/SKILL.md` (+ project-local
-//! `<project>/.claude/skills/`). Gemini/Codex skills + hooks + commands
+//! `<project>/.claude/skills/`). Codex skills + hooks + commands
 //! land as follow-up Phase 2/3 increments. Frontmatter parsing is the
 //! minimal subset (name, description) sufficient for the renderer's
 //! Skills tab; full YAML support is not required.
@@ -102,7 +102,7 @@ pub fn list_claude_skills(home: &Path, project: Option<&Path>) -> Vec<Skill> {
 }
 
 /// Per-provider skill directory matrix. Faithful with `_skill_roots`.
-/// `provider` is "claude-code" | "gemini-cli" | "codex-cli"; unknown values yield
+/// `provider` is "claude-code" | "codex-cli"; unknown values yield
 /// an empty matrix.
 fn skill_roots(
     provider: &str,
@@ -115,14 +115,6 @@ fn skill_roots(
             roots.push((home.join(".claude").join("skills"), "user"));
             if let Some(p) = project {
                 roots.push((p.join(".claude").join("skills"), "project"));
-            }
-        }
-        "gemini-cli" => {
-            roots.push((home.join(".gemini").join("skills"), "user"));
-            roots.push((home.join(".agents").join("skills"), "user"));
-            if let Some(p) = project {
-                roots.push((p.join(".gemini").join("skills"), "project"));
-                roots.push((p.join(".agents").join("skills"), "project"));
             }
         }
         "codex-cli" => {
@@ -198,7 +190,7 @@ fn flatten_hooks_block(
                 .get("matcher")
                 .and_then(|x| x.as_str())
                 .map(String::from);
-            // Shape 1: { matcher, hooks: [...] } — Claude/Gemini convention.
+            // Shape 1: { matcher, hooks: [...] } — Claude convention.
             // Shape 2: { matcher, command } directly — older Codex configs.
             let handlers: Vec<&serde_json::Value> =
                 if let Some(arr) = obj.get("hooks").and_then(|x| x.as_array()) {
@@ -330,23 +322,6 @@ pub fn list_claude_hooks(home: &Path, project: Option<&Path>) -> Vec<Hook> {
     all
 }
 
-/// Gemini hooks: `~/.gemini/settings.json` + `<project>/.gemini/settings.json`.
-pub fn list_gemini_hooks(home: &Path, project: Option<&Path>) -> Vec<Hook> {
-    let mut all = scan_settings_hooks(
-        &home.join(".gemini").join("settings.json"),
-        "gemini-cli",
-        "user",
-    );
-    if let Some(p) = project {
-        all.extend(scan_settings_hooks(
-            &p.join(".gemini").join("settings.json"),
-            "gemini-cli",
-            "project",
-        ));
-    }
-    all
-}
-
 /// Codex hooks: `~/.codex/hooks.json` (preferred) or `~/.codex/config.toml`
 /// `[hooks]` (fallback). Same precedence in the project tier.
 pub fn list_codex_hooks(home: &Path, project: Option<&Path>) -> Vec<Hook> {
@@ -370,7 +345,6 @@ pub fn list_codex_hooks(home: &Path, project: Option<&Path>) -> Vec<Hook> {
 pub fn list_hooks_for_provider(provider: &str, home: &Path, project: Option<&Path>) -> Vec<Hook> {
     match provider {
         "claude-code" => list_claude_hooks(home, project),
-        "gemini-cli" => list_gemini_hooks(home, project),
         "codex-cli" => list_codex_hooks(home, project),
         _ => Vec::new(),
     }
@@ -479,79 +453,6 @@ pub fn list_claude_commands(home: &Path, project: Option<&Path>) -> Vec<Command>
     all
 }
 
-/// Walk a Gemini commands directory (TOML files instead of MD).
-/// Subdirectories become namespaces like `/git:commit`. Description
-/// comes from a top-level `description = "…"` TOML key.
-fn scan_toml_commands(root: &Path, provider: &'static str, tier: &'static str) -> Vec<Command> {
-    let mut out = Vec::new();
-    let Ok(rd) = std::fs::read_dir(root) else {
-        return out;
-    };
-    for entry in rd.flatten() {
-        let p = entry.path();
-        if p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("toml") {
-            push_toml_command(&p, provider, tier, None, &mut out);
-        } else if p.is_dir() {
-            let ns = p.file_name().and_then(|s| s.to_str()).map(String::from);
-            if let Ok(sub) = std::fs::read_dir(&p) {
-                for sub_entry in sub.flatten() {
-                    let sp = sub_entry.path();
-                    if sp.is_file() && sp.extension().and_then(|s| s.to_str()) == Some("toml") {
-                        push_toml_command(&sp, provider, tier, ns.clone(), &mut out);
-                    }
-                }
-            }
-        }
-    }
-    out
-}
-
-fn push_toml_command(
-    toml_path: &Path,
-    provider: &'static str,
-    tier: &'static str,
-    namespace: Option<String>,
-    out: &mut Vec<Command>,
-) {
-    let text = std::fs::read_to_string(toml_path).unwrap_or_default();
-    let parsed = toml::from_str::<toml::Value>(&text).ok();
-    let desc = parsed
-        .as_ref()
-        .and_then(|v| v.get("description"))
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let name = toml_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_string();
-    if name.is_empty() {
-        return;
-    }
-    out.push(Command {
-        kind: "command",
-        provider,
-        name,
-        source_tier: tier,
-        path: toml_path.to_string_lossy().into_owned(),
-        namespace,
-        description: desc,
-    });
-}
-
-/// Gemini commands: `~/.gemini/commands/**/*.toml` + project equivalent.
-pub fn list_gemini_commands(home: &Path, project: Option<&Path>) -> Vec<Command> {
-    let mut all = scan_toml_commands(&home.join(".gemini").join("commands"), "gemini-cli", "user");
-    if let Some(p) = project {
-        all.extend(scan_toml_commands(
-            &p.join(".gemini").join("commands"),
-            "gemini-cli",
-            "project",
-        ));
-    }
-    all
-}
-
 /// Codex prompts: `~/.codex/prompts/*.md` (flat — no project tier).
 /// Always namespaced as `/prompts:<name>` so the renderer can group
 /// them under the same "Commands / Prompts" tab as the other tools.
@@ -565,7 +466,7 @@ pub fn list_codex_commands(home: &Path) -> Vec<Command> {
 }
 
 /// Provider-aware command/prompt scanner — claude → md commands,
-/// gemini → toml commands, codex → md prompts (always namespaced).
+/// codex → md prompts (always namespaced).
 pub fn list_commands_for_provider(
     provider: &str,
     home: &Path,
@@ -573,7 +474,6 @@ pub fn list_commands_for_provider(
 ) -> Vec<Command> {
     match provider {
         "claude-code" => list_claude_commands(home, project),
-        "gemini-cli" => list_gemini_commands(home, project),
         "codex-cli" => list_codex_commands(home),
         _ => Vec::new(),
     }
@@ -598,29 +498,14 @@ mod tests {
     }
 
     #[test]
-    fn list_skills_for_provider_covers_gemini_and_codex_roots() {
+    fn list_skills_for_provider_covers_codex_roots() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
 
-        // Gemini: ~/.gemini/skills/g-skill and ~/.agents/skills/agent-skill.
-        let g = home.join(".gemini/skills/g-skill");
+        // Shared cross-tool dir: ~/.agents/skills/agent-skill.
         let a = home.join(".agents/skills/agent-skill");
-        std::fs::create_dir_all(&g).unwrap();
         std::fs::create_dir_all(&a).unwrap();
-        std::fs::write(
-            g.join("SKILL.md"),
-            "---\nname: gemini-named\ndescription: g\n---\n",
-        )
-        .unwrap();
         std::fs::write(a.join("SKILL.md"), "body").unwrap();
-
-        let items = list_skills_for_provider("gemini-cli", &home, None);
-        // Two roots → 2 skills.
-        assert_eq!(items.len(), 2);
-        // Provider field on both rows is "gemini-cli" (matches Python).
-        assert!(items.iter().all(|s| s.provider == "gemini-cli"));
-        assert!(items.iter().any(|s| s.name == "gemini-named"));
-        assert!(items.iter().any(|s| s.name == "agent-skill"));
 
         // Codex: ~/.codex/skills/codex-x. (/etc/codex/skills not
         // writable in test — but list_skills_for_provider still tries
@@ -631,6 +516,7 @@ mod tests {
         let cx = list_skills_for_provider("codex-cli", &home, None);
         assert!(cx.iter().any(|s| s.name == "codex-x"));
         assert!(cx.iter().any(|s| s.name == "agent-skill"));
+        assert!(cx.iter().all(|s| s.provider == "codex-cli"));
     }
 
     #[test]
@@ -685,25 +571,6 @@ mod tests {
     }
 
     #[test]
-    fn list_gemini_hooks_reads_settings_json_same_shape_as_claude() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        std::fs::create_dir_all(home.join(".gemini")).unwrap();
-        std::fs::write(
-            home.join(".gemini/settings.json"),
-            r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"command":"./check.sh","timeout":5}]}]}}"#,
-        )
-        .unwrap();
-        let items = list_gemini_hooks(&home, None);
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].provider, "gemini-cli");
-        assert_eq!(items[0].event, "PreToolUse");
-        assert_eq!(items[0].matcher.as_deref(), Some("Bash"));
-        assert_eq!(items[0].command, "./check.sh");
-        assert_eq!(items[0].config_format, "json");
-    }
-
-    #[test]
     fn list_codex_hooks_prefers_json_over_toml() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
@@ -742,29 +609,6 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].command, "echo done");
         assert_eq!(items[0].config_format, "toml");
-    }
-
-    #[test]
-    fn list_gemini_commands_reads_toml_with_namespaces() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let cmd_root = home.join(".gemini/commands");
-        std::fs::create_dir_all(cmd_root.join("git")).unwrap();
-        std::fs::write(cmd_root.join("ping.toml"), r#"description = "pong""#).unwrap();
-        std::fs::write(
-            cmd_root.join("git/commit.toml"),
-            r#"description = "nice commit""#,
-        )
-        .unwrap();
-        let cmds = list_gemini_commands(&home, None);
-        assert_eq!(cmds.len(), 2);
-        let flat = cmds.iter().find(|c| c.name == "ping").unwrap();
-        assert!(flat.namespace.is_none());
-        assert_eq!(flat.description.as_deref(), Some("pong"));
-        let ns = cmds.iter().find(|c| c.name == "commit").unwrap();
-        assert_eq!(ns.namespace.as_deref(), Some("git"));
-        assert_eq!(ns.description.as_deref(), Some("nice commit"));
-        assert!(cmds.iter().all(|c| c.provider == "gemini-cli"));
     }
 
     #[test]

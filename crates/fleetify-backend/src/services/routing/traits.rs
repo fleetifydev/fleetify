@@ -8,6 +8,9 @@ use thiserror::Error;
 pub enum AgentKind {
     Claude,
     OpenAI,
+    /// Google family. Reached via the `gemini-api` HTTP provider only — the
+    /// gemini-CLI agent was removed, so there is no longer a CLI execution
+    /// path for this family (Auto routes it straight to the Google API).
     Gemini,
     Codex,
     Kimi,
@@ -189,7 +192,7 @@ mod tests {
             conversation_history: None,
             workspace_context: WorkspaceHints::default(),
             user_hint: Some(ComplexityHint::Medium),
-            allowed_agents: vec![AgentKind::Claude, AgentKind::Gemini],
+            allowed_agents: vec![AgentKind::Claude, AgentKind::Codex],
             budget_remaining: Some(1.5),
         };
         let s = serde_json::to_string(&t).unwrap();

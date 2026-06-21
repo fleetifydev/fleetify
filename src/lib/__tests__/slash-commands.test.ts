@@ -10,9 +10,9 @@ describe("/prompts in commandsForContext", () => {
     expect(hits).toHaveLength(1);
     expect(hits[0].intent).toBe("session.prompts");
   });
-  it("is present for claude and gemini sessions", () => {
+  it("is present for claude and codex sessions", () => {
     expect(promptsHits("session-chat", "claude")).toHaveLength(1);
-    expect(promptsHits("session-chat", "gemini-cli")).toHaveLength(1);
+    expect(promptsHits("session-chat", "codex-cli")).toHaveLength(1);
   });
   it("is present in the fleet command center", () => {
     const hits = promptsHits("fleet", null);
@@ -32,7 +32,7 @@ describe("/prompts in commandsForContext", () => {
 
 describe("/context in commandsForContext", () => {
   it("is present in session-chat for every provider", () => {
-    for (const tool of ["claude-code", "codex-cli", "gemini-cli"]) {
+    for (const tool of ["claude-code", "codex-cli"]) {
       expect(commandsForContext("session-chat", tool).map((c) => c.cmd)).toContain("/context");
     }
   });

@@ -21,8 +21,8 @@ function block(over: Partial<SpawnFormBlock> = {}): SpawnFormBlock {
     status: "pending",
     gaps: [{ field: "project_path", reason: "missing", candidates: [] }],
     draft: {
-      title: "gemini-test_a",
-      tool: "gemini-cli",
+      title: "codex-test_a",
+      tool: "codex-cli",
       first_task: "Briefly introduce yourself.",
     },
     ...over,
@@ -34,7 +34,7 @@ describe("SpawnFormCard (folder picker)", () => {
 
   it("shows the agent context and the folder prompt", () => {
     render(<SpawnFormCard block={block()} />);
-    expect(screen.getByText(/gemini-test_a · gemini/)).toBeTruthy();
+    expect(screen.getByText(/codex-test_a · codex/)).toBeTruthy();
     expect(screen.getByText("Pick a folder…")).toBeTruthy();
   });
 
@@ -66,7 +66,7 @@ describe("SpawnFormCard (folder picker)", () => {
     expect(spawnSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({
         project_path: "/home/u/test_a",
-        tool: "gemini-cli",
+        tool: "codex-cli",
         first_task: "Briefly introduce yourself.",
         use_worktree: false,
       }),
@@ -79,7 +79,7 @@ describe("SpawnFormCard (folder picker)", () => {
         block={block({
           status: "created",
           created_session_id: "s-9",
-          draft: { title: "gemini-test_a", project_path: "/home/u/test_a" },
+          draft: { title: "codex-test_a", project_path: "/home/u/test_a" },
           gaps: [],
         })}
       />,

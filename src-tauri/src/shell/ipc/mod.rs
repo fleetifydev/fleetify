@@ -1528,7 +1528,6 @@ const NPM_PROVIDER_PKG: &[(&str, &str)] = &[
     // own spelling. The installed binary is still `claude`.
     ("claude-code", "@anthropic-ai/claude-code"),
     ("codex-cli", "@openai/codex"),
-    ("gemini-cli", "@google/gemini-cli"),
     ("kimi-code", "@moonshot-ai/kimi-code"),
     // OpenCode and GitHub Copilot both ship cross-platform npm packages —
     // `npm install -g` is the documented all-OS install for each.
@@ -2765,7 +2764,7 @@ pub async fn providers_set_connected_bulk(
 /// from the catalog) into `fleet.config.json` — the renderer's
 /// `app-store.openComposer` reads both when seeding a new chat, so
 /// keeping the model paired with the provider here prevents the
-/// classic mismatch (pick Gemini, composer still uses
+/// classic mismatch (pick Codex, composer still uses
 /// `claude-sonnet-4-6`). For CLI agents the catalog ships an empty
 /// `default_models` (models live inside each binary), so we only
 /// write the provider id and let the composer's CLI baseline fill

@@ -63,7 +63,7 @@ async fn reset_stale_session_state(pool: &sqlx::SqlitePool) {
 
 /// One-shot back-fix for Windows `\\?\`-prefixed `project_path` rows
 /// stored before fleet-core's `strip_verbatim_prefix` landed at the
-/// `canonicalize` sites. Without this, gemini-cli's ACP rejects the
+/// `canonicalize` sites. Without this, some ACP agents reject the
 /// session/new with `-32603 EISDIR` because lstat treats `\\?\C:\…`
 /// as a path with `C:` as its leaf component. No-op on non-Windows
 /// targets and on pools that don't have any verbatim-prefixed rows.

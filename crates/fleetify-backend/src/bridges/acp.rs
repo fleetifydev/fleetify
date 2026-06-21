@@ -52,6 +52,12 @@ struct Handlers {
     fs_read: Option<RequestHandler>,
     fs_write: Option<RequestHandler>,
     session_update: Option<NotificationHandler>,
+    /// `session/update` notifications that arrived BEFORE `session_update` was
+    /// set (during cold_start, before the per-turn handler is wired). Replayed
+    /// when `on_session_update` registers, so an ACP agent's initial
+    /// `available_commands_update` (pushed right after `session/new`) isn't
+    /// dropped — without this the agent's slash commands never reach the UI.
+    session_update_pending: Vec<Value>,
     /// Handlers for arbitrary inbound *requests* keyed by method name —
     /// used for agent-specific extension methods (e.g. Cursor's blocking
     /// `cursor/ask_question` / `cursor/create_plan`). Consulted only after
@@ -151,7 +157,20 @@ impl AcpClient {
         self.handlers.lock().await.fs_write = Some(h);
     }
     pub async fn on_session_update(&self, h: NotificationHandler) {
-        self.handlers.lock().await.session_update = Some(h);
+        // Register the handler AND replay any `session/update` notifications
+        // buffered before it was set (e.g. the agent's `available_commands_update`
+        // pushed during cold_start). Otherwise that initial advertisement is lost.
+        let pending: Vec<Value> = {
+            let mut g = self.handlers.lock().await;
+            g.session_update = Some(h.clone());
+            std::mem::take(&mut g.session_update_pending)
+        };
+        for params in pending {
+            let h = h.clone();
+            tokio::spawn(async move {
+                h(params).await;
+            });
+        }
     }
     /// Register a handler for an arbitrary inbound request method (e.g. an
     /// agent extension like `cursor/ask_question`). The handler's `Ok` value
@@ -485,13 +504,18 @@ async fn handle_inbound_notification(method: String, msg: Value, handlers: Arc<M
         .cloned()
         .unwrap_or(Value::Object(Default::default()));
     if method == "session/update" {
-        let h = handlers.lock().await.session_update.clone();
-        if let Some(h) = h {
+        let mut g = handlers.lock().await;
+        if let Some(h) = g.session_update.clone() {
+            drop(g);
             tokio::spawn(async move {
                 h(params).await;
             });
-            return;
+        } else if g.session_update_pending.len() < 128 {
+            // No handler yet (cold_start) — buffer so `on_session_update` can
+            // replay it, instead of dropping the initial advertisement.
+            g.session_update_pending.push(params);
         }
+        return;
     }
     // Agent-specific extension notifications (e.g. Cursor's
     // `cursor/update_todos` / `cursor/task` / `cursor/generate_image`).
@@ -546,6 +570,56 @@ mod tests {
         let r = client.initialize(json!({})).await.unwrap();
         assert_eq!(r["protocolVersion"], 1);
         let _ = agent.await;
+        client.shutdown().await;
+    }
+
+    /// A `session/update` that arrives BEFORE `on_session_update` is registered
+    /// (the cold_start race: an agent pushes `available_commands_update` right
+    /// after `session/new`, before the per-turn handler is wired) must be
+    /// buffered and replayed — not dropped — so the agent's slash commands reach
+    /// the UI.
+    #[tokio::test]
+    async fn session_update_before_handler_is_buffered_and_replayed() {
+        let (_client_to_agent_r, client_to_agent_w) = duplex(4096);
+        let (mut agent_to_client_w, agent_to_client_r) = duplex(4096);
+        let client = Arc::new(AcpClient::new());
+        client
+            .attach(agent_to_client_r, client_to_agent_w)
+            .await
+            .unwrap();
+
+        // Agent advertises commands while NO session_update handler is set yet.
+        let notif = json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": { "update": {
+                "sessionUpdate": "available_commands_update",
+                "availableCommands": [{ "name": "review" }]
+            } }
+        });
+        let mut bytes = serde_json::to_vec(&notif).unwrap();
+        bytes.push(b'\n');
+        agent_to_client_w.write_all(&bytes).await.unwrap();
+        agent_to_client_w.flush().await.unwrap();
+        // Let the read loop receive + buffer it.
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+        // Registering the handler must replay the buffered notification.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Value>(4);
+        client
+            .on_session_update(Arc::new(move |params: Value| {
+                let tx = tx.clone();
+                Box::pin(async move {
+                    let _ = tx.send(params).await;
+                })
+            }))
+            .await;
+
+        let got = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("handler should be replayed")
+            .expect("params present");
+        assert_eq!(got["update"]["sessionUpdate"], "available_commands_update");
         client.shutdown().await;
     }
 

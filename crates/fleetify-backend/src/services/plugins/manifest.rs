@@ -263,11 +263,11 @@ mod tests {
     fn discover_provider_dirs_finds_existing_dot_provider_folders() {
         let tmp = tempdir().unwrap();
         std::fs::create_dir(tmp.path().join(".claude")).unwrap();
-        std::fs::create_dir(tmp.path().join(".gemini")).unwrap();
+        std::fs::create_dir(tmp.path().join(".kimi")).unwrap();
         // No .codex — not all plugins target every provider.
         let dirs = discover_provider_dirs(tmp.path());
         assert_eq!(dirs.len(), 2);
         assert!(dirs.iter().any(|p| p.ends_with(".claude")));
-        assert!(dirs.iter().any(|p| p.ends_with(".gemini")));
+        assert!(dirs.iter().any(|p| p.ends_with(".kimi")));
     }
 }

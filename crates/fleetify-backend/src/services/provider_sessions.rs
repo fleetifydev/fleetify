@@ -1,9 +1,8 @@
-//! Faithful ports of `sessions.py::_list_gemini_sessions_for_path` and
-//! `_list_codex_sessions_for_path`. Same row shape as the Claude
-//! variant in [`crate::services::claude_history`] so the renderer's
-//! resume picker treats all three uniformly.
+//! Faithful port of `sessions.py::_list_codex_sessions_for_path`. Same
+//! row shape as the Claude variant in [`crate::services::claude_history`]
+//! so the renderer's resume picker treats both uniformly.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -21,66 +20,6 @@ fn home() -> PathBuf {
             .or_else(|_| std::env::var("HOME"))
             .unwrap_or_else(|_| ".".to_string()),
     )
-}
-
-/// Match Gemini's project-encoding (separators → `-`, leading dash
-/// stripped). Faithful with `_gemini_project_hash`.
-pub fn gemini_project_hash(path: &str) -> String {
-    let normalized = path
-        .trim_end_matches('/')
-        .trim_end_matches('\\')
-        .to_string();
-    let dashed = normalized.replace(['\\', '/'], "-");
-    dashed.trim_start_matches('-').to_string()
-}
-
-/// List Gemini ACP session checkpoints saved for `project_path`. Each
-/// entry under `~/.gemini/tmp/<hash>/checkpoints/` is a session — file
-/// (json) or directory (some Gemini variants persist as a tree of
-/// segments). Returns rows newest-first.
-pub fn list_gemini_sessions(project_path: &str) -> Vec<SessionPreview> {
-    let hash_str = gemini_project_hash(project_path);
-    let checkpoint_dir = home()
-        .join(".gemini")
-        .join("tmp")
-        .join(hash_str)
-        .join("checkpoints");
-    if !checkpoint_dir.is_dir() {
-        return Vec::new();
-    }
-    let Ok(rd) = std::fs::read_dir(&checkpoint_dir) else {
-        return Vec::new();
-    };
-    let mut out: Vec<SessionPreview> = Vec::new();
-    for entry in rd.flatten() {
-        let p = entry.path();
-        let session_id = if p.is_file() {
-            p.file_stem().and_then(|s| s.to_str()).map(String::from)
-        } else if p.is_dir() {
-            p.file_name().and_then(|s| s.to_str()).map(String::from)
-        } else {
-            None
-        };
-        let Some(session_id) = session_id else {
-            continue;
-        };
-        let mtime = match entry.metadata().and_then(|m| m.modified()) {
-            Ok(t) => chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339(),
-            Err(_) => chrono::Utc::now().to_rfc3339(),
-        };
-        let summary = if p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("json") {
-            preview_from_first_user(&p).unwrap_or_else(|| "No preview".to_string())
-        } else {
-            "No preview".to_string()
-        };
-        out.push(SessionPreview {
-            session_id,
-            summary,
-            updated_at: mtime,
-        });
-    }
-    out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    out
 }
 
 /// List Codex thread checkpoints persisted for `project_path`. Files
@@ -136,15 +75,9 @@ pub fn list_codex_sessions(project_path: &str) -> Vec<SessionPreview> {
     out
 }
 
-/// Both Gemini and Codex persist a JSON file with a top-level
+/// Codex persists a JSON file with a top-level
 /// `messages: [{role, content}]` array. Pull the first non-empty user
 /// prompt as the preview (capped at 120 chars).
-fn preview_from_first_user(json_path: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(json_path).ok()?;
-    let data: Value = serde_json::from_str(&text).ok()?;
-    preview_from_messages(&data)
-}
-
 fn preview_from_messages(data: &Value) -> Option<String> {
     let messages = data.get("messages")?.as_array()?;
     // Same "first 5 messages" budget as Python — the first user
@@ -185,16 +118,6 @@ fn preview_from_messages(data: &Value) -> Option<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn gemini_project_hash_strips_separators_and_leading_dash() {
-        assert_eq!(gemini_project_hash("/home/loseu/proj"), "home-loseu-proj");
-        assert_eq!(
-            gemini_project_hash(r"C:\Users\loseu\proj"),
-            "C:-Users-loseu-proj",
-        );
-        assert_eq!(gemini_project_hash("/proj/"), "proj");
-    }
-
     fn install_fake_home() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
         let g = crate::test_support::home_lock()
             .lock()
@@ -203,55 +126,6 @@ mod tests {
         std::env::set_var("HOME", tmp.path());
         std::env::set_var("USERPROFILE", tmp.path());
         (g, tmp)
-    }
-
-    #[test]
-    fn list_gemini_sessions_empty_when_root_missing() {
-        let (_g, _tmp) = install_fake_home();
-        assert!(list_gemini_sessions("/x/y").is_empty());
-    }
-
-    #[test]
-    fn list_gemini_sessions_returns_files_with_preview_and_newest_first() {
-        let (_g, tmp) = install_fake_home();
-        let hash = gemini_project_hash("/work/proj");
-        let dir = tmp
-            .path()
-            .join(".gemini")
-            .join("tmp")
-            .join(hash)
-            .join("checkpoints");
-        std::fs::create_dir_all(&dir).unwrap();
-
-        // One JSON checkpoint with a user prompt → returns preview.
-        let older = dir.join("aaa.json");
-        std::fs::write(
-            &older,
-            r#"{"messages":[{"role":"user","content":"older prompt"}]}"#,
-        )
-        .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(25));
-        let newer = dir.join("bbb.json");
-        std::fs::write(
-            &newer,
-            r#"{"messages":[{"role":"assistant","content":"hi"},{"role":"user","content":[{"text":"newer prompt"}]}]}"#,
-        )
-        .unwrap();
-
-        let rows = list_gemini_sessions("/work/proj");
-        assert_eq!(rows.len(), 2);
-        // Both rows present.
-        let ids: std::collections::HashSet<&str> =
-            rows.iter().map(|r| r.session_id.as_str()).collect();
-        assert!(ids.contains("aaa"));
-        assert!(ids.contains("bbb"));
-        for r in &rows {
-            match r.session_id.as_str() {
-                "aaa" => assert_eq!(r.summary, "older prompt"),
-                "bbb" => assert_eq!(r.summary, "newer prompt"),
-                _ => unreachable!(),
-            }
-        }
     }
 
     #[test]

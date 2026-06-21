@@ -210,7 +210,7 @@ describe("sandboxOptionsFor", () => {
     approvals: ["untrusted", "on-request", "never"],
     sandboxes: ["read-only", "workspace-write", "danger-full-access"],
   });
-  const geminiTile = makeTile("gemini-cli", {
+  const cursorTile = makeTile("cursor-cli", {
     kind: "modes",
     modes: [{ id: "default", label: "Ask permissions" }],
     sandbox: ["off", "on"],
@@ -226,8 +226,8 @@ describe("sandboxOptionsFor", () => {
     expect(opts).toEqual(["read-only", "workspace-write", "danger-full-access"]);
   });
 
-  it("returns sandbox options for a modes provider with a sandbox toggle (gemini)", () => {
-    const opts = sandboxOptionsFor([geminiTile], "gemini-cli");
+  it("returns sandbox options for a modes provider with a sandbox toggle (cursor)", () => {
+    const opts = sandboxOptionsFor([cursorTile], "cursor-cli");
     expect(opts).toEqual(["off", "on"]);
   });
 

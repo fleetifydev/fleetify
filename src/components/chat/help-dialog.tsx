@@ -1,9 +1,13 @@
 /**
  * Help dialog — the `/help` command surface. A read-only reference split into
- * three tabs at the top — Keyboard Shortcuts, Fleet Commands, and Session
- * Commands (grouped by provider, all tools). The active tab's content scrolls
- * below. Styled to match the app's other composer modals (see prompts-picker).
- * Pure-presentational: all content comes from imported data.
+ * three tabs — Keyboard Shortcuts, Fleet Commands, and Session Commands. The
+ * Session tab shows the commands that ACTUALLY work for the active agent: a
+ * universal group (Fleetify handles these for every provider) plus, when the
+ * active session's agent advertises native commands over ACP
+ * (`available_commands_update` — Grok / OpenCode / Hermes / Cursor / Copilot),
+ * a live group of that agent's real, executable command set. Agents that
+ * advertise nothing (Claude / Codex / Antigravity drive non-interactively, so
+ * their TUI slash commands never reach them) show only the universal group.
  */
 import { useEffect, useState } from "react";
 import { X } from "lucide-react";
@@ -16,23 +20,12 @@ import {
 import {
   FLEET_CMDS,
   SESSION_CMDS_BASE,
-  SESSION_CMDS_BY_TOOL,
   SESSION_CMDS_COMMON,
-  type SlashCmdDef,
 } from "@/lib/slash-commands";
-import { ProviderLogo } from "@/components/ui/provider-logo";
+import { ProviderLogo, providerName } from "@/components/ui/provider-logo";
+import { useChatStore } from "@/stores/chat-store";
 
 const SHORTCUT_ORDER: ShortcutGroup[] = ["Navigation", "Layout & panels", "Git & PRs", "Agents"];
-
-// Session commands grouped by provider. `tool` is the ProviderLogo id whose
-// brand mark renders left of the header; "Common" is provider-agnostic, so it
-// carries none.
-const SESSION_GROUPS: { label: string; tool?: string; cmds: SlashCmdDef[] }[] = [
-  { label: "Common", cmds: [...SESSION_CMDS_BASE, ...SESSION_CMDS_COMMON] },
-  { label: "Claude Code", tool: "claude-code", cmds: SESSION_CMDS_BY_TOOL["claude-code"] },
-  { label: "Codex CLI", tool: "codex-cli", cmds: SESSION_CMDS_BY_TOOL["codex-cli"] },
-  { label: "Gemini CLI", tool: "gemini-cli", cmds: SESSION_CMDS_BY_TOOL["gemini-cli"] },
-];
 
 type TabKey = "shortcuts" | "fleet" | "session";
 const TABS: { key: TabKey; label: string }[] = [
@@ -41,8 +34,22 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "session", label: "Session Commands" },
 ];
 
-export function HelpDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function HelpDialog({
+  open,
+  onClose,
+  tool,
+  sessionId,
+}: {
+  open: boolean;
+  onClose: () => void;
+  tool?: string | null;
+  sessionId?: string | null;
+}) {
   const [tab, setTab] = useState<TabKey>("shortcuts");
+  // The active session's LIVE provider-advertised commands. The store is only
+  // populated for agents that push `available_commands_update` over ACP, so this
+  // is empty for Claude/Codex/Antigravity (and in the Fleet composer).
+  const liveCmds = useChatStore((s) => (sessionId ? s.dynamicCommands[sessionId] : undefined));
 
   // Reset to the first tab whenever the dialog (re)opens. The component stays
   // mounted (only `open` toggles), so without this a reopen would keep the last
@@ -67,6 +74,26 @@ export function HelpDialog({ open, onClose }: { open: boolean; onClose: () => vo
 
   if (!open) return null;
   const mac = isMac();
+
+  // The universal group (Fleetify intercepts these for EVERY agent) + the active
+  // agent's live ACP-advertised commands. Non-working TUI-only commands are
+  // intentionally not listed — an agent's real command set is exactly what it
+  // advertises over the wire.
+  const sessionGroups: { label: string; tool?: string; rows: { cmd: string; desc: string }[] }[] = [
+    {
+      label: "Works in every agent",
+      rows: [...SESSION_CMDS_BASE, ...SESSION_CMDS_COMMON].map((c) => ({ cmd: c.cmd, desc: c.desc })),
+    },
+    ...(tool && liveCmds && liveCmds.length > 0
+      ? [
+          {
+            label: `${providerName(tool)} — this session`,
+            tool,
+            rows: liveCmds.map((c) => ({ cmd: `/${c.name}`, desc: c.description })),
+          },
+        ]
+      : []),
+  ];
 
   return (
     <div onClick={onClose} style={overlay} role="dialog" aria-modal="true" aria-label="Help">
@@ -115,11 +142,11 @@ export function HelpDialog({ open, onClose }: { open: boolean; onClose: () => vo
             FLEET_CMDS.map((c) => <CmdRow key={c.intent} cmd={c.cmd} desc={c.desc} />)}
 
           {tab === "session" &&
-            SESSION_GROUPS.map((g) =>
-              g.cmds.length === 0 ? null : (
+            sessionGroups.map((g) =>
+              g.rows.length === 0 ? null : (
                 <div key={g.label} style={{ marginBottom: 10 }}>
                   <SubHeader text={g.label} tool={g.tool} />
-                  {g.cmds.map((c) => <CmdRow key={`${g.label}:${c.cmd}`} cmd={c.cmd} desc={c.desc} />)}
+                  {g.rows.map((c) => <CmdRow key={`${g.label}:${c.cmd}`} cmd={c.cmd} desc={c.desc} />)}
                 </div>
               ),
             )}

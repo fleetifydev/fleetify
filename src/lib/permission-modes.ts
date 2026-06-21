@@ -48,11 +48,11 @@ export function resolveSemanticMode(
 /** Outcome of a `/plan` or `/yolo` command — apply a patch, or inform the user
  *  the mode isn't available. */
 export type ModeCommandOutcome =
-  | { kind: "apply"; patch: ModePatch; title: string; message: string; tone: "info" | "warn" }
+  | { kind: "apply"; patch: ModePatch; mode: string; note: string; tone: "info" | "warn" }
   | { kind: "info"; title: string; message: string; tone: "warn" };
 
 /** Tools whose permission change only takes effect on the next process spawn. */
-const SPAWN_HINT_TOOLS = new Set(["codex-cli", "gemini-cli"]);
+const SPAWN_HINT_TOOLS = new Set(["codex-cli"]);
 
 /**
  * Decide what a `/plan` or `/yolo` command should do for the active provider.
@@ -75,15 +75,13 @@ export function decideModeCommand(
   const spawnHint = tool && SPAWN_HINT_TOOLS.has(tool)
     ? " Applies on the next spawn — restart the session to apply now."
     : "";
-  const label = semantic === "plan" ? "Plan mode" : "YOLO mode";
-  const blurb = semantic === "plan"
-    ? "The agent plans first and won't make changes until you approve."
-    : "Tool approvals are bypassed — the agent runs without asking.";
+  // The notice renders "Session mode switched to <b>{mode}</b> mode." as a plain
+  // line (ModeNoticeCard); `note` is the optional respawn hint appended after.
   return {
     kind: "apply",
     patch,
-    title: label,
-    message: `Session mode switched to ${label}. ${blurb}${spawnHint}`,
+    mode: semantic === "plan" ? "Plan" : "YOLO",
+    note: spawnHint,
     tone: semantic === "plan" ? "info" : "warn",
   };
 }

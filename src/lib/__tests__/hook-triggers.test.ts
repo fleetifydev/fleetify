@@ -23,7 +23,7 @@ describe("hook-triggers", () => {
   it("triggerDisplay shows native name when unambiguous", () => {
     const pre = HOOK_TRIGGERS.find((t) => t.id === "pre_tool_use")!;
     expect(triggerDisplay(pre, ["claude-code"])).toBe("PreToolUse");
-    expect(triggerDisplay(pre, ["claude-code", "gemini-cli"])).toContain("Before tool use");
+    expect(triggerDisplay(pre, ["claude-code", "cursor-cli"])).toContain("Before tool use");
   });
 
   it("defaultCommandFor maps extensions to interpreters", () => {

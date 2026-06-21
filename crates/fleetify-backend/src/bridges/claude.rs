@@ -852,10 +852,10 @@ impl ClaudeBridge {
         } else {
             self.project_path.clone()
         };
-        // Strip Windows verbatim (`\\?\`) prefix defensively — same
-        // rationale as bridges/gemini.rs (claude-code on Windows is
-        // more tolerant than gemini-cli but PATH-resolution and
-        // CLAUDE.md auto-discovery can still misbehave with `\\?\`).
+        // Strip Windows verbatim (`\\?\`) prefix defensively — several
+        // CLI agents choke on it (claude-code on Windows is more tolerant
+        // than most, but PATH-resolution and CLAUDE.md auto-discovery can
+        // still misbehave with `\\?\`).
         let cwd = fleetify_core::strip_verbatim_prefix(std::path::Path::new(&cwd_raw));
 
         let mut command = tokio::process::Command::new(&cmd[0]);

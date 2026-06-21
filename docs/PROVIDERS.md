@@ -6,7 +6,7 @@ is driven by the single static catalog in
 [`PROVIDER_ARCHITECTURE.md`](PROVIDER_ARCHITECTURE.md) for *how* it all connects,
 and [`AGENTS.md`](AGENTS.md) for the CLI-agent details.
 
-The catalog currently ships **22 providers**: **11 CLI agents**, **10 cloud HTTP
+The catalog currently ships **21 providers**: **10 CLI agents**, **10 cloud HTTP
 APIs**, and **1 local HTTP** (Ollama).
 
 ---
@@ -21,7 +21,6 @@ holds the credential. Surface in Settings → Agents via `/api/agents/scan`.
 |---|---|---|---|---|
 | Claude Code | `claude-code` | `claude` | Anthropic's agentic CLI; Fleetify's default agent. | `npm i -g @anthropic-ai/claude-code` · `claude login` |
 | Codex CLI | `codex-cli` | `codex` | OpenAI's coding agent (ChatGPT/Codex models). | `npm i -g @openai/codex` · `codex login` |
-| Gemini CLI | `gemini-cli` | `gemini` | Google's terminal agent (Gemini models, OAuth). | `npm i -g @google/gemini-cli` · `gemini` |
 | Kimi Code CLI | `kimi-code` | `kimi` | Moonshot's coding agent. | `npm i -g @moonshot-ai/kimi-code` · `kimi login` |
 | OpenCode | `opencode` | `opencode` | Open-source multi-model agent; free `opencode/*` models work with no key. **ACP.** | `npm i -g opencode-ai` · `opencode auth login` |
 | Cursor CLI | `cursor-cli` | `cursor-agent` | Cursor's terminal agent. **ACP.** | shell installer · `cursor-agent login` |

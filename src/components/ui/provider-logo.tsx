@@ -408,7 +408,6 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
     case "anthropic":  return <ImgIcon src={claudeIcon} size={size} label="Claude Code" />;
     case "codex-cli":  return <ThemedImgIcon light={codexLightIcon} dark={codexDarkIcon} size={size} label="Codex" />;
     case "cursor-cli": return <CursorLogo size={size} />;
-    case "gemini-cli": return <ImgIcon src={geminiIcon} size={size} label="Gemini" />;
     case "ollama":     return <MaskIcon src={ollamaIcon} size={size} label="Ollama" />;
     case "cloudflare-workers-ai": return <ImgIcon src={cloudflareIcon} size={size} label="Cloudflare Workers AI" />;
     case "kimi-code":  return <ImgIcon src={kimiIcon} size={size} label="Kimi" />;
@@ -445,7 +444,7 @@ export function ProviderLogo({ tool, size = 18 }: { tool: string; size?: number 
 
 export function providerName(tool: string): string {
   const names: Record<string, string> = {
-    "claude-code": "Claude Code", "codex-cli": "Codex", "cursor-cli": "Cursor", "gemini-cli": "Gemini CLI",
+    "claude-code": "Claude Code", "codex-cli": "Codex", "cursor-cli": "Cursor",
     "grok-build": "Grok Build",
     ollama: "Ollama", "kimi-code": "Kimi Code", "antigravity-cli": "Antigravity CLI",
     "antigravity-sdk": "Antigravity SDK",

@@ -24,7 +24,6 @@ each one to the renderer over WebSocket. Every concrete bridge is a variant of
 | Variant | Provider(s) | Transport family |
 |---|---|---|
 | `Claude` | claude | subprocess `claude --output-format stream-json` |
-| `Gemini` | gemini | **ACP** (`gemini --acp`) |
 | `Codex` | codex | `codex app-server` (JSON-RPC over stdio) |
 | `OpenCode` | opencode | **ACP** (`opencode acp`) |
 | `Cursor` | cursor | **ACP** (`cursor-agent acp`) + `cursor/*` extensions |

@@ -47,11 +47,6 @@ const CLAUDE_MODELS: ModelOption[] = [
   { id: "claude-sonnet-4-6",         label: "Sonnet 4.6", ctx: "200K" },
   { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5",  ctx: "200K" },
 ];
-const GEMINI_MODELS: ModelOption[] = [
-  { id: "gemini-3.1-pro-preview",        label: "3.1 Pro",  ctx: "1M" },
-  { id: "gemini-3-flash-preview",        label: "3 Flash",  ctx: "1M" },
-  { id: "gemini-3.1-flash-lite-preview", label: "3.1 Lite", ctx: "1M" },
-];
 // Codex (gpt-5.x) — keep parity with the New Agent dialog options.
 const CODEX_MODELS: ModelOption[] = [
   { id: "gpt-5.2", label: "GPT-5.2", ctx: "200K" },
@@ -85,7 +80,6 @@ const OPENAI_MODELS: ModelOption[] = [
 ];
 
 function modelsFor(tool: string | null | undefined): ModelOption[] {
-  if (tool === "gemini-cli") return GEMINI_MODELS;
   if (tool === "codex-cli")  return CODEX_MODELS;
   if (tool === "antigravity-cli")    return AGY_MODELS;
   if (tool === "antigravity-sdk") return AGY_SDK_MODELS;
@@ -892,7 +886,7 @@ interface ChatInputProps {
    *  branch (fleet/<slug>-<id>) instead of the source repo's HEAD. */
   worktreePath?: string | null;
   branch?: string | null;
-  /** Provider/tool of the current agent ("claude-code" | "gemini-cli" | ...). Drives the model dropdown. */
+  /** Provider/tool of the current agent ("claude-code" | "codex-cli" | ...). Drives the model dropdown. */
   tool?: string | null;
   /** Session ID — used to scope plugin slash commands. Optional (no plugin commands when absent). */
   sessionId?: string | null;
@@ -1769,8 +1763,8 @@ export function ChatInput({
       }
       apiUpdateSession(sessionId, { permission_mode: arg })
         .then(() => {
-          const respawnHint = (tool === "codex-cli" || tool === "gemini-cli")
-            ? " Codex/Gemini pick this up on the next spawn — stop and restart the session to apply now."
+          const respawnHint = tool === "codex-cli"
+            ? " Codex picks this up on the next spawn — stop and restart the session to apply now."
             : "";
           pushInfo("Permissions updated", `Mode set to ${arg}.${respawnHint}`);
           // mirror to local store so the bottom-left picker reflects it
@@ -1794,7 +1788,9 @@ export function ChatInput({
       }
       registerConfigPatch(sessionId, apiUpdateSession(sessionId, outcome.patch));
       useAppStore.getState().updateSession?.(sessionId, outcome.patch);
-      pushInfo(outcome.title, outcome.message, outcome.tone);
+      // Plain inline confirmation (not a boxed card): "✓ Session mode switched
+      // to <b>Plan</b> mode." — see ModeNoticeCard.
+      pushCard("mode_notice", { mode: outcome.mode, note: outcome.note });
       return true;
     }
 
@@ -2468,7 +2464,7 @@ export function ChatInput({
           onPick={(p) => { setPromptsOpen(false); onSend(p.body); }}
         />
 
-        <HelpDialog open={helpOpen} onClose={() => setHelpOpen(false)} />
+        <HelpDialog open={helpOpen} onClose={() => setHelpOpen(false)} tool={tool} sessionId={sessionId} />
 
         {slotAbove}
 

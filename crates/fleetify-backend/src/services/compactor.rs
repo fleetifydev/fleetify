@@ -593,15 +593,15 @@ mod tests {
             compact_at: "2026-06-14T00:00:00Z".to_string(),
             summary_message_id: "row-1".to_string(),
         };
-        let v = compaction_done_event("s1", "gemini-cli", Some("gemini-2.5-pro"), "manual", &r);
+        let v = compaction_done_event("s1", "codex-cli", Some("gpt-5.2"), "manual", &r);
         assert_eq!(v["type"], "compaction_done");
         assert_eq!(v["session_id"], "s1");
-        assert_eq!(v["provider"], "gemini-cli");
+        assert_eq!(v["provider"], "codex-cli");
         assert_eq!(v["pre_chars"], 4200);
         assert_eq!(v["post_chars"], 1);
         assert_eq!(v["pre_message_count"], 8);
         assert_eq!(v["compact_at"], "2026-06-14T00:00:00Z");
-        assert_eq!(v["model"], "gemini-2.5-pro");
+        assert_eq!(v["model"], "gpt-5.2");
         assert_eq!(v["trigger"], "manual");
         assert_eq!(v["summary"], "S");
         assert_eq!(v["summary_message_id"], "row-1");

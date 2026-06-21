@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 pub const PROTOCOL_VERSION: u32 = 1;
 
 /// `std::fs::canonicalize` returns Windows verbatim-prefixed paths
-/// (`\\?\C:\…`). Several downstream tools (the Gemini ACP server, git,
+/// (`\\?\C:\…`). Several downstream tools (some ACP CLI agents, git,
 /// the claude CLI on some node versions) treat these as malformed and
-/// return cryptic errors — verified for gemini-cli 0.42.0, which fails
+/// return cryptic errors — e.g. an ACP server that fails
 /// `session/new` with `-32603 Internal error / EISDIR: illegal
 /// operation on a directory, lstat 'C:'` when handed a `\\?\` path.
 /// This helper strips that prefix when it's the only thing making the

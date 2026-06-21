@@ -2,7 +2,7 @@
 //! `git:generatePRSummary`, and `git:reviewDiff` handlers.
 //!
 //! Each spawns the session's CLI in one-shot mode (`claude --print`,
-//! `codex exec --quiet`, `gemini --prompt-stdin`) with the prompt on
+//! `codex exec --quiet`) with the prompt on
 //! stdin and captures the stdout. No persistent session, no bridge —
 //! these are renderer-driven one-shots used by the Quick Commit and
 //! Create PR pipelines (and pre-PR Review dialog).
@@ -23,12 +23,10 @@ use crate::shell::git;
 // `@anthropic-ai/claude-code` npm package installs on PATH.
 const CLAUDE: (&str, &[&str]) = ("claude", &["--print"]);
 const CODEX: (&str, &[&str]) = ("codex", &["exec", "--quiet"]);
-const GEMINI: (&str, &[&str]) = ("gemini", &["--prompt-stdin"]);
 
 fn cli_for(tool: Option<&str>) -> (&'static str, &'static [&'static str]) {
     match tool.unwrap_or("claude-code") {
         "codex-cli" => CODEX,
-        "gemini-cli" => GEMINI,
         _ => CLAUDE, // unknown → claude (parity with the Electron fallback)
     }
 }
@@ -38,7 +36,7 @@ fn cli_for(tool: Option<&str>) -> (&'static str, &'static [&'static str]) {
 /// then the others. We skip the originally-requested tool because the
 /// caller already discovered it's missing.
 fn cli_fallback_chain(skip: &str) -> Vec<(&'static str, &'static [&'static str])> {
-    [CLAUDE, CODEX, GEMINI]
+    [CLAUDE, CODEX]
         .into_iter()
         .filter(|(bin, _)| *bin != skip)
         .collect()
@@ -63,7 +61,7 @@ async fn binary_on_path(bin: &str) -> bool {
 /// If the requested tool's binary isn't on PATH, transparently falls
 /// back through the remaining CLIs in `cli_fallback_chain` order so a
 /// user with only `claude` installed still gets a working AI summary
-/// when their session was created with `tool: "gemini-cli"`.
+/// when their session was created with `tool: "codex-cli"`.
 async fn run_session_cli(
     folder: &str,
     tool: Option<&str>,
@@ -89,7 +87,7 @@ async fn run_session_cli(
             false,
             bin.to_string(),
             String::new(),
-            format!("{bin} not on PATH — install claude/codex/gemini CLI to enable AI summaries"),
+            format!("{bin} not on PATH — install claude/codex CLI to enable AI summaries"),
         );
     }
     spawn_session_cli(folder, bin, args, prompt, timeout).await
@@ -689,7 +687,6 @@ mod tests {
     fn cli_for_picks_per_tool() {
         assert_eq!(cli_for(Some("claude-code")).0, "claude");
         assert_eq!(cli_for(Some("codex-cli")).0, "codex");
-        assert_eq!(cli_for(Some("gemini-cli")).0, "gemini");
         // Unknown → claude (parity with Electron fallback).
         assert_eq!(cli_for(Some("does-not-exist")).0, "claude");
         assert_eq!(cli_for(None).0, "claude");

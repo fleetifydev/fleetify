@@ -167,7 +167,23 @@ pub struct CodexBridge {
     /// places that haven't migrated yet).
     pub permission_handler: Option<super::permission::PermissionHandler>,
     aborted: Arc<AtomicBool>,
+    /// Advertise codex's method-wired slash commands only once per bridge
+    /// (codex's app-server, unlike the ACP agents, never pushes one itself).
+    slash_advertised: Arc<AtomicBool>,
     state: Arc<Mutex<Option<State>>>,
+}
+
+/// Codex's TUI `/review` has no prompt-text equivalent over the app-server, but
+/// it maps to the `review/start` method. Recognise a bare `/review` and return
+/// its `ReviewTarget` — the uncommitted working tree, the TUI's default,
+/// `{ "type": "uncommittedChanges" }` (verified against a live app-server). Any
+/// other message returns None so normal prompts pass through to `turn/start`.
+fn codex_review_target(msg: &str) -> Option<Value> {
+    if msg.trim() == "/review" {
+        Some(json!({ "type": "uncommittedChanges" }))
+    } else {
+        None
+    }
 }
 
 /// Prepend a system prompt (staff dispatch protocol, or a template's system
@@ -203,6 +219,7 @@ impl CodexBridge {
             system_prompt: None,
             permission_handler: None,
             aborted: Arc::new(AtomicBool::new(false)),
+            slash_advertised: Arc::new(AtomicBool::new(false)),
             state: Arc::new(Mutex::new(None)),
         }
     }
@@ -422,6 +439,21 @@ impl CodexBridge {
         self.aborted.store(false, Ordering::SeqCst);
         let (tx, rx) = mpsc::channel::<BridgeEvent>(64);
         let bridge_tx = tx.clone();
+
+        // Advertise codex's method-wired slash commands ONCE so the composer +
+        // /help surface them. Codex's app-server doesn't push
+        // `available_commands_update` like the ACP agents, so we synthesize the
+        // set we route to app-server methods (today: `/review` → `review/start`).
+        if !self.slash_advertised.swap(true, Ordering::SeqCst) {
+            let _ = bridge_tx
+                .send(BridgeEvent::SlashCommands {
+                    commands: json!([{
+                        "name": "review",
+                        "description": "Review your uncommitted changes"
+                    }]),
+                })
+                .await;
+        }
 
         // model_override is not honoured at runtime for the Codex CLI
         // bridge: model is configured via TOML at app-server startup.
@@ -702,8 +734,15 @@ impl CodexBridge {
 
             // Send the prompt as a single text input item.
             tracing::info!(target: "codex", session_id = %session_id, "codex: turn/start START");
-            let input_items = json!([{ "type": "text", "text": compose_input_text(sys_prompt.as_deref(), &msg_owned) }]);
-            let turn_res = client.turn_start(&thread_id, input_items, None).await;
+            // `/review` routes to the app-server `review/start` method (it streams
+            // a turn just like `turn/start`); everything else is a normal turn.
+            let turn_res = if let Some(target) = codex_review_target(&msg_owned) {
+                tracing::info!(target: "codex", session_id = %session_id, "codex: /review → review/start");
+                client.review_start(&thread_id, target).await
+            } else {
+                let input_items = json!([{ "type": "text", "text": compose_input_text(sys_prompt.as_deref(), &msg_owned) }]);
+                client.turn_start(&thread_id, input_items, None).await
+            };
             tracing::info!(target: "codex", session_id = %session_id, turn_start_ok = turn_res.is_ok(), "codex: turn/start returned — waiting for turn/completed");
 
             // Wait for turn/completed, abort, or a 90s ceiling. The old
@@ -801,6 +840,7 @@ impl CodexBridge {
                 agent_template,
                 system_prompt,
                 aborted: Arc::new(AtomicBool::new(false)),
+                slash_advertised: Arc::new(AtomicBool::new(false)),
                 state,
                 permission_handler,
             };
@@ -1084,6 +1124,24 @@ fn item_to_tool_end(params: &Value) -> Option<(String, String, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_review_target_recognizes_bare_review() {
+        // `/review` → review the uncommitted working tree (the app-server's
+        // internally-tagged ReviewTarget — verified against a live app-server).
+        assert_eq!(
+            codex_review_target("/review"),
+            Some(json!({ "type": "uncommittedChanges" }))
+        );
+        assert_eq!(
+            codex_review_target("  /review  "),
+            Some(json!({ "type": "uncommittedChanges" }))
+        );
+        // Anything else is a normal prompt → turn/start (None).
+        assert_eq!(codex_review_target("/review the auth flow"), None);
+        assert_eq!(codex_review_target("please review this"), None);
+        assert_eq!(codex_review_target("/compact"), None);
+    }
 
     #[test]
     fn extract_codex_error_unwraps_api_error_and_handles_none() {

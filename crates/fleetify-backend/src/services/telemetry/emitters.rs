@@ -239,7 +239,7 @@ fn agent_key(a: AgentKind) -> &'static str {
     match a {
         AgentKind::Claude => "claude-code",
         AgentKind::OpenAI => "openai",
-        AgentKind::Gemini => "gemini-cli",
+        AgentKind::Gemini => "gemini-api",
         AgentKind::Codex => "codex-cli",
         AgentKind::Kimi => "kimi-code",
         AgentKind::GitHubCopilot => "github-copilot",

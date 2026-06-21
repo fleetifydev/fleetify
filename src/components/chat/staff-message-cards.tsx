@@ -1,5 +1,5 @@
 import { ProviderLogo } from "@/components/ui/provider-logo";
-import { CheckCircle2, Loader2, AlertTriangle, FileEdit, Terminal, GitBranch, Lightbulb, Webhook, Command, BarChart3, Plug, FileText, Gauge } from "lucide-react";
+import { CheckCircle2, Check, Loader2, AlertTriangle, FileEdit, Terminal, GitBranch, Lightbulb, Webhook, Command, BarChart3, Plug, FileText, Gauge } from "lucide-react";
 import { ChatError } from "./chat-error";
 
 /* ── Task Routed Card ── */
@@ -436,6 +436,28 @@ export function InfoCard({ title, message, tone = "info" }: { title: string; mes
         <span style={{ fontSize: 12, fontWeight: 600, color: "var(--foreground)" }}>{title}</span>
       </div>
       <div style={{ fontSize: 12, color: "var(--muted-foreground)" }}>{message}</div>
+    </div>
+  );
+}
+
+/* ── Mode-switch notice ──
+   A `/plan` or `/yolo` confirmation, rendered as a PLAIN inline message (no card
+   box) so it reads as a quiet status line, not an alert: a calm check + "Session
+   mode switched to <b>Plan</b> mode." The bold word is the mode; the optional
+   `note` carries the Codex/Gemini "applies on next spawn" hint. Theme-aware
+   tokens, calm (non-green) success colour per the chat aesthetic. */
+export function ModeNoticeCard({ mode, note }: { mode: string; note?: string }) {
+  return (
+    <div style={{
+      display: "flex", alignItems: "flex-start", gap: 8,
+      marginBottom: 18, fontSize: 13, lineHeight: 1.55,
+    }}>
+      <Check size={15} strokeWidth={2.25} style={{ flexShrink: 0, marginTop: 2, color: "var(--c-low)" }} />
+      <span style={{ color: "var(--c-med)" }}>
+        Session mode switched to{" "}
+        <strong style={{ color: "var(--c-high)", fontWeight: 600 }}>{mode}</strong> mode.
+        {note ? <span style={{ color: "var(--c-low)" }}>{note}</span> : null}
+      </span>
     </div>
   );
 }

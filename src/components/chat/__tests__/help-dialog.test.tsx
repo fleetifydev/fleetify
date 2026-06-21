@@ -1,6 +1,7 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { HelpDialog } from "../help-dialog";
+import { useChatStore } from "@/stores/chat-store";
 
 describe("HelpDialog", () => {
   it("renders nothing when closed", () => {
@@ -34,15 +35,27 @@ describe("HelpDialog", () => {
     expect(screen.queryByText("/new")).not.toBeInTheDocument();
   });
 
-  it("shows a provider icon beside each provider header on the Session tab", () => {
-    render(<HelpDialog open onClose={vi.fn()} />);
+  it("Session tab shows only the universal group when the agent advertises no commands", () => {
+    // Claude drives non-interactively and advertises no ACP commands, so the
+    // Session tab carries just the universal group — no provider sub-group/icon.
+    render(<HelpDialog open onClose={vi.fn()} tool="claude-code" sessionId="s-none" />);
     fireEvent.click(screen.getByRole("tab", { name: "Session Commands" }));
+    expect(screen.getByText("Works in every agent")).toBeInTheDocument();
+    expect(screen.getByText("/plan")).toBeInTheDocument();
+    expect(screen.queryByAltText("Claude Code")).not.toBeInTheDocument();
+  });
 
-    // Each provider group renders its brand mark left of the header. The
-    // "Common" group has no provider, so it carries no icon.
-    expect(screen.getByAltText("Claude Code")).toBeInTheDocument();
-    expect(screen.getByAltText("Codex")).toBeInTheDocument();
-    expect(screen.getByAltText("Gemini")).toBeInTheDocument();
+  it("shows the active agent's LIVE ACP-advertised commands with its brand mark", () => {
+    // Agents that push `available_commands_update` (Grok/OpenCode/Hermes/Cursor/
+    // Copilot) get a live, brand-marked group of their real command set.
+    useChatStore.setState({
+      dynamicCommands: { "s-grok": [{ name: "rewind", description: "Rewind the session" }] },
+    });
+    render(<HelpDialog open onClose={vi.fn()} tool="grok-build" sessionId="s-grok" />);
+    fireEvent.click(screen.getByRole("tab", { name: "Session Commands" }));
+    expect(screen.getByText("/rewind")).toBeInTheDocument();
+    expect(screen.getByText("Rewind the session")).toBeInTheDocument();
+    expect(screen.getByAltText("Grok")).toBeInTheDocument();
   });
 
   it("closes on Escape and on overlay click", () => {

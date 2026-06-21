@@ -8,7 +8,7 @@ import type { Components } from "react-markdown";
 import type { ChatMessage, ContentBlock, ArtifactBlock, ResourceCardBlock } from "@/types/chat";
 import {
   SkillsCard, HooksCard, CommandsCard, UsageCard, MCPStatusCard,
-  InfoCard, ContextCard,
+  InfoCard, ModeNoticeCard, ContextCard,
 } from "./staff-message-cards";
 import { CitationCard } from "./citation-card";
 import { AuthRequiredCard } from "./auth-required-card";
@@ -2881,6 +2881,11 @@ function renderResourceCard(block: ResourceCardBlock): React.ReactNode {
         title={String(data.title ?? "")}
         message={String(data.message ?? "")}
         tone={(data.tone as "info" | "warn" | "error" | undefined) ?? "info"}
+      />;
+    case "mode_notice":
+      return <ModeNoticeCard
+        mode={String(data.mode ?? "")}
+        note={data.note ? String(data.note) : undefined}
       />;
     default:
       return null;

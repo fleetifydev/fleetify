@@ -23,7 +23,6 @@ use std::path::PathBuf;
 pub const COMPONENT_PROVIDERS: &[&str] = &[
     "claude-code",
     "codex-cli",
-    "gemini-cli",
     "kimi-code",
     "opencode",
     "github-copilot",
@@ -67,6 +66,14 @@ fn home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// The `~/.gemini` namespace directory. Antigravity CLI nests its config
+/// under this Google-shared namespace (`~/.gemini/antigravity-cli`, and its
+/// hooks under `~/.gemini/config/hooks`), so the path is resolved here rather
+/// than via a provider id. `None` when no home dir resolves.
+fn gemini_namespace_home() -> Option<PathBuf> {
+    Some(home()?.join(".gemini"))
+}
+
 /// The config-home base directory a provider reads its components from.
 /// `None` for providers without an on-disk home (e.g. `antigravity-sdk`)
 /// or when neither `USERPROFILE` nor `HOME` is set.
@@ -75,7 +82,6 @@ pub fn provider_home(provider: &str) -> Option<PathBuf> {
     let p = match provider {
         "claude-code" => h.join(".claude"),
         "codex-cli" => h.join(".codex"),
-        "gemini-cli" => h.join(".gemini"),
         "kimi-code" => h.join(".kimi"),
         // XDG-style, even on Windows under %USERPROFILE% (per OpenCode docs).
         "opencode" => h.join(".config").join("opencode"),
@@ -105,7 +111,6 @@ pub fn component_basename(provider: &str) -> &str {
     match provider {
         "claude-code" => "claude",
         "codex-cli" => "codex",
-        "gemini-cli" => "gemini",
         "kimi-code" => "kimi",
         "cursor-cli" => "cursor",
         "hermes-agent" => "hermes",
@@ -138,7 +143,7 @@ pub fn skills_dir(provider: &str) -> Option<PathBuf> {
 }
 
 /// The shared `~/.agents/skills/` location from the Agent-Skills open standard.
-/// Codex (USER scope), Gemini, GitHub Copilot, Cursor and Kimi all read it, so
+/// Codex (USER scope), GitHub Copilot, Cursor and Kimi all read it, so
 /// writing a skill here makes it discoverable cross-tool independent of each
 /// agent's own home dir. `None` only when no home dir resolves.
 pub fn agents_skills_dir() -> Option<PathBuf> {
@@ -146,12 +151,12 @@ pub fn agents_skills_dir() -> Option<PathBuf> {
 }
 
 /// Where a provider reads slash-commands / prompts, if it has such a
-/// surface. Claude / Gemini / OpenCode use `commands/<name>.md`; Codex
+/// surface. Claude / OpenCode use `commands/<name>.md`; Codex
 /// uses `prompts/<name>.md`. The rest expose commands only via skills
 /// (`/skill-name`), so they return `None`.
 pub fn commands_dir(provider: &str) -> Option<PathBuf> {
     let sub = match provider {
-        "claude-code" | "gemini-cli" | "opencode" => "commands",
+        "claude-code" | "opencode" => "commands",
         "codex-cli" => "prompts",
         _ => return None,
     };
@@ -166,9 +171,7 @@ pub fn commands_dir(provider: &str) -> Option<PathBuf> {
 /// per-agent file → `None`.
 pub fn agents_dir(provider: &str) -> Option<(PathBuf, &'static str)> {
     let (sub, ext) = match provider {
-        "claude-code" | "opencode" | "antigravity-cli" | "gemini-cli" | "cursor-cli" => {
-            ("agents", "md")
-        }
+        "claude-code" | "opencode" | "antigravity-cli" | "cursor-cli" => ("agents", "md"),
         "github-copilot" => ("agents", "agent.md"),
         _ => return None,
     };
@@ -189,7 +192,7 @@ pub fn cursor_rules_dir() -> Option<PathBuf> {
 pub fn hooks_dir(provider: &str, base: Option<&std::path::Path>) -> Option<PathBuf> {
     match base {
         None => match provider {
-            "antigravity-cli" => Some(provider_home("gemini-cli")?.join("config").join("hooks")),
+            "antigravity-cli" => Some(gemini_namespace_home()?.join("config").join("hooks")),
             _ => Some(provider_home(provider)?.join("hooks")),
         },
         Some(folder) => match provider {
@@ -209,7 +212,7 @@ pub fn hooks_dir(provider: &str, base: Option<&std::path::Path>) -> Option<PathB
 /// (Copilot/OpenCode/Hermes).
 pub fn hook_config_file(provider: &str, base: Option<&std::path::Path>) -> Option<PathBuf> {
     let (sub, file): (Option<&str>, &str) = match provider {
-        "claude-code" | "gemini-cli" => (None, "settings.json"),
+        "claude-code" => (None, "settings.json"),
         "codex-cli" | "cursor-cli" => (None, "hooks.json"),
         "kimi-code" => (None, "config.toml"),
         "antigravity-cli" => (Some("config"), "hooks.json"),
@@ -217,7 +220,7 @@ pub fn hook_config_file(provider: &str, base: Option<&std::path::Path>) -> Optio
     };
     let root = match base {
         None => match provider {
-            "antigravity-cli" => provider_home("gemini-cli")?,
+            "antigravity-cli" => gemini_namespace_home()?,
             _ => provider_home(provider)?,
         },
         Some(folder) => match provider {
@@ -419,9 +422,9 @@ mod tests {
     #[test]
     fn hook_config_file_paths() {
         with_home(|| {
-            assert!(hook_config_file("gemini-cli", None)
+            assert!(hook_config_file("claude-code", None)
                 .unwrap()
-                .ends_with(".gemini/settings.json"));
+                .ends_with(".claude/settings.json"));
             assert!(hook_config_file("codex-cli", None)
                 .unwrap()
                 .ends_with(".codex/hooks.json"));

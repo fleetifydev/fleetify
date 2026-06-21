@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { X, FolderOpen, Clock, ChevronDown, Check, Sparkles, Wand2 } from "lucide-react";
-import { ClaudeLogo, OpenAILogo, GeminiLogo, KimiLogo } from "@/components/ui/provider-logo";
-import { createSession, fetchClaudeSessions, fetchGeminiSessions, fetchCodexSessions, apiFetch, type ClaudeSession } from "@/lib/api";
+import { ClaudeLogo, OpenAILogo, KimiLogo } from "@/components/ui/provider-logo";
+import { createSession, fetchClaudeSessions, fetchCodexSessions, apiFetch, type ClaudeSession } from "@/lib/api";
 import { providers as providersApi, type AccountInfo } from "@/lib/providers-api";
 import { useAppStore } from "@/stores/app-store";
 import { useRouterConfig } from "@/hooks/use-router-config";
@@ -146,11 +146,6 @@ const PROVIDERS = [
     { id: "gpt-5.2", label: "GPT-5.2", desc: "Fastest" },
     { id: "gpt-5.4", label: "GPT-5.4", desc: "Balanced", default: true },
     { id: "gpt-5.5", label: "GPT-5.5", desc: "Capable"  },
-  ]},
-  { id: "gemini-cli", name: "Gemini CLI", icon: GeminiLogo, models: [
-    { id: "gemini-3.1-pro-preview",        label: "3.1 Pro",  desc: "Best",    default: true },
-    { id: "gemini-3-flash-preview",        label: "3 Flash",  desc: "Fast"    },
-    { id: "gemini-3.1-flash-lite-preview", label: "3.1 Lite", desc: "Fastest" },
   ]},
   // Kimi Code CLI (Moonshot). Tier mapping aligns with the capability-
   // matrix entry in config/agents.toml — fast → k1.5-preview, balanced
@@ -328,14 +323,14 @@ export function NewAgentView({ onClose }: Props) {
     return () => { cancelled = true; };
   }, [provider]);
   useEffect(() => {
-    if (!path.trim() || !["claude-code","gemini-cli","codex-cli"].includes(provider)) {
+    if (!path.trim() || !["claude-code","codex-cli"].includes(provider)) {
       setClaudeSessions([]); setSessionCount(0); return;
     }
     if (fetchTimer.current) clearTimeout(fetchTimer.current);
     fetchTimer.current = setTimeout(async () => {
       setSessLoading(true);
       try {
-        const fn = provider === "gemini-cli" ? fetchGeminiSessions : provider === "codex-cli" ? fetchCodexSessions : fetchClaudeSessions;
+        const fn = provider === "codex-cli" ? fetchCodexSessions : fetchClaudeSessions;
         const r = await fn(path.trim());
         setClaudeSessions(r); setSessionCount(r.length); setResumeId(null);
       } catch { setClaudeSessions([]); setSessionCount(0); }
@@ -934,7 +929,7 @@ export function NewAgentView({ onClose }: Props) {
             <Sep/>
 
             {/* ── Session ── */}
-            {["claude-code","gemini-cli","codex-cli"].includes(provider) && (
+            {["claude-code","codex-cli"].includes(provider) && (
               <>
                 <SecHead style={{ marginTop:20 }}>Session</SecHead>
                 <div style={{ display:"flex", flexDirection:"column", gap:8, marginTop:10, marginBottom:20 }}>

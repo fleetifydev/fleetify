@@ -274,7 +274,6 @@ export async function apiMe(): Promise<AuthUser | null> {
 // ── Providers ────────────────────────────────────────────────
 export interface ProviderScan {
   claude_cli:      { installed: boolean; authenticated: boolean; path: string | null };
-  gemini_cli:      { installed: boolean; authenticated: boolean; path: string | null };
   codex_cli:       { installed: boolean; authenticated: boolean; path: string | null };
   kimi_cli:        { installed: boolean; authenticated: boolean; path: string | null };
   agy_cli:         { installed: boolean; authenticated: boolean; path: string | null };
@@ -932,12 +931,6 @@ export interface ClaudeSession {
 export async function fetchClaudeSessions(projectPath?: string): Promise<ClaudeSession[]> {
   const q = projectPath ? `?path=${encodeURIComponent(projectPath)}` : "";
   const res = await apiFetch(`${API_BASE}/claude-sessions${q}`);
-  if (!res.ok) return [];
-  return res.json();
-}
-
-export async function fetchGeminiSessions(projectPath: string): Promise<ClaudeSession[]> {
-  const res = await apiFetch(`${API_BASE}/gemini-sessions?path=${encodeURIComponent(projectPath)}`);
   if (!res.ok) return [];
   return res.json();
 }

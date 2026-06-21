@@ -2,7 +2,7 @@
 
 How a Fleetify plugin is structured, how it installs, and how its components
 **materialize into every CLI agent's native config** so one install reaches
-Claude Code, Codex, Gemini CLI, Kimi, OpenCode, GitHub Copilot, Cursor,
+Claude Code, Codex, Kimi, OpenCode, GitHub Copilot, Cursor,
 Hermes, and Antigravity.
 
 > Related: [`MCP_INTEGRATION.md`](MCP_INTEGRATION.md), [`PROVIDERS.md`](PROVIDERS.md).
@@ -21,9 +21,9 @@ my-plugin/
 ├── templates/                     # optional — Fleet-internal agent templates
 ├── workflows/                     # optional — Fleet workflows
 ├── .fleetify/prompts/             # optional — Fleetify-native prompts
-└── .<provider>/                   # per-agent components (one of the 9 ids)
+└── .<provider>/                   # per-agent components (one of the 8 ids)
     ├── skills/<name>/SKILL.md      #   Agent-Skills (universal format)
-    ├── commands/<name>.md          #   slash commands (claude/gemini/opencode)
+    ├── commands/<name>.md          #   slash commands (claude/opencode)
     ├── prompts/<name>.md           #   codex only
     ├── agents/<name>.md            #   sub-agents (claude/opencode/agy/copilot)
     └── hooks/…                     #   provider-native hook files
@@ -53,7 +53,7 @@ never half-applies a plugin.
 ```
 
 - **`providers`** lists the agents the plugin targets. **`KNOWN_PROVIDERS`** =
-  `claude, codex, gemini, kimi, opencode, github-copilot, cursor, hermes, agy,
+  `claude, codex, kimi, opencode, github-copilot, cursor, hermes, agy,
   antigravity-sdk` (the last is MCP-only — no on-disk home).
 - **`declares.providers`** is a **map** (`provider id → {skills, commands,
   hooks}`), not a fixed struct — new agents are additive.
@@ -71,7 +71,6 @@ naive `~/.{id}`:
 |---|---|---|---|---|---|
 | `claude-code` | `~/.claude` | `skills/` | `commands/*.md` | `agents/*.md` | `settings.json` (merge†) |
 | `codex-cli` | `~/.codex` | `skills/` | `prompts/*.md` | — | — |
-| `gemini-cli` | `~/.gemini` | `skills/` | `commands/*.md` | — | — |
 | `kimi-code` | `~/.kimi` | `skills/` | — | — | `config.toml` (TOML merge†) |
 | `opencode` | `~/.config/opencode` | `skills/` | `commands/*.md` | `agents/*.md` | `plugins/*.ts` (copy) |
 | `github-copilot` | `~/.copilot` | `skills/` | — | `agents/*.agent.md` | `hooks/*.json` (copy) |
@@ -99,7 +98,7 @@ providers; uninstall reverses by prefix-walk).
     absent, the materializer reads the first dir the plugin did ship (skills
     are byte-identical across agents). No 9× duplication required.
 - **Commands / prompts**: `.<provider>/commands/*.md` → `commands/` (Claude /
-  Gemini / OpenCode) or `prompts/` (Codex), namespaced.
+  OpenCode) or `prompts/` (Codex), namespaced.
 - **Sub-agents**: `.<provider>/agents/*.md` → the agent's `agents/` dir; GitHub
   Copilot gets the `.agent.md` extension, others plain `.md`.
 - **Hooks** (copy strategies): `.<provider>/hooks/…` → Copilot `~/.copilot/hooks/*.json`,

@@ -54,7 +54,6 @@ function ctxLimit(model: string | null | undefined): number | null {
   if (!model) return null;
   if (model.includes("claude")) return 200_000;
   if (model.includes("gpt-4")) return 128_000;
-  if (model.includes("gemini-cli")) return 1_000_000;
   return null;
 }
 

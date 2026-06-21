@@ -34,7 +34,6 @@ stream.
 |---|---|---|
 | **ClaudeBridge** (stream-json + `--mcp-config`) | ✅ | Full event translation + cost wiring + MCP registry splice |
 | **OpenAIBridge** (SSE Responses API) | ✅ | Mocked-server test |
-| **GeminiBridge** (ACP) | ✅ | Real cold-start + session_update streaming |
 | **CodexBridge** (V2 JSON-RPC) | ✅ | Spawn + handshake + thread/start + turn streaming + unified-diff parse |
 | **Fleet MCP servers** | ✅ | `fleet-memory-mcp` + `fleet-dispatch-mcp` + `fleet-reveng-mcp` stdio binaries |
 

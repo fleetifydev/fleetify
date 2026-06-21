@@ -34,7 +34,7 @@ pub struct AutoRoute {
     /// The `session.tool` the bridge dispatches for this family — the actual
     /// execution path chosen from active providers (e.g. `claude` for the
     /// Claude Code CLI vs `anthropic` for the direct API; `codex` vs `openai`;
-    /// `gemini` vs `gemini-api`).
+    /// the Google family has only `gemini-api`).
     pub execution_tool: String,
     /// Not Diamond-catalog ids to send for this family. Cheap→strong spread so
     /// ND's `tradeoff:"cost"` has room to trade.
@@ -60,13 +60,6 @@ fn openai_codex_nd_models() -> Vec<String> {
 fn openai_api_nd_models() -> Vec<String> {
     vec!["gpt-5-mini".into(), "gpt-5".into(), "gpt-5.5".into()]
 }
-// Gemini CLI surfaces the 3.x line; ND knows the previews.
-fn gemini_cli_nd_models() -> Vec<String> {
-    vec![
-        "gemini-3-flash-preview".into(),
-        "gemini-3.1-pro-preview".into(),
-    ]
-}
 // Gemini API: Fleet's catalog spans 2.5 + 3.1; these are all in ND.
 fn gemini_api_nd_models() -> Vec<String> {
     vec![
@@ -79,7 +72,7 @@ fn gemini_api_nd_models() -> Vec<String> {
 /// Resolve the Auto routes from active-provider state, in execution-preference
 /// order per family.
 ///
-/// * `cli_authed(id)` — that CLI agent (`claude`/`codex`/`gemini`) is installed
+/// * `cli_authed(id)` — that CLI agent (`claude`/`codex`) is installed
 ///   AND authenticated (from the agent scan cache).
 /// * `has_key(id)` — an API key is on file for that provider id
 ///   (`anthropic`/`openai`/`gemini-api`), via `providers::keys::get_key`.
@@ -128,14 +121,9 @@ pub fn select_routes(
         });
     }
 
-    // Gemini family: Gemini CLI first, then the direct Google API.
-    if cli_authed("gemini-cli") {
-        routes.push(AutoRoute {
-            agent: AgentKind::Gemini,
-            execution_tool: "gemini-cli".into(),
-            nd_models: gemini_cli_nd_models(),
-        });
-    } else if has_key("gemini-api") {
+    // Gemini family: the gemini-CLI agent was removed, so the only execution
+    // path is the direct Google API.
+    if has_key("gemini-api") {
         routes.push(AutoRoute {
             agent: AgentKind::Gemini,
             execution_tool: "gemini-api".into(),
@@ -204,10 +192,12 @@ mod tests {
     }
 
     #[test]
-    fn cli_wins_over_api_for_openai_and_gemini() {
-        // Codex + Gemini CLI authed AND their API keys present → CLI wins.
+    fn cli_wins_over_api_for_openai() {
+        // Codex CLI authed AND the OpenAI API key present → CLI wins for the
+        // OpenAI family. The Google family has no CLI anymore, so its
+        // `gemini-api` key is the only path.
         let routes = select_routes(
-            &|id| matches!(id, "codex-cli" | "gemini-cli"),
+            &|id| id == "codex-cli",
             &|id| matches!(id, "openai" | "gemini-api"),
             false,
         );
@@ -216,11 +206,12 @@ mod tests {
             .find(|r| r.agent == AgentKind::OpenAI)
             .unwrap();
         assert_eq!(openai.execution_tool, "codex-cli");
+        // Google family resolves straight to the API (no CLI execution path).
         let gemini = routes
             .iter()
             .find(|r| r.agent == AgentKind::Gemini)
             .unwrap();
-        assert_eq!(gemini.execution_tool, "gemini-cli");
+        assert_eq!(gemini.execution_tool, "gemini-api");
     }
 
     #[test]

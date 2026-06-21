@@ -35,7 +35,7 @@ describe("OnboardingChat install IPC", () => {
 
   it("does not autoInstall any provider — every CLI waits for an explicit Install click", () => {
     // Earlier iterations auto-fired `npm install -g …` for Claude /
-    // Codex / Gemini / Kimi during the verify loop. Users reported it
+    // Codex / Kimi during the verify loop. Users reported it
     // as surprising ("why is something downloading?"), so the contract
     // now requires every row — including the npm-installed CLIs — to
     // wait for an explicit Install button click. The verify-loop gate
@@ -102,9 +102,9 @@ describe("OnboardingChat install IPC", () => {
     expect(ids).not.toContain("googleai");
     expect(ids).toContain("gemini-api");
 
-    // The full workspace catalog (22 ids — must match providers::CATALOG).
+    // The full workspace catalog (21 ids — must match providers::CATALOG).
     const catalog = [
-      "claude-code", "codex-cli", "gemini-cli", "kimi-code", "opencode", "github-copilot",
+      "claude-code", "codex-cli", "kimi-code", "opencode", "github-copilot",
       "cursor-cli", "grok-build", "hermes-agent", "antigravity-cli", "antigravity-sdk",
       "openai", "anthropic", "deepseek", "grok", "nvidia-nim", "kimi-api",
       "gemini-api", "perplexity", "openrouter", "cloudflare-workers-ai",
@@ -153,13 +153,12 @@ describe("OnboardingChat install IPC", () => {
     expect(onboardingSrc).toMatch(/!frozen\s*&&\s*open\s*&&\s*!running/);
   });
 
-  it("renames Codex / Gemini CLI rows and uses 'Gemini' label for the API row", () => {
-    // Codex CLI / Gemini CLI labels disambiguate the CLI rows from
-    // their API namesakes; the API row's label drops to plain
+  it("renames the Codex CLI row and uses 'Gemini' label for the API row", () => {
+    // The Codex CLI label disambiguates the CLI row from its API
+    // namesake; the Gemini API row's label drops to plain
     // "Gemini" (the brand the user knows) while its catalog id
     // stays "gemini-api" so providers.setKey hits the right entry.
     expect(onboardingSrc).toMatch(/label:\s*"Codex CLI"/);
-    expect(onboardingSrc).toMatch(/label:\s*"Gemini CLI"/);
     expect(onboardingSrc).toMatch(/id:\s*"gemini-api"[\s\S]{0,80}label:\s*"Gemini"/);
   });
 

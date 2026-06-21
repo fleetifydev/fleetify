@@ -99,7 +99,6 @@ interface ProviderDef {
   scanKey?: keyof Pick<
     ProviderScan,
     | "claude_cli"
-    | "gemini_cli"
     | "codex_cli"
     | "kimi_cli"
     | "agy_cli"
@@ -158,10 +157,6 @@ const PROVIDERS: ProviderDef[] = [
   // first-run experience wants to opt a tile back in.
   { id: "claude-code",         label: "Claude Code",       logo: "claude-code", kind: "cli", scanKey: "claude_cli", hint: "Anthropic CLI" },
   { id: "codex-cli",          label: "Codex CLI",         logo: "codex-cli",  kind: "cli", scanKey: "codex_cli",  hint: "OpenAI CLI" },
-  // Antigravity sits next to its predecessor Gemini CLI — Google sunsets
-  // the latter for individual AI Pro/Ultra users on 2026-06-18, so
-  // surfacing both side-by-side gives migrating users a one-tap path.
-  { id: "gemini-cli",         label: "Gemini CLI",        logo: "gemini-cli", kind: "cli", scanKey: "gemini_cli", hint: "Google CLI" },
   // Kimi Code ships as `@moonshot-ai/kimi-code` (npm). Auth state is
   // read from `~/.kimi/auth.json` or `KIMI_API_KEY`
   // (KIMI_CLI_INDICATORS in the catalog).
@@ -197,7 +192,7 @@ const PROVIDERS: ProviderDef[] = [
   // Backend catalog id is "gemini-api" (the OpenAI-compat endpoint
   // at /v1beta/openai); the label is just "Gemini" so the row
   // matches the brand the user knows it by.
-  { id: "gemini-api",     label: "Gemini",            logo: "gemini-cli", kind: "api", envKey: "gemini",                          hint: "API key (Gemini API)" },
+  { id: "gemini-api",     label: "Gemini",            logo: "gemini-api", kind: "api", envKey: "gemini",                          hint: "API key (Gemini API)" },
   { id: "deepseek",       label: "DeepSeek",          logo: "deepseek", kind: "api",                                          hint: "API key" },
   { id: "grok",           label: "Grok (xAI)",        logo: "grok",   kind: "api",                                            hint: "API key" },
   { id: "kimi-api",       label: "Kimi (Moonshot)",   logo: "kimi-code",   kind: "api",                                            hint: "API key" },
@@ -1615,7 +1610,7 @@ function ScanWidget({
   // is already in flight — that would queue two long-running spawns
   // back-to-back and confuse the row's state machine.
   const installingRef = useRef<Set<string>>(new Set());
-  // Captured OAuth URLs, keyed by toolKey ("gemini_cli" / "claude_cli"
+  // Captured OAuth URLs, keyed by toolKey ("claude_cli"
   // / "codex_cli"). Pushed from main.cjs's auth-pty as soon as it
   // spots the URL in the CLI's output. ScanRow surfaces a clickable
   // "re-open browser" icon while the URL is known, so the user can
@@ -1694,7 +1689,7 @@ function ScanWidget({
           }));
           try {
             // Backend `shell_install_provider` routes on the kebab id
-            // ("claude-code", "codex-cli", "gemini-cli"), not the snake-case
+            // ("claude-code", "codex-cli", "kimi-code"), not the snake-case
             // scanKey ("claude_cli", …) used by the scan probe.
             const installRes = await window.electronAPI.installProvider(p.id);
             if (cancelled) return;
@@ -1824,7 +1819,7 @@ function ScanWidget({
   // Race-based completion detection. We start TWO signals in parallel:
   //
   //   1. /providers/scan poll (every 2 s) — primary success signal.
-  //      The backend's shutil.which("codex-cli"|"gemini-cli"|"claude") checks
+  //      The backend's shutil.which("codex-cli"|"claude") checks
   //      whether the new shim is on PATH; that's the source of truth.
   //      Wins as soon as npm has finished writing the .cmd / bin.
   //
@@ -2065,7 +2060,7 @@ function ScanWidget({
       {providers.map((p) => {
         const st = states[p.id] ?? { status: "pending" as ScanStatus, detail: "" };
         // Each row reads ONLY its own provider's URL — keyed by
-        // scanKey ("gemini_cli" / "claude_cli" / "codex_cli") so
+        // scanKey ("claude_cli" / "codex_cli") so
         // simultaneous sign-ins for two providers each get their
         // own re-open icon pointing at the right URL.
         const authUrl = p.scanKey ? authUrls[p.scanKey] : undefined;

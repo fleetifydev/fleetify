@@ -198,7 +198,7 @@ chat.rs calls `fleet_auto_resolve(pool, task, routes)` **instead of**
    ```
    Claude → Claude Code CLI, else Anthropic API (Phase 2, gated off)
    OpenAI → Codex CLI,       else OpenAI API
-   Gemini → Gemini CLI,      else Gemini API
+   Gemini → Gemini API       (no CLI path — the gemini-CLI agent was removed)
    ```
 
    A family with no active path is **omitted**, so Not Diamond can never

@@ -45,7 +45,7 @@ pub struct HookMergeRecord {
 pub fn is_merge_provider(provider: &str) -> bool {
     matches!(
         provider,
-        "claude-code" | "gemini-cli" | "codex-cli" | "cursor-cli" | "antigravity-cli" | "kimi-code"
+        "claude-code" | "codex-cli" | "cursor-cli" | "antigravity-cli" | "kimi-code"
     )
 }
 
@@ -76,7 +76,7 @@ pub fn materialize_hook_item_at(
         return Ok(None);
     };
     match provider {
-        "claude-code" | "gemini-cli" | "codex-cli" => merge_claude(&file, hook)?,
+        "claude-code" | "codex-cli" => merge_claude(&file, hook)?,
         "cursor-cli" => merge_cursor(&file, hook)?,
         "antigravity-cli" => merge_agy(&file, hook)?,
         "kimi-code" => merge_kimi(&file, hook)?,
@@ -98,7 +98,7 @@ pub fn unmaterialize_hook(rec: &HookMergeRecord) -> Result<()> {
         return Ok(());
     }
     match rec.provider.as_str() {
-        "claude-code" | "gemini-cli" | "codex-cli" => unmerge_claude(file, rec),
+        "claude-code" | "codex-cli" => unmerge_claude(file, rec),
         "cursor-cli" => unmerge_cursor(file, rec),
         "antigravity-cli" => unmerge_agy(file, rec),
         "kimi-code" => unmerge_kimi(file, rec),
@@ -565,21 +565,10 @@ mod tests {
     }
 
     #[test]
-    fn gemini_and_codex_merge_nested_json() {
+    fn codex_merges_nested_json() {
         let tmp = tempdir().unwrap();
         let home = tmp.path().to_path_buf();
         with_home(&home, || {
-            let g = materialize_hook_item(
-                "gemini-cli",
-                &hook("BeforeTool", Some("write_file"), "g.sh"),
-            )
-            .unwrap()
-            .unwrap();
-            let gf = home.join(".gemini/settings.json");
-            let v: Value = serde_json::from_str(&std::fs::read_to_string(&gf).unwrap()).unwrap();
-            assert_eq!(v["hooks"]["BeforeTool"][0]["hooks"][0]["command"], "g.sh");
-            unmaterialize_hook(&g).unwrap();
-
             let c = materialize_hook_item("codex-cli", &hook("PreToolUse", None, "c.sh"))
                 .unwrap()
                 .unwrap();

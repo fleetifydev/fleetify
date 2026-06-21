@@ -14,7 +14,6 @@ export type AgentTool =
   // surfaces it as a neutral "Auto" chip — never dispatched as a literal agent.
   | "auto"
   | "claude-code"
-  | "gemini-cli"
   | "codex-cli"
   | "aider"
   | "opencode"

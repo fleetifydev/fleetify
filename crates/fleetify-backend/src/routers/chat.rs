@@ -20,7 +20,6 @@ use tokio::sync::Mutex;
 
 use crate::bridges::claude::ClaudeBridge;
 use crate::bridges::codex::CodexBridge;
-use crate::bridges::gemini::GeminiBridge;
 // crate::bridges::openai::OpenAIBridge — retired from dispatch in favour
 // of OpenAICompatBridge. File stays for the mockito unit tests until a
 // follow-up sweep retires it entirely.
@@ -122,8 +121,8 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
     // map from leaking entries for long-lived sessions.
     let pending_sends: Arc<Mutex<HashMap<String, VecDeque<String>>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    // Per-session permission round-trips. The bridges Codex/Gemini
-    // route their CLI/protocol approval hooks through a closure built
+    // Per-session permission round-trips. The CLI/ACP bridges (Codex,
+    // OpenCode, Cursor, …) route their CLI/protocol approval hooks through a closure built
     // off this PermissionSession; the `permission_response` WS arm
     // resolves the matching oneshot. On disconnect we
     // `fail_all_pending` so bridge tasks still parked on receivers
@@ -1110,7 +1109,7 @@ async fn run_send_flow(
 
     let _ = st.sm.update_status(&st.auth.pool, &sid, "running").await;
 
-    // Tool-based bridge selection (parity with chat.py). Gemini/Codex/
+    // Tool-based bridge selection (parity with chat.py). Codex/
     // SdkBridge land later in Phase 2; unknown tool → faithful error.
     //
     // `agent_cwd` is the working directory the bridge spawns the CLI
@@ -1179,7 +1178,6 @@ async fn run_send_flow(
             match session.tool.as_str() {
                 "claude-code" => vec![crate::services::routing::traits::AgentKind::Claude],
                 "openai" => vec![crate::services::routing::traits::AgentKind::OpenAI],
-                "gemini-cli" => vec![crate::services::routing::traits::AgentKind::Gemini],
                 "codex-cli" => vec![crate::services::routing::traits::AgentKind::Codex],
                 "github-copilot" => {
                     vec![crate::services::routing::traits::AgentKind::GitHubCopilot]
@@ -1215,7 +1213,7 @@ async fn run_send_flow(
     // back to a safe default — never feed a bridge the "auto" sentinel.
     if is_auto {
         // tool_override carries the chosen execution path (claude / codex /
-        // openai / gemini / gemini-api / anthropic); fall back to the agent's
+        // openai / gemini-api / anthropic); fall back to the agent's
         // default tool string defensively.
         session.tool = resolution.tool_override.clone().unwrap_or_else(|| {
             crate::services::routing::persist::agent_kind_to_str(resolution.agent).to_string()
@@ -1550,7 +1548,7 @@ async fn run_send_flow(
             // ACP has no system-prompt slot — staff gets the orchestrator
             // prompt (roster + [[DISPATCH]] protocol), non-staff inherits its
             // template prompt; KimiBridge prepends it onto the turn. Parity
-            // with the Gemini block.
+            // with the Claude block.
             if is_staff {
                 b.system_prompt = Some(
                     crate::services::staff_prompt::build(
@@ -1634,60 +1632,12 @@ async fn run_send_flow(
                 ),
             ))
         }
-        "gemini-cli" => {
-            let is_staff = session.title == "Staff Agent";
-            let mut b = GeminiBridge::new(
-                sid.clone(),
-                agent_cwd.clone(),
-                session.permission_mode.clone(),
-                session.model_name.clone(),
-                is_staff,
-                session.agent_template.clone(),
-            );
-            // Wire the OS-sandbox toggle (session.sandbox = "on"/"off").
-            // Antigravity's sandbox is already expressed via its
-            // proceed-in-sandbox mode, so we only set it for Gemini here.
-            b.sandbox = session.sandbox.clone();
-            // Parity with the Claude block: staff gets the orchestrator
-            // prompt (live roster + [[DISPATCH]] protocol), non-staff
-            // inherits its template prompt. ACP has no system-prompt slot,
-            // so GeminiBridge prepends this onto the turn. Without it a
-            // Gemini staff session can't see the fleet or dispatch at all.
-            if is_staff {
-                b.system_prompt = Some(
-                    crate::services::staff_prompt::build(
-                        &st.auth.pool,
-                        &sid,
-                        session.user_id.as_deref(),
-                    )
-                    .await,
-                );
-            } else if let Some(tpl) =
-                crate::services::templates::resolve(session.agent_template.as_deref())
-            {
-                b.system_prompt = Some(tpl.system_prompt.to_string());
-            }
-            // Wire the live permission dialog only when the user opted
-            // into a mode that asks. ACP's `default` is the one mode
-            // that routes through `on_permission_request`; bypass /
-            // dontAsk run autonomously and would never invoke the
-            // callback anyway. Staff sessions skip the dialog entirely
-            // (they only call safe read-only tools).
-            if !is_staff && session.permission_mode == "default" {
-                b = b.with_permission_handler(build_permission_handler(
-                    &permission_session,
-                    &sink,
-                    &sid,
-                ));
-            }
-            AnyBridge::Gemini(Arc::new(b))
-        }
         "codex-cli" => {
             let is_staff = session.title == "Staff Agent";
             // Codex's app-server has no system-prompt flag, so the staff
             // dispatch protocol (or a template prompt) is prepended to the
-            // turn input by the bridge — parity with the antigravity/gemini
-            // arms. Without this the Fleet (staff) Codex agent never learns
+            // turn input by the bridge — parity with the antigravity arm.
+            // Without this the Fleet (staff) Codex agent never learns
             // the `[[DISPATCH:...]]` protocol and can't delegate.
             let system_prompt = if is_staff {
                 Some(
@@ -1954,9 +1904,7 @@ async fn run_send_flow(
     // via BridgeContext but cannot swap the bridge identity mid-turn.
     // Full bridge-swap is deferred (see task notes).
     let bridge_tool_str = match session.tool.as_str() {
-        "claude-code" | "openai" | "gemini-cli" | "codex-cli" | "github-copilot" => {
-            session.tool.as_str()
-        }
+        "claude-code" | "openai" | "codex-cli" | "github-copilot" => session.tool.as_str(),
         _ => "claude-code",
     };
     let resolution_tool_str =
@@ -3158,29 +3106,12 @@ async fn run_dispatched_task(
             b.tool_overrides =
                 crate::bridges::parse_tool_overrides(target.tool_overrides.as_deref());
             // A dispatched Kimi agent inherits its template's system prompt
-            // (e.g. reverse_engineering). Mirror the Gemini dispatch arm.
+            // (e.g. reverse_engineering). Mirror the Claude dispatch arm.
             if let Some(tpl) = crate::services::templates::resolve(target.agent_template.as_deref())
             {
                 b.system_prompt = Some(tpl.system_prompt.to_string());
             }
             AnyBridge::Kimi(std::sync::Arc::new(b))
-        }
-        "gemini-cli" => {
-            let mut b = GeminiBridge::new(
-                target_id.clone(),
-                target_cwd.clone(),
-                target.permission_mode.clone(),
-                target.model_name.clone(),
-                false, // dispatched tasks always land on non-staff agents
-                target.agent_template.clone(),
-            );
-            // Mirror the Claude dispatch arm: a dispatched Gemini agent
-            // inherits its template's system prompt (e.g. reverse_engineering).
-            if let Some(tpl) = crate::services::templates::resolve(target.agent_template.as_deref())
-            {
-                b.system_prompt = Some(tpl.system_prompt.to_string());
-            }
-            AnyBridge::Gemini(std::sync::Arc::new(b))
         }
         "codex-cli" => {
             let mut b = CodexBridge::new(
@@ -3192,7 +3123,7 @@ async fn run_dispatched_task(
                 false, // dispatched tasks always land on non-staff agents
                 target.agent_template.clone(),
             );
-            // Mirror the Gemini dispatch arm: a dispatched Codex agent
+            // Mirror the Claude dispatch arm: a dispatched Codex agent
             // inherits its template's system prompt (e.g. reverse_engineering).
             if let Some(tpl) = crate::services::templates::resolve(target.agent_template.as_deref())
             {
@@ -3438,7 +3369,7 @@ async fn run_dispatched_task(
     // Last bridge-level error seen on the stream. A bridge that dies on
     // start-up emits Error + Status(done) and closes — without tracking
     // this, the run used to resolve as success=true with an empty summary
-    // (the silent-failure that hid "Gemini start-up failed: …" entirely).
+    // (the silent-failure that hid "<agent> start-up failed: …" entirely).
     let mut bridge_error: Option<String> = None;
 
     // Stream-loss-on-session-switch fix (same as run_send_flow): insert
@@ -3695,7 +3626,7 @@ async fn run_dispatched_task(
                         bridge_error = Some(error.clone());
                     }
                     // Terminal event of the per-turn protocol. Daemon/ACP
-                    // bridges (Gemini, Codex, OpenCode, Cursor, Antigravity)
+                    // bridges (Codex, OpenCode, Cursor, Antigravity)
                     // never close their `rx` on their own — the JSON-RPC
                     // client keeps a notification handler that retains a
                     // `tx.clone()` for the life of the bridge. Without this

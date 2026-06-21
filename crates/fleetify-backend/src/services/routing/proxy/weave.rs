@@ -147,9 +147,9 @@ mod tests {
 
     #[test]
     fn base_url_returns_router_root_for_every_provider() {
-        // Regression: each consumer (claude-code, OpenAI HTTP bridge,
-        // gemini-cli) appends its own path to whatever Weave returns.
-        // The earlier `/anthropic`/`/openai`/`/google` suffixes routed
+        // Regression: each consumer (claude-code, OpenAI HTTP bridge, the
+        // Google-family HTTP bridge) appends its own path to whatever Weave
+        // returns. The earlier `/anthropic`/`/openai`/`/google` suffixes routed
         // every request to a non-existent path and 404'd upstream.
         let g = WeaveProxyGateway::new("k".into(), "https://router.workweave.ai".into());
         for provider in [

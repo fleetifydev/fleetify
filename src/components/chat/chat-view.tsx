@@ -1709,7 +1709,6 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
       const providerLabel =
         fresh.tool === "claude-code" ? "Claude Code"
         : fresh.tool === "codex-cli" ? "Codex"
-        : fresh.tool === "gemini-cli" ? "Gemini CLI"
         : fresh.tool === "kimi-code" ? "Kimi Code"
         : fresh.tool.charAt(0).toUpperCase() + fresh.tool.slice(1);
       const text = `Ready when you are — I'll be working in **${projectName}** with **${providerLabel}**. What would you like to do?`;

@@ -1,12 +1,12 @@
 //! Kimi (Moonshot) Code CLI bridge over the Agent Client Protocol (ACP).
 //!
 //! Kimi Code CLI ships a first-class ACP server: `kimi acp` speaks JSON-RPC
-//! over stdin/stdout (the same protocol Gemini / OpenCode / Cursor / Hermes
-//! use), so this is a gemini.rs-style clone — spawn `kimi acp`, run the ACP
+//! over stdin/stdout (the same protocol OpenCode / Cursor / Hermes
+//! use), so this is an opencode.rs-style clone — spawn `kimi acp`, run the ACP
 //! handshake + `session/new`, then forward `session/update` notifications as
 //! the `BridgeEvent`s the renderer already understands.
 //!
-//! Differences from the Gemini bridge (Kimi's CLI is intentionally lean):
+//! Differences from the OpenCode bridge (Kimi's CLI is intentionally lean):
 //!   * **Spawn:** plain `kimi acp` — there are no documented `--model` /
 //!     `--approval-mode` flags for ACP mode, so model + approval ride through
 //!     ACP (`session/new` model defaults; permissions via
@@ -43,12 +43,12 @@ fn kimi_is_bypass(mode: &str) -> bool {
 }
 
 /// Normalize an ACP `mcpServers` array so every **stdio** entry (one with a
-/// `command`) carries an `env` field. ACP agents that mirror gemini-cli's
-/// strict `zMcpServerStdio` schema reject an env-less stdio entry with
+/// `command`) carries an `env` field. ACP agents with a strict
+/// `zMcpServerStdio` schema reject an env-less stdio entry with
 /// `-32602 Invalid params`, which would take EVERY MCP (fleet built-ins
 /// included) down with it. Backfilling `env: []` keeps one env-less user
 /// entry from sinking the rest. http/sse entries pass through untouched.
-/// Mirrors the same helper in the gemini / opencode / cursor ACP bridges.
+/// Mirrors the same helper in the opencode / cursor ACP bridges.
 fn ensure_stdio_env(servers: Value) -> Value {
     let Value::Array(arr) = servers else {
         return servers;
@@ -190,8 +190,8 @@ pub struct KimiBridge {
     pub permission_mode: String,
     pub model_name: Option<String>,
     /// Staff orchestrator prompt or an agent-template prompt, set by the chat
-    /// router exactly as for `GeminiBridge`. ACP has no system-prompt slot, so
-    /// it rides in as a leading text block on the turn.
+    /// router exactly as for the other ACP bridges. ACP has no system-prompt
+    /// slot, so it rides in as a leading text block on the turn.
     pub system_prompt: Option<String>,
     pub is_staff: bool,
     pub agent_template: Option<String>,
@@ -231,7 +231,7 @@ impl KimiBridge {
     }
 
     /// Builder hook for the chat router to inject the live permission
-    /// callback. Same shape as `GeminiBridge::with_permission_handler`.
+    /// callback. Same shape as `OpenCodeBridge::with_permission_handler`.
     pub fn with_permission_handler(
         mut self,
         handler: super::permission::PermissionHandler,
@@ -309,7 +309,7 @@ impl KimiBridge {
         let client = Arc::new(AcpClient::new());
         client.attach(stdout, stdin).await?;
 
-        // Permission handler routing — same three-way split as the Gemini
+        // Permission handler routing — same three-way split as the OpenCode
         // bridge: bypass → auto-allow; handler set → ask the user; neither →
         // auto-deny stub (safe fallback).
         // Per-tool overrides (tool_overrides) are consulted FIRST and
@@ -437,7 +437,7 @@ impl KimiBridge {
         }
 
         // Materialize merged MCP map (user registry + fleet built-ins) for ACP
-        // session/new — same wiring as the Gemini / Hermes / Cursor bridges.
+        // session/new — same wiring as the OpenCode / Hermes / Cursor bridges.
         let mcp_map = crate::services::mcp_dispatch::build_merged_map(
             &self.session_id,
             self.is_staff,
@@ -483,7 +483,7 @@ impl KimiBridge {
 
         // Model / base_url / header overrides don't apply at runtime for an
         // ACP subprocess (the session is already created, and `kimi acp`
-        // exposes no model flag). Documented Day-1 limit — parity with Gemini.
+        // exposes no model flag). Documented Day-1 limit — parity with OpenCode.
         if ctx.model_override.is_some() {
             tracing::warn!(
                 target: "kimi",
@@ -863,7 +863,7 @@ mod tests {
 
     #[test]
     fn kimi_is_bypass_native_yolo_auto_allows() {
-        // Kimi/Gemini native "yolo" maps to the bypass tier — same as
+        // Kimi's native "yolo" maps to the bypass tier — same as
         // bypassPermissions.
         assert!(kimi_is_bypass("yolo"));
         assert_eq!(kimi_is_bypass("yolo"), kimi_is_bypass("bypassPermissions"));

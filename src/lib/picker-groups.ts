@@ -36,7 +36,7 @@ export interface PickerGroup {
  *  into the binary (so the registry can't ship them). When buildPickerGroups
  *  encounters a CLI tile whose catalog `default_models` is empty, it pulls
  *  the list from here instead. Mirrors src/components/chat/chat-input.tsx's
- *  CLAUDE_MODELS / CODEX_MODELS / GEMINI_MODELS (kept in sync by hand). */
+ *  CLAUDE_MODELS / CODEX_MODELS (kept in sync by hand). */
 /** Reusable no-effort descriptor for models that expose no effort lever. */
 const EFFORT_NONE: EffortCapability = { kind: "none" };
 
@@ -76,23 +76,6 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
     },
     {
       id: "gpt-5.5", label: "GPT-5.5", ctx: "200K",
-      effort: EFFORT_NONE,
-      supports_effort: false,
-    },
-  ],
-  "gemini-cli": [
-    {
-      id: "gemini-3.1-pro-preview", label: "3.1 Pro", ctx: "1M",
-      effort: EFFORT_NONE,
-      supports_effort: false,
-    },
-    {
-      id: "gemini-3-flash-preview", label: "3 Flash", ctx: "1M",
-      effort: EFFORT_NONE,
-      supports_effort: false,
-    },
-    {
-      id: "gemini-3.1-flash-lite-preview", label: "3.1 Lite", ctx: "1M",
       effort: EFFORT_NONE,
       supports_effort: false,
     },
@@ -208,7 +191,6 @@ const CLI_FALLBACK_LABELS: Record<string, string> = {
   "claude-code":     "Claude Code",
   claude:            "Claude Code", // legacy id alias (pre-rename sessions)
   "codex-cli":             "Codex CLI",
-  "gemini-cli":            "Gemini CLI",
   "kimi-code":              "Kimi Code",
   opencode:          "OpenCode",
   "cursor-cli":            "Cursor CLI",

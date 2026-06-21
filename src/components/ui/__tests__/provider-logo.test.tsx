@@ -8,7 +8,6 @@ describe("ProviderLogo — agent brand icons", () => {
     ["claude-code", "Claude Code"],
     ["anthropic", "Claude Code"],
     ["codex-cli", "Codex"],
-    ["gemini-cli", "Gemini"],
     ["gemini-api", "Gemini"],
     ["kimi-code", "Kimi"],
     ["kimi-api", "Kimi"],

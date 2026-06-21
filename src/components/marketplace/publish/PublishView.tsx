@@ -31,10 +31,9 @@ interface Props {
   onClose: () => void;
 }
 
-const PROVIDERS: { id: "claude-code" | "codex-cli" | "gemini-cli"; label: string }[] = [
+const PROVIDERS: { id: "claude-code" | "codex-cli"; label: string }[] = [
   { id: "claude-code", label: "Claude Code" },
   { id: "codex-cli",  label: "Codex"  },
-  { id: "gemini-cli", label: "Gemini CLI" },
 ];
 
 const COMPONENTS: { key: keyof ScaffoldInput["components"]; label: string; hint: string }[] = [
@@ -61,7 +60,7 @@ export function PublishView({ onClose }: Props) {
   const [homepage, setHomepage] = useState("");
   const [license, setLicense] = useState("MIT");
   const [tagsRaw, setTagsRaw] = useState("");
-  const [providers, setProviders] = useState<("claude-code" | "codex-cli" | "gemini-cli")[]>(["claude-code", "codex-cli", "gemini-cli"]);
+  const [providers, setProviders] = useState<("claude-code" | "codex-cli")[]>(["claude-code", "codex-cli"]);
   const [components, setComponents] = useState({
     mcp_server: true,
     skill: false,
@@ -132,7 +131,7 @@ export function PublishView({ onClose }: Props) {
     return <SuccessView path={result.path} written={result.written} onClose={onClose} />;
   }
 
-  const toggleProvider = (id: "claude-code" | "codex-cli" | "gemini-cli") => {
+  const toggleProvider = (id: "claude-code" | "codex-cli") => {
     setProviders(prev => prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id]);
   };
   const toggleComponent = (k: keyof typeof components) => {

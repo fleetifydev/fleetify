@@ -60,7 +60,7 @@ fn agent_key(a: AgentKind) -> &'static str {
     match a {
         AgentKind::Claude => "claude-code",
         AgentKind::OpenAI => "openai",
-        AgentKind::Gemini => "gemini-cli",
+        AgentKind::Gemini => "gemini-api",
         AgentKind::Codex => "codex-cli",
         AgentKind::Kimi => "kimi-code",
         AgentKind::GitHubCopilot => "github-copilot",
@@ -126,8 +126,8 @@ tiers = ["gpt-4o-mini", "gpt-4o"]
     #[test]
     fn unknown_allowed_agent_dropped() {
         let sel = AgentSelector::new(matrix());
-        // Gemini isn't in the test matrix; only claude survives.
-        let c = sel.rank(&task("hello", vec![AgentKind::Gemini, AgentKind::Claude]));
+        // Kimi isn't in the test matrix; only claude survives.
+        let c = sel.rank(&task("hello", vec![AgentKind::Kimi, AgentKind::Claude]));
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].agent, AgentKind::Claude);
     }

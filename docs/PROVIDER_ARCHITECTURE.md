@@ -47,7 +47,7 @@ the registry.
 enum ProviderKind { Api, LocalHttp, Cli }
 ```
 
-- **`Cli`** — a local subprocess agent (Claude Code, Codex, Gemini CLI, Kimi,
+- **`Cli`** — a local subprocess agent (Claude Code, Codex, Kimi,
   OpenCode, Cursor, GitHub Copilot, Hermes, Antigravity CLI, Antigravity SDK).
   Auth is **out-of-band** (the agent's own `login`); Fleetify never holds the
   credential. Models usually live inside the binary, so `default_models` is
@@ -169,7 +169,6 @@ match session.tool {
     "cursor"                                   => AnyBridge::Cursor(…)     // ACP
     "github-copilot"                           => AnyBridge::GitHubCopilot(…) // ACP
     "hermes"                                   => AnyBridge::Hermes(…)     // ACP
-    "gemini"                                   => AnyBridge::Gemini(…)     // ACP
     "codex"                                    => AnyBridge::Codex(…)      // app-server
     "agy"                                      => AnyBridge::Antigravity(…)// PTY -p
     "antigravity-sdk"                          => AnyBridge::AntigravitySdk(…) // py sidecar

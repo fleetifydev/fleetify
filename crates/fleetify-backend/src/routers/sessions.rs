@@ -61,7 +61,6 @@ pub fn router() -> Router<AppState> {
             get(get_session_rules).put(set_session_rules),
         )
         .route("/claude-sessions", get(list_claude_sessions))
-        .route("/gemini-sessions", get(list_gemini_sessions))
         .route("/codex-sessions", get(list_codex_sessions))
         .route("/git/repos", get(list_user_repos))
         .route("/git/clone", post(clone_repository))
@@ -219,10 +218,10 @@ async fn create_session(
     if !raw.is_empty() {
         let p = std::path::Path::new(&raw);
         // Strip Windows verbatim (`\\?\`) prefix — `std::fs::canonicalize`
-        // returns it on Windows, and gemini-cli's ACP rejects it with
-        // `EISDIR: illegal operation on a directory, lstat 'C:'` (verified
-        // against gemini-cli 0.42.0). Storing the normalized form keeps
-        // every downstream bridge (claude/gemini/codex) happy.
+        // returns it on Windows, and some ACP agents reject it with
+        // `EISDIR: illegal operation on a directory, lstat 'C:'`. Storing
+        // the normalized form keeps every downstream bridge (claude/codex)
+        // happy.
         let resolved = fleetify_core::canonicalize_or_keep(p);
         if !resolved.is_dir() {
             return Err(ApiError::BadRequest(format!(
@@ -1299,7 +1298,7 @@ async fn list_hooks(
 ) -> Result<Json<Value>, ApiError> {
     let s = owned(&st, &id, &user.id).await?;
     let provider = s.tool.as_str();
-    if !matches!(provider, "claude-code" | "gemini-cli" | "codex-cli") {
+    if !matches!(provider, "claude-code" | "codex-cli") {
         return Ok(Json(json!({ "items": [] })));
     }
     let home = std::path::PathBuf::from(
@@ -1331,7 +1330,7 @@ async fn list_commands(
 ) -> Result<Json<Value>, ApiError> {
     let s = owned(&st, &id, &user.id).await?;
     let provider = s.tool.as_str();
-    if !matches!(provider, "claude-code" | "gemini-cli" | "codex-cli") {
+    if !matches!(provider, "claude-code" | "codex-cli") {
         return Ok(Json(json!({ "items": [] })));
     }
     let home = std::path::PathBuf::from(
@@ -1357,7 +1356,7 @@ async fn list_commands(
 }
 
 /// `/sessions/{id}/skills` — provider-aware skill scan via
-/// services::provider_inspector. Claude / Gemini / Codex each have
+/// services::provider_inspector. Claude / Codex each have
 /// their own directory matrix (user, project, system tiers); unknown
 /// tools return `{items: []}`.
 async fn list_skills(
@@ -1367,7 +1366,7 @@ async fn list_skills(
 ) -> Result<Json<Value>, ApiError> {
     let s = owned(&st, &id, &user.id).await?;
     let provider = s.tool.as_str();
-    if !matches!(provider, "claude-code" | "gemini-cli" | "codex-cli") {
+    if !matches!(provider, "claude-code" | "codex-cli") {
         return Ok(Json(json!({ "items": [] })));
     }
     let home = std::path::PathBuf::from(
@@ -1421,22 +1420,6 @@ async fn list_claude_sessions(
     });
     let rows = tokio::task::spawn_blocking(move || {
         crate::services::claude_history::scan_sessions_all_accounts(project_path.as_deref())
-    })
-    .await
-    .unwrap_or_default();
-    let v: Vec<Value> = rows
-        .into_iter()
-        .map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
-        .collect();
-    Json(Value::Array(v))
-}
-async fn list_gemini_sessions(AuthUser(_u): AuthUser, Query(q): Query<PathQ>) -> Json<Value> {
-    if q.path.trim().is_empty() {
-        return Json(json!([]));
-    }
-    let path = q.path.clone();
-    let rows = tokio::task::spawn_blocking(move || {
-        crate::services::provider_sessions::list_gemini_sessions(&path)
     })
     .await
     .unwrap_or_default();

@@ -88,7 +88,9 @@ pub fn agent_kind_to_str(a: crate::services::routing::traits::AgentKind) -> &'st
     match a {
         AgentKind::Claude => "claude-code",
         AgentKind::OpenAI => "openai",
-        AgentKind::Gemini => "gemini-cli",
+        // Google family: only the HTTP `gemini-api` provider remains (the
+        // gemini-CLI agent was removed).
+        AgentKind::Gemini => "gemini-api",
         AgentKind::Codex => "codex-cli",
         AgentKind::Kimi => "kimi-code",
         AgentKind::GitHubCopilot => "github-copilot",
@@ -104,7 +106,7 @@ pub fn str_to_agent_kind(s: &str) -> Option<crate::services::routing::traits::Ag
         // the "claude" → "claude-code" rename.
         "claude" | "claude-code" => Some(AgentKind::Claude),
         "openai" => Some(AgentKind::OpenAI),
-        "gemini-cli" => Some(AgentKind::Gemini),
+        "gemini-api" => Some(AgentKind::Gemini),
         "codex-cli" => Some(AgentKind::Codex),
         "kimi-code" => Some(AgentKind::Kimi),
         "github-copilot" => Some(AgentKind::GitHubCopilot),
@@ -255,7 +257,7 @@ pub struct RoutingResolution {
 ///    a `routing_decisions` row, UPDATE the session's `pinned_*` columns,
 ///    emit a `routing_decision` telemetry event, return the new id.
 ///
-/// `manual_tool` MUST be one of `"claude-code" | "openai" | "gemini-cli" | "codex-cli"`;
+/// `manual_tool` MUST be one of `"claude-code" | "openai" | "gemini-api" | "codex-cli"`;
 /// anything else falls through to `AgentKind::Claude` so we never crash on
 /// a row with a bogus tool string (the chat handler already rejects unknown
 /// tools earlier in the flow, so this is purely defensive).
@@ -943,6 +945,8 @@ mod tests {
             AgentKind::OpenAI,
             AgentKind::Gemini,
             AgentKind::Codex,
+            AgentKind::Kimi,
+            AgentKind::GitHubCopilot,
         ] {
             assert_eq!(str_to_agent_kind(agent_kind_to_str(a)), Some(a));
         }

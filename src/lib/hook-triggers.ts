@@ -15,35 +15,35 @@ export interface HookTrigger {
 
 export const HOOK_TRIGGERS: HookTrigger[] = [
   { id: "pre_tool_use", label: "Before tool use", toolScoped: true, natives: {
-    "claude-code": "PreToolUse", "gemini-cli": "BeforeTool", "codex-cli": "PreToolUse",
+    "claude-code": "PreToolUse", "codex-cli": "PreToolUse",
     "cursor-cli": "preToolUse", "kimi-code": "PreToolUse", "antigravity-cli": "PreToolUse",
     "github-copilot": "preToolUse" } },
   { id: "post_tool_use", label: "After tool use", toolScoped: true, natives: {
-    "claude-code": "PostToolUse", "gemini-cli": "AfterTool", "codex-cli": "PostToolUse",
+    "claude-code": "PostToolUse", "codex-cli": "PostToolUse",
     "cursor-cli": "postToolUse", "kimi-code": "PostToolUse", "antigravity-cli": "PostToolUse",
     "github-copilot": "postToolUse" } },
   { id: "user_prompt_submit", label: "User prompt submit", toolScoped: false, natives: {
-    "claude-code": "UserPromptSubmit", "gemini-cli": "BeforeAgent", "codex-cli": "UserPromptSubmit",
+    "claude-code": "UserPromptSubmit", "codex-cli": "UserPromptSubmit",
     "cursor-cli": "beforeSubmitPrompt", "kimi-code": "UserPromptSubmit",
     "github-copilot": "userPromptSubmitted" } },
   { id: "session_start", label: "Session start", toolScoped: false, natives: {
-    "claude-code": "SessionStart", "gemini-cli": "SessionStart", "codex-cli": "SessionStart",
+    "claude-code": "SessionStart", "codex-cli": "SessionStart",
     "cursor-cli": "sessionStart", "kimi-code": "SessionStart", "github-copilot": "sessionStart" } },
   { id: "session_end", label: "Session end", toolScoped: false, natives: {
-    "claude-code": "SessionEnd", "gemini-cli": "SessionEnd", "cursor-cli": "sessionEnd",
+    "claude-code": "SessionEnd", "cursor-cli": "sessionEnd",
     "kimi-code": "SessionEnd", "github-copilot": "sessionEnd" } },
   { id: "stop", label: "Agent stop", toolScoped: false, natives: {
-    "claude-code": "Stop", "gemini-cli": "AfterAgent", "codex-cli": "Stop", "cursor-cli": "stop",
+    "claude-code": "Stop", "codex-cli": "Stop", "cursor-cli": "stop",
     "kimi-code": "Stop", "antigravity-cli": "Stop", "github-copilot": "agentStop" } },
   { id: "before_model", label: "Before model call", toolScoped: false, natives: {
-    "gemini-cli": "BeforeModel", "antigravity-cli": "PreInvocation" } },
+    "antigravity-cli": "PreInvocation" } },
   { id: "after_model", label: "After model call", toolScoped: false, natives: {
-    "gemini-cli": "AfterModel", "antigravity-cli": "PostInvocation" } },
+    "antigravity-cli": "PostInvocation" } },
   { id: "pre_compact", label: "Before compaction", toolScoped: false, natives: {
-    "claude-code": "PreCompact", "gemini-cli": "PreCompress", "codex-cli": "PreCompact",
+    "claude-code": "PreCompact", "codex-cli": "PreCompact",
     "cursor-cli": "preCompact", "kimi-code": "PreCompact", "github-copilot": "preCompact" } },
   { id: "notification", label: "Notification", toolScoped: false, natives: {
-    "claude-code": "Notification", "gemini-cli": "Notification", "kimi-code": "Notification",
+    "claude-code": "Notification", "kimi-code": "Notification",
     "github-copilot": "notification" } },
 ];
 
