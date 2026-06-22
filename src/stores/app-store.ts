@@ -881,14 +881,22 @@ export const useAppStore = create<AppState>((set, get) => ({
           const pick = connected.find((t) => t.is_default) ?? connected[0];
           if (pick) defaultProvider = pick.spec.id as Session["tool"];
         }
+        // Pass discovered models so API-provider (and live CLI) defaults are
+        // visible in the groups; the flag also rides in via CLI_MODELS for the
+        // offline CLI agents. resolveSessionModel then heals a missing/stale
+        // model to the provider's FLAGGED default (not just the first model),
+        // silently — no notification (fail-open on ok/unverified).
+        const { useDiscoveredModelsStore } = await import("@/stores/discovered-models-store");
+        const { resolveSessionModel } = await import("@/lib/model-resolution");
         const groups = buildPickerGroups(
           tiles,
           tiles.filter((t) => t.spec.kind === "cli" && t.connected).map((t) => t.spec.id),
+          useDiscoveredModelsStore.getState().models,
         );
         const provModels = groups.find((g) => g.id === defaultProvider)?.models ?? [];
-        const firstModel = provModels[0];
-        if (defaultProvider !== "auto" && firstModel && !provModels.some((m) => m.id === defaultModel)) {
-          defaultModel = firstModel.id;
+        if (defaultProvider !== "auto" && provModels.length > 0) {
+          const r = resolveSessionModel(defaultModel, provModels);
+          if (r.status === "healed") defaultModel = r.model;
         }
       }
     } catch { /* keep cfg / hardcoded fallbacks */ }

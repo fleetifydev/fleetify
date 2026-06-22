@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback, useState, useMemo, memo } from "react";
 import Lenis from "lenis";
 import { useAppStore, COMPOSER_CHAT_KEY } from "@/stores/app-store";
-import { useChatStore, selectSession, typeOutAssistantMessage } from "@/stores/chat-store";
+import { useChatStore, selectSession, typeOutAssistantMessage, pushChatError } from "@/stores/chat-store";
 import { wsManager, compactionOptimisticId } from "@/services/ws-manager";
 import { ChatInput, type Attachment } from "./chat-input";
 import { MessageContent, StreamingMessage } from "./message-content";
@@ -14,7 +14,10 @@ import { fetchMessages, fetchClaudeHistory, createSession, clearSessionMessages,
 import { registerConfigPatch } from "@/lib/session-config-sync";
 import { usesInAppTitleBar, folderName } from "@/lib/utils";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
-import { resolveStartupDefault, hermesHealModel, HERMES_DEFAULT_SENTINEL, contextWindowForModel } from "@/lib/picker-groups";
+import { resolveStartupDefault, hermesHealModel, HERMES_DEFAULT_SENTINEL, contextWindowForModel, buildPickerGroups, resolveDispatchTool } from "@/lib/picker-groups";
+import { providers } from "@/lib/providers-api";
+import { useDiscoveredModelsStore } from "@/stores/discovered-models-store";
+import { resolveSessionModel, sendBlockMessage } from "@/lib/model-resolution";
 import { FleetDecisionCard } from "./fleet-decision-card";
 import { useFleetStore, AUTO_CHAIN_CAP } from "@/stores/fleet-store";
 import { LogoMark } from "@/components/brand/logo-mark";
@@ -838,12 +841,59 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     sendLock.current = true;
     setTimeout(() => { sendLock.current = false; }, 600);
     setScrollSpacer(typeof window !== "undefined" ? window.innerHeight : 900);
+
+    // Pre-send model guard. The session's persisted model_name may be stale
+    // (removed from the catalog). Heal it to the provider default silently +
+    // persist (so the next send is clean) and proceed; only BLOCK when the
+    // provider is known + connected yet has zero models to fall back to
+    // (status "missing"). Mirrors openComposer's resolve idiom. This complements
+    // the backend dispatch guard (B2, HTTP providers) by covering CLI/ACP agents
+    // and giving instant in-chat feedback.
+    //
+    // FAIL-OPEN: any error resolving the catalog/groups must never block a
+    // legitimate send — the whole block is best-effort and falls through to the
+    // send on throw. "auto" is Fleet's cross-provider router (no pinned model),
+    // so it's exempt entirely.
+    try {
+      const session = useAppStore.getState().sessions.find((s) => s.id === sessionId);
+      if (session && session.tool !== "auto") {
+        const tiles = (await providers.listCatalog()).tiles ?? [];
+        const groups = buildPickerGroups(
+          tiles,
+          tiles.filter((t) => t.spec.kind === "cli" && t.connected).map((t) => t.spec.id),
+          useDiscoveredModelsStore.getState().models,
+        );
+        const dispatchTool = resolveDispatchTool(session.tool);
+        const provModels = groups.find((g) => g.id === dispatchTool)?.models ?? [];
+        // providerKnownEmpty: only assert when the provider tile EXISTS and is
+        // connected but the resolved group has no models — i.e. we genuinely
+        // know the provider yet have nothing to heal to. Otherwise leave false
+        // so resolveSessionModel reports "unverified" (fail-open) on an empty
+        // list (cold-start race / transient discovery miss) and we never block.
+        const tile = tiles.find((t) => t.spec.id === dispatchTool);
+        const providerKnownEmpty = !!tile && tile.connected && provModels.length === 0;
+        const r = resolveSessionModel(session.model_name ?? null, provModels, { providerKnownEmpty });
+        if (r.status === "healed") {
+          // Persist the corrected model the same way the toolbar picker does
+          // (handleModelChange): optimistic store update + a tracked PATCH the
+          // WS send waits on, so the message dispatches with the healed model.
+          updateSession(sessionId, { model_name: r.model });
+          registerConfigPatch(sessionId, apiUpdateSession(sessionId, { model_name: r.model }));
+        }
+        const block = sendBlockMessage(r);
+        if (block) { pushChatError(sessionId, block); sendLock.current = false; return; }
+      }
+    } catch (err) {
+      // Never block on a guard failure — log and proceed to send.
+      console.error("pre-send model guard failed (proceeding):", err);
+    }
+
     try {
       await wsManager.send(sessionId, text, attachments);
     } catch (err) {
       console.error("send failed:", err);
     }
-  }, []);
+  }, [updateSession]);
 
   const handleStop = useCallback(() => {
     if (effectiveSessionId) wsManager.abort(effectiveSessionId);

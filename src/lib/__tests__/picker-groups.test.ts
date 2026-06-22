@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildPickerGroups, effortForDiscoveredModel, resolveDispatchTool, resolveModelChip, modelsForTile, resolveStartupDefault, hermesProviders, hermesHealModel, parseContextWindow, contextWindowForModel } from "../picker-groups";
+import type { PickerGroup } from "../picker-groups";
 import type { ProviderTile, ProviderSpec } from "@/lib/providers-api";
 
 describe("parseContextWindow", () => {
@@ -124,6 +125,17 @@ describe("buildPickerGroups", () => {
     expect(sonnet?.label).toBe("Sonnet 4.6");
     expect(sonnet?.effort.kind).toBe("none");
     expect(sonnet?.supports_effort).toBe(false);
+  });
+
+  // C4: the offline CLI fallback must carry the authored default so the picker
+  // resolves the same default model as the remote catalog before discovery
+  // loads. claude-code's CLI_MODELS default is Opus 4.8.
+  it("flags the claude-code CLI fallback default as claude-opus-4-8", () => {
+    const groups = buildPickerGroups([baseTile("claude-code", "Claude Code", "cli")], ["claude-code"]);
+    const claude = groups.find((g) => g.id === "claude-code");
+    expect(claude?.models.find((m) => m.default)?.id).toBe("claude-opus-4-8");
+    // Exactly one default per agent.
+    expect(claude?.models.filter((m) => m.default)).toHaveLength(1);
   });
 
   it("a cold-start CLI model has supports_effort === false", () => {
@@ -448,15 +460,17 @@ describe("resolveModelChip", () => {
     expect(resolveModelChip(groups, "perplexity", "openai/gpt-5.5").dispatchTool).toBe("perplexity");
   });
 
-  it("falls through label resolution: CLI table → raw id → 'Default'", () => {
+  it("falls through label resolution: CLI table → raw id → neutral 'Auto'", () => {
     expect(resolveModelChip([], "claude-code", "claude-opus-4-8").label).toBe("Opus 4.8"); // CLI table
     // Fable 5 must resolve from the cold-start CLI table too (before the
     // discovered-catalog store hydrates / offline), not render as its raw id.
     expect(resolveModelChip([], "claude-code", "claude-fable-5").label).toBe("Fable 5");
     expect(resolveModelChip([], "claude-code", "totally-unknown-xyz").label).toBe("totally-unknown-xyz"); // raw id
-    // Null model = the provider's own default (spawned agents) — labelled
-    // "Default", and the face stays on the SESSION's tool.
-    expect(resolveModelChip([], "claude-code", null).label).toBe("Default");
+    // Null model = the provider's own default (spawned agents). With no groups
+    // loaded there's no default model to name, so the neutral last resort is
+    // "Auto" (never the placeholder-looking "Default"); the face stays on the
+    // SESSION's tool.
+    expect(resolveModelChip([], "claude-code", null).label).toBe("Auto");
     expect(resolveModelChip([], "claude-code", null).dispatchTool).toBe("claude-code");
   });
 
@@ -485,6 +499,37 @@ describe("resolveModelChip", () => {
     // the persisted model_name (away from "default"), it does not relabel "default".
     const groups = buildPickerGroups([baseTile("hermes-agent", "Hermes Agent", "cli")], ["hermes-agent"]);
     expect(resolveModelChip(groups, "hermes-agent", "default").label).toBe("Hermes (configured model)");
+  });
+
+  it("resolveModelChip resolves an empty model to the provider default's label, never 'Default'", () => {
+    const groups = [
+      { id: "claude-code", label: "Claude Code", models: [
+        { id: "claude-sonnet-4-6", label: "Sonnet 4.6", effort: { kind: "none" }, supports_effort: false },
+        { id: "claude-opus-4-8", label: "Opus 4.8", default: true, effort: { kind: "none" }, supports_effort: false },
+      ] },
+    ] as PickerGroup[];
+    const chip = resolveModelChip(groups, "claude-code", null);
+    expect(chip.label).toBe("Opus 4.8");
+    expect(chip.label).not.toBe("Default");
+  });
+
+  it("resolveModelChip falls back to the group's first model when none is flagged default", () => {
+    const groups = [
+      { id: "claude-code", label: "Claude Code", models: [
+        { id: "claude-sonnet-4-6", label: "Sonnet 4.6", effort: { kind: "none" }, supports_effort: false },
+        { id: "claude-opus-4-8", label: "Opus 4.8", effort: { kind: "none" }, supports_effort: false },
+      ] },
+    ] as PickerGroup[];
+    expect(resolveModelChip(groups, "claude-code", null).label).toBe("Sonnet 4.6");
+  });
+
+  it("resolveModelChip resolves an empty model to a neutral 'Auto' when no group/model exists", () => {
+    // No groups at all (cold-start race) and no model on the session → the
+    // last-resort label is the neutral "Auto", never the placeholder "Default".
+    const chip = resolveModelChip([], "claude-code", null);
+    expect(chip.label).toBe("Auto");
+    expect(chip.label).not.toBe("Default");
+    expect(chip.dispatchTool).toBe("claude-code");
   });
 });
 
@@ -571,13 +616,15 @@ describe("resolveStartupDefault", () => {
     expect(r).toEqual({ tool: "claude-code", model: "claude-sonnet-4-6" });
   });
 
-  it("falls back to the provider's first model when the persisted model is invalid", () => {
+  it("heals an invalid persisted model to the provider's FLAGGED default", () => {
     const tiles = [tile("claude-code", "cli", [], { is_default: true })];
     const r = resolveStartupDefault(tiles, "not-a-real-model");
     expect(r.tool).toBe("claude-code");
-    // First CLI-table entry — Fable 5 leads, matching the remote catalog's
-    // newest-flagship-first ordering.
-    expect(r.model).toBe("claude-fable-5");
+    // resolveStartupDefault now routes the final pick through
+    // resolveSessionModel, so a stale model heals to the group's FLAGGED
+    // default (claude-opus-4-8 via the CLI_MODELS `default` flag), not the
+    // first table entry (claude-fable-5).
+    expect(r.model).toBe("claude-opus-4-8");
   });
 
   it("falls back to the first connected tile and claude when none is default", () => {

@@ -1349,12 +1349,29 @@ async fn run_send_flow(
                 let _ = st.sm.update_status(&st.auth.pool, &sid, "idle").await;
                 return;
             };
-            let model = session.model_name.clone().unwrap_or_else(|| {
-                spec.default_models
-                    .first()
-                    .map(|m| m.id.to_string())
-                    .unwrap_or_default()
-            });
+            // Safety-net: validate/heal the session's model id against the
+            // provider's baked catalog. Valid id ⇒ itself; invalid id with a
+            // known model list ⇒ heal to the first baked model; empty list
+            // (dynamic / CLI providers like Ollama) ⇒ fail-open. `Err(())`
+            // (provider has models but none to heal to) surfaces the same
+            // error-event shape as the `unknown provider` branch above
+            // instead of calling the vendor with a dead model.
+            let model = match crate::providers::helpers::resolve_dispatch_model(
+                session.model_name.as_deref(),
+                spec,
+            ) {
+                Ok(m) => m,
+                Err(()) => {
+                    send_json(
+                        &sink,
+                        json!({"type":"error","session_id":sid,
+                               "error":format!("model is no longer available for {pid}")}),
+                    )
+                    .await;
+                    let _ = st.sm.update_status(&st.auth.pool, &sid, "idle").await;
+                    return;
+                }
+            };
 
             // Agentic dispatch: HTTP-provider sessions ALWAYS run through
             // the agentic loop (workspace context in the system prompt +

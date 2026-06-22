@@ -28,6 +28,31 @@ pub fn list_api_providers() -> Vec<&'static ProviderSpec> {
         .collect()
 }
 
+/// Resolve the model id to dispatch for an HTTP provider. Valid id ⇒ itself.
+/// Invalid id with a known model list ⇒ heal to the first baked model. Empty
+/// model list (dynamic / CLI providers) ⇒ fail-open (return as-is). `Err(())`
+/// only when the provider has a model list but nothing to heal to.
+///
+/// This is a SAFETY NET, not the authoring path: it heals to
+/// `default_models.first()` (the first baked model), NOT the `default`-flagged
+/// model — the frontend owns honouring the flagged default before send.
+pub fn resolve_dispatch_model(
+    model_name: Option<&str>,
+    spec: &'static ProviderSpec,
+) -> Result<String, ()> {
+    let m = model_name.unwrap_or("");
+    if spec.default_models.is_empty() {
+        return Ok(m.to_string()); // dynamic/CLI — cannot validate, fail-open
+    }
+    if !m.is_empty() && spec.default_models.iter().any(|x| x.id == m) {
+        return Ok(m.to_string());
+    }
+    match spec.default_models.first() {
+        Some(first) => Ok(first.id.to_string()),
+        None => Err(()),
+    }
+}
+
 /// CLI agents only. Drives Settings → Agents tile list.
 pub fn list_cli_agents() -> Vec<&'static ProviderSpec> {
     CATALOG
@@ -136,6 +161,44 @@ mod tests {
         // the vision model 403s until the user accepts a separate license.
         assert!(!ids.contains(&"@cf/meta/llama-guard-3-8b"));
         assert!(!ids.contains(&"@cf/meta/llama-3.2-11b-vision-instruct"));
+    }
+
+    #[test]
+    fn resolve_dispatch_model_valid_passes_through() {
+        let s = find_provider("openai").expect("openai in catalog");
+        let first = s.default_models.first().expect("openai has models").id;
+        assert_eq!(
+            resolve_dispatch_model(Some(first), s),
+            Ok(first.to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_dispatch_model_invalid_heals_to_first() {
+        let s = find_provider("openai").expect("openai in catalog");
+        let first = s.default_models.first().unwrap().id.to_string();
+        assert_eq!(
+            resolve_dispatch_model(Some("nonexistent-xyz"), s),
+            Ok(first)
+        );
+    }
+
+    #[test]
+    fn resolve_dispatch_model_empty_default_models_fail_open() {
+        // claude-code is a CLI provider with `default_models == &[]`.
+        let s = find_provider("claude-code").expect("claude-code in catalog");
+        assert!(s.default_models.is_empty());
+        assert_eq!(
+            resolve_dispatch_model(Some("whatever"), s),
+            Ok("whatever".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_dispatch_model_null_heals_to_first_for_http_provider() {
+        let s = find_provider("openai").unwrap();
+        let first = s.default_models.first().unwrap().id.to_string();
+        assert_eq!(resolve_dispatch_model(None, s), Ok(first));
     }
 
     #[test]

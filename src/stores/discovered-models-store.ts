@@ -23,6 +23,7 @@ import { create } from "zustand";
 import { fetchAgentModels, fetchProviderModels, type DiscoveredModel } from "@/lib/api";
 import { effortForDiscoveredModel, type PickerModel } from "@/lib/picker-groups";
 import type { ProviderTile } from "@/lib/providers-api";
+import { resolveSessionModel } from "@/lib/model-resolution";
 
 /** CLI agents whose lineup the backend serves from the remote model catalog
  *  (fleetify.dev/api) - cheap to fetch eagerly at mount. */
@@ -48,6 +49,7 @@ function toPickerModels(
       note: m.note,
       effort: eff,
       supports_effort: eff.kind !== "none",
+      default: m.default ?? false,
     };
   });
 }
@@ -60,7 +62,22 @@ interface DiscoveredModelsState {
   hydrated: boolean;
   hydrate: (tiles: ProviderTile[]) => Promise<void>;
   discoverLive: (tiles: ProviderTile[], projectPath?: string) => Promise<void>;
+  /** Heal stale persisted Fleet-default / Sessions-Default model ids against
+   *  the freshly-discovered catalog. Durable-config side of self-healing:
+   *  reads config, and for each (provider, model) pair whose model no longer
+   *  exists for its provider, rewrites it to the provider's flagged default
+   *  (via `resolveSessionModel`) and merge-writes config. Silent, fail-open
+   *  (skips a pair whose provider has no discovered models). Called at the end
+   *  of `hydrate` / `discoverLive`; never re-triggers them. */
+  reconcileFleetDefault: () => Promise<void>;
 }
+
+/** (providerKey, modelKey) pairs in `FleetConfig` to reconcile. Typed against
+ *  `keyof FleetConfig` so indexing below stays honest (each is `string?`). */
+const RECONCILE_PAIRS: readonly [keyof FleetConfig, keyof FleetConfig][] = [
+  ["defaultProvider", "defaultModel"],
+  ["sessionDefaultProvider", "sessionDefaultModel"],
+];
 
 export const useDiscoveredModelsStore = create<DiscoveredModelsState>((set, get) => {
   const storeAgent = async (agentId: string, cwd: string, tiles: ProviderTile[]) => {
@@ -87,6 +104,9 @@ export const useDiscoveredModelsStore = create<DiscoveredModelsState>((set, get)
         ...REMOTE_CATALOG_AGENTS.map((id) => storeAgent(id, "", tiles)),
         ...connectedApiIds(tiles).map((pid) => storeProvider(pid, tiles)),
       ]);
+      // Heal stale persisted defaults against the catalog we just populated.
+      // `get()` so the freshly-`set` models are visible to reconcile.
+      await get().reconcileFleetDefault();
     },
 
     async discoverLive(tiles, projectPath = "") {
@@ -95,6 +115,49 @@ export const useDiscoveredModelsStore = create<DiscoveredModelsState>((set, get)
         ...LIVE_PROBE_AGENTS.map((id) => storeAgent(id, projectPath, tiles)),
         ...connectedApiIds(tiles).map((pid) => storeProvider(pid, tiles)),
       ]);
+      await get().reconcileFleetDefault();
+    },
+
+    async reconcileFleetDefault() {
+      // Best-effort read; no config bridge or a throwing one ⇒ nothing to heal.
+      let cfg: FleetConfig | null | undefined;
+      try {
+        cfg = await window.electronAPI?.getConfig?.();
+      } catch {
+        return;
+      }
+      if (!cfg) return;
+
+      const models = get().models;
+      const next: FleetConfig = { ...cfg };
+      let changed = false;
+      for (const [pk, mk] of RECONCILE_PAIRS) {
+        const prov = cfg[pk] as string | undefined;
+        const avail = prov ? models[prov] : undefined;
+        // Fail-open: skip when the provider isn't pinned or has no discovered
+        // models (catalog unavailable for it — don't clobber a maybe-valid id).
+        if (!prov || !avail || avail.length === 0) continue;
+        const persisted = cfg[mk] as string | undefined;
+        const r = resolveSessionModel(persisted ?? null, avail);
+        // Only the "healed" verdict means the id was genuinely stale; "ok" /
+        // "unverified" leave config untouched.
+        if (r.status === "healed" && r.model !== persisted) {
+          (next[mk] as string) = r.model;
+          changed = true;
+        }
+      }
+      // Nothing healed ⇒ no write. This (plus reconcile never calling
+      // hydrate/discoverLive nor touching `hydrated`/`models`) keeps the
+      // catalog-load → reconcile path free of any reconcile↔hydrate loop:
+      // a `setConfig` here does not feed back into this store.
+      if (!changed) return;
+      // FULL REPLACE contract: `next` is the spread of the complete config
+      // getConfig returned, so the merge-write loses no other fields.
+      try {
+        await window.electronAPI?.setConfig?.(next);
+      } catch {
+        /* best-effort: a failed persist just leaves the stale id for next load */
+      }
     },
   };
 });

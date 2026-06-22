@@ -138,6 +138,9 @@ export interface DiscoveredModel {
   group?: string;
   note?: string;
   endpoint?: string;
+  /** Backend marks exactly one model per agent/provider lineup as the catalog
+   *  default (Task B1). Drives default-model resolution in the renderer. */
+  default?: boolean;
 }
 export async function listModels(): Promise<{ providers: CatalogProvider[] }> {
   const res = await apiFetch(`${API_BASE}/models`);

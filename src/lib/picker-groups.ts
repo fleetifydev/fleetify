@@ -1,4 +1,5 @@
 import type { ProviderTile, EffortCapability } from "@/lib/providers-api";
+import { resolveSessionModel } from "@/lib/model-resolution";
 
 export interface PickerModel {
   id: string;
@@ -10,6 +11,8 @@ export interface PickerModel {
    *  for backwards compatibility with any consumer that still reads it directly. */
   effort: EffortCapability;
   supports_effort: boolean;
+  /** True when the backend catalog flags this as the lineup's default model. */
+  default?: boolean;
 }
 
 export interface PickerGroup {
@@ -51,6 +54,7 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
       id: "claude-opus-4-8", label: "Opus 4.8", ctx: "200K",
       effort: EFFORT_NONE,
       supports_effort: false,
+      default: true,
     },
     {
       id: "claude-sonnet-4-6", label: "Sonnet 4.6", ctx: "200K",
@@ -85,6 +89,7 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
       id: "kimi-k2.6", label: "Kimi K2.6", ctx: "256K",
       effort: EFFORT_NONE,
       supports_effort: false,
+      default: true,
     },
     {
       id: "kimi-k2.6-thinking", label: "Kimi K2.6 Thinking", ctx: "256K",
@@ -575,11 +580,14 @@ export function resolveStartupDefault(
   const groupModels = groups
     .filter((g) => resolveDispatchTool(g.id) === tool)
     .flatMap((g) => g.models);
-  const persisted =
-    persistedDefaultModel && groupModels.some((m) => m.id === persistedDefaultModel)
-      ? persistedDefaultModel
-      : undefined;
-  return { tool, model: persisted ?? groupModels[0]?.id };
+  // Honor the FLAGGED default: a persisted model that's still valid is kept
+  // (status "ok"); a missing/stale one heals to the group's flagged default,
+  // else its first model. `groupModels` carries `default` for claude-code via
+  // the CLI_MODELS flag even without discovered models, so the Fleet seed picks
+  // the right model. (buildPickerGroups emits every CLI agent as a fallback, so
+  // the default tool's group is non-empty in practice.)
+  const r = resolveSessionModel(persistedDefaultModel ?? null, groupModels);
+  return { tool, model: r.model };
 }
 
 /** Strip the `perplexity:brand` sub-id back to the catalog provider id
@@ -617,6 +625,11 @@ export function resolveModelChip(
     groups.find((g) => g.models.some((m) => m.id === model)) ??
     groups.find((g) => g.id === tool);
   const activeModel = activeGroup?.models.find((m) => m.id === model);
+  // When the session has no model (null/empty), resolve the chip to the
+  // provider's OWN default model name instead of a placeholder-looking
+  // "Default": the tool group's flagged-`default` model, else its first model.
+  const groupForTool = groups.find((g) => g.id === tool);
+  const groupDefault = groupForTool?.models.find((m) => m.default) ?? groupForTool?.models[0];
   const label =
     activeModel?.label ??
     (model ? CLI_MODEL_LABELS[model] : undefined) ??
@@ -629,9 +642,10 @@ export function resolveModelChip(
       ? model.slice(model.indexOf(":") + 1)
       : undefined) ??
     model ??
-    // No model on the session (spawned agents default to the provider's
-    // own pick) — say so instead of a placeholder-looking "Model".
-    "Default";
+    // No model on the session (spawned agents default to the provider's own
+    // pick) — show the provider's default model name, neutral "Auto" last.
+    groupDefault?.label ??
+    "Auto";
   return { dispatchTool: resolveDispatchTool(activeGroup?.id ?? tool), label };
 }
 

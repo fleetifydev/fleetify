@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { fetchAgentModels, fetchProviderModels } from "@/lib/api";
 import { buildPickerGroups, resolveModelChip } from "@/lib/picker-groups";
 import type { ProviderTile } from "@/lib/providers-api";
@@ -84,6 +84,24 @@ describe("discovered-models-store hydrate", () => {
     expect(resolveModelChip(groups, "claude-code", "claude-fable-5").label).toBe("Fable 5");
   });
 
+  it("carries the catalog default flag into stored picker models", async () => {
+    mockedAgent.mockImplementation(async (id: string) =>
+      id === "claude-code"
+        ? {
+            models: [
+              { id: "claude-opus-4-8", label: "Opus 4.8", ctx: "200K", default: true },
+              { id: "claude-fable-5", label: "Fable 5", ctx: "200K" },
+            ],
+            current: null,
+          }
+        : { models: [], current: null },
+    );
+    await useDiscoveredModelsStore.getState().hydrate(TILES);
+    const models = useDiscoveredModelsStore.getState().models["claude-code"] ?? [];
+    expect(models.find((m) => m.id === "claude-opus-4-8")?.default).toBe(true);
+    expect(models.find((m) => m.id !== "claude-opus-4-8")?.default).toBe(false);
+  });
+
   it("is single-flight: a second hydrate does not refetch", async () => {
     await useDiscoveredModelsStore.getState().hydrate(TILES);
     const calls = mockedAgent.mock.calls.length;
@@ -106,5 +124,46 @@ describe("discovered-models-store discoverLive", () => {
     }
     expect(mockedAgent.mock.calls.every((c) => c[1] === "/work/proj")).toBe(true);
     expect(mockedProvider.mock.calls.map((c) => c[0])).toEqual(["openai"]);
+  });
+});
+
+describe("discovered-models-store reconcileFleetDefault", () => {
+  afterEach(() => {
+    // Drop the per-test electronAPI stub so it can't leak into other suites.
+    delete (window as { electronAPI?: unknown }).electronAPI;
+  });
+
+  it("reconcileFleetDefault rewrites a stale config.defaultModel to the provider's flagged default", async () => {
+    const setConfig = vi.fn(async () => true);
+    Object.defineProperty(window, "electronAPI", {
+      configurable: true,
+      value: {
+        getConfig: async () => ({ defaultProvider: "claude-code", defaultModel: "claude-opus-4-7" /* gone */ }),
+        setConfig,
+      },
+    });
+    // discovered models for claude-code, opus-4-8 flagged default
+    useDiscoveredModelsStore.setState({ models: { "claude-code": [
+      { id: "claude-sonnet-4-6", label: "Sonnet 4.6" } as any,
+      { id: "claude-opus-4-8", label: "Opus 4.8", default: true } as any,
+    ] } });
+    await useDiscoveredModelsStore.getState().reconcileFleetDefault();
+    expect(setConfig).toHaveBeenCalledWith(expect.objectContaining({ defaultModel: "claude-opus-4-8", defaultProvider: "claude-code" }));
+  });
+
+  it("reconcileFleetDefault leaves a still-valid config.defaultModel untouched", async () => {
+    const setConfig = vi.fn(async () => true);
+    Object.defineProperty(window, "electronAPI", {
+      configurable: true,
+      value: {
+        getConfig: async () => ({ defaultProvider: "claude-code", defaultModel: "claude-opus-4-8" }),
+        setConfig,
+      },
+    });
+    useDiscoveredModelsStore.setState({ models: { "claude-code": [
+      { id: "claude-opus-4-8", label: "Opus 4.8", default: true } as any,
+    ] } });
+    await useDiscoveredModelsStore.getState().reconcileFleetDefault();
+    expect(setConfig).not.toHaveBeenCalled();
   });
 });

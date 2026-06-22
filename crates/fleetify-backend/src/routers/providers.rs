@@ -450,6 +450,10 @@ struct ProviderModel {
     /// Opaque here — passed through verbatim to the renderer. `None` for
     /// live-discovery sources (OpenRouter/Cloudflare) that don't report it.
     effort: Option<serde_json::Value>,
+    /// Provider's default model flag (from the remote catalog). `false` unless
+    /// the catalog marks this model as the provider's default.
+    #[serde(default)]
+    default: bool,
 }
 type ProviderModelList = Vec<ProviderModel>;
 
@@ -467,6 +471,7 @@ impl ProviderModel {
             note: None,
             endpoint: None,
             effort: None,
+            default: false,
         }
     }
 }
@@ -536,6 +541,7 @@ fn provider_model_json(m: &ProviderModel) -> Value {
     if let Some(e) = &m.effort {
         o.insert("effort".into(), e.clone());
     }
+    o.insert("default".into(), json!(m.default));
     Value::Object(o)
 }
 
@@ -757,6 +763,7 @@ fn parse_remote_catalog(body: &Value) -> ProviderModelList {
                 note: str_field("note"),
                 endpoint: str_field("endpoint"),
                 effort: m.get("effort").cloned().filter(|v| !v.is_null()),
+                default: m.get("default").and_then(|x| x.as_bool()).unwrap_or(false),
             })
         })
         .collect()
@@ -1901,6 +1908,7 @@ mod tests {
             note: None,
             endpoint: None,
             effort: None,
+            default: false,
         }]
     }
 
@@ -2353,6 +2361,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_remote_catalog_carries_default() {
+        let body = serde_json::json!({
+            "models": [
+                {"id": "a", "label": "A", "default": true},
+                {"id": "b", "label": "B"}
+            ]
+        });
+        let models = parse_remote_catalog(&body);
+        assert!(models.iter().find(|m| m.id == "a").unwrap().default);
+        assert!(!models.iter().find(|m| m.id == "b").unwrap().default);
+    }
+
+    #[test]
     fn parse_remote_catalog_carries_group_and_endpoint() {
         // Perplexity Agent entries carry the picker group + endpoint override.
         let body = json!({ "models": [
@@ -2494,6 +2515,7 @@ mod tests {
                 effort: Some(serde_json::json!({
                     "kind": "levels", "levels": ["low", "high"], "default": "high"
                 })),
+                default: true,
             },
             ProviderModel::basic("c/d".into(), "D".into(), None),
         ];
@@ -2508,12 +2530,16 @@ mod tests {
         // effort descriptor round-trips back out verbatim.
         assert_eq!(v["models"][0]["effort"]["kind"], "levels");
         assert_eq!(v["models"][0]["effort"]["default"], "high");
+        // `default` is always emitted (plain bool, not omitted when false).
+        assert_eq!(v["models"][0]["default"], true);
         // Absent optionals are omitted from the wire shape (not null).
         assert!(v["models"][1].get("ctx").is_none());
         assert!(v["models"][1].get("supports_effort").is_none());
         assert!(v["models"][1].get("group").is_none());
         assert!(v["models"][1].get("effort").is_none());
         assert_eq!(v["models"][1]["label"], "D");
+        // `default` flows from `ProviderModel::basic` as false, still emitted.
+        assert_eq!(v["models"][1]["default"], false);
     }
 
     #[test]
