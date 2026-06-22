@@ -94,6 +94,16 @@ export default defineConfig({
           "**/src-tauri/fleet.db-journal",
           "**/src-tauri/target/**",
           "**/.claude/worktrees/**",
+          // Per-session worktrees that worktree-on sessions carve at
+          // `<project>/.fleetify-worktrees/<id>/`. When this repo is itself
+          // opened as a session folder (dogfooding), the worktree checkout
+          // drops a full copy of the project — index.html, tsconfig.json,
+          // src/ — straight into Vite's watched root. Vite then sees a
+          // "new" index.html + tsconfig and force-reloads the page mid-send,
+          // which reads as the app crashing + restarting (and tears down the
+          // chat WebSocket, so the agent reply never lands). Ignore the
+          // whole worktrees tree so carving one never reloads the dev UI.
+          "**/.fleetify-worktrees/**",
         ],
       },
     };
