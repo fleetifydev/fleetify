@@ -8,6 +8,7 @@ import { useAppStore } from "@/stores/app-store";
 import { usePluginStore } from "@/stores/plugin-store";
 import { clearToken, type AuthUser } from "@/lib/api";
 import { identifyUser, initPostHog, pageview } from "@/lib/posthog";
+import { isIntroComplete } from "@/lib/onboarding-gate";
 
 // Heavy routes that are rarely the first surface a user sees — pulled
 // out of the initial bundle so cold-start ships fewer KB of JS and the
@@ -50,6 +51,38 @@ const LogoGallery = lazy(() =>
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1 } },
 });
+
+// Resolve whether the one-time onboarding intro has already been completed
+// on THIS device. The authoritative signal is the durable, device-scoped
+// backend config (`fleet.config.json::onboardingComplete`), which survives
+// sign-out/sign-in, app restarts, and run-mode/port changes. The legacy
+// `fleet:setup-done` localStorage marker is origin-scoped (keyed by port),
+// so it's honoured only as a migration path — and when it's the sole signal
+// we promote it into the durable config so the gate stays correct from then
+// on. Reads/writes are best-effort: a slow/absent IPC bridge must never
+// strand the user, so failures fall through to "not complete".
+async function resolveIntroComplete(): Promise<boolean> {
+  const legacySetupDone = localStorage.getItem("fleet:setup-done") === "1";
+  let cfg: FleetConfig | null = null;
+  try {
+    cfg = (await window.electronAPI?.getConfig?.()) ?? null;
+  } catch {
+    cfg = null;
+  }
+  const onboardingComplete = cfg?.onboardingComplete === true;
+  const complete = isIntroComplete({ onboardingComplete, legacySetupDone });
+  if (complete && !onboardingComplete) {
+    // Migration backfill — config_set is a full replace, so spread the
+    // existing config to avoid wiping routing/providers/telemetry/etc.
+    try {
+      const base: FleetConfig = cfg ?? { onboardingComplete: false, apiKeys: {} };
+      await window.electronAPI?.setConfig?.({ ...base, onboardingComplete: true });
+    } catch {
+      /* best-effort */
+    }
+  }
+  return complete;
+}
 
 type Screen = "splash" | "welcome" | "setup" | "onboarding-chat" | "main";
 
@@ -152,7 +185,7 @@ export function App() {
         console.warn("[posthog] bootstrap failed:", err);
       });
 
-    window.fleetify.getState().then((state) => {
+    window.fleetify.getState().then(async (state) => {
       // FLEETIFY_NOAUTH=1: shell stubs a "John Doe" identity and tags
       // the payload with `noAuth: true`. Treat the welcome/sign-in
       // step as already complete so the user lands on onboarding-chat
@@ -172,10 +205,11 @@ export function App() {
         };
         localStorage.setItem("fleet:user", JSON.stringify(user));
         setAuthedUser(user);
-        // Returning users who haven't completed onboarding yet land
-        // in the chat-style onboarding once.
-        const setupDone = localStorage.getItem("fleet:setup-done") === "1";
-        setScreen(setupDone ? "main" : "onboarding-chat");
+        // Returning users who haven't completed the intro yet land in the
+        // chat-style onboarding once; everyone who already finished it (on
+        // any port / run mode) goes straight to main.
+        const introComplete = await resolveIntroComplete();
+        setScreen(introComplete ? "main" : "onboarding-chat");
       } else {
         clearToken();
         localStorage.removeItem("fleet:onboarded");
@@ -202,29 +236,72 @@ export function App() {
 
   const [authedUser, setAuthedUser] = useState<AuthUser | null>(null);
 
-  const handleAuth = useCallback((user: AuthUser, _token: string, isNew: boolean) => {
+  const handleAuth = useCallback(async (user: AuthUser, _token: string, isNew: boolean) => {
     localStorage.setItem("fleet:onboarded", "1");
     localStorage.setItem("fleet:user", JSON.stringify(user));
     setAuthedUser(user);
-    window.electronAPI?.setConfig({ onboardingComplete: true, apiKeys: {}, userName: user.name });
     // PostHog identity merge — frontend was emitting under the anonymous
     // device_id; calling identify(user_id) fires $identify with
     // $anon_distinct_id set, so PostHog server-side merges the two
     // persons. No-op when SDK isn't initialised (opt-out or no key).
     identifyUser(user.id, { is_new: isNew, name: user.name, email: user.email });
-    // Fresh registrations land in the chat-style onboarding.
-    // Returning users skip straight to main once they've completed it.
-    if (isNew) {
-      localStorage.removeItem("fleet:setup-done");
-      setScreen("onboarding-chat");
-    } else {
-      const setupDone = localStorage.getItem("fleet:setup-done") === "1";
-      setScreen(setupDone ? "main" : "onboarding-chat");
+
+    // Read the durable config once. We persist the display name with a
+    // read-merge-write (config_set is a full replace), and crucially we do
+    // NOT mark onboardingComplete on sign-in — that flag means "the user
+    // finished the intro" and is set only in handleOnboardingDone.
+    let cfg: FleetConfig | null = null;
+    try {
+      cfg = (await window.electronAPI?.getConfig?.()) ?? null;
+    } catch {
+      cfg = null;
     }
+    const base: FleetConfig = cfg ?? { onboardingComplete: false, apiKeys: {} };
+
+    if (isNew) {
+      // Fresh registration: force the intro exactly once — clear both the
+      // legacy marker and the durable flag.
+      localStorage.removeItem("fleet:setup-done");
+      try {
+        await window.electronAPI?.setConfig?.({ ...base, userName: user.name, onboardingComplete: false });
+      } catch {
+        /* best-effort */
+      }
+      setScreen("onboarding-chat");
+      return;
+    }
+
+    // Returning users skip straight to main once they've completed the intro
+    // on any device/port. Persist the name AND backfill the durable flag from
+    // the legacy localStorage marker in a single write.
+    const complete = isIntroComplete({
+      onboardingComplete: cfg?.onboardingComplete === true,
+      legacySetupDone: localStorage.getItem("fleet:setup-done") === "1",
+    });
+    try {
+      await window.electronAPI?.setConfig?.({ ...base, userName: user.name, onboardingComplete: complete });
+    } catch {
+      /* best-effort */
+    }
+    setScreen(complete ? "main" : "onboarding-chat");
   }, []);
 
   const handleOnboardingDone = useCallback(() => {
+    // Legacy origin-scoped marker — kept for back-compat with any reader.
     localStorage.setItem("fleet:setup-done", "1");
+    // Authoritative, device-scoped completion flag. This is what makes the
+    // intro a true one-time-per-device event across sign-out/sign-in, app
+    // restarts and run-mode/port changes. Read-merge-write because
+    // config_set replaces the whole file.
+    void (async () => {
+      try {
+        const cfg = (await window.electronAPI?.getConfig?.()) ?? null;
+        const base: FleetConfig = cfg ?? { onboardingComplete: false, apiKeys: {} };
+        await window.electronAPI?.setConfig?.({ ...base, onboardingComplete: true });
+      } catch {
+        /* best-effort */
+      }
+    })();
     setIntroReveal(true);
     setScreen("main");
   }, []);
