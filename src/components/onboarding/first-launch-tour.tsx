@@ -13,6 +13,7 @@
 import { useEffect, useState, useLayoutEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import { X, ArrowRight, ArrowLeft } from "lucide-react";
+import { formatShortcut, shortcutLabel } from "@/lib/keyboard-shortcuts";
 
 interface TourStep {
   /** data-tour attribute value of the target element. Every step is
@@ -37,7 +38,7 @@ const STEPS: TourStep[] = [
   {
     target: "new-agent",
     title: "Spawn a new agent.",
-    body: "Hit New session (or ⌘N) to start a fresh chat. Mix providers freely — one agent on Claude, another on Codex, side by side.",
+    body: `Hit New session (or ${shortcutLabel("new-draft")}) to start a fresh chat. Mix providers freely — one agent on Claude, another on Codex, side by side.`,
     placement: "right",
   },
   {
@@ -45,7 +46,7 @@ const STEPS: TourStep[] = [
     title: "Where you talk to Fleet.",
     body:
       "Type or paste your task. Use @ to drop in files, agents, or folders. Drag screenshots straight in.\n\n" +
-      "Bottom-left has permissions (Ask / Auto / Plan / Bypass), + for attachments, and ⌘I to enhance a rough prompt. Bottom-right picks the provider, model, and reasoning effort. Enter sends, Esc aborts mid-response.",
+      `Bottom-left has permissions (Ask / Auto / Plan / Bypass), + for attachments, and ${formatShortcut(["Mod", "I"])} to enhance a rough prompt. Bottom-right picks the provider, model, and reasoning effort. Enter sends, Esc aborts mid-response.`,
     placement: "top",
   },
   {

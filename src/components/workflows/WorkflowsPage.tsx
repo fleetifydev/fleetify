@@ -46,6 +46,7 @@ import {
 } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
 import { usesInAppTitleBar, folderName } from "@/lib/utils";
+import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { wsManager } from "@/services/ws-manager";
 import {
@@ -3929,7 +3930,7 @@ function EnhanceButton({ busy, hasText, onClick }: {
       onClick={onClick}
       onMouseDown={e => e.preventDefault()}
       disabled={busy || !hasText}
-      title={busy ? "Enhancing…" : !hasText ? "Type a prompt to enhance" : "Enhance prompt (⌘I)"}
+      title={busy ? "Enhancing…" : !hasText ? "Type a prompt to enhance" : `Enhance prompt (${formatShortcut(["Mod", "I"])})`}
       style={{
         width: 22, height: 22, borderRadius: 5, flexShrink: 0,
         display: "flex", alignItems: "center", justifyContent: "center",

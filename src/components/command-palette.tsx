@@ -8,6 +8,7 @@ import {
 import { useAppStore } from "@/stores/app-store";
 import { wsManager } from "@/services/ws-manager";
 import { useThemeStore } from "@/stores/theme-store";
+import { formatShortcut, shortcutLabel } from "@/lib/keyboard-shortcuts";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -141,7 +142,7 @@ export function CommandPalette({ open, onClose, onAction }: Props) {
       section: "Fleetify",
       icon: Layers,
       title: "Go to Fleetify",
-      shortcut: "⌘1",
+      shortcut: formatShortcut(["Mod", "1"]),
       description: "Return to the agent overview",
       execute: () => { setMainView("fleet"); onClose(); },
     });
@@ -152,7 +153,7 @@ export function CommandPalette({ open, onClose, onAction }: Props) {
       section: "Fleetify",
       icon: GitBranch,
       title: "Go to Workflows",
-      shortcut: "⌘2",
+      shortcut: formatShortcut(["Mod", "2"]),
       description: "View and manage automation workflows",
       execute: () => { setMainView("workflows"); onClose(); },
     });
@@ -163,7 +164,7 @@ export function CommandPalette({ open, onClose, onAction }: Props) {
       section: "Fleetify",
       icon: Plus,
       title: "New Agent",
-      shortcut: "⌘N",
+      shortcut: shortcutLabel("new-draft"),
       description: "Spawn a new agent session",
       execute: () => {
         onClose();
@@ -220,7 +221,7 @@ export function CommandPalette({ open, onClose, onAction }: Props) {
       section: "Session",
       icon: PanelLeft,
       title: "Toggle Sidebar",
-      shortcut: "⌘B",
+      shortcut: formatShortcut(["Mod", "B"]),
       description: "Show or hide the left sidebar",
       execute: () => { toggleSidebar(); onClose(); },
     });
@@ -232,7 +233,7 @@ export function CommandPalette({ open, onClose, onAction }: Props) {
       section: "App",
       icon: Settings,
       title: "Settings",
-      shortcut: "⌘,",
+      shortcut: formatShortcut(["Mod", ","]),
       description: "Open app settings",
       execute: () => { onClose(); onAction("settings"); },
     });
@@ -700,7 +701,7 @@ export function CommandPalette({ open, onClose, onAction }: Props) {
           {[
             { key: "↑↓", hint: "navigate" },
             { key: "↵",  hint: dispatchCmd ? "send" : "open" },
-            { key: "⌘K", hint: "close" },
+            { key: formatShortcut(["Mod", "K"]), hint: "close" },
           ].map(({ key, hint }) => (
             <span key={key} style={{ display: "flex", alignItems: "center", gap: 4 }}>
               <kbd style={{

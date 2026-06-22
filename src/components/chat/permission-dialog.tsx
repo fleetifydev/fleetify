@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import type { PermissionRequest } from "@/stores/chat-store";
 import { useAppStore } from "@/stores/app-store";
+import { formatShortcut } from "@/lib/keyboard-shortcuts";
 
 interface Props {
   request: PermissionRequest;
@@ -229,7 +230,7 @@ export function PermissionDialog({
                 onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.07)"; }}
               >
                 {isQuestion ? "Continue" : "Allow"}
-                <kbd style={{ fontFamily: MONO, fontSize: 9.5, opacity: 0.55 }}>⌘↵</kbd>
+                <kbd style={{ fontFamily: MONO, fontSize: 9.5, opacity: 0.55 }}>{formatShortcut(["Mod", "Enter"])}</kbd>
               </button>
 
               {/* Always allow — hidden for questions. Highest weight,
@@ -254,7 +255,7 @@ export function PermissionDialog({
                   onMouseLeave={e => { e.currentTarget.style.opacity = "1"; }}
                 >
                   Always allow
-                  <kbd style={{ fontFamily: MONO, fontSize: 9.5, opacity: 0.55, color: "#0a0a0a" }}>⌘⇧↵</kbd>
+                  <kbd style={{ fontFamily: MONO, fontSize: 9.5, opacity: 0.55, color: "#0a0a0a" }}>{formatShortcut(["Mod", "Shift", "Enter"])}</kbd>
                 </button>
               )}
             </div>

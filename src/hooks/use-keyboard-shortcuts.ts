@@ -2,8 +2,9 @@ import { useEffect } from "react";
 import { useAppStore } from "@/stores/app-store";
 import { useChatStore } from "@/stores/chat-store";
 import { wsManager } from "@/services/ws-manager";
-import { stopSession } from "@/lib/api";
+import { stopSession, archiveSession } from "@/lib/api";
 import { git } from "@/lib/git-api";
+import { getPlatform, type Platform } from "@/lib/utils";
 
 /** Resolve the active session's project folder, or null if Fleet view. */
 function activeFolder(): string | null {
@@ -27,7 +28,10 @@ interface ShortcutCtx {
 interface ShortcutBinding {
   /** Shared with KEYBOARD_SHORTCUTS (source:"hook") — guarded by a drift test. */
   id: string;
-  matches: (e: KeyboardEvent, mod: boolean, shift: boolean) => boolean;
+  /** `platform` lets a binding's key diverge per-OS (e.g. new session is
+   *  Cmd+N on macOS, Ctrl+T on Windows/Linux). Bindings that don't care
+   *  simply ignore the argument. */
+  matches: (e: KeyboardEvent, mod: boolean, shift: boolean, platform: Platform) => boolean;
   run: (e: KeyboardEvent, ctx: ShortcutCtx) => void;
 }
 
@@ -84,10 +88,26 @@ export const SHORTCUT_BINDINGS: ShortcutBinding[] = [
     run: (e, { state }) => { e.preventDefault(); state.openWorkspaceView("terminal"); },
   },
   {
-    // Cmd+N — create a draft session inline
+    // New draft session — Cmd+N on macOS, Ctrl+T (the new-tab convention) on
+    // Windows / Linux. Key diverges per-OS; see KEYBOARD_SHORTCUTS.new-draft.
     id: "new-draft",
-    matches: (e, mod, shift) => mod && !shift && (e.key === "n" || e.key === "N"),
+    matches: (e, mod, shift, platform) =>
+      mod && !shift && e.key.toLowerCase() === (platform === "mac" ? "n" : "t"),
     run: (e, { state }) => { e.preventDefault(); void state.beginDraft(); },
+  },
+  {
+    // Cmd+W / Ctrl+W — close the active agent session by archiving it (the
+    // same action as the sidebar context-menu's archive: optimistic remove +
+    // backend archive). No-op on the Fleet overview or the staff session.
+    id: "close-session",
+    matches: (e, mod, shift) => mod && !shift && (e.key === "w" || e.key === "W"),
+    run: (e, { state }) => {
+      const { activeSessionId, staffSessionId } = state;
+      if (!activeSessionId || activeSessionId === staffSessionId) return;
+      e.preventDefault();
+      state.removeSession(activeSessionId);
+      archiveSession(activeSessionId).catch(() => {});
+    },
   },
   {
     // Cmd+Shift+. — toggle right panel
@@ -225,6 +245,8 @@ export const HANDLED_SHORTCUT_IDS: string[] = SHORTCUT_BINDINGS.map(b => b.id);
  */
 export function useKeyboardShortcuts() {
   useEffect(() => {
+    // Host platform is stable for the session — resolve once, not per keystroke.
+    const platform = getPlatform();
     const handler = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
       const shift = e.shiftKey;
@@ -233,7 +255,7 @@ export function useKeyboardShortcuts() {
         chatState: useChatStore.getState(),
       };
       for (const b of SHORTCUT_BINDINGS) {
-        if (b.matches(e, mod, shift)) { b.run(e, ctx); return; }
+        if (b.matches(e, mod, shift, platform)) { b.run(e, ctx); return; }
       }
     };
     window.addEventListener("keydown", handler);

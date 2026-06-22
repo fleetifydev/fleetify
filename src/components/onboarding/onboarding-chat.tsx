@@ -34,6 +34,8 @@ import {
 import { LogoMark } from "@/components/brand/logo-mark";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { apiScanProviders, checkPythonRuntime, type ProviderScan, type AuthUser } from "@/lib/api";
+import { getPlatform } from "@/lib/utils";
+import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import { providers as providersApi } from "@/lib/providers-api";
 import type { ProviderTile } from "@/lib/providers-api";
 import { modelsForTile } from "@/lib/picker-groups";
@@ -1811,7 +1813,9 @@ function ScanWidget({
     if (!window.electronAPI?.authProvider) {
       clearTimeout(timeout);
       console.warn("[fleet] electronAPI.authProvider missing — main process needs restart");
-      flipFail("Restart Fleet (Cmd+Q) to enable Sign in");
+      // Quit shortcut is OS-specific: ⌘Q on macOS, Alt+F4 on Windows, Ctrl+Q elsewhere.
+      const quitHint = getPlatform() === "windows" ? "Alt+F4" : formatShortcut(["Mod", "Q"]);
+      flipFail(`Restart Fleet (${quitHint}) to enable Sign in`);
       return;
     }
 

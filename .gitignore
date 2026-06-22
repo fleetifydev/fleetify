@@ -21,3 +21,6 @@ docs/superpowers/
 
 # Fleetify
 .fleetify-worktrees/
+
+# Local scratch — session notes, not shipped
+notion.md

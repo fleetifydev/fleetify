@@ -8,6 +8,7 @@ import {
   Plug, RefreshCw, ArrowUp, SquareMousePointer,
 } from "lucide-react";
 import { folderName } from "@/lib/utils";
+import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import { humanizeToolName } from "@/lib/tool-names";
 import { searchProjectFiles, apiFetch, type FileSearchEntry, updateSession as apiUpdateSession, enhancePrompt } from "@/lib/api";
 import { registerConfigPatch } from "@/lib/session-config-sync";
@@ -618,7 +619,7 @@ function MoreActionsMenu({
               <Wand2 size={12} strokeWidth={1.75} />
               {enhancing ? "Enhancing…" : "Enhance prompt"}
             </span>
-            <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "var(--c-dim)" }}>⌘I</span>
+            <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "var(--c-dim)" }}>{formatShortcut(["Mod", "I"])}</span>
           </button>
 
           {/* Tiny separator before the view modes — same hairline as the
@@ -762,7 +763,7 @@ function PermissionModePicker({
           }}>
             <span style={{ fontSize: 10, color: "var(--c-dim)", fontWeight: 500 }}>Mode</span>
             <div style={{ display: "flex", gap: 2 }}>
-              <Kbd>⇧</Kbd><Kbd>⌘</Kbd><Kbd>M</Kbd>
+              <Kbd>{formatShortcut(["Shift", "Mod", "M"])}</Kbd>
             </div>
           </div>
           {modes.map((m, i) => {
@@ -3075,7 +3076,7 @@ export function ChatInput({
                         borderRadius: 6, color: "var(--c-high)", fontSize: 12, fontWeight: 600,
                         cursor: "pointer", fontFamily: "inherit", transition: "background 0.12s",
                       }}
-                    >Allow<kbd style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, opacity: 0.55 }}>⌘↵</kbd></button>
+                    >Allow<kbd style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, opacity: 0.55 }}>{formatShortcut(["Mod", "Enter"])}</kbd></button>
 
                     <button
                       onClick={() => onPermissionAllowAlways?.(permissionRequest.id, permissionRequest.tool_name)}
@@ -3089,7 +3090,7 @@ export function ChatInput({
                         borderRadius: 6, color: "var(--background)", fontSize: 12, fontWeight: 600,
                         cursor: "pointer", fontFamily: "inherit", transition: "opacity 0.12s",
                       }}
-                    >Always allow<kbd style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, opacity: 0.55, color: "var(--background)" }}>⌘⇧↵</kbd></button>
+                    >Always allow<kbd style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, opacity: 0.55, color: "var(--background)" }}>{formatShortcut(["Mod", "Shift", "Enter"])}</kbd></button>
                   </div>
                   <div style={{ height: 1, background: "var(--c-brd)", margin: "9px -13px 0" }} />
                 </div>

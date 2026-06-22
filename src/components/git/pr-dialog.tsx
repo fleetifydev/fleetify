@@ -12,6 +12,7 @@
 import { useEffect, useRef, useState } from "react";
 import { X, GitPullRequest, Loader2, ExternalLink, Check, Sparkles } from "lucide-react";
 import { git, defaultPRTitle } from "@/lib/git-api";
+import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import { github, type GitHubLinkPayload } from "@/lib/github-link-api";
 
 type Phase = "compose" | "creating" | "done" | "error";
@@ -459,7 +460,7 @@ export function PRDialog({
               flexShrink: 0,
             }}>
               <span style={{ fontSize: 11, color: "var(--c-dim)", fontFamily: "var(--font-mono)" }}>
-                ⌘↵ to submit
+                {formatShortcut(["Mod", "Enter"])} to submit
               </span>
               <div style={{ display: "flex", gap: 8 }}>
                 <button onClick={onClose} disabled={creating} style={btnGhost}>Cancel</button>

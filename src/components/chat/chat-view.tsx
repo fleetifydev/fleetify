@@ -13,6 +13,7 @@ import { SessionToolbar } from "./session-toolbar";
 import { fetchMessages, fetchClaudeHistory, createSession, clearSessionMessages, updateSession as apiUpdateSession, stopSession, restartSession, analyzeFleetResponse, fetchAgentModels } from "@/lib/api";
 import { registerConfigPatch } from "@/lib/session-config-sync";
 import { usesInAppTitleBar, folderName } from "@/lib/utils";
+import { formatShortcut, shortcutLabel } from "@/lib/keyboard-shortcuts";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { resolveStartupDefault, hermesHealModel, HERMES_DEFAULT_SENTINEL, contextWindowForModel, buildPickerGroups, resolveDispatchTool } from "@/lib/picker-groups";
 import { providers } from "@/lib/providers-api";
@@ -2938,8 +2939,7 @@ function EmptyFleetWelcome({ onNewAgent, hasAgents = false }: { onNewAgent: () =
         fontSize: 11.5, color: "var(--c-ghost, #6a6a6a)",
       }}>
         <span>or press</span>
-        <Kbd>⌘</Kbd>
-        <Kbd>N</Kbd>
+        <Kbd>{shortcutLabel("new-draft")}</Kbd>
         <span>for a fresh session</span>
       </div>
     </div>
@@ -3068,20 +3068,21 @@ function BrandLockup({
  *
  * Order matches the reference: Preview, Diff, Terminal, Files,
  * Tasks, Plan. The four with shortcuts use the modifier hints that
- * Claude Code Desktop ships (⌘P / ⌘D / ` / ⌘F). */
+ * Claude Code Desktop ships (⇧⌘P / ⇧⌘D / ⌃` / ⇧⌘F on macOS; the
+ * Ctrl+Shift+… equivalents on Windows / Linux). */
 const PANEL_VIEWS: {
   id: WorkspaceView;
   label: string;
   Icon: React.ComponentType<{ size: number; strokeWidth?: number }>;
-  /** Keyboard shortcut display — strings rendered as small Kbd chips
-   *  on the right of the row. Order matches modifier-then-key. */
+  /** Keyboard shortcut as platform-neutral tokens — rendered per-OS via
+   *  formatShortcut(). Order is modifier-then-key. */
   shortcut?: string[];
 }[] = [
-  { id: "preview",  label: "Preview",  Icon: Play,             shortcut: ["⇧", "⌘", "P"] },
-  { id: "browser",  label: "Browser",  Icon: Globe,            shortcut: ["⇧", "⌘", "B"] },
-  { id: "diff",     label: "Diff",     Icon: GitCompareArrows, shortcut: ["⇧", "⌘", "D"] },
-  { id: "terminal", label: "Terminal", Icon: TerminalIcon,     shortcut: ["⌃", "`"] },
-  { id: "files",    label: "Files",    Icon: FolderOpen,       shortcut: ["⇧", "⌘", "F"] },
+  { id: "preview",  label: "Preview",  Icon: Play,             shortcut: ["Shift", "Mod", "P"] },
+  { id: "browser",  label: "Browser",  Icon: Globe,            shortcut: ["Shift", "Mod", "B"] },
+  { id: "diff",     label: "Diff",     Icon: GitCompareArrows, shortcut: ["Shift", "Mod", "D"] },
+  { id: "terminal", label: "Terminal", Icon: TerminalIcon,     shortcut: ["Ctrl", "`"] },
+  { id: "files",    label: "Files",    Icon: FolderOpen,       shortcut: ["Shift", "Mod", "F"] },
   { id: "tasks",    label: "Tasks",    Icon: ListTodo },
   { id: "memories", label: "Memories", Icon: Layers },
   // Agent panel intentionally NOT listed — it's auto-spawned by
@@ -3216,9 +3217,7 @@ function PanelViewMenu({
                     flexShrink: 0,
                     fontVariantNumeric: "tabular-nums",
                   }}>
-                    {shortcut.map((k, i) => (
-                      <span key={i} style={{ minWidth: 9, textAlign: "center" }}>{k}</span>
-                    ))}
+                    {formatShortcut(shortcut)}
                   </span>
                 )}
               </button>

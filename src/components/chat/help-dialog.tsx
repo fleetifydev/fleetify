@@ -14,8 +14,8 @@ import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import {
   KEYBOARD_SHORTCUTS,
-  renderKey,
-  isMac,
+  formatShortcut,
+  shortcutKeysForDoc,
   type ShortcutGroup,
 } from "@/lib/keyboard-shortcuts";
 import {
@@ -87,7 +87,6 @@ export function HelpDialog({
   }, [open, onClose]);
 
   if (!open) return null;
-  const mac = isMac();
 
   // 1) the universal group Fleetify intercepts for EVERY agent, then 2) one
   // group per provider carrying its real native commands (PROVIDER_NATIVE_CMDS).
@@ -152,9 +151,7 @@ export function HelpDialog({
                     <div key={s.id} style={rowStyle}>
                       <span style={rowDesc}>{s.label}</span>
                       <span style={{ display: "flex", gap: 2, flexShrink: 0 }}>
-                        {s.keys.map((k, i) => (
-                          <span key={i} style={kbd}>{renderKey(k, mac)}</span>
-                        ))}
+                        <span style={kbd}>{formatShortcut(shortcutKeysForDoc(s))}</span>
                       </span>
                     </div>
                   ))}

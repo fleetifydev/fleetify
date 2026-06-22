@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { X, Image as ImageIcon, Loader2, Check, AlertCircle, Paperclip } from "lucide-react";
+import { formatShortcut } from "@/lib/keyboard-shortcuts";
 
 interface Props {
   open: boolean;
@@ -375,7 +376,7 @@ export function FeedbackModal({ open, onClose }: Props) {
           gap: 8,
         }}>
           <span style={{ fontSize: 11, color: "var(--c-ghost)", flex: 1, letterSpacing: "-0.01em" }}>
-            ⌘↵ to send
+            {formatShortcut(["Mod", "Enter"])} to send
           </span>
           <button
             onClick={onClose}

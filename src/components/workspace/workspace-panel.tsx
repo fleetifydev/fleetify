@@ -14,6 +14,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useAppStore, type WorkspaceView } from "@/stores/app-store";
+import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import { usePaneSessionId, useIsInPane } from "@/components/chat/pane-session-context";
 import {
   fetchSessionMemory, createSessionMemory, deleteSessionMemory,
@@ -993,7 +994,7 @@ function CodeEditor({ path, root, onLineChange }: {
           ))}
         </div>
         {!saved && (
-          <button onClick={save} title="Save (⌘S)" style={{
+          <button onClick={save} title={`Save (${formatShortcut(["Mod", "S"])})`} style={{
             fontSize:10.5, fontFamily:SANS, color: themeDef.preview.accent,
             background:"none", border:"none", cursor:"pointer", padding:"2px 6px",
             borderRadius:4, flexShrink:0, opacity:0.7,
@@ -5637,7 +5638,7 @@ function FilterInput({
           fontFamily: MONO, padding: "1px 5px",
           border: "1px solid var(--c-brd)", borderRadius: 3,
           flexShrink: 0,
-        }}>⌘F</span>
+        }}>{formatShortcut(["Mod", "F"])}</span>
       )}
     </div>
   );
@@ -6036,14 +6037,14 @@ function FileView() {
           >{displayPath}</span>
           {isMarkdown && (
             <FileActionChip
-              title={viewMode === "preview" ? "Edit source (⌘E)" : "Preview (⌘E)"}
+              title={viewMode === "preview" ? `Edit source (${formatShortcut(["Mod", "E"])})` : `Preview (${formatShortcut(["Mod", "E"])})`}
               onClick={() => setViewMode(v => v === "preview" ? "code" : "preview")}
             >
               {viewMode === "preview" ? <Code2 size={11} /> : <Eye size={11} />}
             </FileActionChip>
           )}
           {!showPreview && (
-            <FileActionChip title="Search in file (⌘F)" onClick={openSearch}>
+            <FileActionChip title={`Search in file (${formatShortcut(["Mod", "F"])})`} onClick={openSearch}>
               <Search size={11} />
             </FileActionChip>
           )}
@@ -6625,7 +6626,7 @@ function MemoriesView() {
             value={draftBody}
             onChange={e => setDraftBody(e.target.value)}
             onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submit(); }}
-            placeholder="Content (⌘↵ to save)"
+            placeholder={`Content (${formatShortcut(["Mod", "Enter"])} to save)`}
             rows={3}
             style={{
               padding: "6px 9px",

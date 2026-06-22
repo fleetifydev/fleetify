@@ -5,6 +5,32 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/** The three desktop targets we ship to. Drives both window-chrome decisions
+ *  and keyboard-shortcut glyph rendering (see `lib/keyboard-shortcuts.ts`). */
+export type Platform = "mac" | "windows" | "linux";
+
+/**
+ * Resolve the host OS as a coarse `Platform`. Prefers the Tauri-injected
+ * `electronAPI.platform` (`darwin` / `win32` / `linux`) — the authoritative
+ * synchronous signal — and falls back to the user-agent string in a plain
+ * browser context. Defaults to `linux` (the generic non-mac, non-win
+ * keyboard convention) when nothing else matches.
+ */
+export function getPlatform(): Platform {
+  const api = (window as Window).electronAPI;
+  if (api && typeof api.platform === "string") {
+    if (api.platform === "darwin") return "mac";
+    if (api.platform === "win32") return "windows";
+    if (api.platform === "linux") return "linux";
+  }
+  if (typeof navigator !== "undefined") {
+    const ua = navigator.userAgent || "";
+    if (/mac/i.test(ua)) return "mac";
+    if (/windows/i.test(ua)) return "windows";
+  }
+  return "linux";
+}
+
 export function isWindowsPlatform(): boolean {
   const api = (window as Window).electronAPI;
   if (api && typeof api.platform === "string") return api.platform === "win32";

@@ -14,6 +14,7 @@ import { useChatStore } from "@/stores/chat-store";
 import { useShallow } from "zustand/react/shallow";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { folderName } from "@/lib/utils";
+import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import type { Session } from "@/types/session";
 import type {
   SessionDetail, SessionActivityItem, SessionFileEntry, SessionMemoryItem,
@@ -1410,7 +1411,7 @@ function MemoryItem({
             <option value="gotcha">gotcha</option>
             <option value="plan">plan</option>
           </select>
-          <span style={{ flex: 1, fontSize: 10, color: "var(--c-ghost)" }}>⌘↵ save · Esc cancel</span>
+          <span style={{ flex: 1, fontSize: 10, color: "var(--c-ghost)" }}>{formatShortcut(["Mod", "Enter"])} save · Esc cancel</span>
           <button
             onClick={cancelEdit}
             style={{
@@ -1980,7 +1981,7 @@ function SessionDetailView({ sessionId, session }: { sessionId: string; session?
                 }}
               />
               <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
-                <span style={{ flex: 1, fontSize: 10, color: "var(--c-ghost)" }}>⌘↵ to save · Esc to cancel</span>
+                <span style={{ flex: 1, fontSize: 10, color: "var(--c-ghost)" }}>{formatShortcut(["Mod", "Enter"])} to save · Esc to cancel</span>
                 <button
                   onClick={() => { setMemoryAdding(false); setMemoryDraftTitle(""); setMemoryDraftContent(""); }}
                   style={{

@@ -18,6 +18,7 @@ import { ChatError } from "./chat-error";
 import { LogoMark } from "@/components/brand/logo-mark";
 import { ChevronRight, Copy, Check, ArrowRightLeft, CheckCircle2, AlertCircle, Terminal, FileText, Globe, Search, Cpu, CheckSquare, FolderSearch, Pencil, Wrench, Brain, MoveHorizontal, Trash2, FolderOpen, Download, Code2, BarChart2, BookOpen, Image, CornerDownLeft, Send, Bookmark, BookmarkCheck, RotateCcw, X, Clock, ArrowUp, Database } from "lucide-react";
 import { createSessionMemory } from "@/lib/api";
+import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useChatStore, selectSession } from "@/stores/chat-store";
 import { useAppStore } from "@/stores/app-store";
@@ -2767,7 +2768,7 @@ function DispatchResultCard({ block }: { block: import("@/types/chat").DispatchR
             gap: 6,
           }}>
             <span style={{ fontSize: 10, color: "var(--c-ghost)", flex: 1 }}>
-              ⌘↵ to send · Esc to cancel
+              {formatShortcut(["Mod", "Enter"])} to send · Esc to cancel
             </span>
             <button
               onClick={sendReply}

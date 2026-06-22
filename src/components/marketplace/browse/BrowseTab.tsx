@@ -13,6 +13,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Search, Loader2 } from "lucide-react";
 import { usePluginStore } from "@/stores/plugin-store";
 import type { CatalogPlugin, Provides } from "@/types/plugin";
+import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import {
   PROVIDES_ORDER, PROVIDES_LABEL_EN, manifestProvides,
 } from "@/types/plugin";
@@ -188,7 +189,7 @@ export function BrowseTab({ onOpenDetail, onQuickInstall }: Props) {
           fontFamily: "var(--font-mono)",
           border: "1px solid var(--sidebar-border)",
           borderRadius: 3, padding: "1px 5px",
-        }}>⌘K</kbd>
+        }}>{formatShortcut(["Mod", "K"])}</kbd>
       </div>
 
       {/* Category filter strip. Chips render in the order defined by

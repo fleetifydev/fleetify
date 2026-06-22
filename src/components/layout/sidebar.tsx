@@ -16,6 +16,7 @@ import { useShallow } from "zustand/react/shallow";
 import { forkSession, fetchBulkStats, stopSession, restartSession, resetSession, archiveSession } from "@/lib/api";
 import { exportChat } from "@/lib/export-chat";
 import { usesInAppTitleBar, folderName } from "@/lib/utils";
+import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import { isStudioTool } from "@/lib/studio-tools";
 import { STUDIO_ENABLED } from "@/lib/feature-flags";
 import type { Session } from "@/types/session";
@@ -512,7 +513,7 @@ function AgentRowImpl({ session, isActive, stats, onClick, onPin, onFork, onStop
                 border: "1px solid var(--c-brd2)", borderRadius: 3,
                 padding: "0px 3px", lineHeight: "13px",
               }}>
-                ⌘{shortcutIndex}
+                {formatShortcut(["Mod", String(shortcutIndex)])}
               </span>
             ) : null}
           </div>
