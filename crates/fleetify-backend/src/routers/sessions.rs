@@ -48,7 +48,9 @@ pub fn router() -> Router<AppState> {
         .route("/sessions/{id}/budget", patch(set_budget))
         .route("/sessions/{id}/activity", get(get_activity))
         .route("/sessions/{id}/files", get(get_files))
+        .route("/sessions/{id}/diff", get(get_diff))
         .route("/sessions/{id}/memory", get(get_memory).post(create_memory))
+        .route("/sessions/{id}/memory-files", get(get_memory_files))
         .route(
             "/sessions/{id}/memory/{item}",
             patch(update_memory).delete(delete_memory),
@@ -887,6 +889,139 @@ async fn get_files(
     Ok(Json(Value::Array(files)))
 }
 
+struct WorkingDiff {
+    diff: String,
+    file_count: usize,
+    is_repo: bool,
+}
+
+/// Working-tree (uncommitted, tracked) diff via the `git` CLI. Empty cwd or a
+/// non-repo returns `is_repo: false`; diff text is capped so the card stays sane.
+async fn git_working_diff(cwd: &str) -> WorkingDiff {
+    if cwd.is_empty() {
+        return WorkingDiff {
+            diff: String::new(),
+            file_count: 0,
+            is_repo: false,
+        };
+    }
+    let inside = tokio::process::Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(cwd)
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !inside {
+        return WorkingDiff {
+            diff: String::new(),
+            file_count: 0,
+            is_repo: false,
+        };
+    }
+    let mut diff = tokio::process::Command::new("git")
+        .args(["diff"])
+        .current_dir(cwd)
+        .output()
+        .await
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    const CAP: usize = 100_000;
+    if diff.len() > CAP {
+        diff = format!("{}\n… (diff truncated)", trunc(&diff, CAP));
+    }
+    let file_count = tokio::process::Command::new("git")
+        .args(["diff", "--name-only"])
+        .current_dir(cwd)
+        .output()
+        .await
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .count()
+        })
+        .unwrap_or(0);
+    WorkingDiff {
+        diff,
+        file_count,
+        is_repo: true,
+    }
+}
+
+/// `GET /api/sessions/{id}/diff` — the session's working-tree git diff, rendered
+/// as a card. Worktree-aware (uses `worktree_path` when set, else `project_path`).
+async fn get_diff(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let s = owned(&st, &id, &user.id).await?;
+    let cwd = s
+        .worktree_path
+        .clone()
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| s.project_path.clone());
+    let r = git_working_diff(&cwd).await;
+    Ok(Json(json!({
+        "diff": r.diff,
+        "file_count": r.file_count,
+        "is_repo": r.is_repo,
+        "cwd": cwd,
+    })))
+}
+
+/// The CLAUDE.md memory files that govern a session: the project CLAUDE.md (in
+/// the session cwd) and the user-global ~/.claude/CLAUDE.md. Missing files are
+/// omitted. Distinct from `get_memory` (the session_memory notes table).
+fn collect_claude_memory_files(cwd: &str, home: &str) -> Vec<Value> {
+    let mut candidates: Vec<(std::path::PathBuf, &str)> = Vec::new();
+    if !cwd.is_empty() {
+        candidates.push((std::path::Path::new(cwd).join("CLAUDE.md"), "project"));
+    }
+    if !home.is_empty() {
+        candidates.push((
+            std::path::Path::new(home).join(".claude").join("CLAUDE.md"),
+            "user",
+        ));
+    }
+    let mut out: Vec<Value> = Vec::new();
+    for (path, scope) in candidates {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            out.push(json!({
+                "path": path.to_string_lossy(),
+                "content": trunc(&content, 20_000),
+                "scope": scope,
+            }));
+        }
+    }
+    out
+}
+
+/// `GET /api/sessions/{id}/memory-files` — the CLAUDE.md memory files governing
+/// the session (project + user-global). Distinct from `/memory` (session_memory).
+async fn get_memory_files(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let s = owned(&st, &id, &user.id).await?;
+    let cwd = s
+        .worktree_path
+        .clone()
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| s.project_path.clone());
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
+    let files = collect_claude_memory_files(&cwd, &home);
+    Ok(Json(json!({ "files": files })))
+}
+
 async fn get_memory(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
@@ -1577,6 +1712,66 @@ fn trunc(s: &str, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn working_diff_reports_changes_and_flags_non_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "t@t.t"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-qm", "init"]);
+        std::fs::write(repo.join("a.txt"), "two\n").unwrap();
+
+        let r = git_working_diff(repo.to_str().unwrap()).await;
+        assert!(r.is_repo);
+        assert_eq!(r.file_count, 1);
+        assert!(r.diff.contains("a.txt"));
+
+        // Empty cwd → not a usable repo (deterministic; avoids depending on
+        // whether the OS temp dir happens to sit inside a git work tree).
+        let nr = git_working_diff("").await;
+        assert!(!nr.is_repo);
+        assert_eq!(nr.file_count, 0);
+    }
+
+    #[test]
+    fn claude_memory_files_collect_and_omit_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let proj = tmp.path().join("proj");
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(proj.join("CLAUDE.md"), "# project rules").unwrap();
+        std::fs::write(home.join(".claude").join("CLAUDE.md"), "# global rules").unwrap();
+
+        let files = collect_claude_memory_files(proj.to_str().unwrap(), home.to_str().unwrap());
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0]["scope"], "project");
+        assert!(files[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("project rules"));
+        assert_eq!(files[1]["scope"], "user");
+
+        // Missing project CLAUDE.md → omitted (only the user file remains).
+        let empty = tmp.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let only_user =
+            collect_claude_memory_files(empty.to_str().unwrap(), home.to_str().unwrap());
+        assert_eq!(only_user.len(), 1);
+        assert_eq!(only_user[0]["scope"], "user");
+    }
 
     #[test]
     fn rest_repos_to_gh_shape_maps_fields_and_keeps_org_repos() {

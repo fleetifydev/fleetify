@@ -8,7 +8,7 @@ import type { Components } from "react-markdown";
 import type { ChatMessage, ContentBlock, ArtifactBlock, ResourceCardBlock } from "@/types/chat";
 import {
   SkillsCard, HooksCard, CommandsCard, UsageCard, MCPStatusCard,
-  InfoCard, ModeNoticeCard, ContextCard,
+  InfoCard, ModeNoticeCard, ContextCard, DiffCard, MemoryFilesCard,
 } from "./staff-message-cards";
 import { CitationCard } from "./citation-card";
 import { AuthRequiredCard } from "./auth-required-card";
@@ -2908,6 +2908,14 @@ function renderResourceCard(block: ResourceCardBlock): React.ReactNode {
         mode={String(data.mode ?? "")}
         note={data.note ? String(data.note) : undefined}
       />;
+    case "diff":
+      return <DiffCard
+        diff={String(data.diff ?? "")}
+        files={Number(data.file_count ?? 0)}
+        isRepo={Boolean(data.is_repo ?? false)}
+      />;
+    case "memory":
+      return <MemoryFilesCard files={(data.files as never) || []} />;
     default:
       return null;
   }

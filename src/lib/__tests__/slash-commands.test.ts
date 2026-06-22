@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { commandsForContext } from "../slash-commands";
+import { commandsForContext, PROVIDER_NATIVE_CMDS, SESSION_CMDS_BY_TOOL } from "../slash-commands";
 
 const promptsHits = (ctx: "fleet" | "session-chat", tool: string | null) =>
   commandsForContext(ctx, tool).filter((c) => c.cmd === "/prompts");
@@ -78,5 +78,30 @@ describe("commandsForContext — mode commands", () => {
     expect(cmds).not.toContain("/init");
     expect(cmds).toContain("/prompts");
     expect(cmds).not.toContain("/effort"); // supportedTools: claude-code + codex-cli only
+  });
+});
+
+describe("claude-code native commands", () => {
+  it("autocompletes the passthrough + native commands for claude-code", () => {
+    const cmds = commandsForContext("session-chat", "claude-code").map((c) => c.cmd);
+    for (const c of ["/review", "/security-review", "/init", "/code-review", "/simplify", "/verify", "/run", "/deep-research", "/diff", "/memory"]) {
+      expect(cmds).toContain(c);
+    }
+  });
+
+  it("tags the 8 skill/action commands as passthrough and the 2 viewers as local", () => {
+    const byCmd = new Map(SESSION_CMDS_BY_TOOL["claude-code"].map((c) => [c.cmd, c.mechanism]));
+    for (const c of ["/review", "/security-review", "/init", "/code-review", "/simplify", "/verify", "/run", "/deep-research"]) {
+      expect(byCmd.get(c)).toBe("passthrough");
+    }
+    expect(byCmd.get("/diff")).toBe("local");
+    expect(byCmd.get("/memory")).toBe("local");
+  });
+
+  it("lists claude-code native commands for the /help dialog", () => {
+    const cmds = (PROVIDER_NATIVE_CMDS["claude-code"] ?? []).map((c) => c.cmd);
+    expect(cmds).toContain("/review");
+    expect(cmds).toContain("/diff");
+    expect(cmds).toContain("/memory");
   });
 });

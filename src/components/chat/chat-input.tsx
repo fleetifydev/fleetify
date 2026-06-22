@@ -1810,6 +1810,25 @@ export function ChatInput({
       return true;
     }
 
+    /* /diff ─ working-tree git diff for this session's cwd (worktree-aware),
+       rendered as a card. Claude's native /diff is an interactive viewer
+       ("not available" over `claude -p`), so Fleetify renders it. */
+    if (head === "/diff") {
+      echoUser();
+      fetchAndPushCard(`/api/sessions/${sessionId}/diff`, "diff");
+      return true;
+    }
+
+    /* /memory ─ the CLAUDE.md memory files governing this session (project +
+       user-global), rendered as a card. Claude's native /memory is an
+       interactive editor ("not available" over `claude -p`). Distinct from
+       Fleetify's session_memory at /api/sessions/{id}/memory. */
+    if (head === "/memory") {
+      echoUser();
+      fetchAndPushCard(`/api/sessions/${sessionId}/memory-files`, "memory");
+      return true;
+    }
+
     return false;
   }, [sessionId, tool, effort, setEffortLocal, onEffortChange, contextUsedTokens, contextMaxTokens, contextPercent, providerTiles, setOpenDrop]);
 
@@ -1982,6 +2001,16 @@ export function ChatInput({
     // refine branch so it is never rewritten or sent to the agent.
     if (t.split(/\s+/)[0] === "/help") {
       handleHelpCommand();
+      return;
+    }
+
+    // Every other slash command bypasses the Fleet refiner: a command must
+    // reach the CLI (passthrough) or its app-owned handler verbatim — never be
+    // rewritten into prose. dispatchSend → handleSlashIntent decides local vs
+    // passthrough. (Without this, "/code-review high --fix" — >8 chars with
+    // whitespace — would be sent to enhancePrompt when Fleet is active.)
+    if (t.startsWith("/")) {
+      dispatchSend(t, attachments);
       return;
     }
 

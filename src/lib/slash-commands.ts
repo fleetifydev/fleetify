@@ -48,6 +48,15 @@ export type SlashIntent =
   | "session.yolo"
   | "session.model"
   | "session.review"
+  | "session.securityReview"
+  | "session.init"
+  | "session.codeReview"
+  | "session.simplify"
+  | "session.verify"
+  | "session.run"
+  | "session.deepResearch"
+  | "session.diff"
+  | "session.memory"
   | "session.hooks"
   | "session.skills"
   | "session.effort"
@@ -115,6 +124,22 @@ export const SESSION_CMDS_BY_TOOL: Record<SessionTool, SlashCmdDef[]> = {
   "claude-code": [
     { intent: "session.compaction", cmd: "/compact", desc: "Summarize conversation to free context", scope: "session" },
     { intent: "session.context",    cmd: "/context", desc: "Show context window usage",              scope: "session" },
+    // Native Claude Code commands. Headless `claude -p` executes custom
+    // commands, bundled skills, and non-interactive action commands (verified
+    // 2026-06-22) — so these are PASSTHROUGH: handleSlashIntent does NOT
+    // intercept them, the `/cmd args` text reaches the CLI verbatim.
+    { intent: "session.review",         cmd: "/review",          desc: "Review a pull request (or uncommitted changes)",           scope: "session", mechanism: "passthrough" },
+    { intent: "session.securityReview", cmd: "/security-review", desc: "Analyze pending changes for vulnerabilities",              scope: "session", mechanism: "passthrough" },
+    { intent: "session.init",           cmd: "/init",            desc: "Generate a CLAUDE.md project guide",                       scope: "session", mechanism: "passthrough" },
+    { intent: "session.codeReview",     cmd: "/code-review",     desc: "Review the diff for bugs + cleanups (add --fix to apply)", scope: "session", mechanism: "passthrough" },
+    { intent: "session.simplify",       cmd: "/simplify",        desc: "Cleanup-only review of the changed code",                  scope: "session", mechanism: "passthrough" },
+    { intent: "session.verify",         cmd: "/verify",          desc: "Build, run, and verify the app",                           scope: "session", mechanism: "passthrough" },
+    { intent: "session.run",            cmd: "/run",             desc: "Launch and drive the app",                                 scope: "session", mechanism: "passthrough" },
+    { intent: "session.deepResearch",   cmd: "/deep-research",   desc: "Fan-out web research with a cited synthesis",              scope: "session", mechanism: "passthrough" },
+    // Native, but interactive-only over `claude -p` ("isn't available in this
+    // environment") → Fleetify renders these locally as resource cards.
+    { intent: "session.diff",           cmd: "/diff",            desc: "Show uncommitted working-tree changes",                    scope: "session", mechanism: "local" },
+    { intent: "session.memory",         cmd: "/memory",          desc: "View CLAUDE.md memory files",                              scope: "session", mechanism: "local" },
   ],
   "codex-cli": [
     { intent: "session.compaction", cmd: "/compact", desc: "Summarize visible conversation (auto-confirmed)", scope: "session" },
@@ -176,13 +201,28 @@ export const SESSION_CMDS_BASE: SlashCmdDef[] = [
  *
  * Builtin core only: per-user **skills** (which also surface as `/<name>`) are
  * dynamic, so they're NOT hard-coded here — the help dialog merges the active
- * session's live-advertised set on top. Agents driven non-interactively that
- * advertise nothing (Claude Code `claude -p`, Antigravity print mode) have NO
- * entry: their only working commands are the universal set, shown separately.
+ * session's live-advertised set on top. Claude Code is driven headlessly
+ * (`claude -p`), which — verified 2026-06-22 — DOES execute custom commands,
+ * bundled skills, and non-interactive action commands; only interactive-UI
+ * commands refuse ("isn't available in this environment"). Its passthrough set
+ * lives here; the two interactive viewers (/diff, /memory) render Fleetify-side.
+ * Antigravity print mode still advertises nothing and has no entry.
  *
  * Keyed by Fleetify provider id (see providerName() for the display label).
  */
 export const PROVIDER_NATIVE_CMDS: Record<string, { cmd: string; desc: string }[]> = {
+  "claude-code": [
+    { cmd: "/review",          desc: "Review a pull request (or uncommitted changes)" },
+    { cmd: "/security-review", desc: "Analyze pending changes for vulnerabilities" },
+    { cmd: "/init",            desc: "Generate a CLAUDE.md project guide" },
+    { cmd: "/code-review",     desc: "Review the diff for bugs + cleanups (add --fix to apply)" },
+    { cmd: "/simplify",        desc: "Cleanup-only review of the changed code" },
+    { cmd: "/verify",          desc: "Build, run, and verify the app" },
+    { cmd: "/run",             desc: "Launch and drive the app" },
+    { cmd: "/deep-research",   desc: "Fan-out web research with a cited synthesis" },
+    { cmd: "/diff",            desc: "Show uncommitted working-tree changes" },
+    { cmd: "/memory",          desc: "View CLAUDE.md memory files" },
+  ],
   "grok-build": [
     { cmd: "/compact",        desc: "Compact the conversation history" },
     { cmd: "/context",        desc: "View context-window usage" },

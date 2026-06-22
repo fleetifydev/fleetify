@@ -462,6 +462,59 @@ export function ModeNoticeCard({ mode, note }: { mode: string; note?: string }) 
   );
 }
 
+/* ── Diff card (/diff) ──
+   Working-tree git diff for the session's cwd, rendered read-only. Claude's
+   native /diff is an interactive viewer (unavailable over `claude -p`), so
+   Fleetify renders it from the GET /sessions/{id}/diff payload. */
+export function DiffCard({ diff, files, isRepo }: { diff: string; files: number; isRepo: boolean }) {
+  if (!isRepo) {
+    return <InfoCard title="Not a git repository" message="This session's working directory isn't a git repository." tone="info" />;
+  }
+  if (!diff.trim()) {
+    return <InfoCard title="No changes" message="The working tree is clean — nothing to diff." tone="info" />;
+  }
+  return (
+    <div style={{ borderRadius: 10, border: "1px solid var(--border)", marginBottom: 12, background: "var(--card)", overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 14px", borderBottom: "1px solid var(--border)" }}>
+        <FileEdit size={14} style={{ color: "#06b6d4" }} />
+        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--foreground)" }}>Working-tree diff</span>
+        <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--muted-foreground)" }}>
+          {`${files} file${files === 1 ? "" : "s"} changed`}
+        </span>
+      </div>
+      <pre style={{ margin: 0, padding: "10px 14px", maxHeight: 360, overflow: "auto", fontSize: 11.5, lineHeight: 1.5, fontFamily: "var(--font-mono)", whiteSpace: "pre", color: "var(--foreground)" }}>
+        {diff}
+      </pre>
+    </div>
+  );
+}
+
+/* ── Memory files card (/memory) ──
+   The CLAUDE.md memory files governing the session (project + user-global),
+   from GET /sessions/{id}/memory-files. Distinct from Fleetify's session_memory
+   notes — this is faithful to Claude Code's native /memory (CLAUDE.md). */
+export function MemoryFilesCard({ files }: { files: Array<{ path: string; content: string; scope: string }> }) {
+  if (!files || files.length === 0) {
+    return <InfoCard title="No memory files" message="No CLAUDE.md found in the project or your home directory." tone="info" />;
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 }}>
+      {files.map((f) => (
+        <div key={f.path} style={{ borderRadius: 10, border: "1px solid var(--border)", background: "var(--card)", overflow: "hidden" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", borderBottom: "1px solid var(--border)" }}>
+            <FileText size={14} style={{ color: "#a78bfa" }} />
+            <span style={{ fontSize: 12, fontFamily: "var(--font-mono)", color: "var(--foreground)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.path}</span>
+            <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, color: "var(--muted-foreground)", flexShrink: 0 }}>{f.scope}</span>
+          </div>
+          <pre style={{ margin: 0, padding: "10px 14px", maxHeight: 280, overflow: "auto", fontSize: 11.5, lineHeight: 1.5, fontFamily: "var(--font-mono)", whiteSpace: "pre-wrap", color: "var(--foreground)" }}>
+            {f.content}
+          </pre>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ── Card Button ── */
 function CardBtn({ label, icon, onClick, primary }: { label: string; icon?: React.ReactNode; onClick?: () => void; primary?: boolean }) {
   return (

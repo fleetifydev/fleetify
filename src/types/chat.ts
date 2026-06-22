@@ -149,7 +149,8 @@ export interface ResourceCardBlock {
   card_kind:
     | "skills" | "hooks" | "commands" | "prompts"
     | "usage" | "mcp" | "context"
-    | "info" | "mode_notice";
+    | "info" | "mode_notice"
+    | "diff" | "memory";
   data: unknown;
 }
 

@@ -47,8 +47,9 @@ describe("HelpDialog", () => {
     expect(screen.getByText("OpenCode")).toBeInTheDocument();
     expect(screen.getByText("Codex")).toBeInTheDocument();
     expect(screen.getByAltText("Grok")).toBeInTheDocument();
-    // A representative native command from a couple of providers.
-    expect(screen.getByText("/security-review")).toBeInTheDocument(); // Copilot
+    // A representative native command from a couple of providers. /security-review
+    // is now shared (Copilot + Claude Code), so assert presence, not uniqueness.
+    expect(screen.getAllByText("/security-review").length).toBeGreaterThan(0); // Copilot + Claude Code
     expect(screen.getByText("/dream")).toBeInTheDocument();           // Grok
   });
 
@@ -65,6 +66,18 @@ describe("HelpDialog", () => {
     // ...plus the live skill merged into the Grok group.
     expect(screen.getByText("/my-custom-skill")).toBeInTheDocument();
     expect(screen.getByText("A user skill")).toBeInTheDocument();
+  });
+
+  it("shows a Claude Code group with its native commands", () => {
+    render(<HelpDialog open onClose={vi.fn()} tool="claude-code" sessionId={null} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Session Commands" }));
+    // The Claude Code group header renders (regression: it was absent before).
+    expect(screen.getByText("Claude Code")).toBeInTheDocument();
+    // /diff is unique to Claude Code → proves the group's rows render.
+    expect(screen.getByText("/diff")).toBeInTheDocument();
+    // Commands shared with other providers now appear in multiple groups.
+    expect(screen.getAllByText("/review").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("/memory").length).toBeGreaterThan(0);
   });
 
   it("closes on Escape and on overlay click", () => {

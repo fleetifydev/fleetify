@@ -6,9 +6,9 @@
  * one group per provider carrying that agent's real native commands
  * (PROVIDER_NATIVE_CMDS — probe-verified ACP-advertised / method-wired). The
  * active session's agent additionally gets its LIVE-advertised set (incl.
- * per-user skills) merged into its group. Agents that run nothing extra over
- * their transport (Claude Code, Antigravity) have no provider group — their
- * working commands are the universal set.
+ * per-user skills) merged into its group. Antigravity (print mode) advertises
+ * nothing over its transport and has no provider group — its working commands
+ * are the universal set.
  */
 import { useEffect, useState } from "react";
 import { X } from "lucide-react";
@@ -32,6 +32,7 @@ const SHORTCUT_ORDER: ShortcutGroup[] = ["Navigation", "Layout & panels", "Git &
 // Provider groups on the Session tab, in display order. Each maps to a
 // PROVIDER_NATIVE_CMDS entry; the label/icon come from providerName/ProviderLogo.
 const PROVIDER_ORDER = [
+  "claude-code",
   "grok-build",
   "github-copilot",
   "opencode",
@@ -92,7 +93,7 @@ export function HelpDialog({
   // group per provider carrying its real native commands (PROVIDER_NATIVE_CMDS).
   // For the active session's provider we merge its LIVE-advertised set on top
   // (deduped) so per-user skills + version-specific commands show too. Agents
-  // with no native set (Claude Code, Antigravity) simply have no group here.
+  // with no native set (Antigravity) simply have no group here.
   const universal = [...SESSION_CMDS_BASE, ...SESSION_CMDS_COMMON].map((c) => ({ cmd: c.cmd, desc: c.desc }));
   // Commands already shown under "Works in every agent" — dropped from each
   // provider group so a universal command (e.g. /plan, /model) isn't repeated.
