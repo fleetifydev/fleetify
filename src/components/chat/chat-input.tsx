@@ -1292,6 +1292,14 @@ export function ChatInput({
   const adjust = useCallback(() => {
     const t = ref.current;
     if (!t) return;
+    // Empty composer → collapse to the CSS single-line height instead of
+    // measuring scrollHeight. On a cold app open the textarea mounts before
+    // the app font (Geist) has loaded, and a scrollHeight read taken with
+    // fallback-font metrics can overshoot — which locked the EMPTY input to
+    // an oversized height on first open until the next keystroke re-measured
+    // it. With rows=1 + the CSS minHeight, `height: auto` is exactly one line
+    // and never overshoots, independent of font-load timing.
+    if (t.value === "") { t.style.height = "auto"; return; }
     t.style.height = "0px";
     t.style.height = Math.min(t.scrollHeight, 200) + "px";
   }, []);
