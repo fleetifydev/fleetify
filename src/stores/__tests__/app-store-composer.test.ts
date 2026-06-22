@@ -44,7 +44,7 @@ describe("openComposer — default workspace folder seeding", () => {
     expect(useAppStore.getState().composer.projectPath).toBe("");
   });
 
-  it("re-types the welcome to name the folder when it changes", async () => {
+  it("refreshes the welcome to name the folder INSTANTLY on change — no typewriter replay", async () => {
     Object.defineProperty(window, "electronAPI", {
       configurable: true,
       value: { getConfig: async () => ({}) }, // start with no default folder
@@ -53,15 +53,18 @@ describe("openComposer — default workspace folder seeding", () => {
 
     // Change the folder mid-compose (mirrors the toolbar's Pick folder).
     useAppStore.getState().setComposerField({ projectPath: "C:/work/my-project" });
-    await vi.advanceTimersByTimeAsync(3000); // let the typewriter finish
 
+    // Deliberately do NOT advance timers: the refresh now drops the full
+    // text in one shot, so it's already complete. With the old
+    // replay-from-zero typewriter the text would still be empty here — this
+    // is the regression guard for "don't re-type from scratch every change".
     const text = welcomeText();
     expect(text).toContain("I'll take a look at");
     expect(text).toContain("my-project");
     expect(text).not.toContain("Pick a folder above");
   });
 
-  it("reverts the welcome to the pick-a-folder nudge when the folder is cleared", async () => {
+  it("reverts the welcome to the pick-a-folder nudge instantly when the folder is cleared", async () => {
     Object.defineProperty(window, "electronAPI", {
       configurable: true,
       value: { getConfig: async () => ({ defaultFolder: "C:/work/seed-project" }) },
@@ -69,8 +72,7 @@ describe("openComposer — default workspace folder seeding", () => {
     await useAppStore.getState().openComposer();
 
     useAppStore.getState().setComposerField({ projectPath: "" });
-    await vi.advanceTimersByTimeAsync(3000);
-
+    // Instant — no timer advance needed.
     expect(welcomeText()).toContain("Pick a folder above");
   });
 });

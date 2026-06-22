@@ -1310,7 +1310,9 @@ export function markAuthSignedIn(sessionId: string): void {
  * @param sessionId  chat session that owns the message
  * @param messageId  id of the placeholder assistant message
  * @param fullText   final text to land character by character
- * @param speedMs    delay between characters (default 18ms)
+ * @param speedMs    delay between characters (default 18ms). Pass 0 (or
+ *                   less) to drop the full text instantly with no
+ *                   typewriter — used when refreshing an already-seen line.
  */
 const typewriterIntervals = new Map<string, ReturnType<typeof setInterval>>();
 
@@ -1322,7 +1324,24 @@ export function typeOutAssistantMessage(
 ) {
   const key = `${sessionId}::${messageId}`;
   const inflight = typewriterIntervals.get(key);
-  if (inflight) clearInterval(inflight);
+  if (inflight) { clearInterval(inflight); typewriterIntervals.delete(key); }
+
+  // Instant mode (speedMs <= 0): set the full text in one shot, no
+  // animation. Used to REFRESH a line the user has already watched type
+  // out (e.g. the composer welcome after the folder changes) — replaying
+  // the typewriter from the first character on every change reads as a
+  // glitch. The in-flight run is cancelled above, so a change landing
+  // mid-type still resolves cleanly to the final text.
+  if (speedMs <= 0) {
+    const state = useChatStore.getState();
+    const messages = state.sessions[sessionId]?.messages ?? [];
+    const idx = messages.findIndex(m => m.id === messageId);
+    if (idx === -1) return;
+    const next = messages.slice();
+    next[idx] = { ...messages[idx]!, content: [{ type: "text", text: fullText }] };
+    state.setMessages(sessionId, next);
+    return;
+  }
 
   let i = 0;
   const interval = setInterval(() => {
