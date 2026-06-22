@@ -136,20 +136,35 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
   useEffect(() => {
     if (tourBootstrapped.current) return;
     if (!revealDone) return;
-    let done = false;
-    // Key matches FirstLaunchTour.TOUR_FLAG. Bumped from "fleet:tour-done"
-    // to "-v2" so users whose old flag was set spuriously by failed
-    // tests get a clean shot at the actual experience.
-    try { done = localStorage.getItem("fleet:tour-done-v2") === "1"; } catch { /* noop */ }
-    if (done) return;
+    // Claim the one-shot synchronously so a revealDone churn can't race a
+    // second async check into firing the tour twice.
     tourBootstrapped.current = true;
-
-    // A short beat after the reveal so the sidebar / chat-input the tour
-    // spotlights have laid out before the first step measures them. The
-    // tour also polls for its own targets, so this only needs to clear
-    // the reveal's opacity fade.
-    const timer = setTimeout(() => setTourActive(true), 450);
-    return () => clearTimeout(timer);
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    void (async () => {
+      // Durable, device-scoped "seen" flag — survives port / run-mode /
+      // reinstall changes, unlike the origin-scoped localStorage marker
+      // which got dropped and made the tour reappear on every launch.
+      // Mirrors the onboarding gate (#216). The legacy localStorage key
+      // ("fleet:tour-done-v2", matches FirstLaunchTour.TOUR_FLAG) is still
+      // honoured as a fallback so a device flagged by the old path stays
+      // flagged without re-running the tour once.
+      let done = false;
+      try {
+        const cfg = await window.electronAPI?.getConfig?.();
+        done = cfg?.tourComplete === true;
+      } catch { /* fall through to the legacy marker */ }
+      if (!done) {
+        try { done = localStorage.getItem("fleet:tour-done-v2") === "1"; } catch { /* noop */ }
+      }
+      if (cancelled || done) return;
+      // A short beat after the reveal so the sidebar / chat-input the tour
+      // spotlights have laid out before the first step measures them. The
+      // tour also polls for its own targets, so this only needs to clear
+      // the reveal's opacity fade.
+      timer = setTimeout(() => { if (!cancelled) setTourActive(true); }, 450);
+    })();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, [revealDone]);
 
   // ── Visibility-driven reconnect ──

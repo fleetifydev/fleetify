@@ -19,18 +19,21 @@ import { folderName } from "@/lib/utils";
 /** Compose-mode welcome line. Names the picked project so the greeting
  *  reflects the current folder; falls back to the "pick a folder" nudge
  *  when none is selected yet. Shared by `openComposer` (initial type) and
- *  `setComposerField` (re-typed whenever the folder changes). */
+ *  `setComposerField` (refreshed instantly whenever the folder changes). */
 function composerWelcomeText(projectPath: string): string {
   return projectPath
     ? `I'll take a look at ${folderName(projectPath) || "the project"} before you send your first task.`
     : "Pick a folder above and I'll take a look at the project before you send your first task.";
 }
 
-/** (Re)play the compose-mode welcome typewriter for the current folder.
- *  Ensures the placeholder message exists, then types from the first
- *  character — `typeOutAssistantMessage` cancels any in-flight run, so
- *  rapid folder changes don't stack intervals onto the same line. */
-function retypeComposerWelcome(projectPath: string): void {
+/** Refresh the compose-mode welcome line for the current folder WITHOUT
+ *  replaying the typewriter. The line is typed out once by `openComposer`;
+ *  every later folder change just needs the text to reflect the new folder,
+ *  so we set it instantly (speed 0) rather than re-animating from the first
+ *  character on every pick — which read as a glitchy restart. Ensures the
+ *  placeholder exists first (e.g. the user picks a folder before the initial
+ *  line has landed). */
+function refreshComposerWelcome(projectPath: string): void {
   const welcomeId = `welcome-${COMPOSER_CHAT_KEY}`;
   const cs = useChatStore.getState();
   const exists = (cs.sessions[COMPOSER_CHAT_KEY]?.messages ?? []).some(m => m.id === welcomeId);
@@ -42,7 +45,7 @@ function retypeComposerWelcome(projectPath: string): void {
       timestamp: new Date().toISOString(),
     });
   }
-  typeOutAssistantMessage(COMPOSER_CHAT_KEY, welcomeId, composerWelcomeText(projectPath), 14);
+  typeOutAssistantMessage(COMPOSER_CHAT_KEY, welcomeId, composerWelcomeText(projectPath), 0);
 }
 
 
@@ -936,9 +939,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     // "open"), and an early `if (!prev.open) return` silently dropped those
     // picks — the chip never updated, so it read as "can't select a model".
     set({ composer: { ...prev, ...patch } });
-    // The welcome typewriter is a draft-surface affordance — only re-type it
-    // when the composer is actually open AND the folder changed.
-    if (prev.open && folderChanged) retypeComposerWelcome(patch.projectPath ?? "");
+    // The welcome line is a draft-surface affordance — only refresh it
+    // (instantly, no typewriter replay) when the composer is open AND the
+    // folder changed.
+    if (prev.open && folderChanged) refreshComposerWelcome(patch.projectPath ?? "");
   },
 
   commitComposer: async () => {

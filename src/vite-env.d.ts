@@ -68,6 +68,12 @@ interface PythonRuntimeResult {
 
 interface FleetConfig {
   onboardingComplete: boolean;
+  /** Device-scoped "first-launch tour seen" flag. Durable (lives in
+   *  fleet.config.json, like onboardingComplete) so the guided tour fires
+   *  once per device and never returns across port / run-mode / reinstall
+   *  changes — the old localStorage marker is origin-scoped and got dropped,
+   *  which made the tour replay on every launch. */
+  tourComplete?: boolean;
   apiKeys: {
     anthropic?: string;
     openai?: string;
