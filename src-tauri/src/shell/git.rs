@@ -518,22 +518,59 @@ pub async fn push(folder: &Path) -> Value {
     }
 }
 
+/// The NOAUTH dev stub identity (see [`crate::shell::auth`]): a synthetic
+/// "John Doe <john.doe@fleetify.local>" the desktop UI signs in as when
+/// `FLEETIFY_NOAUTH=1`. It is NOT a real committer and must never reach a
+/// repo's git config — otherwise every commit made in that working tree
+/// (the snapshot-before-archive in `sidebar.tsx`, agent commits, and the
+/// developer's own commits) is attributed to "John Doe". GitHub's
+/// squash-merge then folds that author into a phantom `Co-authored-by:`
+/// trailer, which is why merged PRs showed "3 people".
+const NOAUTH_STUB_EMAIL: &str = "john.doe@fleetify.local";
+
 pub async fn ensure_repo(folder: &Path, name: Option<&str>, email: Option<&str>) -> Value {
     let path = folder.to_string_lossy().to_string();
+
+    // Snapshot the repo's *local* committer identity BEFORE auto-init can
+    // seed a placeholder. A non-empty value here means the repo already
+    // carries an identity of its own that we must never overwrite. (Global
+    // scope is excluded on purpose: a global identity is a fine fallback
+    // and isn't ours to replace at the repo level.)
+    let had_name = !git(&["config", "--local", "--get", "user.name"], folder)
+        .await
+        .1
+        .trim()
+        .is_empty();
+    let had_email = !git(&["config", "--local", "--get", "user.email"], folder)
+        .await
+        .1
+        .trim()
+        .is_empty();
+
     // Delegate to fleet-backend's faithful auto-init (init -b main +
     // identity seed + .gitignore + initial commit).
     let _ = fleetify_backend::services::worktree::ensure_git_repo(&path).await;
-    // Apply any explicit identity overrides on top.
-    if let Some(n) = name {
-        if !n.is_empty() {
-            let _ = git(&["config", "user.name", n], folder).await;
+
+    // Apply the caller's identity ONLY to seed a repo that had no local
+    // identity of its own, and NEVER write the NOAUTH "John Doe" stub —
+    // the two rules that keep "John Doe" out of real commit history.
+    let is_noauth_stub = matches!(
+        email.map(str::trim),
+        Some(e) if e.eq_ignore_ascii_case(NOAUTH_STUB_EMAIL)
+    );
+    if !is_noauth_stub {
+        if !had_name {
+            if let Some(n) = name.map(str::trim).filter(|n| !n.is_empty()) {
+                let _ = git(&["config", "user.name", n], folder).await;
+            }
+        }
+        if !had_email {
+            if let Some(e) = email.map(str::trim).filter(|e| !e.is_empty()) {
+                let _ = git(&["config", "user.email", e], folder).await;
+            }
         }
     }
-    if let Some(e) = email {
-        if !e.is_empty() {
-            let _ = git(&["config", "user.email", e], folder).await;
-        }
-    }
+
     if fleetify_backend::services::worktree::is_git_repo(&path).await {
         json!({ "ok": true })
     } else {
@@ -2328,6 +2365,72 @@ mod tests {
         let _ = git(&["config", "user.email", "t@x"], p).await;
         let _ = git(&["config", "user.name", "T"], p).await;
         let _ = git(&["commit", "-m", "init", "--allow-empty"], p).await;
+    }
+
+    /// Regression: opening a session while signed in as the NOAUTH
+    /// "John Doe" stub used to overwrite the repo's real committer
+    /// identity via `ensure_repo`, so every later commit — and the
+    /// `Co-authored-by` GitHub aggregates on squash-merge — was attributed
+    /// to John Doe. `ensure_repo` must leave an existing identity alone.
+    #[tokio::test]
+    async fn ensure_repo_never_overwrites_existing_identity_with_noauth_stub() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("proj");
+        std::fs::create_dir_all(&repo).unwrap();
+        fresh_repo(&repo).await; // local identity: T <t@x>
+
+        let _ = ensure_repo(&repo, Some("John Doe"), Some(NOAUTH_STUB_EMAIL)).await;
+
+        let (_, name, _) = git(&["config", "--local", "--get", "user.name"], &repo).await;
+        let (_, email, _) = git(&["config", "--local", "--get", "user.email"], &repo).await;
+        assert_eq!(name.trim(), "T", "must not clobber the real committer name");
+        assert_eq!(
+            email.trim(),
+            "t@x",
+            "must not clobber the real committer email"
+        );
+    }
+
+    /// The stub must never be *seeded* either: a fresh repo opened under
+    /// NOAUTH falls back to the backend's "Fleet User" placeholder, never
+    /// "john.doe@fleetify.local".
+    #[tokio::test]
+    async fn ensure_repo_never_seeds_noauth_stub_into_fresh_repo() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("proj");
+        std::fs::create_dir_all(&repo).unwrap();
+
+        let _ = ensure_repo(&repo, Some("John Doe"), Some(NOAUTH_STUB_EMAIL)).await;
+
+        let (_, email, _) = git(&["config", "--local", "--get", "user.email"], &repo).await;
+        assert_ne!(
+            email.trim(),
+            NOAUTH_STUB_EMAIL,
+            "the NOAUTH stub identity must never reach git config"
+        );
+    }
+
+    /// Happy path stays intact: a real signed-in identity still seeds a
+    /// fresh repo that has no identity of its own.
+    #[tokio::test]
+    async fn ensure_repo_seeds_real_identity_into_fresh_repo() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("proj");
+        std::fs::create_dir_all(&repo).unwrap();
+
+        let _ = ensure_repo(&repo, Some("Ada Lovelace"), Some("ada@example.com")).await;
+
+        let (_, email, _) = git(&["config", "--local", "--get", "user.email"], &repo).await;
+        assert_eq!(email.trim(), "ada@example.com");
     }
 
     #[test]
