@@ -276,6 +276,10 @@ export function OnboardingChat({ user, onDone }: Props) {
   // timer-based auto-progress so the user controls the pace and can
   // finish inline key entry before the summary message lands.
   const scanContinueResolverRef = useRef<(() => void) | null>(null);
+  // Set while an assistant line is typing out — calling it reveals the full
+  // text at once. Wired to right-click on the chat so the user can skip the
+  // typewriter instead of waiting it out. Null when nothing is typing.
+  const completeTypingRef = useRef<(() => void) | null>(null);
   const firstName = (user?.name || "").trim().split(/\s+/)[0] || "there";
 
   useEffect(() => {
@@ -312,23 +316,34 @@ export function OnboardingChat({ user, onDone }: Props) {
       ]);
 
       let i = 0;
+      let timer: ReturnType<typeof setTimeout>;
+      // Reveal the whole line at once and unblock the queue. Shared by the
+      // natural end-of-typing path and the right-click-to-skip affordance
+      // (completeTypingRef) so the user never has to sit through the whole
+      // animation.
+      const finish = () => {
+        clearTimeout(timer);
+        if (completeTypingRef.current === finish) completeTypingRef.current = null;
+        setMessages((m) =>
+          m.map((msg) => (msg.id === id ? { ...msg, text, typing: false } : msg)),
+        );
+        setTimeout(resolve, PAUSE_BETWEEN_BUBBLES);
+      };
       const tick = () => {
         i += 1;
+        if (i >= text.length) { finish(); return; }
         const visible = text.slice(0, i);
         setMessages((m) =>
-          m.map((msg) =>
-            msg.id === id ? { ...msg, text: visible, typing: i < text.length } : msg,
-          ),
+          m.map((msg) => (msg.id === id ? { ...msg, text: visible, typing: true } : msg)),
         );
-        if (i < text.length) {
-          const ch = text[i - 1];
-          const punct = ch === "." || ch === "," || ch === "—" || ch === ":" || ch === "?";
-          setTimeout(tick, punct ? TYPE_PUNCT_MS : TYPE_BASE_MS);
-        } else {
-          setTimeout(resolve, PAUSE_BETWEEN_BUBBLES);
-        }
+        const ch = text[i - 1];
+        const punct = ch === "." || ch === "," || ch === "—" || ch === ":" || ch === "?";
+        timer = setTimeout(tick, punct ? TYPE_PUNCT_MS : TYPE_BASE_MS);
       };
-      setTimeout(tick, PAUSE_BETWEEN_BUBBLES);
+      // Expose "finish now" so a right-click anywhere in the chat skips
+      // straight to the end of this line.
+      completeTypingRef.current = finish;
+      timer = setTimeout(tick, PAUSE_BETWEEN_BUBBLES);
     });
 
   const pushUser = (text: string) => {
@@ -761,6 +776,15 @@ export function OnboardingChat({ user, onDone }: Props) {
       <div
         ref={scrollRef}
         className="app-no-drag"
+        onContextMenu={(e) => {
+          // Right-click anywhere in the chat skips the typewriter — reveal
+          // the in-flight line's full text instead of waiting it out. When
+          // nothing is typing this is a no-op and the native menu shows.
+          if (completeTypingRef.current) {
+            e.preventDefault();
+            completeTypingRef.current();
+          }
+        }}
         style={{
           flex: 1,
           width: "100%",
