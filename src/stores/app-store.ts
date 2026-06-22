@@ -26,6 +26,15 @@ function composerWelcomeText(projectPath: string): string {
     : "Pick a folder above and I'll take a look at the project before you send your first task.";
 }
 
+/**
+ * The compose-mode welcome line animates with the typewriter ONLY the first
+ * time the compose surface opens in an app run; every later "New session" open
+ * shows it instantly. Re-typing it from the first character on every press read
+ * as a glitchy restart — the user wanted it typed once, not re-animated each
+ * time. Module-scoped so it survives store re-creation within the session.
+ */
+let composerWelcomeAnimated = false;
+
 /** Refresh the compose-mode welcome line for the current folder WITHOUT
  *  replaying the typewriter. The line is typed out once by `openComposer`;
  *  every later folder change just needs the text to reflect the new folder,
@@ -935,7 +944,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
     // When a default folder is already selected, the "pick a folder"
     // nudge would be wrong — name the project we'll look at instead.
-    typeOutAssistantMessage(COMPOSER_CHAT_KEY, welcomeId, composerWelcomeText(defaultFolder), 14);
+    // Animate the very first open; show it instantly on every later open so
+    // hitting "New session" doesn't replay the typewriter from scratch.
+    typeOutAssistantMessage(
+      COMPOSER_CHAT_KEY,
+      welcomeId,
+      composerWelcomeText(defaultFolder),
+      composerWelcomeAnimated ? 0 : 14,
+    );
+    composerWelcomeAnimated = true;
   },
 
   setComposerField: (patch) => {

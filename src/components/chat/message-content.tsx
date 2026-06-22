@@ -3412,11 +3412,19 @@ export function StreamingMessage({ text, thinking }: { text: string; thinking: s
   const sid = activeSessionId || staffSessionId;
   const { activeToolCalls, streamStartTime, isStreaming, contentSoFar } = useChatStore(selectSession(sid));
   const toolCallList = Object.entries(activeToolCalls);
-  // The typewriter hook still runs even though we no longer render its
-  // output directly — chronological contentSoFar handles the live text.
-  // We keep the hook call to preserve React hook order and the
-  // approxTokens-based stats below.
-  void useTypewriter(text);
+  // Smoothly reveal the trailing (still-streaming) text block so the live
+  // response types out at a steady cadence — decoupled from the bursty network
+  // deltas — the way Claude / ChatGPT / Cursor animate their streams. Only the
+  // LAST text block is typed; earlier ones (already capped by a following tool
+  // call) stay fully shown, preserving the chronological text↔tool interleave
+  // rendered below. The hook runs unconditionally to keep React hook order.
+  let lastTextIdx = -1;
+  for (let i = contentSoFar.length - 1; i >= 0; i--) {
+    if (contentSoFar[i]?.type === "text") { lastTextIdx = i; break; }
+  }
+  const lastBlock = lastTextIdx >= 0 ? contentSoFar[lastTextIdx] : undefined;
+  const lastTextRaw = lastBlock ? stripDispatch((lastBlock as { text: string }).text) : "";
+  const typedTail = useTypewriter(lastTextRaw);
 
   // Apply the same transcript-view rules the finalised messages use,
   // otherwise the toggle silently no-ops on the row that's actually
@@ -3490,7 +3498,9 @@ export function StreamingMessage({ text, thinking }: { text: string; thinking: s
             in once the message lands in messages[]. */}
         {contentSoFar.map((block, i) => {
           if (block.type === "text") {
-            const t = stripDispatch((block as { text: string }).text);
+            // Trailing block reveals through the typewriter (typedTail); the
+            // earlier, settled blocks render in full.
+            const t = i === lastTextIdx ? typedTail : stripDispatch((block as { text: string }).text);
             if (!t) return null;
             return <MarkdownBody key={`cs-${i}`} text={t} />;
           }

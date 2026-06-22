@@ -117,6 +117,23 @@ describe("openComposer — default workspace folder seeding", () => {
     expect(text).not.toContain("Pick a folder above");
   });
 
+  it("shows the welcome instantly on a re-open — the typewriter doesn't replay on every New session", async () => {
+    Object.defineProperty(window, "electronAPI", {
+      configurable: true,
+      value: { getConfig: async () => ({ defaultFolder: "C:/work/proj" }) },
+    });
+    // First open may animate (module-scoped once-per-run flag); close it…
+    await useAppStore.getState().openComposer();
+    useAppStore.getState().closeComposer();
+    // …then re-open. This time the welcome must be set in one shot: the full
+    // text is present WITHOUT advancing the fake timers. Under the old
+    // always-animate behaviour it would still be empty here (regression guard
+    // for "don't re-type the welcome from scratch on every New session press").
+    await useAppStore.getState().openComposer();
+    expect(welcomeText()).toContain("proj");
+    expect(welcomeText()).toContain("I'll take a look at");
+  });
+
   it("reverts the welcome to the pick-a-folder nudge instantly when the folder is cleared", async () => {
     Object.defineProperty(window, "electronAPI", {
       configurable: true,
