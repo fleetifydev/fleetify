@@ -97,7 +97,20 @@ export function FirstLaunchTour({ onDone }: { onDone: () => void }) {
 
   const finish = useCallback(() => {
     if (seenAtLeastOne.current) {
+      // Legacy origin-scoped marker — kept so older builds still read it.
       try { localStorage.setItem(TOUR_FLAG, "1"); } catch { /* noop */ }
+      // Durable, device-scoped flag so the tour never reappears across
+      // port / run-mode / reinstall changes (localStorage is origin-scoped
+      // and was getting dropped, which made the tour fire on every launch).
+      // Read-merge-write because config_set replaces the whole file —
+      // mirrors the onboarding gate (#216).
+      void (async () => {
+        try {
+          const cfg = (await window.electronAPI?.getConfig?.()) ?? null;
+          const base: FleetConfig = cfg ?? { onboardingComplete: false, apiKeys: {} };
+          await window.electronAPI?.setConfig?.({ ...base, tourComplete: true });
+        } catch { /* best-effort */ }
+      })();
     }
     onDone();
   }, [onDone]);
