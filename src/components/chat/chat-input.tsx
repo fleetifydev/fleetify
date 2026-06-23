@@ -2765,7 +2765,7 @@ export function ChatInput({
         {/* ── Main box ── */}
         <div
           onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}
-          className={effort === "ultra_code" ? "composer-ultra" : undefined}
+          className={undefined /* ultracode composer rainbow border removed (kaldırıldı) — was: effort === "ultra_code" ? "composer-ultra" : undefined */}
           style={{
             // 8px corners — sharp / minimal (Cursor-style), not pill-soft.
             borderRadius: 8,
@@ -3658,8 +3658,8 @@ export function ChatInput({
               <span style={{ color: "var(--c-high)", fontWeight: 500 }}>{modelLabel}</span>
               <span style={{ color: "var(--c-dim)", fontSize: 10 }}>·</span>
               <span
-                className={effort === "max" ? "effort-rgb" : effort === "ultra_code" ? "effort-ultra" : undefined}
-                style={{ color: (effort === "max" || effort === "ultra_code") ? undefined : "var(--c-low)", fontSize: 10.5 }}
+                className={/* "max" RGB animation removed (kaldırıldı) — was: effort === "max" ? "effort-rgb" : */ effort === "ultra_code" ? "effort-ultra" : undefined}
+                style={{ color: effort === "ultra_code" ? undefined : "var(--c-low)" /* "max" now plain — was: (effort === "max" || effort === "ultra_code") ? undefined : … */, fontSize: 10.5 }}
               >{effortLabel(effort)}</span>
               <ChevronDown size={9} strokeWidth={2} style={{
                 color: "var(--c-low)", marginLeft: 0,

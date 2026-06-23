@@ -715,6 +715,7 @@ body {
    purple gradient. Both are background-clip text gradients animated only by
    sliding the background-position — GPU-cheap, zero layout cost. The label
    keeps its own font sizing; only the fill is replaced. */
+/* "max" RGB animation removed (kaldırıldı) — kept commented for recovery:
 @keyframes effort-rgb-slide {
   from { background-position: 0% 50%; }
   to   { background-position: 200% 50%; }
@@ -729,6 +730,7 @@ body {
   color: transparent;
   animation: effort-rgb-slide 3s linear infinite;
 }
+*/
 @keyframes effort-ultra-slide {
   0%, 100% { background-position: 0% 50%; }
   50%      { background-position: 100% 50%; }
@@ -750,6 +752,7 @@ body {
    ::before draws only the edge; animating the gradient ANGLE (via a registered
    @property) spins the rainbow while the rounded-rect ring itself stays put.
    GPU-cheap, pointer-transparent, sits exactly on the bar's 8px corners. */
+/* Ultracode composer rainbow border removed (kaldırıldı) — kept commented for recovery:
 @property --ultra-angle {
   syntax: "<angle>";
   initial-value: 0deg;
@@ -773,6 +776,7 @@ body {
   animation: ultra-ring-spin 4s linear infinite;
   pointer-events: none;
 }
+*/
 
 /* ─── Live-status sheen ───
    A barely-there bright band drifts across a live status word (Running,

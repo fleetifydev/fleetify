@@ -580,12 +580,13 @@ export function UnifiedModelPicker({
               }}
             >
               <span
-                className={level === "max" ? "effort-rgb" : level === "ultra_code" ? "effort-ultra" : undefined}
+                className={/* "max" RGB animation removed (kaldırıldı) — was: level === "max" ? "effort-rgb" : */ level === "ultra_code" ? "effort-ultra" : undefined}
                 style={{
                   fontSize: 12,
-                  // Animated tiers (max = RGB, ULTRA CODE = purple) own their
-                  // text fill via the class; an inline color would defeat it.
-                  color: (level === "max" || level === "ultra_code")
+                  // Only ULTRA CODE (purple) owns its text fill via the class.
+                  // "max" RGB animation removed → it renders with the normal color.
+                  // Was: color: (level === "max" || level === "ultra_code") ? undefined : …
+                  color: level === "ultra_code"
                     ? undefined
                     : active ? "var(--c-high, #ffffff)" : "var(--c-low, #c0c0c0)",
                   fontWeight: active ? 500 : 400,
