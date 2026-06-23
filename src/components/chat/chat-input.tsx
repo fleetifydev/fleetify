@@ -1301,7 +1301,14 @@ export function ChatInput({
     // it. With rows=1 + the CSS minHeight, `height: auto` is exactly one line
     // and never overshoots, independent of font-load timing.
     if (t.value === "") { t.style.height = "auto"; return; }
-    t.style.height = "0px";
+    // Measure against `auto`, NOT `0px`. Collapsing to 0 first made the
+    // textarea visibly flash shut → reopen on every keystroke; during a
+    // stream (frequent re-renders around the composer) that flash read as
+    // the whole bar jumping up/down. `auto` sizes to content without the
+    // collapse, so the height only changes when a line is genuinely
+    // added/removed — and `scrollHeight` read under `auto` still shrinks
+    // correctly when text is deleted.
+    t.style.height = "auto";
     t.style.height = Math.min(t.scrollHeight, 200) + "px";
   }, []);
   useEffect(() => { adjust(); }, [value, adjust]);
