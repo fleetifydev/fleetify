@@ -128,6 +128,7 @@ pub fn run() {
             shell::ipc::fs_scaffold_plugin,
             shell::ipc::dialog_open_folder,
             shell::ipc::git_get_context,
+            shell::ipc::git_working_diff,
             shell::ipc::git_has_gh_cli,
             shell::ipc::git_has_git,
             shell::ipc::git_list_branches,

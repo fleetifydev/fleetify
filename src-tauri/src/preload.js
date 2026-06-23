@@ -415,6 +415,7 @@ document.addEventListener("mousedown", function (e) {
         },
       },
       getGitContext: function (folder) { return invoke("git_get_context", { folder: String(folder || "") }); },
+      getWorkingDiff: function (folder) { return invoke("git_working_diff", { folder: String(folder || "") }); },
       hasGhCli: function (opts) {
         return invoke("git_has_gh_cli", { refresh: !!(opts && opts.refresh) });
       },

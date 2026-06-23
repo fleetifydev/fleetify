@@ -21,6 +21,8 @@ import { isStudioTool } from "@/lib/studio-tools";
 import { STUDIO_ENABLED } from "@/lib/feature-flags";
 import type { Session } from "@/types/session";
 import { FeedbackModal } from "@/components/feedback-modal";
+import { useHoverIntent } from "@/hooks/use-hover-intent";
+import { SessionHoverPreview } from "@/components/layout/session-hover-preview";
 
 type SessionStats = { message_count: number; total_cost_usd: number };
 
@@ -424,6 +426,8 @@ function AgentRowImpl({ session, isActive, stats, onClick, onPin, onFork, onStop
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [hovered, setHovered] = useState(false);
+  const rowRef = useRef<HTMLDivElement>(null);
+  const preview = useHoverIntent({ openDelay: 400, closeDelay: 200 });
 
   useEffect(() => {
     if (!menu) return;
@@ -450,13 +454,14 @@ function AgentRowImpl({ session, isActive, stats, onClick, onPin, onFork, onStop
 
   return (
     <div
+      ref={rowRef}
       draggable
       onDragStart={onDragStart}
       onDragOver={onDragOver}
       onDrop={e => { e.preventDefault(); onDrop(); }}
       onDragEnd={onDragEnd}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      onMouseEnter={() => { setHovered(true); preview.anchorProps.onMouseEnter(); }}
+      onMouseLeave={() => { setHovered(false); preview.anchorProps.onMouseLeave(); }}
       style={{ position: "relative", opacity: isDragging ? 0.4 : 1, transition: "none" }}
     >
       {isDropTarget && (
@@ -537,6 +542,13 @@ function AgentRowImpl({ session, isActive, stats, onClick, onPin, onFork, onStop
           onClose={() => setMenu(null)} onPin={onPin} onFork={onFork}
           onStop={onStop} onRestart={onRestart} onReset={onReset} />
       )}
+      <SessionHoverPreview
+        session={session}
+        anchor={rowRef}
+        open={preview.open}
+        popupProps={preview.popupProps}
+        onClose={preview.close}
+      />
     </div>
   );
 }

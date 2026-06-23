@@ -908,6 +908,12 @@ pub async fn fs_get_project_root() -> String {
 pub async fn git_get_context(folder: String) -> serde_json::Value {
     git::get_context(&PathBuf::from(folder)).await
 }
+/// Cheap, pollable working-tree diff (branch + uncommitted +/-) for the
+/// sidebar hover preview. Two git calls vs `git_get_context`'s five-plus.
+#[tauri::command]
+pub async fn git_working_diff(folder: String) -> serde_json::Value {
+    git::working_diff(&PathBuf::from(folder)).await
+}
 /// gh CLI status probe. Reads from the integrations cache primed by
 /// `warm_at_boot`; falls back to a live probe (three subprocesses) when
 /// the cache is cold, then stores the fresh snapshot so subsequent

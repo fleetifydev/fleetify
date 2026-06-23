@@ -424,6 +424,40 @@ pub async fn get_context(folder: &Path) -> Value {
     })
 }
 
+/// Lightweight live diff for the hover preview: the current branch plus the
+/// UNCOMMITTED working-tree change count (`git diff HEAD --numstat`, staged +
+/// unstaged). Two git calls run concurrently, so it stays cheap enough to poll
+/// at a tight interval — unlike the full `get_context`, which also resolves the
+/// remote, the default branch, and the committed base...HEAD diff.
+pub async fn working_diff(folder: &Path) -> Value {
+    let (branch_res, diff_res) = tokio::join!(
+        git(&["rev-parse", "--abbrev-ref", "HEAD"], folder),
+        git(&["diff", "HEAD", "--numstat"], folder),
+    );
+
+    let (rc_b, branch, _) = branch_res;
+    let branch_v = if rc_b != 0 {
+        Value::Null
+    } else {
+        let b = branch.trim();
+        if b.is_empty() || b == "HEAD" { Value::Null } else { json!(b) }
+    };
+
+    let (rc_w, wnum, _) = diff_res;
+    let (mut plus, mut minus) = (0i64, 0i64);
+    if rc_w == 0 {
+        for line in wnum.lines() {
+            let mut it = line.split_whitespace();
+            if let (Some(p), Some(m)) = (it.next(), it.next()) {
+                plus += p.parse::<i64>().unwrap_or(0);
+                minus += m.parse::<i64>().unwrap_or(0);
+            }
+        }
+    }
+
+    json!({ "branch": branch_v, "plus": plus, "minus": minus })
+}
+
 pub async fn has_gh_cli() -> Value {
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     // Bail early if our resolver can't find gh anywhere — covers macOS
