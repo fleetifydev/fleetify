@@ -338,6 +338,9 @@ export async function createSession(data: {
   /** Which provider/agent account this session uses. Omitted ⇒ the System
    *  account (real HOME for CLI / default labeled key for HTTP). */
   account_id?: string;
+  /** Reasoning effort the session starts at (low … max … ultra_code).
+   *  Defaulted from the user's last-used session so they don't re-pick. */
+  effort?: string;
 }) {
   const res = await apiFetch(`${API_BASE}/sessions`, {
     method: "POST",

@@ -4,6 +4,7 @@ import { ClaudeLogo, OpenAILogo, KimiLogo } from "@/components/ui/provider-logo"
 import { createSession, fetchClaudeSessions, fetchCodexSessions, apiFetch, type ClaudeSession } from "@/lib/api";
 import { providers as providersApi, type AccountInfo } from "@/lib/providers-api";
 import { useAppStore } from "@/stores/app-store";
+import type { Session } from "@/types/session";
 import { useRouterConfig } from "@/hooks/use-router-config";
 import { RoutersStatusBar } from "@/components/settings/routers/routers-status-bar";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
@@ -183,10 +184,31 @@ export function hasOffWorktreeConflict(
   return sessions.some(s => (s.project_path ?? "").trim() === p && !s.worktree_path);
 }
 
+/** The user's most recently touched real agent session (by last_accessed),
+ *  skipping the staff session, archived rows, and rows without a model. Used
+ *  to default a new session's provider/model/effort to the last one used so
+ *  the user isn't re-picking the model (and effort) every time. */
+function lastUsedSession(sessions: Session[], staffSessionId: string | null | undefined): Session | undefined {
+  let best: Session | undefined;
+  let bestT = -1;
+  for (const s of sessions) {
+    if (s.id === staffSessionId || s.archived_at || !s.model_name) continue;
+    const t = new Date(s.last_accessed ?? s.created_at).getTime();
+    if (t > bestT) { bestT = t; best = s; }
+  }
+  return best;
+}
+
 export function NewAgentView({ onClose }: Props) {
   const { addSession, setActiveSession, sessions, staffSessionId } = useAppStore();
-  const [provider,  setProvider]  = useState("claude-code");
-  const [modelId,   setModelId]   = useState("claude-sonnet-4-6");
+  // Default the provider/model/effort to whatever the user last used so they
+  // don't re-pick on every new session. Lazy initialisers ⇒ seeded once on
+  // open (sessions are loaded by then); the composer still changes them later.
+  const [provider,  setProvider]  = useState<string>(() => lastUsedSession(sessions, staffSessionId)?.tool ?? "claude-code");
+  const [modelId,   setModelId]   = useState<string>(() => lastUsedSession(sessions, staffSessionId)?.model_name ?? "claude-sonnet-4-6");
+  // No effort picker in this dialog (the composer owns it), so the setter is
+  // intentionally omitted — this only seeds the new session's starting effort.
+  const [effort] = useState<string>(() => lastUsedSession(sessions, staffSessionId)?.effort ?? "high");
   const [name,      setName]      = useState("");
   // Per-session git isolation. Default mirrors the app-store default
   // (`use_worktree=true`) so parallel sessions don't stomp on each other.
@@ -448,6 +470,7 @@ export function NewAgentView({ onClose }: Props) {
         agent_template: builtinAgentTemplate ?? selectedTpl?.name,
         use_worktree: useWorktree,
         account_id: accountId ?? undefined,
+        effort,
       });
       addSession(s); setActiveSession(s.id); onClose();
     } catch (e) { console.error(e); } finally { setLoading(false); }

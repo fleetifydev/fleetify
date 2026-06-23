@@ -536,6 +536,7 @@ pub async fn create(
         agent_template: spec.agent_template.clone(),
         account_id: None,
         origin: None,
+        effort: None,
     };
 
     let session = st

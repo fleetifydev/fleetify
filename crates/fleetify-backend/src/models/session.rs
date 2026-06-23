@@ -79,6 +79,11 @@ pub struct SessionCreate {
     /// the background-agent poller passes 'claude-bg'. NULL for UI creates.
     #[serde(default)]
     pub origin: Option<String>,
+    /// Reasoning effort the session starts at (low … max … ultra_code).
+    /// Persisted at creation so a new session can carry the user's last-used
+    /// effort. NULL ⇒ the composer falls back to its default.
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 /// PATCH /api/sessions/{id} body. All optional (partial update).
