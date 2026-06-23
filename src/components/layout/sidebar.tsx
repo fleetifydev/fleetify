@@ -404,10 +404,12 @@ function AgentRowImpl({ session, isActive, stats, onClick, onPin, onFork, onStop
   const effectiveStatus = isStreaming && session.status !== "running" ? "running" : session.status;
   const isRunning = effectiveStatus === "running";
   const bgColor = isActive ? "var(--c-srf2)" : hovered ? "var(--c-srf)" : "transparent";
-  // Left accent bar: waiting sessions earn an attention-orange strip (so a
-  // session that needs you pops out of the list); otherwise the selected
-  // row gets the primary accent. Drawn as an inset shadow — no layout shift.
-  const accentColor = effectiveStatus === "waiting" ? "#fb923c" : isActive ? "var(--primary)" : null;
+  // Left accent bar: ONLY waiting sessions earn an attention-orange strip (so a
+  // session that needs you pops out of the list). The selected row no longer
+  // draws the white --primary strip — selection is communicated by the row
+  // background (--c-srf2) + bolder title alone. Drawn as an inset shadow — no
+  // layout shift.
+  const accentColor = effectiveStatus === "waiting" ? "#fb923c" : null;
   const timeLabel = timeAgo(session.last_accessed ?? session.created_at);
 
   return (

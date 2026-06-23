@@ -22,7 +22,6 @@ export function SideRow({
       padding: "6px 10px", border: "none", cursor: "pointer",
       textAlign: "left", fontSize: 13, fontWeight: active ? 600 : 400,
       borderRadius: 7, background: baseBg,
-      boxShadow: active ? "inset 2px 0 0 var(--primary)" : undefined,
       color: baseColor, transition: "none",
     }}
       onMouseEnter={e => { if (!active) { e.currentTarget.style.background = "var(--c-srf)"; e.currentTarget.style.color = "var(--c-high)"; } }}
