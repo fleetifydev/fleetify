@@ -348,6 +348,22 @@ describe("buildPickerGroups", () => {
     expect(groups.find((g) => g.id === "cursor-cli")?.models).toEqual(live);
   });
 
+  // A catalog-retired model (active=false) must never reach the picker; models
+  // with no `active` field (embedded/CLI fallbacks, live probes) are kept.
+  it("filters catalog-retired (active=false) models out of the picker", () => {
+    const tiles = [baseTile("cursor-cli", "Cursor CLI", "cli")];
+    const dyn = {
+      "cursor-cli": [
+        { id: "live", label: "Live", effort: { kind: "none" }, supports_effort: false, active: true },
+        { id: "retired", label: "Retired", effort: { kind: "none" }, supports_effort: false, active: false },
+        { id: "legacy", label: "Legacy", effort: { kind: "none" }, supports_effort: false },
+      ],
+    };
+    const models =
+      buildPickerGroups(tiles, ["cursor-cli"], dyn as never).find((g) => g.id === "cursor-cli")?.models ?? [];
+    expect(models.map((m) => m.id)).toEqual(["live", "legacy"]);
+  });
+
   // Regression: when providerTiles is empty (cold-start race or transient
   // IPC failure), buildPickerGroups must still return all CLI agent rails
   // populated from CLI_MODELS so the picker isn't a blank popover.

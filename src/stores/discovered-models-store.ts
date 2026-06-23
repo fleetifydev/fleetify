@@ -50,6 +50,7 @@ function toPickerModels(
       effort: eff,
       supports_effort: eff.kind !== "none",
       default: m.default ?? false,
+      active: m.active,
     };
   });
 }

@@ -13,6 +13,9 @@ export interface PickerModel {
   supports_effort: boolean;
   /** True when the backend catalog flags this as the lineup's default model. */
   default?: boolean;
+  /** Catalog availability (the remote catalog's `active` field). `false` ⇒
+   *  retired: filtered out of the picker and rejected at send. */
+  active?: boolean;
 }
 
 export interface PickerGroup {
@@ -516,6 +519,11 @@ export function buildPickerGroups(
     }
   }
 
+  // A catalog-retired model (`active: false`) must never appear in the picker.
+  // Only the remote-catalog path carries this flag; embedded/CLI fallbacks have
+  // no `active` field (treated as available). A session already pinned to a now-
+  // retired model is blocked at send (chat-input dispatchSend).
+  for (const g of out) g.models = g.models.filter((m) => m.active !== false);
   return out;
 }
 
@@ -526,7 +534,7 @@ export function buildPickerGroups(
  *  fallback. Returns [] when nothing resolves (e.g. Ollama, whose models
  *  are fetched live). */
 export function modelsForTile(tile: ProviderTile, dynamic?: PickerModel[]): PickerModel[] {
-  if (dynamic && dynamic.length > 0) return dynamic;
+  if (dynamic && dynamic.length > 0) return dynamic.filter((m) => m.active !== false);
   const catalog = tile.spec.default_models.map((m) => {
     const effort = tile.capabilities?.model_efforts?.find((me) => me.id === m.id)?.effort ?? EFFORT_NONE;
     return modelFromSpec(m, effort);

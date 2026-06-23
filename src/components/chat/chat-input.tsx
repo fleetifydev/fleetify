@@ -1904,6 +1904,17 @@ export function ChatInput({
       if (ref.current) ref.current.style.height = "0px";
       return;
     }
+    // A catalog-retired model (active=false) can't run a turn. The picker hides
+    // such models, but a session pinned to one before it was retired would
+    // otherwise dispatch into a dead model — block it with the same in-chat
+    // error surface and keep the composer contents.
+    if (sessionId && model && tool) {
+      const picked = useDiscoveredModelsStore.getState().models[tool]?.find((m) => m.id === model);
+      if (picked?.active === false) {
+        pushChatError(sessionId, `"${picked.label}" is no longer available — pick another model.`);
+        return;
+      }
+    }
     if (t && historyRef.current[0] !== t) historyRef.current.unshift(t);
     historyIdxRef.current = -1;
     draftRef.current = "";
@@ -1985,7 +1996,7 @@ export function ChatInput({
     setPendingRefine(null);
     setEnhanceUndo(null); setEnhanceToast(null);
     if (ref.current) ref.current.style.height = "0px";
-  }, [onSend, tool, sessionId]);
+  }, [onSend, tool, sessionId, model]);
 
   /* ── submit ──
    * When Fleet co-pilot is active (agent session, not turned off),

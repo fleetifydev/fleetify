@@ -454,6 +454,12 @@ struct ProviderModel {
     /// the catalog marks this model as the provider's default.
     #[serde(default)]
     default: bool,
+    /// Catalog availability switch. `Some(false)` ⇒ the model is retired:
+    /// hidden from the picker and rejected at send. `None`/`Some(true)` ⇒
+    /// selectable. `#[serde(default)]` so disk-cache files written before this
+    /// field existed still deserialize.
+    #[serde(default)]
+    active: Option<bool>,
 }
 type ProviderModelList = Vec<ProviderModel>;
 
@@ -472,6 +478,7 @@ impl ProviderModel {
             endpoint: None,
             effort: None,
             default: false,
+            active: None,
         }
     }
 }
@@ -542,6 +549,9 @@ fn provider_model_json(m: &ProviderModel) -> Value {
         o.insert("effort".into(), e.clone());
     }
     o.insert("default".into(), json!(m.default));
+    if let Some(a) = m.active {
+        o.insert("active".into(), json!(a));
+    }
     Value::Object(o)
 }
 
@@ -764,6 +774,7 @@ fn parse_remote_catalog(body: &Value) -> ProviderModelList {
                 endpoint: str_field("endpoint"),
                 effort: m.get("effort").cloned().filter(|v| !v.is_null()),
                 default: m.get("default").and_then(|x| x.as_bool()).unwrap_or(false),
+                active: m.get("active").and_then(|x| x.as_bool()),
             })
         })
         .collect()
@@ -1909,6 +1920,7 @@ mod tests {
             endpoint: None,
             effort: None,
             default: false,
+            active: None,
         }]
     }
 
@@ -2516,6 +2528,7 @@ mod tests {
                     "kind": "levels", "levels": ["low", "high"], "default": "high"
                 })),
                 default: true,
+                active: None,
             },
             ProviderModel::basic("c/d".into(), "D".into(), None),
         ];
