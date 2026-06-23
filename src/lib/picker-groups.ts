@@ -14,8 +14,11 @@ export interface PickerModel {
   /** True when the backend catalog flags this as the lineup's default model. */
   default?: boolean;
   /** Catalog availability (the remote catalog's `active` field). `false` ⇒
-   *  retired: filtered out of the picker and rejected at send. */
+   *  retired: shown disabled in the picker and rejected at send. */
   active?: boolean;
+  /** Catalog sort weight. Higher floats the model toward the top of its
+   *  provider's list; ties keep catalog order. Absent ⇒ 0. */
+  priority?: number;
 }
 
 export interface PickerGroup {
@@ -52,6 +55,7 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
       id: "claude-fable-5", label: "Fable 5", ctx: "1M",
       effort: EFFORT_NONE,
       supports_effort: false,
+      active: false, // retired — disabled in the picker (matches the catalog)
     },
     {
       id: "claude-opus-4-8", label: "Opus 4.8", ctx: "200K",
@@ -519,11 +523,23 @@ export function buildPickerGroups(
     }
   }
 
-  // A catalog-retired model (`active: false`) must never appear in the picker.
-  // Only the remote-catalog path carries this flag; embedded/CLI fallbacks have
-  // no `active` field (treated as available). A session already pinned to a now-
-  // retired model is blocked at send (chat-input dispatchSend).
-  for (const g of out) g.models = g.models.filter((m) => m.active !== false);
+  // Catalog-retired models (`active: false`) are KEPT in the picker but rendered
+  // disabled (greyed, non-clickable) by UnifiedModelPicker — they stay visible so
+  // users can see the model exists yet can't pick it. Selection/dispatch is gated
+  // separately: resolveSessionModel skips inactive (heals away, never defaults to
+  // one) and send is blocked. Entries with no `active` field (embedded/CLI
+  // fallbacks, live probes) are treated as available.
+
+  // Order each group by catalog `priority` (higher floats toward the top). The
+  // sort is stable — equal/absent priorities (0) keep their source order, so CLI
+  // fallbacks and live-probe lists are untouched unless the catalog weights them.
+  // Decorate-with-index keeps stability explicit (not engine-dependent).
+  for (const g of out) {
+    g.models = g.models
+      .map((m, i) => [m, i] as const)
+      .sort(([a, ai], [b, bi]) => (b.priority ?? 0) - (a.priority ?? 0) || ai - bi)
+      .map(([m]) => m);
+  }
   return out;
 }
 

@@ -460,6 +460,12 @@ struct ProviderModel {
     /// field existed still deserialize.
     #[serde(default)]
     active: Option<bool>,
+    /// Picker sort weight from the catalog — higher floats the model toward the
+    /// top of its provider's list (the renderer sorts by it, ties keep order).
+    /// `None` ⇒ unweighted (treated as 0). `#[serde(default)]` so older
+    /// disk-cache files still deserialize.
+    #[serde(default)]
+    priority: Option<i64>,
 }
 type ProviderModelList = Vec<ProviderModel>;
 
@@ -479,6 +485,7 @@ impl ProviderModel {
             effort: None,
             default: false,
             active: None,
+            priority: None,
         }
     }
 }
@@ -551,6 +558,9 @@ fn provider_model_json(m: &ProviderModel) -> Value {
     o.insert("default".into(), json!(m.default));
     if let Some(a) = m.active {
         o.insert("active".into(), json!(a));
+    }
+    if let Some(p) = m.priority {
+        o.insert("priority".into(), json!(p));
     }
     Value::Object(o)
 }
@@ -775,6 +785,7 @@ fn parse_remote_catalog(body: &Value) -> ProviderModelList {
                 effort: m.get("effort").cloned().filter(|v| !v.is_null()),
                 default: m.get("default").and_then(|x| x.as_bool()).unwrap_or(false),
                 active: m.get("active").and_then(|x| x.as_bool()),
+                priority: m.get("priority").and_then(|x| x.as_i64()),
             })
         })
         .collect()
@@ -1921,6 +1932,7 @@ mod tests {
             effort: None,
             default: false,
             active: None,
+            priority: None,
         }]
     }
 
@@ -2529,6 +2541,7 @@ mod tests {
                 })),
                 default: true,
                 active: None,
+                priority: Some(50),
             },
             ProviderModel::basic("c/d".into(), "D".into(), None),
         ];
@@ -2545,8 +2558,11 @@ mod tests {
         assert_eq!(v["models"][0]["effort"]["default"], "high");
         // `default` is always emitted (plain bool, not omitted when false).
         assert_eq!(v["models"][0]["default"], true);
+        // `priority` is emitted when present.
+        assert_eq!(v["models"][0]["priority"], 50);
         // Absent optionals are omitted from the wire shape (not null).
         assert!(v["models"][1].get("ctx").is_none());
+        assert!(v["models"][1].get("priority").is_none());
         assert!(v["models"][1].get("supports_effort").is_none());
         assert!(v["models"][1].get("group").is_none());
         assert!(v["models"][1].get("effort").is_none());

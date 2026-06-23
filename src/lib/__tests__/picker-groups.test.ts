@@ -348,9 +348,11 @@ describe("buildPickerGroups", () => {
     expect(groups.find((g) => g.id === "cursor-cli")?.models).toEqual(live);
   });
 
-  // A catalog-retired model (active=false) must never reach the picker; models
-  // with no `active` field (embedded/CLI fallbacks, live probes) are kept.
-  it("filters catalog-retired (active=false) models out of the picker", () => {
+  // A catalog-retired model (active=false) is KEPT in the picker (UnifiedModelPicker
+  // renders it disabled); selection is gated elsewhere (resolveSessionModel skips
+  // inactive). Models with no `active` field (embedded/CLI fallbacks, live probes)
+  // are kept as normal.
+  it("keeps catalog-retired (active=false) models in the picker (rendered disabled)", () => {
     const tiles = [baseTile("cursor-cli", "Cursor CLI", "cli")];
     const dyn = {
       "cursor-cli": [
@@ -361,7 +363,26 @@ describe("buildPickerGroups", () => {
     };
     const models =
       buildPickerGroups(tiles, ["cursor-cli"], dyn as never).find((g) => g.id === "cursor-cli")?.models ?? [];
-    expect(models.map((m) => m.id)).toEqual(["live", "legacy"]);
+    expect(models.map((m) => m.id)).toEqual(["live", "retired", "legacy"]);
+  });
+
+  // Catalog `priority` orders the picker (higher = top); ties + absent (0) keep
+  // catalog order (stable sort).
+  it("sorts models by catalog priority (desc), stable on ties", () => {
+    const tiles = [baseTile("cursor-cli", "Cursor CLI", "cli")];
+    const dyn = {
+      "cursor-cli": [
+        { id: "low", label: "Low", effort: { kind: "none" }, supports_effort: false, priority: 1 },
+        { id: "top", label: "Top", effort: { kind: "none" }, supports_effort: false, priority: 100 },
+        { id: "mid-a", label: "MidA", effort: { kind: "none" }, supports_effort: false, priority: 10 },
+        { id: "none-a", label: "NoneA", effort: { kind: "none" }, supports_effort: false },
+        { id: "mid-b", label: "MidB", effort: { kind: "none" }, supports_effort: false, priority: 10 },
+        { id: "none-b", label: "NoneB", effort: { kind: "none" }, supports_effort: false },
+      ],
+    };
+    const models =
+      buildPickerGroups(tiles, ["cursor-cli"], dyn as never).find((g) => g.id === "cursor-cli")?.models ?? [];
+    expect(models.map((m) => m.id)).toEqual(["top", "mid-a", "mid-b", "low", "none-a", "none-b"]);
   });
 
   // Regression: when providerTiles is empty (cold-start race or transient

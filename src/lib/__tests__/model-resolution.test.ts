@@ -22,6 +22,22 @@ describe("resolveSessionModel", () => {
   it("heals empty/null persisted to default", () => {
     expect(resolveSessionModel(null, [M("a"), M("b", true)])).toEqual({ status: "healed", model: "b" });
   });
+
+  // Catalog-retired models (active: false) are not selectable.
+  it("heals a session pinned to a retired (active:false) model away to the default", () => {
+    const avail = [{ id: "fable", active: false }, { id: "opus", default: true }];
+    expect(resolveSessionModel("fable", avail)).toEqual({ status: "healed", model: "opus" });
+  });
+  it("never heals TO a retired model (skips it when picking the default)", () => {
+    const avail = [{ id: "fable", active: false }, { id: "opus" }];
+    expect(resolveSessionModel("gone", avail)).toEqual({ status: "healed", model: "opus" });
+  });
+  it("unverified when every model is retired", () => {
+    expect(resolveSessionModel("fable", [{ id: "fable", active: false }])).toEqual({
+      status: "unverified",
+      model: "fable",
+    });
+  });
 });
 
 describe("sendBlockMessage", () => {

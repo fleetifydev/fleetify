@@ -144,6 +144,9 @@ export interface DiscoveredModel {
   /** Catalog availability. `false` ⇒ retired: hidden from the picker and
    *  rejected at send. Absent/`true` ⇒ selectable. */
   active?: boolean;
+  /** Picker sort weight from the catalog. Higher floats the model toward the
+   *  top of its provider's list; ties keep catalog order. Absent ⇒ 0. */
+  priority?: number;
 }
 export async function listModels(): Promise<{ providers: CatalogProvider[] }> {
   const res = await apiFetch(`${API_BASE}/models`);

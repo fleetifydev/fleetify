@@ -129,14 +129,12 @@ export function UnifiedModelPicker({
     return undefined;
   }, [groups, model]);
   const eff = activeModel?.effort ?? { kind: "none" as const };
-  const baseLevels = (eff.kind === "levels" || eff.kind === "thinking_level") ? eff.levels : [];
-  // ULTRACODE: an Opus-only top tier surfaced above `max` WITHOUT touching the
-  // backend catalog — appended client-side for Claude Opus only (Sonnet and the
-  // rest keep their native ladder). Maps to Claude max reasoning (see bridges).
-  const isOpus = !!model && model.startsWith("claude") && model.includes("opus");
-  const levels = (isOpus && baseLevels.includes("max") && !baseLevels.includes("ultra_code"))
-    ? [...baseLevels, "ultra_code"]
-    : baseLevels;
+  // Effort levels are catalog-driven: the backend catalog ships each model's
+  // ladder verbatim (e.g. Opus → low·medium·high·xhigh·max·ultra_code), so the
+  // picker renders exactly what the catalog provides — no client-side tiers.
+  // `max` and `ultra_code` still get their animated treatment below, keyed on
+  // the level id, whenever the catalog includes them.
+  const levels = (eff.kind === "levels" || eff.kind === "thinking_level") ? eff.levels : [];
   const effortEnabled = levels.length > 0;
 
   // Clear the filter whenever the active provider rail changes so switching
@@ -464,13 +462,20 @@ export function UnifiedModelPicker({
         <div style={{ flex: 1, overflowY: "auto" }}>
           {shownModels.map((m) => {
             const active = model === m.id;
+            // Catalog-retired (`active: false`) models stay listed but are shown
+            // greyed + non-clickable; the picker is the one place they remain
+            // visible. Dispatch is gated separately (resolveSessionModel).
+            const retired = m.active === false;
             return (
               <button
                 key={m.id}
                 role="option"
                 aria-selected={active}
+                aria-disabled={retired}
+                disabled={retired}
                 aria-label={m.label}
-                onClick={() => visibleGroup && onPickModel(visibleGroup.id, m.id)}
+                title={retired ? "Retired — no longer available" : undefined}
+                onClick={retired ? undefined : () => visibleGroup && onPickModel(visibleGroup.id, m.id)}
                 onMouseDown={(e) => e.preventDefault()}
                 style={{
                   display: "flex",
@@ -480,16 +485,17 @@ export function UnifiedModelPicker({
                   padding: "4px 9px",
                   background: active ? "var(--c-srf, rgba(255,255,255,0.10))" : "transparent",
                   border: "none",
-                  cursor: "pointer",
+                  cursor: retired ? "not-allowed" : "pointer",
                   textAlign: "left",
                   outline: "none",
                   borderRadius: 5,
+                  opacity: retired ? 0.4 : 1,
                 }}
                 onMouseEnter={(e) => {
-                  if (!active) e.currentTarget.style.background = "var(--c-srf, rgba(255,255,255,0.06))";
+                  if (!active && !retired) e.currentTarget.style.background = "var(--c-srf, rgba(255,255,255,0.06))";
                 }}
                 onMouseLeave={(e) => {
-                  if (!active) e.currentTarget.style.background = "transparent";
+                  if (!active && !retired) e.currentTarget.style.background = "transparent";
                 }}
               >
                 <span

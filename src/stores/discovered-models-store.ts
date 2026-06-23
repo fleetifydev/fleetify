@@ -51,6 +51,7 @@ function toPickerModels(
       supports_effort: eff.kind !== "none",
       default: m.default ?? false,
       active: m.active,
+      priority: m.priority,
     };
   });
 }

@@ -7,17 +7,24 @@ export type ModelResolution = { status: "ok" | "healed" | "missing" | "unverifie
 
 export function resolveSessionModel(
   persisted: string | null | undefined,
-  available: { id: string; default?: boolean }[],
+  available: { id: string; default?: boolean; active?: boolean }[],
   opts: { providerKnownEmpty?: boolean } = {},
 ): ModelResolution {
   const id = persisted ?? "";
-  if (available.length === 0) {
+  // Catalog-retired models (`active: false`) are not selectable: never resolve
+  // "ok" onto one, never heal TO one, and heal a session pinned to one AWAY to
+  // the provider's default. They stay visible-but-disabled in the picker; this
+  // resolver is the gate that keeps a retired model un-dispatchable everywhere
+  // selection happens (startup default, session restore, send). Entries with no
+  // `active` field (embedded/CLI fallbacks, live probes) are treated as usable.
+  const usable = available.filter((m) => m.active !== false);
+  if (usable.length === 0) {
     return { status: opts.providerKnownEmpty ? "missing" : "unverified", model: id };
   }
-  if (id && available.some((m) => m.id === id)) return { status: "ok", model: id };
-  // `available` is non-empty here (the length-0 case returned above), so
-  // `available[0]` is defined; assert it past `noUncheckedIndexedAccess`.
-  const def = available.find((m) => m.default) ?? available[0]!;
+  if (id && usable.some((m) => m.id === id)) return { status: "ok", model: id };
+  // `usable` is non-empty here (the length-0 case returned above), so
+  // `usable[0]` is defined; assert it past `noUncheckedIndexedAccess`.
+  const def = usable.find((m) => m.default) ?? usable[0]!;
   return { status: "healed", model: def.id };
 }
 
