@@ -4,7 +4,7 @@ import { ClaudeLogo, OpenAILogo, KimiLogo } from "@/components/ui/provider-logo"
 import { createSession, fetchClaudeSessions, fetchCodexSessions, apiFetch, type ClaudeSession } from "@/lib/api";
 import { providers as providersApi, type AccountInfo } from "@/lib/providers-api";
 import { useAppStore } from "@/stores/app-store";
-import type { Session } from "@/types/session";
+import { lastUsedSession } from "@/lib/last-used-session";
 import { useRouterConfig } from "@/hooks/use-router-config";
 import { RoutersStatusBar } from "@/components/settings/routers/routers-status-bar";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
@@ -182,21 +182,6 @@ export function hasOffWorktreeConflict(
   const p = path.trim();
   if (!p) return false;
   return sessions.some(s => (s.project_path ?? "").trim() === p && !s.worktree_path);
-}
-
-/** The user's most recently touched real agent session (by last_accessed),
- *  skipping the staff session, archived rows, and rows without a model. Used
- *  to default a new session's provider/model/effort to the last one used so
- *  the user isn't re-picking the model (and effort) every time. */
-function lastUsedSession(sessions: Session[], staffSessionId: string | null | undefined): Session | undefined {
-  let best: Session | undefined;
-  let bestT = -1;
-  for (const s of sessions) {
-    if (s.id === staffSessionId || s.archived_at || !s.model_name) continue;
-    const t = new Date(s.last_accessed ?? s.created_at).getTime();
-    if (t > bestT) { bestT = t; best = s; }
-  }
-  return best;
 }
 
 export function NewAgentView({ onClose }: Props) {

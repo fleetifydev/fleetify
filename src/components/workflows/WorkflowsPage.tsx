@@ -48,6 +48,7 @@ import { useAppStore } from "@/stores/app-store";
 import { usesInAppTitleBar, folderName } from "@/lib/utils";
 import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import { ProviderLogo } from "@/components/ui/provider-logo";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { wsManager } from "@/services/ws-manager";
 import {
   loadRoutines, saveRoutines, loadRuns,
@@ -404,105 +405,8 @@ export function WorkflowsPage() {
   );
 }
 
-/* In-app confirm modal — replaces window.confirm so the dialog matches
-   the rest of the theme (dark surface, app font, app button shapes).
-   Scrim-click and Escape both cancel; primary action focuses on open. */
-function ConfirmDialog({ title, message, confirmLabel, destructive, onConfirm, onCancel }: {
-  title: string;
-  message?: string;
-  confirmLabel: string;
-  destructive?: boolean;
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  const confirmRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => { confirmRef.current?.focus(); }, []);
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); onCancel(); }
-      if (e.key === "Enter")  { e.preventDefault(); onConfirm(); }
-    };
-    document.addEventListener("keydown", h);
-    return () => document.removeEventListener("keydown", h);
-  }, [onCancel, onConfirm]);
-
-  return (
-    <div
-      onClick={onCancel}
-      style={{
-        position: "fixed", inset: 0, zIndex: 200,
-        background: "rgba(0,0,0,0.55)",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        padding: 20,
-        animation: "rt-confirm-fade 0.16s ease-out both",
-      }}
-    >
-      <style>{`
-        @keyframes rt-confirm-fade { from { opacity: 0; } to { opacity: 1; } }
-        @keyframes rt-confirm-pop {
-          from { opacity: 0; transform: translateY(8px) scale(0.98); }
-          to   { opacity: 1; transform: translateY(0) scale(1); }
-        }
-      `}</style>
-      <div
-        onClick={e => e.stopPropagation()}
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="rt-confirm-title"
-        style={{
-          width: "100%", maxWidth: 380,
-          background: "var(--sidebar)",
-          border: "1px solid var(--sidebar-border)",
-          borderRadius: 12,
-          padding: 18,
-          boxShadow: "0 20px 50px rgba(0,0,0,0.45), 0 4px 12px rgba(0,0,0,0.25)",
-          animation: "rt-confirm-pop 0.22s cubic-bezier(0.22, 1, 0.36, 1) both",
-          color: "var(--c-high)",
-        }}
-      >
-        <h2
-          id="rt-confirm-title"
-          style={{
-            margin: 0,
-            fontSize: 14, fontWeight: 600,
-            color: "var(--c-high)",
-            letterSpacing: "-0.005em",
-            lineHeight: 1.3,
-          }}
-        >{title}</h2>
-        {message && (
-          <p style={{
-            margin: "6px 0 0",
-            fontSize: 12, color: "var(--c-dim)",
-            lineHeight: 1.5,
-          }}>{message}</p>
-        )}
-        <div style={{
-          display: "flex", justifyContent: "flex-end", gap: 6,
-          marginTop: 18,
-        }}>
-          <button onClick={onCancel} style={secondaryBtnStyle}>Cancel</button>
-          <button
-            ref={confirmRef}
-            onClick={onConfirm}
-            style={destructive ? {
-              ...pillBtnStyle,
-              background: "rgba(248,113,113,0.16)",
-              borderColor: "rgba(248,113,113,0.35)",
-              color: "#fca5a5",
-            } : pillBtnStyle}
-            onMouseEnter={e => {
-              if (destructive) e.currentTarget.style.background = "rgba(248,113,113,0.22)";
-            }}
-            onMouseLeave={e => {
-              if (destructive) e.currentTarget.style.background = "rgba(248,113,113,0.16)";
-            }}
-          >{confirmLabel}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
+/* ConfirmDialog moved to src/components/ui/confirm-dialog.tsx — shared
+   across the sidebar session delete and routine delete surfaces. */
 
 /* ── Top bar ─────────────────────────────────────────────────────── */
 

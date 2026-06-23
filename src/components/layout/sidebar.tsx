@@ -3,9 +3,9 @@ import { ReactLenis } from "lenis/react";
 import {
   Plus, Search, Settings, HelpCircle, Library, MessageCircle,
   LayoutGrid, Store, Repeat,
-  Pin, PinOff, Type, GitFork, Archive,
-  SlidersHorizontal, X, Check,
-  User, Sun, Square, RotateCcw, RefreshCw, PanelLeft, PanelLeftClose,
+  Pin, PinOff, Type, GitFork, Trash2,
+  SlidersHorizontal, X, Check, MoreHorizontal,
+  Sun, Square, RotateCcw, RefreshCw, PanelLeft, PanelLeftClose,
   Download,
 } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
@@ -13,8 +13,9 @@ import { ProviderLogo } from "@/components/ui/provider-logo";
 import { useThemeStore } from "@/stores/theme-store";
 import { useChatStore } from "@/stores/chat-store";
 import { useShallow } from "zustand/react/shallow";
-import { forkSession, fetchBulkStats, stopSession, restartSession, resetSession, archiveSession } from "@/lib/api";
+import { forkSession, fetchBulkStats, stopSession, restartSession, resetSession, deleteSession } from "@/lib/api";
 import { exportChat } from "@/lib/export-chat";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { usesInAppTitleBar, folderName } from "@/lib/utils";
 import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import { isStudioTool } from "@/lib/studio-tools";
@@ -34,6 +35,7 @@ function AccountFooter() {
   const raw = localStorage.getItem("fleet:user");
   const user = raw ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : null;
   const displayName: string = user?.name ?? user?.email?.split("@")[0] ?? "User";
+  const initials = displayName.trim().split(/\s+/).map(w => w[0]).slice(0, 2).join("").toUpperCase() || "U";
   const { toggle: toggleTheme } = useThemeStore();
 
   const openAccount = () =>
@@ -43,16 +45,21 @@ function AccountFooter() {
     <button
       onClick={openAccount}
       style={{
-        display: "flex", alignItems: "center", gap: 9, width: "100%",
-        padding: "4px 9px", border: "none", cursor: "pointer",
-        textAlign: "left", fontSize: 12.5, fontWeight: 400,
-        borderRadius: 5, background: "none", color: "var(--c-med)",
+        display: "flex", alignItems: "center", gap: 10, width: "100%",
+        padding: "6px 10px", border: "none", cursor: "pointer",
+        textAlign: "left", fontSize: 13, fontWeight: 400,
+        borderRadius: 7, background: "none", color: "var(--c-med)",
         transition: "none",
       }}
       onMouseEnter={e => { e.currentTarget.style.background = "var(--c-srf)"; e.currentTarget.style.color = "var(--c-high)"; }}
       onMouseLeave={e => { e.currentTarget.style.background = "none";       e.currentTarget.style.color = "var(--c-med)"; }}
     >
-      <User size={12} style={{ color: "var(--c-dim)", flexShrink: 0 }} />
+      <span style={{
+        width: 20, height: 20, borderRadius: "50%", flexShrink: 0,
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        background: "var(--c-srf2)", color: "var(--c-med)",
+        fontSize: 9.5, fontWeight: 600, letterSpacing: 0.2,
+      }}>{initials}</span>
       <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
         {displayName}
       </span>
@@ -68,7 +75,7 @@ function AccountFooter() {
         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = "var(--c-high)"; }}
         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = "var(--c-dim)"; }}
       >
-        <Sun size={11} />
+        <Sun size={14} />
       </span>
     </button>
   );
@@ -124,16 +131,15 @@ export function Ib({ children, onClick, title }: { children: React.ReactNode; on
 }
 
 /* ── context menu ── */
-function CtxMenu({ x, y, menuRef, session, onClose, onPin, onFork, onStop, onRestart, onReset }: {
+function CtxMenu({ x, y, menuRef, session, onClose, onPin, onFork, onStop, onRestart, onReset, onDelete }: {
   x: number; y: number; menuRef: React.RefObject<HTMLDivElement | null>;
   session: Session; onClose: () => void; onPin: () => void; onFork: () => void;
-  onStop: () => void; onRestart: () => void; onReset: () => void;
+  onStop: () => void; onRestart: () => void; onReset: () => void; onDelete: () => void;
 }) {
   // Per-field selectors — full-state useAppStore() subscribed the menu
   // to every store mutation, even though it only needs two action
   // refs that never change identity.
   const updateSession = useAppStore(s => s.updateSession);
-  const removeSession = useAppStore(s => s.removeSession);
 
   const doRename = () => {
     const n = prompt("Rename:", session.title);
@@ -168,7 +174,7 @@ function CtxMenu({ x, y, menuRef, session, onClose, onPin, onFork, onStop, onRes
         e.currentTarget.style.color = danger ? "#f87171" : "var(--c-med)";
       }}
     >
-      <Icon size={11} style={{ color: iconColor ?? (danger ? "#f87171" : "var(--c-ghost)"), flexShrink: 0 }} />
+      <Icon size={13} style={{ color: iconColor ?? (danger ? "#f87171" : "var(--c-ghost)"), flexShrink: 0 }} />
       <span>{label}</span>
     </button>
   );
@@ -232,32 +238,7 @@ function CtxMenu({ x, y, menuRef, session, onClose, onPin, onFork, onStop, onRes
 
       <Sep />
 
-      <Row icon={Archive} label="Archive" danger onClick={() => {
-        onClose();
-        // ── Conductor-style auto-commit before archive ──
-        // If the session's worktree has uncommitted changes, snapshot
-        // them as a commit before we tear the session down. This is
-        // exactly the affordance Conductor calls "Archiving a workspace
-        // now saves uncommitted changes as a commit" — work isn't lost
-        // when the user dismisses an agent. Best-effort: any failure
-        // (no folder, no git, nothing to commit) is silent and we
-        // proceed with the archive regardless.
-        const folder = session.project_path;
-        const archiveAfter = () => {
-          removeSession(session.id);
-          archiveSession(session.id).catch(() => {});
-        };
-        if (folder) {
-          import("@/lib/git-api").then(async ({ git }) => {
-            try {
-              await git.commit(folder, `chore: snapshot before archive (${session.title})`);
-            } catch { /* ignore — proceed to archive */ }
-            archiveAfter();
-          }).catch(archiveAfter);
-        } else {
-          archiveAfter();
-        }
-      }} />
+      <Row icon={Trash2} label="Delete" danger onClick={() => { onClose(); onDelete(); }} />
     </div>
   );
 }
@@ -424,6 +405,8 @@ function AgentRowImpl({ session, isActive, stats, onClick, onPin, onFork, onStop
   shortcutIndex?: number; // 1-based, 1-9
 }) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const removeSession = useAppStore(s => s.removeSession);
   const menuRef = useRef<HTMLDivElement>(null);
   const [hovered, setHovered] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
@@ -435,6 +418,29 @@ function AgentRowImpl({ session, isActive, stats, onClick, onPin, onFork, onStop
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, [menu]);
+
+  // Permanent delete with a Conductor-style safety net: if the session's
+  // worktree has uncommitted changes, snapshot them as a commit first so
+  // work isn't lost when the session row is removed. Best-effort — any
+  // failure (no folder, no git, nothing to commit) is silent and we
+  // delete regardless. Deletes only the session/chat, never the folder.
+  const doDelete = useCallback(() => {
+    const folder = session.project_path;
+    const deleteAfter = () => {
+      removeSession(session.id);
+      deleteSession(session.id).catch(() => {});
+    };
+    if (folder) {
+      import("@/lib/git-api").then(async ({ git }) => {
+        try {
+          await git.commit(folder, `chore: snapshot before delete (${session.title})`);
+        } catch { /* ignore — proceed to delete */ }
+        deleteAfter();
+      }).catch(deleteAfter);
+    } else {
+      deleteAfter();
+    }
+  }, [session.project_path, session.id, session.title, removeSession]);
 
   const cost = stats?.total_cost_usd;
   const costLabel = cost != null && cost > 0
@@ -450,6 +456,10 @@ function AgentRowImpl({ session, isActive, stats, onClick, onPin, onFork, onStop
   const effectiveStatus = isStreaming && session.status !== "running" ? "running" : session.status;
   const isRunning = effectiveStatus === "running";
   const bgColor = isActive ? "var(--c-srf2)" : hovered ? "var(--c-srf)" : "transparent";
+  // Left accent bar: waiting sessions earn an attention-orange strip (so a
+  // session that needs you pops out of the list); otherwise the selected
+  // row gets the primary accent. Drawn as an inset shadow — no layout shift.
+  const accentColor = effectiveStatus === "waiting" ? "#fb923c" : isActive ? "var(--primary)" : null;
   const timeLabel = timeAgo(session.last_accessed ?? session.created_at);
 
   return (
@@ -475,22 +485,23 @@ function AgentRowImpl({ session, isActive, stats, onClick, onPin, onFork, onStop
         onClick={onClick}
         onContextMenu={e => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY }); }}
         style={{
-          display: "flex", alignItems: "center", gap: 8,
-          width: "100%", padding: "4px 9px",
-          borderRadius: 5, border: "none", cursor: "pointer", textAlign: "left",
+          display: "flex", alignItems: "center", gap: 10,
+          width: "100%", padding: "6px 10px",
+          borderRadius: 7, border: "none", cursor: "pointer", textAlign: "left",
           transition: "none",
           background: bgColor,
+          boxShadow: accentColor ? `inset 2px 0 0 ${accentColor}` : undefined,
         }}
       >
         {/* Status indicator — the only visual ‘state’ signal. The active
             row carries it via background; nothing else needs to compete. */}
-        <AgentStatusIcon status={effectiveStatus} size={11} />
+        <AgentStatusIcon status={effectiveStatus} size={13} />
 
         {/* Title — single line, ellipsis. Active OR running uses --c-high;
             everything else stays at --c-med so the live work stands out. */}
         <span style={{
           flex: 1, minWidth: 0,
-          fontSize: 12.5, fontWeight: isActive ? 500 : 400, lineHeight: "17px",
+          fontSize: 13, fontWeight: isActive ? 600 : 400, lineHeight: "18px",
           color: isRunning || isActive ? "var(--c-high)" : "var(--c-med)",
           whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
         }}>
@@ -502,7 +513,7 @@ function AgentRowImpl({ session, isActive, stats, onClick, onPin, onFork, onStop
             so the row stops feeling like an info dump. */}
         {hovered ? (
           <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-            <ProviderLogo tool={session.tool} size={10} />
+            <ProviderLogo tool={session.tool} size={12} />
             {costLabel ? (
               <span style={{
                 fontSize: 10.5, color: "var(--c-dim)",
@@ -521,6 +532,20 @@ function AgentRowImpl({ session, isActive, stats, onClick, onPin, onFork, onStop
                 {formatShortcut(["Mod", String(shortcutIndex)])}
               </span>
             ) : null}
+            <span
+              role="button"
+              title="More actions"
+              onClick={e => { e.stopPropagation(); preview.close(); setMenu({ x: e.clientX, y: e.clientY }); }}
+              style={{
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+                width: 20, height: 20, borderRadius: 4, flexShrink: 0,
+                color: "var(--c-ghost)", cursor: "pointer", marginRight: -2,
+              }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "var(--c-srf2)"; (e.currentTarget as HTMLElement).style.color = "var(--c-high)"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "none"; (e.currentTarget as HTMLElement).style.color = "var(--c-ghost)"; }}
+            >
+              <MoreHorizontal size={15} />
+            </span>
           </div>
         ) : (
           <span style={{
@@ -533,14 +558,25 @@ function AgentRowImpl({ session, isActive, stats, onClick, onPin, onFork, onStop
         )}
 
         {session.pinned && !hovered && (
-          <Pin size={9} style={{ color: "var(--c-ghost)", flexShrink: 0, opacity: 0.55 }} />
+          <Pin size={11} style={{ color: "var(--c-ghost)", flexShrink: 0, opacity: 0.55 }} />
         )}
       </button>
 
       {menu && (
         <CtxMenu x={menu.x} y={menu.y} menuRef={menuRef} session={session}
           onClose={() => setMenu(null)} onPin={onPin} onFork={onFork}
-          onStop={onStop} onRestart={onRestart} onReset={onReset} />
+          onStop={onStop} onRestart={onRestart} onReset={onReset}
+          onDelete={() => setConfirmDelete(true)} />
+      )}
+      {confirmDelete && (
+        <ConfirmDialog
+          title={`Delete "${session.title}"?`}
+          message="This permanently removes the session and its messages. This can't be undone."
+          confirmLabel="Delete"
+          destructive
+          onConfirm={() => { setConfirmDelete(false); doDelete(); }}
+          onCancel={() => setConfirmDelete(false)}
+        />
       )}
       <SessionHoverPreview
         session={session}
@@ -589,7 +625,7 @@ export function SortMenu({ value, onChange, align = "right" }: {
   }, [open]);
   return (
     <div ref={ref} style={{ position: "relative" }}>
-      <Ib onClick={() => setOpen(!open)} title="Sort agents"><SlidersHorizontal size={12} /></Ib>
+      <Ib onClick={() => setOpen(!open)} title="Sort agents"><SlidersHorizontal size={14} /></Ib>
       {open && (
         <div style={{
           position: "absolute",
@@ -611,7 +647,7 @@ export function SortMenu({ value, onChange, align = "right" }: {
               onMouseLeave={e => e.currentTarget.style.background = "none"}
             >
               {k.charAt(0).toUpperCase() + k.slice(1)}
-              {value === k && <Check size={10} style={{ color: "var(--c-low)" }} />}
+              {value === k && <Check size={11} style={{ color: "var(--c-low)" }} />}
             </button>
           ))}
         </div>
@@ -644,11 +680,12 @@ function SideRow({ icon, label, onClick, badge, active, count, tourKey }: {
   const iconColor = active ? "var(--c-high)" : "var(--c-dim)";
   return (
     <button onClick={onClick} data-tour={tourKey} style={{
-      display: "flex", alignItems: "center", gap: 9, width: "100%",
-      padding: "4px 9px", border: "none", cursor: "pointer",
-      textAlign: "left", fontSize: 12.5,
-      fontWeight: active ? 500 : 400,
-      borderRadius: 5, background: baseBg,
+      display: "flex", alignItems: "center", gap: 10, width: "100%",
+      padding: "6px 10px", border: "none", cursor: "pointer",
+      textAlign: "left", fontSize: 13,
+      fontWeight: active ? 600 : 400,
+      borderRadius: 7, background: baseBg,
+      boxShadow: active ? "inset 2px 0 0 var(--primary)" : undefined,
       color: baseColor,
       transition: "none",
     }}
@@ -713,7 +750,7 @@ function CollapsedRail({ showLogo }: { showLogo: boolean }) {
       onClick={onClick}
       data-tour={tourKey}
       style={{
-        width: 32, height: 32, borderRadius: 8, flexShrink: 0,
+        width: 34, height: 34, borderRadius: 8, flexShrink: 0,
         display: "flex", alignItems: "center", justifyContent: "center",
         background: active ? "var(--c-srf2)" : "none",
         color: active ? "var(--c-high)" : "var(--c-dim)",
@@ -755,10 +792,10 @@ function CollapsedRail({ showLogo }: { showLogo: boolean }) {
           competing tabs in the rail. Workflows/Marketplace move to the
           bottom "Tools" section in the expanded sidebar only. */}
       <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 4 }}>
-        {railBtn("Expand sidebar", <PanelLeftClose size={15} style={{ transform: "rotate(180deg)" }} />, toggleSidebar)}
-        {railBtn("New agent",      <Plus size={15} strokeWidth={2} />, handleNew, false, "new-agent")}
-        {railBtn("Fleet",          <LayoutGrid size={14} />, () => setActiveSession(null), !activeSessionId, "fleet-hub")}
-        {railBtn("Search",         <Search size={14} />, () => {
+        {railBtn("Expand sidebar", <PanelLeftClose size={18} style={{ transform: "rotate(180deg)" }} />, toggleSidebar)}
+        {railBtn("New agent",      <Plus size={18} strokeWidth={2} />, handleNew, false, "new-agent")}
+        {railBtn("Fleet",          <LayoutGrid size={17} />, () => setActiveSession(null), !activeSessionId, "fleet-hub")}
+        {railBtn("Search",         <Search size={17} />, () => {
           window.dispatchEvent(new Event("fleet:new-agent"));
         })}
       </div>
@@ -768,11 +805,11 @@ function CollapsedRail({ showLogo }: { showLogo: boolean }) {
 
       {/* Footer actions */}
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        {railBtn("Settings", <Settings size={14} />, () =>
+        {railBtn("Settings", <Settings size={17} />, () =>
           window.dispatchEvent(new Event("fleet:open-settings")),
           false, "settings",
         )}
-        {railBtn("Help", <HelpCircle size={14} />, openDocs)}
+        {railBtn("Help", <HelpCircle size={17} />, openDocs)}
       </div>
     </nav>
   );
@@ -1098,8 +1135,8 @@ export function Sidebar() {
             display: "flex", gap: 1,
             marginTop: -8,
           }}>
-            <Ib onClick={toggleSidebar} title="Hide sidebar"><PanelLeft size={12} /></Ib>
-            <Ib onClick={toggleSearch} title="Search"><Search size={12} /></Ib>
+            <Ib onClick={toggleSidebar} title="Hide sidebar"><PanelLeft size={14} /></Ib>
+            <Ib onClick={toggleSearch} title="Search"><Search size={14} /></Ib>
             <SortMenu value={sortBy} onChange={setSortBy} />
           </div>
         </div>
@@ -1113,7 +1150,7 @@ export function Sidebar() {
             padding: "5px 10px", borderRadius: 8,
             background: "var(--c-srf)", border: "1px solid var(--c-brd)",
           }}>
-            <Search size={12} style={{ color: "var(--c-ghost)", flexShrink: 0 }} />
+            <Search size={14} style={{ color: "var(--c-ghost)", flexShrink: 0 }} />
             <input
               ref={searchRef}
               value={searchVal}
@@ -1123,7 +1160,7 @@ export function Sidebar() {
               style={{ flex: 1, background: "none", border: "none", outline: "none", fontSize: 12.5, color: "var(--foreground)", fontFamily: "inherit" }}
             />
             <button onClick={() => { setSearchOpen(false); setSearchVal(""); }} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--c-ghost)", display: "flex", padding: 0 }}>
-              <X size={12} />
+              <X size={14} />
             </button>
           </div>
         </div>
@@ -1176,14 +1213,14 @@ export function Sidebar() {
             differ per mode (Workspace agents vs Studio generations). */}
         {appMode === "studio" ? (
           <SideRow
-            icon={<Plus size={13} strokeWidth={2.2} />}
+            icon={<Plus size={16} strokeWidth={2.2} />}
             label="New generation"
             active={studioComposerOpen}
             onClick={() => openStudioComposer()}
           />
         ) : (
           <SideRow
-            icon={<Plus size={13} strokeWidth={2.2} />}
+            icon={<Plus size={16} strokeWidth={2.2} />}
             label="New session"
             onClick={handleNew}
             tourKey="new-agent"
@@ -1193,7 +1230,7 @@ export function Sidebar() {
         {/* Real Fleet surfaces — the SAME shared operations center in both
             Workspace and Studio modes. */}
         <SideRow
-          icon={<LayoutGrid size={13} />}
+          icon={<LayoutGrid size={16} />}
           label="Fleet"
           active={mainView === "fleet" && !activeSessionId && !studioComposerOpen}
           count={allAgents.length}
@@ -1203,13 +1240,13 @@ export function Sidebar() {
         {appMode === "workspace" && (
           <>
             <SideRow
-              icon={<Repeat size={13} />}
+              icon={<Repeat size={16} />}
               label="Routines"
               active={mainView === "workflows"}
               onClick={() => { setMainView("workflows"); setActiveSession(null); }}
             />
             <SideRow
-              icon={<Store size={13} />}
+              icon={<Store size={16} />}
               label="Marketplace"
               active={mainView === "marketplace"}
               onClick={() => { setMainView("marketplace"); setActiveSession(null); }}
@@ -1241,7 +1278,8 @@ export function Sidebar() {
                   }}>
                     <span style={{
                       flex: 1,
-                      fontSize: 11.5, color: "var(--c-ghost)", fontWeight: 400,
+                      fontSize: 10.5, color: "var(--c-ghost)", fontWeight: 500,
+                      letterSpacing: 0.5, textTransform: "uppercase",
                     }}>
                       Pinned
                     </span>
@@ -1263,15 +1301,15 @@ export function Sidebar() {
                       onDragLeave={() => setDropPinZone(false)}
                       onDrop={e => { e.preventDefault(); handleDropToPin(); }}
                       style={{
-                        display: "flex", alignItems: "center", gap: 8,
-                        padding: "4px 9px",
-                        borderRadius: 5,
+                        display: "flex", alignItems: "center", gap: 10,
+                        padding: "6px 10px",
+                        borderRadius: 7,
                         background: dropPinZone ? "var(--c-srf)" : "transparent",
                         transition: "none",
                       }}
                     >
-                      <Pin size={11} style={{ color: dropPinZone ? "var(--c-med)" : "var(--c-ghost)", flexShrink: 0 }} />
-                      <span style={{ fontSize: 12, color: dropPinZone ? "var(--c-low)" : "var(--c-ghost)" }}>
+                      <Pin size={13} style={{ color: dropPinZone ? "var(--c-med)" : "var(--c-ghost)", flexShrink: 0 }} />
+                      <span style={{ fontSize: 13, color: dropPinZone ? "var(--c-low)" : "var(--c-ghost)" }}>
                         Drag to pin
                       </span>
                     </div>
@@ -1288,7 +1326,8 @@ export function Sidebar() {
                       }}>
                         <span style={{
                           flex: 1,
-                          fontSize: 11.5, fontWeight: 400,
+                          fontSize: 10.5, fontWeight: 500,
+                          letterSpacing: 0.5, textTransform: "uppercase",
                           color: "var(--c-ghost)",
                           overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                         }}>
@@ -1320,14 +1359,14 @@ export function Sidebar() {
       {/* ══ FOOTER GROUP ══
           Settings / Get Help / Account stack tightly at the bottom — one
           padded block, no separator line, matches the reference layout. */}
-      <div style={{ flexShrink: 0, padding: "6px 6px 8px" }}>
-        <SideRow icon={<Library size={13} />} label="Library"
+      <div style={{ flexShrink: 0, padding: "8px 6px 8px", borderTop: "1px solid var(--c-brd)" }}>
+        <SideRow icon={<Library size={16} />} label="Library"
           onClick={() => window.dispatchEvent(new Event("fleet:open-library"))} />
-        <SideRow icon={<Settings size={13} />} label="Settings"
+        <SideRow icon={<Settings size={16} />} label="Settings"
           onClick={() => window.dispatchEvent(new Event("fleet:open-settings"))}
           tourKey="settings" />
-        <SideRow icon={<HelpCircle size={13} />} label="Get Help" onClick={openDocs} />
-        <SideRow icon={<MessageCircle size={13} />} label="Give Feedback"
+        <SideRow icon={<HelpCircle size={16} />} label="Get Help" onClick={openDocs} />
+        <SideRow icon={<MessageCircle size={16} />} label="Give Feedback"
           onClick={() => setFeedbackOpen(true)} />
         <AccountFooter />
       </div>

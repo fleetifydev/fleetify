@@ -49,6 +49,18 @@ const baseTile = (
   ...opts,
 });
 
+// Minimal Session factory — fills the fields lastUsedSession reads (id,
+// archived_at, model_name, last_accessed/created_at, tool, effort) plus the
+// rest of the required shape, so a test can stand up a "prior session".
+const mkSession = (o: Partial<import("@/types/session").Session>): import("@/types/session").Session => ({
+  id: "s", title: "", project_path: "", group_path: "", tool: "claude-code",
+  command: "", status: "idle", pinned: false, parent_id: null,
+  worktree_path: null, worktree_branch: null, claude_session_id: null,
+  model_name: null, permission_mode: "default", session_mode: "new",
+  order_idx: 0, created_at: "2026-01-01T00:00:00Z", last_accessed: null, notes: null,
+  ...o,
+});
+
 // Drive openComposer's coherence guard deterministically: it calls
 // providers.listCatalog() to learn which tiles are connected. Stub it per-test
 // instead of leaning on the no-op "electron unavailable" fallback (empty tiles),
@@ -64,7 +76,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   useChatStore.setState({ sessions: {} });
   useDiscoveredModelsStore.setState({ models: {} });
-  useAppStore.setState({ composer: { ...useAppStore.getState().composer, open: false, projectPath: "" } });
+  useAppStore.setState({ composer: { ...useAppStore.getState().composer, open: false, projectPath: "" }, sessions: [], staffSessionId: null });
   // Default: no connected tiles (the folder-seeding tests don't care which
   // provider resolves; this keeps the guard a deterministic no-op for them).
   mockCatalog([]);
@@ -246,5 +258,71 @@ describe("openComposer — provider/model default precedence", () => {
     });
     await useAppStore.getState().openComposer();
     expect(useAppStore.getState().composer.effort).toBe("high");
+  });
+});
+
+describe("openComposer — last-used session seeding", () => {
+  it("seeds provider/model/effort from the most-recent session when nothing is pinned", async () => {
+    mockCatalog([baseTile("openai", "OpenAI", "api", ["gpt-5.5"])]);
+    useAppStore.setState({
+      sessions: [
+        mkSession({ id: "old", tool: "claude-code", model_name: "claude-opus-4-8", effort: "low", last_accessed: "2026-06-23T09:00:00Z" }),
+        mkSession({ id: "recent", tool: "openai", model_name: "gpt-5.5", effort: "medium", last_accessed: "2026-06-23T12:00:00Z" }),
+      ],
+      staffSessionId: null,
+    });
+    Object.defineProperty(window, "electronAPI", {
+      configurable: true,
+      value: { getConfig: async () => ({}) },
+    });
+    await useAppStore.getState().openComposer();
+    const c = useAppStore.getState().composer;
+    expect(c.tool).toBe("openai");
+    expect(c.modelName).toBe("gpt-5.5");
+    expect(c.effort).toBe("medium");
+  });
+
+  it("skips the staff session and rows without a model when picking the last-used", async () => {
+    mockCatalog([baseTile("openai", "OpenAI", "api", ["gpt-5.5"])]);
+    useAppStore.setState({
+      sessions: [
+        // newest, but it's the staff row → skipped
+        mkSession({ id: "staff", tool: "claude-code", model_name: "claude-opus-4-8", effort: "max", last_accessed: "2026-06-23T13:00:00Z" }),
+        // newer than the real one but no model → skipped
+        mkSession({ id: "nomodel", tool: "claude-code", model_name: null, last_accessed: "2026-06-23T12:30:00Z" }),
+        // the real last-used
+        mkSession({ id: "real", tool: "openai", model_name: "gpt-5.5", effort: "medium", last_accessed: "2026-06-23T12:00:00Z" }),
+      ],
+      staffSessionId: "staff",
+    });
+    Object.defineProperty(window, "electronAPI", {
+      configurable: true,
+      value: { getConfig: async () => ({}) },
+    });
+    await useAppStore.getState().openComposer();
+    const c = useAppStore.getState().composer;
+    expect(c.tool).toBe("openai");
+    expect(c.modelName).toBe("gpt-5.5");
+    expect(c.effort).toBe("medium");
+  });
+
+  it("lets an explicit Sessions Default pin win over the last-used session", async () => {
+    mockCatalog([
+      baseTile("openai", "OpenAI", "api", ["gpt-5.5"]),
+      baseTile("claude-code", "Claude Code", "cli", [], { connected: true }),
+    ]);
+    useAppStore.setState({
+      sessions: [mkSession({ id: "recent", tool: "claude-code", model_name: "claude-opus-4-8", effort: "low", last_accessed: "2026-06-23T12:00:00Z" })],
+      staffSessionId: null,
+    });
+    Object.defineProperty(window, "electronAPI", {
+      configurable: true,
+      value: { getConfig: async () => ({ sessionDefaultProvider: "openai", sessionDefaultModel: "gpt-5.5", sessionDefaultEffort: "high" }) },
+    });
+    await useAppStore.getState().openComposer();
+    const c = useAppStore.getState().composer;
+    expect(c.tool).toBe("openai");
+    expect(c.modelName).toBe("gpt-5.5");
+    expect(c.effort).toBe("high");
   });
 });

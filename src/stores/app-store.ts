@@ -14,6 +14,7 @@ export const COMPOSER_CHAT_KEY = "__composer__";
 import { createSession as apiCreateSession, cloneRepository } from "@/lib/api";
 import { providers } from "@/lib/providers-api";
 import { buildPickerGroups } from "@/lib/picker-groups";
+import { lastUsedSession } from "@/lib/last-used-session";
 import { folderName } from "@/lib/utils";
 
 /** Compose-mode welcome line. Names the picked project so the greeting
@@ -853,6 +854,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     // picker (Settings → Providers) can pin one alongside provider+model; else
     // the composer's long-standing "high" baseline.
     let defaultEffort: Session["effort"] = "high";
+    // Whether an explicit "Sessions Default" pin (Settings → Providers) was
+    // applied — if so it's an intentional "always start here" and wins over
+    // the last-used-session seed below.
+    let pinned = false;
     // Pre-select the user's default workspace folder (Settings → General)
     // so a new chat starts in it instead of showing the empty "Pick
     // folder" state. Empty string keeps the picker prompt when unset.
@@ -865,6 +870,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       // baseline. Reading them as a pair avoids mixing one section's provider
       // with the other's (mismatched) model.
       if (cfg?.sessionDefaultProvider) {
+        pinned = true;
         defaultProvider = cfg.sessionDefaultProvider as Session["tool"];
         if (cfg.sessionDefaultModel) defaultModel = cfg.sessionDefaultModel;
         if (cfg.sessionDefaultEffort) defaultEffort = cfg.sessionDefaultEffort as Session["effort"];
@@ -874,6 +880,21 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       if (cfg?.defaultFolder) defaultFolder = cfg.defaultFolder;
     } catch { /* keep fallbacks */ }
+    // Prefer the user's last-used session's provider/model/effort so a new
+    // session remembers their last pick (the sidebar "New session" / ⌘N path
+    // lands here, NOT the legacy NewAgentView dialog where #228 first added
+    // this). Skipped when a Sessions Default is pinned (that wins). The
+    // connected-provider heal below still runs, so a since-disconnected
+    // provider falls back gracefully; brand-new users with no prior session
+    // keep the cfg/Fleet default.
+    if (!pinned) {
+      const lu = lastUsedSession(get().sessions, get().staffSessionId);
+      if (lu?.model_name) {
+        defaultProvider = lu.tool;
+        defaultModel = lu.model_name;
+        if (lu.effort) defaultEffort = lu.effort;
+      }
+    }
     // Guarantee the (provider, model) maps to a CONNECTED provider — otherwise a
     // fresh session opens on a tile the user can't dispatch (e.g. the hardcoded
     // "claude-code" fallback when Claude isn't set up). If the resolved provider

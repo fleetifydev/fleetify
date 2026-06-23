@@ -25,4 +25,11 @@ log.info("renderer.boot", "renderer mounted", {
 // the main thread ~2× longer). StrictMode is a dev-only behaviour with zero
 // effect on production builds, so dropping it only changes the dev experience —
 // making switching feel as snappy as a release build.
+// Suppress the webview's native right-click menu (Inspect / Reload /
+// Back) app-wide. preventDefault only cancels the browser's default
+// context menu — React's own onContextMenu handlers (e.g. the sidebar
+// session menu) still fire, so our custom menus keep working. DevTools
+// stays reachable via F12 / Ctrl+Shift+I.
+window.addEventListener("contextmenu", e => e.preventDefault());
+
 createRoot(document.getElementById("root")!).render(<App />);

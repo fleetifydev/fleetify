@@ -2388,7 +2388,16 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
           permissionMode={isControlCenter ? undefined : (activeSession?.permission_mode ?? "default")}
           sandbox={isControlCenter ? null : (activeSession?.sandbox ?? null)}
           toolOverridesRaw={isControlCenter ? null : (activeSession?.tool_overrides ?? null)}
-          effort={isControlCenter ? undefined : (activeSession?.effort ?? "high")}
+          effort={
+            isControlCenter
+              ? undefined
+              : !effectiveSessionId
+                // Compose mode — read the draft's seeded/picked effort (mirrors
+                // the model prop above); activeSession is null here so the old
+                // `activeSession?.effort ?? "high"` always showed "high".
+                ? (composer.effort ?? "high")
+                : (activeSession?.effort ?? "high")
+          }
           onEffortChange={isControlCenter ? undefined : (e) => {
             if (!effectiveSessionId) {
               // compose mode — no real session yet

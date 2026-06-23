@@ -69,6 +69,10 @@ export default defineConfig({
     const backendPort = Number(process.env.FLEETIFY_BACKEND_PORT) || 8765;
     const httpTarget = `http://127.0.0.1:${backendPort}`;
     const wsTarget = `ws://127.0.0.1:${backendPort}`;
+    // Absolute, forward-slash root of THIS dev server (the worktree or main
+    // checkout we're editing). Used to anchor the worktree watch-ignores
+    // below so they only match NESTED worktrees, never the checkout itself.
+    const root = process.cwd().replace(/\\/g, "/");
     return {
       port: vitePort,
       strictPort: true,
@@ -93,17 +97,25 @@ export default defineConfig({
           "**/src-tauri/fleet.db-shm",
           "**/src-tauri/fleet.db-journal",
           "**/src-tauri/target/**",
-          "**/.claude/worktrees/**",
-          // Per-session worktrees that worktree-on sessions carve at
-          // `<project>/.fleetify-worktrees/<id>/`. When this repo is itself
-          // opened as a session folder (dogfooding), the worktree checkout
-          // drops a full copy of the project — index.html, tsconfig.json,
-          // src/ — straight into Vite's watched root. Vite then sees a
-          // "new" index.html + tsconfig and force-reloads the page mid-send,
-          // which reads as the app crashing + restarting (and tears down the
-          // chat WebSocket, so the agent reply never lands). Ignore the
-          // whole worktrees tree so carving one never reloads the dev UI.
-          "**/.fleetify-worktrees/**",
+          // Ignore worktrees the app carves UNDER this dev server's root —
+          // per-session `<project>/.fleetify-worktrees/<id>/` checkouts (which
+          // a dogfooding session drops a full copy of the project into:
+          // index.html, tsconfig.json, src/ — Vite would see them as "new"
+          // files and force-reload mid-send, tearing down the chat WebSocket),
+          // plus `.claude/worktrees/`.
+          //
+          // These MUST be anchored to `root`. A plain `**/.fleetify-worktrees/**`
+          // glob also matches the dev server's OWN source whenever
+          // `dev:tauri:wt` runs from inside a linked worktree — its absolute
+          // path contains `.fleetify-worktrees/`, so Vite silently ignored
+          // every source file and HMR never fired (every edit needed a manual
+          // restart). Anchoring to `root` ignores only nested worktrees and
+          // keeps the checkout we're actually editing watched.
+          (p: string) => {
+            const np = p.replace(/\\/g, "/");
+            const under = (dir: string) => np === dir || np.startsWith(`${dir}/`);
+            return under(`${root}/.fleetify-worktrees`) || under(`${root}/.claude/worktrees`);
+          },
         ],
       },
     };
