@@ -151,7 +151,8 @@ fn is_under(path: &str, root: &Path) -> bool {
 /// Fleetify never commits to their default branch, and reuse only `fetch`es
 /// (advancing `origin/<default>`, not local HEAD). So carve those off the
 /// freshly-fetched `origin/<default>` to start current. User-picked folders
-/// keep current-HEAD behaviour so their local work isn't bypassed.
+/// start from their default branch (main/master) too, so new sessions begin
+/// on a clean main rather than whatever branch happens to be checked out.
 async fn resolve_base(project_path: &str) -> Result<String, WorktreeError> {
     let clones_root = fleetify_core::fleetify_home().join("clones");
     if is_under(project_path, &clones_root) {
@@ -171,6 +172,36 @@ async fn resolve_base(project_path: &str) -> Result<String, WorktreeError> {
             }
         }
     }
+
+    // User-picked folders: base new sessions off the repo's DEFAULT branch
+    // (main/master) rather than whatever branch is currently checked out, so
+    // work always starts from a clean main. Prefer the local default branch,
+    // fall back to its remote-tracking ref, then to HEAD when neither resolves
+    // (detached HEAD, or a repo with no main/master at all).
+    if let Some(d) = detect_default_branch(project_path).await {
+        let (rc_l, _, _) = git(
+            &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{d}")],
+            project_path,
+        )
+        .await;
+        if rc_l == 0 {
+            return Ok(d);
+        }
+        let (rc_r, _, _) = git(
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/remotes/origin/{d}"),
+            ],
+            project_path,
+        )
+        .await;
+        if rc_r == 0 {
+            return Ok(format!("origin/{d}"));
+        }
+    }
+
     let (rc_h, head, err) = git(&["rev-parse", "--abbrev-ref", "HEAD"], project_path).await;
     if rc_h != 0 {
         return Err(WorktreeError(format!("could not resolve HEAD: {err}")));
