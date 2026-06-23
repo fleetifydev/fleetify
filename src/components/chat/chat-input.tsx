@@ -14,8 +14,8 @@ import { searchProjectFiles, apiFetch, type FileSearchEntry, updateSession as ap
 import { registerConfigPatch } from "@/lib/session-config-sync";
 import { useDiscoveredModelsStore } from "@/stores/discovered-models-store";
 import { effortLabel } from "@/lib/effort";
-import { useFleetStore, type FleetMode } from "@/stores/fleet-store";
-import { LogoMark } from "@/components/brand/logo-mark";
+import { useFleetStore } from "@/stores/fleet-store";
+import { FleetModeRow } from "./fleet-mode-row";
 import { wsManager } from "@/services/ws-manager";
 import { FileMentionPopup } from "./file-mention-popup";
 import { BranchStrip, computeBranchName } from "@/components/git/branch-strip";
@@ -38,6 +38,15 @@ import { SandboxControl } from "./sandbox-control";
 import { PromptsPicker } from "./prompts-picker";
 import { HelpDialog } from "./help-dialog";
 import { listPrompts, resolvePromptArg } from "@/lib/prompts-api";
+
+/* ─────────────────── source kinds (Fleet hub) ─────────────────── */
+
+export const SOURCE_KINDS = [
+  { tab: "local",     label: "Local folder" },
+  { tab: "git",       label: "Clone from Git" },
+  { tab: "remote",    label: "Remote SSH" },
+  { tab: "container", label: "Docker container" },
+] as const;
 
 /* ─────────────────── constants ─────────────────── */
 
@@ -667,6 +676,86 @@ function MoreActionsMenu({
   );
 }
 
+const attachItemStyle: React.CSSProperties = {
+  display: "block", width: "100%", textAlign: "left",
+  padding: "5px 9px", borderRadius: 4,
+  background: "transparent", border: "none", outline: "none",
+  color: "var(--c-med)", fontSize: 12.5, fontFamily: "inherit", cursor: "pointer",
+};
+
+/** The `+` button. Always offers "Attach file" (the prior sole behavior).
+ *  On the Fleet hub (controlCenter) it also lists the 4 source kinds —
+ *  the entry points the deleted welcome-card grid used to host. Each
+ *  source entry calls onNewSource(tab); the toolbar already listens for
+ *  the resulting `fleet:open-source-tab` event. */
+function AttachMenu({
+  onAttachFile, onNewSource, showSources,
+}: {
+  onAttachFile: () => void;
+  onNewSource?: (tab: "local" | "git" | "remote" | "container") => void;
+  showSources: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  // No sources to offer → keep the prior behavior exactly: a plain Attach button.
+  if (!showSources || !onNewSource) {
+    return (
+      <ToolBtn title="Attach file (or drag & drop)" onClick={onAttachFile}>
+        <Plus size={14} strokeWidth={1.9} />
+      </ToolBtn>
+    );
+  }
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative", flexShrink: 0 }}>
+      <ToolBtn title="Attach or start from a source" onClick={() => setOpen((v) => !v)}>
+        <Plus size={14} strokeWidth={1.9} />
+      </ToolBtn>
+      {open && (
+        <div style={{
+          position: "absolute", bottom: "calc(100% + 6px)", left: 0,
+          minWidth: 194,
+          background: "var(--popover, #161616)",
+          border: "1px solid var(--c-brd, rgba(255,255,255,0.08))",
+          borderRadius: 7, padding: 3,
+          boxShadow: "0 -8px 28px rgba(0,0,0,0.42)", zIndex: 60,
+          fontFamily: "var(--font-sans)",
+          animation: "fleet-popover-up 0.14s ease-out both",
+        }}>
+          <button
+            onClick={() => { onAttachFile(); setOpen(false); }}
+            onMouseDown={(e) => e.preventDefault()}
+            style={attachItemStyle}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(var(--fg-rgb),0.06)"; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
+          >Attach file…</button>
+          <div style={{ height: 1, background: "var(--c-brd)", margin: "3px 8px" }} />
+          {SOURCE_KINDS.map((s) => (
+            <button
+              key={s.tab}
+              onClick={() => { onNewSource(s.tab); setOpen(false); }}
+              onMouseDown={(e) => e.preventDefault()}
+              style={attachItemStyle}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(var(--fg-rgb),0.06)"; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
+            >{s.label}</button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Permission-mode picker — clickable label that opens a dropdown
  *  mirroring Claude Code's mode menu (Ask / Accept / Plan / Auto /
  *  Bypass). The label colour shifts with the active mode so the
@@ -831,16 +920,7 @@ export interface AgentMention {
   kind?: "agent" | "folder";
 }
 
-/** Color + label table for the Fleet mode cycle button. Shared
- *  between the toolbar icon and tooltips. */
-function fleetModeMeta(mode: FleetMode): { label: string; color: string; hint: string } {
-  switch (mode) {
-    case "manual":      return { label: "Manual",      color: "var(--c-dim)",            hint: "Fleet off" };
-    case "refine-only": return { label: "Refine only", color: "rgba(148,163,184,0.95)",  hint: "rewrite on send" };
-    case "copilot":     return { label: "Co-pilot",    color: "rgba(96,165,250,0.95)",   hint: "refine + decision card" };
-    case "auto":        return { label: "Auto",        color: "rgba(64,180,120,0.95)",   hint: "refine + auto-continue" };
-  }
-}
+// fleetModeMeta is now exported from ./fleet-mode-meta (shared with FleetModeRow)
 
 interface ChatInputProps {
   onSend: (msg: string, attachments?: Attachment[]) => void;
@@ -939,6 +1019,9 @@ interface ChatInputProps {
    *  draft PR opens with a real human title instead of just the
    *  branch slug. */
   sessionTitle?: string | null;
+  /** Fleet hub only: start a new agent pointed at a source kind. Wired to
+   *  the `+` menu's Local/Git/Remote/Container entries. */
+  onNewSource?: (tab: "local" | "git" | "remote" | "container") => void;
 }
 
 /** Builds innerHTML for the @mention highlight mirror.
@@ -966,6 +1049,40 @@ function buildMentionHtml(text: string, valid: Set<string>): string {
 
 
 
+/* ─────────────────── ModelChip ─────────────────── */
+
+export function ModelChip({
+  modelLabel, effort, tool, open, onToggle,
+}: {
+  modelLabel: string; effort: Effort; tool: string;
+  open: boolean; onToggle: () => void;
+}) {
+  return (
+    <button
+      data-model-trigger="1"
+      onClick={onToggle}
+      onMouseDown={e => e.preventDefault()}
+      style={{
+        display: "flex", alignItems: "center", gap: 5,
+        padding: "2px 7px", borderRadius: 5, border: "none", cursor: "pointer",
+        background: open ? "var(--c-srf2)" : "none",
+        fontSize: 12, fontFamily: "var(--font-mono)", transition: "all 0.12s", outline: "none",
+      }}
+      onMouseEnter={e => { if (!open) e.currentTarget.style.background = "var(--c-srf)"; }}
+      onMouseLeave={e => { if (!open) e.currentTarget.style.background = "none"; }}
+    >
+      <ProviderLogo tool={tool} size={11} />
+      <span style={{ color: "var(--c-high)", fontWeight: 500 }}>{modelLabel}</span>
+      <span style={{ color: "var(--c-dim)", fontSize: 10 }}>·</span>
+      <span
+        className={/* "max" RGB removed (#234) — was: effort === "max" ? "effort-rgb" : */ effort === "ultra_code" ? "effort-ultra" : undefined}
+        style={{ color: effort === "ultra_code" ? undefined : "var(--c-low)", fontSize: 10.5 }}
+      >{effortLabel(effort)}</span>
+      <ChevronDown size={9} strokeWidth={2} style={{ color: "var(--c-low)", transform: open ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
+    </button>
+  );
+}
+
 /* ─────────────────── main component ─────────────────── */
 
 export function ChatInput({
@@ -989,6 +1106,7 @@ export function ChatInput({
   onPermissionAllowAlways,
   onPermissionDeny,
   controlCenter,
+  onNewSource,
   permissionMode,
   sandbox,
   toolOverridesRaw,
@@ -1151,8 +1269,7 @@ export function ChatInput({
   const fleetMode = useFleetStore(s => sessionId ? s.getSession(sessionId).mode : "manual");
   const fleetPaused = useFleetStore(s => sessionId ? s.getSession(sessionId).status === "paused" : false);
   const recordCost = useFleetStore(s => s.recordCost);
-  // Fleet hub-only: global default mode (settable from this surface).
-  const globalFleetMode = useFleetStore(s => s.globalMode);
+  // Fleet hub-only global mode is now read inside FleetModeRow — not needed here.
   // sandbox and toolOverridesRaw are now passed as props from chat-view
   // (which reads them from activeSession, covering both real sessions and
   // the composer's synthetic draft session). Using props means drafts
@@ -1189,7 +1306,7 @@ export function ChatInput({
   // the chip background — typed-but-unmatched tokens stay as plain text.
   const [pickedMentions, setPickedMentions] = useState<Set<string>>(() => new Set());
 
-  const [openDrop, setOpenDrop] = useState<"model" | "fleet-mode" | null>(null);
+  const [openDrop, setOpenDrop] = useState<"model" | null>(null);
 
   // Refresh the discovered catalogs when the model picker opens — adds the
   // live-probe agents (opencode/cursor/github-copilot/hermes, a local CLI/ACP
@@ -3145,7 +3262,9 @@ export function ChatInput({
                 aria-hidden="true"
                 style={{
                   position: "absolute", inset: 0, pointerEvents: "none",
-                  padding: attachments.length > 0 ? "11px 13px 7px 13px" : "12px 13px 7px 13px",
+                  // Keep in lockstep with the textarea padding below so the
+                  // @-mention highlight overlay stays glyph-aligned.
+                  padding: attachments.length > 0 ? "13px 13px 9px 13px" : "14px 13px 9px 13px",
                   fontSize: 13, lineHeight: 1.55, fontFamily: "inherit",
                   whiteSpace: "pre-wrap", wordBreak: "break-word",
                   overflow: "hidden", color: "transparent",
@@ -3277,11 +3396,14 @@ export function ChatInput({
               padding: askActive
                 ? "8px 13px 6px 13px"
                 : attachments.length > 0
-                ? "11px 13px 7px 13px"
-                : "12px 13px 7px 13px",
+                ? "13px 13px 9px 13px"
+                : "14px 13px 9px 13px",
               background: "transparent", border: "none", outline: "none", resize: "none",
               fontSize: 13, lineHeight: 1.5, color: "var(--foreground)", fontFamily: "inherit",
-              minHeight: askActive ? 20 : 22, maxHeight: 220, overflowY: "auto", boxSizing: "border-box",
+              // Resting floor (empty composer) raised 22→30 for a slightly
+              // taller bar. Auto-grow (rows=1 + scrollHeight→min(220,…)) and
+              // maxHeight:220 are unchanged — only the floor/padding grow.
+              minHeight: askActive ? 20 : 30, maxHeight: 220, overflowY: "auto", boxSizing: "border-box",
               position: "relative", /* sits above absolute mirror */
             }}
           />
@@ -3469,152 +3591,29 @@ export function ChatInput({
                   );
                 })()}
               </>
-            ) : (() => {
-              // Fleet hub: Fleet co-pilot mode picker takes the
-              // leftmost slot where the permission picker would sit
-              // on an agent session. Fleet doesn't execute tools so
-              // a permission policy is meaningless on the hub —
-              // the Fleet policy is what matters here.
-              const modeMeta = fleetModeMeta(globalFleetMode);
-              const isOpen = openDrop === "fleet-mode";
-              return (
-                <div style={{ position: "relative" }}>
-                  <button
-                    onClick={() => setOpenDrop(d => d === "fleet-mode" ? null : "fleet-mode")}
-                    onMouseDown={(e) => e.preventDefault()}
-                    title={`Fleet co-pilot · ${modeMeta.label}`}
-                    style={{
-                      display: "inline-flex", alignItems: "center", gap: 6,
-                      height: 22, padding: "0 6px", borderRadius: 4,
-                      flexShrink: 0,
-                      background: isOpen ? "var(--c-srf)" : "transparent",
-                      border: "none", outline: "none",
-                      cursor: "pointer", fontFamily: "inherit",
-                      transition: "background 0.12s",
-                    }}
-                    onMouseEnter={(e) => { if (!isOpen) e.currentTarget.style.background = "var(--c-srf)"; }}
-                    onMouseLeave={(e) => { if (!isOpen) e.currentTarget.style.background = "transparent"; }}
-                  >
-                    <LogoMark
-                      size={11}
-                      color={modeMeta.color}
-                      opacities={globalFleetMode === "manual" ? [0.5, 0.42, 0.34] : [1, 0.85, 0.7]}
-                      style={{ flexShrink: 0 }}
-                    />
-                    <span style={{
-                      fontSize: 11.5, fontWeight: 500,
-                      color: "var(--c-low)",
-                      letterSpacing: "0.005em",
-                    }}>Fleet</span>
-                    <span aria-hidden style={{ color: "var(--c-brd2)", fontSize: 11 }}>·</span>
-                    <span style={{
-                      fontSize: 11.5, fontWeight: 600,
-                      color: modeMeta.color,
-                      letterSpacing: "0.005em",
-                    }}>{modeMeta.label}</span>
-                    <ChevronDown
-                      size={10} strokeWidth={2.2}
-                      style={{
-                        color: "var(--c-dim)",
-                        marginLeft: -1,
-                        transform: isOpen ? "rotate(180deg)" : "none",
-                        transition: "transform 0.12s",
-                      }}
-                    />
-                  </button>
+            ) : null /* Fleet mode row now lives below the composer box (FleetModeRow) */}
 
-                  {isOpen && (
-                    <div
-                      role="menu"
-                      style={{
-                        position: "absolute", bottom: "calc(100% + 8px)", left: 0,
-                        width: 232, zIndex: 50,
-                        background: "var(--popover)",
-                        border: "1px solid var(--c-brd)",
-                        borderRadius: 9,
-                        padding: "3px 0",
-                        boxShadow: "0 16px 40px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.2)",
-                        animation: "fleet-popover-up 0.14s ease-out both",
-                      }}
-                    >
-                      <div style={{
-                        padding: "5px 10px 4px",
-                      }}>
-                        <div style={{
-                          fontSize: 10.5, fontWeight: 500, color: "var(--c-dim)",
-                          letterSpacing: 0,
-                        }}>Fleet co-pilot</div>
-                      </div>
-
-                      {(["manual", "refine-only", "copilot", "auto"] as const).map(m => {
-                        const meta = fleetModeMeta(m);
-                        const active = m === globalFleetMode;
-                        const desc =
-                          m === "manual"       ? "Prompts go straight to the agent."
-                        : m === "refine-only"  ? "Rewrites your prompt on send."
-                        : m === "copilot"      ? "Refines + asks you what's next."
-                        :                        "Auto-fires obvious next steps.";
-                        return (
-                          <button
-                            key={m}
-                            role="menuitemradio"
-                            aria-checked={active}
-                            onClick={() => {
-                              useFleetStore.getState().setGlobalMode(m);
-                              setOpenDrop(null);
-                            }}
-                            onMouseDown={(e) => e.preventDefault()}
-                            style={{
-                              display: "flex", alignItems: "flex-start", gap: 8,
-                              width: "100%", padding: "5px 10px",
-                              background: active ? "var(--c-srf)" : "none",
-                              border: "none", outline: "none",
-                              cursor: "pointer", textAlign: "left",
-                              fontFamily: "inherit",
-                            }}
-                            onMouseEnter={(e) => { if (!active) (e.currentTarget as HTMLElement).style.background = "var(--c-srf)"; }}
-                            onMouseLeave={(e) => { if (!active) (e.currentTarget as HTMLElement).style.background = "none"; }}
-                          >
-                            <span
-                              aria-hidden
-                              style={{
-                                marginTop: 5, flexShrink: 0,
-                                width: 6, height: 6, borderRadius: 999,
-                                background: meta.color,
-                                boxShadow: active
-                                  ? `0 0 0 3px ${meta.color}26`
-                                  : `0 0 0 2px ${meta.color}18`,
-                              }}
-                            />
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                <span style={{
-                                  fontSize: 12.5,
-                                  fontWeight: active ? 500 : 400,
-                                  color: active ? "var(--c-high)" : "var(--c-low)",
-                                }}>{meta.label}</span>
-                                {active && <Check size={10} style={{ color: "var(--c-dim)" }} />}
-                              </div>
-                              <div style={{
-                                fontSize: 10.5, color: "var(--c-ghost)", lineHeight: 1.35,
-                                marginTop: 1,
-                              }}>{desc}</div>
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
+            {/* Model chip — moved left so model identity anchors the left
+                status cluster alongside permissions/fleet, matching the
+                design direction of Feature C. */}
+            <ModelChip
+              modelLabel={modelLabel}
+              effort={effort}
+              tool={chipDispatchTool}
+              open={openDrop === "model"}
+              onToggle={() => setOpenDrop(d => d === "model" ? null : "model")}
+            />
 
             {/* Tool cluster — sleeker. The frequent actions stay visible
                 (Plus = attach, Mic = voice), and the secondary actions
                 (Enhance + Transcript view) collapse into a single "More"
                 popover so the footer reads as 3 buttons instead of 5.
                 Result: same affordances, calmer row. */}
-            <ToolBtn title="Attach file (or drag & drop)" onClick={() => fileRef.current?.click()}><Plus size={14} strokeWidth={1.9} /></ToolBtn>
+            <AttachMenu
+              onAttachFile={() => fileRef.current?.click()}
+              onNewSource={onNewSource}
+              showSources={!!controlCenter}
+            />
             <MoreActionsMenu
               onEnhance={() => void handleEnhance()}
               enhancing={enhancing}
@@ -3633,40 +3632,6 @@ export function ChatInput({
             flexShrink: 0,
           }}>
             <RoutingChip />
-            <button
-              data-model-trigger="1"
-              onClick={() => setOpenDrop(d => d === "model" ? null : "model")}
-              style={{
-                display: "flex", alignItems: "center", gap: 5,
-                padding: "2px 7px", borderRadius: 5, border: "none", cursor: "pointer",
-                background: openDrop === "model" ? "var(--c-srf2)" : "none",
-                // Mono font kept (was the original) — sans drift made
-                // the model name look chat-y where it should read as
-                // a system-config token.
-                fontSize: 12, fontFamily: "var(--font-mono)",
-                transition: "all 0.12s",
-                outline: "none",
-              }}
-              onMouseEnter={e => { if (openDrop !== "model") { e.currentTarget.style.background = "var(--c-srf)"; } }}
-              onMouseLeave={e => { if (openDrop !== "model") { e.currentTarget.style.background = "none"; } }}
-              onMouseDown={e => e.preventDefault()}
-            >
-              {/* Provider logo lead — resolved from the model's group (same
-                  as the toolbar chip), so it flips to the right provider even
-                  when the model lives under another agent's catalog. */}
-              <ProviderLogo tool={chipDispatchTool} size={11} />
-              <span style={{ color: "var(--c-high)", fontWeight: 500 }}>{modelLabel}</span>
-              <span style={{ color: "var(--c-dim)", fontSize: 10 }}>·</span>
-              <span
-                className={/* "max" RGB animation removed (kaldırıldı) — was: effort === "max" ? "effort-rgb" : */ effort === "ultra_code" ? "effort-ultra" : undefined}
-                style={{ color: effort === "ultra_code" ? undefined : "var(--c-low)" /* "max" now plain — was: (effort === "max" || effort === "ultra_code") ? undefined : … */, fontSize: 10.5 }}
-              >{effortLabel(effort)}</span>
-              <ChevronDown size={9} strokeWidth={2} style={{
-                color: "var(--c-low)", marginLeft: 0,
-                transform: openDrop === "model" ? "rotate(180deg)" : "none",
-                transition: "transform 0.15s",
-              }} />
-            </button>
 
             {/* MCP status — small connected/total badge with a
                 click-to-expand popover. Sits LEFT of the context
@@ -3721,6 +3686,11 @@ export function ChatInput({
           </div>
         </div>
       </div>
+
+      {/* ── Fleet mode row — sits directly below the composer box,
+          visible on both the Fleet hub (controlCenter) and agent
+          sessions. Hub → setGlobalMode; session → setMode(id, m). */}
+      <FleetModeRow sessionId={sessionId ?? null} controlCenter={!!controlCenter} />
       </div>
     </div>
   );

@@ -30,6 +30,12 @@ declare global {
         | { ok: false; error: string; code?: string; status?: number; requestId?: string }
       >;
       onAuthEvent:    (cb: (event: { kind: string; [k: string]: any }) => void) => () => void;
+      /** List code editors installed on PATH (VS Code / Cursor / Visual Studio / …). */
+      detectEditors(): Promise<{ editors: { id: string; label: string }[] }>;
+      /** Launch a project directory in the chosen editor (id from detectEditors). */
+      openInEditor(editorId: string, path: string): Promise<{ ok: boolean; error?: string }>;
+      /** Open a URL or local path in the system's default handler. */
+      openExternal(target: string): Promise<{ ok: boolean; error?: string }>;
     };
   }
 }

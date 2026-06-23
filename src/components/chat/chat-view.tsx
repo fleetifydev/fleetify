@@ -13,7 +13,7 @@ import { SessionToolbar } from "./session-toolbar";
 import { fetchMessages, fetchClaudeHistory, createSession, clearSessionMessages, updateSession as apiUpdateSession, stopSession, restartSession, analyzeFleetResponse, fetchAgentModels } from "@/lib/api";
 import { registerConfigPatch } from "@/lib/session-config-sync";
 import { usesInAppTitleBar, folderName } from "@/lib/utils";
-import { formatShortcut, shortcutLabel } from "@/lib/keyboard-shortcuts";
+import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { resolveStartupDefault, hermesHealModel, HERMES_DEFAULT_SENTINEL, contextWindowForModel, buildPickerGroups, resolveDispatchTool } from "@/lib/picker-groups";
 import { providers } from "@/lib/providers-api";
@@ -21,8 +21,8 @@ import { useDiscoveredModelsStore } from "@/stores/discovered-models-store";
 import { resolveSessionModel, sendBlockMessage } from "@/lib/model-resolution";
 import { FleetDecisionCard } from "./fleet-decision-card";
 import { useFleetStore, AUTO_CHAIN_CAP } from "@/stores/fleet-store";
-import { LogoMark } from "@/components/brand/logo-mark";
-import { PanelLeft, PanelRight, Trash2, X, Check, GitCompareArrows, ListTodo, Terminal as TerminalIcon, Play, FolderOpen, Layers, Monitor, Github, Server, Box, ArrowRight, Copy, GitBranch, Sparkles, HelpCircle, Globe, Scissors } from "lucide-react";
+import { OpenInMenu } from "@/components/layout/open-in-menu";
+import { PanelLeft, PanelRight, Trash2, X, Check, GitCompareArrows, ListTodo, Terminal as TerminalIcon, Play, FolderOpen, Layers, Copy, GitBranch, Sparkles, HelpCircle, Globe, Scissors } from "lucide-react";
 import type { ContentBlock, ChatMessage } from "@/types/chat";
 import type { Session } from "@/types/session";
 import type { WorkspaceView } from "@/stores/app-store";
@@ -153,7 +153,6 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   const staffSessionId     = useAppStore((s) => s.staffSessionId);
   const sessions           = useAppStore((s) => s.sessions);
   const toggleSidebar      = useAppStore((s) => s.toggleSidebar);
-  const setActiveSession   = useAppStore((s) => s.setActiveSession);
   const setStaffSessionId  = useAppStore((s) => s.setStaffSessionId);
   const updateSession      = useAppStore((s) => s.updateSession);
   const addSession         = useAppStore((s) => s.addSession);
@@ -1906,6 +1905,10 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   // screen.
   const isComposing = composerOpen;
   const isControlCenter = !activeSessionId && !isComposing;
+  // Empty hub OR empty compose → centered landing (headline + centered
+  // composer). The first real message / stream flips this off and the
+  // normal scroll+dock layout takes over.
+  const landing = (isControlCenter || isComposing) && messages.length === 0 && !isStreaming;
   // Draft sessions ("New chat" placeholder title — created by the
   // sidebar's New session button before any folder/message is set)
   // are hidden from the sidebar list. They shouldn't show up in the
@@ -2067,6 +2070,11 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                 inherited IBtn's default 30×30 which made them look
                 visibly larger than the PanelLeft toggle on the left
                 edge of the same row. */}
+            <OpenInMenu projectPath={
+              isControlCenter ? null
+              : isComposing ? (composer.projectPath || null)
+              : (activeSession?.project_path || null)
+            } />
             {messages.length > 0 && (
               <IBtn onClick={handleClearChat} title="Clear chat" style={{ width: 22, height: 22, borderRadius: 5 }}>
                 <Trash2 size={14} />
@@ -2188,75 +2196,135 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
          * even though we never actually want horizontal scrolling here.
          * Force-clip it so the bar appears only when the user genuinely
          * overflows vertically. */}
-        <div
-          ref={scrollRef}
-          data-chat-scroll="1"
-          style={{ flex: 1, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "none" }}
-          onContextMenu={(e) => {
-            const sel = window.getSelection()?.toString().trim() ?? "";
-            if (!sel) return;
-            e.preventDefault();
-            const winH = window.innerHeight;
-            const menuH = 180;
-            const y = e.clientY + menuH > winH - 12 ? e.clientY - menuH : e.clientY;
-            setChatCtxMenu({ x: e.clientX, y, text: sel });
-          }}
-        >
-          <div ref={contentRef}>
-          {isControlCenter && messages.length === 0 && !isStreaming ? (
-            <FleetChatEmptyState
-              agents={agentSessions}
-              onNewAgent={() => window.dispatchEvent(new Event("fleet:new-agent"))}
-              onSelectAgent={(id) => setActiveSession(id)}
-            />
-          ) : (
-            <div style={{ maxWidth: 920, margin: "0 auto", width: "100%", padding: "24px 32px 8px" }}>
-              <MessageList key={effectiveSessionId ?? "fleet"} messages={messages} latestUserMsgRef={latestUserMsgRef} />
-              {/* Suppress StreamingMessage while a compaction pill is
-                  active — /compact runs entirely server-side (no agent
-                  turn, no thinking, no tools), so the idle "Thinking…"
-                  / shimmer would be misleading. The inline status pill
-                  below is the only feedback surface for this flow. */}
-              {isStreaming && !compactionPillActive && (
-                <StreamingMessage text={streamingText} thinking={streamingThinking} />
-              )}
-              {effectiveSessionId && <CompactionPill sessionId={effectiveSessionId} />}
-              <div ref={bottomRef} />
-              <div style={{ height: scrollSpacer }} />
-            </div>
-          )}
+        {/* chat-main — constant parent so ChatInput keeps its instance
+            across the landing↔normal switch. The composer (single instance)
+            always lives below; the surrounding spacers/headline/scroll
+            surface ANIMATE between the two layouts rather than being swapped
+            in and out, so the centered landing bar glides down to its docked
+            position without remounting ChatInput (the typed draft survives).
+
+            Landing:  top spacer flex 1 · headline visible · scroll surface
+                      collapsed (flex 0, no messages) · bottom spacer flex 1
+                      ⇒ composer centered between the two equal spacers.
+            Normal:   top/bottom spacers flex 0 · headline collapsed · scroll
+                      surface flex 1 ⇒ transcript fills, composer docked.
+
+            All four flex-grows + the headline transition over 0.3s. None of
+            these elements unmount on the switch, so React keeps every node
+            (including ChatInput) stable. */}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+          {/* Top spacer — pushes the centered block down in landing,
+              collapses to nothing in normal mode. Always present. */}
+          <div style={{ flex: landing ? 1 : 0, transition: "flex-grow 0.3s ease", flexShrink: 0 }} aria-hidden />
+          {/* Headline — fades + collapses out of the flow when leaving
+              landing. maxHeight gives the height collapse something to
+              animate; overflow hidden clips it as it shrinks. */}
+          <div
+            aria-hidden={!landing}
+            style={{
+              flexShrink: 0,
+              overflow: "hidden",
+              opacity: landing ? 1 : 0,
+              maxHeight: landing ? 80 : 0,
+              transform: landing ? "none" : "translateY(-6px)",
+              transition: "opacity 0.25s ease, max-height 0.3s ease, transform 0.3s ease",
+              pointerEvents: landing ? "auto" : "none",
+            }}
+          >
+            <LandingHeadline />
           </div>
-        </div>
+          {/* Messages scroll surface — ALWAYS mounted (keeps scrollRef /
+              contentRef stable). flex 0 in landing (it has no messages to
+              show and must not steal the centering space); flex 1 in normal
+              so the transcript fills the column. The flex-grow change is what
+              the spacers animate against. */}
+          <div
+            ref={scrollRef}
+            data-chat-scroll="1"
+            style={{ flex: landing ? 0 : 1, transition: "flex-grow 0.3s ease", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "none", minHeight: 0 }}
+            onContextMenu={(e) => {
+                const sel = window.getSelection()?.toString().trim() ?? "";
+                if (!sel) return;
+                e.preventDefault();
+                const winH = window.innerHeight;
+                const menuH = 180;
+                const y = e.clientY + menuH > winH - 12 ? e.clientY - menuH : e.clientY;
+                setChatCtxMenu({ x: e.clientX, y, text: sel });
+              }}
+            >
+            <div ref={contentRef}>
+              <div style={{ maxWidth: 920, margin: "0 auto", width: "100%", padding: "24px 32px 8px" }}>
+                <MessageList key={effectiveSessionId ?? "fleet"} messages={messages} latestUserMsgRef={latestUserMsgRef} />
+                {/* Suppress StreamingMessage while a compaction pill is
+                    active — /compact runs entirely server-side (no agent
+                    turn, no thinking, no tools), so the idle "Thinking…"
+                    / shimmer would be misleading. The inline status pill
+                    below is the only feedback surface for this flow. */}
+                {isStreaming && !compactionPillActive && (
+                  <StreamingMessage text={streamingText} thinking={streamingThinking} />
+                )}
+                {effectiveSessionId && <CompactionPill sessionId={effectiveSessionId} />}
+                <div ref={bottomRef} />
+                <div style={{ height: scrollSpacer }} />
+              </div>
+            </div>
+          </div>
 
-        {/* ── Messages → chat-input transition strip ──
-            Mirror of the header's tail strip, flipped. 16px gradient
-            from transparent (top) to var(--card) (bottom) so messages
-            scrolling down fade out instead of slamming into the input.
-            Negative marginTop pulls the strip UP into the messages
-            area; flex-shrink:0 + relative positioning keeps it on top
-            of message content (z-index 1 vs messages 0). No absolute
-            positioning needed — the strip rides naturally on top of
-            the messages flex item just before the ChatInput. */}
-        <div aria-hidden style={{
-          height: 16, marginTop: -16,
-          flexShrink: 0, zIndex: 1, position: "relative",
-          pointerEvents: "none",
-          background: "linear-gradient(to top, var(--card) 0%, color-mix(in srgb, var(--card) 60%, transparent) 50%, transparent 100%)",
-        }} />
+          {/* ── Messages → chat-input transition strip (normal mode) ──
+              Mirror of the header's tail strip, flipped. 16px gradient
+              from transparent (top) to var(--card) (bottom) so messages
+              scrolling down fade out instead of slamming into the input.
+              Negative marginTop pulls the strip UP into the messages
+              area; flex-shrink:0 + relative positioning keeps it on top
+              of message content (z-index 1 vs messages 0). Suppressed on
+              the centered landing — there are no messages to fade. */}
+          {!landing && (
+            <div aria-hidden style={{
+              height: 16, marginTop: -16,
+              flexShrink: 0, zIndex: 1, position: "relative",
+              pointerEvents: "none",
+              background: "linear-gradient(to top, var(--card) 0%, color-mix(in srgb, var(--card) 60%, transparent) 50%, transparent 100%)",
+            }} />
+          )}
 
-        <ChatInput
-          // ── Per-session input state ──
-          // ChatInput holds its own `value` state. Without `key`, React
-          // keeps the same instance across session switches, so a
-          // half-typed message in agent A leaks into agent B's input
-          // box. Keying by effectiveSessionId remounts the component
-          // when the active session changes, giving each session its
-          // own draft. Trade-off: typing in A then switching to B
-          // discards A's draft instead of preserving it. Acceptable
-          // — that's the standard mental model for chat apps.
-          key={effectiveSessionId ?? "fleet-empty"}
-          onSend={isControlCenter ? handleStaffSend : handleAgentSend}
-          onStop={handleStop}
+          {/* Composer — single instance, ALWAYS rendered here (never moved
+              into a branch that unmounts). Centered (capped width) in
+              landing, full-width docked in normal mode. The width/padding
+              transition so the bar eases out to full width as it docks; the
+              vertical glide is driven by the spacers above/below.
+              maxWidth uses a large numeric (not "100%") in normal mode so the
+              max-width transition has two animatable endpoints — the chat
+              column is narrower than 2000px in practice, so it reads as
+              full-width while still easing. */}
+          <div style={{
+            width: "100%",
+            maxWidth: landing ? 720 : 2000,
+            margin: "0 auto",
+            paddingInline: landing ? 24 : 0,
+            transition: "max-width 0.3s ease, padding 0.3s ease",
+          }}>
+            <ChatInput
+              // ── Per-session input state ──
+              // ChatInput holds its own `value` state. Without `key`, React
+              // keeps the same instance across session switches, so a
+              // half-typed message in agent A leaks into agent B's input
+              // box. Keying by effectiveSessionId remounts the component
+              // when the active session changes, giving each session its
+              // own draft. Trade-off: typing in A then switching to B
+              // discards A's draft instead of preserving it. Acceptable
+              // — that's the standard mental model for chat apps.
+              key={effectiveSessionId ?? "fleet-empty"}
+              onSend={isControlCenter ? handleStaffSend : handleAgentSend}
+              // Empty-hub / compose source picker — the composer's "+"
+              // (and the empty-landing affordance) spawns a draft agent
+              // and deep-links the toolbar into the matching source tab.
+              onNewSource={(tab) => {
+                window.dispatchEvent(new Event("fleet:new-agent"));
+                requestAnimationFrame(() => {
+                  window.dispatchEvent(new CustomEvent("fleet:open-source-tab", { detail: { tab } }));
+                });
+              }}
+              onStop={handleStop}
           disabled={isStreaming}
           streaming={isStreaming}
           locked={!!permissionRequest || !!cursorQuestion || !!cursorPlan}
@@ -2283,8 +2351,10 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
               : isControlCenter
                 ? fleetAutoMode
                   ? "Fleetify will route this automatically…  @ to target an agent"
-                  : "Talk to Fleetify…  @ to target a specific agent"
-                : "Send a message…"
+                  : "Ask anything…  @ to target a specific agent"
+                : isComposing
+                  ? "Describe a task…"
+                  : "Send a message…"
           }
           // Fleet hub picker reads the Staff Agent row so the user's
           // last switch is what shows up; non-hub paths keep using
@@ -2530,7 +2600,16 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
               }));
             return [...agents, ...folders];
           })() : undefined}
-        />
+            />
+          </div>
+
+          {/* Balancing spacer — centers the landing block vertically by
+              pushing equal flex space above (the top spacer) and below the
+              composer. Always present (mirrors the top spacer) so it can
+              animate flex-grow 1→0 in lockstep; collapses to nothing in
+              normal mode. */}
+          <div style={{ flex: landing ? 1 : 0, transition: "flex-grow 0.3s ease", flexShrink: 0 }} aria-hidden />
+        </div>
       </div>
       {chatCtxMenu && (
         <ChatContextMenu
@@ -2833,238 +2912,20 @@ function SessionBreadcrumb({
   );
 }
 
-function FleetChatEmptyState({ agents, onNewAgent, onSelectAgent: _onSelectAgent }: {
-  agents: Session[];
-  onNewAgent: () => void;
-  onSelectAgent: (id: string) => void;
-}) {
-  // Whenever the chat canvas is empty on the Fleet hub, show the
-  // welcome composition — regardless of whether agents already exist
-  // elsewhere. The user wants the canvas to have something to land
-  // on every time it opens with no messages, not just on first run.
-  return <EmptyFleetWelcome onNewAgent={onNewAgent} hasAgents={agents.length > 0} />;
-}
-
-/* ── Empty fleet welcome ──────────────────────────────────────────
-   Shown on the Fleet hub when the user has no agents yet. Goal:
-   make the surface feel deliberate — not "screen left blank because
-   there's nothing to render" — and give the user 4 obvious entry
-   points to the source picker (Local / Git / Remote / Container)
-   without forcing them through the sidebar to discover them.
-
-   Each source card spawns a draft session AND tells the toolbar to
-   pre-open the source picker on the matching tab via the
-   `fleet:open-source-tab` window event the toolbar listens for. */
-type SourceKind = "local" | "git" | "remote" | "container";
-function EmptyFleetWelcome({ onNewAgent, hasAgents = false }: { onNewAgent: () => void; hasAgents?: boolean }) {
-  const launchOnTab = useCallback((tab: SourceKind) => {
-    onNewAgent();
-    // Defer one frame so the new session has time to mount its
-    // toolbar before we ask it to open a tab.
-    requestAnimationFrame(() => {
-      window.dispatchEvent(new CustomEvent("fleet:open-source-tab", { detail: { tab } }));
-    });
-  }, [onNewAgent]);
-
+/** Centered landing headline shown above the composer on the empty Fleet
+ *  hub and the empty compose screen. Fixed brand line — the placeholder
+ *  inside the composer carries the context-specific prompt. */
+export function LandingHeadline() {
   return (
-    <div style={{
-      display: "flex", flexDirection: "column",
-      alignItems: "center", justifyContent: "center",
-      minHeight: "60vh",
-      padding: "32px 32px 48px",
-      textAlign: "center",
+    <h1 style={{
+      margin: "0 0 18px",
+      fontSize: 26, fontWeight: 600, letterSpacing: "-0.025em",
+      color: "var(--foreground)", textAlign: "center", lineHeight: 1.2,
     }}>
-      {/* Single cluster — brand + headline + tagline read as one
-          masthead. Compact gaps so it doesn't break apart into
-          three floating pieces (the user's "ayrı gözüküyor"
-          complaint). The whole thing is capped to 480px so the
-          tagline doesn't sprawl across the canvas. */}
-      <div style={{
-        display: "flex", flexDirection: "column",
-        alignItems: "center", gap: 6,
-        marginBottom: 18,
-        maxWidth: 480,
-      }}>
-        <BrandLockup compact />
-        <h2 style={{
-          marginTop: 6, marginBottom: 0,
-          fontSize: 20, fontWeight: 600, letterSpacing: "-0.025em",
-          color: "var(--foreground)", lineHeight: 1.2,
-        }}>
-          {hasAgents ? "Spawn a new agent" : "Your fleet is empty"}
-        </h2>
-        <p style={{
-          margin: 0,
-          fontSize: 12.5, color: "var(--c-dim)", lineHeight: 1.5,
-          maxWidth: 360,
-        }}>
-          {hasAgents
-            ? "Pick how you'd like to start the next one."
-            : "Spawn an agent and point it at a project. Pick how you'd like to start."}
-        </p>
-      </div>
-
-      {/* Source-kind grid — 4 cards in a 2×2 (or wraps to 1×4 on
-          narrow widths). Each row spawns a fresh draft session AND
-          deep-links straight into the matching source-picker tab. */}
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-        gap: 8,
-        width: "100%",
-        maxWidth: 520,
-      }}>
-        <SourceCard
-          icon={<Monitor size={14} />}
-          title="Local folder"
-          desc="A project already on this machine"
-          onClick={() => launchOnTab("local")}
-        />
-        <SourceCard
-          icon={<Github size={14} />}
-          title="Clone from Git"
-          desc="A GitHub repo or git URL"
-          onClick={() => launchOnTab("git")}
-        />
-        <SourceCard
-          icon={<Server size={14} />}
-          title="Remote SSH"
-          desc="A workspace on a remote box"
-          onClick={() => launchOnTab("remote")}
-        />
-        <SourceCard
-          icon={<Box size={14} />}
-          title="Docker container"
-          desc="A running container's filesystem"
-          onClick={() => launchOnTab("container")}
-        />
-      </div>
-
-      {/* Footnote — sits closer to the cards now so it reads as a
-          tail of the same composition rather than a stranded line. */}
-      <div style={{
-        marginTop: 14,
-        display: "inline-flex", alignItems: "center", gap: 6,
-        fontSize: 11.5, color: "var(--c-ghost, #6a6a6a)",
-      }}>
-        <span>or press</span>
-        <Kbd>{shortcutLabel("new-draft")}</Kbd>
-        <span>for a fresh session</span>
-      </div>
-    </div>
+      Talk to Fleetify
+    </h1>
   );
 }
-
-function SourceCard({
-  icon, title, desc, onClick,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  desc: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      onMouseDown={e => e.preventDefault()}
-      style={{
-        display: "flex", flexDirection: "column", alignItems: "flex-start",
-        gap: 4, padding: "12px 14px", textAlign: "left",
-        borderRadius: 8,
-        background: "rgba(255,255,255,0.025)",
-        border: "1px solid rgba(255,255,255,0.06)",
-        color: "var(--foreground)",
-        cursor: "pointer", outline: "none",
-        fontFamily: "var(--font-sans)",
-        transition: "background 0.14s, border-color 0.14s, transform 0.08s",
-      }}
-      onMouseEnter={e => {
-        e.currentTarget.style.background = "rgba(255,255,255,0.05)";
-        e.currentTarget.style.borderColor = "rgba(255,255,255,0.14)";
-      }}
-      onMouseLeave={e => {
-        e.currentTarget.style.background = "rgba(255,255,255,0.025)";
-        e.currentTarget.style.borderColor = "rgba(255,255,255,0.06)";
-      }}
-    >
-      <div style={{
-        display: "flex", alignItems: "center", gap: 7, width: "100%",
-      }}>
-        <span style={{ display: "inline-flex", color: "var(--c-dim)", flexShrink: 0 }}>
-          {icon}
-        </span>
-        <span style={{
-          flex: 1,
-          fontSize: 13, fontWeight: 500,
-          color: "var(--foreground)",
-        }}>
-          {title}
-        </span>
-        <ArrowRight size={11} style={{ color: "var(--c-ghost, #6a6a6a)", flexShrink: 0 }} />
-      </div>
-      <span style={{
-        fontSize: 11.5, color: "var(--c-dim)",
-        lineHeight: 1.4,
-      }}>
-        {desc}
-      </span>
-    </button>
-  );
-}
-
-/* ── Kbd — small key-cap pill used by the empty-state footnote ──
-   Single character per pill so a multi-key combo reads as a real
-   keyboard rather than one mashed pill. Tabular numerals so digits
-   sit on the same baseline as letters. */
-function Kbd({ children }: { children: React.ReactNode }) {
-  return (
-    <span style={{
-      display: "inline-flex", alignItems: "center", justifyContent: "center",
-      minWidth: 18, height: 18,
-      padding: "0 5px",
-      borderRadius: 4,
-      fontSize: 10.5, fontWeight: 500,
-      lineHeight: 1,
-      color: "var(--c-low, #b5b5b5)",
-      background: "var(--c-srf2, rgba(255,255,255,0.05))",
-      border: "1px solid var(--c-brd, rgba(255,255,255,0.10))",
-      borderBottomWidth: 2,
-      fontFamily: "var(--font-sans)",
-      fontVariantNumeric: "tabular-nums",
-    }}>
-      {children}
-    </span>
-  );
-}
-
-/* ── Brand lockup (reused) ─────────────────────────────────── */
-function BrandLockup({
-  marginBottom = 0,
-  compact = false,
-}: {
-  marginBottom?: number;
-  compact?: boolean;
-}) {
-  // compact = empty-state size (matches the rest of the app's chrome,
-  // not a 22px hero treatment).
-  const logo = compact ? 18 : 26;
-  const text = compact ? 15 : 22;
-  return (
-    <div style={{
-      display: "inline-flex", alignItems: "center", gap: compact ? 8 : 10,
-      marginBottom, color: "var(--foreground)",
-    }}>
-      <LogoMark size={logo} color="currentColor" />
-      <span style={{
-        fontFamily: "'Geist Variable', 'Geist', system-ui, sans-serif",
-        fontWeight: 700, fontSize: text, letterSpacing: "-0.025em", lineHeight: 1,
-      }}>
-        Fleetify
-      </span>
-    </div>
-  );
-}
-
 
 /* ── Panel view menu ──
  *

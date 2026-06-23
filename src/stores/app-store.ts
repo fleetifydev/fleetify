@@ -211,6 +211,17 @@ interface AppState {
    *  Aa / Aa / Aa control. */
   transcriptFontScale: number;
   sidebarCollapsed: boolean;
+  /** Shared left-sidebar width (px). Lifted out of app-shell's local
+   *  useState so the Settings and Library routes — which are
+   *  full-viewport surfaces that DON'T mount app-shell — render their
+   *  sidebars at the same width the user dragged the Fleet sidebar to.
+   *  app-shell owns the resize (clamped to LEFT_MIN/LEFT_MAX there);
+   *  Settings/Library just read it and pass it to SidebarShell. Default
+   *  mirrors SIDEBAR_DEFAULT_WIDTH (224) from sidebar-shell — kept as a
+   *  literal so the store doesn't import a React component module. Held
+   *  in-memory (session-scoped); the cross-route share is the
+   *  requirement, not survival across restarts. */
+  leftWidth: number;
   /** Sidebar agent-list search overlay open/closed. Lifted to the
    *  store because on Windows the toggle button now lives in the
    *  title bar but the overlay (and its filtered list) still
@@ -277,6 +288,10 @@ interface AppState {
   clearPendingGeneration: () => void;
   setStaffSessionId: (id: string | null) => void;
   toggleSidebar: () => void;
+  /** Set the shared sidebar width. Callers (app-shell's resize handler)
+   *  are responsible for clamping to the LEFT_MIN/LEFT_MAX bounds; the
+   *  store stores whatever it's given. */
+  setLeftWidth: (w: number) => void;
   setSidebarSearchOpen: (open: boolean) => void;
   toggleSidebarSearch: () => void;
   setSidebarSearchVal: (val: string) => void;
@@ -394,6 +409,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   transcriptView: (localStorage.getItem("fleet:transcriptView") as AppState["transcriptView"]) || "normal",
   transcriptFontScale: parseFloat(localStorage.getItem("fleet:transcriptFontScale") || "1"),
   sidebarCollapsed: false,
+  // Default mirrors SIDEBAR_DEFAULT_WIDTH (224) from sidebar-shell.tsx —
+  // kept as a literal so the store doesn't import a component module.
+  leftWidth: 224,
   sidebarSearchOpen: false,
   sidebarSearchVal: "",
   sidebarSortBy: ((): "recent" | "status" | "name" => {
@@ -701,6 +719,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   toggleSidebar: () =>
     set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
+
+  setLeftWidth: (w) => set({ leftWidth: w }),
 
   setSidebarSearchOpen: (open) => set({ sidebarSearchOpen: open }),
   toggleSidebarSearch: () =>

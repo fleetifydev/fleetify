@@ -220,6 +220,68 @@ fn reveal_in_file_manager(path: &std::path::Path) -> Result<(), String> {
     }
 }
 
+// ── open in editor ────────────────────────────────────────────────
+/// Editors we can launch a project folder in, in menu order.
+/// (renderer id, PATH binary, display label). The renderer sends `id`
+/// back to `open_in_editor`; we map it to the binary here so the wire
+/// never carries a raw executable name.
+const EDITOR_CANDIDATES: &[(&str, &str, &str)] = &[
+    ("vscode", "code", "VS Code"),
+    ("vscode-insiders", "code-insiders", "VS Code Insiders"),
+    ("cursor", "cursor", "Cursor"),
+    ("vs", "devenv", "Visual Studio"),
+    ("sublime", "subl", "Sublime Text"),
+    ("intellij", "idea", "IntelliJ IDEA"),
+];
+
+/// Map a renderer editor id to its PATH binary. Pure — unit-tested.
+fn editor_bin(id: &str) -> Option<&'static str> {
+    EDITOR_CANDIDATES
+        .iter()
+        .find(|(eid, _, _)| *eid == id)
+        .map(|(_, bin, _)| *bin)
+}
+
+/// List editors installed on PATH, in menu order. `which` resolves
+/// platform suffixes (e.g. `code.cmd` on Windows) so this matches what
+/// `open_in_editor` will later be able to launch.
+#[tauri::command]
+pub async fn detect_editors() -> serde_json::Value {
+    let editors: Vec<serde_json::Value> = EDITOR_CANDIDATES
+        .iter()
+        .filter(|(_, bin, _)| which::which(bin).is_ok())
+        .map(|(id, _, label)| serde_json::json!({ "id": id, "label": label }))
+        .collect();
+    serde_json::json!({ "editors": editors })
+}
+
+/// Launch the project directory in the chosen editor. Spawns the
+/// resolved absolute binary with the path as its sole argument — same
+/// detached-spawn pattern as `reveal_in_file_manager`, no shell.
+#[tauri::command]
+pub async fn open_in_editor(editor_id: String, path: String) -> serde_json::Value {
+    let Some(bin) = editor_bin(&editor_id) else {
+        return serde_json::json!({ "ok": false, "error": format!("unknown editor: {editor_id}") });
+    };
+    let p = std::path::PathBuf::from(&path);
+    if !p.exists() {
+        return serde_json::json!({
+            "ok": false,
+            "error": format!("path does not exist: {}", p.display())
+        });
+    }
+    let exe = match which::which(bin) {
+        Ok(e) => e,
+        Err(e) => {
+            return serde_json::json!({ "ok": false, "error": format!("{bin} not found: {e}") })
+        }
+    };
+    match std::process::Command::new(exe).arg(&p).spawn() {
+        Ok(_) => serde_json::json!({ "ok": true }),
+        Err(e) => serde_json::json!({ "ok": false, "error": format!("launch {bin}: {e}") }),
+    }
+}
+
 // ── clipboard ─────────────────────────────────────────────────────
 #[tauri::command]
 pub async fn clipboard_write(text: String) -> serde_json::Value {
@@ -487,9 +549,21 @@ location.href='https://fleet.internal/read/'+b;\
     let json = String::from_utf8(bytes).ok()?;
     let v: serde_json::Value = serde_json::from_str(&json).ok()?;
     Some(fleetify_backend::services::browser::EmbeddedPage {
-        url: v.get("url").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-        title: v.get("title").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-        text: v.get("text").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        url: v
+            .get("url")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        title: v
+            .get("title")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        text: v
+            .get("text")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
     })
 }
 
@@ -3547,5 +3621,38 @@ mod tests {
         bad.insert("../escape.txt".to_string(), "x".to_string());
         let v4 = scaffold_plugin_impl(&parent, "other-plugin", &bad);
         assert!(v4["error"].as_str().unwrap().contains("unsafe path"));
+    }
+}
+
+#[cfg(test)]
+mod editor_tests {
+    use super::*;
+
+    #[test]
+    fn editor_bin_maps_known_ids_and_rejects_unknown() {
+        assert_eq!(editor_bin("vscode"), Some("code"));
+        assert_eq!(editor_bin("vscode-insiders"), Some("code-insiders"));
+        assert_eq!(editor_bin("cursor"), Some("cursor"));
+        assert_eq!(editor_bin("vs"), Some("devenv"));
+        assert_eq!(editor_bin("sublime"), Some("subl"));
+        assert_eq!(editor_bin("intellij"), Some("idea"));
+        assert_eq!(editor_bin("bogus"), None);
+    }
+
+    #[test]
+    fn open_in_editor_rejects_unknown_editor() {
+        // Unknown id returns early — never reaches spawn.
+        let r = tauri::async_runtime::block_on(open_in_editor("bogus".into(), ".".into()));
+        assert_eq!(r["ok"], false);
+    }
+
+    #[test]
+    fn open_in_editor_rejects_missing_path() {
+        // Known id but nonexistent path returns early — never reaches spawn.
+        let r = tauri::async_runtime::block_on(open_in_editor(
+            "vscode".into(),
+            "/no/such/path/zzz-fleet-test".into(),
+        ));
+        assert_eq!(r["ok"], false);
     }
 }

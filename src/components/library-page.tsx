@@ -28,7 +28,7 @@ import { createPortal } from "react-dom";
 import {
   ArrowLeft, Library as LibraryIcon, FileText, Sparkles, Webhook,
   Workflow, LayoutTemplate, Cable, Package, HelpCircle, MessageCircle,
-  User, Sun, Plus, Trash2, Pencil, Bot, ScrollText,
+  Plus, Trash2, Pencil, Bot, ScrollText,
   MoreHorizontal, FolderOpen, Copy, Search, X,
 } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
@@ -39,13 +39,14 @@ import { RuleForm } from "./library/rule-form";
 import { HookForm } from "./library/hook-form";
 import { ProviderLogo, providerName } from "@/components/ui/provider-logo";
 import type { LibraryKind, LibraryItem } from "@/lib/library-api";
-import { useThemeStore } from "@/stores/theme-store";
 import type { PluginInstall } from "@/types/plugin";
 import { pluginLabel } from "@/types/plugin";
 import { usesInAppTitleBar } from "@/lib/utils";
 import { WindowsTitleBar } from "./layout/windows-title-bar";
 import { openDocs } from "./layout/sidebar";
 import { FeedbackModal } from "./feedback-modal";
+import { SidebarShell, SideRow } from "./layout/sidebar-shell";
+import { AccountFooter } from "./layout/account-footer";
 
 interface Props {
   /** Called when the user closes the Library (X button or Esc). */
@@ -134,6 +135,73 @@ function countForSection(inst: PluginInstall, section: SectionId): number {
     case "Templates": return d.templates;
     case "MCP":       return d.mcp_servers;
   }
+}
+
+/* ── LibrarySidebar ──
+   The library sidebar extracted into its own exported component so it
+   can be unit-tested in isolation and so the chrome is rendered by the
+   shared SidebarShell primitive (same card/rail as Settings). */
+export function LibrarySidebar({
+  active, setActive, onClose, setFeedbackOpen, totals,
+}: {
+  active: SectionId;
+  setActive: (id: SectionId) => void;
+  onClose: () => void;
+  setFeedbackOpen: (v: boolean) => void;
+  totals: Record<SectionId, number>;
+}) {
+  // Library is a full-viewport route (app-shell isn't mounted), so it
+  // reads the shared sidebar width from the store and passes it to the
+  // shell — keeping it in lockstep with the Fleet sidebar the user drags.
+  const leftWidth = useAppStore(s => s.leftWidth);
+  const backArrow = usesInAppTitleBar() ? null : (
+    <button
+      onClick={onClose}
+      title="Back (Esc)"
+      style={{
+        width: 24, height: 24, borderRadius: 5, flexShrink: 0,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        background: "none", border: "none", cursor: "pointer",
+        color: "var(--c-dim)", outline: "none",
+        transition: "background 0.1s, color 0.1s",
+      }}
+      onMouseEnter={e => {
+        e.currentTarget.style.background = "var(--c-srf)";
+        e.currentTarget.style.color = "var(--c-med)";
+      }}
+      onMouseLeave={e => {
+        e.currentTarget.style.background = "none";
+        e.currentTarget.style.color = "var(--c-dim)";
+      }}
+    >
+      <ArrowLeft size={12} />
+    </button>
+  );
+  return (
+    <SidebarShell
+      width={leftWidth}
+      caption={{ icon: <LibraryIcon size={13} />, label: "Library" }}
+      topBar={backArrow}
+      footer={
+        <>
+          <SideRow icon={<HelpCircle size={16} />} label="Get Help" onClick={openDocs} />
+          <SideRow icon={<MessageCircle size={16} />} label="Give Feedback" onClick={() => setFeedbackOpen(true)} />
+          <AccountFooter />
+        </>
+      }
+    >
+      {NAV.map(item => (
+        <SideRow
+          key={item.id}
+          icon={<item.icon size={16} />}
+          label={item.id}
+          count={totals[item.id]}
+          active={active === item.id}
+          onClick={() => setActive(item.id)}
+        />
+      ))}
+    </SidebarShell>
+  );
 }
 
 export function LibraryPage({ onClose }: Props) {
@@ -225,115 +293,14 @@ export function LibraryPage({ onClose }: Props) {
         // AppShell, where the title bar abuts the OS window edge).
         padding: "0 8px",
       }}>
-      {/* ── Sidebar — same metrics as SettingsPage so swapping between
-          the two surfaces feels like flipping pages of the same book. */}
-      <div style={{
-        width: 224, flexShrink: 0,
-        marginTop: 8, marginBottom: 8,
-        borderRadius: 8,
-        border: "1px solid var(--c-brd)",
-        background: "var(--sidebar)",
-        overflow: "hidden",
-      }}>
-        <nav style={{
-          height: "100%",
-          display: "flex", flexDirection: "column",
-          background: "var(--sidebar)",
-          overflow: "hidden", userSelect: "none",
-        }}>
-          {/* Windows-only top spacer. The 44px drag-bar below this
-              renders only on macOS (it carries the back-arrow and
-              reserves space for the traffic lights); without it the
-              first nav row sat flush against the sidebar's top
-              border and read as cramped. 12px gives the rail a bit
-              of breathing room without re-introducing the dead
-              header band the user explicitly asked us to remove. */}
-          {usesInAppTitleBar() && (
-            <div style={{ height: 12, flexShrink: 0 }} />
-          )}
-
-          {/* macOS drag-bar with back button. The 78px left pad
-              reserves room for the OS-drawn traffic lights so the
-              drag region doesn't hide them; the back-arrow on the
-              right closes the page (replacing the old X close
-              icon — semantically the same action, just a navigation
-              affordance instead of a window control). Windows
-              suppresses this whole block because the WindowsTitleBar
-              above already carries the back arrow + caption buttons,
-              and the empty 78px traffic-light pad would otherwise
-              waste vertical space at the top of the rail. */}
-          {!usesInAppTitleBar() && (
-            <div className="drag-region" style={{
-              height: 44, flexShrink: 0,
-              display: "flex", alignItems: "center",
-              padding: "0 10px 0 78px",
-            }}>
-              <div style={{ flex: 1 }} />
-              <div className="no-drag" style={{ display: "flex", gap: 1, marginTop: -8 }}>
-                <button
-                  onClick={onClose}
-                  title="Back (Esc)"
-                  style={{
-                    width: 24, height: 24, borderRadius: 5, flexShrink: 0,
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    background: "none", border: "none", cursor: "pointer",
-                    color: "var(--c-dim)",
-                    outline: "none",
-                    transition: "background 0.1s, color 0.1s",
-                  }}
-                  onMouseEnter={e => {
-                    e.currentTarget.style.background = "var(--c-srf)";
-                    e.currentTarget.style.color = "var(--c-med)";
-                  }}
-                  onMouseLeave={e => {
-                    e.currentTarget.style.background = "none";
-                    e.currentTarget.style.color = "var(--c-dim)";
-                  }}
-                >
-                  <ArrowLeft size={12} />
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Sub-title — anchors the rail with a Library glyph so the
-              user knows which surface they're in at a glance. */}
-          <div style={{
-            display: "flex", alignItems: "center", gap: 8,
-            padding: "0 12px 12px",
-            color: "var(--c-dim)",
-            fontSize: 11.5, fontWeight: 600, letterSpacing: "0.08em",
-            textTransform: "uppercase",
-          }}>
-            <LibraryIcon size={13} />
-            <span>Library</span>
-          </div>
-
-          <div className="scroll-subtle" style={{
-            flex: 1, overflowY: "auto", minHeight: 0, padding: "0 6px",
-          }}>
-            {NAV.map(item => (
-              <LibraryNavRow
-                key={item.id}
-                icon={<item.icon size={13} />}
-                label={item.id}
-                count={totals[item.id]}
-                active={active === item.id}
-                onClick={() => setActive(item.id)}
-              />
-            ))}
-          </div>
-
-          {/* Footer parity with the main sidebar — Help / Give Feedback
-              / Account stack so the rail reads the same across surfaces. */}
-          <div style={{ flexShrink: 0, padding: "6px 6px 8px" }}>
-            <LibraryNavRow icon={<HelpCircle size={13} />} label="Get Help" onClick={openDocs} />
-            <LibraryNavRow icon={<MessageCircle size={13} />} label="Give Feedback"
-              onClick={() => setFeedbackOpen(true)} />
-            <LibraryAccountFooter />
-          </div>
-        </nav>
-      </div>
+      {/* ── Sidebar — rendered by shared SidebarShell (same chrome as Settings). */}
+      <LibrarySidebar
+        active={active}
+        setActive={setActive}
+        onClose={onClose}
+        setFeedbackOpen={setFeedbackOpen}
+        totals={totals}
+      />
 
       {/* ── Content ── */}
       <div style={{
@@ -420,105 +387,6 @@ export function LibraryPage({ onClose }: Props) {
           onClose={() => { setDialogKind(null); setDialogEditing(null); }}
         />
       ) : null}
-    </div>
-  );
-}
-
-/* ── LibraryAccountFooter ──
-   Mirror of the main sidebar's AccountFooter: user pill on the left,
-   theme-toggle on the right. Click jumps into Settings → Account so the
-   row keeps the same semantics across surfaces. */
-function LibraryAccountFooter() {
-  const raw = (() => { try { return localStorage.getItem("fleet:user"); } catch { return null; } })();
-  const user = raw ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : null;
-  const displayName: string = user?.name ?? user?.email?.split("@")[0] ?? "User";
-  const { toggle: toggleTheme } = useThemeStore();
-
-  const openAccount = () =>
-    window.dispatchEvent(new CustomEvent("fleet:open-settings", { detail: { tab: "Account" } }));
-
-  return (
-    <button
-      onClick={openAccount}
-      style={{
-        display: "flex", alignItems: "center", gap: 9, width: "100%",
-        padding: "4px 9px", border: "none", cursor: "pointer",
-        textAlign: "left", fontSize: 12.5, fontWeight: 400,
-        borderRadius: 5, background: "none", color: "var(--c-med)",
-        fontFamily: "inherit", outline: "none",
-        transition: "background 0.08s, color 0.08s",
-      }}
-      onMouseEnter={e => { e.currentTarget.style.background = "var(--c-srf)"; e.currentTarget.style.color = "var(--c-high)"; }}
-      onMouseLeave={e => { e.currentTarget.style.background = "none";       e.currentTarget.style.color = "var(--c-med)"; }}
-    >
-      <User size={12} style={{ color: "var(--c-dim)", flexShrink: 0 }} />
-      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {displayName}
-      </span>
-      <span
-        role="button"
-        title="Toggle theme"
-        onClick={(e) => { e.stopPropagation(); toggleTheme(); }}
-        style={{
-          display: "inline-flex", alignItems: "center", justifyContent: "center",
-          width: 18, height: 18, borderRadius: 4, flexShrink: 0,
-          color: "var(--c-dim)",
-        }}
-        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = "var(--c-high)"; }}
-        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = "var(--c-dim)"; }}
-      >
-        <Sun size={11} />
-      </span>
-    </button>
-  );
-}
-
-/* ── Sidebar nav row — small icon + label + count badge ───────── */
-function LibraryNavRow({
-  icon, label, count, active, onClick,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  count?: number;
-  active?: boolean;
-  onClick?: () => void;
-}) {
-  const [hover, setHover] = useState(false);
-  return (
-    <div
-      role={onClick ? "button" : undefined}
-      tabIndex={onClick ? 0 : undefined}
-      onClick={onClick}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        display: "flex", alignItems: "center", gap: 9,
-        padding: "5px 9px",
-        borderRadius: 6,
-        cursor: onClick ? "pointer" : "default",
-        background: active
-          ? "var(--c-srf)"
-          : hover && onClick ? "var(--c-srf)" : "transparent",
-        color: active ? "var(--c-high)" : "var(--c-med)",
-        fontSize: 12.5,
-        fontWeight: active ? 600 : 500,
-        transition: "background 0.10s, color 0.10s",
-      }}
-    >
-      <span style={{
-        display: "inline-flex", width: 16, justifyContent: "center",
-        color: active ? "var(--c-high)" : "var(--c-dim)",
-        flexShrink: 0,
-      }}>{icon}</span>
-      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
-      {count !== undefined && count > 0 && (
-        <span style={{
-          fontSize: 10.5,
-          fontFamily: "var(--font-mono)",
-          color: active ? "var(--c-med)" : "var(--c-ghost)",
-          fontWeight: 500,
-        }}>{count}</span>
-      )}
     </div>
   );
 }

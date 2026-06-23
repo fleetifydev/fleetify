@@ -5,12 +5,11 @@ import {
   LayoutGrid, Store, Repeat,
   Pin, PinOff, Type, GitFork, Trash2,
   SlidersHorizontal, X, Check, MoreHorizontal,
-  Sun, Square, RotateCcw, RefreshCw, PanelLeft, PanelLeftClose,
+  Square, RotateCcw, RefreshCw, PanelLeft, PanelLeftClose,
   Download,
 } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
 import { ProviderLogo } from "@/components/ui/provider-logo";
-import { useThemeStore } from "@/stores/theme-store";
 import { useChatStore } from "@/stores/chat-store";
 import { useShallow } from "zustand/react/shallow";
 import { forkSession, fetchBulkStats, stopSession, restartSession, resetSession, deleteSession } from "@/lib/api";
@@ -24,62 +23,11 @@ import type { Session } from "@/types/session";
 import { FeedbackModal } from "@/components/feedback-modal";
 import { useHoverIntent } from "@/hooks/use-hover-intent";
 import { SessionHoverPreview } from "@/components/layout/session-hover-preview";
+import { SideRow, SidebarShell } from "./sidebar-shell";
+export { SideRow } from "./sidebar-shell"; // keep existing import sites working
+import { AccountFooter } from "./account-footer";
 
 type SessionStats = { message_count: number; total_cost_usd: number };
-
-/* ── Account Footer ──
-   Matches the Claude Code reference: a single full-width row with user
-   icon + name on the left and a small theme toggle on the right.
-   Visually identical to a SideRow so it sits flush with Settings / Get Help. */
-function AccountFooter() {
-  const raw = localStorage.getItem("fleet:user");
-  const user = raw ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : null;
-  const displayName: string = user?.name ?? user?.email?.split("@")[0] ?? "User";
-  const initials = displayName.trim().split(/\s+/).map(w => w[0]).slice(0, 2).join("").toUpperCase() || "U";
-  const { toggle: toggleTheme } = useThemeStore();
-
-  const openAccount = () =>
-    window.dispatchEvent(new CustomEvent("fleet:open-settings", { detail: { tab: "Account" } }));
-
-  return (
-    <button
-      onClick={openAccount}
-      style={{
-        display: "flex", alignItems: "center", gap: 10, width: "100%",
-        padding: "6px 10px", border: "none", cursor: "pointer",
-        textAlign: "left", fontSize: 13, fontWeight: 400,
-        borderRadius: 7, background: "none", color: "var(--c-med)",
-        transition: "none",
-      }}
-      onMouseEnter={e => { e.currentTarget.style.background = "var(--c-srf)"; e.currentTarget.style.color = "var(--c-high)"; }}
-      onMouseLeave={e => { e.currentTarget.style.background = "none";       e.currentTarget.style.color = "var(--c-med)"; }}
-    >
-      <span style={{
-        width: 20, height: 20, borderRadius: "50%", flexShrink: 0,
-        display: "inline-flex", alignItems: "center", justifyContent: "center",
-        background: "var(--c-srf2)", color: "var(--c-med)",
-        fontSize: 9.5, fontWeight: 600, letterSpacing: 0.2,
-      }}>{initials}</span>
-      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {displayName}
-      </span>
-      <span
-        role="button"
-        title="Toggle theme"
-        onClick={(e) => { e.stopPropagation(); toggleTheme(); }}
-        style={{
-          display: "inline-flex", alignItems: "center", justifyContent: "center",
-          width: 18, height: 18, borderRadius: 4, flexShrink: 0,
-          color: "var(--c-dim)",
-        }}
-        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = "var(--c-high)"; }}
-        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = "var(--c-dim)"; }}
-      >
-        <Sun size={14} />
-      </span>
-    </button>
-  );
-}
 
 /* ── helpers ── */
 
@@ -661,60 +609,6 @@ export function SortMenu({ value, onChange, align = "right" }: {
    so the sidebar reads as one consistent list instead of a toggle on
    top of a list.) */
 
-/* ── SideRow ──
-   The single nav primitive used everywhere in the sidebar — primary
-   actions, mode switches (Fleet/Workflows/Marketplace), and footer items
-   all share these metrics so the whole rail reads as one consistent list.
-
-   Active state lifts onto the same surface the agent rows use, so a
-   selected mode visually mirrors a selected session. */
-function SideRow({ icon, label, onClick, badge, active, count, tourKey }: {
-  icon: React.ReactNode; label: string; onClick?: () => void;
-  badge?: string; active?: boolean; count?: number;
-  /** Optional data-tour attribute so the first-launch tour can
-   *  anchor a spotlight to this row by selector. */
-  tourKey?: string;
-}) {
-  const baseBg    = active ? "var(--c-srf2)" : "transparent";
-  const baseColor = active ? "var(--c-high)" : "var(--c-med)";
-  const iconColor = active ? "var(--c-high)" : "var(--c-dim)";
-  return (
-    <button onClick={onClick} data-tour={tourKey} style={{
-      display: "flex", alignItems: "center", gap: 10, width: "100%",
-      padding: "6px 10px", border: "none", cursor: "pointer",
-      textAlign: "left", fontSize: 13,
-      fontWeight: active ? 600 : 400,
-      borderRadius: 7, background: baseBg,
-      boxShadow: active ? "inset 2px 0 0 var(--primary)" : undefined,
-      color: baseColor,
-      transition: "none",
-    }}
-      onMouseEnter={e => { if (!active) { e.currentTarget.style.background = "var(--c-srf)"; e.currentTarget.style.color = "var(--c-high)"; } }}
-      onMouseLeave={e => { if (!active) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--c-med)"; } }}
-    >
-      <span style={{ flexShrink: 0, display: "flex", color: iconColor, transition: "none" }}>{icon}</span>
-      <span style={{ flex: 1 }}>{label}</span>
-      {count != null && count > 0 && (
-        <span style={{
-          fontSize: 10.5, color: active ? "var(--c-low)" : "var(--c-ghost)",
-          fontVariantNumeric: "tabular-nums", lineHeight: 1, flexShrink: 0,
-        }}>
-          {count}
-        </span>
-      )}
-      {badge && (
-        <span style={{
-          fontSize: 9.5, color: "var(--c-low)",
-          background: "var(--c-srf2)",
-          padding: "1px 6px", borderRadius: 3, fontWeight: 500,
-          letterSpacing: 0.2,
-        }}>
-          {badge}
-        </span>
-      )}
-    </button>
-  );
-}
 
 /* ══════════════════════════════════════
    SIDEBAR
@@ -816,7 +710,6 @@ function CollapsedRail({ showLogo }: { showLogo: boolean }) {
 }
 
 export function Sidebar() {
-  const showLogo = useMemo(() => usesInAppTitleBar(), []);
   // ── Per-field selectors ──
   // Was: a single full-state destructure of useAppStore(). Zustand
   // returns the entire state, so EVERY app-store mutation (every
@@ -1095,55 +988,28 @@ export function Sidebar() {
   });
 
   return (
-    <nav data-tour="sidebar-rail" style={{
-      height: "100%", display: "flex", flexDirection: "column",
-      background: "var(--sidebar)", overflow: "hidden", userSelect: "none",
-    }}>
-
-      {/* Windows breathing room — sidebar sits flush under the dedicated
-          title bar above it; without a small spacer the "New session" row
-          (and the search overlay, when open) feel glued to the chrome. */}
-      {showLogo && <div style={{ height: 10, flexShrink: 0 }} />}
-
-      {/* ══ TOP BAR (macOS only) ══
-          On macOS the OS-drawn traffic-light buttons live at the top
-          of the window, so the sidebar still mounts its 44px top bar
-          with a 78px left inset to clear them, and keeps the toggle /
-          search / sort trio on the right. On Windows the same trio
-          now lives in the dedicated top title-bar row at the very
-          top of the shell — so we render no top bar here at all,
-          and the sidebar content slides up to fill the freed space. */}
-      {!showLogo && (
-        <div
-          className="drag-region"
-          style={{
-            height: 44, flexShrink: 0,
-            display: "flex", alignItems: "center",
-            padding: "0 10px 0 78px",
-          }}
-        >
-          <div style={{ flex: 1 }} />
+    <SidebarShell
+      chrome={false}
+      scroll={false}
+      navTour="sidebar-rail"
+      topBar={
+        <>
           {/* ── Vertical alignment math (macOS) ──
                 traffic-light top      = y:16 (main.cjs)  → center y:22
                 chat-view IBtn (30×30) = (44-30)/2 = top y:7  → center y:22
                 sidebar starts at window y:8 (outer 8px inset)
                 sidebar Ib (24×24) centered in 44px bar would land at
                   window y: 8 + (44-24)/2 + 12 = y:30 — 8px below the rest
-                -8 marginTop pulls it back up to window y:22  ✓
-              All three icon centers now sit on a single horizontal line. */}
-          <div className="no-drag" style={{
-            display: "flex", gap: 1,
-            marginTop: -8,
-          }}>
-            <Ib onClick={toggleSidebar} title="Hide sidebar"><PanelLeft size={14} /></Ib>
-            <Ib onClick={toggleSearch} title="Search"><Search size={14} /></Ib>
-            <SortMenu value={sortBy} onChange={setSortBy} />
-          </div>
-        </div>
-      )}
-
-      {/* ══ SEARCH OVERLAY ══ */}
-      {searchOpen && (
+                the shell's -8 marginTop on the topBar row pulls it back to y:22 ✓
+              All three icon centers sit on a single horizontal line. */}
+          <Ib onClick={toggleSidebar} title="Hide sidebar"><PanelLeft size={14} /></Ib>
+          <Ib onClick={toggleSearch} title="Search"><Search size={14} /></Ib>
+          <SortMenu value={sortBy} onChange={setSortBy} />
+        </>
+      }
+      aboveScroll={searchOpen && (
+        /* ══ SEARCH OVERLAY ══ — fixed (non-scrolling), so it lives in the
+           shell's aboveScroll slot rather than inside the Lenis scroller. */
         <div style={{ padding: "0 8px 6px", flexShrink: 0 }}>
           <div style={{
             display: "flex", alignItems: "center", gap: 7,
@@ -1165,8 +1031,29 @@ export function Sidebar() {
           </div>
         </div>
       )}
+      footer={
+        /* ══ FOOTER GROUP ══
+           Settings / Get Help / Account stack tightly at the bottom. The
+           shell's footer wrapper supplies flexShrink:0 + padding; we keep
+           Fleet's own borderTop separator (Settings/Library have none). */
+        <div style={{ borderTop: "1px solid var(--c-brd)" }}>
+          <SideRow icon={<Library size={16} />} label="Library"
+            onClick={() => window.dispatchEvent(new Event("fleet:open-library"))} />
+          <SideRow icon={<Settings size={16} />} label="Settings"
+            onClick={() => window.dispatchEvent(new Event("fleet:open-settings"))}
+            tourKey="settings" />
+          <SideRow icon={<HelpCircle size={16} />} label="Get Help" onClick={openDocs} />
+          <SideRow icon={<MessageCircle size={16} />} label="Give Feedback"
+            onClick={() => setFeedbackOpen(true)} />
+          <AccountFooter />
+          <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
+        </div>
+      }
+    >
 
-      {/* ══ FULL SCROLL AREA — nav + sessions flow together ══ */}
+      {/* ══ FULL SCROLL AREA — nav + sessions flow together ══
+          Fleet owns its own scroller (Lenis smooth-scroll) inside the shell's
+          non-overflow (scroll={false}) flex:1 area — no double scroll container. */}
       <ReactLenis className="scroll-subtle" style={{ flex: 1, overflow: "hidden", minHeight: 0, overscrollBehavior: "none" }} options={{ lerp: 0.09, smoothWheel: true, wheelMultiplier: 0.9, easing: (t: number) => 1 - Math.pow(1 - t, 4) }}>
         <div style={{ padding: "0 6px" }}>
 
@@ -1355,23 +1242,6 @@ export function Sidebar() {
         </div>
         </div>
       </ReactLenis>
-
-      {/* ══ FOOTER GROUP ══
-          Settings / Get Help / Account stack tightly at the bottom — one
-          padded block, no separator line, matches the reference layout. */}
-      <div style={{ flexShrink: 0, padding: "8px 6px 8px", borderTop: "1px solid var(--c-brd)" }}>
-        <SideRow icon={<Library size={16} />} label="Library"
-          onClick={() => window.dispatchEvent(new Event("fleet:open-library"))} />
-        <SideRow icon={<Settings size={16} />} label="Settings"
-          onClick={() => window.dispatchEvent(new Event("fleet:open-settings"))}
-          tourKey="settings" />
-        <SideRow icon={<HelpCircle size={16} />} label="Get Help" onClick={openDocs} />
-        <SideRow icon={<MessageCircle size={16} />} label="Give Feedback"
-          onClick={() => setFeedbackOpen(true)} />
-        <AccountFooter />
-      </div>
-
-      <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
-    </nav>
+    </SidebarShell>
   );
 }

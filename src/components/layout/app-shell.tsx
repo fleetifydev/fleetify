@@ -25,9 +25,10 @@ import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { fetchSessions, deleteEmptyDrafts, updateSession as apiUpdateSession } from "@/lib/api";
 import type { Session, SessionStatus } from "@/types/session";
 
+// Clamp bounds for the shared sidebar width (the value itself lives in
+// the app-store; default 224 there mirrors SIDEBAR_DEFAULT_WIDTH).
 const LEFT_MIN = 170;
 const LEFT_MAX = 360;
-const LEFT_DEFAULT = 224;
 
 const RIGHT_MIN = 280;
 // Upper bound is computed at drag-time from the live window width so
@@ -82,7 +83,7 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
     setSessions, updateSession, staffSessionId, setStaffSessionId,
     sidebarCollapsed, sessions, setActiveSession,
     rightPanelOpen, toggleRightPanel, _removedIds, pruneRemovedIds, mainView, activeSessionId,
-    studioComposerOpen,
+    studioComposerOpen, leftWidth, setLeftWidth,
   } = useAppStore();
 
   // ── Reveal once data is ready ──
@@ -190,7 +191,10 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, []);
 
-  const [leftWidth, setLeftWidth] = useState(LEFT_DEFAULT);
+  // leftWidth lives in the app-store (not local state) so the Settings
+  // and Library routes — which don't mount this app-shell — share the
+  // width the user drags here. Read above from the store; the resize
+  // handler below writes the clamped value back.
   const [rightWidth, setRightWidth] = useState(RIGHT_DEFAULT);
   // Only the setters are consumed: useDrag reports drag start/end through
   // them. The boolean values used to gate the panel width transitions, but
@@ -327,10 +331,15 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
     };
   }, [updateSession]);
 
-  // Left sidebar drag — moves right edge
+  // Left sidebar drag — moves right edge. Width lives in the app-store
+  // (shared with Settings/Library), so read the live value from the
+  // store, apply the LEFT_MIN/LEFT_MAX clamp, and write it back. Reading
+  // via getState() (not the leftWidth closure) keeps this callback stable
+  // and always operates on the freshest width mid-drag.
   const onLeftDrag = useDrag(useCallback((dx: number) => {
-    setLeftWidth(w => Math.min(LEFT_MAX, Math.max(LEFT_MIN, w + dx)));
-  }, []), setLeftDragging);
+    const cur = useAppStore.getState().leftWidth;
+    setLeftWidth(Math.min(LEFT_MAX, Math.max(LEFT_MIN, cur + dx)));
+  }, [setLeftWidth]), setLeftDragging);
 
   // Right panel drag — moves left edge (dx is inverted).
   // Max grows with the window: window width minus sidebar minus

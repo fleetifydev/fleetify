@@ -21,7 +21,7 @@ import { useState, useEffect, useCallback } from "react";
 import {
   Settings, Cpu, Plug, Cable, Route, Mic,
   FileCode, Webhook, FileText, FolderOpen, Loader2, Bug,
-  Check, User, ArrowUpRight, HelpCircle, Sun, ArrowLeft,
+  Check, User, ArrowUpRight, HelpCircle, ArrowLeft,
   Copy, MessageCircle, Pencil,
   // Palette — kept here (commented) because the Appearance / Themes
   // section below is preserved as dormant code. Uncomment along with
@@ -40,7 +40,6 @@ import { usesInAppTitleBar } from "@/lib/utils";
 import { copyText } from "@/lib/clipboard";
 import { getFleetRules, setFleetRules } from "@/lib/api";
 import { useAppStore } from "@/stores/app-store";
-import { useThemeStore } from "@/stores/theme-store";
 // Dormant — the Settings → Appearance picker is commented out below but
 // kept in source so we can resurrect the multi-theme catalog without
 // reconstructing it from git history. Uncomment alongside the matching
@@ -55,6 +54,8 @@ import { ProvidersSection } from "./settings/providers-section";
 import { GeneralSection as GeneralSectionV2 } from "./settings/general/general-section";
 import { WindowsTitleBar } from "./layout/windows-title-bar";
 import { openDocs } from "./layout/sidebar";
+import { SidebarShell, SideRow } from "./layout/sidebar-shell";
+import { AccountFooter } from "./layout/account-footer";
 import { FeedbackModal } from "./feedback-modal";
 
 interface SettingsProps {
@@ -968,87 +969,49 @@ function FleetRulesEditor() {
 }
 
 
-/* ── SideRow ──
-   Pixel-identical copy of the SideRow primitive in components/layout/
-   sidebar.tsx. Same metrics (4px 9px padding, 9px gap, 12.5px label,
-   font-weight 400→500 on active, 5px radius, --c-srf2 active surface)
-   so the Settings sidebar list reads as the same primitive as the main
-   app's sidebar list — the user spec is "the only difference between
-   the two surfaces is which rows live in them". */
-function SideRow({
-  icon, label, onClick, active,
+/* ── SettingsSidebar ──
+   The settings sidebar extracted into its own exported component so it
+   can be unit-tested in isolation and so the chrome is rendered by the
+   shared SidebarShell primitive (same card/rail as Library). */
+export function SettingsSidebar({
+  active, setActive, onClose, setFeedbackOpen,
 }: {
-  icon: React.ReactNode;
-  label: string;
-  onClick?: () => void;
-  active?: boolean;
+  active: string; setActive: (id: string) => void;
+  onClose: () => void; setFeedbackOpen: (v: boolean) => void;
 }) {
-  const baseBg = active ? "var(--c-srf2)" : "transparent";
-  const baseColor = active ? "var(--c-high)" : "var(--c-med)";
-  const iconColor = active ? "var(--c-high)" : "var(--c-dim)";
-  return (
-    <button onClick={onClick} style={{
-      display: "flex", alignItems: "center", gap: 9, width: "100%",
-      padding: "4px 9px", border: "none", cursor: "pointer",
-      textAlign: "left", fontSize: 12.5,
-      fontWeight: active ? 500 : 400,
-      borderRadius: 5, background: baseBg,
-      color: baseColor,
-      fontFamily: "inherit", outline: "none",
-      transition: "background 0.08s, color 0.08s",
+  // Settings is a full-viewport route (app-shell isn't mounted), so it
+  // reads the shared sidebar width from the store and passes it to the
+  // shell — keeping it in lockstep with the Fleet sidebar the user drags.
+  const leftWidth = useAppStore(s => s.leftWidth);
+  const backArrow = usesInAppTitleBar() ? null : (
+    <button onClick={onClose} title="Back (Esc)" style={{
+      width: 24, height: 24, borderRadius: 5, flexShrink: 0,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      background: "none", border: "none", cursor: "pointer", color: "var(--c-dim)", outline: "none",
+      transition: "background 0.1s, color 0.1s",
     }}
-      onMouseEnter={e => { if (!active) { e.currentTarget.style.background = "var(--c-srf)"; e.currentTarget.style.color = "var(--c-high)"; } }}
-      onMouseLeave={e => { if (!active) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--c-med)"; } }}
-    >
-      <span style={{ flexShrink: 0, display: "flex", color: iconColor, transition: "color 0.08s" }}>{icon}</span>
-      <span style={{ flex: 1 }}>{label}</span>
-    </button>
+      onMouseEnter={e => { e.currentTarget.style.background = "var(--c-srf)"; e.currentTarget.style.color = "var(--c-med)"; }}
+      onMouseLeave={e => { e.currentTarget.style.background = "none"; e.currentTarget.style.color = "var(--c-dim)"; }}
+    ><ArrowLeft size={12} /></button>
   );
-}
-
-/* ── SettingsAccountFooter ──
-   Mirror of components/layout/sidebar.tsx → AccountFooter. Clicking it
-   here jumps to the Account tab inside the same Settings page; the
-   theme toggle on the right behaves identically. */
-function SettingsAccountFooter({ onClickAccount }: { onClickAccount?: () => void } = {}) {
-  const raw = (() => { try { return localStorage.getItem("fleet:user"); } catch { return null; } })();
-  const user = raw ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : null;
-  const displayName: string = user?.name ?? user?.email?.split("@")[0] ?? "User";
-  const { toggle: toggleTheme } = useThemeStore();
-
   return (
-    <button
-      onClick={onClickAccount}
-      style={{
-        display: "flex", alignItems: "center", gap: 9, width: "100%",
-        padding: "4px 9px", border: "none", cursor: "pointer",
-        textAlign: "left", fontSize: 12.5, fontWeight: 400,
-        borderRadius: 5, background: "none", color: "var(--c-med)",
-        fontFamily: "inherit", outline: "none",
-        transition: "background 0.08s, color 0.08s",
-      }}
-      onMouseEnter={e => { e.currentTarget.style.background = "var(--c-srf)"; e.currentTarget.style.color = "var(--c-high)"; }}
-      onMouseLeave={e => { e.currentTarget.style.background = "none";       e.currentTarget.style.color = "var(--c-med)"; }}
+    <SidebarShell
+      width={leftWidth}
+      caption={{ icon: <Settings size={13} />, label: "Settings" }}
+      topBar={backArrow}
+      footer={
+        <>
+          <SideRow icon={<HelpCircle size={16} />} label="Get Help" onClick={openDocs} />
+          <SideRow icon={<MessageCircle size={16} />} label="Give Feedback" onClick={() => setFeedbackOpen(true)} />
+          <AccountFooter onClickAccount={() => setActive("Account")} />
+        </>
+      }
     >
-      <User size={12} style={{ color: "var(--c-dim)", flexShrink: 0 }} />
-      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {displayName}
-      </span>
-      <span
-        role="button"
-        title="Toggle theme"
-        onClick={(e) => { e.stopPropagation(); toggleTheme(); }}
-        style={{
-          display: "inline-flex", alignItems: "center", justifyContent: "center",
-          width: 18, height: 18, borderRadius: 4, flexShrink: 0,
-          color: "var(--c-dim)",
-        }}
-        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = "var(--c-high)"; }}
-        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = "var(--c-dim)"; }}
-      >
-        <Sun size={11} />
-      </span>
-    </button>
+      {NAV.map(item => (
+        <SideRow key={item.id} icon={<item.icon size={16} />} label={item.id}
+          active={active === item.id} onClick={() => setActive(item.id)} />
+      ))}
+    </SidebarShell>
   );
 }
 
@@ -1108,117 +1071,13 @@ export function SettingsPage({ initialTab = "General", onClose }: SettingsProps)
         // above can span the full window width like the main shell.
         padding: "0 8px",
       }}>
-      {/* ── Sidebar — pixel-identical to AppShell's left sidebar ── */}
-      <div style={{
-        width: 224, flexShrink: 0,
-        marginTop: 8, marginBottom: 8,
-        borderRadius: 8,
-        border: "1px solid var(--c-brd)",
-        background: "var(--sidebar)",
-        overflow: "hidden",
-      }}>
-        <nav style={{
-          height: "100%",
-          display: "flex", flexDirection: "column",
-          background: "var(--sidebar)",
-          overflow: "hidden", userSelect: "none",
-        }}>
-          {/* Windows-only top spacer. The 44px drag-bar below this
-              renders only on macOS (it carries the back-arrow and
-              reserves space for the traffic lights); without it the
-              first nav row sat flush against the sidebar's top
-              border. 12px gives the rail a bit of breathing room
-              without re-introducing the dead header band the user
-              explicitly asked us to remove. */}
-          {usesInAppTitleBar() && (
-            <div style={{ height: 12, flexShrink: 0 }} />
-          )}
-
-          {/* Top bar — same 44px height + 78px traffic-light reservation
-              as the main sidebar. The right-side button is a back-arrow
-              that returns to the workspace; ``marginTop:-8`` lines its
-              center up with the macOS traffic lights. Windows suppresses
-              this whole block: WindowsTitleBar above already carries the
-              back arrow + caption buttons, and an empty 78px traffic-
-              light pad would otherwise waste vertical space the user
-              specifically asked us to reclaim. */}
-          {!usesInAppTitleBar() && (
-            <div className="drag-region" style={{
-              height: 44, flexShrink: 0,
-              display: "flex", alignItems: "center",
-              padding: "0 10px 0 78px",
-            }}>
-              <div style={{ flex: 1 }} />
-              <div className="no-drag" style={{ display: "flex", gap: 1, marginTop: -8 }}>
-                <button
-                  onClick={onClose}
-                  title="Back (Esc)"
-                  style={{
-                    width: 24, height: 24, borderRadius: 5, flexShrink: 0,
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    background: "none", border: "none", cursor: "pointer",
-                    color: "var(--c-dim)",
-                    outline: "none",
-                    transition: "background 0.1s, color 0.1s",
-                  }}
-                  onMouseEnter={e => {
-                    e.currentTarget.style.background = "var(--c-srf)";
-                    e.currentTarget.style.color = "var(--c-med)";
-                  }}
-                  onMouseLeave={e => {
-                    e.currentTarget.style.background = "none";
-                    e.currentTarget.style.color = "var(--c-dim)";
-                  }}
-                >
-                  <ArrowLeft size={12} />
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Rail caption — same uppercase glyph + label pattern the
-              Library page uses so the two full-viewport routes feel
-              like the same surface with a different list. Pinned
-              above the scroll area so it doesn't move with NAV row
-              scrolling. */}
-          <div style={{
-            display: "flex", alignItems: "center", gap: 8,
-            padding: "0 12px 12px",
-            color: "var(--c-dim)",
-            fontSize: 11.5, fontWeight: 600, letterSpacing: "0.08em",
-            textTransform: "uppercase",
-          }}>
-            <Settings size={13} />
-            <span>Settings</span>
-          </div>
-
-          {/* Scroll area — same metrics as the main sidebar (padding 0 6px).
-              The only difference is the rows themselves: Settings tabs
-              instead of agent sessions. */}
-          <div className="scroll-subtle" style={{
-            flex: 1, overflowY: "auto", minHeight: 0, padding: "0 6px",
-          }}>
-            {NAV.map(item => (
-              <SideRow
-                key={item.id}
-                icon={<item.icon size={13} />}
-                label={item.id}
-                active={active === item.id}
-                onClick={() => setActive(item.id)}
-              />
-            ))}
-          </div>
-
-          {/* Footer — same Help + Account stack as the main sidebar so the
-              two surfaces feel like the same rail with a different list. */}
-          <div style={{ flexShrink: 0, padding: "6px 6px 8px" }}>
-            <SideRow icon={<HelpCircle size={13} />} label="Get Help" onClick={openDocs} />
-            <SideRow icon={<MessageCircle size={13} />} label="Give Feedback"
-              onClick={() => setFeedbackOpen(true)} />
-            <SettingsAccountFooter onClickAccount={() => setActive("Account")} />
-          </div>
-        </nav>
-      </div>
+      {/* ── Sidebar ── */}
+      <SettingsSidebar
+        active={active}
+        setActive={setActive}
+        onClose={onClose}
+        setFeedbackOpen={setFeedbackOpen}
+      />
 
       {/* ── Content ── */}
       <div style={{

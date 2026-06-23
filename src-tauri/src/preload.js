@@ -64,6 +64,10 @@ document.addEventListener("mousedown", function (e) {
     sendFeedback: function (body) {
       return invoke("feedback_send", { body: body || {} });
     },
+    detectEditors: function () { return invoke("detect_editors"); },
+    openInEditor: function (editorId, path) {
+      return invoke("open_in_editor", { editorId: String(editorId || ""), path: String(path || "") });
+    },
   };
 
   // window.electronAPI: boot-safe until Phase 1c. Async no-op for unknown
