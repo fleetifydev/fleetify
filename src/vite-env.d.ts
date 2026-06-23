@@ -106,7 +106,7 @@ interface FleetConfig {
   /** Sessions Default reasoning effort — paired with `sessionDefaultProvider`.
    *  Seeds a new session's effort in `openComposer`; only meaningful for models
    *  that expose an effort lever. Settings → Providers → "Sessions Default". */
-  sessionDefaultEffort?: "low" | "medium" | "high" | "extra_high" | "max";
+  sessionDefaultEffort?: "low" | "medium" | "high" | "extra_high" | "max" | "ultra_code";
   /** Master toggle for OS-level notifications (completion, errors,
    *  budget warnings). When false, all per-event notification toggles are
    *  ignored. Default true. */

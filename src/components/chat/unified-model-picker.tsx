@@ -15,7 +15,7 @@ import { ProviderLogo } from "@/components/ui/provider-logo";
 import type { PickerGroup, PickerModel } from "@/lib/picker-groups";
 import { resolveDispatchTool } from "@/lib/picker-groups";
 
-export type Effort = "low" | "medium" | "high" | "extra_high" | "max";
+export type Effort = "low" | "medium" | "high" | "extra_high" | "max" | "ultra_code";
 
 /** Map capability level ids (xhigh, etc.) to their display labels.
  *  Falls back to capitalizing the raw level for values not in this table. */
@@ -26,6 +26,7 @@ const EFFORT_LABELS: Record<string, string> = {
   high: "High",
   xhigh: "Extra high",
   max: "Max",
+  ultra_code: "Ultracode",
 };
 
 /** Translate a capability level id to the session's effort vocabulary. */
@@ -128,7 +129,14 @@ export function UnifiedModelPicker({
     return undefined;
   }, [groups, model]);
   const eff = activeModel?.effort ?? { kind: "none" as const };
-  const levels = (eff.kind === "levels" || eff.kind === "thinking_level") ? eff.levels : [];
+  const baseLevels = (eff.kind === "levels" || eff.kind === "thinking_level") ? eff.levels : [];
+  // ULTRACODE: an Opus-only top tier surfaced above `max` WITHOUT touching the
+  // backend catalog — appended client-side for Claude Opus only (Sonnet and the
+  // rest keep their native ladder). Maps to Claude max reasoning (see bridges).
+  const isOpus = !!model && model.startsWith("claude") && model.includes("opus");
+  const levels = (isOpus && baseLevels.includes("max") && !baseLevels.includes("ultra_code"))
+    ? [...baseLevels, "ultra_code"]
+    : baseLevels;
   const effortEnabled = levels.length > 0;
 
   // Clear the filter whenever the active provider rail changes so switching
@@ -566,9 +574,14 @@ export function UnifiedModelPicker({
               }}
             >
               <span
+                className={level === "max" ? "effort-rgb" : level === "ultra_code" ? "effort-ultra" : undefined}
                 style={{
                   fontSize: 12,
-                  color: active ? "var(--c-high, #ffffff)" : "var(--c-low, #c0c0c0)",
+                  // Animated tiers (max = RGB, ULTRA CODE = purple) own their
+                  // text fill via the class; an inline color would defeat it.
+                  color: (level === "max" || level === "ultra_code")
+                    ? undefined
+                    : active ? "var(--c-high, #ffffff)" : "var(--c-low, #c0c0c0)",
                   fontWeight: active ? 500 : 400,
                 }}
               >

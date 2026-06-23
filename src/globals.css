@@ -710,6 +710,70 @@ body {
 .logo-glow rect:nth-of-type(2) { animation-delay: 0.16s; }
 .logo-glow rect:nth-of-type(3) { animation-delay: 0.32s; }
 
+/* ─── Effort-tier accents (mirror Claude Code's own effort styling) ───
+   `max` sweeps a moving RGB rainbow across the label; `ULTRA CODE` sweeps a
+   purple gradient. Both are background-clip text gradients animated only by
+   sliding the background-position — GPU-cheap, zero layout cost. The label
+   keeps its own font sizing; only the fill is replaced. */
+@keyframes effort-rgb-slide {
+  from { background-position: 0% 50%; }
+  to   { background-position: 200% 50%; }
+}
+.effort-rgb {
+  background: linear-gradient(90deg,
+    #ff3b3b, #ff9f1c, #ffe600, #2bff6a, #00d4ff, #4d6bff, #b14dff, #ff4dd2, #ff3b3b);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: effort-rgb-slide 3s linear infinite;
+}
+@keyframes effort-ultra-slide {
+  0%, 100% { background-position: 0% 50%; }
+  50%      { background-position: 100% 50%; }
+}
+.effort-ultra {
+  background: linear-gradient(90deg, #7c3aed, #a855f7, #c084fc, #9333ea, #7c3aed);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: effort-ultra-slide 2.6s ease-in-out infinite;
+  font-weight: 600;
+}
+
+/* ─── Ultracode composer ring ───
+   When the ULTRACODE effort tier is active, the chat input bar gets an RGB
+   rainbow that rotates around its border. A masked conic-gradient ring on a
+   ::before draws only the edge; animating the gradient ANGLE (via a registered
+   @property) spins the rainbow while the rounded-rect ring itself stays put.
+   GPU-cheap, pointer-transparent, sits exactly on the bar's 8px corners. */
+@property --ultra-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+@keyframes ultra-ring-spin {
+  to { --ultra-angle: 360deg; }
+}
+.composer-ultra::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(from var(--ultra-angle),
+    #ff3b3b, #ff9f1c, #ffe600, #2bff6a, #00d4ff, #4d6bff, #b14dff, #ff4dd2, #ff3b3b);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask-composite: exclude;
+  animation: ultra-ring-spin 4s linear infinite;
+  pointer-events: none;
+}
+
 /* ─── Live-status sheen ───
    A barely-there bright band drifts across a live status word (Running,
    thinking, Working…). `currentColor` keeps the base tone identical to the

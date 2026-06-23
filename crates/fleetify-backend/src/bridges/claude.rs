@@ -438,6 +438,9 @@ fn effort_to_claude(effort: &str, model: &str) -> Option<&'static str> {
         "high" => Some("high"),
         "extra_high" => Some("xhigh"),
         "max" => Some("max"),
+        // ULTRA CODE is a Fleetify-only top tier; Claude has no reasoning level
+        // above `max`, so it maps to max (its distinct identity is UI-only).
+        "ultra_code" => Some("max"),
         _ => None,
     }
 }
@@ -1470,6 +1473,8 @@ mod tests {
             Some("xhigh")
         );
         assert_eq!(effort_to_claude("max", "claude-opus-4-8"), Some("max"));
+        // ULTRA CODE (Fleetify-only top tier) maps to Claude's max reasoning.
+        assert_eq!(effort_to_claude("ultra_code", "claude-opus-4-8"), Some("max"));
         // Sonnet lacks xhigh but Claude Code auto-falls-back, so we still pass it.
         assert_eq!(
             effort_to_claude("extra_high", "claude-sonnet-4-6"),

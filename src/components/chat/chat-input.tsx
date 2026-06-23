@@ -90,13 +90,14 @@ function modelsFor(tool: string | null | undefined): ModelOption[] {
 }
 
 
-type Effort = "low" | "medium" | "high" | "extra_high" | "max";
+type Effort = "low" | "medium" | "high" | "extra_high" | "max" | "ultra_code";
 const EFFORTS: { id: Effort; label: string }[] = [
   { id: "low",        label: "Low"        },
   { id: "medium",     label: "Medium"     },
   { id: "high",       label: "High"       },
   { id: "extra_high", label: "Extra high" },
   { id: "max",        label: "Max"        },
+  { id: "ultra_code", label: "Ultracode" },
 ];
 
 
@@ -1204,6 +1205,14 @@ export function ChatInput({
   const [effortLocal, setEffortLocal] = useState<Effort>("high");
   const effort = effortProp ?? effortLocal;
   const setEffort = useCallback((e: Effort) => { setEffortLocal(e); onEffortChange?.(e); }, [onEffortChange]);
+
+  // Typing the magic word "ultracode" anywhere in the draft flips the session
+  // to the ULTRA CODE effort tier (Claude's purple max+ mode). Case-insensitive;
+  // only ever upgrades — deleting the word leaves the tier set (change it back
+  // via the model picker). This is the keyword activation the user asked for.
+  useEffect(() => {
+    if (effort !== "ultra_code" && /ultracode/i.test(value)) setEffort("ultra_code");
+  }, [value, effort, setEffort]);
 
   // @ mention state (file search)
   const [mentionOpen,    setMentionOpen]    = useState(false);
@@ -2745,6 +2754,7 @@ export function ChatInput({
         {/* ── Main box ── */}
         <div
           onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}
+          className={effort === "ultra_code" ? "composer-ultra" : undefined}
           style={{
             // 8px corners — sharp / minimal (Cursor-style), not pill-soft.
             borderRadius: 8,
@@ -3636,7 +3646,10 @@ export function ChatInput({
               <ProviderLogo tool={chipDispatchTool} size={11} />
               <span style={{ color: "var(--c-high)", fontWeight: 500 }}>{modelLabel}</span>
               <span style={{ color: "var(--c-dim)", fontSize: 10 }}>·</span>
-              <span style={{ color: "var(--c-low)", fontSize: 10.5 }}>{effortLabel(effort)}</span>
+              <span
+                className={effort === "max" ? "effort-rgb" : effort === "ultra_code" ? "effort-ultra" : undefined}
+                style={{ color: (effort === "max" || effort === "ultra_code") ? undefined : "var(--c-low)", fontSize: 10.5 }}
+              >{effortLabel(effort)}</span>
               <ChevronDown size={9} strokeWidth={2} style={{
                 color: "var(--c-low)", marginLeft: 0,
                 transform: openDrop === "model" ? "rotate(180deg)" : "none",

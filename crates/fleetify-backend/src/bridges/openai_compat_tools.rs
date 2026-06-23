@@ -209,7 +209,7 @@ impl OpenAICompatToolAdapter {
                 // but a session carried over from a CLI model might hold
                 // xhigh/max which aren't valid for the OpenAI-compat API.
                 let api_effort = match eff {
-                    "extra_high" | "xhigh" | "max" => "high",
+                    "extra_high" | "xhigh" | "max" | "ultra_code" => "high",
                     other => other,
                 };
                 body["reasoning_effort"] = serde_json::json!(api_effort);

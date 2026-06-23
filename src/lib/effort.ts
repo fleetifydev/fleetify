@@ -1,7 +1,7 @@
 /** Session-level reasoning-effort vocabulary: `low · medium · high · extra_high
  *  · max`. The capability layer speaks `xhigh`; this is the picker/session
  *  spelling (see docs/EFFORTS.md). */
-export type Effort = "low" | "medium" | "high" | "extra_high" | "max";
+export type Effort = "low" | "medium" | "high" | "extra_high" | "max" | "ultra_code";
 
 /** Full, human-readable effort labels shown in the composer / session-toolbar /
  *  routine model chips. Deliberately NOT abbreviated (was "Med" / "X-Hi", which
@@ -13,6 +13,7 @@ export const EFFORT_LABELS: Record<Effort, string> = {
   high: "High",
   extra_high: "Extra high",
   max: "Max",
+  ultra_code: "Ultracode",
 };
 
 /** Full label for a session effort id, falling back to the raw id if unknown. */

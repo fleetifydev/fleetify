@@ -65,7 +65,7 @@ export interface Session {
   budget_limit?: number | null;
   budget_used?: number;
   use_worktree?: boolean;
-  effort?: "low" | "medium" | "high" | "extra_high" | "max";
+  effort?: "low" | "medium" | "high" | "extra_high" | "max" | "ultra_code";
   sandbox?: string | null;
   tool_overrides?: string | null;
   /** Renderer-only flag: this session was created client-side by

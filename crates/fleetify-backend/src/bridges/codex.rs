@@ -53,7 +53,7 @@ fn effort_to_codex(effort: &str) -> &'static str {
     match effort {
         "low" => "low",
         "medium" => "medium",
-        "high" | "extra_high" | "max" => "high",
+        "high" | "extra_high" | "max" | "ultra_code" => "high",
         _ => "",
     }
 }
@@ -1281,6 +1281,7 @@ mod tests {
         assert_eq!(effort_to_codex("high"), "high");
         assert_eq!(effort_to_codex("extra_high"), "high");
         assert_eq!(effort_to_codex("max"), "high");
+        assert_eq!(effort_to_codex("ultra_code"), "high");
         assert_eq!(effort_to_codex(""), "");
         assert_eq!(effort_to_codex("nope"), "");
     }
