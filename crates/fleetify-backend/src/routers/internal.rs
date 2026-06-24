@@ -325,147 +325,45 @@ async fn dispatch(
         return Err(ApiError::Forbidden("internal-secret mismatch".into()));
     }
 
-    let caller = b.caller_session_id.trim();
-    let agent_ref = b.agent.trim();
-    let task = b.task.trim();
-    if caller.is_empty() || agent_ref.is_empty() || task.is_empty() {
+    // Resolve + guard + spawn now live in services::dispatch_exec so the Fleet
+    // Hub delegation can reuse the exact same path. This endpoint is a thin
+    // secret-gated wrapper that maps DispatchError → ApiError.
+    let spec = crate::services::dispatch_exec::DispatchSpec {
+        agent_ref: b.agent.trim().to_string(),
+        task: b.task.trim().to_string(),
+    };
+    if b.caller_session_id.trim().is_empty() || spec.agent_ref.is_empty() || spec.task.is_empty() {
         return Err(ApiError::BadRequest(
             "caller_session_id, agent, and task are required".into(),
         ));
     }
 
-    // Resolve caller for ownership scoping.
-    let caller_row: Option<Session> =
-        sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = ?")
-            .bind(caller)
-            .fetch_optional(&st.auth.pool)
-            .await?;
-    let Some(caller_row) = caller_row else {
-        return Err(ApiError::NotFound(format!(
-            "caller session {caller} not found"
-        )));
-    };
-
-    // Resolve target by UUID first, then case-insensitive title. We
-    // scope by the caller's user_id (when set) so a hallucinated id
-    // can't route work to someone else's fleet.
-    let lower_ref = agent_ref.to_lowercase();
-    let candidates: Vec<Session> = match &caller_row.user_id {
-        Some(uid) => {
-            sqlx::query_as::<_, Session>(
-                "SELECT * FROM sessions WHERE user_id = ? AND archived_at IS NULL",
-            )
-            .bind(uid)
-            .fetch_all(&st.auth.pool)
-            .await?
-        }
-        None => {
-            sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE archived_at IS NULL")
-                .fetch_all(&st.auth.pool)
-                .await?
-        }
-    };
-    let target = candidates
-        .into_iter()
-        .find(|s| s.id == agent_ref || s.title.to_lowercase() == lower_ref);
-    let Some(target) = target else {
-        return Err(ApiError::NotFound(format!(
-            "no session matches {agent_ref:?}"
-        )));
-    };
-    if target.id == caller {
-        return Err(ApiError::BadRequest("cannot dispatch to self".into()));
-    }
-
-    // ── Cycle + depth guard ──
-    // Read the caller's ancestry chain and refuse if the target
-    // already appears in it (cycle) or if going one level deeper
-    // would exceed the cap. Matches the Python chat.py rule that
-    // `mcp__fleet_dispatch__dispatch_to_agent` reads via
-    // session_manager.get_dispatch_chain().
-    let caller_chain = st.sm.get_dispatch_chain(caller);
-    if caller_chain.iter().any(|s| s == &target.id) {
-        return Err(ApiError::BadRequest(format!(
-            "dispatch cycle detected: target {} already in chain ({})",
-            target.id,
-            caller_chain.join(" → "),
-        )));
-    }
-    if caller_chain.len() >= crate::session_manager::SessionManager::MAX_DISPATCH_CHAIN_DEPTH {
-        return Err(ApiError::BadRequest(format!(
-            "dispatch chain too deep ({} hops, max {})",
-            caller_chain.len(),
-            crate::session_manager::SessionManager::MAX_DISPATCH_CHAIN_DEPTH,
-        )));
-    }
-
-    // Persist the task on the target so the agent's own chat reads
-    // like the user typed the task directly.
-    let _ = sqlx::query(
-        "INSERT INTO messages (id,session_id,role,content,cost_usd,timestamp) \
-         VALUES (?,?,?,?,0.0,?)",
-    )
-    .bind(uuid::Uuid::new_v4().to_string())
-    .bind(&target.id)
-    .bind("user")
-    .bind(json!([{"type":"text","text":task}]).to_string())
-    .bind(chrono::Utc::now().to_rfc3339())
-    .execute(&st.auth.pool)
-    .await;
-
-    // Compute the chain we'll set on the target for the duration of
-    // its run: caller's chain extended by the caller's own id, so a
-    // sub-dispatch issued by the target carries the full ancestry.
-    let mut target_chain = caller_chain;
-    target_chain.push(caller.to_string());
-
-    // ── Layer-2 routing for dispatch ──
-    // The TARGET agent identity is already chosen by the caller (Layer 1
-    // does not apply to dispatch). Routing here picks the model tier for
-    // the dispatched task and resolves any active proxy-gateway override.
-    // No session pin is written — dispatch sessions are short-lived and
-    // each call gets a fresh decision row.
-    let routing_res = crate::services::routing::persist::resolve_routing_for_dispatch(
-        &st.auth.pool,
-        &st.routing,
-        &target.id, // dispatch task_id surrogate
-        &target.id,
-        &target.tool,
-        target.model_name.as_deref(),
-        task,
-    )
-    .await;
-
-    // Spawn the target's bridge in the background. Same shape as the
-    // staff [[DISPATCH:]] path so the result flows through the
-    // SessionManager fanout + the dispatch_result system-message
-    // backstop. The CALLER (not staff) is the "result destination"
-    // here — when agent A dispatches to agent B, A's chat sees the
-    // dispatch_result card.
-    let pool = st.auth.pool.clone();
-    let sm = st.sm;
-    let caller_owned = caller.to_string();
-    let target_owned = target.clone();
-    let task_owned = task.to_string();
-    let task_for_card = task.to_string();
-    sm.set_dispatch_chain(&target.id, target_chain);
-    tokio::spawn(async move {
-        crate::routers::chat::run_dispatched_task_internal(
-            pool,
-            sm,
-            caller_owned,
-            target_owned,
-            task_owned,
-            task_for_card,
-            routing_res,
-        )
-        .await;
-    });
+    let (target, _join) =
+        crate::services::dispatch_exec::dispatch_one(&st, b.caller_session_id.trim(), &spec)
+            .await
+            .map_err(|e| {
+                use crate::services::dispatch_exec::DispatchError as DE;
+                match e {
+                    DE::CallerNotFound => ApiError::NotFound(format!(
+                        "caller session {} not found",
+                        b.caller_session_id.trim()
+                    )),
+                    DE::TargetNotFound(r) => {
+                        ApiError::NotFound(format!("no session matches {r:?}"))
+                    }
+                    DE::SelfDispatch => ApiError::BadRequest("cannot dispatch to self".into()),
+                    DE::Cycle(m) => ApiError::BadRequest(format!("dispatch cycle detected: {m}")),
+                    DE::DepthExceeded(n) => ApiError::BadRequest(format!(
+                        "dispatch chain too deep ({n} hops, max {})",
+                        crate::session_manager::SessionManager::MAX_DISPATCH_CHAIN_DEPTH,
+                    )),
+                }
+            })?;
 
     Ok(Json(json!({
         "ok": true,
         "target_session_id": target.id,
-        "task_dispatched": task,
+        "task_dispatched": spec.task,
     })))
 }
 

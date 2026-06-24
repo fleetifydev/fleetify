@@ -154,6 +154,13 @@ interface FleetStoreState {
    *  allowed for this session right now (mode != manual, cost OK,
    *  not paused). Use before firing a refine/analyze. */
   isFleetLiveFor: (sessionId: string) => boolean;
+
+  /** Orchestration bridge — the currently-tracked delegation batch id
+   *  (set after the user approves a plan; the BatchProgressCard polls it).
+   *  Runtime-only; heavy batch state lives on the backend. */
+  activeBatchId: string | null;
+  setActiveBatch: (batchId: string) => void;
+  clearActiveBatch: () => void;
 }
 
 /** Read the global default mode set from the Fleet hub. This is the
@@ -347,6 +354,9 @@ export const useFleetStore = create<FleetStoreState>((set, get) => ({
   decisions: initialDecisions,
   reports: initialReports,
   globalMode: loadGlobalMode(),
+  activeBatchId: null,
+  setActiveBatch: (batchId) => set({ activeBatchId: batchId }),
+  clearActiveBatch: () => set({ activeBatchId: null }),
 
   setStatus: (sessionId, status, lastAction) =>
     set(state => {

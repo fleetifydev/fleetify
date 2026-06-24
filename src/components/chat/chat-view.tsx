@@ -10,7 +10,7 @@ import { PermissionDialog } from "./permission-dialog";
 import { CursorQuestionCard } from "./cursor-question-card";
 import { CursorPlanCard } from "./cursor-plan-card";
 import { SessionToolbar } from "./session-toolbar";
-import { fetchMessages, fetchClaudeHistory, createSession, clearSessionMessages, updateSession as apiUpdateSession, stopSession, restartSession, analyzeFleetResponse, fetchAgentModels } from "@/lib/api";
+import { fetchMessages, fetchClaudeHistory, createSession, clearSessionMessages, updateSession as apiUpdateSession, stopSession, restartSession, analyzeFleetResponse, fetchAgentModels, planFleet, delegateFleet, type PlanDispatch } from "@/lib/api";
 import { registerConfigPatch } from "@/lib/session-config-sync";
 import { usesInAppTitleBar, folderName } from "@/lib/utils";
 import { formatShortcut } from "@/lib/keyboard-shortcuts";
@@ -20,9 +20,11 @@ import { providers } from "@/lib/providers-api";
 import { useDiscoveredModelsStore } from "@/stores/discovered-models-store";
 import { resolveSessionModel, sendBlockMessage } from "@/lib/model-resolution";
 import { FleetDecisionCard } from "./fleet-decision-card";
+import { PlanPreviewCard } from "@/components/dashboard/fleet-panel/plan-preview-card";
+import { BatchProgressCard } from "@/components/dashboard/fleet-panel/batch-progress-card";
 import { useFleetStore, AUTO_CHAIN_CAP } from "@/stores/fleet-store";
 import { OpenInMenu } from "@/components/layout/open-in-menu";
-import { PanelLeft, PanelRight, Trash2, X, Check, GitCompareArrows, ListTodo, Terminal as TerminalIcon, Play, FolderOpen, Layers, Copy, GitBranch, Sparkles, HelpCircle, Globe, Scissors } from "lucide-react";
+import { PanelLeft, PanelRight, Trash2, X, Check, GitCompareArrows, ListTodo, Terminal as TerminalIcon, Play, FolderOpen, Layers, Copy, GitBranch, Sparkles, HelpCircle, Globe, Scissors, Loader2 } from "lucide-react";
 import type { ContentBlock, ChatMessage } from "@/types/chat";
 import type { Session } from "@/types/session";
 import type { WorkspaceView } from "@/stores/app-store";
@@ -953,9 +955,60 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     loadedSessionsRef.current.delete(effectiveSessionId);
   }, [effectiveSessionId, clearAllForSession]);
 
+  // ── Home delegation (the composer as a "delegate a goal" input) ──
+  // On the hub, when the Fleet mode is copilot/auto, the typed message is a
+  // GOAL: it gets planned across the fleet and previewed inline above the
+  // composer (copilot) or dispatched immediately (auto), instead of opening the
+  // staff chat. Manual / refine-only keep the normal staff chat untouched.
+  const fleetGlobalMode = useFleetStore(s => s.globalMode);
+  const setActiveBatch = useFleetStore(s => s.setActiveBatch);
+  const clearActiveBatch = useFleetStore(s => s.clearActiveBatch);
+  const delegateBatchId = useFleetStore(s => s.activeBatchId);
+  const [delegatePhase, setDelegatePhase] = useState<"idle" | "planning" | "preview" | "tracking">("idle");
+  const [delegatePlan, setDelegatePlan] = useState<{ dispatches: PlanDispatch[]; summary: string } | null>(null);
+  // Retained so the "no agents → create one" fallback can re-send the goal to a
+  // freshly-spawned agent.
+  const [delegateGoal, setDelegateGoal] = useState("");
+
   // Staff agent send — creates the session lazily if it doesn't exist yet.
   const handleStaffSend = useCallback(async (text: string, attachments?: Attachment[]) => {
     if (text.trim() === "/new") { void beginDraft(); return; }
+
+    // Home-delegation intercept (hub only — handleStaffSend is wired solely when
+    // isControlCenter). copilot/auto → the message is a fleet goal: plan it, and
+    // in auto dispatch it immediately. Skip slash commands (/status, /compact, …)
+    // and compaction payloads — those keep their own handlers below. Manual /
+    // refine-only fall through to the normal staff send.
+    if (text.trim() && !text.trim().startsWith("/") && !text.startsWith("[fleet:compaction]")) {
+      const gMode = useFleetStore.getState().globalMode;
+      if (gMode === "copilot" || gMode === "auto") {
+        const goal = text.trim();
+        const auto = gMode === "auto";
+        setDelegateGoal(goal);
+        setDelegatePlan(null);
+        setDelegatePhase("planning");
+        planFleet(goal)
+          .then(p => {
+            setDelegatePlan(p);
+            // Auto: fire the plan immediately, no approval. Co-pilot (and auto
+            // with an empty plan, so the user sees *why* nothing ran): preview
+            // and wait for "Dispatch all".
+            if (auto && p.dispatches.length > 0) {
+              setDelegatePhase("tracking");
+              delegateFleet(p.dispatches)
+                .then(r => setActiveBatch(r.batch_id))
+                .catch(() => setDelegatePhase("preview"));
+            } else {
+              setDelegatePhase("preview");
+            }
+          })
+          .catch(() => {
+            setDelegatePlan({ dispatches: [], summary: "Couldn't reach the planner — try again." });
+            setDelegatePhase("preview");
+          });
+        return;
+      }
+    }
 
     // Compaction takes priority over any of the fleet send wrapping
     // below. The chat-input has already tagged the payload with
@@ -2349,9 +2402,11 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                   ? "Review the plan above to continue…"
                   : "Approve or deny above to continue…"
               : isControlCenter
-                ? fleetAutoMode
-                  ? "Fleetify will route this automatically…  @ to target an agent"
-                  : "Ask anything…  @ to target a specific agent"
+                ? fleetGlobalMode === "auto"
+                  ? "Describe a goal — Fleet plans and dispatches it across your agents…"
+                  : fleetGlobalMode === "copilot"
+                    ? "Describe a goal — Fleet plans it across your agents for you to approve…"
+                    : "Ask anything…  @ to target a specific agent"
                 : isComposing
                   ? "Describe a task…"
                   : "Send a message…"
@@ -2551,6 +2606,129 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                     }));
                   }}
                 />
+              )}
+              {/* Home delegation — the composer as a "delegate a goal" input.
+                  On the hub with copilot/auto, the typed message is planned
+                  across the fleet and previewed here, then dispatched + tracked
+                  inline. Self-gated on isControlCenter so agent chats are
+                  untouched. */}
+              {isControlCenter && (fleetGlobalMode === "copilot" || fleetGlobalMode === "auto") && delegatePhase === "idle" && (
+                <div style={{
+                  marginBottom: 8, padding: "7px 11px",
+                  fontSize: 11.5, color: "var(--c-low)",
+                  background: "var(--c-srf)", border: "1px solid var(--c-brd)", borderRadius: 8,
+                  display: "flex", alignItems: "center", gap: 7,
+                }}>
+                  <Sparkles size={12} strokeWidth={2.2} style={{ color: "rgba(96,165,250,0.95)", flexShrink: 0 }} />
+                  <span>Co-pilot on — your next message is planned across the fleet, not sent to chat.</span>
+                </div>
+              )}
+              {isControlCenter && delegatePhase !== "idle" && (
+                <div style={{
+                  marginBottom: 8, padding: "10px 12px",
+                  background: "var(--c-srf)", border: "1px solid var(--c-brd)", borderRadius: 10,
+                  display: "flex", flexDirection: "column",
+                  animation: "fleet-pane-in 0.18s cubic-bezier(0.22, 1, 0.36, 1) both",
+                }}>
+                  {delegatePhase === "planning" && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--c-med)" }}>
+                      <Loader2 size={13} className="animate-spin" style={{ color: "rgba(96,165,250,0.95)" }} />
+                      Planning across the fleet…
+                    </div>
+                  )}
+                  {delegatePhase === "preview" && delegatePlan && (
+                    delegatePlan.dispatches.length > 0 ? (
+                      <PlanPreviewCard
+                        dispatches={delegatePlan.dispatches}
+                        summary={delegatePlan.summary}
+                        titleFor={(id) => agentSessions.find(s => s.id === id)?.title ?? id}
+                        onConfirm={(dispatches) => {
+                          setDelegatePhase("tracking");
+                          delegateFleet(dispatches)
+                            .then(r => setActiveBatch(r.batch_id))
+                            .catch(() => setDelegatePhase("preview"));
+                        }}
+                        onCancel={() => { setDelegatePhase("idle"); setDelegatePlan(null); }}
+                      />
+                    ) : (
+                      // No existing agent fits (or the fleet is empty) — offer to
+                      // spin up a fresh agent on a folder the user picks, then run
+                      // the goal there. This is where the "where does it work?"
+                      // folder is answered: only when a brand-new agent is needed.
+                      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                        <div style={{ fontSize: 12.5, color: "var(--c-med)", lineHeight: 1.5 }}>
+                          {delegatePlan.summary || "No existing agent fits this goal."}
+                        </div>
+                        <div style={{ fontSize: 11.5, color: "var(--c-low)", lineHeight: 1.5 }}>
+                          Pick a folder and Fleet will spin up an agent there to run this goal.
+                        </div>
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button
+                            onClick={async () => {
+                              try {
+                                // The real native folder dialog lives in the
+                                // window-owning shell (electronAPI bridge); the
+                                // backend /fs/pick is a no-op. Mirror the
+                                // session-toolbar picker, prompt-fallback in dev.
+                                const w = window as unknown as { electronAPI?: { openFolderDialog?: () => Promise<string | null> } };
+                                const folder = w.electronAPI?.openFolderDialog
+                                  ? await w.electronAPI.openFolderDialog()
+                                  : window.prompt("Project folder path");
+                                if (!folder) return;
+                                setDelegatePhase("planning");
+                                const agent = await createSession({
+                                  title: folderName(folder) || "Fleet Agent",
+                                  project_path: folder,
+                                  tool: "claude-code",
+                                  permission_mode: "bypassPermissions",
+                                });
+                                const r = await delegateFleet([{ target_id: agent.id, task: delegateGoal }]);
+                                setActiveBatch(r.batch_id);
+                                setDelegatePhase("tracking");
+                              } catch {
+                                setDelegatePhase("preview");
+                              }
+                            }}
+                            style={{
+                              display: "inline-flex", alignItems: "center", gap: 6,
+                              padding: "6px 12px", borderRadius: 7, fontSize: 12.5, fontWeight: 600,
+                              color: "var(--c-high)", background: "var(--c-srf2)",
+                              border: "1px solid var(--c-brd2)", cursor: "pointer", fontFamily: "inherit",
+                            }}
+                          >
+                            <FolderOpen size={13} strokeWidth={2} /> Pick a folder &amp; run here
+                          </button>
+                          <button
+                            onClick={() => { setDelegatePhase("idle"); setDelegatePlan(null); }}
+                            style={{
+                              padding: "6px 12px", borderRadius: 7, fontSize: 12.5,
+                              color: "var(--c-med)", background: "transparent",
+                              border: "1px solid var(--c-brd)", cursor: "pointer", fontFamily: "inherit",
+                            }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  )}
+                  {delegatePhase === "tracking" && delegateBatchId && (
+                    <>
+                      <BatchProgressCard batchId={delegateBatchId} />
+                      <button
+                        onClick={() => { setDelegatePhase("idle"); setDelegatePlan(null); clearActiveBatch(); }}
+                        style={{
+                          marginTop: 10, alignSelf: "flex-start",
+                          padding: "5px 11px", borderRadius: 7, fontSize: 12, fontWeight: 600,
+                          color: "var(--c-med)", background: "transparent",
+                          border: "1px solid var(--c-brd)", cursor: "pointer", fontFamily: "inherit",
+                        }}
+                      >
+                        Done
+                      </button>
+                    </>
+                  )}
+                </div>
               )}
               {/* Session toolbar — pre-deploy setup row with folder /
                   git+worktree / model / perms / notes. Shown WHILE

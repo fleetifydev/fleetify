@@ -1091,6 +1091,60 @@ export async function askFleet(
   return res.json();
 }
 
+/* ── Fleet orchestration bridge ──────────────────────────────────
+   Plan a goal across existing agents, fire an approved batch, poll it. */
+
+/** One planned (or approved) routing: a task for a specific existing agent. */
+export interface PlanDispatch {
+  target_id: string;
+  task: string;
+}
+
+/** A dispatch inside a running delegation batch. */
+export interface BatchDispatch {
+  target_id: string;
+  target_title: string;
+  status: "queued" | "running" | "done" | "failed";
+  summary: string;
+  error: string;
+}
+
+export interface FleetBatch {
+  batch_id: string;
+  done: boolean;
+  dispatches: BatchDispatch[];
+}
+
+/** Ask Fleet brain to route a goal across the user's existing agents.
+ *  Side-effect-free — nothing is dispatched until the user approves. */
+export async function planFleet(goal: string): Promise<{ dispatches: PlanDispatch[]; summary: string }> {
+  const res = await apiFetch(`${API_BASE}/fleet/plan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ goal }),
+  });
+  if (!res.ok) throw new Error(`Fleet plan failed: ${res.status}`);
+  return res.json();
+}
+
+/** Fire an approved set of dispatches as one batch; returns its initial state. */
+export async function delegateFleet(dispatches: PlanDispatch[]): Promise<{ batch_id: string; dispatches: BatchDispatch[] }> {
+  const res = await apiFetch(`${API_BASE}/fleet/delegate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dispatches }),
+  });
+  if (!res.ok) throw new Error(`Fleet delegate failed: ${res.status}`);
+  return res.json();
+}
+
+/** Poll a delegation batch's per-dispatch progress. */
+export async function getFleetBatch(batchId: string): Promise<FleetBatch> {
+  const res = await apiFetch(`${API_BASE}/fleet/delegate/${batchId}`);
+  if (!res.ok) throw new Error(`Fleet batch fetch failed: ${res.status}`);
+  return res.json();
+}
+
 /** A row of Fleet's personal memory about the user. */
 export interface UserMemory {
   id: string;

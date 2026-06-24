@@ -15,7 +15,13 @@ use sqlx::SqlitePool;
 
 use super::haiku_client::{call_haiku_with_meta_cost, extract_json_object};
 
-const PLANNER_TIMEOUT: Duration = Duration::from_secs(8);
+// The planner shells to `claude --print` (Haiku). A cold one-shot call on
+// Windows with the planner system prompt + fleet context measured ~9.3s — over
+// the original 8s budget, so every plan timed out and degraded to an empty
+// routing. 30s gives comfortable headroom for cold-start + larger fleets while
+// still bounding a genuinely hung call. (The renderer shows a "planning…"
+// state, so a few seconds of latency reads as work, not a hang.)
+const PLANNER_TIMEOUT: Duration = Duration::from_secs(30);
 pub const MAX_DISPATCHES: usize = 6;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

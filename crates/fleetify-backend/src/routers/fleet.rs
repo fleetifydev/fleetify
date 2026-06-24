@@ -4,20 +4,142 @@
 //! is unavailable so the user never sees a fake "Fleet couldn't
 //! analyze" card sitting on top of their chat).
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::auth::AuthUser;
+use crate::models::session::Session;
 use crate::routers::{ApiError, AppState};
-use crate::services::fleet_brain;
+use crate::services::{auto_planner, fleet_brain, fleet_delegate};
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/fleet/analyze", post(analyze))
         .route("/fleet/chat", post(chat))
         .route("/fleet/rules", get(get_rules).put(set_rules))
+        // Orchestration bridge: plan a goal across existing agents, fire an
+        // approved batch, and poll its progress.
+        .route("/fleet/plan", post(plan))
+        .route("/fleet/delegate", post(delegate))
+        .route("/fleet/delegate/{batch_id}", get(delegate_status))
+}
+
+/// Build the planner's fleet snapshot from the user's non-archived sessions,
+/// excluding the "Staff Agent" cockpit itself (we never route work to it).
+async fn user_fleet(pool: &sqlx::SqlitePool, user_id: &str) -> Vec<auto_planner::FleetAgent> {
+    let rows = sqlx::query_as::<_, Session>(
+        "SELECT * FROM sessions WHERE user_id = ? AND archived_at IS NULL",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    rows.into_iter()
+        .filter(|s| s.title.trim() != "Staff Agent")
+        .map(|s| auto_planner::FleetAgent {
+            id: s.id,
+            name: s.title,
+            project: {
+                let p = s.project_path;
+                if p.trim().is_empty() {
+                    None
+                } else {
+                    Some(p)
+                }
+            },
+            status: Some(s.status),
+            description: None,
+        })
+        .collect()
+}
+
+/// The user's Staff Agent session id — the caller anchor for delegated
+/// dispatches (ownership scoping + cycle/depth chain root + result destination).
+async fn staff_session_id(pool: &sqlx::SqlitePool, user_id: &str) -> Option<String> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT id FROM sessions WHERE user_id = ? AND title = 'Staff Agent' \
+         AND archived_at IS NULL LIMIT 1",
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+}
+
+#[derive(Deserialize, Default)]
+struct PlanBody {
+    #[serde(default)]
+    goal: String,
+}
+
+/// `POST /api/fleet/plan` — Haiku-plan a routing of the goal across the user's
+/// existing agents. Side-effect-free; empty/degraded plans return an empty
+/// dispatch list with a human summary.
+async fn plan(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Json(b): Json<PlanBody>,
+) -> Json<Value> {
+    let goal = b.goal.trim();
+    if goal.is_empty() {
+        return Json(json!({ "dispatches": [], "summary": "Describe a goal to delegate." }));
+    }
+    let fleet = user_fleet(&st.auth.pool, &user.id).await;
+    let staff = staff_session_id(&st.auth.pool, &user.id).await;
+    let r = auto_planner::plan_dispatches(&st.auth.pool, goal, &fleet, &[], staff.as_deref())
+        .await
+        .unwrap_or(auto_planner::AutoPlanResult {
+            dispatches: vec![],
+            summary: "Planner unavailable.".into(),
+        });
+    Json(serde_json::to_value(r).unwrap_or(Value::Null))
+}
+
+#[derive(Deserialize, Default)]
+struct DelegateBody {
+    #[serde(default)]
+    dispatches: Vec<auto_planner::PlanDispatch>,
+}
+
+/// `POST /api/fleet/delegate` — fire an approved set of dispatches under one
+/// batch, anchored on the user's Staff Agent. Returns the batch immediately.
+async fn delegate(
+    State(st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Json(b): Json<DelegateBody>,
+) -> Result<Json<Value>, ApiError> {
+    if b.dispatches.is_empty() {
+        return Err(ApiError::BadRequest("no dispatches to delegate".into()));
+    }
+    let Some(staff) = staff_session_id(&st.auth.pool, &user.id).await else {
+        return Err(ApiError::BadRequest(
+            "no Staff Agent session — open the Fleet cockpit first".into(),
+        ));
+    };
+    let batch_id =
+        fleet_delegate::start_batch(st.clone(), Some(user.id.as_str()), &staff, b.dispatches);
+    let batch = fleet_delegate::get_batch(&batch_id)
+        .ok_or_else(|| ApiError::Internal("batch vanished after creation".into()))?;
+    Ok(Json(serde_json::to_value(batch).unwrap_or(Value::Null)))
+}
+
+/// `GET /api/fleet/delegate/{batch_id}` — poll a batch's per-dispatch status.
+/// 404 when unknown or owned by another user.
+async fn delegate_status(
+    State(_st): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(batch_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    if !fleet_delegate::batch_belongs_to(&batch_id, Some(user.id.as_str())) {
+        return Err(ApiError::NotFound("batch not found".into()));
+    }
+    let batch = fleet_delegate::get_batch(&batch_id)
+        .ok_or_else(|| ApiError::NotFound("batch not found".into()))?;
+    Ok(Json(serde_json::to_value(batch).unwrap_or(Value::Null)))
 }
 
 /// `GET /api/fleet/rules` — the current FLEET.md text (empty when absent).

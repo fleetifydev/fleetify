@@ -92,3 +92,14 @@ describe("fleet-store isFleetLiveFor gating", () => {
     expect(useFleetStore.getState().isFleetLiveFor(SID)).toBe(true);
   });
 });
+
+describe("fleet-store delegation batch", () => {
+  it("tracks and clears the active delegation batch", () => {
+    const s = useFleetStore.getState();
+    expect(useFleetStore.getState().activeBatchId).toBeNull();
+    s.setActiveBatch("batch-1");
+    expect(useFleetStore.getState().activeBatchId).toBe("batch-1");
+    s.clearActiveBatch();
+    expect(useFleetStore.getState().activeBatchId).toBeNull();
+  });
+});
