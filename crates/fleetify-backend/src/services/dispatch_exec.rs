@@ -73,24 +73,37 @@ pub async fn dispatch_one(
     // Resolve target by UUID first, then case-insensitive title — scoped to the
     // caller's user_id (when set) so a hallucinated id can't route work to
     // someone else's fleet.
+    // Resolve the target with one indexed query instead of fetching the
+    // caller's entire fleet and scanning it in memory: match by exact id OR
+    // case-insensitive title, scoped to the caller's user_id when set. The
+    // `ORDER BY (id = ?) DESC` prefers an exact-id hit over a title collision.
     let lower_ref = agent_ref.to_lowercase();
-    let candidates: Vec<Session> = match &caller_row.user_id {
+    let target: Option<Session> = match &caller_row.user_id {
         Some(uid) => sqlx::query_as::<_, Session>(
-            "SELECT * FROM sessions WHERE user_id = ? AND archived_at IS NULL",
+            "SELECT * FROM sessions WHERE user_id = ? AND archived_at IS NULL \
+             AND (id = ? OR LOWER(title) = ?) ORDER BY (id = ?) DESC LIMIT 1",
         )
         .bind(uid)
-        .fetch_all(&st.auth.pool)
+        .bind(agent_ref)
+        .bind(&lower_ref)
+        .bind(agent_ref)
+        .fetch_optional(&st.auth.pool)
         .await
-        .unwrap_or_default(),
-        None => sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE archived_at IS NULL")
-            .fetch_all(&st.auth.pool)
-            .await
-            .unwrap_or_default(),
+        .ok()
+        .flatten(),
+        None => sqlx::query_as::<_, Session>(
+            "SELECT * FROM sessions WHERE archived_at IS NULL \
+             AND (id = ? OR LOWER(title) = ?) ORDER BY (id = ?) DESC LIMIT 1",
+        )
+        .bind(agent_ref)
+        .bind(&lower_ref)
+        .bind(agent_ref)
+        .fetch_optional(&st.auth.pool)
+        .await
+        .ok()
+        .flatten(),
     };
-    let Some(target) = candidates
-        .into_iter()
-        .find(|s| s.id == agent_ref || s.title.to_lowercase() == lower_ref)
-    else {
+    let Some(target) = target else {
         return Err(DispatchError::TargetNotFound(agent_ref.to_string()));
     };
     if target.id == caller {

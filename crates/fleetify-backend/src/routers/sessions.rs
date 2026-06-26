@@ -154,23 +154,28 @@ async fn list_sessions(
         "SELECT * FROM sessions WHERE (user_id = ? OR user_id IS NULL) \
          AND archived_at IS NULL ORDER BY pinned DESC, group_path, order_idx"
     };
-    let rows = sqlx::query_as::<_, Session>(sql)
+    let mut rows = sqlx::query_as::<_, Session>(sql)
         .bind(&user.id)
         .fetch_all(&st.auth.pool)
         .await?;
-    // Claim unclaimed (legacy user_id NULL) rows for this user.
-    let unclaimed: Vec<&str> = rows
+    // Claim unclaimed (legacy user_id NULL) rows for this user in ONE batched
+    // UPDATE instead of N round-trips, then reflect the claim in the returned
+    // rows so the UI sees the owned state immediately (no extra refetch).
+    let unclaimed: Vec<String> = rows
         .iter()
         .filter(|s| s.user_id.is_none())
-        .map(|s| s.id.as_str())
+        .map(|s| s.id.clone())
         .collect();
     if !unclaimed.is_empty() {
+        let placeholders = vec!["?"; unclaimed.len()].join(",");
+        let update_sql = format!("UPDATE sessions SET user_id = ? WHERE id IN ({placeholders})");
+        let mut q = sqlx::query(&update_sql).bind(&user.id);
         for sid in &unclaimed {
-            sqlx::query("UPDATE sessions SET user_id = ? WHERE id = ?")
-                .bind(&user.id)
-                .bind(sid)
-                .execute(&st.auth.pool)
-                .await?;
+            q = q.bind(sid);
+        }
+        q.execute(&st.auth.pool).await?;
+        for s in rows.iter_mut().filter(|s| s.user_id.is_none()) {
+            s.user_id = Some(user.id.clone());
         }
     }
     Ok(Json(rows))
@@ -649,20 +654,26 @@ async fn fork_session(
     .bind(&id)
     .fetch_all(&st.auth.pool)
     .await?;
-    for m in msgs {
-        sqlx::query(
-            "INSERT INTO messages (id,session_id,role,content,model,usage_json,cost_usd,timestamp) \
-             VALUES (?,?,?,?,?,?,0.0,?)",
-        )
-        .bind(uuid::Uuid::new_v4().to_string())
-        .bind(&new_id)
-        .bind(&m.role)
-        .bind(&m.content)
-        .bind(&m.model)
-        .bind(&m.usage_json)
-        .bind(&m.timestamp)
-        .execute(&st.auth.pool)
-        .await?;
+    // Copy every message under ONE transaction so the fork commits once
+    // instead of fsync-ing per message (the N+1 round-trips under WAL+NORMAL).
+    if !msgs.is_empty() {
+        let mut tx = st.auth.pool.begin().await?;
+        for m in &msgs {
+            sqlx::query(
+                "INSERT INTO messages (id,session_id,role,content,model,usage_json,cost_usd,timestamp) \
+                 VALUES (?,?,?,?,?,?,0.0,?)",
+            )
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(&new_id)
+            .bind(&m.role)
+            .bind(&m.content)
+            .bind(&m.model)
+            .bind(&m.usage_json)
+            .bind(&m.timestamp)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
     }
     let forked = sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = ?")
         .bind(&new_id)
@@ -1337,8 +1348,8 @@ async fn stats_bulk(
 ) -> Result<Json<Value>, ApiError> {
     let rows: Vec<(String, i64, f64)> = sqlx::query_as(
         "SELECT m.session_id, COUNT(m.id), COALESCE(SUM(m.cost_usd),0.0) \
-         FROM messages m WHERE m.session_id IN \
-         (SELECT id FROM sessions WHERE user_id = ?) GROUP BY m.session_id",
+         FROM messages m JOIN sessions s ON s.id = m.session_id \
+         WHERE s.user_id = ? GROUP BY m.session_id",
     )
     .bind(&user.id)
     .fetch_all(&st.auth.pool)
