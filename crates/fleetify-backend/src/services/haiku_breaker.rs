@@ -44,7 +44,7 @@ fn should_half_open(opened_at: &Instant) -> bool {
 /// `false` when the breaker is open — callers should skip the LLM call
 /// entirely and fall back to their non-LLM path immediately.
 pub fn is_haiku_available() -> bool {
-    let mut g = breaker().lock().unwrap();
+    let mut g = breaker().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(opened) = g.opened_at {
         if should_half_open(&opened) {
             tracing::info!(target: "haiku_breaker", "haiku_breaker.half_open");
@@ -58,7 +58,7 @@ pub fn is_haiku_available() -> bool {
 }
 
 pub fn record_haiku_success() {
-    let mut g = breaker().lock().unwrap();
+    let mut g = breaker().lock().unwrap_or_else(|e| e.into_inner());
     if g.consecutive_failures > 0 || g.opened_at.is_some() {
         tracing::info!(target: "haiku_breaker", "haiku_breaker.recovered");
     }
@@ -67,7 +67,7 @@ pub fn record_haiku_success() {
 }
 
 pub fn record_haiku_failure() {
-    let mut g = breaker().lock().unwrap();
+    let mut g = breaker().lock().unwrap_or_else(|e| e.into_inner());
     g.consecutive_failures += 1;
     if g.consecutive_failures >= FAIL_THRESHOLD && g.opened_at.is_none() {
         g.opened_at = Some(Instant::now());
@@ -91,7 +91,7 @@ mod tests {
     static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn reset() {
-        let mut g = breaker().lock().unwrap();
+        let mut g = breaker().lock().unwrap_or_else(|e| e.into_inner());
         g.consecutive_failures = 0;
         g.opened_at = None;
     }

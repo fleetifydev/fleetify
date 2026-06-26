@@ -4,8 +4,9 @@
 
 use std::path::Path;
 use std::str::FromStr;
+use std::time::Duration;
 
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::SqlitePool;
 
 /// Open the pool and run migrations. `url` is e.g. `sqlite::memory:`
@@ -19,7 +20,14 @@ pub async fn init_pool(url: &str) -> anyhow::Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str(url)?
         .create_if_missing(true)
         .foreign_keys(true)
-        .journal_mode(SqliteJournalMode::Wal);
+        .journal_mode(SqliteJournalMode::Wal)
+        // WAL+NORMAL is the documented-safe durability combo (no corruption,
+        // only the last commit can be lost on power-loss) and halves the
+        // fsync cost per commit — critical when ~20 agents each write every
+        // ~800 ms. busy_timeout converts a spurious SQLITE_BUSY into a short
+        // wait instead of an immediate dropped write under WAL contention.
+        .synchronous(SqliteSynchronous::Normal)
+        .busy_timeout(Duration::from_secs(5));
     finish_pool(opts, url.contains(":memory:")).await
 }
 
@@ -36,13 +44,23 @@ pub async fn init_pool_at(path: &Path) -> anyhow::Result<SqlitePool> {
         .filename(path)
         .create_if_missing(true)
         .foreign_keys(true)
-        .journal_mode(SqliteJournalMode::Wal);
+        .journal_mode(SqliteJournalMode::Wal)
+        // See init_pool: WAL+NORMAL + a 5 s busy timeout keep ~20 concurrent
+        // agent writers from serializing on fsync or dropping rows on BUSY.
+        .synchronous(SqliteSynchronous::Normal)
+        .busy_timeout(Duration::from_secs(5));
     finish_pool(opts, false).await
 }
 
 async fn finish_pool(opts: SqliteConnectOptions, is_mem: bool) -> anyhow::Result<SqlitePool> {
     let pool = SqlitePoolOptions::new()
-        .max_connections(if is_mem { 1 } else { 5 })
+        // 5 → 10: under ~20 concurrent agents the read path (session list,
+        // /messages, routing) shares this pool with stalled writers; under WAL
+        // readers don't need the write lock, so more connections lets reads
+        // through instead of queuing behind a busy writer. acquire_timeout
+        // turns sqlx's 30 s default hang into a fast, surfaced error.
+        .max_connections(if is_mem { 1 } else { 10 })
+        .acquire_timeout(Duration::from_secs(10))
         .connect_with(opts)
         .await?;
 

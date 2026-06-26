@@ -5,7 +5,14 @@
 //! faithful while those subsystems land later.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
+
+// parking_lot::Mutex is non-poisoning. With panic=unwind (workspace
+// Cargo.toml), a panic while holding one of these short guards would, under a
+// std::sync::Mutex, POISON it — then every other agent's .lock().unwrap()
+// panics in turn, a fleet-wide cascade from one bad task. parking_lot hands
+// the next caller the guard instead, containing the failure to that one task.
+use parking_lot::Mutex;
 
 use sqlx::SqlitePool;
 use tokio::sync::broadcast;
@@ -74,15 +81,10 @@ impl SessionManager {
     }
 
     pub fn register_ws(&self, session_id: &str) {
-        *self
-            .ws
-            .lock()
-            .unwrap()
-            .entry(session_id.to_string())
-            .or_insert(0) += 1;
+        *self.ws.lock().entry(session_id.to_string()).or_insert(0) += 1;
     }
     pub fn unregister_ws(&self, session_id: &str) {
-        let mut m = self.ws.lock().unwrap();
+        let mut m = self.ws.lock();
         if let Some(n) = m.get_mut(session_id) {
             *n = n.saturating_sub(1);
             if *n == 0 {
@@ -96,7 +98,7 @@ impl SessionManager {
     /// `send_to_session_ws` for the same id. Idempotent + safe to
     /// call many times — each subscriber gets its own receiver.
     pub fn subscribe_session(&self, session_id: &str) -> broadcast::Receiver<serde_json::Value> {
-        let mut map = self.session_tx.lock().unwrap();
+        let mut map = self.session_tx.lock();
         let tx = map.entry(session_id.to_string()).or_insert_with(|| {
             // 256 buffered messages — comfortably above the burst a
             // dispatch_ack + target stream + dispatch_result triplet
@@ -119,21 +121,19 @@ impl SessionManager {
     pub fn set_dispatch_chain(&self, session_id: &str, chain: Vec<String>) {
         self.dispatch_chains
             .lock()
-            .unwrap()
             .insert(session_id.to_string(), chain);
     }
 
     pub fn get_dispatch_chain(&self, session_id: &str) -> Vec<String> {
         self.dispatch_chains
             .lock()
-            .unwrap()
             .get(session_id)
             .cloned()
             .unwrap_or_default()
     }
 
     pub fn clear_dispatch_chain(&self, session_id: &str) {
-        self.dispatch_chains.lock().unwrap().remove(session_id);
+        self.dispatch_chains.lock().remove(session_id);
     }
 
     /// Publish a JSON payload to every subscriber of `session_id`. Used by
@@ -146,7 +146,7 @@ impl SessionManager {
     /// reload, so dropped fanouts never lose state.
     pub fn send_to_session_ws(&self, session_id: &str, payload: serde_json::Value) {
         let tx_opt = {
-            let map = self.session_tx.lock().unwrap();
+            let map = self.session_tx.lock();
             map.get(session_id).cloned()
         };
         if let Some(tx) = tx_opt {

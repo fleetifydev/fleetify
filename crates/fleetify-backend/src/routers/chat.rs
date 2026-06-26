@@ -65,11 +65,16 @@ async fn ws_entry(
 }
 
 async fn send_json(sink: &Sink, v: Value) {
-    let _ = sink
-        .lock()
-        .await
-        .send(Message::Text(v.to_string().into()))
-        .await;
+    let mut guard = sink.lock().await;
+    // Bound the per-frame write: a wedged WebView2 socket (paused tab, dead
+    // network-service) must not park this task — and every other session
+    // multiplexed over this one sink — indefinitely. On timeout we drop the
+    // frame; the renderer re-syncs from the persisted backstop / on reconnect.
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        guard.send(Message::Text(v.to_string().into())),
+    )
+    .await;
 }
 
 async fn owned_session(st: &AppState, sid: &str, user_id: &str) -> Option<Session> {
@@ -2972,6 +2977,14 @@ pub(crate) async fn run_dispatched_task_internal(
             "message": "Dispatched",
         }),
     );
+    // Admission control: cap how many dispatched / spawned / delegated agent
+    // CLI turns run at once. The dispatch_ack above already created the UI
+    // card, so an over-cap agent shows as live and simply WAITS here for a
+    // slot instead of launching its 150-400 MB CLI immediately and OOM-ing a
+    // low-RAM box. Held across the whole turn; freed when this fn returns.
+    // The user's own foreground turn (run_send_flow) is intentionally NOT
+    // gated, so direct interaction stays responsive.
+    let _permit = crate::services::admission::acquire_agent_permit().await;
     run_dispatched_task(
         pool,
         sm,
@@ -3975,11 +3988,12 @@ async fn persist_block_into(pool: &sqlx::SqlitePool, staff_sid: &str, block: &Va
 fn push_text(content: &mut Vec<Value>, kind: &str, chunk: &str) {
     if let Some(last) = content.last_mut() {
         if last.get("type").and_then(|x| x.as_str()) == Some(kind) {
-            if let Some(t) = last
-                .get_mut("text")
-                .and_then(|x| x.as_str().map(String::from))
-            {
-                last["text"] = json!(format!("{t}{chunk}"));
+            // Append in place instead of cloning the whole accumulated string
+            // and reallocating it on every delta (was O(n) per chunk → O(n²)
+            // per turn). String::push_str is amortized O(chunk) — this sits on
+            // the hottest, most-concurrent path under a 20-agent fleet.
+            if let Some(Value::String(s)) = last.get_mut("text") {
+                s.push_str(chunk);
                 return;
             }
         }

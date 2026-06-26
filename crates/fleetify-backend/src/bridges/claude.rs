@@ -916,7 +916,17 @@ impl ClaudeBridge {
             "claude bridge spawn"
         );
         let mut child = command.spawn()?;
-        let stdout = child.stdout.take().expect("piped stdout");
+        // Graceful instead of .expect("piped stdout"): a missing stdout pipe
+        // (e.g. Windows handle/pipe exhaustion when ~100 child processes are
+        // live under a heavy fleet) fails THIS turn with a surfaced error
+        // instead of panicking the bridge task and — under panic=abort —
+        // taking the whole backend (and all other agents) down with it.
+        let stdout = child.stdout.take().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "claude bridge: child stdout pipe missing",
+            )
+        })?;
         let stderr = child.stderr.take();
         *self.child.lock().await = Some(child);
 
@@ -924,6 +934,10 @@ impl ClaudeBridge {
         let our_id = self.session_id.clone();
         let child_h = self.child.clone();
         let aborted = self.aborted.clone();
+        // Latency probe: time from this spawn to the first event the CLI emits
+        // (the per-turn cold-start the Latency audit flagged as the dominant
+        // actual-latency term). Logged once per turn.
+        let spawn_t = std::time::Instant::now();
 
         tokio::spawn(async move {
             let _ = tx
@@ -934,6 +948,7 @@ impl ClaudeBridge {
             let mut st = ParseState::new(our_id);
             let mut lines = BufReader::new(stdout).lines();
             let mut buffer = String::new();
+            let mut logged_ttf = false;
             while let Ok(Some(raw)) = lines.next_line().await {
                 if aborted.load(std::sync::atomic::Ordering::SeqCst) {
                     break;
@@ -941,6 +956,14 @@ impl ClaudeBridge {
                 let line = raw.trim();
                 if line.is_empty() {
                     continue;
+                }
+                if !logged_ttf {
+                    logged_ttf = true;
+                    tracing::info!(
+                        target: "fleetify::latency",
+                        spawn_to_first_event_ms = spawn_t.elapsed().as_millis() as u64,
+                        "claude turn: first event"
+                    );
                 }
                 let event: Value = match serde_json::from_str(line) {
                     Ok(v) => {
@@ -1474,7 +1497,10 @@ mod tests {
         );
         assert_eq!(effort_to_claude("max", "claude-opus-4-8"), Some("max"));
         // ULTRA CODE (Fleetify-only top tier) maps to Claude's max reasoning.
-        assert_eq!(effort_to_claude("ultra_code", "claude-opus-4-8"), Some("max"));
+        assert_eq!(
+            effort_to_claude("ultra_code", "claude-opus-4-8"),
+            Some("max")
+        );
         // Sonnet lacks xhigh but Claude Code auto-falls-back, so we still pass it.
         assert_eq!(
             effort_to_claude("extra_high", "claude-sonnet-4-6"),

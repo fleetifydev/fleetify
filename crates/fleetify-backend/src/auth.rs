@@ -168,7 +168,7 @@ impl JwksCache {
     }
 
     fn is_stale(&self) -> bool {
-        match *self.fetched_at.read().unwrap() {
+        match *self.fetched_at.read().unwrap_or_else(|e| e.into_inner()) {
             None => true,
             Some(t) => t.elapsed() > JWKS_TTL,
         }
@@ -178,12 +178,17 @@ impl JwksCache {
         if self.is_stale() {
             self.refresh(false, None).await?;
         }
-        if let Some(k) = self.keys.read().unwrap().get(kid) {
+        if let Some(k) = self.keys.read().unwrap_or_else(|e| e.into_inner()).get(kid) {
             return Ok(Some(k.clone()));
         }
         // Unknown kid → one force-refresh (single-flight; siblings short-circuit).
         self.refresh(true, Some(kid)).await?;
-        Ok(self.keys.read().unwrap().get(kid).cloned())
+        Ok(self
+            .keys
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(kid)
+            .cloned())
     }
 
     async fn refresh(&self, force: bool, target_kid: Option<&str>) -> Result<(), AuthError> {
@@ -193,7 +198,12 @@ impl JwksCache {
         }
         if force {
             if let Some(k) = target_kid {
-                if self.keys.read().unwrap().contains_key(k) {
+                if self
+                    .keys
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .contains_key(k)
+                {
                     return Ok(()); // a sibling refreshed while we waited
                 }
             }
@@ -233,8 +243,8 @@ impl JwksCache {
                 new_keys.insert(kid, Arc::new(k));
             }
         }
-        *self.keys.write().unwrap() = new_keys;
-        *self.fetched_at.write().unwrap() = Some(Instant::now());
+        *self.keys.write().unwrap_or_else(|e| e.into_inner()) = new_keys;
+        *self.fetched_at.write().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
         Ok(())
     }
 }

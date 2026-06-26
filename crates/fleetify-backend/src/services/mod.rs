@@ -2,6 +2,7 @@
 
 pub mod accounts;
 pub mod activity_logger;
+pub mod admission;
 pub mod auto_planner;
 pub mod browser;
 pub mod builtin_templates;

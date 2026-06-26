@@ -296,6 +296,14 @@ interface ChatState {
    *  when a session is archived/deleted, so a future re-creation of the
    *  same id starts clean instead of inheriting orphan state. */
   clearSession: (sessionId: string) => void;
+  /** Reclaim renderer memory: empty the message arrays + stream scratch of
+   *  every session whose id is NOT in `keepIds` and which is not currently
+   *  streaming. chat-view re-fetches the last 50 messages from SQLite when the
+   *  user returns to a session (chat-view.tsx:723), so this is lossless from
+   *  the user's point of view. Sub-agent transcripts / process log / tool
+   *  state are intentionally PRESERVED — they have no re-fetch path, so
+   *  dropping them would lose data the user can't get back. */
+  evictInactive: (keepIds: string[]) => void;
   /** Patch cost/usage/model onto the most-recent assistant message —
    *  used when a `cost` event arrives after `status:done` already
    *  finalized the content. Without this, cost is lost on that
@@ -547,6 +555,39 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const { [sessionId]: _alsoGone, ...restPreviews } = state.dispatchPreviews;
       void _gone; void _alsoGone;
       return { sessions: rest, dispatchPreviews: restPreviews };
+    }),
+
+  evictInactive: (keepIds) =>
+    set((state) => {
+      const keep = new Set(keepIds);
+      let changed = false;
+      const next: Record<string, SessionChatState> = {};
+      for (const [sid, s] of Object.entries(state.sessions)) {
+        // Untouched: visible (active + split panes), mid-stream, or already
+        // lean. Only a session still holding a retained transcript gets reset
+        // — and only its re-fetchable parts (messages + stream scratch).
+        // Sub-agent tasks, process log, tool/permission state are preserved.
+        if (
+          keep.has(sid) ||
+          s.isStreaming ||
+          (s.messages.length === 0 &&
+            s.contentSoFar.length === 0 &&
+            !s.streamingText &&
+            !s.streamingThinking)
+        ) {
+          next[sid] = s;
+          continue;
+        }
+        next[sid] = {
+          ...s,
+          messages: [],
+          contentSoFar: [],
+          streamingText: "",
+          streamingThinking: "",
+        };
+        changed = true;
+      }
+      return changed ? { sessions: next } : {};
     }),
 
   appendDispatchPreview: (targetId, p) =>
