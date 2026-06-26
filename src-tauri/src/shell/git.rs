@@ -1886,6 +1886,20 @@ pub async fn list_prs(folder: &Path, limit: u32) -> Value {
     }
 }
 
+/// `--json` field set for `gh pr view` in [`get_pr_status`].
+///
+/// Every entry MUST be a valid `gh pr view --json` field name. The issue-comment
+/// field is `comments` (an array) — NOT `commentsCount`, which is a
+/// renderer-OUTPUT name only. Requesting `commentsCount` makes `gh pr view`
+/// exit non-zero with `Unknown JSON field: "commentsCount"`, so EVERY status
+/// poll returned `ok:false` and the BranchStrip's Merge button stayed pinned on
+/// "Loading PR status…" for anyone on the gh-CLI auth path (the REST/OAuth path
+/// was unaffected). The count is derived from `comments.len()` in the mapping
+/// below. Keep this in sync with `map_pr_status` (REST) which sources the count
+/// from the pull object's numeric `comments`.
+const PR_VIEW_FIELDS: &str = "number,url,state,mergeable,isDraft,baseRefName,headRefName,\
+                              statusCheckRollup,comments";
+
 pub async fn get_pr_status(folder: &Path, pr_number: Option<u64>) -> Value {
     // `gh pr view <n>` is deterministic when we already know the
     // number. `gh pr view` WITHOUT a number relies on gh's branch
@@ -1901,8 +1915,7 @@ pub async fn get_pr_status(folder: &Path, pr_number: Option<u64>) -> Value {
     // PR (preferring OPEN > MERGED > CLOSED) and re-fetch its full
     // shape via `gh pr view <number>` so the renderer still gets the
     // same `checks` summary.
-    let field_set = "number,url,state,mergeable,isDraft,baseRefName,headRefName,\
-                     statusCheckRollup,commentsCount";
+    let field_set = PR_VIEW_FIELDS;
     let resolved_number: Option<u64> = match pr_number {
         Some(n) => Some(n),
         None => {
@@ -2020,7 +2033,7 @@ pub async fn get_pr_status(folder: &Path, pr_number: Option<u64>) -> Value {
             "pending": pending,
             "total": rollup.len(),
         },
-        "commentsCount": raw.get("commentsCount").and_then(|v| v.as_i64()).unwrap_or(0),
+        "commentsCount": raw.get("comments").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
     });
     json!({ "ok": true, "pr": pr })
 }
@@ -2489,6 +2502,33 @@ mod tests {
             argv.iter().any(|a| a.contains("isDraft")),
             "keeps the json field set"
         );
+    }
+
+    #[test]
+    fn pr_view_fields_use_valid_gh_field_names() {
+        // Regression: `gh pr view --json …,commentsCount` is rejected by gh with
+        // `Unknown JSON field: "commentsCount"` (commentsCount is a
+        // renderer-OUTPUT name, not a gh field). That made get_pr_status exit
+        // non-zero → ok:false on EVERY poll, pinning the BranchStrip Merge
+        // button on "Loading PR status…" for the gh-CLI auth path (REST was
+        // fine). The gh field is `comments` (an array); the count is derived
+        // from its length in the status mapping.
+        let fields: Vec<&str> = PR_VIEW_FIELDS.split(',').map(str::trim).collect();
+        assert!(
+            fields.contains(&"comments"),
+            "gh pr view needs the `comments` array field (count = .len()); got: {PR_VIEW_FIELDS}"
+        );
+        assert!(
+            !fields.contains(&"commentsCount"),
+            "`commentsCount` is NOT a valid `gh pr view` field — gh exits non-zero on it"
+        );
+        // Fields the status mapping + Merge gate depend on must stay present.
+        for required in ["number", "state", "mergeable", "isDraft", "statusCheckRollup"] {
+            assert!(
+                fields.contains(&required),
+                "missing required gh field `{required}` in {PR_VIEW_FIELDS}"
+            );
+        }
     }
 
     #[tokio::test]
