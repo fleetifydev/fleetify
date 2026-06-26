@@ -106,6 +106,38 @@ describe("useProviderHealth", () => {
     }
   });
 
+  // ollama-cloud is a kind:"api" provider (AuthSpec::Bearer), so it must flow
+  // through the generic API-tile health path exactly like openai / gemini-api —
+  // no Ollama-specific branch. These two tests pin that: the keyed tile reports
+  // `ok` (via the prewarmed /providers/health snapshot → snapToHealth) and
+  // `failed` (via the cold-cache testConnection fan-out).
+  it("ollama-cloud (api tile) resolves to ok from the health snapshot like other api tiles", async () => {
+    providersMock.fetchHealth.mockResolvedValue({
+      ok: true,
+      providers: {
+        "ollama-cloud": { kind: "ok", latency_ms: 88, model_count: 12 },
+      },
+    });
+    const tiles = [apiTile("ollama-cloud", { has_key: true })];
+    const { result } = renderHook(() => useProviderHealth({ tiles }));
+    await waitFor(() => {
+      expect(result.current.providers["ollama-cloud"]).toEqual({ kind: "ok", latencyMs: 88, modelCount: 12 });
+    });
+    expect(providersMock.testConnection).not.toHaveBeenCalled();
+  });
+
+  it("ollama-cloud (api tile) failed test reflects code like other api tiles", async () => {
+    providersMock.testConnection.mockResolvedValueOnce({ ok: false, code: "AUTH", error: "401" });
+    const tiles = [apiTile("ollama-cloud", { has_key: true })];
+    const { result } = renderHook(() => useProviderHealth({ tiles }));
+    await waitFor(() => expect(result.current.providers["ollama-cloud"]?.kind).toBe("failed"));
+    const h = result.current.providers["ollama-cloud"];
+    if (h?.kind === "failed") {
+      expect(h.code).toBe("AUTH");
+      expect(h.message).toBe("401");
+    }
+  });
+
   it("installOllama transitions through running-installer → waiting-daemon → running", async () => {
     const { apiScanProviders } = await import("@/lib/api");
     const installSpy = vi.fn(async () => ({ success: true }));

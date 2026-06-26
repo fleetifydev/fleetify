@@ -1285,6 +1285,68 @@ const CLOUDFLARE_WORKERS_AI_MODELS: &[ModelSpec] = &[
     },
 ];
 
+// Curated FALLBACK for Ollama Cloud. The live list comes from
+// `GET https://ollama.com/api/tags` (see routers::providers::discover_ollama_cloud_models);
+// this only paints the picker before discovery resolves. Bare names — direct
+// cloud API uses the un-suffixed form. Cloud models retire on a schedule, so
+// never treat this as canonical.
+const OLLAMA_CLOUD_MODELS: &[ModelSpec] = &[
+    ModelSpec {
+        id: "gpt-oss:120b",
+        label: "GPT-OSS 120B",
+        context_window: Some("128K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: true,
+    },
+    ModelSpec {
+        id: "gpt-oss:20b",
+        label: "GPT-OSS 20B",
+        context_window: Some("128K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "deepseek-v3.1:671b",
+        label: "DeepSeek V3.1 671B",
+        context_window: Some("128K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "qwen3-coder:480b",
+        label: "Qwen3 Coder 480B",
+        context_window: Some("256K"),
+        note: Some("Coding"),
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "glm-5.1",
+        label: "GLM 5.1",
+        context_window: Some("128K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "kimi-k2.6",
+        label: "Kimi K2.6",
+        context_window: Some("256K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: true,
+    },
+];
+
 // ─── Catalog ─────────────────────────────────────────────────────────────
 
 pub static CATALOG: &[ProviderSpec] = &[
@@ -1525,6 +1587,31 @@ pub static CATALOG: &[ProviderSpec] = &[
             macos: "brew install --cask ollama",
             linux: "curl -fsSL https://ollama.com/install.sh | sh",
         }),
+        login_hint: "",
+    },
+    ProviderSpec {
+        // Ollama Cloud — hosted Ollama at https://ollama.com, same /api/* surface
+        // as a local daemon but auth-gated. Sibling to `ollama` (local), mirroring
+        // the catalog's anthropic/claude-code, kimi-api/kimi access-method split.
+        // Models are listed live via GET /api/tags (see discover_ollama_cloud_models).
+        id: "ollama-cloud",
+        display_name: "Ollama Cloud",
+        kind: ProviderKind::Api,
+        default_base_url: "https://ollama.com",
+        auth: AuthSpec::Bearer {
+            env_hint: Some("OLLAMA_API_KEY"),
+        },
+        default_models: OLLAMA_CLOUD_MODELS,
+        extras: ProviderExtras {
+            dynamic_models: true,
+            supports_streaming: true,
+            citations: false,
+            search_results: false,
+        },
+        bin: "",
+        auth_indicators: &[],
+        install_hint: "",
+        install_hints: None,
         login_hint: "",
     },
     // ── CLI agents ────
@@ -1833,15 +1920,41 @@ mod tests {
             .iter()
             .filter(|p| matches!(p.kind, ProviderKind::Cli))
             .count();
-        // 10 cloud HTTP providers (OpenAI, Anthropic, DeepSeek, Grok, NVIDIA NIM,
-        // Kimi, Gemini API, Perplexity, OpenRouter, Cloudflare Workers AI) + 1
-        // local (ollama) + 10 CLI agents (Claude, Codex, Kimi, OpenCode,
+        // 11 cloud HTTP providers (OpenAI, Anthropic, DeepSeek, Grok, NVIDIA NIM,
+        // Kimi, Gemini API, Perplexity, OpenRouter, Cloudflare Workers AI, Ollama
+        // Cloud) + 1 local (ollama) + 10 CLI agents (Claude, Codex, Kimi, OpenCode,
         // GitHub Copilot, Cursor, Grok Build, Antigravity CLI, Antigravity SDK,
         // Hermes). If you intentionally added/removed a provider, update these
         // constants with the catalog.
-        assert_eq!(api, 10, "expected 10 Api providers, got {api}");
+        assert_eq!(api, 11, "expected 11 Api providers, got {api}");
         assert_eq!(local, 1, "expected 1 LocalHttp provider, got {local}");
         assert_eq!(cli, 10, "expected 10 Cli agents, got {cli}");
+    }
+
+    #[test]
+    fn ollama_cloud_in_catalog_is_api_bearer() {
+        let p = CATALOG
+            .iter()
+            .find(|p| p.id == "ollama-cloud")
+            .expect("ollama-cloud present");
+        assert_eq!(p.display_name, "Ollama Cloud");
+        assert!(matches!(p.kind, ProviderKind::Api));
+        assert!(matches!(
+            p.auth,
+            AuthSpec::Bearer {
+                env_hint: Some("OLLAMA_API_KEY")
+            }
+        ));
+        assert_eq!(p.default_base_url, "https://ollama.com");
+        assert!(p.extras.dynamic_models, "cloud list is fetched live");
+        assert!(p.extras.supports_streaming);
+    }
+
+    #[test]
+    fn ollama_and_cloud_are_distinct_ids() {
+        let ids: Vec<_> = CATALOG.iter().map(|p| p.id).collect();
+        assert!(ids.contains(&"ollama"));
+        assert!(ids.contains(&"ollama-cloud"));
     }
 
     #[test]
@@ -2489,11 +2602,12 @@ mod tests {
         let catalog_ids: Vec<&str> = CATALOG
             .iter()
             .filter(|s| matches!(s.kind, ProviderKind::Api))
-            // OpenRouter is a live aggregator: its real catalog is discovered at
-            // runtime (routers::providers::list_provider_models) and the static
-            // default_models are only a loose pre-discovery fallback — so they're
-            // intentionally exempt from this doc-pinned known-good check.
-            .filter(|s| s.id != "openrouter")
+            // OpenRouter and Ollama Cloud are live aggregators: their real catalogs
+            // are discovered at runtime (routers::providers::list_provider_models /
+            // discover_ollama_cloud_models) and the static default_models are only a
+            // loose pre-discovery fallback — so they're intentionally exempt from this
+            // doc-pinned known-good check.
+            .filter(|s| s.id != "openrouter" && s.id != "ollama-cloud")
             .flat_map(|s| s.default_models.iter().map(|m| m.id))
             .collect();
         for id in catalog_ids {

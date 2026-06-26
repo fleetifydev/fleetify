@@ -61,8 +61,12 @@ describe("ProviderLogo — model-provider brand icons", () => {
     expect(el.getAttribute("src")).toBeTruthy();
   });
 
+  // Ollama Cloud (`ollama-cloud`, the kind:"api" hosted sibling of local
+  // `ollama`) reuses the Ollama brand mark, rendered the same masked-currentColor
+  // way so the tile + picker rail show the llama instead of the generic fallback.
   it.each([
     ["ollama", "Ollama"],
+    ["ollama-cloud", "Ollama"],
   ])("renders %s as a currentColor mask so it adapts to the theme", (tool, label) => {
     const { getByRole } = render(<ProviderLogo tool={tool} size={20} />);
     const el = getByRole("img", { name: label });

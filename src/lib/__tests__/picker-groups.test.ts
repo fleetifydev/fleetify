@@ -459,6 +459,48 @@ describe("buildPickerGroups", () => {
     const claude = groups.find((g) => g.id === "claude-code")!;
     expect(claude.models[0].effort).toEqual({ kind: "levels", levels: ["low", "high"], default: "high" });
   });
+
+  // ── ollama-cloud — the CLOUD sibling of local `ollama` ──────────────
+  // `ollama-cloud` is a kind:"api" provider (auth Bearer / OLLAMA_API_KEY,
+  // base https://ollama.com) carrying a baked fallback model list. It must
+  // surface through the SAME generic HTTP/api path as every other connected
+  // cloud provider — its own group, short brand label, dropped when the tile
+  // is disabled — and stay distinct from the local kind:"local_http" `ollama`.
+  it("surfaces a connected ollama-cloud (api) as its own cloud group with the baked models", () => {
+    const tiles = [
+      baseTile("ollama-cloud", "Ollama Cloud", "api", ["gpt-oss:120b", "gpt-oss:20b", "glm-5.1"]),
+    ];
+    const cloud = buildPickerGroups(tiles, []).find((g) => g.id === "ollama-cloud");
+    expect(cloud).toBeDefined();
+    expect(cloud?.label).toBe("Ollama Cloud"); // BRAND_SHORT curated label
+    expect(cloud?.models.map((m) => m.id)).toEqual(["gpt-oss:120b", "gpt-oss:20b", "glm-5.1"]);
+  });
+
+  it("drops ollama-cloud from the picker when its tile is not connected", () => {
+    const tiles = [
+      baseTile("ollama-cloud", "Ollama Cloud", "api", ["gpt-oss:120b"], {
+        connected: false,
+        has_key: false,
+      }),
+    ];
+    expect(buildPickerGroups(tiles, []).find((g) => g.id === "ollama-cloud")).toBeUndefined();
+  });
+
+  it("keeps local ollama and cloud ollama-cloud as separate, distinctly-labelled groups", () => {
+    const tiles = [
+      baseTile("ollama", "Ollama", "local_http", []), // local: models fetched live via /api/tags
+      baseTile("ollama-cloud", "Ollama Cloud", "api", ["gpt-oss:120b"]),
+    ];
+    // Local ollama's live list arrives via dynamicModels (mirrors how the
+    // composer feeds the discovered /api/tags catalog); cloud uses its baked one.
+    const groups = buildPickerGroups(tiles, [], {
+      ollama: [{ id: "llama3:8b", label: "llama3:8b", supports_effort: false }],
+    });
+    expect(groups.find((g) => g.id === "ollama")?.label).toBe("Ollama");
+    expect(groups.find((g) => g.id === "ollama")?.models.map((m) => m.id)).toEqual(["llama3:8b"]);
+    expect(groups.find((g) => g.id === "ollama-cloud")?.label).toBe("Ollama Cloud");
+    expect(groups.find((g) => g.id === "ollama-cloud")?.models.map((m) => m.id)).toEqual(["gpt-oss:120b"]);
+  });
 });
 
 describe("resolveModelChip", () => {

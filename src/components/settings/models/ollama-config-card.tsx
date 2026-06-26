@@ -18,6 +18,7 @@ import {
 } from "@/lib/providers-api";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { ConnectionStatusPill, type ConnectionStatus } from "@/components/settings/shared/connection-status-pill";
+import { OllamaModelBrowser } from "@/components/settings/models/ollama-model-browser";
 import type { OllamaHealth } from "@/hooks/use-provider-health";
 
 const inputStyle: React.CSSProperties = {
@@ -98,6 +99,15 @@ export function OllamaConfigCard({
   const [probing, setProbing] = useState(false);
   const [probeError, setProbeError] = useState<string | null>(null);
   const [probedModels, setProbedModels] = useState<OllamaModelEntry[]>([]);
+  // Optional API key. Local Ollama needs none; a remote/authenticated rig
+  // (secured LAN box or proxy) may. `keyPreview` is the masked form of any
+  // saved key, fetched on mount.
+  const [keyDraft, setKeyDraft] = useState("");
+  const [keyPreview, setKeyPreview] = useState<string | null>(null);
+  const [savingKey, setSavingKey] = useState(false);
+  // Names Ollama reports as currently loaded (/api/ps) — used to badge them
+  // "Running" in the detected-models grid.
+  const [runningNames, setRunningNames] = useState<Set<string>>(new Set());
 
   // Auto-expand when the daemon comes up so the model grid is visible
   // without a click. Plus auto-expand during install so the progress
@@ -122,9 +132,16 @@ export function OllamaConfigCard({
       setSavedUrl(r.base_url);
       if (r.ok) {
         setProbedModels(r.models);
+        // Also ask which models are loaded right now so we can badge them.
+        // Only `name` is reliable on the ps rows, so match on that.
+        const ps = await providersApi.ollamaPs(r.base_url);
+        setRunningNames(
+          ps.ok ? new Set(ps.models.map((m) => m.name).filter(Boolean)) : new Set(),
+        );
       } else {
         setProbedModels([]);
         setProbeError(`${r.code}${r.error ? ` — ${r.error}` : ""}`);
+        setRunningNames(new Set());
       }
     },
     [],
@@ -136,12 +153,36 @@ export function OllamaConfigCard({
     }
   }, [health.kind, probedModels.length, probing, probeError, probe]);
 
+  // Read any saved (optional) key on mount so we can show a masked preview.
+  useEffect(() => {
+    let cancelled = false;
+    void providersApi.getKeyPreview("ollama").then((r) => {
+      if (!cancelled && r.ok) setKeyPreview(r.preview);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const onSaveUrl = async () => {
     const trimmed = draftUrl.trim();
     if (!trimmed) return;
     await setOllamaBaseUrl(trimmed);
     setDraftUrl("");
     await probe(trimmed);
+  };
+
+  const onSaveKey = async () => {
+    const trimmed = keyDraft.trim();
+    if (!trimmed) return;
+    setSavingKey(true);
+    const r = await providersApi.setKey("ollama", trimmed);
+    setSavingKey(false);
+    if (r.ok) {
+      setKeyDraft("");
+      const p = await providersApi.getKeyPreview("ollama");
+      if (p.ok) setKeyPreview(p.preview);
+    }
   };
 
   const enabled = new Set(tile.enabled_models);
@@ -320,6 +361,42 @@ export function OllamaConfigCard({
             )}
           </div>
 
+          {/* Optional API key — local Ollama usually needs none, but a
+              remote/authenticated rig (secured LAN box or proxy) may. */}
+          <div style={{ padding: "12px 0", borderTop: "1px solid var(--c-brd)" }}>
+            <div style={{ fontSize: 12, fontWeight: 500, color: "var(--c-high)", marginBottom: 6 }}>
+              API key (optional)
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <input
+                type="password"
+                aria-label="API key (optional)"
+                value={keyDraft}
+                placeholder={keyPreview ? "Replace saved key" : "Usually not needed for local Ollama"}
+                onChange={(e) => setKeyDraft(e.target.value)}
+                style={inputStyle}
+              />
+              <button
+                onClick={onSaveKey}
+                aria-label="Save API key"
+                disabled={!keyDraft.trim() || savingKey}
+                style={{ ...primaryBtn, opacity: !keyDraft.trim() || savingKey ? 0.5 : 1 }}
+              >
+                {savingKey ? <Loader2 size={12} className="spin" /> : null} Save
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: "var(--c-dim)", marginTop: 6 }}>
+              {keyPreview ? (
+                <>
+                  Saved: <code>{keyPreview}</code> · only needed for an authenticated remote
+                  Ollama.
+                </>
+              ) : (
+                <>Only needed for an authenticated remote Ollama (secured LAN rig or proxy).</>
+              )}
+            </div>
+          </div>
+
           {health.kind === "running" && probedModels.length > 0 && (
             <div style={{ padding: "12px 0 4px 0", borderTop: "1px solid var(--c-brd)" }}>
               <div style={{ fontSize: 12, fontWeight: 500, color: "var(--c-high)", marginBottom: 8 }}>
@@ -361,6 +438,24 @@ export function OllamaConfigCard({
                       >
                         {m.name}
                       </span>
+                      {runningNames.has(m.name) && (
+                        <span
+                          style={{
+                            fontSize: 9.5,
+                            fontWeight: 600,
+                            color: "rgb(64,180,120)",
+                            background: "rgba(64,180,120,0.14)",
+                            border: "1px solid rgba(64,180,120,0.30)",
+                            borderRadius: 5,
+                            padding: "1px 6px",
+                            letterSpacing: 0.3,
+                            textTransform: "uppercase",
+                            flexShrink: 0,
+                          }}
+                        >
+                          Running
+                        </span>
+                      )}
                       {m.size && (
                         <span style={{ fontSize: 10, color: "var(--c-dim)" }}>
                           {humanBytes(m.size)}
@@ -375,8 +470,19 @@ export function OllamaConfigCard({
 
           {health.kind === "running" && probedModels.length === 0 && !probing && (
             <div style={{ fontSize: 12, color: "var(--c-low)", padding: "8px 0" }}>
-              No models found. Run <code>ollama pull &lt;model&gt;</code> to download one.
+              No models found — download one below.
             </div>
+          )}
+
+          {/* Downloadable-model browser: curated cards + a free-text pull box.
+              `installed` is the probed-model name list; `onChanged` re-probes
+              so a freshly pulled / deleted model shows up in the grid above. */}
+          {health.kind === "running" && (
+            <OllamaModelBrowser
+              baseUrl={savedUrl}
+              installed={probedModels.map((m) => m.name)}
+              onChanged={() => void probe(savedUrl)}
+            />
           )}
         </div>
       )}

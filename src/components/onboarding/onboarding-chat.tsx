@@ -187,6 +187,12 @@ const PROVIDERS: ProviderDef[] = [
   // handles the two-stage flow inline.
   { id: "antigravity-sdk",label: "Antigravity SDK",   logo: "antigravity-cli",    kind: "api", envKey: "gemini", scanKey: "antigravity_sdk", hint: "Python SDK + Gemini key" },
   { id: "ollama",         label: "Ollama",            logo: "ollama", kind: "cli", ollama: true,                              hint: "Local models" },
+  // Ollama Cloud — the hosted sibling of the local daemon above. Pure HTTP
+  // API (kind:"api", Bearer OLLAMA_API_KEY, base https://ollama.com), so it
+  // takes a key inline via KeyEntryRow → providers.setKey (keychain write),
+  // exactly like the other API rows. Reuses the `ollama` brand mark. No
+  // `ollama` flag (that routes to OllamaUrlRow, the local-daemon URL card).
+  { id: "ollama-cloud",   label: "Ollama Cloud",      logo: "ollama", kind: "api",                                            hint: "API key (ollama.com)" },
   { id: "openai",         label: "OpenAI",            logo: "openai", kind: "api", envKey: "openai",                          hint: "API key" },
   // Anthropic API (Claude over the HTTP API — distinct from the Claude
   // Code CLI row above). No env-var probe; key entered inline.
@@ -2551,6 +2557,7 @@ function apiKeyUrl(id: string): string | null {
     case "perplexity": return "https://www.perplexity.ai/account/api/keys";
     case "nvidia-nim": return "https://build.nvidia.com/";
     case "openrouter": return "https://openrouter.ai/keys";
+    case "ollama-cloud": return "https://ollama.com/settings/keys";
     case "cloudflare-workers-ai": return "https://dash.cloudflare.com/?to=/:account/ai/workers-ai";
     default: return null;
   }

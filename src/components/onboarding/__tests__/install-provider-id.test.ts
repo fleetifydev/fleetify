@@ -88,7 +88,7 @@ describe("OnboardingChat install IPC", () => {
     expect(onboardingSrc).not.toMatch(/for\s*\(\s*const\s+p\s+of\s+providers\s*\)/);
   });
 
-  it("lists every backend catalog provider id (full 21) and keeps gemini-api naming", () => {
+  it("lists every backend catalog provider id (full 22) and keeps gemini-api naming", () => {
     // providers.setKey/setDefault reject ids not in `providers::CATALOG`.
     // Onboarding must now offer the FULL catalog so the selection drives
     // the enabled set. Anthropic + Cloudflare + the three new CLIs join
@@ -102,13 +102,15 @@ describe("OnboardingChat install IPC", () => {
     expect(ids).not.toContain("googleai");
     expect(ids).toContain("gemini-api");
 
-    // The full workspace catalog (21 ids — must match providers::CATALOG).
+    // The full workspace catalog (22 ids — must match providers::CATALOG).
+    // ollama-cloud is the hosted sibling of the local `ollama` daemon row
+    // (kind:"api", Bearer key) — see catalog.rs::ollama_cloud_in_catalog_is_api_bearer.
     const catalog = [
       "claude-code", "codex-cli", "kimi-code", "opencode", "github-copilot",
       "cursor-cli", "grok-build", "hermes-agent", "antigravity-cli", "antigravity-sdk",
       "openai", "anthropic", "deepseek", "grok", "nvidia-nim", "kimi-api",
       "gemini-api", "perplexity", "openrouter", "cloudflare-workers-ai",
-      "ollama",
+      "ollama", "ollama-cloud",
     ];
     for (const id of catalog) {
       expect(ids, `expected catalog provider "${id}" in onboarding list`).toContain(id);

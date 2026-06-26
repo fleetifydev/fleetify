@@ -7,7 +7,8 @@ use std::path::PathBuf;
 use tauri::{Emitter, Manager};
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::shell::{
     ai_git, auth, config, feedback, git, github_link, head_watcher, logging, pty, voice,
@@ -2911,15 +2912,11 @@ pub async fn providers_set_key(
 
 #[tauri::command]
 pub async fn providers_get_key_preview(id: String) -> serde_json::Value {
-    // Local-only providers (ollama) never have a keychain entry.
-    if let Some(spec) = fleetify_backend::providers::find_provider(&id) {
-        if matches!(
-            spec.kind,
-            fleetify_backend::providers::ProviderKind::LocalHttp
-        ) {
-            return serde_json::json!({ "ok": true, "preview": null });
-        }
-    } else {
+    // Validate the provider id. Local providers (ollama) may now carry an
+    // optional key (e.g. an authenticated remote rig), so they fall through
+    // to the normal masked-preview path — which still returns null when no
+    // key is stored.
+    if fleetify_backend::providers::find_provider(&id).is_none() {
         return serde_json::json!({ "ok": false, "code": "UNKNOWN_PROVIDER" });
     }
     let Some(uid) = auth::get_user_id().await else {
@@ -3279,7 +3276,11 @@ pub async fn providers_set_default(
 /// expose a models endpoint. Until then, those providers report
 /// NOT_FOUND and the user can still Save without testing.
 #[tauri::command]
-pub async fn providers_test_connection(id: String, key: String) -> serde_json::Value {
+pub async fn providers_test_connection(
+    app: tauri::AppHandle,
+    id: String,
+    key: String,
+) -> serde_json::Value {
     let Some(spec) = fleetify_backend::providers::find_provider(&id) else {
         return serde_json::json!({ "ok": false, "code": "UNKNOWN_PROVIDER", "error": format!("unknown provider {id}") });
     };
@@ -3325,6 +3326,26 @@ pub async fn providers_test_connection(id: String, key: String) -> serde_json::V
     // URL (mirrors providers_health::probe_one).
     let url = if id == "cloudflare-workers-ai" {
         "https://api.cloudflare.com/client/v4/user/tokens/verify".to_string()
+    } else if id == "ollama-cloud" {
+        // Ollama's catalog lives at `/api/tags`, not OpenAI's `/models`
+        // (`https://ollama.com/models` is the HTML site, not an API).
+        // NOTE: ollama.com /api/tags is unauthenticated (lists cloud models
+        // without a key), so this validates reachability, not the key. A wrong
+        // key may still 200. Authenticated key-check (minimal /api/chat) is
+        // gated on Task 16 E2E.
+        //
+        // Honor the configurable `providers.ollama_cloud_base_url` override the
+        // same way dispatch + discovery do. Falls back to the catalog default
+        // (`spec.default_base_url` == `https://ollama.com`) when unset, so this
+        // is a no-op for users who never set one.
+        let base = app
+            .path()
+            .app_data_dir()
+            .ok()
+            .map(|dir| config::providers_from(&config::load_config_from(&dir)))
+            .and_then(|p| p.ollama_cloud_base_url)
+            .unwrap_or_else(|| spec.default_base_url.to_string());
+        format!("{}/api/tags", base.trim_end_matches('/'))
     } else {
         format!("{}/models", spec.default_base_url.trim_end_matches('/'))
     };
@@ -3343,6 +3364,8 @@ pub async fn providers_test_connection(id: String, key: String) -> serde_json::V
                     v.get("data")
                         .and_then(|d| d.as_array())
                         .map(|a| a.len())
+                        // Ollama's /api/tags returns `{models:[...]}` (cloud catalog).
+                        .or_else(|| v.get("models").and_then(|m| m.as_array()).map(|a| a.len()))
                         // Some providers (e.g. Ollama-compat shims) return the bare array.
                         .or_else(|| v.as_array().map(|a| a.len()))
                 });
@@ -3386,6 +3409,11 @@ pub async fn providers_test_connection(id: String, key: String) -> serde_json::V
     outcome
 }
 
+/// Format the optional Ollama bearer header. Shared by the ollama probe/ps/pull/delete commands.
+fn ollama_bearer(key: Option<String>) -> Option<String> {
+    key.map(|k| format!("Bearer {k}"))
+}
+
 /// Probe an Ollama server for the model catalog. `base_url` defaults to
 /// the user's configured value (or `http://localhost:11434`). Returns the
 /// model list verbatim so the renderer can drive checkbox state.
@@ -3414,7 +3442,19 @@ pub async fn providers_ollama_probe(
         }
     };
     let url = format!("{}/api/tags", resolved.trim_end_matches('/'));
-    match client.get(&url).send().await {
+    // Optional saved key — a secured/reverse-proxied daemon needs it; keyless
+    // localhost works unchanged (no user or no saved key ⇒ no header).
+    let key = match auth::get_user_id().await {
+        Some(uid) => crate::shell::providers_link::read_secret("ollama", &uid)
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    let mut req = client.get(&url);
+    if let Some(h) = ollama_bearer(key) {
+        req = req.header("Authorization", h);
+    }
+    match req.send().await {
         Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
             Ok(body) => {
                 let models = body
@@ -3437,6 +3477,358 @@ pub async fn providers_ollama_probe(
         Err(e) => {
             serde_json::json!({ "ok": false, "running": false, "code": "NETWORK", "error": e.to_string(), "base_url": resolved })
         }
+    }
+}
+
+/// Pass through the running-model fields from Ollama's `/api/ps` payload.
+/// Absent keys serialize as JSON `null`, which the renderer tolerates.
+fn ollama_ps_models(body: &serde_json::Value) -> serde_json::Value {
+    let models = body
+        .get("models")
+        .and_then(|m| m.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| {
+            serde_json::json!({
+                "name": m.get("name"),
+                "size": m.get("size"),
+                "size_vram": m.get("size_vram"),
+                "expires_at": m.get("expires_at"),
+                "context_length": m.get("context_length"),
+                "details": m.get("details"),
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!(models)
+}
+
+/// Per-layer accumulator for `/api/pull` NDJSON progress. Ollama streams one
+/// line per layer keyed by `digest`; the percentage is `Σcompleted / Σtotal`
+/// recomputed every line, so the denominator grows as new layers begin. Pure
+/// (no I/O) — Task 9's streaming loop folds each decoded line through `update`.
+#[derive(Default)]
+pub struct OllamaPullProgress {
+    layers: HashMap<String, (u64, u64)>,
+} // digest -> (completed, total)
+
+impl OllamaPullProgress {
+    /// Fold one NDJSON line; returns (completed_total, total_total, percent 0..100).
+    pub fn update(&mut self, line: &serde_json::Value) -> (u64, u64, f64) {
+        if let (Some(d), Some(total)) = (
+            line.get("digest").and_then(|d| d.as_str()),
+            line.get("total").and_then(|t| t.as_u64()),
+        ) {
+            let completed = line.get("completed").and_then(|c| c.as_u64()).unwrap_or(0);
+            self.layers.insert(d.to_string(), (completed, total));
+        }
+        let completed: u64 = self.layers.values().map(|(c, _)| *c).sum();
+        let total: u64 = self.layers.values().map(|(_, t)| *t).sum();
+        let pct = if total > 0 {
+            (completed as f64 / total as f64) * 100.0
+        } else {
+            0.0
+        };
+        (completed, total, pct)
+    }
+    pub fn is_done(line: &serde_json::Value) -> bool {
+        line.get("status").and_then(|s| s.as_str()) == Some("success")
+    }
+    pub fn is_error(line: &serde_json::Value) -> Option<String> {
+        line.get("error").and_then(|e| e.as_str()).map(String::from)
+    }
+}
+
+/// List the models Ollama currently holds in memory via `/api/ps`. Mirrors
+/// `providers_ollama_probe` (same base resolution, optional saved key, 2s
+/// client, error taxonomy) but reads the running set rather than the catalog.
+#[tauri::command]
+pub async fn providers_ollama_ps(
+    app: tauri::AppHandle,
+    base_url: Option<String>,
+) -> serde_json::Value {
+    let resolved = base_url
+        .or_else(|| {
+            app.path()
+                .app_data_dir()
+                .ok()
+                .map(|d| config::providers_from(&config::load_config_from(&d)))
+                .and_then(|p| p.ollama_base_url)
+        })
+        .unwrap_or_else(|| "http://localhost:11434".into());
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return serde_json::json!({ "ok": false, "running": false, "code": "NETWORK", "error": e.to_string(), "base_url": resolved })
+        }
+    };
+    let url = format!("{}/api/ps", resolved.trim_end_matches('/'));
+    // Optional saved key — a secured/reverse-proxied daemon needs it; keyless
+    // localhost works unchanged (no user or no saved key ⇒ no header).
+    let key = match auth::get_user_id().await {
+        Some(uid) => crate::shell::providers_link::read_secret("ollama", &uid)
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    let mut req = client.get(&url);
+    if let Some(h) = ollama_bearer(key) {
+        req = req.header("Authorization", h);
+    }
+    match req.send().await {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(body) => {
+                serde_json::json!({ "ok": true, "running": true, "base_url": resolved, "models": ollama_ps_models(&body) })
+            }
+            Err(e) => {
+                serde_json::json!({ "ok": false, "running": true, "code": "PARSE", "error": e.to_string(), "base_url": resolved })
+            }
+        },
+        Ok(resp) => {
+            serde_json::json!({ "ok": false, "running": false, "code": "NETWORK", "error": format!("HTTP {}", resp.status()), "base_url": resolved })
+        }
+        Err(e) if e.is_timeout() => {
+            serde_json::json!({ "ok": false, "running": false, "code": "TIMEOUT", "error": e.to_string(), "base_url": resolved })
+        }
+        Err(e) => {
+            serde_json::json!({ "ok": false, "running": false, "code": "NETWORK", "error": e.to_string(), "base_url": resolved })
+        }
+    }
+}
+
+/// Drain complete `\n`-terminated JSON lines from `buf`, parsing each; leaves
+/// any trailing partial line in `buf` for the next chunk. Ollama's `/api/pull`
+/// stream is NDJSON and a single TCP chunk can split a line, so the loop must
+/// buffer the remainder rather than drop it.
+fn drain_ndjson(buf: &mut Vec<u8>) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+        let line: Vec<u8> = buf.drain(..=pos).collect();
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&line) {
+            out.push(v);
+        }
+    }
+    out
+}
+
+// Per-model cancel flags for in-flight `/api/pull` streams, keyed by model
+// name. `providers_ollama_pull` registers a fresh flag on entry and removes it
+// on exit; `providers_ollama_pull_cancel` flips it. Mirrors the `GH_AUTH_CHILD`
+// OnceLock<Mutex<…>> global-state slot.
+static OLLAMA_PULL_CANCELS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+fn ollama_pull_cancels() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
+    OLLAMA_PULL_CANCELS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Pull a model from an Ollama server, streaming `/api/pull` NDJSON progress to
+/// the renderer via `ollama-pull-progress` events. Base resolution + the
+/// optional saved bearer mirror `providers_ollama_probe`. A pull runs for
+/// minutes, so the client carries no overall timeout (only a connect cap);
+/// `providers_ollama_pull_cancel` aborts it between chunks (Ollama resumes the
+/// download on a later retry). Terminal state (`success` / `error`) is conveyed
+/// via events — the return value only acknowledges the command landed.
+#[tauri::command]
+pub async fn providers_ollama_pull(
+    app: tauri::AppHandle,
+    model: String,
+    base_url: Option<String>,
+) -> serde_json::Value {
+    let resolved = base_url
+        .or_else(|| {
+            app.path()
+                .app_data_dir()
+                .ok()
+                .map(|d| config::providers_from(&config::load_config_from(&d)))
+                .and_then(|p| p.ollama_base_url)
+        })
+        .unwrap_or_else(|| "http://localhost:11434".into());
+
+    // Register a fresh cancel flag so `providers_ollama_pull_cancel` can abort
+    // this stream the instant the user clicks cancel.
+    let cancel = Arc::new(AtomicBool::new(false));
+    ollama_pull_cancels()
+        .lock()
+        .unwrap()
+        .insert(model.clone(), cancel.clone());
+
+    // Optional saved key — a secured/reverse-proxied daemon needs it; keyless
+    // localhost works unchanged (no user or no saved key ⇒ no header).
+    let key = match auth::get_user_id().await {
+        Some(uid) => crate::shell::providers_link::read_secret("ollama", &uid)
+            .ok()
+            .flatten(),
+        None => None,
+    };
+
+    // No overall timeout — pulls take minutes — but cap the initial connect.
+    let built = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(4))
+        .build();
+    let url = format!("{}/api/pull", resolved.trim_end_matches('/'));
+
+    // A single labeled block so every terminal path lands on one cleanup.
+    'pull: {
+        let client = match built {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = app.emit(
+                    "ollama-pull-progress",
+                    serde_json::json!({ "model": model, "status": "error", "error": e.to_string() }),
+                );
+                break 'pull;
+            }
+        };
+        let mut req = client
+            .post(&url)
+            .json(&serde_json::json!({ "model": model, "stream": true }));
+        if let Some(h) = ollama_bearer(key) {
+            req = req.header("Authorization", h);
+        }
+        let mut resp = match req.send().await {
+            Ok(r) if r.status().is_success() => r,
+            Ok(r) => {
+                let _ = app.emit(
+                    "ollama-pull-progress",
+                    serde_json::json!({ "model": model, "status": "error", "error": format!("HTTP {}", r.status()) }),
+                );
+                break 'pull;
+            }
+            Err(e) => {
+                let _ = app.emit(
+                    "ollama-pull-progress",
+                    serde_json::json!({ "model": model, "status": "error", "error": e.to_string() }),
+                );
+                break 'pull;
+            }
+        };
+
+        // Fold each decoded NDJSON line through the per-layer accumulator,
+        // emitting a progress event per line and a terminal event on
+        // success/error. `drain_ndjson` keeps any partial trailing line.
+        let mut prog = OllamaPullProgress::default();
+        let mut buf: Vec<u8> = Vec::new();
+        loop {
+            // Honor cancellation before blocking on the next chunk read.
+            if cancel.load(Ordering::SeqCst) {
+                break;
+            }
+            match resp.chunk().await {
+                Ok(Some(bytes)) => {
+                    buf.extend_from_slice(&bytes);
+                    for line in drain_ndjson(&mut buf) {
+                        if let Some(msg) = OllamaPullProgress::is_error(&line) {
+                            let _ = app.emit(
+                                "ollama-pull-progress",
+                                serde_json::json!({ "model": model, "status": "error", "error": msg }),
+                            );
+                            break 'pull;
+                        }
+                        // The final `{"status":"success"}` line is terminal:
+                        // emit ONLY the dedicated 100% frame and break. Emitting
+                        // the per-line event too would hand the renderer a second
+                        // terminal event (with stale completed/total), so it
+                        // re-probes twice and never paints the 100% frame.
+                        if OllamaPullProgress::is_done(&line) {
+                            let _ = app.emit(
+                                "ollama-pull-progress",
+                                serde_json::json!({ "model": model, "status": "success", "percent": 100 }),
+                            );
+                            break 'pull;
+                        }
+                        let (completed, total, percent) = prog.update(&line);
+                        let _ = app.emit(
+                            "ollama-pull-progress",
+                            serde_json::json!({
+                                "model": model,
+                                "status": line["status"],
+                                "completed": completed,
+                                "total": total,
+                                "percent": percent,
+                            }),
+                        );
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    let _ = app.emit(
+                        "ollama-pull-progress",
+                        serde_json::json!({ "model": model, "status": "error", "error": e.to_string() }),
+                    );
+                    break;
+                }
+            }
+        }
+    }
+
+    // Single cleanup point for every exit (success, error, cancel, EOF).
+    ollama_pull_cancels().lock().unwrap().remove(&model);
+    serde_json::json!({ "ok": true })
+}
+
+/// Flip the cancel flag for an in-flight `providers_ollama_pull(model)` so its
+/// streaming loop returns between chunks. No-op when no pull is in flight.
+#[tauri::command]
+pub async fn providers_ollama_pull_cancel(model: String) -> serde_json::Value {
+    if let Some(flag) = ollama_pull_cancels().lock().unwrap().get(&model) {
+        flag.store(true, Ordering::SeqCst);
+    }
+    serde_json::json!({ "ok": true })
+}
+
+/// Delete a model from an Ollama server via `DELETE /api/delete`. Base
+/// resolution + the optional saved bearer mirror `providers_ollama_probe`.
+/// Maps the daemon's status into the renderer's `{ ok, code }` taxonomy.
+#[tauri::command]
+pub async fn providers_ollama_delete(
+    app: tauri::AppHandle,
+    model: String,
+    base_url: Option<String>,
+) -> serde_json::Value {
+    let resolved = base_url
+        .or_else(|| {
+            app.path()
+                .app_data_dir()
+                .ok()
+                .map(|d| config::providers_from(&config::load_config_from(&d)))
+                .and_then(|p| p.ollama_base_url)
+        })
+        .unwrap_or_else(|| "http://localhost:11434".into());
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(4))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return serde_json::json!({ "ok": false, "code": "NETWORK", "error": e.to_string() })
+        }
+    };
+    let url = format!("{}/api/delete", resolved.trim_end_matches('/'));
+    let key = match auth::get_user_id().await {
+        Some(uid) => crate::shell::providers_link::read_secret("ollama", &uid)
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    let mut req = client
+        .delete(&url)
+        .json(&serde_json::json!({ "model": model }));
+    if let Some(h) = ollama_bearer(key) {
+        req = req.header("Authorization", h);
+    }
+    match req.send().await {
+        Ok(resp) if resp.status().is_success() => serde_json::json!({ "ok": true }),
+        Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
+            serde_json::json!({ "ok": false, "code": "NOT_FOUND" })
+        }
+        Ok(resp) => {
+            serde_json::json!({ "ok": false, "code": "NETWORK", "error": format!("HTTP {}", resp.status()) })
+        }
+        Err(e) => serde_json::json!({ "ok": false, "code": "NETWORK", "error": e.to_string() }),
     }
 }
 
@@ -3489,6 +3881,30 @@ pub async fn providers_set_ollama_base_url(
 }
 
 #[tauri::command]
+pub async fn providers_set_ollama_cloud_base_url(
+    app: tauri::AppHandle,
+    base_url: String,
+) -> serde_json::Value {
+    let Ok(dir) = app.path().app_data_dir() else {
+        return serde_json::json!({ "ok": false, "error": "no app data dir" });
+    };
+    let mut cfg = config::load_config_from(&dir);
+    let mut providers = config::providers_from(&cfg);
+    let trimmed = base_url.trim().to_string();
+    providers.ollama_cloud_base_url = if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    };
+    config::providers_set(&mut cfg, &providers);
+    if let Err(e) = config::save_config_to(&dir, &cfg) {
+        return serde_json::json!({ "ok": false, "code": "CONFIG", "error": e.to_string() });
+    }
+    crate::shell::providers_setup::reload_backend(&app).await;
+    serde_json::json!({ "ok": true })
+}
+
+#[tauri::command]
 pub async fn providers_set_cloudflare_account_id(
     app: tauri::AppHandle,
     account_id: String,
@@ -3515,6 +3931,67 @@ pub async fn providers_set_cloudflare_account_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ollama_auth_header_only_when_key_present() {
+        assert_eq!(
+            ollama_bearer(Some("k".into())),
+            Some("Bearer k".to_string())
+        );
+        assert_eq!(ollama_bearer(None), None);
+    }
+
+    #[test]
+    fn extracts_ps_running_models() {
+        let body = serde_json::json!({ "models": [
+            { "name": "gemma:8b", "size": 100, "size_vram": 90, "expires_at": "2025-10-17T16:47:07Z", "context_length": 4096 }
+        ]});
+        let v = ollama_ps_models(&body);
+        assert_eq!(v.as_array().unwrap().len(), 1);
+        assert_eq!(v[0]["name"], "gemma:8b");
+        assert_eq!(v[0]["size_vram"], 90);
+    }
+
+    #[test]
+    fn pull_percent_accumulates_per_digest() {
+        let mut p = OllamaPullProgress::default();
+        // layer A: 50% of 200
+        let (_, _, pct) = p.update(&serde_json::json!({"status":"pulling sha-A","digest":"sha-A","total":200,"completed":100}));
+        assert!((pct - 50.0).abs() < 0.01);
+        // layer B appears: denominator grows to 300, completed 100/300
+        let (c, t, pct2) = p.update(&serde_json::json!({"status":"pulling sha-B","digest":"sha-B","total":100,"completed":0}));
+        assert_eq!((c, t), (100, 300));
+        assert!((pct2 - 33.33).abs() < 0.1);
+    }
+
+    #[test]
+    fn pull_handles_missing_completed_and_terminal_lines() {
+        let mut p = OllamaPullProgress::default();
+        p.update(&serde_json::json!({"status":"pulling sha-A","digest":"sha-A","total":200})); // completed absent ⇒ 0
+        let (c, _, _) = p.update(&serde_json::json!({"status":"verifying sha256 digest"})); // no bytes ⇒ unchanged
+        assert_eq!(c, 0);
+        assert!(OllamaPullProgress::is_done(
+            &serde_json::json!({"status":"success"})
+        ));
+        assert_eq!(
+            OllamaPullProgress::is_error(&serde_json::json!({"error":"boom"})),
+            Some("boom".into())
+        );
+    }
+
+    #[test]
+    fn drain_ndjson_buffers_partial_lines() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"{\"status\":\"a\"}\n{\"sta"); // 1 complete + 1 partial
+        let first = drain_ndjson(&mut buf);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0]["status"], "a");
+        buf.extend_from_slice(b"tus\":\"b\"}\n"); // completes the 2nd
+        let second = drain_ndjson(&mut buf);
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0]["status"], "b");
+        assert!(buf.is_empty());
+    }
 
     #[test]
     fn read_directory_lists_dirs_first_then_alpha() {

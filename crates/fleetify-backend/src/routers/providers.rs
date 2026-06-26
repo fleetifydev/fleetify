@@ -571,6 +571,7 @@ async fn discover_provider_models(id: &str) -> ProviderModelList {
         "openrouter" => discover_openrouter_models().await,
         "cloudflare-workers-ai" => discover_cloudflare_models().await,
         "grok" => discover_grok_models().await,
+        "ollama-cloud" => discover_ollama_cloud_models().await,
         _ => Vec::new(),
     };
     if !live.is_empty() {
@@ -898,6 +899,58 @@ fn parse_grok_models(body: &Value) -> ProviderModelList {
                 .map(humanize_context);
             let label = id.clone();
             Some(ProviderModel::basic(id, label, ctx))
+        })
+        .collect();
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
+}
+
+/// Fetch Ollama Cloud's model list (`GET {base}/api/tags`). The list is open
+/// (no key required), but we attach the stored key when present so a future
+/// auth-gated list still works. Network / parse failures degrade to an empty
+/// list, so the picker falls back to the curated catalog entries.
+async fn discover_ollama_cloud_models() -> ProviderModelList {
+    // Resolve the cloud base the same way dispatch does
+    // (`chat::ollama_cloud_base_url_from_cfg`) so a configured
+    // `providers.ollama_cloud_base_url` override is honored here too. With no
+    // override this still yields `https://ollama.com` (the catalog default), so
+    // it's a no-op for users who never set one.
+    let base = crate::routers::chat::ollama_cloud_base_url_from_cfg();
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let url = format!("{}/api/tags", base.trim_end_matches('/'));
+    let mut req = client.get(&url);
+    if let Some(key) = crate::providers::keys::get_key("ollama-cloud") {
+        req = req.bearer_auth(key);
+    }
+    let body: Value = match req.send().await {
+        Ok(r) if r.status().is_success() => match r.json().await {
+            Ok(v) => v,
+            Err(_) => return Vec::new(),
+        },
+        _ => return Vec::new(),
+    };
+    parse_ollama_tags_models(&body)
+}
+
+/// Pure parser for Ollama's `GET /api/tags` payload — testable without HTTP.
+/// Maps `models: [{ name, ... }]` to the picker shape (each entry's `name` is
+/// both id and label), sorted by id for a stable rail order. Unlike OpenAI's
+/// `/v1/models`, Ollama returns `models`, not `data`.
+fn parse_ollama_tags_models(body: &Value) -> ProviderModelList {
+    let Some(arr) = body.get("models").and_then(|m| m.as_array()) else {
+        return Vec::new();
+    };
+    let mut out: ProviderModelList = arr
+        .iter()
+        .filter_map(|m| {
+            let name = m.get("name").and_then(|n| n.as_str())?.to_string();
+            Some(ProviderModel::basic(name.clone(), name, None))
         })
         .collect();
     out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -1557,7 +1610,13 @@ async fn check_ollama(base_url: Option<&str>) -> Value {
         Ok(c) => c,
         Err(_) => return json!({ "running": false, "models": [], "base_url": base }),
     };
-    let resp = match client.get(&url).send().await {
+    // Optional saved key for a secured/reverse-proxied daemon; keyless
+    // localhost works unchanged (no cached key ⇒ no header).
+    let mut req = client.get(&url);
+    if let Some(k) = crate::providers::keys::get_key("ollama") {
+        req = req.header("Authorization", format!("Bearer {k}"));
+    }
+    let resp = match req.send().await {
         Ok(r) => r,
         Err(_) => return json!({ "running": false, "models": [], "base_url": base }),
     };
@@ -2341,6 +2400,23 @@ mod tests {
         assert_eq!(out[0].ctx.as_deref(), Some("1M"));
         assert_eq!(out[1].id, "grok-build-0.1");
         assert_eq!(out[1].ctx.as_deref(), Some("256K"));
+    }
+
+    #[test]
+    fn parses_ollama_tags_into_models() {
+        let body = serde_json::json!({ "models": [
+            { "name": "gpt-oss:120b", "model": "gpt-oss:120b", "size": 1, "details": { "parameter_size": "120B" } },
+            { "name": "qwen3-coder:480b", "model": "qwen3-coder:480b", "size": 2 }
+        ]});
+        let models = parse_ollama_tags_models(&body);
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "gpt-oss:120b");
+        assert_eq!(models[0].label, "gpt-oss:120b");
+    }
+
+    #[test]
+    fn parses_ollama_tags_empty_to_empty() {
+        assert!(parse_ollama_tags_models(&serde_json::json!({})).is_empty());
     }
 
     #[test]

@@ -236,6 +236,9 @@ const BRAND_SHORT: Record<string, string> = {
   perplexity: "Perplexity",
   openrouter: "OpenRouter",
   ollama: "Ollama",
+  // Cloud sibling of local `ollama` — curated rail label so it stays distinct
+  // ("Ollama Cloud") from the local tile rather than depending on display_name.
+  "ollama-cloud": "Ollama Cloud",
 };
 
 /** Brand splits applied to Perplexity Agent API marketplace ids.

@@ -1,11 +1,12 @@
 /**
- * Visual-state tests for OllamaConfigCard. The card now derives all of
- * its presence-detection state from the `health` prop owned by
- * useProviderHealth in the parent (Settings → Models). These tests
- * pin the 5 health-kind branches plus the Install / Cancel callbacks.
+ * Visual-state tests for OllamaConfigCard. The card derives its
+ * presence-detection state from the `health` prop owned by
+ * useProviderHealth in the parent (Settings → Models). These tests pin
+ * the health-kind branches and the Install / Cancel callbacks, plus the
+ * optional API-key field and the per-model "Running" badge.
  */
-import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { OllamaConfigCard } from "../ollama-config-card";
 import type { ProviderTile } from "@/lib/providers-api";
 import type { OllamaHealth } from "@/hooks/use-provider-health";
@@ -17,22 +18,43 @@ vi.mock("@/hooks/use-providers-config", () => ({
   }),
 }));
 
+const apiMock = vi.hoisted(() => ({
+  ollamaProbe: vi.fn(),
+  ollamaPs: vi.fn(),
+  getKeyPreview: vi.fn(),
+  setKey: vi.fn(),
+}));
+
 vi.mock("@/lib/providers-api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/providers-api")>(
     "@/lib/providers-api",
   );
   return {
     ...actual,
-    providers: {
-      ...actual.providers,
-      ollamaProbe: vi.fn(async () => ({
-        ok: false as const,
-        running: false,
-        base_url: "",
-        code: "NETWORK" as const,
-      })),
-    },
+    providers: { ...actual.providers, ...apiMock },
   };
+});
+
+beforeEach(() => {
+  apiMock.ollamaProbe.mockReset();
+  apiMock.ollamaPs.mockReset();
+  apiMock.getKeyPreview.mockReset();
+  apiMock.setKey.mockReset();
+  // Safe defaults: daemon unreachable, nothing running, no stored key.
+  apiMock.ollamaProbe.mockResolvedValue({
+    ok: false,
+    running: false,
+    base_url: "",
+    code: "NETWORK",
+  });
+  apiMock.ollamaPs.mockResolvedValue({
+    ok: false,
+    running: false,
+    base_url: "",
+    code: "NETWORK",
+  });
+  apiMock.getKeyPreview.mockResolvedValue({ ok: true, preview: null });
+  apiMock.setKey.mockResolvedValue({ ok: true });
 });
 
 function tile(): ProviderTile {
@@ -171,5 +193,84 @@ describe("OllamaConfigCard health-driven states", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /Cancel/i }));
     expect(onCancelInstall).toHaveBeenCalled();
+  });
+});
+
+describe("OllamaConfigCard optional key + running badge", () => {
+  it("shows an optional API key field and reads any saved preview on mount", async () => {
+    const health: OllamaHealth = { kind: "running", models: [] };
+    render(
+      <OllamaConfigCard
+        tile={tile()}
+        health={health}
+        onInstall={() => {}}
+        onCancelInstall={() => {}}
+      />,
+    );
+    expect(await screen.findByLabelText("API key (optional)")).toBeInTheDocument();
+    expect(apiMock.getKeyPreview).toHaveBeenCalledWith("ollama");
+  });
+
+  it("displays a masked preview when a key is already stored", async () => {
+    apiMock.getKeyPreview.mockResolvedValue({ ok: true, preview: "sk-•••N5kJ" });
+    const health: OllamaHealth = { kind: "running", models: [] };
+    render(
+      <OllamaConfigCard
+        tile={tile()}
+        health={health}
+        onInstall={() => {}}
+        onCancelInstall={() => {}}
+      />,
+    );
+    expect(await screen.findByText(/sk-•••N5kJ/)).toBeInTheDocument();
+  });
+
+  it("saving the optional key calls providers.setKey('ollama', value)", async () => {
+    const health: OllamaHealth = { kind: "running", models: [] };
+    render(
+      <OllamaConfigCard
+        tile={tile()}
+        health={health}
+        onInstall={() => {}}
+        onCancelInstall={() => {}}
+      />,
+    );
+    const input = await screen.findByLabelText("API key (optional)");
+    fireEvent.change(input, { target: { value: "secret-token-123" } });
+    fireEvent.click(screen.getByRole("button", { name: /save api key/i }));
+    await waitFor(() =>
+      expect(apiMock.setKey).toHaveBeenCalledWith("ollama", "secret-token-123"),
+    );
+  });
+
+  it("badges a model that appears in /api/ps as Running", async () => {
+    apiMock.ollamaProbe.mockResolvedValue({
+      ok: true,
+      running: true,
+      base_url: "http://localhost:11434",
+      models: [{ name: "llama3" }, { name: "qwen2" }],
+    });
+    apiMock.ollamaPs.mockResolvedValue({
+      ok: true,
+      running: true,
+      base_url: "http://localhost:11434",
+      models: [{ name: "llama3" }],
+    });
+    const health: OllamaHealth = { kind: "running", models: ["llama3", "qwen2"] };
+    render(
+      <OllamaConfigCard
+        tile={tile()}
+        health={health}
+        onInstall={() => {}}
+        onCancelInstall={() => {}}
+      />,
+    );
+    // Wait for probe → ps to resolve and the badge to render.
+    expect(await screen.findByText("Running")).toBeInTheDocument();
+    expect(screen.getAllByText("Running")).toHaveLength(1);
+    expect(screen.getByText("llama3").closest("label")).toHaveTextContent("Running");
+    expect(
+      screen.getByText("qwen2").closest("label"),
+    ).not.toHaveTextContent("Running");
   });
 });

@@ -48,6 +48,27 @@ fn cloudflare_base_url() -> Option<String> {
         .map(|id| cloudflare_base_url_for_account(&id))
 }
 
+/// Resolve the Ollama Cloud base URL: fleet.config.json
+/// `providers.ollama_cloud_base_url`, else the documented default.
+///
+/// `pub(crate)` so discovery (`routers::providers`) resolves the cloud base the
+/// same way dispatch does, rather than hard-reading the catalog default.
+pub(crate) fn ollama_cloud_base_url_from_cfg() -> String {
+    std::env::var("FLEETIFY_HOME")
+        .ok()
+        .and_then(|home| {
+            std::fs::read_to_string(std::path::PathBuf::from(home).join("fleet.config.json")).ok()
+        })
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|cfg| {
+            cfg.get("providers")
+                .and_then(|p| p.get("ollama_cloud_base_url"))
+                .and_then(|u| u.as_str())
+                .map(String::from)
+        })
+        .unwrap_or_else(|| "https://ollama.com".to_string())
+}
+
 #[derive(Deserialize)]
 struct TokenQ {
     #[serde(default)]
@@ -1341,6 +1362,7 @@ async fn run_send_flow(
         | "kimi-api"
         | "gemini-api"
         | "ollama"
+        | "ollama-cloud"
         | "openrouter"
         | "cloudflare-workers-ai" => {
             let pid = session.tool.as_str();
@@ -1395,7 +1417,7 @@ async fn run_send_flow(
             // context). Result: every HTTP session gets workspace context
             // and read tools from day one; the user opts up to writes /
             // shell via the Perms chip as needed.
-            let agentic_mode = if pid == "ollama" {
+            let agentic_mode = if pid == "ollama" || pid == "ollama-cloud" {
                 None
             } else {
                 Some(match session.permission_mode.as_str() {
@@ -1540,6 +1562,10 @@ async fn run_send_flow(
                             return;
                         }
                     }
+                }
+                if pid == "ollama-cloud" {
+                    // TODO(ollama-cloud): dispatch goes to {base}/v1/chat/completions (local parity). Cloud /v1 is undocumented — if it 404s with a real key, add a native /api/chat sender. Verified in Task 16 E2E.
+                    b.base_url = ollama_cloud_base_url_from_cfg();
                 }
                 AnyBridge::OpenAICompat(Arc::new(b))
             }
@@ -3115,6 +3141,7 @@ async fn run_dispatched_task(
         | "kimi-api"
         | "gemini-api"
         | "ollama"
+        | "ollama-cloud"
         | "openrouter"
         | "cloudflare-workers-ai" => {
             let pid = target.tool.as_str();
@@ -3142,6 +3169,9 @@ async fn run_dispatched_task(
                         return;
                     }
                 }
+            }
+            if pid == "ollama-cloud" {
+                b.base_url = ollama_cloud_base_url_from_cfg();
             }
             AnyBridge::OpenAICompat(std::sync::Arc::new(b))
         }
@@ -4101,6 +4131,15 @@ mod tests {
         insert_minimal_session(&pool, "tgt-empty", "Frontend Agent").await;
         let block = inject_agent_context(&pool, "tgt-empty", 5).await;
         assert_eq!(block, "[No messages found for agent tgt-empty]");
+    }
+
+    #[test]
+    fn cloud_base_url_defaults_to_ollama_com() {
+        // With no override in env/config, the helper returns the documented host.
+        assert_eq!(
+            super::ollama_cloud_base_url_from_cfg(),
+            "https://ollama.com"
+        );
     }
 }
 

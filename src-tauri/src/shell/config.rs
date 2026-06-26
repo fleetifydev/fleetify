@@ -125,6 +125,11 @@ pub struct ProvidersConfig {
     /// the OS keychain), so it round-trips in `fleet.config.json`.
     #[serde(default)]
     pub cloudflare_account_id: Option<String>,
+    /// Ollama Cloud base URL. `None` ⇒ falls back to `https://ollama.com`.
+    /// Editable for forward-compat / self-hosted gateways. Not a secret (the
+    /// key lives in the OS keychain), so it round-trips in fleet.config.json.
+    #[serde(default)]
+    pub ollama_cloud_base_url: Option<String>,
 }
 
 /// Read the `"providers"` section from a config Value. Defaults when
@@ -293,6 +298,19 @@ mod tests {
         assert!(p.enabled_models.is_empty());
         assert!(p.ollama_base_url.is_none());
         assert!(p.enabled_agents.is_empty());
+    }
+
+    #[test]
+    fn providers_config_round_trips_cloud_base_url() {
+        let json =
+            serde_json::json!({ "providers": { "ollama_cloud_base_url": "https://ollama.com" } });
+        let p = providers_from(&json);
+        assert_eq!(
+            p.ollama_cloud_base_url.as_deref(),
+            Some("https://ollama.com")
+        );
+        let def = ProvidersConfig::default();
+        assert!(def.ollama_cloud_base_url.is_none());
     }
 
     #[test]

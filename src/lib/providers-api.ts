@@ -174,6 +174,35 @@ export type ProvidersOllamaProbeResult =
       error?: string;
     };
 
+/** One running model row from Ollama's `/api/ps`. */
+export interface OllamaPsEntry {
+  name: string;
+  size?: number;
+  size_vram?: number;
+  expires_at?: string;
+  context_length?: number;
+  details?: Record<string, unknown>;
+}
+
+/** Streamed `ollama-pull-progress` event payload. `error` rides the
+ *  terminal error line; the terminal success arrives as a status update. */
+export interface OllamaPullEvent {
+  model: string;
+  status: string;
+  completed?: number;
+  total?: number;
+  percent?: number;
+  error?: string;
+}
+
+export type ProvidersOllamaPsResult =
+  | { ok: true; running: true; base_url: string; models: OllamaPsEntry[] }
+  | { ok: false; running: boolean; base_url: string; code: string; error?: string };
+
+export type ProvidersOllamaDeleteResult =
+  | { ok: true }
+  | { ok: false; code: "NOT_FOUND" | "NETWORK"; error?: string };
+
 export type ProvidersMutationResult = { ok: boolean; error?: string };
 
 export type CloudflareVerifyResult = {
@@ -222,6 +251,12 @@ interface ProvidersAPI {
   ) => Promise<ProvidersMutationResult>;
   testConnection: (id: string, key: string) => Promise<ProvidersTestResult>;
   ollamaProbe: (baseUrl?: string | null) => Promise<ProvidersOllamaProbeResult>;
+  ollamaPs: (baseUrl?: string | null) => Promise<ProvidersOllamaPsResult>;
+  ollamaPull: (model: string, baseUrl?: string | null) => Promise<{ ok: boolean; error?: string }>;
+  ollamaPullCancel: (model: string) => Promise<{ ok: boolean }>;
+  ollamaDelete: (model: string, baseUrl?: string | null) => Promise<ProvidersOllamaDeleteResult>;
+  setOllamaCloudBaseUrl: (baseUrl: string) => Promise<ProvidersMutationResult>;
+  onOllamaPullProgress: (cb: (e: OllamaPullEvent) => void) => () => void;
   setEnabledModels: (id: string, models: string[]) => Promise<ProvidersMutationResult>;
   setOllamaBaseUrl: (baseUrl: string) => Promise<ProvidersMutationResult>;
   setCloudflareAccountId: (accountId: string) => Promise<ProvidersMutationResult>;
@@ -267,6 +302,18 @@ function api(): ProvidersAPI {
         code: "NETWORK",
         error: "electron unavailable",
       }),
+      ollamaPs: async () => ({
+        ok: false,
+        running: false,
+        base_url: "",
+        code: "NETWORK",
+        error: "electron unavailable",
+      }),
+      ollamaPull: async () => ({ ok: false, error: "electron unavailable" }),
+      ollamaPullCancel: async () => ({ ok: false }),
+      ollamaDelete: async () => ({ ok: false, code: "NETWORK", error: "electron unavailable" }),
+      setOllamaCloudBaseUrl: async () => ({ ok: false, error: "electron unavailable" }),
+      onOllamaPullProgress: () => () => {},
       setEnabledModels: async () => ({ ok: false, error: "electron unavailable" }),
       setOllamaBaseUrl: async () => ({ ok: false, error: "electron unavailable" }),
       setCloudflareAccountId: async () => ({ ok: false, error: "electron unavailable" }),
@@ -394,6 +441,12 @@ export const providers = {
     api().setConnectedBulk(connected, enabledAgents ?? null),
   testConnection: (id: string, key: string) => api().testConnection(id, key),
   ollamaProbe: (baseUrl?: string | null) => api().ollamaProbe(baseUrl ?? null),
+  ollamaPs: (baseUrl?: string | null) => api().ollamaPs(baseUrl ?? null),
+  ollamaPull: (model: string, baseUrl?: string | null) => api().ollamaPull(model, baseUrl ?? null),
+  ollamaPullCancel: (model: string) => api().ollamaPullCancel(model),
+  ollamaDelete: (model: string, baseUrl?: string | null) => api().ollamaDelete(model, baseUrl ?? null),
+  setOllamaCloudBaseUrl: (baseUrl: string) => api().setOllamaCloudBaseUrl(baseUrl),
+  onOllamaPullProgress: (cb: (e: OllamaPullEvent) => void) => api().onOllamaPullProgress(cb),
   setEnabledModels: (id: string, models: string[]) => api().setEnabledModels(id, models),
   setOllamaBaseUrl: (baseUrl: string) => api().setOllamaBaseUrl(baseUrl),
   setCloudflareAccountId: (accountId: string) => api().setCloudflareAccountId(accountId),

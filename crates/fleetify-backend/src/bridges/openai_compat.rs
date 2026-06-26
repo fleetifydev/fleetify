@@ -60,6 +60,10 @@ pub struct OpenAICompatBridge {
     pub system_prompt: Option<String>,
     pub base_url: String,
     pub api_key: Option<String>,
+    /// When false (AuthSpec::None — local Ollama), a missing key is NOT fatal:
+    /// dispatch proceeds with no Authorization header. When true (Bearer/ApiKey),
+    /// a missing key surfaces the "No API key" error as before.
+    pub key_required: bool,
     state: Arc<Mutex<OpenAICompatState>>,
     aborted: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -79,6 +83,10 @@ impl OpenAICompatBridge {
         };
         let api_key = crate::providers::keys::get_key_for(spec.id, account_id)
             .or_else(|| env_hint.and_then(|n| std::env::var(n).ok()));
+        let key_required = matches!(
+            spec.auth,
+            crate::providers::AuthSpec::Bearer { .. } | crate::providers::AuthSpec::ApiKey { .. }
+        );
         Self {
             provider_id: spec.id,
             session_id: session_id.into(),
@@ -86,6 +94,7 @@ impl OpenAICompatBridge {
             system_prompt: None,
             base_url: spec.default_base_url.to_string(),
             api_key,
+            key_required,
             state: Arc::new(Mutex::new(OpenAICompatState::default())),
             aborted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
@@ -106,7 +115,8 @@ impl OpenAICompatBridge {
         let (tx, rx) = mpsc::channel::<BridgeEvent>(256);
 
         let provider_id = self.provider_id;
-        let Some(api_key) = self.api_key.clone() else {
+        let api_key = self.api_key.clone();
+        if api_key.is_none() && self.key_required {
             let _ = tx
                 .send(BridgeEvent::Error {
                     error: format!(
@@ -120,7 +130,7 @@ impl OpenAICompatBridge {
                 })
                 .await;
             return Ok(rx);
-        };
+        }
 
         let sid = self.session_id.clone();
         let model = ctx
@@ -183,10 +193,10 @@ impl OpenAICompatBridge {
                 "stream": true,
                 "stream_options": {"include_usage": true},
             });
-            let mut req = reqwest::Client::new()
-                .post(&url)
-                .bearer_auth(&api_key)
-                .json(&body);
+            let mut req = reqwest::Client::new().post(&url).json(&body);
+            if let Some(k) = &api_key {
+                req = req.bearer_auth(k);
+            }
             // App-attribution (OpenRouter rankings); no-op for other providers.
             for (k, v) in attribution_headers(provider_id) {
                 req = req.header(*k, *v);
@@ -362,6 +372,19 @@ fn parse_sse_event(block: &str, assistant_text: &mut String, usage: &mut Value) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_required_follows_auth_spec() {
+        // Local Ollama: AuthSpec::None ⇒ key optional.
+        let ollama = crate::providers::find_provider("ollama").unwrap();
+        let b = OpenAICompatBridge::from_spec(ollama, "sid", "llama3.2", None);
+        assert!(!b.key_required, "local ollama must NOT require a key");
+
+        // OpenAI: AuthSpec::Bearer ⇒ key required.
+        let openai = crate::providers::find_provider("openai").unwrap();
+        let b2 = OpenAICompatBridge::from_spec(openai, "sid", "gpt-5", None);
+        assert!(b2.key_required, "cloud Api providers require a key");
+    }
 
     #[test]
     fn openrouter_carries_app_attribution_headers() {

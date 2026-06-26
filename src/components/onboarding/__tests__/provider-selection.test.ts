@@ -25,4 +25,19 @@ describe("buildSelectionPersist", () => {
     const { enabledAgents } = buildSelectionPersist(all, ["openai", "ollama"], cliAgentIds);
     expect(enabledAgents).toEqual([]);
   });
+
+  it("keeps ollama-cloud connected when selected, independent of the local ollama row", () => {
+    // ollama-cloud is the hosted API sibling of the local `ollama` daemon.
+    // Selecting one must not drag the other along, and the cloud row — being
+    // kind:"api", not a CLI agent — never lands in enabledAgents.
+    const withCloud = [...all, "ollama-cloud"];
+    const cloudOnly = buildSelectionPersist(withCloud, ["ollama-cloud"], cliAgentIds);
+    expect(cloudOnly.connected["ollama-cloud"]).toBe(true);
+    expect(cloudOnly.connected.ollama).toBe(false);
+    expect(cloudOnly.enabledAgents).toEqual([]);
+
+    const localOnly = buildSelectionPersist(withCloud, ["ollama"], cliAgentIds);
+    expect(localOnly.connected["ollama-cloud"]).toBe(false);
+    expect(localOnly.connected.ollama).toBe(true);
+  });
 });

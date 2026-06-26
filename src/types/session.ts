@@ -32,6 +32,7 @@ export type AgentTool =
   | "perplexity"
   | "openrouter"
   | "ollama"
+  | "ollama-cloud"
   | "kimi-code";
 
 export interface Session {

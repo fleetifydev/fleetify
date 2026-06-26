@@ -311,6 +311,26 @@ document.addEventListener("mousedown", function (e) {
             baseUrl: baseUrl == null ? null : String(baseUrl),
           });
         },
+        ollamaPs:         function (baseUrl) {
+          return invoke("providers_ollama_ps", {
+            baseUrl: baseUrl == null ? null : String(baseUrl),
+          });
+        },
+        ollamaPull:       function (model, baseUrl) { return invoke("providers_ollama_pull", { model: String(model || ""), baseUrl: baseUrl == null ? null : String(baseUrl) }); },
+        ollamaPullCancel: function (model) { return invoke("providers_ollama_pull_cancel", { model: String(model || "") }); },
+        ollamaDelete:     function (model, baseUrl) { return invoke("providers_ollama_delete", { model: String(model || ""), baseUrl: baseUrl == null ? null : String(baseUrl) }); },
+        // Subscribe to /api/pull streamed progress. Mirrors `onChanged` below:
+        // ev() guard, try/catch around the callback, returns an unlisten fn.
+        onOllamaPullProgress: function (cb) {
+          var unsub = null;
+          var e = ev();
+          if (e) {
+            e.listen("ollama-pull-progress", function (m) {
+              try { cb(m && m.payload); } catch (_) {}
+            }).then(function (u) { unsub = u; });
+          }
+          return function () { try { unsub && unsub(); } catch (_) {} };
+        },
         setEnabledModels: function (id, models) {
           return invoke("providers_set_enabled_models", {
             id: String(id || ""),
@@ -319,6 +339,9 @@ document.addEventListener("mousedown", function (e) {
         },
         setOllamaBaseUrl: function (baseUrl) {
           return invoke("providers_set_ollama_base_url", { baseUrl: String(baseUrl || "") });
+        },
+        setOllamaCloudBaseUrl: function (baseUrl) {
+          return invoke("providers_set_ollama_cloud_base_url", { baseUrl: String(baseUrl || "") });
         },
         setCloudflareAccountId: function (accountId) { return invoke("providers_set_cloudflare_account_id", { accountId: String(accountId || "") }); },
         // Fires when any providers_* mutation lands. Renderer's
