@@ -14,7 +14,7 @@
     "macOSPrivateApi": true,
     "windows": [],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' http: https: ws: wss:; media-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'"
     }
   },
   "plugins": {
@@ -24,7 +24,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis", "app", "dmg", "deb", "rpm", "appimage"],
     "externalBin": [
       "binaries/fleet-memory-mcp",
       "binaries/fleet-dispatch-mcp",
@@ -44,7 +44,11 @@
     "shortDescription": "Local agent fleet for Claude, Codex, Gemini.",
     "longDescription": "Fleetify is a desktop control plane for Claude, Codex, and Gemini agent sessions — Fleet, the in-app orchestrator, dispatches work to many agents on real projects in parallel, watches progress live, and ships PRs through the same workflow you already use on the command line.",
     "windows": {
-      "wix": { "language": "en-US" }
+      "wix": { "language": "en-US" },
+      "nsis": {
+        "compression": "lzma",
+        "installMode": "currentUser"
+      }
     },
     "macOS": {
       "minimumSystemVersion": "11.0"
