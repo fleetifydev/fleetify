@@ -911,23 +911,38 @@ describe("BranchStrip — post-PR lifecycle", () => {
     expect(screen.getByRole("button", { name: /Open · #42/i })).toBeEnabled();
   });
 
-  it("OPEN PR with PENDING checks: Merge ENABLED — gh --auto queues it; label flips to 'Merge (auto)'", async () => {
+  it("OPEN PR BLOCKED by pending required checks: Merge DISABLED + CI ring shown", async () => {
     usePrStore.setState({ prs: [openRepoPr] });
     prListMock.mockResolvedValue({ ok: true, prs: [openRepoPr] });
     gitContextMock.mockResolvedValue({
       branch: "fleet/x-a1b2c3d4", baseBranch: "main",
       plus: 5, minus: 2, remoteHttpsUrl: "https://github.com/u/r",
     });
+    // GitHub reports BLOCKED while required checks are still running → the gate
+    // makes Merge honestly un-clickable (no fabricated "(auto)": `merge_pr`
+    // never queued an auto-merge, so that click used to just fail).
     prStatusMock.mockResolvedValue({
       ok: true,
-      pr: { ...openPr, mergeable: "MERGEABLE",
-        checks: { passing: 0, failing: 0, pending: 2, total: 2 } },
+      pr: {
+        ...openPr,
+        mergeable: "MERGEABLE",
+        mergeStateStatus: "BLOCKED",
+        checks: {
+          passing: 0, failing: 0, pending: 2, total: 2,
+          runs: [{ name: "build", status: "IN_PROGRESS", conclusion: null, bucket: "pending", url: null }],
+        },
+      },
     });
     const { BranchStrip } = await loadBranchStrip();
     render(<BranchStrip projectPath="/repo" />);
-    const merge = await screen.findByRole("button", { name: /Merge \(auto\)/i });
-    expect(merge).toBeEnabled();
-    expect(merge).toHaveAttribute("title", expect.stringMatching(/auto-merge queued/i));
+    // The CI ring only renders once the status poll lands (checks.total > 0),
+    // so awaiting it also waits for `det` to be populated (past "Loading…").
+    expect(await screen.findByTestId("pr-checks-ring")).toBeTruthy();
+    const merge = screen.getByRole("button", { name: /^Merge/i });
+    await waitFor(() => {
+      expect(merge).toBeDisabled();
+      expect(merge).toHaveAttribute("title", expect.stringMatching(/waiting on 2 checks/i));
+    });
   });
 
   it("MERGED PR: surfaces 'Open · #N' + 'Sync main' instead of just the merged indicator", async () => {

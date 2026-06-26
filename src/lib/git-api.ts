@@ -47,15 +47,33 @@ type DiagnosisResult =
   | { ok: false; error: string };
 type ApplyRecoveryResult = { ok: true; output: string } | { ok: false; error: string };
 
+/** One CI check (GitHub Actions check-run or legacy status context), normalized
+ *  by the backend for the CI ring + details popover. */
+export type CheckRun = {
+  name: string;
+  /** Raw gh/REST status (QUEUED | IN_PROGRESS | COMPLETED | …) — display only. */
+  status: string;
+  /** SUCCESS | FAILURE | NEUTRAL | … | null while still running. */
+  conclusion: string | null;
+  /** Normalized bucket driving the icon + ring colour + counts. */
+  bucket: "passing" | "failing" | "pending";
+  /** Link to the check's page on GitHub, when available. */
+  url: string | null;
+};
 export type PRStatus = {
   number: number;
   url: string;
   state: "OPEN" | "CLOSED" | "MERGED" | string;
   mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN" | string;
+  /** GitHub's branch-protection-aware merge state. Absent on older backends /
+   *  mocks → the merge gate falls back to `mergeable` + check counts. */
+  mergeStateStatus?:
+    | "CLEAN" | "BLOCKED" | "BEHIND" | "DIRTY" | "DRAFT" | "UNSTABLE" | "HAS_HOOKS" | "UNKNOWN"
+    | string;
   isDraft: boolean;
   baseRefName: string;
   headRefName: string;
-  checks: { passing: number; failing: number; pending: number; total: number };
+  checks: { passing: number; failing: number; pending: number; total: number; runs?: CheckRun[] };
   commentsCount: number;
 };
 type PRStatusResult  = { ok: true; pr: PRStatus | null } | { ok: false; code?: string; error: string };

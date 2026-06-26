@@ -22,6 +22,9 @@ import { AuthChoicePopover } from "@/components/git/auth-choice-popover";
 import { BranchPickerMenu } from "@/components/git/branch-picker-menu";
 import { RecoveryDialog } from "@/components/git/recovery-dialog";
 import { PreflightDialog } from "@/components/git/preflight-dialog";
+import { resolveMergeGate } from "@/components/git/merge-gate";
+import { PrChecksIndicator } from "@/components/git/pr-checks-indicator";
+import { PrChecksPopover } from "@/components/git/pr-checks-popover";
 import type { PreflightIssue } from "@/lib/git-api";
 import { git, type PRStatus, defaultPRTitle, defaultPRBody } from "@/lib/git-api";
 import { github } from "@/lib/github-link-api";
@@ -1116,6 +1119,9 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // Skipped entirely in worktree mode: the strip is locked to the working
   // branch's own PR there, so there is no foreign selection to detail-poll.
   const [foreignPr, setForeignPr] = useState<PRStatus | null>(null);
+  // Whether the CI-checks details popover (anchored on the merge cluster's
+  // status ring) is open. Reads the selected PR's `checks.runs` live.
+  const [checksOpen, setChecksOpen] = useState(false);
   useEffect(() => {
     if (!folder || isWorktree || effectiveSelectedNumber == null || selectedIsBranchPr) {
       setForeignPr(null);
@@ -1981,21 +1987,43 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
       // do it once they pass.
       const det = selectedPr;
       const checksFailing = det ? det.checks.failing > 0 : false;
-      const checksPending = det ? det.checks.pending > 0 && det.checks.failing === 0 : false;
-      const canMerge = !!det && det.mergeable !== "CONFLICTING" && !checksFailing;
+      // resolveMergeGate folds GitHub's branch-protection-aware mergeStateStatus
+      // into the button's enabled state: on a protected branch with required
+      // checks pending/failing it returns canMerge=false, so Merge is honestly
+      // un-clickable. (No fabricated "(auto)" — `merge_pr` never passed `--auto`,
+      // so that click used to just fail against a protected branch.)
+      const gate = resolveMergeGate(det);
+      const canMerge = gate.canMerge;
       // A CONFLICTING PR (but not a failing-checks one — the agent can't
       // fix red CI from here) becomes an agent-resolve action instead of
       // a dead disabled button, when a session is wired to resolve it.
       const canResolve = !!det && det.mergeable === "CONFLICTING" && !checksFailing
         && !!onResolveConflicts && !!folder;
-      const mergeTitle = !det ? "Loading PR status…"
-        : !canMerge
-          ? (checksFailing ? `${det.checks.failing} check${det.checks.failing > 1 ? "s" : ""} failing`
-            : det.mergeable === "CONFLICTING" ? "Has merge conflicts — resolve on GitHub or rebase locally"
-            : "Merge unavailable")
-          : det.isDraft ? `Mark #${det.number} ready for review and squash + merge into ${det.baseRefName}`
-          : checksPending ? `Auto-merge queued — will squash + merge once ${det.checks.pending} check${det.checks.pending > 1 ? "s" : ""} pass`
-          : `Squash + merge #${det.number} into ${det.baseRefName}`;
+      const mergeTitle = gate.reason;
+      // CI status ring + click-through details popover — only when the PR
+      // actually has checks (repos without CI keep the strip clean).
+      const checksRing = det && det.checks.total > 0 ? (
+        <span style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
+          <PrChecksIndicator
+            checks={det.checks}
+            open={checksOpen}
+            onClick={() => setChecksOpen(o => !o)}
+          />
+          {checksOpen ? (
+            <PrChecksPopover
+              runs={det.checks.runs ?? []}
+              summary={det.checks}
+              blockedReason={!canMerge && gate.kind !== "draft" ? gate.reason : null}
+              onOpenCheck={(url) => {
+                (window as unknown as { electronAPI?: { openExternal?: (u: string) => Promise<unknown> } })
+                  .electronAPI?.openExternal?.(url);
+                setChecksOpen(false);
+              }}
+              onDismiss={() => setChecksOpen(false)}
+            />
+          ) : null}
+        </span>
+      ) : null;
       foreignCluster = (
         <>
           <ActionBtn onClick={onOpenSelected} title={`Open #${effSelectedRepoPr.number} on GitHub`}>
@@ -2006,6 +2034,7 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
               #N is dropped here — the status pill on the left already shows
               it, so repeating it on the right was redundant noise. */}
           <span aria-hidden style={{ opacity: 0.4 }}>·</span>
+          {checksRing}
           {canResolve ? (
             <ActionBtn onClick={onResolveAndMerge} primary accent="purple"
               disabled={!!resolving}
@@ -2018,7 +2047,7 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
             <ActionBtn onClick={onMerge} primary accent="purple" disabled={!canMerge || merging} title={mergeTitle}>
               {merging
                 ? <>Merging… <Loader2 size={11} style={{ animation: "spin 1.2s linear infinite" }} /></>
-                : <>Merge{checksPending ? " (auto)" : ""} <GitMerge size={11} /></>}
+                : <>Merge <GitMerge size={11} /></>}
             </ActionBtn>
           )}
         </>

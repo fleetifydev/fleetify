@@ -687,30 +687,32 @@ pub fn map_pr_status(pull: &Value, checks: &Value) -> Value {
         Some(Value::Bool(false)) => "CONFLICTING",
         _ => "UNKNOWN",
     };
+    // REST `mergeable_state` (clean/blocked/behind/dirty/unstable/draft/…) is
+    // GitHub's branch-protection-aware merge state — upper-cased to match the
+    // gh path's `mergeStateStatus`, so the renderer's Merge gate behaves
+    // identically across the OAuth/REST and gh-CLI auth backends.
+    let merge_state = pull
+        .get("mergeable_state")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_uppercase());
+    // REST `/commits/{sha}/check-runs` shares the renderer `checks` shape via
+    // the SAME normalizer the gh path uses (counts + per-check runs[]).
     let runs = checks
         .get("check_runs")
         .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let (mut passing, mut failing, mut pending) = (0i64, 0i64, 0i64);
-    for r in &runs {
-        match r.get("conclusion").and_then(|v| v.as_str()) {
-            Some("success") => passing += 1,
-            Some("failure") | Some("timed_out") | Some("cancelled") | Some("startup_failure") => {
-                failing += 1
-            }
-            _ => pending += 1,
-        }
-    }
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+    let checks_obj = super::git::normalize_check_runs(runs);
     json!({
         "number": pull.get("number").cloned().unwrap_or(Value::Null),
         "url": pull.get("html_url").cloned().unwrap_or(Value::Null),
         "state": pull.get("state").and_then(|v| v.as_str()).map(|s| s.to_uppercase()).unwrap_or_default(),
         "mergeable": mergeable,
+        "mergeStateStatus": merge_state,
         "isDraft": pull.get("draft").cloned().unwrap_or(Value::Bool(false)),
         "baseRefName": pull.get("base").and_then(|b| b.get("ref")).cloned().unwrap_or(Value::Null),
         "headRefName": pull.get("head").and_then(|h| h.get("ref")).cloned().unwrap_or(Value::Null),
-        "checks": { "passing": passing, "failing": failing, "pending": pending, "total": runs.len() as i64 },
+        "checks": checks_obj,
         "commentsCount": pull.get("comments").cloned().unwrap_or(json!(0)),
     })
 }

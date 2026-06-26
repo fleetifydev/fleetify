@@ -1897,8 +1897,80 @@ pub async fn list_prs(folder: &Path, limit: u32) -> Value {
 /// was unaffected). The count is derived from `comments.len()` in the mapping
 /// below. Keep this in sync with `map_pr_status` (REST) which sources the count
 /// from the pull object's numeric `comments`.
-const PR_VIEW_FIELDS: &str = "number,url,state,mergeable,isDraft,baseRefName,headRefName,\
+const PR_VIEW_FIELDS: &str = "number,url,state,mergeable,mergeStateStatus,isDraft,baseRefName,headRefName,\
                               statusCheckRollup,comments";
+
+/// Normalize a checks array — gh's `statusCheckRollup` OR REST's `check_runs` —
+/// into the renderer's `checks` object: aggregate counts plus a per-check
+/// `runs[]` (`{name,status,conclusion,bucket,url}`) that drives the CI ring +
+/// details popover. One pass handles three item shapes:
+///   • gh CheckRun      — name / status / conclusion / detailsUrl
+///   • gh StatusContext  — context / state / targetUrl  (`__typename == "StatusContext"`)
+///   • REST check_run   — name / status / conclusion / html_url
+/// `bucket` ∈ {passing, failing, pending} is the icon/ring-color driver and the
+/// source of the counts (so the ring + popover never disagree).
+pub(crate) fn normalize_check_runs(items: &[Value]) -> Value {
+    let (mut passing, mut failing, mut pending) = (0u32, 0u32, 0u32);
+    let mut runs = Vec::with_capacity(items.len());
+    for c in items {
+        let is_status_ctx =
+            c.get("__typename").and_then(|v| v.as_str()) == Some("StatusContext");
+        let name = c
+            .get("name")
+            .and_then(|v| v.as_str())
+            .or_else(|| c.get("context").and_then(|v| v.as_str()))
+            .unwrap_or("check")
+            .to_string();
+        let url = c
+            .get("detailsUrl")
+            .and_then(|v| v.as_str())
+            .or_else(|| c.get("targetUrl").and_then(|v| v.as_str()))
+            .or_else(|| c.get("html_url").and_then(|v| v.as_str()))
+            .map(str::to_string);
+        let (bucket, status, conclusion): (&str, String, Option<String>) = if is_status_ctx {
+            let state = c.get("state").and_then(|v| v.as_str()).unwrap_or("").to_uppercase();
+            let bucket = match state.as_str() {
+                "SUCCESS" => "passing",
+                "FAILURE" | "ERROR" => "failing",
+                _ => "pending", // PENDING / EXPECTED
+            };
+            (bucket, "COMPLETED".to_string(), Some(state))
+        } else {
+            let status = c.get("status").and_then(|v| v.as_str()).unwrap_or("").to_uppercase();
+            let concl = c.get("conclusion").and_then(|v| v.as_str()).map(|s| s.to_uppercase());
+            // Bucket by conclusion: it is only set once a run completes, so its
+            // presence means "done" regardless of the `status` string (gh sends
+            // status+conclusion; the renderer/tests may send conclusion alone).
+            // No conclusion yet ⇒ still pending (queued / in_progress).
+            let bucket = match concl.as_deref() {
+                Some("SUCCESS") | Some("NEUTRAL") | Some("SKIPPED") => "passing",
+                Some("FAILURE") | Some("TIMED_OUT") | Some("CANCELLED")
+                | Some("STARTUP_FAILURE") | Some("ACTION_REQUIRED") => "failing",
+                _ => "pending",
+            };
+            (bucket, status, concl)
+        };
+        match bucket {
+            "passing" => passing += 1,
+            "failing" => failing += 1,
+            _ => pending += 1,
+        }
+        runs.push(json!({
+            "name": name,
+            "status": status,
+            "conclusion": conclusion,
+            "bucket": bucket,
+            "url": url,
+        }));
+    }
+    json!({
+        "passing": passing,
+        "failing": failing,
+        "pending": pending,
+        "total": items.len(),
+        "runs": runs,
+    })
+}
 
 pub async fn get_pr_status(folder: &Path, pr_number: Option<u64>) -> Value {
     // `gh pr view <n>` is deterministic when we already know the
@@ -1986,53 +2058,27 @@ pub async fn get_pr_status(folder: &Path, pr_number: Option<u64>) -> Value {
         return json!({ "ok": false, "error": "missing pr.number" });
     };
 
-    // Aggregate statusCheckRollup → counters. Mirrors summarizePR in
-    // frontend/electron/main.cjs:1690 so the renderer's Merge gate
-    // (`pr.checks.failing > 0`, `pr.checks.pending > 0`) keeps working.
-    let mut passing = 0u32;
-    let mut failing = 0u32;
-    let mut pending = 0u32;
+    // statusCheckRollup → counts + per-check runs[] (CI ring + popover).
+    // mergeStateStatus carries GitHub's branch-protection-aware merge state
+    // (BLOCKED/BEHIND/CLEAN/UNSTABLE/…) so the Merge gate reflects TRUE
+    // mergeability, not just our own check counts.
     let rollup: &[Value] = raw
         .get("statusCheckRollup")
         .and_then(|v| v.as_array())
         .map(|v| v.as_slice())
         .unwrap_or(&[]);
-    for c in rollup {
-        let status = c
-            .get("status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_uppercase();
-        let concl = c
-            .get("conclusion")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_uppercase();
-        if status == "COMPLETED" {
-            match concl.as_str() {
-                "SUCCESS" => passing += 1,
-                "FAILURE" | "TIMED_OUT" | "CANCELLED" => failing += 1,
-                _ => pending += 1, // skipped / neutral / action_required
-            }
-        } else {
-            pending += 1; // queued / in_progress
-        }
-    }
+    let checks = normalize_check_runs(rollup);
 
     let pr = json!({
         "number": number,
         "url": raw.get("url"),
         "state": raw.get("state"),
         "mergeable": raw.get("mergeable"),
+        "mergeStateStatus": raw.get("mergeStateStatus"),
         "isDraft": raw.get("isDraft").and_then(|v| v.as_bool()).unwrap_or(false),
         "baseRefName": raw.get("baseRefName"),
         "headRefName": raw.get("headRefName"),
-        "checks": {
-            "passing": passing,
-            "failing": failing,
-            "pending": pending,
-            "total": rollup.len(),
-        },
+        "checks": checks,
         "commentsCount": raw.get("comments").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
     });
     json!({ "ok": true, "pr": pr })
@@ -2523,12 +2569,59 @@ mod tests {
             "`commentsCount` is NOT a valid `gh pr view` field — gh exits non-zero on it"
         );
         // Fields the status mapping + Merge gate depend on must stay present.
-        for required in ["number", "state", "mergeable", "isDraft", "statusCheckRollup"] {
+        // `mergeStateStatus` drives the branch-protection-aware merge gate.
+        for required in [
+            "number",
+            "state",
+            "mergeable",
+            "mergeStateStatus",
+            "isDraft",
+            "statusCheckRollup",
+        ] {
             assert!(
                 fields.contains(&required),
                 "missing required gh field `{required}` in {PR_VIEW_FIELDS}"
             );
         }
+    }
+
+    #[test]
+    fn normalize_check_runs_buckets_all_shapes() {
+        let items = vec![
+            // gh CheckRun — success → passing
+            json!({ "__typename": "CheckRun", "name": "build", "status": "COMPLETED",
+                    "conclusion": "SUCCESS", "detailsUrl": "https://gh/build" }),
+            // gh CheckRun — failure → failing
+            json!({ "__typename": "CheckRun", "name": "lint", "status": "COMPLETED",
+                    "conclusion": "FAILURE", "detailsUrl": "https://gh/lint" }),
+            // gh CheckRun — still running → pending
+            json!({ "__typename": "CheckRun", "name": "test", "status": "IN_PROGRESS",
+                    "conclusion": null, "detailsUrl": "https://gh/test" }),
+            // gh StatusContext — legacy status, pending state
+            json!({ "__typename": "StatusContext", "context": "ci/legacy",
+                    "state": "PENDING", "targetUrl": "https://gh/legacy" }),
+            // REST check_run shape — html_url + lowercase, neutral → passing
+            json!({ "name": "codeql", "status": "completed", "conclusion": "neutral",
+                    "html_url": "https://gh/codeql" }),
+        ];
+        let c = normalize_check_runs(&items);
+        assert_eq!(c["passing"], 2, "success + neutral");
+        assert_eq!(c["failing"], 1, "failure");
+        assert_eq!(c["pending"], 2, "in_progress + legacy pending");
+        assert_eq!(c["total"], 5);
+        let runs = c["runs"].as_array().unwrap();
+        assert_eq!(runs.len(), 5);
+        // StatusContext maps context→name, state→conclusion, targetUrl→url.
+        assert_eq!(runs[3]["name"], "ci/legacy");
+        assert_eq!(runs[3]["bucket"], "pending");
+        assert_eq!(runs[3]["url"], "https://gh/legacy");
+        // REST html_url is picked up as the run url; bucket from conclusion.
+        assert_eq!(runs[4]["url"], "https://gh/codeql");
+        assert_eq!(runs[4]["bucket"], "passing");
+        // Empty input → zeroed counts, empty runs (no checks / no CI).
+        let empty = normalize_check_runs(&[]);
+        assert_eq!(empty["total"], 0);
+        assert_eq!(empty["runs"].as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]
