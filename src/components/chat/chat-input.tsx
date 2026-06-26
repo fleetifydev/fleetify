@@ -15,7 +15,7 @@ import { registerConfigPatch } from "@/lib/session-config-sync";
 import { useDiscoveredModelsStore } from "@/stores/discovered-models-store";
 import { effortLabel } from "@/lib/effort";
 import { useFleetStore } from "@/stores/fleet-store";
-import { FleetModeRow } from "./fleet-mode-row";
+import { FleetModeChip } from "./fleet-mode-chip";
 import { wsManager } from "@/services/ws-manager";
 import { FileMentionPopup } from "./file-mention-popup";
 import { BranchStrip, computeBranchName } from "@/components/git/branch-strip";
@@ -920,7 +920,7 @@ export interface AgentMention {
   kind?: "agent" | "folder";
 }
 
-// fleetModeMeta is now exported from ./fleet-mode-meta (shared with FleetModeRow)
+// fleetModeMeta is now exported from ./fleet-mode-meta (shared with FleetModeChip)
 
 interface ChatInputProps {
   onSend: (msg: string, attachments?: Attachment[]) => void;
@@ -1269,7 +1269,7 @@ export function ChatInput({
   const fleetMode = useFleetStore(s => sessionId ? s.getSession(sessionId).mode : "manual");
   const fleetPaused = useFleetStore(s => sessionId ? s.getSession(sessionId).status === "paused" : false);
   const recordCost = useFleetStore(s => s.recordCost);
-  // Fleet hub-only global mode is now read inside FleetModeRow — not needed here.
+  // Fleet hub-only global mode is now read inside FleetModeChip — not needed here.
   // sandbox and toolOverridesRaw are now passed as props from chat-view
   // (which reads them from activeSession, covering both real sessions and
   // the composer's synthetic draft session). Using props means drafts
@@ -3591,7 +3591,14 @@ export function ChatInput({
                   );
                 })()}
               </>
-            ) : null /* Fleet mode row now lives below the composer box (FleetModeRow) */}
+            ) : null}
+
+            {/* Fleet mode chip — hub only. Sits left of the model chip so
+                Fleet mode + model read as one status cluster. Opens an
+                upward dropdown (Manual / Refine only / Co-pilot / Auto). */}
+            {controlCenter ? (
+              <FleetModeChip sessionId={sessionId ?? null} controlCenter={!!controlCenter} />
+            ) : null}
 
             {/* Model chip — moved left so model identity anchors the left
                 status cluster alongside permissions/fleet, matching the
@@ -3686,11 +3693,6 @@ export function ChatInput({
           </div>
         </div>
       </div>
-
-      {/* ── Fleet mode row — sits directly below the composer box,
-          visible on both the Fleet hub (controlCenter) and agent
-          sessions. Hub → setGlobalMode; session → setMode(id, m). */}
-      <FleetModeRow sessionId={sessionId ?? null} controlCenter={!!controlCenter} />
       </div>
     </div>
   );

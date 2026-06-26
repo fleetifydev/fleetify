@@ -152,13 +152,22 @@ export function PrSwitcherChip({ openPrs, selectedNumber, selectedStatus, onSele
               <span style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, color: "var(--c-fg)", flexShrink: 0 }}>
                 #{p.number}
               </span>
-              {p.isDraft && (
+              {p.isDraft ? (
                 <span style={{
                   fontSize: 9.5, fontWeight: 600, letterSpacing: "0.04em",
                   padding: "1px 5px", borderRadius: 999, flexShrink: 0,
                   background: "rgba(var(--fg-rgb), 0.07)", color: "var(--c-low)",
                   textTransform: "uppercase",
                 }}>draft</span>
+              ) : (
+                // Open (non-draft) PRs get an "Open" badge too, mirroring the
+                // draft badge but in the live-open green.
+                <span style={{
+                  fontSize: 9.5, fontWeight: 600, letterSpacing: "0.04em",
+                  padding: "1px 5px", borderRadius: 999, flexShrink: 0,
+                  background: "rgba(64,180,120,0.13)", color: "rgb(64,180,120)",
+                  textTransform: "uppercase",
+                }}>open</span>
               )}
               <span style={{
                 flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis",
