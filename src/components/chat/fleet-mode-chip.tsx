@@ -1,8 +1,9 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef } from "react";
 import { ChevronDown, Check } from "lucide-react";
 import { useFleetStore, type FleetMode } from "@/stores/fleet-store";
 import { LogoMark } from "@/components/brand/logo-mark";
 import { fleetModeMeta } from "./fleet-mode-meta";
+import { ComposerDropMenu } from "./composer-drop-menu";
 
 const MODES: FleetMode[] = ["manual", "refine-only", "copilot", "auto"];
 
@@ -24,7 +25,7 @@ export function FleetModeChip({
   controlCenter: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
 
   const globalMode = useFleetStore(s => s.globalMode);
   const setGlobalMode = useFleetStore(s => s.setGlobalMode);
@@ -36,22 +37,6 @@ export function FleetModeChip({
   const active = controlCenter ? globalMode : sessionMode;
   const activeMeta = fleetModeMeta(active);
 
-  // Close on outside click / Escape — mirrors the toolbar's other
-  // self-contained popovers (MoreActionsMenu / AttachMenu).
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
   const pick = (m: FleetMode) => {
     if (controlCenter) setGlobalMode(m);
     else if (sessionId) setMode(sessionId, m);
@@ -59,12 +44,13 @@ export function FleetModeChip({
   };
 
   return (
-    <div ref={wrapRef} style={{ position: "relative", flexShrink: 0 }}>
+    <div style={{ position: "relative", flexShrink: 0 }}>
       {/* Trigger — same chip face as ModelChip (leading glyph + label +
           chevron) so the two sit side by side as one status cluster. The
           label takes the active mode's colour (Manual stays calm/neutral
           since it means "Fleet off"). */}
       <button
+        ref={btnRef}
         data-testid="fleet-mode-trigger"
         aria-label={`Fleet mode: ${activeMeta.label}`}
         title="Fleet mode"
@@ -98,23 +84,23 @@ export function FleetModeChip({
         />
       </button>
 
-      {open && (
-        <div
-          role="listbox"
-          aria-label="Fleet mode"
-          style={{
-            position: "absolute", bottom: "calc(100% + 6px)", left: 0,
-            minWidth: 234,
-            background: "var(--popover, #161616)",
-            border: "1px solid var(--c-brd)",
-            borderRadius: 8,
-            padding: 3,
-            boxShadow: "0 -8px 28px rgba(0,0,0,0.42)",
-            zIndex: 60,
-            fontFamily: "var(--font-sans)",
-            animation: "fleet-popover-up 0.14s ease-out both",
-          }}
-        >
+      <ComposerDropMenu
+        anchorRef={btnRef}
+        open={open}
+        onClose={() => setOpen(false)}
+        role="listbox"
+        ariaLabel="Fleet mode"
+        style={{
+          minWidth: 234,
+          background: "var(--popover, #161616)",
+          border: "1px solid var(--c-brd)",
+          borderRadius: 8,
+          padding: 3,
+          boxShadow: "0 -8px 28px rgba(0,0,0,0.42)",
+          fontFamily: "var(--font-sans)",
+          animation: "fleet-popover-up 0.14s ease-out both",
+        }}
+      >
           {/* Section label — same hairline-quiet header the other toolbar
               popovers use, with the Fleet glyph for identity. */}
           <div style={{
@@ -177,8 +163,7 @@ export function FleetModeChip({
               </button>
             );
           })}
-        </div>
-      )}
+      </ComposerDropMenu>
     </div>
   );
 }

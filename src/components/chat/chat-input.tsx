@@ -35,6 +35,7 @@ import { decideModeCommand } from "@/lib/permission-modes";
 import type { PermMode } from "@/lib/providers-api";
 import { ToolMatrixEditor } from "./tool-matrix-editor";
 import { SandboxControl } from "./sandbox-control";
+import { ComposerDropMenu } from "./composer-drop-menu";
 import { PromptsPicker } from "./prompts-picker";
 import { HelpDialog } from "./help-dialog";
 import { listPrompts, resolvePromptArg } from "@/lib/prompts-api";
@@ -774,21 +775,9 @@ function PermissionModePicker({
   onPick: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+  // Dismiss + positioning live in ComposerDropMenu — the menu is portaled out
+  // of the input card so it can't be clipped. We only hold the trigger ref.
+  const btnRef = useRef<HTMLButtonElement>(null);
 
   if (modes.length === 0) return null;
 
@@ -799,8 +788,9 @@ function PermissionModePicker({
   const shortLabel = fullLabel.split(/\s+/)[0] ?? fullLabel;
 
   return (
-    <div ref={wrapRef} style={{ position: "relative", flexShrink: 0 }}>
+    <div style={{ position: "relative", flexShrink: 0 }}>
       <button
+        ref={btnRef}
         onClick={() => setOpen(o => !o)}
         onMouseDown={e => e.preventDefault()}
         title={`Permission mode: ${fullLabel}`}
@@ -834,19 +824,21 @@ function PermissionModePicker({
         {shortLabel}
         <ChevronDown size={11} strokeWidth={2} style={{ color: "var(--c-ghost)", flexShrink: 0 }} />
       </button>
-      {open && (
-        <div style={{
-          position: "absolute", bottom: "calc(100% + 6px)", left: 0,
+      <ComposerDropMenu
+        anchorRef={btnRef}
+        open={open}
+        onClose={() => setOpen(false)}
+        style={{
           minWidth: 194,
           background: "var(--popover, #161616)",
           border: "1px solid var(--c-brd, rgba(255,255,255,0.08))",
           borderRadius: 7,
           padding: 3,
           boxShadow: "0 -8px 28px rgba(0,0,0,0.42)",
-          zIndex: 60,
           fontFamily: "var(--font-sans)",
           animation: "fleet-popover-up 0.14s ease-out both",
-        }}>
+        }}
+      >
           <div style={{
             display: "flex", alignItems: "center", justifyContent: "space-between",
             padding: "3px 8px 3px",
@@ -899,8 +891,7 @@ function PermissionModePicker({
               </button>
             );
           })}
-        </div>
-      )}
+      </ComposerDropMenu>
     </div>
   );
 }
@@ -2418,7 +2409,7 @@ export function ChatInput({
 
   return (
     <div style={{ flexShrink: 0, padding: "0 16px 16px" }} ref={wrapperRef}>
-      <div data-tour="chat-input" style={{ maxWidth: 900, margin: "0 auto", position: "relative" }}>
+      <div data-tour="chat-input" data-composer-surface="" style={{ maxWidth: 900, margin: "0 auto", position: "relative" }}>
 
         {/* @ mention popup — file search */}
         {mentionOpen && projectPath && (

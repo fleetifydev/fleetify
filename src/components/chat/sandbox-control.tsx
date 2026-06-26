@@ -1,5 +1,6 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef } from "react";
 import { Check } from "lucide-react";
+import { ComposerDropMenu } from "./composer-drop-menu";
 
 const SANDBOX_LABELS: Record<string, string> = {
   "read-only": "Read-only",
@@ -113,31 +114,16 @@ function SandboxSelect({
   onChange: (v: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+  // ComposerDropMenu owns dismiss + positioning (portaled past the input card's
+  // overflow clip); we only hold the trigger ref.
+  const btnRef = useRef<HTMLButtonElement>(null);
 
   const trigger = friendlyLabel(value);
 
   return (
-    <div ref={wrapRef} style={{ position: "relative", flexShrink: 0 }}>
+    <div style={{ position: "relative", flexShrink: 0 }}>
       <button
+        ref={btnRef}
         onClick={() => setOpen((o) => !o)}
         onMouseDown={(e) => e.preventDefault()}
         title={`Sandbox: ${trigger}`}
@@ -163,21 +149,21 @@ function SandboxSelect({
       >
         Sandbox: {trigger}
       </button>
-      {open && (
-        <div
-          style={{
-            position: "absolute", bottom: "calc(100% + 6px)", left: 0,
-            minWidth: 200,
-            background: "var(--popover, #161616)",
-            border: "1px solid var(--c-brd, rgba(255,255,255,0.08))",
-            borderRadius: 8,
-            padding: 4,
-            boxShadow: "0 -8px 28px rgba(0,0,0,0.42)",
-            zIndex: 60,
-            fontFamily: "var(--font-sans)",
-            animation: "fleet-popover-up 0.14s ease-out both",
-          }}
-        >
+      <ComposerDropMenu
+        anchorRef={btnRef}
+        open={open}
+        onClose={() => setOpen(false)}
+        style={{
+          minWidth: 200,
+          background: "var(--popover, #161616)",
+          border: "1px solid var(--c-brd, rgba(255,255,255,0.08))",
+          borderRadius: 8,
+          padding: 4,
+          boxShadow: "0 -8px 28px rgba(0,0,0,0.42)",
+          fontFamily: "var(--font-sans)",
+          animation: "fleet-popover-up 0.14s ease-out both",
+        }}
+      >
           <div
             style={{
               padding: "5px 9px 4px",
@@ -226,8 +212,7 @@ function SandboxSelect({
               </button>
             );
           })}
-        </div>
-      )}
+      </ComposerDropMenu>
     </div>
   );
 }
