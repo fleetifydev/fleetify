@@ -2,6 +2,10 @@
 **/target
 node_modules
 dist
+
+# Single lockfile policy: the project standardizes on npm (package-lock.json).
+# A stray pnpm-lock.yaml only invites dual-lockfile drift.
+pnpm-lock.yaml
 .DS_Store
 *.log
 fleet.db

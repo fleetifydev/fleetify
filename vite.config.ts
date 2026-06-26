@@ -24,6 +24,14 @@ export default defineConfig({
     // unminified source to anyone who pokes at devtools. Keep them off
     // for prod; vite dev still emits them automatically.
     sourcemap: false,
+    // The only renderer is WebView2 (Chromium/Edge) on Windows + recent
+    // WKWebView on macOS — both ship modern ES. Skip legacy down-levelling
+    // so output stays smaller and parses faster on low-end machines.
+    target: "chrome105",
+    // Don't gzip every emitted chunk just to print a size report; it adds
+    // build time and the real numbers come from the visualizer / brotli at
+    // ship time.
+    reportCompressedSize: false,
     rollupOptions: {
       output: {
         // Split heavy / rarely-changing vendor code into dedicated
@@ -47,6 +55,12 @@ export default defineConfig({
           // before the markdown chunk finishes parsing on first paint.
           if (id.match(/node_modules\/(react-markdown|remark-.*|rehype-.*|micromark.*|mdast-.*|hast-.*|unified|unist-.*|vfile.*|bail|trough|decode-named-character-reference|character-entities.*|trim-lines|space-separated-tokens|comma-separated-tokens|property-information|html-url-attributes|zwitch|html-void-elements|ccount|escape-string-regexp|markdown-table|longest-streak|stringify-entities)\//)) {
             return "vendor-markdown";
+          }
+          // KaTeX math rendering — large JS + (lazily fetched) font
+          // payload. Only chat messages containing math touch it; isolate
+          // it so it never sits in the entry or vendor-markdown chunk.
+          if (id.match(/node_modules\/(katex|rehype-katex|remark-math|mdast-util-math|micromark-extension-math|hast-util-to-text)\//)) {
+            return "vendor-katex";
           }
           // Icon set — lucide-react re-exports ~1k SVGs. Tree-shaking
           // generally works but the icons we DO use still add up.
