@@ -19,7 +19,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 const MAX_BODY: usize = 2_000_000; // 2 MB ceiling on fetched body bytes
 const FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let mut stdin = BufReader::new(tokio::io::stdin());
     let mut stdout = tokio::io::stdout();

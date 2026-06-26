@@ -34,11 +34,23 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 # keep the bundle a few MB smaller still (debuginfo lives in PDB/dSYM
 # for support tickets).
 [profile.release]
-opt-level = 3
-lto = "thin"
+# Size-optimized for shipped installers. The app is I/O-bound (HTTP +
+# sqlite + agent-process spawn), so trading opt-level 3 → "s" and thin →
+# fat LTO costs imperceptible runtime speed but shrinks the binary by an
+# estimated 10-20% of .text. codegen-units=1 lets fat LTO do whole-program
+# dead-code elimination; strip drops the symbol table.
+#
+# panic = "unwind" (the default — deliberately NOT "abort"): Fleetify is a
+# multi-agent orchestrator running ~N agent tasks on one shared tokio runtime.
+# panic="abort" turns ANY panic on ANY task (a bad turn, an alloc failure under
+# memory pressure, a poisoned lock) into a whole-process abort that kills all
+# agents at once. "unwind" lets tokio contain a panic to the one offending
+# task. The unwind tables cost a few hundred KB of binary — a worthwhile trade
+# for fleet-wide crash isolation.
+opt-level = "s"
+lto = "fat"
 codegen-units = 1
 strip = "symbols"
-panic = "abort"
 
 # Faster CI / `cargo test` cycles. Most tests are I/O-bound (sqlite +
 # fs), so opt-level=1 already covers the hot paths and we skip the
@@ -46,3 +58,9 @@ panic = "abort"
 [profile.dev]
 opt-level = 0
 incremental = true
+# Drop full DWARF/var debuginfo (cargo's dev default is debug=2) down to
+# line tables. Keeps panic backtraces with file:line — all an agent-driven
+# workflow needs — while shrinking the .pdb / debug-section footprint that
+# was the single biggest chunk of the multi-GB debug cache. Release is
+# unaffected (it strips symbols).
+debug = "line-tables-only"

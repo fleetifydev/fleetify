@@ -9,10 +9,13 @@ name = "fleet-reveng-mcp"
 path = "src/main.rs"
 
 [dependencies]
-tokio.workspace = true
+# Trimmed tokio: single-threaded stdio JSON-RPC loop + reqwest only.
+# See memory-mcp/Cargo.toml for the rationale.
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "io-std", "io-util"] }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
-tracing.workspace = true
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+# `stream` dropped: fetch_url buffers the whole body via r.bytes().await
+# (2 MB cap), never the streaming body API.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 base64 = "0.22"
