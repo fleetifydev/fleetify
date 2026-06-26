@@ -37,10 +37,15 @@ fn webview_url() -> String {
 /// embedded backend binds this port; the webview URL in release mode
 /// (and the Vite dev proxy in debug mode) target the same port.
 fn backend_port() -> u16 {
-    std::env::var("FLEETIFY_BACKEND_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(8765)
+    match std::env::var("FLEETIFY_BACKEND_PORT") {
+        Ok(s) => s.parse().unwrap_or_else(|_| {
+            // Surface the misconfiguration instead of silently binding 8765 —
+            // a typo'd port otherwise looks like "the backend won't connect".
+            tracing::warn!(value = %s, "FLEETIFY_BACKEND_PORT is not a valid port; falling back to 8765");
+            8765
+        }),
+        Err(_) => 8765,
+    }
 }
 
 fn static_dir() -> Option<PathBuf> {
@@ -78,6 +83,26 @@ pub fn run() {
         .unwrap_or(true)
     {
         std::env::set_var("GDK_BACKEND", "x11");
+    }
+
+    // Cap the WebView2 disk cache so the per-user data folder (HTTP cache,
+    // cookies, Code Cache, …) can't grow unbounded — measured ~480 MB in the
+    // wild, ~50× the 9.5 MB installer and far bigger than the ~27 MB program.
+    // The packaged app otherwise passes NO browser args (only the `prod` dev
+    // script injects any), so the cache had no ceiling. Append rather than
+    // replace so an existing override (e.g. remote-debugging) survives.
+    #[cfg(target_os = "windows")]
+    {
+        const CACHE_CAP: &str = "--disk-cache-size=157286400"; // 150 MB
+        let existing = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+        if !existing.contains("--disk-cache-size") {
+            let combined = if existing.trim().is_empty() {
+                CACHE_CAP.to_string()
+            } else {
+                format!("{existing} {CACHE_CAP}")
+            };
+            std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", combined);
+        }
     }
 
     let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
@@ -225,6 +250,10 @@ pub fn run() {
             std::sync::atomic::AtomicBool::new(false),
         )))
         .setup(|app| {
+            // Cold-start stopwatch: wall-clock from setup() entry, logged at
+            // the first window reveal so the boot path stops being untimed
+            // (measure-first). Cheap — just an Instant.
+            let boot_start = std::time::Instant::now();
             // Bring tracing online FIRST so any setup-phase warnings
             // (auth handle, embedded backend boot, webview build) land
             // in the log file. The returned WorkerGuard is parked on
@@ -443,6 +472,12 @@ pub fn run() {
                 tokio::time::sleep(std::time::Duration::from_millis(120)).await;
                 if let Err(e) = main_for_reveal.show() {
                     tracing::warn!("show main window failed: {e}");
+                } else {
+                    tracing::info!(
+                        target: "fleetify::startup",
+                        cold_start_ms = boot_start.elapsed().as_millis() as u64,
+                        "main window revealed"
+                    );
                 }
                 let _ = main_for_reveal.set_focus();
             });

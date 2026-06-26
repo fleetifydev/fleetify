@@ -32,7 +32,6 @@ use tokio::sync::{broadcast, Mutex};
 pub const VIEW_W: u32 = 1280;
 pub const VIEW_H: u32 = 800;
 
-
 /// ~20 fps — smooth-enough scroll/typing while keeping retina-sharp
 /// screenshots cheap on localhost. Skipped entirely when no panel watches.
 const FRAME_INTERVAL: Duration = Duration::from_millis(50);
@@ -220,6 +219,7 @@ async fn ensure() -> Result<()> {
         use chromiumoxide::cdp::browser_protocol::emulation::{
             MediaFeature, SetEmulatedMediaParams,
         };
+        use chromiumoxide::cdp::browser_protocol::network::SetUserAgentOverrideParams;
         use chromiumoxide::cdp::browser_protocol::page::AddScriptToEvaluateOnNewDocumentParams;
         let _ = page
             .execute(
@@ -236,6 +236,15 @@ async fn ensure() -> Result<()> {
             .build()
         {
             let _ = page.execute(p).await;
+        }
+        // Override the "HeadlessChrome" UA with the matching desktop-Chrome
+        // string so bot-detecting sites serve the full page instead of a
+        // stripped one (see CHROME_UA). Best-effort, like the emulation above.
+        if let Ok(ua) = SetUserAgentOverrideParams::builder()
+            .user_agent(CHROME_UA.to_string())
+            .build()
+        {
+            let _ = page.execute(ua).await;
         }
     }
 
@@ -274,13 +283,17 @@ async fn ensure() -> Result<()> {
     });
 
     // URL poller — broadcasts whenever the page's URL changes (agent
-    // navigate / link click / redirect) so the panel can mirror it. Runs
-    // even when no frames are watched.
+    // navigate / link click / redirect) so the panel can mirror it. Skips the
+    // CDP round-trip when nothing is subscribed to URL changes (idle panel),
+    // mirroring the frames loop's receiver-count gate.
     let upage = page.clone();
     let urls = tokio::spawn(async move {
         let mut last = String::new();
         loop {
             tokio::time::sleep(Duration::from_millis(500)).await;
+            if url_tx().receiver_count() == 0 {
+                continue;
+            }
             if let Ok(Some(mut u)) = upage.url().await {
                 // Defensive: never broadcast a panel-internal sentinel fragment.
                 if let Some(i) = u.find("#__fleet") {

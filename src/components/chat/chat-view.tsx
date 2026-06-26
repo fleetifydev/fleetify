@@ -647,6 +647,17 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     const wrapper = scrollRef.current;
     const content = contentRef.current;
     if (!wrapper || !content) return;
+    // Respect reduced-motion: skip the always-on 60fps Lenis RAF entirely and
+    // fall back to native scroll (the manual scrollTop restore logic still
+    // works with lenisRef.current === null). This is both an a11y requirement
+    // AND the single biggest idle-power drain on the foreground window.
+    const reduceMotion =
+      typeof window !== "undefined" &&
+      !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    if (reduceMotion) {
+      lenisRef.current = null;
+      return;
+    }
     const lenis = new Lenis({
       wrapper,
       content,
@@ -669,11 +680,25 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
       },
     });
     lenisRef.current = lenis;
-    let raf = requestAnimationFrame(function loop(time: number) {
+    // Drive the RAF loop ONLY while the document is visible. A hidden window
+    // (minimized / background) has nothing to smooth-scroll, so the 60fps loop
+    // is pure wasted wakeups/CPU/battery there — pause it on visibilitychange.
+    let raf = 0;
+    const loop = (time: number) => {
       lenis.raf(time);
       raf = requestAnimationFrame(loop);
-    });
-    return () => { cancelAnimationFrame(raf); lenis.destroy(); lenisRef.current = null; };
+    };
+    const start = () => { if (!raf) raf = requestAnimationFrame(loop); };
+    const stop = () => { if (raf) { cancelAnimationFrame(raf); raf = 0; } };
+    const onVis = () => { if (document.hidden) stop(); else start(); };
+    document.addEventListener("visibilitychange", onVis);
+    if (!document.hidden) start();
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      stop();
+      lenis.destroy();
+      lenisRef.current = null;
+    };
   }, []);
 
   // Reset scroll tracking on session switch.

@@ -18,6 +18,8 @@ if (saved === "light") {
 installGlobalErrorCapture();
 log.info("renderer.boot", "renderer mounted", {
   userAgent: typeof navigator !== "undefined" ? navigator.userAgent : null,
+  // Time from page navigation to renderer module eval — a cold-start signal.
+  sinceNavMs: typeof performance !== "undefined" ? Math.round(performance.now()) : null,
 });
 
 // NOTE: no <StrictMode>. It double-invokes every render + effect in dev, which
@@ -33,3 +35,5 @@ log.info("renderer.boot", "renderer mounted", {
 window.addEventListener("contextmenu", e => e.preventDefault());
 
 createRoot(document.getElementById("root")!).render(<App />);
+// Cold-start marker — pair with sinceNavMs above to measure mount cost.
+if (typeof performance !== "undefined") performance.mark("fleet:react-render");
