@@ -3414,23 +3414,27 @@ fn ollama_bearer(key: Option<String>) -> Option<String> {
     key.map(|k| format!("Bearer {k}"))
 }
 
-/// Probe an Ollama server for the model catalog. `base_url` defaults to
-/// the user's configured value (or `http://localhost:11434`). Returns the
-/// model list verbatim so the renderer can drive checkbox state.
+/// Probe an Ollama server for the model catalog. `base_url` falls back to the
+/// user's configured value, then `$OLLAMA_HOST`, then the IPv4 loopback
+/// default (see `fleetify_core::resolve_ollama_base_url` for why not
+/// `localhost`). Returns the model list verbatim so the renderer can drive
+/// checkbox state.
 #[tauri::command]
 pub async fn providers_ollama_probe(
     app: tauri::AppHandle,
     base_url: Option<String>,
 ) -> serde_json::Value {
-    let resolved = base_url
-        .or_else(|| {
-            app.path()
-                .app_data_dir()
-                .ok()
-                .map(|d| config::providers_from(&config::load_config_from(&d)))
-                .and_then(|p| p.ollama_base_url)
-        })
-        .unwrap_or_else(|| "http://localhost:11434".into());
+    let configured = base_url.or_else(|| {
+        app.path()
+            .app_data_dir()
+            .ok()
+            .map(|d| config::providers_from(&config::load_config_from(&d)))
+            .and_then(|p| p.ollama_base_url)
+    });
+    let resolved = fleetify_core::resolve_ollama_base_url(
+        configured.as_deref(),
+        std::env::var("OLLAMA_HOST").ok().as_deref(),
+    );
 
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(2))

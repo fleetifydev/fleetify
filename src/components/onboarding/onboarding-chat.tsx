@@ -42,6 +42,7 @@ import { modelsForTile } from "@/lib/picker-groups";
 import type { PickerModel } from "@/lib/picker-groups";
 import { useDiscoveredModelsStore } from "@/stores/discovered-models-store";
 import { buildSelectionPersist } from "@/components/onboarding/provider-selection";
+import { isProviderInstalled, type ScanCliKey } from "@/components/onboarding/provider-install-state";
 import { STUDIO_ENABLED } from "@/lib/feature-flags";
 import { useThemeStore } from "@/stores/theme-store";
 import { capture, optIn, optOut } from "@/lib/posthog";
@@ -98,19 +99,7 @@ interface ProviderDef {
    *  that live in the Studio registry rather than the providers catalog.
    *  The picker renders workspace providers first, then studio ones. */
   category?: "workspace" | "studio";
-  scanKey?: keyof Pick<
-    ProviderScan,
-    | "claude_cli"
-    | "codex_cli"
-    | "kimi_cli"
-    | "agy_cli"
-    | "antigravity_sdk"
-    | "opencode_cli"
-    | "cursor_cli"
-    | "grok_cli"
-    | "github_copilot_cli"
-    | "hermes_cli"
-  >;
+  scanKey?: ScanCliKey;
   /** Optional env-var bucket on `scan.env_keys`. Only set when the
    *  scan probe actually checks for this provider's key — the four
    *  legacy buckets (anthropic / openai / gemini / groq) plus the
@@ -1310,8 +1299,7 @@ function ProvidersWidget({
   // Split the CLI agents into "installed on this device" vs "installable" so the
   // picker reads like a real setup screen (cards for what's ready, a list for
   // what you can add) instead of one flat roster.
-  const isInstalled = (p: ProviderDef) =>
-    !!(p.scanKey && scan && scan[p.scanKey]?.installed);
+  const isInstalled = (p: ProviderDef) => isProviderInstalled(p, scan);
   const installedCli = providerKind.filter(isInstalled);
   const installableCli = providerKind.filter((p) => !isInstalled(p));
   const selectAll = (list: ProviderDef[]) =>

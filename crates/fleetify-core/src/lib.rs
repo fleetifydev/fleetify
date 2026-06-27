@@ -76,6 +76,52 @@ pub fn fleetify_home() -> PathBuf {
     user_home().join(".fleetify")
 }
 
+/// Resolve the base URL to probe a local Ollama daemon, OS-agnostically.
+///
+/// Priority: an explicit caller value (e.g. a configured `ollama_base_url`) >
+/// the `OLLAMA_HOST` environment variable (Ollama's own convention) >
+/// `http://127.0.0.1:11434`.
+///
+/// The default is the IPv4 literal `127.0.0.1`, deliberately NOT `localhost`:
+/// Ollama binds `127.0.0.1:11434` by default, but on Windows and some macOS
+/// setups `localhost` resolves to IPv6 `::1` first, so a `localhost` probe
+/// reaches an address with no listener and reports the daemon down even when
+/// it is up. `curl` papers over this with Happy Eyeballs (it races both
+/// address families); a single-address HTTP client does not, so it must
+/// target the family Ollama actually listens on. Using the literal makes
+/// detection identical on Linux, macOS, and Windows.
+pub fn resolve_ollama_base_url(explicit: Option<&str>, ollama_host: Option<&str>) -> String {
+    let pick = explicit
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| ollama_host.map(str::trim).filter(|s| !s.is_empty()));
+    match pick {
+        Some(raw) => normalize_ollama_base(raw),
+        None => "http://127.0.0.1:11434".to_string(),
+    }
+}
+
+/// Normalize an Ollama host/URL into a `scheme://host:port` probe base.
+/// Accepts the forms `OLLAMA_HOST` and stored configs use in the wild: a full
+/// URL (`http://h:p`, returned as-is bar a trailing slash), `host:port`, a
+/// bare `host` (default port 11434), or `:port` (default host). The bind-all
+/// sentinel `0.0.0.0` is rewritten to loopback `127.0.0.1` — it is not a
+/// dialable address.
+fn normalize_ollama_base(raw: &str) -> String {
+    let raw = raw.trim().trim_end_matches('/');
+    if raw.starts_with("http://") || raw.starts_with("https://") {
+        return raw.to_string();
+    }
+    let hostport = if let Some(port) = raw.strip_prefix(':') {
+        format!("127.0.0.1:{port}")
+    } else if raw.contains(':') {
+        raw.to_string()
+    } else {
+        format!("{raw}:11434")
+    };
+    format!("http://{}", hostport.replacen("0.0.0.0", "127.0.0.1", 1))
+}
+
 /// Top-level error shared across crates. Concrete variants are added per phase.
 #[derive(Debug, thiserror::Error)]
 pub enum FleetError {
@@ -134,5 +180,72 @@ mod tests {
     fn canonicalize_or_keep_returns_input_when_path_is_missing() {
         let missing = Path::new("__does_not_exist_anywhere_94e9__");
         assert_eq!(canonicalize_or_keep(missing), missing.to_path_buf());
+    }
+
+    #[test]
+    fn ollama_base_defaults_to_ipv4_loopback_not_localhost() {
+        let got = resolve_ollama_base_url(None, None);
+        assert_eq!(got, "http://127.0.0.1:11434");
+        assert!(
+            !got.contains("localhost"),
+            "default must not depend on localhost resolution (IPv6 ::1 hazard): {got}"
+        );
+    }
+
+    #[test]
+    fn ollama_base_honors_explicit_full_url_and_trims_trailing_slash() {
+        assert_eq!(
+            resolve_ollama_base_url(Some("http://192.168.1.50:11434/"), None),
+            "http://192.168.1.50:11434",
+        );
+    }
+
+    #[test]
+    fn ollama_base_explicit_wins_over_env() {
+        assert_eq!(
+            resolve_ollama_base_url(Some("http://10.0.0.2:11434"), Some("127.0.0.1:9999")),
+            "http://10.0.0.2:11434",
+        );
+    }
+
+    #[test]
+    fn ollama_base_reads_ollama_host_env_forms() {
+        // host:port
+        assert_eq!(
+            resolve_ollama_base_url(None, Some("127.0.0.1:11434")),
+            "http://127.0.0.1:11434"
+        );
+        // bare host → default port
+        assert_eq!(
+            resolve_ollama_base_url(None, Some("my-ollama-box")),
+            "http://my-ollama-box:11434"
+        );
+        // :port → default host
+        assert_eq!(
+            resolve_ollama_base_url(None, Some(":11500")),
+            "http://127.0.0.1:11500"
+        );
+        // already a URL
+        assert_eq!(
+            resolve_ollama_base_url(None, Some("http://host:1234")),
+            "http://host:1234"
+        );
+    }
+
+    #[test]
+    fn ollama_base_rewrites_bind_all_to_loopback() {
+        // 0.0.0.0 is a bind sentinel, not a dialable address — probe loopback.
+        assert_eq!(
+            resolve_ollama_base_url(None, Some("0.0.0.0:11434")),
+            "http://127.0.0.1:11434"
+        );
+    }
+
+    #[test]
+    fn ollama_base_ignores_blank_values() {
+        assert_eq!(
+            resolve_ollama_base_url(Some("   "), Some("")),
+            "http://127.0.0.1:11434"
+        );
     }
 }

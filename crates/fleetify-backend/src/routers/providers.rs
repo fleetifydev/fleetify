@@ -1598,10 +1598,15 @@ async fn cloudflare_verify(Json(body): Json<CloudflareVerifyBody>) -> Json<Value
 
 /// Probe an Ollama daemon. Base URL is parameterized so callers can
 /// point at a LAN box (`http://192.168.1.50:11434`) when the user has
-/// configured `ProvidersConfig.ollama_base_url`. Defaults to localhost
-/// when no value is supplied.
+/// configured `ProvidersConfig.ollama_base_url`. With no explicit value it
+/// falls back to `$OLLAMA_HOST`, then the IPv4 loopback default — see
+/// `fleetify_core::resolve_ollama_base_url` for why not `localhost`.
 async fn check_ollama(base_url: Option<&str>) -> Value {
-    let base = base_url.unwrap_or("http://localhost:11434");
+    let base = fleetify_core::resolve_ollama_base_url(
+        base_url,
+        std::env::var("OLLAMA_HOST").ok().as_deref(),
+    );
+    let base = base.as_str();
     let url = format!("{}/api/tags", base.trim_end_matches('/'));
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
