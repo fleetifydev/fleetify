@@ -86,14 +86,16 @@ tauri-plugin-macos-fps = "0.1"
 tempfile = "3"
 
 [features]
-# Cloud-only by DEFAULT so the shipped installer stays small and never
-# carries the statically-linked whisper.cpp/ggml (~10-22 MB) nor risks
-# loading a 150 MB–1.6 GB on-device model into RAM — fatal on 2 GB
-# machines. Voice dictation still works via the broker/byok cloud engines
-# (see shell/voice/mod.rs `#[cfg(not(feature = "local-whisper"))]` arms).
-# Opt INTO the offline engine (needs a cmake/C++ toolchain) with:
-#   cargo build --features local-whisper      (or set it in tauri build)
-default = []
+# On-device Whisper ships by DEFAULT so the offline voice engine works out
+# of the box on every platform (Windows/macOS/Linux, CPU backend). This
+# statically links whisper.cpp/ggml (~10-22 MB) and needs a cmake/C++
+# toolchain at build time. The heavy cost — loading a 150 MB–1.6 GB model
+# into RAM — only happens if the user actually selects/downloads an
+# on-device model (opt-in in Settings → Voice); the broker/byok cloud
+# engines remain the zero-RAM path otherwise.
+# For a lean cloud-only build (no whisper.cpp, no toolchain required):
+#   cargo build --no-default-features      (or drop it from tauri build)
+default = ["local-whisper"]
 local-whisper = ["dep:whisper-rs", "dep:hound"]
 # Opt a RELEASE build into the embedded-webview devtools (browser_embed_devtools).
 # Debug builds always have them; this just declares the cfg so the

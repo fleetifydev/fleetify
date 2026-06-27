@@ -1379,7 +1379,7 @@ async fn run_send_flow(
             // Safety-net: validate/heal the session's model id against the
             // provider's baked catalog. Valid id ⇒ itself; invalid id with a
             // known model list ⇒ heal to the first baked model; empty list
-            // (dynamic / CLI providers like Ollama) ⇒ fail-open. `Err(())`
+            // (dynamic / CLI providers like Ollama) ⇒ fail-open. `None`
             // (provider has models but none to heal to) surfaces the same
             // error-event shape as the `unknown provider` branch above
             // instead of calling the vendor with a dead model.
@@ -1387,8 +1387,8 @@ async fn run_send_flow(
                 session.model_name.as_deref(),
                 spec,
             ) {
-                Ok(m) => m,
-                Err(()) => {
+                Some(m) => m,
+                None => {
                     send_json(
                         &sink,
                         json!({"type":"error","session_id":sid,

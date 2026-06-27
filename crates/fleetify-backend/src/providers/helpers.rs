@@ -30,7 +30,7 @@ pub fn list_api_providers() -> Vec<&'static ProviderSpec> {
 
 /// Resolve the model id to dispatch for an HTTP provider. Valid id ⇒ itself.
 /// Invalid id with a known model list ⇒ heal to the first baked model. Empty
-/// model list (dynamic / CLI providers) ⇒ fail-open (return as-is). `Err(())`
+/// model list (dynamic / CLI providers) ⇒ fail-open (return as-is). `None`
 /// only when the provider has a model list but nothing to heal to.
 ///
 /// This is a SAFETY NET, not the authoring path: it heals to
@@ -39,18 +39,17 @@ pub fn list_api_providers() -> Vec<&'static ProviderSpec> {
 pub fn resolve_dispatch_model(
     model_name: Option<&str>,
     spec: &'static ProviderSpec,
-) -> Result<String, ()> {
+) -> Option<String> {
     let m = model_name.unwrap_or("");
     if spec.default_models.is_empty() {
-        return Ok(m.to_string()); // dynamic/CLI — cannot validate, fail-open
+        return Some(m.to_string()); // dynamic/CLI — cannot validate, fail-open
     }
     if !m.is_empty() && spec.default_models.iter().any(|x| x.id == m) {
-        return Ok(m.to_string());
+        return Some(m.to_string());
     }
-    match spec.default_models.first() {
-        Some(first) => Ok(first.id.to_string()),
-        None => Err(()),
-    }
+    spec.default_models
+        .first()
+        .map(|first| first.id.to_string())
 }
 
 /// CLI agents only. Drives Settings → Agents tile list.
@@ -169,7 +168,7 @@ mod tests {
         let first = s.default_models.first().expect("openai has models").id;
         assert_eq!(
             resolve_dispatch_model(Some(first), s),
-            Ok(first.to_string())
+            Some(first.to_string())
         );
     }
 
@@ -179,7 +178,7 @@ mod tests {
         let first = s.default_models.first().unwrap().id.to_string();
         assert_eq!(
             resolve_dispatch_model(Some("nonexistent-xyz"), s),
-            Ok(first)
+            Some(first)
         );
     }
 
@@ -190,7 +189,7 @@ mod tests {
         assert!(s.default_models.is_empty());
         assert_eq!(
             resolve_dispatch_model(Some("whatever"), s),
-            Ok("whatever".to_string())
+            Some("whatever".to_string())
         );
     }
 
@@ -198,7 +197,7 @@ mod tests {
     fn resolve_dispatch_model_null_heals_to_first_for_http_provider() {
         let s = find_provider("openai").unwrap();
         let first = s.default_models.first().unwrap().id.to_string();
-        assert_eq!(resolve_dispatch_model(None, s), Ok(first));
+        assert_eq!(resolve_dispatch_model(None, s), Some(first));
     }
 
     #[test]
