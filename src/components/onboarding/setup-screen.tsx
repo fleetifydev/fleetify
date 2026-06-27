@@ -19,7 +19,7 @@ interface Provider {
 }
 
 const PROVIDERS: Provider[] = [
-  { key: "claude_cli", logo: "claude-code", name: "Claude Code", action: "install" },
+  { key: "claude_code", logo: "claude-code", name: "Claude Code", action: "install" },
   { key: "codex_cli",  logo: "codex-cli",  name: "Codex CLI",   action: "install" },
   { key: "ollama",     logo: "ollama", name: "Ollama",      action: "open", externalUrl: "https://ollama.com/download" },
   { key: "anthropic",  logo: "claude-code", name: "Anthropic",   action: "key", configKey: "anthropic" },
@@ -184,7 +184,7 @@ function ProvidersStep({ onDone }: { onDone: () => void }) {
     if (installedNow[key]) return true;
     if (!scan) return false;
     switch (key) {
-      case "claude_cli": return scan.claude_cli.installed && scan.claude_cli.authenticated;
+      case "claude_code": return scan.claude_code.installed && scan.claude_code.authenticated;
       case "codex_cli":  return scan.codex_cli.installed && scan.codex_cli.authenticated;
       case "ollama":     return scan.ollama.running;
       case "anthropic":  return scan.env_keys.anthropic;

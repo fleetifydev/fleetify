@@ -21,13 +21,17 @@ vi.mock("@/stores/app-store", () => ({
 }));
 
 vi.mock("@/stores/theme-store", () => ({
-  useThemeStore: () => ({
-    theme: "dark" as const,
-    colorTheme: "zinc" as const,
-    setTheme: vi.fn(),
-    setColorTheme: vi.fn(),
-    toggle: vi.fn(),
-  }),
+  useThemeStore: (selector?: (s: unknown) => unknown) => {
+    const state = {
+      mode: "dark" as const,
+      theme: "dark" as const,
+      colorTheme: "zinc" as const,
+      setMode: vi.fn(),
+      cycleMode: vi.fn(),
+      setColorTheme: vi.fn(),
+    };
+    return selector ? selector(state) : state;
+  },
 }));
 
 vi.mock("@/stores/plugin-store", () => ({

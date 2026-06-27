@@ -4,11 +4,11 @@ import { useProviderHealth } from "../use-provider-health";
 
 vi.mock("@/lib/api", () => ({
   apiScanProviders: vi.fn(async () => ({
-    claude_cli: { installed: false, authenticated: false, path: null },
+    claude_code: { installed: false, authenticated: false, path: null },
     codex_cli:  { installed: false, authenticated: false, path: null },
-    agy_cli:    { installed: false, authenticated: false, path: null },
+    antigravity_cli:    { installed: false, authenticated: false, path: null },
     antigravity_sdk: { installed: false, authenticated: false, path: null },
-    ollama:     { running: false, models: [] },
+    ollama:     { running: false, installed: false, models: [] },
     env_keys:   { anthropic: false, openai: false, gemini: false, groq: false },
   })),
 }));
@@ -64,9 +64,9 @@ describe("useProviderHealth", () => {
   it("ollama resolves to 'running' with models when scan reports running=true", async () => {
     const { apiScanProviders } = await import("@/lib/api");
     (apiScanProviders as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      claude_cli: { installed: false, authenticated: false, path: null },
+      claude_code: { installed: false, authenticated: false, path: null },
         codex_cli:  { installed: false, authenticated: false, path: null },
-      ollama:     { running: true, models: ["llama3", "qwen2"] },
+      ollama:     { running: true, installed: true, models: ["llama3", "qwen2"] },
       env_keys:   { anthropic: false, openai: false, gemini: false, groq: false },
     });
     const { result } = renderHook(() => useProviderHealth({ tiles: [] }));
@@ -146,16 +146,16 @@ describe("useProviderHealth", () => {
     // First scan (mount) — missing.
     (apiScanProviders as ReturnType<typeof vi.fn>)
       .mockResolvedValueOnce({
-        claude_cli: { installed: false, authenticated: false, path: null },
+        claude_code: { installed: false, authenticated: false, path: null },
             codex_cli:  { installed: false, authenticated: false, path: null },
-        ollama:     { running: false, models: [] },
+        ollama:     { running: false, installed: false, models: [] },
         env_keys:   { anthropic: false, openai: false, gemini: false, groq: false },
       })
       // Poll after install — running.
       .mockResolvedValueOnce({
-        claude_cli: { installed: false, authenticated: false, path: null },
+        claude_code: { installed: false, authenticated: false, path: null },
             codex_cli:  { installed: false, authenticated: false, path: null },
-        ollama:     { running: true, models: ["llama3"] },
+        ollama:     { running: true, installed: true, models: ["llama3"] },
         env_keys:   { anthropic: false, openai: false, gemini: false, groq: false },
       });
 
@@ -173,9 +173,9 @@ describe("useProviderHealth", () => {
       installOllama: vi.fn(async () => ({ success: false, error: "needs admin", openedBrowser: true })),
     };
     (apiScanProviders as ReturnType<typeof vi.fn>).mockResolvedValue({
-      claude_cli: { installed: false, authenticated: false, path: null },
+      claude_code: { installed: false, authenticated: false, path: null },
         codex_cli:  { installed: false, authenticated: false, path: null },
-      ollama:     { running: false, models: [] },
+      ollama:     { running: false, installed: false, models: [] },
       env_keys:   { anthropic: false, openai: false, gemini: false, groq: false },
     });
     const { result } = renderHook(() => useProviderHealth({ tiles: [] }));
@@ -216,9 +216,9 @@ describe("useProviderHealth", () => {
   it("cancelInstall returns to missing", async () => {
     const { apiScanProviders } = await import("@/lib/api");
     (apiScanProviders as ReturnType<typeof vi.fn>).mockResolvedValue({
-      claude_cli: { installed: false, authenticated: false, path: null },
+      claude_code: { installed: false, authenticated: false, path: null },
         codex_cli:  { installed: false, authenticated: false, path: null },
-      ollama:     { running: false, models: [] },
+      ollama:     { running: false, installed: false, models: [] },
       env_keys:   { anthropic: false, openai: false, gemini: false, groq: false },
     });
     (window as unknown as { electronAPI: unknown }).electronAPI = {

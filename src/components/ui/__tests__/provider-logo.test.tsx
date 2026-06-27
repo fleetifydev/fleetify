@@ -110,16 +110,16 @@ describe("ProviderLogo — model-provider brand icons", () => {
     ["grok-build", "Grok"],
     ["opencode", "OpenCode"],
   ])("swaps %s between a light and dark asset by theme", (tool, label) => {
-    const { setTheme } = useThemeStore.getState();
+    const { setMode } = useThemeStore.getState();
 
-    setTheme("light");
+    setMode("light");
     const { getByRole, rerender } = render(<ProviderLogo tool={tool} size={20} />);
     const lightEl = getByRole("img", { name: label }) as HTMLImageElement;
     expect(lightEl.tagName).toBe("IMG");
     const lightSrc = lightEl.getAttribute("src");
     expect(lightSrc).toBeTruthy();
 
-    setTheme("dark");
+    setMode("dark");
     rerender(<ProviderLogo tool={tool} size={20} />);
     const darkEl = getByRole("img", { name: label }) as HTMLImageElement;
     const darkSrc = darkEl.getAttribute("src");
@@ -127,6 +127,6 @@ describe("ProviderLogo — model-provider brand icons", () => {
     // The two themes resolve to different bundled assets.
     expect(darkSrc).not.toBe(lightSrc);
 
-    setTheme("dark"); // restore default
+    setMode("dark"); // restore default
   });
 });

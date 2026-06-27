@@ -5,7 +5,7 @@
  * returned to the renderer.
  */
 import { useEffect, useState } from "react";
-import { Cloud, HardDrive, KeyRound, Download, Check, Zap, Trash2, Loader2, X } from "lucide-react";
+import { Cloud, HardDrive, KeyRound, Download, Check, Zap, Trash2, Loader2, X, ChevronDown } from "lucide-react";
 
 import { voice, type VoiceEngine, type VoiceModel, type VoiceModelProgress } from "@/lib/voice-api";
 import { getVoicePrefs, setVoicePref } from "@/hooks/use-voice-dictation";
@@ -220,11 +220,33 @@ export function VoiceSection() {
         </div>
       </Section>
 
-      {/* Language */}
+      {/* Language. A native <select> in WebKitGTK (Tauri/Linux) draws its value
+          text in the GTK system theme and ignores CSS `color`, so it was barely
+          legible in dark mode. `appearance: none` makes WebKit render the control
+          itself so it honours `color`/`background`; the native arrow goes with it,
+          so we overlay a <ChevronDown>, and each <option> gets explicit colours
+          for the open list. */}
       <Section label="Language">
-        <select value={language} onChange={(e) => setLanguage(e.target.value)} style={selectSt}>
-          {LANGS.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}
-        </select>
+        <div style={{ position: "relative" }}>
+          <select
+            value={language}
+            onChange={(e) => setLanguage(e.target.value)}
+            style={{ ...selectSt, appearance: "none", WebkitAppearance: "none", paddingRight: 30, cursor: "pointer" }}
+          >
+            {LANGS.map((l) => (
+              <option key={l.code} value={l.code} style={{ background: "var(--c-srf)", color: "var(--c-high)" }}>
+                {l.label}
+              </option>
+            ))}
+          </select>
+          <ChevronDown
+            size={14}
+            style={{
+              position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
+              pointerEvents: "none", color: "var(--c-dim)",
+            }}
+          />
+        </div>
       </Section>
 
       {/* ── BYOK ─────────────────────────────────────────────── */}

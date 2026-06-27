@@ -2,11 +2,14 @@
  * AccountFooter — shared user-row for Fleet, Settings, and Library sidebars.
  *
  * Visually identical to Fleet's original AccountFooter: 20px initials pill,
- * displayName, Sun size={14} theme toggle, gap:10, padding:6px 10px,
+ * displayName, size={14} theme toggle, gap:10, padding:6px 10px,
  * fontSize:13, borderRadius:7. Settings passes onClickAccount to switch
  * in-page tabs; Library/Fleet use the default (dispatch fleet:open-settings).
+ *
+ * The theme toggle reflects the current mode (Sun=light, Moon=dark,
+ * Monitor=system) and cycles System → Light → Dark → System on click.
  */
-import { Sun } from "lucide-react";
+import { Sun, Moon, Monitor } from "lucide-react";
 import { useThemeStore } from "@/stores/theme-store";
 
 export interface AccountFooterProps {
@@ -22,7 +25,10 @@ export function AccountFooter({ onClickAccount }: AccountFooterProps = {}) {
   const user = raw ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : null;
   const displayName: string = user?.name ?? user?.email?.split("@")[0] ?? "User";
   const initials = displayName.trim().split(/\s+/).map((w: string) => w[0]).slice(0, 2).join("").toUpperCase() || "U";
-  const { toggle: toggleTheme } = useThemeStore();
+  const mode = useThemeStore((s) => s.mode);
+  const cycleMode = useThemeStore((s) => s.cycleMode);
+  const ThemeIcon = mode === "light" ? Sun : mode === "dark" ? Moon : Monitor;
+  const modeLabel = mode === "system" ? "System" : mode === "dark" ? "Dark" : "Light";
 
   const handleClick = onClickAccount ?? (() =>
     window.dispatchEvent(new CustomEvent("fleet:open-settings", { detail: { tab: "Account" } }))
@@ -52,8 +58,9 @@ export function AccountFooter({ onClickAccount }: AccountFooterProps = {}) {
       </span>
       <span
         role="button"
-        title="Toggle theme"
-        onClick={(e) => { e.stopPropagation(); toggleTheme(); }}
+        aria-label={`Theme: ${modeLabel} — click to switch`}
+        title={`Theme: ${modeLabel} — click to switch`}
+        onClick={(e) => { e.stopPropagation(); cycleMode(); }}
         style={{
           display: "inline-flex", alignItems: "center", justifyContent: "center",
           width: 18, height: 18, borderRadius: 4, flexShrink: 0,
@@ -62,7 +69,7 @@ export function AccountFooter({ onClickAccount }: AccountFooterProps = {}) {
         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = "var(--c-high)"; }}
         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = "var(--c-dim)"; }}
       >
-        <Sun size={14} />
+        <ThemeIcon size={14} />
       </span>
     </button>
   );

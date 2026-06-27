@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   Search, ArrowRight, Square, Send,
   Layers, StopCircle, Plus, Zap, GitBranch,
-  MessageSquareX, PanelLeft, Settings, Sun, Moon,
+  MessageSquareX, PanelLeft, Settings, Sun, Moon, Monitor,
   ChevronRight,
 } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
@@ -83,7 +83,7 @@ export function CommandPalette({ open, onClose, onAction }: Props) {
     fleetAutoMode,
   } = useAppStore();
 
-  const { theme, toggle: toggleTheme } = useThemeStore();
+  const { mode, cycleMode } = useThemeStore();
 
   // ─── Build command list ───────────────────────────────────────────────────
 
@@ -242,15 +242,15 @@ export function CommandPalette({ open, onClose, onAction }: Props) {
       kind: "action",
       id: "toggle-theme",
       section: "App",
-      icon: theme === "dark" ? Sun : Moon,
-      title: theme === "dark" ? "Switch to Light Mode" : "Switch to Dark Mode",
-      description: "Toggle between light and dark theme",
-      execute: () => { toggleTheme(); onClose(); },
+      icon: mode === "light" ? Sun : mode === "dark" ? Moon : Monitor,
+      title: `Switch theme — now ${mode === "system" ? "System" : mode === "dark" ? "Dark" : "Light"}`,
+      description: "Cycle System → Light → Dark",
+      execute: () => { cycleMode(); onClose(); },
     });
 
     return cmds;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessions, fleetAutoMode, theme]);
+  }, [sessions, fleetAutoMode, mode]);
 
   // ─── Filtered + sectioned list ────────────────────────────────────────────
 

@@ -23,11 +23,8 @@ import {
   FileCode, Webhook, FileText, FolderOpen, Loader2, Bug,
   Check, User, ArrowUpRight, HelpCircle, ArrowLeft,
   Copy, MessageCircle, Pencil,
-  // Palette — kept here (commented) because the Appearance / Themes
-  // section below is preserved as dormant code. Uncomment along with
-  // the NAV row, AppearanceSection, ThemeCard and the render guard
-  // below to bring the multi-theme picker back.
-  // Palette,
+  // Palette — icon for the Theme (appearance) settings tab.
+  Palette,
   // Volume2 / playCompletionBeep / useToggle / Toggle all retired with the
   // legacy single-toggle GeneralSection; the Notifications card under
   // settings/general/ owns those primitives now.
@@ -57,6 +54,7 @@ import { openDocs } from "./layout/sidebar";
 import { SidebarShell, SideRow } from "./layout/sidebar-shell";
 import { AccountFooter } from "./layout/account-footer";
 import { FeedbackModal } from "./feedback-modal";
+import { ThemeModeCards } from "@/components/theme/theme-mode-cards";
 
 interface SettingsProps {
   /** Tab to land on (e.g. "Account" / "Models"). Defaults to General. */
@@ -68,7 +66,8 @@ interface SettingsProps {
 const NAV: { id: string; icon: React.FC<{ size?: number; style?: React.CSSProperties }> }[] = [
   { id: "Account",      icon: User       },
   { id: "General",      icon: Settings   },
-  // Dormant — the Appearance tab (multi-theme picker) is preserved
+  { id: "Theme",        icon: Palette    },
+  // Dormant — the legacy Appearance tab (multi-color-theme picker) is preserved
   // as commented-out code throughout this file. The sidebar's user-
   // row toggle owns dark/light switching now. Uncomment the matching
   // blocks below to bring the tab back.
@@ -709,6 +708,31 @@ function ValueText({ children }: { children: React.ReactNode }) {
 // }
 
 /* ══════════════════════════════════════════════════════════════
+   Section: Theme — System / Dark / Light (mirrors onboarding's picker)
+   ──────────────────────────────────────────────────────────────
+   The same <ThemeModeCards/> the onboarding flow uses. Selecting a card
+   applies it live through the theme store; "System" then follows the OS
+   appearance. The dormant multi-color-theme catalog above is intentionally
+   left out of scope here.
+══════════════════════════════════════════════════════════════ */
+function ThemeSection() {
+  return (
+    <>
+      <SectionHeader>Appearance</SectionHeader>
+      <div style={{
+        fontSize: 12.5, color: "var(--c-low)", lineHeight: 1.6,
+        marginTop: -6, marginBottom: 16, maxWidth: 540,
+      }}>
+        Choose how Fleetify looks.{" "}
+        <strong style={{ color: "var(--c-med)", fontWeight: 600 }}>System</strong>{" "}
+        follows your operating system&apos;s appearance and updates automatically.
+      </div>
+      <ThemeModeCards />
+    </>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
    Section: Models
 ══════════════════════════════════════════════════════════════ */
 
@@ -1114,6 +1138,7 @@ export function SettingsPage({ initialTab = "General", onClose }: SettingsProps)
 
             {active === "Account"      && <AccountSection />}
             {active === "General"      && <GeneralSectionV2 />}
+            {active === "Theme"        && <ThemeSection />}
             {/* Dormant — see "Section: Appearance — DORMANT" block above. */}
             {/* {active === "Appearance"   && <AppearanceSection />} */}
             {active === "Providers"    && <ProvidersSection initialSubTab={providersInitialSubTab} />}

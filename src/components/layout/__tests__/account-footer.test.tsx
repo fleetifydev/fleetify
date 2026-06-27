@@ -4,33 +4,24 @@
  * Pins that:
  * - Renders the initials avatar from localStorage["fleet:user"] (or "U" fallback)
  * - Renders the displayName
- * - Renders the theme-toggle (Sun icon, title="Toggle theme")
- * - Clicking the theme toggle calls useThemeStore().toggle
+ * - Renders the theme toggle reflecting the current mode (Sun/Moon/Monitor)
+ * - Clicking the theme toggle cycles System → Light → Dark without bubbling
+ *   to the row's onClickAccount
  * - Clicking the row calls onClickAccount when provided
  * - Clicking the row dispatches fleet:open-settings when no onClickAccount
+ *
+ * Uses the real theme store (reactive, happy-dom-safe) rather than a mock so
+ * the cycle assertions exercise the actual contract.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-
-// Stub the theme store — only toggle matters here
-vi.mock("@/stores/theme-store", () => ({
-  useThemeStore: () => ({
-    theme: "dark" as const,
-    colorTheme: "zinc" as const,
-    setTheme: vi.fn(),
-    setColorTheme: vi.fn(),
-    toggle: mockToggle,
-  }),
-}));
-
-const mockToggle = vi.fn();
-
 import { AccountFooter } from "../account-footer";
+import { useThemeStore } from "@/stores/theme-store";
 
 describe("AccountFooter", () => {
   beforeEach(() => {
-    mockToggle.mockClear();
     localStorage.clear();
+    useThemeStore.getState().setMode("dark");
   });
 
   afterEach(() => {
@@ -57,19 +48,28 @@ describe("AccountFooter", () => {
     expect(screen.getByText("alice")).toBeTruthy();
   });
 
-  it("renders the theme toggle button", () => {
+  it("renders the theme toggle reflecting the current mode", () => {
+    useThemeStore.getState().setMode("system");
     render(<AccountFooter />);
-    expect(screen.getByTitle("Toggle theme")).toBeTruthy();
+    expect(screen.getByLabelText(/^Theme:/).getAttribute("aria-label")).toContain("System");
   });
 
-  it("clicking theme toggle calls store toggle and does NOT bubble", () => {
+  it("clicking the theme toggle cycles System → Light → Dark and does NOT bubble", () => {
+    useThemeStore.getState().setMode("system");
     const onClickAccount = vi.fn();
     render(<AccountFooter onClickAccount={onClickAccount} />);
-    const toggleBtn = screen.getByTitle("Toggle theme");
-    fireEvent.click(toggleBtn);
-    expect(mockToggle).toHaveBeenCalledOnce();
-    // stopPropagation means the row click handler should NOT fire
+
+    // Re-query each click: the accessible label tracks the mode.
+    fireEvent.click(screen.getByLabelText(/^Theme:/));
+    expect(useThemeStore.getState().mode).toBe("light");
+    // stopPropagation means the row handler must NOT fire.
     expect(onClickAccount).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByLabelText(/^Theme:/));
+    expect(useThemeStore.getState().mode).toBe("dark");
+
+    fireEvent.click(screen.getByLabelText(/^Theme:/));
+    expect(useThemeStore.getState().mode).toBe("system");
   });
 
   it("calls onClickAccount when row is clicked", () => {

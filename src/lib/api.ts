@@ -288,10 +288,10 @@ export async function apiMe(): Promise<AuthUser | null> {
 
 // ── Providers ────────────────────────────────────────────────
 export interface ProviderScan {
-  claude_cli:      { installed: boolean; authenticated: boolean; path: string | null };
+  claude_code:     { installed: boolean; authenticated: boolean; path: string | null };
   codex_cli:       { installed: boolean; authenticated: boolean; path: string | null };
-  kimi_cli:        { installed: boolean; authenticated: boolean; path: string | null };
-  agy_cli:         { installed: boolean; authenticated: boolean; path: string | null };
+  kimi_code:       { installed: boolean; authenticated: boolean; path: string | null };
+  antigravity_cli: { installed: boolean; authenticated: boolean; path: string | null };
   /** Python interpreter + `google-antigravity` package + GEMINI_API_KEY
    *  state. Driving the SDK from Fleetify needs all three; this surface
    *  rolls them into the same `installed`/`authenticated` pair the other
@@ -301,12 +301,15 @@ export interface ProviderScan {
   // script (Cursor, Hermes). Detected so onboarding shows Installed / Not
   // installed + an Install button instead of "Set up in Settings". Cursor /
   // Copilot / Hermes resolve off-PATH via their backend bridge helpers.
-  opencode_cli:       { installed: boolean; authenticated: boolean; path: string | null };
-  cursor_cli:         { installed: boolean; authenticated: boolean; path: string | null };
-  grok_cli:           { installed: boolean; authenticated: boolean; path: string | null };
-  github_copilot_cli: { installed: boolean; authenticated: boolean; path: string | null };
-  hermes_cli:         { installed: boolean; authenticated: boolean; path: string | null };
-  ollama: { running: boolean; models: string[] };
+  opencode:        { installed: boolean; authenticated: boolean; path: string | null };
+  cursor_cli:      { installed: boolean; authenticated: boolean; path: string | null };
+  grok_build:      { installed: boolean; authenticated: boolean; path: string | null };
+  github_copilot:  { installed: boolean; authenticated: boolean; path: string | null };
+  hermes_agent:    { installed: boolean; authenticated: boolean; path: string | null };
+  // `running` = live daemon probe; `installed` = durable presence (daemon
+  // reachable OR the `ollama` binary on disk) the onboarding picker buckets on,
+  // so an installed-but-stopped daemon isn't mislabelled "Installable".
+  ollama: { running: boolean; installed: boolean; models: string[] };
   env_keys: { anthropic: boolean; openai: boolean; gemini: boolean; groq: boolean };
 }
 

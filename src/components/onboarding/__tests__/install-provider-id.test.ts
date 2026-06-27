@@ -7,8 +7,8 @@ import { describe, it, expect } from "vitest";
 // the IPC?") is a single-line concern that a static check covers
 // without timer plumbing.
 //
-// Regression context: passing `p.scanKey` ("agy_cli",
-// "antigravity_sdk", "claude_cli"…) to `installProvider` lands at
+// Regression context: passing `p.scanKey` ("antigravity_cli",
+// "antigravity_sdk", "claude_code"…) to `installProvider` lands at
 // the backend's `shell_install_provider` which routes on the kebab
 // `p.id` ("antigravity-cli", "antigravity-sdk", "claude-code") and returns
 // `unknown provider: <scanKey>` for every CLI install in onboarding.
@@ -223,15 +223,15 @@ describe("OnboardingChat install IPC", () => {
       const skMatch = row.match(/scanKey:\s*"([^"]+)"/);
       scanKeyById.set(idMatch[1], skMatch ? skMatch[1] : null);
     }
-    expect(scanKeyById.get("opencode")).toBe("opencode_cli");
+    expect(scanKeyById.get("opencode")).toBe("opencode");
     expect(scanKeyById.get("cursor-cli")).toBe("cursor_cli");
-    expect(scanKeyById.get("github-copilot")).toBe("github_copilot_cli");
-    expect(scanKeyById.get("hermes-agent")).toBe("hermes_cli");
+    expect(scanKeyById.get("github-copilot")).toBe("github_copilot");
+    expect(scanKeyById.get("hermes-agent")).toBe("hermes_agent");
     // The Install / Sign-in buttons are wired only when a row has a scanKey.
     expect(onboardingSrc).toMatch(/onInstall=\{!frozen && p\.scanKey \? \(\) => handleInstall\(p\)/);
   });
 
-  it("surfaces the Grok Build CLI tile (grok logo, grok_cli scanKey, CLI bucket)", () => {
+  it("surfaces the Grok Build CLI tile (grok logo, grok_build scanKey, CLI bucket)", () => {
     // Grok Build is xAI's ACP agent — a CLI tile mirroring cursor-cli. It must
     // land in the workspace CLI section so the picker's Installed/Installable
     // split + ScanRow pick it up with no bespoke dispatch. The logo REUSES the
@@ -245,7 +245,7 @@ describe("OnboardingChat install IPC", () => {
     expect(grokRow!).toMatch(/label:\s*"Grok Build"/);
     expect(grokRow!).toMatch(/logo:\s*"grok"/);
     expect(grokRow!).toMatch(/kind:\s*"cli"/);
-    expect(grokRow!).toMatch(/scanKey:\s*"grok_cli"/);
+    expect(grokRow!).toMatch(/scanKey:\s*"grok_build"/);
     // No `category` field → it stays a workspace (catalog) provider, not Studio.
     expect(grokRow!).not.toMatch(/category:/);
   });

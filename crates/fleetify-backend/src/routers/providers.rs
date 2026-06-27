@@ -1596,24 +1596,92 @@ async fn cloudflare_verify(Json(body): Json<CloudflareVerifyBody>) -> Json<Value
     Json(json!({ "valid": r.valid, "error": r.error }))
 }
 
+/// Well-known absolute install paths for the `ollama` binary, per OS. Pure so
+/// it is unit-testable without a real install. The official installers drop
+/// the binary at these fixed locations, which a Finder/Explorer-launched
+/// process may not carry on its PATH — same reason the CLI bridges keep a
+/// `resolve_*_bin` list.
+fn ollama_bin_candidates() -> Vec<PathBuf> {
+    #[allow(unused_mut)]
+    let mut c: Vec<PathBuf> = Vec::new();
+    #[cfg(target_os = "macos")]
+    {
+        c.push(PathBuf::from("/usr/local/bin/ollama"));
+        c.push(PathBuf::from("/opt/homebrew/bin/ollama"));
+        // Ollama.app ships the CLI inside the bundle; the /usr/local/bin
+        // symlink is only created on first launch, so check the bundle too.
+        c.push(PathBuf::from(
+            "/Applications/Ollama.app/Contents/Resources/ollama",
+        ));
+        if let Ok(home) = std::env::var("HOME") {
+            c.push(PathBuf::from(home).join("Applications/Ollama.app/Contents/Resources/ollama"));
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        c.push(PathBuf::from("/usr/local/bin/ollama"));
+        c.push(PathBuf::from("/usr/bin/ollama"));
+        if let Ok(home) = std::env::var("HOME") {
+            c.push(PathBuf::from(home).join(".local/bin/ollama"));
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            c.push(PathBuf::from(&local).join(r"Programs\Ollama\ollama.exe"));
+        }
+        if let Ok(pf) = std::env::var("ProgramFiles") {
+            c.push(PathBuf::from(&pf).join(r"Ollama\ollama.exe"));
+        }
+    }
+    c
+}
+
+/// Whether the `ollama` CLI is present on this machine — PATH first (which
+/// resolves `ollama.exe` on Windows), then the well-known install locations
+/// above. Instant and deterministic, unlike the daemon's HTTP probe, so it
+/// reports "installed" even when the daemon is stopped or merely slow to
+/// answer the scan's 2 s probe.
+fn ollama_cli_present() -> bool {
+    which::which("ollama").is_ok() || ollama_bin_candidates().iter().any(|p| p.exists())
+}
+
+/// `installed` for the Ollama scan row: a reachable daemon proves the install
+/// (even a remote `$OLLAMA_HOST` box); otherwise fall back to the local CLI
+/// being present on disk.
+fn ollama_installed(running: bool, cli_present: bool) -> bool {
+    running || cli_present
+}
+
 /// Probe an Ollama daemon. Base URL is parameterized so callers can
 /// point at a LAN box (`http://192.168.1.50:11434`) when the user has
 /// configured `ProvidersConfig.ollama_base_url`. With no explicit value it
 /// falls back to `$OLLAMA_HOST`, then the IPv4 loopback default — see
 /// `fleetify_core::resolve_ollama_base_url` for why not `localhost`.
+///
+/// Returns `{ running, installed, models, base_url }`. `running` is the live
+/// daemon probe; `installed` is the durable signal (daemon reachable OR the
+/// `ollama` CLI on disk) the onboarding picker buckets on, so an installed-but-
+/// stopped Ollama isn't mislabelled "Installable".
 async fn check_ollama(base_url: Option<&str>) -> Value {
     let base = fleetify_core::resolve_ollama_base_url(
         base_url,
         std::env::var("OLLAMA_HOST").ok().as_deref(),
     );
     let base = base.as_str();
+    // Resolved once up front so every "daemon down" exit still reports an
+    // accurate install state from the on-disk CLI.
+    let cli_present = ollama_cli_present();
+    let down = |base: &str| {
+        json!({ "running": false, "installed": ollama_installed(false, cli_present), "models": [], "base_url": base })
+    };
     let url = format!("{}/api/tags", base.trim_end_matches('/'));
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
     {
         Ok(c) => c,
-        Err(_) => return json!({ "running": false, "models": [], "base_url": base }),
+        Err(_) => return down(base),
     };
     // Optional saved key for a secured/reverse-proxied daemon; keyless
     // localhost works unchanged (no cached key ⇒ no header).
@@ -1623,14 +1691,14 @@ async fn check_ollama(base_url: Option<&str>) -> Value {
     }
     let resp = match req.send().await {
         Ok(r) => r,
-        Err(_) => return json!({ "running": false, "models": [], "base_url": base }),
+        Err(_) => return down(base),
     };
     if !resp.status().is_success() {
-        return json!({ "running": false, "models": [], "base_url": base });
+        return down(base);
     }
     let body: Value = match resp.json().await {
         Ok(v) => v,
-        Err(_) => return json!({ "running": false, "models": [], "base_url": base }),
+        Err(_) => return down(base),
     };
     let models: Vec<String> = body
         .get("models")
@@ -1642,7 +1710,7 @@ async fn check_ollama(base_url: Option<&str>) -> Value {
                 .collect()
         })
         .unwrap_or_default();
-    json!({ "running": true, "models": models, "base_url": base })
+    json!({ "running": true, "installed": true, "models": models, "base_url": base })
 }
 
 /// Build a `{installed, authenticated, path}` value for a CLI agent the
@@ -1711,16 +1779,16 @@ async fn scan_providers() -> Json<Value> {
     let hermes = cli_agent_scan("hermes-agent", crate::bridges::hermes::resolve_hermes_bin());
     let grok = cli_agent_scan_grok(crate::bridges::grok_cli::resolve_grok_bin());
     Json(json!({
-        "claude_cli": claude,
+        "claude_code": claude,
         "codex_cli": codex,
-        "kimi_cli": kimi,
-        "agy_cli": agy,
+        "kimi_code": kimi,
+        "antigravity_cli": agy,
         "antigravity_sdk": agy_sdk,
-        "opencode_cli": opencode,
+        "opencode": opencode,
         "cursor_cli": cursor,
-        "github_copilot_cli": github_copilot,
-        "hermes_cli": hermes,
-        "grok_cli": grok,
+        "github_copilot": github_copilot,
+        "hermes_agent": hermes,
+        "grok_build": grok,
         "ollama": ollama,
         "env_keys": {
             "anthropic": std::env::var("ANTHROPIC_API_KEY").is_ok(),
@@ -1784,6 +1852,44 @@ async fn list_models() -> Json<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ollama_installed_combines_running_daemon_and_cli_presence() {
+        // The daemon answering proves Ollama is installed; so does the CLI
+        // being on disk. Only when NEITHER holds is Ollama genuinely absent.
+        // This is the fix for "installed but the picker shows Installable":
+        // the first scan's 2 s HTTP probe can lose the race to a slow daemon,
+        // so install state must not hinge on `running` alone.
+        assert!(!ollama_installed(false, false));
+        assert!(ollama_installed(true, false)); // daemon up, CLI off PATH
+        assert!(ollama_installed(false, true)); // CLI present, daemon stopped
+        assert!(ollama_installed(true, true));
+    }
+
+    #[test]
+    fn ollama_bin_candidates_lists_os_known_install_paths() {
+        // The official installers drop `ollama` at fixed locations a
+        // GUI-launched app's PATH may miss, so we probe them by absolute path.
+        let cands = ollama_bin_candidates();
+        let as_str: Vec<String> = cands.iter().map(|p| p.to_string_lossy().to_string()).collect();
+        #[cfg(target_os = "linux")]
+        {
+            assert!(as_str.iter().any(|p| p == "/usr/local/bin/ollama"));
+            assert!(as_str.iter().any(|p| p == "/usr/bin/ollama"));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert!(as_str.iter().any(|p| p == "/usr/local/bin/ollama"));
+            assert!(as_str
+                .iter()
+                .any(|p| p.ends_with("Ollama.app/Contents/Resources/ollama")));
+        }
+        #[cfg(target_os = "windows")]
+        {
+            // LOCALAPPDATA / ProgramFiles are effectively always set on Windows.
+            assert!(as_str.iter().any(|p| p.ends_with("ollama.exe")));
+        }
+    }
 
     #[tokio::test]
     async fn http_health_cache_round_trip() {
@@ -2092,11 +2198,11 @@ mod tests {
         // {installed, authenticated} bucket so the picker can show an Install
         // button + completion state instead of "Set up in Settings".
         for key in [
-            "opencode_cli",
+            "opencode",
             "cursor_cli",
-            "github_copilot_cli",
-            "hermes_cli",
-            "grok_cli",
+            "github_copilot",
+            "hermes_agent",
+            "grok_build",
         ] {
             let bucket = v.get(key).unwrap_or_else(|| panic!("missing bucket {key}"));
             assert!(
@@ -2109,7 +2215,7 @@ mod tests {
             );
         }
         // Legacy buckets remain intact.
-        assert!(v.get("claude_cli").is_some());
+        assert!(v.get("claude_code").is_some());
         assert!(v.get("ollama").is_some());
         assert!(v.get("env_keys").is_some());
     }

@@ -44,7 +44,8 @@ import { useDiscoveredModelsStore } from "@/stores/discovered-models-store";
 import { buildSelectionPersist } from "@/components/onboarding/provider-selection";
 import { isProviderInstalled, type ScanCliKey } from "@/components/onboarding/provider-install-state";
 import { STUDIO_ENABLED } from "@/lib/feature-flags";
-import { useThemeStore } from "@/stores/theme-store";
+import { useThemeStore, type ThemeMode } from "@/stores/theme-store";
+import { ThemeModeCards } from "@/components/theme/theme-mode-cards";
 import { capture, optIn, optOut } from "@/lib/posthog";
 
 interface Props {
@@ -61,9 +62,6 @@ type WidgetKind =
   | "github"
   | "theme"
   | "telemetry-consent";
-
-/** Theme choice offered in onboarding. "system" follows the OS preference. */
-type ThemeMode = "system" | "dark" | "light";
 
 // Onboarding primary-button colors, theme-aware via globals.css: gray on white
 // in light, white on dark in dark (see --onb-btn-bg / --onb-btn-fg). Was a fixed
@@ -146,32 +144,32 @@ const PROVIDERS: ProviderDef[] = [
   // now waits for an explicit Install button click. The verify-loop
   // gate (`p.autoInstall === true`) is preserved in case a future
   // first-run experience wants to opt a tile back in.
-  { id: "claude-code",         label: "Claude Code",       logo: "claude-code", kind: "cli", scanKey: "claude_cli", hint: "Anthropic CLI" },
+  { id: "claude-code",         label: "Claude Code",       logo: "claude-code", kind: "cli", scanKey: "claude_code", hint: "Anthropic CLI" },
   { id: "codex-cli",          label: "Codex CLI",         logo: "codex-cli",  kind: "cli", scanKey: "codex_cli",  hint: "OpenAI CLI" },
   // Kimi Code ships as `@moonshot-ai/kimi-code` (npm). Auth state is
   // read from `~/.kimi/auth.json` or `KIMI_API_KEY`
   // (KIMI_CLI_INDICATORS in the catalog).
-  { id: "kimi-code",           label: "Kimi Code",         logo: "kimi-code",   kind: "cli", scanKey: "kimi_cli",   hint: "Moonshot CLI" },
+  { id: "kimi-code",           label: "Kimi Code",         logo: "kimi-code",   kind: "cli", scanKey: "kimi_code",   hint: "Moonshot CLI" },
   // Antigravity CLI installer runs a remote shell script
   // (`iex (irm https://antigravity.google/cli/install.ps1)` on Windows,
   // `curl … | bash` elsewhere). Same explicit-click contract as above.
-  { id: "antigravity-cli",            label: "Antigravity CLI",   logo: "antigravity-cli",    kind: "cli", scanKey: "agy_cli",                       hint: "Google's terminal agent (OAuth)" },
+  { id: "antigravity-cli",            label: "Antigravity CLI",   logo: "antigravity-cli",    kind: "cli", scanKey: "antigravity_cli",                       hint: "Google's terminal agent (OAuth)" },
   // OpenCode / Cursor / GitHub Copilot — detected via the scan probe like the
   // CLIs above. A not-installed row shows an Install button that runs the
   // OS-appropriate installer in the background (npm for OpenCode/Copilot, the
   // curl|bash / irm script for Cursor) and waits for the binary to land before
   // flipping to Sign-in / Ready.
-  { id: "opencode",       label: "OpenCode",          logo: "opencode", kind: "cli", scanKey: "opencode_cli",                 hint: "CLI agent" },
+  { id: "opencode",       label: "OpenCode",          logo: "opencode", kind: "cli", scanKey: "opencode",                 hint: "CLI agent" },
   { id: "cursor-cli",         label: "Cursor CLI",        logo: "cursor-cli", kind: "cli", scanKey: "cursor_cli",                     hint: "CLI agent" },
   // Grok Build — xAI's ACP agent (`grok`). Auth is out-of-band (the bridge
   // injects XAI_API_KEY); detected via the scan probe like the CLIs above.
   // Reuses the existing `grok` brand mark.
-  { id: "grok-build",         label: "Grok Build",        logo: "grok",   kind: "cli", scanKey: "grok_cli",                         hint: "CLI agent" },
-  { id: "github-copilot", label: "GitHub Copilot",    logo: "github-copilot", kind: "cli", scanKey: "github_copilot_cli",    hint: "CLI agent" },
+  { id: "grok-build",         label: "Grok Build",        logo: "grok",   kind: "cli", scanKey: "grok_build",                         hint: "CLI agent" },
+  { id: "github-copilot", label: "GitHub Copilot",    logo: "github-copilot", kind: "cli", scanKey: "github_copilot",    hint: "CLI agent" },
   // Hermes Agent — one CLI that fans out across whichever providers the user's
   // `hermes model` config has authenticated (Copilot, Anthropic, ...). Installs
   // via the official curl|bash / irm script; detected via the scan probe.
-  { id: "hermes-agent",         label: "Hermes Agent",      logo: "hermes-agent", kind: "cli", scanKey: "hermes_cli",                     hint: "CLI agent (multi-provider)" },
+  { id: "hermes-agent",         label: "Hermes Agent",      logo: "hermes-agent", kind: "cli", scanKey: "hermes_agent",                     hint: "CLI agent (multi-provider)" },
   // SDK pairs a pip install with a GEMINI_API_KEY entry. The renderer
   // handles the two-stage flow inline.
   { id: "antigravity-sdk",label: "Antigravity SDK",   logo: "antigravity-cli",    kind: "api", envKey: "gemini", scanKey: "antigravity_sdk", hint: "Python SDK + Gemini key" },
@@ -1022,117 +1020,16 @@ function Bubble({
   );
 }
 
-/* ── ThemeWidget — System / Dark / Light, big side-by-side cards ──
-   Applies the choice live (setColorTheme) so the rest of onboarding
-   previews it; Continue advances to the privacy step. "System" resolves
-   the OS preference at selection. */
-function ThemePreview({ mode }: { mode: ThemeMode }) {
-  const swatch = (dark: boolean, key?: string) => {
-    const bg = dark ? "#161618" : "#fbfbfc";
-    const fg = dark ? "rgba(255,255,255,0.82)" : "rgba(0,0,0,0.78)";
-    const dim = dark ? "rgba(255,255,255,0.22)" : "rgba(0,0,0,0.16)";
-    const accent = dark ? "rgba(255,255,255,0.55)" : "rgba(0,0,0,0.45)";
-    return (
-      <div
-        key={key}
-        style={{
-          flex: 1,
-          background: bg,
-          display: "flex",
-          flexDirection: "column",
-          gap: 5,
-          padding: "12px 11px",
-          justifyContent: "center",
-        }}
-      >
-        <div style={{ width: 16, height: 5, borderRadius: 3, background: accent }} />
-        <div style={{ width: "78%", height: 5, borderRadius: 3, background: fg }} />
-        <div style={{ width: "92%", height: 4, borderRadius: 3, background: dim }} />
-        <div style={{ width: "58%", height: 4, borderRadius: 3, background: dim }} />
-      </div>
-    );
-  };
-  return (
-    <div
-      style={{
-        height: 80,
-        borderRadius: 9,
-        overflow: "hidden",
-        display: "flex",
-        border: "1px solid rgba(128,128,128,0.18)",
-      }}
-    >
-      {mode === "system"
-        ? [swatch(true, "d"), swatch(false, "l")]
-        : mode === "dark"
-          ? swatch(true)
-          : swatch(false)}
-    </div>
-  );
-}
-
+/* ── ThemeWidget — System / Dark / Light picker for onboarding ──
+   Wraps the shared <ThemeModeCards/> (applies the choice live so the rest of
+   onboarding previews it) and adds the Continue button that advances to the
+   privacy/telemetry step. */
 function ThemeWidget({ onConfirm }: { onConfirm: (mode: ThemeMode) => void }) {
-  const setColorTheme = useThemeStore((s) => s.setColorTheme);
-  const [mode, setMode] = useState<ThemeMode>(
-    useThemeStore.getState().theme === "light" ? "light" : "dark",
-  );
-
-  const apply = (m: ThemeMode) => {
-    setMode(m);
-    const osDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? true;
-    // Dark → default dark palette (zinc); Light → light palette; System →
-    // resolve the OS preference now.
-    const palette = m === "light" ? "light" : m === "dark" ? "zinc" : osDark ? "zinc" : "light";
-    setColorTheme(palette);
-  };
-
-  const OPTIONS: { mode: ThemeMode; label: string }[] = [
-    { mode: "system", label: "System" },
-    { mode: "dark", label: "Dark" },
-    { mode: "light", label: "Light" },
-  ];
+  const mode = useThemeStore((s) => s.mode);
 
   return (
     <div style={{ marginTop: 12 }}>
-      <div style={{ display: "flex", gap: 10 }}>
-        {OPTIONS.map((o) => {
-          const active = mode === o.mode;
-          return (
-            <button
-              key={o.mode}
-              onClick={() => apply(o.mode)}
-              style={{
-                flex: 1,
-                display: "flex",
-                flexDirection: "column",
-                gap: 8,
-                padding: 8,
-                borderRadius: 12,
-                cursor: "pointer",
-                background: active ? "var(--secondary)" : "transparent",
-                border: `1px solid ${active ? "var(--c-high)" : "var(--c-brd)"}`,
-                transition: "border-color 0.15s ease, background 0.15s ease",
-              }}
-            >
-              <ThemePreview mode={o.mode} />
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 5,
-                  fontSize: 12.5,
-                  fontWeight: active ? 600 : 500,
-                  color: active ? "var(--c-high)" : "var(--c-med)",
-                }}
-              >
-                {active && <Check size={12} strokeWidth={2.6} />}
-                {o.label}
-              </div>
-            </button>
-          );
-        })}
-      </div>
+      <ThemeModeCards />
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
         <button
           onClick={() => onConfirm(mode)}
@@ -1630,7 +1527,7 @@ function ScanWidget({
   // is already in flight — that would queue two long-running spawns
   // back-to-back and confuse the row's state machine.
   const installingRef = useRef<Set<string>>(new Set());
-  // Captured OAuth URLs, keyed by toolKey ("claude_cli"
+  // Captured OAuth URLs, keyed by toolKey ("claude_code"
   // / "codex_cli"). Pushed from main.cjs's auth-pty as soon as it
   // spots the URL in the CLI's output. ScanRow surfaces a clickable
   // "re-open browser" icon while the URL is known, so the user can
@@ -1710,7 +1607,7 @@ function ScanWidget({
           try {
             // Backend `shell_install_provider` routes on the kebab id
             // ("claude-code", "codex-cli", "kimi-code"), not the snake-case
-            // scanKey ("claude_cli", …) used by the scan probe.
+            // scanKey ("claude_code", …) used by the scan probe.
             const installRes = await window.electronAPI.installProvider(p.id);
             if (cancelled) return;
             if (installRes?.success) {
@@ -2082,7 +1979,7 @@ function ScanWidget({
       {providers.map((p) => {
         const st = states[p.id] ?? { status: "pending" as ScanStatus, detail: "" };
         // Each row reads ONLY its own provider's URL — keyed by
-        // scanKey ("claude_cli" / "codex_cli") so
+        // scanKey ("claude_code" / "codex_cli") so
         // simultaneous sign-ins for two providers each get their
         // own re-open icon pointing at the right URL.
         const authUrl = p.scanKey ? authUrls[p.scanKey] : undefined;
