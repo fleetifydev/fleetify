@@ -45,23 +45,26 @@ describe("PrChecksPopover", () => {
         onDismiss={vi.fn()}
       />,
     );
-    expect(screen.getByText(/1 passed · 1 failing · 1 running/)).toBeTruthy();
+    expect(screen.getByText("1 passed")).toBeTruthy();
+    expect(screen.getByText("1 failing")).toBeTruthy();
+    expect(screen.getByText("1 running")).toBeTruthy();
     expect(screen.getByText("build")).toBeTruthy();
     expect(screen.getByText("lint")).toBeTruthy();
     expect(screen.getByText("test")).toBeTruthy();
   });
 
-  it("shows a blocked reason when supplied", () => {
-    render(
+  it("uses a green check for passing rows and an X for failing rows", () => {
+    const { container } = render(
       <PrChecksPopover
         runs={runs}
         summary={{ passing: 1, failing: 1, pending: 1, total: 3 }}
-        blockedReason="1 check failing"
         onOpenCheck={vi.fn()}
         onDismiss={vi.fn()}
       />,
     );
-    expect(screen.getByText("1 check failing")).toBeTruthy();
+    const check = container.querySelector(".lucide-check") as SVGElement | null;
+    expect(check?.style.color).toContain("64, 180, 120"); // the app's green
+    expect(container.querySelector(".lucide-x")).toBeTruthy(); // failing → X icon
   });
 
   it("opens a check on GitHub when its row is clicked (and not for url-less rows)", () => {

@@ -2013,7 +2013,6 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
             <PrChecksPopover
               runs={det.checks.runs ?? []}
               summary={det.checks}
-              blockedReason={!canMerge && gate.kind !== "draft" ? gate.reason : null}
               onOpenCheck={(url) => {
                 (window as unknown as { electronAPI?: { openExternal?: (u: string) => Promise<unknown> } })
                   .electronAPI?.openExternal?.(url);

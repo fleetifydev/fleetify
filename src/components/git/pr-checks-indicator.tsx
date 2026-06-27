@@ -38,9 +38,10 @@ export function PrChecksIndicator({ checks, open = false, onClick }: Props) {
 
   const completed = passing + failing;
   const frac = Math.max(0, Math.min(1, completed / total));
-  // Failures shout (red). Otherwise stay muted — running leans on the pulse,
-  // and an all-green PR reads as a calm full ring, not a celebratory green.
-  const color = failing > 0 ? "var(--c-err)" : "var(--c-med)";
+  // Outcome colour, matching the popover's icons: red on any failure, muted
+  // while still running (the pulse carries the "in progress" cue), green once
+  // everything has passed.
+  const color = failing > 0 ? "var(--c-err)" : pending > 0 ? "var(--c-med)" : "rgb(64,180,120)";
   const isPending = pending > 0 && failing === 0;
 
   const label =
