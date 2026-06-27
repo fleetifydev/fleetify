@@ -144,27 +144,6 @@ export function WelcomeScreen({ onAuth }: WelcomeScreenProps) {
           ))}
         </div>
 
-        {/* Error banner */}
-        {error && (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "10px 12px",
-              borderRadius: 8,
-              marginBottom: 14,
-              background: "rgba(239,68,68,0.08)",
-              border: "1px solid rgba(239,68,68,0.18)",
-              width: "100%",
-            }}
-            role="alert"
-          >
-            <AlertCircle size={13} style={{ color: "#ef4444", flexShrink: 0 }} />
-            <span style={{ fontSize: 12.5, color: "#ef4444", textAlign: "left" }}>{error}</span>
-          </div>
-        )}
-
         {/* Single CTA — Sign in with Fleetify */}
         <button
           className="app-no-drag"
@@ -215,6 +194,23 @@ export function WelcomeScreen({ onAuth }: WelcomeScreenProps) {
             </>
           )}
         </button>
+
+        {/* Error — alert icon + red text, left-aligned, no banner box; below the CTA */}
+        {error && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              marginTop: 14,
+              width: "100%",
+            }}
+            role="alert"
+          >
+            <AlertCircle size={13} style={{ color: "#ef4444", flexShrink: 0 }} />
+            <span style={{ fontSize: 12.5, color: "#ef4444", textAlign: "left" }}>{error}</span>
+          </div>
+        )}
 
         {/* Helper line */}
         <p
