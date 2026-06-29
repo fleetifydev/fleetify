@@ -152,17 +152,18 @@ pub async fn maybe_extract_user_facts(
     let mut saved: u32 = 0;
     for it in items_raw.iter().take(5) {
         let Some(obj) = it.as_object() else { continue };
-        let title = obj.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
+        let title = obj
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
         let content = obj
             .get("content")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .trim();
         let kind = obj.get("kind").and_then(|v| v.as_str()).unwrap_or("fact");
-        let importance = obj
-            .get("importance")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(3);
+        let importance = obj.get("importance").and_then(|v| v.as_i64()).unwrap_or(3);
         if title.is_empty() || content.is_empty() {
             continue;
         }

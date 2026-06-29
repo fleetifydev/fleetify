@@ -13,14 +13,12 @@ use crate::routers::{ApiError, AppState};
 use crate::services::user_memory;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route(
-        "/user/memory",
-        get(list_memory).post(create_memory),
-    )
-    .route(
-        "/user/memory/{id}",
-        axum::routing::patch(update_memory).delete(delete_memory),
-    )
+    Router::new()
+        .route("/user/memory", get(list_memory).post(create_memory))
+        .route(
+            "/user/memory/{id}",
+            axum::routing::patch(update_memory).delete(delete_memory),
+        )
 }
 
 #[derive(Deserialize)]

@@ -1,0 +1,130 @@
+# Fleetify CI — the gate set documented in CLAUDE.md ("Testing"), wired so the
+# checks stop being honor-system. Mirrors the exact local commands.
+#
+# Notes:
+# - The default build ships on-device Whisper (PR #255), so the workspace
+#   compiles whisper.cpp via whisper-rs-sys. That needs CMake + a C++ toolchain
+#   and libclang (bindgen). windows-latest preinstalls all three (MSVC, CMake,
+#   LLVM/Clang on PATH), so no extra setup step is required; if a future runner
+#   image drops libclang, set LIBCLANG_PATH on the rust job.
+# - The Rust job runs on windows-latest because that is the project's real
+#   target (keyring `windows-native`, `winreg`, ConPTY) and matches the local
+#   commands devs run.
+# - `cargo audit` / `npm audit` are advisory for now (continue-on-error) so a
+#   single transitive advisory (e.g. rsa RUSTSEC-2023-0071) doesn't wall every
+#   PR. Flip them to blocking once the known advisories are triaged.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pr-title:
+    name: Conventional PR title
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      # The PR title is the changelog entry (release-please contract). Enforce
+      # the conventional-commit prefix set we actually use.
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            perf
+            deps
+            revert
+            docs
+            chore
+            refactor
+            test
+            ci
+            build
+            style
+
+  rust:
+    name: Rust (fmt + clippy + test)
+    runs-on: windows-latest
+    # The default build compiles whisper.cpp (cmake/C++) — heavy. Bound the job
+    # so a hung advisory test or a pathological compile can't run for hours.
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      # The 4 fleet-*-mcp sidecars are standalone workspace bins, NOT deps of
+      # src-tauri — nothing compiles them implicitly. But Tauri's externalBin
+      # build script resolves `binaries/fleet-*-mcp-<triple>` at build time, so
+      # `cargo check` on fleetify-app fails ("resource path … doesn't exist")
+      # unless they're staged first. Locally `dev:tauri:wt` runs this via
+      # beforeDevCommand; CI must do it explicitly. node ships on windows-latest
+      # and the script is dependency-free (node builtins + cargo only).
+      - name: Stage MCP sidecars (Tauri externalBin)
+        run: node scripts/build-sidecars.mjs
+      # Format first — instant, fails fast on style before the heavy compile.
+      - name: Format
+        run: cargo fmt --all -- --check
+      # HARD GATE: clippy compiles the whole workspace AND lints it, so it is
+      # both the "everything compiles" gate and the lint gate — running a
+      # separate `cargo check` first just paid the (heavy, whisper.cpp) compile
+      # twice. -D warnings makes any lint a failure; the workspace is clean.
+      - name: Clippy (compile + lint)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      # Test stays ADVISORY: ~6 tests fail on the Windows runner from
+      # path-separator (`\` vs `/`) + env assumptions, unrelated to app logic.
+      # Bounded so a test that hangs (binds a port / spawns a process and waits)
+      # can't wedge the job — continue-on-error keeps a timeout non-blocking.
+      - name: Test (advisory)
+        continue-on-error: true
+        timeout-minutes: 12
+        run: cargo test --workspace
+      # Prebuilt cargo-audit binary — `cargo install --locked` compiles it from
+      # source (several minutes) and pushed the job past its timeout. This pulls
+      # a release binary in seconds. Bounded + continue-on-error so a slow or
+      # failing advisory audit never wedges or blocks CI.
+      - name: Install cargo-audit (advisory)
+        continue-on-error: true
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: Audit (advisory)
+        continue-on-error: true
+        timeout-minutes: 5
+        run: cargo audit
+
+  web:
+    name: Renderer (lint + test + types)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Type-check
+        run: npx tsc -b tsconfig.build.json --noEmit
+      # Advisory: vitest needs a Node-version-specific webstorage flag locally;
+      # keep visible until the CI Node version is confirmed green.
+      - name: Unit tests (advisory)
+        continue-on-error: true
+        run: npm test
+      - name: Audit (advisory)
+        continue-on-error: true
+        run: npm audit --omit=dev

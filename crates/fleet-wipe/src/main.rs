@@ -33,6 +33,9 @@ fn main() {
 /// linux-keyutils backend names keys `keyring-rs:<account>@<service>`; we match
 /// on the `<service>` half being `Fleetify` or `Fleetify-*` so a stray
 /// `NotFleetify` or another app's key is never touched.
+// Only the Linux `wipe` enumerates key descriptions; on Windows/macOS this
+// helper is unused, so silence dead-code there (keeps `clippy -D warnings` green).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn is_fleetify_desc(desc: &str) -> bool {
     let Some(rest) = desc.strip_prefix("keyring-rs:") else {
         return false;

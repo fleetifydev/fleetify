@@ -1672,9 +1672,7 @@ async fn check_ollama(base_url: Option<&str>) -> Value {
     // Resolved once up front so every "daemon down" exit still reports an
     // accurate install state from the on-disk CLI.
     let cli_present = ollama_cli_present();
-    let down = |base: &str| {
-        json!({ "running": false, "installed": ollama_installed(false, cli_present), "models": [], "base_url": base })
-    };
+    let down = |base: &str| json!({ "running": false, "installed": ollama_installed(false, cli_present), "models": [], "base_url": base });
     let url = format!("{}/api/tags", base.trim_end_matches('/'));
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
@@ -1871,7 +1869,10 @@ mod tests {
         // The official installers drop `ollama` at fixed locations a
         // GUI-launched app's PATH may miss, so we probe them by absolute path.
         let cands = ollama_bin_candidates();
-        let as_str: Vec<String> = cands.iter().map(|p| p.to_string_lossy().to_string()).collect();
+        let as_str: Vec<String> = cands
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
         #[cfg(target_os = "linux")]
         {
             assert!(as_str.iter().any(|p| p == "/usr/local/bin/ollama"));

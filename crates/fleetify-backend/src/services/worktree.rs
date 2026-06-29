@@ -180,7 +180,12 @@ async fn resolve_base(project_path: &str) -> Result<String, WorktreeError> {
     // (detached HEAD, or a repo with no main/master at all).
     if let Some(d) = detect_default_branch(project_path).await {
         let (rc_l, _, _) = git(
-            &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{d}")],
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{d}"),
+            ],
             project_path,
         )
         .await;

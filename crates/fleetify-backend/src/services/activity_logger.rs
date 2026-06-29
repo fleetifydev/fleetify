@@ -143,9 +143,9 @@ pub async fn record_activity(
 /// WAL+NORMAL instead of N+1 — and emit their telemetry from a single
 /// background task instead of one `tokio::spawn` per row. Used by the
 /// TodoWrite explode path, which previously issued an autocommitted
-/// INSERT + a spawn for every todo (a 15-item TodoWrite meant 16 commits
-/// + 16 spawns). Best-effort: a failed write logs and is swallowed so the
-/// bridge stream is never broken.
+/// INSERT plus a spawn for every todo (a 15-item TodoWrite meant 16
+/// commits and 16 spawns). Best-effort: a failed write logs and is
+/// swallowed so the bridge stream is never broken.
 ///
 /// Each row keeps a distinct, increasing `ts` (matching the old
 /// successive `Utc::now()` calls), so the umbrella row still sorts after

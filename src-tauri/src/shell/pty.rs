@@ -80,8 +80,14 @@ pub fn spawn_piped(
     // Drain stdout AND stderr into the shared buffer (capped tail). grok writes
     // to stderr; capture both so nothing is missed.
     let streams: [Option<Box<dyn std::io::Read + Send>>; 2] = [
-        child.stdout.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
-        child.stderr.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
+        child
+            .stdout
+            .take()
+            .map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
+        child
+            .stderr
+            .take()
+            .map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
     ];
     for stream in streams.into_iter().flatten() {
         let out = output.clone();

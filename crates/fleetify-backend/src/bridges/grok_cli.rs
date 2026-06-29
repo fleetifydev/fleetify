@@ -82,7 +82,10 @@ pub fn resolve_grok_bin() -> Option<String> {
         let exe = if cfg!(windows) { "grok.exe" } else { "grok" };
         // `.grok/bin` (current native installer, incl. Windows) before the
         // legacy `.local/bin` (curl|bash) target.
-        for dir in [home.join(".grok").join("bin"), home.join(".local").join("bin")] {
+        for dir in [
+            home.join(".grok").join("bin"),
+            home.join(".local").join("bin"),
+        ] {
             let p = dir.join(exe);
             if p.exists() {
                 return Some(p.to_string_lossy().into_owned());

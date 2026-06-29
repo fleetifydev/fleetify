@@ -45,7 +45,9 @@ async fn handle_url_socket(socket: WebSocket) {
         if let Some(u) = browser::current_url_opt().await {
             if !u.is_empty() {
                 let _ = sender
-                    .send(Message::Text(json!({ "type": "url", "url": u }).to_string().into()))
+                    .send(Message::Text(
+                        json!({ "type": "url", "url": u }).to_string().into(),
+                    ))
                     .await;
             }
         }
@@ -53,7 +55,9 @@ async fn handle_url_socket(socket: WebSocket) {
             match urls.recv().await {
                 Ok(u) => {
                     if sender
-                        .send(Message::Text(json!({ "type": "url", "url": u }).to_string().into()))
+                        .send(Message::Text(
+                            json!({ "type": "url", "url": u }).to_string().into(),
+                        ))
                         .await
                         .is_err()
                     {
@@ -71,7 +75,9 @@ async fn handle_url_socket(socket: WebSocket) {
                 if v.get("type").and_then(|x| x.as_str()) == Some("navigate") {
                     if let Some(url) = v.get("url").and_then(|x| x.as_str()) {
                         let url = url.to_string();
-                        tokio::spawn(async move { let _ = browser::navigate(&url).await; });
+                        tokio::spawn(async move {
+                            let _ = browser::navigate(&url).await;
+                        });
                     }
                 }
             }
@@ -100,7 +106,9 @@ async fn handle_socket(socket: WebSocket) {
         // Show the current page immediately on connect (the screencast only
         // emits on the next paint, so a freshly-attached panel would be blank).
         if let Some(f) = browser::last_frame_snapshot().await {
-            let _ = sender.send(Message::Binary(f.as_ref().clone().into())).await;
+            let _ = sender
+                .send(Message::Binary(f.as_ref().clone().into()))
+                .await;
         }
         loop {
             tokio::select! {

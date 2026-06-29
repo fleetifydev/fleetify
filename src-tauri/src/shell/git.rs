@@ -440,7 +440,11 @@ pub async fn working_diff(folder: &Path) -> Value {
         Value::Null
     } else {
         let b = branch.trim();
-        if b.is_empty() || b == "HEAD" { Value::Null } else { json!(b) }
+        if b.is_empty() || b == "HEAD" {
+            Value::Null
+        } else {
+            json!(b)
+        }
     };
 
     let (rc_w, wnum, _) = diff_res;
@@ -1897,7 +1901,8 @@ pub async fn list_prs(folder: &Path, limit: u32) -> Value {
 /// was unaffected). The count is derived from `comments.len()` in the mapping
 /// below. Keep this in sync with `map_pr_status` (REST) which sources the count
 /// from the pull object's numeric `comments`.
-const PR_VIEW_FIELDS: &str = "number,url,state,mergeable,mergeStateStatus,isDraft,baseRefName,headRefName,\
+const PR_VIEW_FIELDS: &str =
+    "number,url,state,mergeable,mergeStateStatus,isDraft,baseRefName,headRefName,\
                               statusCheckRollup,comments";
 
 /// Normalize a checks array — gh's `statusCheckRollup` OR REST's `check_runs` —
@@ -1913,8 +1918,7 @@ pub(crate) fn normalize_check_runs(items: &[Value]) -> Value {
     let (mut passing, mut failing, mut pending) = (0u32, 0u32, 0u32);
     let mut runs = Vec::with_capacity(items.len());
     for c in items {
-        let is_status_ctx =
-            c.get("__typename").and_then(|v| v.as_str()) == Some("StatusContext");
+        let is_status_ctx = c.get("__typename").and_then(|v| v.as_str()) == Some("StatusContext");
         let name = c
             .get("name")
             .and_then(|v| v.as_str())
@@ -1928,7 +1932,11 @@ pub(crate) fn normalize_check_runs(items: &[Value]) -> Value {
             .or_else(|| c.get("html_url").and_then(|v| v.as_str()))
             .map(str::to_string);
         let (bucket, status, conclusion): (&str, String, Option<String>) = if is_status_ctx {
-            let state = c.get("state").and_then(|v| v.as_str()).unwrap_or("").to_uppercase();
+            let state = c
+                .get("state")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_uppercase();
             let bucket = match state.as_str() {
                 "SUCCESS" => "passing",
                 "FAILURE" | "ERROR" => "failing",
@@ -1936,16 +1944,26 @@ pub(crate) fn normalize_check_runs(items: &[Value]) -> Value {
             };
             (bucket, "COMPLETED".to_string(), Some(state))
         } else {
-            let status = c.get("status").and_then(|v| v.as_str()).unwrap_or("").to_uppercase();
-            let concl = c.get("conclusion").and_then(|v| v.as_str()).map(|s| s.to_uppercase());
+            let status = c
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_uppercase();
+            let concl = c
+                .get("conclusion")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_uppercase());
             // Bucket by conclusion: it is only set once a run completes, so its
             // presence means "done" regardless of the `status` string (gh sends
             // status+conclusion; the renderer/tests may send conclusion alone).
             // No conclusion yet ⇒ still pending (queued / in_progress).
             let bucket = match concl.as_deref() {
                 Some("SUCCESS") | Some("NEUTRAL") | Some("SKIPPED") => "passing",
-                Some("FAILURE") | Some("TIMED_OUT") | Some("CANCELLED")
-                | Some("STARTUP_FAILURE") | Some("ACTION_REQUIRED") => "failing",
+                Some("FAILURE")
+                | Some("TIMED_OUT")
+                | Some("CANCELLED")
+                | Some("STARTUP_FAILURE")
+                | Some("ACTION_REQUIRED") => "failing",
                 _ => "pending",
             };
             (bucket, status, concl)
