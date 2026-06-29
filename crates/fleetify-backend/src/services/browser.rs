@@ -36,6 +36,13 @@ pub const VIEW_H: u32 = 800;
 /// screenshots cheap on localhost. Skipped entirely when no panel watches.
 const FRAME_INTERVAL: Duration = Duration::from_millis(50);
 
+// Idle-shutdown: headless Chromium holds ~300-600 MB resident even when no
+// panel is open and no agent is driving it. The watchdog wakes every
+// IDLE_CHECK and closes the browser once it has gone IDLE_SHUTDOWN with no
+// panel watching AND no CDP op touching it; the next `page()` re-launches.
+const IDLE_CHECK: Duration = Duration::from_secs(20);
+const IDLE_SHUTDOWN: Duration = Duration::from_secs(180);
+
 /// Real desktop-Chrome UA. The backend browser IS Chrome, but new-headless
 /// stamps "HeadlessChrome" into the UA, which sites read as a bot and serve
 /// the stripped page to. Overriding with the matching non-headless Chrome
@@ -58,6 +65,24 @@ struct Inner {
 fn state() -> &'static Mutex<Option<Inner>> {
     static S: OnceLock<Mutex<Option<Inner>>> = OnceLock::new();
     S.get_or_init(|| Mutex::new(None))
+}
+
+/// Wall-clock of the last browser touch — a CDP op via `page()` or a launch.
+/// The idle watchdog reads this so a browser that's actively driven by an
+/// agent over CDP but has no panel attached (receiver_count == 0) is never
+/// torn down mid-task. A brief sync lock (no await held), poison-recovering.
+fn last_activity() -> &'static std::sync::Mutex<std::time::Instant> {
+    static A: OnceLock<std::sync::Mutex<std::time::Instant>> = OnceLock::new();
+    A.get_or_init(|| std::sync::Mutex::new(std::time::Instant::now()))
+}
+fn touch_activity() {
+    *last_activity().lock().unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
+}
+fn idle_for() -> Duration {
+    last_activity()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .elapsed()
 }
 
 fn frame_tx() -> &'static broadcast::Sender<Arc<Vec<u8>>> {
@@ -314,12 +339,59 @@ async fn ensure() -> Result<()> {
         frames,
         urls,
     });
+    touch_activity();
+    drop(g); // release the state lock before spawning the watchdog
+
+    // Idle-shutdown watchdog. Reclaims Chrome's ~300-600 MB once the panel is
+    // closed AND no agent has driven the page for IDLE_SHUTDOWN. It holds the
+    // state lock across teardown so a concurrent `ensure()` can't launch a
+    // second Chrome into the shared per-PID profile dir mid-close. Exactly one
+    // runs at a time: `ensure()` only builds `Inner` (and this task) when state
+    // was None, and the task returns after tearing down — the next `page()`
+    // re-launches lazily.
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(IDLE_CHECK).await;
+            if frame_tx().receiver_count() > 0
+                || url_tx().receiver_count() > 0
+                || idle_for() < IDLE_SHUTDOWN
+            {
+                continue;
+            }
+            let mut g = state().lock().await;
+            // Re-check under the lock: a panel may have attached or an op may
+            // have touched the browser between waking and acquiring the lock.
+            if frame_tx().receiver_count() > 0
+                || url_tx().receiver_count() > 0
+                || idle_for() < IDLE_SHUTDOWN
+            {
+                continue;
+            }
+            if let Some(inner) = g.take() {
+                // Stop the pollers first (they reference the page), then close
+                // gracefully — bounded by a timeout so an unresponsive Chrome
+                // can't wedge the watchdog (and every later op) holding the lock.
+                inner.frames.abort();
+                inner.urls.abort();
+                let mut browser = inner.browser;
+                let _ = tokio::time::timeout(Duration::from_secs(5), browser.close()).await;
+                inner.handler.abort();
+                drop(browser); // chromiumoxide's Drop kills the child if close() timed out
+                tracing::info!(
+                    target: "browser",
+                    "idle {IDLE_SHUTDOWN:?} with no watchers — closed headless Chromium to reclaim memory"
+                );
+            }
+            return;
+        }
+    });
     Ok(())
 }
 
 /// Clone the live page handle (lazy-launching the browser first).
 async fn page() -> Result<Page> {
     ensure().await?;
+    touch_activity();
     let g = state().lock().await;
     Ok(g.as_ref().expect("ensured").page.clone())
 }
