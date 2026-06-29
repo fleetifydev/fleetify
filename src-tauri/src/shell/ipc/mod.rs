@@ -3473,7 +3473,20 @@ pub async fn providers_ollama_probe(
             }
         },
         Ok(resp) => {
-            serde_json::json!({ "ok": false, "running": false, "code": "NETWORK", "error": format!("HTTP {}", resp.status()), "base_url": resolved })
+            let status = resp.status();
+            // 401/403 (or 407 proxy auth) ⇒ the daemon answered but rejected
+            // the request: a secured / reverse-proxied rig that needs an API
+            // key, not a network fault. Surface it as AUTH (running: the server
+            // IS reachable) so the card can prompt for a key ("Needs API key")
+            // instead of a misleading "can't reach the daemon".
+            if status == reqwest::StatusCode::UNAUTHORIZED
+                || status == reqwest::StatusCode::FORBIDDEN
+                || status == reqwest::StatusCode::PROXY_AUTHENTICATION_REQUIRED
+            {
+                serde_json::json!({ "ok": false, "running": true, "code": "AUTH", "error": format!("HTTP {status}"), "base_url": resolved })
+            } else {
+                serde_json::json!({ "ok": false, "running": false, "code": "NETWORK", "error": format!("HTTP {status}"), "base_url": resolved })
+            }
         }
         Err(e) if e.is_timeout() => {
             serde_json::json!({ "ok": false, "running": false, "code": "TIMEOUT", "error": e.to_string(), "base_url": resolved })
@@ -3593,7 +3606,20 @@ pub async fn providers_ollama_ps(
             }
         },
         Ok(resp) => {
-            serde_json::json!({ "ok": false, "running": false, "code": "NETWORK", "error": format!("HTTP {}", resp.status()), "base_url": resolved })
+            let status = resp.status();
+            // 401/403 (or 407 proxy auth) ⇒ the daemon answered but rejected
+            // the request: a secured / reverse-proxied rig that needs an API
+            // key, not a network fault. Surface it as AUTH (running: the server
+            // IS reachable) so the card can prompt for a key ("Needs API key")
+            // instead of a misleading "can't reach the daemon".
+            if status == reqwest::StatusCode::UNAUTHORIZED
+                || status == reqwest::StatusCode::FORBIDDEN
+                || status == reqwest::StatusCode::PROXY_AUTHENTICATION_REQUIRED
+            {
+                serde_json::json!({ "ok": false, "running": true, "code": "AUTH", "error": format!("HTTP {status}"), "base_url": resolved })
+            } else {
+                serde_json::json!({ "ok": false, "running": false, "code": "NETWORK", "error": format!("HTTP {status}"), "base_url": resolved })
+            }
         }
         Err(e) if e.is_timeout() => {
             serde_json::json!({ "ok": false, "running": false, "code": "TIMEOUT", "error": e.to_string(), "base_url": resolved })

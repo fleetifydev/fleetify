@@ -2,8 +2,8 @@
  * Downloadable-model browser for the local-Ollama settings card.
  *
  * Two ways to add a model:
- *   1. Curated cards — a baked list of popular Ollama-library models with
- *      capability badges (tools / thinking / vision / embedding) and a size
+ *   1. Curated rows — a baked list of popular Ollama-library models with
+ *      capability chips (tools / thinking / vision / embedding) and a size
  *      picker. Download pulls `name:size` (or the bare `name` when a model
  *      has no size variants, e.g. an embedding model).
  *   2. Free-text box — pull any `model:tag` the user types.
@@ -20,9 +20,13 @@
  * `renderAction(target)` helper keyed by the exact target, so once a target
  * is in flight EVERY place that would start it again shows progress + Cancel
  * instead of a second Download.
+ *
+ * Visual language deliberately mirrors the sibling provider cards: hairline
+ * row separators (not filled boxes), a single green accent reserved for
+ * "installed / running", and uniform muted capability chips — no rainbow.
  */
 import { useEffect, useRef, useState } from "react";
-import { Download, X, Trash2 } from "lucide-react";
+import { Download, X, Trash2, ChevronDown } from "lucide-react";
 import { providers as providersApi } from "@/lib/providers-api";
 
 type Cap = "tools" | "thinking" | "vision" | "embedding";
@@ -50,12 +54,7 @@ const CURATED_LOCAL_MODELS: CuratedModel[] = [
   { name: "nomic-embed-text", blurb: "High-quality text embeddings", caps: ["embedding"], sizes: [] },
 ];
 
-const CAP_COLOR: Record<Cap, string> = {
-  tools: "rgb(96,165,250)",
-  thinking: "rgb(167,139,250)",
-  vision: "rgb(251,191,36)",
-  embedding: "rgb(45,212,191)",
-};
+const GREEN = "rgb(64,180,120)";
 
 const inputStyle: React.CSSProperties = {
   flex: 1,
@@ -71,11 +70,17 @@ const inputStyle: React.CSSProperties = {
   outline: "none",
 };
 
+// appearance:none + custom chevron + explicit <option> colors — the native
+// select value text ignores CSS `color` in WebKitGTK (Tauri/Linux), rendering
+// invisible in dark themes. This styles around that.
 const selectStyle: React.CSSProperties = {
+  appearance: "none",
+  WebkitAppearance: "none",
+  MozAppearance: "none",
   background: "var(--c-srf)",
   border: "1px solid var(--c-brd)",
   borderRadius: 7,
-  padding: "5px 8px",
+  padding: "5px 24px 5px 9px",
   fontSize: 11.5,
   color: "var(--c-high)",
   fontFamily: "var(--font-mono, ui-monospace, monospace)",
@@ -87,13 +92,13 @@ const ghostBtn: React.CSSProperties = {
   fontFamily: "inherit",
   cursor: "pointer",
   outline: "none",
-  padding: "5px 10px",
+  padding: "5px 11px",
   borderRadius: 7,
   fontSize: 11.5,
   fontWeight: 500,
   background: "transparent",
   border: "1px solid var(--c-brd)",
-  color: "var(--c-high)",
+  color: "var(--c-med)",
   display: "inline-flex",
   alignItems: "center",
   gap: 5,
@@ -116,6 +121,29 @@ const primaryBtn: React.CSSProperties = {
   gap: 5,
   flexShrink: 0,
 };
+
+/** Uniform, muted capability chip — same neutral treatment for every cap so
+ *  the row stays scannable without a four-colour rainbow. */
+function CapChip({ cap }: { cap: Cap }) {
+  return (
+    <span
+      style={{
+        fontSize: 9,
+        fontWeight: 600,
+        letterSpacing: 0.5,
+        textTransform: "uppercase",
+        color: "var(--c-dim)",
+        border: "1px solid var(--c-brd)",
+        borderRadius: 4,
+        padding: "1px 5px",
+        lineHeight: 1.6,
+        flexShrink: 0,
+      }}
+    >
+      {cap}
+    </span>
+  );
+}
 
 /** True when an exact pull target is already installed. Ollama stores a
  *  bare-name pull as `name:latest`, so a target with no tag also matches
@@ -240,7 +268,7 @@ export function OllamaModelBrowser({
 
   // One control surface per target. A target in `pulls` shows progress +
   // Cancel (never a second Download); an installed target shows Delete; else
-  // Download. This is what makes resolution 3 structural rather than ad hoc.
+  // Download. This is what makes the concurrency guard structural, not ad hoc.
   function renderAction(target: string) {
     const pulling = pulls[target];
     if (pulling) {
@@ -254,8 +282,8 @@ export function OllamaModelBrowser({
             aria-label={`Pulling ${target}`}
             style={{
               flex: 1,
-              height: 6,
-              borderRadius: 4,
+              height: 5,
+              borderRadius: 3,
               background: "var(--c-srf)",
               border: "1px solid var(--c-brd)",
               overflow: "hidden",
@@ -265,7 +293,7 @@ export function OllamaModelBrowser({
               style={{
                 width: `${pulling.percent}%`,
                 height: "100%",
-                background: "var(--c-high)",
+                background: GREEN,
                 transition: "width 0.2s",
               }}
             />
@@ -274,9 +302,10 @@ export function OllamaModelBrowser({
             style={{
               fontSize: 10.5,
               color: "var(--c-dim)",
-              minWidth: 72,
+              minWidth: 66,
               textAlign: "right",
               whiteSpace: "nowrap",
+              fontVariantNumeric: "tabular-nums",
             }}
           >
             {pulling.status} {pulling.percent}%
@@ -294,8 +323,20 @@ export function OllamaModelBrowser({
     }
     if (isInstalledTarget(target, installed)) {
       return (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-          <span style={{ fontSize: 11, fontWeight: 600, color: "rgb(64,180,120)" }}>Installed ✓</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginLeft: "auto", flexShrink: 0 }}>
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+              fontSize: 11,
+              fontWeight: 500,
+              color: GREEN,
+            }}
+          >
+            <span style={{ width: 6, height: 6, borderRadius: "50%", background: GREEN }} />
+            Installed
+          </span>
           <button
             type="button"
             aria-label={`Delete ${target}`}
@@ -312,7 +353,7 @@ export function OllamaModelBrowser({
         type="button"
         aria-label={`Download ${target}`}
         onClick={() => void startPull(target)}
-        style={primaryBtn}
+        style={{ ...primaryBtn, marginLeft: "auto" }}
       >
         <Download size={11} /> Download
       </button>
@@ -322,25 +363,34 @@ export function OllamaModelBrowser({
   const trimmed = freeText.trim();
 
   return (
-    <div style={{ padding: "12px 0 4px 0", borderTop: "1px solid var(--c-brd)" }}>
-      <div style={{ fontSize: 12, fontWeight: 500, color: "var(--c-high)", marginBottom: 8 }}>
-        Download a model
+    <div style={{ padding: "14px 0 2px 0", borderTop: "1px solid var(--c-brd)" }}>
+      <div style={{ fontSize: 12, fontWeight: 500, color: "var(--c-high)" }}>Download a model</div>
+      <div style={{ fontSize: 11, color: "var(--c-dim)", marginTop: 3 }}>
+        Pull a curated model below, or any tag from the{" "}
+        <a
+          href="https://ollama.com/library"
+          target="_blank"
+          rel="noreferrer"
+          style={{ color: "var(--c-low)" }}
+        >
+          Ollama library
+        </a>
+        .
       </div>
 
-      {/* Curated cards */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        {CURATED_LOCAL_MODELS.map((m) => {
+      {/* Curated rows — hairline separators, no filled boxes. */}
+      <div style={{ marginTop: 6 }}>
+        {CURATED_LOCAL_MODELS.map((m, i) => {
           const hasSizes = m.sizes.length > 0;
           const sel = sizeSel[m.name] ?? m.sizes[0] ?? "";
           const target = hasSizes ? `${m.name}:${sel}` : m.name;
+          const pulling = !!pulls[target];
           return (
             <div
               key={m.name}
               style={{
-                border: "1px solid var(--c-brd)",
-                borderRadius: 8,
-                padding: "9px 11px",
-                background: "var(--c-srf)",
+                padding: "10px 0",
+                borderTop: i === 0 ? "none" : "1px solid var(--c-brd)",
               }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -355,41 +405,37 @@ export function OllamaModelBrowser({
                   {m.name}
                 </span>
                 {m.caps.map((c) => (
-                  <span
-                    key={c}
-                    style={{
-                      fontSize: 9.5,
-                      fontWeight: 600,
-                      letterSpacing: 0.3,
-                      textTransform: "uppercase",
-                      color: CAP_COLOR[c],
-                      border: `1px solid ${CAP_COLOR[c]}`,
-                      borderRadius: 5,
-                      padding: "0px 5px",
-                      opacity: 0.9,
-                    }}
-                  >
-                    {c}
-                  </span>
+                  <CapChip key={c} cap={c} />
                 ))}
               </div>
               <div style={{ fontSize: 11, color: "var(--c-low)", marginTop: 3 }}>{m.blurb}</div>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
-                {hasSizes && (
-                  <select
-                    aria-label={`Size for ${m.name}`}
-                    value={sel}
-                    onChange={(e) =>
-                      setSizeSel((s) => ({ ...s, [m.name]: e.target.value }))
-                    }
-                    style={selectStyle}
-                  >
-                    {m.sizes.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
-                      </option>
-                    ))}
-                  </select>
+                {hasSizes && !pulling && (
+                  <div style={{ position: "relative", display: "inline-flex", flexShrink: 0 }}>
+                    <select
+                      aria-label={`Size for ${m.name}`}
+                      value={sel}
+                      onChange={(e) => setSizeSel((s) => ({ ...s, [m.name]: e.target.value }))}
+                      style={selectStyle}
+                    >
+                      {m.sizes.map((s) => (
+                        <option key={s} value={s} style={{ background: "var(--c-srf)", color: "var(--c-high)" }}>
+                          {s}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown
+                      size={12}
+                      style={{
+                        position: "absolute",
+                        right: 7,
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                        pointerEvents: "none",
+                        color: "var(--c-dim)",
+                      }}
+                    />
+                  </div>
                 )}
                 {renderAction(target)}
               </div>
@@ -403,23 +449,29 @@ export function OllamaModelBrowser({
         })}
       </div>
 
-      {/* Free-text pull box — any model:tag from the Ollama library. */}
-      <div style={{ marginTop: 12 }}>
-        <div style={{ fontSize: 12, fontWeight: 500, color: "var(--c-high)", marginBottom: 6 }}>
-          Pull any model
+      {/* Free-text pull — any model:tag, kept as a quiet affordance below the
+          curated list rather than a second heavyweight section. */}
+      <div style={{ marginTop: 4, paddingTop: 12, borderTop: "1px solid var(--c-brd)" }}>
+        <div style={{ fontSize: 11.5, fontWeight: 500, color: "var(--c-med)", marginBottom: 6 }}>
+          Pull any tag
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <input
             aria-label="Model to pull"
             value={freeText}
-            placeholder="model:tag (e.g. llama3.3:70b)"
+            placeholder="model:tag — e.g. llama3.3:70b"
             onChange={(e) => setFreeText(e.target.value)}
             style={inputStyle}
           />
           {trimmed ? (
             renderAction(trimmed)
           ) : (
-            <button type="button" aria-label="Download model" disabled style={{ ...primaryBtn, opacity: 0.5, cursor: "default" }}>
+            <button
+              type="button"
+              aria-label="Download model"
+              disabled
+              style={{ ...primaryBtn, marginLeft: 0, opacity: 0.5, cursor: "default" }}
+            >
               <Download size={11} /> Download
             </button>
           )}
@@ -429,18 +481,6 @@ export function OllamaModelBrowser({
             {errors[trimmed]}
           </div>
         )}
-        <div style={{ fontSize: 11, color: "var(--c-dim)", marginTop: 6 }}>
-          Any model from the{" "}
-          <a
-            href="https://ollama.com/library"
-            target="_blank"
-            rel="noreferrer"
-            style={{ color: "var(--c-low)" }}
-          >
-            Ollama library
-          </a>
-          , e.g. <code>mistral-nemo:12b</code>.
-        </div>
       </div>
     </div>
   );

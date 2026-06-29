@@ -170,7 +170,10 @@ export type ProvidersOllamaProbeResult =
       ok: false;
       running: boolean;
       base_url: string;
-      code: "NETWORK" | "TIMEOUT" | "PARSE";
+      // AUTH ⇒ the daemon answered but rejected the request (401/403/407):
+      // a secured / proxied rig that needs an API key, distinct from a
+      // NETWORK fault where nothing answered.
+      code: "NETWORK" | "TIMEOUT" | "PARSE" | "AUTH";
       error?: string;
     };
 

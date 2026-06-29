@@ -92,7 +92,7 @@ describe("OllamaConfigCard health-driven states", () => {
     expect(screen.getByText(/Detecting/i)).toBeInTheDocument();
   });
 
-  it("renders 'Not installed' + Install button when missing", () => {
+  it("renders 'Not connected' + Install button when missing", () => {
     const health: OllamaHealth = { kind: "missing" };
     render(
       <OllamaConfigCard
@@ -102,7 +102,7 @@ describe("OllamaConfigCard health-driven states", () => {
         onCancelInstall={() => {}}
       />,
     );
-    expect(screen.getByText(/Not installed/i)).toBeInTheDocument();
+    expect(screen.getByText(/Not connected/i)).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /Install Ollama/i }),
     ).toBeInTheDocument();
@@ -272,5 +272,48 @@ describe("OllamaConfigCard optional key + running badge", () => {
     expect(
       screen.getByText("qwen2").closest("label"),
     ).not.toHaveTextContent("Running");
+  });
+});
+
+describe("OllamaConfigCard auth-needed states", () => {
+  it("shows 'Needs API key' when a probe returns AUTH and no key is saved", async () => {
+    apiMock.ollamaProbe.mockResolvedValue({
+      ok: false,
+      running: true,
+      base_url: "http://remote:11434",
+      code: "AUTH",
+      error: "HTTP 401",
+    });
+    const health: OllamaHealth = { kind: "running", models: [] };
+    render(
+      <OllamaConfigCard
+        tile={tile()}
+        health={health}
+        onInstall={() => {}}
+        onCancelInstall={() => {}}
+      />,
+    );
+    expect(await screen.findByText(/Needs API key/i)).toBeInTheDocument();
+  });
+
+  it("shows 'Key rejected' when a probe returns AUTH but a key is already saved", async () => {
+    apiMock.getKeyPreview.mockResolvedValue({ ok: true, preview: "sk-•••abc" });
+    apiMock.ollamaProbe.mockResolvedValue({
+      ok: false,
+      running: true,
+      base_url: "http://remote:11434",
+      code: "AUTH",
+      error: "HTTP 403",
+    });
+    const health: OllamaHealth = { kind: "running", models: [] };
+    render(
+      <OllamaConfigCard
+        tile={tile()}
+        health={health}
+        onInstall={() => {}}
+        onCancelInstall={() => {}}
+      />,
+    );
+    expect(await screen.findByText(/Key rejected/i)).toBeInTheDocument();
   });
 });

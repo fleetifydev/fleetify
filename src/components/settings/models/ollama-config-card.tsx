@@ -108,6 +108,10 @@ export function OllamaConfigCard({
   // Names Ollama reports as currently loaded (/api/ps) — used to badge them
   // "Running" in the detected-models grid.
   const [runningNames, setRunningNames] = useState<Set<string>>(new Set());
+  // Whether the last probe got a 401/403 (AUTH) — the daemon is reachable but
+  // rejected us. Resolved at render with `keyPreview` to "Needs API key" (no
+  // key saved) or "Key rejected" (key saved but still refused).
+  const [probeWasAuth, setProbeWasAuth] = useState(false);
 
   // Auto-expand when the daemon comes up so the model grid is visible
   // without a click. Plus auto-expand during install so the progress
@@ -132,6 +136,7 @@ export function OllamaConfigCard({
       setSavedUrl(r.base_url);
       if (r.ok) {
         setProbedModels(r.models);
+        setProbeWasAuth(false);
         // Also ask which models are loaded right now so we can badge them.
         // Only `name` is reliable on the ps rows, so match on that.
         const ps = await providersApi.ollamaPs(r.base_url);
@@ -140,6 +145,7 @@ export function OllamaConfigCard({
         );
       } else {
         setProbedModels([]);
+        setProbeWasAuth(r.code === "AUTH");
         setProbeError(`${r.code}${r.error ? ` — ${r.error}` : ""}`);
         setRunningNames(new Set());
       }
@@ -194,14 +200,31 @@ export function OllamaConfigCard({
     await setEnabledModels(tile.spec.id, Array.from(next));
   };
 
+  // "Needs API key" / "Key rejected" — a probe got 401/403 on a secured
+  // remote. Resolved here so it can override the scan-derived status below.
+  const authState: "needs_key" | "rejected" | null = probeWasAuth
+    ? keyPreview
+      ? "rejected"
+      : "needs_key"
+    : null;
+
+  // Model count lives in the subtitle (mirrors the cloud provider cards),
+  // leaving the pill free to read the shared Connected / Not connected.
+  const baseUrl = savedUrl ?? tile.spec.default_base_url;
+  const modelCount =
+    health.kind === "running" ? probedModels.length || health.models.length : 0;
+
   let status: ConnectionStatus = "needs_setup";
   let label: string | undefined;
-  if (health.kind === "scanning") {
+  if (authState) {
+    status = authState === "rejected" ? "error" : "needs_setup";
+    label = authState === "rejected" ? "Key rejected" : "Needs API key";
+  } else if (health.kind === "scanning") {
     status = "testing";
     label = "Detecting…";
   } else if (health.kind === "missing") {
     status = "needs_setup";
-    label = "Not installed";
+    label = "Not connected";
   } else if (health.kind === "installing") {
     status = "testing";
     label =
@@ -212,16 +235,16 @@ export function OllamaConfigCard({
           : "Install timed out";
   } else if (health.kind === "running") {
     status = "connected";
-    label = `${health.models.length} model${health.models.length === 1 ? "" : "s"}`;
+    label = "Connected";
   } else if (health.kind === "error") {
     status = "error";
-    label = health.message;
+    label = "Error";
   }
 
   return (
     <div
       style={{
-        border: `1px solid ${health.kind === "running" ? "rgba(64,180,120,0.30)" : "var(--c-brd)"}`,
+        border: "1px solid var(--c-brd)",
         borderRadius: 10,
         marginBottom: 10,
         overflow: "hidden",
@@ -246,8 +269,19 @@ export function OllamaConfigCard({
           }}
         >
           <div style={{ fontSize: 13, fontWeight: 500 }}>{tile.spec.display_name}</div>
-          <div style={{ fontSize: 11.5, color: "var(--c-low)", marginTop: 2 }}>
-            {savedUrl ?? tile.spec.default_base_url} · local LLM runtime
+          <div
+            style={{
+              fontSize: 11.5,
+              color: "var(--c-low)",
+              marginTop: 2,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {health.kind === "running"
+              ? `${modelCount} model${modelCount === 1 ? "" : "s"} · ${baseUrl}`
+              : `${baseUrl} · local LLM runtime`}
           </div>
         </button>
         <ConnectionStatusPill status={status} label={label} />
@@ -362,17 +396,29 @@ export function OllamaConfigCard({
           </div>
 
           {/* Optional API key — local Ollama usually needs none, but a
-              remote/authenticated rig (secured LAN box or proxy) may. */}
+              remote/authenticated rig (secured LAN box or proxy) may. When a
+              probe returns 401/403 we flip the copy from optional to required. */}
           <div style={{ padding: "12px 0", borderTop: "1px solid var(--c-brd)" }}>
             <div style={{ fontSize: 12, fontWeight: 500, color: "var(--c-high)", marginBottom: 6 }}>
-              API key (optional)
+              API key{" "}
+              {authState ? (
+                <span style={{ color: "rgb(234,179,8)" }}>· required by this endpoint</span>
+              ) : (
+                <span style={{ color: "var(--c-dim)", fontWeight: 400 }}>(optional)</span>
+              )}
             </div>
             <div style={{ display: "flex", gap: 6 }}>
               <input
                 type="password"
                 aria-label="API key (optional)"
                 value={keyDraft}
-                placeholder={keyPreview ? "Replace saved key" : "Usually not needed for local Ollama"}
+                placeholder={
+                  keyPreview
+                    ? "Replace saved key"
+                    : authState
+                      ? "Paste the key for this endpoint"
+                      : "Usually not needed for local Ollama"
+                }
                 onChange={(e) => setKeyDraft(e.target.value)}
                 style={inputStyle}
               />
@@ -386,7 +432,11 @@ export function OllamaConfigCard({
               </button>
             </div>
             <div style={{ fontSize: 11, color: "var(--c-dim)", marginTop: 6 }}>
-              {keyPreview ? (
+              {authState === "rejected" ? (
+                <>The saved key was rejected (401/403). Replace it with a valid key for this endpoint.</>
+              ) : authState === "needs_key" ? (
+                <>This endpoint requires an API key to connect — paste it above, then Detect again.</>
+              ) : keyPreview ? (
                 <>
                   Saved: <code>{keyPreview}</code> · only needed for an authenticated remote
                   Ollama.
