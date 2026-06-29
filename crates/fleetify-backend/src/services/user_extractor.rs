@@ -55,7 +55,7 @@ pub async fn maybe_extract_user_facts(
 ) -> Result<u32> {
     let now = Instant::now();
     {
-        let g = last_extract().lock().unwrap();
+        let g = last_extract().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(prev) = g.get(user_id) {
             if now.duration_since(*prev) < COOLDOWN {
                 return Ok(0);

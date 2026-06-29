@@ -62,7 +62,7 @@ pub async fn maybe_distill_session(
 ) -> Result<u32> {
     let now = Instant::now();
     {
-        let g = last_distill().lock().unwrap();
+        let g = last_distill().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(prev) = g.get(session_id) {
             if now.duration_since(*prev) < COOLDOWN {
                 return Ok(0);

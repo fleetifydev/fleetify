@@ -88,7 +88,7 @@ pub fn register_batch(user_id: Option<&str>, dispatches: Vec<DispatchState>) -> 
         done: false,
     };
     recompute_done(&mut batch);
-    let mut reg = registry().lock().unwrap();
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
     if reg.len() >= MAX_BATCHES {
         if let Some(oldest) = reg
             .values()
@@ -108,7 +108,11 @@ pub fn register_batch(user_id: Option<&str>, dispatches: Vec<DispatchState>) -> 
 }
 
 pub fn get_batch(batch_id: &str) -> Option<Batch> {
-    registry().lock().unwrap().get(batch_id).cloned()
+    registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(batch_id)
+        .cloned()
 }
 
 pub fn batch_belongs_to(batch_id: &str, user_id: Option<&str>) -> bool {
@@ -127,7 +131,7 @@ pub fn set_status(
     summary: &str,
     error: &str,
 ) {
-    let mut reg = registry().lock().unwrap();
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(b) = reg.get_mut(batch_id) {
         if let Some(d) = b.dispatches.iter_mut().find(|d| d.target_id == target_id) {
             d.status = status;
@@ -143,7 +147,7 @@ pub fn set_status(
 }
 
 fn set_title(batch_id: &str, target_id: &str, title: &str) {
-    let mut reg = registry().lock().unwrap();
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(b) = reg.get_mut(batch_id) {
         if let Some(d) = b.dispatches.iter_mut().find(|d| d.target_id == target_id) {
             d.target_title = title.into();

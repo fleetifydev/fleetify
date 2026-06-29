@@ -255,7 +255,7 @@ type JwksCacheSingleton = Mutex<Option<(String, Arc<JwksCache>)>>;
 pub fn default_jwks_cache(jwks_url: &str) -> Arc<JwksCache> {
     static SINGLETON: OnceLock<JwksCacheSingleton> = OnceLock::new();
     let cell = SINGLETON.get_or_init(|| Mutex::new(None));
-    let mut guard = cell.lock().unwrap();
+    let mut guard = cell.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((url, cache)) = guard.as_ref() {
         if url == jwks_url {
             return cache.clone();
@@ -467,7 +467,7 @@ pub async fn resolve_user_id_from_token_cached(
     }
     let key = token_cache_key(token);
     {
-        let mut c = token_cache().lock().unwrap();
+        let mut c = token_cache().lock().unwrap_or_else(|e| e.into_inner());
         if let Some((exp, uid)) = c.get(&key) {
             if *exp > Instant::now() {
                 return Ok(uid.clone());
@@ -476,7 +476,7 @@ pub async fn resolve_user_id_from_token_cached(
         }
     }
     let user = resolve_user_from_token(token, cfg, jwks, pool).await?;
-    let mut c = token_cache().lock().unwrap();
+    let mut c = token_cache().lock().unwrap_or_else(|e| e.into_inner());
     c.insert(key, (Instant::now() + TOKEN_USER_TTL, user.id.clone()));
     if c.len() > TOKEN_USER_MAX {
         // Evict the soonest-to-expire entry (TTL/LRU approximation).

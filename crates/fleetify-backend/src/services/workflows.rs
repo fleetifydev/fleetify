@@ -203,7 +203,10 @@ pub fn allocate_run(
         steps,
         error: None,
     };
-    runs().lock().unwrap().insert(run_id.clone(), run);
+    runs()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(run_id.clone(), run);
     run_id
 }
 

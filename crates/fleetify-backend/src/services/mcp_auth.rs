@@ -156,7 +156,7 @@ pub async fn start(server_name: &str, config: &Value) -> Result<String> {
 
     // Sweep expired states before insertion.
     {
-        let mut g = states().lock().unwrap();
+        let mut g = states().lock().unwrap_or_else(|e| e.into_inner());
         g.retain(|_, p| p.started_at.elapsed() < STATE_TTL);
         g.insert(
             state.clone(),
@@ -193,7 +193,7 @@ pub async fn start(server_name: &str, config: &Value) -> Result<String> {
 /// Exchange the code for tokens and persist to mcp_secrets.
 pub async fn callback(code: &str, state: &str) -> Result<String> {
     let pending = {
-        let mut g = states().lock().unwrap();
+        let mut g = states().lock().unwrap_or_else(|e| e.into_inner());
         g.remove(state)
     }
     .ok_or_else(|| anyhow!("unknown or expired state {state:?}"))?;
