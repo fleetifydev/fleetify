@@ -139,6 +139,100 @@ pub async fn record_activity(
     Ok(())
 }
 
+/// Insert several activity rows in ONE transaction — one fsync under
+/// WAL+NORMAL instead of N+1 — and emit their telemetry from a single
+/// background task instead of one `tokio::spawn` per row. Used by the
+/// TodoWrite explode path, which previously issued an autocommitted
+/// INSERT + a spawn for every todo (a 15-item TodoWrite meant 16 commits
+/// + 16 spawns). Best-effort: a failed write logs and is swallowed so the
+/// bridge stream is never broken.
+///
+/// Each row keeps a distinct, increasing `ts` (matching the old
+/// successive `Utc::now()` calls), so the umbrella row still sorts after
+/// its todos in the renderer's ts-ordered Tasks panel.
+async fn record_activity_batch(
+    pool: &SqlitePool,
+    session_id: &str,
+    project_path: Option<&str>,
+    rows: Vec<(&'static str, String, Option<Value>)>,
+) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    struct Prepared {
+        id: String,
+        kind: &'static str,
+        summary: String,
+        payload_str: Option<String>,
+        ts: chrono::DateTime<Utc>,
+        ts_str: String,
+    }
+    let prepared: Vec<Prepared> = rows
+        .into_iter()
+        .map(|(kind, summary, payload)| {
+            let ts = Utc::now();
+            let summary_capped: String = summary.chars().take(500).collect();
+            let payload_str: Option<String> = payload.and_then(|p| {
+                serde_json::to_string(&p)
+                    .ok()
+                    .map(|s| s.chars().take(4000).collect::<String>())
+            });
+            Prepared {
+                id: uuid::Uuid::new_v4().to_string(),
+                kind,
+                summary: summary_capped,
+                payload_str,
+                ts,
+                ts_str: ts.to_rfc3339(),
+            }
+        })
+        .collect();
+
+    let write_res: std::result::Result<(), sqlx::Error> = async {
+        let mut tx = pool.begin().await?;
+        for p in &prepared {
+            sqlx::query(
+                "INSERT INTO session_activity \
+                 (id, session_id, project_path, kind, summary, payload_json, ts) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&p.id)
+            .bind(session_id)
+            .bind(project_path)
+            .bind(p.kind)
+            .bind(&p.summary)
+            .bind(p.payload_str.as_deref())
+            .bind(&p.ts_str)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await
+    }
+    .await;
+    if let Err(e) = write_res {
+        tracing::warn!(
+            target: "activity",
+            "activity.batch_write_failed session_id={session_id} rows={} err={e}",
+            prepared.len()
+        );
+    }
+
+    // One background task emits all rows' telemetry (was one spawn per row).
+    let session_id_owned = session_id.to_string();
+    let emits: Vec<(&'static str, String, chrono::DateTime<Utc>)> = prepared
+        .into_iter()
+        .map(|p| (p.kind, p.summary, p.ts))
+        .collect();
+    tokio::spawn(async move {
+        for (kind, summary, ts) in emits {
+            let _ = telemetry::emit_activity(&session_id_owned, kind, Some(&summary), ts).await;
+        }
+    });
+
+    Ok(())
+}
+
 /// Persist one tool-end event from the bridge's stream loop. Special-
 /// cases `TodoWrite` to explode each todo into its own row + an
 /// umbrella `tool` row, matching the renderer's Tasks panel contract.
@@ -160,6 +254,8 @@ pub async fn record_tool_event(
     // Special-case TodoWrite: explode items + record umbrella row.
     if tool_name == "TodoWrite" {
         if let Some(todos) = inp.get("todos").and_then(|v| v.as_array()) {
+            let mut rows: Vec<(&'static str, String, Option<Value>)> =
+                Vec::with_capacity(todos.len() + 1);
             for todo in todos {
                 let Some(obj) = todo.as_object() else {
                     continue;
@@ -186,28 +282,15 @@ pub async fn record_tool_event(
                 if let Some(af) = obj.get("activeForm") {
                     payload["activeForm"] = af.clone();
                 }
-                record_activity(
-                    pool,
-                    session_id,
-                    project_path,
-                    "todo",
-                    &summary,
-                    Some(&payload),
-                )
-                .await?;
+                rows.push(("todo", summary, Some(payload)));
             }
             let count = todos.len();
-            let summary = format!("TodoWrite · {count} items");
-            let payload = json!({ "tool": "TodoWrite" });
-            return record_activity(
-                pool,
-                session_id,
-                project_path,
+            rows.push((
                 "tool",
-                &summary,
-                Some(&payload),
-            )
-            .await;
+                format!("TodoWrite · {count} items"),
+                Some(json!({ "tool": "TodoWrite" })),
+            ));
+            return record_activity_batch(pool, session_id, project_path, rows).await;
         }
     }
 
