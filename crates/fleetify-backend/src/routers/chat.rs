@@ -2293,11 +2293,19 @@ async fn run_send_flow(
             .execute(&st.auth.pool)
             .await;
     } else {
+        // measure-first 2.3: the whole content blob is re-serialized + rewritten
+        // on every final persist. Capture its byte size + the UPDATE latency so
+        // the append-only-vs-full-blob decision (4.4) is data-driven, not a
+        // guess. One info line per assistant turn.
+        let block_count = content.len();
+        let blob = Value::Array(content).to_string();
+        let turn_blob_bytes = blob.len();
+        let persist_t = std::time::Instant::now();
         let _ = sqlx::query(
             "UPDATE messages SET content = ?, model = ?, usage_json = ?, \
              cost_usd = ?, timestamp = ? WHERE id = ?",
         )
-        .bind(Value::Array(content).to_string())
+        .bind(&blob)
         .bind(&model_name)
         .bind(if usage.is_null() {
             None
@@ -2309,6 +2317,13 @@ async fn run_send_flow(
         .bind(&assistant_msg_id)
         .execute(&st.auth.pool)
         .await;
+        tracing::info!(
+            target: "persist",
+            turn_blob_bytes,
+            block_count,
+            persist_ms = persist_t.elapsed().as_millis() as u64,
+            "assistant turn persisted (chat)"
+        );
     }
 
     if cost_usd > 0.0 {
@@ -3787,11 +3802,18 @@ async fn run_dispatched_task(
                 .await;
         }
     } else {
+        // measure-first 2.3 (dispatched-agent turn — same full-blob rewrite as
+        // the chat path). Logged under the same "persist" target so p95 turn
+        // size spans both user-facing and agent-to-agent turns.
+        let block_count = content.len();
+        let blob = Value::Array(content).to_string();
+        let turn_blob_bytes = blob.len();
+        let persist_t = std::time::Instant::now();
         let _ = sqlx::query(
             "UPDATE messages SET content = ?, model = ?, usage_json = ?, \
              cost_usd = ?, timestamp = ? WHERE id = ?",
         )
-        .bind(Value::Array(content).to_string())
+        .bind(&blob)
         .bind(&model_name)
         .bind(if usage.is_null() {
             None
@@ -3803,6 +3825,13 @@ async fn run_dispatched_task(
         .bind(&assistant_msg_id)
         .execute(&pool)
         .await;
+        tracing::info!(
+            target: "persist",
+            turn_blob_bytes,
+            block_count,
+            persist_ms = persist_t.elapsed().as_millis() as u64,
+            "assistant turn persisted (dispatch)"
+        );
     }
     if let Some(cs) = new_claude_sid {
         if target.claude_session_id.as_deref() != Some(cs.as_str()) {

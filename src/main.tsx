@@ -37,3 +37,23 @@ window.addEventListener("contextmenu", e => e.preventDefault());
 createRoot(document.getElementById("root")!).render(<App />);
 // Cold-start marker — pair with sinceNavMs above to measure mount cost.
 if (typeof performance !== "undefined") performance.mark("fleet:react-render");
+
+// Time-to-first-paint: a double requestAnimationFrame fires only after the
+// browser has committed the first frame, so this elapsed is a real
+// "navigation → first paint". Pairs with renderer.boot's sinceNavMs
+// (module-eval) to split module-eval cost from React mount + paint cost,
+// turning the cold-start estimates into measured numbers. measure-first 2.1.
+if (typeof performance !== "undefined" && typeof requestAnimationFrame !== "undefined") {
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      performance.mark("fleet:first-paint");
+      const firstPaintMs = Math.round(performance.now());
+      try {
+        performance.measure("fleet:mount-to-paint", "fleet:react-render", "fleet:first-paint");
+      } catch {
+        // Marks missing (perf buffer cleared) — the absolute number still stands.
+      }
+      log.info("renderer.firstPaint", "first frame painted", { firstPaintMs });
+    }),
+  );
+}

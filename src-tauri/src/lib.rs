@@ -378,7 +378,14 @@ pub fn run() {
                 match fleetify_backend::serve_with_routing_setup(addr, sd, routing_setup).await {
                     Ok(handle) => {
                         std::mem::forget(handle);
-                        tracing::info!("embedded backend up on {addr}");
+                        // backend_bind_ms splits the boot path: this is the
+                        // setup()→backend-bound phase; cold_start_ms at the
+                        // window reveal is the total. (total − bind) is the
+                        // webview-build + URL-reachable wait. measure-first 2.1.
+                        tracing::info!(
+                            backend_bind_ms = boot_start.elapsed().as_millis() as u64,
+                            "embedded backend up on {addr}"
+                        );
                     }
                     Err(e) => {
                         tracing::error!("backend failed to start: {e}");
