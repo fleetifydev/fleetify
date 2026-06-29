@@ -809,8 +809,12 @@ export function Sidebar() {
   useEffect(() => {
     const load = () => fetchBulkStats().then(setStatsMap).catch(() => {});
     load();
-    const iv = setInterval(load, 10_000);
-    return () => clearInterval(iv);
+    // Pause the 10s poll while the window is hidden; refresh once on return so
+    // the sidebar is current immediately instead of waiting up to a full tick.
+    const iv = setInterval(() => { if (!document.hidden) load(); }, 10_000);
+    const onVis = () => { if (!document.hidden) load(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { clearInterval(iv); document.removeEventListener("visibilitychange", onVis); };
   }, []);
 
   const handleNew = useCallback(() => {

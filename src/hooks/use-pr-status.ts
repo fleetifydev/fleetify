@@ -24,7 +24,11 @@ export function usePRStatus(folder: string | null | undefined): PRStatus | null 
       }).catch(() => { if (!cancelled) setPr(null); });
     };
     load();
-    const iv = setInterval(load, 30_000);
+    // Pause while the window is hidden — the sidebar runs one of these per
+    // session, so a backgrounded app would otherwise keep firing N `gh pr`
+    // subprocesses + GitHub API calls every 30s for data nobody is looking
+    // at. Resumes on the next tick after the window is visible again.
+    const iv = setInterval(() => { if (!document.hidden) load(); }, 30_000);
     return () => { cancelled = true; clearInterval(iv); };
   }, [folder]);
 

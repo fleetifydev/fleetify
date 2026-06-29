@@ -47,7 +47,10 @@ export function useSessionGitContext(folder: string | null | undefined, enabled:
     };
 
     load();
-    const iv = setInterval(load, POLL_MS);
+    // Skip the git working-diff poll while the window is hidden — each tick
+    // spawns a git subprocess, wasted when nobody is watching. Resumes on the
+    // next tick once visible again.
+    const iv = setInterval(() => { if (!document.hidden) load(); }, POLL_MS);
     return () => { cancelled = true; clearInterval(iv); };
   }, [folder, enabled]);
 
