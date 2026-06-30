@@ -956,9 +956,144 @@ pub async fn delete_remote_branch_rest(folder: &Path, token: &str, branch: &str)
     }
 }
 
+// ─── Actions check re-run (parity gh ↔ rest) ───
+
+/// Pure: (method, URL) to re-run a single failed Actions job.
+pub fn build_rerun_job_request(o: &Origin, job_id: u64) -> (&'static str, String) {
+    (
+        "POST",
+        format!(
+            "https://api.{}/repos/{}/{}/actions/jobs/{job_id}/rerun",
+            o.host, o.owner, o.repo
+        ),
+    )
+}
+
+/// Pure: (method, URL) to re-run the failed jobs of a workflow run.
+pub fn build_rerun_run_request(o: &Origin, run_id: u64) -> (&'static str, String) {
+    (
+        "POST",
+        format!(
+            "https://api.{}/repos/{}/{}/actions/runs/{run_id}/rerun-failed-jobs",
+            o.host, o.owner, o.repo
+        ),
+    )
+}
+
+/// Map a re-run POST response into our `{ok}` / `{ok:false,code}` shape.
+fn rerun_status_to_value(status: u16, body_txt: &str) -> Value {
+    if (200..300).contains(&status) {
+        return json!({ "ok": true });
+    }
+    match status {
+        403 => fail(
+            "ACTIONS_FORBIDDEN",
+            "GitHub denied the re-run — this sign-in can't write Actions. \
+             Use the gh CLI sign-in or grant the workflow scope.",
+        ),
+        404 => fail(
+            "NOT_FOUND",
+            "Workflow run or job not found — it may have expired.",
+        ),
+        _ => fail(
+            "HTTP",
+            &format!(
+                "GitHub returned {status}. {}",
+                body_txt.chars().take(160).collect::<String>()
+            ),
+        ),
+    }
+}
+
+async fn post_rerun(
+    client: &reqwest::Client,
+    headers: reqwest::header::HeaderMap,
+    url: &str,
+) -> Value {
+    match client.post(url).headers(headers).send().await {
+        Ok(r) => {
+            let status = r.status().as_u16();
+            let txt = r.text().await.unwrap_or_default();
+            rerun_status_to_value(status, &txt)
+        }
+        Err(e) => fail("NETWORK", &e.to_string()),
+    }
+}
+
+/// Sender: re-run one failed Actions job. `{ ok, rerun:1 }` on success.
+pub async fn rerun_check_job_rest(folder: &Path, token: &str, job_id: u64) -> Value {
+    let Some(o) = resolve_origin(folder).await else {
+        return fail("NO_ORIGIN", "no origin remote");
+    };
+    let (_, url) = build_rerun_job_request(&o, job_id);
+    let v = post_rerun(&reqwest::Client::new(), auth_headers(token).await, &url).await;
+    if v.get("ok").and_then(|b| b.as_bool()) == Some(true) {
+        json!({ "ok": true, "rerun": 1 })
+    } else {
+        v
+    }
+}
+
+/// Sender: re-run the failed jobs of each distinct workflow run. Succeeds if at
+/// least one run was re-queued; returns the last error otherwise.
+pub async fn rerun_failed_checks_rest(folder: &Path, token: &str, run_ids: &[u64]) -> Value {
+    let Some(o) = resolve_origin(folder).await else {
+        return fail("NO_ORIGIN", "no origin remote");
+    };
+    let client = reqwest::Client::new();
+    let headers = auth_headers(token).await;
+    let mut ok = 0u32;
+    let mut last_err: Option<Value> = None;
+    for run_id in super::git::dedupe_ids(run_ids) {
+        let (_, url) = build_rerun_run_request(&o, run_id);
+        let v = post_rerun(&client, headers.clone(), &url).await;
+        if v.get("ok").and_then(|b| b.as_bool()) == Some(true) {
+            ok += 1;
+        } else {
+            last_err = Some(v);
+        }
+    }
+    if ok > 0 {
+        json!({ "ok": true, "rerun": ok })
+    } else {
+        last_err.unwrap_or_else(|| fail("NO_RUNS", "no rerunnable workflow runs"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rerun_request_shapes() {
+        assert_eq!(
+            build_rerun_job_request(&origin(), 456),
+            (
+                "POST",
+                "https://api.github.com/repos/acme/app/actions/jobs/456/rerun".to_string()
+            )
+        );
+        assert_eq!(
+            build_rerun_run_request(&origin(), 123),
+            (
+                "POST",
+                "https://api.github.com/repos/acme/app/actions/runs/123/rerun-failed-jobs"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn rerun_status_mapping() {
+        assert_eq!(rerun_status_to_value(201, "")["ok"], true);
+        assert_eq!(rerun_status_to_value(200, "")["ok"], true);
+        assert_eq!(
+            rerun_status_to_value(403, "no")["code"],
+            "ACTIONS_FORBIDDEN"
+        );
+        assert_eq!(rerun_status_to_value(404, "gone")["code"], "NOT_FOUND");
+        assert_eq!(rerun_status_to_value(500, "boom")["ok"], false);
+    }
 
     #[test]
     fn parse_origin_https_and_ssh() {

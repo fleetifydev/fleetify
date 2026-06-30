@@ -553,6 +553,22 @@ document.addEventListener("mousedown", function (e) {
           authStored: authStored || null,
         });
       },
+      rerunCheckJob: function (folder, jobId, authMethod, authStored) {
+        return invoke("git_rerun_check_job", {
+          folder: String(folder || ""),
+          jobId: Number(jobId),
+          authMethod: authMethod || null,
+          authStored: authStored || null,
+        });
+      },
+      rerunFailedChecks: function (folder, runIds, authMethod, authStored) {
+        return invoke("git_rerun_failed_checks", {
+          folder: String(folder || ""),
+          runIds: (runIds || []).map(Number),
+          authMethod: authMethod || null,
+          authStored: authStored || null,
+        });
+      },
       syncMain: function (folder, baseBranch) {
         return invoke("git_sync_main", { folder: String(folder || ""), baseBranch: String(baseBranch || "main") });
       },

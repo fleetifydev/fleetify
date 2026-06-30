@@ -176,6 +176,8 @@ pub fn run() {
             shell::ipc::git_get_pr_status,
             shell::ipc::git_list_prs,
             shell::ipc::git_merge_pr,
+            shell::ipc::git_rerun_check_job,
+            shell::ipc::git_rerun_failed_checks,
             shell::ipc::git_delete_remote_branch,
             shell::ipc::git_pr_ready,
             shell::ipc::git_sync_main,

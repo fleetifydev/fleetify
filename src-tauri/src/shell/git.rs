@@ -1905,6 +1905,93 @@ const PR_VIEW_FIELDS: &str =
     "number,url,state,mergeable,mergeStateStatus,isDraft,baseRefName,headRefName,\
                               statusCheckRollup,comments";
 
+/// Strip a trailing `?query` / `#fragment` from a URL path segment.
+fn trim_id_segment(s: &str) -> &str {
+    s.split(['?', '#']).next().unwrap_or(s)
+}
+
+/// Parse a GitHub Actions check details URL of the shape
+/// `…/actions/runs/<run_id>/job/<job_id>` into `(run_id, job_id)`. Any URL that
+/// doesn't match (legacy commit statuses, third-party CI targets, malformed) →
+/// `(None, None)` — such checks aren't rerunnable via the Actions API.
+pub(crate) fn parse_actions_run_job(url: &str) -> (Option<u64>, Option<u64>) {
+    const MARKER: &str = "/actions/runs/";
+    let Some(idx) = url.find(MARKER) else {
+        return (None, None);
+    };
+    let mut parts = url[idx + MARKER.len()..].split('/');
+    let run_id = parts
+        .next()
+        .and_then(|s| trim_id_segment(s).parse::<u64>().ok());
+    let job_id = match parts.next() {
+        Some("job") | Some("jobs") => parts
+            .next()
+            .and_then(|s| trim_id_segment(s).parse::<u64>().ok()),
+        _ => None,
+    };
+    (run_id, job_id)
+}
+
+/// Order-preserving u64 de-dupe (coalesces per-job run ids before the bulk
+/// `rerun-failed-jobs` fan-out).
+pub(crate) fn dedupe_ids(ids: &[u64]) -> Vec<u64> {
+    let mut out = Vec::with_capacity(ids.len());
+    for &id in ids {
+        if !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    out
+}
+
+/// Classify a `gh api` re-run failure into our `{ok:false,code}` shape.
+fn gh_rerun_err(err: &str) -> Value {
+    let lo = err.to_lowercase();
+    if lo.contains("403") || lo.contains("forbidden") || lo.contains("not accessible") {
+        json!({ "ok": false, "code": "ACTIONS_FORBIDDEN",
+                "error": "GitHub denied the re-run (insufficient Actions permissions)." })
+    } else if lo.contains("404") || lo.contains("not found") {
+        json!({ "ok": false, "code": "NOT_FOUND",
+                "error": "Workflow run or job not found — it may have expired." })
+    } else {
+        json!({ "ok": false, "code": "GH", "error": err.trim() })
+    }
+}
+
+/// gh path: re-run one failed Actions job. `gh api` fills {owner}/{repo} from
+/// the repo at `folder`.
+pub async fn rerun_check_job(folder: &Path, job_id: u64) -> Value {
+    let path = format!("repos/{{owner}}/{{repo}}/actions/jobs/{job_id}/rerun");
+    let (rc, _out, err) = gh(&["api", "-X", "POST", path.as_str()], folder).await;
+    if rc == 0 {
+        json!({ "ok": true, "rerun": 1 })
+    } else {
+        gh_rerun_err(&err)
+    }
+}
+
+/// gh path: re-run the failed jobs of each distinct workflow run.
+pub async fn rerun_failed_checks(folder: &Path, run_ids: &[u64]) -> Value {
+    let mut ok = 0u32;
+    let mut last_err: Option<Value> = None;
+    for run_id in dedupe_ids(run_ids) {
+        let path = format!("repos/{{owner}}/{{repo}}/actions/runs/{run_id}/rerun-failed-jobs");
+        let (rc, _out, err) = gh(&["api", "-X", "POST", path.as_str()], folder).await;
+        if rc == 0 {
+            ok += 1;
+        } else {
+            last_err = Some(gh_rerun_err(&err));
+        }
+    }
+    if ok > 0 {
+        json!({ "ok": true, "rerun": ok })
+    } else {
+        last_err.unwrap_or_else(
+            || json!({ "ok": false, "code": "NO_RUNS", "error": "no rerunnable workflow runs" }),
+        )
+    }
+}
+
 /// Normalize a checks array — gh's `statusCheckRollup` OR REST's `check_runs` —
 /// into the renderer's `checks` object: aggregate counts plus a per-check
 /// `runs[]` (`{name,status,conclusion,bucket,url}`) that drives the CI ring +
@@ -1968,6 +2055,11 @@ pub(crate) fn normalize_check_runs(items: &[Value]) -> Value {
             };
             (bucket, status, concl)
         };
+        let (run_id, job_id) = match url.as_deref() {
+            Some(u) => parse_actions_run_job(u),
+            None => (None, None),
+        };
+        let rerunnable = job_id.is_some();
         match bucket {
             "passing" => passing += 1,
             "failing" => failing += 1,
@@ -1979,6 +2071,9 @@ pub(crate) fn normalize_check_runs(items: &[Value]) -> Value {
             "conclusion": conclusion,
             "bucket": bucket,
             "url": url,
+            "runId": run_id,
+            "jobId": job_id,
+            "rerunnable": rerunnable,
         }));
     }
     json!({
@@ -2462,6 +2557,69 @@ fn ssh_to_https(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_actions_run_job_extracts_ids() {
+        assert_eq!(
+            parse_actions_run_job("https://github.com/o/r/actions/runs/123/job/456"),
+            (Some(123), Some(456))
+        );
+        // trailing query is stripped
+        assert_eq!(
+            parse_actions_run_job(
+                "https://github.com/o/r/actions/runs/12/job/34?check_suite_focus=true"
+            ),
+            (Some(12), Some(34))
+        );
+        // run page without a job segment → run only
+        assert_eq!(
+            parse_actions_run_job("https://github.com/o/r/actions/runs/99"),
+            (Some(99), None)
+        );
+        // non-Actions target (legacy status / third-party CI) → nothing
+        assert_eq!(
+            parse_actions_run_job("https://circleci.com/gh/o/r/42"),
+            (None, None)
+        );
+        assert_eq!(parse_actions_run_job("garbage"), (None, None));
+    }
+
+    #[test]
+    fn dedupe_ids_keeps_first_order() {
+        assert_eq!(dedupe_ids(&[3, 1, 3, 2, 1]), vec![3, 1, 2]);
+        assert_eq!(dedupe_ids(&[]), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn gh_rerun_err_classifies() {
+        assert_eq!(
+            gh_rerun_err("HTTP 403: Resource not accessible by integration")["code"],
+            "ACTIONS_FORBIDDEN"
+        );
+        assert_eq!(
+            gh_rerun_err("gh: Not Found (HTTP 404)")["code"],
+            "NOT_FOUND"
+        );
+        assert_eq!(gh_rerun_err("some other failure")["code"], "GH");
+    }
+
+    #[test]
+    fn normalize_check_runs_marks_actions_checks_rerunnable() {
+        let items = vec![
+            json!({"name":"build","status":"completed","conclusion":"failure",
+                   "detailsUrl":"https://github.com/o/r/actions/runs/100/job/200"}),
+            json!({"__typename":"StatusContext","context":"ci/circle","state":"FAILURE",
+                   "targetUrl":"https://circleci.com/x"}),
+        ];
+        let c = normalize_check_runs(&items);
+        let runs = c["runs"].as_array().unwrap();
+        assert_eq!(runs[0]["runId"], 100);
+        assert_eq!(runs[0]["jobId"], 200);
+        assert_eq!(runs[0]["rerunnable"], true);
+        // legacy StatusContext is never rerunnable
+        assert_eq!(runs[1]["rerunnable"], false);
+        assert_eq!(runs[1]["jobId"], serde_json::Value::Null);
+    }
 
     fn git_available() -> bool {
         std::process::Command::new("git")

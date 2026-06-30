@@ -319,6 +319,40 @@ pub async fn host_merge_pr(
     tag_and_reset_on_auth_failure(r)
 }
 
+pub async fn host_rerun_check_job(
+    folder: &Path,
+    requested: Option<&str>,
+    stored: Option<&str>,
+    job_id: u64,
+) -> Value {
+    let r = match resolve_auth_method(folder, requested, stored).await {
+        Some(AuthMethod::Gh) => super::git::rerun_check_job(folder, job_id).await,
+        Some(AuthMethod::Rest) => match oauth_token().await {
+            Some(t) => super::github_pr::rerun_check_job_rest(folder, &t, job_id).await,
+            None => no_auth(),
+        },
+        None => no_auth(),
+    };
+    tag_and_reset_on_auth_failure(r)
+}
+
+pub async fn host_rerun_failed_checks(
+    folder: &Path,
+    requested: Option<&str>,
+    stored: Option<&str>,
+    run_ids: &[u64],
+) -> Value {
+    let r = match resolve_auth_method(folder, requested, stored).await {
+        Some(AuthMethod::Gh) => super::git::rerun_failed_checks(folder, run_ids).await,
+        Some(AuthMethod::Rest) => match oauth_token().await {
+            Some(t) => super::github_pr::rerun_failed_checks_rest(folder, &t, run_ids).await,
+            None => no_auth(),
+        },
+        None => no_auth(),
+    };
+    tag_and_reset_on_auth_failure(r)
+}
+
 pub async fn host_delete_remote_branch(
     folder: &Path,
     requested: Option<&str>,

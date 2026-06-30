@@ -1170,6 +1170,38 @@ pub async fn git_pr_ready(
     .await
 }
 #[tauri::command]
+pub async fn git_rerun_check_job(
+    folder: String,
+    job_id: u64,
+    auth_method: Option<String>,
+    auth_stored: Option<String>,
+) -> serde_json::Value {
+    crate::shell::git_host::host_rerun_check_job(
+        &PathBuf::from(folder),
+        auth_method.as_deref(),
+        auth_stored.as_deref(),
+        job_id,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn git_rerun_failed_checks(
+    folder: String,
+    run_ids: Vec<u64>,
+    auth_method: Option<String>,
+    auth_stored: Option<String>,
+) -> serde_json::Value {
+    crate::shell::git_host::host_rerun_failed_checks(
+        &PathBuf::from(folder),
+        auth_method.as_deref(),
+        auth_stored.as_deref(),
+        &run_ids,
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn git_sync_main(folder: String, base_branch: String) -> serde_json::Value {
     git::sync_main(&PathBuf::from(folder), &base_branch).await
 }

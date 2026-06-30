@@ -59,6 +59,14 @@ export type CheckRun = {
   bucket: "passing" | "failing" | "pending";
   /** Link to the check's page on GitHub, when available. */
   url: string | null;
+  /** GitHub Actions workflow-run id (parsed from the details URL), when this is
+   *  an Actions check — the bulk re-run target. */
+  runId?: number | null;
+  /** GitHub Actions job id (parsed from the details URL) — the per-check re-run
+   *  target. */
+  jobId?: number | null;
+  /** True when the check can be re-run (an Actions job with a known id). */
+  rerunnable?: boolean;
 };
 export type PRStatus = {
   number: number;
@@ -121,6 +129,11 @@ interface GitAPI {
    *  review". Used by the Merge button so one click un-drafts +
    *  squash-merges in sequence. */
   markPRReady?(folder: string, prNumber: number, authMethod?: string, authStored?: string): Promise<{ ok: boolean; error?: string }>;
+  /** Re-run a single failed Actions job (`POST actions/jobs/{id}/rerun`). */
+  rerunCheckJob?(folder: string, jobId: number, authMethod?: string, authStored?: string): Promise<{ ok: boolean; rerun?: number; code?: string; error?: string }>;
+  /** Re-run the failed jobs of each given workflow run
+   *  (`POST actions/runs/{id}/rerun-failed-jobs`). */
+  rerunFailedChecks?(folder: string, runIds: number[], authMethod?: string, authStored?: string): Promise<{ ok: boolean; rerun?: number; code?: string; error?: string }>;
   /** Open the PR in the browser. With `prNumber` the exact /pull/<n>
    *  page opens; without it the backend tries to resolve the current
    *  branch's PR via gh before falling back to the repo's /pulls list. */
@@ -219,6 +232,14 @@ export const git = {
                     api().mergePR(folder, prNumber, method, undefined, storedAuthMethod()),
   markPRReady:    (folder: string, prNumber: number) =>
                     api().markPRReady?.(folder, prNumber, undefined, storedAuthMethod())
+                    ?? Promise.resolve({ ok: false, error: "electron unavailable" }),
+  /** Re-run one failed Actions job by its id (per-check re-run). */
+  rerunCheck:     (folder: string, jobId: number) =>
+                    api().rerunCheckJob?.(folder, jobId, undefined, storedAuthMethod())
+                    ?? Promise.resolve({ ok: false, error: "electron unavailable" }),
+  /** Re-run the failed jobs of the given workflow runs (bulk re-run). */
+  rerunFailedChecks: (folder: string, runIds: number[]) =>
+                    api().rerunFailedChecks?.(folder, runIds, undefined, storedAuthMethod())
                     ?? Promise.resolve({ ok: false, error: "electron unavailable" }),
   openPR:         (folder: string, prNumber?: number) => api().openPR(folder, prNumber),
   /** Post-merge cleanup: switch the source repo to `baseBranch`

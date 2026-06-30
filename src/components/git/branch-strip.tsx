@@ -25,8 +25,9 @@ import { PreflightDialog } from "@/components/git/preflight-dialog";
 import { resolveMergeGate } from "@/components/git/merge-gate";
 import { PrChecksIndicator } from "@/components/git/pr-checks-indicator";
 import { PrChecksPopover } from "@/components/git/pr-checks-popover";
+import { applyRerunOverlay } from "@/components/git/rerun-overlay";
 import type { PreflightIssue } from "@/lib/git-api";
-import { git, type PRStatus, defaultPRTitle, defaultPRBody } from "@/lib/git-api";
+import { git, type PRStatus, type CheckRun, defaultPRTitle, defaultPRBody } from "@/lib/git-api";
 import { github } from "@/lib/github-link-api";
 import { glog } from "@/lib/git-log";
 import { useAppStore, COMPOSER_CHAT_KEY } from "@/stores/app-store";
@@ -69,6 +70,10 @@ const KNOWN_DEFAULTS = new Set(["main", "master"]);
  *  once the agent's push clears the conflict. Short-lived (only during an
  *  active, user-initiated resolve). */
 const RESOLVE_POLL_MS = 2000;
+/** Optimistic-pending grace after a re-run is triggered: past this we trust the
+ *  server's reported state even if a re-run check still reads "failing" (e.g. it
+ *  re-failed fast), so a silently-failed re-run can't pin "Pending" forever. */
+const RERUN_GRACE_MS = 30_000;
 /** Give up waiting after this long (agent couldn't resolve / push failed)
  *  so the UI never spins forever; we surface a ChatError and stop. */
 const RESOLVE_TIMEOUT_MS = 5 * 60 * 1000;
@@ -1122,6 +1127,10 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // Whether the CI-checks details popover (anchored on the merge cluster's
   // status ring) is open. Reads the selected PR's `checks.runs` live.
   const [checksOpen, setChecksOpen] = useState(false);
+  // Names of checks with a re-run in flight — drives the optimistic
+  // failing→pending overlay until the status poll reflects GitHub's new state.
+  const [rerunning, setRerunning] = useState<ReadonlySet<string>>(() => new Set());
+  const rerunStartedAtRef = useRef<number>(0);
   useEffect(() => {
     // Reset any previously-loaded foreign detail the instant the selection (or
     // context) changes — otherwise switching PRs keeps the PREVIOUS PR's status
@@ -1200,6 +1209,45 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
     foreignPr,
   });
   const selectedPr: PRStatus | null = effSelectedPr;
+  // Optimistic "waiting" view: re-running checks render as pending. Handlers
+  // below read the RAW selectedPr to decide what to re-run; the UI reads this.
+  const overlaidPr: PRStatus | null = selectedPr
+    ? { ...selectedPr, checks: applyRerunOverlay(selectedPr.checks, rerunning) }
+    : null;
+
+  // While a re-run is in flight, poll the selected PR fast (2s) and retire each
+  // re-running name once the server stops reporting it "failing" (it actually
+  // went pending/passing) — or once the grace window elapses (trust the server).
+  useEffect(() => {
+    if (!folder || rerunning.size === 0) return;
+    const target = effectiveSelectedNumber ?? selectedPr?.number ?? null;
+    if (target == null) return;
+    let cancelled = false;
+    const tick = () => {
+      git
+        .prStatus(folder, target)
+        .then((r) => {
+          if (cancelled || !r.ok || !r.pr) return;
+          if (selectedIsBranchPr) setPr(r.pr);
+          else setForeignPr(r.pr);
+          const stillFailing = new Set(
+            (r.pr.checks.runs ?? []).filter((x) => x.bucket === "failing").map((x) => x.name),
+          );
+          const graceOver = Date.now() - rerunStartedAtRef.current > RERUN_GRACE_MS;
+          setRerunning((prev) => {
+            const next = new Set([...prev].filter((name) => stillFailing.has(name) && !graceOver));
+            return next.size === prev.size ? prev : next;
+          });
+        })
+        .catch(() => {});
+    };
+    tick();
+    const iv = setInterval(tick, RESOLVE_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+    };
+  }, [folder, rerunning, effectiveSelectedNumber, selectedPr?.number, selectedIsBranchPr]);
 
   if (controlCenter) return null;
 
@@ -1270,6 +1318,50 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // ctxR.baseBranch directly, gated by the `noGit ? <NoGitPill /> : …`
   // ternary so the cast is only consumed when noGit is provably false.
   const ctxR = ctx as GitContext & { branch: string };
+
+  const onRerunCheck = (run: CheckRun) => {
+    if (!folder || run.jobId == null) return;
+    setRerunning((prev) => new Set(prev).add(run.name));
+    rerunStartedAtRef.current = Date.now();
+    void git.rerunCheck(folder, run.jobId).then((r) => {
+      if (!r.ok) {
+        setRerunning((prev) => {
+          const n = new Set(prev);
+          n.delete(run.name);
+          return n;
+        });
+        const sid = useAppStore.getState().activeSessionId || COMPOSER_CHAT_KEY;
+        pushChatError(sid, `Re-run failed: ${r.error ?? "unknown error"}`);
+      }
+    });
+  };
+
+  const onRerunFailed = () => {
+    if (!folder || !selectedPr) return;
+    const failing = (selectedPr.checks.runs ?? []).filter(
+      (r) => r.bucket === "failing" && r.rerunnable && r.runId != null,
+    );
+    if (failing.length === 0) return;
+    const names = failing.map((r) => r.name);
+    const runIds = Array.from(new Set(failing.map((r) => r.runId as number)));
+    setRerunning((prev) => {
+      const n = new Set(prev);
+      names.forEach((x) => n.add(x));
+      return n;
+    });
+    rerunStartedAtRef.current = Date.now();
+    void git.rerunFailedChecks(folder, runIds).then((r) => {
+      if (!r.ok) {
+        setRerunning((prev) => {
+          const n = new Set(prev);
+          names.forEach((x) => n.delete(x));
+          return n;
+        });
+        const sid = useAppStore.getState().activeSessionId || COMPOSER_CHAT_KEY;
+        pushChatError(sid, `Re-run failed: ${r.error ?? "unknown error"}`);
+      }
+    });
+  };
 
   const onMerge = async () => {
     if (!folder || !selectedPr || selectedPr.state !== "OPEN") return;
@@ -2002,7 +2094,7 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
       // conflicts logic decides whether Merge is enabled. Pending checks
       // DON'T block — gh's `--auto` flag queues the merge and lets GitHub
       // do it once they pass.
-      const det = selectedPr;
+      const det = overlaidPr;
       const checksFailing = det ? det.checks.failing > 0 : false;
       // resolveMergeGate folds GitHub's branch-protection-aware mergeStateStatus
       // into the button's enabled state: on a protected branch with required
@@ -2036,6 +2128,8 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
                 setChecksOpen(false);
               }}
               onDismiss={() => setChecksOpen(false)}
+              onRerunCheck={onRerunCheck}
+              onRerunFailed={onRerunFailed}
             />
           ) : null}
         </span>
@@ -2169,7 +2263,7 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
           <PrSwitcherChip
             openPrs={openPrsList}
             selectedNumber={effectiveSelectedNumber}
-            selectedStatus={effSelectedPr}
+            selectedStatus={overlaidPr}
             onSelect={setSelectedPrNumber}
             onOpenUrl={(p) => {
               const w = window as unknown as { electronAPI?: { openExternal?: (url: string) => Promise<unknown> } };

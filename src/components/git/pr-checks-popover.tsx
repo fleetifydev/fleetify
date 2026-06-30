@@ -9,7 +9,7 @@
  * normalized) runs.
  */
 import { Fragment, useEffect, useRef, useState } from "react";
-import { Check, X, Loader2, ExternalLink } from "lucide-react";
+import { Check, X, Loader2, ExternalLink, RotateCw } from "lucide-react";
 import type { CSSProperties } from "react";
 import type { CheckRun } from "@/lib/git-api";
 import type { ChecksSummary } from "./pr-checks-indicator";
@@ -22,6 +22,11 @@ interface Props {
   summary: ChecksSummary;
   onOpenCheck: (url: string) => void;
   onDismiss: () => void;
+  /** Per-check re-run, fired for a failing + rerunnable row. Omit to hide the
+   *  per-row controls. */
+  onRerunCheck?: (run: CheckRun) => void;
+  /** Bulk "Re-run failed checks". Omit to hide the footer action. */
+  onRerunFailed?: () => void;
 }
 
 function RowIcon({ bucket }: { bucket: CheckRun["bucket"] }) {
@@ -55,7 +60,7 @@ const panel: CSSProperties = {
   fontFamily: "var(--font-sans)",
 };
 
-export function PrChecksPopover({ runs, summary, onOpenCheck, onDismiss }: Props) {
+export function PrChecksPopover({ runs, summary, onOpenCheck, onDismiss, onRerunCheck, onRerunFailed }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<number | null>(null);
 
@@ -79,6 +84,10 @@ export function PrChecksPopover({ runs, summary, onOpenCheck, onDismiss }: Props
   if (summary.passing) segs.push({ t: `${summary.passing} passed`, c: GREEN });
   if (summary.failing) segs.push({ t: `${summary.failing} failing`, c: "var(--c-err)" });
   if (summary.pending) segs.push({ t: `${summary.pending} running`, c: "var(--c-med)" });
+
+  // Failing checks that GitHub Actions can re-run (legacy statuses / external
+  // CI aren't rerunnable) — gates both the per-row ↻ and the bulk footer.
+  const failingRerunnable = runs.filter((r) => r.bucket === "failing" && r.rerunnable);
 
   return (
     <div ref={ref} role="dialog" aria-label="CI checks" style={panel}>
@@ -114,12 +123,19 @@ export function PrChecksPopover({ runs, summary, onOpenCheck, onDismiss }: Props
           runs.map((r, i) => {
             const clickable = !!r.url;
             const hovered = hover === i;
+            const canRerun = r.bucket === "failing" && !!r.rerunnable && !!onRerunCheck;
             return (
-              <button
+              <div
                 key={`${r.name}-${i}`}
-                type="button"
+                role="button"
+                tabIndex={clickable ? 0 : -1}
                 onClick={() => r.url && onOpenCheck(r.url)}
-                disabled={!clickable}
+                onKeyDown={(e) => {
+                  if ((e.key === "Enter" || e.key === " ") && r.url) {
+                    e.preventDefault();
+                    onOpenCheck(r.url);
+                  }
+                }}
                 title={clickable ? `Open “${r.name}” on GitHub` : r.name}
                 onMouseEnter={() => setHover(i)}
                 onMouseLeave={() => setHover((h) => (h === i ? null : h))}
@@ -152,7 +168,31 @@ export function PrChecksPopover({ runs, summary, onOpenCheck, onDismiss }: Props
                 >
                   {r.name}
                 </span>
-                {clickable ? (
+                {canRerun ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRerunCheck!(r);
+                    }}
+                    aria-label={`Re-run ${r.name}`}
+                    title={`Re-run “${r.name}”`}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      padding: 2,
+                      borderRadius: 4,
+                      color: "var(--c-dim)",
+                      cursor: "pointer",
+                      display: "flex",
+                      flexShrink: 0,
+                      opacity: hovered ? 0.9 : 0.5,
+                      transition: "opacity 0.12s",
+                    }}
+                  >
+                    <RotateCw size={11} strokeWidth={2} />
+                  </button>
+                ) : clickable ? (
                   <ExternalLink
                     size={11}
                     strokeWidth={1.85}
@@ -164,11 +204,38 @@ export function PrChecksPopover({ runs, summary, onOpenCheck, onDismiss }: Props
                     }}
                   />
                 ) : null}
-              </button>
+              </div>
             );
           })
         )}
       </div>
+
+      {onRerunFailed && failingRerunnable.length > 0 ? (
+        <button
+          type="button"
+          onClick={onRerunFailed}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 6,
+            padding: "8px 12px",
+            borderTop: "1px solid var(--c-brd)",
+            background: "transparent",
+            border: "none",
+            color: "var(--c-high)",
+            font: "inherit",
+            fontSize: 11.5,
+            fontWeight: 600,
+            cursor: "pointer",
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.background = "var(--c-ghost)")}
+          onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+        >
+          <RotateCw size={12} strokeWidth={2} />
+          Re-run failed checks
+        </button>
+      ) : null}
     </div>
   );
 }
