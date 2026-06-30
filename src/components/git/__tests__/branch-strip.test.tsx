@@ -1619,3 +1619,105 @@ describe("BranchStrip — merge-conflict agent resolution", () => {
     await waitFor(() => expect(mergePRMock).toHaveBeenCalledWith("/repo", 42, "squash"), { timeout: 8000 });
   });
 });
+
+// ── Issue 1: once the SELECTED PR is mergeable, the Create PR + Review lead
+// actions are noise next to the live Merge button — hide them. The working
+// branch having its own open PR already hid them (createBlocked); these pin
+// the previously-uncovered case where the merge cluster targets a FOREIGN
+// mergeable PR while the working branch has no PR of its own.
+describe("BranchStrip — hide lead actions when the selected PR is mergeable", () => {
+  afterEach(() => { usePrStore.setState({ prs: [] }); });
+
+  // Foreign-only store: the working branch has NO PR, so the switcher selects
+  // the repo's open PR. baseBranch:null disarms the background auto-PR effect
+  // so it can't open a PR for the working branch and change the shape.
+  const FOREIGN_7 = [
+    { number: 7, state: "OPEN", headRefName: "feat/other", isDraft: false, mergeable: "MERGEABLE", title: "Other feature", url: "https://github.com/u/r/pull/7" },
+  ];
+
+  it("hides Create PR + Review once the selected (foreign) PR is mergeable", async () => {
+    usePrStore.setState({ prs: FOREIGN_7 });
+    prListMock.mockResolvedValue({ ok: true, prs: FOREIGN_7 });
+    gitContextMock.mockResolvedValue({ branch: "fleet/solo-a1b2c3d4", baseBranch: null, plus: 5, minus: 2, remoteHttpsUrl: "https://github.com/u/r" });
+    // Working-branch poll (no number) → no own PR; #7 detail → clean + mergeable.
+    prStatusMock.mockImplementation(async (_f: string, num?: number) =>
+      num === 7 ? { ok: true, pr: OPEN_PR_7 } : { ok: true, pr: null });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" />);
+    // The merge cluster resolves to an ENABLED Merge for the mergeable #7…
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Merge$/i })).toBeEnabled());
+    // …and the lead actions are gone — a ready-to-merge PR doesn't need them.
+    expect(screen.queryByRole("button", { name: /^create pr$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /review changes/i })).toBeNull();
+  });
+
+  it("KEEPS Create PR + Review while the selected PR is NOT mergeable (failing checks)", async () => {
+    usePrStore.setState({ prs: FOREIGN_7 });
+    prListMock.mockResolvedValue({ ok: true, prs: FOREIGN_7 });
+    gitContextMock.mockResolvedValue({ branch: "fleet/solo-a1b2c3d4", baseBranch: null, plus: 5, minus: 2, remoteHttpsUrl: "https://github.com/u/r" });
+    // #7's detail reports failing checks → NOT mergeable, so the lead actions
+    // stay available (the user's next move isn't a merge).
+    prStatusMock.mockImplementation(async (_f: string, num?: number) =>
+      num === 7
+        ? { ok: true, pr: { ...OPEN_PR_7, checks: { passing: 0, failing: 2, pending: 0, total: 2 } } }
+        : { ok: true, pr: null });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" />);
+    // Merge is present but disabled (failing) — confirms #7's detail landed.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Merge$/i }))
+        .toHaveAttribute("title", expect.stringMatching(/2 checks failing/i)));
+    expect(screen.getByRole("button", { name: /^Merge$/i })).toBeDisabled();
+    // Lead actions remain because the PR can't be merged yet.
+    expect(screen.getByRole("button", { name: /^create pr$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /review changes/i })).toBeInTheDocument();
+  });
+});
+
+// ── Issue 2: switching PRs must show the NEW PR's status immediately, not the
+// previous PR's stale detail. The foreign-PR detail (`foreignPr`) carries the
+// checks → a lingering "Failing" from the prior PR used to ride along on the
+// newly-selected PR for the whole detail-poll window. The fix resets it on
+// every selection change so the chip falls back to the store entry's basic
+// state until the fresh poll lands.
+describe("BranchStrip — PR switcher shows fresh status on switch, not the previous PR's", () => {
+  afterEach(() => { usePrStore.setState({ prs: [] }); });
+
+  it("clears the previous PR's 'Failing' the instant a different PR is selected", async () => {
+    const TWO = [
+      { number: 7, state: "OPEN", headRefName: "feat/seven", isDraft: false, mergeable: "MERGEABLE", title: "Seventh feature", url: "https://github.com/u/r/pull/7" },
+      { number: 8, state: "OPEN", headRefName: "feat/eight", isDraft: false, mergeable: "MERGEABLE", title: "Eighth feature", url: "https://github.com/u/r/pull/8" },
+    ];
+    usePrStore.setState({ prs: TWO });
+    prListMock.mockResolvedValue({ ok: true, prs: TWO });
+    gitContextMock.mockResolvedValue({ branch: "fleet/solo-a1b2c3d4", baseBranch: null, plus: 5, minus: 2, remoteHttpsUrl: "https://github.com/u/r" });
+    const FAILING_7 = { ...OPEN_PR_7, number: 7, headRefName: "feat/seven", checks: { passing: 0, failing: 1, pending: 0, total: 1 } };
+    // #7 → FAILING. #8's detail never resolves during the test, so the ONLY
+    // thing that can drop #7's "Failing" off the chip after switching to #8 is
+    // the reset — isolating the regression from the eventual fresh poll.
+    prStatusMock.mockImplementation(async (_f: string, num?: number) => {
+      if (num === 7) return { ok: true, pr: FAILING_7 };
+      if (num === 8) return new Promise(() => {}); // pending: no fresh #8 detail
+      return { ok: true, pr: null }; // working-branch poll: no own PR
+    });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" />);
+
+    // Select #7 and let its detail land as "Failing".
+    fireEvent.click(await screen.findByRole("button", { name: /switch pull request/i }));
+    fireEvent.click(await screen.findByText("Seventh feature"));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /switch pull request/i }))
+        .toHaveAttribute("title", expect.stringMatching(/#7 · Failing/)));
+
+    // Switch to #8 — its detail is still loading. The chip must NOT inherit
+    // #7's "Failing"; it falls back to #8's store state ("Open").
+    fireEvent.click(screen.getByRole("button", { name: /switch pull request/i }));
+    fireEvent.click(await screen.findByText("Eighth feature"));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /switch pull request/i }))
+        .toHaveAttribute("title", expect.stringMatching(/#8 · Open/)));
+    expect(screen.getByRole("button", { name: /switch pull request/i }))
+      .toHaveAttribute("title", expect.not.stringMatching(/Failing/));
+  });
+});

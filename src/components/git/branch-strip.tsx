@@ -1123,8 +1123,15 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // status ring) is open. Reads the selected PR's `checks.runs` live.
   const [checksOpen, setChecksOpen] = useState(false);
   useEffect(() => {
+    // Reset any previously-loaded foreign detail the instant the selection (or
+    // context) changes — otherwise switching PRs keeps the PREVIOUS PR's status
+    // on screen (e.g. a lingering "Failing") for the whole detail-poll window,
+    // because the chip + merge cluster read the stale `foreignPr` until the new
+    // `git.prStatus` resolves. Nulling it makes the chip fall back to the store
+    // entry's basic state (Open/Draft/Conflict) for the NEW PR until the fresh
+    // poll lands and refines it.
+    setForeignPr(null);
     if (!folder || isWorktree || effectiveSelectedNumber == null || selectedIsBranchPr) {
-      setForeignPr(null);
       return;
     }
     let cancelled = false;
@@ -1235,7 +1242,17 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // a dead lead action is noise next to the live merge cluster).
   // autoCreating is excluded so the in-flight "Creating…" feedback
   // stays visible right after the click.
-  const createBlocked = !autoCreating && (!!branchOpenPr || emptyDiffBlocked);
+  //
+  // Also hidden once the SELECTED PR is actually mergeable: when the Merge
+  // button is live, Create PR + Review are just noise next to it — the user's
+  // next move is Merge, not opening another PR or re-reviewing. The working
+  // branch's own open PR is already covered by `branchOpenPr` above; this folds
+  // in the FOREIGN-selection case (the merge cluster targets a repo PR the
+  // working branch doesn't own). `resolveMergeGate(null)` reports canMerge:false,
+  // so the actions stay through the post-switch detail-poll window until we KNOW
+  // the selected PR is mergeable.
+  const selectedMergeable = !!effSelectedRepoPr && resolveMergeGate(selectedPr).canMerge;
+  const createBlocked = !autoCreating && (!!branchOpenPr || emptyDiffBlocked || selectedMergeable);
   const createDisabled = autoCreating || !!branchOpenPr || emptyDiffBlocked;
   const createTooltip =
     branchOpenPr ? `PR #${branchOpenPr.number} is already open for this branch`
