@@ -1292,6 +1292,177 @@ const CLOUDFLARE_WORKERS_AI_MODELS: &[ModelSpec] = &[
 // never treat this as canonical.
 const OLLAMA_CLOUD_MODELS: &[ModelSpec] = &[
     ModelSpec {
+        id: "glm-5.2",
+        label: "GLM 5.2",
+        context_window: Some("976K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "deepseek-v4-pro",
+        label: "DeepSeek V4 Pro",
+        context_window: Some("1M"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "deepseek-v4-flash",
+        label: "DeepSeek V4 Flash",
+        context_window: Some("1M"),
+        note: Some("Preview"),
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "gemini-3-flash-preview",
+        label: "Gemini 3 Flash",
+        context_window: Some("1M"),
+        note: Some("Preview"),
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "minimax-m3",
+        label: "MiniMax M3",
+        context_window: Some("512K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "glm-5",
+        label: "GLM 5",
+        context_window: Some("198K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "glm-5.1",
+        label: "GLM 5.1",
+        context_window: Some("198K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "glm-4.7",
+        label: "GLM 4.7",
+        context_window: Some("198K"),
+        note: Some("Coding"),
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "kimi-k2.7-code",
+        label: "Kimi K2.7 Code",
+        context_window: Some("256K"),
+        note: Some("Coding"),
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "kimi-k2.6",
+        label: "Kimi K2.6",
+        context_window: Some("256K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "kimi-k2.5",
+        label: "Kimi K2.5",
+        context_window: Some("256K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "qwen3.5:397b",
+        label: "Qwen 3.5",
+        context_window: Some("256K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "qwen3-coder:480b",
+        label: "Qwen3 Coder 480B",
+        context_window: Some("256K"),
+        note: Some("Coding"),
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "gemma4:31b",
+        label: "Gemma 4",
+        context_window: Some("256K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "nemotron-3-ultra",
+        label: "Nemotron 3 Ultra",
+        context_window: Some("256K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "nemotron-3-super",
+        label: "Nemotron 3 Super",
+        context_window: Some("256K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "minimax-m2.7",
+        label: "MiniMax M2.7",
+        context_window: Some("200K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "minimax-m2.5",
+        label: "MiniMax M2.5",
+        context_window: Some("198K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
+        id: "minimax-m2.1",
+        label: "MiniMax M2.1",
+        context_window: Some("200K"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
+    ModelSpec {
         id: "gpt-oss:120b",
         label: "GPT-OSS 120B",
         context_window: Some("128K"),
@@ -1308,42 +1479,6 @@ const OLLAMA_CLOUD_MODELS: &[ModelSpec] = &[
         group: None,
         endpoint: None,
         supports_effort: false,
-    },
-    ModelSpec {
-        id: "deepseek-v3.1:671b",
-        label: "DeepSeek V3.1 671B",
-        context_window: Some("128K"),
-        note: None,
-        group: None,
-        endpoint: None,
-        supports_effort: false,
-    },
-    ModelSpec {
-        id: "qwen3-coder:480b",
-        label: "Qwen3 Coder 480B",
-        context_window: Some("256K"),
-        note: Some("Coding"),
-        group: None,
-        endpoint: None,
-        supports_effort: false,
-    },
-    ModelSpec {
-        id: "glm-5.1",
-        label: "GLM 5.1",
-        context_window: Some("128K"),
-        note: None,
-        group: None,
-        endpoint: None,
-        supports_effort: false,
-    },
-    ModelSpec {
-        id: "kimi-k2.6",
-        label: "Kimi K2.6",
-        context_window: Some("256K"),
-        note: None,
-        group: None,
-        endpoint: None,
-        supports_effort: true,
     },
 ];
 
@@ -1955,6 +2090,42 @@ mod tests {
         let ids: Vec<_> = CATALOG.iter().map(|p| p.id).collect();
         assert!(ids.contains(&"ollama"));
         assert!(ids.contains(&"ollama-cloud"));
+    }
+
+    #[test]
+    fn ollama_cloud_models_are_current_and_bare() {
+        let p = CATALOG
+            .iter()
+            .find(|p| p.id == "ollama-cloud")
+            .expect("ollama-cloud present");
+        let ids: Vec<&str> = p.default_models.iter().map(|m| m.id).collect();
+        // Bare ids only. The website tags pages show a ":cloud" / "-cloud"
+        // suffix, but the direct cloud API ({base}/v1/chat/completions) takes
+        // the un-suffixed form — a suffixed id would 404. Guard against a
+        // copy-paste of the website tag.
+        for m in p.default_models {
+            assert!(
+                !m.id.contains(":cloud") && !m.id.ends_with("-cloud"),
+                "ollama-cloud model id must be bare (no :cloud/-cloud), got {}",
+                m.id
+            );
+        }
+        // Representative sample of the current grid (ollama.com/search?c=cloud).
+        for id in [
+            "glm-5.2",
+            "deepseek-v4-pro",
+            "gemini-3-flash-preview",
+            "minimax-m3",
+            "gpt-oss:120b",
+            "qwen3-coder:480b",
+        ] {
+            assert!(ids.contains(&id), "expected current cloud model {id}");
+        }
+        // Stale entries from the old curated list must be gone.
+        assert!(
+            !ids.contains(&"deepseek-v3.1:671b"),
+            "stale cloud model deepseek-v3.1:671b should be removed"
+        );
     }
 
     #[test]

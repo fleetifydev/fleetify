@@ -76,6 +76,21 @@ describe("useProviderHealth", () => {
     }
   });
 
+  it("ollama resolves to 'running' (Connected) when installed=true even if running=false", async () => {
+    // The Settings card must treat an installed-but-stopped (or slow-to-probe)
+    // daemon as present — same as onboarding's `installed || running` split —
+    // instead of collapsing to 'missing' and showing the bogus Install button.
+    const { apiScanProviders } = await import("@/lib/api");
+    (apiScanProviders as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      claude_code: { installed: false, authenticated: false, path: null },
+        codex_cli:  { installed: false, authenticated: false, path: null },
+      ollama:     { running: false, installed: true, models: [] },
+      env_keys:   { anthropic: false, openai: false, gemini: false, groq: false },
+    });
+    const { result } = renderHook(() => useProviderHealth({ tiles: [] }));
+    await waitFor(() => expect(result.current.ollama.kind).toBe("running"));
+  });
+
   it("provider with has_key=false stays no_key", async () => {
     const tiles = [tileWithKey("openai", false)];
     const { result } = renderHook(() => useProviderHealth({ tiles }));

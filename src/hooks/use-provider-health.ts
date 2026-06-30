@@ -175,7 +175,12 @@ export function useProviderHealth({ tiles }: { tiles: ProviderTile[] }): UseProv
       setOllama({ kind: "error", message: e instanceof Error ? e.message : "scan failed" });
     }
     if (scanResult) {
-      if (scanResult.ollama.running) {
+      // Treat an installed-but-stopped (or slow-to-probe) daemon as present —
+      // mirror onboarding's `installed || running` split (see
+      // onboarding/provider-install-state.ts). Keying on `running` alone made
+      // Settings show a bogus "Install Ollama" button for a daemon that was
+      // merely not answering the 2s probe right now.
+      if (scanResult.ollama.running || scanResult.ollama.installed) {
         setOllama({ kind: "running", models: scanResult.ollama.models });
       } else {
         setOllama({ kind: "missing" });

@@ -9,7 +9,7 @@
  * missing — wired to `onInstall` which calls the hook's installOllama().
  */
 import { useState, useEffect, useCallback } from "react";
-import { Loader2, RefreshCw, Download, X } from "lucide-react";
+import { Loader2, Download, X } from "lucide-react";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import {
   providers as providersApi,
@@ -89,15 +89,13 @@ export function OllamaConfigCard({
   onInstall: () => void;
   onCancelInstall: () => void;
 }) {
-  const { setOllamaBaseUrl, setEnabledModels } = useProvidersConfig();
+  const { setEnabledModels } = useProvidersConfig();
   const [expanded, setExpanded] = useState(false);
-  const [draftUrl, setDraftUrl] = useState("");
   const [savedUrl, setSavedUrl] = useState<string | null>(null);
-  // Per-card probe state (only meaningful while running, for the "Detect"
-  // button + base-URL save flow). Mount-time presence detection is
-  // owned by the parent hook.
+  // Per-card probe state. The base URL is auto-resolved by the backend
+  // (resolve_ollama_base_url → 127.0.0.1:11434, or $OLLAMA_HOST) — there is no
+  // Base URL field, so probe() always runs against the auto-resolved endpoint.
   const [probing, setProbing] = useState(false);
-  const [probeError, setProbeError] = useState<string | null>(null);
   const [probedModels, setProbedModels] = useState<OllamaModelEntry[]>([]);
   // Optional API key. Local Ollama needs none; a remote/authenticated rig
   // (secured LAN box or proxy) may. `keyPreview` is the masked form of any
@@ -119,18 +117,22 @@ export function OllamaConfigCard({
   // is a one-shot React-internal sync, not external state, and the
   // health.kind dep gates it to actual transitions.
   useEffect(() => {
-    if (health.kind === "running" || health.kind === "installing") {
+    if (
+      health.kind === "running" ||
+      health.kind === "installing" ||
+      probeWasAuth
+    ) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setExpanded(true);
     }
-  }, [health.kind]);
+  }, [health.kind, probeWasAuth]);
 
-  // When we transition into "running", probe once to populate the
-  // model grid (the scan only carries name strings, not sizes).
+  // Probe the auto-resolved base URL (null → backend picks 127.0.0.1:11434 or
+  // $OLLAMA_HOST). Populates the model grid + "Running" badges, or flags a
+  // 401/403 as AUTH so render shows "Needs API key".
   const probe = useCallback(
     async (url?: string | null) => {
       setProbing(true);
-      setProbeError(null);
       const r = await providersApi.ollamaProbe(url ?? null);
       setProbing(false);
       setSavedUrl(r.base_url);
@@ -146,18 +148,22 @@ export function OllamaConfigCard({
       } else {
         setProbedModels([]);
         setProbeWasAuth(r.code === "AUTH");
-        setProbeError(`${r.code}${r.error ? ` — ${r.error}` : ""}`);
         setRunningNames(new Set());
       }
     },
     [],
   );
 
+  // Auto-detect on mount and after health transitions (e.g. install →
+  // running): probe the auto-resolved endpoint once. Surfaces the model grid
+  // when reachable, or "Needs API key" when the endpoint is auth-gated — no
+  // Base URL field, no Detect button. Guards stop it re-firing once we have a
+  // definitive result.
   useEffect(() => {
-    if (health.kind === "running" && probedModels.length === 0 && !probing && !probeError) {
-      void probe();
-    }
-  }, [health.kind, probedModels.length, probing, probeError, probe]);
+    if (probing || probedModels.length > 0 || probeWasAuth) return;
+    void probe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [health.kind]);
 
   // Read any saved (optional) key on mount so we can show a masked preview.
   useEffect(() => {
@@ -169,14 +175,6 @@ export function OllamaConfigCard({
       cancelled = true;
     };
   }, []);
-
-  const onSaveUrl = async () => {
-    const trimmed = draftUrl.trim();
-    if (!trimmed) return;
-    await setOllamaBaseUrl(trimmed);
-    setDraftUrl("");
-    await probe(trimmed);
-  };
 
   const onSaveKey = async () => {
     const trimmed = keyDraft.trim();
@@ -285,7 +283,7 @@ export function OllamaConfigCard({
           </div>
         </button>
         <ConnectionStatusPill status={status} label={label} />
-        {health.kind === "missing" && (
+        {health.kind === "missing" && !authState && (
           <button
             onClick={onInstall}
             style={primaryBtn}
@@ -356,44 +354,10 @@ export function OllamaConfigCard({
             </div>
           )}
 
-          {/* Base URL form is always available when expanded — even when
-              missing, in case the user has a remote Ollama at a LAN URL. */}
-          <div style={{ padding: "14px 0 12px 0" }}>
-            <div style={{ fontSize: 12, fontWeight: 500, color: "var(--c-high)", marginBottom: 6 }}>
-              Base URL
-            </div>
-            <div style={{ display: "flex", gap: 6 }}>
-              <input
-                value={draftUrl}
-                placeholder={savedUrl ?? tile.spec.default_base_url}
-                onChange={(e) => setDraftUrl(e.target.value)}
-                style={inputStyle}
-              />
-              <button
-                onClick={() => void probe(draftUrl.trim() || null)}
-                disabled={probing}
-                style={{ ...ghostBtn, opacity: probing ? 0.5 : 1 }}
-              >
-                {probing ? <Loader2 size={12} className="spin" /> : <RefreshCw size={11} />} Detect
-              </button>
-              <button
-                onClick={onSaveUrl}
-                disabled={!draftUrl.trim()}
-                style={{ ...primaryBtn, opacity: !draftUrl.trim() ? 0.5 : 1 }}
-              >
-                Save
-              </button>
-            </div>
-            <div style={{ fontSize: 11, color: "var(--c-dim)", marginTop: 6 }}>
-              Use <code>http://localhost:11434</code> for a local install, or a LAN URL
-              like <code>http://192.168.1.50:11434</code> to talk to a remote rig.
-            </div>
-            {probeError && (
-              <div style={{ fontSize: 11.5, color: "rgb(248,113,113)", marginTop: 6 }}>
-                {probeError}
-              </div>
-            )}
-          </div>
+          {/* No Base URL field — the backend auto-resolves it
+              (resolve_ollama_base_url → 127.0.0.1:11434, or $OLLAMA_HOST). A
+              custom/remote endpoint can be pointed to via the OLLAMA_HOST env
+              var; the card probes whatever that resolves to. */}
 
           {/* Optional API key — local Ollama usually needs none, but a
               remote/authenticated rig (secured LAN box or proxy) may. When a

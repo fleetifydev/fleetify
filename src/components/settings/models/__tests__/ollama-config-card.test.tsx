@@ -275,6 +275,71 @@ describe("OllamaConfigCard optional key + running badge", () => {
   });
 });
 
+describe("OllamaConfigCard base-URL removed + auto-detect", () => {
+  it("does not render a Base URL input or Detect button (base URL is auto-detected)", async () => {
+    const health: OllamaHealth = { kind: "running", models: [] };
+    render(
+      <OllamaConfigCard
+        tile={tile()}
+        health={health}
+        onInstall={() => {}}
+        onCancelInstall={() => {}}
+      />,
+    );
+    // The API-key field proves the card is expanded (auto-expands on running).
+    await screen.findByLabelText("API key (optional)");
+    expect(screen.queryByText("Base URL")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /detect/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("auto-detects an auth-gated endpoint: shows 'Needs API key' and hides Install even when health=missing", async () => {
+    apiMock.ollamaProbe.mockResolvedValue({
+      ok: false,
+      running: true,
+      base_url: "http://remote:11434",
+      code: "AUTH",
+      error: "HTTP 401",
+    });
+    const health: OllamaHealth = { kind: "missing" };
+    render(
+      <OllamaConfigCard
+        tile={tile()}
+        health={health}
+        onInstall={() => {}}
+        onCancelInstall={() => {}}
+      />,
+    );
+    expect(await screen.findByText(/Needs API key/i)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Install Ollama/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("auto-expands and reveals the API key field when the endpoint needs a key", async () => {
+    apiMock.ollamaProbe.mockResolvedValue({
+      ok: false,
+      running: true,
+      base_url: "http://remote:11434",
+      code: "AUTH",
+      error: "HTTP 401",
+    });
+    const health: OllamaHealth = { kind: "missing" };
+    render(
+      <OllamaConfigCard
+        tile={tile()}
+        health={health}
+        onInstall={() => {}}
+        onCancelInstall={() => {}}
+      />,
+    );
+    expect(
+      await screen.findByLabelText("API key (optional)"),
+    ).toBeInTheDocument();
+  });
+});
+
 describe("OllamaConfigCard auth-needed states", () => {
   it("shows 'Needs API key' when a probe returns AUTH and no key is saved", async () => {
     apiMock.ollamaProbe.mockResolvedValue({
