@@ -234,7 +234,7 @@ pub fn parse_analyze(raw: &str) -> Option<AnalyzeResult> {
 
     let sections = if decision == "done" {
         obj.get("sections")
-            .and_then(|v| if v.is_object() { Some(v) } else { None })
+            .filter(|&v| v.is_object())
             .and_then(|raw_sections| {
                 let bullets = |key: &str| -> Option<Vec<String>> {
                     let arr = raw_sections.get(key)?.as_array()?;

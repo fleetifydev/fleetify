@@ -799,7 +799,7 @@ async fn handle(socket: WebSocket, st: AppState, token: String) {
             h.abort();
         }
     }
-    for (_, b) in bridges.lock().await.iter() {
+    for b in bridges.lock().await.values() {
         b.abort().await;
     }
     // Fail every parked permission prompt so bridge tasks awaiting these
