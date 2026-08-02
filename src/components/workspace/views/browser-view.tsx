@@ -8,12 +8,16 @@
 
 import { useState, useEffect, useRef, useCallback, useContext } from "react";
 import {
-  ArrowLeft, ArrowRight, Copy, ExternalLink, Globe, List, MoreHorizontal,
+  ArrowLeft, ArrowRight, ChevronDown, Copy, ExternalLink, Globe, List, MoreHorizontal,
   Maximize2, Minimize2, RefreshCw, Search, SquareMousePointer, Star,
   Terminal as TerminalIcon, Trash2, X,
 } from "lucide-react";
 import { PaneCloseContext } from "@/components/workspace/pane-close-context";
 import { SANS } from "@/components/workspace/typography";
+import {
+  SELECT_MODES, parsePickPayload, parseSelectMode, pickToRefDetail,
+  selectModeLabel, selectModeMenuLabel, type SelectMode,
+} from "@/lib/element-ref";
 import { useAppStore } from "@/stores/app-store";
 
 /* ── Browser pane ──
@@ -53,6 +57,12 @@ function BrowserView() {
   const [editUrl, setEditUrl] = useState("");
   const [active, setActive] = useState(false);
   const [selecting, setSelecting] = useState(false);
+  // Sticky Select behaviour: ask opens the in-page box, the copy modes put
+  // the chosen representation straight on the clipboard per click.
+  const [selectMode, setSelectMode] = useState<SelectMode>(() => {
+    try { return parseSelectMode(localStorage.getItem("fleet:browser-select-mode")); } catch { return "ask"; }
+  });
+  const [modeOpen, setModeOpen] = useState(false);
   const fullscreen = useAppStore((s) => s.rightPanelFullscreen);
   const setRightPanelFullscreen = useAppStore((s) => s.setRightPanelFullscreen);
   const [urlFocused, setUrlFocused] = useState(false);
@@ -238,17 +248,17 @@ function BrowserView() {
 
   // Keep the webview-hide flag in sync with any open overlay (popover or
   // suggestions) — the native webview renders above the DOM.
-  useEffect(() => { popoverOpenRef.current = histOpen || menuOpen || showSuggest; }, [histOpen, menuOpen, showSuggest]);
+  useEffect(() => { popoverOpenRef.current = histOpen || menuOpen || modeOpen || showSuggest; }, [histOpen, menuOpen, modeOpen, showSuggest]);
 
   // Close the popovers on an outside click / Escape.
   useEffect(() => {
-    if (!histOpen && !menuOpen) return;
-    const close = () => { setHistOpen(false); setMenuOpen(false); };
+    if (!histOpen && !menuOpen && !modeOpen) return;
+    const close = () => { setHistOpen(false); setMenuOpen(false); setModeOpen(false); };
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
     window.addEventListener("mousedown", close);
     window.addEventListener("keydown", onKey);
     return () => { window.removeEventListener("mousedown", close); window.removeEventListener("keydown", onKey); };
-  }, [histOpen, menuOpen]);
+  }, [histOpen, menuOpen, modeOpen]);
 
   // Escape leaves full screen. Registered only while full screen is on, so it
   // never competes with the popover/menu Escape handlers above.
@@ -270,32 +280,51 @@ function BrowserView() {
     if (!activeRef.current) return;
     setSelecting((prev) => {
       const next = !prev;
-      void tauriInvoke("browser_embed_set_select", { on: next });
+      void tauriInvoke("browser_embed_set_select", { on: next, mode: selectMode });
       return next;
     });
-  }, []);
+  }, [selectMode]);
 
-  // A picked element arrives as a URL-encoded JSON payload → drop it into the composer.
+  // Pick a sticky mode from the ▾ popover; live-switch when already armed.
+  const applyMode = useCallback((m: SelectMode) => {
+    setSelectMode(m);
+    try { localStorage.setItem("fleet:browser-select-mode", m); } catch { /* ignore */ }
+    setModeOpen(false);
+    if (activeRef.current && selecting) void tauriInvoke("browser_embed_set_select", { on: true, mode: m });
+  }, [selecting]);
+
+  // Messages from the in-page element box arrive as URL-encoded JSON. Three
+  // kinds: copy (put a representation on the clipboard — the page's own
+  // clipboard API is blocked on plain-http origins, ours never is), dismiss
+  // (Esc/× in the box — un-arm the Select pill), and a real pick → composer.
   useEffect(() => {
     const listen = (window as unknown as { __TAURI__?: { event?: { listen?: (n: string, cb: (e: { payload: unknown }) => void) => Promise<() => void> } } }).__TAURI__?.event?.listen;
     if (!listen) return;
     let un: (() => void) | undefined;
     void listen("browser-embed:pick", (e) => {
       if (typeof e.payload !== "string") return;
+      const msg = parsePickPayload(e.payload);
+      if (!msg) return;
+      if (msg.action === "copy") {
+        // The box stays open in-page, so Select stays armed-looking there;
+        // don't flip our pill either.
+        if (msg.value) void navigator.clipboard?.writeText(msg.value);
+        return;
+      }
       setSelecting(false);
-      try {
-        const info = JSON.parse(decodeURIComponent(e.payload)) as { selector?: string; tag?: string; text?: string; url?: string; prompt?: string };
-        window.dispatchEvent(new CustomEvent("fleet:add-element-ref", {
-          detail: {
-            selector: info.selector || info.tag || "element",
-            text: info.text || "",
-            url: info.url || "",
-            // Typed into the in-page composer that opens at the picked
-            // element. Empty when the user sent without writing anything.
-            prompt: info.prompt || "",
-          },
-        }));
-      } catch { /* ignore malformed payloads */ }
+      if (msg.action === "dismiss") return;
+      const detail = pickToRefDetail(msg);
+      if (!detail) return;
+      window.dispatchEvent(new CustomEvent("fleet:add-element-ref", {
+        detail: {
+          ...detail,
+          // Typed into the in-page composer that opens at the picked
+          // element. Empty when the user sent without writing anything.
+          prompt: msg.prompt || "",
+          // The box's Send dispatches the agent turn immediately; Add stages.
+          autosend: !!msg.submit,
+        },
+      }));
     }).then((f) => { un = f; });
     return () => { un?.(); };
   }, []);
@@ -376,28 +405,53 @@ function BrowserView() {
           {fullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
         </button>
 
-        {/* Element-select — right-side pill (Cursor's "Design"). */}
-        <button
-          title={selecting ? "Cancel select" : "Select an element → composer"}
-          disabled={!active}
-          onClick={toggleSelect}
-          onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-          style={{
-            height: 26, padding: "0 9px", borderRadius: 7, flexShrink: 0, marginRight: 2,
-            display: "inline-flex", alignItems: "center", gap: 5,
-            background: selecting ? "rgba(76,141,255,0.18)" : "transparent",
-            border: "none", outline: "none",
-            color: !active ? "#4a4a4a" : selecting ? "#4c8dff" : "#9a9a9a",
-            cursor: active ? "pointer" : "default",
-            fontFamily: SANS, fontSize: 12.5, fontWeight: 500,
-          }}
-          onMouseEnter={(e) => { if (active && !selecting) e.currentTarget.style.background = "rgba(255,255,255,0.07)"; }}
-          onMouseLeave={(e) => { if (!selecting) e.currentTarget.style.background = "transparent"; }}
-        >
-          <SquareMousePointer size={13} />
-          {!compact && <span>Select</span>}
-          {selecting && <X size={12} style={{ opacity: 0.8 }} />}
-        </button>
+        {/* Element-select — right-side split pill (Cursor's "Design"). Body
+            toggles picking with the sticky mode; the ▾ picks Ask vs Copy(…). */}
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 1, flexShrink: 0, marginRight: 2 }}>
+          <button
+            title={selecting
+              ? "Cancel select"
+              : selectMode === "ask"
+                ? "Select an element → composer"
+                : `Select: each click copies (${selectModeMenuLabel(selectMode)})`}
+            disabled={!active}
+            onClick={toggleSelect}
+            onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+            style={{
+              height: 26, padding: "0 7px 0 9px", borderRadius: "7px 0 0 7px",
+              display: "inline-flex", alignItems: "center", gap: 5,
+              background: selecting ? "rgba(76,141,255,0.18)" : "transparent",
+              border: "none", outline: "none",
+              color: !active ? "#4a4a4a" : selecting ? "#4c8dff" : "#9a9a9a",
+              cursor: active ? "pointer" : "default",
+              fontFamily: SANS, fontSize: 12.5, fontWeight: 500,
+            }}
+            onMouseEnter={(e) => { if (active && !selecting) e.currentTarget.style.background = "rgba(255,255,255,0.07)"; }}
+            onMouseLeave={(e) => { if (!selecting) e.currentTarget.style.background = "transparent"; }}
+          >
+            <SquareMousePointer size={13} />
+            {!compact && <span>{selectModeLabel(selectMode, selecting)}</span>}
+            {selecting && <X size={12} style={{ opacity: 0.8 }} />}
+          </button>
+          <button
+            title="Select mode"
+            disabled={!active}
+            onClick={() => { setModeOpen((v) => !v); setHistOpen(false); setMenuOpen(false); }}
+            onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+            style={{
+              height: 26, width: 15, borderRadius: "0 7px 7px 0",
+              display: "inline-flex", alignItems: "center", justifyContent: "center",
+              background: selecting ? "rgba(76,141,255,0.18)" : modeOpen ? "rgba(255,255,255,0.07)" : "transparent",
+              border: "none", outline: "none",
+              color: !active ? "#4a4a4a" : selecting || modeOpen ? "#4c8dff" : "#9a9a9a",
+              cursor: active ? "pointer" : "default",
+            }}
+            onMouseEnter={(e) => { if (active && !selecting && !modeOpen) e.currentTarget.style.background = "rgba(255,255,255,0.07)"; }}
+            onMouseLeave={(e) => { if (!selecting && !modeOpen) e.currentTarget.style.background = "transparent"; }}
+          >
+            <ChevronDown size={11} />
+          </button>
+        </div>
         {!compact && <BrowserNavBtn title="Developer tools" disabled={!active} onClick={() => void tauriInvoke("browser_embed_devtools")}><TerminalIcon size={13} /></BrowserNavBtn>}
         <BrowserNavBtn title="More" active={menuOpen} onClick={() => { setMenuOpen((v) => !v); setHistOpen(false); }}><MoreHorizontal size={14} /></BrowserNavBtn>
 
@@ -503,6 +557,18 @@ function BrowserView() {
             <BrowserPopItem onClick={() => { setMenuOpen(false); requestClose?.("browser"); }}>
               <X size={13} style={{ flexShrink: 0 }} /><span>Close Browser</span>
             </BrowserPopItem>
+          </BrowserPopover>
+        )}
+
+        {/* Select-mode popover (the pill's ▾) */}
+        {modeOpen && (
+          <BrowserPopover right={34}>
+            {SELECT_MODES.map((m) => (
+              <BrowserPopItem key={m} onClick={() => applyMode(m)}>
+                <span style={{ width: 14, flexShrink: 0, color: "#4c8dff" }}>{m === selectMode ? "✓" : ""}</span>
+                <span>{selectModeMenuLabel(m)}</span>
+              </BrowserPopItem>
+            ))}
           </BrowserPopover>
         )}
       </div>

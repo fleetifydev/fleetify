@@ -316,12 +316,19 @@ const PICK_MARKER: &str = "fleet.internal/pick/";
 const META_MARKER: &str = "fleet.internal/meta/";
 const READ_MARKER: &str = "fleet.internal/read/";
 // Element-select overlay, injected at document-start on every page. Exposes
-// window.__fleetStartSelect()/__fleetStopSelect(); on click while active it
-// highlights the hovered element and posts {selector,tag,text,url} back via
-// the fragment sentinel.
+// window.__fleetStartSelect(mode)/__fleetStopSelect(); modes are 'ask' (click
+// opens an action box: copy CSS/XPath/HTML, add the element to the chat, or
+// write a prompt and Send — Send dispatches the agent turn immediately via
+// submit:true) and 'copy:<kind>' (every click copies that representation and
+// the picker stays armed). Right-click in either mode opens a one-off menu
+// (ask / copy css / xpath / component / html / text). Every capture carries a
+// rich payload (selector, xpath, rect, attrs, curated computed styles,
+// React/Vue component + dev source when detectable). Everything posts back
+// via the fragment sentinel; {action:"copy"|"dismiss"} messages ride the
+// same channel.
 const SELECT_JS: &str = r#"(function () {
   if (window.__fleetSelInit) return; window.__fleetSelInit = true;
-  var active = false, box = null, last = null, promptHost = null;
+  var active = false, mode = 'ask', box = null, last = null, promptHost = null, menuHost = null, bubbleHost = null, suppressClick = false;
   function ensureBox() {
     if (box) return box;
     box = document.createElement('div');
@@ -349,28 +356,221 @@ const SELECT_JS: &str = r#"(function () {
     }
     return parts.join(' > ');
   }
-  function onMove(e) {
-    if (!active) return;
-    var el = document.elementFromPoint(e.clientX, e.clientY);
-    if (!el || el === last) return;
-    last = el;
+  function xPath(el) {
+    if (!el || el.nodeType !== 1) return '';
+    var parts = [], anchored = false;
+    while (el && el.nodeType === 1) {
+      if (el.id) { parts.unshift('*[@id="' + el.id + '"]'); anchored = true; break; }
+      var idx = 1, sib = el.previousElementSibling;
+      while (sib) { if (sib.nodeName === el.nodeName) idx++; sib = sib.previousElementSibling; }
+      parts.unshift(el.nodeName.toLowerCase() + '[' + idx + ']');
+      el = el.parentElement;
+    }
+    return (anchored ? '//' : '/') + parts.join('/');
+  }
+  function attrInfo(el) {
+    try {
+      var out = {}, keep = ['id', 'class', 'data-testid', 'aria-label', 'role', 'name', 'type', 'placeholder', 'href', 'src', 'alt', 'title', 'for'];
+      for (var i = 0; i < keep.length; i++) {
+        var v = el.getAttribute && el.getAttribute(keep[i]);
+        if (v) out[keep[i]] = String(v).slice(0, 200);
+      }
+      if (el.tagName === 'INPUT' && el.type !== 'password' && el.value) out.value = String(el.value).slice(0, 120);
+      return out;
+    } catch (_) { return null; }
+  }
+  // Curated computed styles — the ones that explain how the element looks.
+  // Defaults are filtered so a plain <div> contributes almost nothing.
+  function styleInfo(el) {
+    try {
+      var cs = getComputedStyle(el), out = {};
+      var keys = ['display', 'position', 'width', 'height', 'padding', 'margin', 'color', 'background-color', 'font-size', 'font-weight', 'line-height', 'text-align', 'border', 'border-radius', 'gap', 'flex-direction', 'justify-content', 'align-items', 'opacity', 'overflow', 'z-index'];
+      for (var i = 0; i < keys.length; i++) {
+        var v = cs.getPropertyValue(keys[i]);
+        if (!v || v === 'auto' || v === 'normal' || v === 'none' || v === 'visible' || v === 'static' || v === 'stretch' || v === '1' || v === '0px' || v === 'rgba(0, 0, 0, 0)' || v.indexOf('0px none') === 0 || v.indexOf('0px 0px') === 0) continue;
+        out[keys[i]] = v;
+      }
+      return out;
+    } catch (_) { return null; }
+  }
+  // Framework sniffing, best effort and dev-leaning: React fibers hang off a
+  // __reactFiber$ key on the DOM node (component names survive any build that
+  // keeps function names; file:line only in dev via _debugSource); Vue 3
+  // exposes __vueParentComponent. Never throws on plain pages — every miss
+  // just returns null and the payload stays selector-only.
+  function frameworkInfo(el) {
+    try {
+      var node = el, key = null, hop = 0, k;
+      while (node && hop < 4 && !key) {
+        for (k in node) { if (k.indexOf('__reactFiber$') === 0) { key = k; break; } }
+        if (!key) { node = node.parentElement; hop++; }
+      }
+      if (key) {
+        var f = node[key], names = [], src = null, guard = 0, t, n, s, fn, i2;
+        while (f && guard < 60) {
+          t = f.type; n = null;
+          if (typeof t === 'function') n = t.displayName || t.name || null;
+          else if (t && typeof t === 'object') n = t.displayName || (t.render && (t.render.displayName || t.render.name)) || null;
+          if (n && n !== 'Fragment' && names.indexOf(n) < 0 && names.length < 6) names.push(n);
+          if (!src && f._debugSource) {
+            s = f._debugSource; fn = String(s.fileName || '').replace(/\\/g, '/');
+            i2 = fn.indexOf('/src/');
+            if (i2 >= 0) fn = fn.slice(i2 + 1);
+            src = fn + (s.lineNumber ? ':' + s.lineNumber : '');
+          }
+          f = f.return; guard++;
+        }
+        if (names.length || src) return { component: names[0] || null, tree: names, source: src };
+      }
+      var v = el.__vueParentComponent || (el.parentElement && el.parentElement.__vueParentComponent);
+      if (v) {
+        var vn = [], c = v, g = 0, ty, n2, vsrc = null;
+        while (c && g < 10) {
+          ty = c.type || {}; n2 = ty.name || ty.__name || null;
+          if (n2 && vn.indexOf(n2) < 0 && vn.length < 6) vn.push(n2);
+          if (!vsrc && ty.__file) vsrc = ty.__file;
+          c = c.parent; g++;
+        }
+        if (vn.length || vsrc) return { component: vn[0] || null, tree: vn, source: vsrc };
+      }
+    } catch (_) {}
+    return null;
+  }
+  function buildInfo(el) {
+    var r = el ? el.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
+    var info = {
+      selector: cssPath(el),
+      xpath: xPath(el),
+      tag: el ? el.nodeName.toLowerCase() : '',
+      text: el ? (el.innerText || el.textContent || '').trim().slice(0, 2000) : '',
+      url: location.href, t: Date.now(),
+      rect: { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) },
+      html: el ? String(el.outerHTML || '').slice(0, 1500) : ''
+    };
+    if (el) {
+      var a = attrInfo(el); if (a && Object.keys(a).length) info.attrs = a;
+      var st = styleInfo(el); if (st && Object.keys(st).length) info.styles = st;
+      var fw = frameworkInfo(el);
+      if (fw) {
+        if (fw.component) info.component = fw.component;
+        if (fw.tree && fw.tree.length) info.componentTree = fw.tree;
+        if (fw.source) info.source = fw.source;
+      }
+    }
+    return info;
+  }
+  function highlightEl(el) {
     var r = el.getBoundingClientRect(), b = ensureBox();
     b.style.display = 'block';
     b.style.left = r.left + 'px'; b.style.top = r.top + 'px';
     b.style.width = r.width + 'px'; b.style.height = r.height + 'px';
   }
+  function onMove(e) {
+    if (!active) return;
+    var el = document.elementFromPoint(e.clientX, e.clientY);
+    if (!el || el === last) return;
+    if (el === menuHost || el === promptHost || el === bubbleHost) return;
+    last = el;
+    highlightEl(el);
+  }
   function send(info) {
     try { location.href = 'https://fleet.internal/pick/' + encodeURIComponent(JSON.stringify(info)); } catch (_) {}
   }
-  // Prompt composer, anchored at the picked element. Lives in a shadow root
-  // so the host page's CSS cannot restyle it and ours cannot leak out. It has
-  // to be injected INTO the page rather than drawn in the app: the native
-  // webview renders above the app's DOM, so a React box at these coordinates
-  // would be hidden behind the page.
+  var KIND_LABEL = { css: 'CSS selector', xpath: 'XPath', component: 'component', html: 'HTML', text: 'text' };
+  function copyValue(kind, info, el) {
+    if (kind === 'css') return info.selector;
+    if (kind === 'xpath') return info.xpath;
+    if (kind === 'html') return String((el && el.outerHTML) || info.html || '').slice(0, 20000);
+    if (kind === 'text') return info.text || '';
+    if (kind === 'component') {
+      if (info.source) return info.source;
+      var t = (info.componentTree || []).slice();
+      t.reverse();
+      return t.join(' > ');
+    }
+    return '';
+  }
+  function hideBubble() {
+    if (bubbleHost) { try { bubbleHost.remove(); } catch (_) {} bubbleHost = null; }
+  }
+  // Cursor-anchored toast for the box-less copy paths (copy mode + the
+  // right-click menu) — confirmation without opening any UI.
+  function showBubble(x, y, label) {
+    hideBubble();
+    bubbleHost = document.createElement('div');
+    bubbleHost.style.cssText = 'position:fixed;z-index:2147483647;left:0;top:0;width:0;height:0;';
+    (document.documentElement || document.body).appendChild(bubbleHost);
+    var root = bubbleHost.attachShadow ? bubbleHost.attachShadow({ mode: 'open' }) : bubbleHost;
+    var b = document.createElement('div');
+    var left = Math.max(8, Math.min(x + 12, window.innerWidth - 180));
+    var top = Math.max(8, y - 34);
+    b.setAttribute('style', 'position:fixed;left:' + left + 'px;top:' + top + 'px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:11.5px -apple-system,BlinkMacSystemFont,Inter,system-ui,sans-serif;background:#1c1c1c;color:#d9d9d9;border:1px solid #3a3a3a;border-radius:7px;padding:5px 9px;box-shadow:0 6px 20px rgba(0,0,0,0.4);opacity:1;transition:opacity .25s ease .8s;');
+    b.textContent = label;
+    root.appendChild(b);
+    setTimeout(function () { try { b.style.opacity = '0'; } catch (_) {} }, 30);
+    setTimeout(hideBubble, 1200);
+  }
+  function doCopy(kind, info, el, x, y) {
+    send({ action: 'copy', kind: kind, value: String(copyValue(kind, info, el) || '') });
+    showBubble(x, y, '✓ Copied ' + (KIND_LABEL[kind] || kind));
+  }
+  function docHideMenu() { suppressClick = true; hideMenu(); }
+  function hideMenu() {
+    document.removeEventListener('mousedown', docHideMenu);
+    if (menuHost) { try { menuHost.remove(); } catch (_) {} menuHost = null; }
+  }
+  // Right-click menu: one-off actions at the cursor, independent of the
+  // sticky mode. Copy items leave the picker armed.
+  function showMenu(info, el, x, y) {
+    hideMenu(); hidePrompt();
+    menuHost = document.createElement('div');
+    menuHost.style.cssText = 'position:fixed;z-index:2147483647;left:0;top:0;width:0;height:0;';
+    (document.documentElement || document.body).appendChild(menuHost);
+    var root = menuHost.attachShadow ? menuHost.attachShadow({ mode: 'open' }) : menuHost;
+    var wrap = document.createElement('div');
+    var W = 214;
+    var left = Math.max(8, Math.min(x, window.innerWidth - W - 8));
+    var top = Math.max(8, Math.min(y, window.innerHeight - 236));
+    wrap.setAttribute('style', 'position:fixed;left:' + left + 'px;top:' + top + 'px;width:' + W + 'px;font:12.5px -apple-system,BlinkMacSystemFont,Inter,system-ui,sans-serif;background:#1c1c1c;color:#d9d9d9;border:1px solid #3a3a3a;border-radius:9px;padding:4px;box-shadow:0 10px 30px rgba(0,0,0,0.45);box-sizing:border-box;');
+    wrap.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+    var head = document.createElement('div');
+    head.setAttribute('style', 'font:10.5px ui-monospace,SFMono-Regular,Menlo,monospace;color:#4c8dff;padding:4px 8px 6px;border-bottom:1px solid #2c2c2c;margin:0 0 3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;');
+    head.textContent = info.selector || info.tag || 'element';
+    wrap.appendChild(head);
+    function item(label, fn) {
+      var it = document.createElement('button');
+      it.textContent = label;
+      it.setAttribute('style', 'display:block;width:100%;text-align:left;font:inherit;background:transparent;border:none;color:#d9d9d9;padding:5px 8px;border-radius:6px;cursor:pointer;');
+      it.addEventListener('mouseenter', function () { it.style.background = 'rgba(255,255,255,0.07)'; });
+      it.addEventListener('mouseleave', function () { it.style.background = 'transparent'; });
+      it.addEventListener('click', function (ev) { ev.preventDefault(); ev.stopPropagation(); fn(); });
+      wrap.appendChild(it);
+    }
+    item('Ask about element…', function () {
+      hideMenu();
+      var rect = el ? el.getBoundingClientRect() : { left: 20, top: 20, bottom: 20 };
+      stopPicking(true);
+      showPrompt(info, rect, el);
+    });
+    item('Copy CSS selector', function () { hideMenu(); doCopy('css', info, el, x, y); });
+    item('Copy XPath', function () { hideMenu(); doCopy('xpath', info, el, x, y); });
+    if (info.component || info.source) item('Copy component', function () { hideMenu(); doCopy('component', info, el, x, y); });
+    item('Copy outer HTML', function () { hideMenu(); doCopy('html', info, el, x, y); });
+    if (info.text) item('Copy text', function () { hideMenu(); doCopy('text', info, el, x, y); });
+    root.appendChild(wrap);
+    document.addEventListener('mousedown', docHideMenu);
+  }
+  // Element action box, anchored at the picked element. Lives in a shadow
+  // root so the host page's CSS cannot restyle it and ours cannot leak out.
+  // It has to be injected INTO the page rather than drawn in the app: the
+  // native webview renders above the app's DOM, so a React box at these
+  // coordinates would be hidden behind the page. One box, three intents:
+  // copy a representation (CSS/XPath/HTML), add the element straight to the
+  // chat, or write a prompt and send both.
   function hidePrompt() {
     if (promptHost) { try { promptHost.remove(); } catch (_) {} promptHost = null; }
   }
-  function showPrompt(info, rect) {
+  function showPrompt(info, rect, el) {
     hidePrompt();
     promptHost = document.createElement('div');
     promptHost.style.cssText = 'position:fixed;z-index:2147483647;left:0;top:0;width:0;height:0;';
@@ -379,7 +579,7 @@ const SELECT_JS: &str = r#"(function () {
     var wrap = document.createElement('div');
     // Clamp into the viewport: an element near the right or bottom edge must
     // not push the composer off-screen.
-    var W = 300, H = 104;
+    var W = 324, H = 128;
     var left = Math.max(8, Math.min(rect.left, window.innerWidth - W - 8));
     var top = rect.bottom + 8;
     if (top + H > window.innerHeight - 8) top = Math.max(8, rect.top - H - 8);
@@ -387,15 +587,64 @@ const SELECT_JS: &str = r#"(function () {
       'font:13px -apple-system,BlinkMacSystemFont,Inter,system-ui,sans-serif;' +
       'background:#1c1c1c;color:#e8e8e8;border:1px solid #3a3a3a;border-radius:10px;' +
       'box-shadow:0 10px 30px rgba(0,0,0,0.45);padding:9px;box-sizing:border-box;');
-    var tag = document.createElement('div');
-    tag.setAttribute('style', 'font:11px ui-monospace,SFMono-Regular,Menlo,monospace;color:#4c8dff;margin:0 0 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;');
-    tag.textContent = info.selector || info.tag || 'element';
     var ta = document.createElement('textarea');
+    // Send = dispatch the agent turn immediately (submit:true; the composer
+    // falls back to staging when it can't safely send). Add = stage only.
+    function finish() { info.prompt = ta.value.trim(); info.submit = true; hidePrompt(); if (box) box.style.display = 'none'; send(info); }
+    function addOnly() { info.prompt = ''; info.submit = false; hidePrompt(); if (box) box.style.display = 'none'; send(info); }
+    // Dismissing must also un-arm the app's Select pill — the picking
+    // listeners are already gone, so without telling the app the pill would
+    // stay lit until the next manual toggle.
+    function dismiss() {
+      hidePrompt(); if (box) box.style.display = 'none';
+      try { location.href = 'https://fleet.internal/pick/' + encodeURIComponent(JSON.stringify({ action: 'dismiss' })); } catch (_) {}
+    }
+    var head = document.createElement('div');
+    head.setAttribute('style', 'display:flex;align-items:center;gap:6px;margin:0 0 6px;');
+    var tag = document.createElement('div');
+    tag.setAttribute('style', 'flex:1;min-width:0;font:11px ui-monospace,SFMono-Regular,Menlo,monospace;color:#4c8dff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;');
+    tag.textContent = info.selector || info.tag || 'element';
+    tag.setAttribute('title', info.selector || '');
+    head.appendChild(tag);
+    if (info.component) {
+      var badge = document.createElement('div');
+      badge.setAttribute('style', 'flex-shrink:0;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:10.5px ui-monospace,SFMono-Regular,Menlo,monospace;color:#9a9a9a;border:1px solid #333;border-radius:4px;padding:1px 5px;');
+      badge.textContent = '<' + info.component + '>';
+      badge.setAttribute('title', (info.componentTree || []).join(' < ') + (info.source ? '\n' + info.source : ''));
+      head.appendChild(badge);
+    }
+    var closeB = document.createElement('button');
+    closeB.textContent = '×';
+    closeB.setAttribute('title', 'Dismiss (Esc)');
+    closeB.setAttribute('style', 'flex-shrink:0;background:transparent;border:none;color:#8a8a8a;font-size:15px;line-height:1;cursor:pointer;padding:0 2px;');
+    closeB.addEventListener('click', dismiss);
+    head.appendChild(closeB);
     ta.setAttribute('placeholder', 'Ask about this element…');
     ta.setAttribute('style', 'width:100%;height:44px;resize:none;box-sizing:border-box;background:#111;color:#e8e8e8;' +
       'border:1px solid #333;border-radius:6px;padding:6px 8px;font:inherit;font-size:12.5px;outline:none;');
     var row = document.createElement('div');
-    row.setAttribute('style', 'display:flex;justify-content:flex-end;gap:6px;margin-top:7px;');
+    row.setAttribute('style', 'display:flex;align-items:center;gap:4px;margin-top:7px;');
+    // Copy buttons post {action:'copy'} to the app — the page's own clipboard
+    // API is unavailable on plain-http origins, the app's never is. The box
+    // stays open so copying and asking aren't mutually exclusive.
+    function mkCopy(label, get, title) {
+      var b = document.createElement('button');
+      b.textContent = label;
+      b.setAttribute('title', title);
+      b.setAttribute('style', 'font:inherit;font-size:11px;padding:3px 7px;border-radius:5px;cursor:pointer;background:transparent;color:#9a9a9a;border:1px solid #333;');
+      b.addEventListener('click', function () {
+        send({ action: 'copy', kind: label.toLowerCase(), value: String(get() || '') });
+        b.textContent = '✓';
+        setTimeout(function () { b.textContent = label; }, 900);
+      });
+      return b;
+    }
+    var copies = document.createElement('div');
+    copies.setAttribute('style', 'display:flex;gap:4px;margin-right:auto;');
+    copies.appendChild(mkCopy('CSS', function () { return info.selector; }, 'Copy CSS selector'));
+    copies.appendChild(mkCopy('XPath', function () { return info.xpath; }, 'Copy XPath'));
+    copies.appendChild(mkCopy('HTML', function () { return String((el && el.outerHTML) || info.html || '').slice(0, 20000); }, 'Copy outer HTML'));
+    row.appendChild(copies);
     function mkBtn(label, primary) {
       var b = document.createElement('button');
       b.textContent = label;
@@ -403,10 +652,12 @@ const SELECT_JS: &str = r#"(function () {
         (primary ? 'background:#4c8dff;color:#fff;border:1px solid #4c8dff;' : 'background:transparent;color:#aaa;border:1px solid #3a3a3a;'));
       return b;
     }
-    var cancel = mkBtn('Cancel', false), submit = mkBtn('Send', true);
-    function finish() { info.prompt = ta.value.trim(); hidePrompt(); if (box) box.style.display = 'none'; send(info); }
-    function dismiss() { hidePrompt(); if (box) box.style.display = 'none'; }
-    cancel.addEventListener('click', dismiss);
+    var add = mkBtn('Add', false), submit = mkBtn('Send', true);
+    add.setAttribute('title', 'Add element to the chat without a prompt');
+    submit.setAttribute('title', 'Send to the agent now (Enter)');
+    submit.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg><span>Send</span>';
+    submit.style.display = 'inline-flex'; submit.style.alignItems = 'center'; submit.style.gap = '5px';
+    add.addEventListener('click', addOnly);
     submit.addEventListener('click', finish);
     // Enter sends, Shift+Enter is a newline, Escape cancels — the composer
     // convention the rest of the app already uses.
@@ -415,37 +666,85 @@ const SELECT_JS: &str = r#"(function () {
       else if (ev.key === 'Escape') { ev.preventDefault(); dismiss(); }
       ev.stopPropagation();
     }, true);
-    row.appendChild(cancel); row.appendChild(submit);
-    wrap.appendChild(tag); wrap.appendChild(ta); wrap.appendChild(row);
+    // Escape must also work when a copy/action button holds focus.
+    wrap.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape') { ev.preventDefault(); dismiss(); }
+      ev.stopPropagation();
+    });
+    row.appendChild(add); row.appendChild(submit);
+    wrap.appendChild(head); wrap.appendChild(ta); wrap.appendChild(row);
     root.appendChild(wrap);
     try { ta.focus(); } catch (_) {}
   }
   function onClick(e) {
     if (!active) return;
+    // Events over our own shadow hosts (menu / box / toast) retarget to the
+    // host — never treat them as page picks, and never swallow their clicks.
+    if (e.target === menuHost || e.target === promptHost || e.target === bubbleHost) return;
     e.preventDefault(); e.stopPropagation();
+    // The mousedown that closed the right-click menu must not also pick.
+    if (suppressClick) { suppressClick = false; return; }
     var el = last || document.elementFromPoint(e.clientX, e.clientY);
-    var info = { selector: cssPath(el), tag: el ? el.nodeName.toLowerCase() : '', text: el ? (el.innerText || el.textContent || '').trim().slice(0, 2000) : '', url: location.href, t: Date.now() };
+    var info = buildInfo(el);
+    if (mode !== 'ask') {
+      var kind = mode.slice(5);
+      if (kind === 'component' && !info.component && !info.source) {
+        send({ action: 'copy', kind: 'css', value: info.selector });
+        showBubble(e.clientX, e.clientY, 'No component — copied CSS selector');
+      } else {
+        doCopy(kind, info, el, e.clientX, e.clientY);
+      }
+      return; // stay armed — copy mode is for collecting several in a row
+    }
     var rect = el ? el.getBoundingClientRect() : { left: 20, top: 20, bottom: 20 };
     // Keep the highlight up so the user can still see what they picked while
     // typing; only the picking listeners go away.
     stopPicking(true);
-    showPrompt(info, rect);
+    showPrompt(info, rect, el);
   }
-  function start() {
-    if (active) return; active = true;
-    hidePrompt();
+  function onContext(e) {
+    if (!active) return;
+    e.preventDefault(); e.stopPropagation();
+    if (e.target === menuHost || e.target === promptHost || e.target === bubbleHost) return;
+    var el = document.elementFromPoint(e.clientX, e.clientY);
+    if (!el) return;
+    last = el;
+    highlightEl(el);
+    showMenu(buildInfo(el), el, e.clientX, e.clientY);
+  }
+  function onKey(e) {
+    if (!active) return;
+    if (e.key !== 'Escape') return;
+    e.preventDefault(); e.stopPropagation();
+    if (menuHost) { hideMenu(); return; }
+    stop();
+    // Un-arm the app's Select pill too — the listeners are already gone.
+    send({ action: 'dismiss' });
+  }
+  function start(m) {
+    // Mode is applied even when already active — the app live-switches by
+    // re-invoking with the new mode.
+    mode = typeof m === 'string' && m ? m : 'ask';
+    if (active) return;
+    active = true;
+    hidePrompt(); hideMenu();
     document.addEventListener('mousemove', onMove, true);
     document.addEventListener('click', onClick, true);
+    document.addEventListener('contextmenu', onContext, true);
+    document.addEventListener('keydown', onKey, true);
     if (document.body) document.body.style.cursor = 'crosshair';
   }
   function stopPicking(keepHighlight) {
     active = false; last = null;
+    hideMenu();
     document.removeEventListener('mousemove', onMove, true);
     document.removeEventListener('click', onClick, true);
+    document.removeEventListener('contextmenu', onContext, true);
+    document.removeEventListener('keydown', onKey, true);
     if (box && !keepHighlight) box.style.display = 'none';
     if (document.body) document.body.style.cursor = '';
   }
-  function stop() { stopPicking(false); hidePrompt(); }
+  function stop() { stopPicking(false); hidePrompt(); hideMenu(); hideBubble(); }
   window.__fleetStartSelect = start;
   window.__fleetStopSelect = stop;
   var metaSent = false;
@@ -672,15 +971,29 @@ pub async fn navigate_embedded_page(
 }
 
 #[tauri::command]
-pub async fn browser_embed_set_select(app: tauri::AppHandle, on: bool) -> serde_json::Value {
+pub async fn browser_embed_set_select(
+    app: tauri::AppHandle,
+    on: bool,
+    mode: Option<String>,
+) -> serde_json::Value {
     use tauri::Manager;
     if let Some(wv) = app.get_webview(BROWSER_EMBED_LABEL) {
         let js = if on {
-            "window.__fleetStartSelect && window.__fleetStartSelect()"
+            // The mode string is interpolated into page JS — never pass a
+            // caller-controlled value through; unknown modes fall back to ask.
+            let mode = match mode.as_deref() {
+                Some("copy:css") => "copy:css",
+                Some("copy:xpath") => "copy:xpath",
+                Some("copy:component") => "copy:component",
+                Some("copy:html") => "copy:html",
+                Some("copy:text") => "copy:text",
+                _ => "ask",
+            };
+            format!("window.__fleetStartSelect && window.__fleetStartSelect('{mode}')")
         } else {
-            "window.__fleetStopSelect && window.__fleetStopSelect()"
+            "window.__fleetStopSelect && window.__fleetStopSelect()".to_string()
         };
-        let _ = wv.eval(js);
+        let _ = wv.eval(&js);
     }
     serde_json::json!({ "ok": true })
 }

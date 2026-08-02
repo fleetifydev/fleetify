@@ -172,6 +172,15 @@ fn tools_list() -> Value {
             }
         },
         {
+            "name": "inspect",
+            "description": "Inspect the first element matching a CSS selector: selector path, XPath, bounding box, key attributes, curated computed styles, and React/Vue component + dev source file when detectable.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "selector": { "type": "string", "description": "CSS selector of the element to inspect." } },
+                "required": ["selector"]
+            }
+        },
+        {
             "name": "back",
             "description": "Go back one entry in the browser history.",
             "inputSchema": { "type": "object", "properties": {} }

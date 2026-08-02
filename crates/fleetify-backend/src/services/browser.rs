@@ -515,11 +515,11 @@ pub async fn hover_at(x: f64, y: f64) -> Result<Value> {
     Ok(v)
 }
 
-/// Inspector pick: like `hover_at` but also returns the element's text/HTML
-/// so the picked element can be handed to the agent as context.
+/// Inspector pick: like `hover_at` but returns the full rich payload — same
+/// shape as `inspect_selector`, resolved by point instead of selector.
 pub async fn pick_at(x: f64, y: f64) -> Result<Value> {
     let p = page().await?;
-    let js = format!("{}({x},{y},true)", INSPECT_FN);
+    let js = format!("{ELEMENT_INFO_JS}(document.elementFromPoint({x},{y}))");
     let v = p
         .evaluate(js)
         .await
@@ -529,10 +529,29 @@ pub async fn pick_at(x: f64, y: f64) -> Result<Value> {
     Ok(v)
 }
 
-/// In-page helper: resolve the element at a point to a stable-ish CSS
-/// selector + bounding rect (+ text/html when `full`). Kept as one string so
-/// hover and pick share identical selector logic.
-const INSPECT_FN: &str = r#"(function(x,y,full){
+/// Agent-facing `inspect` tool: rich element info for the first match of a
+/// CSS selector on the shared page. Errors when nothing matches so the agent
+/// gets a real signal instead of a silent null.
+pub async fn inspect_selector(selector: &str) -> Result<Value> {
+    let p = page().await?;
+    let sel = serde_json::to_string(selector).map_err(|e| anyhow!("selector: {e}"))?;
+    let js = format!("{ELEMENT_INFO_JS}(document.querySelector({sel}))");
+    let v = p
+        .evaluate(js)
+        .await
+        .map_err(|e| anyhow!("inspect: {e}"))?
+        .into_value::<Value>()
+        .unwrap_or(Value::Null);
+    if v.is_null() {
+        return Err(anyhow!("no element matches selector: {selector}"));
+    }
+    Ok(v)
+}
+
+/// In-page helper for hover only: resolve the element at a point to a
+/// stable-ish CSS selector + bounding rect. Deliberately light — it runs on
+/// every mousemove; picks and the agent's `inspect` use `ELEMENT_INFO_JS`.
+const INSPECT_FN: &str = r#"(function(x,y){
   var el=document.elementFromPoint(x,y);
   if(!el)return null;
   function sel(e){
@@ -547,12 +566,128 @@ const INSPECT_FN: &str = r#"(function(x,y,full){
     return t;
   }
   var r=el.getBoundingClientRect();
-  var out={selector:sel(el),tag:el.tagName.toLowerCase(),rect:{x:r.left,y:r.top,w:r.width,h:r.height}};
-  if(full){
-    out.text=(el.innerText||el.value||'').trim().slice(0,500);
-    out.html=(el.outerHTML||'').slice(0,1200);
+  return {selector:sel(el),tag:el.tagName.toLowerCase(),rect:{x:r.left,y:r.top,w:r.width,h:r.height}};
+})"#;
+
+/// Rich element info, given an Element: selector path, xpath, rect, key
+/// attributes, curated computed styles, and React/Vue component + dev source
+/// when detectable. The payload shape matches what the embedded Browser
+/// pane's picker captures — keep in lockstep with `SELECT_JS` in
+/// `src-tauri/src/shell/ipc/mod.rs`.
+const ELEMENT_INFO_JS: &str = r#"(function (el) {
+  if (!el || el.nodeType !== 1) return null;
+  function cssPath(e) {
+    if (!e) return '';
+    if (e.id) return '#' + e.id;
+    var parts = [];
+    while (e && e.nodeType === 1 && parts.length < 5) {
+      var sel = e.nodeName.toLowerCase();
+      if (e.className && typeof e.className === 'string') {
+        var c = e.className.trim().split(/\s+/).slice(0, 2).join('.');
+        if (c) sel += '.' + c;
+      }
+      var p = e.parentNode;
+      if (p && p.children) {
+        var sibs = Array.prototype.filter.call(p.children, function (s) { return s.nodeName === e.nodeName; });
+        if (sibs.length > 1) sel += ':nth-of-type(' + (sibs.indexOf(e) + 1) + ')';
+      }
+      parts.unshift(sel);
+      e = p;
+    }
+    return parts.join(' > ');
   }
-  return out;
+  function xPath(e) {
+    if (!e || e.nodeType !== 1) return '';
+    var parts = [], anchored = false;
+    while (e && e.nodeType === 1) {
+      if (e.id) { parts.unshift('*[@id="' + e.id + '"]'); anchored = true; break; }
+      var idx = 1, sib = e.previousElementSibling;
+      while (sib) { if (sib.nodeName === e.nodeName) idx++; sib = sib.previousElementSibling; }
+      parts.unshift(e.nodeName.toLowerCase() + '[' + idx + ']');
+      e = e.parentElement;
+    }
+    return (anchored ? '//' : '/') + parts.join('/');
+  }
+  function attrInfo(e) {
+    try {
+      var out = {}, keep = ['id', 'class', 'data-testid', 'aria-label', 'role', 'name', 'type', 'placeholder', 'href', 'src', 'alt', 'title', 'for'];
+      for (var i = 0; i < keep.length; i++) {
+        var v = e.getAttribute && e.getAttribute(keep[i]);
+        if (v) out[keep[i]] = String(v).slice(0, 200);
+      }
+      if (e.tagName === 'INPUT' && e.type !== 'password' && e.value) out.value = String(e.value).slice(0, 120);
+      return out;
+    } catch (_) { return null; }
+  }
+  function styleInfo(e) {
+    try {
+      var cs = getComputedStyle(e), out = {};
+      var keys = ['display', 'position', 'width', 'height', 'padding', 'margin', 'color', 'background-color', 'font-size', 'font-weight', 'line-height', 'text-align', 'border', 'border-radius', 'gap', 'flex-direction', 'justify-content', 'align-items', 'opacity', 'overflow', 'z-index'];
+      for (var i = 0; i < keys.length; i++) {
+        var v = cs.getPropertyValue(keys[i]);
+        if (!v || v === 'auto' || v === 'normal' || v === 'none' || v === 'visible' || v === 'static' || v === 'stretch' || v === '1' || v === '0px' || v === 'rgba(0, 0, 0, 0)' || v.indexOf('0px none') === 0 || v.indexOf('0px 0px') === 0) continue;
+        out[keys[i]] = v;
+      }
+      return out;
+    } catch (_) { return null; }
+  }
+  function frameworkInfo(e) {
+    try {
+      var node = e, key = null, hop = 0, k;
+      while (node && hop < 4 && !key) {
+        for (k in node) { if (k.indexOf('__reactFiber$') === 0) { key = k; break; } }
+        if (!key) { node = node.parentElement; hop++; }
+      }
+      if (key) {
+        var f = node[key], names = [], src = null, guard = 0, t, n, s, fn, i2;
+        while (f && guard < 60) {
+          t = f.type; n = null;
+          if (typeof t === 'function') n = t.displayName || t.name || null;
+          else if (t && typeof t === 'object') n = t.displayName || (t.render && (t.render.displayName || t.render.name)) || null;
+          if (n && n !== 'Fragment' && names.indexOf(n) < 0 && names.length < 6) names.push(n);
+          if (!src && f._debugSource) {
+            s = f._debugSource; fn = String(s.fileName || '').replace(/\\/g, '/');
+            i2 = fn.indexOf('/src/');
+            if (i2 >= 0) fn = fn.slice(i2 + 1);
+            src = fn + (s.lineNumber ? ':' + s.lineNumber : '');
+          }
+          f = f.return; guard++;
+        }
+        if (names.length || src) return { component: names[0] || null, tree: names, source: src };
+      }
+      var v = e.__vueParentComponent || (e.parentElement && e.parentElement.__vueParentComponent);
+      if (v) {
+        var vn = [], c = v, g = 0, ty, n2, vsrc = null;
+        while (c && g < 10) {
+          ty = c.type || {}; n2 = ty.name || ty.__name || null;
+          if (n2 && vn.indexOf(n2) < 0 && vn.length < 6) vn.push(n2);
+          if (!vsrc && ty.__file) vsrc = ty.__file;
+          c = c.parent; g++;
+        }
+        if (vn.length || vsrc) return { component: vn[0] || null, tree: vn, source: vsrc };
+      }
+    } catch (_) {}
+    return null;
+  }
+  var r = el.getBoundingClientRect();
+  var info = {
+    selector: cssPath(el),
+    xpath: xPath(el),
+    tag: el.nodeName.toLowerCase(),
+    text: (el.innerText || el.textContent || '').trim().slice(0, 2000),
+    url: location.href,
+    rect: { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) },
+    html: String(el.outerHTML || '').slice(0, 1500)
+  };
+  var a = attrInfo(el); if (a && Object.keys(a).length) info.attrs = a;
+  var st = styleInfo(el); if (st && Object.keys(st).length) info.styles = st;
+  var fw = frameworkInfo(el);
+  if (fw) {
+    if (fw.component) info.component = fw.component;
+    if (fw.tree && fw.tree.length) info.componentTree = fw.tree;
+    if (fw.source) info.source = fw.source;
+  }
+  return info;
 })"#;
 
 pub async fn eval(script: &str) -> Result<Value> {
@@ -669,6 +804,7 @@ pub async fn action(name: &str, args: &Value) -> Result<Value> {
         }
         "click" => click_selector(s("selector")).await,
         "fill" => fill_selector(s("selector"), s("value")).await,
+        "inspect" => inspect_selector(s("selector")).await,
         "back" => back().await,
         "forward" => forward().await,
         "reload" => reload().await,

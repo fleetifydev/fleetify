@@ -727,6 +727,7 @@ impl ClaudeBridge {
                 "mcp__fleet_browser__read_page",
                 "mcp__fleet_browser__click",
                 "mcp__fleet_browser__fill",
+                "mcp__fleet_browser__inspect",
                 "mcp__fleet_browser__back",
                 "mcp__fleet_browser__forward",
                 "mcp__fleet_browser__reload",

@@ -39,6 +39,7 @@ import { ComposerDropMenu } from "./composer-drop-menu";
 import { PromptsPicker } from "./prompts-picker";
 import { HelpDialog } from "./help-dialog";
 import { listPrompts, resolvePromptArg } from "@/lib/prompts-api";
+import { buildElementContextBlock, elementRefLabel, elementRefTitle, mergePromptIntoDraft, type ElementRef } from "@/lib/element-ref";
 
 /* ─────────────────── source kinds (Fleet hub) ─────────────────── */
 
@@ -1278,19 +1279,37 @@ export function ChatInput({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   // Element references picked from the in-panel browser ("Select" tool). Shown
   // as removable chips and prepended as context when the message is sent.
-  const [elementRefs, setElementRefs] = useState<{ id: string; selector: string; text: string; url: string }[]>([]);
-  const elementRefsRef = useRef<{ id: string; selector: string; text: string; url: string }[]>([]);
+  const [elementRefs, setElementRefs] = useState<ElementRef[]>([]);
+  const elementRefsRef = useRef<ElementRef[]>([]);
   useEffect(() => { elementRefsRef.current = elementRefs; }, [elementRefs]);
+  // Latest-value mirrors for the window-event handler below (registered once,
+  // so its closure would otherwise go stale).
+  const valueRef = useRef("");
+  useEffect(() => { valueRef.current = value; }, [value]);
+  const autoSendRef = useRef<(text: string) => boolean>(() => false);
   useEffect(() => {
     const handler = (e: Event) => {
-      const d = (e as CustomEvent<{ selector?: string; text?: string; url?: string; prompt?: string }>).detail;
+      const d = (e as CustomEvent<Omit<ElementRef, "id"> & { prompt?: string; autosend?: boolean }>).detail;
       if (!d) return;
-      setElementRefs((prev) => (prev.length >= 8 ? prev : [...prev, { id: crypto.randomUUID(), selector: d.selector || "element", text: d.text || "", url: d.url || "" }]));
-      // The browser's in-page composer lets the user type the question right
-      // at the element. Carry it into the input rather than making them
-      // retype it here; append so picking a second element keeps the first.
-      const typed = (d.prompt || "").trim();
-      if (typed) setValue((prev) => (prev.trim() ? `${prev.replace(/\s+$/, "")}\n${typed}` : typed));
+      const { prompt: promptRaw, autosend, ...fields } = d;
+      const typed = (promptRaw || "").trim();
+      // Sync the ref by hand so an immediate dispatch below sees the new chip
+      // without waiting for React to flush state.
+      const cur = elementRefsRef.current;
+      const next = cur.length >= 8
+        ? cur
+        : [...cur, { ...fields, id: crypto.randomUUID(), selector: fields.selector || "element", text: fields.text || "", url: fields.url || "" }];
+      elementRefsRef.current = next;
+      setElementRefs(next);
+      const merged = mergePromptIntoDraft(valueRef.current, typed);
+      // The browser box's Send means "run the agent now". When a guard blocks
+      // (streaming, locked, refine card up, no session…) we fall back to
+      // staging — never queue a turn.
+      if (typed && autosend && autoSendRef.current(merged)) return;
+      // Staging path: the typed question lands in the input rather than
+      // making the user retype it; append so picking a second element keeps
+      // the first.
+      if (typed) setValue(merged);
       requestAnimationFrame(() => ref.current?.focus());
     };
     window.addEventListener("fleet:add-element-ref", handler);
@@ -2098,9 +2117,7 @@ export function ChatInput({
       const refs = elementRefsRef.current;
       let outText = t;
       if (refs.length) {
-        const block = refs
-          .map((r) => `> Selected element \`${r.selector}\`${r.url ? ` (${r.url})` : ""}${r.text ? `: "${r.text.slice(0, 500)}"` : ""}`)
-          .join("\n");
+        const block = buildElementContextBlock(refs);
         outText = t ? `${block}\n\n${t}` : block;
       }
       onSend(outText, atts.length > 0 ? atts : undefined);
@@ -2110,6 +2127,21 @@ export function ChatInput({
     setEnhanceUndo(null); setEnhanceToast(null);
     if (ref.current) ref.current.style.height = "0px";
   }, [onSend, tool, sessionId, model]);
+
+  // Direct dispatch for the browser box's Send (reassigned every render so
+  // the once-registered element-ref handler always sees fresh guards).
+  // Bypasses Fleet refine on purpose — the user asked for the agent to run
+  // NOW; the refine card would turn "send" back into "stage". Session
+  // composers only: a control-center instance must never answer a
+  // browser-pane send.
+  useEffect(() => {
+    autoSendRef.current = (text: string): boolean => {
+      if (!sessionId || controlCenter) return false;
+      if (askQuestion || locked || streaming || refining || pendingRefine || disabled) return false;
+      dispatchSend(text, attachments);
+      return true;
+    };
+  });
 
   /* ── submit ──
    * When Fleet co-pilot is active (agent session, not turned off),
@@ -2958,14 +2990,14 @@ export function ChatInput({
           {elementRefs.length > 0 && (
             <div style={{ padding: "10px 12px 0", display: "flex", flexWrap: "wrap", gap: 6 }}>
               {elementRefs.map((r) => (
-                <div key={r.id} title={`${r.selector}${r.url ? ` · ${r.url}` : ""}`} style={{
+                <div key={r.id} title={elementRefTitle(r)} style={{
                   display: "flex", alignItems: "center", gap: 6,
                   padding: "4px 8px", borderRadius: 7,
                   border: "1px solid rgba(var(--fg-rgb),0.1)", background: "rgba(var(--fg-rgb),0.05)",
                 }}>
                   <SquareMousePointer size={12} style={{ color: "var(--c-dim)", flexShrink: 0 }} />
-                  <span style={{ fontSize: 12, color: "var(--c-low)", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {r.text ? r.text.slice(0, 40) : r.selector}
+                  <span style={{ fontSize: 12, color: "var(--c-low)", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: r.component ? "var(--font-mono)" : undefined }}>
+                    {elementRefLabel(r)}
                   </span>
                   <button onClick={() => setElementRefs((prev) => prev.filter((x) => x.id !== r.id))}
                     style={{ background: "none", border: "none", cursor: "pointer", color: "var(--c-ghost)", display: "flex", padding: 0 }}>
