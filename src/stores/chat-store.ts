@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { ChatMessage, ContentBlock } from "@/types/chat";
+import { COMPOSER_CHAT_KEY } from "@/stores/composer-chat-key";
 
 export interface PermissionRequest {
   id: string;
@@ -563,11 +564,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let changed = false;
       const next: Record<string, SessionChatState> = {};
       for (const [sid, s] of Object.entries(state.sessions)) {
-        // Untouched: visible (active + split panes), mid-stream, or already
-        // lean. Only a session still holding a retained transcript gets reset
-        // — and only its re-fetchable parts (messages + stream scratch).
-        // Sub-agent tasks, process log, tool/permission state are preserved.
+        // Untouched: the compose surface, visible sessions (active + split
+        // panes), mid-stream, or already lean. Only a session still holding a
+        // retained transcript gets reset — and only its re-fetchable parts
+        // (messages + stream scratch). Sub-agent tasks, process log,
+        // tool/permission state are preserved.
+        //
+        // The compose surface is pinned because it is NOT re-fetchable (the
+        // whole premise of this sweep) and callers can't opt it in: compose
+        // mode has no session id, so the sweep's keep list — [activeSessionId,
+        // ...panes] — can never name it. It used to be emptied on the very
+        // sweep that clicking "New session" triggers (activeSessionId → null
+        // re-runs the effect), which is why a fresh chat came up centered or
+        // docked depending on who won the race. app-store clears the key
+        // itself on open / commit / close, so nothing leaks.
         if (
+          sid === COMPOSER_CHAT_KEY ||
           keep.has(sid) ||
           s.isStreaming ||
           (s.messages.length === 0 &&

@@ -24,6 +24,7 @@ import { PlanPreviewCard } from "@/components/dashboard/fleet-panel/plan-preview
 import { BatchProgressCard } from "@/components/dashboard/fleet-panel/batch-progress-card";
 import { useFleetStore, AUTO_CHAIN_CAP } from "@/stores/fleet-store";
 import { OpenInMenu } from "@/components/layout/open-in-menu";
+import { isLandingLayout } from "./landing-layout";
 import { PanelLeft, PanelRight, Trash2, X, Check, GitCompareArrows, ListTodo, Terminal as TerminalIcon, Play, FolderOpen, Layers, Copy, GitBranch, Sparkles, HelpCircle, Globe, Scissors, Loader2 } from "lucide-react";
 import type { ContentBlock, ChatMessage } from "@/types/chat";
 import type { Session } from "@/types/session";
@@ -55,6 +56,11 @@ import { isViewSelectable } from "@/components/workspace/view-gate";
 // and visibly shifted the scroll).
 const MESSAGE_WINDOW = 12;
 const MESSAGE_WINDOW_STEP = 80;
+
+/** Stable empty list for the centered landing, where the scroll surface is
+ *  collapsed to zero height and has nothing to show. A fresh `[]` per render
+ *  would defeat MessageList's memo. */
+const NO_MESSAGES: ChatMessage[] = [];
 
 const MessageList = memo(function MessageList({
   messages,
@@ -980,13 +986,23 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   }, [effectiveSessionId, healTool, healModel, updateSession]);
 
   const handleClearChat = useCallback(async () => {
+    // Compose mode has no session row to clear on the backend —
+    // `effectiveSessionId` is null there, so this used to bail immediately and
+    // the header button was a dead control (it shows once a folderless send
+    // has stacked up warnings). Clearing the sentinel key drops exactly the
+    // transient compose-time messages and returns the surface to its pristine
+    // centered state, which is what "Clear chat" means here.
+    if (composerOpen && !activeSessionId) {
+      useChatStore.getState().clearSession(COMPOSER_CHAT_KEY);
+      return;
+    }
     if (!effectiveSessionId) return;
     try {
       await clearSessionMessages(effectiveSessionId);
     } catch { /* best effort */ }
     clearAllForSession(effectiveSessionId);
     loadedSessionsRef.current.delete(effectiveSessionId);
-  }, [effectiveSessionId, clearAllForSession]);
+  }, [composerOpen, activeSessionId, effectiveSessionId, clearAllForSession]);
 
   // ── Home delegation (the composer as a "delegate a goal" input) ──
   // On the hub, when the Fleet mode is copilot/auto, the typed message is a
@@ -1991,10 +2007,12 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   // screen.
   const isComposing = composerOpen;
   const isControlCenter = !activeSessionId && !isComposing;
-  // Empty hub OR empty compose → centered landing (headline + centered
-  // composer). The first real message / stream flips this off and the
-  // normal scroll+dock layout takes over.
-  const landing = (isControlCenter || isComposing) && messages.length === 0 && !isStreaming;
+  // Empty hub OR fresh compose → centered landing (headline + centered
+  // composer). The compose welcome line doesn't count (see landing-layout):
+  // "New chat" must open centered EVERY time, not only when the async welcome
+  // write lost the race. The first real message / stream flips this off and
+  // the normal scroll+dock layout takes over.
+  const landing = isLandingLayout({ isControlCenter, isComposing, isStreaming, messages });
   // Draft sessions ("New chat" placeholder title — created by the
   // sidebar's New session button before any folder/message is set)
   // are hidden from the sidebar list. They shouldn't show up in the
@@ -2161,7 +2179,10 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
               : isComposing ? (composer.projectPath || null)
               : (activeSession?.project_path || null)
             } />
-            {messages.length > 0 && (
+            {/* Nothing on screen to clear while the surface is centered — the
+                compose welcome line is hidden there, and showing a Clear chat
+                button for it was the other half of the inconsistent open. */}
+            {!landing && messages.length > 0 && (
               <IBtn onClick={handleClearChat} title="Clear chat" style={{ width: 22, height: 22, borderRadius: 5 }}>
                 <Trash2 size={14} />
               </IBtn>
@@ -2340,7 +2361,12 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
             >
             <div ref={contentRef}>
               <div style={{ maxWidth: 920, margin: "0 auto", width: "100%", padding: "24px 32px 8px" }}>
-                <MessageList key={effectiveSessionId ?? "fleet"} messages={messages} latestUserMsgRef={latestUserMsgRef} />
+                {/* Landing collapses this surface to zero height, so anything
+                    handed to it would only sit clipped behind the centered
+                    composer — hand it nothing. (Compose mode gets here with
+                    the welcome line already in `messages`; it re-appears above
+                    the transcript the moment the surface docks.) */}
+                <MessageList key={effectiveSessionId ?? "fleet"} messages={landing ? NO_MESSAGES : messages} latestUserMsgRef={latestUserMsgRef} />
                 {/* Suppress StreamingMessage while a compaction pill is
                     active — /compact runs entirely server-side (no agent
                     turn, no thinking, no tools), so the idle "Thinking…"

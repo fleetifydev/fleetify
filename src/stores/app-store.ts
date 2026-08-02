@@ -4,13 +4,10 @@ import { wsManager } from "@/services/ws-manager";
 import { STUDIO_ENABLED } from "@/lib/feature-flags";
 import { useChatStore, typeOutAssistantMessage } from "@/stores/chat-store";
 
-/** Sentinel chat-store key used for compose-time messages (welcome
- *  typewriter, "pick a folder" warnings, etc.). The composer doesn't
- *  have a session id yet, so these messages live under this fixed key
- *  in chat-store. They are NOT migrated to the real session id on
- *  commitComposer — by design, they're transient compose-mode UX and
- *  disappear the moment the surface flips to the real session. */
-export const COMPOSER_CHAT_KEY = "__composer__";
+// Re-exported (not declared here) so chat-store can read the sentinel without
+// importing app-store, which would be circular — see composer-chat-key.ts.
+import { COMPOSER_CHAT_KEY } from "@/stores/composer-chat-key";
+export { COMPOSER_CHAT_KEY };
 import { createSession as apiCreateSession, cloneRepository } from "@/lib/api";
 import { providers } from "@/lib/providers-api";
 import { buildPickerGroups } from "@/lib/picker-groups";
