@@ -22,6 +22,8 @@ const WorkflowsPage = lazy(() =>
 );
 import { useAppStore } from "@/stores/app-store";
 import { useChatStore } from "@/stores/chat-store";
+import { useDiscoveredModelsStore } from "@/stores/discovered-models-store";
+import { providers } from "@/lib/providers-api";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { fetchSessions, deleteEmptyDrafts, updateSession as apiUpdateSession } from "@/lib/api";
 import type { Session, SessionStatus } from "@/types/session";
@@ -149,6 +151,41 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
     const t = setInterval(sweep, 20000);
     return () => clearInterval(t);
   }, [activeSessionId, paneSig]);
+
+  // ── Model-catalog freshness ──
+  // The published catalog can move while the app is open — a model retired, a
+  // new one shipped — and nothing in a desktop app notices on its own. Waiting
+  // out the backend's TTL means the picker offers a lineup that no longer
+  // exists and a session can sit pinned to a model the provider will reject.
+  //
+  // So we ask at the moments the user actually cares: app start, and coming
+  // back to the window. The probe is a few hundred bytes and the backend
+  // debounces it, so a focus storm costs nothing; only a MOVED catalog does any
+  // work (re-discover + heal every selected model onto the provider default).
+  // Mounted once here rather than in chat-input, which exists per split pane.
+  useEffect(() => {
+    let cancelled = false;
+    const revalidate = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      void (async () => {
+        try {
+          const { tiles } = await providers.listCatalog();
+          if (cancelled || !tiles?.length) return;
+          await useDiscoveredModelsStore.getState().revalidate(tiles);
+        } catch {
+          /* fail-open: a probe failure must never disturb the current lineup */
+        }
+      })();
+    };
+    revalidate();
+    window.addEventListener("focus", revalidate);
+    document.addEventListener("visibilitychange", revalidate);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", revalidate);
+      document.removeEventListener("visibilitychange", revalidate);
+    };
+  }, []);
 
   // ── First-launch tour ──
   // The typed "Welcome to Fleet…" message and its "wait for the greeting

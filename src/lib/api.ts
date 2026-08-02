@@ -164,6 +164,51 @@ export async function listModels(): Promise<{ providers: CatalogProvider[] }> {
   return res.json();
 }
 
+/** Result of a catalog staleness probe. `changed` is the only bit callers act
+ *  on: the served catalog identity moved, the backend cleared its cache, and
+ *  any lineup the renderer is holding is stale. */
+export type CatalogRevalidation = {
+  changed: boolean;
+  /** False when the backend's debounce collapsed the call. */
+  probed: boolean;
+  commit: string | null;
+  tag: string | null;
+};
+
+const CATALOG_UNCHANGED: CatalogRevalidation = {
+  changed: false,
+  probed: false,
+  commit: null,
+  tag: null,
+};
+
+/** Ask the backend whether the published model catalog moved.
+ *
+ *  This is the cheap half of the remote-config split: the catalog PAYLOAD is
+ *  immutable and long-cached, while a small POINTER says which payload is
+ *  current. Probing the pointer costs a few hundred bytes, so it can run on
+ *  natural triggers (window focus, picker open) instead of waiting out the
+ *  backend's TTL — which is what actually decides how long a retired model
+ *  keeps showing up in the picker.
+ *
+ *  Never throws: a failed probe reports "unchanged", so an unreachable catalog
+ *  leaves the lineup the user already has exactly as it is. */
+export async function revalidateCatalog(): Promise<CatalogRevalidation> {
+  try {
+    const res = await apiFetch(`${API_BASE}/providers/catalog/revalidate`, { method: "POST" });
+    if (!res.ok) return CATALOG_UNCHANGED;
+    const d = (await res.json()) as Partial<CatalogRevalidation>;
+    return {
+      changed: d.changed === true,
+      probed: d.probed === true,
+      commit: typeof d.commit === "string" ? d.commit : null,
+      tag: typeof d.tag === "string" ? d.tag : null,
+    };
+  } catch {
+    return CATALOG_UNCHANGED;
+  }
+}
+
 /** Discovered model catalog for a live-model CLI agent (`opencode` / `cursor` /
  *  `github-copilot` / `hermes`), sourced at runtime by the backend (OpenCode via
  *  `opencode models`, Cursor via a short ACP `session/new` probe, Hermes via its

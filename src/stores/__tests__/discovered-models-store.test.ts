@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { fetchAgentModels, fetchProviderModels } from "@/lib/api";
+import { fetchAgentModels, fetchProviderModels, revalidateCatalog } from "@/lib/api";
 import { buildPickerGroups, resolveModelChip } from "@/lib/picker-groups";
 import type { ProviderTile } from "@/lib/providers-api";
 import {
@@ -11,10 +11,20 @@ import {
 vi.mock("@/lib/api", () => ({
   fetchAgentModels: vi.fn(async () => ({ models: [], current: null })),
   fetchProviderModels: vi.fn(async () => []),
+  // Default: the catalog hasn't moved, so discovery paths behave exactly as
+  // they did before the freshness probe existed.
+  revalidateCatalog: vi.fn(async () => ({
+    changed: false,
+    probed: true,
+    commit: "c0",
+    tag: "main",
+  })),
+  updateSession: vi.fn(async () => ({})),
 }));
 
 const mockedAgent = vi.mocked(fetchAgentModels);
 const mockedProvider = vi.mocked(fetchProviderModels);
+const mockedRevalidate = vi.mocked(revalidateCatalog);
 
 const baseTile = (
   id: string,
@@ -58,7 +68,77 @@ beforeEach(() => {
   // empty-discovery default below can't leak between tests.
   mockedAgent.mockReset().mockResolvedValue({ models: [], current: null });
   mockedProvider.mockReset().mockResolvedValue([]);
-  useDiscoveredModelsStore.setState({ models: {}, hydrated: false });
+  mockedRevalidate
+    .mockReset()
+    .mockResolvedValue({ changed: false, probed: true, commit: "c0", tag: "main" });
+  useDiscoveredModelsStore.setState({ models: {}, hydrated: false, catalogCommit: null });
+});
+
+describe("discovered-models-store revalidate", () => {
+  const OPUS_6 = [
+    { id: "claude-opus-6", label: "Opus 6", default: true },
+    { id: "claude-sonnet-5", label: "Sonnet 5" },
+  ];
+
+  it("does no work while the catalog hasn't moved", async () => {
+    const did = await useDiscoveredModelsStore.getState().revalidate(TILES);
+    expect(did).toBe(false);
+    expect(mockedAgent).not.toHaveBeenCalled();
+    // The probed identity is still recorded, so the next move is detectable.
+    expect(useDiscoveredModelsStore.getState().catalogCommit).toBe("c0");
+  });
+
+  it("re-discovers and heals the selected model when the catalog moves", async () => {
+    const { useAppStore } = await import("@/stores/app-store");
+    useAppStore.setState({
+      sessions: [
+        // Pinned to a model the new catalog dropped.
+        { id: "s1", tool: "claude-code", model_name: "claude-opus-5" },
+        // Still served — must be left alone.
+        { id: "s2", tool: "claude-code", model_name: "claude-sonnet-5" },
+      ] as never,
+      composer: {
+        ...useAppStore.getState().composer,
+        open: true,
+        tool: "claude-code",
+        modelName: "claude-opus-5",
+      },
+    });
+    mockedRevalidate.mockResolvedValue({
+      changed: true,
+      probed: true,
+      commit: "c1",
+      tag: "v2026.08.01",
+    });
+    mockedAgent.mockImplementation(async (id: string) =>
+      id === "claude-code" ? { models: OPUS_6, current: null } : { models: [], current: null },
+    );
+
+    const did = await useDiscoveredModelsStore.getState().revalidate(TILES);
+
+    expect(did).toBe(true);
+    const app = useAppStore.getState();
+    expect(app.sessions.find((s) => s.id === "s1")?.model_name).toBe("claude-opus-6");
+    expect(app.sessions.find((s) => s.id === "s2")?.model_name).toBe("claude-sonnet-5");
+    expect(app.composer.modelName).toBe("claude-opus-6");
+    expect(useDiscoveredModelsStore.getState().catalogCommit).toBe("c1");
+  });
+
+  it("leaves selections untouched when the move brings no discoverable lineup", async () => {
+    const { useAppStore } = await import("@/stores/app-store");
+    useAppStore.setState({
+      sessions: [{ id: "s1", tool: "claude-code", model_name: "claude-opus-5" }] as never,
+    });
+    mockedRevalidate.mockResolvedValue({ changed: true, probed: true, commit: "c2", tag: "main" });
+    // Catalog moved but discovery came back empty (offline mid-flight): the
+    // user's pick must survive — resetting the fleet on a blip is far worse
+    // than showing a model that's on its way out.
+    mockedAgent.mockResolvedValue({ models: [], current: null });
+
+    await useDiscoveredModelsStore.getState().revalidate(TILES);
+
+    expect(useAppStore.getState().sessions[0]?.model_name).toBe("claude-opus-5");
+  });
 });
 
 describe("discovered-models-store hydrate", () => {

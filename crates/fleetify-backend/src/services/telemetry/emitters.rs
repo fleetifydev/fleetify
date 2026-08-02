@@ -177,9 +177,24 @@ pub async fn emit_activity(
 }
 
 pub async fn emit_heartbeat(occurred_at: DateTime<Utc>) -> Result<()> {
+    // The model catalog this device is actually serving. A staged rollout can't
+    // be operated blind — without a version distribution across the fleet you
+    // can't tell a release that reached 5% of devices from one that reached
+    // everybody, and you can't spot a slice stuck on an old snapshot. Both
+    // fields are absent until the first successful pointer probe (offline
+    // first-run), which is itself the signal "this device has never reached the
+    // catalog". Carries no content — just an identity the cloud published.
+    let catalog = crate::routers::providers::active_catalog_version().await;
     enqueue_payload(json!({
         "kind": "device_heartbeat",
         "occurred_at": iso_utc(occurred_at),
+        "catalog_commit": catalog.commit,
+        "catalog_tag": catalog.tag,
+        // Our staged-rollout slice, so the cloud can tell which catalog we
+        // SHOULD be on without re-deriving the hash server-side — two
+        // implementations of it in two languages would eventually disagree and
+        // push devices into the wrong slice.
+        "catalog_bucket": crate::routers::providers::device_rollout_bucket(),
     }))
     .await
 }

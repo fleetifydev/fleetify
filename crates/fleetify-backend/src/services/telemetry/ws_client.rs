@@ -258,6 +258,29 @@ async fn handle_inbound(text: &str) {
                 let _ = outbox::bump_attempt(id).await;
             }
         }
+        // The cloud noticed, from our own heartbeat, that we're on a catalog
+        // we shouldn't be. Re-probe the pointer, which invalidates the model
+        // cache when the identity really moved — this is a TRIGGER for the
+        // normal pull, not an alternative source of truth. The socket is
+        // auth-gated, so the pull path stays the thing that has to be correct.
+        //
+        // Jittered by our rollout bucket: the frame arrives on each device's
+        // own heartbeat so it's already smeared across a minute, but a catalog
+        // publish lands with the whole fleet's heartbeats already in flight,
+        // and a deterministic 0–9s spread costs nothing to add.
+        "catalog.changed" => {
+            let delay = u64::from(crate::routers::providers::device_rollout_bucket() % 10);
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(delay)).await;
+                let r = crate::routers::providers::revalidate_remote_catalog(true).await;
+                if r.changed {
+                    tracing::info!(
+                        target: "catalog.version",
+                        "catalog change pushed by cloud; model cache invalidated"
+                    );
+                }
+            });
+        }
         _ => {}
     }
 }

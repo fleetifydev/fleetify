@@ -301,6 +301,13 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   // is created on the user's first send (well after this resolves), so the
   // seed below always sees it.
   const [persistedDefaultModel, setPersistedDefaultModel] = useState<string | null>(null);
+  // Re-read after a catalog change has been absorbed. This value is the Fleet
+  // hub's model when the staff session has no model_name of its own, and it was
+  // loaded once on mount — so when the catalog retired that model,
+  // `reconcileFleetDefault` healed it on disk while the hub kept rendering the
+  // retired id until a remount. `healRevision` (not `catalogCommit`) is the
+  // right signal: the commit is recorded at probe time, before the heal runs.
+  const healRevision = useDiscoveredModelsStore((s) => s.healRevision);
   useEffect(() => {
     let cancelled = false;
     void window.electronAPI?.getConfig?.().then((cfg) => {
@@ -313,7 +320,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [healRevision]);
   const startupDefault = useMemo(() => {
     const { tool, model } = resolveStartupDefault(providerTiles, persistedDefaultModel);
     return { tool: tool as import("@/types/session").AgentTool, model };

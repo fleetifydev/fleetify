@@ -116,6 +116,25 @@ pub fn router() -> Router<AppState> {
         .route("/agents/{id}/models", get(list_agent_models))
         .route("/providers/{id}/models", get(list_provider_models))
         .route("/providers/cloudflare/verify", post(cloudflare_verify))
+        .route("/providers/catalog/revalidate", post(revalidate_catalog))
+}
+
+/// POST /providers/catalog/revalidate — the renderer's staleness check, fired
+/// on natural triggers (window focus, model-picker open). Cheap: one small
+/// conditional-ish GET of the catalog pointer, debounced server-side. POST
+/// because it mutates cache state.
+///
+/// `changed: true` means the lineup the renderer holds is stale and it should
+/// re-discover; `probed: false` means the debounce collapsed this call.
+async fn revalidate_catalog() -> Json<Value> {
+    let r = revalidate_remote_catalog(false).await;
+    Json(json!({
+        "ok": true,
+        "changed": r.changed,
+        "probed": r.probed,
+        "commit": r.version.commit,
+        "tag": r.version.tag,
+    }))
 }
 
 use crate::providers::capabilities;
@@ -362,6 +381,11 @@ fn remote_catalog_prewarm_ids() -> Vec<&'static str> {
 /// `/providers/{id}/models` and (baked-agent) `/agents/{id}/models` endpoints
 /// read through.
 pub async fn prewarm_remote_catalog() {
+    // Record the pointer BEFORE warming, so the first user-triggered probe
+    // compares against the identity these payloads actually came from. Without
+    // it the first probe reads as "unknown provenance" and re-pulls every
+    // provider for nothing on each app start.
+    let _ = revalidate_remote_catalog(true).await;
     let ids = remote_catalog_prewarm_ids();
     let total = ids.len();
     let warmed = futures_util::future::join_all(ids.into_iter().map(fetch_remote_catalog))
@@ -676,6 +700,221 @@ fn models_cdn_tag() -> String {
         .unwrap_or_else(|| "main".to_string())
 }
 
+// ── Catalog version pointer (cheap staleness probe) ─────────────────────────
+// The remote catalog follows the standard remote-config split: an IMMUTABLE,
+// long-cached PAYLOAD (jsDelivr `@<tag>/dist/...`) plus a tiny POINTER saying
+// which payload is current. `/api/meta` is that pointer — a few hundred bytes
+// reporting `{ tag, catalogCommit }`.
+//
+// Probing the pointer is cheap enough to run on natural user triggers (window
+// focus, model-picker open) rather than waiting out REMOTE_CATALOG_TTL, which
+// is what actually decides how long a just-published model stays invisible. A
+// moved commit invalidates L1 wholesale and the next per-provider read
+// re-pulls; the payload fetch path itself is untouched.
+
+/// Renderer triggers (focus + picker open) burst — collapse them.
+const CATALOG_PROBE_MIN_INTERVAL: Duration = Duration::from_secs(15);
+/// The pointer sits on the user's critical path; fail fast and keep serving.
+const CATALOG_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The catalog identity the L1 cache was populated from — specifically the one
+/// THIS device is assigned, which under a staged rollout may not be the one the
+/// serving API itself has cached.
+#[derive(Clone, Default, Serialize)]
+pub struct CatalogVersion {
+    /// `catalogCommit` of the assigned catalog. Absent for a freshly staged
+    /// candidate whose commit the cloud hasn't resolved yet — the tag is then
+    /// the identity (it's immutable, so that's just as stable).
+    pub commit: Option<String>,
+    /// The ref this device should use (immutable CalVer tag, or `main`).
+    pub tag: Option<String>,
+    /// The ref the serving API has cached. Equal to `tag` outside a rollout;
+    /// when they differ, the API can't hand us our payload and we go to the
+    /// immutable CDN URL for `tag` instead.
+    pub api_tag: Option<String>,
+}
+
+impl CatalogVersion {
+    /// Stable identity for change detection: the commit when the cloud knows
+    /// it, else the (immutable) tag.
+    fn identity(&self) -> Option<&str> {
+        self.commit.as_deref().or(self.tag.as_deref())
+    }
+
+    /// True when the serving API is on a different catalog than we're assigned
+    /// — i.e. this device is inside a staged rollout.
+    fn is_staged(&self) -> bool {
+        match (&self.tag, &self.api_tag) {
+            (Some(t), Some(a)) => t != a,
+            _ => false,
+        }
+    }
+}
+
+/// Stable rollout bucket in [0, 100) derived from the device id.
+///
+/// Explicit FNV-1a rather than `DefaultHasher`: the bucket must not move when
+/// the toolchain or the app version changes, or a device would hop between
+/// rollout slices on upgrade — precisely when someone is watching a staged
+/// release and needs the slices to hold still.
+pub fn device_rollout_bucket() -> u32 {
+    rollout_bucket(&crate::services::telemetry::get_or_create().device_id)
+}
+
+fn rollout_bucket(device_id: &str) -> u32 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in device_id.as_bytes() {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    (hash % 100) as u32
+}
+
+static CATALOG_VERSION: OnceLock<RwLock<CatalogVersion>> = OnceLock::new();
+static CATALOG_PROBED_AT: OnceLock<RwLock<Option<Instant>>> = OnceLock::new();
+
+fn catalog_version_cell() -> &'static RwLock<CatalogVersion> {
+    CATALOG_VERSION.get_or_init(|| RwLock::new(CatalogVersion::default()))
+}
+
+fn catalog_probed_at() -> &'static RwLock<Option<Instant>> {
+    CATALOG_PROBED_AT.get_or_init(|| RwLock::new(None))
+}
+
+/// The catalog identity currently serving this device. Read by the telemetry
+/// heartbeat: a staged rollout can't be operated without knowing which slice of
+/// the fleet is on which catalog.
+pub async fn active_catalog_version() -> CatalogVersion {
+    catalog_version_cell().read().await.clone()
+}
+
+/// Outcome of a pointer probe.
+pub struct CatalogRevalidation {
+    /// The served identity moved — L1 was cleared, the next read re-pulls.
+    pub changed: bool,
+    /// False when the debounce collapsed this call (nothing was asked).
+    pub probed: bool,
+    pub version: CatalogVersion,
+}
+
+/// Pure parser for the `/api/meta` pointer payload. A response with no
+/// `catalogCommit` carries no identity, so it's a miss rather than something we
+/// record over a known-good commit.
+fn parse_catalog_pointer(body: &Value) -> Option<CatalogVersion> {
+    let s = |k: &str| {
+        body.get(k)
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    let api_tag = s("tag");
+    let api_commit = s("catalogCommit");
+    match s("assignedTag") {
+        // The cloud assigned this device a catalog (staged rollout, or simply
+        // the stable one). Identity comes from the ASSIGNED pair: falling back
+        // to the API's own commit here would report the stable catalog while
+        // we're actually serving the candidate — and a rollout you can't
+        // observe accurately is worse than no rollout.
+        Some(assigned) => {
+            let commit = s("assignedCommit").or_else(|| {
+                // Same catalog ⇒ the API's commit IS this one's.
+                if api_tag.as_deref() == Some(assigned.as_str()) {
+                    api_commit.clone()
+                } else {
+                    None
+                }
+            });
+            Some(CatalogVersion {
+                commit,
+                tag: Some(assigned),
+                api_tag,
+            })
+        }
+        // Older cloud with no assignment concept — the pre-rollout contract,
+        // where a response without a commit carries no identity at all.
+        None => {
+            api_commit.as_ref()?;
+            Some(CatalogVersion {
+                commit: api_commit,
+                tag: api_tag.clone(),
+                api_tag,
+            })
+        }
+    }
+}
+
+/// GET the pointer. `None` on any network/parse failure — an unreachable
+/// pointer must NEVER invalidate a good lineup, or going offline would wipe the
+/// picker down to the disk fallback for no reason.
+async fn probe_catalog_pointer() -> Option<CatalogVersion> {
+    let client = reqwest::Client::builder()
+        .timeout(CATALOG_PROBE_TIMEOUT)
+        .build()
+        .ok()?;
+    // Send our rollout bucket so the cloud can assign a staged catalog to a
+    // slice of the fleet. Coarse by design — 100 buckets across every install
+    // is not an identifier, and it keeps the pointer response shareable per
+    // bucket instead of per device.
+    let url = format!(
+        "{}/meta?b={}",
+        models_api_base().trim_end_matches('/'),
+        device_rollout_bucket(),
+    );
+    let body: Value = match client.get(&url).send().await {
+        Ok(r) if r.status().is_success() => r.json().await.ok()?,
+        _ => return None,
+    };
+    parse_catalog_pointer(&body)
+}
+
+/// Probe the pointer; invalidate L1 when the catalog identity moved. `force`
+/// skips the debounce — used by the boot prewarm and the push path, both rare.
+pub async fn revalidate_remote_catalog(force: bool) -> CatalogRevalidation {
+    if !force {
+        if let Some(at) = *catalog_probed_at().read().await {
+            if at.elapsed() < CATALOG_PROBE_MIN_INTERVAL {
+                return CatalogRevalidation {
+                    changed: false,
+                    probed: false,
+                    version: active_catalog_version().await,
+                };
+            }
+        }
+    }
+    *catalog_probed_at().write().await = Some(Instant::now());
+
+    let Some(fetched) = probe_catalog_pointer().await else {
+        // Offline / pointer down: keep serving what we have.
+        return CatalogRevalidation {
+            changed: false,
+            probed: true,
+            version: active_catalog_version().await,
+        };
+    };
+
+    let previous = active_catalog_version().await;
+    // An unrecorded previous identity means we don't know what L1 was populated
+    // from (e.g. the boot probe failed and L1 came off the disk cache), so it
+    // counts as moved: one extra re-pull beats serving a stale lineup. Entering
+    // or leaving a rollout slice moves the identity too, so a staged device
+    // re-pulls exactly like a promoted one.
+    let changed = previous.identity() != fetched.identity();
+    *catalog_version_cell().write().await = fetched.clone();
+    if changed {
+        remote_catalog_cache().write().await.clear();
+        tracing::info!(
+            target: "catalog.version",
+            "catalog moved {:?} -> {:?} (tag {:?}) — L1 invalidated",
+            previous.commit, fetched.commit, fetched.tag
+        );
+    }
+    CatalogRevalidation {
+        changed,
+        probed: true,
+        version: fetched,
+    }
+}
+
 /// Fetch a provider/agent's curated models from the remote catalog, TTL-cached.
 /// Tries the serving API first, then the jsDelivr origin directly; any failure
 /// degrades to an empty list (cached briefly) so callers fall to the baked
@@ -710,20 +949,31 @@ async fn fetch_remote_catalog_uncached(id: &str) -> ProviderModelList {
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
-    // 1. Serving API: `…/providers/{id}/models`.
-    let api_url = format!(
-        "{}/providers/{}/models",
-        models_api_base().trim_end_matches('/'),
-        id
-    );
-    if let Some(models) = try_fetch_catalog(&client, &api_url).await {
-        return models;
+    let version = active_catalog_version().await;
+    // 1. Serving API: `…/providers/{id}/models` — SKIPPED while we're inside a
+    //    staged rollout. The API serves one catalog; if we've been assigned a
+    //    different one it simply can't hand us that payload, and asking anyway
+    //    would silently drop us back onto the stable lineup. This is the whole
+    //    reason the rollout lives in the pointer: the payload is an immutable,
+    //    CDN-addressable artifact, so a slice can be served without the API
+    //    having to hold two catalogs at once.
+    if !version.is_staged() {
+        let api_url = format!(
+            "{}/providers/{}/models",
+            models_api_base().trim_end_matches('/'),
+            id
+        );
+        if let Some(models) = try_fetch_catalog(&client, &api_url).await {
+            return models;
+        }
     }
-    // 2. jsDelivr origin: the catalog's built per-provider file. Lets the app
-    //    consume the catalog before the serving API is deployed.
+    // 2. jsDelivr origin: the catalog's built per-provider file, at the tag we
+    //    were assigned (falling back to the configured ref when the pointer
+    //    hasn't answered yet). Also the path that let the app consume the
+    //    catalog before the serving API existed.
     let cdn_url = format!(
         "https://cdn.jsdelivr.net/gh/fleetifydev/models@{}/dist/providers/{}.json",
-        models_cdn_tag(),
+        version.tag.as_deref().unwrap_or(&models_cdn_tag()),
         id
     );
     try_fetch_catalog(&client, &cdn_url)
@@ -2529,6 +2779,80 @@ mod tests {
     #[test]
     fn parses_ollama_tags_empty_to_empty() {
         assert!(parse_ollama_tags_models(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn parse_catalog_pointer_reads_identity() {
+        // The `/api/meta` pointer: identity is `catalogCommit`, `tag` is the
+        // ref being served.
+        let body = json!({
+            "schemaVersion": 1,
+            "tag": "v2026.08.01",
+            "catalogCommit": "2340bcf",
+            "assignedTag": "v2026.08.01",
+            "assignedCommit": "2340bcf",
+            "generatedAt": "2026-08-01T11:56:41.652Z",
+            "providerCount": 16,
+            "modelCount": 91
+        });
+        let v = parse_catalog_pointer(&body).expect("pointer parses");
+        assert_eq!(v.commit.as_deref(), Some("2340bcf"));
+        assert_eq!(v.tag.as_deref(), Some("v2026.08.01"));
+        assert!(!v.is_staged(), "assigned == served ⇒ not in a rollout");
+    }
+
+    #[test]
+    fn parse_catalog_pointer_without_commit_is_a_miss() {
+        // No identity ⇒ nothing we can compare against, so it must NOT be
+        // recorded over a known-good commit (that would mask the next change).
+        assert!(parse_catalog_pointer(&json!({ "tag": "main" })).is_none());
+        assert!(parse_catalog_pointer(&json!({ "catalogCommit": "" })).is_none());
+        assert!(parse_catalog_pointer(&json!({ "nope": 1 })).is_none());
+    }
+
+    #[test]
+    fn parse_catalog_pointer_tolerates_a_missing_tag() {
+        let v = parse_catalog_pointer(&json!({ "catalogCommit": "deadbee" }))
+            .expect("commit alone is a valid identity");
+        assert_eq!(v.commit.as_deref(), Some("deadbee"));
+        assert!(v.tag.is_none());
+    }
+
+    #[test]
+    fn staged_assignment_reports_the_candidate_not_the_served_catalog() {
+        // Inside a rollout the cloud serves `main` from its own cache but
+        // assigns us the candidate. Reporting the API's commit here would make
+        // the fleet's version distribution lie about who is on what.
+        let v = parse_catalog_pointer(&json!({
+            "tag": "main",
+            "catalogCommit": "aaaaaaa",
+            "assignedTag": "v2026.08.01",
+            "assignedCommit": null
+        }))
+        .expect("an assigned tag alone is a valid identity");
+        assert_eq!(v.tag.as_deref(), Some("v2026.08.01"));
+        assert_eq!(v.api_tag.as_deref(), Some("main"));
+        assert!(
+            v.commit.is_none(),
+            "must NOT inherit the served catalog's commit"
+        );
+        assert_eq!(v.identity(), Some("v2026.08.01"));
+        assert!(
+            v.is_staged(),
+            "assigned != served ⇒ fetch the payload from the CDN"
+        );
+    }
+
+    #[test]
+    fn rollout_bucket_is_in_range_and_deterministic() {
+        for id in ["a", "0e5c7f4e-1f2a-4b3c-8d9e-000000000001", ""] {
+            let b = rollout_bucket(id);
+            assert!(b < 100, "{id} → {b} out of range");
+            assert_eq!(b, rollout_bucket(id), "same device must not hop slices");
+        }
+        // Different devices land in different slices (not a distribution test —
+        // just that the bucket actually depends on the id).
+        assert_ne!(rollout_bucket("device-a"), rollout_bucket("device-b"));
     }
 
     #[test]
