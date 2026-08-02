@@ -15,7 +15,7 @@ import {
 import { PaneCloseContext } from "@/components/workspace/pane-close-context";
 import { SANS } from "@/components/workspace/typography";
 import {
-  SELECT_MODES, parsePickPayload, parseSelectMode, pickToRefDetail,
+  SELECT_MODES, copyTextSafe, parsePickPayload, parseSelectMode, pickToRefDetail,
   selectModeLabel, selectModeMenuLabel, type SelectMode,
 } from "@/lib/element-ref";
 import { useAppStore } from "@/stores/app-store";
@@ -47,7 +47,13 @@ function looksLikeUrl(s: string): boolean {
 }
 function resolveTarget(raw: string): string {
   const t = raw.trim();
-  if (looksLikeUrl(t)) return /^https?:\/\//i.test(t) ? t : "https://" + t;
+  if (looksLikeUrl(t)) {
+    if (/^https?:\/\//i.test(t)) return t;
+    // Loopback hosts get http: dev servers speak plain http, and a https://
+    // guess just buys a TLS error before the user retypes the scheme.
+    const loopback = /^(localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0)(:\d+)?([/?#]|$)/i.test(t);
+    return (loopback ? "http://" : "https://") + t;
+  }
   return "https://www.google.com/search?q=" + encodeURIComponent(t);
 }
 function hostOf(url: string): string { try { return new URL(url).host; } catch { return url; } }
@@ -294,9 +300,11 @@ function BrowserView() {
   }, [selecting]);
 
   // Messages from the in-page element box arrive as URL-encoded JSON. Three
-  // kinds: copy (put a representation on the clipboard — the page's own
-  // clipboard API is blocked on plain-http origins, ours never is), dismiss
-  // (Esc/× in the box — un-arm the Select pill), and a real pick → composer.
+  // kinds: copy (LAST-RESORT clipboard write — the page copies in its own
+  // document first, where focus and the user gesture live; this document is
+  // usually unfocused at that moment, so the write may legitimately miss and
+  // must never surface an unhandled rejection), dismiss (Esc/× in the box —
+  // un-arm the Select pill), and a real pick → composer.
   useEffect(() => {
     const listen = (window as unknown as { __TAURI__?: { event?: { listen?: (n: string, cb: (e: { payload: unknown }) => void) => Promise<() => void> } } }).__TAURI__?.event?.listen;
     if (!listen) return;
@@ -308,7 +316,7 @@ function BrowserView() {
       if (msg.action === "copy") {
         // The box stays open in-page, so Select stays armed-looking there;
         // don't flip our pill either.
-        if (msg.value) void navigator.clipboard?.writeText(msg.value);
+        if (msg.value) void copyTextSafe(msg.value);
         return;
       }
       setSelecting(false);
@@ -699,4 +707,5 @@ function BrowserPopItem({ onClick, disabled, children }: { onClick?: () => void;
   );
 }
 
-export { BrowserView };
+// resolveTarget is exported for its unit tests only.
+export { BrowserView, resolveTarget };

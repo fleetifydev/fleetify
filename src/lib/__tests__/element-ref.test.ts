@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildElementContextBlock,
+  copyTextSafe,
   elementRefLabel,
   elementRefTitle,
   mergePromptIntoDraft,
@@ -178,5 +179,35 @@ describe("mergePromptIntoDraft", () => {
 
   it("appends below existing text, trimming trailing whitespace once", () => {
     expect(mergePromptIntoDraft("first line  \n", "second line")).toBe("first line\nsecond line");
+  });
+});
+
+describe("copyTextSafe", () => {
+  const setClipboard = (impl: unknown) => {
+    Object.defineProperty(globalThis.navigator, "clipboard", {
+      value: impl,
+      configurable: true,
+    });
+  };
+
+  it("resolves true when the clipboard write lands", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    setClipboard({ writeText });
+    await expect(copyTextSafe("hello")).resolves.toBe(true);
+    expect(writeText).toHaveBeenCalledWith("hello");
+  });
+
+  it("resolves false instead of surfacing an unhandled rejection when the document is unfocused", async () => {
+    setClipboard({
+      writeText: vi.fn().mockRejectedValue(
+        new DOMException("Document is not focused.", "NotAllowedError"),
+      ),
+    });
+    await expect(copyTextSafe("hello")).resolves.toBe(false);
+  });
+
+  it("resolves false when the Clipboard API is unavailable", async () => {
+    setClipboard(undefined);
+    await expect(copyTextSafe("hello")).resolves.toBe(false);
   });
 });

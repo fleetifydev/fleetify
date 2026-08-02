@@ -510,8 +510,37 @@ const SELECT_JS: &str = r#"(function () {
     setTimeout(function () { try { b.style.opacity = '0'; } catch (_) {} }, 30);
     setTimeout(hideBubble, 1200);
   }
+  // Copy in THIS document — it owns the OS focus and the user gesture while
+  // the user interacts with the embedded page, so the app's document is
+  // unfocused and its async Clipboard API would reject (NotAllowedError).
+  // Order: sync execCommand inside the gesture (works on any origin, plain
+  // http included) → this page's navigator.clipboard (secure contexts) →
+  // a caught last-resort message to the app.
+  function copyToClipboard(value) {
+    var v = String(value == null ? '' : value);
+    var ok = false;
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = v;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+      (document.body || document.documentElement).appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, v.length);
+      ok = !!(document.execCommand && document.execCommand('copy'));
+      ta.remove();
+    } catch (_) { ok = false; }
+    if (ok) return;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(v).catch(function () { send({ action: 'copy', kind: 'fallback', value: v }); });
+        return;
+      }
+    } catch (_) {}
+    send({ action: 'copy', kind: 'fallback', value: v });
+  }
   function doCopy(kind, info, el, x, y) {
-    send({ action: 'copy', kind: kind, value: String(copyValue(kind, info, el) || '') });
+    copyToClipboard(String(copyValue(kind, info, el) || ''));
     showBubble(x, y, '✓ Copied ' + (KIND_LABEL[kind] || kind));
   }
   function docHideMenu() { suppressClick = true; hideMenu(); }
@@ -624,16 +653,18 @@ const SELECT_JS: &str = r#"(function () {
       'border:1px solid #333;border-radius:6px;padding:6px 8px;font:inherit;font-size:12.5px;outline:none;');
     var row = document.createElement('div');
     row.setAttribute('style', 'display:flex;align-items:center;gap:4px;margin-top:7px;');
-    // Copy buttons post {action:'copy'} to the app — the page's own clipboard
-    // API is unavailable on plain-http origins, the app's never is. The box
-    // stays open so copying and asking aren't mutually exclusive.
+    // Copy buttons copy in-page (see copyToClipboard — the app's document is
+    // unfocused while the user is in this webview, so its Clipboard API
+    // would reject). The box stays open so copying and asking aren't
+    // mutually exclusive; focus returns to the textarea afterwards.
     function mkCopy(label, get, title) {
       var b = document.createElement('button');
       b.textContent = label;
       b.setAttribute('title', title);
       b.setAttribute('style', 'font:inherit;font-size:11px;padding:3px 7px;border-radius:5px;cursor:pointer;background:transparent;color:#9a9a9a;border:1px solid #333;');
       b.addEventListener('click', function () {
-        send({ action: 'copy', kind: label.toLowerCase(), value: String(get() || '') });
+        copyToClipboard(String(get() || ''));
+        try { ta.focus(); } catch (_) {}
         b.textContent = '✓';
         setTimeout(function () { b.textContent = label; }, 900);
       });
@@ -689,7 +720,7 @@ const SELECT_JS: &str = r#"(function () {
     if (mode !== 'ask') {
       var kind = mode.slice(5);
       if (kind === 'component' && !info.component && !info.source) {
-        send({ action: 'copy', kind: 'css', value: info.selector });
+        copyToClipboard(info.selector);
         showBubble(e.clientX, e.clientY, 'No component — copied CSS selector');
       } else {
         doCopy(kind, info, el, e.clientX, e.clientY);

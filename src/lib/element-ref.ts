@@ -201,3 +201,21 @@ export function buildElementContextBlock(refs: ElementRef[]): string {
     })
     .join("\n");
 }
+
+/**
+ * Last-resort clipboard write for copy actions that fall through from the
+ * embedded page. The async Clipboard API rejects with NotAllowedError when
+ * this document is unfocused — which is the normal state while the user
+ * interacts with the native child webview — so the rejection must never
+ * escape as an unhandled error. Returns whether the write landed.
+ */
+export async function copyTextSafe(value: string): Promise<boolean> {
+  try {
+    const cb = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
+    if (!cb?.writeText) return false;
+    await cb.writeText(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
