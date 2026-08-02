@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use crate::services::library::store;
 use crate::services::library::types::LibraryKind;
-use crate::services::plugins::providers::COMPONENT_PROVIDERS;
+use crate::services::plugins::providers::{component_basename, COMPONENT_PROVIDERS};
 use crate::services::provider_inspector::parse_frontmatter;
 
 /// One sendable prompt. `slug` is the user-facing key for `/prompts <slug>`;
@@ -88,7 +88,13 @@ fn plugin_prompts(seen: &mut BTreeSet<String>, out: &mut Vec<PromptSummary>) {
             } else {
                 "commands"
             };
-            let dir = root.join(format!(".{p}")).join(sub);
+            // Plugins organise by VENDOR basename (`.claude/`, `.codex/`),
+            // not by routing id — `component_basename` is the mapping, and
+            // its doc comment warns this is structural, not a legacy alias.
+            // Using `p` directly looked for `.claude-code/` / `.codex-cli/`,
+            // which no plugin ships, so 7 of the 9 providers' commands were
+            // invisible here while materialising correctly.
+            let dir = root.join(format!(".{}", component_basename(p))).join(sub);
             let Ok(entries) = std::fs::read_dir(&dir) else {
                 continue;
             };
@@ -165,10 +171,29 @@ mod tests {
         std::fs::write(pdir.join(format!("{slug}.md")), body).unwrap();
     }
 
-    fn write_plugin_command(home: &std::path::Path, plugin: &str, stem: &str, content: &str) {
-        let dir = home.join("plugins").join(plugin).join(".claude/commands");
+    /// Write a plugin-shipped command/prompt into the VENDOR dotdir a real
+    /// plugin actually uses (`.claude/commands`, `.codex/prompts`) — see
+    /// `providers::component_basename`, which is the mapping from routing id
+    /// to that dotdir.
+    fn write_plugin_component(
+        home: &std::path::Path,
+        plugin: &str,
+        vendor: &str,
+        sub: &str,
+        stem: &str,
+        content: &str,
+    ) {
+        let dir = home
+            .join("plugins")
+            .join(plugin)
+            .join(format!(".{vendor}"))
+            .join(sub);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(format!("{stem}.md")), content).unwrap();
+    }
+
+    fn write_plugin_command(home: &std::path::Path, plugin: &str, stem: &str, content: &str) {
+        write_plugin_component(home, plugin, "claude", "commands", stem, content);
     }
 
     #[test]
@@ -210,6 +235,33 @@ mod tests {
             assert_eq!(p.description.as_deref(), Some("ship it"));
             assert_eq!(p.body, "Run the deploy.");
             assert_eq!(p.id, "plugin:myplug:deploy");
+        });
+    }
+
+    /// The vendor-basename mapping, not just the claude case. Listing used to
+    /// join the routing id (`.codex-cli/`), a directory no plugin ships, so
+    /// every suffix-renamed provider's commands were silently absent from the
+    /// prompt list even though the materializer placed them correctly.
+    #[test]
+    fn plugin_prompts_are_found_under_the_vendor_dotdir_not_the_routing_id() {
+        let tmp = tempdir().unwrap();
+        with_home(tmp.path(), || {
+            write_plugin_component(
+                tmp.path(),
+                "codexplug",
+                "codex",
+                "prompts",
+                "shipit",
+                "---\ndescription: ship\n---\nDo the thing.",
+            );
+            let list = list_prompts();
+            let p = list
+                .iter()
+                .find(|p| p.slug == "shipit")
+                .expect("a .codex/prompts command must be listed");
+            assert_eq!(p.source, "codexplug");
+            assert_eq!(p.id, "plugin:codexplug:shipit");
+            assert_eq!(p.body, "Do the thing.");
         });
     }
 

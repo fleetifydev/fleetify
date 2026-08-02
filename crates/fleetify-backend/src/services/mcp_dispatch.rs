@@ -455,14 +455,22 @@ mod tests {
 
     #[test]
     fn builtin_names_gating() {
+        // fleet_browser rides along on every non-staff session — the sidecar
+        // is lazy, so mounting it costs nothing until a browse call actually
+        // launches Chromium (see builtin_names_for).
         assert_eq!(
             builtin_names_for(false, None),
-            vec!["fleet_memory", "fleet_dispatch"]
+            vec!["fleet_memory", "fleet_dispatch", "fleet_browser"]
         );
         assert_eq!(builtin_names_for(true, None), vec!["fleet_memory"]);
         assert_eq!(
             builtin_names_for(false, Some("reverse_engineering")),
-            vec!["fleet_memory", "fleet_dispatch", "fleet_reveng"]
+            vec![
+                "fleet_memory",
+                "fleet_dispatch",
+                "fleet_browser",
+                "fleet_reveng"
+            ]
         );
         assert_eq!(
             builtin_names_for(true, Some("reverse_engineering")),
@@ -471,7 +479,7 @@ mod tests {
         // Unknown template ignored.
         assert_eq!(
             builtin_names_for(false, Some("other")),
-            vec!["fleet_memory", "fleet_dispatch"]
+            vec!["fleet_memory", "fleet_dispatch", "fleet_browser"]
         );
     }
 

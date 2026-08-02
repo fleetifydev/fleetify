@@ -570,10 +570,21 @@ mod tests {
         let map: std::collections::HashMap<_, _> = env.into_iter().collect();
         assert_eq!(map.get("HOME").unwrap(), "/tmp/acct/abc");
         assert_eq!(map.get("USERPROFILE").unwrap(), "/tmp/acct/abc");
-        assert_eq!(map.get("XDG_CONFIG_HOME").unwrap(), "/tmp/acct/abc/.config");
+        // Built with the same joins the code uses rather than hardcoded
+        // POSIX strings: `Path::join` emits `\` on Windows, and CI runs the
+        // Rust job on windows-latest, so a literal "/…/.config" only ever
+        // held on the maintainer's Linux machine.
+        assert_eq!(
+            map.get("XDG_CONFIG_HOME").unwrap(),
+            &home.join(".config").to_string_lossy().into_owned()
+        );
         assert_eq!(
             map.get("XDG_DATA_HOME").unwrap(),
-            "/tmp/acct/abc/.local/share"
+            &home
+                .join(".local")
+                .join("share")
+                .to_string_lossy()
+                .into_owned()
         );
     }
 

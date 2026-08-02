@@ -841,7 +841,13 @@ mod tests {
         let home = tmp.path().join("home");
         with_home(&home, || {
             let r = materialize_prompt_item(&payload, "my-greeting").unwrap();
-            let dst = home.join(".fleetify/prompts/my-greeting.md");
+            // Segment-wise join, not an embedded "a/b/c": on Windows a single
+            // join keeps the literal forward slashes, so the recorded path
+            // (built with separate joins) would never string-match.
+            let dst = home
+                .join(".fleetify")
+                .join("prompts")
+                .join("my-greeting.md");
             assert!(dst.is_file(), "prompt should land in ~/.fleetify/prompts/");
             assert_eq!(
                 std::fs::read_to_string(&dst).unwrap(),
@@ -868,7 +874,7 @@ mod tests {
         let home = tmp.path().join("home");
         with_home(&home, || {
             let r = materialize_skill_item(&payload, "my-skill", "claude-code", None).unwrap();
-            let dst = home.join(".claude/skills/my-skill");
+            let dst = home.join(".claude").join("skills").join("my-skill");
             assert!(dst.join("SKILL.md").is_file());
             assert!(dst.join("ref.txt").is_file(), "assets copied");
             // Bare slug is the dir id (NOT namespaced) and the frontmatter

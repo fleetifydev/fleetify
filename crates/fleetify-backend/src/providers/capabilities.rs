@@ -637,7 +637,8 @@ mod tests {
                     "medium".into(),
                     "high".into(),
                     "xhigh".into(),
-                    "max".into()
+                    "max".into(),
+                    "ultra_code".into()
                 ],
                 default: "high".into(),
             }
