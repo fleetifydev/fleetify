@@ -1206,6 +1206,10 @@ pub async fn git_sync_main(folder: String, base_branch: String) -> serde_json::V
     git::sync_main(&PathBuf::from(folder), &base_branch).await
 }
 #[tauri::command]
+pub async fn git_fetch_base(folder: String, base_branch: String) -> serde_json::Value {
+    git::fetch_base(&PathBuf::from(folder), &base_branch).await
+}
+#[tauri::command]
 pub async fn git_carve_next_round(
     folder: String,
     branch: String,

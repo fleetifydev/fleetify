@@ -442,6 +442,11 @@ document.addEventListener("mousedown", function (e) {
         },
       },
       getGitContext: function (folder) { return invoke("git_get_context", { folder: String(folder || "") }); },
+      // Fetch-only refresh of origin/<base> (no checkout) so the base-behind
+      // indicator behind the "Sync <base>" action reflects the latest remote.
+      fetchBase: function (folder, baseBranch) {
+        return invoke("git_fetch_base", { folder: String(folder || ""), baseBranch: String(baseBranch || "main") });
+      },
       getWorkingDiff: function (folder) { return invoke("git_working_diff", { folder: String(folder || "") }); },
       hasGhCli: function (opts) {
         return invoke("git_has_gh_cli", { refresh: !!(opts && opts.refresh) });

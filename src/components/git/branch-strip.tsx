@@ -13,7 +13,7 @@ import {
   ChevronDown, Check,
   GitBranch, GitPullRequest, ArrowLeft,
   X, Loader2, Copy, GitMerge, ExternalLink,
-  CircleSlash,
+  CircleSlash, RefreshCw, FolderGit2,
 } from "lucide-react";
 import { truncateMid, folderName } from "@/lib/utils";
 import { PRDialog } from "@/components/git/pr-dialog";
@@ -57,8 +57,26 @@ type GitContext = {
   baseBranch: string | null;
   plus: number;
   minus: number;
+  /** Commits the local base branch is BEHIND its remote (origin/<base>), and
+   *  only when a pure fast-forward is possible — the backend reports 0 when the
+   *  base is diverged or up to date. Drives the standalone "Sync <base>" action.
+   *  Optional so partial/legacy context payloads default to "not behind". */
+  baseBehind?: number;
   remoteHttpsUrl: string | null;
 };
+
+/** Hand a URL to the OS browser. Prefers the shell bridge (so the link leaves
+ *  the webview) and falls back to `window.open` in a plain-web/dev context
+ *  where the bridge isn't injected — same shape as the chat/marketplace
+ *  helpers. Best-effort: a rejected bridge call must never break the click. */
+function openExternalUrl(url: string): void {
+  const w = window as unknown as { electronAPI?: { openExternal?: (u: string) => Promise<unknown> } };
+  if (w.electronAPI?.openExternal) {
+    void Promise.resolve(w.electronAPI.openExternal(url)).catch(() => {});
+  } else {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+}
 
 /** Branch names that conventionally serve as the integration branch
  *  when `baseBranch` is unknown. Used to detect "on default branch"
@@ -594,6 +612,11 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
   // foreground event within that window is ignored. The mount probe is always
   // immediate. Mirrors `lastPrPollAtRef`'s 3s pattern with a wider window.
   const lastGhProbeAtRef = useRef(0);
+  // Timestamp (ms) of the last base-branch fetch (`git fetch origin <base>`).
+  // The base-behind indicator (ctx.baseBehind) is computed fetch-free, so we
+  // refresh origin/<base> on focus to keep it honest — throttled to 30s like
+  // the gh probe so rapid alt-tabbing can't hammer the network.
+  const lastBaseFetchAtRef = useRef(0);
   // Live ref to doWorktreeNextRound (declared far below the controlCenter
   // early-return and re-created each render). The PR poll + auto-cleanup
   // effects are HOISTED above that declaration to keep the hook count stable,
@@ -776,6 +799,49 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
     };
   }, [folder]);
 
+  // Base-branch freshness. `ctx.baseBehind` is computed fetch-free in the
+  // backend, so a stale `origin/<base>` would under-report how far the local
+  // base has drifted (and the "Sync <base>" action would never appear after an
+  // external merge / a teammate's push). We refresh origin/<base> with a
+  // fetch-only IPC (no checkout) when the base resolves and whenever the app
+  // returns to the foreground, then re-pull the git context so baseBehind is
+  // accurate the moment the user looks. Throttled (30s) and off-worktree only —
+  // worktree sessions surface the next round via "Start next round", not a base
+  // sync. Absent `fetchBase` (e.g. the test harness's partial electronAPI) is a
+  // no-op.
+  useEffect(() => {
+    if (!folder || isWorktree) return;
+    const base = ctx?.baseBranch;
+    if (!base) return;
+    const w = window as unknown as { electronAPI?: {
+      fetchBase?: (folder: string, base: string) => Promise<{ ok: boolean }>;
+      getGitContext?: (folder: string) => Promise<GitContext>;
+    } };
+    const api = w.electronAPI;
+    if (!api?.fetchBase) return;
+    let cancelled = false;
+    const refresh = () => {
+      lastBaseFetchAtRef.current = Date.now();
+      api.fetchBase!(folder, base).then(() => {
+        if (cancelled) return;
+        api.getGitContext?.(folder).then(c => { if (!cancelled) setCtx(c ?? null); }).catch(() => {});
+      }).catch(() => {});
+    };
+    refresh();
+    const onForeground = () => {
+      if (document.visibilityState === "hidden") return;
+      if (Date.now() - lastBaseFetchAtRef.current < 30000) return;
+      refresh();
+    };
+    window.addEventListener("focus", onForeground);
+    document.addEventListener("visibilitychange", onForeground);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", onForeground);
+      document.removeEventListener("visibilitychange", onForeground);
+    };
+  }, [folder, ctx?.baseBranch, isWorktree]);
+
   // PR status poll — every 15s. Slower than git context because gh
   // hits the GitHub API (rate limits) and PR state changes less often
   // than working-tree edits. Skipped when we don't have a feature
@@ -870,6 +936,20 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
         })) {
           glog("ui", "next-round.external", { prNumber: incoming?.number });
           doWorktreeNextRoundRef.current(incoming!.baseRefName || ctx?.baseBranch || "main");
+        }
+        // Off-worktree: a branch PR that's already MERGED — and that we did
+        // NOT merge in-app this session (justMergedRef gates that) — is a
+        // FINISHED PR. Clinging to it strands the strip on the merged PR's
+        // View while an unrelated open PR's Merge bleeds into the same row
+        // (the user's "I'm on #116 but it shows #262 + Sync main" bug). Drop
+        // it so the repo-wide selection falls through to the newest open PR.
+        // The in-app merge path keeps the transient MERGED state (justMergedRef
+        // true) so the auto-cleanup + feedback still run; worktree mode keeps
+        // boot-into-merged → "Start next round" (handled in the merge slot).
+        if (!isWorktree && incoming?.state === "MERGED" && !justMergedRef.current) {
+          setPr(null);
+          setPrStatusLoaded(true);
+          return;
         }
         setPr(incoming);
         setPrStatusLoaded(true);
@@ -1558,6 +1638,37 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
     return doSyncAndCarve(base);
   };
 
+  // Standalone "Sync <base>" click — a PURE fast-forward of the local base
+  // branch, shown when `ctx.baseBehind > 0` (the local base has drifted behind
+  // origin). Unlike doSyncAndCarve this does NOT carve a next round: it just
+  // catches the local base up so the indicator clears. Acts on the SOURCE repo
+  // (worktree-off: sourcePath === folder). Reuses `git.syncMain`, whose backend
+  // already does fetch + checkout base + pull --ff-only + return to the prior
+  // branch — exactly a base catch-up, nothing more.
+  const onSyncBaseOnly = async () => {
+    const sourceTarget = sourcePath || folder;
+    const base = ctx?.baseBranch;
+    if (!sourceTarget || !base || syncing) return;
+    glog("ui", "syncBase.start", { folder: sourceTarget, base });
+    setSyncing(true);
+    const r = await git.syncMain(sourceTarget, base);
+    glog("ui", "syncBase.result", { ok: r.ok, error: r.ok ? undefined : r.error });
+    setSyncing(false);
+    if (!r.ok) {
+      const sid = useAppStore.getState().activeSessionId || COMPOSER_CHAT_KEY;
+      pushChatError(sid, r.error || `Sync ${base} failed`);
+      return;
+    }
+    // Re-pull the git context so `baseBehind` recomputes and the action hides
+    // once the local base has caught up.
+    if (folder) {
+      const api = (window as unknown as { electronAPI?: {
+        getGitContext?: (f: string) => Promise<GitContext>;
+      } }).electronAPI;
+      api?.getGitContext?.(folder).then(c => setCtx(c ?? null)).catch(() => {});
+    }
+  };
+
   // Forward the branch PR's number so the browser lands on the exact
   // /pull/<n> page instead of the repo-wide /pulls list.
   const onOpenPR = () => folder && git.openPR(folder, pr?.number);
@@ -2122,9 +2233,11 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
             <PrChecksPopover
               runs={det.checks.runs ?? []}
               summary={det.checks}
+              // The PR's checks tab — target of the popover's footer action and
+              // the fallback for runs GitHub reported without a link.
+              prChecksUrl={det.url ? `${det.url.replace(/\/+$/, "")}/checks` : null}
               onOpenCheck={(url) => {
-                (window as unknown as { electronAPI?: { openExternal?: (u: string) => Promise<unknown> } })
-                  .electronAPI?.openExternal?.(url);
+                openExternalUrl(url);
                 setChecksOpen(false);
               }}
               onDismiss={() => setChecksOpen(false)}
@@ -2165,19 +2278,20 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
     }
 
     if (pr && pr.state === "MERGED") {
-      // The branch PR was MERGED (Sync main pair shows). When the repo
-      // ALSO has an open PR, the chip falls back to it (branchOpenPr is
-      // null for a MERGED branch PR), and `selectedRepoPr` is that
-      // foreign PR by construction — a merged PR isn't in openPrs. Render
-      // its merge cluster too, so the chip never points at an
-      // unactionable PR: spec §6's "merge section visible whenever the
-      // repo has an open PR" holds through the MERGED transitional state.
+      // The branch PR was MERGED. Off-worktree this is transient: the poll's
+      // P1 filter drops a non-self merged branch PR, and an in-app merge clears
+      // it via the auto-cleanup — so here we only show "View", plus (worktree
+      // only) the manual "Start next round". Catching the local base up to
+      // origin is a SEPARATE concern now, handled by the standalone
+      // "Sync <base>" action (driven by ctx.baseBehind), not by this PR state.
+      // When the repo ALSO has an open PR, its merge cluster renders too so the
+      // chip never points at an unactionable PR (spec §6).
       mergeSlot = (
         <>
           <ActionBtn onClick={onOpenPR} title={`Open #${pr.number} on GitHub`}>
             View <ExternalLink size={11} strokeWidth={1.85} />
           </ActionBtn>
-          {isWorktree ? (
+          {isWorktree && (
             // Worktree boot-into-merged affordance. When the app opens a
             // session whose PR was already merged (no live OPEN→MERGED flip
             // observed this session, so the poll's auto-advance never fired),
@@ -2189,13 +2303,6 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
               {syncing
                 ? <><Loader2 size={11} style={{ animation: "spin 1.2s linear infinite" }} /> Starting…</>
                 : <><Check size={11} /> Start next round</>}
-            </ActionBtn>
-          ) : (
-            <ActionBtn onClick={onSyncMain} primary disabled={syncing}
-              title={`Checkout ${pr.baseRefName || "main"} on the source repo and pull --ff-only`}>
-              {syncing
-                ? <><Loader2 size={11} style={{ animation: "spin 1.2s linear infinite" }} /> Syncing…</>
-                : <><Check size={11} /> Sync {pr.baseRefName || "main"}</>}
             </ActionBtn>
           )}
           {foreignCluster != null && <span aria-hidden style={{ opacity: 0.4 }}>·</span>}
@@ -2213,6 +2320,24 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
       mergeSlot = foreignCluster;
     }
   }
+
+  // ── Standalone "Sync <base>" slot ──
+  // Shown when the local base branch has drifted behind origin
+  // (ctx.baseBehind > 0), INDEPENDENT of any PR state — the honest replacement
+  // for the old post-merge Sync-main button (which keyed off pr.state ===
+  // "MERGED"). A pure fast-forward of the local base; worktree sessions use the
+  // "Start next round" carve instead, so it's off-worktree only. Uses the
+  // DETECTED base name in the label/tooltip — never assumes "main".
+  const baseBehind = ctx?.baseBehind ?? 0;
+  const showSyncBase = !noGit && !isWorktree && baseBehind > 0 && !!ctx?.baseBranch;
+  const syncBaseSlot: React.ReactNode = showSyncBase ? (
+    <ActionBtn onClick={onSyncBaseOnly} disabled={syncing}
+      title={`${ctx!.baseBranch} is ${baseBehind} commit${baseBehind === 1 ? "" : "s"} behind origin — fast-forward your local ${ctx!.baseBranch}`}>
+      {syncing
+        ? <><Loader2 size={11} style={{ animation: "spin 1.2s linear infinite" }} /> Syncing…</>
+        : <><RefreshCw size={11} strokeWidth={1.85} /> Sync {ctx!.baseBranch}</>}
+    </ActionBtn>
+  ) : null;
 
   return (
     <>
@@ -2232,6 +2357,32 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
         color: "var(--c-low)",
         fontSize: 12,
       }}>
+        {/* Worktree badge — leading context tag. When the session's files live
+            in an isolated git worktree (not the source repo's working tree),
+            surface a small, calm "WORKTREE" chip so the isolation reads at a
+            glance. Off-worktree sessions omit it entirely. Theme-aware tokens
+            keep it legible in light + dark without shouting over the actions. */}
+        {isWorktree && (
+          <span
+            title="This session works in an isolated git worktree — its file edits are separate from the source repo's working tree"
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 4,
+              flexShrink: 0,
+              padding: "1px 6px 1px 5px",
+              borderRadius: 4,
+              fontSize: 9.5, fontWeight: 600, letterSpacing: "0.07em",
+              lineHeight: 1.7,
+              textTransform: "uppercase",
+              color: "var(--c-med)",
+              background: "rgba(var(--fg-rgb), 0.05)",
+              border: "1px solid rgba(var(--fg-rgb), 0.12)",
+            }}
+          >
+            <FolderGit2 size={10} strokeWidth={1.9} style={{ opacity: 0.85 }} />
+            Worktree
+          </span>
+        )}
+
         {/* Branch glyph — FAR LEFT; small, transparent chip. Suppressed
             when the labeled PR pill is shown (below): the pill already
             carries a PR icon + the state colour, so a second standalone
@@ -2306,17 +2457,23 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
           ) : noGit ? (
             <NoGitPill />
           ) : onDefaultBranch && plannedBranch && plannedBranch !== ctxR.branch ? (
-            // We DO have a git repo — agent's on main/master and a
-            // feature branch will be carved on Create PR. The current
-            // (base) pill is clickable for base-menu; planned target
-            // stays informational since it doesn't exist yet.
+            // We DO have a git repo — agent's on main/master and a feature
+            // branch will be carved on Create PR. The current (base) pill opens
+            // the base menu. The planned pill stays DIM (it doesn't exist yet)
+            // but is still interactive: clicking it opens the working-branch
+            // switcher so the user can check out an existing branch or carve a
+            // new one now, instead of being stuck on the default branch with a
+            // dead label (the "I can't change the working branch on a real repo"
+            // case).
             <>
               <PillTrigger onClick={() => setBranchMenuMode("base")}>
                 <BranchPill text={ctxR.branch} tone="low" dim />
               </PillTrigger>
               <ArrowLeft size={11} strokeWidth={1.75}
                 style={{ color: "var(--c-ghost)", flexShrink: 0, opacity: 0.7 }} />
-              <BranchPill text={plannedBranch} tone="med" dim />
+              <PillTrigger onClick={() => setBranchMenuMode("working")}>
+                <BranchPill text={plannedBranch} tone="med" dim />
+              </PillTrigger>
             </>
           ) : onDefaultBranch ? (
             <PillTrigger onClick={() => setBranchMenuMode("base")}>
@@ -2383,6 +2540,13 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
           display: "inline-flex", alignItems: "center", gap: 8,
           color: "var(--c-low)", fontSize: 12,
         }}>
+          {/* "Sync <base>" sits leftmost — a quiet "your base drifted behind
+              origin" nudge that must not displace the lead Create PR / Merge
+              actions from the prominent right edge (nearest the Send button). */}
+          {syncBaseSlot}
+          {syncBaseSlot != null && (showReview || createSlot != null || mergeSlot != null) && (
+            <span aria-hidden style={{ opacity: 0.4 }}>·</span>
+          )}
           {showReview && (
             <>
               <button

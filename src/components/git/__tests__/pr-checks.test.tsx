@@ -111,4 +111,74 @@ describe("PrChecksPopover", () => {
     );
     expect(screen.getByText(/No individual checks reported/)).toBeTruthy();
   });
+
+  const CHECKS_URL = "https://github.com/o/r/pull/7/checks";
+
+  it("shows the open-link glyph on EVERY row, not just the hovered one", () => {
+    const { container } = render(
+      <PrChecksPopover
+        runs={runs}
+        summary={{ passing: 1, failing: 1, pending: 1, total: 3 }}
+        prChecksUrl={CHECKS_URL}
+        onOpenCheck={vi.fn()}
+        onDismiss={vi.fn()}
+      />,
+    );
+    // one glyph per row (+1 in the footer action) and none of them hidden.
+    const glyphs = Array.from(container.querySelectorAll(".lucide-external-link"));
+    expect(glyphs.length).toBe(runs.length + 1);
+    for (const g of glyphs) {
+      expect((g as SVGElement).style.opacity).not.toBe("0");
+    }
+  });
+
+  it("falls back to the PR's checks page for a run with no url of its own", () => {
+    const onOpenCheck = vi.fn();
+    render(
+      <PrChecksPopover
+        runs={runs}
+        summary={{ passing: 1, failing: 1, pending: 1, total: 3 }}
+        prChecksUrl={CHECKS_URL}
+        onOpenCheck={onOpenCheck}
+        onDismiss={vi.fn()}
+      />,
+    );
+    // "test" is IN_PROGRESS with url: null — still reachable, via the PR page.
+    fireEvent.click(screen.getByText("test"));
+    expect(onOpenCheck).toHaveBeenCalledWith(CHECKS_URL);
+    // a run WITH its own url still wins over the fallback.
+    fireEvent.click(screen.getByText("build"));
+    expect(onOpenCheck).toHaveBeenLastCalledWith("https://gh/build");
+  });
+
+  it.each([
+    ["all passing", { passing: 3, failing: 0, pending: 0, total: 3 }],
+    ["still running", { passing: 0, failing: 0, pending: 3, total: 3 }],
+    ["failing", { passing: 0, failing: 3, pending: 0, total: 3 }],
+  ])("offers the GitHub checks-page action when %s", (_label, summary) => {
+    const onOpenCheck = vi.fn();
+    render(
+      <PrChecksPopover
+        runs={runs}
+        summary={summary}
+        prChecksUrl={CHECKS_URL}
+        onOpenCheck={onOpenCheck}
+        onDismiss={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /checks on github/i }));
+    expect(onOpenCheck).toHaveBeenCalledWith(CHECKS_URL);
+  });
+
+  it("omits the checks-page action when no PR url is known", () => {
+    render(
+      <PrChecksPopover
+        runs={runs}
+        summary={{ passing: 1, failing: 1, pending: 1, total: 3 }}
+        onOpenCheck={vi.fn()}
+        onDismiss={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /checks on github/i })).toBeNull();
+  });
 });

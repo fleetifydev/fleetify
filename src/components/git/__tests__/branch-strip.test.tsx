@@ -945,7 +945,7 @@ describe("BranchStrip — post-PR lifecycle", () => {
     });
   });
 
-  it("MERGED PR: surfaces 'Open · #N' + 'Sync main' instead of just the merged indicator", async () => {
+  it("off-worktree boot-into-MERGED with no other open PR collapses to a clean strip (no stale View/Sync main)", async () => {
     gitContextMock.mockResolvedValue({
       branch: "fleet/x-a1b2c3d4", baseBranch: "main",
       plus: 0, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
@@ -956,61 +956,41 @@ describe("BranchStrip — post-PR lifecycle", () => {
     });
     const { BranchStrip } = await loadBranchStrip();
     render(<BranchStrip projectPath="/repo" />);
-    await waitFor(() => expect(screen.getByRole("button", { name: /Sync main/i })).toBeEnabled());
-    expect(screen.getByRole("button", { name: /Open · #42/i })).toBeEnabled();
+    // The session's own PR already merged and nothing else is open — the strip
+    // lets go of the finished PR instead of stranding View + Sync main on it.
+    await waitFor(() => expect(prStatusMock).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByRole("button", { name: /Sync main/i })).toBeNull());
+    expect(screen.queryByRole("button", { name: /^View$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Open · #42/i })).toBeNull();
   });
 
-  it("Sync main hits the SOURCE path AND auto-carves next round in the WORKTREE path", async () => {
+  // The post-merge sync+carve now runs only via the auto-cleanup path (the
+  // manual Sync-main-on-MERGED button was removed when stale merged PRs were
+  // made to drop off-worktree). Happy-path sync+carve is covered by the
+  // auto-cleanup + own-branch-merge tests below; this pins the carve-FAILURE
+  // branch: source still fast-forwards, the carve failure is a soft warning.
+  it("auto-cleanup: syncMain ok but carveNextRound fails → source still synced (soft warning)", async () => {
+    usePrStore.setState({ prs: [openRepoPr] });
+    prListMock.mockResolvedValue({ ok: true, prs: [openRepoPr] });
     gitContextMock.mockResolvedValue({
       branch: "fleet/x-a1b2c3d4", baseBranch: "main",
-      plus: 0, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
+      plus: 5, minus: 2, remoteHttpsUrl: "https://github.com/u/r",
     });
-    prStatusMock.mockResolvedValue({
-      ok: true,
-      pr: { ...openPr, state: "MERGED" },
-    });
-    syncMainMock.mockResolvedValue({ ok: true, base: "main", prevBranch: "fleet/x-a1b2c3d4" });
-    carveNextRoundMock.mockResolvedValue({ ok: true, branch: "fleet/My-app-abc12345", base: "main" });
-    const { BranchStrip } = await loadBranchStrip();
-    // projectPath is the WORKTREE (worktree-on session); sourcePath
-    // is the real repo. Sync main hits the SOURCE; carveNextRound
-    // hits the WORKTREE (the agent's working dir).
-    render(
-      <BranchStrip
-        projectPath="/repo/.fleetify-worktrees/abc"
-        sourcePath="/repo"
-        plannedBranch="fleet/My-app-abc12345"
-      />
-    );
-    fireEvent.click(await screen.findByRole("button", { name: /Sync main/i }));
-    await waitFor(() => {
-      expect(syncMainMock).toHaveBeenCalledWith("/repo", "main");
-    });
-    await waitFor(() => {
-      expect(carveNextRoundMock).toHaveBeenCalledWith(
-        "/repo/.fleetify-worktrees/abc",
-        "fleet/My-app-abc12345",
-        "main",
-      );
-    });
-  });
-
-  it("Sync main success but carveNextRound failure: soft warning, source still synced", async () => {
-    gitContextMock.mockResolvedValue({
-      branch: "fleet/x-a1b2c3d4", baseBranch: "main",
-      plus: 0, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
-    });
-    prStatusMock.mockResolvedValue({
-      ok: true,
-      pr: { ...openPr, state: "MERGED" },
-    });
+    // OPEN until the in-app merge fires, MERGED after (justMergedRef set), so
+    // the auto-cleanup effect triggers doSyncAndCarve.
+    prStatusMock.mockImplementation(async () =>
+      mergePRMock.mock.calls.length > 0
+        ? { ok: true, pr: { ...openPr, state: "MERGED" } }
+        : { ok: true, pr: openPr });
+    mergePRMock.mockResolvedValue({ ok: true });
     syncMainMock.mockResolvedValue({ ok: true, base: "main", prevBranch: "fleet/x-a1b2c3d4" });
     carveNextRoundMock.mockResolvedValue({ ok: false, error: "Working tree has uncommitted changes. Commit or stash first." });
     const { BranchStrip } = await loadBranchStrip();
-    render(<BranchStrip projectPath="/repo" plannedBranch="fleet/x-abc12345" />);
-    fireEvent.click(await screen.findByRole("button", { name: /Sync main/i }));
-    await waitFor(() => expect(syncMainMock).toHaveBeenCalledWith("/repo", "main"));
-    await waitFor(() => expect(carveNextRoundMock).toHaveBeenCalled());
+    render(<BranchStrip projectPath="/repo" plannedBranch="fleet/x-a1b2c3d4" />);
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Merge$/i })).toBeEnabled(), { timeout: 3000 });
+    fireEvent.click(screen.getByRole("button", { name: /^Merge$/i }));
+    await waitFor(() => expect(syncMainMock).toHaveBeenCalledWith("/repo", "main"), { timeout: 3000 });
+    await waitFor(() => expect(carveNextRoundMock).toHaveBeenCalled(), { timeout: 3000 });
   });
 
   it("Merge click forwards to git.mergePR with squash + the PR number", async () => {
@@ -1097,20 +1077,22 @@ describe("BranchStrip — post-PR lifecycle", () => {
     });
   });
 
-  it("auto-cleanup does NOT fire for pre-existing MERGED state (e.g. someone merged on github.com)", async () => {
+  it("does NOT auto-sync for a pre-existing MERGED state (someone merged on github.com); the finished PR is dropped", async () => {
     gitContextMock.mockResolvedValue({
       branch: "fleet/x-a1b2c3d4", baseBranch: "main",
       plus: 0, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
     });
     // PR is already MERGED at mount — user did not merge from the app.
-    // justMergedRef stays false → effect should NOT fire.
+    // justMergedRef stays false → no auto-sync, AND the finished PR is dropped
+    // (off-worktree) so the strip doesn't strand the user on its leftovers.
     prStatusMock.mockResolvedValue({ ok: true, pr: { ...openPr, state: "MERGED" } });
     syncMainMock.mockResolvedValue({ ok: true, base: "main", prevBranch: "fleet/x-a1b2c3d4" });
     const { BranchStrip } = await loadBranchStrip();
     render(<BranchStrip projectPath="/repo" plannedBranch="fleet/x-a1b2c3d4" />);
-    // Confirm the MERGED state is visible.
-    await waitFor(() => expect(screen.getByRole("button", { name: /Sync main/i })).toBeInTheDocument());
-    // Give the effect time to NOT fire.
+    await waitFor(() => expect(prStatusMock).toHaveBeenCalled());
+    // The stale merged PR is dropped — no View/Sync main strand.
+    await waitFor(() => expect(screen.queryByRole("button", { name: /Sync main/i })).toBeNull());
+    // Give the auto-cleanup effect time to (not) fire.
     await new Promise(resolve => setTimeout(resolve, 200));
     expect(syncMainMock).not.toHaveBeenCalled();
   });
@@ -1129,6 +1111,185 @@ describe("BranchStrip — post-PR lifecycle", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /Closed · #42/i })).toBeInTheDocument());
     expect(screen.queryByRole("button", { name: /^Merge$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Sync main/i })).toBeNull();
+  });
+
+  // P1 (regression): a session sitting on a branch whose own PR already
+  // MERGED must not cling to that finished PR. Off-worktree, a boot-into-
+  // MERGED branch PR (one we did NOT merge in-app this session) is dropped
+  // so the strip falls through to the repo's newest open PR — instead of
+  // stranding the user on the merged PR's View + Sync main while a different,
+  // unrelated PR's Merge bleeds into the same row. (User's real scenario:
+  // branch PR #262 merged, repo has a newer open #116.)
+  it("off-worktree boot-into-MERGED branch PR is dropped → newest open PR surfaces, no stale View/Sync main", async () => {
+    const merged262 = { ...openPr, number: 262, state: "MERGED", headRefName: "fleet/x-a1b2c3d4" };
+    const open116 = {
+      number: 116, state: "OPEN", headRefName: "feat/newer", isDraft: false,
+      mergeable: "MERGEABLE", title: "Newer feature", url: "https://github.com/u/r/pull/116",
+    };
+    const open116Det = {
+      ...openPr, number: 116, headRefName: "feat/newer", url: "https://github.com/u/r/pull/116",
+    };
+    usePrStore.setState({ prs: [open116] });
+    prListMock.mockResolvedValue({ ok: true, prs: [open116] });
+    gitContextMock.mockResolvedValue({
+      branch: "fleet/x-a1b2c3d4", baseBranch: "main",
+      plus: 0, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
+    });
+    // Branch poll (no num) → the stale MERGED #262; foreign detail poll (#116) → OPEN.
+    prStatusMock.mockImplementation(async (_f: string, num?: number) =>
+      num === 116 ? { ok: true, pr: open116Det } : { ok: true, pr: merged262 });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" />);
+    // The newest open PR's Merge cluster surfaces…
+    await waitFor(() => expect(screen.getByRole("button", { name: /Open · #116/i })).toBeInTheDocument());
+    // …and the finished PR's leftovers are gone.
+    expect(screen.queryByRole("button", { name: /Sync main/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^View$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /#262/i })).toBeNull();
+  });
+});
+
+describe("BranchStrip — Sync base (base-behind, decoupled from PR state)", () => {
+  it("shows 'Sync <base>' when the local base is behind origin, labeled with the DETECTED base (not hardcoded main)", async () => {
+    gitContextMock.mockResolvedValue({
+      branch: "feat/x", baseBranch: "develop",
+      plus: 1, minus: 0, baseBehind: 3, remoteHttpsUrl: "https://github.com/u/r",
+    });
+    prStatusMock.mockResolvedValue({ ok: true, pr: null });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" />);
+    await waitFor(() => expect(screen.getByRole("button", { name: /Sync develop/i })).toBeInTheDocument());
+    // Decoupled from PR state — no MERGED PR here — and never assumes "main".
+    expect(screen.queryByRole("button", { name: /Sync main/i })).toBeNull();
+  });
+
+  it("hides the Sync action when the local base is up to date (baseBehind 0)", async () => {
+    gitContextMock.mockResolvedValue({
+      branch: "feat/x", baseBranch: "main",
+      plus: 1, minus: 0, baseBehind: 0, remoteHttpsUrl: "https://github.com/u/r",
+    });
+    prStatusMock.mockResolvedValue({ ok: true, pr: null });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" />);
+    await screen.findByText("feat/x");
+    expect(screen.queryByRole("button", { name: /Sync/i })).toBeNull();
+  });
+
+  it("clicking Sync base fast-forwards via git.syncMain and does NOT carve a next round", async () => {
+    gitContextMock.mockResolvedValue({
+      branch: "feat/x", baseBranch: "main",
+      plus: 1, minus: 0, baseBehind: 2, remoteHttpsUrl: "https://github.com/u/r",
+    });
+    prStatusMock.mockResolvedValue({ ok: true, pr: null });
+    syncMainMock.mockResolvedValue({ ok: true, base: "main", prevBranch: "feat/x" });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" />);
+    fireEvent.click(await screen.findByRole("button", { name: /Sync main/i }));
+    await waitFor(() => expect(syncMainMock).toHaveBeenCalledWith("/repo", "main"));
+    // Pure fast-forward of the local base — the next-round carve must NOT fire.
+    expect(carveNextRoundMock).not.toHaveBeenCalled();
+  });
+
+  it("does NOT show the Sync action in worktree mode (worktree uses Start next round)", async () => {
+    gitContextMock.mockResolvedValue({
+      branch: "fleet/x-a1b2c3d4", baseBranch: "main",
+      plus: 1, minus: 0, baseBehind: 3, remoteHttpsUrl: "https://github.com/u/r",
+    });
+    prStatusMock.mockResolvedValue({ ok: true, pr: null });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo/.fleetify-worktrees/abc" sourcePath="/repo" isWorktree />);
+    await screen.findByText("fleet/x-a1b2c3d4");
+    expect(screen.queryByRole("button", { name: /Sync main/i })).toBeNull();
+  });
+});
+
+describe("BranchStrip — session switch isolation (repo-wide PR store)", () => {
+  // Switching sessions remounts ChatInput/BranchStrip (keyed by session id), so
+  // component state is fresh — but the repo-wide PR store is a module-level
+  // zustand store that SURVIVES the remount. Without clearing it on
+  // unmount/folder-change, the new session's strip serves the PREVIOUS repo's
+  // PRs (switcher chip + "Open · #N / Merge" instead of Create PR) until the new
+  // folder's prList poll lands. This pins the leak: after a remount onto a
+  // different repo whose poll is still in flight, the old PR number is gone.
+  it("clears the previous session's PR number when switching to a different repo (remount)", async () => {
+    const repoPr42 = {
+      number: 42, state: "OPEN", headRefName: "feat/a", isDraft: false,
+      mergeable: "MERGEABLE", title: "Repo A PR", url: "https://github.com/u/r/pull/42",
+    };
+    const pr42 = {
+      number: 42, url: "https://github.com/u/r/pull/42", state: "OPEN",
+      mergeable: "MERGEABLE", isDraft: false, baseRefName: "main", headRefName: "feat/a",
+      checks: { passing: 1, failing: 0, pending: 0, total: 1 }, commentsCount: 0,
+    };
+    gitContextMock.mockImplementation(async (folder: string) =>
+      folder === "/repoB"
+        ? { branch: "feat/b", baseBranch: "main", plus: 0, minus: 0, remoteHttpsUrl: "https://github.com/u/r" }
+        : { branch: "feat/a", baseBranch: "main", plus: 3, minus: 1, remoteHttpsUrl: "https://github.com/u/r" });
+    // repoA polls resolve with #42; repoB polls NEVER resolve — simulating the
+    // in-flight window right after the switch where the leak is visible.
+    prListMock.mockImplementation((folder: string) =>
+      folder === "/repoB" ? new Promise(() => {}) : Promise.resolve({ ok: true, prs: [repoPr42] }));
+    prStatusMock.mockImplementation((folder: string) =>
+      folder === "/repoB" ? new Promise(() => {}) : Promise.resolve({ ok: true, pr: pr42 }));
+    const { BranchStrip } = await loadBranchStrip();
+    const { rerender } = render(<BranchStrip key="sessA" projectPath="/repoA" sessionId="A" />);
+    // Session A: the repo-wide chip shows #42.
+    await screen.findByText("#42");
+    // Switch to session B (different repo) — key change forces a remount.
+    rerender(<BranchStrip key="sessB" projectPath="/repoB" sessionId="B" />);
+    // The previous repo's PR number must NOT linger while repoB's poll is still
+    // in flight — the store is the only cross-session carrier here.
+    await waitFor(() => expect(screen.queryByText("#42")).toBeNull());
+    expect(screen.queryByRole("button", { name: /Open · #42/i })).toBeNull();
+  });
+});
+
+describe("BranchStrip — switch working branch from the default branch", () => {
+  // A real repo sitting on its default branch (the non-worktree bootstrap
+  // shape: on `main`, the session's fleet/<…> branch not carved yet) showed the
+  // planned working branch as a DEAD label — only the base pill was clickable,
+  // and the base menu is read-only. So the user "couldn't change the working
+  // branch" and the strip read as an uncreated repo. The planned pill must be
+  // interactive: clicking it opens the working-branch switcher (checkout an
+  // existing branch / carve a new one).
+  it("makes the planned working branch pill open the working-branch switcher while on the default branch", async () => {
+    gitContextMock.mockResolvedValue({
+      branch: "main", baseBranch: "main", plus: 0, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
+    });
+    prStatusMock.mockResolvedValue({ ok: true, pr: null });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" plannedBranch="fleet/abc-2f2e5725" sessionId="s1" sessionTitle="abc" />);
+    // Once git context loads (on the default branch), the planned working
+    // branch pill is INTERACTIVE — a role=button (PillTrigger). Before the fix
+    // it was a plain dead label, so this findByRole would never resolve.
+    const trigger = await screen.findByRole("button", { name: /fleet\/abc-2f2e5725/i });
+    // Clicking it opens the "Switch working branch" picker.
+    fireEvent.click(trigger);
+    await screen.findByText(/Switch working branch/i);
+  });
+});
+
+describe("BranchStrip — worktree indicator", () => {
+  it("shows a WORKTREE badge when the session runs in an isolated worktree", async () => {
+    gitContextMock.mockResolvedValue({
+      branch: "fleet/x-a1b2c3d4", baseBranch: "main", plus: 1, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
+    });
+    prStatusMock.mockResolvedValue({ ok: true, pr: null });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo/.fleetify-worktrees/abc" sourcePath="/repo" isWorktree />);
+    await screen.findByText("fleet/x-a1b2c3d4");
+    expect(screen.getByText(/^worktree$/i)).toBeInTheDocument();
+  });
+
+  it("does not show the WORKTREE badge for a non-worktree session", async () => {
+    gitContextMock.mockResolvedValue({
+      branch: "fleet/x-a1b2c3d4", baseBranch: "main", plus: 1, minus: 0, remoteHttpsUrl: "https://github.com/u/r",
+    });
+    prStatusMock.mockResolvedValue({ ok: true, pr: null });
+    const { BranchStrip } = await loadBranchStrip();
+    render(<BranchStrip projectPath="/repo" />);
+    await screen.findByText("fleet/x-a1b2c3d4");
+    expect(screen.queryByText(/^worktree$/i)).toBeNull();
   });
 });
 
@@ -1329,13 +1490,12 @@ describe("BranchStrip — PR switcher + repo-wide merge", () => {
     await waitFor(() => expect(carveNextRoundMock).toHaveBeenCalled());
   });
 
-  // Fix 1 (review): MERGED transitional state must NOT strand the chip on
-  // an unactionable PR. When the branch PR is MERGED (Sync main showing)
-  // and the repo still has an open foreign PR, the chip selects that
-  // foreign PR — so the selected PR's merge cluster must render ALONGSIDE
-  // the Sync-main pair. Spec §6 ("merge section visible whenever the repo
-  // has an open PR") holds through the MERGED transition.
-  it("MERGED branch PR + open foreign PR: renders BOTH Sync main AND the foreign Merge", async () => {
+  // P1: the MERGED transitional state must NOT strand the strip on a finished
+  // PR. When the branch PR is MERGED and the repo still has an open foreign PR,
+  // the merged branch PR is DROPPED (off-worktree) and ONLY the open foreign
+  // PR's merge cluster surfaces — no stale Sync main bleeding in from the
+  // finished branch PR alongside an unrelated Merge.
+  it("MERGED branch PR + open foreign PR: drops the merged branch PR, surfaces ONLY the foreign Merge", async () => {
     // Store holds only #7 (the merged branch PR #5 is no longer open).
     const REPO_PRS_7_ONLY = [
       { number: 7, state: "OPEN", headRefName: "feat/other", isDraft: false, mergeable: "MERGEABLE", title: "Other feature", url: "https://github.com/u/r/pull/7" },
@@ -1350,12 +1510,12 @@ describe("BranchStrip — PR switcher + repo-wide merge", () => {
         : { ok: true, pr: { ...OPEN_PR_5, state: "MERGED" } });
     const { BranchStrip } = await loadBranchStrip();
     render(<BranchStrip projectPath="/repo" />);
-    // Sync-main pair (just-merged branch PR) is present…
-    await waitFor(() => expect(screen.getByRole("button", { name: /Sync main/i })).toBeEnabled());
-    // …AND the foreign PR's Merge cluster renders alongside it.
+    // The foreign PR's Merge cluster renders…
     await waitFor(() =>
       expect(screen.getByRole("button", { name: /^Merge$/i }))
         .toHaveAttribute("title", expect.stringContaining("#7")));
+    // …and the finished branch PR's Sync-main strand is gone.
+    expect(screen.queryByRole("button", { name: /Sync main/i })).toBeNull();
   });
 
   // Fix 3 (review): foreign-PR `det`-gating — a selected foreign PR whose

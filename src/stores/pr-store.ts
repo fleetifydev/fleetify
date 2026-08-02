@@ -113,6 +113,14 @@ export function useRepoPrs(folder: string | null | undefined): void {
     return () => {
       cancelled = true;
       clearInterval(t);
+      // Clear the repo-wide store when leaving this folder (session switch or
+      // unmount). The store is a module-level zustand store that SURVIVES the
+      // keyed ChatInput/BranchStrip remount, so without this the next session's
+      // strip serves THIS repo's PRs — a stale switcher chip / "Open · #N" +
+      // Merge instead of Create PR — until its own prList poll lands. Runs on
+      // both unmount and folder change (the effect re-runs on `folder`), so the
+      // incoming folder always starts from a clean store.
+      setAll([]);
     };
   }, [folder, setAll]);
 }

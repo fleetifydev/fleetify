@@ -2,11 +2,17 @@
  * PrChecksPopover — per-check breakdown shown when the CI ring is clicked.
  *
  * Floats above the ring and dismisses on click-outside / Esc. Green ✓ / red ✗ /
- * spinner read the state at a glance; the ↗ to each check's GitHub page reveals
- * on row hover to keep the list calm. The merge-block reason lives on the Merge
- * button, so the popover stays focused on the checks themselves. Purely
- * presentational — the caller owns open/close and supplies the (already
- * normalized) runs.
+ * spinner read the state at a glance, and EVERY row carries a visible ↗ to its
+ * page on GitHub — passing and running checks are just as worth opening as red
+ * ones, and a hover-only glyph read as "not clickable". Runs GitHub reports
+ * without a `detailsUrl` (queued ones often lack it) fall back to the PR's own
+ * checks tab, as does the footer action, so there is always a way out to CI.
+ * A failure that GitHub reports as re-runnable swaps its glyph for a re-run
+ * control (the row still opens the check), and a bulk "Re-run failed checks"
+ * sits above the escape hatch when there is anything to re-run.
+ * The merge-block reason lives on the Merge button, so the popover stays
+ * focused on the checks themselves. Purely presentational — the caller owns
+ * open/close and supplies the (already normalized) runs.
  */
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Check, X, Loader2, ExternalLink, RotateCw } from "lucide-react";
@@ -20,6 +26,10 @@ const GREEN = "rgb(64,180,120)";
 interface Props {
   runs: CheckRun[];
   summary: ChecksSummary;
+  /** The PR's checks tab (`<pr-url>/checks`). Target of the footer action and
+   *  the fallback for runs GitHub reported without a link of their own. Absent
+   *  → both degrade to nothing rather than to a broken link. */
+  prChecksUrl?: string | null;
   onOpenCheck: (url: string) => void;
   onDismiss: () => void;
   /** Per-check re-run, fired for a failing + rerunnable row. Omit to hide the
@@ -60,8 +70,17 @@ const panel: CSSProperties = {
   fontFamily: "var(--font-sans)",
 };
 
-export function PrChecksPopover({ runs, summary, onOpenCheck, onDismiss, onRerunCheck, onRerunFailed }: Props) {
+export function PrChecksPopover({
+  runs,
+  summary,
+  prChecksUrl = null,
+  onOpenCheck,
+  onDismiss,
+  onRerunCheck,
+  onRerunFailed,
+}: Props) {
   const ref = useRef<HTMLDivElement>(null);
+  // -1 is the footer action; 0..n-1 are the check rows.
   const [hover, setHover] = useState<number | null>(null);
 
   useEffect(() => {
@@ -114,29 +133,41 @@ export function PrChecksPopover({ runs, summary, onOpenCheck, onDismiss, onRerun
         )}
       </div>
 
-      <div style={{ overflowY: "auto", padding: 4 }}>
+      <div style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto", padding: 4 }}>
         {runs.length === 0 ? (
           <div style={{ padding: "7px 9px", fontSize: 11.5, color: "var(--c-dim)" }}>
             No individual checks reported.
           </div>
         ) : (
           runs.map((r, i) => {
-            const clickable = !!r.url;
+            // Own link when GitHub gave one, else the PR's checks tab — a
+            // queued run with no `detailsUrl` should still take you to CI.
+            const target = r.url ?? prChecksUrl;
+            const clickable = !!target;
             const hovered = hover === i;
             const canRerun = r.bucket === "failing" && !!r.rerunnable && !!onRerunCheck;
             return (
               <div
                 key={`${r.name}-${i}`}
+                // A div, not a button: the row hosts the re-run button and
+                // nesting buttons is invalid HTML. Keyboard affordances are
+                // therefore explicit.
                 role="button"
                 tabIndex={clickable ? 0 : -1}
-                onClick={() => r.url && onOpenCheck(r.url)}
+                onClick={() => target && onOpenCheck(target)}
                 onKeyDown={(e) => {
-                  if ((e.key === "Enter" || e.key === " ") && r.url) {
+                  if ((e.key === "Enter" || e.key === " ") && target) {
                     e.preventDefault();
-                    onOpenCheck(r.url);
+                    onOpenCheck(target);
                   }
                 }}
-                title={clickable ? `Open “${r.name}” on GitHub` : r.name}
+                title={
+                  r.url
+                    ? `Open “${r.name}” on GitHub`
+                    : clickable
+                      ? `“${r.name}” has no direct link yet — open the PR's checks on GitHub`
+                      : r.name
+                }
                 onMouseEnter={() => setHover(i)}
                 onMouseLeave={() => setHover((h) => (h === i ? null : h))}
                 style={{
@@ -168,6 +199,8 @@ export function PrChecksPopover({ runs, summary, onOpenCheck, onDismiss, onRerun
                 >
                   {r.name}
                 </span>
+                {/* A re-runnable failure offers the re-run control instead of
+                    the link glyph — the row itself still opens the check. */}
                 {canRerun ? (
                   <button
                     type="button"
@@ -193,14 +226,16 @@ export function PrChecksPopover({ runs, summary, onOpenCheck, onDismiss, onRerun
                     <RotateCw size={11} strokeWidth={2} />
                   </button>
                 ) : clickable ? (
+                  // Always visible — dim at rest, brighter on hover. Hiding it
+                  // until hover made passing/running rows read as inert.
                   <ExternalLink
                     size={11}
                     strokeWidth={1.85}
                     style={{
-                      color: "var(--c-dim)",
+                      color: hovered ? "var(--c-med)" : "var(--c-dim)",
                       flexShrink: 0,
-                      opacity: hovered ? 0.8 : 0,
-                      transition: "opacity 0.12s",
+                      opacity: hovered ? 0.95 : 0.45,
+                      transition: "opacity 0.12s, color 0.12s",
                     }}
                   />
                 ) : null}
@@ -210,6 +245,7 @@ export function PrChecksPopover({ runs, summary, onOpenCheck, onDismiss, onRerun
         )}
       </div>
 
+      {/* Primary footer action when something failed and can be re-run. */}
       {onRerunFailed && failingRerunnable.length > 0 ? (
         <button
           type="button"
@@ -234,6 +270,46 @@ export function PrChecksPopover({ runs, summary, onOpenCheck, onDismiss, onRerun
         >
           <RotateCw size={12} strokeWidth={2} />
           Re-run failed checks
+        </button>
+      ) : null}
+
+      {/* Footer escape hatch — one always-present way to the CI pages, whatever
+          the checks are doing. Covers the cases the rows can't: no runs
+          reported at all, or a run list that outgrew the scroll box. */}
+      {prChecksUrl ? (
+        <button
+          type="button"
+          onClick={() => onOpenCheck(prChecksUrl)}
+          onMouseEnter={() => setHover(-1)}
+          onMouseLeave={() => setHover((h) => (h === -1 ? null : h))}
+          title="Open this PR's checks tab on GitHub"
+          style={{
+            flexShrink: 0,
+            display: "flex",
+            alignItems: "center",
+            gap: 7,
+            width: "100%",
+            padding: "7px 12px",
+            borderTop: "1px solid var(--c-brd)",
+            borderLeft: "none",
+            borderRight: "none",
+            borderBottom: "none",
+            background: hover === -1 ? "var(--c-ghost)" : "transparent",
+            color: hover === -1 ? "var(--c-high)" : "var(--c-med)",
+            font: "inherit",
+            fontSize: 11.5,
+            fontWeight: 500,
+            textAlign: "left",
+            cursor: "pointer",
+            transition: "background 0.1s, color 0.12s",
+          }}
+        >
+          <span style={{ flex: 1, minWidth: 0 }}>Open checks on GitHub</span>
+          <ExternalLink
+            size={11}
+            strokeWidth={1.85}
+            style={{ flexShrink: 0, opacity: hover === -1 ? 0.95 : 0.55 }}
+          />
         </button>
       ) : null}
     </div>

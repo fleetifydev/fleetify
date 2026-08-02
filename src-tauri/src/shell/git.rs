@@ -379,6 +379,23 @@ pub async fn gh_auth_token() -> Option<String> {
     }
 }
 
+/// Parse `git rev-list --left-right --count <base>...origin/<base>` output
+/// ("<ahead>\t<behind>") into the number of commits the local base branch is
+/// BEHIND its remote — but ONLY when a pure fast-forward is possible (no
+/// local-only commits ahead). Returns 0 when the base is diverged (ahead > 0,
+/// where `git pull --ff-only` would reject the sync, so the UI must not offer
+/// it) or on any parse failure. Pure (no git/IO) so it unit-tests directly.
+fn behind_if_fast_forward(left_right: &str) -> i64 {
+    let mut it = left_right.split_whitespace();
+    let ahead = it.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+    let behind = it.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+    if ahead == 0 {
+        behind
+    } else {
+        0
+    }
+}
+
 pub async fn get_context(folder: &Path) -> Value {
     let (rc_b, branch, _) = git(&["rev-parse", "--abbrev-ref", "HEAD"], folder).await;
     if rc_b != 0 {
@@ -415,11 +432,36 @@ pub async fn get_context(folder: &Path) -> Value {
         }
     }
 
+    // How far the local base branch is behind its remote tracking branch. This
+    // is the honest signal for offering a "Sync <base>" action (replacing the
+    // old proxy of "your PR is MERGED"). Computed fetch-free against the
+    // last-known `origin/<base>` — the renderer refreshes it with an on-focus
+    // fetch — and only when a pure fast-forward is possible (see
+    // `behind_if_fast_forward`), so we never advertise a sync `--ff-only` would
+    // reject. Uses the DETECTED base name; never assumes "main".
+    let mut base_behind: i64 = 0;
+    if let Some(b) = &base {
+        let (rc_lr, lr, _) = git(
+            &[
+                "rev-list",
+                "--left-right",
+                "--count",
+                &format!("{b}...origin/{b}"),
+            ],
+            folder,
+        )
+        .await;
+        if rc_lr == 0 {
+            base_behind = behind_if_fast_forward(&lr);
+        }
+    }
+
     json!({
         "branch": branch_v,
         "baseBranch": base.map(Value::String).unwrap_or(Value::Null),
         "plus": plus,
         "minus": minus,
+        "baseBehind": base_behind,
         "remoteHttpsUrl": remote_https.map(Value::String).unwrap_or(Value::Null),
     })
 }
@@ -2434,6 +2476,19 @@ pub async fn sync_main(folder: &Path, base: &str) -> Value {
     json!({ "ok": true, "base": base, "prevBranch": prev })
 }
 
+/// Best-effort `git fetch origin <base>` (fetch-only, NO checkout) so the
+/// renderer's `baseBehind` indicator reflects the latest remote without the
+/// heavier `sync_main` (which checks out + pulls). Drives the on-focus refresh
+/// behind the standalone "Sync <base>" action. Failure is reported but
+/// non-fatal — an offline / no-remote repo just leaves baseBehind unchanged.
+pub async fn fetch_base(folder: &Path, base: &str) -> Value {
+    let (rc, _o, err) = git(&["fetch", "origin", base], folder).await;
+    if rc != 0 {
+        return json!({ "ok": false, "error": err.trim() });
+    }
+    json!({ "ok": true })
+}
+
 /// Carve a new feature branch from `base`. Best-effort fetches the
 /// latest `origin/<base>` first so the new branch starts at the freshest
 /// commit instead of a stale local base — equivalent semantically to
@@ -2943,7 +2998,26 @@ mod tests {
         assert_eq!(v["branch"], "main");
         assert_eq!(v["plus"], 0);
         assert_eq!(v["minus"], 0);
+        // No remote on a fresh repo → origin/<base> is unknown → behind is 0
+        // (and the field is always present so the renderer can read it).
+        assert_eq!(v["baseBehind"], 0);
         assert!(v.get("error").is_none());
+    }
+
+    #[test]
+    fn behind_if_fast_forward_counts_only_when_pure_ff() {
+        // "<ahead>\t<behind>" from `rev-list --left-right --count base...origin/base`.
+        assert_eq!(behind_if_fast_forward("0\t3"), 3); // behind 3, ff possible
+        assert_eq!(behind_if_fast_forward("0\t0"), 0); // up to date
+        assert_eq!(behind_if_fast_forward("0\t1"), 1); // behind 1
+                                                       // Diverged: local base has its own commits → `pull --ff-only` would
+                                                       // reject, so we must NOT advertise a sync (report 0, not the behind).
+        assert_eq!(behind_if_fast_forward("2\t3"), 0);
+        assert_eq!(behind_if_fast_forward("5\t0"), 0); // ahead only, nothing to sync
+                                                       // Parse failures / malformed output collapse to 0 (never panics).
+        assert_eq!(behind_if_fast_forward(""), 0);
+        assert_eq!(behind_if_fast_forward("0"), 0); // missing behind column
+        assert_eq!(behind_if_fast_forward("garbage"), 0);
     }
 
     #[tokio::test]

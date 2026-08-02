@@ -181,6 +181,7 @@ pub fn run() {
             shell::ipc::git_delete_remote_branch,
             shell::ipc::git_pr_ready,
             shell::ipc::git_sync_main,
+            shell::ipc::git_fetch_base,
             shell::ipc::git_carve_next_round,
             shell::ipc::git_preflight_check,
             shell::ipc::shell_check_github_auth,
