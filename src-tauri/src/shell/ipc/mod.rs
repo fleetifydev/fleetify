@@ -316,11 +316,12 @@ const PICK_MARKER: &str = "fleet.internal/pick/";
 const META_MARKER: &str = "fleet.internal/meta/";
 const READ_MARKER: &str = "fleet.internal/read/";
 // Element-select overlay, injected at document-start on every page. Exposes
-// window.__fleetStartSelect(mode)/__fleetStopSelect(); modes are 'ask' (click
-// opens an action box: copy CSS/XPath/HTML, add the element to the chat, or
-// write a prompt and Send — Send dispatches the agent turn immediately via
-// submit:true) and 'copy:<kind>' (every click copies that representation and
-// the picker stays armed). Right-click in either mode opens a one-off menu
+// window.__fleetStartSelect(mode)/__fleetStopSelect(); modes are 'ask' (a
+// press opens an action box: copy CSS/XPath/HTML, add the element to the
+// chat, or write a prompt and Send — Send dispatches the agent turn
+// immediately via submit:true) and 'copy:<kind>' (every press copies that
+// representation and the picker stays armed). Picking triggers on
+// window-capture pointerdown — see PRESS_EVT inside for why. Right-click in either mode opens a one-off menu
 // (ask / copy css / xpath / component / html / text). Every capture carries a
 // rich payload (selector, xpath, rect, attrs, curated computed styles,
 // React/Vue component + dev source when detectable). Everything posts back
@@ -328,7 +329,31 @@ const READ_MARKER: &str = "fleet.internal/read/";
 // same channel.
 const SELECT_JS: &str = r#"(function () {
   if (window.__fleetSelInit) return; window.__fleetSelInit = true;
-  var active = false, mode = 'ask', box = null, last = null, promptHost = null, menuHost = null, bubbleHost = null, suppressClick = false, promptKey = null;
+  var active = false, mode = 'ask', box = null, last = null, promptHost = null, menuHost = null, bubbleHost = null, swallowClick = false, promptKey = null, cursorStyle = null;
+  // Press beats click: pages like YouTube and Google sign-in install their
+  // own document-level delegation long before the user arms Select, and
+  // same-node capture listeners run in registration order — a late
+  // document-level click listener loses that race (stopImmediatePropagation
+  // in their handlers kills it outright). Window capture runs before any
+  // document listener regardless of when it registered, and reacting on the
+  // press also survives pages that re-render on mousedown.
+  var PRESS_EVT = window.PointerEvent ? 'pointerdown' : 'mousedown';
+  // Force the crosshair on EVERY element while picking: body.style.cursor
+  // alone loses to any element's own cursor CSS (links, buttons, :hover
+  // rules). Our box/menu live in shadow roots, which document styles never
+  // reach, so they keep their normal cursors. The body fallback below stays
+  // for pages whose CSP blocks injected <style> elements.
+  function applyCursor() {
+    if (cursorStyle) return;
+    try {
+      cursorStyle = document.createElement('style');
+      cursorStyle.textContent = '*, *:hover { cursor: crosshair !important; }';
+      (document.head || document.documentElement).appendChild(cursorStyle);
+    } catch (_) { cursorStyle = null; }
+  }
+  function clearCursor() {
+    if (cursorStyle) { try { cursorStyle.remove(); } catch (_) {} cursorStyle = null; }
+  }
   function ensureBox() {
     if (box) return box;
     box = document.createElement('div');
@@ -543,9 +568,7 @@ const SELECT_JS: &str = r#"(function () {
     copyToClipboard(String(copyValue(kind, info, el) || ''));
     showBubble(x, y, '✓ Copied ' + (KIND_LABEL[kind] || kind));
   }
-  function docHideMenu() { suppressClick = true; hideMenu(); }
   function hideMenu() {
-    document.removeEventListener('mousedown', docHideMenu);
     if (menuHost) { try { menuHost.remove(); } catch (_) {} menuHost = null; }
   }
   // Right-click menu: one-off actions at the cursor, independent of the
@@ -587,7 +610,8 @@ const SELECT_JS: &str = r#"(function () {
     item('Copy outer HTML', function () { hideMenu(); doCopy('html', info, el, x, y); });
     if (info.text) item('Copy text', function () { hideMenu(); doCopy('text', info, el, x, y); });
     root.appendChild(wrap);
-    document.addEventListener('mousedown', docHideMenu);
+    // No outside-close listener needed: any press outside the menu host is
+    // handled by onPress, which closes the menu without picking.
   }
   // Element action box, anchored at the picked element. Lives in a shadow
   // root so the host page's CSS cannot restyle it and ours cannot leak out.
@@ -696,7 +720,27 @@ const SELECT_JS: &str = r#"(function () {
     var add = mkBtn('Add', false), submit = mkBtn('Send', true);
     add.setAttribute('title', 'Add element to the chat without a prompt');
     submit.setAttribute('title', 'Send to the agent now (Enter)');
-    submit.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg><span>Send</span>';
+    // Send icon built node-by-node, never from an HTML string: YouTube and
+    // the Google sign-in pages enforce Trusted Types
+    // (require-trusted-types-for 'script'), where assigning a plain string
+    // as element markup THROWS — it aborted showPrompt mid-way and the box
+    // never appeared on those sites. Guarded by a test that bans the setter
+    // outright.
+    var svgNS = 'http://www.w3.org/2000/svg';
+    var icon = document.createElementNS(svgNS, 'svg');
+    icon.setAttribute('width', '12'); icon.setAttribute('height', '12');
+    icon.setAttribute('viewBox', '0 0 24 24'); icon.setAttribute('fill', 'none');
+    icon.setAttribute('stroke', 'currentColor'); icon.setAttribute('stroke-width', '2');
+    icon.setAttribute('stroke-linecap', 'round'); icon.setAttribute('stroke-linejoin', 'round');
+    var iconPath1 = document.createElementNS(svgNS, 'path');
+    iconPath1.setAttribute('d', 'm22 2-7 20-4-9-9-4Z');
+    var iconPath2 = document.createElementNS(svgNS, 'path');
+    iconPath2.setAttribute('d', 'M22 2 11 13');
+    icon.appendChild(iconPath1); icon.appendChild(iconPath2);
+    var sendLabel = document.createElement('span');
+    sendLabel.textContent = 'Send';
+    submit.textContent = '';
+    submit.appendChild(icon); submit.appendChild(sendLabel);
     submit.style.display = 'inline-flex'; submit.style.alignItems = 'center'; submit.style.gap = '5px';
     add.addEventListener('click', addOnly);
     submit.addEventListener('click', finish);
@@ -717,18 +761,23 @@ const SELECT_JS: &str = r#"(function () {
     root.appendChild(wrap);
     try { ta.focus(); } catch (_) {}
   }
-  function onClick(e) {
+  // The pick trigger (see PRESS_EVT above for why press, why window).
+  function onPress(e) {
     if (!active) return;
     // Events over our own shadow hosts (menu / box / toast) retarget to the
-    // host — never treat them as page picks, and never swallow their clicks.
+    // host — never treat them as page picks, and never swallow their input.
     if (e.target === menuHost || e.target === promptHost || e.target === bubbleHost) return;
-    e.preventDefault(); e.stopPropagation();
-    // The mousedown that closed the right-click menu must not also pick.
-    if (suppressClick) { suppressClick = false; return; }
+    if (typeof e.button === 'number' && e.button !== 0) return;
+    e.preventDefault();
+    if (e.stopImmediatePropagation) e.stopImmediatePropagation(); else e.stopPropagation();
+    // Eat the click this press composes so the page never acts on a pick.
+    swallowClick = true;
+    // A press outside the open right-click menu closes it without picking.
+    if (menuHost) { hideMenu(); return; }
     // A page-specific throw anywhere below would otherwise die silently and
     // read as "clicking does nothing" — surface it to the app's log instead.
     try {
-      var el = last || document.elementFromPoint(e.clientX, e.clientY);
+      var el = document.elementFromPoint(e.clientX, e.clientY) || last;
       var info = buildInfo(el);
       if (mode !== 'ask') {
         var kind = mode.slice(5);
@@ -749,6 +798,17 @@ const SELECT_JS: &str = r#"(function () {
       send({ action: 'error', message: 'pick failed: ' + String((err && err.message) || err) });
     }
   }
+  // Permanent window-capture click swallower: consumes the click composed
+  // from a handled press — including the one trailing an ask-pick, which
+  // arrives after picking already stopped. No-ops whenever idle.
+  function onClickSwallow(e) {
+    if (!active && !swallowClick) return;
+    if (e.target === menuHost || e.target === promptHost || e.target === bubbleHost) return;
+    swallowClick = false;
+    e.preventDefault();
+    if (e.stopImmediatePropagation) e.stopImmediatePropagation(); else e.stopPropagation();
+  }
+  window.addEventListener('click', onClickSwallow, true);
   function onContext(e) {
     if (!active) return;
     e.preventDefault(); e.stopPropagation();
@@ -779,19 +839,21 @@ const SELECT_JS: &str = r#"(function () {
     if (active) return;
     active = true;
     hidePrompt(); hideMenu();
-    document.addEventListener('mousemove', onMove, true);
-    document.addEventListener('click', onClick, true);
-    document.addEventListener('contextmenu', onContext, true);
-    document.addEventListener('keydown', onKey, true);
+    window.addEventListener(PRESS_EVT, onPress, true);
+    window.addEventListener('mousemove', onMove, true);
+    window.addEventListener('contextmenu', onContext, true);
+    window.addEventListener('keydown', onKey, true);
+    applyCursor();
     if (document.body) document.body.style.cursor = 'crosshair';
   }
   function stopPicking(keepHighlight) {
     active = false; last = null;
     hideMenu();
-    document.removeEventListener('mousemove', onMove, true);
-    document.removeEventListener('click', onClick, true);
-    document.removeEventListener('contextmenu', onContext, true);
-    document.removeEventListener('keydown', onKey, true);
+    clearCursor();
+    window.removeEventListener(PRESS_EVT, onPress, true);
+    window.removeEventListener('mousemove', onMove, true);
+    window.removeEventListener('contextmenu', onContext, true);
+    window.removeEventListener('keydown', onKey, true);
     if (box && !keepHighlight) box.style.display = 'none';
     if (document.body) document.body.style.cursor = '';
   }

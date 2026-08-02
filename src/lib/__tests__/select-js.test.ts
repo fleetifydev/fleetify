@@ -20,6 +20,7 @@ type Harness = {
   win: InstanceType<typeof Window>;
   el: HTMLElement;
   click: () => void;
+  rclick: () => void;
   esc: () => void;
   boxOpen: () => boolean;
 };
@@ -38,7 +39,14 @@ function boot(): Harness {
   return {
     win,
     el,
-    click: () => el.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 })),
+    click: () => {
+      // Real engines fire pointerdown -> mousedown -> mouseup -> click; the
+      // script picks on the press and swallows the trailing click.
+      for (const type of ["pointerdown", "mousedown", "click"]) {
+        el.dispatchEvent(new win.MouseEvent(type, { bubbles: true, cancelable: true, clientX: 20, clientY: 20, button: 0 }));
+      }
+    },
+    rclick: () => el.dispatchEvent(new win.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 })),
     esc: () => doc.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })),
     boxOpen: () => hosts().some((h) => (h as { shadowRoot: { querySelector: (s: string) => unknown } }).shadowRoot.querySelector("textarea")),
   };
@@ -88,5 +96,127 @@ describe("SELECT_JS state machine", () => {
     fleet(h).__fleetStartSelect("ask");
     h.click();
     expect(h.boxOpen()).toBe(true);
+  });
+});
+
+describe("crosshair cursor override", () => {
+  it("injects a cursor:crosshair !important style for every element while armed, and removes it on stop", () => {
+    const h = boot();
+    const doc = h.win.document;
+    const styleTags = () =>
+      [...doc.querySelectorAll("style")].filter((s) => /crosshair\s*!important/.test(s.textContent || ""));
+    expect(styleTags().length).toBe(0);
+    fleet(h).__fleetStartSelect("ask");
+    expect(styleTags().length).toBe(1);
+    fleet(h).__fleetStopSelect();
+    expect(styleTags().length).toBe(0);
+  });
+
+  it("keeps exactly one override across re-arms (navigation re-arm is idempotent)", () => {
+    const h = boot();
+    const doc = h.win.document;
+    fleet(h).__fleetStartSelect("copy:css");
+    fleet(h).__fleetStartSelect("ask"); // live mode switch while armed
+    const count = [...doc.querySelectorAll("style")].filter((s) => /crosshair/.test(s.textContent || "")).length;
+    expect(count).toBe(1);
+  });
+});
+
+describe("hostile page delegation (YouTube-class apps)", () => {
+  it("still opens the ask box when the page registered stopImmediatePropagation capture handlers first", () => {
+    const h = boot();
+    const doc = h.win.document;
+    // Simulate YouTube: page code loaded long before the user arms Select,
+    // with document-capture delegation that kills events for its widgets.
+    const kill = (e: Event) => { e.stopImmediatePropagation(); e.preventDefault(); };
+    for (const type of ["pointerdown", "mousedown", "click"]) {
+      doc.addEventListener(type, kill, true);
+    }
+    fleet(h).__fleetStartSelect("ask");
+    h.click();
+    expect(h.boxOpen()).toBe(true);
+  });
+});
+
+describe("right-click menu press interplay", () => {
+  it("a press that closes the menu does not pick; the next press does", () => {
+    const h = boot();
+    fleet(h).__fleetStartSelect("ask");
+    h.rclick();
+    h.click(); // closes the menu — must not open the box
+    expect(h.boxOpen()).toBe(false);
+    h.click();
+    expect(h.boxOpen()).toBe(true);
+  });
+});
+
+describe("Trusted Types safety (YouTube / Google sign-in)", () => {
+  it("never uses innerHTML — a plain-string assignment throws under require-trusted-types-for", () => {
+    expect(SELECT_JS).not.toContain("innerHTML");
+  });
+
+  it("opens the ask box even when the page enforces Trusted Types", () => {
+    const h = boot();
+    // Simulate the enforcement: on TT pages every string->markup assignment
+    // throws exactly like this. happy-dom SHARES Element.prototype across
+    // Window instances, so the override must be restored or it poisons
+    // every later boot() in this file.
+    const proto = (h.win as unknown as { Element: { prototype: object } }).Element.prototype;
+    const original = Object.getOwnPropertyDescriptor(proto, "innerHTML");
+    try {
+      Object.defineProperty(proto, "innerHTML", {
+        configurable: true,
+        get() { return ""; },
+        set() { throw new TypeError("This document requires 'TrustedHTML' assignment."); },
+      });
+      fleet(h).__fleetStartSelect("ask");
+      h.click();
+      expect(h.boxOpen()).toBe(true);
+    } finally {
+      if (original) Object.defineProperty(proto, "innerHTML", original);
+    }
+  });
+});
+
+describe("Enter and the Send button post identical dispatch payloads", () => {
+  type ShadowHost = { shadowRoot: { querySelector: (s: string) => unknown; querySelectorAll: (s: string) => unknown[] } };
+  const openBoxAndSend = (act: (host: ShadowHost, ta: { value: string; dispatchEvent: (e: Event) => boolean }, h: Harness) => void) => {
+    const h = boot();
+    fleet(h).__fleetStartSelect("ask");
+    h.click();
+    const doc = h.win.document;
+    const host = [...doc.documentElement.children, ...doc.body.children].find(
+      (el) => (el as { shadowRoot?: unknown }).shadowRoot,
+    ) as unknown as ShadowHost;
+    const ta = host.shadowRoot.querySelector("textarea") as { value: string; dispatchEvent: (e: Event) => boolean };
+    ta.value = "fix this";
+    act(host, ta, h);
+    const href = String(h.win.location.href);
+    const i = href.indexOf("fleet.internal/pick/");
+    expect(i).toBeGreaterThan(-1);
+    return JSON.parse(decodeURIComponent(href.slice(i + "fleet.internal/pick/".length))) as { submit?: boolean; prompt?: string };
+  };
+
+  it("Enter dispatches with submit:true and the typed prompt", () => {
+    const p = openBoxAndSend((_host, ta, h) => {
+      ta.dispatchEvent(new h.win.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    expect(p).toMatchObject({ submit: true, prompt: "fix this" });
+  });
+
+  it("the Send button (and its icon) posts the exact same payload", () => {
+    const viaButton = openBoxAndSend((host, _ta, h) => {
+      const send = [...host.shadowRoot.querySelectorAll("button")].find(
+        (b) => ((b as { textContent?: string }).textContent || "").includes("Send"),
+      ) as { dispatchEvent: (e: Event) => boolean };
+      send.dispatchEvent(new h.win.MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    expect(viaButton).toMatchObject({ submit: true, prompt: "fix this" });
+
+    const viaIcon = openBoxAndSend((host, _ta, h) => {
+      const svg = host.shadowRoot.querySelector("svg") as { dispatchEvent: (e: Event) => boolean };
+      svg.dispatchEvent(new h.win.MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    expect(viaIcon).toMatchObject({ submit: true, prompt: "fix this" });
   });
 });

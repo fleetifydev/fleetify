@@ -1286,7 +1286,9 @@ export function ChatInput({
   // so its closure would otherwise go stale).
   const valueRef = useRef("");
   useEffect(() => { valueRef.current = value; }, [value]);
-  const autoSendRef = useRef<(text: string) => boolean>(() => false);
+  // Returns null when the turn dispatched, else a human-readable reason the
+  // send had to fall back to staging.
+  const autoSendRef = useRef<(text: string) => string | null>(() => "composer not ready");
   useEffect(() => {
     const handler = (e: Event) => {
       const d = (e as CustomEvent<Omit<ElementRef, "id"> & { prompt?: string; autosend?: boolean }>).detail;
@@ -1304,8 +1306,14 @@ export function ChatInput({
       const merged = mergePromptIntoDraft(valueRef.current, typed);
       // The browser box's Send means "run the agent now". When a guard blocks
       // (streaming, locked, refine card up, no session…) we fall back to
-      // staging — never queue a turn.
-      if (typed && autosend && autoSendRef.current(merged)) return;
+      // staging — never queue a turn — and SAY so: a silent fallback reads
+      // as "the Send button is broken".
+      if (typed && autosend) {
+        const blocked = autoSendRef.current(merged);
+        if (!blocked) return;
+        console.warn("[browser-select] box send fell back to staging:", blocked);
+        setEnhanceToast(`Not sent — ${blocked}. Staged in the composer.`);
+      }
       // Staging path: the typed question lands in the input rather than
       // making the user retype it; append so picking a second element keeps
       // the first.
@@ -2135,11 +2143,17 @@ export function ChatInput({
   // composers only: a control-center instance must never answer a
   // browser-pane send.
   useEffect(() => {
-    autoSendRef.current = (text: string): boolean => {
-      if (!sessionId || controlCenter) return false;
-      if (askQuestion || locked || streaming || refining || pendingRefine || disabled) return false;
+    autoSendRef.current = (text: string): string | null => {
+      if (controlCenter) return "control-center composer";
+      if (!sessionId) return "no active session";
+      if (askQuestion) return "a question is waiting for an answer";
+      if (locked) return "composer is locked";
+      if (streaming) return "agent is still responding";
+      if (refining) return "refine in progress";
+      if (pendingRefine) return "refine card is open";
+      if (disabled) return "composer is disabled";
       dispatchSend(text, attachments);
-      return true;
+      return null;
     };
   });
 
