@@ -16,6 +16,9 @@ import remarkGfm from "remark-gfm";
 import { useAppStore, type WorkspaceView } from "@/stores/app-store";
 import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import { usePaneSessionId, useIsInPane } from "@/components/chat/pane-session-context";
+import { useActiveCwd } from "@/components/workspace/use-active-cwd";
+import { PaneCloseContext } from "@/components/workspace/pane-close-context";
+import { PreviewView } from "@/components/workspace/views/preview-view";
 import {
   fetchSessionMemory, createSessionMemory, deleteSessionMemory,
   fetchMessages,
@@ -1021,7 +1024,17 @@ function CodeEditor({ path, root, onLineChange }: {
   );
 }
 
-/* ─── Terminal ─── */
+/* ─── Terminal ───
+   BROKEN — do not un-park a consumer without fixing this first.
+   This connects to `ws://<host>/ws/terminal`, a route the backend does NOT
+   serve: the only trace of it is a comment at routers/workspace.rs:4 marking
+   it Phase-3. Every mount therefore falls straight into `ws.onerror` and
+   prints "Terminal unavailable".
+
+   It survives only because its two consumers — TerminalWorkspace and
+   QuadrantWorkspace — are themselves void-parked at the bottom of this file.
+   The terminal that actually works is XtermShell, which drives the Tauri PTY
+   (src-tauri/src/shell/pty.rs) rather than a backend socket. */
 function TerminalPanel({ cwd, termKey }: { cwd: string; termKey: string }) {
   const termRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -3738,7 +3751,8 @@ const NARROW_BREAKPOINT = 480;
    animation completes. Each view's X button consumes this instead
    of calling removeWorkspaceView directly so closing reads as the
    inverse of opening (sliding out vs sliding in). */
-const PaneCloseContext    = createContext<((v: WorkspaceView) => void) | null>(null);
+// PaneCloseContext now lives in ./pane-close-context so views extracted into
+// views/ can consume it without importing this file (a circular import).
 const RightmostPaneContext = createContext<WorkspaceView | null>(null);
 const CurrentPaneContext   = createContext<WorkspaceView | null>(null);
 const PANE_EXIT_DURATION_MS = 200;
@@ -4108,9 +4122,9 @@ function WorkspacePane({ view }: { view: WorkspaceView }) {
   if (view === "tasks")     return <TasksPaneRouter />;
   if (view === "memories")  return <MemoriesView />;
   if (view === "process")   return <ProcessPaneRouter />;
-  // preview / editor — placeholder until each has a real
-  // implementation. We still render the chrome so the user can
-  // close the slot.
+  if (view === "preview")   return <PreviewView />;
+  // editor — placeholder until it has a real implementation. We still
+  // render the chrome so the user can close the slot.
   return <PlaceholderView view={view} />;
 }
 
@@ -4768,13 +4782,7 @@ function TerminalView() {
   //   3. undefined → main.cjs falls back to $HOME
   // This is what makes the terminal "open in the right place" — the
   // shell lands in the same directory the agent is editing in.
-  const _paneSid_cwd = usePaneSessionId();
-  const activeCwd = useAppStore(s => {
-    const id = _paneSid_cwd ?? s.activeSessionId;
-    if (!id) return undefined;
-    const sess = s.sessions.find(x => x.id === id);
-    return sess?.worktree_path || sess?.project_path || undefined;
-  });
+  const activeCwd = useActiveCwd();
 
   // Session list — one entry per terminal. Only the active one is
   // visible at a time; the others stay mounted but hidden (display:
@@ -5132,13 +5140,7 @@ function TermActionBtn({
 function DiffView() {
   const requestClose = useContext(PaneCloseContext);
 
-  const _paneSid_cwd = usePaneSessionId();
-  const activeCwd = useAppStore(s => {
-    const id = _paneSid_cwd ?? s.activeSessionId;
-    if (!id) return undefined;
-    const sess = s.sessions.find(x => x.id === id);
-    return sess?.worktree_path || sess?.project_path || undefined;
-  });
+  const activeCwd = useActiveCwd();
 
   const [raw, setRaw] = useState<string>("");
   const [loading, setLoading] = useState(false);

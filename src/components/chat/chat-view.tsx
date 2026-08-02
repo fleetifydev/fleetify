@@ -28,6 +28,7 @@ import { PanelLeft, PanelRight, Trash2, X, Check, GitCompareArrows, ListTodo, Te
 import type { ContentBlock, ChatMessage } from "@/types/chat";
 import type { Session } from "@/types/session";
 import type { WorkspaceView } from "@/stores/app-store";
+import { isViewSelectable } from "@/components/workspace/view-gate";
 
 /** Memoised message list — the filter + lastUserIdx + map() block
  *  was an inline IIFE inside ChatView, which re-renders on every
@@ -3186,6 +3187,10 @@ function PanelViewMenu({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
+  // Read straight from the store rather than plumbing two more props through
+  // the pane/global branch at the call site — the menu is the only consumer.
+  const activeSessionId = useAppStore((s) => s.activeSessionId);
+  const staffSessionId  = useAppStore((s) => s.staffSessionId);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -3243,7 +3248,8 @@ function PanelViewMenu({
             animation: "fleetMenuIn 0.12s cubic-bezier(0.4, 0, 0.2, 1)",
           }}
         >
-          {PANEL_VIEWS.map(({ id, label, Icon, shortcut }) => {
+          {PANEL_VIEWS.filter(v => isViewSelectable(v.id, activeSessionId, staffSessionId))
+            .map(({ id, label, Icon, shortcut }) => {
             const active = open && activeViews.includes(id);
             return (
               <button

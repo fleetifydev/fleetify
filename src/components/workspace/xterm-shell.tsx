@@ -13,6 +13,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
+import { feedPtyChunk } from "@/stores/dev-server-store";
 
 interface Props {
   cwd?: string;
@@ -140,7 +141,14 @@ export function XtermShell({ cwd, shell }: Props) {
         // reason as the mount banner. The prompt + main.cjs logs are
         // the source of truth if cwd resolution ever needs debugging.)
 
-        unsubData = api.onPtyData(ptyId, chunk => term.write(chunk));
+        unsubData = api.onPtyData(ptyId, chunk => {
+          term.write(chunk);
+          // Sniff for a dev-server boot banner so the Preview pane can frame it.
+          // Piggybacks on the subscription the terminal already needs — no
+          // second listener, and no Rust change, because pty.rs already streams
+          // every chunk to the renderer.
+          if (cwd) feedPtyChunk(cwd, chunk);
+        });
         unsubExit = api.onPtyExit(ptyId, ({ exitCode, signal }) => {
           term.write(`\r\n\x1b[2m[process exited — code ${exitCode}${signal ? ` signal ${signal}` : ""}]\x1b[0m\r\n`);
         });
