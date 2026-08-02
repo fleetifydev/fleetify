@@ -69,6 +69,13 @@ function BrowserView() {
     try { return parseSelectMode(localStorage.getItem("fleet:browser-select-mode")); } catch { return "ask"; }
   });
   const [modeOpen, setModeOpen] = useState(false);
+  // Mirrors for the once-registered Tauri event listeners below — the content
+  // script re-injects FRESH (unarmed) on every navigation, so the url
+  // listener must know the current pill state to re-arm each new page.
+  const selectingRef = useRef(false);
+  useEffect(() => { selectingRef.current = selecting; }, [selecting]);
+  const selectModeRef = useRef<SelectMode>("ask");
+  useEffect(() => { selectModeRef.current = selectMode; }, [selectMode]);
   const fullscreen = useAppStore((s) => s.rightPanelFullscreen);
   const setRightPanelFullscreen = useAppStore((s) => s.setRightPanelFullscreen);
   const [urlFocused, setUrlFocused] = useState(false);
@@ -181,6 +188,12 @@ function BrowserView() {
         lastMirror.current = u;
         const ws = mirrorWsRef.current;
         if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "navigate", url: u }));
+      }
+      // Each navigation injects a FRESH, unarmed content script — while the
+      // Select pill is on, re-arm every new page so the pill and the page
+      // can never disagree (the old behaviour: pill lit, picker dead).
+      if (selectingRef.current) {
+        void tauriInvoke("browser_embed_set_select", { on: true, mode: selectModeRef.current });
       }
     }).then((f) => { un = f; });
     return () => { un?.(); };
@@ -317,6 +330,12 @@ function BrowserView() {
         // The box stays open in-page, so Select stays armed-looking there;
         // don't flip our pill either.
         if (msg.value) void copyTextSafe(msg.value);
+        return;
+      }
+      if (msg.action === "error") {
+        // The content script caught a page-specific throw — surface it so a
+        // dead-feeling click is diagnosable from the renderer log.
+        console.error("[browser-select] in-page picker error:", msg.message || "unknown");
         return;
       }
       setSelecting(false);

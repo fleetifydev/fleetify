@@ -328,7 +328,7 @@ const READ_MARKER: &str = "fleet.internal/read/";
 // same channel.
 const SELECT_JS: &str = r#"(function () {
   if (window.__fleetSelInit) return; window.__fleetSelInit = true;
-  var active = false, mode = 'ask', box = null, last = null, promptHost = null, menuHost = null, bubbleHost = null, suppressClick = false;
+  var active = false, mode = 'ask', box = null, last = null, promptHost = null, menuHost = null, bubbleHost = null, suppressClick = false, promptKey = null;
   function ensureBox() {
     if (box) return box;
     box = document.createElement('div');
@@ -597,6 +597,7 @@ const SELECT_JS: &str = r#"(function () {
   // copy a representation (CSS/XPath/HTML), add the element straight to the
   // chat, or write a prompt and send both.
   function hidePrompt() {
+    if (promptKey) { document.removeEventListener('keydown', promptKey, true); promptKey = null; }
     if (promptHost) { try { promptHost.remove(); } catch (_) {} promptHost = null; }
   }
   function showPrompt(info, rect, el) {
@@ -623,11 +624,20 @@ const SELECT_JS: &str = r#"(function () {
     function addOnly() { info.prompt = ''; info.submit = false; hidePrompt(); if (box) box.style.display = 'none'; send(info); }
     // Dismissing must also un-arm the app's Select pill — the picking
     // listeners are already gone, so without telling the app the pill would
-    // stay lit until the next manual toggle.
+    // stay lit until the next manual toggle. Idempotent: the document-level
+    // Escape below and the textarea's own Escape can both fire for one key.
     function dismiss() {
+      if (!promptHost) return;
       hidePrompt(); if (box) box.style.display = 'none';
       try { location.href = 'https://fleet.internal/pick/' + encodeURIComponent(JSON.stringify({ action: 'dismiss' })); } catch (_) {}
     }
+    // Box-wide Escape, focus-independent: the picking listeners are gone once
+    // the box opens, so without a document-level handler Esc only worked
+    // while the textarea kept focus. Removed again in hidePrompt.
+    promptKey = function (ev) {
+      if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); dismiss(); }
+    };
+    document.addEventListener('keydown', promptKey, true);
     var head = document.createElement('div');
     head.setAttribute('style', 'display:flex;align-items:center;gap:6px;margin:0 0 6px;');
     var tag = document.createElement('div');
@@ -715,33 +725,43 @@ const SELECT_JS: &str = r#"(function () {
     e.preventDefault(); e.stopPropagation();
     // The mousedown that closed the right-click menu must not also pick.
     if (suppressClick) { suppressClick = false; return; }
-    var el = last || document.elementFromPoint(e.clientX, e.clientY);
-    var info = buildInfo(el);
-    if (mode !== 'ask') {
-      var kind = mode.slice(5);
-      if (kind === 'component' && !info.component && !info.source) {
-        copyToClipboard(info.selector);
-        showBubble(e.clientX, e.clientY, 'No component — copied CSS selector');
-      } else {
-        doCopy(kind, info, el, e.clientX, e.clientY);
+    // A page-specific throw anywhere below would otherwise die silently and
+    // read as "clicking does nothing" — surface it to the app's log instead.
+    try {
+      var el = last || document.elementFromPoint(e.clientX, e.clientY);
+      var info = buildInfo(el);
+      if (mode !== 'ask') {
+        var kind = mode.slice(5);
+        if (kind === 'component' && !info.component && !info.source) {
+          copyToClipboard(info.selector);
+          showBubble(e.clientX, e.clientY, 'No component — copied CSS selector');
+        } else {
+          doCopy(kind, info, el, e.clientX, e.clientY);
+        }
+        return; // stay armed — copy mode is for collecting several in a row
       }
-      return; // stay armed — copy mode is for collecting several in a row
+      var rect = el ? el.getBoundingClientRect() : { left: 20, top: 20, bottom: 20 };
+      // Keep the highlight up so the user can still see what they picked
+      // while typing; only the picking listeners go away.
+      stopPicking(true);
+      showPrompt(info, rect, el);
+    } catch (err) {
+      send({ action: 'error', message: 'pick failed: ' + String((err && err.message) || err) });
     }
-    var rect = el ? el.getBoundingClientRect() : { left: 20, top: 20, bottom: 20 };
-    // Keep the highlight up so the user can still see what they picked while
-    // typing; only the picking listeners go away.
-    stopPicking(true);
-    showPrompt(info, rect, el);
   }
   function onContext(e) {
     if (!active) return;
     e.preventDefault(); e.stopPropagation();
     if (e.target === menuHost || e.target === promptHost || e.target === bubbleHost) return;
-    var el = document.elementFromPoint(e.clientX, e.clientY);
-    if (!el) return;
-    last = el;
-    highlightEl(el);
-    showMenu(buildInfo(el), el, e.clientX, e.clientY);
+    try {
+      var el = document.elementFromPoint(e.clientX, e.clientY);
+      if (!el) return;
+      last = el;
+      highlightEl(el);
+      showMenu(buildInfo(el), el, e.clientX, e.clientY);
+    } catch (err) {
+      send({ action: 'error', message: 'menu failed: ' + String((err && err.message) || err) });
+    }
   }
   function onKey(e) {
     if (!active) return;

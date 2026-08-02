@@ -9,7 +9,7 @@
  * Tauri.
  */
 
-export type PickAction = "copy" | "dismiss";
+export type PickAction = "copy" | "dismiss" | "error";
 
 /** Sticky behaviour of the Select pill: ask opens the prompt box, the copy
  * modes put the chosen representation straight on the clipboard per click. */
@@ -63,6 +63,8 @@ export type PickPayload = {
   kind?: string;
   /** copy: the string to place on the clipboard. */
   value?: string;
+  /** error: what went wrong inside the content script. */
+  message?: string;
   /** True when the box's Send fired — the turn should dispatch immediately. */
   submit?: boolean;
   selector?: string;
