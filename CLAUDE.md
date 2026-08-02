@@ -83,17 +83,27 @@ Override the slot explicitly when needed: `npm run dev:tauri:wt -- 17`.
 ### Unit + integration (gates that run in CI)
 
 ```bash
-cargo fmt --all -- --check                           # format check
-cargo clippy --workspace --all-targets -- -D warnings # lint, deny-warnings
-cargo test --workspace                               # rust unit + integration
-npm run lint                                         # eslint
-npm test                                             # vitest (renderer)
-npx tsc -b tsconfig.build.json --noEmit              # type-check
-node scripts/release/discover-sidecars.mjs \
-  --format=tauri-externalbin --check                 # sidecar drift guard
+cargo fmt --all -- --check                           # format check      (HARD gate)
+cargo clippy --workspace --all-targets -- -D warnings # lint, deny-warnings (HARD gate)
+cargo test --workspace                               # rust unit + integration (advisory)
+npm run lint                                         # eslint            (HARD gate)
+npx tsc -b tsconfig.build.json --noEmit              # type-check        (HARD gate)
+npm test                                             # vitest (renderer) (advisory)
+npm run check:sidecars                               # sidecar drift guard (HARD gate)
 ```
 
-Run all of these locally **before pushing**. CI runs the same set on every PR (see PR #2's `ci.yml`).
+Run all of these locally **before pushing**. CI runs the same set on every PR
+(`.github/workflows/ci.yml`).
+
+**"Advisory" means `continue-on-error: true` in CI — a red test does not block
+a merge.** That is a deliberate choice, not an invitation: failures accumulate
+silently, so treat a red test as red. Check whether it is red on `main` too
+before assuming your branch caused it, and do not leave a new one behind.
+
+**Node 22.** CI pins it and `engines` / `.nvmrc` declare it. Newer majors are
+not merely untested — Node 25 exposes a `localStorage` global whose `clear` is
+`undefined`, which shadows happy-dom inside vitest and turns the renderer suite
+into ~140 phantom failures that have nothing to do with the code.
 
 ### E2E / smoke testing
 
@@ -128,12 +138,14 @@ crates/
 ├── fleetify-backend/      # embedded axum server (library, no main.rs)
 ├── memory-mcp/            # stdio MCP: remember + recall
 ├── dispatch-mcp/          # stdio MCP: dispatch_to_agent
-└── reveng-mcp/            # stdio MCP: fetch_url + save_asset + …
+├── reveng-mcp/            # stdio MCP: fetch_url + save_asset + …
+├── browser-mcp/           # stdio MCP: headless Chromium browsing (lazy launch)
+└── fleet-wipe/            # uninstall / reset helper
 
 src-tauri/                 # Tauri v2 shell, embeds fleetify-backend in setup()
 src/                       # React + Vite renderer
-scripts/                   # release helpers + dev-tauri-wt.mjs
-docs/                      # RELEASE.md, RUNNING.md, PHASE_STATUS.md, etc.
+scripts/                   # build-sidecars.mjs, dev-tauri-wt.mjs, wipe.mjs
+docs/                      # RUNNING.md, PHASE_STATUS.md, ANALYTICS.md, etc.
 ```
 
 ---

@@ -144,7 +144,9 @@ runtime, in order:
 
 Because each worktree builds its own `target/`, every dev instance resolves its
 own copy of the sidecars — no cross-instance conflict. The release sidecar set is
-asserted by `scripts/release/discover-sidecars.mjs` (the drift guard CI runs).
+asserted by `npm run check:sidecars` (the drift guard CI runs), which compares
+`SIDECARS` in `scripts/build-sidecars.mjs` against `bundle.externalBin` in
+`src-tauri/tauri.conf.json`.
 
 ---
 
@@ -184,6 +186,6 @@ POST   /api/mcp/servers/{name}/auth/signout  clear stored secret
 | User registry (`~/.fleetify/mcp_servers.json`) | `crates/fleetify-backend/src/services/mcp_registry.rs` |
 | OAuth token store | `crates/fleetify-backend/src/services/mcp_secrets.rs` |
 | HTTP endpoints | `crates/fleetify-backend/src/routers/mcp.rs` |
-| Built-in sidecars | `crates/{memory,dispatch,reveng,permission}-mcp/` |
+| Built-in sidecars | `crates/{memory,dispatch,reveng,browser}-mcp/` |
 | Per-bridge mounting | `crates/fleetify-backend/src/bridges/{claude,gemini,codex,antigravity,antigravity_sdk,opencode,cursor,hermes,github_copilot,kimi}.rs` |
-| Sidecar drift guard | `scripts/release/discover-sidecars.mjs` |
+| Sidecar drift guard | `npm run check:sidecars` (`scripts/build-sidecars.mjs --check`) |

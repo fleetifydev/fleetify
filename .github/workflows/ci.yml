@@ -73,6 +73,12 @@ jobs:
       # unless they're staged first. Locally `dev:tauri:wt` runs this via
       # beforeDevCommand; CI must do it explicitly. node ships on windows-latest
       # and the script is dependency-free (node builtins + cargo only).
+      # Drift guard, before the staging build so it fails in milliseconds
+      # rather than after a cargo compile. SIDECARS in build-sidecars.mjs and
+      # bundle.externalBin in tauri.conf.json must list the same binaries; a
+      # comment used to ask contributors to remember, which is not a gate.
+      - name: Sidecar drift guard
+        run: node scripts/build-sidecars.mjs --check
       - name: Stage MCP sidecars (Tauri externalBin)
         run: node scripts/build-sidecars.mjs
       # Format first — instant, fails fast on style before the heavy compile.

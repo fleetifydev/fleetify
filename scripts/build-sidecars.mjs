@@ -24,7 +24,7 @@
 //!   node scripts/build-sidecars.mjs --release  # release (for `tauri build`)
 
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, existsSync } from 'node:fs';
+import { copyFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -39,6 +39,16 @@ const SIDECARS = [
   { pkg: 'reveng-mcp', bin: 'fleet-reveng-mcp' },
   { pkg: 'browser-mcp', bin: 'fleet-browser-mcp' },
 ];
+
+// `--check` is the drift guard: SIDECARS above and bundle.externalBin in
+// tauri.conf.json have to list the same binaries, and nothing enforced that
+// until now — the comment above simply asked contributors to remember. A
+// sidecar added here but not there is bundled-but-missing at runtime; added
+// there but not here fails the Tauri build with "resource path … doesn't
+// exist". Compares only; never compiles, so CI can run it in milliseconds.
+if (process.argv.includes('--check')) {
+  process.exit(checkExternalBinDrift());
+}
 
 const release = process.argv.includes('--release');
 const profile = release ? 'release' : 'debug';
@@ -77,6 +87,46 @@ for (const s of SIDECARS) {
   }
   copyFileSync(from, to);
   console.log(`[build-sidecars] staged -> binaries/${s.bin}-${triple}${exe}`);
+}
+
+/**
+ * Compare SIDECARS against `bundle.externalBin`. Returns a process exit code:
+ * 0 when they agree, 1 on any drift (or an unreadable/!malformed config).
+ * Tauri strips the host triple at bundle time, so externalBin entries are the
+ * bare `binaries/<bin>` form — that is what we compare against.
+ */
+function checkExternalBinDrift() {
+  const confPath = join(ROOT, 'src-tauri', 'tauri.conf.json');
+  let conf;
+  try {
+    conf = JSON.parse(readFileSync(confPath, 'utf8'));
+  } catch (e) {
+    console.error(`[build-sidecars] --check: cannot read ${confPath}: ${e.message}`);
+    return 1;
+  }
+  const declared = conf?.bundle?.externalBin;
+  if (!Array.isArray(declared)) {
+    console.error('[build-sidecars] --check: bundle.externalBin is missing or not an array');
+    return 1;
+  }
+  const inConf = new Set(declared.map((p) => p.split('/').pop()));
+  const inScript = new Set(SIDECARS.map((s) => s.bin));
+
+  const missingFromConf = [...inScript].filter((b) => !inConf.has(b)).sort();
+  const missingFromScript = [...inConf].filter((b) => !inScript.has(b)).sort();
+
+  if (missingFromConf.length === 0 && missingFromScript.length === 0) {
+    console.log(`[build-sidecars] --check: ok, ${inScript.size} sidecars in sync`);
+    return 0;
+  }
+  for (const b of missingFromConf) {
+    console.error(`[build-sidecars] --check: '${b}' is built here but absent from bundle.externalBin`);
+  }
+  for (const b of missingFromScript) {
+    console.error(`[build-sidecars] --check: '${b}' is in bundle.externalBin but not built here`);
+  }
+  console.error('[build-sidecars] --check: sidecar list drift — fix scripts/build-sidecars.mjs or src-tauri/tauri.conf.json');
+  return 1;
 }
 
 /** Host target triple from `rustc -vV` (the `host:` line). */
