@@ -86,7 +86,7 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
     setSessions, updateSession, staffSessionId, setStaffSessionId,
     sidebarCollapsed, sessions, setActiveSession,
     rightPanelOpen, toggleRightPanel, _removedIds, pruneRemovedIds, mainView, activeSessionId,
-    studioComposerOpen, leftWidth, setLeftWidth,
+    studioComposerOpen, leftWidth, setLeftWidth, rightPanelFullscreen,
   } = useAppStore();
 
   // ── Reveal once data is ready ──
@@ -417,7 +417,11 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
 
   // Effective sidebar width — 0 only when collapsed. The hub (sidebar +
   // content) is revealed together once the data is ready; no slide-in.
-  const sidebarWidth = !sidebarCollapsed ? leftWidth : 0;
+  // Fullscreen hands the whole window to the right panel: the sidebar and the
+  // chat column collapse to zero and the panel stretches. Kept as a width
+  // override rather than a separate layout branch so the resize transitions
+  // and the panel's own chrome keep working unchanged.
+  const sidebarWidth = !sidebarCollapsed && !rightPanelFullscreen ? leftWidth : 0;
 
   // A studio (Higgsfield) session renders the generation surface in EITHER
   // mode — the session list is shared, so a studio session can be opened from
@@ -547,7 +551,8 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
           drops the chrome to zero so the chat reclaims the width. */}
       {!studioComposerOpen && !activeStudio && (
       <div style={{
-        width: rightPanelOpen ? rightWidth : 0,
+        width: rightPanelFullscreen ? "100%" : rightPanelOpen ? rightWidth : 0,
+        flex: rightPanelFullscreen ? 1 : undefined,
         flexShrink: 0,
         overflow: "hidden",
         // No outer card chrome any more — the workspace panes draw

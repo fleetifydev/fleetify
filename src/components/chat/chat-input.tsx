@@ -1283,9 +1283,14 @@ export function ChatInput({
   useEffect(() => { elementRefsRef.current = elementRefs; }, [elementRefs]);
   useEffect(() => {
     const handler = (e: Event) => {
-      const d = (e as CustomEvent<{ selector?: string; text?: string; url?: string }>).detail;
+      const d = (e as CustomEvent<{ selector?: string; text?: string; url?: string; prompt?: string }>).detail;
       if (!d) return;
       setElementRefs((prev) => (prev.length >= 8 ? prev : [...prev, { id: crypto.randomUUID(), selector: d.selector || "element", text: d.text || "", url: d.url || "" }]));
+      // The browser's in-page composer lets the user type the question right
+      // at the element. Carry it into the input rather than making them
+      // retype it here; append so picking a second element keeps the first.
+      const typed = (d.prompt || "").trim();
+      if (typed) setValue((prev) => (prev.trim() ? `${prev.replace(/\s+$/, "")}\n${typed}` : typed));
       requestAnimationFrame(() => ref.current?.focus());
     };
     window.addEventListener("fleet:add-element-ref", handler);

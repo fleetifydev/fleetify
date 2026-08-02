@@ -232,6 +232,10 @@ interface AppState {
    *  localStorage so the user's preference survives restarts. */
   sidebarSortBy: "recent" | "status" | "name";
   rightPanelOpen: boolean;
+  /** Right panel fills the window — sidebar and chat collapse to zero.
+   *  Driven from the Browser pane, where a page is worth the whole screen;
+   *  nothing about it is browser-specific, so any pane can use it. */
+  rightPanelFullscreen: boolean;
   rightPanelTab: RightPanelTab;
   /** Active grid of workspace views (the right panel). Replaces the
    *  old single-string `workspaceView` so the user can have, e.g.,
@@ -294,6 +298,7 @@ interface AppState {
   setSidebarSearchVal: (val: string) => void;
   setSidebarSortBy: (sort: "recent" | "status" | "name") => void;
   toggleRightPanel: () => void;
+  setRightPanelFullscreen: (on: boolean) => void;
   /** Replace the entire grid with the supplied view (legacy single-pane
    *  behaviour). */
   setWorkspaceView: (view: WorkspaceView) => void;
@@ -416,6 +421,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     return raw === "status" || raw === "name" || raw === "recent" ? raw : "recent";
   })(),
   rightPanelOpen: false,
+  rightPanelFullscreen: false,
   rightPanelTab: "workspace",
   workspaceView: "editor",
   openWorkspaceViews: [],
@@ -819,6 +825,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         rightPanelTab: "workspace",
       };
     }),
+  setRightPanelFullscreen: (on) => set({ rightPanelFullscreen: on }),
   setRightPanelTab: (tab) => set({ rightPanelTab: tab }),
   // Right panel auto-closes when switching to a non-fleet surface.
   // Routines / Marketplace don't have a session-scoped right panel to

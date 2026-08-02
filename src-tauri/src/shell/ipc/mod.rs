@@ -321,7 +321,7 @@ const READ_MARKER: &str = "fleet.internal/read/";
 // the fragment sentinel.
 const SELECT_JS: &str = r#"(function () {
   if (window.__fleetSelInit) return; window.__fleetSelInit = true;
-  var active = false, box = null, last = null;
+  var active = false, box = null, last = null, promptHost = null;
   function ensureBox() {
     if (box) return box;
     box = document.createElement('div');
@@ -359,27 +359,93 @@ const SELECT_JS: &str = r#"(function () {
     b.style.left = r.left + 'px'; b.style.top = r.top + 'px';
     b.style.width = r.width + 'px'; b.style.height = r.height + 'px';
   }
+  function send(info) {
+    try { location.href = 'https://fleet.internal/pick/' + encodeURIComponent(JSON.stringify(info)); } catch (_) {}
+  }
+  // Prompt composer, anchored at the picked element. Lives in a shadow root
+  // so the host page's CSS cannot restyle it and ours cannot leak out. It has
+  // to be injected INTO the page rather than drawn in the app: the native
+  // webview renders above the app's DOM, so a React box at these coordinates
+  // would be hidden behind the page.
+  function hidePrompt() {
+    if (promptHost) { try { promptHost.remove(); } catch (_) {} promptHost = null; }
+  }
+  function showPrompt(info, rect) {
+    hidePrompt();
+    promptHost = document.createElement('div');
+    promptHost.style.cssText = 'position:fixed;z-index:2147483647;left:0;top:0;width:0;height:0;';
+    (document.documentElement || document.body).appendChild(promptHost);
+    var root = promptHost.attachShadow ? promptHost.attachShadow({ mode: 'open' }) : promptHost;
+    var wrap = document.createElement('div');
+    // Clamp into the viewport: an element near the right or bottom edge must
+    // not push the composer off-screen.
+    var W = 300, H = 104;
+    var left = Math.max(8, Math.min(rect.left, window.innerWidth - W - 8));
+    var top = rect.bottom + 8;
+    if (top + H > window.innerHeight - 8) top = Math.max(8, rect.top - H - 8);
+    wrap.setAttribute('style', 'position:fixed;left:' + left + 'px;top:' + top + 'px;width:' + W + 'px;' +
+      'font:13px -apple-system,BlinkMacSystemFont,Inter,system-ui,sans-serif;' +
+      'background:#1c1c1c;color:#e8e8e8;border:1px solid #3a3a3a;border-radius:10px;' +
+      'box-shadow:0 10px 30px rgba(0,0,0,0.45);padding:9px;box-sizing:border-box;');
+    var tag = document.createElement('div');
+    tag.setAttribute('style', 'font:11px ui-monospace,SFMono-Regular,Menlo,monospace;color:#4c8dff;margin:0 0 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;');
+    tag.textContent = info.selector || info.tag || 'element';
+    var ta = document.createElement('textarea');
+    ta.setAttribute('placeholder', 'Ask about this element…');
+    ta.setAttribute('style', 'width:100%;height:44px;resize:none;box-sizing:border-box;background:#111;color:#e8e8e8;' +
+      'border:1px solid #333;border-radius:6px;padding:6px 8px;font:inherit;font-size:12.5px;outline:none;');
+    var row = document.createElement('div');
+    row.setAttribute('style', 'display:flex;justify-content:flex-end;gap:6px;margin-top:7px;');
+    function mkBtn(label, primary) {
+      var b = document.createElement('button');
+      b.textContent = label;
+      b.setAttribute('style', 'font:inherit;font-size:12px;padding:4px 12px;border-radius:6px;cursor:pointer;' +
+        (primary ? 'background:#4c8dff;color:#fff;border:1px solid #4c8dff;' : 'background:transparent;color:#aaa;border:1px solid #3a3a3a;'));
+      return b;
+    }
+    var cancel = mkBtn('Cancel', false), submit = mkBtn('Send', true);
+    function finish() { info.prompt = ta.value.trim(); hidePrompt(); if (box) box.style.display = 'none'; send(info); }
+    function dismiss() { hidePrompt(); if (box) box.style.display = 'none'; }
+    cancel.addEventListener('click', dismiss);
+    submit.addEventListener('click', finish);
+    // Enter sends, Shift+Enter is a newline, Escape cancels — the composer
+    // convention the rest of the app already uses.
+    ta.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); finish(); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); dismiss(); }
+      ev.stopPropagation();
+    }, true);
+    row.appendChild(cancel); row.appendChild(submit);
+    wrap.appendChild(tag); wrap.appendChild(ta); wrap.appendChild(row);
+    root.appendChild(wrap);
+    try { ta.focus(); } catch (_) {}
+  }
   function onClick(e) {
     if (!active) return;
     e.preventDefault(); e.stopPropagation();
     var el = last || document.elementFromPoint(e.clientX, e.clientY);
     var info = { selector: cssPath(el), tag: el ? el.nodeName.toLowerCase() : '', text: el ? (el.innerText || el.textContent || '').trim().slice(0, 2000) : '', url: location.href, t: Date.now() };
-    stop();
-    try { location.href = 'https://fleet.internal/pick/' + encodeURIComponent(JSON.stringify(info)); } catch (_) {}
+    var rect = el ? el.getBoundingClientRect() : { left: 20, top: 20, bottom: 20 };
+    // Keep the highlight up so the user can still see what they picked while
+    // typing; only the picking listeners go away.
+    stopPicking(true);
+    showPrompt(info, rect);
   }
   function start() {
     if (active) return; active = true;
+    hidePrompt();
     document.addEventListener('mousemove', onMove, true);
     document.addEventListener('click', onClick, true);
     if (document.body) document.body.style.cursor = 'crosshair';
   }
-  function stop() {
+  function stopPicking(keepHighlight) {
     active = false; last = null;
     document.removeEventListener('mousemove', onMove, true);
     document.removeEventListener('click', onClick, true);
-    if (box) box.style.display = 'none';
+    if (box && !keepHighlight) box.style.display = 'none';
     if (document.body) document.body.style.cursor = '';
   }
+  function stop() { stopPicking(false); hidePrompt(); }
   window.__fleetStartSelect = start;
   window.__fleetStopSelect = stop;
   var metaSent = false;
