@@ -541,6 +541,16 @@ impl ClaudeBridge {
             "--verbose".into(),
             "--include-partial-messages".into(),
         ];
+        // Container sessions can mount neither the stdio sidecars (their
+        // paths resolve to host `.exe` files) nor the HTTP loopbacks
+        // (`127.0.0.1` inside a container is the container, not us), so
+        // no MCP config is reachable. Derived from `project_path` rather
+        // than passed in, so there is exactly one source of truth.
+        let in_container = matches!(
+            crate::services::exec_target::parse(&self.project_path),
+            crate::services::exec_target::ExecTarget::Container { .. }
+        );
+        let effective_mcp_path = mcp_config_path.filter(|_| !in_container);
         if let Some(id) = &self.claude_session_id {
             c.push("--resume".into());
             c.push(id.clone());
@@ -574,7 +584,7 @@ impl ClaudeBridge {
             c.push("--agents".into());
             c.push(staff_subagents_json().to_string());
         }
-        if let Some(path) = mcp_config_path {
+        if let Some(path) = effective_mcp_path {
             // `=` form prevents the claude CLI from variadic-slurping
             // subsequent positional args. `--mcp-config <configs...>`
             // would otherwise consume the trailing prompt as a second
@@ -582,19 +592,28 @@ impl ClaudeBridge {
             // found" error). Using `=` pins exactly one value.
             c.push(format!("--mcp-config={path}"));
         }
-        match self.permission_mode.as_str() {
-            "bypassPermissions" | "dangerouslySkipPermissions" => {
-                c.push("--dangerously-skip-permissions".into())
+        if in_container {
+            // With no MCP config there is no permission tool, so a
+            // non-bypass mode would leave the CLI waiting on a prompt
+            // nothing can answer — a hang rather than an error. The
+            // container is itself the isolation boundary, which is what
+            // makes bypassing acceptable here.
+            c.push("--dangerously-skip-permissions".into());
+        } else {
+            match self.permission_mode.as_str() {
+                "bypassPermissions" | "dangerouslySkipPermissions" => {
+                    c.push("--dangerously-skip-permissions".into())
+                }
+                "acceptEdits" => {
+                    c.push("--permission-mode".into());
+                    c.push("acceptEdits".into());
+                }
+                "plan" => {
+                    c.push("--permission-mode".into());
+                    c.push("plan".into());
+                }
+                _ => {}
             }
-            "acceptEdits" => {
-                c.push("--permission-mode".into());
-                c.push("acceptEdits".into());
-            }
-            "plan" => {
-                c.push("--permission-mode".into());
-                c.push("plan".into());
-            }
-            _ => {}
         }
         // Point the CLI at the fleet_permission MCP tool in EVERY mode
         // (when a handler is wired + an mcp config exists). In default
@@ -607,7 +626,7 @@ impl ClaudeBridge {
         // answer (see internal.rs::permission_prompt). Empirically verified
         // that `--dangerously-skip-permissions` + `--permission-prompt-tool`
         // coexist and only AskUserQuestion reaches the tool under bypass.
-        if self.permission_handler.is_some() && mcp_config_path.is_some() {
+        if self.permission_handler.is_some() && effective_mcp_path.is_some() {
             c.push("--permission-prompt-tool".into());
             c.push("mcp__fleet_permission__permission_prompt".into());
         }
@@ -616,7 +635,7 @@ impl ClaudeBridge {
         // and route the model to our in-process `ask_user` MCP tool, which
         // renders the interactive card in Fleetify and blocks for the answer.
         // Wired whenever fleet_permission is mounted — staff and non-staff alike.
-        if self.ask_user_enabled && mcp_config_path.is_some() {
+        if self.ask_user_enabled && effective_mcp_path.is_some() {
             c.push("--disallowedTools".into());
             c.push("AskUserQuestion".into());
             c.push("--append-system-prompt".into());
@@ -761,19 +780,53 @@ impl ClaudeBridge {
         // — claude CLI needs to read it after we return from spawn.
         // OS cleans up temp files at process exit; the leak is bounded
         // by per-turn invocations.
-        let mcp_cfg_path: Option<String> = match self.build_mcp_config() {
-            Some(value) => {
-                let mut tmp = std::env::temp_dir();
-                tmp.push(format!("fleetify-mcp-{}.json", uuid::Uuid::new_v4()));
-                match std::fs::write(&tmp, value.to_string()) {
-                    Ok(_) => Some(tmp.to_string_lossy().into_owned()),
-                    Err(e) => {
-                        tracing::warn!(target: "claude-code", "mcp_config write failed: {e}; running without MCPs");
-                        None
+        // Where this turn actually runs. `Unsupported` fails the turn with
+        // the reason rather than falling through to a local spawn — an
+        // `ssh://` path is also a valid POSIX path, so falling through is
+        // how a session silently runs in the wrong directory.
+        let target = crate::services::exec_target::parse(&self.project_path);
+        if let crate::services::exec_target::ExecTarget::Unsupported(reason) = &target {
+            anyhow::bail!("{reason}");
+        }
+        let in_container = matches!(
+            target,
+            crate::services::exec_target::ExecTarget::Container { .. }
+        );
+        // The picker probed this at selection time, but that answer goes
+        // stale the moment the container is stopped, restarted or
+        // replaced. Re-check here so a missing CLI names the container and
+        // says what to do, instead of surfacing docker's raw "executable
+        // file not found" mid-stream. Costs one docker round trip
+        // (typically ~100-300ms) against a turn measured in seconds.
+        if let crate::services::exec_target::ExecTarget::Container { id, .. } = &target {
+            if !crate::routers::docker::probe_agent_in_container(id, "claude").await {
+                anyhow::bail!(
+                    "The claude CLI is not installed in container '{id}'. \
+                     Install it there, or switch this session to a local folder."
+                );
+            }
+        }
+        // Skipped entirely in a container: the stdio sidecars resolve to
+        // host `.exe` paths and the HTTP loopbacks point at 127.0.0.1,
+        // which inside a container is the container. Writing a temp file
+        // the CLI could never read is pure waste.
+        let mcp_cfg_path: Option<String> = if in_container {
+            None
+        } else {
+            match self.build_mcp_config() {
+                Some(value) => {
+                    let mut tmp = std::env::temp_dir();
+                    tmp.push(format!("fleetify-mcp-{}.json", uuid::Uuid::new_v4()));
+                    match std::fs::write(&tmp, value.to_string()) {
+                        Ok(_) => Some(tmp.to_string_lossy().into_owned()),
+                        Err(e) => {
+                            tracing::warn!(target: "claude-code", "mcp_config write failed: {e}; running without MCPs");
+                            None
+                        }
                     }
                 }
+                None => None,
             }
-            None => None,
         };
         let mut cmd = self.build_command(message, mcp_cfg_path.as_deref());
         // Self-heal an orphaned `--resume` target. If the stored Claude
@@ -787,7 +840,12 @@ impl ClaudeBridge {
         // conversation in this cwd (keeping context) instead of erroring. The
         // healed turn emits a valid session id via its init event, which
         // chat.rs persists over the stale one.
-        if let Some(id) = self.claude_session_id.as_deref() {
+        // Host-only. In a container the transcript lives inside the
+        // container, so the `~/.claude/projects/` lookup below would
+        // always report "missing" and wrongly self-heal a perfectly good
+        // --resume into --continue. Let the CLI be the authority on
+        // whether its own conversation exists.
+        if let Some(id) = self.claude_session_id.as_deref().filter(|_| !in_container) {
             // Multi-account: when a `CLAUDE_CONFIG_DIR` override is active the
             // conversation must be checked under THAT account's config dir, not
             // the default `~/.claude` — otherwise a transcript that exists under
@@ -862,18 +920,23 @@ impl ClaudeBridge {
         // still misbehave with `\\?\`).
         let cwd = fleetify_core::strip_verbatim_prefix(std::path::Path::new(&cwd_raw));
 
-        let mut command = tokio::process::Command::new(&cmd[0]);
-        command
-            .args(&cmd[1..])
-            .current_dir(&cwd)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        // Every env pair is collected BEFORE the command is built. In
+        // container mode they have to become `-e` flags inside the argv,
+        // which means they must be known before the argv exists — setting
+        // them on the Command afterwards would attach them to the docker
+        // CLI process instead of to the process inside the container. That
+        // failure is silent (the agent just runs without its proxy auth),
+        // which makes it the worst one available here.
+        let mut envs: Vec<(String, String)> = Vec::new();
         // Multi-account isolation: point HOME (and XDG/Windows equivalents) at
         // the selected account's private dir so `claude` reads that account's
-        // `~/.claude` credentials. No-op for the System account.
-        crate::bridges::account_env::apply_to_command(&mut command, &ctx.account_env);
+        // `~/.claude` credentials. No-op for the System account. Skipped in a
+        // container — those are host paths, and the container has its own HOME.
+        if !in_container {
+            envs.extend(ctx.account_env.iter().cloned());
+        }
         if let Some(ref url) = ctx.base_url_override {
-            command.env("ANTHROPIC_BASE_URL", url);
+            envs.push(("ANTHROPIC_BASE_URL".to_string(), url.clone()));
         }
         // Forward proxy auth headers to claude-code via its
         // `ANTHROPIC_CUSTOM_HEADERS` env var (newline-separated
@@ -898,7 +961,27 @@ impl ClaudeBridge {
                 forwarded_header_names.push(name.as_str().to_string());
             }
             if !lines.is_empty() {
-                command.env("ANTHROPIC_CUSTOM_HEADERS", lines.join("\n"));
+                envs.push(("ANTHROPIC_CUSTOM_HEADERS".to_string(), lines.join("\n")));
+            }
+        }
+
+        // Local → `[claude, …]`. Container → `docker exec -i -w <dir>
+        // -e K=V … <id> claude …`. Unsupported was already rejected above.
+        let argv = crate::services::exec_target::build_argv(&target, &cmd[0], &cmd[1..], &envs)
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        let mut command = tokio::process::Command::new(&argv[0]);
+        command
+            .args(&argv[1..])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if !in_container {
+            // In container mode `-w` already carries the working directory
+            // inside, and the env is in the argv. Calling current_dir with
+            // a `docker://` string is exactly the bug this work removes.
+            command.current_dir(&cwd);
+            for (k, v) in &envs {
+                command.env(k, v);
             }
         }
         // One-line dispatch log so the user can grep `claude bridge spawn`
@@ -1239,6 +1322,79 @@ mod tests {
             .windows(2)
             .any(|w| w == ["--permission-mode", "acceptEdits"]));
         assert_eq!(c.last().unwrap(), "hi");
+    }
+
+    /// No MCP config can be mounted in a container — the stdio sidecars
+    /// are host `.exe` files and the in-process HTTP loopback lives on
+    /// 127.0.0.1, which inside a container is the container itself. With
+    /// no permission tool there is nothing to answer a prompt, so any
+    /// mode other than bypass would hang the turn rather than fail it.
+    #[test]
+    fn container_session_forces_permission_bypass() {
+        for mode in ["default", "plan", "acceptEdits"] {
+            let mut b = ClaudeBridge::new("s", "docker://abc123/work");
+            b.permission_mode = mode.into();
+            let c = b.build_command("hi", None);
+            assert!(
+                c.iter().any(|a| a == "--dangerously-skip-permissions"),
+                "mode {mode} did not force bypass: {c:?}"
+            );
+            assert!(
+                !c.iter().any(|a| a == "--permission-mode"),
+                "mode {mode} still emitted --permission-mode: {c:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_session_keeps_its_permission_mode() {
+        let mut b = ClaudeBridge::new("s", r"C:\proj");
+        b.permission_mode = "plan".into();
+        let c = b.build_command("hi", None);
+        assert!(c.windows(2).any(|w| w == ["--permission-mode", "plan"]));
+        assert!(!c.iter().any(|a| a == "--dangerously-skip-permissions"));
+    }
+
+    #[test]
+    fn container_session_mounts_no_mcp_config() {
+        let b = ClaudeBridge::new("s", "docker://abc123/work");
+        // Even when a path is offered, container mode must not mount it.
+        let c = b.build_command("hi", Some("/tmp/mcp.json"));
+        assert!(
+            !c.iter().any(|a| a.starts_with("--mcp-config")),
+            "container session mounted an MCP config: {c:?}"
+        );
+        assert!(!c.iter().any(|a| a == "--permission-prompt-tool"), "{c:?}");
+    }
+
+    /// Disabling AskUserQuestion while pointing the model at an `ask_user`
+    /// tool that was never mounted is worse than doing neither: the model
+    /// is told to call something that does not exist AND has its builtin
+    /// taken away. Both halves must stay off together in a container.
+    #[test]
+    fn container_session_does_not_disable_ask_user_question() {
+        let mut b = ClaudeBridge::new("s", "docker://abc123/work");
+        b.ask_user_enabled = true;
+        let c = b.build_command("hi", Some("/tmp/mcp.json"));
+        assert!(!c.iter().any(|a| a == "--disallowedTools"), "{c:?}");
+        assert!(!c.iter().any(|a| a == "AskUserQuestion"), "{c:?}");
+    }
+
+    #[test]
+    fn local_session_still_disables_ask_user_question() {
+        let mut b = ClaudeBridge::new("s", "/tmp/x");
+        b.ask_user_enabled = true;
+        let c = b.build_command("hi", Some("/tmp/mcp.json"));
+        assert!(c
+            .windows(2)
+            .any(|w| w == ["--disallowedTools", "AskUserQuestion"]));
+    }
+
+    #[test]
+    fn local_session_still_mounts_the_mcp_config() {
+        let b = ClaudeBridge::new("s", "/tmp/x");
+        let c = b.build_command("hi", Some("/tmp/mcp.json"));
+        assert!(c.iter().any(|a| a == "--mcp-config=/tmp/mcp.json"), "{c:?}");
     }
 
     #[test]

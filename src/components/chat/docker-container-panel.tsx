@@ -3,14 +3,20 @@
  *
  * Lists running Docker containers via the local CLI, lets the user
  * expand one and browse its filesystem, and commits a workspace
- * path as `docker://<id>:<abs/path>`. Same shape as RemoteSshPanel
+ * path as `docker://<id>/<abs/path>`. Same shape as RemoteSshPanel
  * so the picker reads as one design family across Local / Git /
  * Remote / Container.
  *
- * Like the SSH MVP, agent execution INSIDE the container is the
- * follow-up — today this just lets the user register the target.
- * The marker scheme means the rest of the app can recognise a
- * container-bound session and decide what to do with it later.
+ * Note there is NO colon before the path — `buildContainerUrl`
+ * concatenates a slash-prefixed path straight onto the id. An earlier
+ * version of this comment claimed `docker://<id>:<abs/path>`, which no
+ * code ever produced. The backend parser (`services/exec_target.rs`)
+ * splits at the first slash, which is unambiguous because container ids
+ * cannot contain one.
+ *
+ * Unlike the SSH tab, agent execution inside the container is wired:
+ * the session spawns via `docker exec`. The preflight below reports
+ * whether the CLI is actually installed in the target.
  */
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -18,7 +24,7 @@ import {
   Box, ArrowLeft, RefreshCw,
 } from "lucide-react";
 import {
-  dockerStatus, dockerContainers, dockerListDir,
+  dockerStatus, dockerContainers, dockerListDir, dockerProbeAgent,
   type DockerContainer, type SshDirEntry,
 } from "@/lib/api";
 
@@ -266,6 +272,11 @@ function ContainerBrowser({
   const [entries, setEntries] = useState<SshDirEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // null = not answered yet. A failed probe stays null rather than
+  // becoming false: the daemon could be busy or the container
+  // mid-restart, and guessing "missing" would cry wolf on a good
+  // container. The backend re-probes at spawn either way.
+  const [agentPresent, setAgentPresent] = useState<boolean | null>(null);
 
   const load = useCallback(async (p: string) => {
     setLoading(true); setErr(null);
@@ -282,6 +293,15 @@ function ContainerBrowser({
   }, [container.id]);
 
   useEffect(() => { void load("/"); }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setAgentPresent(null);
+    dockerProbeAgent(container.id)
+      .then(r => { if (!cancelled) setAgentPresent(r.present); })
+      .catch(() => { /* see agentPresent's comment — unknown, not missing */ });
+    return () => { cancelled = true; };
+  }, [container.id]);
 
   const goUp = useCallback(() => {
     if (path === "/" || path === "") return;
@@ -346,6 +366,24 @@ function ContainerBrowser({
           Use folder
         </button>
       </div>
+
+      {/* Preflight — reports, never vetoes. The user may well be about
+          to install the CLI into this container. */}
+      {agentPresent === false && (
+        <div style={{
+          display: "flex", alignItems: "flex-start", gap: 6,
+          padding: "6px 8px",
+          borderBottom: "1px solid var(--c-brd, rgba(255,255,255,0.08))",
+          fontSize: 10.5, lineHeight: 1.45,
+          color: "rgb(251,191,36)",
+        }}>
+          <AlertCircle size={11} style={{ marginTop: 1, flexShrink: 0 }} />
+          <span>
+            The claude CLI is not installed in this container. You can still
+            pick a folder, but turns will fail until you install it.
+          </span>
+        </div>
+      )}
 
       {/* Entries */}
       <div style={{ maxHeight: 220, overflowY: "auto" }}>

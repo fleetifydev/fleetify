@@ -497,9 +497,13 @@ export function SessionToolbar({
             )}
 
             {/* ── Container tab — running Docker containers as
-                workspaces. Same MVP shape as Remote: pick a container,
-                browse its filesystem, commit a path. project_path
-                lands as `docker://<id>:/abs/path`. */}
+                workspaces. Pick a container, browse its filesystem,
+                commit a path. project_path lands as
+                `docker://<id>/abs/path` — no colon, despite what this
+                comment claimed until the backend parser was written
+                against the emitter rather than against the comment.
+                Unlike Remote, this one actually executes: the session
+                spawns via `docker exec`. */}
             {sourceTab === "container" && (
               <DockerContainerPanel
                 onPick={(containerUrl) => {

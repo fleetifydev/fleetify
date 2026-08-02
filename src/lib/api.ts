@@ -318,6 +318,24 @@ export async function dockerListDir(containerId: string, path: string): Promise<
   return res.json();
 }
 
+export interface DockerAgentProbe { present: boolean; path: string }
+
+/** Is the agent CLI installed inside this container? Drives the picker's
+ *  preflight hint. Advisory only — the backend re-probes at spawn, because
+ *  this answer goes stale as soon as the container is stopped or replaced. */
+export async function dockerProbeAgent(containerId: string, agent = "claude"): Promise<DockerAgentProbe> {
+  const res = await apiFetch(`${API_BASE}/docker/probe-agent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ container_id: containerId, agent }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({} as { detail?: string }));
+    throw new Error(data.detail ?? `docker probe-agent failed (${res.status})`);
+  }
+  return res.json();
+}
+
 // ── Auth API ─────────────────────────────────────────────────
 export interface AuthUser { id: string; name: string; email: string }
 

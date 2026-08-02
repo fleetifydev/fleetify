@@ -14,6 +14,7 @@ pub mod command_catalog;
 pub mod compactor;
 pub mod dispatch;
 pub mod dispatch_exec;
+pub mod exec_target;
 pub mod fleet_brain;
 pub mod fleet_delegate;
 pub mod fleet_rules;

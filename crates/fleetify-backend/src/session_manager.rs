@@ -179,6 +179,19 @@ impl SessionManager {
         if session.project_path.is_empty() || is_staff {
             return;
         }
+        // Host git can only act on host paths. A container session's
+        // project_path points inside the container, so carving a worktree
+        // there would shell out to `git -C docker://…` — and even the
+        // no-carve branch below would record a branch name for a repo the
+        // host cannot see.
+        if !crate::services::exec_target::is_host_path(&session.project_path) {
+            tracing::info!(
+                session_id = %session.id,
+                project = %session.project_path,
+                "session.git_setup.skipped (not a host path)"
+            );
+            return;
+        }
         use crate::services::worktree;
         let label = if session.title.trim().is_empty() {
             "session".to_string()
