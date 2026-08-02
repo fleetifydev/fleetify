@@ -464,6 +464,33 @@ async fn next_round_worktree(
     ))
 }
 
+/// Hard-delete a session row for real.
+///
+/// Four tables reference `sessions(id)` without ON DELETE CASCADE (`messages`,
+/// `cost_events`, `session_activity`, `session_memory` — 0001_init.sql), and
+/// the pool runs with `foreign_keys=ON` (db.rs). So a bare
+/// `DELETE FROM sessions` fails with SQLITE_CONSTRAINT_FOREIGNKEY the moment
+/// the session has a single message — which is every session that ever ran a
+/// turn. That was the "deleted session comes back after restart" bug: the
+/// handler 500'd, the sidebar swallowed the rejection, and the in-memory
+/// `_removedIds` tombstone hid the row until the next launch resurfaced it.
+///
+/// One transaction, children first, so a crash mid-way can never leave a
+/// session stripped of its transcript but still alive.
+async fn hard_delete_session(pool: &sqlx::SqlitePool, id: &str) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    for sql in [
+        "DELETE FROM messages WHERE session_id = ?",
+        "DELETE FROM cost_events WHERE session_id = ?",
+        "DELETE FROM session_activity WHERE session_id = ?",
+        "DELETE FROM session_memory WHERE session_id = ?",
+        "DELETE FROM sessions WHERE id = ?",
+    ] {
+        sqlx::query(sql).bind(id).execute(&mut *tx).await?;
+    }
+    tx.commit().await
+}
+
 async fn delete_session(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
@@ -490,10 +517,7 @@ async fn delete_session(
             .execute(&st.auth.pool)
             .await?;
     } else {
-        sqlx::query("DELETE FROM sessions WHERE id = ?")
-            .bind(&id)
-            .execute(&st.auth.pool)
-            .await?;
+        hard_delete_session(&st.auth.pool, &id).await?;
     }
     // Cloud telemetry — record the session stop.
     let sid_owned = s.id.clone();
@@ -520,10 +544,10 @@ async fn delete_empty_drafts(
     .await?;
     let ids: Vec<String> = rows.into_iter().map(|r| r.0).collect();
     for sid in &ids {
-        sqlx::query("DELETE FROM sessions WHERE id = ?")
-            .bind(sid)
-            .execute(&st.auth.pool)
-            .await?;
+        // Same FK trap as delete_session: "no messages" does NOT mean "no
+        // children" — a draft that was started once can still own
+        // session_activity / cost_events rows, and those block the bare DELETE.
+        hard_delete_session(&st.auth.pool, sid).await?;
     }
     Ok(Json(json!({"deleted": ids.len(), "ids": ids})))
 }
@@ -1723,6 +1747,86 @@ fn trunc(s: &str, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: deleting a session that has a transcript must actually
+    /// delete it. `messages` / `cost_events` / `session_activity` /
+    /// `session_memory` all reference `sessions(id)` WITHOUT cascade and the
+    /// pool enforces foreign keys, so the old bare `DELETE FROM sessions`
+    /// failed with a constraint error for any session that ever ran a turn.
+    /// The renderer swallowed that 500, hid the row behind its in-memory
+    /// tombstone, and the "deleted" session came back on the next launch.
+    #[tokio::test]
+    async fn hard_delete_removes_session_and_all_child_rows() {
+        let pool = crate::db::init_pool("sqlite::memory:").await.unwrap();
+        let sid = "del-fk-01";
+        sqlx::query(
+            "INSERT INTO sessions \
+             (id,title,project_path,group_path,tool,command,status,use_worktree,\
+              permission_mode,session_mode,pinned,order_idx,created_at,budget_used) \
+             VALUES (?,?,?,'','claude-code','claude-code','stopped',0,'default','new',0,0,\
+                     '2026-01-01T00:00:00Z',0.0)",
+        )
+        .bind(sid)
+        .bind("Doomed")
+        .bind("/tmp/doomed")
+        .execute(&pool)
+        .await
+        .unwrap();
+        // One row in EVERY table that references sessions(id) — each alone was
+        // enough to block the old single-statement delete.
+        sqlx::query(
+            "INSERT INTO messages (id,session_id,role,content,cost_usd,timestamp) \
+             VALUES ('m1',?,'user','hi',0.0,'2026-01-01T00:00:01Z')",
+        )
+        .bind(sid)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO cost_events (id,session_id,model,cost_usd,timestamp) \
+             VALUES ('c1',?,'claude-opus-5',0.01,'2026-01-01T00:00:02Z')",
+        )
+        .bind(sid)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO session_activity (id,session_id,kind,summary,ts) \
+             VALUES ('a1',?,'status','running','2026-01-01T00:00:03Z')",
+        )
+        .bind(sid)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO session_memory (id,session_id,title,content,created_at) \
+             VALUES ('sm1',?,'note','remember','2026-01-01T00:00:04Z')",
+        )
+        .bind(sid)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        hard_delete_session(&pool, sid)
+            .await
+            .expect("delete must succeed even though the session has children");
+
+        for (table, col) in [
+            ("sessions", "id"),
+            ("messages", "session_id"),
+            ("cost_events", "session_id"),
+            ("session_activity", "session_id"),
+            ("session_memory", "session_id"),
+        ] {
+            let (n,): (i64,) =
+                sqlx::query_as(&format!("SELECT COUNT(*) FROM {table} WHERE {col} = ?"))
+                    .bind(sid)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(n, 0, "{table} still holds rows for the deleted session");
+        }
+    }
 
     #[tokio::test]
     async fn working_diff_reports_changes_and_flags_non_repo() {
