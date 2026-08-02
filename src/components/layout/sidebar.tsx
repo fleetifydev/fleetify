@@ -3,17 +3,16 @@ import { ReactLenis } from "lenis/react";
 import {
   Plus, Search, Settings, HelpCircle, Library, MessageCircle,
   LayoutGrid, Store, Repeat,
-  Pin, PinOff, Type, GitFork, Trash2,
+  Pin,
   SlidersHorizontal, X, Check, MoreHorizontal,
-  Square, RotateCcw, RefreshCw, PanelLeft, PanelLeftClose,
-  Download,
+  PanelLeft, PanelLeftClose,
 } from "lucide-react";
 import { useAppStore } from "@/stores/app-store";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { useChatStore } from "@/stores/chat-store";
 import { useShallow } from "zustand/react/shallow";
+import { SessionContextMenu } from "@/components/layout/session-context-menu";
 import { forkSession, fetchBulkStats, stopSession, restartSession, resetSession, deleteSession } from "@/lib/api";
-import { exportChat } from "@/lib/export-chat";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { usesInAppTitleBar, folderName } from "@/lib/utils";
 import { formatShortcut } from "@/lib/keyboard-shortcuts";
@@ -79,117 +78,6 @@ export function Ib({ children, onClick, title }: { children: React.ReactNode; on
 }
 
 /* ── context menu ── */
-function CtxMenu({ x, y, menuRef, session, onClose, onPin, onFork, onStop, onRestart, onReset, onDelete }: {
-  x: number; y: number; menuRef: React.RefObject<HTMLDivElement | null>;
-  session: Session; onClose: () => void; onPin: () => void; onFork: () => void;
-  onStop: () => void; onRestart: () => void; onReset: () => void; onDelete: () => void;
-}) {
-  // Per-field selectors — full-state useAppStore() subscribed the menu
-  // to every store mutation, even though it only needs two action
-  // refs that never change identity.
-  const updateSession = useAppStore(s => s.updateSession);
-
-  const doRename = () => {
-    const n = prompt("Rename:", session.title);
-    if (n) {
-      fetch(`/api/sessions/${session.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: n }) })
-        .then(() => updateSession(session.id, { title: n }));
-    }
-  };
-
-  const isActive = ["running", "waiting", "starting"].includes(session.status);
-
-  const Row = ({ icon: Icon, label, danger = false, iconColor, onClick }: {
-    icon: React.ElementType; label: string; danger?: boolean;
-    iconColor?: string; onClick: () => void;
-  }) => (
-    <button
-      onClick={onClick}
-      style={{
-        display: "flex", alignItems: "center", gap: 8, width: "100%",
-        padding: "5px 8px", background: "none", border: "none",
-        borderRadius: 6, cursor: "pointer", fontSize: 12, textAlign: "left",
-        color: danger ? "#f87171" : "var(--c-med)",
-        transition: "none",
-        fontFamily: "inherit",
-      }}
-      onMouseEnter={e => {
-        e.currentTarget.style.background = danger ? "rgba(248,113,113,0.09)" : "var(--c-srf)";
-        if (!danger) e.currentTarget.style.color = "var(--c-high)";
-      }}
-      onMouseLeave={e => {
-        e.currentTarget.style.background = "none";
-        e.currentTarget.style.color = danger ? "#f87171" : "var(--c-med)";
-      }}
-    >
-      <Icon size={13} style={{ color: iconColor ?? (danger ? "#f87171" : "var(--c-ghost)"), flexShrink: 0 }} />
-      <span>{label}</span>
-    </button>
-  );
-
-  const Sep = () => <div style={{ height: 1, background: "var(--c-brd)", margin: "3px 0" }} />;
-
-  /* Smart positioning — flip up if too close to bottom edge */
-  const winH = typeof window !== "undefined" ? window.innerHeight : 800;
-  const menuH = isActive ? 230 : 200;
-  const top = y + menuH > winH - 16 ? y - menuH : y;
-
-  return (
-    <div ref={menuRef} style={{
-      position: "fixed", left: x, top,
-      zIndex: 9999, minWidth: 180,
-      borderRadius: 10, padding: "4px",
-      background: "var(--popover)",
-      border: "1px solid var(--c-brd2)",
-      boxShadow: "0 8px 24px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.10), 0 0 0 0.5px rgba(0,0,0,0.06)",
-    }}>
-      {/* Session title header */}
-      <div style={{
-        padding: "5px 8px 6px", borderBottom: "1px solid var(--c-brd)", marginBottom: 3,
-      }}>
-        <div style={{
-          fontSize: 11, fontWeight: 500, color: "var(--c-ghost)",
-          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-        }}>
-          {session.title}
-        </div>
-      </div>
-
-      <Row icon={session.pinned ? PinOff : Pin} label={session.pinned ? "Unpin" : "Pin to top"} onClick={() => { onClose(); onPin(); }} />
-      <Row icon={Type}    label="Rename"       onClick={() => { onClose(); doRename(); }} />
-      <Row icon={GitFork} label="Fork session" onClick={() => { onClose(); onFork(); }} />
-
-      <Sep />
-
-      {/* Export — was the chat-header "..." popover; relocated
-          here per the user's spec. Reads messages live from the
-          chat-store at click time so we don't have to keep them
-          in sync as a prop. */}
-      <Row icon={Download} label="Export as Markdown" onClick={() => {
-        onClose();
-        const msgs = useChatStore.getState().sessions[session.id]?.messages ?? [];
-        exportChat({ title: session.title, sessionId: session.id, messages: msgs, format: "md" });
-      }} />
-      <Row icon={Download} label="Export as JSON" onClick={() => {
-        onClose();
-        const msgs = useChatStore.getState().sessions[session.id]?.messages ?? [];
-        exportChat({ title: session.title, sessionId: session.id, messages: msgs, format: "json" });
-      }} />
-
-      <Sep />
-
-      {isActive && (
-        <Row icon={Square} label="Stop agent" iconColor="#fb923c" onClick={() => { onClose(); onStop(); }} />
-      )}
-      <Row icon={RotateCcw} label="Restart agent" onClick={() => { onClose(); onRestart(); }} />
-      <Row icon={RefreshCw} label="Reset session" onClick={() => { onClose(); onReset(); }} />
-
-      <Sep />
-
-      <Row icon={Trash2} label="Delete" danger onClick={() => { onClose(); onDelete(); }} />
-    </div>
-  );
-}
 
 /* ── agent status icon ──
  *
@@ -513,7 +401,7 @@ function AgentRowImpl({ session, isActive, stats, onClick, onPin, onFork, onStop
       </button>
 
       {menu && (
-        <CtxMenu x={menu.x} y={menu.y} menuRef={menuRef} session={session}
+        <SessionContextMenu x={menu.x} y={menu.y} menuRef={menuRef} session={session}
           onClose={() => setMenu(null)} onPin={onPin} onFork={onFork}
           onStop={onStop} onRestart={onRestart} onReset={onReset}
           onDelete={() => setConfirmDelete(true)} />

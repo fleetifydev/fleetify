@@ -41,12 +41,15 @@ import {
   Brain, Send, AlertCircle, Sparkles, Archive,
   StopCircle, Eye, Pencil, Terminal, Globe, Moon, Trash2, Plus,
 } from "lucide-react";
-import { memo, useMemo, useState, useCallback, useEffect } from "react";
+import { memo, useMemo, useState, useCallback, useEffect, useRef } from "react";
+import { SessionContextMenu } from "@/components/layout/session-context-menu";
+import { countActive, countIdle } from "@/components/dashboard/fleet-panel/fleet-stats";
+import { activeWorkingMs, formatWorkingTime } from "@/components/dashboard/fleet-panel/working-time";
 import { useAppStore } from "@/stores/app-store";
 import { useChatStore } from "@/stores/chat-store";
 import { useFleetStore, type FleetReport, type FleetDecision } from "@/stores/fleet-store";
 import { useFleetData, type FleetActivityRow } from "./hooks/use-fleet-data";
-import { askFleet, stopSession, archiveSession, listUserMemory, createUserMemory, deleteUserMemory, type SessionDetail, type SessionActivityItem, type UserMemory } from "@/lib/api";
+import { askFleet, stopSession, archiveSession, listUserMemory, createUserMemory, updateUserMemory, deleteUserMemory, type SessionDetail, type SessionActivityItem, type UserMemory } from "@/lib/api";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import type { Session } from "@/types/session";
 import { folderName } from "@/lib/utils";
@@ -260,8 +263,8 @@ function humanActivity(row: SessionActivityItem): string {
 
 /* ── Watching strip ────────────────────────────────────────────── */
 
-function WatchingStrip({ agentCount, activeCount, pendingCount, spend, totalTokens, fleetSpend, onCatchUp, onStopAll, onArchiveIdle, canStopAll, canArchiveIdle, showCatchUp }: {
-  agentCount: number; activeCount: number; pendingCount: number;
+function WatchingStrip({ agentCount, activeCount, idleCount, pendingCount, spend, totalTokens, fleetSpend, onCatchUp, onStopAll, onArchiveIdle, canStopAll, canArchiveIdle, showCatchUp }: {
+  agentCount: number; activeCount: number; idleCount: number; pendingCount: number;
   spend: number; totalTokens: number; fleetSpend: number;
   onCatchUp: () => void; onStopAll: () => void; onArchiveIdle: () => void;
   canStopAll: boolean; canArchiveIdle: boolean;
@@ -282,6 +285,7 @@ function WatchingStrip({ agentCount, activeCount, pendingCount, spend, totalToke
       }}>
         <StatPair value={agentCount} label="Agents" />
         <StatPair value={activeCount} label="Active" accent={activeCount > 0 ? C_GREEN : undefined} />
+        <StatPair value={idleCount} label="Idle" />
         <StatPair value={pendingCount} label="Pending" accent={pendingCount > 0 ? C_ORANGE : undefined} />
         <StatPair value={fmtCost(spend)} label="Spent" />
         <StatPair value={fmtTokens(totalTokens)} label="Tokens" />
@@ -380,10 +384,25 @@ function InsightsList({ insights }: { insights: Insight[] }) {
 
 /* ── Session row ───────────────────────────────────────────────── */
 
-const SessionRow = memo(function SessionRow({ session, detail, onOpen }: {
+const SessionRow = memo(function SessionRow({ session, detail, onOpen, onOpenChat }: {
   session: Session; detail: SessionDetail | undefined; onOpen: (id: string) => void;
+  /** Jump straight to the chat, bypassing the detail pane. Only the
+   *  right-click menu uses it; a left click still opens the detail. */
+  onOpenChat?: (id: string) => void;
 }) {
   const [hovered, setHovered] = useState(false);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  // Dismiss on any outside click — the menu is fixed-position and would
+  // otherwise survive scrolling the panel away from its row.
+  useEffect(() => {
+    if (!menu) return;
+    const away = (e: MouseEvent) => { if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenu(null); };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setMenu(null); };
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("mousedown", away); document.removeEventListener("keydown", esc); };
+  }, [menu]);
   const cs = useChatStore(s => s.sessions[session.id]);
   const staffSessionId = useAppStore(s => s.staffSessionId);
   const isStaff = staffSessionId !== null && session.id === staffSessionId;
@@ -399,7 +418,9 @@ const SessionRow = memo(function SessionRow({ session, detail, onOpen }: {
   const statusLabel = isError ? "ERROR" : isWaiting ? "WAITING" : isRunning ? "RUNNING" : "IDLE";
   const statusColor = isError ? C_RED : isWaiting ? C_ORANGE : isRunning ? C_GREEN : "var(--c-dim)";
   return (
+    <>
     <button onClick={() => onOpen(session.id)} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
+      onContextMenu={e => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY }); }}
       style={{ position: "relative", display: "flex", flexDirection: "column", gap: 0, width: "100%", padding: "12px 16px", border: "none", borderBottom: "1px solid var(--c-brd)", cursor: "pointer", textAlign: "left", background: isWaiting ? "rgba(251,146,60,0.05)" : hovered ? "var(--c-srf)" : "transparent", transition: "background 0.12s", fontFamily: "inherit" }}>
       {isWaiting && <span aria-hidden style={{ position: "absolute", left: 0, top: 12, bottom: 12, width: 2, background: C_ORANGE, borderRadius: 2 }} />}
       <div style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
@@ -427,6 +448,19 @@ const SessionRow = memo(function SessionRow({ session, detail, onOpen }: {
         <span style={{ marginLeft: "auto", color: "var(--c-ghost)" }}>{ago}</span>
       </div>
     </button>
+    {menu && (
+      <SessionContextMenu
+        x={menu.x} y={menu.y} menuRef={menuRef} session={session}
+        onClose={() => setMenu(null)}
+        onOpen={onOpenChat ? () => onOpenChat(session.id) : undefined}
+        onStop={isRunning ? () => { void stopSession(session.id); } : undefined}
+        onDelete={() => {
+          if (!window.confirm(`Delete "${session.title || "Untitled"}"? This cannot be undone.`)) return;
+          void archiveSession(session.id);
+        }}
+      />
+    )}
+    </>
   );
 });
 
@@ -449,6 +483,7 @@ function AgentDetail({ session, detail, activity, onBack, onOpenChat }: {
   session: Session; detail: SessionDetail | undefined; activity: SessionActivityItem[]; onBack: () => void; onOpenChat: () => void;
 }) {
   const [stopping, setStopping] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const cs = useChatStore(s => s.sessions[session.id]);
   const isRunning = session.status === "running" || session.status === "starting";
   const isWaiting = session.status === "waiting" || !!cs?.permissionRequest;
@@ -495,6 +530,20 @@ function AgentDetail({ session, detail, activity, onBack, onOpenChat }: {
   })();
   const doStop = async () => { setStopping(true); try { await stopSession(session.id); } catch { /* ignore */ } setStopping(false); };
 
+  // Active working time — sums activity gaps, skipping the long ones. See
+  // working-time.ts for why this is not the wall-clock span.
+  const workedLabel = formatWorkingTime(activeWorkingMs(activity));
+
+  // Deleting from the detail pane returns to the list — the pane it was
+  // showing no longer exists. Confirmed because it is not undoable; the
+  // archive path elsewhere in the panel is the reversible one.
+  const doDelete = async () => {
+    if (!window.confirm(`Delete "${session.title || "Untitled"}"? This cannot be undone.`)) return;
+    setDeleting(true);
+    try { await archiveSession(session.id); onBack(); }
+    catch { setDeleting(false); }
+  };
+
   return (
     <div style={{ animation: "fp-detail-in 0.2s cubic-bezier(0.22,1,0.36,1) both" }}>
       <style>{`@keyframes fp-detail-in { from { opacity:0; transform:translateX(10px); } to { opacity:1; transform:none; } }`}</style>
@@ -503,6 +552,16 @@ function AgentDetail({ session, detail, activity, onBack, onOpenChat }: {
         <span style={{ flex: 1 }} />
         <button onClick={onOpenChat} style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 600, color: "var(--c-med)" }}>Open chat</button>
         {isRunning && <button onClick={doStop} style={{ marginLeft: 14, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 500, color: "var(--c-dim)" }}>{stopping ? "Stopping…" : "Stop"}</button>}
+        <button
+          onClick={doDelete}
+          disabled={deleting}
+          title="Delete this session"
+          style={{ marginLeft: 14, background: "none", border: "none", cursor: deleting ? "default" : "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 500, color: "var(--c-dim)" }}
+          onMouseEnter={e => { if (!deleting) e.currentTarget.style.color = C_RED; }}
+          onMouseLeave={e => (e.currentTarget.style.color = "var(--c-dim)")}
+        >
+          {deleting ? "Deleting…" : "Delete"}
+        </button>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(248px, 1fr))", gap: 8, padding: 10, alignContent: "start" }}>
@@ -531,7 +590,7 @@ function AgentDetail({ session, detail, activity, onBack, onOpenChat }: {
         {/* security */}
         <Card label="Security">
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {[["perm", session.permission_mode || "default"], ["sandbox", session.sandbox || "native"], session.effort ? ["effort", session.effort] : null].filter(Boolean).map((c) => {
+            {[["perm", session.permission_mode || "default"], ["sandbox", session.sandbox || "native"], session.effort ? ["effort", session.effort] : null, ["worked", workedLabel]].filter(Boolean).map((c) => {
               const [k, v] = c as [string, string];
               return <span key={k} style={{ fontSize: 10.5, color: "var(--c-med)", background: "var(--c-srf)", border: "1px solid var(--c-brd)", borderRadius: 6, padding: "4px 9px" }}>
                 <span style={{ color: "var(--c-ghost)", fontSize: 8.5, textTransform: "uppercase", letterSpacing: "0.3px", marginRight: 4 }}>{k}</span>{v}
@@ -791,6 +850,8 @@ function FleetMemoryCard() {
   const [adding, setAdding] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
   const [draftContent, setDraftContent] = useState("");
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editContent, setEditContent] = useState("");
 
   const refresh = useCallback(() => {
     listUserMemory().then(setRows).catch(() => setRows([]));
@@ -810,6 +871,24 @@ function FleetMemoryCard() {
     setRows(prev => prev?.filter(r => r.id !== id) ?? null);
     try { await deleteUserMemory(id); } catch { refresh(); }
   }, [refresh]);
+
+  // Correcting a memory matters more than it looks: the auto-extractor writes
+  // rows from chat turns, and a wrong one keeps getting injected into the
+  // staff prompt. Delete-and-retype was the only fix before this.
+  const beginEdit = useCallback((m: UserMemory) => {
+    setEditId(m.id);
+    setEditContent(m.content);
+  }, []);
+  const cancelEdit = useCallback(() => { setEditId(null); setEditContent(""); }, []);
+  const saveEdit = useCallback(async (id: string) => {
+    const content = editContent.trim();
+    if (!content) return;
+    // Optimistic: the row is already on screen, so swapping the text locally
+    // keeps the list from flickering through a refetch.
+    setRows(prev => prev?.map(r => (r.id === id ? { ...r, content } : r)) ?? null);
+    setEditId(null); setEditContent("");
+    try { await updateUserMemory(id, { content }); } catch { refresh(); }
+  }, [editContent, refresh]);
 
   const count = rows?.length ?? 0;
 
@@ -854,8 +933,39 @@ function FleetMemoryCard() {
                       </span>
                     )}
                   </div>
-                  <div style={{ fontSize: 11, color: "var(--c-low)", lineHeight: 1.45 }}>{m.content}</div>
+                  {editId === m.id ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 3 }}>
+                      <input
+                        value={editContent}
+                        onChange={e => setEditContent(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === "Enter") void saveEdit(m.id);
+                          else if (e.key === "Escape") cancelEdit();
+                        }}
+                        autoFocus
+                        aria-label="Memory detail"
+                        style={{ padding: "5px 8px", fontSize: 11, borderRadius: 6, border: "1px solid var(--c-brd)", background: "rgba(255,255,255,0.04)", color: "var(--c-high)", outline: "none", fontFamily: "inherit" }}
+                      />
+                      <div style={{ display: "flex", gap: 5 }}>
+                        <button onClick={() => void saveEdit(m.id)} style={{ padding: "3px 9px", fontSize: 10.5, fontWeight: 600, borderRadius: 5, border: "none", background: C_BLUE, color: "#0a0a0a", cursor: "pointer" }}>Save</button>
+                        <button onClick={cancelEdit} style={{ padding: "3px 9px", fontSize: 10.5, borderRadius: 5, border: "1px solid var(--c-brd)", background: "transparent", color: "var(--c-low)", cursor: "pointer" }}>Cancel</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 11, color: "var(--c-low)", lineHeight: 1.45 }}>{m.content}</div>
+                  )}
                 </div>
+                {editId !== m.id && (
+                  <button
+                    onClick={() => beginEdit(m)}
+                    title="Correct this"
+                    style={{ flexShrink: 0, background: "transparent", border: "none", cursor: "pointer", color: "var(--c-ghost)", padding: 2, display: "inline-flex" }}
+                    onMouseEnter={e => (e.currentTarget.style.color = C_BLUE)}
+                    onMouseLeave={e => (e.currentTarget.style.color = "var(--c-ghost)")}
+                  >
+                    <Pencil size={11} />
+                  </button>
+                )}
                 <button
                   onClick={() => remove(m.id)}
                   title="Forget this"
@@ -1095,7 +1205,9 @@ export function FleetPanel({ sessions, onSelectAgent }: Props) {
     return map;
   }, [decisions]);
 
-  const activeCount = agents.filter(s => s.status === "running" || s.status === "starting").length;
+  // countActive / countIdle are complements by construction — see fleet-stats.ts.
+  const activeCount = countActive(agents);
+  const idleCount   = countIdle(agents);
   const idleSessions = useMemo(() => agents.filter(s => {
     const last = s.last_accessed ?? s.created_at;
     if (!last) return false;
@@ -1332,6 +1444,7 @@ export function FleetPanel({ sessions, onSelectAgent }: Props) {
             <WatchingStrip
               agentCount={agents.length}
               activeCount={activeCount}
+              idleCount={idleCount}
               pendingCount={pendingCount}
               spend={spend}
               totalTokens={totalTokens}
@@ -1359,7 +1472,7 @@ export function FleetPanel({ sessions, onSelectAgent }: Props) {
 
             <SectionLabel count={agents.length}>Sessions</SectionLabel>
             {sortedAgents.map((s) => (
-              <SessionRow key={s.id} session={s} detail={details[s.id]} onOpen={setDetailId} />
+              <SessionRow key={s.id} session={s} detail={details[s.id]} onOpen={setDetailId} onOpenChat={jumpTo} />
             ))}
 
             {activity.length > 0 && (
