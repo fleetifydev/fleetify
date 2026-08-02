@@ -19,6 +19,7 @@ import { resolveStartupDefault, hermesHealModel, HERMES_DEFAULT_SENTINEL, contex
 import { providers } from "@/lib/providers-api";
 import { useDiscoveredModelsStore } from "@/stores/discovered-models-store";
 import { resolveSessionModel, sendBlockMessage } from "@/lib/model-resolution";
+import { isSessionEstablished, markSessionEstablished } from "@/lib/session-established";
 import { FleetDecisionCard } from "./fleet-decision-card";
 import { PlanPreviewCard } from "@/components/dashboard/fleet-panel/plan-preview-card";
 import { BatchProgressCard } from "@/components/dashboard/fleet-panel/batch-progress-card";
@@ -61,6 +62,34 @@ const MESSAGE_WINDOW_STEP = 80;
  *  collapsed to zero height and has nothing to show. A fresh `[]` per render
  *  would defeat MessageList's memo. */
 const NO_MESSAGES: ChatMessage[] = [];
+
+/** Keep the model chip honest: show an id the catalog still serves.
+ *
+ *  `resolveModelChip` only picks a LABEL, and it falls back to the embedded
+ *  `CLI_MODEL_LABELS` map — so a model the catalog retired keeps rendering with
+ *  a friendly name as if nothing happened. Selection validity is a different
+ *  question, and the model system already has one gate for it
+ *  (`resolveSessionModel`, used by startup, the composer and send). Routing the
+ *  displayed id through the same gate makes the chip self-correcting on render:
+ *  no event, no counter, no ordering to get wrong, and it covers every writer
+ *  of that id (Settings' Fleet default, onboarding, a live catalog change).
+ *
+ *  Two deliberate pass-throughs: a null id stays null (the chip renders the
+ *  session's own provider with a "Default" label — substituting a concrete
+ *  model there is the bug that put a Codex face on a Gemini session), and an
+ *  undiscovered provider is left alone, because "we could not reach the
+ *  catalog" must never look like "your model is gone". */
+export function resolveChipModel(
+  tool: string,
+  model: string | null | undefined,
+  discovered: Record<string, { id: string; default?: boolean; active?: boolean }[]>,
+): string | null {
+  if (!model || tool === "auto") return model ?? null;
+  const available = discovered[tool];
+  if (!available || available.length === 0) return model;
+  const r = resolveSessionModel(model, available);
+  return r.status === "healed" ? r.model : model;
+}
 
 const MessageList = memo(function MessageList({
   messages,
@@ -308,13 +337,6 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   // is created on the user's first send (well after this resolves), so the
   // seed below always sees it.
   const [persistedDefaultModel, setPersistedDefaultModel] = useState<string | null>(null);
-  // Re-read after a catalog change has been absorbed. This value is the Fleet
-  // hub's model when the staff session has no model_name of its own, and it was
-  // loaded once on mount — so when the catalog retired that model,
-  // `reconcileFleetDefault` healed it on disk while the hub kept rendering the
-  // retired id until a remount. `healRevision` (not `catalogCommit`) is the
-  // right signal: the commit is recorded at probe time, before the heal runs.
-  const healRevision = useDiscoveredModelsStore((s) => s.healRevision);
   useEffect(() => {
     let cancelled = false;
     void window.electronAPI?.getConfig?.().then((cfg) => {
@@ -327,12 +349,15 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     return () => {
       cancelled = true;
     };
-  }, [healRevision]);
+  }, []);
   const startupDefault = useMemo(() => {
     const { tool, model } = resolveStartupDefault(providerTiles, persistedDefaultModel);
     return { tool: tool as import("@/types/session").AgentTool, model };
   }, [providerTiles, persistedDefaultModel]);
   const isLocalOnlyActive = activeSession?.local_only === true;
+  // Live lineups, so the chip can check its id against what the catalog
+  // actually serves right now (see resolveChipModel).
+  const discoveredModels = useDiscoveredModelsStore((s) => s.models);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   // Per-session scroll position memory — saved from actual DOM scrollTop.
@@ -997,6 +1022,12 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
       return;
     }
     if (!effectiveSessionId) return;
+    // Emptying the chat must NOT hand the session back to the setup phase.
+    // Without this latch the wiped message list read as "brand new": the
+    // folder/worktree setup row returned on a session that was long past it,
+    // the branch strip disappeared, and the auto-intro re-fired — starting the
+    // agent on a prompt nobody typed the next time the session was opened.
+    markSessionEstablished(effectiveSessionId);
     try {
       await clearSessionMessages(effectiveSessionId);
     } catch { /* best effort */ }
@@ -1472,6 +1503,17 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     && !m.id.startsWith("attempt-")
     && !m.id.startsWith("error-")
   );
+  // "Past the setup phase" — the question the toolbar / branch strip / auto-intro
+  // actually want answered. It CANNOT be `hasRealMessage` alone: that reads a
+  // wipeable client-side array, so Clear chat made an established session look
+  // brand new and all three misfired together (setup row back on a session with
+  // a worktree, branch strip gone, and the auto-intro re-armed so returning to
+  // the session ran the agent on a prompt nobody typed). The latch is durable
+  // and one-way; see session-established.ts.
+  const established = hasRealMessage || isSessionEstablished(activeSessionId);
+  useEffect(() => {
+    if (hasRealMessage) markSessionEstablished(activeSessionId);
+  }, [hasRealMessage, activeSessionId]);
 
   // ── Auto-intro on folder pick ──
   // The moment a draft session gets its project_path filled in (via
@@ -1498,7 +1540,10 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     if (!loadedSessionsRef.current.has(activeSessionId)) return;
     if (hasUserMessageEarly) return;
     if (isStreaming) return;
+    // Durable latch too: the ref only lives as long as this mount, so leaving
+    // the session and coming back used to re-arm the intro.
     if (autoIntroFiredRef.current.has(activeSessionId)) return;
+    if (isSessionEstablished(activeSessionId)) return;
     // Local-only skip — the session isn't in the DB yet (no real
     // id, no claude_session_id, no bridge to talk to). The local
     // welcome-typewriter effect below handles this case with a
@@ -1506,6 +1551,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     if (isLocalOnlyActive) return;
 
     autoIntroFiredRef.current.add(activeSessionId);
+    markSessionEstablished(activeSessionId);
     // Tight, structured prompt. Asks the agent for a 2–4 word
     // project name on the first line (we parse it for the session
     // title) and a single-sentence summary right after. NO deep
@@ -2013,6 +2059,14 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   // write lost the race. The first real message / stream flips this off and
   // the normal scroll+dock layout takes over.
   const landing = isLandingLayout({ isControlCenter, isComposing, isStreaming, messages });
+  // Provider the chip/picker is bound to — the composer's pick while composing,
+  // the Staff row in the hub, the active session elsewhere. Hoisted because the
+  // displayed model is validated against THIS provider's lineup.
+  const chipTool = !effectiveSessionId
+    ? (composer.tool ?? startupDefault.tool)
+    : isControlCenter
+      ? (staffSession?.tool ?? startupDefault.tool)
+      : (activeSession?.tool ?? startupDefault.tool);
   // Draft sessions ("New chat" placeholder title — created by the
   // sidebar's New session button before any folder/message is set)
   // are hidden from the sidebar list. They shouldn't show up in the
@@ -2481,7 +2535,8 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
           // feedback — the pick still applied on commit, but the rail + chip
           // never updated, so it read as "can't select a model". Outside
           // compose: the Staff row in the hub, the active session elsewhere.
-          model={
+          model={resolveChipModel(
+            chipTool,
             !effectiveSessionId
               ? (composer.modelName ?? startupDefault.model)
               : isControlCenter
@@ -2492,15 +2547,10 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                 // resolver matches by model id first — so it rendered a
                 // CODEX face on a GEMINI session. Null renders the session's
                 // own provider with a "Default" label instead.
-                : (activeSession?.model_name ?? null)
-          }
-          tool={
-            !effectiveSessionId
-              ? (composer.tool ?? startupDefault.tool)
-              : isControlCenter
-                ? (staffSession?.tool ?? startupDefault.tool)
-                : (activeSession?.tool ?? startupDefault.tool)
-          }
+                : (activeSession?.model_name ?? null),
+            discoveredModels,
+          )}
+          tool={chipTool}
           // Real context-fill + cumulative session stats — both
           // derived from the in-store messages array. The arc
           // shows the LATEST assistant turn's input fill (so the
@@ -2600,7 +2650,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
           // dimmed BranchStrip floating above an empty chat reads as
           // noise. Same gate as before: hide while we have no real
           // message yet AND the agent isn't streaming.
-          hideBranchStrip={!isControlCenter && !!activeSession && !hasRealMessage && !isStreaming}
+          hideBranchStrip={!isControlCenter && !!activeSession && !established && !isStreaming}
           sessionTitle={isControlCenter ? undefined : (activeSession?.title ?? null)}
           // `effectiveSessionId` is the session the chat-input is
           // actually bound to: the real session in session mode, the
@@ -2797,7 +2847,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                   takes over with the full base ← branch / diff / PR
                   view. */}
               {!isControlCenter && activeSession
-                && !hasRealMessage && !isStreaming && (
+                && !established && !isStreaming && (
                 <SessionToolbar
                   // In compose mode `effectiveSessionId` is null —
                   // pass the synthetic id so the toolbar's internal
