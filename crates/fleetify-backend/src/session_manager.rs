@@ -174,7 +174,15 @@ impl SessionManager {
     ///     when the user actually opens a PR. Avoids littering the
     ///     folder with a half-empty repo for sessions that never
     ///     produce a PR.
-    pub(crate) async fn attach_git_setup(&self, pool: &SqlitePool, session: &Session) {
+    /// `checkout_branch`: Git-mode branch pick — worktree-on sessions check
+    /// out this branch in the carved worktree instead of an auto `fleet/…`
+    /// one (create-time only; the PATCH-upgrade path passes `None`).
+    pub(crate) async fn attach_git_setup(
+        &self,
+        pool: &SqlitePool,
+        session: &Session,
+        checkout_branch: Option<&str>,
+    ) {
         let is_staff = session.title.trim().eq_ignore_ascii_case("staff agent");
         if session.project_path.is_empty() || is_staff {
             return;
@@ -217,8 +225,14 @@ impl SessionManager {
         }
         // Worktree ON: eager init + carve so multi-session work in the same
         // folder is parallel from the first send. The user explicitly opted in.
-        match worktree::ensure_worktree(&session.project_path, &session.id, Some(&label), None)
-            .await
+        match worktree::ensure_worktree(
+            &session.project_path,
+            &session.id,
+            Some(&label),
+            None,
+            checkout_branch,
+        )
+        .await
         {
             Ok((path, branch)) => {
                 let _ = sqlx::query(
@@ -309,7 +323,8 @@ impl SessionManager {
                 .fetch_one(pool)
                 .await?;
 
-        self.attach_git_setup(pool, &session).await;
+        self.attach_git_setup(pool, &session, data.base_branch.as_deref())
+            .await;
         // Persist any worktree fields attach_git_setup set (none in Phase 1c).
         session = sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = ?")
             .bind(&id)

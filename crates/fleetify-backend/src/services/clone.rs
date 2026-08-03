@@ -294,9 +294,122 @@ pub async fn check_accessible(url: &str) -> Result<(), CloneError> {
     }
 }
 
+/// Remote branch inventory for a URL — read via `ls-remote` so the composer
+/// can offer real branches BEFORE the deferred clone runs.
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct RemoteBranches {
+    /// The remote's HEAD target (its default branch), when advertised.
+    pub default_branch: Option<String>,
+    /// All `refs/heads/*` names, remote order preserved.
+    pub branches: Vec<String>,
+}
+
+/// Parse `git ls-remote --symref <url> HEAD refs/heads/*` output.
+/// Lines look like:
+///   `ref: refs/heads/main\tHEAD`      (the symref → default branch)
+///   `<sha>\tHEAD`
+///   `<sha>\trefs/heads/main`
+fn parse_ls_remote(out: &str) -> RemoteBranches {
+    let mut default_branch = None;
+    let mut branches = Vec::new();
+    for line in out.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("ref: ") {
+            if let Some(target) = rest.split_whitespace().next() {
+                if let Some(name) = target.strip_prefix("refs/heads/") {
+                    default_branch = Some(name.to_string());
+                }
+            }
+            continue;
+        }
+        if let Some(refname) = line.split_whitespace().nth(1) {
+            if let Some(name) = refname.strip_prefix("refs/heads/") {
+                if !branches.iter().any(|b| b == name) {
+                    branches.push(name.to_string());
+                }
+            }
+        }
+    }
+    RemoteBranches {
+        default_branch,
+        branches,
+    }
+}
+
+/// List a remote's branches + default without cloning. Same auth path as the
+/// clone itself (GitHub token injection for private repos, credential helper
+/// disabled so a missing credential fails fast instead of prompting).
+pub async fn list_remote_branches(url: &str) -> Result<RemoteBranches, CloneError> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err(CloneError::Failed("Empty URL".into()));
+    }
+    let auth_url = inject_github_token(url);
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.args([
+        "-c",
+        "credential.helper=",
+        "ls-remote",
+        "--symref",
+        &auth_url,
+        "HEAD",
+        "refs/heads/*",
+    ]);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let output = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await;
+    match output {
+        Err(_) => Err(CloneError::Failed("git ls-remote timed out".into())),
+        Ok(Err(e)) => Err(CloneError::Failed(format!("git launch failed: {e}"))),
+        Ok(Ok(o)) => {
+            if o.status.success() {
+                Ok(parse_ls_remote(&String::from_utf8_lossy(&o.stdout)))
+            } else {
+                let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                Err(CloneError::Failed(redact_token(&if err.is_empty() {
+                    format!("git ls-remote exited {}", o.status.code().unwrap_or(-1))
+                } else {
+                    err
+                })))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_ls_remote_extracts_default_and_heads() {
+        let out = "ref: refs/heads/main\tHEAD\n\
+                   aaaa\tHEAD\n\
+                   aaaa\trefs/heads/main\n\
+                   bbbb\trefs/heads/develop\n\
+                   cccc\trefs/heads/feature/x\n";
+        let parsed = parse_ls_remote(out);
+        assert_eq!(parsed.default_branch.as_deref(), Some("main"));
+        assert_eq!(parsed.branches, vec!["main", "develop", "feature/x"]);
+    }
+
+    #[test]
+    fn parse_ls_remote_tolerates_missing_symref_and_dupes() {
+        let out = "aaaa\trefs/heads/main\naaaa\trefs/heads/main\nbbbb\tHEAD\n";
+        let parsed = parse_ls_remote(out);
+        assert_eq!(parsed.default_branch, None);
+        assert_eq!(parsed.branches, vec!["main"]);
+        assert_eq!(
+            parse_ls_remote(""),
+            RemoteBranches {
+                default_branch: None,
+                branches: vec![]
+            }
+        );
+    }
 
     #[test]
     fn repo_name_from_url_handles_https_ssh_and_no_dotgit() {

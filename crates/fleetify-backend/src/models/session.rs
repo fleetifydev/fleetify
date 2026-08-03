@@ -84,6 +84,12 @@ pub struct SessionCreate {
     /// effort. NULL ⇒ the composer falls back to its default.
     #[serde(default)]
     pub effort: Option<String>,
+    /// Git-mode branch pick: when `use_worktree` is on, the carved worktree
+    /// checks out THIS branch (instead of an auto `fleet/…` one). Not
+    /// persisted — consumed once by `attach_git_setup` at create time.
+    /// Worktree-off sessions never need it (the composer clones `--branch`).
+    #[serde(default)]
+    pub base_branch: Option<String>,
 }
 
 /// PATCH /api/sessions/{id} body. All optional (partial update).

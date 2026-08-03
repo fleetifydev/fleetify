@@ -141,6 +141,12 @@ export interface ComposerState {
    *  branch, …) without paying the clone cost up front — the actual
    *  `git clone` runs at the moment they fire their first message. */
   pendingCloneUrl: string | null;
+  /** Branch picked for the pending clone (ls-remote fed, chosen in the
+   *  toolbar's branch chip while still in Git draft mode). Worktree OFF →
+   *  the clone checks it out (`--branch`); worktree ON → the carved
+   *  worktree checks it out (`base_branch` on createSession). Null →
+   *  remote default. Cleared together with pendingCloneUrl. */
+  pendingCloneBranch: string | null;
 }
 
 /** @deprecated kept only so external imports (tests, callers that
@@ -447,6 +453,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     title: "New chat",
     claudeSessionId: null,
     pendingCloneUrl: null,
+    pendingCloneBranch: null,
   },
 
   setSessions: (sessions) => set({ sessions }),
@@ -968,6 +975,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         title: "New chat",
         claudeSessionId: null,
         pendingCloneUrl: null,
+        pendingCloneBranch: null,
       },
       activeSessionId: null,   // chat-view + composer.open == compose surface
       mainView: "fleet",
@@ -1028,11 +1036,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       // the user can pick a different repo / fix the URL — the
       // composer stays open and the chat input shows the thrown error.
       let resolvedProjectPath = c.projectPath;
+      // Branch pick semantics (Git mode): worktree OFF → the clone itself
+      // checks out the picked branch; worktree ON → clone the remote
+      // default ("main") and let the carved worktree check the pick out
+      // (base_branch below). Null pick → remote default either way.
+      const clonePickedBranch = c.pendingCloneBranch?.trim() || null;
       if (c.pendingCloneUrl) {
-        const cloneResult = await cloneRepository(c.pendingCloneUrl);
+        const cloneResult = await cloneRepository(
+          c.pendingCloneUrl,
+          !c.useWorktree && clonePickedBranch ? clonePickedBranch : undefined,
+        );
         resolvedProjectPath = cloneResult.path;
         set((s) => ({
-          composer: { ...s.composer, projectPath: cloneResult.path, pendingCloneUrl: null },
+          composer: { ...s.composer, projectPath: cloneResult.path, pendingCloneUrl: null, pendingCloneBranch: null },
         }));
       }
       // Coerce the "New chat" placeholder back to the folder basename
@@ -1049,6 +1065,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         model_name: c.modelName ?? undefined,
         claude_session_id: c.claudeSessionId ?? undefined,
         use_worktree: c.useWorktree,
+        base_branch: c.useWorktree && clonePickedBranch ? clonePickedBranch : undefined,
       });
       // SessionCreate doesn't carry sandbox / tool_overrides / effort — PATCH
       // them onto the freshly-created row right away so a draft's
@@ -1134,7 +1151,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (patch.use_worktree !== undefined) c.useWorktree = patch.use_worktree;
     if (patch.title !== undefined) c.title = patch.title;
     if (patch.claude_session_id !== undefined) c.claudeSessionId = patch.claude_session_id ?? null;
-    if (patch.pending_clone_url !== undefined) c.pendingCloneUrl = patch.pending_clone_url ?? null;
+    if (patch.pending_clone_url !== undefined) {
+      c.pendingCloneUrl = patch.pending_clone_url ?? null;
+      // A different repo invalidates the old branch pick.
+      c.pendingCloneBranch = null;
+    }
+    if (patch.pending_clone_branch !== undefined) c.pendingCloneBranch = patch.pending_clone_branch ?? null;
     get().setComposerField(c);
   },
   commitDraft: async () => get().commitComposer(),

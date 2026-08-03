@@ -363,6 +363,7 @@ pub async fn reconcile_once(
             account_id: None,
             origin: Some("claude-bg".to_string()),
             effort: None,
+            base_branch: None,
         };
 
         match sm.create_session(pool, cfg, &data, None).await {

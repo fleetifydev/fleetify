@@ -84,6 +84,10 @@ export interface Session {
    *  shipped over the wire. Co-exists with `project_path`: the chip
    *  prefers this URL while the clone is deferred. */
   pending_clone_url?: string | null;
+  /** Renderer-only: branch picked for the pending clone (ls-remote fed).
+   *  Consumed by `commitComposer` (clone `--branch` when worktree is off,
+   *  `base_branch` on createSession when it's on); never persisted. */
+  pending_clone_branch?: string | null;
 }
 
 export interface Group {

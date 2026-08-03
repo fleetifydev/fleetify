@@ -419,6 +419,9 @@ export async function createSession(data: {
   /** Reasoning effort the session starts at (low … max … ultra_code).
    *  Defaulted from the user's last-used session so they don't re-pick. */
   effort?: string;
+  /** Git-mode branch pick: with `use_worktree` on, the carved worktree
+   *  checks out THIS branch instead of an auto fleet/… one. */
+  base_branch?: string;
 }) {
   const res = await apiFetch(`${API_BASE}/sessions`, {
     method: "POST",
@@ -859,6 +862,24 @@ export async function cloneRepository(
  *  git's stderr when the remote is unreachable / unauthorised / wrong
  *  URL. Auth flows through the system credential helper exactly like
  *  `cloneRepository`. */
+/** List a remote's branches + default branch WITHOUT cloning (backend
+ *  `git ls-remote`, same GitHub-token auth as the clone). Feeds the
+ *  composer's branch chip while the clone is still deferred. */
+export async function listRemoteBranches(
+  url: string,
+): Promise<{ default_branch: string | null; branches: string[] }> {
+  const res = await apiFetch(`${API_BASE}/git/branches`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(detail || `Branch list failed: ${res.statusText}`);
+  }
+  return res.json();
+}
+
 export async function checkRepoAccessible(url: string): Promise<{ ok: true }> {
   const res = await apiFetch(`${API_BASE}/git/check`, {
     method: "POST",

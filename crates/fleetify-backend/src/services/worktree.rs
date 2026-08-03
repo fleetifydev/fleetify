@@ -548,11 +548,17 @@ pub async fn carve_next_round_worktree(
     }
 }
 
+/// `checkout`: Git-mode branch pick. `Some(B)` → the worktree checks out B
+/// itself (a local tracking branch is materialised from `origin/B` when the
+/// pick is remote-only). When git refuses because B is already checked out in
+/// the main clone (double-checkout), fall back to carving the auto `fleet/…`
+/// branch BASED on B — same shape the no-pick path produces.
 pub async fn ensure_worktree(
     project_path: &str,
     session_id: &str,
     label: Option<&str>,
     base_branch: Option<&str>,
+    checkout: Option<&str>,
 ) -> Result<(String, String), WorktreeError> {
     ensure_git_repo(project_path).await;
     if !is_git_repo(project_path).await {
@@ -604,13 +610,42 @@ pub async fn ensure_worktree(
         let _ = std::fs::create_dir_all(p);
     }
 
+    let wt_str = wt_dir.to_string_lossy().to_string();
+    let cwd = repo_root.to_string_lossy().to_string();
+
+    // Git-mode direct checkout (see doc comment).
+    if let Some(b) = checkout.map(str::trim).filter(|b| !b.is_empty()) {
+        let (rc_show, _, _) =
+            git(&["show-ref", "--verify", &format!("refs/heads/{b}")], &cwd).await;
+        if rc_show != 0 {
+            // Remote-only pick — materialise the local tracking branch.
+            let _ = git(&["branch", "--track", b, &format!("origin/{b}")], &cwd).await;
+        }
+        let (rc_add, _, err_add) = git(&["worktree", "add", &wt_str, b], &cwd).await;
+        if rc_add == 0 {
+            return Ok((wt_str, b.to_string()));
+        }
+        let lerr = err_add.to_lowercase();
+        if !(lerr.contains("already checked out") || lerr.contains("already used")) {
+            return Err(WorktreeError(format!("git worktree add failed: {err_add}")));
+        }
+        tracing::info!(
+            branch = b,
+            fallback = %branch,
+            "worktree.checkout_branch busy — carving fleet branch based on it"
+        );
+        let (rc_fb, _, err_fb) = git(&["worktree", "add", "-b", &branch, &wt_str, b], &cwd).await;
+        if rc_fb != 0 {
+            return Err(WorktreeError(format!("git worktree add failed: {err_fb}")));
+        }
+        return Ok((wt_str, branch));
+    }
+
     let base = match base_branch {
         Some(b) => b.to_string(),
         None => resolve_base(project_path).await?,
     };
 
-    let wt_str = wt_dir.to_string_lossy().to_string();
-    let cwd = repo_root.to_string_lossy().to_string();
     let (rc, _, err) = git(&["worktree", "add", "-b", &branch, &wt_str, &base], &cwd).await;
     if rc != 0 {
         let lerr = err.to_lowercase();
@@ -771,7 +806,7 @@ mod tests {
         clean_repo(&p).await;
         let sid = "abcdef1234567890";
         // round 1
-        let (wt1, b1) = ensure_worktree(&p, sid, Some("auth"), None)
+        let (wt1, b1) = ensure_worktree(&p, sid, Some("auth"), None, None)
             .await
             .expect("r1");
         assert!(std::path::Path::new(&wt1).is_dir());
@@ -786,6 +821,35 @@ mod tests {
         assert!(wt2.ends_with(&format!("{sid}-r2")), "got {wt2}");
         assert!(std::path::Path::new(&wt2).is_dir());
         assert_ne!(wt1, wt2, "round 2 must be a NEW directory");
+    }
+
+    #[tokio::test]
+    async fn worktree_checks_out_the_picked_branch_and_falls_back_on_collision() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().to_string_lossy().to_string();
+        clean_repo(&p).await;
+        let _ = git(&["branch", "feature-x"], &p).await;
+        // Picked branch is free → the worktree opens ON it (Git-mode pick).
+        let (wt, b) = ensure_worktree(
+            &p,
+            "1111222233334444",
+            Some("auth"),
+            None,
+            Some("feature-x"),
+        )
+        .await
+        .expect("picked branch carve");
+        assert_eq!(b, "feature-x");
+        assert!(std::path::Path::new(&wt).is_dir());
+        // Picked branch is checked out in the main clone (main) — git refuses
+        // a double checkout, so we fall back to a fleet/… branch BASED on it.
+        let (_wt2, b2) = ensure_worktree(&p, "5555666677778888", Some("auth"), None, Some("main"))
+            .await
+            .expect("collision fallback");
+        assert_eq!(b2, "fleet/auth-55556666");
     }
 
     #[tokio::test]

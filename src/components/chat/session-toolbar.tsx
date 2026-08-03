@@ -30,7 +30,7 @@ import {
   GitBranch, Search as SearchIcon,
   Github, Server, Box,
 } from "lucide-react";
-import { updateSession as apiUpdateSession, cloneRepository, fetchClaudeSessions, fetchClaudeHistory, type ClaudeSession } from "@/lib/api";
+import { updateSession as apiUpdateSession, cloneRepository, fetchClaudeSessions, fetchClaudeHistory, listRemoteBranches, type ClaudeSession } from "@/lib/api";
 import { registerConfigPatch } from "@/lib/session-config-sync";
 import { extractOwnerRepo } from "@/lib/git-url";
 import { GitSourceTab } from "./git-source-tab";
@@ -90,6 +90,7 @@ export function SessionToolbar({
   const session = useAppStore(s => s.sessions.find(x => x.id === sessionId));
   const composerOpen = useAppStore(s => s.composer.open);
   const pendingCloneUrl = useAppStore(s => s.composer.pendingCloneUrl);
+  const pendingCloneBranch = useAppStore(s => s.composer.pendingCloneBranch);
   const isDraft = composerOpen || session?.local_only === true;
   const [openMenu, setOpenMenu] = useState<MenuId>(null);
 
@@ -122,6 +123,30 @@ export function SessionToolbar({
       }
     }
   }, [gitPresent, useWorktree, isDraft, setDraftField]);
+
+  // ── Git-draft branch data (pre-clone) ──
+  // While the clone is deferred (Git tab, pendingCloneUrl set) the branch
+  // chip lists the REMOTE's branches via the backend's ls-remote endpoint —
+  // no disk writes, no clone. Selection is a draft-field write; the pick is
+  // honoured at commit (clone --branch, or the worktree's checkout).
+  const [remoteInfo, setRemoteInfo] = useState<{ url: string; def: string | null; branches: string[] } | null>(null);
+  const [remoteLoading, setRemoteLoading] = useState(false);
+  const [remoteError, setRemoteError] = useState<string | null>(null);
+  // No reset-on-url-change effect: staleness is handled by KEYING the data
+  // to its url — consumers ignore an entry whose url no longer matches, and
+  // the menu-open handler refetches on mismatch.
+  const loadRemoteBranches = useCallback(async (url: string) => {
+    setRemoteLoading(true);
+    setRemoteError(null);
+    try {
+      const r = await listRemoteBranches(url);
+      setRemoteInfo({ url, def: r.default_branch, branches: r.branches });
+    } catch (e) {
+      setRemoteError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRemoteLoading(false);
+    }
+  }, []);
 
   // ── Git branch chip data ──
   // Reads the picked folder's local + remote branches via the
@@ -614,22 +639,33 @@ export function SessionToolbar({
         // `branchDisabled` flags so the rest of the chip's visuals
         // (opacity, cursor, etc.) just work.
         const gitMissing = gitPresent === false;
-        const disabled = !projectPath || gitMissing;
-        const noRepo = !disabled && !branchesLoading && branches.current === null && branches.local.length === 0;
+        // Git draft mode: repo picked, clone deferred — both segments work
+        // off the REMOTE (ls-remote list; worktree is just a flag until
+        // commit), so a local path is not required.
+        const inGitDraft = isDraft && !!pendingCloneUrl && !projectPath;
+        // Ignore a fetched list that belongs to a previously-picked repo.
+        const liveRemote = remoteInfo && remoteInfo.url === pendingCloneUrl ? remoteInfo : null;
+        const disabled = gitMissing || (!projectPath && !inGitDraft);
+        const noRepo = !inGitDraft && !disabled && !branchesLoading && branches.current === null && branches.local.length === 0;
         const branchDisabled = disabled || noRepo;
-        const current = branches.current ?? "—";
+        const pickedRemote = inGitDraft ? (pendingCloneBranch ?? liveRemote?.def ?? null) : null;
+        const current = inGitDraft ? (pickedRemote ?? "default") : (branches.current ?? "—");
         const filter = branchFilter.trim().toLowerCase();
         const matchedLocal  = branches.local.filter(b => !filter || b.toLowerCase().includes(filter));
         const matchedRemote = branches.remote.filter(b => !filter || b.toLowerCase().includes(filter));
+        const matchedRemoteOnly = (liveRemote?.branches ?? []).filter(b => !filter || b.toLowerCase().includes(filter));
         const branchTitle =
           gitMissing ? "Git not detected — install Git to use branches"
+          : inGitDraft ? (pendingCloneBranch
+            ? `Cloning '${pendingCloneBranch}'. Click to change.`
+            : "Repo's default branch. Click to pick another.")
           : disabled  ? "Pick a folder first to see branches"
           : noRepo  ? "Git unavailable in this folder"
           : branchSwitching ? "Switching branch…"
           : `On '${current}'. Click to switch.`;
         const wtTitle =
           gitMissing ? "Git not detected — worktrees require Git"
-          : disabled  ? "Pick a folder first"
+          : disabled  ? "Pick a folder or repo first"
           : useWorktree
             ? "Working in an isolated worktree — parallel-safe. Click to disable."
             : "Working directly in the project — no worktree. Click to enable.";
@@ -668,7 +704,13 @@ export function SessionToolbar({
                 setOpenMenu(isOpen ? null : "git");
                 if (!isOpen) {
                   setBranchFilter("");
-                  reloadBranches();
+                  if (inGitDraft) {
+                    if (!remoteInfo || remoteInfo.url !== pendingCloneUrl) {
+                      void loadRemoteBranches(pendingCloneUrl!);
+                    }
+                  } else {
+                    reloadBranches();
+                  }
                 }
               }}
               onMouseDown={e => e.preventDefault()}
@@ -770,11 +812,43 @@ export function SessionToolbar({
                       fontFamily: "inherit",
                     }}
                   />
-                  {branchesLoading && (
+                  {(branchesLoading || remoteLoading) && (
                     <span style={{ fontSize: 10.5, color: "var(--c-dim, #8a8a8a)" }}>Loading…</span>
                   )}
                 </div>
-                {matchedLocal.length > 0 && (
+                {/* ── Git draft: the REMOTE's branches (pre-clone pick) ── */}
+                {inGitDraft && (
+                  <>
+                    {remoteError && (
+                      <div style={{ padding: "8px 12px", fontSize: 11.5, color: "rgb(248,113,113)" }}>
+                        {remoteError}
+                      </div>
+                    )}
+                    {matchedRemoteOnly.map(b => (
+                      <MenuRow
+                        key={`clone-${b}`}
+                        onClick={() => {
+                          // A draft-field write only — the pick is honoured at
+                          // commit (clone --branch, or the worktree checkout).
+                          setDraftField({ pending_clone_branch: b });
+                          setOpenMenu(null);
+                        }}
+                        primary={b}
+                        right={b === (pendingCloneBranch ?? liveRemote?.def)
+                          ? <Check size={11} style={{ color: "var(--c-fg, #ffffff)" }} />
+                          : b === liveRemote?.def
+                            ? <span style={{ fontSize: 10, color: "var(--c-dim, #8a8a8a)" }}>default</span>
+                            : undefined}
+                      />
+                    ))}
+                    {!remoteLoading && !remoteError && matchedRemoteOnly.length === 0 && (
+                      <div style={{ padding: "10px 12px 14px", fontSize: 12, color: "var(--c-low, #b0b0b0)" }}>
+                        {liveRemote ? `No branches match "${branchFilter}".` : "Loading branches…"}
+                      </div>
+                    )}
+                  </>
+                )}
+                {!inGitDraft && matchedLocal.length > 0 && (
                   <>
                     <div style={{
                       padding: "6px 10px 2px", fontSize: 10.5, fontWeight: 500,
@@ -810,7 +884,7 @@ export function SessionToolbar({
                     ))}
                   </>
                 )}
-                {matchedRemote.length > 0 && (
+                {!inGitDraft && matchedRemote.length > 0 && (
                   <>
                     <div style={{
                       padding: "8px 10px 2px", fontSize: 10.5, fontWeight: 500,
@@ -842,7 +916,7 @@ export function SessionToolbar({
                     ))}
                   </>
                 )}
-                {!branchesLoading && matchedLocal.length === 0 && matchedRemote.length === 0 && (
+                {!inGitDraft && !branchesLoading && matchedLocal.length === 0 && matchedRemote.length === 0 && (
                   <div style={{
                     padding: "10px 12px 14px",
                     fontSize: 12, color: "var(--c-low, #b0b0b0)",

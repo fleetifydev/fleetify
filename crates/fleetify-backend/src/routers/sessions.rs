@@ -66,6 +66,7 @@ pub fn router() -> Router<AppState> {
         .route("/codex-sessions", get(list_codex_sessions))
         .route("/git/repos", get(list_user_repos))
         .route("/git/clone", post(clone_repository))
+        .route("/git/branches", post(list_remote_branches))
         .route("/git/check", post(check_repo_accessible))
 }
 
@@ -382,7 +383,9 @@ async fn update_session(
             .bind(&id)
             .fetch_one(&st.auth.pool)
             .await?;
-        st.sm.attach_git_setup(&st.auth.pool, &refreshed).await;
+        st.sm
+            .attach_git_setup(&st.auth.pool, &refreshed, None)
+            .await;
     }
     let updated = sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = ?")
         .bind(&id)
@@ -1713,6 +1716,21 @@ async fn clone_repository(
         Ok((path, branch)) => Ok(Json(json!({
             "path": path,
             "branch": branch,
+        }))),
+        Err(crate::services::clone::CloneError::Failed(msg)) => Err(ApiError::BadRequest(msg)),
+    }
+}
+
+/// Remote branch inventory for a URL — lets the composer's branch chip work
+/// in Git mode BEFORE the deferred clone runs (`ls-remote`, no disk writes).
+async fn list_remote_branches(
+    AuthUser(_u): AuthUser,
+    Json(b): Json<CloneBody>,
+) -> Result<Json<Value>, ApiError> {
+    match crate::services::clone::list_remote_branches(&b.url).await {
+        Ok(r) => Ok(Json(json!({
+            "default_branch": r.default_branch,
+            "branches": r.branches,
         }))),
         Err(crate::services::clone::CloneError::Failed(msg)) => Err(ApiError::BadRequest(msg)),
     }
