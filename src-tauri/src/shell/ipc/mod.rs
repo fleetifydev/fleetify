@@ -974,8 +974,14 @@ pub async fn browser_embed_set_bounds(
 ) -> serde_json::Value {
     use tauri::{LogicalPosition, LogicalSize, Manager};
     if let Some(wv) = app.get_webview(BROWSER_EMBED_LABEL) {
-        let _ = wv.set_position(LogicalPosition::new(x, y));
-        let _ = wv.set_size(LogicalSize::new(width.max(1.0), height.max(1.0)));
+        // One set_bounds instead of set_position + set_size: each message is
+        // a full webview relayout on Linux (GTK allocate cascade), and the
+        // renderer pushes bounds from a per-frame loop while the panel
+        // resizes — the pair doubled that cost for no benefit.
+        let _ = wv.set_bounds(tauri::Rect {
+            position: LogicalPosition::new(x, y).into(),
+            size: LogicalSize::new(width.max(1.0), height.max(1.0)).into(),
+        });
     }
     serde_json::json!({ "ok": true })
 }

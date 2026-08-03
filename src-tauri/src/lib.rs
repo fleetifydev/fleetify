@@ -258,6 +258,30 @@ pub fn run() {
             std::sync::atomic::AtomicBool::new(false),
         )))
         .setup(|app| {
+            // X errors are FATAL in GDK by default: one async BadWindow (e.g.
+            // a GDK XTranslateCoordinates racing a webview teardown, or the
+            // WebKit inspector probing a just-destroyed window) kills the
+            // whole app. Log-and-continue instead — these are races on
+            // already-dead X resources, not corrupt state.
+            #[cfg(target_os = "linux")]
+            {
+                unsafe extern "C" fn fleet_x_error_handler(
+                    _dpy: *mut x11_dl::xlib::Display,
+                    ev: *mut x11_dl::xlib::XErrorEvent,
+                ) -> std::os::raw::c_int {
+                    if !ev.is_null() {
+                        let e = unsafe { &*ev };
+                        eprintln!(
+                            "[X-ERROR] code={} request={} minor={} resource={:#x} (suppressed)",
+                            e.error_code, e.request_code, e.minor_code, e.resourceid
+                        );
+                    }
+                    0
+                }
+                if let Ok(xl) = x11_dl::xlib::Xlib::open() {
+                    unsafe { (xl.XSetErrorHandler)(Some(fleet_x_error_handler)) };
+                }
+            }
             // Cold-start stopwatch: wall-clock from setup() entry, logged at
             // the first window reveal so the boot path stops being untimed
             // (measure-first). Cheap — just an Instant.

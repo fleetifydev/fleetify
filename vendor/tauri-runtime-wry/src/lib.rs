@@ -3825,6 +3825,22 @@ fn handle_user_message<T: UserEvent>(
               }
               window
             });
+            // FLEETIFY PATCH v2: destroy the gtk widget explicitly. Dropping
+            // the wrapper only destroys when the LAST clone dies — a clone
+            // held anywhere (event closures, in-flight messages) leaves a
+            // zombie webview painted over the app and its half-dead windows
+            // turn later GDK X calls into fatal BadWindow errors.
+            #[cfg(not(any(
+              target_os = "windows",
+              target_os = "macos",
+              target_os = "ios",
+              target_os = "android"
+            )))]
+            {
+              use gtk::prelude::WidgetExtManual;
+              use wry::WebViewExtUnix;
+              unsafe { webview.webview().destroy() };
+            }
           }
           WebviewMessage::SetBounds(bounds) => {
             let bounds: RectWrapper = bounds.into();
@@ -3844,6 +3860,13 @@ fn handle_user_message<T: UserEvent>(
             if let Err(e) = webview.set_bounds(bounds) {
               log::error!("failed to set webview size: {e}");
             }
+            #[cfg(not(any(
+              target_os = "windows",
+              target_os = "macos",
+              target_os = "ios",
+              target_os = "android"
+            )))]
+            fleet_sync_fixed_child(&window, &webview, bounds);
           }
           WebviewMessage::SetSize(size) => match webview.bounds() {
             Ok(mut bounds) => {
@@ -3861,6 +3884,13 @@ fn handle_user_message<T: UserEvent>(
               if let Err(e) = webview.set_bounds(bounds) {
                 log::error!("failed to set webview size: {e}");
               }
+              #[cfg(not(any(
+                target_os = "windows",
+                target_os = "macos",
+                target_os = "ios",
+                target_os = "android"
+              )))]
+              fleet_sync_fixed_child(&window, &webview, bounds);
             }
             Err(e) => {
               log::error!("failed to get webview bounds: {e}");
@@ -3882,6 +3912,13 @@ fn handle_user_message<T: UserEvent>(
               if let Err(e) = webview.set_bounds(bounds) {
                 log::error!("failed to set webview position: {e}");
               }
+              #[cfg(not(any(
+                target_os = "windows",
+                target_os = "macos",
+                target_os = "ios",
+                target_os = "android"
+              )))]
+              fleet_sync_fixed_child(&window, &webview, bounds);
             }
             Err(e) => {
               log::error!("failed to get webview bounds: {e}");
@@ -4744,6 +4781,97 @@ struct WebviewBounds {
   height_rate: f32,
 }
 
+/// FLEETIFY PATCH v2 (see vendor/tauri-runtime-wry/FLEETIFY_PATCH.md):
+/// Positioned child webviews on Linux live in the window's GTK widget tree —
+/// a GtkOverlay wraps the window's content webview and hosts a GtkFixed layer
+/// where children are absolutely positioned (wry's own GtkFixed support does
+/// put()/size_allocate on set_bounds). The previous approach (build_as_child:
+/// raw X11 child window + foreign GdkWindow pseudo-toplevel) put the webview
+/// outside GDK's pointer/focus tracking: X keyboard focus never reached it
+/// under Wayland/Mutter, gdk_window_set_cursor degraded to an attribute-only
+/// write that XWayland only renders on a real crossing (cursor stuck), and
+/// the foreign construct crashed with BadWindow when the inspector opened.
+/// One real toplevel + GTK-tracked children fixes all three at the root.
+#[cfg(not(any(
+  target_os = "windows",
+  target_os = "macos",
+  target_os = "ios",
+  target_os = "android"
+)))]
+fn fleet_embed_fixed_layer(vbox: &gtk::Box) -> gtk::Fixed {
+  use gtk::prelude::*;
+  const LAYER_NAME: &str = "fleet-embed-fixed";
+  // The window's content webview is built inside a GtkOverlay from creation
+  // (see the WindowChild-no-handle branch) precisely so that adding the
+  // positioned layer later never has to reparent a LIVE WebKitWebView —
+  // reparenting one loses its GL context and freezes the app.
+  let mut overlay: Option<gtk::Overlay> = None;
+  for child in vbox.children() {
+    if let Ok(o) = child.dynamic_cast::<gtk::Overlay>() {
+      overlay = Some(o);
+      break;
+    }
+  }
+  let overlay = overlay.expect(
+    "fleet_embed_fixed_layer: window content was not wrapped in a GtkOverlay at creation",
+  );
+  // Reuse the layer if this window already has one.
+  for oc in overlay.children() {
+    if oc.widget_name() == LAYER_NAME {
+      if let Ok(fixed) = oc.dynamic_cast::<gtk::Fixed>() {
+        return fixed;
+      }
+    }
+  }
+  let fixed = gtk::Fixed::new();
+  fixed.set_widget_name(LAYER_NAME);
+  overlay.add_overlay(&fixed);
+  // The fixed layer spans the whole overlay; without pass-through it would
+  // swallow input meant for the content webview underneath. The embedded
+  // webviews inside it have their own (native) windows and receive input
+  // directly, so pass-through only affects the empty area.
+  overlay.set_overlay_pass_through(&fixed, true);
+  fixed.show();
+  fixed
+}
+
+/// FLEETIFY PATCH v2: keep the GtkFixed child properties in sync with wry's
+/// set_bounds. wry positions via a direct size_allocate, but GtkFixed still
+/// remembers the put() coordinates — without this a container relayout (e.g.
+/// window resize) would snap the webview back to stale coordinates.
+#[cfg(not(any(
+  target_os = "windows",
+  target_os = "macos",
+  target_os = "ios",
+  target_os = "android"
+)))]
+fn fleet_sync_fixed_child(window: &Window, webview: &wry::WebView, bounds: wry::Rect) {
+  use gtk::prelude::*;
+  use wry::WebViewExtUnix;
+  let widget = webview.webview();
+  let Some(parent) = widget.parent() else {
+    return;
+  };
+  if parent.widget_name() != "fleet-embed-fixed" {
+    return;
+  }
+  let Ok(fixed) = parent.dynamic_cast::<gtk::Fixed>() else {
+    return;
+  };
+  let scale = window.scale_factor();
+  let pos = bounds.position.to_logical::<i32>(scale);
+  let size = bounds.size.to_logical::<i32>(scale);
+  // gtk_fixed_move queue_resizes unconditionally — skip it when nothing
+  // changed so a repeated identical bounds push doesn't relayout the window.
+  // set_size_request already no-ops on equal values.
+  let cur_x = fixed.child_property::<i32>(&widget, "x");
+  let cur_y = fixed.child_property::<i32>(&widget, "y");
+  if cur_x != pos.x || cur_y != pos.y {
+    fixed.move_(&widget, pos.x, pos.y);
+  }
+  widget.set_size_request(size.width, size.height);
+}
+
 fn create_webview<T: UserEvent>(
   kind: WebviewKind,
   window: &Window,
@@ -5232,33 +5360,40 @@ You may have it installed on another user account, but it is not available for t
       target_os = "android"
     )))]
     WebviewKind::WindowChild => {
-      // FLEETIFY PATCH (see vendor/tauri-runtime-wry/FLEETIFY_PATCH.md):
-      // Upstream packs WindowChild webviews into the window's vertical GtkBox
-      // (`build_gtk(default_vbox)`), where they stack full-width below the main
-      // content and `set_bounds` becomes a no-op — so a positioned embedded
-      // webview (our right-panel browser, added via window.add_child()) is
-      // impossible on Linux. Upstream bug: tauri-apps/tauri#13071 / #10420.
+      // FLEETIFY PATCH v2 (see vendor/tauri-runtime-wry/FLEETIFY_PATCH.md and
+      // fleet_embed_fixed_layer above): upstream packs WindowChild webviews
+      // into the window's vertical GtkBox where positioning is impossible
+      // (tauri-apps/tauri#13071 / #10420). Patch v1 used `build_as_child`
+      // (raw X11 child window) which broke keyboard focus, cursor updates
+      // and crashed on inspector popups under Wayland — v2 embeds positioned
+      // children in a GtkFixed layer inside the window's own widget tree.
       //
-      // We want the positioned `build_as_child` path (X11, like macOS/Windows)
-      // for that browser. BUT under the `unstable` feature the window's OWN
-      // content webview is *also* created as a WindowChild (see the create_window
-      // path above), while the window is not yet realized — at that point
-      // `window_handle()` is unavailable and `build_as_child` would fail, leaving
-      // the app with a blank main window. So branch on handle availability:
+      // Branch on handle availability because under the `unstable` feature
+      // the window's OWN content webview is also created as a WindowChild
+      // while the window is not yet realized:
       //   - handle available  → a child added after the window exists (the
-      //                         embedded browser) → positioned child webview.
+      //                         embedded browser) → positioned GtkFixed child.
       //   - handle unavailable → the window's own content webview during
       //                         creation → keep upstream's vbox behaviour.
-      // This leaves the main webview byte-for-byte as upstream and only diverts
-      // genuine `add_child` children. Safe for Fleetify: we force GDK_BACKEND=x11
-      // (XWayland) and ship no GTK menu bar. Drop this patch once upstream lands
-      // positioned Linux child webviews.
       use raw_window_handle::HasWindowHandle as _;
       if window.window_handle().is_ok() {
-        webview_builder.build_as_child(&window)
+        let fixed = {
+          let vbox = window.default_vbox().unwrap();
+          fleet_embed_fixed_layer(&vbox)
+        };
+        webview_builder.build_gtk(&fixed)
       } else {
+        // The window's OWN content webview: wrap it in a GtkOverlay from the
+        // start so positioned children can be layered on top later WITHOUT
+        // reparenting a live WebKitWebView (that loses the GL context and
+        // freezes the app). gtk_overlay's add() makes it the main child, so
+        // it keeps auto-sizing exactly like the plain vbox packing did.
+        use gtk::prelude::{BoxExt, WidgetExt};
         let vbox = window.default_vbox().unwrap();
-        webview_builder.build_gtk(vbox)
+        let overlay = gtk::Overlay::new();
+        vbox.pack_start(&overlay, true, true, 0);
+        overlay.show();
+        webview_builder.build_gtk(&overlay)
       }
     }
     #[cfg(any(
