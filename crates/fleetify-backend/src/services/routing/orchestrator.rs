@@ -51,6 +51,18 @@ pub struct RouteOutcome {
     pub primary_router_id: Option<String>,
 }
 
+/// Read-only snapshot of the orchestrator's live configuration, for the
+/// `/api/routing/summary` endpoint. Owned Strings (not &'static str)
+/// because the snapshot outlives the registry read-locks.
+#[derive(Debug, Clone)]
+pub struct RoutingStatus {
+    pub enabled: bool,
+    pub decision_id: String,
+    pub decision_name: String,
+    pub proxy_id: String,
+    pub proxy_name: String,
+}
+
 impl RoutingOrchestrator {
     pub fn new(
         decision: Arc<RwLock<DecisionRouterRegistry>>,
@@ -74,6 +86,29 @@ impl RoutingOrchestrator {
     }
     pub fn set_enabled(&self, v: bool) {
         *self.enabled.write() = v;
+    }
+
+    /// Snapshot the live state: master toggle + active decision router +
+    /// active proxy gateway. Locks are taken briefly and released before
+    /// returning — never hold them across an await.
+    pub fn status(&self) -> RoutingStatus {
+        let (decision_id, decision_name) = {
+            let reg = self.decision.read();
+            let a = reg.active();
+            (a.id().to_string(), a.display_name().to_string())
+        };
+        let (proxy_id, proxy_name) = {
+            let reg = self.proxy.read();
+            let a = reg.active();
+            (a.id().to_string(), a.display_name().to_string())
+        };
+        RoutingStatus {
+            enabled: self.enabled(),
+            decision_id,
+            decision_name,
+            proxy_id,
+            proxy_name,
+        }
     }
 
     /// Route a task to an (agent, model) decision. NEVER returns Err — on
@@ -688,5 +723,19 @@ tiers = ["claude-haiku-4-5", "claude-sonnet-4-6"]
         orch.reload_from_setup(setup);
         assert_eq!(orch.decision.read().active().id(), "builtin");
         assert_eq!(orch.proxy.read().active().id(), "none-proxy");
+    }
+
+    #[test]
+    fn status_snapshots_enabled_and_active_ids() {
+        let orch = RoutingOrchestrator::with_empty_defaults(false);
+        let s = orch.status();
+        assert!(!s.enabled);
+        assert_eq!(s.decision_id, "builtin");
+        assert_eq!(s.proxy_id, "none-proxy");
+        assert!(!s.decision_name.is_empty());
+        assert!(!s.proxy_name.is_empty());
+
+        orch.set_enabled(true);
+        assert!(orch.status().enabled);
     }
 }

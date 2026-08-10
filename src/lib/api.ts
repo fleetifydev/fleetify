@@ -1351,3 +1351,40 @@ export async function createSessionsWebSocket(): Promise<WebSocket> {
   const qs = `?token=${encodeURIComponent(t.token)}`;
   return new WebSocket(`${protocol}//${host}/ws/sessions${qs}`);
 }
+
+// ── Routing summary (Fleet right sidebar Router section) ──────
+
+export interface RoutingDecisionInfo {
+  ts: number; // epoch seconds
+  agent: string;
+  model: string;
+  source: string; // "builtin" | "notdiamond" | "weave"
+  fallback_used: boolean;
+  task_flow: "chat" | "dispatch";
+}
+
+export interface RoutingSummary {
+  enabled: boolean;
+  active_decision_router: { id: string; display_name: string };
+  active_proxy_gateway: { id: string; display_name: string };
+  totals_24h: {
+    decisions: number;
+    fallbacks: number;
+    avg_latency_ms: number;
+    last_decision_ts: number | null;
+  };
+  last_decision: RoutingDecisionInfo | null;
+  recent: RoutingDecisionInfo[];
+  routed_session_ids: string[];
+}
+
+/** Null on any failure — the Router section hides rather than erroring. */
+export async function fetchRoutingSummary(): Promise<RoutingSummary | null> {
+  try {
+    const res = await apiFetch(`${API_BASE}/routing/summary`);
+    if (!res.ok) return null;
+    return (await res.json()) as RoutingSummary;
+  } catch {
+    return null;
+  }
+}

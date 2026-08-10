@@ -19,6 +19,7 @@ pub mod plugins;
 pub mod prompt;
 pub mod prompts;
 pub mod providers;
+pub mod routing;
 pub mod runtime;
 pub mod sessions;
 pub mod ssh;

@@ -49,6 +49,8 @@ import { useAppStore } from "@/stores/app-store";
 import { useChatStore } from "@/stores/chat-store";
 import { useFleetStore, type FleetReport, type FleetDecision } from "@/stores/fleet-store";
 import { useFleetData, type FleetActivityRow } from "./hooks/use-fleet-data";
+import { useRoutingSummary } from "./hooks/use-routing-summary";
+import { RouterSection } from "./router-section";
 import { askFleet, stopSession, archiveSession, listUserMemory, createUserMemory, updateUserMemory, deleteUserMemory, type SessionDetail, type SessionActivityItem, type UserMemory } from "@/lib/api";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import type { Session } from "@/types/session";
@@ -1169,6 +1171,7 @@ export function FleetPanel({ sessions, onSelectAgent }: Props) {
   const setActiveSession = useAppStore(s => s.setActiveSession);
 
   const { activity, details } = useFleetData(sessions);
+  const routingSummary = useRoutingSummary();
 
   const fleetSessions = useFleetStore(s => s.sessions);
   const decisions = useFleetStore(s => s.decisions);
@@ -1458,6 +1461,13 @@ export function FleetPanel({ sessions, onSelectAgent }: Props) {
             />
 
             {coPilotActive && <InsightsList insights={insights} />}
+
+            <RouterSection
+              summary={routingSummary}
+              sessions={agents}
+              details={details}
+              activityBySession={activityBySession}
+            />
 
             {coPilotActive && (
               <AskFleetCard
