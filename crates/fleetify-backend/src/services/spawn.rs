@@ -538,6 +538,13 @@ pub async fn create(
         origin: None,
         effort: None,
         base_branch: None,
+        // Spawn-form sessions are host sessions. A container target is
+        // picked in the composer, which goes through create_session.
+        exec_mode: None,
+        container_id: None,
+        container_workdir: None,
+        container_image: None,
+        container_mount_credentials: None,
     };
 
     let session = st

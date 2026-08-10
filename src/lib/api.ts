@@ -281,6 +281,27 @@ export async function sshKnownHosts(): Promise<{ hosts: SshKnownHost[] }> {
   return res.json();
 }
 
+/** Read a backend error body.
+ *
+ *  `ApiError::BadRequest` renders a **plain-text** body, not a
+ *  `{detail}` envelope, so `res.json()` throws and the reason gets swallowed
+ *  into a generic "(400)". Try JSON first (some handlers do return an
+ *  envelope), then fall back to the raw text. */
+async function errorDetail(res: Response, fallback: string): Promise<string> {
+  const raw = await res.text().catch(() => "");
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as { detail?: string };
+      if (parsed?.detail) return parsed.detail;
+    } catch {
+      // Not JSON — the plain-text body IS the message.
+    }
+    const trimmed = raw.trim();
+    if (trimmed) return trimmed;
+  }
+  return fallback;
+}
+
 // ── Docker (Container tab) ──────────────────────────────────────
 export interface DockerStatus { installed: boolean; running: boolean; error: string | null }
 export async function dockerStatus(): Promise<DockerStatus> {
@@ -299,8 +320,7 @@ export interface DockerContainer {
 export async function dockerContainers(): Promise<{ containers: DockerContainer[] }> {
   const res = await apiFetch(`${API_BASE}/docker/containers`);
   if (!res.ok) {
-    const data = await res.json().catch(() => ({} as { detail?: string }));
-    throw new Error(data.detail ?? `docker ps failed (${res.status})`);
+    throw new Error(await errorDetail(res, `docker ps failed (${res.status})`));
   }
   return res.json();
 }
@@ -312,8 +332,7 @@ export async function dockerListDir(containerId: string, path: string): Promise<
     body: JSON.stringify({ container_id: containerId, path }),
   });
   if (!res.ok) {
-    const data = await res.json().catch(() => ({} as { detail?: string }));
-    throw new Error(data.detail ?? `docker list-dir failed (${res.status})`);
+    throw new Error(await errorDetail(res, `docker list-dir failed (${res.status})`));
   }
   return res.json();
 }
@@ -330,8 +349,7 @@ export async function dockerProbeAgent(containerId: string, agent = "claude"): P
     body: JSON.stringify({ container_id: containerId, agent }),
   });
   if (!res.ok) {
-    const data = await res.json().catch(() => ({} as { detail?: string }));
-    throw new Error(data.detail ?? `docker probe-agent failed (${res.status})`);
+    throw new Error(await errorDetail(res, `docker probe-agent failed (${res.status})`));
   }
   return res.json();
 }
@@ -422,6 +440,21 @@ export async function createSession(data: {
   /** Git-mode branch pick: with `use_worktree` on, the carved worktree
    *  checks out THIS branch instead of an auto fleet/… one. */
   base_branch?: string;
+  /** Where the agent runs. Orthogonal to the source above: `docker-run`
+   *  composes with a Git worktree (the container bind-mounts the host
+   *  checkout), `docker-attach` does not (the files live inside a
+   *  container we did not create). Omitted ⇒ `host`. */
+  exec_mode?: "host" | "docker-attach" | "docker-run";
+  /** Attach target. Required for `docker-attach`; for `docker-run` the
+   *  backend fills it in when it provisions. */
+  container_id?: string;
+  container_workdir?: string;
+  /** Image to provision from, for `docker-run`. */
+  container_image?: string;
+  /** Opt in to mounting this provider's own credential directory into the
+   *  container. Off by default — it carries a host login across the
+   *  boundary, so it is always the user's explicit choice. */
+  container_mount_credentials?: boolean;
 }) {
   const res = await apiFetch(`${API_BASE}/sessions`, {
     method: "POST",

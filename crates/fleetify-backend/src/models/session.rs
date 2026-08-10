@@ -47,6 +47,72 @@ pub struct Session {
     /// auto-created by the background-agent poller (services::claude_agents)
     /// to mirror a backgrounded Claude Code CLI session.
     pub origin: Option<String>,
+    /// Where this session's agent process runs: `host`, `docker-attach` or
+    /// `docker-run`. A discriminator rather than a boolean so `ssh`/`podman`/
+    /// `wsl` land later without another migration. Read through
+    /// [`Session::exec_target`], never directly.
+    pub exec_mode: String,
+    /// Container the agent execs into. Set for both docker modes; for
+    /// `docker-run` it is the container Fleetify provisioned and therefore
+    /// owns (and tears down on delete).
+    pub container_id: Option<String>,
+    /// Working directory INSIDE the container. Distinct from `project_path`,
+    /// which stays the host path for `docker-run` so host git keeps working.
+    pub container_workdir: Option<String>,
+    /// Image to provision from, for `docker-run`. NULL for `docker-attach` —
+    /// the user's container already exists and its image is not ours to pick.
+    pub container_image: Option<String>,
+    /// Tier B of the credential strategy: mount this provider's own
+    /// credential directory into the container. Off by default; it carries a
+    /// host login across the boundary.
+    pub container_mount_credentials: bool,
+}
+
+impl Session {
+    /// Where this session's agent runs.
+    ///
+    /// Reads the columns first and falls back to parsing `project_path`, so a
+    /// row written before migration 0014 — or by an older build against the
+    /// same DB — still resolves rather than silently becoming a host session.
+    pub fn exec_target(&self) -> crate::services::exec_target::ExecTarget {
+        use crate::services::exec_target::ExecTarget;
+        match (self.exec_mode.as_str(), self.container_id.as_deref()) {
+            ("docker-attach" | "docker-run", Some(id)) => ExecTarget::Container {
+                id: id.to_string(),
+                workdir: self
+                    .container_workdir
+                    .clone()
+                    .filter(|w| !w.is_empty())
+                    .unwrap_or_else(|| "/".into()),
+            },
+            // Columns say container but no id was recorded — a half-written
+            // row. Refuse rather than silently running on the host, which is
+            // the whole failure mode `exec_target` exists to prevent.
+            (mode, None) if mode.starts_with("docker") => ExecTarget::Unsupported(
+                "This session is set to run in a container but has no container recorded. \
+                 Re-pick the container from the session toolbar."
+                    .into(),
+            ),
+            _ => crate::services::exec_target::parse(&self.project_path),
+        }
+    }
+
+    /// True when host-side filesystem work — git, worktree carving, rule-file
+    /// writes — applies to this session.
+    ///
+    /// Note this is NOT the negation of "runs in a container": a `docker-run`
+    /// session bind-mounts a host checkout, so host git is exactly right for
+    /// it. Only `docker-attach` (files live inside a container we did not
+    /// create) and unexecutable targets are excluded.
+    pub fn has_host_workspace(&self) -> bool {
+        if self.exec_mode == "docker-run" {
+            return crate::services::exec_target::is_host_path(&self.project_path);
+        }
+        matches!(
+            self.exec_target(),
+            crate::services::exec_target::ExecTarget::Local
+        )
+    }
 }
 
 /// POST /api/sessions body. Defaults mirror `SessionCreate` in Python.
@@ -90,6 +156,20 @@ pub struct SessionCreate {
     /// Worktree-off sessions never need it (the composer clones `--branch`).
     #[serde(default)]
     pub base_branch: Option<String>,
+    /// Execution target, orthogonal to the source (Local / Git). Absent →
+    /// `host`, unless `project_path` carries a `docker://` marker, in which
+    /// case `create_session` derives `docker-attach` from it so the pre-0014
+    /// composer flow keeps working.
+    #[serde(default)]
+    pub exec_mode: Option<String>,
+    #[serde(default)]
+    pub container_id: Option<String>,
+    #[serde(default)]
+    pub container_workdir: Option<String>,
+    #[serde(default)]
+    pub container_image: Option<String>,
+    #[serde(default)]
+    pub container_mount_credentials: Option<bool>,
 }
 
 /// PATCH /api/sessions/{id} body. All optional (partial update).
@@ -110,6 +190,11 @@ pub struct SessionUpdate {
     pub claude_session_id: Option<String>,
     pub use_worktree: Option<bool>,
     pub account_id: Option<String>,
+    pub exec_mode: Option<String>,
+    pub container_id: Option<String>,
+    pub container_workdir: Option<String>,
+    pub container_image: Option<String>,
+    pub container_mount_credentials: Option<bool>,
 }
 
 /// `groups` row. Mirrors `Group` in Python.

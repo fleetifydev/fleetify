@@ -572,7 +572,11 @@ impl GrokCliBridge {
     /// Lazily spawn `grok agent stdio`, run the ACP handshake (no
     /// `authenticate` — auth is via the injected `XAI_API_KEY` env), create the
     /// session, and apply model / mode. Idempotent.
-    async fn cold_start(&self, account_env: Vec<(String, String)>) -> Result<()> {
+    async fn cold_start(
+        &self,
+        account_env: Vec<(String, String)>,
+        mount_credentials: bool,
+    ) -> Result<()> {
         let mut guard = self.state.lock().await;
         if guard.is_some() {
             return Ok(());
@@ -590,26 +594,62 @@ impl GrokCliBridge {
             .to_string_lossy()
             .into_owned();
 
-        let mut cmd = Command::new(&bin);
-        cmd.arg("agent")
-            .arg("stdio")
-            .current_dir(&cwd)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        // Multi-account isolation (no-op for the System account).
-        crate::bridges::account_env::apply_to_command(&mut cmd, &account_env);
-        // Canonical PATH (not our launch-chain-bloated runtime PATH) so cmd.exe's
-        // 8191-char truncation can't strip `node`/`git` from a shim and kill the
-        // agent at spawn. See `bridges::apply_clean_path`.
-        crate::bridges::apply_clean_path(&mut cmd);
+        // Where this turn runs. `Unsupported` fails cold_start with the
+        // reason rather than falling through to a host spawn.
+        let target = crate::services::exec_target::parse(&self.project_path);
+        if let crate::services::exec_target::ExecTarget::Unsupported(reason) = &target {
+            anyhow::bail!("{reason}");
+        }
+        let in_container = matches!(
+            target,
+            crate::services::exec_target::ExecTarget::Container { .. }
+        );
+
+        // Everything that must hold before a container turn is worth
+        // spawning: the CLI is actually installed inside (cached — the
+        // picker's answer goes stale the moment the container is stopped or
+        // replaced, but re-asking uncached cost a docker round trip on every
+        // message), and a credential can reach it. Refusing here names the
+        // fix; the alternative is the CLI's own opaque failure mid-stream.
+        let preflight =
+            crate::services::container::spawn::preflight(&target, "grok-build", mount_credentials)
+                .await?;
+
+        // Env is collected before the argv exists: in a container it becomes
+        // `-e` flags ahead of the container id, and setting it on the Command
+        // afterwards would attach it to the docker client instead of to grok.
+        let mut envs: Vec<(String, String)> = Vec::new();
+        // Multi-account isolation (no-op for the System account). Host-only —
+        // HOME/XDG overrides name host paths.
+        if !in_container {
+            envs.extend(account_env.iter().cloned());
+        }
         // Auth: grok's ACP `authenticate` is non-functional — `session/new`
         // errors `-32000 "Authentication required"` unless XAI_API_KEY is set
-        // on the process. Inject the hot-reloaded provider key here. Set AFTER
-        // account_env so a labeled-account override wins if it ever sets one.
+        // on the process. Inject the hot-reloaded provider key here. Pushed
+        // AFTER account_env so a labeled-account override wins if it ever
+        // sets one. This one DOES cross into the container: it is the only
+        // credential grok can use there, and the key is the whole point.
         if let Some(key) = crate::providers::keys::get_key("grok") {
-            cmd.env("XAI_API_KEY", key);
+            envs.push(("XAI_API_KEY".to_string(), key));
         }
+        // Credentials that crossed the boundary (Tier A). Empty on the host.
+        envs.extend(preflight.envs.iter().cloned());
+
+        let mut args = vec!["agent".to_string(), "stdio".to_string()];
+        args.extend(preflight.args.iter().cloned());
+
+        let mut cmd = crate::services::container::spawn::command(
+            &crate::services::container::spawn::SpawnRequest {
+                target: &target,
+                provider_id: "grok-build",
+                host_program: &bin,
+                args: &args,
+                envs: &envs,
+                cwd: &cwd,
+                pipe_stdin: true,
+            },
+        )?;
 
         let mut proc = cmd.spawn().map_err(|e| {
             anyhow!(
@@ -761,6 +801,22 @@ impl GrokCliBridge {
         let mcp_servers = Value::Array(grok_acceptable_mcp(
             &crate::services::mcp_dispatch::to_acp_servers(&mcp_map),
         ));
+        // In a container the fleet sidecars are unavailable: mcp_registry
+        // resolves them to an absolute HOST path next to the running exe,
+        // which does not exist inside, and mcp_dispatch's
+        // FLEETIFY_BACKEND_URL points at 127.0.0.1 — the container itself.
+        // Advertising servers that cannot start is how the model ends up
+        // calling a tool that never answers.
+        let mcp_servers = if in_container {
+            tracing::info!(
+                target: "fleetify::container",
+                session_id = %self.session_id,
+                "fleet MCP servers dropped for this container turn (host sidecar paths are unreachable inside)"
+            );
+            Value::Array(Vec::new())
+        } else {
+            mcp_servers
+        };
 
         // Resume a prior Grok session via `session/load` when we have its id,
         // falling back to `session/new` if the load fails (e.g. the session was
@@ -768,6 +824,12 @@ impl GrokCliBridge {
         // notifications, which we intentionally drop here: cold start runs
         // before the per-turn update handler is wired and the Fleet DB already
         // holds the transcript.
+        // The cwd grok is TOLD about, which is not the one docker got. `-w`
+        // already put the process inside; session/new and session/load name
+        // the directory a second time over the protocol, and the host path
+        // does not exist on grok's side of the boundary.
+        let cwd = crate::services::container::spawn::agent_workdir(&target, &cwd);
+
         let resume = self.resume_session_id.clone().filter(|s| !s.is_empty());
         let new_session = |servers: Value| {
             let client = client.clone();
@@ -881,7 +943,7 @@ impl GrokCliBridge {
         let msg_owned = msg.to_string();
         let needs_cold_start = state_mu.lock().await.is_none();
         let cold_starter = if needs_cold_start {
-            Some(self.cold_start_fut(ctx.account_env.clone()))
+            Some(self.cold_start_fut(ctx.account_env.clone(), ctx.container_mount_credentials))
         } else {
             None
         };
@@ -1036,6 +1098,7 @@ impl GrokCliBridge {
     fn cold_start_fut(
         &self,
         account_env: Vec<(String, String)>,
+        mount_credentials: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> {
         let bridge = GrokCliBridge {
             session_id: self.session_id.clone(),
@@ -1051,7 +1114,7 @@ impl GrokCliBridge {
             aborted: Arc::new(AtomicBool::new(false)),
             state: self.state.clone(),
         };
-        Box::pin(async move { bridge.cold_start(account_env).await })
+        Box::pin(async move { bridge.cold_start(account_env, mount_credentials).await })
     }
 }
 

@@ -4,7 +4,6 @@
 //! `calculate_cost` fallback are Phase 4/3 (explicit, not silent).
 
 use std::collections::{HashMap, HashSet};
-use std::process::Stdio;
 use std::sync::Arc;
 
 use serde_json::{json, Map, Value};
@@ -576,8 +575,16 @@ impl ClaudeBridge {
             // its tool name is intentionally absent from this list.
             let mut allowed: Vec<String> =
                 vec!["Agent".into(), "WebSearch".into(), "WebFetch".into()];
-            for name in self.mcp_tool_names() {
-                allowed.push(name.to_string());
+            // Only advertise fleet tools whose server is actually mounted.
+            // In a container none are: the stdio sidecars resolve to host
+            // `.exe` paths that do not exist inside, so `build_mcp_config`
+            // returns None and `--mcp-config` is never passed. Advertising
+            // them anyway is how the model ends up calling a server that
+            // never started, and the failure reads as a hallucinated tool.
+            if effective_mcp_path.is_some() {
+                for name in self.mcp_tool_names() {
+                    allowed.push(name.to_string());
+                }
             }
             c.push("--allowedTools".into());
             c.push(allowed.join(","));
@@ -792,20 +799,19 @@ impl ClaudeBridge {
             target,
             crate::services::exec_target::ExecTarget::Container { .. }
         );
-        // The picker probed this at selection time, but that answer goes
-        // stale the moment the container is stopped, restarted or
-        // replaced. Re-check here so a missing CLI names the container and
-        // says what to do, instead of surfacing docker's raw "executable
-        // file not found" mid-stream. Costs one docker round trip
-        // (typically ~100-300ms) against a turn measured in seconds.
-        if let crate::services::exec_target::ExecTarget::Container { id, .. } = &target {
-            if !crate::routers::docker::probe_agent_in_container(id, "claude").await {
-                anyhow::bail!(
-                    "The claude CLI is not installed in container '{id}'. \
-                     Install it there, or switch this session to a local folder."
-                );
-            }
-        }
+        // Everything that must hold before a container turn is worth
+        // spawning: the CLI is actually installed there (cached — the
+        // picker's answer goes stale the moment the container is stopped or
+        // replaced, but re-asking uncached cost a docker round trip on every
+        // single message), a credential can reach it, and the flags the
+        // container makes necessary are known. Refusing here names the fix;
+        // the alternative is the CLI's own opaque failure mid-stream.
+        let preflight = crate::services::container::spawn::preflight(
+            &target,
+            "claude-code",
+            ctx.container_mount_credentials,
+        )
+        .await?;
         // Skipped entirely in a container: the stdio sidecars resolve to
         // host `.exe` paths and the HTTP loopbacks point at 127.0.0.1,
         // which inside a container is the container. Writing a temp file
@@ -905,6 +911,10 @@ impl ClaudeBridge {
             cmd.push("--model".into());
             cmd.push(m.clone());
         }
+        // Flags the container makes necessary — for claude that is
+        // `--dangerously-skip-permissions`, and only when the container does
+        // NOT run as root (the CLI rejects it as root). Empty for a host turn.
+        cmd.extend(preflight.args.iter().cloned());
         self.aborted
             .store(false, std::sync::atomic::Ordering::SeqCst);
         let cwd_raw = if self.project_path.is_empty() {
@@ -935,6 +945,10 @@ impl ClaudeBridge {
         if !in_container {
             envs.extend(ctx.account_env.iter().cloned());
         }
+        // Credentials that crossed the boundary (Tier A of the container
+        // credential strategy). Empty for a host turn, where the account env
+        // above already points claude at the right `~/.claude`.
+        envs.extend(preflight.envs.iter().cloned());
         if let Some(ref url) = ctx.base_url_override {
             envs.push(("ANTHROPIC_BASE_URL".to_string(), url.clone()));
         }
@@ -967,23 +981,25 @@ impl ClaudeBridge {
 
         // Local → `[claude, …]`. Container → `docker exec -i -w <dir>
         // -e K=V … <id> claude …`. Unsupported was already rejected above.
-        let argv = crate::services::exec_target::build_argv(&target, &cmd[0], &cmd[1..], &envs)
-            .map_err(|e| anyhow::anyhow!(e))?;
-
-        let mut command = tokio::process::Command::new(&argv[0]);
-        command
-            .args(&argv[1..])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if !in_container {
-            // In container mode `-w` already carries the working directory
-            // inside, and the env is in the argv. Calling current_dir with
-            // a `docker://` string is exactly the bug this work removes.
-            command.current_dir(&cwd);
-            for (k, v) in &envs {
-                command.env(k, v);
-            }
-        }
+        //
+        // This used to be built inline here; it is the shared helper now, so
+        // claude is on the same path as the other nine bridges rather than
+        // being the one provider with its own container branch. The argv is
+        // byte-identical either way — `spawn::tests::
+        // claude_container_argv_matches_the_pre_refactor_shape` pins it.
+        let mut command = crate::services::container::spawn::command(
+            &crate::services::container::spawn::SpawnRequest {
+                target: &target,
+                provider_id: "claude-code",
+                host_program: &cmd[0],
+                args: &cmd[1..],
+                envs: &envs,
+                cwd: &cwd.to_string_lossy(),
+                // claude spawns one-shot (`claude -p …`) and never reads
+                // stdin, so this stays off — the one bridge for which it does.
+                pipe_stdin: false,
+            },
+        )?;
         // One-line dispatch log so the user can grep `claude bridge spawn`
         // in their terminal and see exactly what got fired off: which model
         // claude-code will request, whether a proxy is in front of
@@ -1125,6 +1141,15 @@ impl ClaudeBridge {
     pub async fn abort(&self) {
         self.aborted
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        // In a container the child we hold is the host `docker exec` CLIENT.
+        // Killing it does NOT stop the process on the other side — docker
+        // exec does not propagate client death — so Stop used to leave the
+        // agent running, and billing. Kill inside first, then the client.
+        if let crate::services::exec_target::ExecTarget::Container { id, .. } =
+            crate::services::exec_target::parse(&self.project_path)
+        {
+            crate::services::container::lifecycle::kill_in_container(&id, "claude").await;
+        }
         if let Some(c) = self.child.lock().await.as_mut() {
             let _ = c.start_kill();
         }
@@ -1452,7 +1477,11 @@ mod tests {
         let mut b = ClaudeBridge::new("s", "/tmp/x");
         b.is_staff = true;
         b.system_prompt = Some("you are fleet".into());
-        let c = b.build_command("hi", None);
+        // A real staff turn always has an MCP config — `build_mcp_config`
+        // splices fleet_memory in for staff — and the tool names are only
+        // advertised when one is actually mounted, so the path has to be
+        // present for this assertion to mean anything.
+        let c = b.build_command("hi", Some("/tmp/fleetify-mcp-test.json"));
 
         // --system-prompt is set without the prior `--tools ""` pair.
         assert!(c
@@ -1693,5 +1722,33 @@ mod tests {
         b.permission_mode = "plan".into();
         let c = b.build_command("hi", None);
         assert!(c.windows(2).any(|w| w == ["--permission-mode", "plan"]));
+    }
+
+    /// Advertising a tool whose server never started is how the model ends
+    /// up calling something that cannot answer, and the failure reads as a
+    /// hallucinated tool rather than a missing mount. In a container none of
+    /// the fleet sidecars start — they resolve to host `.exe` paths — so the
+    /// names must not appear in --allowedTools either.
+    #[test]
+    fn staff_in_a_container_advertises_no_fleet_tools() {
+        let mut b = ClaudeBridge::new("s1", "docker://abc123/work");
+        b.is_staff = true;
+        // Even when a config path IS handed in, the container branch drops
+        // it — so the names must be dropped with it.
+        let c = b.build_command("hi", Some("/tmp/fleetify-mcp-test.json"));
+        let idx = c
+            .iter()
+            .position(|s| s == "--allowedTools")
+            .expect("--allowedTools");
+        let names = &c[idx + 1];
+        assert!(names.contains("Agent"), "names: {names}");
+        assert!(
+            !names.contains("mcp__fleet_"),
+            "no fleet server is mounted in a container, so none may be advertised: {names}"
+        );
+        assert!(
+            !c.iter().any(|a| a.starts_with("--mcp-config")),
+            "a host mcp-config path must never reach a container turn"
+        );
     }
 }

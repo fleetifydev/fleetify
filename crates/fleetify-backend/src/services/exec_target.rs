@@ -36,6 +36,23 @@ fn valid_container_id(s: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
 }
 
+/// The schemes this module recognises. Anything else shaped like a URL
+/// scheme is refused rather than treated as a host path — see `scheme_of`.
+const KNOWN_SCHEMES: &[&str] = &[DOCKER_SCHEME, SSH_SCHEME];
+
+/// The `<scheme>://` prefix of `s`, when it has one.
+///
+/// Deliberately strict: the head must be non-empty and pure ASCII
+/// alphanumeric. That keeps every real filesystem path out — a Windows drive
+/// (`C:\…`), a verbatim prefix (`\\?\C:\…`) and a POSIX filename containing a
+/// colon all lack the `://`, and a path that somehow contained one would
+/// still need an alphanumeric-only head to be mistaken for a scheme.
+fn scheme_of(s: &str) -> Option<&str> {
+    let i = s.find("://")?;
+    let head = &s[..i];
+    (!head.is_empty() && head.chars().all(|c| c.is_ascii_alphanumeric())).then(|| &s[..i + 3])
+}
+
 pub fn parse(project_path: &str) -> ExecTarget {
     if project_path.starts_with(SSH_SCHEME) {
         return ExecTarget::Unsupported(
@@ -45,7 +62,16 @@ pub fn parse(project_path: &str) -> ExecTarget {
         );
     }
     let Some(rest) = project_path.strip_prefix(DOCKER_SCHEME) else {
-        return ExecTarget::Local;
+        // An unrecognised scheme must NOT fall through to `Local`. Before
+        // this guard a `podman://c1/work` silently became a host path, which
+        // is the exact bug class the module exists to prevent — and the
+        // reason the doc comment above promises it never degrades.
+        return match scheme_of(project_path) {
+            Some(other) if !KNOWN_SCHEMES.contains(&other) => ExecTarget::Unsupported(format!(
+                "'{other}' targets aren't supported yet. Pick a local folder or a Docker container."
+            )),
+            _ => ExecTarget::Local,
+        };
     };
     // `docker://<id>/<abs path>` — no colon, despite what the picker's
     // doc comment used to claim. Container ids cannot contain `/` (see
@@ -71,6 +97,35 @@ pub fn parse(project_path: &str) -> ExecTarget {
 /// execute at all.
 pub fn is_host_path(project_path: &str) -> bool {
     matches!(parse(project_path), ExecTarget::Local)
+}
+
+/// Validate a session's `project_path` at create/patch time and return the
+/// exact string to persist.
+///
+/// This replaces the raw `is_dir()` guard the session router used to inline.
+/// `Path::new("docker://abc123/work").is_dir()` is always `false`, so that
+/// guard made a container session impossible to create — the only way in was
+/// a PATCH, which validated nothing at all.
+///
+/// Host paths are still canonicalised, and still stripped of the Windows
+/// verbatim (`\\?\`) prefix, which several ACP agents reject. Container
+/// markers are stored verbatim. Anything we cannot execute is refused with
+/// the parser's own user-facing reason instead of a misleading "not a
+/// directory".
+pub fn validate_project_path(raw: &str) -> Result<String, String> {
+    match parse(raw) {
+        ExecTarget::Unsupported(reason) => Err(reason),
+        ExecTarget::Container { .. } => Ok(raw.to_string()),
+        ExecTarget::Local => {
+            let resolved = fleetify_core::canonicalize_or_keep(std::path::Path::new(raw));
+            if !resolved.is_dir() {
+                return Err(format!(
+                    "Project path does not exist or is not a directory: {raw}"
+                ));
+            }
+            Ok(resolved.to_string_lossy().to_string())
+        }
+    }
 }
 
 /// Build the full argv for a spawn.
@@ -209,6 +264,68 @@ mod tests {
             }
             other => panic!("expected Unsupported, got {other:?}"),
         }
+    }
+
+    /// A scheme we do not execute must NOT degrade to `Local`. `parse` used
+    /// to `strip_prefix("docker://")` and return `Local` on failure, so a
+    /// future `podman://c1/work` became a host path — precisely the
+    /// silent-wrong-directory bug this module exists to prevent.
+    #[test]
+    fn unknown_schemes_are_unsupported_never_local() {
+        for s in ["podman://c1/work", "wsl://distro/home", "k8s://ns/pod"] {
+            match parse(s) {
+                ExecTarget::Unsupported(_) => {}
+                other => panic!("{s} parsed as {other:?}, expected Unsupported"),
+            }
+        }
+    }
+
+    /// The flip side: a colon in a real path is not a scheme. A Windows
+    /// drive letter and a POSIX filename containing `:` must stay `Local`,
+    /// or the scheme guard above would break every Windows session.
+    #[test]
+    fn colons_that_are_not_schemes_stay_local() {
+        assert_eq!(parse(r"C:\Users\me\proj"), ExecTarget::Local);
+        assert_eq!(parse("/home/me/a:b"), ExecTarget::Local);
+        assert_eq!(parse(r"\\?\C:\Users\me\proj"), ExecTarget::Local);
+        assert_eq!(parse("relative/path"), ExecTarget::Local);
+    }
+
+    #[test]
+    fn validate_accepts_a_container_marker_unchanged() {
+        assert_eq!(
+            validate_project_path("docker://abc123/work/repo"),
+            Ok("docker://abc123/work/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_rejects_ssh_with_the_parsers_own_reason() {
+        let err = validate_project_path("ssh://me@host/srv").unwrap_err();
+        assert!(err.to_lowercase().contains("ssh"), "reason was: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_a_malformed_container_marker() {
+        let err = validate_project_path("docker://-flag/x").unwrap_err();
+        assert!(err.contains("container id"), "reason was: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_a_host_path_that_is_not_a_directory() {
+        let err = validate_project_path("/definitely/not/a/real/dir/xyzzy").unwrap_err();
+        assert!(err.contains("does not exist"), "reason was: {err}");
+    }
+
+    /// The canonicalising behaviour the old inline `is_dir()` guard had must
+    /// survive the move into the validator: a real host dir comes back
+    /// canonical (and free of the Windows verbatim prefix), not verbatim.
+    #[test]
+    fn validate_canonicalises_a_real_host_directory() {
+        let tmp = std::env::temp_dir();
+        let got = validate_project_path(&tmp.to_string_lossy()).expect("temp dir is a directory");
+        assert!(!got.starts_with(r"\\?\"), "verbatim prefix leaked: {got}");
+        assert!(!got.is_empty());
     }
 
     #[test]

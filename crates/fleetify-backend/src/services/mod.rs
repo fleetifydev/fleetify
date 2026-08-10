@@ -12,6 +12,7 @@ pub mod clone;
 pub mod codex_toml;
 pub mod command_catalog;
 pub mod compactor;
+pub mod container;
 pub mod dispatch;
 pub mod dispatch_exec;
 pub mod exec_target;

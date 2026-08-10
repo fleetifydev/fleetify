@@ -217,6 +217,12 @@ impl AntigravitySdkBridge {
         message: &str,
         _ctx: super::BridgeContext,
     ) -> anyhow::Result<mpsc::Receiver<BridgeEvent>> {
+        // Refuse a container target up front. This bridge drives a
+        // host-installed Python SDK which provisions its OWN remote sandbox,
+        // so nesting it inside the user's container is meaningless as well as
+        // broken. See `container::providers`.
+        super::refuse_non_host_target(&self.agent_cwd)?;
+
         let (tx, rx) = mpsc::channel::<BridgeEvent>(32);
 
         // Resolve Python + script paths up front so we can surface a

@@ -404,20 +404,22 @@ impl GitHubCopilotBridge {
         }
     }
 
-    /// Build the `copilot --acp --stdio …` Command. Pure — no I/O, no
-    /// spawn. Caller adds stdio piping + cwd + env.
-    pub(crate) fn build_command(&self) -> Command {
-        let bin = resolve_copilot_bin().unwrap_or_else(|| "copilot".to_string());
-
-        let mut cmd = Command::new(&bin);
-        cmd.arg("--acp").arg("--stdio");
+    /// Build the `copilot --acp --stdio …` argv tail. Pure — no I/O, no
+    /// spawn, and no host binary resolution, so the same list feeds a host
+    /// spawn and a `docker exec` one.
+    ///
+    /// `agent_cwd` is the directory copilot should treat as its workspace, in
+    /// **its own** filesystem: the host path on the host, the container's path
+    /// inside one. It rides `--add-dir`, so passing the host path to a
+    /// container would add a directory that does not exist there.
+    pub(crate) fn build_args(&self, agent_cwd: &str) -> Vec<String> {
+        let mut args: Vec<String> = vec!["--acp".to_string(), "--stdio".to_string()];
 
         match map_for_copilot(&self.permission_mode) {
-            CopilotPermArgs::AllowAll => {
-                cmd.arg("--allow-all-tools");
-            }
+            CopilotPermArgs::AllowAll => args.push("--allow-all-tools".to_string()),
             CopilotPermArgs::AcceptEdits => {
-                cmd.arg("--allow-tool=write").arg("--allow-tool=edit");
+                args.push("--allow-tool=write".to_string());
+                args.push("--allow-tool=edit".to_string());
             }
             CopilotPermArgs::Ask => {}
         }
@@ -425,41 +427,44 @@ impl GitHubCopilotBridge {
         // Apply per-tool overrides: emit `--allow-tool=<name>` for each
         // `allow` entry. Copilot has no `--deny-tool` flag, so `deny` entries
         // simply withhold the allow (tool stays at Copilot's default ask/deny).
-        // NOTE: copilot has no --deny-tool; deny overrides just withhold the allow.
         for (tool, decision) in &self.tool_overrides {
             if decision == "allow" {
-                cmd.arg(format!("--allow-tool={}", tool));
+                args.push(format!("--allow-tool={}", tool));
             }
         }
 
-        let cwd = if self.project_path.is_empty() {
+        args.push(format!("--add-dir={}", agent_cwd));
+
+        if let Some(m) = &self.model_name {
+            args.push(format!("--model={}", m));
+        }
+        if let Some(e) = &self.effort_level {
+            args.push(format!("--effort={}", e));
+        }
+
+        args.push("--no-ask-user".to_string());
+        // NOTE: do NOT pass `--no-banner` — the current Copilot CLI (v1.0.56+)
+        // has no such flag and exits with "unknown option '--no-banner'",
+        // which closes the ACP stream ("ACP initialize failed"). The banner is
+        // off by default in this version (only `--banner` enables it), so
+        // there's nothing to suppress.
+        args.push("--log-level=warning".to_string());
+
+        args
+    }
+
+    /// The host working directory this session spawns in, normalized.
+    fn host_cwd(&self) -> String {
+        let raw = if self.project_path.is_empty() {
             std::env::var("USERPROFILE")
                 .or_else(|_| std::env::var("HOME"))
                 .unwrap_or_else(|_| ".".to_string())
         } else {
             self.project_path.clone()
         };
-        let cwd = fleetify_core::strip_verbatim_prefix(std::path::Path::new(&cwd))
+        fleetify_core::strip_verbatim_prefix(std::path::Path::new(&raw))
             .to_string_lossy()
-            .into_owned();
-        cmd.arg(format!("--add-dir={}", cwd));
-
-        if let Some(m) = &self.model_name {
-            cmd.arg(format!("--model={}", m));
-        }
-        if let Some(e) = &self.effort_level {
-            cmd.arg(format!("--effort={}", e));
-        }
-
-        cmd.arg("--no-ask-user");
-        // NOTE: do NOT pass `--no-banner` — the current Copilot CLI (v1.0.56+)
-        // has no such flag and exits with "unknown option '--no-banner'",
-        // which closes the ACP stream ("ACP initialize failed"). The banner is
-        // off by default in this version (only `--banner` enables it), so
-        // there's nothing to suppress.
-        cmd.arg("--log-level=warning");
-
-        cmd
+            .into_owned()
     }
 
     /// Translate Fleetify's MCP config (`{mcpServers: {name: {...}}}`) into
@@ -516,31 +521,44 @@ impl GitHubCopilotBridge {
         tx: mpsc::Sender<BridgeEvent>,
         account_env: Vec<(String, String)>,
     ) -> Result<(Arc<AcpClient>, String)> {
-        let mut cmd = self.build_command();
-        cmd.stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        // Multi-account isolation (no-op for the System account). On Windows
-        // Copilot reads %APPDATA%/%LOCALAPPDATA%, relocated by `account_env`.
-        crate::bridges::account_env::apply_to_command(&mut cmd, &account_env);
-        // Canonical PATH (not our launch-chain-bloated runtime PATH) so cmd.exe's
-        // 8191-char truncation can't strip `node`/`git` from the `.cmd` shim and
-        // kill the agent at spawn. See `bridges::apply_clean_path`.
-        crate::bridges::apply_clean_path(&mut cmd);
+        // Where this turn runs. `Unsupported` fails cold_start with the
+        // reason rather than falling through to a host spawn.
+        let target = crate::services::exec_target::parse(&self.project_path);
+        if let crate::services::exec_target::ExecTarget::Unsupported(reason) = &target {
+            anyhow::bail!("{reason}");
+        }
+        let in_container = matches!(
+            target,
+            crate::services::exec_target::ExecTarget::Container { .. }
+        );
 
-        // Set current_dir to the normalized cwd so relative paths in
-        // copilot's tools resolve correctly.
-        let cwd_raw = if self.project_path.is_empty() {
-            std::env::var("USERPROFILE")
-                .or_else(|_| std::env::var("HOME"))
-                .unwrap_or_else(|_| ".".to_string())
+        let cwd = self.host_cwd();
+        // `--add-dir` names a directory in copilot's OWN filesystem, so it
+        // follows the boundary rather than the host.
+        let agent_cwd = crate::services::container::spawn::agent_workdir(&target, &cwd);
+        let args = self.build_args(&agent_cwd);
+        let bin = resolve_copilot_bin().unwrap_or_else(|| "copilot".to_string());
+
+        // Multi-account isolation (no-op for the System account). On Windows
+        // Copilot reads %APPDATA%/%LOCALAPPDATA%, relocated by `account_env` —
+        // host paths, so they stop at the container boundary.
+        let envs: Vec<(String, String)> = if in_container {
+            Vec::new()
         } else {
-            self.project_path.clone()
+            account_env.clone()
         };
-        let cwd = fleetify_core::strip_verbatim_prefix(std::path::Path::new(&cwd_raw))
-            .to_string_lossy()
-            .into_owned();
-        cmd.current_dir(&cwd);
+
+        let mut cmd = crate::services::container::spawn::command(
+            &crate::services::container::spawn::SpawnRequest {
+                target: &target,
+                provider_id: "github-copilot",
+                host_program: &bin,
+                args: &args,
+                envs: &envs,
+                cwd: &cwd,
+                pipe_stdin: true,
+            },
+        )?;
 
         let mut proc = cmd.spawn().map_err(|e| {
             anyhow!(
@@ -608,6 +626,10 @@ impl GitHubCopilotBridge {
         // which we forward to the picker; session/load returns no model block, so
         // a resumed turn re-derives the list from the set_config_option response
         // below.
+        // The cwd copilot is TOLD about, which is not the one docker got.
+        // session/new and session/load name the directory a second time over
+        // the protocol; the host path does not exist on copilot's side.
+        let cwd = agent_cwd;
         let existing = self.acp_session_id.lock().await.clone();
         let mcp = self.translate_mcp_config();
         let mut session_models: Vec<CopilotModel> = Vec::new();
@@ -913,15 +935,11 @@ mod tests {
     }
 
     fn cmd_args(b: &GitHubCopilotBridge) -> Vec<String> {
-        let cmd = b.build_command();
-        cmd.as_std()
-            .get_args()
-            .map(|a| a.to_string_lossy().to_string())
-            .collect()
+        b.build_args("/tmp/proj")
     }
 
     #[test]
-    fn build_command_default_mode_emits_core_flags() {
+    fn build_args_default_mode_emits_core_flags() {
         let b = dummy_bridge("default", None, None);
         let args = cmd_args(&b);
         assert!(args.iter().any(|a| a == "--acp"));
@@ -936,14 +954,14 @@ mod tests {
     }
 
     #[test]
-    fn build_command_bypass_permissions_adds_allow_all_tools() {
+    fn build_args_bypass_permissions_adds_allow_all_tools() {
         let b = dummy_bridge("bypassPermissions", None, None);
         let args = cmd_args(&b);
         assert!(args.iter().any(|a| a == "--allow-all-tools"));
     }
 
     #[test]
-    fn build_command_accept_edits_adds_write_and_edit() {
+    fn build_args_accept_edits_adds_write_and_edit() {
         let b = dummy_bridge("acceptEdits", None, None);
         let args = cmd_args(&b);
         assert!(args.iter().any(|a| a == "--allow-tool=write"));
@@ -952,28 +970,28 @@ mod tests {
     }
 
     #[test]
-    fn build_command_model_override_appends_model_flag() {
+    fn build_args_model_override_appends_model_flag() {
         let b = dummy_bridge("default", Some("gpt-5.3-codex"), None);
         let args = cmd_args(&b);
         assert!(args.iter().any(|a| a == "--model=gpt-5.3-codex"));
     }
 
     #[test]
-    fn build_command_no_model_omits_model_flag() {
+    fn build_args_no_model_omits_model_flag() {
         let b = dummy_bridge("default", None, None);
         let args = cmd_args(&b);
         assert!(!args.iter().any(|a| a.starts_with("--model=")));
     }
 
     #[test]
-    fn build_command_effort_level_appends_effort_flag() {
+    fn build_args_effort_level_appends_effort_flag() {
         let b = dummy_bridge("default", None, Some("high"));
         let args = cmd_args(&b);
         assert!(args.iter().any(|a| a == "--effort=high"));
     }
 
     #[test]
-    fn build_command_tool_overrides_allow_emits_allow_tool_flag() {
+    fn build_args_tool_overrides_allow_emits_allow_tool_flag() {
         // An `allow` override for "shell" should emit `--allow-tool=shell`.
         let mut b = dummy_bridge("default", None, None);
         b.tool_overrides = super::super::parse_tool_overrides(Some(r#"{"shell":"allow"}"#));
@@ -986,7 +1004,7 @@ mod tests {
     }
 
     #[test]
-    fn build_command_tool_overrides_deny_does_not_emit_allow_tool() {
+    fn build_args_tool_overrides_deny_does_not_emit_allow_tool() {
         // A `deny` override must NOT emit --allow-tool (Copilot has no --deny-tool).
         let mut b = dummy_bridge("default", None, None);
         b.tool_overrides = super::super::parse_tool_overrides(Some(r#"{"shell":"deny"}"#));
@@ -999,7 +1017,7 @@ mod tests {
     }
 
     #[test]
-    fn build_command_tool_overrides_allow_multiple_tools() {
+    fn build_args_tool_overrides_allow_multiple_tools() {
         let mut b = dummy_bridge("default", None, None);
         b.tool_overrides = super::super::parse_tool_overrides(Some(
             r#"{"shell":"allow","write":"allow","read":"deny"}"#,

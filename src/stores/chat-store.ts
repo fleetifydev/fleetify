@@ -224,6 +224,21 @@ export interface SessionChatState {
    *  a /compact or /compress flow is running or its result is still
    *  on-screen waiting to be cleared. */
   compactionPill: CompactionPill | null;
+  /** Inline container-provisioning status — see ContainerSetupPill.
+   *  Non-null while a docker-run session is pulling an image / starting
+   *  its container on the first turn. Cleared when setup finishes. */
+  containerSetup: ContainerSetup | null;
+}
+
+/** Live state of a container being made ready for a session. */
+export interface ContainerSetup {
+  /** `pull` | `start` | `verify` — matches the backend's SetupEvent. */
+  step: string;
+  /** Already phrased for the user by the backend; shown verbatim. */
+  detail: string;
+  /** 0–1 within the step, when measurable. Only the image pull is. */
+  pct: number | null;
+  startedAt: number;
 }
 
 const emptySession = (): SessionChatState => ({
@@ -243,6 +258,7 @@ const emptySession = (): SessionChatState => ({
   subagentTasks: {},
   selectedSubagentTaskId: null,
   compactionPill: null,
+  containerSetup: null,
 });
 
 // Shared stable reference used by selectSession when the requested session
@@ -373,6 +389,13 @@ interface ChatState {
   /** Start the inline compaction pill — fired by ws-manager on the
    *  backend's `compaction_status` (state="starting") event. Sets the
    *  pill to running with a fresh startedAt anchor. */
+  /** Backend reported a provisioning step. Creates the pill on the first
+   *  event and updates it thereafter. */
+  setContainerSetup: (sessionId: string, s: { step: string; detail: string; pct: number | null }) => void;
+  /** Provisioning finished (or failed) — drop the pill. Failures surface
+   *  through the shared <ChatError> like every other in-chat error. */
+  clearContainerSetup: (sessionId: string) => void;
+
   startCompactionPill: (
     sessionId: string,
     args: { provider: string; command: string },
@@ -885,6 +908,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setCursorPlan: (sessionId, p) =>
     set((state) => patch(state, sessionId, () => ({ cursorPlan: p }))),
+
+  setContainerSetup: (sessionId, ev) =>
+    set((state) =>
+      patch(state, sessionId, (s) => ({
+        containerSetup: {
+          step: ev.step,
+          detail: ev.detail,
+          // Keep the bar monotonic within a step — a late event must not
+          // rewind it — but let a NEW step reset the fraction.
+          pct:
+            s.containerSetup && s.containerSetup.step === ev.step && ev.pct != null
+              ? Math.max(s.containerSetup.pct ?? 0, ev.pct)
+              : ev.pct,
+          startedAt: s.containerSetup?.startedAt ?? Date.now(),
+        },
+      })),
+    ),
+
+  clearContainerSetup: (sessionId) =>
+    set((state) => patch(state, sessionId, () => ({ containerSetup: null }))),
 
   startCompactionPill: (sessionId, { provider, command }) =>
     set((state) =>

@@ -6,6 +6,7 @@ import { wsManager, compactionOptimisticId } from "@/services/ws-manager";
 import { ChatInput, type Attachment } from "./chat-input";
 import { MessageContent, StreamingMessage } from "./message-content";
 import { CompactionPill } from "./compaction-pill";
+import { ContainerSetupPill } from "./container-setup-pill";
 import { PermissionDialog } from "./permission-dialog";
 import { CursorQuestionCard } from "./cursor-question-card";
 import { CursorPlanCard } from "./cursor-plan-card";
@@ -2429,6 +2430,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                 {isStreaming && !compactionPillActive && (
                   <StreamingMessage text={streamingText} thinking={streamingThinking} />
                 )}
+                {effectiveSessionId && <ContainerSetupPill sessionId={effectiveSessionId} />}
                 {effectiveSessionId && <CompactionPill sessionId={effectiveSessionId} />}
                 <div ref={bottomRef} />
                 <div style={{ height: scrollSpacer }} />

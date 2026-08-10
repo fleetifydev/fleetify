@@ -719,7 +719,11 @@ impl HermesBridge {
 
     /// Lazily spawn `hermes acp`, run the ACP handshake (no `authenticate`),
     /// create the session, and apply model / mode. Idempotent.
-    async fn cold_start(&self, account_env: Vec<(String, String)>) -> Result<()> {
+    async fn cold_start(
+        &self,
+        account_env: Vec<(String, String)>,
+        mount_credentials: bool,
+    ) -> Result<()> {
         let mut guard = self.state.lock().await;
         if guard.is_some() {
             return Ok(());
@@ -737,15 +741,56 @@ impl HermesBridge {
             .to_string_lossy()
             .into_owned();
 
-        let mut cmd = Command::new(&bin);
-        cmd.args(hermes_acp_args())
-            .current_dir(&cwd)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+        // Where this turn runs. `Unsupported` fails cold_start with the
+        // reason rather than falling through to a host spawn.
+        let target = crate::services::exec_target::parse(&self.project_path);
+        if let crate::services::exec_target::ExecTarget::Unsupported(reason) = &target {
+            anyhow::bail!("{reason}");
+        }
+        let in_container = matches!(
+            target,
+            crate::services::exec_target::ExecTarget::Container { .. }
+        );
+
+        // Everything that must hold before a container turn is worth
+        // spawning: the CLI is actually installed inside (cached — the
+        // picker's answer goes stale the moment the container is stopped or
+        // replaced, but re-asking uncached cost a docker round trip on every
+        // message), and a credential can reach it. Refusing here names the
+        // fix; the alternative is the CLI's own opaque failure mid-stream.
+        let preflight = crate::services::container::spawn::preflight(
+            &target,
+            "hermes-agent",
+            mount_credentials,
+        )
+        .await?;
+
         // Multi-account isolation (no-op for the System account). On Windows
-        // Hermes reads %LOCALAPPDATA%\hermes, which `account_env` relocates.
-        crate::bridges::account_env::apply_to_command(&mut cmd, &account_env);
+        // Hermes reads %LOCALAPPDATA%\hermes, which `account_env` relocates —
+        // host paths, so they stop at the boundary. Inside, Hermes reads its
+        // own state dir (the official image mounts it at /opt/data).
+        let envs: Vec<(String, String)> = if in_container {
+            Vec::new()
+        } else {
+            account_env.clone()
+        };
+        // Credentials that crossed the boundary (Tier A). Empty on the host.
+        let mut envs = envs;
+        envs.extend(preflight.envs.iter().cloned());
+        let mut args: Vec<String> = hermes_acp_args().iter().map(|a| a.to_string()).collect();
+        args.extend(preflight.args.iter().cloned());
+
+        let mut cmd = crate::services::container::spawn::command(
+            &crate::services::container::spawn::SpawnRequest {
+                target: &target,
+                provider_id: "hermes-agent",
+                host_program: &bin,
+                args: &args,
+                envs: &envs,
+                cwd: &cwd,
+                pipe_stdin: true,
+            },
+        )?;
 
         let mut proc = cmd.spawn().map_err(|e| {
             anyhow!("Hermes CLI not found ({e}). Install: pip install \"hermes-agent[acp]\" (or see hermes-agent.nousresearch.com)")
@@ -884,6 +929,23 @@ impl HermesBridge {
             self.agent_template.as_deref(),
         );
         let mcp_servers = ensure_stdio_env(crate::services::mcp_dispatch::to_acp_servers(&mcp_map));
+        // In a container the fleet sidecars are unavailable: mcp_registry
+        // resolves them to an absolute HOST path next to the running exe,
+        // which does not exist inside, and mcp_dispatch's
+        // FLEETIFY_BACKEND_URL points at 127.0.0.1 — the container itself.
+        // Advertising servers that cannot start is how the model ends up
+        // calling a tool that never answers, so drop them and let the UI say
+        // which are missing instead.
+        let mcp_servers = if in_container {
+            tracing::info!(
+                target: "fleetify::container",
+                session_id = %self.session_id,
+                "fleet MCP servers dropped for this container turn (host sidecar paths are unreachable inside)"
+            );
+            serde_json::Value::Array(Vec::new())
+        } else {
+            mcp_servers
+        };
 
         // Resume a prior Hermes session via `session/load` when we have its
         // id, falling back to `session/new` if the load fails (e.g. the
@@ -891,6 +953,11 @@ impl HermesBridge {
         // `session/update` notifications, which we intentionally drop here:
         // cold start runs before the per-turn update handler is wired and the
         // Fleet DB already holds the transcript.
+        // The cwd hermes is TOLD about, which is not the one docker got.
+        // session/new and session/load name the directory a second time over
+        // the protocol; the host path does not exist on hermes' side.
+        let cwd = crate::services::container::spawn::agent_workdir(&target, &cwd);
+
         let resume = self.resume_session_id.clone().filter(|s| !s.is_empty());
         let new_session = |servers: Value| {
             let client = client.clone();
@@ -991,7 +1058,7 @@ impl HermesBridge {
         let system_prompt = self.system_prompt.clone();
         let needs_cold_start = state_mu.lock().await.is_none();
         let cold_starter = if needs_cold_start {
-            Some(self.cold_start_fut(ctx.account_env.clone()))
+            Some(self.cold_start_fut(ctx.account_env.clone(), ctx.container_mount_credentials))
         } else {
             None
         };
@@ -1133,6 +1200,7 @@ impl HermesBridge {
     fn cold_start_fut(
         &self,
         account_env: Vec<(String, String)>,
+        mount_credentials: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> {
         let bridge = HermesBridge {
             session_id: self.session_id.clone(),
@@ -1148,7 +1216,7 @@ impl HermesBridge {
             aborted: Arc::new(AtomicBool::new(false)),
             state: self.state.clone(),
         };
-        Box::pin(async move { bridge.cold_start(account_env).await })
+        Box::pin(async move { bridge.cold_start(account_env, mount_credentials).await })
     }
 }
 

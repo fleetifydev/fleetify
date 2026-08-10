@@ -147,6 +147,17 @@ export interface ComposerState {
    *  worktree checks it out (`base_branch` on createSession). Null →
    *  remote default. Cleared together with pendingCloneUrl. */
   pendingCloneBranch: string | null;
+  /** Execution target picked in the container chip. Orthogonal to the
+   *  source above: `docker-run` composes with a Local folder or a Git
+   *  worktree (the container bind-mounts it), `docker-attach` replaces the
+   *  project path with the container's own URL. */
+  execMode: "host" | "docker-attach" | "docker-run";
+  /** Image to provision from, for `docker-run`. */
+  containerImage: string | null;
+  /** Tier B credential strategy: mount this agent's own credential folder
+   *  into the container. Off by default — it carries a host login across
+   *  the boundary, so it is never implicit. */
+  containerMountCredentials: boolean;
 }
 
 /** @deprecated kept only so external imports (tests, callers that
@@ -454,6 +465,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     claudeSessionId: null,
     pendingCloneUrl: null,
     pendingCloneBranch: null,
+    execMode: "host",
+    containerImage: null,
+    containerMountCredentials: false,
   },
 
   setSessions: (sessions) => set({ sessions }),
@@ -976,6 +990,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         claudeSessionId: null,
         pendingCloneUrl: null,
         pendingCloneBranch: null,
+        // A fresh composer always starts on this machine — a previous
+        // session's container pick must not leak into the next draft.
+        execMode: "host",
+        containerImage: null,
+        containerMountCredentials: false,
       },
       activeSessionId: null,   // chat-view + composer.open == compose surface
       mainView: "fleet",
@@ -1066,6 +1085,17 @@ export const useAppStore = create<AppState>((set, get) => ({
         claude_session_id: c.claudeSessionId ?? undefined,
         use_worktree: c.useWorktree,
         base_branch: c.useWorktree && clonePickedBranch ? clonePickedBranch : undefined,
+        // Execution target. Omitted for a host session so the backend keeps
+        // its own default; without this the composer's container pick was
+        // silently dropped at create and the session came out running on
+        // this machine.
+        ...(c.execMode !== "host"
+          ? {
+              exec_mode: c.execMode,
+              container_image: c.containerImage ?? undefined,
+              container_mount_credentials: c.containerMountCredentials,
+            }
+          : {}),
       });
       // SessionCreate doesn't carry sandbox / tool_overrides / effort — PATCH
       // them onto the freshly-created row right away so a draft's
@@ -1157,6 +1187,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       c.pendingCloneBranch = null;
     }
     if (patch.pending_clone_branch !== undefined) c.pendingCloneBranch = patch.pending_clone_branch ?? null;
+    // Execution target. Without these three the container chip's pick was
+    // accepted by the UI and then dropped on the way to the backend — the
+    // draft committed as a plain host session.
+    if (patch.exec_mode !== undefined) c.execMode = patch.exec_mode;
+    if (patch.container_image !== undefined) c.containerImage = patch.container_image ?? null;
+    if (patch.container_mount_credentials !== undefined) {
+      c.containerMountCredentials = patch.container_mount_credentials;
+    }
     get().setComposerField(c);
   },
   commitDraft: async () => get().commitComposer(),

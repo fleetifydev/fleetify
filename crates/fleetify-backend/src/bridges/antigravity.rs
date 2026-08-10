@@ -656,6 +656,13 @@ impl AntigravityBridge {
         message: &str,
         ctx: super::BridgeContext,
     ) -> anyhow::Result<mpsc::Receiver<BridgeEvent>> {
+        // Refuse a container target up front, by name. Everything below this
+        // line is host-coupled — the PTY, the workspace-trust write into
+        // agy_home, the pre-spawn MCP config, the post-turn transcript read —
+        // so letting it run would fail deep inside with an error that names
+        // none of that. See `container::providers` for the full reason.
+        super::refuse_non_host_target(&self.agent_cwd)?;
+
         let (tx, rx) = mpsc::channel::<BridgeEvent>(8);
 
         // Multi-account: record the selected account's HOME so every in-process

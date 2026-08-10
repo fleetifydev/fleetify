@@ -108,14 +108,13 @@ async fn spawn_session(
             fields.join(", ")
         )));
     }
-    // project_path must be a real directory (mirror create_session).
+    // project_path must be an executable target (mirror create_session): a
+    // real host directory, or a container marker. A raw `is_dir()` here
+    // rejected every `docker://` path, since that is never a directory.
     if let Some(p) = resolved.spec.project_path.as_deref() {
-        let canon = fleetify_core::canonicalize_or_keep(std::path::Path::new(p));
-        if !canon.is_dir() {
-            return Err(ApiError::BadRequest(format!(
-                "Project path does not exist or is not a directory: {p}"
-            )));
-        }
+        let validated =
+            crate::services::exec_target::validate_project_path(p).map_err(ApiError::BadRequest)?;
+        resolved.spec.project_path = Some(validated);
     }
     let s = crate::services::spawn::create(&st, Some(&user.id), &resolved.spec, None)
         .await
@@ -224,19 +223,13 @@ async fn create_session(
     }
 
     if !raw.is_empty() {
-        let p = std::path::Path::new(&raw);
-        // Strip Windows verbatim (`\\?\`) prefix — `std::fs::canonicalize`
-        // returns it on Windows, and some ACP agents reject it with
-        // `EISDIR: illegal operation on a directory, lstat 'C:'`. Storing
-        // the normalized form keeps every downstream bridge (claude/codex)
-        // happy.
-        let resolved = fleetify_core::canonicalize_or_keep(p);
-        if !resolved.is_dir() {
-            return Err(ApiError::BadRequest(format!(
-                "Project path does not exist or is not a directory: {raw}"
-            )));
-        }
-        data.project_path = resolved.to_string_lossy().to_string();
+        // Target-aware: a host path is canonicalised (and stripped of the
+        // Windows verbatim `\\?\` prefix, which some ACP agents reject with
+        // `EISDIR: illegal operation on a directory, lstat 'C:'`), while a
+        // `docker://` marker is stored verbatim. The old raw `is_dir()`
+        // guard here is why a container session could not be created at all.
+        data.project_path = crate::services::exec_target::validate_project_path(&raw)
+            .map_err(ApiError::BadRequest)?;
     } else if is_staff || is_studio {
         data.project_path = dirs_home();
     } else {
@@ -309,9 +302,23 @@ async fn update_session(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
     Path(id): Path<String>,
-    Json(p): Json<SessionUpdate>,
+    Json(mut p): Json<SessionUpdate>,
 ) -> Result<Json<Session>, ApiError> {
     let s = owned(&st, &id, &user.id).await?;
+    // PATCH was the only way to reach the DB with an unvalidated path, and
+    // for a container session it was the only way in at all — so the one
+    // endpoint that most needed a guard had none. Now that create accepts
+    // container markers directly, this validates on equal terms.
+    if let Some(raw) = p.project_path.as_deref() {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return Err(ApiError::BadRequest("project_path cannot be blank".into()));
+        }
+        p.project_path = Some(
+            crate::services::exec_target::validate_project_path(raw)
+                .map_err(ApiError::BadRequest)?,
+        );
+    }
     macro_rules! set {
         ($col:literal, $val:expr) => {
             if let Some(v) = $val {
@@ -338,6 +345,11 @@ async fn update_session(
     set!("claude_session_id", p.claude_session_id.clone());
     set!("use_worktree", p.use_worktree);
     set!("account_id", p.account_id.clone());
+    set!("exec_mode", p.exec_mode.clone());
+    set!("container_id", p.container_id.clone());
+    set!("container_workdir", p.container_workdir.clone());
+    set!("container_image", p.container_image.clone());
+    set!("container_mount_credentials", p.container_mount_credentials);
     // Manual picker selection wins over any prior routing decision.
     // `pinned_agent` / `pinned_model` are sticky across the session's
     // lifetime (Branch 1 of `resolve_routing_for_turn`), so without
@@ -508,6 +520,14 @@ async fn delete_session(
     // new session off the same name.
     if let Some(wt) = s.worktree_path.as_deref() {
         let _ = crate::services::worktree::remove_worktree(&s.project_path, wt).await;
+    }
+    // Tear down a container Fleetify provisioned. Deliberately scoped to
+    // `docker-run`: an ATTACHED container is the user's own, and deleting a
+    // Fleetify session must never stop something they started themselves.
+    if s.exec_mode == "docker-run" {
+        if let Some(cid) = s.container_id.as_deref() {
+            crate::services::container::lifecycle::teardown_provisioned(cid).await;
+        }
     }
     if s.origin.as_deref() == Some("claude-bg") {
         // Auto-surfaced background session: ARCHIVE instead of hard-deleting so
@@ -780,6 +800,15 @@ async fn set_session_rules(
 /// The working directory a session's provider spawns in (mirrors chat.rs:
 /// worktree checkout when present, else the in-place project path).
 fn session_workdir(s: &Session) -> Option<std::path::PathBuf> {
+    // A `docker-attach` session's files live inside a container, so a host
+    // `std::fs::write` against `docker://abc/work/CLAUDE.md` creates a literal
+    // `docker:` directory on Windows and silently no-ops elsewhere — the rule
+    // never applies and nothing says so. `docker-run` keeps a host workspace
+    // (it bind-mounts one), so rule files land correctly there and the
+    // container sees them through the mount.
+    if !s.has_host_workspace() {
+        return None;
+    }
     let dir = s
         .worktree_path
         .clone()

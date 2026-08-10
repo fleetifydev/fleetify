@@ -514,6 +514,28 @@ export interface WSCompactionStatus {
   command: string;
 }
 
+/** One step of making a container ready for a `docker-run` session.
+ *
+ *  Emitted on the first turn only, while the image is pulled and the
+ *  container started — a cold `docker pull` runs for minutes, and reporting
+ *  nothing is indistinguishable from a hang. `pct` is a 0–1 fraction and is
+ *  only present for the pull; the other steps are single beats. */
+export interface WSContainerSetup {
+  type: "container_setup";
+  /** `pull` | `start` | `verify`. */
+  step: string;
+  /** Already phrased for the user by the backend; rendered verbatim. */
+  detail: string;
+  pct: number | null;
+}
+
+/** Provisioning finished. `error` non-null means it failed — a normal
+ *  `error` event follows immediately, so the pill only has to clear. */
+export interface WSContainerSetupDone {
+  type: "container_setup_done";
+  error: string | null;
+}
+
 /** Interim progress while the app-owned summariser streams. `pct` is a
  *  monotonic 0–100 the inline pill renders as a progress bar; `phase` is
  *  "prepare" | "summarize" | "persist". Emitted between compaction_status
@@ -666,6 +688,8 @@ export type WSServerMessage =
   | WSAgentRestarted
   | WSEnhanceDone
   | WSCompactionStatus
+  | WSContainerSetup
+  | WSContainerSetupDone
   | WSCompactionProgress
   | WSCompactionDone
   | WSCitation

@@ -1495,6 +1495,25 @@ class WSManager {
         }
         break;
       }
+      case "container_setup": {
+        // A docker-run session is being made ready on its first turn:
+        // pulling the image, starting the container, checking the agent is
+        // in there. Surfaced inline because a cold pull runs for minutes and
+        // silence is indistinguishable from a hang.
+        store.setContainerSetup(sessionId, {
+          step: typeof data.step === "string" ? data.step : "start",
+          detail: typeof data.detail === "string" ? data.detail : "Preparing the container…",
+          pct: typeof data.pct === "number" ? data.pct : null,
+        });
+        break;
+      }
+      case "container_setup_done": {
+        // Ready, or failed. Either way the pill's job is over — a failure
+        // arrives right behind this as a normal `error`, which routes to the
+        // shared <ChatError> like every other in-chat failure.
+        store.clearContainerSetup(sessionId);
+        break;
+      }
       case "compaction_progress": {
         // Interim % from the streaming summariser — advance the pill bar.
         const pct = typeof data.pct === "number" ? data.pct : 0;

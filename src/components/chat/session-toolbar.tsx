@@ -30,7 +30,7 @@ import {
   GitBranch, Search as SearchIcon,
   Github, Server, Box,
 } from "lucide-react";
-import { updateSession as apiUpdateSession, cloneRepository, fetchClaudeSessions, fetchClaudeHistory, listRemoteBranches, type ClaudeSession } from "@/lib/api";
+import { updateSession as apiUpdateSession, cloneRepository, fetchClaudeSessions, fetchClaudeHistory, listRemoteBranches, dockerContainers, type ClaudeSession } from "@/lib/api";
 import { registerConfigPatch } from "@/lib/session-config-sync";
 import { extractOwnerRepo } from "@/lib/git-url";
 import { GitSourceTab } from "./git-source-tab";
@@ -43,7 +43,7 @@ import { DockerContainerPanel } from "./docker-container-panel";
 import { SessionRulesChip } from "./session-rules-chip";
 import { folderName as folderNameUtil } from "@/lib/utils";
 
-type MenuId = "source" | "git" | "history" | null;
+type MenuId = "source" | "git" | "container" | "history" | null;
 
 export function SessionToolbar({
   sessionId,
@@ -91,7 +91,24 @@ export function SessionToolbar({
   const composerOpen = useAppStore(s => s.composer.open);
   const pendingCloneUrl = useAppStore(s => s.composer.pendingCloneUrl);
   const pendingCloneBranch = useAppStore(s => s.composer.pendingCloneBranch);
+  const composerExecMode = useAppStore(s => s.composer.execMode);
+  const composerMountCreds = useAppStore(s => s.composer.containerMountCredentials);
   const isDraft = composerOpen || session?.local_only === true;
+  // Where this session's agent runs. Falls back to parsing project_path so a
+  // row written before the exec_mode column resolves the same way the
+  // backend's `Session::exec_target` does, rather than reading as a host
+  // session and re-showing the Git surface.
+  // Draft sessions have no backend row, so the pick lives in composer state
+  // until the first message commits it. Reading only `session` here made the
+  // chip look inert while configuring a new session.
+  const execMode: "host" | "docker-attach" | "docker-run" =
+    (isDraft ? composerExecMode : session?.exec_mode) ??
+    (projectPath?.startsWith("docker://") ? "docker-attach" : "host");
+  const containerId =
+    session?.container_id ??
+    (projectPath?.startsWith("docker://")
+      ? projectPath.slice("docker://".length).split("/")[0] || null
+      : null);
   const [openMenu, setOpenMenu] = useState<MenuId>(null);
 
   // ── git binary presence ──
@@ -257,7 +274,7 @@ export function SessionToolbar({
   // Source tab — Local (browse), Git (repo list + clone-by-URL),
   // Remote (SSH host management), Container (running Docker containers).
   // The Git tab's repo-list state lives inside <GitSourceTab/>.
-  const [sourceTab,   setSourceTab]   = useState<"local" | "git" | "remote" | "container">("local");
+  const [sourceTab,   setSourceTab]   = useState<"local" | "git" | "remote">("local");
   const wrapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -281,13 +298,20 @@ export function SessionToolbar({
   // Open the source picker on a specific tab when an external
   // affordance asks (the Fleet hub's empty-state cards). Window
   // event so any caller can opt in without the toolbar exposing a
-  // ref. Detail can be "local" / "git" / "remote" / "container";
-  // unknown values are ignored.
+  // ref. Detail can be "local" / "git" / "remote"; unknown values are
+  // ignored. "container" is still accepted for callers that predate the
+  // move — it opens the picker on Local, where the Run-in-container
+  // section now lives.
   useEffect(() => {
     const onOpen = (e: Event) => {
       const detail = (e as CustomEvent<{ tab?: "local" | "git" | "remote" | "container" }>).detail;
       const tab = detail?.tab;
-      if (tab === "local" || tab === "git" || tab === "remote" || tab === "container") {
+      if (tab === "container") {
+        setSourceTab("local");
+        setOpenMenu("source");
+        return;
+      }
+      if (tab === "local" || tab === "git" || tab === "remote") {
         setSourceTab(tab);
         setOpenMenu("source");
       }
@@ -419,9 +443,10 @@ export function SessionToolbar({
           // When no path is set yet, fall back to whichever tab the
           // user has open so the chip tracks intent before the pick
           // lands.
-          const isContainer =
-            (projectPath && projectPath.startsWith("docker://")) ||
-            (!projectPath && sourceTab === "container");
+          // Container is no longer a source, so this is purely "does the
+          // project path itself live inside a container" — i.e. attach mode.
+          // A docker-run session's source is still Local or Git.
+          const isContainer = !!(projectPath && projectPath.startsWith("docker://"));
           const isRemote =
             !isContainer && (
               (projectPath && projectPath.startsWith("ssh://")) ||
@@ -464,7 +489,6 @@ export function SessionToolbar({
               <SourceTab active={sourceTab === "local"}     onClick={() => setSourceTab("local")}>Local</SourceTab>
               <SourceTab active={sourceTab === "git"}       onClick={() => setSourceTab("git")}>Git</SourceTab>
               <SourceTab active={sourceTab === "remote"}    onClick={() => setSourceTab("remote")}>Remote</SourceTab>
-              <SourceTab active={sourceTab === "container"} onClick={() => setSourceTab("container")}>Container</SourceTab>
             </div>
 
             {/* ── Local tab ── */}
@@ -521,22 +545,11 @@ export function SessionToolbar({
               />
             )}
 
-            {/* ── Container tab — running Docker containers as
-                workspaces. Pick a container, browse its filesystem,
-                commit a path. project_path lands as
-                `docker://<id>/abs/path` — no colon, despite what this
-                comment claimed until the backend parser was written
-                against the emitter rather than against the comment.
-                Unlike Remote, this one actually executes: the session
-                spawns via `docker exec`. */}
-            {sourceTab === "container" && (
-              <DockerContainerPanel
-                onPick={(containerUrl) => {
-                  void patch({ project_path: containerUrl });
-                  setOpenMenu(null);
-                }}
-              />
-            )}
+            {/* Container is NOT here on purpose. It is an execution
+                target, orthogonal to the source, so it lives in its own
+                chip beside the branch chip — putting it inside the source
+                picker would re-imply "container is a kind of source",
+                which is exactly what migration 0014 undid. */}
           </Menu>
         )}
       </Chip>
@@ -557,7 +570,10 @@ export function SessionToolbar({
         const hasPendingClone = !!pendingCloneUrl;
         const inGitMode       = sourceTab === "git" || hasPendingClone || isClonePath;
         const inRemoteMode    = sourceTab === "remote";
-        const inContainerMode = sourceTab === "container";
+        // Attach sessions carry the container URL as their project path, so
+        // the readout chip still has a container flavour even though there
+        // is no container *tab* any more.
+        const inContainerMode = isContainerPath;
         const isPickerMode    = inGitMode || inRemoteMode || inContainerMode;
         const Icon =
           isContainerPath ? Box
@@ -623,6 +639,52 @@ export function SessionToolbar({
         );
       })()}
 
+      {/* ── Container chip ──
+            Where the agent RUNS, as a peer of the branch chip rather than a
+            section inside the source picker. Container is orthogonal to the
+            source — that is the whole point of the exec_mode column — so
+            nesting it under "which files" would contradict the model.
+
+            Compact when the session runs on this machine: an icon-only
+            affordance, because most sessions never leave the host and a
+            fully-labelled seventh chip would crowd the strip for nothing.
+            Expands to the container's name + a live/dead dot once the
+            session actually runs in one.
+
+            Hidden for an ssh:// session: `ExecTarget::Unsupported` refuses
+            that combination, so offering it would advertise a dead end. ── */}
+      {!(projectPath && projectPath.startsWith("ssh://")) && (
+        <ContainerChip
+          containerId={containerId}
+          mode={execMode}
+          mountsCredentials={isDraft ? composerMountCreds : session?.container_mount_credentials === true}
+          open={openMenu === "container"}
+          onToggle={() => setOpenMenu(openMenu === "container" ? null : "container")}
+          sourcePath={projectPath}
+          providerId={tool}
+          onAttach={(containerUrl) => {
+            // Attach: the files live inside the container, so its URL IS the
+            // project path and there is no host workspace.
+            void patch({ project_path: containerUrl });
+            setOpenMenu(null);
+          }}
+          onRun={(image, mountCredentials) => {
+            // Run: keep the HOST project path — the container bind-mounts
+            // it, so host git keeps working — and record the image.
+            void patch({
+              exec_mode: "docker-run",
+              container_image: image,
+              container_mount_credentials: mountCredentials,
+            });
+            setOpenMenu(null);
+          }}
+          onClear={() => {
+            void patch({ exec_mode: "host", container_image: null, container_id: null });
+            setOpenMenu(null);
+          }}
+        />
+      )}
+
       {/* ── Git branch + worktree (composite chip) ──
             Two click targets glued together inside a single chip
             shell — mirrors the reference design where the branch
@@ -638,7 +700,14 @@ export function SessionToolbar({
         // without git. We pass through to the same `disabled` /
         // `branchDisabled` flags so the rest of the chip's visuals
         // (opacity, cursor, etc.) just work.
-        const gitMissing = gitPresent === false;
+        // A `docker-attach` session's files live inside a container we did
+        // not create, so there is no host checkout for git to act on and the
+        // whole chip is meaningless. `docker-run` is the opposite: it
+        // bind-mounts a HOST checkout, so branches and worktrees apply
+        // exactly as they do for a plain local session — that orthogonality
+        // is the point of the mode, and gating on "is it containerised"
+        // rather than "is there a host workspace" would take it away.
+        const gitMissing = gitPresent === false || execMode === "docker-attach";
         // Git draft mode: repo picked, clone deferred — both segments work
         // off the REMOTE (ls-remote list; worktree is just a flag until
         // commit), so a local path is not required.
@@ -1252,6 +1321,140 @@ export function SessionToolbar({
 }
 
 /* ─── Chip — base chip atom shared by every entry above ─── */
+/** Running-in-container chip.
+ *
+ *  Two jobs the toolbar had no way to do before: say out loud that this
+ *  session executes somewhere other than this machine, and show when that
+ *  somewhere has stopped. Previously a dead container was discovered at the
+ *  next turn's re-probe — i.e. the user found out by the turn failing.
+ *
+ *  Liveness is polled off `docker ps` (the container list the picker already
+ *  uses) rather than a dedicated endpoint, so a stopped container drops out
+ *  of the list and the chip goes dead without any new backend surface. */
+/** Container chip — where this session's agent runs.
+ *
+ *  A peer of the branch chip, not a section inside the source picker:
+ *  execution target is orthogonal to source (that is what the `exec_mode`
+ *  column buys), so nesting it under "which files" would contradict the
+ *  model the backend now enforces.
+ *
+ *  Two shapes. On the host it is icon-only — a quiet affordance, because
+ *  most sessions never leave this machine and a seventh fully-labelled chip
+ *  would crowd the strip for a setting nobody changed. Once the session runs
+ *  in a container it expands to the container's name and a live/dead dot,
+ *  polled off `docker ps`; a stopped container used to be discovered at the
+ *  next turn's re-probe, i.e. by the turn failing. */
+function ContainerChip({
+  containerId, mode, mountsCredentials, open, onToggle,
+  sourcePath, providerId, onAttach, onRun, onClear,
+}: {
+  containerId: string | null;
+  mode: "host" | "docker-attach" | "docker-run";
+  mountsCredentials: boolean;
+  open: boolean;
+  onToggle: () => void;
+  sourcePath: string | null;
+  providerId: string;
+  onAttach: (containerUrl: string) => void;
+  onRun: (image: string, mountCredentials: boolean) => void;
+  onClear: () => void;
+}) {
+  // The probe answer carries the id it belongs to, so switching containers
+  // does not need a synchronous reset inside the effect (which triggers a
+  // cascading render) — a mismatched id simply reads as "not answered yet".
+  const [probe, setProbe] = useState<{ id: string; alive: boolean; name: string | null } | null>(null);
+  const active = mode !== "host";
+  const answer = probe && probe.id === containerId ? probe : null;
+
+  useEffect(() => {
+    if (!active || !containerId) return;
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const { containers } = await dockerContainers();
+        if (cancelled) return;
+        // `docker ps` reports short ids; a session may hold either the short
+        // id or a name, so match on both ends rather than requiring equality.
+        const hit = containers.find(
+          c =>
+            c.id === containerId ||
+            c.name === containerId ||
+            containerId.startsWith(c.id) ||
+            c.id.startsWith(containerId),
+        );
+        setProbe({ id: containerId, alive: !!hit, name: hit?.name ?? null });
+      } catch {
+        // Daemon unreachable is not literally "container stopped", but from
+        // the session's point of view the effect is identical: the next turn
+        // cannot run. Show it as dead rather than pretending.
+        if (!cancelled) setProbe({ id: containerId, alive: false, name: null });
+      }
+    };
+    void check();
+    const t = setInterval(check, 15_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [containerId, active]);
+
+  const alive = answer?.alive ?? null;
+  const label = answer?.name ?? containerId?.slice(0, 12) ?? "";
+  const state = !active ? "host" : alive === null ? "unknown" : alive ? "live" : "dead";
+  const dot =
+    state === "live" ? "var(--c-low, #4a9)"
+    : state === "dead" ? "var(--c-err, #d66)"
+    : "rgba(var(--fg-rgb),0.35)";
+  const title =
+    !active ? "Runs on this machine. Click to run it in a Docker container instead."
+    : state === "dead" ? `Container '${label}' isn't running — start it, or switch back to this machine.`
+    : mode === "docker-run" ? "Running in a container Fleetify started. Deleting this session removes it."
+    : `Running inside your container '${label}'. Fleetify never stops it.`;
+
+  return (
+    <Chip
+      active={open}
+      onClick={onToggle}
+      title={mountsCredentials ? `${title} Your credentials are mounted into it.` : title}
+    >
+      <span
+        data-testid="container-chip"
+        data-state={state}
+        data-mode={mode}
+        style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+      >
+        <Box size={13} strokeWidth={1.75} style={{ opacity: active ? 0.9 : 0.55 }} />
+        {active && (
+          <>
+            <span
+              aria-hidden
+              style={{
+                width: 6, height: 6, borderRadius: "50%", background: dot,
+                // A dead container is the one state worth interrupting for.
+                boxShadow: state === "dead"
+                  ? `0 0 0 3px color-mix(in srgb, ${dot} 22%, transparent)`
+                  : "none",
+              }}
+            />
+            <span style={{ maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis" }}>
+              {label}
+            </span>
+          </>
+        )}
+      </span>
+      {open && (
+        <Menu width={340} padding={0}>
+          <DockerContainerPanel
+            sourcePath={sourcePath}
+            execMode={mode}
+            providerId={providerId}
+            onAttach={onAttach}
+            onRun={onRun}
+            onClear={onClear}
+          />
+        </Menu>
+      )}
+    </Chip>
+  );
+}
+
 function Chip({
   children, onClick, active, chevron, title, disabled,
 }: {
@@ -1445,6 +1648,11 @@ function Menu({ children, width, padding }: {
       background: "var(--popover, #0D0D0D)",
       border: "1px solid var(--c-brd, rgba(255,255,255,0.06))",
       borderRadius: 8,
+      // The menu renders INSIDE the Chip's <button>, and buttons default to
+      // `text-align: center` — which every descendant inherits. That is why
+      // popover rows each had to re-declare `textAlign: "left"`, and why any
+      // row that forgot came out centred. Reset it once, here.
+      textAlign: "left",
       padding: padding ?? 4,
       boxShadow: "0 -14px 36px rgba(0,0,0,0.35)",
       zIndex: 100,

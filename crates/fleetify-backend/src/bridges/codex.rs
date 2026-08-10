@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::{mpsc, Mutex};
 
 use super::codex_client::CodexClient;
@@ -197,6 +197,21 @@ fn compose_input_text(system_prompt: Option<&str>, message: &str) -> String {
     }
 }
 
+/// The sandbox tier codex is actually given.
+///
+/// On the host the user's (or the permission mode's) choice stands. Inside a
+/// container it cannot: codex builds its sandbox from Landlock+seccomp on
+/// Linux and Seatbelt on macOS, and an ordinary container exposes neither, so
+/// `read-only` and `workspace-write` both fail to start rather than degrade.
+/// The container is the enclosing boundary instead.
+fn effective_sandbox(requested: &str, in_container: bool) -> &str {
+    if in_container {
+        crate::services::container::providers::CODEX_CONTAINER_SANDBOX
+    } else {
+        requested
+    }
+}
+
 impl CodexBridge {
     pub fn new(
         session_id: impl Into<String>,
@@ -240,6 +255,7 @@ impl CodexBridge {
         &self,
         base_url_override: Option<String>,
         account_env: Vec<(String, String)>,
+        mount_credentials: bool,
     ) -> Result<()> {
         let mut guard = self.state.lock().await;
         if guard.is_some() {
@@ -264,19 +280,52 @@ impl CodexBridge {
             }
             None => derived_sandbox,
         };
+        // Where this turn actually runs. `Unsupported` fails cold_start with
+        // the reason rather than falling through to a host spawn — an
+        // `ssh://` path is also a valid POSIX path, so falling through is how
+        // a session silently runs in the wrong place.
+        let target = crate::services::exec_target::parse(&self.project_path);
+        if let crate::services::exec_target::ExecTarget::Unsupported(reason) = &target {
+            anyhow::bail!("{reason}");
+        }
+        let in_container = matches!(
+            target,
+            crate::services::exec_target::ExecTarget::Container { .. }
+        );
+
+        // Everything that must hold before a container turn is worth
+        // spawning: the CLI is actually installed inside (cached — the
+        // picker's answer goes stale the moment the container is stopped or
+        // replaced, but re-asking uncached cost a docker round trip on every
+        // message), and a credential can reach it. Refusing here names the
+        // fix; the alternative is the CLI's own opaque failure mid-stream.
+        let preflight =
+            crate::services::container::spawn::preflight(&target, "codex-cli", mount_credentials)
+                .await?;
+
         let bin = which::which("codex")
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| "codex".to_string());
 
-        let mut cmd = Command::new(&bin);
-        cmd.args(["app-server", "--listen", "stdio://"]);
+        // Args and env are both collected up front. In container mode they
+        // have to be known before the argv exists: env becomes `-e` flags
+        // ahead of the container id, and setting it on the Command afterwards
+        // would attach it to the docker client instead of to the process
+        // inside. That failure is silent — the agent just runs without its
+        // key — which makes it the worst one available here.
+        let mut args: Vec<String> = vec![
+            "app-server".to_string(),
+            "--listen".to_string(),
+            "stdio://".to_string(),
+        ];
+        let mut envs: Vec<(String, String)> = Vec::new();
         if let Some(ref url) = base_url_override {
-            cmd.env("OPENAI_BASE_URL", url);
+            envs.push(("OPENAI_BASE_URL".to_string(), url.clone()));
         }
         let codex_effort = effort_to_codex(&self.effort);
         if !codex_effort.is_empty() {
-            cmd.arg("-c")
-                .arg(format!("model_reasoning_effort={codex_effort}"));
+            args.push("-c".to_string());
+            args.push(format!("model_reasoning_effort={codex_effort}"));
         }
         // Materialize the merged MCP map (user registry + fleet
         // builtins) into Codex `-c mcp_servers.<n>.X=<toml>` args.
@@ -297,9 +346,8 @@ impl CodexBridge {
             mcp_arg_count = mcp_args.len(),
             "codex MCP args built"
         );
-        for a in &mcp_args {
-            cmd.arg(a);
-        }
+        args.extend(mcp_args.iter().cloned());
+        args.extend(preflight.args.iter().cloned());
         let cwd_raw = if self.project_path.is_empty() {
             std::env::var("USERPROFILE")
                 .or_else(|_| std::env::var("HOME"))
@@ -314,16 +362,28 @@ impl CodexBridge {
         let cwd = fleetify_core::strip_verbatim_prefix(std::path::Path::new(&cwd_raw))
             .to_string_lossy()
             .into_owned();
-        cmd.current_dir(&cwd)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        // Multi-account isolation (no-op for the System account).
-        crate::bridges::account_env::apply_to_command(&mut cmd, &account_env);
-        // Canonical PATH (not our launch-chain-bloated runtime PATH) so cmd.exe's
-        // 8191-char truncation can't strip `node`/`git` from the `.cmd` shim and
-        // kill the agent at spawn. See `bridges::apply_clean_path`.
-        crate::bridges::apply_clean_path(&mut cmd);
+        // Multi-account isolation (no-op for the System account). Skipped in
+        // a container: HOME/XDG overrides are host paths and the container
+        // has its own home, so forwarding them points codex at nothing.
+        if !in_container {
+            envs.extend(account_env.iter().cloned());
+        }
+        // Credentials that crossed the boundary (Tier A). Empty on the host.
+        envs.extend(preflight.envs.iter().cloned());
+
+        let mut cmd = crate::services::container::spawn::command(
+            &crate::services::container::spawn::SpawnRequest {
+                target: &target,
+                provider_id: "codex-cli",
+                host_program: &bin,
+                args: &args,
+                envs: &envs,
+                cwd: &cwd,
+                // The app-server conversation is long-lived JSON-RPC over
+                // stdin; `docker exec -i` carries it only because this is on.
+                pipe_stdin: true,
+            },
+        )?;
 
         let mut proc = cmd.spawn().map_err(|e| {
             anyhow!(
@@ -408,9 +468,38 @@ impl CodexBridge {
         client.send_initialized().await?;
         tracing::info!(target: "codex", session_id = %self.session_id, "codex: initialized notification sent, thread/start START");
 
+        // What codex is TOLD about itself, which is not what we told docker.
+        //
+        // * cwd — the container's own `/work…`, not the host path. `-w`
+        //   already put the process there; handing thread/start the host path
+        //   points codex at a directory that does not exist on its side, and
+        //   the failure surfaces as a confusing missing-project error well
+        //   after the spawn looked fine.
+        // * sandbox — codex sandboxes itself with Landlock+seccomp (Linux) or
+        //   Seatbelt (macOS), and a container exposes neither, so any other
+        //   tier refuses to start. The container is the boundary instead.
+        //   This rides the protocol, not argv: a `--sandbox` flag on
+        //   `app-server` is silently ignored.
+        let agent_cwd = crate::services::container::spawn::agent_workdir(&target, &cwd);
+        let effective_sandbox = effective_sandbox(sandbox, in_container);
+        if in_container && effective_sandbox != sandbox {
+            tracing::info!(
+                target: "codex",
+                session_id = %self.session_id,
+                requested = sandbox,
+                effective = effective_sandbox,
+                "codex: container replaces the CLI sandbox — Landlock/Seatbelt are unavailable inside"
+            );
+        }
         let thread_id = tokio::time::timeout(
             std::time::Duration::from_secs(INIT_TIMEOUT_SECS),
-            client.thread_start(&cwd, sandbox, approval, self.model_name.as_deref(), None),
+            client.thread_start(
+                &agent_cwd,
+                effective_sandbox,
+                approval,
+                self.model_name.as_deref(),
+                None,
+            ),
         )
         .await
         .map_err(|_| anyhow!("Codex thread/start timed out after {INIT_TIMEOUT_SECS}s."))??;
@@ -491,7 +580,11 @@ impl CodexBridge {
         let sys_prompt = self.system_prompt.clone();
         let needs_cold_start = state_mu.lock().await.is_none();
         let cold_starter = if needs_cold_start {
-            Some(self.cold_start_fut(ctx.base_url_override.clone(), ctx.account_env.clone()))
+            Some(self.cold_start_fut(
+                ctx.base_url_override.clone(),
+                ctx.account_env.clone(),
+                ctx.container_mount_credentials,
+            ))
         } else {
             None
         };
@@ -816,6 +909,7 @@ impl CodexBridge {
         &self,
         base_url_override: Option<String>,
         account_env: Vec<(String, String)>,
+        mount_credentials: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> {
         let session_id = self.session_id.clone();
         let project_path = self.project_path.clone();
@@ -844,7 +938,9 @@ impl CodexBridge {
                 state,
                 permission_handler,
             };
-            bridge.cold_start(base_url_override, account_env).await
+            bridge
+                .cold_start(base_url_override, account_env, mount_credentials)
+                .await
         })
     }
 }
@@ -1271,6 +1367,88 @@ mod tests {
         assert_eq!(
             effective3, derived,
             "unknown sandbox should fall back to derived"
+        );
+    }
+
+    /// On the host, whatever the user (or the permission mode) picked stands.
+    #[test]
+    fn sandbox_is_untouched_on_the_host() {
+        assert_eq!(effective_sandbox("read-only", false), "read-only");
+        assert_eq!(
+            effective_sandbox("workspace-write", false),
+            "workspace-write"
+        );
+    }
+
+    /// Inside a container it cannot stand: codex builds its sandbox from
+    /// Landlock+seccomp (Linux) or Seatbelt (macOS), and a container exposes
+    /// neither, so read-only/workspace-write fail to START rather than
+    /// degrade. The container is the enclosing boundary instead.
+    #[test]
+    fn container_replaces_the_codex_sandbox_because_landlock_is_unavailable() {
+        assert_eq!(effective_sandbox("read-only", true), "danger-full-access");
+        assert_eq!(
+            effective_sandbox("workspace-write", true),
+            "danger-full-access"
+        );
+        assert_eq!(
+            effective_sandbox("danger-full-access", true),
+            "danger-full-access"
+        );
+    }
+
+    /// The tier rides `thread/start`, not argv. Fleetify runs
+    /// `codex app-server`, where a `--sandbox` command-line flag is silently
+    /// ignored — so an edit that "moves it to the args" would look correct
+    /// and change nothing.
+    #[test]
+    fn codex_container_argv_is_app_server_with_no_sandbox_flag() {
+        let target = crate::services::exec_target::ExecTarget::Container {
+            id: "c1".into(),
+            workdir: "/work".into(),
+        };
+        let args: Vec<String> = ["app-server", "--listen", "stdio://"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let argv = crate::services::container::spawn::argv_for(
+            &crate::services::container::spawn::SpawnRequest {
+                target: &target,
+                provider_id: "codex-cli",
+                host_program: r"C:\Program Files\nodejs\codex.cmd",
+                args: &args,
+                envs: &[],
+                cwd: "",
+                pipe_stdin: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(argv[0], "docker");
+        assert_eq!(argv[2], "-i", "app-server's JSON-RPC needs docker exec -i");
+        let id_at = argv.iter().position(|a| a == "c1").unwrap();
+        assert_eq!(
+            argv[id_at + 1],
+            "codex",
+            "must exec the in-container binary, not the host .cmd shim"
+        );
+        assert!(
+            !argv.iter().any(|a| a == "--sandbox"),
+            "the sandbox rides thread/start, not argv: {argv:?}"
+        );
+    }
+
+    /// codex is told its own cwd a second time over the protocol. That copy
+    /// must be the container's path — the host path names a directory that
+    /// does not exist on codex's side.
+    #[test]
+    fn thread_start_cwd_is_the_in_container_path() {
+        let target = crate::services::exec_target::ExecTarget::Container {
+            id: "c1".into(),
+            workdir: "/work/repo".into(),
+        };
+        assert_eq!(
+            crate::services::container::spawn::agent_workdir(&target, r"C:\Users\me\repo"),
+            "/work/repo"
         );
     }
 

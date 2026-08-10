@@ -69,6 +69,29 @@ export interface Session {
   effort?: "low" | "medium" | "high" | "extra_high" | "max" | "ultra_code";
   sandbox?: string | null;
   tool_overrides?: string | null;
+  /** Where the agent process runs. Orthogonal to the *source* (Local /
+   *  Git / Remote), which is what `project_path` describes — a git
+   *  worktree session can be `docker-run`, and then host git still
+   *  operates on the checkout the container bind-mounts.
+   *
+   *  - `host`          — spawn on this machine (the default)
+   *  - `docker-attach` — exec into a container the user already runs;
+   *                      the files live inside it, so there is no host
+   *                      workspace and the Git surface does not apply
+   *  - `docker-run`    — Fleetify provisions a container from
+   *                      `container_image` and mounts `project_path` */
+  exec_mode?: "host" | "docker-attach" | "docker-run";
+  container_id?: string | null;
+  /** Working directory INSIDE the container. Distinct from
+   *  `project_path`, which stays the HOST path for `docker-run`. */
+  container_workdir?: string | null;
+  /** Image to provision from. Only meaningful for `docker-run` — an
+   *  attached container already exists and its image is not ours to pick. */
+  container_image?: string | null;
+  /** Tier B of the credential strategy: mount this provider's own
+   *  credential directory into the container. Off by default — it carries
+   *  a host login across the boundary, so it is never implicit. */
+  container_mount_credentials?: boolean;
   /** Renderer-only flag: this session was created client-side by
    *  `beginDraft` and has no backend row yet. `commitDraft` swaps it
    *  out for a server-issued Session (which never carries this flag)

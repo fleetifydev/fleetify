@@ -47,6 +47,56 @@ pub struct SessionManager {
     dispatch_chains: Mutex<HashMap<String, Vec<String>>>,
 }
 
+/// The `exec_mode` / `container_id` / `container_workdir` triple a new
+/// session is created with.
+pub(crate) struct ExecColumns {
+    pub mode: String,
+    pub container_id: Option<String>,
+    pub container_workdir: Option<String>,
+}
+
+/// Resolve the execution-target columns for a create.
+///
+/// Two inputs can specify a container, and they are not equivalent:
+///
+///  * the explicit `exec_mode` + `container_id` fields (the orthogonal
+///    toggle — this is how a Git/worktree session gets a container), and
+///  * a `docker://<id>/<path>` marker in `project_path` (what the pre-0014
+///    composer emitted, and what every existing row carries).
+///
+/// The explicit fields win. The marker is still honoured so the older
+/// composer flow and any client that has not been updated keep working
+/// instead of silently creating a host session.
+pub(crate) fn resolve_exec_columns(data: &SessionCreate) -> ExecColumns {
+    use crate::services::exec_target::{parse, ExecTarget};
+
+    if let Some(mode) = data
+        .exec_mode
+        .as_deref()
+        .filter(|m| m.starts_with("docker"))
+    {
+        return ExecColumns {
+            mode: mode.to_string(),
+            container_id: data.container_id.clone(),
+            // `docker-run` has no container yet — lifecycle provisioning fills
+            // this in. `docker-attach` should carry it from the picker.
+            container_workdir: data.container_workdir.clone(),
+        };
+    }
+    if let ExecTarget::Container { id, workdir } = parse(&data.project_path) {
+        return ExecColumns {
+            mode: "docker-attach".to_string(),
+            container_id: Some(id),
+            container_workdir: Some(workdir),
+        };
+    }
+    ExecColumns {
+        mode: "host".to_string(),
+        container_id: None,
+        container_workdir: None,
+    }
+}
+
 impl SessionManager {
     fn new() -> Self {
         let (status_tx, _) = broadcast::channel(256);
@@ -187,16 +237,23 @@ impl SessionManager {
         if session.project_path.is_empty() || is_staff {
             return;
         }
-        // Host git can only act on host paths. A container session's
-        // project_path points inside the container, so carving a worktree
-        // there would shell out to `git -C docker://…` — and even the
+        // Host git can only act on a host checkout.
+        //
+        // This is NOT simply "skip when containerised". A `docker-run`
+        // session bind-mounts a HOST directory into the container, so its
+        // project_path is a real host path and host git is exactly right —
+        // that is what makes the container orthogonal to Git rather than
+        // mutually exclusive with it. Only `docker-attach` (the files live
+        // inside a container we did not create) and unexecutable targets are
+        // excluded; there, `git -C docker://…` would be the bug, and even the
         // no-carve branch below would record a branch name for a repo the
         // host cannot see.
-        if !crate::services::exec_target::is_host_path(&session.project_path) {
+        if !session.has_host_workspace() {
             tracing::info!(
                 session_id = %session.id,
                 project = %session.project_path,
-                "session.git_setup.skipped (not a host path)"
+                exec_mode = %session.exec_mode,
+                "session.git_setup.skipped (no host workspace)"
             );
             return;
         }
@@ -268,6 +325,7 @@ impl SessionManager {
 
     /// Parity with `create_session`: command = `${cmd} ${args…}` from
     /// config.agents, else the raw tool name (custom agent).
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_session(
         &self,
         pool: &SqlitePool,
@@ -288,13 +346,15 @@ impl SessionManager {
         };
         let id = uuid::Uuid::new_v4().to_string();
         let created_at = chrono::Utc::now().to_rfc3339();
+        let exec = resolve_exec_columns(data);
 
         sqlx::query(
             "INSERT INTO sessions \
              (id,title,project_path,group_path,tool,command,status,use_worktree,\
               claude_session_id,model_name,permission_mode,session_mode,\
-              agent_template,account_id,origin,user_id,pinned,order_idx,created_at,notes,effort,budget_used) \
-             VALUES (?,?,?,?,?,?,'stopped',?,?,?,?,?,?,?,?,?,0,0,?,?,?,0.0)",
+              agent_template,account_id,origin,user_id,pinned,order_idx,created_at,notes,effort,budget_used,\
+              exec_mode,container_id,container_workdir,container_image,container_mount_credentials) \
+             VALUES (?,?,?,?,?,?,'stopped',?,?,?,?,?,?,?,?,?,0,0,?,?,?,0.0,?,?,?,?,?)",
         )
         .bind(&id)
         .bind(&data.title)
@@ -314,6 +374,11 @@ impl SessionManager {
         .bind(&created_at)
         .bind(&data.notes)
         .bind(&data.effort)
+        .bind(&exec.mode)
+        .bind(&exec.container_id)
+        .bind(&exec.container_workdir)
+        .bind(&data.container_image)
+        .bind(data.container_mount_credentials.unwrap_or(false))
         .execute(pool)
         .await?;
 

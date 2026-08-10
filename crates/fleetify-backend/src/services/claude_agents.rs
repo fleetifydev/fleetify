@@ -364,6 +364,13 @@ pub async fn reconcile_once(
             origin: Some("claude-bg".to_string()),
             effort: None,
             base_branch: None,
+            // Auto-surfaced background Claude sessions mirror a CLI
+            // conversation that is already running on the host.
+            exec_mode: None,
+            container_id: None,
+            container_workdir: None,
+            container_image: None,
+            container_mount_credentials: None,
         };
 
         match sm.create_session(pool, cfg, &data, None).await {

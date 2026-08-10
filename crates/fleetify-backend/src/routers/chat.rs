@@ -1283,6 +1283,87 @@ async fn run_send_flow(
         .clone()
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| session.project_path.clone());
+    // A `docker-run` session provisions its container HERE, on the first turn
+    // — not when the user picked an image. A picker click should not start a
+    // container the user may abandon, and a draft session has no row to
+    // attach one to yet; same timing as the worktree carve.
+    //
+    // On success `agent_cwd` becomes the `docker://<id>/workspace` marker, so
+    // every bridge's existing `exec_target::parse` picks the container up
+    // with no bridge-side change at all. Reused across turns: an existing
+    // container is restarted rather than replaced.
+    // Pump provisioning steps to the renderer while they happen. A cold
+    // `docker pull` runs for minutes, and doing it silently meant the user's
+    // first message simply sat there — indistinguishable from a hang. The
+    // forwarder lives only for the duration of the call.
+    let (setup_tx, mut setup_rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::services::container::lifecycle::SetupEvent>();
+    let setup_sink = sink.clone();
+    let setup_sid = sid.clone();
+    let setup_pump = tokio::spawn(async move {
+        while let Some(ev) = setup_rx.recv().await {
+            send_json(
+                &setup_sink,
+                json!({
+                    "type": "container_setup",
+                    "session_id": setup_sid,
+                    "step": ev.step,
+                    "detail": ev.detail,
+                    "pct": ev.pct,
+                }),
+            )
+            .await;
+        }
+    });
+    let agent_cwd = match crate::services::container::lifecycle::ensure_ready(
+        &st.auth.pool,
+        &session,
+        &agent_cwd,
+        Some(&setup_tx),
+    )
+    .await
+    {
+        Ok(Some(marker)) => {
+            drop(setup_tx);
+            let _ = setup_pump.await;
+            send_json(
+                &sink,
+                json!({ "type": "container_setup_done", "session_id": sid, "error": null }),
+            )
+            .await;
+            marker
+        }
+        Ok(None) => {
+            // Host session — nothing was reported, so nothing to close out.
+            drop(setup_tx);
+            let _ = setup_pump.await;
+            agent_cwd
+        }
+        Err(e) => {
+            // Fail the turn with the reason. Falling through would run the
+            // agent on the HOST while the user believes it is contained —
+            // the single worst outcome available here.
+            tracing::warn!(
+                target: "fleetify::container",
+                session_id = %sid,
+                "container provisioning failed: {e}"
+            );
+            drop(setup_tx);
+            let _ = setup_pump.await;
+            send_json(
+                &sink,
+                json!({ "type": "container_setup_done", "session_id": sid, "error": e.to_string() }),
+            )
+            .await;
+            send_json(
+                &sink,
+                json!({ "type": "error", "session_id": sid, "error": e.to_string() }),
+            )
+            .await;
+            let _ = st.sm.update_status(&st.auth.pool, &sid, "idle").await;
+            return;
+        }
+    };
     let any_bridge: AnyBridge = match session.tool.as_str() {
         "claude-code" => {
             let mut b = ClaudeBridge::new(sid.clone(), agent_cwd.clone());
@@ -3420,6 +3501,7 @@ async fn run_dispatched_task(
         home_override,
         account_env,
         account_id: target.account_id.clone(),
+        container_mount_credentials: target.container_mount_credentials,
     };
     tracing::info!(
         target: "fleetify::routing::dispatch",

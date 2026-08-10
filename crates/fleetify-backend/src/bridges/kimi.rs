@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::{mpsc, Mutex};
 
 use super::acp::AcpClient;
@@ -242,17 +242,39 @@ impl KimiBridge {
 
     /// Lazily spawn `kimi acp`, run the ACP handshake, and create the ACP
     /// session. Idempotent — first call sets up State, later calls return.
-    async fn cold_start(&self, account_env: Vec<(String, String)>) -> Result<()> {
+    async fn cold_start(
+        &self,
+        account_env: Vec<(String, String)>,
+        mount_credentials: bool,
+    ) -> Result<()> {
         let mut guard = self.state.lock().await;
         if guard.is_some() {
             return Ok(());
         }
+        // Where this turn runs. `Unsupported` fails cold_start with the
+        // reason rather than falling through to a host spawn.
+        let target = crate::services::exec_target::parse(&self.project_path);
+        if let crate::services::exec_target::ExecTarget::Unsupported(reason) = &target {
+            anyhow::bail!("{reason}");
+        }
+        let in_container = matches!(
+            target,
+            crate::services::exec_target::ExecTarget::Container { .. }
+        );
+
+        // Everything that must hold before a container turn is worth
+        // spawning: the CLI is actually installed inside (cached — the
+        // picker's answer goes stale the moment the container is stopped or
+        // replaced, but re-asking uncached cost a docker round trip on every
+        // message), and a credential can reach it. Refusing here names the
+        // fix; the alternative is the CLI's own opaque failure mid-stream.
+        let preflight =
+            crate::services::container::spawn::preflight(&target, "kimi-code", mount_credentials)
+                .await?;
+
         let bin = which::which("kimi")
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| "kimi".to_string());
-
-        let mut cmd = Command::new(&bin);
-        cmd.arg("acp");
 
         // Strip any `\\?\` verbatim prefix before handing the cwd to kimi —
         // some ACP agents choke on it. New session rows are normalized at
@@ -267,16 +289,34 @@ impl KimiBridge {
         let cwd = fleetify_core::strip_verbatim_prefix(std::path::Path::new(&cwd_raw))
             .to_string_lossy()
             .into_owned();
-        cmd.current_dir(&cwd)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        // Multi-account isolation (no-op for the System account).
-        crate::bridges::account_env::apply_to_command(&mut cmd, &account_env);
-        // Canonical PATH (not our launch-chain-bloated runtime PATH) so cmd.exe's
-        // 8191-char truncation can't strip `node`/`git` from the `.cmd` shim and
-        // kill the agent at spawn. See `bridges::apply_clean_path`.
-        crate::bridges::apply_clean_path(&mut cmd);
+        // Multi-account isolation (no-op for the System account). Host-only:
+        // the HOME/XDG overrides are host paths, and the container has its
+        // own home — forwarding them points kimi at nothing.
+        let envs: Vec<(String, String)> = if in_container {
+            Vec::new()
+        } else {
+            account_env.clone()
+        };
+        // Credentials that crossed the boundary (Tier A). Empty on the host.
+        let mut envs = envs;
+        envs.extend(preflight.envs.iter().cloned());
+
+        let mut args = vec!["acp".to_string()];
+        args.extend(preflight.args.iter().cloned());
+
+        let mut cmd = crate::services::container::spawn::command(
+            &crate::services::container::spawn::SpawnRequest {
+                target: &target,
+                provider_id: "kimi-code",
+                host_program: &bin,
+                args: &args,
+                envs: &envs,
+                cwd: &cwd,
+                // ACP is a long-lived JSON-RPC conversation over stdin;
+                // `docker exec -i` carries it only because this is on.
+                pipe_stdin: true,
+            },
+        )?;
 
         let mut proc = cmd.spawn().map_err(|e| {
             anyhow!(
@@ -444,6 +484,23 @@ impl KimiBridge {
             self.agent_template.as_deref(),
         );
         let mcp_servers = ensure_stdio_env(crate::services::mcp_dispatch::to_acp_servers(&mcp_map));
+        // In a container the fleet sidecars are unavailable: mcp_registry
+        // resolves them to an absolute HOST path next to the running exe,
+        // which does not exist inside, and mcp_dispatch's
+        // FLEETIFY_BACKEND_URL points at 127.0.0.1 — the container itself.
+        // Advertising servers that cannot start is how the model ends up
+        // calling a tool that never answers, so drop them and let the UI say
+        // which are missing instead.
+        let mcp_servers = if in_container {
+            tracing::info!(
+                target: "fleetify::container",
+                session_id = %self.session_id,
+                "fleet MCP servers dropped for this container turn (host sidecar paths are unreachable inside)"
+            );
+            serde_json::Value::Array(Vec::new())
+        } else {
+            mcp_servers
+        };
         tracing::info!(
             target: "kimi",
             session_id = %self.session_id,
@@ -452,11 +509,19 @@ impl KimiBridge {
             mcp_mounted = ?mcp_map.keys().collect::<Vec<_>>(),
             "kimi MCP servers built"
         );
-        let acp_session_id = client.session_new(&cwd, mcp_servers).await.map_err(|e| {
-            anyhow!(
+        // The cwd kimi is TOLD about, which is not the one docker got.
+        // `-w` already put the process inside; `session/new` names the
+        // directory a second time over the protocol, and the host path does
+        // not exist on kimi's side of the boundary.
+        let agent_cwd = crate::services::container::spawn::agent_workdir(&target, &cwd);
+        let acp_session_id = client
+            .session_new(&agent_cwd, mcp_servers)
+            .await
+            .map_err(|e| {
+                anyhow!(
                 "session/new failed: {e}. If this is an auth error, run `kimi` → `/login` first."
             )
-        })?;
+            })?;
 
         let model_label = self
             .model_name
@@ -504,7 +569,7 @@ impl KimiBridge {
         let system_prompt = self.system_prompt.clone();
         let needs_cold_start = state_mu.lock().await.is_none();
         let cold_starter = if needs_cold_start {
-            Some(self.cold_start_fut(ctx.account_env.clone()))
+            Some(self.cold_start_fut(ctx.account_env.clone(), ctx.container_mount_credentials))
         } else {
             None
         };
@@ -638,6 +703,7 @@ impl KimiBridge {
     fn cold_start_fut(
         &self,
         account_env: Vec<(String, String)>,
+        mount_credentials: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> {
         let session_id = self.session_id.clone();
         let project_path = self.project_path.clone();
@@ -663,7 +729,7 @@ impl KimiBridge {
                 aborted: Arc::new(AtomicBool::new(false)),
                 state,
             };
-            bridge.cold_start(account_env).await
+            bridge.cold_start(account_env, mount_credentials).await
         })
     }
 }
@@ -931,5 +997,50 @@ mod tests {
         ]);
         let s = extract_tool_output(&v);
         assert!(s.contains("first") && s.contains("second") && s.contains("[diff: src/x.rs]"));
+    }
+}
+
+#[cfg(test)]
+mod container_tests {
+    use crate::services::container::spawn::{agent_workdir, argv_for, SpawnRequest};
+    use crate::services::exec_target::ExecTarget;
+
+    fn target() -> ExecTarget {
+        ExecTarget::Container {
+            id: "c1".into(),
+            workdir: "/work".into(),
+        }
+    }
+
+    /// `kimi acp` is a long-lived JSON-RPC conversation over stdin. Without
+    /// `docker exec -i` the agent starts and then hangs on its first read.
+    #[test]
+    fn kimi_container_argv_execs_the_in_container_binary_with_stdin() {
+        let t = target();
+        let argv = argv_for(&SpawnRequest {
+            target: &t,
+            provider_id: "kimi-code",
+            host_program: r"C:\Users\me\AppData\Roaming\npm\kimi.cmd",
+            args: &["acp".to_string()],
+            envs: &[],
+            cwd: "",
+            pipe_stdin: true,
+        })
+        .unwrap();
+        assert_eq!(argv[2], "-i", "ACP over stdin needs docker exec -i");
+        let id_at = argv.iter().position(|a| a == "c1").unwrap();
+        assert_eq!(argv[id_at + 1], "kimi");
+        assert_eq!(argv[id_at + 2], "acp");
+        assert!(
+            !argv.iter().any(|a| a.ends_with(".cmd")),
+            "the host shim must not leak into the container argv: {argv:?}"
+        );
+    }
+
+    /// session/new names the directory a second time, over the protocol. The
+    /// host path does not exist on kimi's side.
+    #[test]
+    fn kimi_session_new_cwd_is_the_in_container_path() {
+        assert_eq!(agent_workdir(&target(), r"C:\Users\me\proj"), "/work");
     }
 }

@@ -60,6 +60,11 @@ pub struct BridgeContext {
     /// to use (`None`/`"system"` ⇒ the legacy/default key). CLI bridges ignore
     /// this (they isolate via `home_override`).
     pub account_id: Option<String>,
+    /// Tier B of the container credential strategy: the session opted in to
+    /// mounting this provider's own credential directory into the container.
+    /// Ignored for host sessions. Defaults to false — it carries a host login
+    /// across the boundary, so it is never implicit.
+    pub container_mount_credentials: bool,
 }
 
 /// Tool-dispatch wrapper used by the `/ws/sessions` send flow (parity
@@ -789,5 +794,35 @@ mod any_bridge_tests {
         ));
         let any = AnyBridge::GitHubCopilot(bridge);
         assert!(any.claude_session_id().is_none());
+    }
+}
+
+/// Refuse a non-host execution target for a bridge that cannot run anywhere
+/// but the host, surfacing the provider's own reason.
+///
+/// Used by the two Antigravity bridges. Both do substantial host-side work
+/// around the spawn — a PTY, config written next to the agent, a transcript
+/// read back off disk — so they cannot simply be wrapped in `docker exec`.
+/// Failing here names the reason and the fix; failing at the spawn produces
+/// an opaque OS error instead.
+pub(crate) fn refuse_non_host_target(project_path: &str) -> anyhow::Result<()> {
+    use crate::services::exec_target::{parse, ExecTarget};
+    match parse(project_path) {
+        ExecTarget::Local => Ok(()),
+        ExecTarget::Unsupported(reason) => anyhow::bail!("{reason}"),
+        ExecTarget::Container { .. } => {
+            // Provider id is not threaded down here, and both callers are
+            // Antigravity, so read the reason off the CLI entry — the SDK's
+            // is equivalent and the CLI's is the stricter of the two.
+            let reason = match crate::services::container::spec_for("antigravity-cli")
+                .map(|s| s.support)
+            {
+                Some(crate::services::container::ContainerSupport::Unsupported(r)) => r,
+                _ => {
+                    "This agent can't run inside a container. Switch the session to a local folder."
+                }
+            };
+            anyhow::bail!("{reason}")
+        }
     }
 }

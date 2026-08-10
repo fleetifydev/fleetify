@@ -23,7 +23,7 @@ pub fn router() -> Router<AppState> {
         .route("/docker/probe-agent", post(probe_agent))
 }
 
-fn container_id_re() -> &'static regex::Regex {
+pub(crate) fn container_id_re() -> &'static regex::Regex {
     static R: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     R.get_or_init(|| regex::Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._-]*$").expect("container_id_re"))
 }
@@ -45,7 +45,7 @@ fn docker_path() -> Option<std::path::PathBuf> {
 /// Run a docker subprocess and return `(rc, stdout, stderr)`. Times
 /// out at `timeout_secs`; on timeout returns 124 + the same
 /// "Timed out talking to the Docker daemon." message Python emits.
-async fn run_docker(cmd: &[&str], timeout_secs: u64) -> (i32, String, String) {
+pub(crate) async fn run_docker(cmd: &[&str], timeout_secs: u64) -> (i32, String, String) {
     let child = match tokio::process::Command::new("docker")
         .args(cmd)
         .stdout(std::process::Stdio::piped())
