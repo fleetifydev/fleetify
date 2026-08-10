@@ -35,6 +35,7 @@ import {
   dockerStatus, dockerContainers, dockerListDir, dockerProbeAgent,
   type DockerContainer, type SshDirEntry,
 } from "@/lib/api";
+import { isHostPath } from "@/lib/exec-target";
 
 function buildContainerUrl(id: string, path: string): string {
   const cleanPath = path.startsWith("/") ? path : `/${path}`;
@@ -345,7 +346,9 @@ function RunFromImage({
   onRun: (image: string, mountCredentials: boolean) => void;
 }) {
   const trimmed = image.trim();
-  const hasHostSource = !!sourcePath && !sourcePath.startsWith("docker://");
+  // `!startsWith("docker://")` would have counted an ssh:// path as a host
+  // source and offered to mount something that is not on this machine.
+  const hasHostSource = isHostPath(sourcePath);
   // What is stopping the run, if anything. Rendered NEXT TO the button
   // rather than under the input: the reason used to sit two rows above the
   // action it blocked, styled like a field hint, so a filled-in image with a

@@ -42,6 +42,10 @@ import { RemoteSshPanel } from "./remote-ssh-panel";
 import { DockerContainerPanel } from "./docker-container-panel";
 import { SessionRulesChip } from "./session-rules-chip";
 import { folderName as folderNameUtil } from "@/lib/utils";
+import {
+  isHostPath, containerIdFromPath, normalizeBranches, EMPTY_BRANCHES,
+  type BranchList, type ExecMode,
+} from "@/lib/exec-target";
 
 type MenuId = "source" | "git" | "container" | "history" | null;
 
@@ -101,14 +105,10 @@ export function SessionToolbar({
   // Draft sessions have no backend row, so the pick lives in composer state
   // until the first message commits it. Reading only `session` here made the
   // chip look inert while configuring a new session.
-  const execMode: "host" | "docker-attach" | "docker-run" =
+  const execMode: ExecMode =
     (isDraft ? composerExecMode : session?.exec_mode) ??
     (projectPath?.startsWith("docker://") ? "docker-attach" : "host");
-  const containerId =
-    session?.container_id ??
-    (projectPath?.startsWith("docker://")
-      ? projectPath.slice("docker://".length).split("/")[0] || null
-      : null);
+  const containerId = session?.container_id ?? containerIdFromPath(projectPath);
   const [openMenu, setOpenMenu] = useState<MenuId>(null);
 
   // ── git binary presence ──
@@ -170,14 +170,20 @@ export function SessionToolbar({
   // Electron IPC (which shells out to `git for-each-ref`). Refreshed
   // whenever the folder changes; debounced so picking a folder then
   // browsing branches doesn't race the IPC.
-  const [branches, setBranches]       = useState<{ local: string[]; remote: string[]; current: string | null }>({ local: [], remote: [], current: null });
+  const [branches, setBranches]       = useState<BranchList>(EMPTY_BRANCHES);
   const [branchesLoading, setBranchesLoading] = useState(false);
   const [branchFilter, setBranchFilter]       = useState("");
   const [branchSwitching, setBranchSwitching] = useState(false);
   const branchesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reloadBranches = useCallback(async () => {
-    if (!projectPath || !window.electronAPI?.listGitBranches) {
-      setBranches({ local: [], remote: [], current: null });
+    // Host git can only act on a host checkout. Running `listGitBranches`
+    // against a `docker://…` (or `ssh://…`) path shells out to git in a
+    // directory that does not exist, and the malformed result it returns
+    // then crashed the render — `branches.local` came back undefined and
+    // `.filter` blew up the whole toolbar. Guarding the CHIP was not enough;
+    // the fetch itself must not run.
+    if (!projectPath || !isHostPath(projectPath) || !window.electronAPI?.listGitBranches) {
+      setBranches(EMPTY_BRANCHES);
       return;
     }
     setBranchesLoading(true);
@@ -198,15 +204,17 @@ export function SessionToolbar({
         await window.electronAPI?.gitEnsureRepo?.(projectPath, { name, email });
       } catch { /* non-fatal — fall through, list will just be empty */ }
       const r = await window.electronAPI.listGitBranches(projectPath);
-      setBranches(r ?? { local: [], remote: [], current: null });
+      // Normalise rather than trusting the shape: `r ?? default` only guards
+      // a null result, not one that came back missing its arrays.
+      setBranches(normalizeBranches(r));
     } catch {
-      setBranches({ local: [], remote: [], current: null });
+      setBranches(EMPTY_BRANCHES);
     } finally {
       setBranchesLoading(false);
     }
   }, [projectPath]);
   useEffect(() => {
-    setBranches({ local: [], remote: [], current: null });
+    setBranches(EMPTY_BRANCHES);
     if (!projectPath) return;
     if (branchesTimer.current) clearTimeout(branchesTimer.current);
     branchesTimer.current = setTimeout(() => { void reloadBranches(); }, 250);
