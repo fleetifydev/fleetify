@@ -3,7 +3,7 @@ import { ReactLenis } from "lenis/react";
 import {
   Plus, Search, Settings, HelpCircle, Library, MessageCircle,
   LayoutGrid, Store, Repeat,
-  Pin,
+  Pin, PinOff,
   SlidersHorizontal, X, Check, MoreHorizontal,
   PanelLeft, PanelLeftClose,
 } from "lucide-react";
@@ -15,6 +15,7 @@ import { SessionContextMenu } from "@/components/layout/session-context-menu";
 import { forkSession, fetchBulkStats, stopSession, restartSession, resetSession, deleteSession } from "@/lib/api";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { usesInAppTitleBar, folderName } from "@/lib/utils";
+import { canDropOn, planSessionDrop } from "@/lib/sidebar-dnd";
 import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import { isStudioTool } from "@/lib/studio-tools";
 import { STUDIO_ENABLED } from "@/lib/feature-flags";
@@ -779,22 +780,16 @@ export function Sidebar() {
   });
 
 
-  const handleDropToPin = useCallback(() => {
-    if (!dragId) return;
-    const session = allAgents.find(s => s.id === dragId);
-    if (session && !session.pinned) handlePin(session);
-    setDragId(null); setDropPinZone(false);
-  }, [dragId, allAgents, handlePin]);
+  // Plain data view of the sorted list for the pure DnD planner
+  // (src/lib/sidebar-dnd.ts). Workspace group = project folder — the same
+  // key the visual groups render with, so what looks like one group IS one
+  // drag scope.
+  const dndList = useMemo(
+    () => sorted.map(s => ({ id: s.id, group: folderName(s.project_path) ?? "", pinned: !!s.pinned })),
+    [sorted],
+  );
 
-  const handleDrop = useCallback((targetId: string) => {
-    if (!dragId || dragId === targetId) return;
-    const ids = sorted.map(s => s.id);
-    const fromIdx = ids.indexOf(dragId);
-    const toIdx   = ids.indexOf(targetId);
-    if (fromIdx < 0 || toIdx < 0) return;
-    const next = [...ids];
-    next.splice(fromIdx, 1);
-    next.splice(toIdx, 0, dragId);
+  const persistOrder = useCallback((next: string[]) => {
     // ── Optimistic local update first, then persist with surfaced errors ──
     // Was: N PATCH requests fired in parallel with `.catch(() => {})`.
     // If 3 of 30 PATCHes failed, the local order persisted but the
@@ -802,11 +797,6 @@ export function Sidebar() {
     // sidebar visibly. Now: persist all of them, await Promise.all, and
     // if anything failed surface a toast so the user knows to retry.
     next.forEach((id, i) => updateSession(id, { order_idx: i } as Partial<Session>));
-    const auth = (() => {
-      try { return JSON.parse(localStorage.getItem("fleet:token") ?? "null"); }
-      catch { return null; }
-    })();
-    void auth; // future: send Authorization header
     Promise.allSettled(
       next.map((id, i) =>
         fetch(`/api/sessions/${id}`, {
@@ -826,21 +816,59 @@ export function Sidebar() {
         console.warn(`[sidebar] Order not fully saved: ${failed} of ${next.length} agents could not be reordered.`);
       }
     });
+  }, [updateSession]);
+
+  const handleDropToPin = useCallback(() => {
+    if (!dragId) return;
+    const session = allAgents.find(s => s.id === dragId);
+    if (session && !session.pinned) handlePin(session);
+    setDragId(null); setDropPinZone(false);
+  }, [dragId, allAgents, handlePin]);
+
+  // Mirror of the pin zone: dragging a pinned session over the zone unpins
+  // it, sending it back to its workspace group in the normal list.
+  const handleDropToUnpin = useCallback(() => {
+    if (!dragId) return;
+    const session = allAgents.find(s => s.id === dragId);
+    if (session?.pinned) handlePin(session);
+    setDragId(null); setDropPinZone(false);
+  }, [dragId, allAgents, handlePin]);
+
+  const handleDrop = useCallback((targetId: string) => {
+    if (!dragId) return;
+    // Drops are workspace-scoped: the planner rejects cross-workspace
+    // targets outright, reorders within a group, and translates drops
+    // across the pin boundary (same workspace only) into pin / unpin.
+    const plan = planSessionDrop(dndList, dragId, targetId);
+    if (plan.kind === "pin" || plan.kind === "unpin") {
+      const session = allAgents.find(x => x.id === plan.id);
+      if (session) void handlePin(session); // handlePin toggles `pinned`
+    }
+    if (plan.kind === "reorder" || plan.kind === "pin" || plan.kind === "unpin") {
+      persistOrder(plan.ids);
+    }
     setDragId(null); setDropId(null);
-  }, [dragId, sorted, updateSession]);
+  }, [dragId, dndList, allAgents, handlePin, persistOrder]);
 
   const pinnedAgents = sorted.filter(s => s.pinned);
   const unpinned = sorted.filter(s => !s.pinned);
-  const unpinnedGrouped = useMemo(() => {
+  const groupByFolder = (list: Session[]) => {
     const map = new Map<string, Session[]>();
-    for (const s of unpinned) {
+    for (const s of list) {
       const key = folderName(s.project_path) ?? "";
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(s);
     }
     return Array.from(map.entries()).map(([name, items]) => ({ name, items }));
+  };
+  const unpinnedGrouped = useMemo(() => groupByFolder(unpinned),
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessions, searchVal, sortBy]);
+    [sessions, searchVal, sortBy]);
+  // The Pin section keeps the same workspace grouping as the normal list —
+  // a pinned session still appears under its workspace header.
+  const pinnedGrouped = useMemo(() => groupByFolder(pinnedAgents),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sessions, searchVal, sortBy]);
 
   // Build a 1-based shortcut index map over sorted sessions (1–9 only)
   const shortcutIndexMap = useMemo(() => {
@@ -876,7 +904,16 @@ export function Sidebar() {
       e.dataTransfer.setData("application/x-fleet-session-id", s.id);
       e.dataTransfer.effectAllowed = "copyMove";
     },
-    onDragOver: (e: React.DragEvent) => { e.preventDefault(); setDropId(s.id); },
+    onDragOver: (e: React.DragEvent) => {
+      // Workspace-scoped dragging: don't preventDefault for an illegal
+      // target, so the browser shows the no-drop cursor and the row never
+      // lights up as a drop target.
+      if (dragId && !canDropOn(dndList, dragId, s.id)) {
+        if (dropId === s.id) setDropId(null);
+        return;
+      }
+      e.preventDefault(); setDropId(s.id);
+    },
     onDrop: () => handleDrop(s.id),
     onDragEnd: () => { setDragId(null); setDropId(null); },
   });
@@ -1073,28 +1110,53 @@ export function Sidebar() {
                       </span>
                     )}
                   </div>
-                  {pinnedAgents.map(s => <AgentRow key={s.id} {...agentRowProps(s)} />)}
-
-                  {/* Drag to pin — always shown unless dragging a pinned session */}
-                  {(!dragId || !allAgents.find(s => s.id === dragId)?.pinned) && (
-                    <div
-                      onDragOver={e => { e.preventDefault(); setDropPinZone(true); }}
-                      onDragLeave={() => setDropPinZone(false)}
-                      onDrop={e => { e.preventDefault(); handleDropToPin(); }}
-                      style={{
-                        display: "flex", alignItems: "center", gap: 10,
-                        padding: "6px 10px",
-                        borderRadius: 7,
-                        background: dropPinZone ? "var(--c-srf)" : "transparent",
-                        transition: "none",
-                      }}
-                    >
-                      <Pin size={13} style={{ color: dropPinZone ? "var(--c-med)" : "var(--c-ghost)", flexShrink: 0 }} />
-                      <span style={{ fontSize: 13, color: dropPinZone ? "var(--c-low)" : "var(--c-ghost)" }}>
-                        Drag to pin
-                      </span>
+                  {/* Pinned sessions keep their workspace grouping — same
+                      headers as the normal list below, tighter spacing. */}
+                  {pinnedGrouped.map(({ name, items }) => (
+                    <div key={name || "__none__"}>
+                      {name && (
+                        <div style={{ padding: "4px 10px 2px", display: "flex", alignItems: "center" }}>
+                          <span style={{
+                            flex: 1,
+                            fontSize: 10.5, fontWeight: 500,
+                            letterSpacing: 0.5, textTransform: "uppercase",
+                            color: "var(--c-ghost)", opacity: 0.8,
+                            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                          }}>
+                            {name}
+                          </span>
+                        </div>
+                      )}
+                      {items.map(s => <AgentRow key={s.id} {...agentRowProps(s)} />)}
                     </div>
-                  )}
+                  ))}
+
+                  {/* Drag target for pin state changes: pins while dragging an
+                      unpinned session, unpins while dragging a pinned one. */}
+                  {(() => {
+                    const draggingPinned = !!dragId && !!allAgents.find(s => s.id === dragId)?.pinned;
+                    return (
+                      <div
+                        onDragOver={e => { e.preventDefault(); setDropPinZone(true); }}
+                        onDragLeave={() => setDropPinZone(false)}
+                        onDrop={e => { e.preventDefault(); (draggingPinned ? handleDropToUnpin : handleDropToPin)(); }}
+                        style={{
+                          display: "flex", alignItems: "center", gap: 10,
+                          padding: "6px 10px",
+                          borderRadius: 7,
+                          background: dropPinZone ? "var(--c-srf)" : "transparent",
+                          transition: "none",
+                        }}
+                      >
+                        {draggingPinned
+                          ? <PinOff size={13} style={{ color: dropPinZone ? "var(--c-med)" : "var(--c-ghost)", flexShrink: 0 }} />
+                          : <Pin size={13} style={{ color: dropPinZone ? "var(--c-med)" : "var(--c-ghost)", flexShrink: 0 }} />}
+                        <span style={{ fontSize: 13, color: dropPinZone ? "var(--c-low)" : "var(--c-ghost)" }}>
+                          {draggingPinned ? "Drag here to unpin" : "Drag to pin"}
+                        </span>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* ── Project groups ── */}
