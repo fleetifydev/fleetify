@@ -103,14 +103,21 @@ export default defineConfig({
         // `fleet.db-wal`, and `fleet.db-shm` every few seconds and HMR
         // does a full page reload — which remounts the entire React tree
         // mid-conversation and feels like the app is broken. We also
-        // exclude the per-worktree Tauri target dirs and the Cargo build
-        // artefacts which can land in src-tauri/ during `cargo tauri dev`.
+        // exclude every Cargo `target/` dir. The workspace target lives at
+        // the *repo root* (`<root>/target/`), not under src-tauri/, and with
+        // `local-whisper` enabled it holds the whisper-rs-sys → ggml CMake
+        // build tree (~7k dirs of .o/.cmake churn). Letting chokidar recurse
+        // into it adds thousands of inotify watches on build artefacts that
+        // race with `cargo build`'s writes, blowing past
+        // `fs.inotify.max_user_watches` → "ENOSPC: System limit for number
+        // of file watchers reached" and killing the dev server. `**/target/**`
+        // covers the root target, any per-crate target, and src-tauri/target.
         ignored: [
           "**/src-tauri/fleet.db",
           "**/src-tauri/fleet.db-wal",
           "**/src-tauri/fleet.db-shm",
           "**/src-tauri/fleet.db-journal",
-          "**/src-tauri/target/**",
+          "**/target/**",
           // Ignore worktrees the app carves UNDER this dev server's root —
           // per-session `<project>/.fleetify-worktrees/<id>/` checkouts (which
           // a dogfooding session drops a full copy of the project into:
