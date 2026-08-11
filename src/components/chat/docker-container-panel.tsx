@@ -32,10 +32,25 @@ import {
   Box, ArrowLeft, RefreshCw,
 } from "lucide-react";
 import {
-  dockerStatus, dockerContainers, dockerListDir, dockerProbeAgent,
-  type DockerContainer, type SshDirEntry,
+  dockerStatus, dockerContainers, dockerListDir, dockerProbeAgent, dockerImages,
+  type DockerContainer, type DockerImage, type SshDirEntry,
 } from "@/lib/api";
-import { isHostPath } from "@/lib/exec-target";
+import { isHostPath, containerIdFromPath } from "@/lib/exec-target";
+
+/** Is this list entry the container the session is attached to?
+ *
+ *  `docker ps` reports short ids while the session may hold a short id or a
+ *  name (both come from this very picker), so match on either and by
+ *  prefix in both directions — the same rule the toolbar's status chip uses. */
+function isAttachedTo(c: DockerContainer, attachedId: string | null): boolean {
+  if (!attachedId) return false;
+  return (
+    c.id === attachedId ||
+    c.name === attachedId ||
+    attachedId.startsWith(c.id) ||
+    c.id.startsWith(attachedId)
+  );
+}
 
 function buildContainerUrl(id: string, path: string): string {
   const cleanPath = path.startsWith("/") ? path : `/${path}`;
@@ -132,6 +147,19 @@ export function DockerContainerPanel({
   // for `claude` on a codex session reports "not installed" for a container
   // that is perfectly fine.
   const agentBinary = CONTAINER_BINARIES[providerId] ?? providerId;
+  // The container this session is currently attached to, so the list can
+  // mark it. Re-opening the tab used to show a flat list with no memory of
+  // the pick — nothing said which container the session was already on.
+  const attachedId =
+    execMode === "docker-attach" ? containerIdFromPath(sourcePath) : null;
+  // Images already on this machine, for the run-from-image shortcut list.
+  // Best-effort: on any failure the field still takes a typed name.
+  const [localImages, setLocalImages] = useState<DockerImage[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void dockerImages().then(r => { if (!cancelled) setLocalImages(r.images); });
+    return () => { cancelled = true; };
+  }, []);
   const [status, setStatus] = useState<StatusState>({ kind: "loading" });
   const [containers, setContainers] = useState<DockerContainer[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -230,14 +258,16 @@ export function DockerContainerPanel({
           <button
             onClick={onClear}
             onMouseDown={e => e.preventDefault()}
-            title="Run on this machine instead"
+            title={execMode === "docker-attach"
+              ? "Stop using this container — pick a folder to work in instead"
+              : "Run on this machine instead"}
             style={{
               marginLeft: "auto", background: "transparent", border: "none",
               color: "var(--c-dim)", fontSize: 11, cursor: "pointer",
               fontFamily: "var(--font-sans)",
             }}
           >
-            Run locally
+            {execMode === "docker-attach" ? "Detach container" : "Run locally"}
           </button>
         )}
       </div>
@@ -256,6 +286,7 @@ export function DockerContainerPanel({
           mountCredentials={mountCredentials}
           setMountCredentials={setMountCredentials}
           providerId={providerId}
+          localImages={localImages}
           onRun={onRun}
           onPickFolder={onPickFolder}
           onPickFile={onPickFile}
@@ -293,6 +324,7 @@ export function DockerContainerPanel({
             key={c.id}
             container={c}
             open={openId === c.id}
+            attached={isAttachedTo(c, attachedId)}
             onToggle={() => setOpenId(openId === c.id ? null : c.id)}
             onPick={(absPath) => onAttach(buildContainerUrl(c.id, absPath))}
             agentBinary={agentBinary}
@@ -374,7 +406,7 @@ function RunFromImage({
   sourcePath, image, setImage,
   runSource, setRunSource, buildFile, setBuildFile,
   composeService, setComposeService,
-  mountCredentials, setMountCredentials, providerId, onRun, onPickFolder, onPickFile,
+  mountCredentials, setMountCredentials, providerId, localImages, onRun, onPickFolder, onPickFile,
 }: {
   sourcePath: string | null;
   image: string;
@@ -388,6 +420,8 @@ function RunFromImage({
   mountCredentials: boolean;
   setMountCredentials: (v: boolean) => void;
   providerId: string;
+  /** Images already on this machine — a shortcut, not the only source. */
+  localImages: DockerImage[];
   onRun: (payload: RunPayload) => void;
   onPickFolder: () => void;
   onPickFile: (kind: "dockerfile" | "compose") => Promise<string | null>;
@@ -469,16 +503,73 @@ function RunFromImage({
       )}
 
       {runSource === "image" && (
-        <label style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
-          <span style={labelStyle}>Image</span>
-          <input
-            value={image}
-            onChange={e => setImage(e.target.value)}
-            placeholder="node:22"
-            spellCheck={false}
-            style={fieldStyle}
-          />
-        </label>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
+          <label style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
+            <span style={labelStyle}>Image</span>
+            <input
+              value={image}
+              onChange={e => setImage(e.target.value)}
+              placeholder="node:22"
+              spellCheck={false}
+              style={fieldStyle}
+            />
+          </label>
+          {/* Images already on this machine. Typing filters the list; a
+              click fills the field. Anything not listed still works — the
+              typed name is what runs, this is only the shortcut. */}
+          {(() => {
+            const q = image.trim().toLowerCase();
+            const shown = localImages
+              .filter(i => !q || i.name.toLowerCase().includes(q))
+              .slice(0, 8);
+            if (shown.length === 0) return null;
+            if (shown.length === 1 && shown[0]?.name === image.trim()) return null;
+            return (
+              <div
+                data-testid="local-image-list"
+                style={{
+                  display: "flex", flexDirection: "column", gap: 1,
+                  maxHeight: 132, overflowY: "auto",
+                  border: "1px solid var(--c-brd, rgba(255,255,255,0.06))",
+                  borderRadius: 5, padding: 2,
+                }}
+              >
+                <span style={{ fontSize: 10, color: "var(--c-ghost, #6a6a6a)", padding: "2px 6px" }}>
+                  On this machine
+                </span>
+                {shown.map(img => (
+                  <button
+                    key={img.id + img.name}
+                    type="button"
+                    onClick={() => setImage(img.name)}
+                    onMouseDown={e => e.preventDefault()}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 8,
+                      width: "100%", minWidth: 0, textAlign: "left",
+                      padding: "4px 6px", borderRadius: 4,
+                      background: "transparent", border: "none",
+                      cursor: "pointer", color: "var(--c-fg)",
+                      fontFamily: "var(--font-sans)",
+                    }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = "var(--c-srf, rgba(255,255,255,0.05))"; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
+                  >
+                    <span style={{
+                      flex: 1, minWidth: 0, fontSize: 11.5,
+                      fontFamily: "var(--font-mono, monospace)",
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    }}>
+                      {img.name}
+                    </span>
+                    <span style={{ flexShrink: 0, fontSize: 10, color: "var(--c-dim)" }}>
+                      {img.size}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            );
+          })()}
+        </div>
       )}
 
       {runSource === "dockerfile" && (
@@ -740,22 +831,31 @@ function CredentialOption({
 
 /* ─── ContainerRow — one row per running container ─────────────── */
 function ContainerRow({
-  container, open, onToggle, onPick, agentBinary,
+  container, open, attached, onToggle, onPick, agentBinary,
 }: {
   container: DockerContainer;
   open: boolean;
+  /** This is the container the session is currently attached to. */
+  attached: boolean;
   onToggle: () => void;
   onPick: (absPath: string) => void;
   /** Binary to preflight-probe for inside this container. */
   agentBinary: string;
 }) {
   return (
-    <div style={{
-      display: "flex", flexDirection: "column",
-      borderRadius: 5,
-      background: open ? "var(--c-srf, rgba(255,255,255,0.045))" : "transparent",
-      transition: "background 0.12s",
-    }}>
+    <div
+      data-attached={attached || undefined}
+      style={{
+        display: "flex", flexDirection: "column",
+        borderRadius: 5,
+        background: open ? "var(--c-srf, rgba(255,255,255,0.045))" : "transparent",
+        // The selected container reads as selected the way the credential
+        // cards do: a quiet accent outline, not just a badge.
+        border: attached
+          ? "1px solid color-mix(in srgb, var(--c-low, #4a9) 55%, transparent)"
+          : "1px solid transparent",
+        transition: "background 0.12s, border-color 0.12s",
+      }}>
       <button
         onClick={onToggle}
         onMouseDown={e => e.preventDefault()}
@@ -787,11 +887,27 @@ function ContainerRow({
         }} />
         <span style={{ flex: 1, display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
           <span style={{
-            fontSize: 12.5, fontWeight: 500,
-            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-            color: "var(--c-fg, #e6e6e6)",
+            display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0,
           }}>
-            {container.name || container.id.slice(0, 12)}
+            <span style={{
+              fontSize: 12.5, fontWeight: 500,
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              color: "var(--c-fg, #e6e6e6)",
+            }}>
+              {container.name || container.id.slice(0, 12)}
+            </span>
+            {attached && (
+              <span style={{
+                flexShrink: 0,
+                fontSize: 9.5, fontWeight: 600, letterSpacing: "0.04em",
+                textTransform: "uppercase",
+                padding: "1px 5px", borderRadius: 4,
+                color: "var(--c-low, #4a9)",
+                background: "color-mix(in srgb, var(--c-low, #4a9) 14%, transparent)",
+              }}>
+                Attached
+              </span>
+            )}
           </span>
           <span style={{
             fontSize: 10.5, color: "var(--c-dim)",

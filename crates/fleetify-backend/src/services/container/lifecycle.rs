@@ -327,10 +327,11 @@ async fn pull_image(image: &str, tx: Option<&SetupTx>) -> anyhow::Result<()> {
             use tokio::io::AsyncReadExt;
             let _ = e.read_to_string(&mut err).await;
         }
-        anyhow::bail!(
-            "Couldn't pull '{image}': {}",
-            last_line(&err).unwrap_or_else(|| "docker pull failed".into())
-        );
+        let reason = last_line(&err).unwrap_or_else(|| "docker pull failed".into());
+        match pull_error_hint(image, &reason) {
+            Some(hint) => anyhow::bail!("Couldn't pull '{image}': {reason}. {hint}"),
+            None => anyhow::bail!("Couldn't pull '{image}': {reason}"),
+        }
     }
     Ok(())
 }
@@ -439,6 +440,29 @@ async fn build_image(
     Ok(())
 }
 
+/// Turn docker's tag-not-found into advice the user can act on.
+///
+/// `docker pull name` silently means `name:latest`, and a real, existing
+/// repository that publishes only versioned tags (Typesense is the live
+/// example — 1300+ tags, deliberately no `latest`) then fails with
+/// "not found", which reads as "this image doesn't exist" when the actual
+/// problem is one missing tag. Only fires when the user wrote no tag —
+/// an explicit `name:29.0` failing really does mean what docker said.
+fn pull_error_hint(image: &str, err: &str) -> Option<String> {
+    // A tag separator after the last `/` means the user chose a tag
+    // themselves (the check skips registry ports, as in `host:5000/img`).
+    let named_a_tag = image
+        .rsplit('/')
+        .next()
+        .is_some_and(|seg| seg.contains(':'));
+    if named_a_tag || !err.contains("not found") {
+        return None;
+    }
+    Some(format!(
+        "'{image}' means '{image}:latest', and that tag doesn't exist — some          repositories only publish versioned tags. Try a specific version, e.g.          '{image}:<version>'."
+    ))
+}
+
 /// The `[x/y] STEP` part of a BuildKit progress line, when the line is a
 /// step header. `#7 [3/5] RUN npm ci` → `[3/5] RUN npm ci`; timing/output
 /// lines (`#7 0.412 …`, `#7 DONE 1.2s`) return None so they are not
@@ -542,9 +566,35 @@ async fn auto_install_agent(container_id: &str, provider_id: &str, tx: Option<&S
         report(
             tx,
             "install",
-            format!("Couldn't install {} automatically: {}", spec.binary, why),
+            install_failure_detail(spec.binary, cmd, &why),
             None,
         );
+    }
+}
+
+/// Phrase an auto-install failure so it names the actual blocker.
+///
+/// The common real-world case: the picked image is a *service* image — a
+/// database, a search engine — that ships no package tooling at all, so the
+/// install dies on `npm: not found` (or curl/pip). Reporting that line raw
+/// reads like a bug in the install; what it means is "this image cannot host
+/// the agent", and the fix is a dev image for the agent — with the service
+/// beside it via Compose when they need each other.
+fn install_failure_detail(binary: &str, install_cmd: &str, why: &str) -> String {
+    let missing_tool = ["npm", "node", "curl", "bash", "pip", "python3"]
+        .iter()
+        .find(|t| {
+            let w = why.to_ascii_lowercase();
+            (w.contains(&format!("{t}: not found"))
+                || w.contains(&format!("{t}: command not found"))
+                || w.contains(&format!("\"{t}\": executable file not found")))
+                && install_cmd.contains(*t)
+        });
+    match missing_tool {
+        Some(tool) => format!(
+            "Couldn't install {binary}: this image has no `{tool}`, so it can't host the              agent. Pick a dev image (e.g. node:22) for the agent — if you need this image's              service too, run it beside the agent with Compose."
+        ),
+        None => format!("Couldn't install {binary} automatically: {why}"),
     }
 }
 
@@ -589,12 +639,20 @@ pub async fn ensure_ready(
     // and lose whatever the agent had installed inside.
     if let Some(id) = session.container_id.as_deref().filter(|i| !i.is_empty()) {
         if is_alive(id).await {
+            // The reuse shortcut must still ensure the agent. Skipping it
+            // here made the install a one-shot: a container provisioned
+            // before auto-install existed — or whose install failed once
+            // (network blip, image fixed since) — stayed agentless FOREVER,
+            // because every later turn took this early return. The call is
+            // near-free when the agent is present (one cached probe).
+            auto_install_agent(id, &session.tool, tx).await;
             return Ok(Some(format!("{DOCKER_MARKER}{id}{workdir}")));
         }
         report(tx, "start", "Restarting the container…", None);
         let (rc, _, err) = run_docker(&["start", id], 20).await;
         if rc == 0 {
             invalidate(id);
+            auto_install_agent(id, &session.tool, tx).await;
             return Ok(Some(format!("{DOCKER_MARKER}{id}{workdir}")));
         }
         tracing::warn!(
@@ -1213,5 +1271,107 @@ mod build_source_tests {
             resolve_project_file("/home/me/proj", abs),
             std::path::Path::new(abs)
         );
+    }
+}
+
+#[cfg(test)]
+mod pull_hint_tests {
+    use super::pull_error_hint;
+
+    /// The live case: typesense/typesense exists with 1300+ tags and no
+    /// `latest`. Docker's "not found" reads as "no such image"; the hint
+    /// names the actual problem — the implied tag.
+    #[test]
+    fn a_tagless_not_found_gets_the_latest_tag_hint() {
+        let hint = pull_error_hint(
+            "typesense/typesense",
+            "docker.io/typesense/typesense:latest: not found",
+        )
+        .expect("should hint");
+        assert!(hint.contains("typesense/typesense:latest"), "{hint}");
+        assert!(hint.contains("versioned tags"), "{hint}");
+    }
+
+    /// An explicit tag failing really does mean what docker said.
+    #[test]
+    fn an_explicit_tag_gets_no_hint() {
+        assert!(pull_error_hint(
+            "typesense/typesense:99.9",
+            "typesense/typesense:99.9: not found"
+        )
+        .is_none());
+    }
+
+    /// A registry PORT is not a tag: `host:5000/img` still implies latest.
+    #[test]
+    fn a_registry_port_is_not_mistaken_for_a_tag() {
+        assert!(pull_error_hint(
+            "registry.local:5000/team/img",
+            "registry.local:5000/team/img:latest: not found"
+        )
+        .is_some());
+    }
+
+    /// Other failures (auth, network) keep their own message unpolluted.
+    #[test]
+    fn non_not_found_errors_get_no_hint() {
+        assert!(pull_error_hint("busybox", "unauthorized: authentication required").is_none());
+    }
+}
+
+#[cfg(test)]
+mod install_failure_tests {
+    use super::install_failure_detail;
+
+    /// The real-world shape: a service image (database, search engine) with
+    /// no package tooling. The raw `npm: not found` reads like an installer
+    /// bug; the message must say the image cannot host the agent and point
+    /// at the two actual fixes.
+    #[test]
+    fn a_missing_tool_names_the_image_as_the_problem() {
+        let d = install_failure_detail(
+            "claude",
+            "npm install -g @anthropic-ai/claude-code",
+            "sh: npm: not found",
+        );
+        assert!(d.contains("no `npm`"), "{d}");
+        assert!(d.contains("node:22"), "{d}");
+        assert!(d.contains("Compose"), "{d}");
+    }
+
+    /// docker's own phrasing for a missing exec target must match too.
+    #[test]
+    fn dockers_executable_not_found_phrasing_matches() {
+        let d = install_failure_detail(
+            "cursor",
+            "curl https://cursor.com/install -fsS | bash",
+            r#"OCI runtime exec failed: "curl": executable file not found in $PATH"#,
+        );
+        assert!(d.contains("no `curl`"), "{d}");
+    }
+
+    /// A tool the command never uses must not be blamed for the failure.
+    #[test]
+    fn only_tools_the_command_uses_are_considered() {
+        let d = install_failure_detail(
+            "codex",
+            "npm install -g @openai/codex",
+            "sh: curl: not found",
+        );
+        assert!(!d.contains("no `curl`"), "{d}");
+        assert!(d.contains("automatically"), "{d}");
+    }
+
+    /// Network/auth failures keep the raw reason — they are not the image's
+    /// fault and the dev-image advice would be wrong.
+    #[test]
+    fn other_failures_keep_the_raw_reason() {
+        let d = install_failure_detail(
+            "codex",
+            "npm install -g @openai/codex",
+            "npm ERR! network request failed",
+        );
+        assert!(d.contains("network request failed"), "{d}");
+        assert!(!d.contains("Compose"), "{d}");
     }
 }

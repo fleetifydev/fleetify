@@ -133,3 +133,42 @@ describe("project-file path helpers", () => {
     expect(relativeWithin("/home/me/proj2/f", "/home/me/proj")).toBeNull();
   });
 });
+
+import { displayBranch, attachDisplay } from "../exec-target";
+
+describe("displayBranch", () => {
+  /** The regression the user hit: a healthy repo sitting on main showed
+   *  "—", because the IPC never emitted `current` at all. With the backend
+   *  fixed this passes the real branch through untouched. */
+  it("shows the real current branch when there is one", () => {
+    expect(displayBranch("main", ["main", "dev"])).toBe("main");
+    expect(displayBranch("feat/x", ["main", "feat/x"])).toBe("feat/x");
+  });
+
+  /** Detached HEAD / unborn-HEAD right after auto-init: current is null but
+   *  the repo is fine — fall back to its main-line branch. */
+  it("falls back to main, then master, when current is null", () => {
+    expect(displayBranch(null, ["dev", "main"])).toBe("main");
+    expect(displayBranch(null, ["master", "dev"])).toBe("master");
+    // main wins over master when both exist.
+    expect(displayBranch(null, ["master", "main"])).toBe("main");
+  });
+
+  it("returns null only when nothing sensible exists", () => {
+    expect(displayBranch(null, [])).toBeNull();
+    expect(displayBranch(null, ["dev", "feat/x"])).toBeNull();
+  });
+});
+
+describe("attachDisplay", () => {
+  it("shows the picked workdir's leaf", () => {
+    expect(attachDisplay("docker://abc123def456/srv/app")).toBe("app");
+  });
+
+  /** Attached at the container root the old code fell through to the
+   *  literal "Container" — which says nothing about WHICH one. */
+  it("shows the container's short id at the root", () => {
+    expect(attachDisplay("docker://abc123def456789000/")).toBe("abc123def456");
+    expect(attachDisplay("docker://abc123def456789000")).toBe("abc123def456");
+  });
+});

@@ -102,3 +102,32 @@ export function relativeWithin(file: string, dir: string): string | null {
   if (!f.startsWith(d + "/")) return null;
   return f.slice(d.length + 1);
 }
+
+/** The branch to show as selected.
+ *
+ *  The real current branch when there is one; otherwise fall back to the
+ *  repo's main-line branch when it exists (`main`, then `master`). The
+ *  fallback covers a detached HEAD and the unborn-HEAD window right after
+ *  an auto-init — states where "—" reads as "this folder has no git" even
+ *  though the repo is perfectly healthy. Null only when neither applies.
+ */
+export function displayBranch(current: string | null, local: string[]): string | null {
+  if (current) return current;
+  if (local.includes("main")) return "main";
+  if (local.includes("master")) return "master";
+  return null;
+}
+
+/** What the folder-readout chip shows for an attached container.
+ *
+ *  The workdir's leaf when one was picked; the container's short id when
+ *  the user attached at the container root — which used to fall through to
+ *  the literal string "Container", telling them nothing about WHICH one. */
+export function attachDisplay(projectPath: string): string {
+  const id = containerIdFromPath(projectPath);
+  const tail = projectPath
+    .replace(/^docker:\/\/[^/]+/, "")
+    .replace(/\/+$/, "");
+  const leaf = tail.split("/").filter(Boolean).pop();
+  return leaf ?? (id ? id.slice(0, 12) : "Container");
+}

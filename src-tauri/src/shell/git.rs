@@ -553,13 +553,24 @@ pub async fn list_branches(folder: &Path) -> Value {
     if rc1 != 0 || rc2 != 0 {
         return json!({ "error": "not a git repository" });
     }
+    // The branch HEAD is on. Empty on a detached HEAD (rc still 0), which
+    // maps to null so the renderer can fall back sensibly. This key was
+    // simply never emitted before — every consumer modelled `current` and
+    // permanently received null, so the branch chip showed "—" for every
+    // repo that was in fact sitting on main.
+    let (rc3, cur, _) = git(&["branch", "--show-current"], folder).await;
+    let current = cur.trim().to_string();
     let split = |s: String| -> Vec<String> {
         s.lines()
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty())
             .collect()
     };
-    json!({ "local": split(local), "remote": split(remote) })
+    json!({
+        "local": split(local),
+        "remote": split(remote),
+        "current": if rc3 == 0 && !current.is_empty() { json!(current) } else { json!(null) },
+    })
 }
 
 pub async fn checkout(folder: &Path, branch: &str, force: bool) -> Value {

@@ -337,6 +337,19 @@ export async function dockerListDir(containerId: string, path: string): Promise<
   return res.json();
 }
 
+export interface DockerImage { name: string; size: string; id: string }
+/** Local images for the run-from-image picker. Non-fatal on any failure —
+ *  the field still accepts a typed registry image, the list is a shortcut. */
+export async function dockerImages(): Promise<{ images: DockerImage[] }> {
+  try {
+    const res = await apiFetch(`${API_BASE}/docker/images`);
+    if (!res.ok) return { images: [] };
+    return await res.json();
+  } catch {
+    return { images: [] };
+  }
+}
+
 export interface DockerAgentProbe { present: boolean; path: string }
 
 /** Is the agent CLI installed inside this container? Drives the picker's

@@ -6,11 +6,13 @@ const {
   dockerContainersMock,
   dockerListDirMock,
   dockerProbeAgentMock,
+  dockerImagesMock,
 } = vi.hoisted(() => ({
   dockerStatusMock: vi.fn(),
   dockerContainersMock: vi.fn(),
   dockerListDirMock: vi.fn(),
   dockerProbeAgentMock: vi.fn(),
+  dockerImagesMock: vi.fn(),
 }));
 
 vi.mock("@/lib/api", async () => {
@@ -21,6 +23,7 @@ vi.mock("@/lib/api", async () => {
     dockerContainers: dockerContainersMock,
     dockerListDir: dockerListDirMock,
     dockerProbeAgent: dockerProbeAgentMock,
+    dockerImages: dockerImagesMock,
   };
 });
 
@@ -68,6 +71,7 @@ describe("DockerContainerPanel agent preflight", () => {
     });
     dockerContainersMock.mockReset().mockResolvedValue({ containers: [CONTAINER] });
     dockerListDirMock.mockReset().mockResolvedValue({ path: "/", entries: [] });
+    dockerImagesMock.mockReset().mockResolvedValue({ images: [] });
     dockerProbeAgentMock.mockReset();
   });
 
@@ -334,5 +338,68 @@ describe("DockerContainerPanel run-from-image", () => {
     fireEvent.click(screen.getByRole("radio", { name: "Compose" }));
     expect(screen.getByRole("button", { name: /start the stack/i })).toBeDisabled();
     expect(screen.getByText(/choose a compose file first/i)).toBeInTheDocument();
+  });
+
+  /** Cancelling an attach has to say what it does — and the handler behind
+   *  it now resets the docker:// project path too, which was the actual
+   *  bug: exec fields alone let the marker re-derive attach at create. */
+  it("labels the clear action Detach for an attached session", async () => {
+    render(<Panel execMode="docker-attach" sourcePath="docker://abc123/work" />);
+    expect(await screen.findByText(/detach container/i)).toBeInTheDocument();
+    expect(screen.queryByText(/run locally/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps the Run locally label for a provisioned session", async () => {
+    render(<Panel execMode="docker-run" />);
+    expect(await screen.findByText(/run locally/i)).toBeInTheDocument();
+  });
+
+  /** Re-opening the tab used to show a flat list with no memory of the
+   *  pick — nothing said which container the session was already on. */
+  it("marks the attached container in the list", async () => {
+    render(<Panel execMode="docker-attach" sourcePath="docker://abc123/work" />);
+    expect(await screen.findByText("Attached")).toBeInTheDocument();
+  });
+
+  it("marks nothing when the session runs on the host", async () => {
+    render(<Panel execMode="host" sourcePath="/home/me/proj" />);
+    // Wait for the list to load, then confirm no badge appeared.
+    await waitFor(() => expect(dockerContainersMock).toHaveBeenCalled());
+    expect(screen.queryByText("Attached")).not.toBeInTheDocument();
+  });
+
+  /* ── Local images shortcut ─────────────────────────────────────── */
+
+  it("lists images already on the machine and fills the field on click", async () => {
+    dockerImagesMock.mockResolvedValue({
+      images: [
+        { name: "node:22", size: "1.1GB", id: "aaa" },
+        { name: "typesense/typesense:29.0", size: "180MB", id: "bbb" },
+      ],
+    });
+    render(<Panel />);
+    await openRunMode();
+    const list = await screen.findByTestId("local-image-list");
+    expect(list).toHaveTextContent("node:22");
+    fireEvent.click(screen.getByText("typesense/typesense:29.0"));
+    expect(screen.getByPlaceholderText("node:22")).toHaveValue("typesense/typesense:29.0");
+  });
+
+  it("typing filters the local list without limiting what can be typed", async () => {
+    dockerImagesMock.mockResolvedValue({
+      images: [
+        { name: "node:22", size: "1.1GB", id: "aaa" },
+        { name: "alpine:3", size: "8MB", id: "ccc" },
+      ],
+    });
+    render(<Panel />);
+    await openRunMode();
+    await screen.findByTestId("local-image-list");
+    fireEvent.change(screen.getByPlaceholderText("node:22"), { target: { value: "alp" } });
+    expect(screen.queryByText("node:22", { selector: "span" })).not.toBeInTheDocument();
+    expect(screen.getByText("alpine:3")).toBeInTheDocument();
+    // A name that is on no list still runs — the list is a shortcut.
+    fireEvent.change(screen.getByPlaceholderText("node:22"), { target: { value: "ghcr.io/x/y:1" } });
+    expect(screen.getByRole("button", { name: /run in this image/i })).toBeEnabled();
   });
 });

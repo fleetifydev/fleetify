@@ -44,7 +44,7 @@ import { SessionRulesChip } from "./session-rules-chip";
 import { folderName as folderNameUtil } from "@/lib/utils";
 import {
   isHostPath, containerIdFromPath, normalizeBranches, EMPTY_BRANCHES,
-  leafName, parentDir, relativeWithin,
+  leafName, parentDir, relativeWithin, displayBranch, attachDisplay,
   type BranchList, type ExecMode,
 } from "@/lib/exec-target";
 
@@ -401,6 +401,41 @@ export function SessionToolbar({
     return picked;
   }, [patch, projectPath]);
 
+  // Cancel the container target. The exec fields alone are NOT enough for
+  // an attach session: its project_path IS the `docker://` marker, and the
+  // backend re-derives docker-attach from the marker at create — so a
+  // "cancelled" draft quietly came back as a container session. The marker
+  // has to be replaced too: a draft can fall back to no-folder-picked, but
+  // a real session's PATCH rejects a blank path, so there the user picks
+  // the folder to land on and cancelling the dialog cancels the detach.
+  const clearContainerTarget = useCallback(async () => {
+    const hostFields = {
+      exec_mode: "host" as const,
+      container_source: "image" as const,
+      container_image: null,
+      container_file: null,
+      container_service: null,
+      container_id: null,
+    };
+    if (!projectPath?.startsWith("docker://")) {
+      await patch(hostFields);
+      setOpenMenu(null);
+      return;
+    }
+    if (isDraft) {
+      await patch({ ...hostFields, project_path: "" });
+      setOpenMenu(null);
+      return;
+    }
+    const w = window as unknown as { electronAPI?: { openFolderDialog?: () => Promise<string | null> } };
+    const picked = w.electronAPI?.openFolderDialog
+      ? await w.electronAPI.openFolderDialog()
+      : window.prompt("Folder to work in instead");
+    if (!picked) return; // dialog cancelled → stay attached
+    await patch({ ...hostFields, project_path: picked });
+    setOpenMenu(null);
+  }, [patch, projectPath, isDraft]);
+
   const pickFolderForMount = useCallback(async () => {
     const w = window as unknown as { electronAPI?: { openFolderDialog?: () => Promise<string | null> } };
     const picked = w.electronAPI?.openFolderDialog
@@ -633,17 +668,7 @@ export function SessionToolbar({
                   });
                   setOpenMenu(null);
                 }}
-                onClear={() => {
-                  void patch({
-                    exec_mode: "host",
-                    container_source: "image",
-                    container_image: null,
-                    container_file: null,
-                    container_service: null,
-                    container_id: null,
-                  });
-                  setOpenMenu(null);
-                }}
+                onClear={() => { void clearContainerTarget(); }}
                 onPickFolder={() => { void pickFolderForMount(); }}
                 onPickFile={pickProjectFile}
               />
@@ -698,8 +723,10 @@ export function SessionToolbar({
           }
           if (!projectPath) return null;
           if (isContainerPath) {
-            const tail = projectPath.replace(/^docker:\/\/[^/]+/, "").replace(/\/+$/, "");
-            return tail.split("/").filter(Boolean).pop() ?? "Container";
+            // Attached at the container root, the old leaf-of-path logic had
+            // nothing to show and fell through to the literal "Container" —
+            // which says nothing about WHICH one. The short id does.
+            return attachDisplay(projectPath);
           }
           if (isRemotePath) {
             const tail = projectPath.replace(/^ssh:\/\/[^/]+/, "").replace(/\/+$/, "");
@@ -790,7 +817,12 @@ export function SessionToolbar({
         const noRepo = !inGitDraft && !disabled && !branchesLoading && branches.current === null && branches.local.length === 0;
         const branchDisabled = disabled || noRepo;
         const pickedRemote = inGitDraft ? (pendingCloneBranch ?? liveRemote?.def ?? null) : null;
-        const current = inGitDraft ? (pickedRemote ?? "default") : (branches.current ?? "—");
+        // displayBranch: the real HEAD branch now that the IPC reports one,
+        // falling back to main/master for detached or just-initialised
+        // repos — "—" on a healthy repo read as "this folder has no git".
+        const current = inGitDraft
+          ? (pickedRemote ?? "default")
+          : (displayBranch(branches.current, branches.local) ?? "—");
         const filter = branchFilter.trim().toLowerCase();
         const matchedLocal  = branches.local.filter(b => !filter || b.toLowerCase().includes(filter));
         const matchedRemote = branches.remote.filter(b => !filter || b.toLowerCase().includes(filter));

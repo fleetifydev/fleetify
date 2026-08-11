@@ -19,6 +19,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/docker/status", get(status))
         .route("/docker/containers", get(containers))
+        .route("/docker/images", get(images))
         .route("/docker/list-dir", post(list_dir))
         .route("/docker/probe-agent", post(probe_agent))
 }
@@ -114,6 +115,41 @@ async fn containers() -> Result<Json<Value>, ApiError> {
         }));
     }
     Ok(Json(json!({ "containers": items })))
+}
+
+/// Local images, for the run-from-image picker. Untagged build layers
+/// (`<none>`) are noise there and are dropped.
+async fn images() -> Result<Json<Value>, ApiError> {
+    if docker_path().is_none() {
+        return Err(ApiError::BadRequest("Docker is not installed.".into()));
+    }
+    let (rc, out, err) = run_docker(&["image", "ls", "--format", "{{json .}}"], 10).await;
+    if rc != 0 {
+        let short =
+            last_line(&err).unwrap_or_else(|| format!("docker image ls exited with code {rc}"));
+        return Err(ApiError::BadRequest(short));
+    }
+    let mut items: Vec<Value> = Vec::new();
+    for raw in out.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(row) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let repo = row.get("Repository").and_then(|x| x.as_str()).unwrap_or("");
+        let tag = row.get("Tag").and_then(|x| x.as_str()).unwrap_or("");
+        if repo.is_empty() || repo == "<none>" || tag == "<none>" {
+            continue;
+        }
+        items.push(json!({
+            "name": format!("{repo}:{tag}"),
+            "size": row.get("Size").and_then(|x| x.as_str()).unwrap_or(""),
+            "id":   row.get("ID").and_then(|x| x.as_str()).unwrap_or(""),
+        }));
+    }
+    Ok(Json(json!({ "images": items })))
 }
 
 async fn list_dir(Json(req): Json<ListDirReq>) -> Result<Json<Value>, ApiError> {
