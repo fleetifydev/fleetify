@@ -350,6 +350,24 @@ export async function dockerImages(): Promise<{ images: DockerImage[] }> {
   }
 }
 
+/** Generate a starter docker-compose.yml: the picked image as a service
+ *  beside a `dev` service the agent runs in. Refuses to overwrite an
+ *  existing compose file. */
+export async function dockerComposeScaffold(
+  dir: string,
+  image: string,
+): Promise<{ file: string; agent_service: string; service: string }> {
+  const res = await apiFetch(`${API_BASE}/docker/compose-scaffold`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dir, image }),
+  });
+  if (!res.ok) {
+    throw new Error(await errorDetail(res, `compose scaffold failed (${res.status})`));
+  }
+  return res.json();
+}
+
 export interface DockerAgentProbe { present: boolean; path: string }
 
 /** Is the agent CLI installed inside this container? Drives the picker's

@@ -20,6 +20,7 @@ pub fn router() -> Router<AppState> {
         .route("/docker/status", get(status))
         .route("/docker/containers", get(containers))
         .route("/docker/images", get(images))
+        .route("/docker/compose-scaffold", post(compose_scaffold))
         .route("/docker/list-dir", post(list_dir))
         .route("/docker/probe-agent", post(probe_agent))
 }
@@ -47,6 +48,8 @@ fn docker_path() -> Option<std::path::PathBuf> {
 /// out at `timeout_secs`; on timeout returns 124 + the same
 /// "Timed out talking to the Docker daemon." message Python emits.
 pub(crate) async fn run_docker(cmd: &[&str], timeout_secs: u64) -> (i32, String, String) {
+    let started = std::time::Instant::now();
+    let logged = sanitize_docker_argv(cmd);
     let child = match tokio::process::Command::new("docker")
         .args(cmd)
         .stdout(std::process::Stdio::piped())
@@ -61,7 +64,7 @@ pub(crate) async fn run_docker(cmd: &[&str], timeout_secs: u64) -> (i32, String,
         child.wait_with_output(),
     )
     .await;
-    match wait {
+    let out = match wait {
         Err(_) => (
             124,
             String::new(),
@@ -73,7 +76,70 @@ pub(crate) async fn run_docker(cmd: &[&str], timeout_secs: u64) -> (i32, String,
             String::from_utf8_lossy(&o.stdout).into_owned(),
             String::from_utf8_lossy(&o.stderr).into_owned(),
         ),
+    };
+    // Every docker CLI call the app makes, one greppable line each
+    // (`fleetify::docker`) — argv, exit code, duration. Failures at warn so
+    // a broken flow stands out of a default info-level terminal; successes
+    // at debug to keep the hot path quiet. Env VALUES are redacted before
+    // logging: exec/run argv carries -e API_KEY=… pairs.
+    //
+    // An expected miss is not a failure: `command -v claude` answering
+    // "absent" exits 1/127 with NOTHING on stderr, and every provisioning
+    // pass probes like that on purpose — logging those as `docker FAILED`
+    // filled the terminal with warnings for a flow that was working
+    // exactly as designed. Real failures say why on stderr and stay warn.
+    if out.0 == 0 || is_expected_miss(out.0, &out.2) {
+        tracing::debug!(
+            target: "fleetify::docker",
+            argv = %logged,
+            rc = out.0,
+            ms = started.elapsed().as_millis() as u64,
+            "docker"
+        );
+    } else {
+        tracing::warn!(
+            target: "fleetify::docker",
+            argv = %logged,
+            rc = out.0,
+            ms = started.elapsed().as_millis() as u64,
+            stderr = %out.2.trim().lines().last().unwrap_or(""),
+            "docker FAILED"
+        );
     }
+    out
+}
+
+/// A non-zero exit that answers a question rather than reporting a
+/// failure: probe-style commands (`command -v`, `test -f`) exit 1/127 with
+/// an empty stderr when the answer is simply "no".
+fn is_expected_miss(rc: i32, stderr: &str) -> bool {
+    matches!(rc, 1 | 127) && stderr.trim().is_empty()
+}
+
+/// The argv as one loggable string, with env VALUES masked.
+///
+/// `docker exec -e XAI_API_KEY=xai-… id claude` must never reach the log
+/// with the key intact — names are enough to debug ("was the key passed at
+/// all?"), matching the header-names-only precedent in the claude bridge.
+fn sanitize_docker_argv(cmd: &[&str]) -> String {
+    let mut parts: Vec<String> = Vec::with_capacity(cmd.len() + 1);
+    parts.push("docker".to_string());
+    let mut mask_next = false;
+    for a in cmd {
+        if mask_next {
+            mask_next = false;
+            match a.split_once('=') {
+                Some((k, _)) => parts.push(format!("{k}=***")),
+                None => parts.push("***".to_string()),
+            }
+            continue;
+        }
+        if *a == "-e" || *a == "--env" {
+            mask_next = true;
+        }
+        parts.push((*a).to_string());
+    }
+    parts.join(" ")
 }
 
 async fn status() -> Json<Value> {
@@ -221,6 +287,108 @@ async fn list_dir(Json(req): Json<ListDirReq>) -> Result<Json<Value>, ApiError> 
 }
 
 #[derive(Deserialize)]
+struct ScaffoldReq {
+    /// Host project directory the file is written into.
+    dir: String,
+    /// The service image the user picked (e.g. `typesense/typesense:30.2`).
+    image: String,
+}
+
+/// A service name docker compose will accept, derived from the image:
+/// the repo leaf without registry/tag, squashed to `[a-z0-9-]`. `dev` is
+/// reserved for the agent's own service.
+fn scaffold_service_name(image: &str) -> String {
+    let leaf = image.rsplit('/').next().unwrap_or(image);
+    let base = leaf.split(':').next().unwrap_or(leaf);
+    let mut name: String = base
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    name = name.trim_matches('-').to_string();
+    if name.is_empty() || name == "dev" {
+        "service".to_string()
+    } else {
+        name
+    }
+}
+
+/// Write a starter compose file: the picked image as a service, plus a
+/// `dev` service the agent runs in.
+///
+/// This is the answer to "I picked typesense as the image and claude can't
+/// install there": the agent's runtime and the service are two different
+/// containers, and Compose is how they sit side by side. Generating the
+/// file — rather than layering node onto an arbitrary base image — is
+/// deterministic: no distro detection, no package-manager roulette, no
+/// distroless dead ends, and the result is a plain file in the repo the
+/// user can read and edit. Never overwrites: an existing compose file is
+/// the user's, whatever its content.
+async fn compose_scaffold(Json(req): Json<ScaffoldReq>) -> Result<Json<Value>, ApiError> {
+    let dir = req.dir.trim();
+    let image = req.image.trim();
+    if dir.is_empty() || image.is_empty() {
+        return Err(ApiError::BadRequest("dir and image are required".into()));
+    }
+    if !crate::services::exec_target::is_host_path(dir) {
+        return Err(ApiError::BadRequest(
+            "The compose file has to live in a local project folder.".into(),
+        ));
+    }
+    let root = std::path::Path::new(dir);
+    if !root.is_dir() {
+        return Err(ApiError::BadRequest(format!(
+            "Project folder does not exist: {dir}"
+        )));
+    }
+    for existing in [
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "compose.yml",
+        "compose.yaml",
+    ] {
+        if root.join(existing).exists() {
+            return Err(ApiError::BadRequest(format!(
+                "{existing} already exists in this folder — pick it in Compose mode instead \
+                 of generating a new one."
+            )));
+        }
+    }
+    let service = scaffold_service_name(image);
+    // Built line-by-line: YAML is indentation-sensitive, and a multi-line
+    // Rust string literal would smuggle the source code's own indentation
+    // into the file.
+    let content = [
+        format!("# Generated by Fleetify: the agent runs in `dev`; `{service}` runs beside it."),
+        format!("# The agent reaches it over the compose network, e.g. http://{service}:<port>."),
+        "# Edit freely — Fleetify only ever starts this stack, it never tears it down.".to_string(),
+        "services:".to_string(),
+        "  dev:".to_string(),
+        "    image: node:22".to_string(),
+        "    command: sleep infinity".to_string(),
+        "    working_dir: /workspace".to_string(),
+        "    volumes:".to_string(),
+        "      - .:/workspace".to_string(),
+        format!("  {service}:"),
+        format!("    image: {image}"),
+        "    # TODO: add the service's own command/ports/volumes here, e.g.".to_string(),
+        "    # command: \"--data-dir /data --api-key=xyz\"".to_string(),
+        "    # ports: [\"8108:8108\"]".to_string(),
+        String::new(),
+    ]
+    .join("\n");
+    let path = root.join("docker-compose.yml");
+    std::fs::write(&path, content)
+        .map_err(|e| ApiError::BadRequest(format!("couldn't write {}: {e}", path.display())))?;
+    Ok(Json(json!({
+        "ok": true,
+        "file": "docker-compose.yml",
+        "agent_service": "dev",
+        "service": service,
+    })))
+}
+
+#[derive(Deserialize)]
 struct ProbeReq {
     container_id: String,
     #[serde(default = "default_agent")]
@@ -340,6 +508,66 @@ mod tests {
     #[test]
     fn probe_script_quotes_the_agent_name() {
         assert_eq!(probe_script("claude"), "command -v 'claude'");
+    }
+
+    /// A probe answering "absent" is a data point, not a failure — it must
+    /// not warn. A command that actually broke says why on stderr and must.
+    #[test]
+    fn probe_misses_are_not_failures() {
+        assert!(is_expected_miss(127, ""));
+        assert!(is_expected_miss(
+            1, "  
+"
+        ));
+        // Same codes WITH a reason are real failures.
+        assert!(!is_expected_miss(127, "sh: 1: npm: not found"));
+        // Other codes are failures regardless.
+        assert!(!is_expected_miss(125, ""));
+        assert!(!is_expected_miss(-1, ""));
+    }
+
+    /// Secrets must never reach the terminal. `-e KEY=VALUE` pairs are the
+    /// one place the docker argv carries them.
+    #[test]
+    fn env_values_are_masked_in_logged_argv() {
+        let logged = sanitize_docker_argv(&[
+            "exec",
+            "-i",
+            "-e",
+            "XAI_API_KEY=xai-supersecret",
+            "-e",
+            "OPENAI_BASE_URL=http://host.docker.internal:4000",
+            "abc123",
+            "grok",
+        ]);
+        assert!(!logged.contains("supersecret"), "{logged}");
+        assert!(logged.contains("XAI_API_KEY=***"), "{logged}");
+        assert!(logged.contains("OPENAI_BASE_URL=***"), "{logged}");
+        // Everything that is not an env value stays legible.
+        assert!(logged.starts_with("docker exec -i"), "{logged}");
+        assert!(logged.ends_with("abc123 grok"), "{logged}");
+    }
+
+    /// Only the argument AFTER -e is a secret; a later positional that
+    /// happens to contain '=' (sh -c scripts do) must stay readable.
+    #[test]
+    fn non_env_arguments_keep_their_equals_signs() {
+        let logged = sanitize_docker_argv(&["exec", "c1", "sh", "-c", "export FOO=bar; echo done"]);
+        assert!(logged.contains("FOO=bar"), "{logged}");
+    }
+
+    /// The generated service name must be compose-legal and never collide
+    /// with the agent's own `dev` service.
+    #[test]
+    fn scaffold_service_names_are_compose_legal() {
+        assert_eq!(
+            scaffold_service_name("typesense/typesense:30.2"),
+            "typesense"
+        );
+        assert_eq!(scaffold_service_name("postgres"), "postgres");
+        assert_eq!(scaffold_service_name("ghcr.io/acme/My_App:1.0"), "my-app");
+        assert_eq!(scaffold_service_name("dev:1"), "service");
+        assert_eq!(scaffold_service_name(":::"), "service");
     }
 
     #[test]

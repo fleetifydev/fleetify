@@ -57,6 +57,29 @@ fn facts_cache() -> &'static Cache<String> {
     C.get_or_init(Default::default)
 }
 
+/// Why the last auto-install into a container failed, per (container, agent).
+///
+/// The failure detail streams into the session as a transient setup step —
+/// visible for a second, then gone — while the error that PERSISTS is the
+/// spawn pre-flight's generic "not installed". So the one message that
+/// explains the situation ("this image has no npm…") evaporated and the one
+/// that stays taught nothing. The pre-flight reads this memory to say both.
+/// No TTL: the reason stays true until an install succeeds, which clears it.
+fn install_failures() -> &'static std::sync::Mutex<HashMap<String, String>> {
+    static C: OnceLock<std::sync::Mutex<HashMap<String, String>>> = OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// The remembered reason the agent could not be auto-installed here, if any.
+pub fn last_install_failure(container_id: &str, provider_id: &str) -> Option<String> {
+    let binary = super::providers::spec_for(provider_id)?.binary;
+    install_failures()
+        .lock()
+        .ok()?
+        .get(&key(container_id, binary))
+        .cloned()
+}
+
 fn cache_get<V: Clone>(cache: &Cache<V>, key: &str) -> Option<V> {
     let guard = cache.lock().ok()?;
     let (v, at) = guard.get(key)?;
@@ -191,6 +214,18 @@ pub fn run_argv(spec: &RunSpec) -> Vec<String> {
         // Detached: each turn is still a `docker exec`, so the Stage 1 spawn
         // path is untouched by provisioning.
         "-d".into(),
+        // `--entrypoint sleep` rather than a trailing `sleep infinity`
+        // command. On an image with an ENTRYPOINT (every service image:
+        // typesense, postgres, redis…) a trailing command is passed as
+        // ARGUMENTS to that entrypoint — verified live: the container ran
+        // `<entrypoint> sleep infinity` and exited instantly, so the very
+        // first exec found it dead. Overriding the entrypoint makes every
+        // image behave identically: an inert box we exec the agent into.
+        // That is also the honest contract — Image mode is the agent's
+        // runtime, not a way to run the image's own service (a service
+        // belongs beside the agent, via Compose).
+        "--entrypoint".into(),
+        "sleep".into(),
         "--name".into(),
         spec.name.clone(),
     ];
@@ -211,9 +246,8 @@ pub fn run_argv(spec: &RunSpec) -> Vec<String> {
         v.push(format!("{}:host-gateway", super::credentials::HOST_GATEWAY));
     }
     v.push(spec.image.clone());
-    // Keep it alive between turns. Without this the container exits as soon
-    // as its entrypoint returns and every turn would pay a cold provision.
-    v.push("sleep".into());
+    // The overridden entrypoint's argument: sleep forever, so the container
+    // outlives the turn and every turn is a plain `docker exec`.
     v.push("infinity".into());
     v
 }
@@ -248,12 +282,18 @@ pub struct SetupEvent {
 pub type SetupTx = tokio::sync::mpsc::UnboundedSender<SetupEvent>;
 
 fn report(tx: Option<&SetupTx>, step: &'static str, detail: impl Into<String>, pct: Option<f32>) {
+    let detail = detail.into();
+    // Every setup step also lands in the terminal, so a container session's
+    // whole preparation is greppable (`fleetify::container`) after the
+    // transient in-session pill has moved on. Per-layer pull ticks carry a
+    // pct and go to debug — dozens per pull; the milestones go to info.
+    if pct.is_some() {
+        tracing::debug!(target: "fleetify::container::setup", step, detail = %detail, pct = ?pct);
+    } else {
+        tracing::info!(target: "fleetify::container::setup", step, detail = %detail);
+    }
     if let Some(tx) = tx {
-        let _ = tx.send(SetupEvent {
-            step,
-            detail: detail.into(),
-            pct,
-        });
+        let _ = tx.send(SetupEvent { step, detail, pct });
     }
 }
 
@@ -458,8 +498,12 @@ fn pull_error_hint(image: &str, err: &str) -> Option<String> {
     if named_a_tag || !err.contains("not found") {
         return None;
     }
+    // One line on purpose: a continuation (`\` + newline) here has twice
+    // been flattened into literal space runs by patch tooling, and the
+    // mangled text shipped to the user's screen. The double-space test
+    // below pins it either way.
     Some(format!(
-        "'{image}' means '{image}:latest', and that tag doesn't exist — some          repositories only publish versioned tags. Try a specific version, e.g.          '{image}:<version>'."
+        "'{image}' means '{image}:latest', and that tag doesn't exist — some repositories only publish versioned tags. Try a specific version, e.g. '{image}:<version>'."
     ))
 }
 
@@ -557,18 +601,41 @@ async fn auto_install_agent(container_id: &str, provider_id: &str, tx: Option<&S
     );
     // Generous timeout: a global npm install of a large CLI on a cold image
     // is minutes, not seconds.
+    tracing::info!(
+        target: "fleetify::container",
+        container = container_id,
+        binary = spec.binary,
+        install_cmd = cmd,
+        "auto-install: agent missing, installing"
+    );
     let (rc, _out, err) = run_docker(&["exec", container_id, "sh", "-c", cmd], 420).await;
     invalidate(container_id);
     if rc == 0 && probe_agent_cached(container_id, spec.binary).await {
+        if let Ok(mut m) = install_failures().lock() {
+            m.remove(&key(container_id, spec.binary));
+        }
+        tracing::info!(
+            target: "fleetify::container",
+            container = container_id,
+            binary = spec.binary,
+            "auto-install: succeeded"
+        );
         report(tx, "install", format!("{} installed", spec.binary), None);
     } else {
         let why = last_line(&err).unwrap_or_else(|| format!("exit code {rc}"));
-        report(
-            tx,
-            "install",
-            install_failure_detail(spec.binary, cmd, &why),
-            None,
+        let detail = install_failure_detail(spec.binary, cmd, &why);
+        tracing::warn!(
+            target: "fleetify::container",
+            container = container_id,
+            binary = spec.binary,
+            rc,
+            reason = %why,
+            "auto-install: FAILED"
         );
+        if let Ok(mut m) = install_failures().lock() {
+            m.insert(key(container_id, spec.binary), detail.clone());
+        }
+        report(tx, "install", detail, None);
     }
 }
 
@@ -592,7 +659,7 @@ fn install_failure_detail(binary: &str, install_cmd: &str, why: &str) -> String 
         });
     match missing_tool {
         Some(tool) => format!(
-            "Couldn't install {binary}: this image has no `{tool}`, so it can't host the              agent. Pick a dev image (e.g. node:22) for the agent — if you need this image's              service too, run it beside the agent with Compose."
+            "Couldn't install {binary}: this image has no `{tool}`, so it can't host the agent. Pick a dev image (e.g. node:22) for the agent — if you need this image's service too, run it beside the agent with Compose."
         ),
         None => format!("Couldn't install {binary} automatically: {why}"),
     }
@@ -1023,16 +1090,23 @@ mod tests {
         );
     }
 
-    /// Detached + `sleep infinity`: the container outlives the turn, so each
-    /// turn is still a plain `docker exec` and the spawn path is unchanged.
+    /// Detached and kept alive via an ENTRYPOINT OVERRIDE, not a trailing
+    /// command. A trailing `sleep infinity` is passed as arguments to any
+    /// entrypoint the image defines — verified live on an ENTRYPOINT image:
+    /// the container exited instantly and the first exec found it dead.
     #[test]
     fn run_argv_detaches_and_keeps_the_container_alive() {
         let argv = run_argv(&spec());
         assert!(argv.contains(&"-d".to_string()), "{argv:?}");
-        assert_eq!(
-            &argv[argv.len() - 2..],
-            &["sleep".to_string(), "infinity".to_string()]
+        assert!(
+            argv.windows(2)
+                .any(|w| w[0] == "--entrypoint" && w[1] == "sleep"),
+            "the entrypoint must be overridden, or service images die at start: {argv:?}"
         );
+        assert_eq!(argv.last().unwrap(), "infinity");
+        // And the image comes right before its single argument.
+        let image_at = argv.iter().position(|a| a == "node:22").unwrap();
+        assert_eq!(image_at + 2, argv.len());
     }
 
     /// Linux does not resolve host.docker.internal without this, so a
@@ -1060,7 +1134,15 @@ mod tests {
         s.envs = vec![("OPENAI_API_KEY".into(), "sk-x".into())];
         let argv = run_argv(&s);
         let image_at = argv.iter().position(|a| a == "node:22").unwrap();
-        for flag in ["-v", "-e", "--add-host", "-w", "--name", "-d"] {
+        for flag in [
+            "-v",
+            "-e",
+            "--add-host",
+            "-w",
+            "--name",
+            "-d",
+            "--entrypoint",
+        ] {
             if let Some(at) = argv.iter().rposition(|a| a == flag) {
                 assert!(at < image_at, "{flag} must precede the image: {argv:?}");
             }
@@ -1290,6 +1372,7 @@ mod pull_hint_tests {
         .expect("should hint");
         assert!(hint.contains("typesense/typesense:latest"), "{hint}");
         assert!(hint.contains("versioned tags"), "{hint}");
+        assert!(!hint.contains("  "), "double spaces leaked into: {hint}");
     }
 
     /// An explicit tag failing really does mean what docker said.
@@ -1337,6 +1420,10 @@ mod install_failure_tests {
         assert!(d.contains("no `npm`"), "{d}");
         assert!(d.contains("node:22"), "{d}");
         assert!(d.contains("Compose"), "{d}");
+        // The python patch tooling once collapsed Rust line-continuations
+        // into literal space runs, and the mangled text shipped to the
+        // user's screen ("host the              agent"). Never again.
+        assert!(!d.contains("  "), "double spaces leaked into: {d}");
     }
 
     /// docker's own phrasing for a missing exec target must match too.
@@ -1373,5 +1460,44 @@ mod install_failure_tests {
         );
         assert!(d.contains("network request failed"), "{d}");
         assert!(!d.contains("Compose"), "{d}");
+    }
+}
+
+#[cfg(test)]
+mod install_memory_tests {
+    use super::*;
+
+    /// The pre-flight's generic "not installed" persists while the setup
+    /// step that EXPLAINS it is transient — so the reason has to be
+    /// rememberable after the pill is gone.
+    #[test]
+    fn a_recorded_failure_is_readable_until_cleared() {
+        let k = key("memtest-c1", "claude");
+        install_failures()
+            .lock()
+            .unwrap()
+            .insert(k.clone(), "this image has no `npm`".into());
+        assert_eq!(
+            last_install_failure("memtest-c1", "claude-code").as_deref(),
+            Some("this image has no `npm`")
+        );
+        // Success clears it — the reason stops being true.
+        install_failures().lock().unwrap().remove(&k);
+        assert!(last_install_failure("memtest-c1", "claude-code").is_none());
+    }
+
+    /// Keyed per agent: codex failing must not explain a claude refusal.
+    #[test]
+    fn failures_are_scoped_to_the_agent_that_failed() {
+        install_failures()
+            .lock()
+            .unwrap()
+            .insert(key("memtest-c2", "codex"), "no npm".into());
+        assert!(last_install_failure("memtest-c2", "claude-code").is_none());
+        assert!(last_install_failure("memtest-c2", "codex-cli").is_some());
+        install_failures()
+            .lock()
+            .unwrap()
+            .remove(&key("memtest-c2", "codex"));
     }
 }

@@ -33,6 +33,7 @@ import {
 } from "lucide-react";
 import {
   dockerStatus, dockerContainers, dockerListDir, dockerProbeAgent, dockerImages,
+  dockerComposeScaffold,
   type DockerContainer, type DockerImage, type SshDirEntry,
 } from "@/lib/api";
 import { isHostPath, containerIdFromPath } from "@/lib/exec-target";
@@ -428,6 +429,8 @@ function RunFromImage({
 }) {
   const hasHostSource = isHostPath(sourcePath);
   const agentBinary = CONTAINER_BINARIES[providerId] ?? providerId;
+  const [scaffoldErr, setScaffoldErr] = useState<string | null>(null);
+  const [scaffolding, setScaffolding] = useState(false);
   // What is stopping the run, if anything — rendered NEXT TO the button.
   // Compose without a folder can only get one through the file pick, so
   // that is what its blocker asks for.
@@ -514,6 +517,55 @@ function RunFromImage({
               style={fieldStyle}
             />
           </label>
+          {/* Service image? A database or search engine can't HOST the
+              agent (no npm inside) — the working layout is the image beside
+              a dev container, and that is one click: generate a compose
+              file with both, then this panel flips to Compose with it
+              pre-picked. Deterministic on purpose, unlike layering node
+              onto an arbitrary base — no distro detection, no
+              package-manager roulette, and the result is a plain file in
+              the repo the user can read and edit. */}
+          {image.trim() && hasHostSource && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+              <button
+                type="button"
+                data-testid="scaffold-compose"
+                disabled={scaffolding}
+                onClick={() => {
+                  setScaffoldErr(null);
+                  setScaffolding(true);
+                  dockerComposeScaffold(sourcePath as string, image.trim())
+                    .then(r => {
+                      setRunSource("compose");
+                      setBuildFile(r.file);
+                      setComposeService(r.agent_service);
+                    })
+                    .catch(e => setScaffoldErr(e instanceof Error ? e.message : String(e)))
+                    .finally(() => setScaffolding(false));
+                }}
+                onMouseDown={e => e.preventDefault()}
+                style={{
+                  alignSelf: "flex-start",
+                  background: "transparent",
+                  border: "none", outline: "none", cursor: "pointer",
+                  padding: 0, fontSize: 11, color: "var(--c-dim)",
+                  textDecoration: "underline", textUnderlineOffset: 2,
+                  fontFamily: "var(--font-sans)",
+                  opacity: scaffolding ? 0.6 : 1,
+                }}
+              >
+                {scaffolding
+                  ? "Generating compose file…"
+                  : "Service image? Generate a compose file with a dev container beside it"}
+              </button>
+              {scaffoldErr && (
+                <span style={{ fontSize: 11, color: "var(--c-err, #d66)", lineHeight: 1.4 }}>
+                  {scaffoldErr}
+                </span>
+              )}
+            </div>
+          )}
+
           {/* Images already on this machine. Typing filters the list; a
               click fills the field. Anything not listed still works — the
               typed name is what runs, this is only the shortcut. */}

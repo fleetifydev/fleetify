@@ -111,6 +111,24 @@ pub fn agent_workdir(target: &ExecTarget, host_cwd: &str) -> String {
     }
 }
 
+/// The persistent not-installed refusal.
+///
+/// When auto-install already tried and failed, the WHY is folded in — the
+/// setup step that carried it is transient, and "not installed. Install it
+/// there" on an image that cannot host the agent sent the user in a circle.
+fn missing_agent_message(binary: &str, container_id: &str, remembered: Option<&str>) -> String {
+    match remembered {
+        Some(reason) => format!(
+            "The {binary} CLI is not installed in container '{container_id}', and installing it \
+             automatically failed — {reason}"
+        ),
+        None => format!(
+            "The {binary} CLI is not installed in container '{container_id}'. Install it there, \
+             or switch this session to a local folder."
+        ),
+    }
+}
+
 /// What a container turn needs on top of what the bridge already built.
 #[derive(Debug, Default, Clone)]
 pub struct Preflight {
@@ -159,9 +177,12 @@ pub async fn preflight(
     if !super::lifecycle::probe_agent_cached(id, spec.binary).await {
         super::lifecycle::invalidate(id);
         anyhow::bail!(
-            "The {} CLI is not installed in container '{id}'. Install it there, or switch this \
-             session to a local folder.",
-            spec.binary
+            "{}",
+            missing_agent_message(
+                spec.binary,
+                id,
+                super::lifecycle::last_install_failure(id, provider_id).as_deref(),
+            )
         );
     }
 
@@ -462,5 +483,32 @@ mod tests {
                 "hi",
             ])
         );
+    }
+}
+
+#[cfg(test)]
+mod missing_agent_tests {
+    use super::missing_agent_message;
+
+    /// With a remembered install failure the error must explain, not
+    /// circle: "install it there" on an image with no npm is a dead end.
+    #[test]
+    fn a_remembered_failure_replaces_the_circular_advice() {
+        let m = missing_agent_message(
+            "claude",
+            "abc",
+            Some("Couldn't install claude: this image has no `npm`, so it can't host the agent."),
+        );
+        assert!(m.contains("no `npm`"), "{m}");
+        assert!(
+            !m.contains("Install it there"),
+            "circular advice must be gone: {m}"
+        );
+    }
+
+    #[test]
+    fn no_memory_keeps_the_plain_refusal() {
+        let m = missing_agent_message("codex", "abc", None);
+        assert!(m.contains("Install it there"), "{m}");
     }
 }

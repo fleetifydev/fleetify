@@ -7,12 +7,14 @@ const {
   dockerListDirMock,
   dockerProbeAgentMock,
   dockerImagesMock,
+  dockerComposeScaffoldMock,
 } = vi.hoisted(() => ({
   dockerStatusMock: vi.fn(),
   dockerContainersMock: vi.fn(),
   dockerListDirMock: vi.fn(),
   dockerProbeAgentMock: vi.fn(),
   dockerImagesMock: vi.fn(),
+  dockerComposeScaffoldMock: vi.fn(),
 }));
 
 vi.mock("@/lib/api", async () => {
@@ -24,6 +26,7 @@ vi.mock("@/lib/api", async () => {
     dockerListDir: dockerListDirMock,
     dockerProbeAgent: dockerProbeAgentMock,
     dockerImages: dockerImagesMock,
+    dockerComposeScaffold: dockerComposeScaffoldMock,
   };
 });
 
@@ -401,5 +404,45 @@ describe("DockerContainerPanel run-from-image", () => {
     // A name that is on no list still runs — the list is a shortcut.
     fireEvent.change(screen.getByPlaceholderText("node:22"), { target: { value: "ghcr.io/x/y:1" } });
     expect(screen.getByRole("button", { name: /run in this image/i })).toBeEnabled();
+  });
+
+  /* ── Compose scaffold from a service image ─────────────────────── */
+
+  it("one click turns a service image into a compose layout and flips the panel", async () => {
+    dockerComposeScaffoldMock.mockResolvedValue({
+      file: "docker-compose.yml",
+      agent_service: "dev",
+      service: "typesense",
+    });
+    render(<Panel />);
+    await openRunMode();
+    typeImage("typesense/typesense:30.2");
+    fireEvent.click(screen.getByTestId("scaffold-compose"));
+    await waitFor(() =>
+      expect(dockerComposeScaffoldMock).toHaveBeenCalledWith(
+        "/home/me/proj",
+        "typesense/typesense:30.2",
+      ),
+    );
+    // The panel is now in Compose mode with the generated file and the
+    // agent's service pre-picked.
+    expect(await screen.findByRole("button", { name: /start the stack/i })).toBeInTheDocument();
+    expect(screen.getByText("docker-compose.yml")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/single-service file picks itself/i)).toHaveValue("dev");
+  });
+
+  /** The refusal (existing compose file) must land in the panel, not
+   *  vanish into the console. */
+  it("shows the scaffold refusal inline", async () => {
+    dockerComposeScaffoldMock.mockRejectedValue(
+      new Error("docker-compose.yml already exists in this folder"),
+    );
+    render(<Panel />);
+    await openRunMode();
+    typeImage("postgres:16");
+    fireEvent.click(screen.getByTestId("scaffold-compose"));
+    expect(await screen.findByText(/already exists/i)).toBeInTheDocument();
+    // Still in Image mode — nothing was generated.
+    expect(screen.getByRole("button", { name: /run in this image/i })).toBeInTheDocument();
   });
 });
