@@ -545,6 +545,9 @@ pub async fn create(
         container_workdir: None,
         container_image: None,
         container_mount_credentials: None,
+        container_source: None,
+        container_file: None,
+        container_service: None,
     };
 
     let session = st

@@ -120,6 +120,15 @@ document.addEventListener("mousedown", function (e) {
         });
       },
       openFolderDialog: function () { return invoke("dialog_open_folder"); },
+      // opts: { defaultDir?, extensions?, title? } → absolute path or null.
+      openFileDialog: function (opts) {
+        opts = opts || {};
+        return invoke("dialog_open_file", {
+          defaultDir: opts.defaultDir || null,
+          extensions: opts.extensions || null,
+          title: opts.title || null,
+        });
+      },
       checkGithubAuth: function () { return invoke("shell_check_github_auth"); },
       // Launches `gh auth login --web` in a fresh terminal so the user
       // can complete the device-code flow. Renderer should poll

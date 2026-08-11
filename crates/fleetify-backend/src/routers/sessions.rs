@@ -524,9 +524,17 @@ async fn delete_session(
     // Tear down a container Fleetify provisioned. Deliberately scoped to
     // `docker-run`: an ATTACHED container is the user's own, and deleting a
     // Fleetify session must never stop something they started themselves.
-    if s.exec_mode == "docker-run" {
+    // A compose stack is the user's too — Fleetify only ever STARTS it, so
+    // delete leaves both the stack and its service containers untouched.
+    if s.exec_mode == "docker-run" && s.container_source != "compose" {
         if let Some(cid) = s.container_id.as_deref() {
             crate::services::container::lifecycle::teardown_provisioned(cid).await;
+        }
+        // An image built from the session's Dockerfile is session-scoped
+        // state, same as the container; leaving it behind on every deleted
+        // session slowly fills the image store. Best-effort.
+        if s.container_source == "dockerfile" {
+            crate::services::container::lifecycle::remove_built_image(&s.id).await;
         }
     }
     if s.origin.as_deref() == Some("claude-bg") {

@@ -2845,6 +2845,41 @@ pub async fn pty_buffer(id: String) -> serde_json::Value {
 // Renderer (new-agent-dialog.tsx, session-toolbar.tsx) treats the
 // awaited value as a single path string and gates on `if (p)`. An
 // array would always be truthy and break the `if` check.
+// `window.electronAPI.openFileDialog(opts)` → `Promise<string | null>`.
+// Same single-path contract as the folder dialog. `extensions` filters the
+// dialog when given (e.g. ["yml","yaml"] for compose files); a Dockerfile
+// has no extension, so callers picking one pass no filter at all rather
+// than an unmatchable one. `default_dir` opens the dialog in the session's
+// project folder so the pick starts where the file almost certainly is.
+#[tauri::command]
+pub async fn dialog_open_file(
+    app: tauri::AppHandle,
+    default_dir: Option<String>,
+    extensions: Option<Vec<String>>,
+    title: Option<String>,
+) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<tauri_plugin_dialog::FilePath>>();
+    let mut dlg = app.dialog().file();
+    if let Some(dir) = default_dir.filter(|d| !d.trim().is_empty()) {
+        dlg = dlg.set_directory(dir);
+    }
+    if let Some(t) = title.filter(|t| !t.trim().is_empty()) {
+        dlg = dlg.set_title(t);
+    }
+    if let Some(exts) = extensions.filter(|e| !e.is_empty()) {
+        let refs: Vec<&str> = exts.iter().map(|e| e.as_str()).collect();
+        dlg = dlg.add_filter("Supported files", &refs);
+    }
+    dlg.pick_file(move |fp| {
+        let _ = tx.send(fp);
+    });
+    match rx.await {
+        Ok(Some(fp)) => fp.into_path().ok().map(|p| p.to_string_lossy().to_string()),
+        _ => None,
+    }
+}
+
 #[tauri::command]
 pub async fn dialog_open_folder(app: tauri::AppHandle) -> Option<String> {
     use tauri_plugin_dialog::DialogExt;

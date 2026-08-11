@@ -455,6 +455,13 @@ export async function createSession(data: {
    *  container. Off by default — it carries a host login across the
    *  boundary, so it is always the user's explicit choice. */
   container_mount_credentials?: boolean;
+  /** Recipe for `docker-run`: `image` (default), `dockerfile` (build
+   *  `container_file` with the project as context) or `compose`
+   *  (`docker compose up` on `container_file`, agent in
+   *  `container_service`). */
+  container_source?: "image" | "dockerfile" | "compose";
+  container_file?: string;
+  container_service?: string;
 }) {
   const res = await apiFetch(`${API_BASE}/sessions`, {
     method: "POST",

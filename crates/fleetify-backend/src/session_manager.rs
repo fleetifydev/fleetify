@@ -347,14 +347,19 @@ impl SessionManager {
         let id = uuid::Uuid::new_v4().to_string();
         let created_at = chrono::Utc::now().to_rfc3339();
         let exec = resolve_exec_columns(data);
+        let container_source = data
+            .container_source
+            .clone()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "image".to_string());
 
         sqlx::query(
             "INSERT INTO sessions \
              (id,title,project_path,group_path,tool,command,status,use_worktree,\
               claude_session_id,model_name,permission_mode,session_mode,\
               agent_template,account_id,origin,user_id,pinned,order_idx,created_at,notes,effort,budget_used,\
-              exec_mode,container_id,container_workdir,container_image,container_mount_credentials) \
-             VALUES (?,?,?,?,?,?,'stopped',?,?,?,?,?,?,?,?,?,0,0,?,?,?,0.0,?,?,?,?,?)",
+              exec_mode,container_id,container_workdir,container_image,container_mount_credentials,\n              container_source,container_file,container_service) \
+             VALUES (?,?,?,?,?,?,'stopped',?,?,?,?,?,?,?,?,?,0,0,?,?,?,0.0,?,?,?,?,?,?,?,?)",
         )
         .bind(&id)
         .bind(&data.title)
@@ -378,7 +383,14 @@ impl SessionManager {
         .bind(&exec.container_id)
         .bind(&exec.container_workdir)
         .bind(&data.container_image)
-        .bind(data.container_mount_credentials.unwrap_or(false))
+        // Compose owns the service's mounts, so a credential mount cannot be
+        // applied there. Forcing the flag off at the source of truth keeps
+        // the pre-flight from later reporting "credentials bridged" for a
+        // mount that never happened.
+        .bind(data.container_mount_credentials.unwrap_or(false) && container_source != "compose")
+        .bind(&container_source)
+        .bind(&data.container_file)
+        .bind(&data.container_service)
         .execute(pool)
         .await?;
 

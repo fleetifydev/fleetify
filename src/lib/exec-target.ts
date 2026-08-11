@@ -56,3 +56,49 @@ export function normalizeBranches(r: unknown): BranchList {
     current: typeof o.current === "string" ? o.current : null,
   };
 }
+
+/* ── Project-file helpers (Dockerfile / compose pickers) ─────────────
+ *
+ * The OS dialog hands back an absolute path; sessions store the file
+ * relative to the project folder when it lives inside it (pretty, and
+ * robust to the folder moving), absolute otherwise. All of this has to
+ * survive Windows: mixed separators, drive letters whose casing differs
+ * between two strings that name the same place. */
+
+/** Normalise separators to `/` and strip any trailing one. */
+function norm(p: string): string {
+  return p.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+/** Case-insensitive compare is only correct on Windows-shaped paths —
+ *  a drive letter or UNC prefix. POSIX paths stay case-sensitive. */
+function isWindowsShaped(p: string): boolean {
+  return /^[a-zA-Z]:/.test(p) || p.startsWith("//");
+}
+
+/** Last path segment. */
+export function leafName(p: string): string {
+  const n = norm(p);
+  return n.split("/").filter(Boolean).pop() ?? n;
+}
+
+/** The directory containing `p`. */
+export function parentDir(p: string): string {
+  const n = norm(p);
+  const i = n.lastIndexOf("/");
+  return i > 0 ? n.slice(0, i) : n;
+}
+
+/** `file` relative to `dir` when it lives inside it, else null.
+ *  Forward slashes in the result — the backend's PathBuf::join accepts
+ *  them on every platform, and they read cleanly in the UI. */
+export function relativeWithin(file: string, dir: string): string | null {
+  const f = norm(file);
+  const d = norm(dir);
+  if (isWindowsShaped(f) && isWindowsShaped(d)) {
+    if (!f.toLowerCase().startsWith(d.toLowerCase() + "/")) return null;
+    return f.slice(d.length + 1);
+  }
+  if (!f.startsWith(d + "/")) return null;
+  return f.slice(d.length + 1);
+}

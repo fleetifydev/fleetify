@@ -351,3 +351,53 @@ async fn a_run_session_is_created_without_a_container_yet() {
         s["container_id"]
     );
 }
+
+/// The build-source fields round-trip, and compose can never claim a
+/// credential mount: compose owns the service's mounts, so the flag being
+/// true would make the pre-flight report credentials as bridged when
+/// nothing crossed.
+#[tokio::test]
+async fn compose_sessions_never_carry_a_credential_mount() {
+    let (base, _handle) = boot().await;
+    let host_dir = std::env::temp_dir().to_string_lossy().to_string();
+    let (status, body) = create_session(
+        &base,
+        serde_json::json!({
+            "title": "stack", "project_path": host_dir, "tool": "claude-code",
+            "use_worktree": false, "exec_mode": "docker-run",
+            "container_source": "compose", "container_file": "docker-compose.yml",
+            "container_service": "web", "container_mount_credentials": true,
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "body = {body}");
+    let s = as_json(&body);
+    assert_eq!(s["container_source"], "compose");
+    assert_eq!(s["container_file"], "docker-compose.yml");
+    assert_eq!(s["container_service"], "web");
+    assert_eq!(
+        s["container_mount_credentials"], false,
+        "compose cannot apply a credential mount, so the opt-in must not survive create"
+    );
+}
+
+#[tokio::test]
+async fn dockerfile_sessions_round_trip_their_recipe() {
+    let (base, _handle) = boot().await;
+    let host_dir = std::env::temp_dir().to_string_lossy().to_string();
+    let (status, body) = create_session(
+        &base,
+        serde_json::json!({
+            "title": "built", "project_path": host_dir, "tool": "claude-code",
+            "use_worktree": false, "exec_mode": "docker-run",
+            "container_source": "dockerfile", "container_file": "docker/Dockerfile.dev",
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "body = {body}");
+    let s = as_json(&body);
+    assert_eq!(s["container_source"], "dockerfile");
+    assert_eq!(s["container_file"], "docker/Dockerfile.dev");
+    // Provisioning still waits for the first turn.
+    assert!(s["container_id"].is_null());
+}

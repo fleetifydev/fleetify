@@ -22,8 +22,10 @@ export function ContainerSetupPill({ sessionId }: { sessionId: string }) {
 
   // No elapsed counter: the shimmering label already says "working", and a
   // ticking clock would mean reading Date.now() during render.
-  // Only the pull reports a fraction; start/verify are single beats.
-  const pct = setup.step === "pull" && setup.pct != null
+  // Any step may report a fraction (today only the image pull does); the
+  // bar keys off the value, not the step name, so a future measured step
+  // gets it for free.
+  const pct = setup.pct != null
     ? Math.round(Math.min(1, Math.max(0, setup.pct)) * 100)
     : null;
 

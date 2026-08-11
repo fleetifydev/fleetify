@@ -35,6 +35,16 @@ pub struct ProviderContainerSpec {
     /// `$HOME`-relative directory holding this CLI's credentials, for the
     /// opt-in scoped mount (Tier B). Relative on both sides of the boundary.
     pub credential_home: Option<&'static str>,
+    /// Shell command that installs this CLI inside a container Fleetify
+    /// provisioned, for the auto-install step. Sourced from each bridge's
+    /// own "not found" error message — the same command we already tell
+    /// users to run by hand. Executed via `sh -c`; None ⇒ nothing sensible
+    /// to run (the provider is refused in containers anyway).
+    ///
+    /// Auto-install runs ONLY in containers Fleetify started (image /
+    /// Dockerfile / compose services it brought up) — never in an attached
+    /// container, which belongs to the user.
+    pub install_sh: Option<&'static str>,
     pub support: ContainerSupport,
 }
 
@@ -75,6 +85,7 @@ pub fn spec_for(provider_id: &str) -> Option<&'static ProviderContainerSpec> {
             // root container with an error that reads like a CLI bug.
             sandbox_args: &[],
             credential_home: Some(".claude"),
+            install_sh: Some("npm install -g @anthropic-ai/claude-code"),
             support: ContainerSupport::Supported,
         },
         "codex-cli" => &ProviderContainerSpec {
@@ -86,6 +97,7 @@ pub fn spec_for(provider_id: &str) -> Option<&'static ProviderContainerSpec> {
             // See CODEX_CONTAINER_SANDBOX for the value that actually applies.
             sandbox_args: &[],
             credential_home: Some(".codex"),
+            install_sh: Some("npm install -g @openai/codex"),
             support: ContainerSupport::Supported,
         },
         "kimi-code" => &ProviderContainerSpec {
@@ -93,6 +105,7 @@ pub fn spec_for(provider_id: &str) -> Option<&'static ProviderContainerSpec> {
             auth_env: &["MOONSHOT_API_KEY"],
             sandbox_args: &[],
             credential_home: Some(".kimi"),
+            install_sh: Some("npm install -g @moonshot-ai/kimi-code@latest"),
             support: ContainerSupport::Supported,
         },
         "cursor-cli" => &ProviderContainerSpec {
@@ -110,6 +123,7 @@ pub fn spec_for(provider_id: &str) -> Option<&'static ProviderContainerSpec> {
             // sandbox in argv.
             sandbox_args: &[],
             credential_home: Some(".cursor"),
+            install_sh: Some("curl https://cursor.com/install -fsS | bash"),
             support: ContainerSupport::Supported,
         },
         "grok-build" => &ProviderContainerSpec {
@@ -119,6 +133,7 @@ pub fn spec_for(provider_id: &str) -> Option<&'static ProviderContainerSpec> {
             auth_env: &["XAI_API_KEY"],
             sandbox_args: &[],
             credential_home: Some(".grok"),
+            install_sh: Some("curl -fsSL https://x.ai/cli/install.sh | bash"),
             support: ContainerSupport::Supported,
         },
         "opencode" => &ProviderContainerSpec {
@@ -131,6 +146,7 @@ pub fn spec_for(provider_id: &str) -> Option<&'static ProviderContainerSpec> {
             // config home carries settings but no credentials, which fails
             // in the confusing "logged out despite the mount" way.
             credential_home: Some(".local/share/opencode"),
+            install_sh: Some("npm install -g opencode-ai"),
             support: ContainerSupport::Supported,
         },
         "github-copilot" => &ProviderContainerSpec {
@@ -138,6 +154,7 @@ pub fn spec_for(provider_id: &str) -> Option<&'static ProviderContainerSpec> {
             auth_env: &["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"],
             sandbox_args: &[],
             credential_home: Some(".copilot"),
+            install_sh: Some("npm install -g @github/copilot"),
             support: ContainerSupport::Supported,
         },
         "hermes-agent" => &ProviderContainerSpec {
@@ -150,6 +167,7 @@ pub fn spec_for(provider_id: &str) -> Option<&'static ProviderContainerSpec> {
             // skills) in one state dir, mounted at /opt/data in its own
             // official image.
             credential_home: Some(".hermes"),
+            install_sh: Some("pip install \"hermes-agent[acp]\""),
             support: ContainerSupport::Supported,
         },
         "antigravity-cli" => &ProviderContainerSpec {
@@ -171,6 +189,7 @@ pub fn spec_for(provider_id: &str) -> Option<&'static ProviderContainerSpec> {
             // host afterwards. Making those three happen inside a container
             // is its own piece of work, and it depends on the opt-in
             // credential mount landing first since there is no key to inject.
+            install_sh: None,
             support: ContainerSupport::Unsupported(
                 "The Antigravity CLI agent can't run in a container yet: it needs a terminal, \
                  and Fleetify has to write its workspace-trust and MCP config next to the \
@@ -183,6 +202,7 @@ pub fn spec_for(provider_id: &str) -> Option<&'static ProviderContainerSpec> {
             auth_env: &[],
             sandbox_args: &[],
             credential_home: None,
+            install_sh: None,
             support: ContainerSupport::Unsupported(
                 "The Antigravity SDK agent drives a host Python SDK that provisions its own \
                  remote sandbox, so it can't run inside your container. Switch this session \
@@ -345,5 +365,33 @@ mod tests {
                 "{id} binary '{b}' looks like a host path, not an in-container command"
             );
         }
+    }
+
+    /// Every provider that can run in a container must know how to install
+    /// itself into one Fleetify provisions — otherwise "start from an image"
+    /// only works for images that happen to pre-bundle the CLI. The commands
+    /// come from each bridge's own "not found" error message, so the
+    /// auto-install and the manual instruction can never disagree.
+    #[test]
+    fn every_supported_provider_has_an_install_command() {
+        for id in [
+            "claude-code",
+            "codex-cli",
+            "kimi-code",
+            "cursor-cli",
+            "grok-build",
+            "opencode",
+            "github-copilot",
+            "hermes-agent",
+        ] {
+            let s = spec_for(id).unwrap();
+            let cmd = s
+                .install_sh
+                .unwrap_or_else(|| panic!("{id} has no install_sh"));
+            assert!(!cmd.trim().is_empty());
+        }
+        // The refused providers install nothing — there is no point.
+        assert!(spec_for("antigravity-cli").unwrap().install_sh.is_none());
+        assert!(spec_for("antigravity-sdk").unwrap().install_sh.is_none());
     }
 }

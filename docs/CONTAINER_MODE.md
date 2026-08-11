@@ -18,13 +18,50 @@ container that mounts it, and host `git` keeps working on the same checkout.
 | Lifecycle | Yours. Deleting the session never stops it | Fleetify's. Deleting the session removes it |
 | Fleet MCP tools | Unavailable (see [Known gaps](#known-gaps)) | Unavailable (see [Known gaps](#known-gaps)) |
 
-Pick one in the **container chip** in the session toolbar, next to the branch
-chip. It is an execution setting, so it sits with the other execution
-settings rather than inside the source picker.
+Pick one in the source picker's **Container** tab (Local / Git / Remote /
+Container). Once a session runs in a container, a status chip appears in the
+toolbar — the container's name and a live/dead dot — and clicking it jumps
+back to the tab.
 
-`ssh://` targets cannot be combined with either mode; remote execution is not
-implemented, and the chip is hidden for them rather than offering a
-combination the backend refuses.
+`ssh://` targets cannot be combined with either mode; remote execution is
+not implemented.
+
+### Run recipes
+
+Run mode provisions from one of three recipes, all operating around the
+**host** folder you pick right there in the tab:
+
+- **Image** — a named image (`node:22`). Pulled with live progress, then run
+  with your folder mounted at `/workspace`.
+- **Dockerfile** — the project's own Dockerfile, **chosen with the OS file
+  dialog** (stored relative to the project when it lives inside it; nothing
+  chosen means `./Dockerfile`), built with the project as
+  context (BuildKit step headers stream into the session), then run exactly
+  like an image. Rebuilt when the container is re-provisioned, so Dockerfile
+  edits take effect; layer caching keeps unchanged builds fast. The built
+  image is session-scoped and removed when the session is deleted.
+- **Compose** — pick the compose file with the OS dialog; **its directory
+  becomes the project folder** (that is docker compose's own default), so
+  there is no separate folder control to contradict it. Then
+  `docker compose up -d`, and the agent runs inside the service you name (a
+  single-service file picks itself).
+  **The stack is yours**: Fleetify starts it idempotently, never tears it
+  down — deleting the session leaves it running — and cannot mount
+  credentials into it (your compose file owns the service's mounts), so use
+  an API key or sign in inside the service.
+
+### Agent auto-install
+
+If the agent's CLI is missing from a container Fleetify started (image,
+Dockerfile build, or a compose service it brought up), Fleetify installs it
+automatically using the provider's own documented command — the same one the
+error message would have told you to run — and streams the step into the
+session. If the image lacks the tooling (`npm`, `curl`, `pip`), the step
+reports the real blocker and the turn is refused with the standard
+not-installed message; add the tool to your image instead.
+
+Attached containers are **never** auto-installed into — they belong to you.
+The picker's probe just tells you the CLI is missing there.
 
 ### When the container starts
 

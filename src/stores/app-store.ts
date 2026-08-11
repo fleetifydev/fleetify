@@ -158,6 +158,10 @@ export interface ComposerState {
    *  into the container. Off by default — it carries a host login across
    *  the boundary, so it is never implicit. */
   containerMountCredentials: boolean;
+  /** Recipe for `docker-run`: image (default) / dockerfile / compose. */
+  containerSource: "image" | "dockerfile" | "compose";
+  containerFile: string | null;
+  containerService: string | null;
 }
 
 /** @deprecated kept only so external imports (tests, callers that
@@ -468,6 +472,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     execMode: "host",
     containerImage: null,
     containerMountCredentials: false,
+    containerSource: "image",
+    containerFile: null,
+    containerService: null,
   },
 
   setSessions: (sessions) => set({ sessions }),
@@ -995,6 +1002,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         execMode: "host",
         containerImage: null,
         containerMountCredentials: false,
+        containerSource: "image",
+        containerFile: null,
+        containerService: null,
       },
       activeSessionId: null,   // chat-view + composer.open == compose surface
       mainView: "fleet",
@@ -1092,7 +1102,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...(c.execMode !== "host"
           ? {
               exec_mode: c.execMode,
+              container_source: c.containerSource,
               container_image: c.containerImage ?? undefined,
+              container_file: c.containerFile ?? undefined,
+              container_service: c.containerService ?? undefined,
               container_mount_credentials: c.containerMountCredentials,
             }
           : {}),
@@ -1195,6 +1208,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (patch.container_mount_credentials !== undefined) {
       c.containerMountCredentials = patch.container_mount_credentials;
     }
+    if (patch.container_source !== undefined) c.containerSource = patch.container_source ?? "image";
+    if (patch.container_file !== undefined) c.containerFile = patch.container_file ?? null;
+    if (patch.container_service !== undefined) c.containerService = patch.container_service ?? null;
     get().setComposerField(c);
   },
   commitDraft: async () => get().commitComposer(),

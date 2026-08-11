@@ -4,6 +4,9 @@ import {
   containerIdFromPath,
   normalizeBranches,
   EMPTY_BRANCHES,
+  leafName,
+  parentDir,
+  relativeWithin,
 } from "../exec-target";
 
 describe("isHostPath", () => {
@@ -93,5 +96,40 @@ describe("normalizeBranches", () => {
       expect(() => b.local.filter(Boolean)).not.toThrow();
       expect(() => b.remote.filter(Boolean)).not.toThrow();
     }
+  });
+});
+
+describe("project-file path helpers", () => {
+  /** The dialog hands back OS-native absolute paths; every helper has to
+   *  survive Windows separators and drive-letter casing. */
+  it("takes leaves and parents across both separator styles", () => {
+    expect(leafName("C:\\proj\\docker\\Dockerfile.dev")).toBe("Dockerfile.dev");
+    expect(leafName("/home/me/proj/compose.yaml")).toBe("compose.yaml");
+    expect(parentDir("C:\\proj\\docker\\Dockerfile.dev")).toBe("C:/proj/docker");
+    expect(parentDir("/home/me/proj/compose.yaml")).toBe("/home/me/proj");
+  });
+
+  it("relativises a file inside the project, with forward slashes", () => {
+    expect(relativeWithin("C:\\proj\\docker\\Dockerfile.dev", "C:\\proj")).toBe(
+      "docker/Dockerfile.dev",
+    );
+    expect(relativeWithin("/home/me/proj/compose.yaml", "/home/me/proj")).toBe(
+      "compose.yaml",
+    );
+  });
+
+  /** Same place, different drive-letter casing — the classic Windows trap.
+   *  Failing this stores an absolute path where a relative one was right. */
+  it("ignores drive-letter casing on Windows-shaped paths only", () => {
+    expect(relativeWithin("c:\\Proj\\Dockerfile", "C:\\proj")).toBe("Dockerfile");
+    // POSIX stays case-sensitive: /home/ME is a different directory.
+    expect(relativeWithin("/home/ME/proj/f", "/home/me/proj")).toBeNull();
+  });
+
+  it("returns null for a file outside the project", () => {
+    expect(relativeWithin("D:\\elsewhere\\Dockerfile", "C:\\proj")).toBeNull();
+    expect(relativeWithin("/tmp/other/compose.yaml", "/home/me/proj")).toBeNull();
+    // A sibling whose name merely EXTENDS the folder's must not match.
+    expect(relativeWithin("/home/me/proj2/f", "/home/me/proj")).toBeNull();
   });
 });

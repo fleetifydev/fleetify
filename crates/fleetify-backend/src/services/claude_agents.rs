@@ -371,6 +371,9 @@ pub async fn reconcile_once(
             container_workdir: None,
             container_image: None,
             container_mount_credentials: None,
+            container_source: None,
+            container_file: None,
+            container_service: None,
         };
 
         match sm.create_session(pool, cfg, &data, None).await {

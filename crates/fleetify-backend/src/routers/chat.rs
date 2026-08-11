@@ -3501,7 +3501,11 @@ async fn run_dispatched_task(
         home_override,
         account_env,
         account_id: target.account_id.clone(),
-        container_mount_credentials: target.container_mount_credentials,
+        // Compose owns the service's mounts, so a credential mount can never
+        // actually be applied there — claiming it was would make the
+        // pre-flight report credentials as bridged when nothing crossed.
+        container_mount_credentials: target.container_mount_credentials
+            && target.container_source != "compose",
     };
     tracing::info!(
         target: "fleetify::routing::dispatch",

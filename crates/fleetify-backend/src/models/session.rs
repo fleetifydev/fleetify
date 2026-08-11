@@ -64,8 +64,21 @@ pub struct Session {
     pub container_image: Option<String>,
     /// Tier B of the credential strategy: mount this provider's own
     /// credential directory into the container. Off by default; it carries a
-    /// host login across the boundary.
+    /// host login across the boundary. Always false for a `compose` source —
+    /// compose owns the service's mounts, so a credential mount cannot be
+    /// applied and pretending otherwise would report credentials as bridged
+    /// when nothing crossed.
     pub container_mount_credentials: bool,
+    /// Recipe the `docker-run` container comes from: `image` (default),
+    /// `dockerfile` (build `container_file`, project as context) or
+    /// `compose` (`docker compose up` on `container_file`, exec into
+    /// `container_service`). Meaningless for `host`/`docker-attach`.
+    pub container_source: String,
+    /// Dockerfile or compose file path, relative to `project_path`
+    /// (absolute accepted). NULL for the `image` source.
+    pub container_file: Option<String>,
+    /// Compose service whose container the agent runs in.
+    pub container_service: Option<String>,
 }
 
 impl Session {
@@ -170,6 +183,13 @@ pub struct SessionCreate {
     pub container_image: Option<String>,
     #[serde(default)]
     pub container_mount_credentials: Option<bool>,
+    /// `image` | `dockerfile` | `compose`. Absent → `image`.
+    #[serde(default)]
+    pub container_source: Option<String>,
+    #[serde(default)]
+    pub container_file: Option<String>,
+    #[serde(default)]
+    pub container_service: Option<String>,
 }
 
 /// PATCH /api/sessions/{id} body. All optional (partial update).
@@ -195,6 +215,9 @@ pub struct SessionUpdate {
     pub container_workdir: Option<String>,
     pub container_image: Option<String>,
     pub container_mount_credentials: Option<bool>,
+    pub container_source: Option<String>,
+    pub container_file: Option<String>,
+    pub container_service: Option<String>,
 }
 
 /// `groups` row. Mirrors `Group` in Python.

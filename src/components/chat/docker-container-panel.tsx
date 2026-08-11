@@ -42,6 +42,18 @@ function buildContainerUrl(id: string, path: string): string {
   return `docker://${id}${cleanPath}`;
 }
 
+/** What "Run" provisions from. */
+export interface RunPayload {
+  source: "image" | "dockerfile" | "compose";
+  /** Image name; only for `image`. */
+  image?: string;
+  /** Dockerfile or compose file path, relative to the project. */
+  file?: string;
+  /** Compose service the agent runs in. */
+  service?: string;
+  mountCredentials: boolean;
+}
+
 /** Provider id → the binary name that exists INSIDE a container.
  *
  *  Mirrors `services/container/providers.rs`. Two entries are not the
@@ -78,14 +90,26 @@ export function DockerContainerPanel({
   onAttach,
   onRun,
   onClear,
+  onPickFolder,
+  onPickFile,
   sourcePath,
   execMode,
   providerId,
 }: {
   /** Attach to an existing container: hands back `docker://<id>/<path>`. */
   onAttach: (containerUrl: string) => void;
-  /** Provision from an image, mounting the current source path. */
-  onRun: (image: string, mountCredentials: boolean) => void;
+  /** Provision around the current source path. `source` picks the recipe:
+   *  a named image, the project's Dockerfile, or a compose service. */
+  onRun: (payload: RunPayload) => void;
+  /** Open the OS folder dialog and set the session's project path WITHOUT
+   *  closing the picker — run mode needs a folder to mount, and bouncing
+   *  the user back to the Local tab to get one lost them mid-setup. */
+  onPickFolder: () => void;
+  /** Open the OS FILE dialog for a Dockerfile / compose file. Resolves to
+   *  the path to store (relative to the project when inside it) or null on
+   *  cancel. Picking may also set the project folder — the file's location
+   *  is the source of truth for where the project is when none was chosen. */
+  onPickFile: (kind: "dockerfile" | "compose") => Promise<string | null>;
   /** Back to running on this machine. */
   onClear: () => void;
   /** The session's current host path. Run mode needs one to mount. */
@@ -99,6 +123,9 @@ export function DockerContainerPanel({
     execMode === "docker-run" ? "run" : "attach",
   );
   const [image, setImage] = useState("");
+  const [runSource, setRunSource] = useState<"image" | "dockerfile" | "compose">("image");
+  const [buildFile, setBuildFile] = useState("");
+  const [composeService, setComposeService] = useState("");
   const [mountCredentials, setMountCredentials] = useState(false);
   // The binary to probe for inside the container. Mirrors
   // `services/container/providers.rs` — kept in sync deliberately: probing
@@ -220,10 +247,18 @@ export function DockerContainerPanel({
           sourcePath={sourcePath}
           image={image}
           setImage={setImage}
+          runSource={runSource}
+          setRunSource={setRunSource}
+          buildFile={buildFile}
+          setBuildFile={setBuildFile}
+          composeService={composeService}
+          setComposeService={setComposeService}
           mountCredentials={mountCredentials}
           setMountCredentials={setMountCredentials}
           providerId={providerId}
           onRun={onRun}
+          onPickFolder={onPickFolder}
+          onPickFile={onPickFile}
         />
       ) : (
       <>
@@ -328,92 +363,216 @@ function ModeTab({
 
 /* ─── RunFromImage — provision a container around the current source ───
  *
- * The mount is what makes this orthogonal to Git: the container works on
- * the HOST checkout (the worktree when the session has one), so host git
- * keeps working and the agent's edits land in the user's real repository.
- * Without a source path there is nothing to mount, so the action is
- * disabled with the reason rather than silently producing an empty
- * container. */
+ * Three recipes. Image and Dockerfile operate around a HOST folder (the
+ * mount / build context), so they show the folder row. Compose does NOT:
+ * the compose file's own directory *is* the project directory — that is
+ * docker compose's default — so the file picker is the single source of
+ * truth there, and a second folder control could only agree with it or
+ * contradict it. Files are picked with the OS dialog, not typed: a typed
+ * relative path was the most error-prone control in the panel. */
 function RunFromImage({
-  sourcePath, image, setImage, mountCredentials, setMountCredentials, providerId, onRun,
+  sourcePath, image, setImage,
+  runSource, setRunSource, buildFile, setBuildFile,
+  composeService, setComposeService,
+  mountCredentials, setMountCredentials, providerId, onRun, onPickFolder, onPickFile,
 }: {
   sourcePath: string | null;
   image: string;
   setImage: (v: string) => void;
+  runSource: "image" | "dockerfile" | "compose";
+  setRunSource: (v: "image" | "dockerfile" | "compose") => void;
+  buildFile: string;
+  setBuildFile: (v: string) => void;
+  composeService: string;
+  setComposeService: (v: string) => void;
   mountCredentials: boolean;
   setMountCredentials: (v: boolean) => void;
   providerId: string;
-  onRun: (image: string, mountCredentials: boolean) => void;
+  onRun: (payload: RunPayload) => void;
+  onPickFolder: () => void;
+  onPickFile: (kind: "dockerfile" | "compose") => Promise<string | null>;
 }) {
-  const trimmed = image.trim();
-  // `!startsWith("docker://")` would have counted an ssh:// path as a host
-  // source and offered to mount something that is not on this machine.
   const hasHostSource = isHostPath(sourcePath);
-  // What is stopping the run, if anything. Rendered NEXT TO the button
-  // rather than under the input: the reason used to sit two rows above the
-  // action it blocked, styled like a field hint, so a filled-in image with a
-  // dead button read as broken.
+  const agentBinary = CONTAINER_BINARIES[providerId] ?? providerId;
+  // What is stopping the run, if anything — rendered NEXT TO the button.
+  // Compose without a folder can only get one through the file pick, so
+  // that is what its blocker asks for.
   const blocker =
-    !hasHostSource ? "Pick a folder or repo first — there's nothing to mount."
-    : !trimmed ? "Enter an image."
+    runSource === "compose" && !hasHostSource ? "Choose a compose file first."
+    : !hasHostSource ? "Pick a folder or repo first."
+    : runSource === "image" && !image.trim() ? "Enter an image."
     : null;
+
+  const folderLeaf = sourcePath && hasHostSource
+    ? sourcePath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || sourcePath
+    : null;
+
+  const fieldStyle: React.CSSProperties = {
+    width: "100%", boxSizing: "border-box", minWidth: 0,
+    background: "var(--c-srf, rgba(255,255,255,0.045))",
+    border: "1px solid var(--c-brd, rgba(255,255,255,0.08))",
+    borderRadius: 5, padding: "6px 8px",
+    color: "var(--c-fg)", fontSize: 12,
+    fontFamily: "var(--font-mono, monospace)", outline: "none",
+  };
+  const labelStyle: React.CSSProperties = { fontSize: 11.5, fontWeight: 500 };
+
+  const pickFile = (kind: "dockerfile" | "compose") => {
+    void onPickFile(kind).then(v => { if (v != null) setBuildFile(v); });
+  };
 
   return (
     <div style={{ padding: 10, display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
-      <label style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
-        <span style={{ fontSize: 11.5, fontWeight: 500 }}>Image</span>
-        <input
-          value={image}
-          onChange={e => setImage(e.target.value)}
-          placeholder="node:22"
-          spellCheck={false}
-          style={{
-            // `width: 100%` + `boxSizing` keeps the input inside the 320px
-            // popover; without them the flex row grew past the menu and
-            // dragged every sibling's alignment off with it.
-            width: "100%", boxSizing: "border-box", minWidth: 0,
-            background: "var(--c-srf, rgba(255,255,255,0.045))",
-            border: "1px solid var(--c-brd, rgba(255,255,255,0.08))",
-            borderRadius: 5, padding: "6px 8px",
-            color: "var(--c-fg)", fontSize: 12,
-            fontFamily: "var(--font-mono, monospace)", outline: "none",
-          }}
-        />
-        {hasHostSource && (
-          <span style={{ fontSize: 11, color: "var(--c-dim)", lineHeight: 1.45 }}>
-            Mounted at <code style={{ fontFamily: "var(--font-mono, monospace)" }}>/workspace</code>,
-            so branches and worktrees keep working.
-          </span>
-        )}
-      </label>
-
-      {/* ── Credentials ──
-          A radio pair, not a lone checkbox. The choice is genuinely between
-          two strategies, and a single tick-box hides the alternative — which
-          for a security-relevant decision is the wrong default presentation:
-          the user cannot weigh an option they cannot see. Signing in inside
-          the container is first because it is the safer one. */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
-        <span style={{ fontSize: 11.5, fontWeight: 500 }}>Credentials</span>
-        <CredentialOption
-          selected={!mountCredentials}
-          onSelect={() => setMountCredentials(false)}
-          title="Sign in inside the container"
-          detail="Nothing leaves this machine. You log the agent in once, in the container."
-        />
-        <CredentialOption
-          selected={mountCredentials}
-          onSelect={() => setMountCredentials(true)}
-          title={`Mount my ${providerId} login`}
-          detail="Shares only this agent's own credential folder — never your home or SSH keys."
-          warn
-        />
+      {/* ── Recipe ── */}
+      <div role="radiogroup" aria-label="Container source" style={{ display: "flex", gap: 4 }}>
+        {([
+          ["image", "Image"],
+          ["dockerfile", "Dockerfile"],
+          ["compose", "Compose"],
+        ] as const).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            role="radio"
+            aria-checked={runSource === key}
+            onClick={() => { setRunSource(key); setBuildFile(""); }}
+            onMouseDown={e => e.preventDefault()}
+            style={{
+              flex: 1,
+              background: runSource === key ? "var(--c-srf, rgba(255,255,255,0.08))" : "transparent",
+              border: "1px solid var(--c-brd, rgba(255,255,255,0.08))",
+              borderRadius: 5, padding: "5px 0",
+              fontSize: 11.5, fontWeight: runSource === key ? 600 : 500,
+              color: runSource === key ? "var(--c-fg)" : "var(--c-dim)",
+              cursor: "pointer", fontFamily: "var(--font-sans)",
+            }}
+          >
+            {label}
+          </button>
+        ))}
       </div>
+
+      {/* ── Folder to work on — the mount (image) / mount + build context
+            (dockerfile). Compose has no row here on purpose: its file IS
+            the location, picked below. ── */}
+      {runSource !== "compose" && (
+        <PickRow
+          testId="pick-folder-row"
+          icon={<FolderOpen size={13} style={{ color: "var(--c-dim)", flexShrink: 0 }} />}
+          title={folderLeaf ?? "Browse local folder"}
+          subtitle={hasHostSource
+            ? "Mounted into the container — branches and worktrees keep working."
+            : "Pick the folder the container will work on."}
+          onClick={onPickFolder}
+          hoverTitle={hasHostSource ? "Change the project folder" : "Pick the folder the container works on"}
+        />
+      )}
+
+      {runSource === "image" && (
+        <label style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
+          <span style={labelStyle}>Image</span>
+          <input
+            value={image}
+            onChange={e => setImage(e.target.value)}
+            placeholder="node:22"
+            spellCheck={false}
+            style={fieldStyle}
+          />
+        </label>
+      )}
+
+      {runSource === "dockerfile" && (
+        <PickRow
+          testId="pick-dockerfile-row"
+          icon={<Box size={13} style={{ color: "var(--c-dim)", flexShrink: 0 }} />}
+          title={buildFile || "Choose Dockerfile…"}
+          subtitle={buildFile
+            ? "Built with your project folder as the context."
+            : "Nothing picked — ./Dockerfile in the project folder is used."}
+          onClick={() => pickFile("dockerfile")}
+          onClear={buildFile ? () => setBuildFile("") : undefined}
+          hoverTitle="Choose the Dockerfile to build"
+        />
+      )}
+
+      {runSource === "compose" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+          <PickRow
+            testId="pick-compose-row"
+            icon={<Box size={13} style={{ color: "var(--c-dim)", flexShrink: 0 }} />}
+            title={buildFile || "Choose compose file…"}
+            subtitle={
+              hasHostSource
+                ? `Project: ${folderLeaf}${buildFile ? "" : " — ./docker-compose.yml is used"}`
+                : "Its folder becomes the project folder."
+            }
+            onClick={() => pickFile("compose")}
+            onClear={buildFile ? () => setBuildFile("") : undefined}
+            hoverTitle="Choose the docker-compose file"
+          />
+          <label style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
+            <span style={labelStyle}>Service</span>
+            <input
+              value={composeService}
+              onChange={e => setComposeService(e.target.value)}
+              placeholder="left empty, a single-service file picks itself"
+              spellCheck={false}
+              style={fieldStyle}
+            />
+            <span style={{ fontSize: 11, color: "var(--c-dim)", lineHeight: 1.4 }}>
+              {agentBinary} runs inside this service. Fleetify starts the stack and never tears
+              it down — deleting the session leaves it running.
+            </span>
+          </label>
+        </div>
+      )}
+
+      {/* Credentials — compose owns the service's mounts, so the scoped
+          credential mount cannot be applied there and offering it would
+          claim a bridge that never happens. */}
+      {runSource !== "compose" ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
+          <span style={labelStyle}>Credentials</span>
+          <CredentialOption
+            selected={!mountCredentials}
+            onSelect={() => setMountCredentials(false)}
+            title="Sign in inside the container"
+            detail="Nothing leaves this machine. You log the agent in once, in the container."
+          />
+          <CredentialOption
+            selected={mountCredentials}
+            onSelect={() => setMountCredentials(true)}
+            title={`Mount my ${providerId} login`}
+            detail="Shares only this agent's own credential folder — never your home or SSH keys."
+            warn
+          />
+        </div>
+      ) : (
+        <span style={{ fontSize: 11, color: "var(--c-dim)", lineHeight: 1.45 }}>
+          Your compose file owns the service&rsquo;s mounts, so credentials can&rsquo;t be
+          mounted here — set the agent&rsquo;s API key in Fleetify, or sign in inside the
+          service.
+        </span>
+      )}
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
         <button
           disabled={!!blocker}
-          onClick={() => onRun(trimmed, mountCredentials)}
+          onClick={() =>
+            onRun({
+              source: runSource,
+              image: runSource === "image" ? image.trim() : undefined,
+              file:
+                runSource !== "image" && buildFile.trim()
+                  ? buildFile.trim()
+                  : undefined,
+              service:
+                runSource === "compose" && composeService.trim()
+                  ? composeService.trim()
+                  : undefined,
+              mountCredentials: runSource === "compose" ? false : mountCredentials,
+            })
+          }
           onMouseDown={e => e.preventDefault()}
           style={{
             flexShrink: 0,
@@ -427,7 +586,9 @@ function RunFromImage({
             fontFamily: "var(--font-sans)",
           }}
         >
-          Run in this image
+          {runSource === "image" ? "Run in this image"
+            : runSource === "dockerfile" ? "Build & run"
+            : "Start the stack"}
         </button>
         {blocker && (
           <span style={{ fontSize: 11, color: "var(--c-dim)", lineHeight: 1.35, minWidth: 0 }}>
@@ -435,6 +596,76 @@ function RunFromImage({
           </span>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ─── PickRow — one "choose a thing via OS dialog" row ─────────────── */
+function PickRow({
+  icon, title, subtitle, onClick, onClear, hoverTitle, testId,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  subtitle: string;
+  onClick: () => void;
+  /** Present only when something is picked — resets back to the default. */
+  onClear?: () => void;
+  hoverTitle: string;
+  testId?: string;
+}) {
+  return (
+    <div style={{ display: "flex", alignItems: "stretch", gap: 4, minWidth: 0 }}>
+      <button
+        type="button"
+        data-testid={testId}
+        onClick={onClick}
+        onMouseDown={e => e.preventDefault()}
+        title={hoverTitle}
+        style={{
+          flex: 1, display: "flex", alignItems: "center", gap: 8,
+          minWidth: 0, textAlign: "left",
+          padding: "7px 9px", borderRadius: 6,
+          background: "transparent",
+          border: "1px solid var(--c-brd, rgba(255,255,255,0.08))",
+          cursor: "pointer", color: "var(--c-fg)",
+          fontFamily: "var(--font-sans)",
+        }}
+        onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = "var(--c-srf, rgba(255,255,255,0.04))"; }}
+        onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
+      >
+        {icon}
+        <span style={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
+          <span style={{
+            fontSize: 12, fontWeight: 500,
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            fontFamily: "var(--font-mono, monospace)",
+          }}>
+            {title}
+          </span>
+          <span style={{
+            fontSize: 11, color: "var(--c-dim)",
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          }}>
+            {subtitle}
+          </span>
+        </span>
+      </button>
+      {onClear && (
+        <button
+          type="button"
+          aria-label="Reset to default"
+          onClick={onClear}
+          onMouseDown={e => e.preventDefault()}
+          style={{
+            flexShrink: 0, width: 26, borderRadius: 6,
+            background: "transparent",
+            border: "1px solid var(--c-brd, rgba(255,255,255,0.08))",
+            color: "var(--c-dim)", cursor: "pointer", fontSize: 12,
+          }}
+        >
+          ×
+        </button>
+      )}
     </div>
   );
 }
@@ -697,8 +928,9 @@ function ContainerBrowser({
         }}>
           <AlertCircle size={11} style={{ marginTop: 1, flexShrink: 0 }} />
           <span>
-            The claude CLI is not installed in this container. You can still
-            pick a folder, but turns will fail until you install it.
+            <code style={{ fontFamily: "var(--font-mono, monospace)" }}>{agentBinary}</code>{" "}
+            isn&rsquo;t installed in this container. You can still pick a folder — install it
+            there and the next turn will find it.
           </span>
         </div>
       )}

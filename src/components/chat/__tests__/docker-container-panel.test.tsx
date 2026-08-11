@@ -49,6 +49,8 @@ function Panel(props: Partial<React.ComponentProps<typeof DockerContainerPanel>>
       onAttach={() => {}}
       onRun={() => {}}
       onClear={() => {}}
+      onPickFolder={() => {}}
+      onPickFile={() => Promise.resolve(null)}
       sourcePath="/home/me/proj"
       execMode="host"
       providerId="claude-code"
@@ -74,7 +76,7 @@ describe("DockerContainerPanel agent preflight", () => {
     render(<Panel />);
     await expandTheContainer();
     await waitFor(() =>
-      expect(screen.getByText(/claude CLI is not installed/i)).toBeInTheDocument()
+      expect(screen.getByText(/isn.t installed in this container/i)).toBeInTheDocument()
     );
     // The probe names the binary explicitly. It used to rely on the API
     // helper's `agent = "claude"` default, which reported "not installed"
@@ -101,13 +103,24 @@ describe("DockerContainerPanel agent preflight", () => {
     expect(screen.queryByText(/not installed/i)).not.toBeInTheDocument();
   });
 
+  /** The warning used to hardcode "claude" for every provider, so a Codex
+   *  session probed for `codex` correctly and then told the user the
+   *  *claude* CLI was missing. */
+  it("names the agent that is actually missing, not always claude", async () => {
+    dockerProbeAgentMock.mockResolvedValue({ present: false, path: "" });
+    render(<Panel providerId="codex-cli" />);
+    await expandTheContainer();
+    await waitFor(() => expect(screen.getByText("codex")).toBeInTheDocument());
+    expect(screen.queryByText("claude")).not.toBeInTheDocument();
+  });
+
   it("still lets the user pick a container without the CLI — it reports, it does not veto", async () => {
     dockerProbeAgentMock.mockResolvedValue({ present: false, path: "" });
     const onPick = vi.fn();
     render(<Panel onAttach={onPick} />);
     await expandTheContainer();
     await waitFor(() =>
-      expect(screen.getByText(/claude CLI is not installed/i)).toBeInTheDocument()
+      expect(screen.getByText(/isn.t installed in this container/i)).toBeInTheDocument()
     );
     fireEvent.click(screen.getByTitle("Use this folder"));
     expect(onPick).toHaveBeenCalledWith("docker://abc123/");
@@ -169,7 +182,7 @@ describe("DockerContainerPanel run-from-image", () => {
     const btn = screen.getByRole("button", { name: /run in this image/i });
     expect(btn).toBeDisabled();
     // The reason must be adjacent to the action, not buried under the input.
-    expect(screen.getByText(/nothing to mount/i)).toBeInTheDocument();
+    expect(screen.getByText(/pick a folder or repo first/i)).toBeInTheDocument();
   });
 
   it("blocks the run when no image is typed, and says that instead", async () => {
@@ -190,7 +203,13 @@ describe("DockerContainerPanel run-from-image", () => {
     fireEvent.click(btn);
     // Trimmed, and the credential opt-in defaults OFF — it carries a host
     // login across the boundary, so it is never implicit.
-    expect(onRun).toHaveBeenCalledWith("node:22", false);
+    expect(onRun).toHaveBeenCalledWith({
+      source: "image",
+      image: "node:22",
+      file: undefined,
+      service: undefined,
+      mountCredentials: false,
+    });
   });
 
   it("passes the credential opt-in through only when the user ticks it", async () => {
@@ -204,7 +223,9 @@ describe("DockerContainerPanel run-from-image", () => {
       .toHaveAttribute("aria-checked", "true");
     fireEvent.click(screen.getByRole("radio", { name: /mount my .* login/i }));
     fireEvent.click(screen.getByRole("button", { name: /run in this image/i }));
-    expect(onRun).toHaveBeenCalledWith("node:22", true);
+    expect(onRun).toHaveBeenCalledWith(
+      expect.objectContaining({ source: "image", image: "node:22", mountCredentials: true }),
+    );
   });
 
   /** An attach session's project path IS the container, so there is no host
@@ -229,5 +250,89 @@ describe("DockerContainerPanel run-from-image", () => {
     fireEvent.click(mount);
     expect(mount).toHaveAttribute("aria-checked", "true");
     expect(safe).toHaveAttribute("aria-checked", "false");
+  });
+
+  /* ── Run recipes: Dockerfile & Compose ─────────────────────────── */
+
+  it("shows the folder browser inside run mode, so setup never leaves the tab", async () => {
+    const onPickFolder = vi.fn();
+    render(<Panel sourcePath={null} onPickFolder={onPickFolder} />);
+    await openRunMode();
+    fireEvent.click(screen.getByTestId("pick-folder-row"));
+    expect(onPickFolder).toHaveBeenCalled();
+  });
+
+  it("runs the project's own Dockerfile, picked with the OS dialog", async () => {
+    const onRun = vi.fn();
+    const onPickFile = vi.fn().mockResolvedValue("docker/Dockerfile.dev");
+    render(<Panel onRun={onRun} onPickFile={onPickFile} />);
+    await openRunMode();
+    fireEvent.click(screen.getByRole("radio", { name: "Dockerfile" }));
+    fireEvent.click(screen.getByTestId("pick-dockerfile-row"));
+    expect(onPickFile).toHaveBeenCalledWith("dockerfile");
+    // The resolved (relative-ised) path lands on the row and in the payload.
+    await waitFor(() =>
+      expect(screen.getByText("docker/Dockerfile.dev")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /build & run/i }));
+    expect(onRun).toHaveBeenCalledWith(
+      expect.objectContaining({ source: "dockerfile", file: "docker/Dockerfile.dev" }),
+    );
+  });
+
+  /** Nothing picked is a valid state — the backend defaults to
+   *  ./Dockerfile — and the row says so instead of blocking. */
+  it("lets Dockerfile mode run with the default file", async () => {
+    const onRun = vi.fn();
+    render(<Panel onRun={onRun} />);
+    await openRunMode();
+    fireEvent.click(screen.getByRole("radio", { name: "Dockerfile" }));
+    expect(screen.getByText(/Dockerfile in the project folder/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /build & run/i }));
+    expect(onRun).toHaveBeenCalledWith(
+      expect.objectContaining({ source: "dockerfile", file: undefined }),
+    );
+  });
+
+  it("runs a compose service, and never claims a credential mount for it", async () => {
+    const onRun = vi.fn();
+    const onPickFile = vi.fn().mockResolvedValue("compose.yaml");
+    render(<Panel onRun={onRun} onPickFile={onPickFile} />);
+    await openRunMode();
+    fireEvent.click(screen.getByRole("radio", { name: "Compose" }));
+    // Compose owns the service's mounts — the credential cards must be
+    // replaced by the explanation, not just disabled.
+    expect(screen.queryByRole("radio", { name: /mount my .* login/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/owns the service/i)).toBeInTheDocument();
+    // …and there is no separate folder row: the compose file's own
+    // directory IS the project directory, so a second control could only
+    // agree with the file or contradict it.
+    expect(screen.queryByTestId("pick-folder-row")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("pick-compose-row"));
+    expect(onPickFile).toHaveBeenCalledWith("compose");
+    await waitFor(() => expect(screen.getByText("compose.yaml")).toBeInTheDocument());
+    fireEvent.change(
+      screen.getByPlaceholderText(/single-service file picks itself/i),
+      { target: { value: "web" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: /start the stack/i }));
+    expect(onRun).toHaveBeenCalledWith({
+      source: "compose",
+      image: undefined,
+      file: "compose.yaml",
+      service: "web",
+      mountCredentials: false,
+    });
+  });
+
+  /** With no folder, compose's only way to get one is the file pick — the
+   *  blocker must say that, not "pick a folder" (there is no folder row). */
+  it("compose without a folder asks for the file, not a folder", async () => {
+    render(<Panel sourcePath={null} />);
+    await openRunMode();
+    fireEvent.click(screen.getByRole("radio", { name: "Compose" }));
+    expect(screen.getByRole("button", { name: /start the stack/i })).toBeDisabled();
+    expect(screen.getByText(/choose a compose file first/i)).toBeInTheDocument();
   });
 });

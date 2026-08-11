@@ -154,6 +154,7 @@ pub fn run() {
             shell::ipc::fs_get_project_root,
             shell::ipc::fs_scaffold_plugin,
             shell::ipc::dialog_open_folder,
+            shell::ipc::dialog_open_file,
             shell::ipc::git_get_context,
             shell::ipc::git_working_diff,
             shell::ipc::git_has_gh_cli,

@@ -92,6 +92,13 @@ export interface Session {
    *  credential directory into the container. Off by default — it carries
    *  a host login across the boundary, so it is never implicit. */
   container_mount_credentials?: boolean;
+  /** Recipe a `docker-run` container comes from: a named `image` (default),
+   *  the project's `dockerfile`, or a `compose` service. */
+  container_source?: "image" | "dockerfile" | "compose";
+  /** Dockerfile or compose file path, relative to the project folder. */
+  container_file?: string | null;
+  /** Compose service the agent runs in. */
+  container_service?: string | null;
   /** Renderer-only flag: this session was created client-side by
    *  `beginDraft` and has no backend row yet. `commitDraft` swaps it
    *  out for a server-issued Session (which never carries this flag)

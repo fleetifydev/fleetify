@@ -44,10 +44,11 @@ import { SessionRulesChip } from "./session-rules-chip";
 import { folderName as folderNameUtil } from "@/lib/utils";
 import {
   isHostPath, containerIdFromPath, normalizeBranches, EMPTY_BRANCHES,
+  leafName, parentDir, relativeWithin,
   type BranchList, type ExecMode,
 } from "@/lib/exec-target";
 
-type MenuId = "source" | "git" | "container" | "history" | null;
+type MenuId = "source" | "git" | "history" | null;
 
 export function SessionToolbar({
   sessionId,
@@ -97,6 +98,7 @@ export function SessionToolbar({
   const pendingCloneBranch = useAppStore(s => s.composer.pendingCloneBranch);
   const composerExecMode = useAppStore(s => s.composer.execMode);
   const composerMountCreds = useAppStore(s => s.composer.containerMountCredentials);
+  const composerImage = useAppStore(s => s.composer.containerImage);
   const isDraft = composerOpen || session?.local_only === true;
   // Where this session's agent runs. Falls back to parsing project_path so a
   // row written before the exec_mode column resolves the same way the
@@ -282,7 +284,7 @@ export function SessionToolbar({
   // Source tab — Local (browse), Git (repo list + clone-by-URL),
   // Remote (SSH host management), Container (running Docker containers).
   // The Git tab's repo-list state lives inside <GitSourceTab/>.
-  const [sourceTab,   setSourceTab]   = useState<"local" | "git" | "remote">("local");
+  const [sourceTab,   setSourceTab]   = useState<"local" | "git" | "remote" | "container">("local");
   const wrapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -306,20 +308,13 @@ export function SessionToolbar({
   // Open the source picker on a specific tab when an external
   // affordance asks (the Fleet hub's empty-state cards). Window
   // event so any caller can opt in without the toolbar exposing a
-  // ref. Detail can be "local" / "git" / "remote"; unknown values are
-  // ignored. "container" is still accepted for callers that predate the
-  // move — it opens the picker on Local, where the Run-in-container
-  // section now lives.
+  // ref. Detail can be "local" / "git" / "remote" / "container";
+  // unknown values are ignored.
   useEffect(() => {
     const onOpen = (e: Event) => {
       const detail = (e as CustomEvent<{ tab?: "local" | "git" | "remote" | "container" }>).detail;
       const tab = detail?.tab;
-      if (tab === "container") {
-        setSourceTab("local");
-        setOpenMenu("source");
-        return;
-      }
-      if (tab === "local" || tab === "git" || tab === "remote") {
+      if (tab === "local" || tab === "git" || tab === "remote" || tab === "container") {
         setSourceTab(tab);
         setOpenMenu("source");
       }
@@ -357,6 +352,62 @@ export function SessionToolbar({
   // Desktop-foo-…` when run on `C:\Users\Lenovo\Desktop\foo`) live
   // in one place: `folderName` in `@/lib/utils`, which already
   // handles both separators.
+
+  // Folder pick for the Container tab's run recipes: same OS dialog, but
+  // the picker STAYS open — the user is mid-setup (image/Dockerfile/compose
+  // fields still to fill), and closing the menu on them lost the flow.
+  // Dockerfile / compose pick, via the OS FILE dialog. The file is the
+  // primary object; the project folder is inferred from it rather than
+  // asked for twice:
+  //   · no folder yet            → folder := the file's directory
+  //   · file inside the folder   → store it relative (pretty, and robust
+  //                                to the folder moving)
+  //   · compose outside          → the folder FOLLOWS the file. Compose's
+  //                                own default is project-dir = file-dir,
+  //                                and a folder that contradicts the stack
+  //                                it hosts helps nobody.
+  //   · dockerfile outside       → keep the folder (it is the build
+  //                                context — `docker build -f` explicitly
+  //                                supports a Dockerfile outside it) and
+  //                                store the file absolute.
+  const pickProjectFile = useCallback(async (kind: "dockerfile" | "compose"): Promise<string | null> => {
+    const w = window as unknown as {
+      electronAPI?: {
+        openFileDialog?: (opts: { defaultDir?: string; extensions?: string[]; title?: string }) => Promise<string | null>;
+      };
+    };
+    const hostFolder = projectPath && isHostPath(projectPath) ? projectPath : null;
+    const picked = w.electronAPI?.openFileDialog
+      ? await w.electronAPI.openFileDialog({
+          defaultDir: hostFolder ?? undefined,
+          // A Dockerfile has no extension, so a filter would hide it —
+          // that kind gets an unfiltered dialog.
+          extensions: kind === "compose" ? ["yml", "yaml"] : undefined,
+          title: kind === "compose" ? "Choose a compose file" : "Choose a Dockerfile",
+        })
+      : window.prompt(kind === "compose" ? "Compose file path" : "Dockerfile path");
+    if (!picked) return null;
+
+    if (!hostFolder) {
+      await patch({ project_path: parentDir(picked) });
+      return leafName(picked);
+    }
+    const rel = relativeWithin(picked, hostFolder);
+    if (rel) return rel;
+    if (kind === "compose") {
+      await patch({ project_path: parentDir(picked) });
+      return leafName(picked);
+    }
+    return picked;
+  }, [patch, projectPath]);
+
+  const pickFolderForMount = useCallback(async () => {
+    const w = window as unknown as { electronAPI?: { openFolderDialog?: () => Promise<string | null> } };
+    const picked = w.electronAPI?.openFolderDialog
+      ? await w.electronAPI.openFolderDialog()
+      : window.prompt("Project folder path");
+    if (picked) await patch({ project_path: picked });
+  }, [patch]);
 
   const pickFolder = useCallback(async () => {
     const w = window as unknown as { electronAPI?: { openFolderDialog?: () => Promise<string | null> } };
@@ -497,6 +548,7 @@ export function SessionToolbar({
               <SourceTab active={sourceTab === "local"}     onClick={() => setSourceTab("local")}>Local</SourceTab>
               <SourceTab active={sourceTab === "git"}       onClick={() => setSourceTab("git")}>Git</SourceTab>
               <SourceTab active={sourceTab === "remote"}    onClick={() => setSourceTab("remote")}>Remote</SourceTab>
+              <SourceTab active={sourceTab === "container"} onClick={() => setSourceTab("container")}>Container</SourceTab>
             </div>
 
             {/* ── Local tab ── */}
@@ -553,11 +605,49 @@ export function SessionToolbar({
               />
             )}
 
-            {/* Container is NOT here on purpose. It is an execution
-                target, orthogonal to the source, so it lives in its own
-                chip beside the branch chip — putting it inside the source
-                picker would re-imply "container is a kind of source",
-                which is exactly what migration 0014 undid. */}
+            {/* ── Container tab — where the agent RUNS.
+                Semantically still an execution target (exec_mode is
+                orthogonal to the source columns), but presented as a tab:
+                in practice it is picked at the same moment as the source,
+                and a separate chip buried it. Attach replaces the project
+                path with the container's own URL; the run recipes keep the
+                HOST folder — pickable right here — and mount it, which is
+                what keeps branches and worktrees working. */}
+            {sourceTab === "container" && (
+              <DockerContainerPanel
+                sourcePath={projectPath}
+                execMode={execMode}
+                providerId={tool}
+                onAttach={(containerUrl) => {
+                  void patch({ project_path: containerUrl });
+                  setOpenMenu(null);
+                }}
+                onRun={(payload) => {
+                  void patch({
+                    exec_mode: "docker-run",
+                    container_source: payload.source,
+                    container_image: payload.image ?? null,
+                    container_file: payload.file ?? null,
+                    container_service: payload.service ?? null,
+                    container_mount_credentials: payload.mountCredentials,
+                  });
+                  setOpenMenu(null);
+                }}
+                onClear={() => {
+                  void patch({
+                    exec_mode: "host",
+                    container_source: "image",
+                    container_image: null,
+                    container_file: null,
+                    container_service: null,
+                    container_id: null,
+                  });
+                  setOpenMenu(null);
+                }}
+                onPickFolder={() => { void pickFolderForMount(); }}
+                onPickFile={pickProjectFile}
+              />
+            )}
           </Menu>
         )}
       </Chip>
@@ -647,48 +737,22 @@ export function SessionToolbar({
         );
       })()}
 
-      {/* ── Container chip ──
-            Where the agent RUNS, as a peer of the branch chip rather than a
-            section inside the source picker. Container is orthogonal to the
-            source — that is the whole point of the exec_mode column — so
-            nesting it under "which files" would contradict the model.
-
-            Compact when the session runs on this machine: an icon-only
-            affordance, because most sessions never leave the host and a
-            fully-labelled seventh chip would crowd the strip for nothing.
-            Expands to the container's name + a live/dead dot once the
-            session actually runs in one.
-
-            Hidden for an ssh:// session: `ExecTarget::Unsupported` refuses
-            that combination, so offering it would advertise a dead end. ── */}
-      {!(projectPath && projectPath.startsWith("ssh://")) && (
+      {/* ── Container chip — status only.
+            Visible only while the session actually executes in a container:
+            the container's name and a live/dead dot polled off `docker ps`.
+            Configuration lives in the source picker's Container tab —
+            clicking the chip jumps straight there. A dead container used to
+            be discovered at the next turn's re-probe, i.e. by the turn
+            failing; the dot says it first. ── */}
+      {execMode !== "host" && (
         <ContainerChip
           containerId={containerId}
+          containerImage={isDraft ? composerImage : session?.container_image ?? null}
           mode={execMode}
           mountsCredentials={isDraft ? composerMountCreds : session?.container_mount_credentials === true}
-          open={openMenu === "container"}
-          onToggle={() => setOpenMenu(openMenu === "container" ? null : "container")}
-          sourcePath={projectPath}
-          providerId={tool}
-          onAttach={(containerUrl) => {
-            // Attach: the files live inside the container, so its URL IS the
-            // project path and there is no host workspace.
-            void patch({ project_path: containerUrl });
-            setOpenMenu(null);
-          }}
-          onRun={(image, mountCredentials) => {
-            // Run: keep the HOST project path — the container bind-mounts
-            // it, so host git keeps working — and record the image.
-            void patch({
-              exec_mode: "docker-run",
-              container_image: image,
-              container_mount_credentials: mountCredentials,
-            });
-            setOpenMenu(null);
-          }}
-          onClear={() => {
-            void patch({ exec_mode: "host", container_image: null, container_id: null });
-            setOpenMenu(null);
+          onOpenPicker={() => {
+            setSourceTab("container");
+            setOpenMenu("source");
           }}
         />
       )}
@@ -1339,43 +1403,35 @@ export function SessionToolbar({
  *  Liveness is polled off `docker ps` (the container list the picker already
  *  uses) rather than a dedicated endpoint, so a stopped container drops out
  *  of the list and the chip goes dead without any new backend surface. */
-/** Container chip — where this session's agent runs.
+/** Container chip — status only.
  *
- *  A peer of the branch chip, not a section inside the source picker:
- *  execution target is orthogonal to source (that is what the `exec_mode`
- *  column buys), so nesting it under "which files" would contradict the
- *  model the backend now enforces.
- *
- *  Two shapes. On the host it is icon-only — a quiet affordance, because
- *  most sessions never leave this machine and a seventh fully-labelled chip
- *  would crowd the strip for a setting nobody changed. Once the session runs
- *  in a container it expands to the container's name and a live/dead dot,
- *  polled off `docker ps`; a stopped container used to be discovered at the
- *  next turn's re-probe, i.e. by the turn failing. */
+ *  Rendered only while the session executes in a container. The
+ *  configuration surface moved into the source picker's Container tab, so
+ *  this chip's whole job is the two things the tab cannot do from a closed
+ *  popover: say at a glance that this session is NOT running on this
+ *  machine, and show when its container has died — polled off `docker ps`,
+ *  because discovering a dead container at the next turn's re-probe means
+ *  discovering it by the turn failing. Clicking jumps to the tab. */
 function ContainerChip({
-  containerId, mode, mountsCredentials, open, onToggle,
-  sourcePath, providerId, onAttach, onRun, onClear,
+  containerId, containerImage, mode, mountsCredentials, onOpenPicker,
 }: {
   containerId: string | null;
-  mode: "host" | "docker-attach" | "docker-run";
+  /** Fallback label while a docker-run session has no container yet —
+   *  provisioning waits for the first turn, so the id can be legitimately
+   *  absent while the intent is already set. */
+  containerImage: string | null;
+  mode: "docker-attach" | "docker-run";
   mountsCredentials: boolean;
-  open: boolean;
-  onToggle: () => void;
-  sourcePath: string | null;
-  providerId: string;
-  onAttach: (containerUrl: string) => void;
-  onRun: (image: string, mountCredentials: boolean) => void;
-  onClear: () => void;
+  onOpenPicker: () => void;
 }) {
   // The probe answer carries the id it belongs to, so switching containers
   // does not need a synchronous reset inside the effect (which triggers a
   // cascading render) — a mismatched id simply reads as "not answered yet".
   const [probe, setProbe] = useState<{ id: string; alive: boolean; name: string | null } | null>(null);
-  const active = mode !== "host";
   const answer = probe && probe.id === containerId ? probe : null;
 
   useEffect(() => {
-    if (!active || !containerId) return;
+    if (!containerId) return;
     let cancelled = false;
     const check = async () => {
       try {
@@ -1401,25 +1457,33 @@ function ContainerChip({
     void check();
     const t = setInterval(check, 15_000);
     return () => { cancelled = true; clearInterval(t); };
-  }, [containerId, active]);
+  }, [containerId]);
 
   const alive = answer?.alive ?? null;
-  const label = answer?.name ?? containerId?.slice(0, 12) ?? "";
-  const state = !active ? "host" : alive === null ? "unknown" : alive ? "live" : "dead";
+  const label =
+    answer?.name ??
+    containerId?.slice(0, 12) ??
+    containerImage ??
+    "container";
+  // No id yet = provisioning is deferred to the first turn; that is a
+  // pending state, not a dead one.
+  const state = !containerId ? "pending" : alive === null ? "unknown" : alive ? "live" : "dead";
   const dot =
     state === "live" ? "var(--c-low, #4a9)"
     : state === "dead" ? "var(--c-err, #d66)"
     : "rgba(var(--fg-rgb),0.35)";
   const title =
-    !active ? "Runs on this machine. Click to run it in a Docker container instead."
-    : state === "dead" ? `Container '${label}' isn't running — start it, or switch back to this machine.`
-    : mode === "docker-run" ? "Running in a container Fleetify started. Deleting this session removes it."
-    : `Running inside your container '${label}'. Fleetify never stops it.`;
+    state === "pending"
+      ? "Starts when you send the first message. Click to change the container setup."
+    : state === "dead"
+      ? `Container '${label}' isn't running — start it, or switch back to this machine.`
+    : mode === "docker-run"
+      ? "Running in a container Fleetify started. Click to change the setup."
+      : `Running inside your container '${label}'. Fleetify never stops it.`;
 
   return (
     <Chip
-      active={open}
-      onClick={onToggle}
+      onClick={onOpenPicker}
       title={mountsCredentials ? `${title} Your credentials are mounted into it.` : title}
     >
       <span
@@ -1428,37 +1492,21 @@ function ContainerChip({
         data-mode={mode}
         style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
       >
-        <Box size={13} strokeWidth={1.75} style={{ opacity: active ? 0.9 : 0.55 }} />
-        {active && (
-          <>
-            <span
-              aria-hidden
-              style={{
-                width: 6, height: 6, borderRadius: "50%", background: dot,
-                // A dead container is the one state worth interrupting for.
-                boxShadow: state === "dead"
-                  ? `0 0 0 3px color-mix(in srgb, ${dot} 22%, transparent)`
-                  : "none",
-              }}
-            />
-            <span style={{ maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis" }}>
-              {label}
-            </span>
-          </>
-        )}
+        <Box size={13} strokeWidth={1.75} style={{ opacity: 0.9 }} />
+        <span
+          aria-hidden
+          style={{
+            width: 6, height: 6, borderRadius: "50%", background: dot,
+            // A dead container is the one state worth interrupting for.
+            boxShadow: state === "dead"
+              ? `0 0 0 3px color-mix(in srgb, ${dot} 22%, transparent)`
+              : "none",
+          }}
+        />
+        <span style={{ maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis" }}>
+          {label}
+        </span>
       </span>
-      {open && (
-        <Menu width={340} padding={0}>
-          <DockerContainerPanel
-            sourcePath={sourcePath}
-            execMode={mode}
-            providerId={providerId}
-            onAttach={onAttach}
-            onRun={onRun}
-            onClear={onClear}
-          />
-        </Menu>
-      )}
     </Chip>
   );
 }
