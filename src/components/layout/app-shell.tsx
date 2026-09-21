@@ -9,6 +9,7 @@ import { WindowsTitleBar } from "./windows-title-bar";
 import { StudioSession } from "@/components/studio/StudioSession";
 import { StudioComposer } from "@/components/studio/StudioComposer";
 import { isStudioTool } from "@/lib/studio-tools";
+import { sweepInactiveSessions } from "@/lib/session-eviction";
 // MarketplacePage and WorkflowsPage are lazy-loaded — they're
 // rarely the first surface a user lands on (chat is), and pulling
 // them out of the initial bundle measurably speeds up cold start.
@@ -21,7 +22,6 @@ const WorkflowsPage = lazy(() =>
   import("@/components/workflows/WorkflowsPage").then(m => ({ default: m.WorkflowsPage })),
 );
 import { useAppStore } from "@/stores/app-store";
-import { useChatStore } from "@/stores/chat-store";
 import { useDiscoveredModelsStore } from "@/stores/discovered-models-store";
 import { providers } from "@/lib/providers-api";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
@@ -133,8 +133,9 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
   // chat-store keeps the full messages[] for EVERY session at once; with a
   // fleet of ~20 heavy long-running agents that retention is the first thing
   // to OOM the WebView2/V8 renderer on a 2-4 GB box (optimization/stability
-  // S5). Drop the message arrays of sessions that are NOT visible (active +
-  // split panes) and NOT streaming; chat-view re-fetches the last 50 from
+  // S5). Drop the message arrays of sessions that are NOT visible (see
+  // `visibleSessionIds`: active or the hub's staff session, + split panes) and
+  // NOT streaming; chat-view re-fetches the last 50 from
   // SQLite on return, so it's lossless. Runs on navigation AND on a gentle
   // 20s interval to also reclaim finished background agents the user never
   // switched to. getState() inside the sweep keeps the ids current without
@@ -142,14 +143,8 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
   const splitPaneIds = useAppStore(s => s.splitPaneIds);
   const paneSig = (splitPaneIds ?? []).join(",");
   useEffect(() => {
-    const sweep = () => {
-      const app = useAppStore.getState();
-      const keep = [app.activeSessionId, ...(app.splitPaneIds ?? [])]
-        .filter((x): x is string => Boolean(x));
-      useChatStore.getState().evictInactive(keep);
-    };
-    sweep();
-    const t = setInterval(sweep, 20000);
+    sweepInactiveSessions();
+    const t = setInterval(sweepInactiveSessions, 20000);
     return () => clearInterval(t);
   }, [activeSessionId, paneSig]);
 
