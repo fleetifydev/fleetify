@@ -78,13 +78,26 @@ async fn list_installed() -> Json<Value> {
     let Ok(rd) = std::fs::read_dir(&plugins_dir) else {
         return Json(Value::Array(Vec::new()));
     };
+    // Parse first, then inline every icon in one concurrent pass — the
+    // WebView cannot load the remote icon URLs itself (see `icons`).
+    let mut parsed: Vec<_> = rd
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| {
+            let result = manifest::parse_plugin(&entry.path());
+            (entry, result)
+        })
+        .collect();
+    let mut manifests: Vec<_> = parsed
+        .iter_mut()
+        .filter_map(|(_, result)| result.as_mut().ok())
+        .collect();
+    crate::services::plugins::icons::inline_all(&mut manifests).await;
+
     let mut out: Vec<Value> = Vec::new();
-    for entry in rd.flatten() {
+    for (entry, result) in parsed {
         let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        match manifest::parse_plugin(&path) {
+        match result {
             Ok(m) => {
                 let install_id = entry.file_name().to_string_lossy().to_string();
                 let ps = state::get(&install_id);

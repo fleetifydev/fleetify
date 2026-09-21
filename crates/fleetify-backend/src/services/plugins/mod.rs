@@ -22,6 +22,7 @@
 
 pub mod hook_merge;
 pub mod hook_triggers;
+pub mod icons;
 pub mod installer;
 pub mod manifest;
 pub mod marketplace_fetch;

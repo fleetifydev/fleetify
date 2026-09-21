@@ -238,7 +238,24 @@ async fn fill_inline_manifests(repo_url: &str, mm: &mut MarketplaceManifest) {
 /// Load a source: serves fresh-cached when within TTL, otherwise
 /// re-fetches + writes the cache. On fetch error, serves the stale
 /// cache so the UI doesn't go blank on transient GitHub failures.
+///
+/// Icons are inlined on the way out rather than into the catalog cache, so
+/// every path below (fresh, cached, stale) hands the renderer `data:` URIs.
 pub async fn load_source(
+    source_id: &str,
+    repo_url: &str,
+    force: bool,
+) -> Result<Vec<MarketplaceEntry>> {
+    let mut entries = load_source_entries(source_id, repo_url, force).await?;
+    let mut manifests: Vec<&mut PluginManifest> = entries
+        .iter_mut()
+        .filter_map(|e| e.manifest.as_mut())
+        .collect();
+    super::icons::inline_all(&mut manifests).await;
+    Ok(entries)
+}
+
+async fn load_source_entries(
     source_id: &str,
     repo_url: &str,
     force: bool,
