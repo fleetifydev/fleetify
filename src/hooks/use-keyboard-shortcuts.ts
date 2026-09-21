@@ -1,10 +1,11 @@
-import { useEffect } from "react";
+import { useEffect, type RefObject } from "react";
 import { useAppStore } from "@/stores/app-store";
 import { useChatStore } from "@/stores/chat-store";
 import { wsManager } from "@/services/ws-manager";
 import { stopSession, archiveSession } from "@/lib/api";
 import { git } from "@/lib/git-api";
 import { getPlatform, type Platform } from "@/lib/utils";
+import { isOnScreen } from "@/hooks/use-escape-to-stop";
 
 /** Resolve the active session's project folder, or null if Fleet view. */
 function activeFolder(): string | null {
@@ -242,12 +243,18 @@ export const HANDLED_SHORTCUT_IDS: string[] = SHORTCUT_BINDINGS.map(b => b.id);
 /**
  * Global keyboard shortcuts for Fleet. Registered once; state is read fresh
  * from the stores inside the handler. First matching binding wins.
+ *
+ * `shell` is the AppShell root. App.tsx parks the shell under `display: none`
+ * while Settings or Library is open, and every binding here acts on that
+ * hidden UI — so a parked shell ignores the keyboard entirely. Without this,
+ * the Escape that closed Library also ran `back-to-fleet` underneath it.
  */
-export function useKeyboardShortcuts() {
+export function useKeyboardShortcuts(shell?: RefObject<Element | null>) {
   useEffect(() => {
     // Host platform is stable for the session — resolve once, not per keystroke.
     const platform = getPlatform();
     const handler = (e: KeyboardEvent) => {
+      if (shell && !isOnScreen(shell.current)) return;
       const mod = e.metaKey || e.ctrlKey;
       const shift = e.shiftKey;
       const ctx: ShortcutCtx = {
@@ -260,5 +267,5 @@ export function useKeyboardShortcuts() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [shell]);
 }

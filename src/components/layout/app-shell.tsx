@@ -80,7 +80,8 @@ function useDrag(
 }
 
 export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
-  useKeyboardShortcuts();
+  const shellRef = useRef<HTMLDivElement>(null);
+  useKeyboardShortcuts(shellRef);
 
   const {
     setSessions, updateSession, staffSessionId, setStaffSessionId,
@@ -431,7 +432,7 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
     : undefined;
 
   return (
-    <div style={{
+    <div ref={shellRef} style={{
       display: "flex",
       flexDirection: "column",
       height: "100vh",

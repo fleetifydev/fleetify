@@ -28,6 +28,7 @@ import { ProviderLogo } from "@/components/ui/provider-logo";
 import { RoutingChip } from "@/components/settings/routers/routing-chip";
 import { commandsForContext, type SlashCmdDef } from "@/lib/slash-commands";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
+import { useEscapeToStop, isOnScreen } from "@/hooks/use-escape-to-stop";
 import { UnifiedModelPicker, type Effort as UMEffort } from "./unified-model-picker";
 import { buildPickerGroups, effortForDiscoveredModel, resolveDispatchTool, resolveModelChip, type PickerModel } from "@/lib/picker-groups";
 import { permissionCapabilityFor, permissionModesFor, defaultPermissionMode, isLoudMode, toolMatrixFor, parseToolOverrides, sandboxOptionsFor } from "@/lib/capabilities";
@@ -1136,10 +1137,13 @@ export function ChatInput({
     ? (permissionRequest.tool_description ?? PERM_VERB[permTool] ?? humanizeToolName(permTool).toLowerCase())
     : "";
   // Keyboard: Esc → deny, ⌘↵ → allow, ⌘⇧↵ → always allow. Active-session
-  // guarded so a dialog on agent A isn't actioned while viewing agent B.
+  // guarded so a dialog on agent A isn't actioned while viewing agent B, and
+  // on-screen guarded so closing Settings / Library with Esc doesn't deny a
+  // request on the chat parked underneath.
   useEffect(() => {
     if (!permissionRequest) return;
     const handler = (e: KeyboardEvent) => {
+      if (!isOnScreen(wrapperRef.current)) return;
       const active = useAppStore.getState().activeSessionId;
       if (active && sessionId && active !== sessionId) return;
       if (e.key === "Escape") {
@@ -1431,12 +1435,7 @@ export function ChatInput({
   }, [slashIndex, slashOpen, slashQuery]);
 
   /* ESC → stop streaming */
-  useEffect(() => {
-    if (!streaming) return;
-    const h = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); onStop?.(); } };
-    document.addEventListener("keydown", h);
-    return () => document.removeEventListener("keydown", h);
-  }, [streaming, onStop]);
+  useEscapeToStop(wrapperRef, !!streaming, onStop);
 
   /* auto-resize textarea */
   const adjust = useCallback(() => {

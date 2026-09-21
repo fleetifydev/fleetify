@@ -16,6 +16,7 @@ import { registerConfigPatch } from "@/lib/session-config-sync";
 import { usesInAppTitleBar, folderName } from "@/lib/utils";
 import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
+import { useEscapeToStop } from "@/hooks/use-escape-to-stop";
 import { resolveStartupDefault, hermesHealModel, HERMES_DEFAULT_SENTINEL, contextWindowForModel, buildPickerGroups, resolveDispatchTool } from "@/lib/picker-groups";
 import { providers } from "@/lib/providers-api";
 import { useDiscoveredModelsStore } from "@/stores/discovered-models-store";
@@ -967,13 +968,8 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   }, [effectiveSessionId]);
 
   // Global ESC to abort streaming
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && isStreaming) { e.preventDefault(); handleStop(); }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isStreaming, handleStop]);
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  useEscapeToStop(surfaceRef, isStreaming, handleStop);
 
   const handleModelChange = useCallback((sessionId: string, modelId: string) => {
     updateSession(sessionId, { model_name: modelId });
@@ -2103,7 +2099,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   }, [isControlCenter, agentSessions.map(s => s.id).join(","), ensureSession, setMessages, parseContent]);
 
   return (
-    <div style={{
+    <div ref={surfaceRef} style={{
       flex: 1, display: "flex", background: "var(--card)", overflow: "hidden", position: "relative",
       // Transcript font scale — exposed as a CSS variable so any
       // descendant that opts in (`font-size: calc(13px * var(--chat-font-scale))`)
