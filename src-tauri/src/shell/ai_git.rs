@@ -24,6 +24,20 @@ use crate::shell::git;
 const CLAUDE: (&str, &[&str]) = ("claude", &["--print"]);
 const CODEX: (&str, &[&str]) = ("codex", &["exec", "--quiet"]);
 
+// ── AI call budgets ───────────────────────────────────────────────────
+// These CLIs are AGENTS, not completion endpoints: when a prompt doesn't
+// fully answer itself they go and read the repo, and a long answer is a long
+// generation. Measured on a Windows dev box against `claude --print`:
+// commit message with a real diff ~6 s, PR summary with an empty commit range
+// ~37 s, a 400-word review 30-39 s. The old 20/25/35 s budgets sat right on
+// those numbers, so user-visible actions failed with "claude timed out" on
+// perfectly healthy runs. Each of these is behind a spinner the user can
+// cancel by closing the dialog, so waiting is strictly better than a
+// false failure.
+const AI_COMMIT_TIMEOUT: Duration = Duration::from_secs(45);
+const AI_SUMMARY_TIMEOUT: Duration = Duration::from_secs(60);
+const AI_REVIEW_TIMEOUT: Duration = Duration::from_secs(90);
+
 fn cli_for(tool: Option<&str>) -> (&'static str, &'static [&'static str]) {
     match tool.unwrap_or("claude-code") {
         "codex-cli" => CODEX,
@@ -222,7 +236,7 @@ pub async fn generate_commit_message(
     );
 
     let (ok, cli, out, err) =
-        run_session_cli(&folder, tool.as_deref(), &prompt, Duration::from_secs(20)).await;
+        run_session_cli(&folder, tool.as_deref(), &prompt, AI_COMMIT_TIMEOUT).await;
     if !ok {
         return json!({ "ok": false, "error": err });
     }
@@ -248,6 +262,102 @@ pub async fn generate_commit_message(
 }
 
 // ── generatePRSummary ───────────────────────────────────────────
+/// Diff context for the PR summary prompt. `uncommitted` marks the fallback
+/// case: the branch has no commits against the base yet, so the context came
+/// from the working tree instead of the commit range.
+#[derive(Debug, Default, PartialEq)]
+pub struct PrSummaryContext {
+    pub log: String,
+    pub stat: String,
+    pub files: String,
+    pub diff: String,
+    pub uncommitted: bool,
+}
+
+/// Build the diff context for {@link generate_pr_summary}.
+///
+/// The commit range is empty whenever the branch has no commits yet — the
+/// normal state when the PR dialog is opened BEFORE `create_pr_via_gh` runs its
+/// `git add -A` + auto-commit. Handing the CLI `(no commits)` plus an empty
+/// diff doesn't make it fast: it makes it go read the repo itself to work out
+/// what changed, which blew past the timeout every time (measured against
+/// `claude --print`: 5.7 s with a real diff, 36.5 s with an empty one, on a
+/// 25 s budget). So fall back to the working-tree diff — the same context
+/// `review_diff` already uses — and the model answers from what it was given.
+///
+/// `None` means the range couldn't be read at all (not a repo / bad base).
+pub async fn pr_summary_context(path: &Path, base: &str) -> Option<PrSummaryContext> {
+    let range_dot3 = format!("{base}...HEAD");
+    let range_dot2 = format!("{base}..HEAD");
+
+    let (files_ok, files_out) = git_out(
+        path,
+        &["diff", "--name-status", &range_dot3],
+        Duration::from_secs(5),
+    )
+    .await;
+    let (log_ok, log_out) = git_out(
+        path,
+        &["log", "--oneline", "--no-decorate", &range_dot2],
+        Duration::from_secs(5),
+    )
+    .await;
+    let (stat_ok, stat_out) = git_out(
+        path,
+        &["diff", "--shortstat", &range_dot3],
+        Duration::from_secs(5),
+    )
+    .await;
+    let (diff_ok, diff_out) = git_out(
+        path,
+        &["diff", "--unified=2", &range_dot3],
+        Duration::from_secs(8),
+    )
+    .await;
+    if !files_ok || !log_ok {
+        return None;
+    }
+
+    let mut ctx = PrSummaryContext {
+        log: log_out,
+        stat: if stat_ok { stat_out } else { String::new() },
+        files: files_out,
+        diff: if diff_ok { diff_out } else { String::new() },
+        uncommitted: false,
+    };
+    if ctx.diff.trim().is_empty() {
+        let (wd_ok, wd_out) = git_out(
+            path,
+            &["diff", "--unified=2", "HEAD"],
+            Duration::from_secs(8),
+        )
+        .await;
+        if wd_ok && !wd_out.trim().is_empty() {
+            ctx.uncommitted = true;
+            ctx.diff = wd_out;
+            let (wf_ok, wf_out) = git_out(
+                path,
+                &["diff", "--name-status", "HEAD"],
+                Duration::from_secs(5),
+            )
+            .await;
+            if wf_ok && !wf_out.trim().is_empty() {
+                ctx.files = wf_out;
+            }
+            let (ws_ok, ws_out) = git_out(
+                path,
+                &["diff", "--shortstat", "HEAD"],
+                Duration::from_secs(5),
+            )
+            .await;
+            if ws_ok {
+                ctx.stat = ws_out;
+            }
+        }
+    }
+    Some(ctx)
+}
+
 pub async fn generate_pr_summary(
     folder: String,
     base_branch: Option<String>,
@@ -255,37 +365,17 @@ pub async fn generate_pr_summary(
 ) -> Value {
     let base = base_branch.unwrap_or_else(|| "main".to_string());
     let path = PathBuf::from(&folder);
-    let range_dot3 = format!("{base}...HEAD");
-    let range_dot2 = format!("{base}..HEAD");
 
-    let (files_ok, files_out) = git_out(
-        &path,
-        &["diff", "--name-status", &range_dot3],
-        Duration::from_secs(5),
-    )
-    .await;
-    let (log_ok, log_out) = git_out(
-        &path,
-        &["log", "--oneline", "--no-decorate", &range_dot2],
-        Duration::from_secs(5),
-    )
-    .await;
-    let (stat_ok, stat_out) = git_out(
-        &path,
-        &["diff", "--shortstat", &range_dot3],
-        Duration::from_secs(5),
-    )
-    .await;
-    let (diff_ok, diff_out) = git_out(
-        &path,
-        &["diff", "--unified=2", &range_dot3],
-        Duration::from_secs(8),
-    )
-    .await;
-    if !files_ok || !log_ok {
+    let Some(ctx) = pr_summary_context(&path, &base).await else {
         return json!({ "ok": false, "error": "couldn't read diff" });
-    }
-    let diff = if diff_ok { diff_out } else { String::new() };
+    };
+    let PrSummaryContext {
+        log: log_out,
+        stat: stat_out,
+        files: files_out,
+        diff,
+        uncommitted,
+    } = ctx;
     let truncated = if diff.len() > 60_000 {
         format!("{}\n…[truncated]", &diff[..60_000])
     } else {
@@ -300,14 +390,15 @@ Output ONLY the JSON object, no prose around it, no code fence.\n\n\
 # Commits since {base}\n{}\n\n\
 # Shortstat\n{}\n\n\
 # Files\n{}\n\n\
-# Diff\n{truncated}\n",
+# {}\n{truncated}\n",
         if log_out.is_empty() { "(no commits)".to_string() } else { log_out },
-        if stat_ok { stat_out } else { String::new() },
+        stat_out,
         if files_out.is_empty() { "(no files)".to_string() } else { files_out },
+        if uncommitted { "Diff (uncommitted working tree — this is what the PR will contain)" } else { "Diff" },
     );
 
     let (ok, cli, raw, err) =
-        run_session_cli(&folder, tool.as_deref(), &prompt, Duration::from_secs(25)).await;
+        run_session_cli(&folder, tool.as_deref(), &prompt, AI_SUMMARY_TIMEOUT).await;
     if !ok {
         return json!({ "ok": false, "error": err });
     }
@@ -414,7 +505,7 @@ Do NOT wrap the output in code fences. Output Markdown directly.\n\n\
     );
 
     let (ok, cli, out, err) =
-        run_session_cli(&folder, tool.as_deref(), &prompt, Duration::from_secs(35)).await;
+        run_session_cli(&folder, tool.as_deref(), &prompt, AI_REVIEW_TIMEOUT).await;
     if !ok {
         return json!({ "ok": false, "error": err });
     }
@@ -682,6 +773,89 @@ pub fn tokenize_command(input: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn git_ok(args: &[&str], p: &Path) -> bool {
+        git::run("git", args, p, Duration::from_secs(10)).await.0 == 0
+    }
+
+    async fn seed_repo(p: &Path) -> bool {
+        if !git_ok(&["init", "-b", "main"], p).await {
+            return false;
+        }
+        let _ = git_ok(&["config", "user.email", "t@x"], p).await;
+        let _ = git_ok(&["config", "user.name", "T"], p).await;
+        std::fs::write(
+            p.join("app.js"),
+            "export const a = 1;
+",
+        )
+        .unwrap();
+        git_ok(&["add", "-A"], p).await && git_ok(&["commit", "-m", "init"], p).await
+    }
+
+    /// Regression: the PR dialog calls this BEFORE anything commits, so on a
+    /// freshly carved branch `main...HEAD` is empty. Feeding the CLI an empty
+    /// diff didn't make it cheap — it went and read the repo instead, and the
+    /// call timed out ("claude timed out") every single time. The context must
+    /// fall back to the working tree so the model has something to summarise.
+    #[tokio::test]
+    async fn pr_summary_context_falls_back_to_the_working_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("proj");
+        std::fs::create_dir_all(&repo).unwrap();
+        if !seed_repo(&repo).await {
+            return; // no usable git in this sandbox
+        }
+        // A carved branch with NO commits of its own, and an uncommitted edit.
+        assert!(git_ok(&["checkout", "-b", "fleet/topic-abc12345"], &repo).await);
+        std::fs::write(
+            repo.join("app.js"),
+            "export const a = 2;
+",
+        )
+        .unwrap();
+
+        let ctx = pr_summary_context(&repo, "main").await.expect("context");
+        assert!(
+            ctx.uncommitted,
+            "should have flagged the working-tree fallback"
+        );
+        assert!(
+            ctx.diff.contains("export const a = 2"),
+            "working-tree diff missing from context: {:?}",
+            ctx.diff
+        );
+        assert!(
+            ctx.files.contains("app.js"),
+            "files missing: {:?}",
+            ctx.files
+        );
+    }
+
+    /// The committed range still wins when the branch HAS commits — the
+    /// fallback must not shadow a real PR diff with unrelated local edits.
+    #[tokio::test]
+    async fn pr_summary_context_prefers_the_commit_range() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("proj");
+        std::fs::create_dir_all(&repo).unwrap();
+        if !seed_repo(&repo).await {
+            return;
+        }
+        assert!(git_ok(&["checkout", "-b", "fleet/topic-abc12345"], &repo).await);
+        std::fs::write(
+            repo.join("app.js"),
+            "export const a = 3;
+",
+        )
+        .unwrap();
+        assert!(git_ok(&["commit", "-am", "bump"], &repo).await);
+
+        let ctx = pr_summary_context(&repo, "main").await.expect("context");
+        assert!(!ctx.uncommitted, "committed range should be used as-is");
+        assert!(ctx.diff.contains("export const a = 3"));
+        assert!(!ctx.log.trim().is_empty(), "commit log should be populated");
+    }
 
     #[test]
     fn cli_for_picks_per_tool() {

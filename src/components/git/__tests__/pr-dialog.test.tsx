@@ -328,3 +328,50 @@ describe("PRDialog — on-demand AI generation", () => {
     await waitFor(() => expect(submit).toBeEnabled());
   });
 });
+
+/**
+ * Regression: the dialog used to call `git.createPR` WITHOUT `featureBranch`.
+ * For a session whose HEAD is still the default branch (the normal
+ * off-worktree shape — its `fleet/…` branch is only *planned* until the first
+ * PR), `create_pr_via_gh` then had nothing to carve: it ran `git add -A`,
+ * committed onto `main`, and pushed `HEAD -> main`. Observed live as a
+ * `main → main` dialog header and `! [rejected] HEAD -> main` in the trace —
+ * only a stale remote stopped the agent's work from landing on the user's
+ * default branch. The split-button path always sent it; the dialog must too.
+ */
+describe("PRDialog feature-branch carve", () => {
+  beforeEach(() => {
+    gitMock.hasGhCli.mockReset();
+    gitMock.createPR.mockReset();
+    ghMock.getLink.mockReset();
+  });
+
+  const submitWith = async (featureBranch?: string) => {
+    gitMock.hasGhCli.mockResolvedValue({ ok: true, version: "2.55.0", authed: true, ghLogin: "octocat" });
+    ghMock.getLink.mockResolvedValue({ ok: false, link: null });
+    gitMock.createPR.mockResolvedValueOnce({ ok: true, prNumber: 1, prUrl: "https://x/1" });
+    render(
+      <PRDialog
+        folder="/some/repo"
+        branch="main"
+        baseBranch="main"
+        featureBranch={featureBranch}
+        onClose={() => {}}
+      />,
+    );
+    await waitFor(() => expect(screen.getByPlaceholderText(/Short summary/i)).toBeInTheDocument());
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /Create PR/i })); });
+    await waitFor(() => expect(gitMock.createPR).toHaveBeenCalled());
+    return gitMock.createPR.mock.calls[0][1] as Record<string, unknown>;
+  };
+
+  it("forwards the planned branch so the backend carves instead of committing to main", async () => {
+    const opts = await submitWith("fleet/topic-abc12345");
+    expect(opts.featureBranch).toBe("fleet/topic-abc12345");
+  });
+
+  it("omits featureBranch when the session is already on its feature branch", async () => {
+    const opts = await submitWith(undefined);
+    expect("featureBranch" in opts).toBe(false);
+  });
+});

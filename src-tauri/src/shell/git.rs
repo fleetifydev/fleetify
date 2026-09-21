@@ -545,8 +545,16 @@ pub async fn list_branches(folder: &Path) -> Value {
         folder,
     )
     .await;
+    // `%(symref)` is emitted alongside the name so symbolic refs can be
+    // dropped below. `refs/remotes/<remote>/HEAD` is the one that matters:
+    // `%(refname:short)` shortens it to the BARE remote name ("origin"),
+    // which is not a branch and cannot be checked out into one.
     let (rc2, remote, _) = git(
-        &["for-each-ref", "--format=%(refname:short)", "refs/remotes"],
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)%09%(symref)",
+            "refs/remotes",
+        ],
         folder,
     )
     .await;
@@ -566,9 +574,26 @@ pub async fn list_branches(folder: &Path) -> Value {
             .filter(|l| !l.is_empty())
             .collect()
     };
+    // Remote refs carry a trailing tab + symref target. A non-empty target
+    // means the ref is a pointer (origin/HEAD -> origin/main), not a branch,
+    // so it never belongs in a list the branch picker offers to check out.
+    let split_remote = |s: String| -> Vec<String> {
+        s.lines()
+            .filter_map(|l| {
+                let mut parts = l.splitn(2, '\t');
+                let name = parts.next().unwrap_or("").trim();
+                let symref = parts.next().unwrap_or("").trim();
+                if name.is_empty() || !symref.is_empty() {
+                    None
+                } else {
+                    Some(name.to_string())
+                }
+            })
+            .collect()
+    };
     json!({
         "local": split(local),
-        "remote": split(remote),
+        "remote": split_remote(remote),
         "current": if rc3 == 0 && !current.is_empty() { json!(current) } else { json!(null) },
     })
 }
@@ -830,7 +855,8 @@ fn write_gitignore_if_missing(folder: &Path) -> bool {
                 # Node\nnode_modules/\nnpm-debug.log*\n\n\
                 # Python\n__pycache__/\n*.pyc\n.venv/\nvenv/\n.pytest_cache/\n\n\
                 # Build outputs\ndist/\nbuild/\ntarget/\n.next/\n.nuxt/\n.turbo/\n\n\
-                # Env\n.env\n.env.local\n.env.*.local\n";
+                # Env\n.env\n.env.local\n.env.*.local\n\n\
+                # Fleetify\n.fleetify-worktrees/\n";
     std::fs::write(&path, body).is_ok()
 }
 
@@ -1538,6 +1564,17 @@ pub async fn create_pr_via_gh(
     }
 
     // 4. Auto-commit pending working-tree changes.
+    //
+    // Make sure Fleetify's own worktree dir is ignored FIRST. `git add -A`
+    // below stages everything it can see, and in a repo that never had a
+    // `.gitignore` that included `.fleetify-worktrees/<session id>` — an
+    // embedded git repository — so the user's PR shipped a gitlink pointing at
+    // a local path ("warning: adding embedded git repository"). The ignore has
+    // to land on the MAIN checkout, which is where the dir lives: for a
+    // worktree session `folder` is the worktree itself.
+    let ignore_root = main_worktree_root(folder).await;
+    fleetify_backend::services::worktree::ensure_worktrees_ignored(&ignore_root);
+
     let (_, dirty_out, _) = run(
         "git",
         &["status", "--porcelain"],
@@ -3046,6 +3083,52 @@ mod tests {
             .map(|x| x.as_str().unwrap().to_string())
             .collect();
         assert!(local.iter().any(|b| b == "main"));
+    }
+
+    /// Regression: `refs/remotes/<remote>/HEAD` is a SYMBOLIC ref, and
+    /// `%(refname:short)` shortens it to the bare remote name ("origin").
+    /// It used to sail through into `remote`, so the branch picker rendered
+    /// a row called "origin" — and clicking it ran `git checkout origin`,
+    /// which SUCCEEDS into a detached HEAD and strands the session's
+    /// worktree off its branch. Every clone has that symref, so this hit
+    /// the common path.
+    #[tokio::test]
+    async fn list_branches_drops_the_remote_head_symref() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let origin = tmp.path().join("origin");
+        let clone = tmp.path().join("clone");
+        std::fs::create_dir_all(&origin).unwrap();
+        fresh_repo(&origin).await;
+        let (rc, _, _) = git(
+            &["clone", &origin.to_string_lossy(), &clone.to_string_lossy()],
+            tmp.path(),
+        )
+        .await;
+        if rc != 0 {
+            return; // clone unavailable in this sandbox — nothing to assert
+        }
+
+        let v = list_branches(&clone).await;
+        let remote: Vec<String> = v["remote"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_string())
+            .collect();
+
+        // The symref is gone...
+        assert!(
+            !remote.iter().any(|b| b == "origin"),
+            "bare remote name leaked into the branch list: {remote:?}"
+        );
+        // ...but the real remote-tracking branch is still there.
+        assert!(
+            remote.iter().any(|b| b == "origin/main"),
+            "real remote branch missing: {remote:?}"
+        );
     }
 
     #[tokio::test]

@@ -269,28 +269,60 @@ fn ensure_gitignore_initial(folder: &Path) {
     let _ = std::fs::write(&gi, gitignore_content(folder));
 }
 
-fn ensure_worktrees_ignored(folder: &Path) {
-    let gi = folder.join(".gitignore");
-    if !gi.exists() {
-        return;
-    }
-    let Ok(existing) = std::fs::read_to_string(&gi) else {
-        return;
-    };
+/// Make sure git ignores `.fleetify-worktrees/` for the repo rooted at
+/// `folder`. Public because the Tauri shell's Create PR pipeline has to run
+/// it too: that path does a `git add -A`, which is where an unignored
+/// worktree dir gets staged as an embedded git repository.
+pub fn ensure_worktrees_ignored(folder: &Path) {
     let target = WORKTREES_DIRNAME.trim_end_matches('/');
-    for line in existing.lines() {
-        let stripped = line.trim().trim_end_matches('/');
-        if stripped == target {
+    let listed = |body: &str| {
+        body.lines()
+            .any(|l| l.trim().trim_end_matches('/') == target)
+    };
+    let append_to = |path: &Path, existing: String| {
+        let mut body = if existing.is_empty() || existing.ends_with('\n') {
+            existing
+        } else {
+            existing + "\n"
+        };
+        body.push_str(&format!("\n# Fleetify\n{WORKTREES_DIRNAME}/\n"));
+        let _ = std::fs::write(path, body);
+    };
+
+    // Preferred home: the repo's own `.gitignore`, when it HAS one — the entry
+    // is visible and travels with the repo.
+    let gi = folder.join(".gitignore");
+    if gi.exists() {
+        if let Ok(existing) = std::fs::read_to_string(&gi) {
+            if listed(&existing) {
+                return;
+            }
+            append_to(&gi, existing);
             return;
         }
     }
-    let mut body = if existing.ends_with('\n') {
-        existing
-    } else {
-        existing + "\n"
-    };
-    body.push_str(&format!("\n# Fleetify\n{WORKTREES_DIRNAME}/\n"));
-    let _ = std::fs::write(&gi, body);
+
+    // No `.gitignore` at all (an existing repo that never needed one) — this
+    // used to bail, leaving `.fleetify-worktrees/` untracked-but-not-ignored.
+    // The next `git add -A` (Create PR runs one) then staged the session's
+    // worktree as an EMBEDDED GIT REPOSITORY and committed a gitlink into the
+    // user's PR. `.git/info/exclude` is the right home here: local-only, never
+    // committed, and it doesn't conjure a `.gitignore` into a repo that has
+    // deliberately gone without one.
+    let git_dir = folder.join(".git");
+    if !git_dir.is_dir() {
+        return; // linked worktree (.git is a file) — the main checkout owns this
+    }
+    let info = git_dir.join("info");
+    if std::fs::create_dir_all(&info).is_err() {
+        return;
+    }
+    let exclude = info.join("exclude");
+    let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
+    if listed(&existing) {
+        return;
+    }
+    append_to(&exclude, existing);
 }
 
 pub async fn ensure_git_repo(project_path: &str) -> bool {
@@ -682,6 +714,134 @@ mod tests {
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
+    }
+
+    /// Regression: an EXISTING repo with no `.gitignore` got no ignore entry at
+    /// all — `ensure_worktrees_ignored` bailed on the missing file. The next
+    /// `git add -A` (Create PR runs one) then staged `.fleetify-worktrees/<id>`
+    /// as an embedded git repository and committed a gitlink into the user's
+    /// PR. Observed live: `ok · git add -A (pre-push) · warning: adding
+    /// embedded git repository: .fleetify-worktrees/5f5db2e0-…`.
+    #[test]
+    fn worktrees_ignored_via_info_exclude_when_there_is_no_gitignore() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(repo)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false));
+        assert!(!repo.join(".gitignore").exists());
+
+        ensure_worktrees_ignored(repo);
+
+        // No `.gitignore` conjured into a repo that deliberately has none…
+        assert!(!repo.join(".gitignore").exists());
+        // …but git now ignores the dir all the same.
+        let exclude = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+        assert!(
+            exclude
+                .lines()
+                .any(|l| l.trim().trim_end_matches('/') == WORKTREES_DIRNAME),
+            "info/exclude missing the entry: {exclude}"
+        );
+
+        // Idempotent — a second call must not duplicate the entry.
+        ensure_worktrees_ignored(repo);
+        let again = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+        assert_eq!(
+            again.matches(WORKTREES_DIRNAME).count(),
+            1,
+            "entry duplicated: {again}"
+        );
+    }
+
+    /// The point of the ignore: `git add -A` (which Create PR runs before it
+    /// pushes) must not stage the session worktree as an embedded repo.
+    #[test]
+    fn git_add_all_skips_the_worktrees_dir_once_ignored() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let run = |args: &[&str], cwd: &Path| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        if !run(&["init", "-b", "main"], repo) {
+            return;
+        }
+        let _ = run(&["config", "user.email", "t@x"], repo);
+        let _ = run(&["config", "user.name", "T"], repo);
+        std::fs::write(
+            repo.join("app.js"),
+            "export const a = 1;
+",
+        )
+        .unwrap();
+        assert!(run(&["add", "-A"], repo) && run(&["commit", "-m", "init"], repo));
+
+        // A session worktree: a nested repo, exactly what git turns into a gitlink.
+        let wt = repo.join(WORKTREES_DIRNAME).join("sid-1");
+        std::fs::create_dir_all(&wt).unwrap();
+        assert!(run(&["init", "-b", "main"], &wt));
+        std::fs::write(wt.join("scratch.txt"), "x").unwrap();
+
+        ensure_worktrees_ignored(repo);
+        assert!(run(&["add", "-A"], repo));
+
+        let staged = std::process::Command::new("git")
+            .args(["diff", "--cached", "--name-only"])
+            .current_dir(repo)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        assert!(
+            !staged.contains(WORKTREES_DIRNAME),
+            "worktree dir was staged anyway: {staged}"
+        );
+    }
+
+    /// When the repo DOES have a `.gitignore`, the entry still belongs there —
+    /// visible and travelling with the repo — not in `info/exclude`.
+    #[test]
+    fn worktrees_ignored_appends_to_an_existing_gitignore() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        std::fs::write(
+            repo.join(".gitignore"),
+            "node_modules/
+",
+        )
+        .unwrap();
+
+        ensure_worktrees_ignored(repo);
+
+        let gi = std::fs::read_to_string(repo.join(".gitignore")).unwrap();
+        assert!(
+            gi.contains("node_modules/"),
+            "clobbered existing rules: {gi}"
+        );
+        assert!(gi
+            .lines()
+            .any(|l| l.trim().trim_end_matches('/') == WORKTREES_DIRNAME));
+
+        ensure_worktrees_ignored(repo);
+        let again = std::fs::read_to_string(repo.join(".gitignore")).unwrap();
+        assert_eq!(
+            again.matches(WORKTREES_DIRNAME).count(),
+            1,
+            "duplicated: {again}"
+        );
     }
 
     #[test]

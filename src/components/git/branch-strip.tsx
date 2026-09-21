@@ -2583,6 +2583,11 @@ export function BranchStrip({ projectPath, sourcePath, tool, controlCenter, sess
           branch={ctxR.branch}
           baseBranch={ctxR.baseBranch}
           tool={tool}
+          // Same carve target the split button sends (executeCreatePR). Without
+          // it the dialog paths ("Create with custom title…" / "Create draft
+          // PR") commit onto the session's CURRENT branch — which, for a
+          // bootstrap-shape session, is the user's default branch.
+          featureBranch={isBootstrapShape ? plannedBranch! : undefined}
           initialDraft={draftDialog}
           onClose={() => { setShowDialog(false); setDraftDialog(false); }}
           onCreated={() => {

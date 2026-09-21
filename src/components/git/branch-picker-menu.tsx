@@ -175,7 +175,17 @@ export function BranchPickerMenu({
       push(b);
     }
     for (const r of branches.remote) {
-      const trimmed = r.replace(/^origin\//, "");
+      // Strip the REMOTE name, which is always the first segment — not a
+      // hardcoded "origin/", or a second remote's branches would be offered
+      // verbatim ("upstream/foo") and `git checkout upstream/foo` detaches
+      // HEAD instead of switching branch.
+      const slash = r.indexOf("/");
+      // No slash at all means this is the bare remote name, which is what
+      // `refs/remotes/origin/HEAD` shortens to. It's a symref, not a branch:
+      // checking it out succeeds INTO A DETACHED HEAD and strands the
+      // session's worktree off its branch.
+      if (slash < 0) continue;
+      const trimmed = r.slice(slash + 1);
       if (!trimmed || trimmed === "HEAD") continue;
       if (trimmed === baseBranch) continue;
       push(trimmed);

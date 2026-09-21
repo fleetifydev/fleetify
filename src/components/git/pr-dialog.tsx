@@ -18,13 +18,20 @@ import { github, type GitHubLinkPayload } from "@/lib/github-link-api";
 type Phase = "compose" | "creating" | "done" | "error";
 
 export function PRDialog({
-  folder, branch, baseBranch, tool, initialDraft, onClose, onCreated,
+  folder, branch, baseBranch, tool, featureBranch, initialDraft, onClose, onCreated,
 }: {
   folder: string;
   branch: string;
   baseBranch: string;
   /** Active session's provider — drives which CLI we ask for the draft. */
   tool?: string | null;
+  /** Branch the backend must CARVE before committing, for a session whose
+   *  HEAD is still the default branch (its `fleet/…` branch is only planned
+   *  until the first PR). Without it `create_pr_via_gh` commits onto the
+   *  current branch and pushes `HEAD -> main` — i.e. the dialog lands the
+   *  agent's work straight on the user's default branch. Undefined on a
+   *  session already sitting on its feature branch. */
+  featureBranch?: string;
   /** Pre-tick the "Open as draft" checkbox (used when opened from
    *  the "Create draft PR" menu item). */
   initialDraft?: boolean;
@@ -170,7 +177,12 @@ export function PRDialog({
     const trimmedBody = body.length > PR_BODY_MAX
       ? `${body.slice(0, PR_BODY_MAX)}\n\n[…body truncated — GitHub's limit is ~65k chars]`
       : body;
-    const r = await git.createPR(folder, { title: title.trim(), body: trimmedBody, base: baseBranch, draft });
+    const r = await git.createPR(folder, {
+      title: title.trim(), body: trimmedBody, base: baseBranch, draft,
+      // Only sent for a bootstrap-shape session; omitted otherwise so a
+      // session already on its feature branch keeps committing there.
+      ...(featureBranch ? { featureBranch } : {}),
+    });
     if (!r.ok) {
       setError(r.error);
       setErrorCode(r.code ?? null);
