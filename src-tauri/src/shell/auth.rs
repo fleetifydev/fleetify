@@ -61,12 +61,10 @@ fn noauth_tokens() -> Tokens {
         scope: DEFAULT_SCOPES.into(),
     }
 }
+/// Identity-provider origin; production in release builds. Shared with the
+/// embedded backend's token validation via `fleetify_core::endpoints`.
 pub fn issuer() -> String {
-    if is_prod() {
-        "https://fleetify.dev".into()
-    } else {
-        env_or("FLEETIFY_ISSUER", "http://localhost:3001")
-    }
+    fleetify_core::endpoints::issuer_origin()
 }
 pub fn auth_base() -> String {
     format!("{}/api/auth", issuer())
@@ -78,12 +76,10 @@ fn dashboard_url() -> String {
         env_or("FLEETIFY_DASHBOARD_URL", "http://localhost:5174")
     }
 }
+/// RFC 8707 resource indicator: the audience the embedded backend expects
+/// (`fleetify_core::endpoints`); production in release builds.
 fn resource() -> String {
-    if is_prod() {
-        "https://fleetify.dev/api".into()
-    } else {
-        env_or("FLEETIFY_RESOURCE", "http://127.0.0.1:8765")
-    }
+    fleetify_core::endpoints::api_resource()
 }
 
 #[derive(Clone, Serialize)]
@@ -514,5 +510,20 @@ pub async fn get_access_token(force: bool) -> Option<serde_json::Value> {
     match refresh_if_needed(force).await {
         Ok(t) => Some(serde_json::json!({"token": t.access_token, "expiresAt": t.expires_at})),
         Err(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Tokens the shell requests must pass the embedded backend's checks:
+    /// the backend expects `iss` = the shell's auth base and `aud` = the
+    /// `resource` the shell names. Both read the same environment here.
+    #[test]
+    fn shell_requests_tokens_the_embedded_backend_accepts() {
+        let backend = fleetify_backend::auth::AuthConfig::from_env();
+        assert_eq!(auth_base(), backend.auth_base);
+        assert_eq!(resource(), backend.expected_audience);
     }
 }

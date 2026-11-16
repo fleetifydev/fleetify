@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+pub mod endpoints;
+
 /// Backend wire-protocol version. Bumped only on breaking WS/REST changes.
 pub const PROTOCOL_VERSION: u32 = 1;
 

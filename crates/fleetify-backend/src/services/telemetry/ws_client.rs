@@ -31,14 +31,19 @@ const BACKOFF_INITIAL_S: u64 = 1;
 const BACKOFF_MAX_S: u64 = 30;
 const MAX_EVENTS_PER_FLUSH: i64 = 200;
 
+/// The realtime endpoints live on the identity provider's origin:
+/// production in release builds, `FLEETIFY_ISSUER` (default: the local
+/// IdP) in debug builds — the same origin the shell signs in against.
 fn issuer() -> String {
-    std::env::var("FLEETIFY_ISSUER").unwrap_or_else(|_| "https://fleetify.dev".to_string())
+    fleetify_core::endpoints::issuer_origin()
 }
 fn ticket_url() -> String {
     format!("{}/api/realtime/ticket", issuer().trim_end_matches('/'))
 }
 fn ws_url() -> String {
-    let base = issuer();
+    ws_url_for(&issuer())
+}
+fn ws_url_for(base: &str) -> String {
     let trimmed = base.trim_end_matches('/');
     let url = if let Some(rest) = trimmed.strip_prefix("https://") {
         format!("wss://{rest}")
@@ -418,14 +423,19 @@ mod tests {
 
     #[test]
     fn ws_url_translates_http_to_ws_and_https_to_wss() {
-        std::env::set_var("FLEETIFY_ISSUER", "https://fleetify.dev");
-        assert_eq!(ws_url(), "wss://fleetify.dev/api/realtime/connect");
-        std::env::set_var("FLEETIFY_ISSUER", "http://localhost:3001");
-        assert_eq!(ws_url(), "ws://localhost:3001/api/realtime/connect");
+        assert_eq!(
+            ws_url_for("https://fleetify.dev"),
+            "wss://fleetify.dev/api/realtime/connect"
+        );
+        assert_eq!(
+            ws_url_for("http://localhost:3001"),
+            "ws://localhost:3001/api/realtime/connect"
+        );
         // Trailing slash + no scheme = ws://.
-        std::env::set_var("FLEETIFY_ISSUER", "127.0.0.1:3001/");
-        assert_eq!(ws_url(), "ws://127.0.0.1:3001/api/realtime/connect");
-        std::env::remove_var("FLEETIFY_ISSUER");
+        assert_eq!(
+            ws_url_for("127.0.0.1:3001/"),
+            "ws://127.0.0.1:3001/api/realtime/connect"
+        );
     }
 
     #[test]

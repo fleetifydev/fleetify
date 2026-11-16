@@ -11,6 +11,7 @@ use axum::extract::{FromRef, FromRequestParts};
 use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use fleetify_core::endpoints;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -61,19 +62,26 @@ pub struct AuthConfig {
 }
 
 impl AuthConfig {
-    pub fn from_env() -> Self {
-        let origin = std::env::var("FLEETIFY_ISSUER")
-            .unwrap_or_else(|_| "http://localhost:3001".to_string());
-        let auth_base = format!("{origin}/api/auth");
+    /// Derives the better-auth base (`{origin}/api/auth`, also the expected
+    /// `iss`) and its JWKS URL from the identity-provider origin.
+    pub fn new(issuer_origin: String, expected_audience: String) -> Self {
+        let auth_base = format!("{issuer_origin}/api/auth");
         let jwks_url = format!("{auth_base}/jwks");
-        let expected_audience = std::env::var("FLEETIFY_AUDIENCE")
-            .unwrap_or_else(|_| "http://127.0.0.1:8765".to_string());
         Self {
-            issuer_origin: origin,
+            issuer_origin,
             auth_base,
             jwks_url,
             expected_audience,
         }
+    }
+
+    /// Production `fleetify.dev` values in release builds, whatever the
+    /// environment says; debug builds read `FLEETIFY_ISSUER` and
+    /// `FLEETIFY_RESOURCE` / `FLEETIFY_AUDIENCE` (see
+    /// [`fleetify_core::endpoints`]). The shell's OAuth client resolves the
+    /// same values, so the tokens it obtains are the ones validated here.
+    pub fn from_env() -> Self {
+        Self::new(endpoints::issuer_origin(), endpoints::api_resource())
     }
 }
 
@@ -528,5 +536,21 @@ where
             .await
             .map_err(|e| AuthError::Invalid(e.to_string()))?;
         Ok(AuthUser(user))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auth_config_new_derives_prod_urls() {
+        let c = AuthConfig::new(
+            "https://fleetify.dev".into(),
+            "https://fleetify.dev/api".into(),
+        );
+        assert_eq!(c.auth_base, "https://fleetify.dev/api/auth");
+        assert_eq!(c.jwks_url, "https://fleetify.dev/api/auth/jwks");
+        assert_eq!(c.expected_audience, "https://fleetify.dev/api");
     }
 }
