@@ -162,10 +162,7 @@ pub fn purge_legacy_builtin_seeds() {
             .get("builtin")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        if is_builtin_seed && FLEET_BUILTIN_NAMES.contains(&name.as_str()) {
-            return false;
-        }
-        true
+        !(is_builtin_seed && FLEET_BUILTIN_NAMES.contains(&name.as_str()))
     });
     if doc.mcp_servers.len() != before {
         tracing::info!(

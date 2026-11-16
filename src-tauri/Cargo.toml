@@ -14,9 +14,6 @@ crate-type = ["cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
-# Read POSTHOG_* keys from `.env` at compile time so the renderer never
-# sees the API key and the literal string doesn't sit in tracked source.
-dotenvy = "0.15"
 
 [dependencies]
 fleetify-core.workspace = true

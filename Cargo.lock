@@ -1381,7 +1381,6 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "cpal",
- "dotenvy",
  "fleetify-backend",
  "fleetify-core",
  "hound",
@@ -1461,7 +1460,6 @@ dependencies = [
 name = "fleetify-core"
 version = "0.1.0"
 dependencies = [
- "serde",
  "thiserror 2.0.18",
 ]
 
