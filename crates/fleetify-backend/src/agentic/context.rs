@@ -85,7 +85,7 @@ pub async fn build_system_context(workspace: &Workspace, header: Option<&str>) -
             let body = if content.len() > README_BUDGET {
                 format!(
                     "{}\n[truncated at {README_BUDGET} chars — use read_file for the full document]",
-                    &content[..README_BUDGET]
+                    fleetify_core::text::prefix_within_bytes(&content, README_BUDGET)
                 )
             } else {
                 content
@@ -269,6 +269,26 @@ mod tests {
         let prompt = build_system_context(&ws, None).await;
         assert!(prompt.contains("<README.md>"));
         assert!(prompt.contains(&format!("[truncated at {README_BUDGET} chars")));
+    }
+
+    /// Regression: a Turkish README over budget panicked when the cut at
+    /// byte `README_BUDGET` landed inside a letter.
+    #[tokio::test]
+    async fn truncates_oversize_turkish_readme_on_a_character_boundary() {
+        let dir = tempdir().unwrap();
+        let readme = format!("#{}", "ş".repeat(README_BUDGET));
+        assert!(
+            !readme.is_char_boundary(README_BUDGET),
+            "fixture must put the cut inside a letter"
+        );
+        std::fs::write(dir.path().join("README.md"), &readme).unwrap();
+        let ws = Workspace::new(dir.path()).unwrap();
+        let prompt = build_system_context(&ws, None).await;
+        // Keeps the bytes before that letter, then the marker.
+        let kept = &readme[..README_BUDGET - 1];
+        assert!(prompt.contains(&format!(
+            "<README.md>\n{kept}\n[truncated at {README_BUDGET} chars"
+        )));
     }
 
     #[tokio::test]

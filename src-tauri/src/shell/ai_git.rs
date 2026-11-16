@@ -14,6 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use fleetify_core::text::{prefix_within_bytes, truncate_chars};
 use serde_json::{json, Value};
 
 use crate::shell::git;
@@ -165,6 +166,18 @@ async fn git_out(folder: &Path, args: &[&str], timeout: Duration) -> (bool, Stri
     (rc == 0, out)
 }
 
+/// Cut a diff to at most `max_bytes` for a prompt, marking the cut. The cut
+/// backs off to a character boundary: diffs carry whatever the user's files
+/// contain, and slicing inside a character panics.
+fn cap_diff(diff: String, max_bytes: usize) -> String {
+    let head = prefix_within_bytes(&diff, max_bytes);
+    if head.len() == diff.len() {
+        diff
+    } else {
+        format!("{head}\n…[truncated]")
+    }
+}
+
 // ── generateCommitMessage ───────────────────────────────────────
 pub async fn generate_commit_message(
     folder: String,
@@ -217,10 +230,8 @@ pub async fn generate_commit_message(
             Duration::from_secs(8),
         )
         .await;
-        let truncated = if df_ok && df_out.len() > 30_000 {
-            format!("{}\n…[truncated]", &df_out[..30_000])
-        } else if df_ok {
-            df_out
+        let truncated = if df_ok {
+            cap_diff(df_out, 30_000)
         } else {
             String::new()
         };
@@ -240,7 +251,18 @@ pub async fn generate_commit_message(
     if !ok {
         return json!({ "ok": false, "error": err });
     }
-    // First non-empty trimmed line, strip wrapping quotes, truncate to 72.
+    let message = clean_commit_message(&out);
+    if message.is_empty() {
+        return json!({ "ok": false, "error": format!("{cli} returned an empty message") });
+    }
+    json!({ "ok": true, "message": message })
+}
+
+/// Turn the CLI's raw output into a commit subject: the first non-empty
+/// trimmed line, wrapping quotes stripped, at most 72 characters. The limit
+/// counts characters, not bytes, and never splits one: the subject is often
+/// Turkish.
+fn clean_commit_message(out: &str) -> String {
     let mut message: String = out
         .split('\n')
         .map(|s| s.trim().to_string())
@@ -252,13 +274,8 @@ pub async fn generate_commit_message(
     while message.ends_with('"') || message.ends_with('\'') || message.ends_with('`') {
         message.pop();
     }
-    if message.len() > 72 {
-        message.truncate(72);
-    }
-    if message.is_empty() {
-        return json!({ "ok": false, "error": format!("{cli} returned an empty message") });
-    }
-    json!({ "ok": true, "message": message })
+    truncate_chars(&mut message, 72);
+    message
 }
 
 // ── generatePRSummary ───────────────────────────────────────────
@@ -376,11 +393,7 @@ pub async fn generate_pr_summary(
         diff,
         uncommitted,
     } = ctx;
-    let truncated = if diff.len() > 60_000 {
-        format!("{}\n…[truncated]", &diff[..60_000])
-    } else {
-        diff
-    };
+    let truncated = cap_diff(diff, 60_000);
 
     let prompt = format!(
         "You are drafting a GitHub pull request. Read the diff below and emit STRICT JSON with two keys:\n\
@@ -471,16 +484,8 @@ pub async fn review_diff(
 
     let committed = if cd_ok { cd_out } else { String::new() };
     let working = if wd_ok { wd_out } else { String::new() };
-    let trunc_committed = if committed.len() > 50_000 {
-        format!("{}\n…[truncated]", &committed[..50_000])
-    } else {
-        committed.clone()
-    };
-    let trunc_working = if working.len() > 20_000 {
-        format!("{}\n…[truncated]", &working[..20_000])
-    } else {
-        working.clone()
-    };
+    let trunc_committed = cap_diff(committed, 50_000);
+    let trunc_working = cap_diff(working, 20_000);
 
     if trunc_committed.is_empty() && trunc_working.is_empty() {
         return json!({ "ok": false, "error": format!("No diff to review against {base}.") });
@@ -855,6 +860,49 @@ mod tests {
         assert!(!ctx.uncommitted, "committed range should be used as-is");
         assert!(ctx.diff.contains("export const a = 3"));
         assert!(!ctx.log.trim().is_empty(), "commit log should be populated");
+    }
+
+    /// Regression: Fleetify is Türkiye-first, so AI-written subjects are often
+    /// Turkish. Cutting at byte 72 landed inside a two-byte letter and
+    /// panicked, crashing "generate commit message" and "Create PR".
+    #[test]
+    fn commit_message_keeps_72_characters_of_a_turkish_subject() {
+        let subject =
+            "fix(git): uzun Türkçe commit başlığı kısaltılırken uygulama çökmesin güvenle kes";
+        assert_eq!(subject.chars().count(), 80);
+        assert!(
+            !subject.is_char_boundary(72),
+            "fixture must put byte 72 inside a letter"
+        );
+
+        let message = clean_commit_message(&format!("\n  `{subject}`  \nbody text\n"));
+
+        assert_eq!(message.chars().count(), 72);
+        assert_eq!(
+            message,
+            "fix(git): uzun Türkçe commit başlığı kısaltılırken uygulama çökmesin güv"
+        );
+    }
+
+    /// Diffs carry whatever the user's files contain, Turkish comments
+    /// included, so the prompt budget must not cut through a letter either.
+    #[test]
+    fn diff_cap_never_splits_a_turkish_letter() {
+        let diff = "+// çğış\n".repeat(3000); // 13 bytes a line, 39 000 in all
+        assert!(
+            !diff.is_char_boundary(30_000),
+            "fixture must put byte 30 000 inside a letter"
+        );
+
+        let capped = cap_diff(diff.clone(), 30_000);
+
+        let head = capped
+            .strip_suffix("\n…[truncated]")
+            .expect("cut is marked");
+        // Backs off one byte, to the start of the ı that byte 30 000 is in.
+        assert_eq!(head.len(), 29_999);
+        assert!(diff.starts_with(head));
+        assert_eq!(cap_diff("+kısa\n".to_string(), 30_000), "+kısa\n");
     }
 
     #[test]

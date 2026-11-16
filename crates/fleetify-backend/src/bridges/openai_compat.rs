@@ -226,7 +226,10 @@ impl OpenAICompatBridge {
                 let body = resp.text().await.unwrap_or_default();
                 let _ = tx
                     .send(BridgeEvent::Error {
-                        error: format!("{provider_id} {s}: {}", &body[..body.len().min(400)]),
+                        error: format!(
+                            "{provider_id} {s}: {}",
+                            fleetify_core::text::prefix_within_bytes(&body, 400)
+                        ),
                     })
                     .await;
                 let _ = tx

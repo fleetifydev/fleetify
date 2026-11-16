@@ -259,7 +259,7 @@ impl ToolAdapter for OpenAICompatToolAdapter {
             return Err(anyhow!(
                 "{}: provider returned {status}: {}",
                 self.provider_id,
-                &body[..body.len().min(400)]
+                fleetify_core::text::prefix_within_bytes(&body, 400)
             ));
         }
 
@@ -858,6 +858,36 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("401"));
         assert!(msg.contains("invalid api key"));
+    }
+
+    /// Regression: error bodies are not always ASCII (a localized API
+    /// message, a Turkish proxy page). Cutting one at byte 400 inside a
+    /// letter panicked instead of reporting the error.
+    #[tokio::test]
+    async fn execute_turn_cuts_a_non_ascii_error_body_on_a_character_boundary() {
+        let server = MockServer::start().await;
+        let body = format!("E{}", "ş".repeat(300)); // 601 bytes
+        assert!(
+            !body.is_char_boundary(400),
+            "fixture must put byte 400 inside a letter"
+        );
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(502).set_body_string(body.clone()))
+            .mount(&server)
+            .await;
+
+        let adapter = adapter_for(&server);
+        let history = adapter.init_history("sys", "hi");
+        let (tx, _rx) = mpsc::channel(8);
+
+        let err = adapter
+            .execute_turn(&history, &catalog_v1(), &tx)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("502"));
+        // The body is cut back to the 399 bytes before that letter.
+        assert!(msg.ends_with(&format!(": {}", &body[..399])), "{msg}");
     }
 
     #[tokio::test]

@@ -444,6 +444,17 @@ fn effort_to_claude(effort: &str, model: &str) -> Option<&'static str> {
     }
 }
 
+/// Shorten claude-code's stderr for the dev-terminal log line: at most 2048
+/// bytes, backed off to a character boundary, with the dropped byte count.
+fn stderr_log_preview(t: &str) -> String {
+    let head = fleetify_core::text::prefix_within_bytes(t, 2048);
+    if head.len() < t.len() {
+        format!("{head}…[truncated {}b]", t.len() - head.len())
+    } else {
+        t.to_string()
+    }
+}
+
 /// Drives the `claude` subprocess. `--mcp-config` injection is Phase 4.
 pub struct ClaudeBridge {
     pub session_id: String,
@@ -1107,11 +1118,7 @@ impl ClaudeBridge {
                         // line readable when the upstream returns a huge
                         // JSON body (the renderer still gets the full
                         // string via BridgeEvent::Error for the user).
-                        let preview = if t.len() > 2048 {
-                            format!("{}…[truncated {}b]", &t[..2048], t.len() - 2048)
-                        } else {
-                            t.to_string()
-                        };
+                        let preview = stderr_log_preview(t);
                         tracing::error!(
                             target: "fleetify::bridges::claude",
                             exit_code = code.unwrap_or(-1),
@@ -1159,6 +1166,24 @@ impl ClaudeBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: stderr can quote Turkish text (the prompt, a path, an
+    /// upstream error). A byte-2048 cut inside a letter panicked the task
+    /// that reports the error, so the session never heard about it.
+    #[test]
+    fn stderr_preview_backs_off_to_a_character_boundary() {
+        let t = format!("a{}", "ş".repeat(1500)); // 3001 bytes
+        assert!(
+            !t.is_char_boundary(2048),
+            "fixture must put byte 2048 inside a letter"
+        );
+
+        let preview = stderr_log_preview(&t);
+
+        // Keeps 2047 bytes and reports the 954 it dropped.
+        assert_eq!(preview, format!("{}…[truncated 954b]", &t[..2047]));
+        assert_eq!(stderr_log_preview("kısa hata"), "kısa hata");
+    }
 
     #[test]
     fn send_message_accepts_bridge_context() {

@@ -166,7 +166,10 @@ impl PerplexityBridge {
                 let body = resp.text().await.unwrap_or_default();
                 let _ = tx
                     .send(BridgeEvent::Error {
-                        error: format!("perplexity {s}: {}", &body[..body.len().min(400)]),
+                        error: format!(
+                            "perplexity {s}: {}",
+                            fleetify_core::text::prefix_within_bytes(&body, 400)
+                        ),
                     })
                     .await;
                 let _ = tx

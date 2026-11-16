@@ -531,8 +531,10 @@ fn push_hit(
         return;
     }
     seen.insert(url.to_string());
-    let ctx_start = start.saturating_sub(60);
-    let ctx_end = std::cmp::min(content.len(), end + 60);
+    // ~60 bytes either side, each edge backed off to a character boundary:
+    // slicing inside a multi-byte letter panics. Past the end clamps to len.
+    let ctx_start = content.floor_char_boundary(start.saturating_sub(60));
+    let ctx_end = content.floor_char_boundary(end + 60);
     let context: String = content[ctx_start..ctx_end]
         .chars()
         .map(|c| if c == '\n' { ' ' } else { c })
@@ -593,3 +595,30 @@ fn _ensure_write_in_scope() {
 }
 
 // (base64 is a direct dep — pinned in Cargo.toml. No marker needed.)
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: each hit's context window reaches 60 bytes either side
+    /// of the URL, and a window edge inside a multi-byte letter panicked.
+    /// Fetched bundles are full of Turkish, CJK and emoji string literals.
+    #[test]
+    fn find_endpoints_context_never_splits_a_letter() {
+        let url = "https://api.example.com/v1/items";
+        let content = format!("{}a{url} {}", "ş".repeat(40), "ğ".repeat(40));
+        let start = content.find(url).unwrap();
+        let end = start + url.len();
+        assert!(
+            !content.is_char_boundary(start - 60) && !content.is_char_boundary(end + 60),
+            "fixture must put both window edges inside a letter"
+        );
+
+        let out = find_endpoints(json!({ "content": content })).unwrap();
+
+        assert_eq!(out["count"], 1);
+        assert_eq!(out["endpoints"][0]["url"], url);
+        let context = out["endpoints"][0]["context"].as_str().unwrap();
+        assert!(context.contains(url), "{context}");
+    }
+}
