@@ -7,6 +7,7 @@ import { SetupScreen } from "@/components/onboarding/setup-screen";
 import { useAppStore } from "@/stores/app-store";
 import { usePluginStore } from "@/stores/plugin-store";
 import { clearToken, type AuthUser } from "@/lib/api";
+import { handleAuthEvent } from "@/lib/auth-events";
 import { identifyUser, initPostHog, pageview } from "@/lib/posthog";
 import { isIntroComplete } from "@/lib/onboarding-gate";
 
@@ -223,12 +224,14 @@ export function App() {
       setScreen("splash");
     });
 
-    const off = window.fleetify.onAuthEvent((event) => {
-      if (event.kind === "signed-out") {
-        clearToken();
-        setScreen("welcome");
-      }
-    });
+    const off = window.fleetify.onAuthEvent((event) =>
+      handleAuthEvent(event, {
+        onSignedOut: () => {
+          clearToken();
+          setScreen("welcome");
+        },
+      }),
+    );
     return off;
   }, []);
 

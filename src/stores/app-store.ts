@@ -281,6 +281,10 @@ interface AppState {
   pendingGeneration: PendingGeneration | null;
   newAgentDialogOpen: boolean;
   fleetAutoMode: boolean;
+  /** The shell could not save the sign-in to the OS keychain (shell auth
+   *  event `keychain-unavailable`): this session works, but the next launch
+   *  starts signed out. Drives <KeychainWarningBanner />. In memory only. */
+  keychainWarning: boolean;
   _removedIds: Set<string>;
   /** Compose surface state — see ComposerState docs. `open: false` means
    *  the user is either on the Control Center (`activeSessionId === null`)
@@ -347,6 +351,7 @@ interface AppState {
   setMainView: (view: MainView) => void;
   setAppMode: (mode: AppMode) => void;
   setNewAgentDialogOpen: (open: boolean) => void;
+  setKeychainWarning: (v: boolean) => void;
   /** Open the compose surface — pure client-side, no DB write, no
    *  Session entry in `sessions[]`. Sets `composer.open = true` and
    *  `activeSessionId = null`; chat-view detects the combination and
@@ -455,6 +460,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   pendingGeneration: null,
   newAgentDialogOpen: false,
   fleetAutoMode: localStorage.getItem("fleet:autoMode") === "true",
+  keychainWarning: false,
   composer: {
     open: false,
     projectPath: "",
@@ -886,6 +892,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setPendingGeneration: (p) => set({ pendingGeneration: p }),
   clearPendingGeneration: () => set({ pendingGeneration: null }),
   setNewAgentDialogOpen: (open) => set({ newAgentDialogOpen: open }),
+  setKeychainWarning: (v) => set({ keychainWarning: v }),
   // ── Composer state (new) ──
   // The compose surface is NOT a session. Opening it sets composer.open
   // and clears activeSessionId; chat-view renders the welcome / folder

@@ -6,6 +6,7 @@ import { RightPanelWrapper } from "./right-panel-wrapper";
 import { NewAgentView } from "@/components/agent/new-agent-dialog";
 import { FirstLaunchTour } from "@/components/onboarding/first-launch-tour";
 import { WindowsTitleBar } from "./windows-title-bar";
+import { KeychainWarningBanner } from "./keychain-warning-banner";
 import { StudioSession } from "@/components/studio/StudioSession";
 import { StudioComposer } from "@/components/studio/StudioComposer";
 import { isStudioTool } from "@/lib/studio-tools";
@@ -437,6 +438,10 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
       {/* Windows-only custom title bar — full width, sits above the
           sidebar/chat/right-panel grid. macOS renders nothing here. */}
       <WindowsTitleBar />
+
+      {/* Full-width warning when the sign-in could not be saved to the OS
+          keychain; renders nothing otherwise. */}
+      <KeychainWarningBanner />
 
       <div style={{
         display: "flex",

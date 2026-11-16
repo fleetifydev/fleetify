@@ -159,9 +159,25 @@ fn keyring_entry() -> keyring::Result<keyring::Entry> {
 fn keyring_get() -> Option<String> {
     keyring_entry().ok().and_then(|e| e.get_password().ok())
 }
-fn keyring_set(v: &str) {
-    if let Ok(e) = keyring_entry() {
-        let _ = e.set_password(v);
+fn keyring_set(v: &str) -> keyring::Result<()> {
+    keyring_entry()?.set_password(v)
+}
+
+/// Auth event for a refresh token that could not be saved; the renderer
+/// shows a warning banner on it.
+fn keychain_failure_event() -> serde_json::Value {
+    serde_json::json!({"kind": "keychain-unavailable"})
+}
+
+/// Saves the refresh token so the next launch starts signed in. When the
+/// keychain refuses it (Linux without an unlocked Secret Service, a
+/// dismissed unlock prompt), sign-in still succeeds for this session (the
+/// access token is cached in-process), but the next launch would silently
+/// start signed out: log it and tell the renderer.
+fn save_refresh_token(token: &str) {
+    if let Err(e) = keyring_set(token) {
+        tracing::warn!(error = %e, "could not save the refresh token to the system keychain");
+        emit_event(keychain_failure_event());
     }
 }
 fn keyring_del() {
@@ -344,7 +360,7 @@ pub async fn sign_in() -> Result<Tokens, AuthError> {
         .map_err(|e| AuthError::new(e.to_string(), "auth"))?;
     let tokens = decode_token_response(r).await?;
     *cached().lock().unwrap() = Some(tokens.clone());
-    keyring_set(&tokens.refresh_token);
+    save_refresh_token(&tokens.refresh_token);
     Ok(tokens)
 }
 
@@ -390,7 +406,7 @@ pub async fn refresh_if_needed(force: bool) -> Result<Tokens, AuthError> {
         .map_err(|e| AuthError::new(e.to_string(), "auth"))?;
     let tokens = decode_token_response(r).await?;
     *cached().lock().unwrap() = Some(tokens.clone());
-    keyring_set(&tokens.refresh_token);
+    save_refresh_token(&tokens.refresh_token);
     emit_event(serde_json::json!({"kind":"refreshed","expiresAt":tokens.expires_at}));
     Ok(tokens)
 }
@@ -525,5 +541,15 @@ mod tests {
         let backend = fleetify_backend::auth::AuthConfig::from_env();
         assert_eq!(auth_base(), backend.auth_base);
         assert_eq!(resource(), backend.expected_audience);
+    }
+
+    /// The renderer raises its keychain warning banner on exactly this
+    /// payload (`src/lib/auth-events.ts`).
+    #[test]
+    fn keychain_failure_event_is_the_payload_the_renderer_handles() {
+        assert_eq!(
+            keychain_failure_event(),
+            serde_json::json!({"kind": "keychain-unavailable"})
+        );
     }
 }
