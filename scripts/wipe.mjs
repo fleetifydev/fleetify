@@ -19,18 +19,20 @@
  *                                             ~/.cache, which is just cache).
  *   3. OS credential store         — every entry whose service is `Fleetify`
  *                                    or `Fleetify-*` (OIDC refresh token,
- *                                    `Fleetify-GitHub`, `Fleetify-Provider-<id>`,
+ *                                    `Fleetify-GitHub`, `Fleetify-Voice`,
+ *                                    `Fleetify-Provider-<id>`,
  *                                    `Fleetify-Router-<id>`). Backend differs by
  *                                    OS: macOS Keychain (`security`), Windows
  *                                    Credential Manager (`cmdkey`), and on Linux
- *                                    the KERNEL keyring (linux-keyutils) cleared
- *                                    via the `fleet-wipe` helper — secret-tool
- *                                    targets the Secret Service, the wrong store.
+ *                                    the Secret Service (GNOME Keyring, KWallet,
+ *                                    ...) cleared via the `fleet-wipe` helper,
+ *                                    which also sweeps the kernel keyring that
+ *                                    builds before the Secret Service used.
  *
  * Idempotent: missing paths are skipped silently. Logs every action so
  * you can audit what was touched.
  *
- * Pass `--keep-keychain` to skip step 4 (useful when you want to reset
+ * Pass `--keep-keychain` to skip step 3 (useful when you want to reset
  * onboarding state without re-running OAuth).
  */
 
@@ -46,7 +48,6 @@ import { fileURLToPath } from "node:url";
 import {
   isFleetifyKeychainTarget,
   parseMacKeychainDump,
-  parseSecretToolDump,
 } from "./wipe/keychain-filter.mjs";
 
 const ARGS = new Set(process.argv.slice(2));
@@ -249,43 +250,18 @@ function wipeKeychainMac() {
   }
 }
 
+// Linux — the app's `keyring` crate keeps credentials in the Secret Service
+// (GNOME Keyring, KWallet, ...). We shell out to the `fleet-wipe` Rust helper:
+// it deletes every Secret Service item keyring created whose service is
+// `Fleetify` / `Fleetify-*` (the OIDC refresh token plus GitHub / voice /
+// provider / router keys), and invalidates the `keyring-rs:*@Fleetify*` keys
+// that builds before the Secret Service store left in the kernel keyring. No
+// secret-tool needed. fleet-wipe exits non-zero when its Secret Service sweep
+// fails (unreachable, left locked, or an item can't be deleted).
 function wipeKeychainLinux() {
-  // `secret-tool search --all` lists every secret with attributes;
-  // we never look at the secret value, only `attribute.service`.
-  const dump = spawnSync("secret-tool", ["search", "--all"], { encoding: "utf8" });
-  if (dump.status !== 0) {
-    // Missing secret-tool is the common fresh-install case — log,
-    // don't error.
-    console.log("  · keychain               skip       secret-tool unavailable (status", dump.status, ")");
-    return;
-  }
-  const services = parseSecretToolDump(dump.stdout);
-  if (services.length === 0) {
-    console.log("  · keychain               skip       no Fleetify* services found");
-    return;
-  }
-  for (const service of services) {
-    const r = spawnSync("secret-tool", ["clear", "service", service], { encoding: "utf8" });
-    if (r.status === 0) {
-      console.log(`  ✓ keychain               cleared    service=${service}`);
-    } else {
-      console.log(`  ✗ keychain               FAILED     service=${service}`);
-      if (r.stderr) console.log(`    ${r.stderr.trim()}`);
-    }
-  }
-}
-
-// Linux kernel keyring (linux-keyutils) — the store the app's `keyring` crate
-// ACTUALLY uses on Linux (verified: `/proc/keys` holds
-// `keyring-rs:refresh_token@Fleetify`). secret-tool / the Secret Service never
-// see these keys, which is why a wipe left the user signed in. We shell out to
-// the `fleet-wipe` Rust helper — it links the same backend the app does and
-// invalidates every `keyring-rs:*@Fleetify*` key (the OIDC refresh token plus
-// provider / github / router keys).
-function wipeKeychainLinuxKernel() {
   const run = spawnSync("cargo", ["run", "-q", "-p", "fleet-wipe"], { encoding: "utf8" });
   if (run.error) {
-    console.log("  ✗ keychain (kernel)      FAILED     could not run fleet-wipe via cargo");
+    console.log("  ✗ keychain               FAILED     could not run fleet-wipe via cargo");
     console.log(`    ${run.error.message}`);
     console.log("    The OIDC refresh token may persist — install Rust/cargo, then re-run `npm run wipe`.");
     return;
@@ -294,9 +270,9 @@ function wipeKeychainLinuxKernel() {
     if (line.trim()) console.log(`    ${line.trimEnd()}`);
   }
   if (run.status === 0) {
-    console.log("  ✓ keychain (kernel)      cleared    via fleet-wipe (linux-keyutils)");
+    console.log("  ✓ keychain               cleared    via fleet-wipe (Secret Service + kernel keyring)");
   } else {
-    console.log("  ✗ keychain (kernel)      FAILED     fleet-wipe exited", run.status);
+    console.log("  ✗ keychain               FAILED     fleet-wipe exited", run.status);
     if (run.stderr) console.log(`    ${run.stderr.trim()}`);
   }
 }
@@ -320,11 +296,8 @@ if (KEEP_KEYCHAIN) {
 } else if (plat === "darwin") {
   wipeKeychainMac();
 } else {
-  // Linux: the app's keyring backend is the KERNEL keyring (linux-keyutils),
-  // which secret-tool can't reach — clear it via the fleet-wipe helper. Still
-  // run secret-tool too (harmless) in case an older build wrote to the Secret
-  // Service.
-  wipeKeychainLinuxKernel();
+  // Linux: fleet-wipe clears the Secret Service (the app's keyring store) and
+  // the kernel keyring older builds used.
   wipeKeychainLinux();
 }
 

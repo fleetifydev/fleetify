@@ -5,12 +5,21 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# Linux: builds before the Secret Service store kept credentials in the
-# KERNEL keyring (keyring crate's linux-keyutils backend), which `secret-tool`
-# can't see. We enumerate it directly and invalidate leftover Fleetify keys.
-# Secret Service items are not cleared here.
+# Linux: the app keeps credentials in the Secret Service (keyring crate's
+# linux-native-sync-persistent store). We search it with dbus-secret-service,
+# the crate and version keyring itself uses, and delete Fleetify items. Builds
+# before that store kept credentials in the KERNEL keyring (keyring crate's
+# linux-keyutils backend), which `secret-tool` can't see; we still enumerate it
+# and invalidate leftover Fleetify keys.
 [target.'cfg(target_os = "linux")'.dependencies]
+dbus-secret-service = { version = "4.1", features = ["crypto-rust"] }
 linux-keyutils = "0.2"
+
+# The Secret Service test stores its throwaway item through keyring, the way
+# the app does, so a keyring upgrade that changes item attributes fails it.
+# Keep version and features in step with src-tauri and fleetify-backend.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native-sync-persistent", "crypto-rust"] }
 
 # macOS (Keychain) / Windows (Credential Manager): delete the fixed login
 # entry via the same `keyring` crate the app uses, as a belt-and-suspenders to
