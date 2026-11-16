@@ -10,6 +10,7 @@
  */
 import { useEffect, useState } from "react";
 import { CardShell, Row, Toggle } from "./_primitives";
+import { saveConfigPatch } from "./_config";
 
 interface UpdatesCfg {
   updatesAuto?: boolean;
@@ -18,7 +19,6 @@ interface UpdatesCfg {
 
 type ElectronShim = {
   getConfig?: () => Promise<UpdatesCfg | null>;
-  setConfig?: (cfg: UpdatesCfg) => Promise<unknown>;
 };
 function electron(): ElectronShim {
   return (window as unknown as { electronAPI?: ElectronShim }).electronAPI ?? {};
@@ -48,9 +48,8 @@ export function UpdatesCard() {
   }, []);
 
   const patch = async (next: Partial<UpdatesCfg>) => {
-    const merged = { ...cfg, ...next };
-    setCfg(merged);
-    try { await electron().setConfig?.(merged); } catch { /* best effort */ }
+    setCfg(prev => ({ ...prev, ...next }));
+    try { await saveConfigPatch(next); } catch { /* best effort */ }
   };
 
   if (!loaded) {

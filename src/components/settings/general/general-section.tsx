@@ -1,16 +1,17 @@
 /**
- * General section composer — renders the four Settings → General cards
+ * General section composer — renders the five Settings → General cards
  * in their canonical order under quiet uppercase section headers:
  *
- *   Startup → Notifications → Updates → Privacy
+ *   Startup → Notifications → Updates → Privacy → Attribution
  *
  * Each card owns its own persistence; this file is purely visual
- * arrangement. Adding a fifth card is a one-import addition.
+ * arrangement. Adding another card is a one-import addition.
  */
 import { StartupCard } from "./startup-card";
 import { NotificationsCard } from "./notifications-card";
 import { UpdatesCard } from "./updates-card";
 import { PrivacyCard } from "./privacy-card";
+import { AttributionCard } from "./attribution-card";
 
 const sectionHeader: React.CSSProperties = {
   fontSize: 10.5, fontWeight: 600, letterSpacing: "0.10em",
@@ -34,6 +35,9 @@ export function GeneralSection() {
 
       <div style={sectionHeader}>Privacy</div>
       <PrivacyCard />
+
+      <div style={sectionHeader}>Attribution</div>
+      <AttributionCard />
     </>
   );
 }

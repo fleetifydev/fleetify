@@ -132,6 +132,11 @@ interface FleetConfig {
   telemetryEnabled?: boolean;
   /** Crash report opt-out. Default true (opt-in by install). */
   crashReportsEnabled?: boolean;
+  /** Credit Fleetify in the commits it makes (`Co-Authored-By: Fleetify`
+   *  trailer) and the pull requests it opens (footer). Default true;
+   *  anything but `false` counts as on. Read by the shell on every
+   *  Create-PR. Settings → General → Attribution. */
+  gitAttribution?: boolean;
 }
 
 interface Window {

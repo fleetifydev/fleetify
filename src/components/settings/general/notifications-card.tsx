@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Volume2 } from "lucide-react";
 import { CardShell, Row, Toggle } from "./_primitives";
+import { saveConfigPatch } from "./_config";
 
 interface NotificationsCfg {
   notificationsEnabled?: boolean;
@@ -25,7 +26,6 @@ interface NotificationsCfg {
 
 type ElectronShim = {
   getConfig?: () => Promise<NotificationsCfg | null>;
-  setConfig?: (cfg: NotificationsCfg) => Promise<unknown>;
 };
 function electron(): ElectronShim {
   return (window as unknown as { electronAPI?: ElectronShim }).electronAPI ?? {};
@@ -83,9 +83,8 @@ export function NotificationsCard() {
   }, []);
 
   const patch = async (next: Partial<NotificationsCfg>) => {
-    const merged = { ...cfg, ...next };
-    setCfg(merged);
-    try { await electron().setConfig?.(merged); } catch { /* best effort */ }
+    setCfg(prev => ({ ...prev, ...next }));
+    try { await saveConfigPatch(next); } catch { /* best effort */ }
   };
 
   const master = cfg.notificationsEnabled ?? true;

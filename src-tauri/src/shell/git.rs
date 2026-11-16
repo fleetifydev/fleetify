@@ -776,20 +776,35 @@ pub async fn open_pr(folder: &Path, pr_number: Option<i64>) -> Value {
 }
 
 // ── Fleetify attribution helpers ─────────────────────────────────
+// `enabled` is the user's Settings → General → Attribution choice (config
+// key `gitAttribution`, on by default), read once per IPC command. When it is
+// off, both helpers return the trimmed input unchanged.
 const FLEETIFY_CO_AUTHOR: &str = "Co-Authored-By: Fleetify <noreply@fleetify.dev>";
 const FLEETIFY_PR_FOOTER: &str = "\n\n---\nCreated with [Fleetify](https://fleetify.dev)";
 
-fn with_fleetify_trailer(message: &str) -> String {
+/// True when `message` already has a `Co-Authored-By: Fleetify <…>` trailer,
+/// matched case-insensitively on the key and name whatever the address, so a
+/// commit never credits Fleetify twice.
+fn has_fleetify_co_author(message: &str) -> bool {
+    message.lines().any(|line| {
+        line.trim_start()
+            .to_ascii_lowercase()
+            .strip_prefix("co-authored-by:")
+            .is_some_and(|rest| rest.trim_start().starts_with("fleetify <"))
+    })
+}
+
+fn with_fleetify_trailer(message: &str, enabled: bool) -> String {
     let trimmed = message.trim_end();
-    if trimmed.contains("Fleetify <noreply@fleetify.dev>") {
+    if !enabled || has_fleetify_co_author(trimmed) {
         return trimmed.to_string();
     }
     format!("{trimmed}\n\n{FLEETIFY_CO_AUTHOR}")
 }
 
-fn with_fleetify_footer(body: &str) -> String {
+fn with_fleetify_footer(body: &str, enabled: bool) -> String {
     let trimmed = body.trim_end();
-    if trimmed.contains("fleetify.dev") || trimmed.contains("github.com/fleetifyai") {
+    if !enabled || trimmed.contains("fleetify.dev") || trimmed.contains("github.com/fleetifyai") {
         return trimmed.to_string();
     }
     format!("{trimmed}{FLEETIFY_PR_FOOTER}")
@@ -870,7 +885,9 @@ fn write_gitignore_if_missing(folder: &Path) -> bool {
 // `localStorage["fleet:github-auth-method"]` so the onboarding choice is
 // honoured exactly — picking "Use GitHub CLI" never silently routes
 // through OAuth, and vice versa.
-// 8 args is one over the default 7; refactor to a struct is out of scope for this cleanup.
+// `attribution` is the user's `gitAttribution` setting: whether the commits
+// this flow makes (both paths) and the PR footer (gh path) credit Fleetify.
+// 9 args is two over the default 7; refactor to a struct is out of scope for this cleanup.
 #[allow(clippy::too_many_arguments)]
 pub async fn create_pr(
     folder: &Path,
@@ -881,6 +898,7 @@ pub async fn create_pr(
     feature_branch: Option<&str>,
     tool: Option<&str>,
     method: Option<&str>,
+    attribution: bool,
 ) -> Value {
     let want_gh = matches!(method, Some("gh") | Some("cli"));
     let want_oauth = matches!(method, Some("oauth") | Some("link"));
@@ -914,7 +932,17 @@ pub async fn create_pr(
             });
         }
         tracing::info!(target: "createPR", "dispatch-gh (requested)");
-        return create_pr_via_gh(folder, title, body, base, draft, feature_branch, tool).await;
+        return create_pr_via_gh(
+            folder,
+            title,
+            body,
+            base,
+            draft,
+            feature_branch,
+            tool,
+            attribution,
+        )
+        .await;
     }
     if want_oauth {
         let Some(token) = oauth_token else {
@@ -925,7 +953,8 @@ pub async fn create_pr(
             });
         };
         tracing::info!(target: "createPR", "dispatch-link (requested)");
-        let preflight = ensure_repo_for_link(folder, title, base, feature_branch, tool).await;
+        let preflight =
+            ensure_repo_for_link(folder, title, base, feature_branch, tool, attribution).await;
         if let Some(err) = preflight {
             return err;
         }
@@ -943,11 +972,22 @@ pub async fn create_pr(
     // No preference — legacy gh-first then link fallback.
     if gh_authed {
         tracing::info!(target: "createPR", "dispatch-gh (fallback)");
-        return create_pr_via_gh(folder, title, body, base, draft, feature_branch, tool).await;
+        return create_pr_via_gh(
+            folder,
+            title,
+            body,
+            base,
+            draft,
+            feature_branch,
+            tool,
+            attribution,
+        )
+        .await;
     }
     if let Some(token) = oauth_token {
         tracing::info!(target: "createPR", "dispatch-link (fallback)");
-        let preflight = ensure_repo_for_link(folder, title, base, feature_branch, tool).await;
+        let preflight =
+            ensure_repo_for_link(folder, title, base, feature_branch, tool, attribution).await;
         if let Some(err) = preflight {
             return err;
         }
@@ -980,6 +1020,7 @@ async fn ensure_repo_for_link(
     base: Option<&str>,
     feature_branch: Option<&str>,
     tool: Option<&str>,
+    attribution: bool,
 ) -> Option<Value> {
     let _ = (title, base);
     if !folder.exists() {
@@ -1084,7 +1125,7 @@ async fn ensure_repo_for_link(
                 Duration::from_secs(10),
             )
             .await;
-            let baseline_msg = with_fleetify_trailer("chore: initialize repository");
+            let baseline_msg = with_fleetify_trailer("chore: initialize repository", attribution);
             let (rc, _, err) = run(
                 "git",
                 &["commit", "--allow-empty", "-m", &baseline_msg],
@@ -1125,7 +1166,7 @@ async fn ensure_repo_for_link(
                 Duration::from_secs(10),
             )
             .await;
-            let baseline_msg = with_fleetify_trailer("chore: initialize repository");
+            let baseline_msg = with_fleetify_trailer("chore: initialize repository", attribution);
             let (rc, _, err) = run(
                 "git",
                 &["commit", "--allow-empty", "-m", &baseline_msg],
@@ -1192,7 +1233,7 @@ async fn ensure_repo_for_link(
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .unwrap_or_else(|| "Working session updates".to_string());
-        let commit_msg = with_fleetify_trailer(&msg);
+        let commit_msg = with_fleetify_trailer(&msg, attribution);
         let (rc, _, err) = run(
             "git",
             &["commit", "-m", &commit_msg],
@@ -1217,7 +1258,9 @@ async fn ensure_repo_for_link(
 /// PR-summary fallback when body is empty, and finally invokes
 /// `gh pr create`. Every step gets a trace line in the error message
 /// and a tracing breadcrumb so the user can diagnose without log
-/// spelunking.
+/// spelunking. `attribution` gates the Fleetify commit trailer and PR footer.
+// 8 args is one over the default 7; refactor to a struct is out of scope for this cleanup.
+#[allow(clippy::too_many_arguments)]
 pub async fn create_pr_via_gh(
     folder: &Path,
     title: &str,
@@ -1226,6 +1269,7 @@ pub async fn create_pr_via_gh(
     draft: bool,
     feature_branch: Option<&str>,
     tool: Option<&str>,
+    attribution: bool,
 ) -> Value {
     const HANDLER_VERSION: &str = "rust-v1-2026-05-20";
     if title.trim().is_empty() {
@@ -1412,7 +1456,7 @@ pub async fn create_pr_via_gh(
                 Duration::from_secs(10),
             )
             .await;
-            let baseline_msg = with_fleetify_trailer("chore: initialize repository");
+            let baseline_msg = with_fleetify_trailer("chore: initialize repository", attribution);
             let (rc, _, err) = run(
                 "git",
                 &["commit", "--allow-empty", "-m", &baseline_msg],
@@ -1441,7 +1485,7 @@ pub async fn create_pr_via_gh(
             // static "Initial commit").
         } else {
             let (_, _, _) = run("git", &["add", "-A"], folder, Duration::from_secs(120)).await;
-            let init_msg = with_fleetify_trailer("Initial commit");
+            let init_msg = with_fleetify_trailer("Initial commit", attribution);
             let (rc, _, err) = run(
                 "git",
                 &["commit", "--allow-empty", "-m", &init_msg],
@@ -1499,7 +1543,7 @@ pub async fn create_pr_via_gh(
                 Duration::from_secs(10),
             )
             .await;
-            let baseline_msg = with_fleetify_trailer("chore: initialize repository");
+            let baseline_msg = with_fleetify_trailer("chore: initialize repository", attribution);
             let (rc, _, err) = run(
                 "git",
                 &["commit", "--allow-empty", "-m", &baseline_msg],
@@ -1608,7 +1652,7 @@ pub async fn create_pr_via_gh(
             _ => "Working session updates".to_string(),
         };
         note("commit message", true, &msg);
-        let commit_msg = with_fleetify_trailer(&msg);
+        let commit_msg = with_fleetify_trailer(&msg, attribution);
         let (rc, _, err) = run(
             "git",
             &["commit", "-m", &commit_msg],
@@ -1849,7 +1893,7 @@ pub async fn create_pr_via_gh(
         }
     }
 
-    let body_with_footer = with_fleetify_footer(&final_body);
+    let body_with_footer = with_fleetify_footer(&final_body, attribution);
 
     // 7. gh pr create.
     let mut args: Vec<String> = vec![
@@ -2688,6 +2732,48 @@ mod tests {
     }
 
     #[test]
+    fn trailer_added_when_enabled() {
+        assert_eq!(
+            with_fleetify_trailer("feat: x", true),
+            "feat: x\n\nCo-Authored-By: Fleetify <noreply@fleetify.dev>"
+        );
+    }
+
+    #[test]
+    fn trailer_skipped_when_disabled() {
+        assert_eq!(with_fleetify_trailer("feat: x\n", false), "feat: x");
+    }
+
+    #[test]
+    fn trailer_not_duplicated_when_any_fleetify_coauthor_is_present() {
+        let m = "feat: x\n\nCo-authored-by: Fleetify <noreply@fleetify.dev>";
+        assert_eq!(with_fleetify_trailer(m, true), m);
+    }
+
+    #[test]
+    fn trailer_dedupe_ignores_case_and_address() {
+        // Any existing Fleetify co-author line counts, whatever its casing or
+        // address, so a commit never ends up crediting Fleetify twice.
+        let lower = "feat: x\n\nco-authored-by: fleetify <noreply@fleetify.dev>";
+        assert_eq!(with_fleetify_trailer(lower, true), lower);
+        let other = "feat: x\n\nCo-Authored-By: Fleetify <older identity>";
+        assert_eq!(with_fleetify_trailer(other, true), other);
+    }
+
+    #[test]
+    fn footer_skipped_when_disabled() {
+        assert_eq!(with_fleetify_footer("body", false), "body");
+    }
+
+    #[test]
+    fn footer_added_when_enabled() {
+        assert_eq!(
+            with_fleetify_footer("body\n", true),
+            "body\n\n---\nCreated with [Fleetify](https://fleetify.dev)"
+        );
+    }
+
+    #[test]
     fn dedupe_ids_keeps_first_order() {
         assert_eq!(dedupe_ids(&[3, 1, 3, 2, 1]), vec![3, 1, 2]);
         assert_eq!(dedupe_ids(&[]), Vec::<u64>::new());
@@ -3185,6 +3271,7 @@ mod tests {
             Some("main"),
             Some("fleet/x-ab12"),
             None,
+            true,
         )
         .await;
         assert!(res.is_none(), "bootstrap should succeed: {res:?}");
@@ -3209,6 +3296,41 @@ mod tests {
             current_branch_str(tmp.path()).await.as_deref(),
             Some("fleet/x-ab12")
         );
+    }
+
+    /// The link-path bootstrap commits honour the attribution setting: the
+    /// baseline commit credits Fleetify only while attribution is on.
+    #[tokio::test]
+    async fn link_bootstrap_trailer_follows_attribution_setting() {
+        if !git_available() {
+            return;
+        }
+        for attribution in [true, false] {
+            let tmp = tempfile::tempdir().unwrap();
+            // Skip if an ancestor repo would mask our fresh-init state.
+            if fleetify_backend::services::worktree::is_git_repo(&tmp.path().to_string_lossy())
+                .await
+            {
+                return;
+            }
+            let res = ensure_repo_for_link(
+                tmp.path(),
+                "My Feature",
+                Some("main"),
+                Some("fleet/x-ab12"),
+                None,
+                attribution,
+            )
+            .await;
+            assert!(res.is_none(), "bootstrap should succeed: {res:?}");
+            let (_, log, _) = git(&["log", "--all", "--format=%B"], tmp.path()).await;
+            assert_eq!(
+                log.to_ascii_lowercase()
+                    .contains("co-authored-by: fleetify <"),
+                attribution,
+                "attribution={attribution}, commit messages: {log:?}"
+            );
+        }
     }
 
     #[tokio::test]

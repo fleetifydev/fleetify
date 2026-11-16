@@ -15,6 +15,7 @@
 import { useEffect, useState } from "react";
 import { Folder, X } from "lucide-react";
 import { CardShell, Row, Toggle } from "./_primitives";
+import { saveConfigPatch } from "./_config";
 
 interface FleetCfgShim {
   defaultFolder?: string;
@@ -24,7 +25,6 @@ interface FleetCfgShim {
 
 type ElectronShim = {
   getConfig?: () => Promise<FleetCfgShim | null>;
-  setConfig?: (cfg: FleetCfgShim) => Promise<unknown>;
   openFolderDialog?: () => Promise<string | null>;
 };
 function electron(): ElectronShim {
@@ -45,9 +45,8 @@ export function StartupCard() {
   }, []);
 
   const patch = async (next: Partial<FleetCfgShim>) => {
-    const merged = { ...cfg, ...next };
-    setCfg(merged);
-    try { await electron().setConfig?.(merged); } catch { /* best effort */ }
+    setCfg(prev => ({ ...prev, ...next }));
+    try { await saveConfigPatch(next); } catch { /* best effort */ }
   };
 
   const launchOnStartup = cfg.launchOnStartup ?? false;

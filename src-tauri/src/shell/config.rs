@@ -154,6 +154,16 @@ pub fn providers_set(cfg: &mut Value, providers: &ProvidersConfig) {
     }
 }
 
+/// Whether the commits and pull requests the app makes credit Fleetify (a
+/// `Co-Authored-By` trailer and a PR footer). Settings → General →
+/// Attribution writes the flat `gitAttribution` key; absent or non-boolean
+/// means on, the default.
+pub fn git_attribution_from(cfg: &Value) -> bool {
+    cfg.get("gitAttribution")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
+
 /// PostHog product-analytics opt-in. Default `posthog_enabled` is `false` —
 /// flipped only by explicit user consent in the onboarding step or in
 /// Settings → Privacy. `posthog_enabled_at` records the first opt-in
@@ -394,6 +404,34 @@ mod tests {
     #[test]
     fn providers_default_cloudflare_account_id_is_none() {
         assert!(ProvidersConfig::default().cloudflare_account_id.is_none());
+    }
+
+    #[test]
+    fn attribution_defaults_on() {
+        assert!(git_attribution_from(&json!({})));
+    }
+
+    #[test]
+    fn attribution_respects_false() {
+        assert!(!git_attribution_from(&json!({"gitAttribution": false})));
+    }
+
+    #[test]
+    fn attribution_ignores_non_boolean_values() {
+        assert!(git_attribution_from(&json!({"gitAttribution": "false"})));
+        assert!(git_attribution_from(&json!({"gitAttribution": 0})));
+        assert!(git_attribution_from(&json!({"gitAttribution": null})));
+    }
+
+    #[test]
+    fn attribution_opt_out_survives_save_and_reload() {
+        let tmp = tempfile::tempdir().unwrap();
+        save_config_to(
+            tmp.path(),
+            &json!({"theme": "dark", "gitAttribution": false}),
+        )
+        .unwrap();
+        assert!(!git_attribution_from(&load_config_from(tmp.path())));
     }
 
     #[test]

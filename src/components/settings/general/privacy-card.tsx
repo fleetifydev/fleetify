@@ -14,6 +14,7 @@
  */
 import { useEffect, useState } from "react";
 import { CardShell, Row, Toggle } from "./_primitives";
+import { saveConfigPatch } from "./_config";
 import { optIn, optOut } from "@/lib/posthog";
 
 interface PrivacyCfg {
@@ -23,7 +24,6 @@ interface PrivacyCfg {
 
 type ElectronShim = {
   getConfig?: () => Promise<PrivacyCfg | null>;
-  setConfig?: (cfg: PrivacyCfg) => Promise<unknown>;
   telemetryGetConfig?: () => Promise<{ distinct_id: string; posthog_enabled: boolean }>;
   telemetrySetPosthogEnabled?: (enabled: boolean) => Promise<unknown>;
 };
@@ -58,9 +58,8 @@ export function PrivacyCard() {
   }, []);
 
   const patch = async (next: Partial<PrivacyCfg>) => {
-    const merged = { ...cfg, ...next };
-    setCfg(merged);
-    try { await electron().setConfig?.(merged); } catch { /* best effort */ }
+    setCfg(prev => ({ ...prev, ...next }));
+    try { await saveConfigPatch(next); } catch { /* best effort */ }
   };
 
   const togglePosthog = async (next: boolean) => {

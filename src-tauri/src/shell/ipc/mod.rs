@@ -1557,10 +1557,11 @@ pub async fn git_open_pr(folder: String, pr_number: Option<i64>) -> serde_json::
 /// link only, omitted → legacy gh-first / link-fallback. Renderer
 /// pulls the value from `localStorage["fleet:github-auth-method"]`
 /// so the onboarding choice is honoured exactly.
-// 8 args is one over the default 7; refactor to a struct is out of scope for this cleanup.
+// 9 args is two over the default 7; refactor to a struct is out of scope for this cleanup.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn git_create_pr(
+    app: tauri::AppHandle,
     folder: String,
     title: String,
     body: Option<String>,
@@ -1570,6 +1571,13 @@ pub async fn git_create_pr(
     tool: Option<String>,
     method: Option<String>,
 ) -> serde_json::Value {
+    // Settings → General → Attribution, read fresh for every PR so a change
+    // applies without a restart. No data dir → the default (on).
+    let attribution = app
+        .path()
+        .app_data_dir()
+        .map(|dir| config::git_attribution_from(&config::load_config_from(&dir)))
+        .unwrap_or(true);
     git::create_pr(
         &PathBuf::from(folder),
         &title,
@@ -1579,6 +1587,7 @@ pub async fn git_create_pr(
         featureBranch.as_deref(),
         tool.as_deref(),
         method.as_deref(),
+        attribution,
     )
     .await
 }

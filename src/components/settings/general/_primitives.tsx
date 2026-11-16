@@ -1,10 +1,10 @@
 /**
  * Shared visual primitives for the General settings cards.
  *
- * Each card (startup, notifications, updates, privacy) renders a
- * `CardShell` wrapping one or more `Row`s with a `Toggle` (or other
- * control) on the right. Keeping the primitives co-located here means
- * adding a new General card stays a one-import affair and the four
+ * Each card (startup, notifications, updates, privacy, attribution)
+ * renders a `CardShell` wrapping one or more `Row`s with a `Toggle` (or
+ * other control) on the right. Keeping the primitives co-located here
+ * means adding a new General card stays a one-import affair and the
  * cards stay visually identical without copy/paste drift.
  */
 
@@ -43,11 +43,15 @@ export function Row({ title, desc, children, last, disabled }: {
   );
 }
 
-export function Toggle({ on, onChange }: { on: boolean; onChange: () => void }) {
+export function Toggle({ on, onChange, label }: {
+  on: boolean; onChange: () => void;
+  /** Accessible name — usually the row title, so screen readers announce what the switch controls. */
+  label?: string;
+}) {
   return (
     <button
       onClick={onChange}
-      role="switch" aria-checked={on}
+      role="switch" aria-checked={on} aria-label={label}
       style={{
         width: 36, height: 21, borderRadius: 999, padding: 0, position: "relative",
         border: `1px solid ${on ? "transparent" : "var(--c-brd)"}`, cursor: "pointer", flexShrink: 0,
