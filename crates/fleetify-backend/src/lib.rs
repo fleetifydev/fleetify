@@ -154,6 +154,14 @@ fn resolve_db_path_in(configured: &str, home: PathBuf, isolate: bool) -> PathBuf
     }
 }
 
+/// Whether startup loads a `.env` file into the process environment. Only
+/// debug builds do. `dotenvy` searches the working directory and its
+/// ancestors, so a release build launched from a terminal inside some
+/// project would otherwise pick up that project's `.env`.
+pub(crate) fn should_load_dotenv(release_build: bool) -> bool {
+    !release_build
+}
+
 /// Bind `addr` and start serving, hydrating the routing orchestrator with
 /// the supplied `routing_setup`. The Tauri shell composes the setup from
 /// `fleet.config.json` + the per-user keychain before invoking this so
@@ -163,12 +171,16 @@ pub async fn serve_with_routing_setup(
     static_dir: Option<PathBuf>,
     routing_setup: services::routing::setup::RoutingSetup,
 ) -> anyhow::Result<ServerHandle> {
-    // Load `.env` from the workspace root (if present) into the process
-    // environment. Existing env vars are NOT overridden — a real shell-set
-    // value wins over the file. No-op when `.env` is absent, which is the
-    // production case. Powers single-source dev config for POSTHOG_API_KEY
-    // and similar without forcing a wrapper shell script.
-    let _ = dotenvy::dotenv();
+    // Debug builds load the first `.env` found walking up from the working
+    // directory (the workspace root's under `npm run dev:tauri`) into the
+    // process environment. Existing env vars are NOT overridden — a real
+    // shell-set value wins over the file. Powers single-source dev config
+    // for POSTHOG_API_KEY and similar without forcing a wrapper shell
+    // script. Release builds never read `.env`: a project's `.env` in the
+    // launch directory must not configure Fleetify.
+    if should_load_dotenv(!cfg!(debug_assertions)) {
+        let _ = dotenvy::dotenv();
+    }
 
     // Lifespan parity: one-shot ~/.fleet → ~/.fleetify migration.
     services::migration::migrate_fleet_to_fleetify();
@@ -556,5 +568,16 @@ mod db_path_tests {
             resolve_db_path_in(abs, PathBuf::from("/home/.fleetify"), false),
             PathBuf::from(abs)
         );
+    }
+}
+
+#[cfg(test)]
+mod dotenv_tests {
+    use super::should_load_dotenv;
+
+    #[test]
+    fn dotenv_is_read_only_by_debug_builds() {
+        assert!(!should_load_dotenv(true));
+        assert!(should_load_dotenv(false));
     }
 }
