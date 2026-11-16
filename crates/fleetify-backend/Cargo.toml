@@ -43,9 +43,12 @@ glob = "0.3"
 # Antigravity SDK bridge reads `GEMINI_API_KEY` from the OS keyring under
 # `Fleetify-Provider-antigravity-sdk` — same store the Tauri shell writes
 # to via providers_link, so a single source of truth flows through.
-# `windows-native` keeps the credential in the Windows Credential Manager
-# (Tauri shell uses the same feature set).
-keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
+# One feature set for every crate (src-tauri, fleet-wipe): Keychain on macOS,
+# Credential Manager on Windows, Secret Service on Linux. Plain `linux-native`
+# (the kernel keyring) is in-memory and loses every credential on reboot. The
+# Secret Service store needs libdbus-1-dev + pkg-config to build on Linux;
+# `crypto-rust` encrypts secrets on the D-Bus wire.
+keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native-sync-persistent", "crypto-rust"] }
 # Loads `.env` (workspace root) into the process environment at server
 # startup so single-source dev config (POSTHOG_API_KEY, POSTHOG_HOST, …)
 # works without a wrapper shell script. No-op when `.env` is absent —

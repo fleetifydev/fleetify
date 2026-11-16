@@ -5,9 +5,10 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# Linux: the app stores credentials in the KERNEL keyring (keyring crate's
-# linux-keyutils backend), NOT the Secret Service — so `secret-tool` can't see
-# them. We enumerate the kernel keyring directly and invalidate Fleetify keys.
+# Linux: builds before the Secret Service store kept credentials in the
+# KERNEL keyring (keyring crate's linux-keyutils backend), which `secret-tool`
+# can't see. We enumerate it directly and invalidate leftover Fleetify keys.
+# Secret Service items are not cleared here.
 [target.'cfg(target_os = "linux")'.dependencies]
 linux-keyutils = "0.2"
 
@@ -16,4 +17,4 @@ linux-keyutils = "0.2"
 # wipe.mjs's `security` / `cmdkey` enumeration. Feature set mirrors src-tauri
 # so the backend resolves identically.
 [target.'cfg(not(target_os = "linux"))'.dependencies]
-keyring = { version = "3", features = ["windows-native"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native-sync-persistent", "crypto-rust"] }

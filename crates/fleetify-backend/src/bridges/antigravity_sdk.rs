@@ -730,4 +730,13 @@ mod tests {
         assert_eq!(b.autonomy_mode, "chat");
         assert_eq!(b.model, "gemini-3.5-flash");
     }
+
+    // Fails to compile unless keyring's persistent Linux store is enabled:
+    // plain `linux-native` (keyutils) is in-memory and loses every credential on reboot.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_keyring_store_survives_reboot() {
+        #[allow(unused_imports)]
+        use keyring::keyutils_persistent as _;
+    }
 }

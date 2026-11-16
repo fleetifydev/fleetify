@@ -32,9 +32,9 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
-# Windows is the current build/dev target; per-OS backends (apple-native /
-# sync-secret-service) get added behind cfg in Phase 5 packaging.
-keyring = { version = "3", features = ["windows-native"] }
+# Same feature set as fleetify-backend (rationale there): the Secret Service
+# store keeps Linux sign-in and provider keys across reboots.
+keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native-sync-persistent", "crypto-rust"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart"] }
 sha2 = "0.10"
 base64 = "0.22"
