@@ -34,6 +34,10 @@ interface ShortcutBinding {
    *  simply ignore the argument. */
   matches: (e: KeyboardEvent, mod: boolean, shift: boolean, platform: Platform) => boolean;
   run: (e: KeyboardEvent, ctx: ShortcutCtx) => void;
+  /** Still runs while App.tsx parks the shell under `display: none` (Settings
+   *  or Library open). Only for a binding that does not act on the hidden UI —
+   *  today just the emergency abort-all. */
+  worksWhileParked?: boolean;
 }
 
 /**
@@ -192,8 +196,10 @@ export const SHORTCUT_BINDINGS: ShortcutBinding[] = [
     },
   },
   {
-    // Cmd+Shift+A — abort all running agents
+    // Cmd+Shift+A — abort all running agents. An emergency stop, so it also
+    // works while Settings or Library hides the shell.
     id: "abort-all",
+    worksWhileParked: true,
     matches: (e, mod, shift) => mod && shift && e.key === "A",
     run: (e, { state }) => {
       e.preventDefault();
@@ -245,25 +251,28 @@ export const HANDLED_SHORTCUT_IDS: string[] = SHORTCUT_BINDINGS.map(b => b.id);
  * from the stores inside the handler. First matching binding wins.
  *
  * `shell` is the AppShell root. App.tsx parks the shell under `display: none`
- * while Settings or Library is open, and every binding here acts on that
- * hidden UI — so a parked shell ignores the keyboard entirely. Without this,
- * the Escape that closed Library also ran `back-to-fleet` underneath it.
+ * while Settings or Library is open, and nearly every binding here acts on
+ * that hidden UI — so a parked shell ignores them. Without this, the Escape
+ * that closed Library also ran `back-to-fleet` underneath it. Only a binding
+ * marked `worksWhileParked` (the emergency abort-all) still runs.
  */
 export function useKeyboardShortcuts(shell?: RefObject<Element | null>) {
   useEffect(() => {
     // Host platform is stable for the session — resolve once, not per keystroke.
     const platform = getPlatform();
     const handler = (e: KeyboardEvent) => {
-      if (shell && !isOnScreen(shell.current)) return;
       const mod = e.metaKey || e.ctrlKey;
       const shift = e.shiftKey;
-      const ctx: ShortcutCtx = {
+      // Match first: most keystrokes are plain typing that no binding handles,
+      // and they must not pay for the computed-style walk in isOnScreen.
+      const binding = SHORTCUT_BINDINGS.find(b => b.matches(e, mod, shift, platform));
+      if (!binding) return;
+      // The flag goes first so abort-all skips that walk too.
+      if (shell && !binding.worksWhileParked && !isOnScreen(shell.current)) return;
+      binding.run(e, {
         state: useAppStore.getState(),
         chatState: useChatStore.getState(),
-      };
-      for (const b of SHORTCUT_BINDINGS) {
-        if (b.matches(e, mod, shift, platform)) { b.run(e, ctx); return; }
-      }
+      });
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
