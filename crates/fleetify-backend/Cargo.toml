@@ -79,4 +79,6 @@ rand = "0.8"
 tokio = { version = "1", features = ["full", "test-util"] }
 tokio-tungstenite = "0.24"
 tower = { version = "0.5", features = ["util"] }
+# Captures log lines in tests that pin what is never logged.
+tracing-subscriber.workspace = true
 wiremock = "0.6"
