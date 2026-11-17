@@ -2,6 +2,7 @@ import "@fontsource-variable/geist";
 import "./globals.css";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { AppErrorBoundary } from "./components/app-error-boundary";
 import { installGlobalErrorCapture, log } from "./lib/log";
 
 // Initialize theme from localStorage
@@ -34,7 +35,12 @@ log.info("renderer.boot", "renderer mounted", {
 // stays reachable via F12 / Ctrl+Shift+I.
 window.addEventListener("contextmenu", e => e.preventDefault());
 
-createRoot(document.getElementById("root")!).render(<App />);
+// A render error shows a recovery screen instead of a blank window.
+createRoot(document.getElementById("root")!).render(
+  <AppErrorBoundary>
+    <App />
+  </AppErrorBoundary>,
+);
 // Cold-start marker — pair with sinceNavMs above to measure mount cost.
 if (typeof performance !== "undefined") performance.mark("fleet:react-render");
 

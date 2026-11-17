@@ -173,7 +173,7 @@ These fire from `src/lib/posthog.ts` callers in the renderer.
 | `message_sent` | Chat send button | `session_id_short` (first 8 chars), `text_length`, `has_attachments`, `attachment_count` |
 | `message_error` | Send failed (network / auth) | `session_id_short`, `error_type` (the error's class, never its message) |
 | `session_default_set` | Settings → Providers → Sessions Default picker | `provider_id` |
-| `frontend_error` | `window.onerror` or `unhandledrejection` | `source`, `error_type` (the error's class, such as `TypeError`, or its JS type; never its message or stack) |
+| `frontend_error` | `window.onerror`, `unhandledrejection`, or a render error that brings up the recovery screen | `source` (`uncaught`, `unhandled-rejection` or `render`), `error_type` (the error's class, such as `TypeError`, or its JS type; never its message or stack) |
 | `$identify` | At sign-in, at each launch while signed in, or at opt-in | `distinct_id` = your `user_id`, `$anon_distinct_id` = previous device_id |
 
 posthog-js adds its standard properties to every event, such as `$os`,

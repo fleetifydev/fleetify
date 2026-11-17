@@ -10,7 +10,7 @@ const analytics = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/posthog", () => analytics);
 
-import { installGlobalErrorCapture } from "../log";
+import { installGlobalErrorCapture, logRenderError } from "../log";
 
 beforeAll(() => {
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -63,5 +63,38 @@ describe("frontend_error", () => {
       ["frontend_error", { source: "unhandled-rejection", error_type: "string" }],
       ["frontend_error", { source: "unhandled-rejection", error_type: "unknown" }],
     ]);
+  });
+});
+
+describe("render errors from the root error boundary", () => {
+  it("keeps the details in the local log and sends only the error's class", async () => {
+    const appLog = vi.fn(async () => {});
+    (window as unknown as { electronAPI: unknown }).electronAPI = { appLog };
+    try {
+      const error = new TypeError("could not read /home/u/notes/secret.md");
+      logRenderError(error, "\n    at Broken\n    at App");
+
+      // Local log: the message, stack and component stack, at error level.
+      expect(appLog).toHaveBeenCalledWith(
+        "error",
+        "renderer.render-error",
+        "could not read /home/u/notes/secret.md",
+        { stack: error.stack, componentStack: "\n    at Broken\n    at App" },
+      );
+      // Product analytics: the class only.
+      expect(await captured(1)).toEqual([
+        ["frontend_error", { source: "render", error_type: "TypeError" }],
+      ]);
+    } finally {
+      delete (window as unknown as { electronAPI?: unknown }).electronAPI;
+    }
+  });
+
+  it("sends nothing to product analytics while it is off", async () => {
+    analytics.isReady.mockReturnValueOnce(false);
+    logRenderError(new Error("boom"), null);
+    // Give the lazy import time to run.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(analytics.capture).not.toHaveBeenCalled();
   });
 });

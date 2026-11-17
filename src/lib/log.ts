@@ -149,7 +149,7 @@ export function errorType(value: unknown): string {
 // keeps the details in the local log. `capture()` is a no-op unless the user
 // opted in.
 async function capturePostHogFrontendError(
-  source: "uncaught" | "unhandled-rejection",
+  source: "uncaught" | "unhandled-rejection" | "render",
   error: unknown,
 ): Promise<void> {
   try {
@@ -161,6 +161,22 @@ async function capturePostHogFrontendError(
     // import itself fails, the original `log.error` call above
     // already captured the trail.
   }
+}
+
+/**
+ * A render error that the root error boundary (`AppErrorBoundary`) caught.
+ * React doesn't pass those on to `window.onerror`, so the boundary reports
+ * them here. Like the global capture, the local log gets the details (the
+ * message, the stack and where in the component tree it happened) and
+ * product analytics, when the user opted in, only the error's type.
+ */
+export function logRenderError(error: unknown, componentStack?: string | null): void {
+  const message = error instanceof Error ? error.message : String(error);
+  log.error("renderer.render-error", message, {
+    stack: error instanceof Error ? (error.stack ?? null) : null,
+    componentStack: componentStack ?? null,
+  });
+  void capturePostHogFrontendError("render", error);
 }
 
 /**
