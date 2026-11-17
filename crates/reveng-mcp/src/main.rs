@@ -255,26 +255,7 @@ async fn discover_assets(args: Value) -> Result<Value, String> {
         ("data-src", "script_or_image"),
         ("href", "link_or_stylesheet"),
     ] {
-        let mut i = 0usize;
-        while i < body.len() {
-            let needle = format!("{attr}=");
-            let Some(rel) = body[i..].find(&needle) else {
-                break;
-            };
-            let start = i + rel + needle.len();
-            if start >= body.len() {
-                break;
-            }
-            let quote = body.as_bytes()[start];
-            if quote != b'"' && quote != b'\'' {
-                i = start + 1;
-                continue;
-            }
-            let body_start = start + 1;
-            let Some(rel_end) = body[body_start..].find(quote as char) else {
-                break;
-            };
-            let raw = &body[body_start..body_start + rel_end];
+        for raw in quoted_attr_values(&body, attr) {
             let abs = resolve_url(raw, &origin, &dir);
             if !abs.is_empty() && !seen.contains(&abs) {
                 seen.insert(abs.clone());
@@ -305,7 +286,6 @@ async fn discover_assets(args: Value) -> Result<Value, String> {
                 };
                 bucket.push(abs);
             }
-            i = body_start + rel_end + 1;
         }
     }
 
@@ -317,6 +297,40 @@ async fn discover_assets(args: Value) -> Result<Value, String> {
         "links": links,
         "other": other,
     }))
+}
+
+/// Values of every quoted `attr="…"` / `attr='…'` in `body`, in document
+/// order. Unquoted values are skipped. Plain substring match, so `src` also
+/// sees `data-src=`; discover_assets dedups.
+fn quoted_attr_values<'a>(body: &'a str, attr: &str) -> Vec<&'a str> {
+    let needle = format!("{attr}=");
+    let mut values = Vec::new();
+    let mut i = 0usize;
+    while i < body.len() {
+        let Some(rel) = body[i..].find(&needle) else {
+            break;
+        };
+        let start = i + rel + needle.len();
+        if start >= body.len() {
+            break;
+        }
+        let quote = body.as_bytes()[start];
+        if quote != b'"' && quote != b'\'' {
+            // Resume at `start`, right after the ASCII `=`, so always a char
+            // boundary. `start + 1` can land inside a multi-byte letter,
+            // where the next `body[i..]` would panic. The needle ends before
+            // `start`, so the next `find` cannot match it again.
+            i = start;
+            continue;
+        }
+        let body_start = start + 1;
+        let Some(rel_end) = body[body_start..].find(quote as char) else {
+            break;
+        };
+        values.push(&body[body_start..body_start + rel_end]);
+        i = body_start + rel_end + 1;
+    }
+    values
 }
 
 fn split_origin_and_dir(url: &str) -> (String, String) {
@@ -620,5 +634,41 @@ mod tests {
         assert_eq!(out["endpoints"][0]["url"], url);
         let context = out["endpoints"][0]["context"].as_str().unwrap();
         assert!(context.contains(url), "{context}");
+    }
+
+    /// Regression: an unquoted value made the scan resume one byte past the
+    /// `=`, inside the first letter here, and slicing there panicked. Tool
+    /// calls run inline, so the panic took the whole sidecar down.
+    #[test]
+    fn quoted_attr_values_skips_unquoted_non_ascii_value() {
+        assert!(quoted_attr_values("<a href=ürünler.html>", "href").is_empty());
+    }
+
+    /// Same crash from a Windows-1254 page: fetch_url's lossy decode turns
+    /// `\xFC` into U+FFFD, which is 3 bytes.
+    #[test]
+    fn quoted_attr_values_skips_unquoted_replacement_char_value() {
+        assert!(quoted_attr_values("<a href=\u{FFFD}r\u{FFFD}nler.html>", "href").is_empty());
+    }
+
+    #[test]
+    fn quoted_attr_values_extracts_quoted_non_ascii_value() {
+        assert_eq!(
+            quoted_attr_values(r#"<a href="ürünler.html">"#, "href"),
+            vec!["ürünler.html"]
+        );
+    }
+
+    /// discover_assets buckets values in the order they come back and keeps
+    /// the first sighting of a URL, so document order is part of the contract.
+    #[test]
+    fn quoted_attr_values_keeps_document_order_past_unquoted_values() {
+        assert_eq!(
+            quoted_attr_values(
+                r#"<img src=ü.png><img src="a.png"><script src='b.js'>"#,
+                "src"
+            ),
+            vec!["a.png", "b.js"]
+        );
     }
 }
