@@ -10,10 +10,17 @@
  * to raw-markdown rendering so nothing regresses.
  */
 import type { CSSProperties } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { parseChangelog, type ChangelogEntry } from "@/lib/changelog";
 import { semverEq } from "@/lib/semver";
+import { markdownComponents, markdownUrlTransform } from "./markdown-image";
+
+/** A bullet's markdown renders inline, beside its dash. */
+const itemComponents: Components = {
+  ...markdownComponents,
+  p: ({ node: _node, ...props }) => <span {...props} />,
+};
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -45,7 +52,13 @@ export function ChangelogBody({
   if (entries.length === 0) {
     return (
       <div style={rawCard} className="md-detail">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{changelog}</ReactMarkdown>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={markdownComponents}
+          urlTransform={markdownUrlTransform}
+        >
+          {changelog}
+        </ReactMarkdown>
       </div>
     );
   }
@@ -102,7 +115,8 @@ function VersionBlock({ entry, installed, first }: { entry: ChangelogEntry; inst
                   <div style={{ flex: 1, minWidth: 0 }} className="md-detail">
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
-                      components={{ p: ({ node: _node, ...props }) => <span {...props} /> }}
+                      components={itemComponents}
+                      urlTransform={markdownUrlTransform}
                     >
                       {it}
                     </ReactMarkdown>

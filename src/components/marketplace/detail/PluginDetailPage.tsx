@@ -11,6 +11,7 @@ import { Fragment, useEffect, useState } from "react";
 import { ArrowLeft, ExternalLink, Loader2, Package, PanelLeft, Plus, ShieldCheck, Trash2, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { markdownComponents, markdownUrlTransform } from "./markdown-image";
 import { getPluginDetail } from "@/lib/plugin-api";
 import { useAppStore } from "@/stores/app-store";
 import { usePluginStore } from "@/stores/plugin-store";
@@ -349,7 +350,7 @@ export function PluginDetailPage({ source_id, plugin_path, onBack }: Props) {
 
 /* ── Sub-bodies ─────────────────────────────────────────────────────── */
 
-function OverviewBody({ readme, description }: { readme: string | null; description: string }) {
+export function OverviewBody({ readme, description }: { readme: string | null; description: string }) {
   if (!readme || !readme.trim()) {
     return (
       <div style={{
@@ -371,7 +372,13 @@ function OverviewBody({ readme, description }: { readme: string | null; descript
       fontSize: 13, color: "var(--c-med)",
       lineHeight: 1.6,
     }} className="md-detail">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{readme}</ReactMarkdown>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={markdownComponents}
+        urlTransform={markdownUrlTransform}
+      >
+        {readme}
+      </ReactMarkdown>
     </div>
   );
 }
