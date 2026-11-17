@@ -39,6 +39,15 @@ function drag(type: DragType, target: Element, types: string[], files: File[] = 
   return event;
 }
 
+/** A drag that starts in this document (the engine fires dragstart on its
+ *  source), and its end. */
+function startDrag(source: Element) {
+  source.dispatchEvent(new Event("dragstart", { bubbles: true }));
+}
+function endDrag(source: Element) {
+  source.dispatchEvent(new Event("dragend", { bubbles: true }));
+}
+
 function add(html: string): HTMLElement {
   const holder = document.createElement("div");
   holder.innerHTML = html;
@@ -62,12 +71,44 @@ describe("a drop nothing on the page handles never navigates the window", () => 
   it("leaves the app's own drags to their targets", () => {
     // The sidebar leaves an illegal drop target uncancelled on purpose, so
     // the cursor says no-drop: the guard must not cancel it either.
-    const row = add("<div class='session-row'></div>");
+    const row = add("<div class='session-row' draggable='true'></div>");
+    // One drag per set of types: it starts here, crosses, drops, ends.
     for (const types of [SESSION, PANE, [...SESSION, "text/plain"]]) {
+      startDrag(row);
       for (const type of DRAG_TYPES) {
         expect(drag(type, row, types).defaultPrevented, `${type} ${types}`).toBe(false);
       }
+      endDrag(row);
     }
+  });
+
+  it("takes a drag from outside that carries an app type, when nothing handles it", () => {
+    // WebView2 carries a web page's custom setData types across processes:
+    // a drag from a browser can carry the session type next to a link.
+    const panel = add("<div></div>");
+    for (const types of [[...SESSION, "text/uri-list"], [...PANE, "text/plain"]]) {
+      for (const type of DRAG_TYPES) {
+        expect(drag(type, panel, types).defaultPrevented, `${type} ${types}`).toBe(true);
+      }
+    }
+  });
+
+  it("doesn't count a drag the app cancels at its start as the app's own", () => {
+    // A workspace pane cancels dragstart while it isn't armed (dragging
+    // selected text in it): no drag follows, and no dragend ever comes.
+    const pane = add("<div><span>selected text</span></div>");
+    pane.addEventListener("dragstart", (event) => event.preventDefault());
+    pane.firstElementChild!.dispatchEvent(
+      new Event("dragstart", { bubbles: true, cancelable: true }),
+    );
+    expect(drag("dragover", pane, [...SESSION, "text/uri-list"]).defaultPrevented).toBe(true);
+  });
+
+  it("stops treating app types as the app's own once its drag has ended", () => {
+    const row = add("<div draggable='true'></div>");
+    startDrag(row);
+    endDrag(row);
+    expect(drag("drop", row, [...SESSION, "text/uri-list"]).defaultPrevented).toBe(true);
   });
 
   it("leaves a drag of nothing the engine would load alone", () => {

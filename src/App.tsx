@@ -10,6 +10,7 @@ import { clearToken, type AuthUser } from "@/lib/api";
 import { handleAuthEvent } from "@/lib/auth-events";
 import { identifyUser, initPostHog, pageview } from "@/lib/posthog";
 import { isIntroComplete } from "@/lib/onboarding-gate";
+import { showsLogoGallery } from "@/lib/dev-gallery";
 
 // Heavy routes that are rarely the first surface a user sees — pulled
 // out of the initial bundle so cold-start ships fewer KB of JS and the
@@ -375,13 +376,14 @@ export function App() {
 
   // Dev-only logo gallery — navigate to <app>/#logos to compare every
   // brand-mark candidate side-by-side at four sizes against light + dark
-  // surfaces. Pure dev surface; never renders in production paths.
+  // surfaces. Dev builds only (showsLogoGallery): a release build never
+  // shows it, whatever the hash says.
   // Re-checks on hashchange so the gallery toggles without a refresh.
   const [showLogos, setShowLogos] = useState(
-    typeof window !== "undefined" && window.location.hash === "#logos",
+    typeof window !== "undefined" && showsLogoGallery(window.location.hash),
   );
   useEffect(() => {
-    const onHash = () => setShowLogos(window.location.hash === "#logos");
+    const onHash = () => setShowLogos(showsLogoGallery(window.location.hash));
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);

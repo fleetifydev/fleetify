@@ -13,7 +13,9 @@
  *   leaves it alone, and the element's handlers run as before.
  * - The app's own drags (sidebar sessions, workspace panes) are left to their
  *   targets. The sidebar leaves an illegal target uncancelled on purpose, so
- *   the cursor says no-drop.
+ *   the cursor says no-drop. Only a drag that started in this document counts
+ *   as the app's own: WebView2 carries a web page's custom types across
+ *   processes, so a drag from a browser can carry them too.
  * - Text or a link dropped into a field you can type in is left to the
  *   engine, which inserts it there. A file is cancelled even there: a text
  *   field can't take it, and the engine may load it instead.
@@ -51,24 +53,48 @@ export function isTextEntry(target: EventTarget | null): boolean {
 }
 
 /** Whether the guard takes a drag carrying `types` over `target`, when
- *  nothing on the page has: one from outside the app that the engine would
- *  load, unless it is text or a link over a field you can type in. */
-export function guardTakes(types: readonly string[], target: EventTarget | null): boolean {
-  if (types.some((type) => APP_DRAG_TYPES.includes(type))) return false;
+ *  nothing on the page has: one the engine would load, unless it is text or
+ *  a link over a field you can type in, or the app's own drag (`fromApp`,
+ *  started in this document, carrying an app type). */
+export function guardTakes(
+  types: readonly string[],
+  target: EventTarget | null,
+  fromApp: boolean,
+): boolean {
+  if (fromApp && types.some((type) => APP_DRAG_TYPES.includes(type))) return false;
   if (types.includes("Files")) return true;
   return types.some((type) => LOADABLE_TYPES.includes(type)) && !isTextEntry(target);
 }
 
 /** Installs the guard on `target`'s window events. Returns what removes it. */
 export function installDropGuard(target: Window = window): () => void {
+  // Whether a drag that started in this document is in flight: the engine
+  // fires dragstart on its source, and dragend when it ends. A drop ends it
+  // too, in case the source left the document and its dragend never comes.
+  // A dragstart the app cancelled starts no drag (a workspace pane cancels
+  // one while it isn't armed), and no dragend follows it.
+  let dragFromApp = false;
+  const started = (event: Event) => {
+    if (!event.defaultPrevented) dragFromApp = true;
+  };
+  const ended = () => {
+    dragFromApp = false;
+  };
   const take = (event: Event) => {
     if (event.defaultPrevented) return;
     const types = Array.from((event as DragEvent).dataTransfer?.types ?? []);
-    if (guardTakes(types, event.target)) event.preventDefault();
+    if (guardTakes(types, event.target, dragFromApp)) event.preventDefault();
   };
   const events = ["dragenter", "dragover", "drop"] as const;
+  target.addEventListener("dragstart", started);
+  target.addEventListener("dragend", ended);
   for (const type of events) target.addEventListener(type, take);
+  // After `take`, so the drop is judged before the flag clears.
+  target.addEventListener("drop", ended);
   return () => {
+    target.removeEventListener("dragstart", started);
+    target.removeEventListener("dragend", ended);
     for (const type of events) target.removeEventListener(type, take);
+    target.removeEventListener("drop", ended);
   };
 }

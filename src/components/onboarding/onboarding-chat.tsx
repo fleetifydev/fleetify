@@ -20,6 +20,7 @@
 import { type CSSProperties, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { markdownLinkComponents } from "@/components/markdown-link";
 import {
   ArrowRight,
   Check,
@@ -920,7 +921,7 @@ export function OnboardingChat({ user, onDone, startAt }: Props) {
 }
 
 /* ── Bubble ────────────────────────────────────────────────── */
-function Bubble({
+export function Bubble({
   msg,
   scan,
   chosenProviders,
@@ -1021,7 +1022,9 @@ function Bubble({
           letterSpacing: "-0.004em",
         }}
       >
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
+        {/* Links open in the system browser (MarkdownLink), never in place
+            of the onboarding. */}
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownLinkComponents}>{msg.text}</ReactMarkdown>
         {msg.typing && <Caret />}
       </div>
 
