@@ -128,9 +128,11 @@ interface FleetConfig {
   updatesAuto?: boolean;
   /** Update channel — Stable / Beta / Canary. Default "stable". */
   updatesChannel?: "stable" | "beta" | "canary";
-  /** Anonymous usage analytics opt-out. Default true (opt-in by install). */
+  /** Legacy: written by the old privacy card's analytics switch; nothing
+   *  writes it now. An explicit `false` still means dashboard sync off
+   *  while no newer choice is saved (`cloud_sync_from` in the shell). */
   telemetryEnabled?: boolean;
-  /** Crash report opt-out. Default true (opt-in by install). */
+  /** Legacy: written by the old "Crash reports" switch. Nothing reads it. */
   crashReportsEnabled?: boolean;
   /** Credit Fleetify in the commits it makes (`Co-Authored-By: Fleetify`
    *  trailer) and the pull requests it opens (footer). Default true;
@@ -164,13 +166,17 @@ interface Window {
     }>;
     /** Flip the persisted PostHog opt-in AND the backend's live
      *  runtime gate. Used by the onboarding consent step and the
-     *  Privacy settings toggle. */
+     *  Privacy settings toggle. `ok: false` means the gate changed but
+     *  the choice wasn't saved, so it lasts until Fleetify restarts. */
     telemetrySetPosthogEnabled?: (
       enabled: boolean
-    ) => Promise<{ ok: boolean }>;
+    ) => Promise<import("@/lib/privacy-choice").PrivacySaveResult>;
     /** Flip the persisted Fleetify cloud sync switch AND the backend's
-     *  live gate. Turning it off purges anything still queued. */
-    telemetrySetCloudEnabled?: (enabled: boolean) => Promise<unknown>;
+     *  live gate. Turning it off purges anything still queued. Resolves
+     *  like `telemetrySetPosthogEnabled`. */
+    telemetrySetCloudEnabled?: (
+      enabled: boolean
+    ) => Promise<import("@/lib/privacy-choice").PrivacySaveResult>;
     openFolderDialog: () => Promise<string | null>;
     setWindowSize: (
       width: number,

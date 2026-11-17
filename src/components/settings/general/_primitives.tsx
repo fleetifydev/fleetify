@@ -17,8 +17,11 @@ export function CardShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function Row({ title, desc, children, last, disabled }: {
-  title: string; desc?: string; children?: React.ReactNode; last?: boolean; disabled?: boolean;
+export function Row({ title, desc, error, children, last, disabled }: {
+  title: string; desc?: string;
+  /** Shown in red under the description and announced (`role="alert"`). */
+  error?: string | null;
+  children?: React.ReactNode; last?: boolean; disabled?: boolean;
 }) {
   return (
     <div style={{
@@ -35,6 +38,11 @@ export function Row({ title, desc, children, last, disabled }: {
         {desc && (
           <div style={{ fontSize: 12, color: "var(--c-low)", marginTop: 3, lineHeight: 1.5 }}>
             {desc}
+          </div>
+        )}
+        {error && (
+          <div role="alert" style={{ fontSize: 12, color: "var(--c-err)", marginTop: 4, lineHeight: 1.5 }}>
+            {error}
           </div>
         )}
       </div>

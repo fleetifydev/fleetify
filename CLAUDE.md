@@ -241,13 +241,12 @@ Pre-1.0 this still triggers only a minor bump (we're 0.x — semver lets us brea
 
 ## Telemetry & analytics
 
-Fleetify ships two independent telemetry channels. Both default to user
-choice; neither leaks prompt content, API keys, or file paths.
+Fleetify ships two independent telemetry channels. Both are off until the
+user turns them on; `docs/ANALYTICS.md` lists what each one sends.
 
 | Channel | Vendor | Default | Toggle | Outbox |
 |---|---|---|---|---|
-| Anonymous usage analytics | Fleetify cloud (`fleetify.dev`, WebSocket) | **ON** | Settings → Privacy → "Anonymous usage analytics" | `~/.fleetify/telemetry-outbox.sqlite` |
-| Crash reports | Fleetify cloud | **ON** | Settings → Privacy → "Crash reports" | (same outbox) |
+| Dashboard sync | Fleetify cloud (`fleetify.dev`, WebSocket) | **OFF** | Settings → Privacy → "Dashboard sync" | `~/.fleetify/telemetry-outbox.sqlite` |
 | Product analytics | PostHog Cloud (US, HTTP `/batch`) | **OFF** | Settings → Privacy → "Product analytics (PostHog)" | `~/.fleetify/posthog-outbox.sqlite` |
 
 ### PostHog integration

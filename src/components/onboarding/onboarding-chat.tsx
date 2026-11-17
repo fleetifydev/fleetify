@@ -47,10 +47,14 @@ import { STUDIO_ENABLED } from "@/lib/feature-flags";
 import { useThemeStore, type ThemeMode } from "@/stores/theme-store";
 import { ThemeModeCards } from "@/components/theme/theme-mode-cards";
 import { capture, optIn, optOut } from "@/lib/posthog";
+import { sendPrivacyChoice } from "@/lib/privacy-choice";
 
 interface Props {
   user: AuthUser | null;
   onDone: () => void;
+  /** Tests only: open at the theme step, skipping the welcome, provider
+   *  setup and GitHub. */
+  startAt?: "theme";
 }
 
 type Sender = "assistant" | "user";
@@ -61,6 +65,7 @@ type WidgetKind =
   | "main-agent"
   | "github"
   | "theme"
+  | "cloud-sync-consent"
   | "telemetry-consent";
 
 // Onboarding primary-button colors, theme-aware via globals.css: gray on white
@@ -245,7 +250,7 @@ interface Selections {
   tiles?: ProviderTile[];
 }
 
-export function OnboardingChat({ user, onDone }: Props) {
+export function OnboardingChat({ user, onDone, startAt }: Props) {
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [show, setShow] = useState(false);
   const [done, setDone] = useState(false);
@@ -615,52 +620,70 @@ export function OnboardingChat({ user, onDone }: Props) {
       );
     }
 
-    // Theme picker next, then the privacy/telemetry consent step. The theme
-    // widget applies the choice live, so the rest of onboarding previews it.
-    await pushAssistant(
+    await askTheme();
+  };
+
+  // Theme picker next, then the privacy questions. The theme widget applies
+  // the choice live, so the rest of onboarding previews it.
+  const askTheme = () =>
+    pushAssistant(
       `Almost there, ${firstName} — pick a look for Fleetify. You can change it any time in **Settings**.`,
       "theme",
     );
-  };
 
-  // Theme picked (already applied live) → ask for the privacy/telemetry
-  // consent — the last step before the "Enter Fleet" button. Default off so
-  // anyone who clicks past stays opted out; the consent widget's callback
-  // (`handleTelemetryConsent`) flips the SDK + backend gate only on an
-  // explicit "Sure, help out".
+  // Theme picked (already applied live) → the two privacy questions, the last
+  // steps before "Enter Fleet": dashboard sync, then product analytics. Both
+  // are off by default and only an explicit yes turns one on. A choice that
+  // wasn't saved gets one line saying so; it never blocks onboarding.
   const handleThemeConfirm = async (mode: ThemeMode) => {
     resolveLastWidget();
     pushUser(
       mode === "system" ? "System theme" : mode === "dark" ? "Dark theme" : "Light theme",
     );
     await pushAssistant(
-      `One last thing, ${firstName} — would you help us improve Fleetify? We'd send anonymous behavioural data only (which screens, which providers, how long onboarding takes). Never message content, API keys, or file paths. You can change this any time in **Settings → Privacy**.`,
+      `One more thing, ${firstName}. Want to see your sessions on your fleetify.dev dashboard? Fleetify would send session titles (the start of your first message), project folder names, the kind of each agent action, token usage and cost to your account. Never your code, file contents, commands or API keys. It stays off unless you turn it on, and you can change it anytime in **Settings → Privacy**.`,
+      "cloud-sync-consent",
+    );
+  };
+
+  const handleCloudSyncConsent = async (enabled: boolean) => {
+    resolveLastWidget();
+    pushUser(enabled ? "Turn on" : "Not now");
+    const { error } = await sendPrivacyChoice(
+      () => window.electronAPI?.telemetrySetCloudEnabled?.(enabled),
+    );
+    if (error) await pushAssistant(`I couldn't save that choice: ${error}`);
+    await pushAssistant(
+      "Last thing — would you help us improve Fleetify? We'd send usage data (which screens, which providers, how long onboarding takes), linked to your account. Never message content, API keys or file paths. You can change this anytime in **Settings → Privacy**.",
       "telemetry-consent",
     );
   };
 
-  // Telemetry consent → flips both the JS SDK opt state and the
-  // backend's runtime gate via the Tauri command, then drops the
-  // "Enter Fleet" button. Even on "Not now" we still complete
-  // onboarding — this is consent, not a blocker.
+  // Product analytics → flips both the JS SDK opt state and the backend's
+  // runtime gate via the Tauri command, then enables "Enter Fleet".
   const handleTelemetryConsent = async (enabled: boolean) => {
     resolveLastWidget();
     pushUser(enabled ? "Sure, help out" : "Not now");
     // Flip the SDK first so a yes starts capturing immediately,
     // a no suppresses any pending autocapture before the IPC lands.
     if (enabled) optIn(); else optOut();
-    try {
-      await window.electronAPI?.telemetrySetPosthogEnabled?.(enabled);
-    } catch { /* best-effort — the SDK flip above is the user-visible part */ }
+    const { applied, error } = await sendPrivacyChoice(
+      () => window.electronAPI?.telemetrySetPosthogEnabled?.(enabled),
+    );
+    // The backend never got an opt-in: stop capturing again, as Settings →
+    // Privacy would show it off.
+    const optedIn = enabled && applied;
+    if (enabled && !applied) optOut();
+    if (error) await pushAssistant(`I couldn't save that choice: ${error}`);
     await pushAssistant(
-      enabled
+      optedIn
         ? "Thanks — that helps us see what to improve. You can switch it off any time."
         : "No problem. You can opt in later from **Settings → Privacy** if you change your mind.",
     );
     await pushAssistant(
       `That's the lot, ${firstName}. Hit **Enter Fleet** whenever you're ready.`,
     );
-    capture("onboarding_completed", { telemetry_opt_in: enabled });
+    capture("onboarding_completed", { telemetry_opt_in: optedIn });
     setDone(true);
   };
 
@@ -714,6 +737,10 @@ export function OnboardingChat({ user, onDone }: Props) {
     }
 
     (async () => {
+      if (startAt === "theme") {
+        await askTheme();
+        return;
+      }
       await pushAssistant(`Welcome aboard, ${firstName}.`);
       await pushAssistant(
         "Fleet is a single cockpit for every AI coding agent — Claude Code, Codex, Gemini, Cursor, Kimi, OpenCode, GitHub Copilot, Antigravity, Ollama — plus 10+ API providers (OpenAI, Anthropic, Gemini, DeepSeek, Grok, and more). Shared memory, real cost control, one sidebar.",
@@ -806,6 +833,7 @@ export function OnboardingChat({ user, onDone }: Props) {
             onMainAgentPick={handleMainAgentPick}
             onGithubResult={handleGithubResult}
             onThemeConfirm={handleThemeConfirm}
+            onCloudSyncConsent={handleCloudSyncConsent}
             onTelemetryConsent={handleTelemetryConsent}
             onKeySaved={(id) => inlineSavedRef.current.add(id)}
             onScanContinue={() => scanContinueResolverRef.current?.()}
@@ -882,6 +910,7 @@ function Bubble({
   onMainAgentPick,
   onGithubResult,
   onThemeConfirm,
+  onCloudSyncConsent,
   onTelemetryConsent,
   onKeySaved,
   onScanContinue,
@@ -909,6 +938,7 @@ function Bubble({
       | { skipped: true },
   ) => void;
   onThemeConfirm: (mode: ThemeMode) => void;
+  onCloudSyncConsent: (enabled: boolean) => void;
   onTelemetryConsent: (enabled: boolean) => void;
   /** Threaded through to ScanWidget so OnboardingChat can stash the
    *  ids the user saved inline and feed them into the readout
@@ -1013,8 +1043,11 @@ function Bubble({
       {!msg.typing && !msg.resolved && msg.widget === "theme" && (
         <ThemeWidget onConfirm={onThemeConfirm} />
       )}
+      {!msg.typing && !msg.resolved && msg.widget === "cloud-sync-consent" && (
+        <ConsentWidget yesLabel="Turn on" noLabel="Not now" onChoice={onCloudSyncConsent} />
+      )}
       {!msg.typing && !msg.resolved && msg.widget === "telemetry-consent" && (
-        <TelemetryConsentWidget onChoice={onTelemetryConsent} />
+        <ConsentWidget yesLabel="Sure, help out" noLabel="Not now" onChoice={onTelemetryConsent} />
       )}
     </div>
   );
@@ -1023,7 +1056,7 @@ function Bubble({
 /* ── ThemeWidget — System / Dark / Light picker for onboarding ──
    Wraps the shared <ThemeModeCards/> (applies the choice live so the rest of
    onboarding previews it) and adds the Continue button that advances to the
-   privacy/telemetry step. */
+   privacy questions. */
 function ThemeWidget({ onConfirm }: { onConfirm: (mode: ThemeMode) => void }) {
   const mode = useThemeStore((s) => s.mode);
 
@@ -1056,12 +1089,17 @@ function ThemeWidget({ onConfirm }: { onConfirm: (mode: ThemeMode) => void }) {
   );
 }
 
-/* ── TelemetryConsentWidget — two-button consent for PostHog ──
-   Default-off opt-in for product analytics. Either choice resolves
-   the widget and advances onboarding — refusal is not a blocker.    */
-function TelemetryConsentWidget({
+/* ── ConsentWidget — two-button opt-in for a privacy question ──
+   Used for dashboard sync and product analytics, both off by default.
+   Either choice resolves the widget and advances onboarding — refusal
+   is not a blocker.                                                  */
+function ConsentWidget({
+  yesLabel,
+  noLabel,
   onChoice,
 }: {
+  yesLabel: string;
+  noLabel: string;
   onChoice: (enabled: boolean) => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -1095,7 +1133,7 @@ function TelemetryConsentWidget({
           transition: "all 0.2s ease",
         }}
       >
-        Sure, help out
+        {yesLabel}
       </button>
       <button
         onClick={() => pick(false)}
@@ -1113,7 +1151,7 @@ function TelemetryConsentWidget({
           transition: "all 0.2s ease",
         }}
       >
-        Not now
+        {noLabel}
       </button>
     </div>
   );

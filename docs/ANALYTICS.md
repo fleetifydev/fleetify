@@ -1,26 +1,104 @@
 # Fleetify analytics — what we send, what we don't
 
-Fleetify ships two completely independent telemetry channels. Both are
-opt-in or opt-out from the same place: **Settings → General → Privacy**.
+Fleetify has two independent telemetry channels. Both are off until you
+turn them on, and both are switched in **Settings → General → Privacy**.
 
-| Channel | Vendor | Default | Toggle |
+| Channel | Destination | Default | Settings |
 |---|---|---|---|
-| Anonymous usage analytics | Fleetify cloud (`fleetify.dev`) | **ON** | Privacy → "Anonymous usage analytics" |
-| Crash reports | Fleetify cloud | **ON** | Privacy → "Crash reports" |
-| Product analytics | PostHog Cloud (US: `us.i.posthog.com`) | **OFF** | Privacy → "Product analytics (PostHog)" |
+| `Dashboard sync` | Fleetify cloud (`fleetify.dev`) | **OFF** | Privacy → Dashboard sync |
+| `Product analytics` | PostHog Cloud (US) | **OFF** | Privacy → Product analytics |
 
-PostHog is the topic of this document. The two cloud channels above are
-described in their own subsections of the product help.
+Onboarding asks about each one in turn. "Not now" leaves it off, and so
+does leaving onboarding before you answer.
 
 ---
 
-## What PostHog receives
+## Dashboard sync
 
-Every event carries a stable per-machine `distinct_id` — the same UUID
+Shows your sessions on your fleetify.dev dashboard. It is linked to your
+Fleetify account: while it is on, the app asks `fleetify.dev` for a ticket
+with your sign-in token and this install's device id (a random UUID kept in
+`~/.fleetify/device.json`), then keeps one WebSocket open to it.
+
+### What dashboard sync sends
+
+Six event kinds, built in
+`crates/fleetify-backend/src/services/telemetry/emitters.rs`. Before an
+event is queued, and again just before it is sent, `cloud_view` deletes
+its `activity_summary` and cuts its `project_path` down to the folder
+name. What is left is everything that leaves the machine:
+
+| Event (`kind`) | When | Fields |
+|---|---|---|
+| `session_start` | A session is created | `local_session_id`, `tool`, `model`, `status`, `session_title`, `project_path`, `occurred_at` |
+| `session_stop` | A session is deleted | `local_session_id`, `tool`, `status` (always `stopped`), `occurred_at` |
+| `cost` | An agent turn reports its usage | `local_session_id`, `model`, `input_tokens`, `output_tokens`, `cache_read`, `cache_write`, `cost_usd`, `occurred_at`, and `routing_decision_id` when Fleet routed the turn |
+| `status_change` | A session changes state | `local_session_id`, `status` (`running`, `idle`, `error` or `stopped`), `occurred_at` |
+| `activity` | An agent finishes a tool call | `local_session_id`, `activity_kind`, `occurred_at` |
+| `device_heartbeat` | Every 60 seconds | `occurred_at`, `catalog_commit`, `catalog_tag`, `catalog_bucket` |
+
+Each event also carries its `kind`, and goes out as
+`{ "v": 1, "type": "event", "id": "<random UUID>", "payload": { … } }`.
+
+What the fields hold:
+
+- **`session_title`**: the session's title when it is created, at most
+  200 characters. Titles come from your first message when Fleetify names
+  a session after it: a Studio session is named after the first 48
+  characters of its prompt, unless you type a name. Other sessions start
+  with the name you give them, the project folder's name, or a placeholder
+  such as "New agent". Renaming a session later sends nothing.
+- **`project_path`**: the folder name only, such as `fleetify` for
+  `/home/you/code/fleetify`, never the full path. The Fleet hub's own
+  session has no project folder and uses your home folder, so it sends
+  that folder's name, which is usually your OS user name.
+- **`activity_kind`**: one of `file_edit`, `file_read`, `command`,
+  `web_fetch`, `plan`, `todo`, `tool` or `error`. Activity summaries (the
+  command, file path, URL, search query, prompt or to-do text behind an
+  action) are never sent.
+- **`tool`** and **`model`**: the agent or provider (`claude-code`,
+  `openai`, …) and the model id.
+- **Token and cost fields**: the counts the provider reported, and the
+  cost in US dollars as a string with six decimals.
+- **`local_session_id`**, **`routing_decision_id`**: random ids Fleetify
+  generates, so the dashboard can group events.
+- **`catalog_commit`**, **`catalog_tag`**, **`catalog_bucket`**: the
+  version of the model catalog this install runs, and its rollout slice
+  (0–99, derived from the device id).
+
+### Never sent
+
+- Code and file contents
+- Shell commands that agents run, or their output
+- Full paths
+- Prompts or replies beyond the session title
+- API keys (they stay in your OS keychain)
+
+### Turning sync off
+
+Switching **Dashboard sync** off closes the connection to `fleetify.dev`
+at once and deletes everything still queued in
+`~/.fleetify/telemetry-outbox.sqlite`, so nothing recorded earlier goes
+out later. While sync is off, nothing is queued and no connection is
+opened. Turning it off does not delete what was already sent.
+
+If your choice can't be saved, the switch says so under the row; the
+change still applies until Fleetify restarts.
+
+---
+
+## Product analytics (PostHog)
+
+### What PostHog receives
+
+Every event carries a stable per-machine `distinct_id`: the same UUID
 v4 persisted in `~/.fleetify/device.json`. After OAuth sign-in,
-Fleetify calls `posthog.identify(user_id)` so the anonymous person
-merges into the authenticated one via `$anon_distinct_id`. From then
-on, `distinct_id == user_id`.
+Fleetify calls `posthog.identify(user_id)` with your name and email, so
+PostHog links this device's events, earlier ones included, to your
+Fleetify account (via `$anon_distinct_id`). From then on the app's own
+events use your `user_id` as their `distinct_id`; backend events keep the
+device id, which PostHog has linked to you. Product analytics is linked
+to your account, not anonymous.
 
 ### Backend events (Rust)
 
@@ -32,7 +110,7 @@ POSTed in batches every 10s by the worker.
 | Event | Trigger | Properties (kept) | What is **dropped** |
 |---|---|---|---|
 | `session_started` | New chat session created | `provider` (tool id), `model`, `status`, `project_id_hash` (SHA-256, 16 chars), `session_id_hash` | `session_title`, raw `project_path` |
-| `session_ended` | Session closed | `provider`, `session_id_hash` | — |
+| `session_ended` | Session closed | `provider`, `status`, `session_id_hash` | — |
 | `tokens_used` | Cost event from a bridge | `model`, `input_tokens`, `output_tokens`, `cache_read`, `cache_write`, `cost_usd`, `session_id_hash` | `routing_decision_id` (internal) |
 | `session_status_changed` | Bridge status transition | `status`, `session_id_hash` | — |
 | `agent_activity` | Tool call observed | `activity_kind`, `session_id_hash` | `activity_summary` (may carry user content) |
@@ -42,7 +120,7 @@ POSTed in batches every 10s by the worker.
 | `agent_detected` | `/api/agents/scan` observation | `agent`, `installed`, `authenticated` | — |
 | `app_started` | Backend boot | `version`, `platform` (darwin/win32/linux) | — |
 
-**Never** sent under any circumstance:
+Backend events never carry:
 - Prompt content
 - Assistant replies
 - API keys (live in OS keychain, never read by telemetry code)
@@ -52,8 +130,8 @@ POSTed in batches every 10s by the worker.
 - WebSocket frame bodies
 
 `device_heartbeat` (60 s cadence) is **explicitly dropped** by the PostHog
-mapper — Fleetify cloud gets it; PostHog does not (would chew through the
-free-tier quota for no analytical gain).
+mapper — dashboard sync sends it (when it is on); PostHog does not (would
+chew through the free-tier quota for no analytical gain).
 
 ### Frontend events (TypeScript)
 
@@ -63,16 +141,18 @@ These fire from `src/lib/posthog.ts` callers in the renderer.
 |---|---|---|
 | `$pageview` | Screen transition (splash → welcome → setup → onboarding-chat → main) | `$current_url` (`/<screen>`), `title` |
 | `onboarding_started` | OnboardingChat first mount | — |
-| `onboarding_completed` | "Enter Fleet" reached via consent step | `telemetry_opt_in` |
+| `onboarding_completed` | Onboarding's last question answered | `telemetry_opt_in` |
 | `message_sent` | Chat send button | `session_id_short` (first 8 chars), `text_length`, `has_attachments`, `attachment_count` |
 | `message_error` | Send failed (network / auth) | `session_id_short`, `error_message` |
-| `default_provider_set` | Settings → Providers default picker | `provider_id` |
+| `session_default_set` | Settings → Providers → Sessions Default picker | `provider_id` |
 | `frontend_error` | `window.onerror` or `unhandledrejection` | `source`, `message`, `filename?`, `line?`, `col?`, `stack?` |
 | `$identify` | After OAuth sign-in | `is_new`, `name`, `email` (via `$set`), `$anon_distinct_id` = previous device_id |
 
 **Autocapture is also on** — PostHog records click / pageleave events for
-DOM elements in the renderer. We do NOT enable Session Replay (no
-keystroke / DOM recording).
+DOM elements in the renderer. Element text isn't masked, so a click event
+includes the text of the button or link you clicked, which can be a
+session name or a folder path shown in the app. We do NOT enable Session
+Replay (no keystroke / DOM recording).
 
 ### Hashed vs raw IDs
 
@@ -83,21 +163,23 @@ sessions without learning Fleetify's internal IDs.
 
 ---
 
-## How to opt out
+## How to opt out of product analytics
 
-- **At onboarding:** the consent step before "Enter Fleet" is opt-IN.
-  Clicking "Not now" is the default — no events leave the machine.
-- **Later:** **Settings → General → Privacy** has a third toggle,
-  "Product analytics (PostHog)". Flipping it off:
+- **At onboarding:** the product analytics question, the last one before
+  "Enter Fleet", is opt-IN. Clicking "Not now" keeps it off — no events
+  leave the machine.
+- **Later:** **Settings → General → Privacy → Product analytics**.
+  Flipping it off:
   1. Calls `posthog.opt_out_capturing()` in the renderer — new
      autocapture events stop instantly.
   2. Invokes the `telemetry_set_posthog_enabled(false)` Tauri command,
      which (a) persists the flag in `fleet.config.json`, and (b) closes
      the backend's runtime gate so no new `session_started` /
-     `tokens_used` / etc. events get queued.
-- **At build time:** if `POSTHOG_API_KEY` was unset when the Fleetify
-  binary was compiled, the entire backend module is a no-op. The
-  frontend wrapper similarly stubs out when `VITE_POSTHOG_KEY` is unset.
+     `tokens_used` / etc. events get queued. If the flag can't be saved,
+     the switch shows why, and the change lasts until Fleetify restarts.
+- **Without a key:** if `POSTHOG_API_KEY` isn't set in the backend's
+  environment, the entire backend module is a no-op. The frontend
+  wrapper similarly stubs out when the build had no `VITE_POSTHOG_KEY`.
 
 Once disabled, queued events in `~/.fleetify/posthog-outbox.sqlite` stop
 draining (the worker re-checks the gate each tick). You can also wipe
@@ -105,7 +187,7 @@ the file directly — the next launch will recreate an empty one.
 
 ---
 
-## How to verify (for ops + curious users)
+## How to verify product analytics (for ops + curious users)
 
 While the app is running with the gate open:
 

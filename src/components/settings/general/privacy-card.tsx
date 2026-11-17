@@ -1,95 +1,118 @@
 /**
  * Privacy card — Settings → General.
  *
- * Three rows:
- *   - Anonymous usage analytics (Fleetify cloud, opt-out; default ON).
- *   - Crash reports (opt-out; default ON).
- *   - Product analytics (PostHog, opt-IN; default OFF).
+ * Two switches, both off until the user turns them on:
+ *   - Dashboard sync: sessions on the user's fleetify.dev dashboard (the
+ *     Fleetify cloud channel).
+ *   - Product analytics: usage data for PostHog.
  *
- * The first two read/write the flat `telemetryEnabled` /
- * `crashReportsEnabled` fields on FleetConfig. The third uses the
- * dedicated `telemetryGetConfig` / `telemetrySetPosthogEnabled`
- * commands so the toggle and the backend's live runtime gate stay in
- * lockstep without an extra round-trip through `fleet.config.json`.
+ * Both read the saved choice from `telemetryGetConfig` and change it through
+ * their own Tauri command, which flips the backend's live gate and saves the
+ * flag. Neither goes through `saveConfigPatch`: a whole-config write could put
+ * back a stale `telemetry` section.
+ *
+ * A switch shows the new choice at once. If the command never reached the
+ * backend, the switch flips back and says so. If the backend took the change
+ * but couldn't save it, the switch keeps it and shows the backend's message.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CardShell, Row, Toggle } from "./_primitives";
-import { saveConfigPatch } from "./_config";
 import { optIn, optOut } from "@/lib/posthog";
-
-interface PrivacyCfg {
-  telemetryEnabled?: boolean;
-  crashReportsEnabled?: boolean;
-}
+import { sendPrivacyChoice, type PrivacySaveResult } from "@/lib/privacy-choice";
 
 type ElectronShim = {
-  getConfig?: () => Promise<PrivacyCfg | null>;
-  telemetryGetConfig?: () => Promise<{ distinct_id: string; posthog_enabled: boolean }>;
-  telemetrySetPosthogEnabled?: (enabled: boolean) => Promise<unknown>;
+  telemetryGetConfig?: () => Promise<{
+    distinct_id: string;
+    posthog_enabled: boolean;
+    cloud_enabled: boolean;
+  }>;
+  telemetrySetCloudEnabled?: (enabled: boolean) => Promise<PrivacySaveResult>;
+  telemetrySetPosthogEnabled?: (enabled: boolean) => Promise<PrivacySaveResult>;
 };
 function electron(): ElectronShim {
   return (window as unknown as { electronAPI?: ElectronShim }).electronAPI ?? {};
 }
 
+const DASHBOARD_SYNC = "Dashboard sync";
+const PRODUCT_ANALYTICS = "Product analytics";
+
 export function PrivacyCard() {
-  const [cfg, setCfg] = useState<PrivacyCfg>({});
-  const [posthogEnabled, setPosthogEnabled] = useState(false);
+  const [cloud, setCloud] = useState(false);
+  const [cloudError, setCloudError] = useState<string | null>(null);
+  const [posthog, setPosthog] = useState(false);
+  const [posthogError, setPosthogError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  // One command per switch at a time: two in flight could land in either
+  // order and leave the backend's gate disagreeing with the switch.
+  const busy = useRef({ cloud: false, posthog: false });
 
   useEffect(() => {
     let mounted = true;
-    // Two independent reads — the flat FleetConfig (telemetryEnabled +
-    // crashReportsEnabled) and the backend-owned posthog flag. Either
-    // failing leaves its half at its default; the card still renders.
-    Promise.allSettled([
-      electron().getConfig?.() ?? Promise.resolve(null),
-      electron().telemetryGetConfig?.() ?? Promise.resolve(null),
-    ]).then(([cfgRes, telemRes]) => {
-      if (!mounted) return;
-      if (cfgRes.status === "fulfilled" && cfgRes.value) {
-        setCfg(cfgRes.value as PrivacyCfg);
+    (async () => {
+      try {
+        const saved = await electron().telemetryGetConfig?.();
+        if (mounted && saved) {
+          setCloud(saved.cloud_enabled === true);
+          setPosthog(saved.posthog_enabled === true);
+        }
+      } catch {
+        /* both switches stay off */
       }
-      if (telemRes.status === "fulfilled" && telemRes.value) {
-        setPosthogEnabled((telemRes.value as { posthog_enabled: boolean }).posthog_enabled);
-      }
-      setLoaded(true);
-    });
+      if (mounted) setLoaded(true);
+    })();
     return () => { mounted = false; };
   }, []);
 
-  const patch = async (next: Partial<PrivacyCfg>) => {
-    setCfg(prev => ({ ...prev, ...next }));
-    try { await saveConfigPatch(next); } catch { /* best effort */ }
+  const toggleCloud = async () => {
+    if (busy.current.cloud) return;
+    busy.current.cloud = true;
+    const next = !cloud;
+    setCloud(next);
+    const { applied, error } = await sendPrivacyChoice(
+      () => electron().telemetrySetCloudEnabled?.(next),
+    );
+    if (!applied) setCloud(!next);
+    setCloudError(error);
+    busy.current.cloud = false;
   };
 
-  const togglePosthog = async (next: boolean) => {
-    setPosthogEnabled(next);
-    // Flip the SDK client-side FIRST so a live opt-out stops new sends
-    // immediately even if the backend round-trip is slow.
+  const togglePosthog = async () => {
+    if (busy.current.posthog) return;
+    busy.current.posthog = true;
+    const next = !posthog;
+    setPosthog(next);
+    // Flip the SDK first so a live opt-out stops new sends at once, even if
+    // the backend round-trip is slow.
     if (next) optIn(); else optOut();
-    try { await electron().telemetrySetPosthogEnabled?.(next); } catch { /* best effort */ }
+    const { applied, error } = await sendPrivacyChoice(
+      () => electron().telemetrySetPosthogEnabled?.(next),
+    );
+    if (!applied) {
+      setPosthog(!next);
+      // The backend never got the opt-in: stop capturing again. A failed
+      // opt-out leaves the SDK off, since that is what the user asked for.
+      if (next) optOut();
+    }
+    setPosthogError(error);
+    busy.current.posthog = false;
   };
 
   if (!loaded) {
     return <CardShell><div style={{ padding: 16, fontSize: 13, color: "var(--c-low)" }}>Loading…</div></CardShell>;
   }
 
-  const telemetry = cfg.telemetryEnabled ?? true;
-  const crashReports = cfg.crashReportsEnabled ?? true;
-
   return (
     <CardShell>
-      <Row title="Anonymous usage analytics"
-           desc="Helps us prioritize features. Never includes prompt content, API keys, or file paths.">
-        <Toggle on={telemetry} onChange={() => void patch({ telemetryEnabled: !telemetry })} />
+      <Row title={DASHBOARD_SYNC}
+           desc="Shows your sessions on your fleetify.dev dashboard. Sends session titles (the start of your first message), project folder names, the kind of each agent action, token usage and cost, linked to your account. Never your code, file contents, commands or API keys. Off by default."
+           error={cloudError}>
+        <Toggle on={cloud} label={DASHBOARD_SYNC} onChange={() => void toggleCloud()} />
       </Row>
-      <Row title="Crash reports" desc="Send stack traces when Fleetify crashes.">
-        <Toggle on={crashReports} onChange={() => void patch({ crashReportsEnabled: !crashReports })} />
-      </Row>
-      <Row title="Product analytics"
-           desc="Anonymous behavioural data so we can see which features matter (e.g. is onboarding too long?). Same privacy floor — no message content, keys, or file paths. Off by default."
+      <Row title={PRODUCT_ANALYTICS}
+           desc="Usage data that helps us see which features matter (for example, whether onboarding is too long), linked to your account after you sign in. Never message content, API keys or file paths. Off by default."
+           error={posthogError}
            last>
-        <Toggle on={posthogEnabled} onChange={() => void togglePosthog(!posthogEnabled)} />
+        <Toggle on={posthog} label={PRODUCT_ANALYTICS} onChange={() => void togglePosthog()} />
       </Row>
     </CardShell>
   );

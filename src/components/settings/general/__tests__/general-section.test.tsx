@@ -31,7 +31,7 @@ describe("GeneralSection (composed)", () => {
     });
     expect(screen.getByText(/Desktop notifications/i)).toBeInTheDocument();
     expect(screen.getByText(/Automatic updates/i)).toBeInTheDocument();
-    expect(screen.getByText(/Anonymous usage analytics/i)).toBeInTheDocument();
+    expect(await screen.findByText("Dashboard sync")).toBeInTheDocument();
     expect(
       await screen.findByText(/Credit Fleetify in commits and pull requests/i),
     ).toBeInTheDocument();
