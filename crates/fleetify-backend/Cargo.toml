@@ -65,6 +65,11 @@ dotenvy = "0.15"
 # code back is to give agy a real terminal that we own.
 portable-pty = "0.8"
 
+# open_external decides WSL the way the open crate does before it tries
+# wslview (open 5.3.5 unix.rs): the same crate.
+[target.'cfg(target_os = "linux")'.dependencies]
+is-wsl = "0.4"
+
 # Windows-only: read the user's canonical (Machine + User) registry PATH so
 # spawned CLI agents get the clean PATH a fresh terminal would have — NOT the
 # bloated runtime PATH our deep launch chain (npm -> cross-env -> tauri ->

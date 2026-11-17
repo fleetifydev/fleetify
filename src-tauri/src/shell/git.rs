@@ -737,11 +737,26 @@ pub async fn diff_summary(folder: &Path, base: &str) -> Value {
 
 /// Browser target for "Open PR": the exact `/pull/<n>` page when the
 /// caller knows the PR number, the repo's `/pulls` list as the last
-/// resort (no PR exists yet, or resolution failed).
+/// resort (no PR exists yet, or resolution failed). Built without the
+/// credentials an origin remote can hold (`https://user:token@…`): the page
+/// is opened in the browser and handed back to the renderer.
 fn pr_page_url(repo_url: &str, pr_number: Option<i64>) -> String {
+    let repo_url = without_credentials(repo_url);
     match pr_number {
         Some(n) => format!("{repo_url}/pull/{n}"),
         None => format!("{repo_url}/pulls"),
+    }
+}
+
+/// `url` without its username and password, when it has any.
+fn without_credentials(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(mut parsed) if !parsed.username().is_empty() || parsed.password().is_some() => {
+            let _ = parsed.set_username("");
+            let _ = parsed.set_password(None);
+            parsed.to_string()
+        }
+        _ => url.to_string(),
     }
 }
 
@@ -3117,6 +3132,19 @@ mod tests {
         );
         assert_eq!(parse_pr_number("https://github.com/foo/bar"), None);
         assert_eq!(parse_pr_number(""), None);
+    }
+
+    #[test]
+    fn a_pr_page_carries_no_credentials_from_the_remote() {
+        // An origin remote can hold a token: https://user:token@github.com/…
+        assert_eq!(
+            pr_page_url("https://user:tok@github.com/foo/bar", Some(1)),
+            "https://github.com/foo/bar/pull/1"
+        );
+        assert_eq!(
+            pr_page_url("https://tok@github.com/foo/bar", None),
+            "https://github.com/foo/bar/pulls"
+        );
     }
 
     #[test]
