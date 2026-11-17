@@ -156,9 +156,10 @@ interface Window {
     getConfig: () => Promise<FleetConfig | null>;
     setConfig: (config: FleetConfig) => Promise<boolean>;
     /** Read backend-owned telemetry config: stable per-machine
-     *  distinct_id (= device.json device_id), the persisted PostHog
-     *  opt-in flag and whether Fleetify cloud sync is on. Called once at
-     *  boot to bootstrap posthog-js with the same id the Rust sink uses. */
+     *  distinct_id (= device.json device_id), and whether product
+     *  analytics (PostHog) and Fleetify cloud sync are on right now (the
+     *  backend's live gates). Called at boot to decide whether to start
+     *  posthog-js, with the same id the Rust sink uses. */
     telemetryGetConfig?: () => Promise<{
       distinct_id: string;
       posthog_enabled: boolean;

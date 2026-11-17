@@ -23,9 +23,11 @@ vi.mock("@/lib/posthog", () => ({
 const USER = { id: "u-1", name: "Mira Tester", email: "mira@example.com" };
 
 const DASHBOARD_QUESTION =
-  "One more thing, Mira. Want to see your sessions on your fleetify.dev dashboard? Fleetify would send session titles (the start of your first message), project folder names, the kind of each agent action, token usage and cost to your account. Never your code, file contents, commands or API keys. It stays off unless you turn it on, and you can change it anytime in **Settings → Privacy**.";
+  "One more thing, Mira. Want to see your sessions on your fleetify.dev dashboard? Fleetify would send session titles (the folder name, or a name you typed), project folder names, which agent and model each session uses, the kind of each agent action, token usage and cost, and a heartbeat every minute while it's open, to your account. Never your code, file contents, commands or API keys. It stays off unless you turn it on, and you can change it anytime in **Settings → Privacy**.";
 const ANALYTICS_QUESTION =
   "Last thing — would you help us improve Fleetify? We'd send usage data (which screens, which providers, how long onboarding takes), linked to your account. Never message content, API keys or file paths. You can change this anytime in **Settings → Privacy**.";
+const NOT_CHANGED =
+  "I couldn't change that setting. You can try again in **Settings → Privacy**.";
 
 type Mock = ReturnType<typeof vi.fn>;
 let api: { telemetrySetCloudEnabled: Mock; telemetrySetPosthogEnabled: Mock };
@@ -142,10 +144,13 @@ describe("onboarding privacy questions", () => {
     api.telemetrySetPosthogEnabled.mockRejectedValueOnce(new Error("ipc down"));
     await pickTheme();
     await answer("Turn on");
-    line("I couldn't save that choice: Couldn't change this setting.");
+    expectQuestion(NOT_CHANGED);
     expectQuestion(ANALYTICS_QUESTION);
     await answer("Sure, help out");
-    expect(screen.getAllByText("I couldn't save that choice: Couldn't change this setting.")).toHaveLength(2);
+    const plain = NOT_CHANGED.replace(/\*\*/g, "");
+    expect(
+      screen.getAllByText((_, el) => el?.tagName === "P" && el.textContent === plain),
+    ).toHaveLength(2);
     // Nothing recorded the opt-in, so the SDK stops capturing again.
     expect(optIn).toHaveBeenCalledTimes(1);
     expect(optOut).toHaveBeenCalledTimes(1);

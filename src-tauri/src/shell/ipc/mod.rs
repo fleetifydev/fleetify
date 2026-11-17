@@ -88,22 +88,21 @@ pub async fn config_set(app: tauri::AppHandle, config: serde_json::Value) -> ser
 // stops or starts without a restart.
 
 #[tauri::command]
-pub async fn telemetry_get_config(app: tauri::AppHandle) -> serde_json::Value {
-    let (posthog_enabled, cloud_enabled) = match app.path().app_data_dir() {
-        Ok(dir) => {
-            let cfg = config::load_config_from(&dir);
-            (
-                config::telemetry_from(&cfg).posthog_enabled,
-                config::cloud_sync_from(&cfg),
-            )
-        }
-        Err(_) => (false, false),
-    };
+pub async fn telemetry_get_config() -> serde_json::Value {
     let device = fleetify_backend::services::telemetry::device_id::get_or_create();
+    telemetry_config_now(device.device_id)
+}
+
+/// The two flags are the backend's live gates, not the saved choices. They
+/// differ after a failed save (the gate still follows the switch for this
+/// session), and the Settings card has to show what is actually on. The
+/// shell sets both gates from the saved choices as soon as it starts
+/// (lib.rs), before the warm-up, so the renderer's launch read sees them.
+fn telemetry_config_now(distinct_id: String) -> serde_json::Value {
     serde_json::json!({
-        "distinct_id": device.device_id,
-        "posthog_enabled": posthog_enabled,
-        "cloud_enabled": cloud_enabled,
+        "distinct_id": distinct_id,
+        "posthog_enabled": fleetify_backend::services::telemetry::posthog::is_enabled(),
+        "cloud_enabled": fleetify_backend::services::telemetry::cloud_enabled(),
     })
 }
 
@@ -4832,5 +4831,56 @@ mod editor_tests {
             "/no/such/path/zzz-fleet-test".into(),
         ));
         assert_eq!(r["ok"], false);
+    }
+}
+
+#[cfg(test)]
+mod telemetry_config_tests {
+    use super::*;
+    use fleetify_backend::services::telemetry::{cloud_enabled, posthog, set_cloud_enabled};
+
+    /// Puts both gates back as they were, also when the test fails.
+    struct RestoreGates {
+        posthog: bool,
+        cloud: bool,
+    }
+
+    impl Drop for RestoreGates {
+        fn drop(&mut self) {
+            posthog::set_enabled(self.posthog);
+            tauri::async_runtime::block_on(set_cloud_enabled(self.cloud));
+        }
+    }
+
+    #[test]
+    fn telemetry_config_reports_the_live_gates() {
+        let _restore = RestoreGates {
+            posthog: posthog::is_enabled(),
+            cloud: cloud_enabled(),
+        };
+
+        // After a failed save the gates differ from the saved choices, and a
+        // re-mounted Settings card has to show the gates.
+        posthog::set_enabled(true);
+        tauri::async_runtime::block_on(set_cloud_enabled(false));
+        assert_eq!(
+            telemetry_config_now("device-1".into()),
+            serde_json::json!({
+                "distinct_id": "device-1",
+                "posthog_enabled": true,
+                "cloud_enabled": false,
+            })
+        );
+
+        posthog::set_enabled(false);
+        tauri::async_runtime::block_on(set_cloud_enabled(true));
+        assert_eq!(
+            telemetry_config_now("device-1".into()),
+            serde_json::json!({
+                "distinct_id": "device-1",
+                "posthog_enabled": false,
+                "cloud_enabled": true,
+            })
+        );
     }
 }

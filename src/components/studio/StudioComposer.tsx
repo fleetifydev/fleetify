@@ -105,7 +105,9 @@ export function StudioComposer() {
     setError(null);
     try {
       const text = prompt.trim();
-      const sessionTitle = title.trim() || text.slice(0, 48) || "Generation";
+      // Never derived from the prompt: session titles reach the fleetify.dev
+      // dashboard when dashboard sync is on.
+      const sessionTitle = title.trim() || "Generation";
       const session = await createSession({
         title: sessionTitle,
         project_path: folder,

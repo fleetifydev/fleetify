@@ -134,6 +134,35 @@ export const log = {
 };
 
 /**
+ * What kind of error it was: the class name (`TypeError`, `AbortError`, …)
+ * for an Error, otherwise its JS type. Never its message or stack, which can
+ * carry file paths, message text or tokens.
+ */
+function errorType(value: unknown): string {
+  if (value instanceof Error) return (value.name || "Error").slice(0, 64);
+  if (value === null || value === undefined) return "unknown";
+  return typeof value;
+}
+
+// Product analytics gets only the error's type; `installGlobalErrorCapture`
+// keeps the details in the local log. `capture()` is a no-op unless the user
+// opted in.
+async function capturePostHogFrontendError(
+  source: "uncaught" | "unhandled-rejection",
+  error: unknown,
+): Promise<void> {
+  try {
+    const { capture, isReady } = await import("./posthog");
+    if (!isReady()) return;
+    capture("frontend_error", { source, error_type: errorType(error) });
+  } catch {
+    // Don't let analytics tip the renderer over — if the dynamic
+    // import itself fails, the original `log.error` call above
+    // already captured the trail.
+  }
+}
+
+/**
  * Wire global error capture. Call once from the renderer entry point.
  *   • `window.onerror`         — synchronous throws that escape every
  *                                React error boundary AND non-React
@@ -144,25 +173,6 @@ export const log = {
  *   • `beforeunload`           — last-ditch flush so the final batch
  *                                lands before the window dies.
  */
-// Lazy import keeps the posthog SDK chunk out of the cold-start path
-// even before `initPostHog` runs. `capture()` itself is a no-op until
-// the SDK has been initialised by `App.tsx`.
-async function capturePostHogFrontendError(
-  source: "uncaught" | "unhandled-rejection",
-  message: string,
-  fields: Record<string, unknown>,
-): Promise<void> {
-  try {
-    const { capture, isReady } = await import("./posthog");
-    if (!isReady()) return;
-    capture("frontend_error", { source, message, ...fields });
-  } catch {
-    // Don't let analytics tip the renderer over — if the dynamic
-    // import itself fails, the original `log.error` call above
-    // already captured the trail.
-  }
-}
-
 export function installGlobalErrorCapture(): void {
   if (typeof window === "undefined") return;
   window.addEventListener("error", (ev) => {
@@ -174,12 +184,7 @@ export function installGlobalErrorCapture(): void {
       col: ev.colno ?? null,
       stack: err instanceof Error ? err.stack : null,
     });
-    void capturePostHogFrontendError("uncaught", message, {
-      filename: ev.filename ?? null,
-      line: ev.lineno ?? null,
-      col: ev.colno ?? null,
-      stack: err instanceof Error ? err.stack : null,
-    });
+    void capturePostHogFrontendError("uncaught", err);
   });
   window.addEventListener("unhandledrejection", (ev) => {
     const reason = ev.reason;
@@ -191,9 +196,7 @@ export function installGlobalErrorCapture(): void {
     log.error("renderer.unhandled-rejection", message, {
       stack: reason instanceof Error ? reason.stack : null,
     });
-    void capturePostHogFrontendError("unhandled-rejection", message, {
-      stack: reason instanceof Error ? reason.stack : null,
-    });
+    void capturePostHogFrontendError("unhandled-rejection", reason);
   });
   window.addEventListener("beforeunload", () => {
     // Best-effort sync flush. The promise it returns may not resolve

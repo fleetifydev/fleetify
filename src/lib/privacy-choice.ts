@@ -1,11 +1,12 @@
 /**
  * Sending a privacy choice (dashboard sync, product analytics) to the shell.
  *
- * `telemetry_set_cloud_enabled` and `telemetry_set_posthog_enabled` apply the
- * choice to the backend's live gate, then save it. They resolve to
- * `{ ok: true }`, or to `{ ok: false, error }` when the save failed: the
- * choice then holds only until Fleetify restarts. A call that throws, or a
- * bridge that isn't there, never reached the backend, so nothing changed.
+ * `telemetry_set_cloud_enabled` and `telemetry_set_posthog_enabled` save the
+ * choice, then apply it to the backend's live gate, also when the save
+ * failed. They resolve to `{ ok: true }`, or to `{ ok: false, error }` when
+ * the save failed: the choice then holds only until Fleetify restarts. A
+ * call that throws, or a bridge that isn't there, never reached the backend,
+ * so nothing changed.
  *
  * Settings → Privacy and the onboarding questions both go through here.
  */

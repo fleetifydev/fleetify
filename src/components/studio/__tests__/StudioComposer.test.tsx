@@ -55,6 +55,9 @@ describe("StudioComposer", () => {
 
     await waitFor(() => expect(mockCreate).toHaveBeenCalled());
     expect(mockCreate.mock.calls[0][0]).toMatchObject({ tool: "higgsfield", model_name: "nano_banana_2", project_path: "/home/u/art" });
+    // The prompt never becomes the session title: titles reach the dashboard
+    // when dashboard sync is on.
+    expect(mockCreate.mock.calls[0][0].title).toBe("Generation");
     // The composer hands the first generation to the session view instead of
     // calling generate itself, then activates the new session.
     await waitFor(() => expect(setPendingGeneration).toHaveBeenCalled());

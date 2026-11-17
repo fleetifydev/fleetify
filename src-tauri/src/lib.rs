@@ -447,15 +447,22 @@ pub fn run() {
             // (200ms × 20 = 4s upper bound covers a cold Rust startup).
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                // Fleetify cloud sync starts closed in the backend. If the
-                // user turned it on, open it right away rather than after
-                // the warm-up below, so the backend's first heartbeat and
-                // early session events aren't dropped. Closing waits for the
-                // restore at the end of this task. Rows older builds queued
-                // depend on neither: the outbox drops them itself when it
-                // opens, before anything can read them.
+                // Both telemetry gates start closed in the backend. Open the
+                // ones the user turned on right away rather than after the
+                // warm-up below: `telemetry_get_config` reports the live
+                // gates, and the renderer reads it as soon as it loads (it
+                // decides then whether to start posthog-js). It also keeps
+                // the backend's first heartbeat and early session events.
+                // The PostHog gate is only a flag, so it can open before
+                // serve() has set up the PostHog sink. Closing the cloud gate
+                // waits for the restore at the end of this task. Rows older
+                // builds queued depend on neither: the outbox drops them
+                // itself when it opens, before anything can read them.
                 if let Ok(dir) = handle.path().app_data_dir() {
                     let cfg = crate::shell::config::load_config_from(&dir);
+                    if crate::shell::config::telemetry_from(&cfg).posthog_enabled {
+                        fleetify_backend::services::telemetry::posthog::set_enabled(true);
+                    }
                     if crate::shell::config::cloud_sync_from(&cfg) {
                         fleetify_backend::services::telemetry::set_cloud_enabled(true).await;
                     }
@@ -479,23 +486,14 @@ pub fn run() {
                 // token so private-repo clones authenticate from the first try.
                 crate::shell::github_link::push_clone_token().await;
 
-                // Restore the persisted PostHog opt-in. The backend's
-                // posthog::init already ran inside serve(), so the
-                // outbox + worker are wired; we just need to flip the
-                // runtime gate to match what the user previously
-                // consented to. Fresh installs land on default-off
-                // because telemetry_from returns Default on missing.
-                //
-                // Then restore the Fleetify cloud sync choice. Closing also
+                // Restore the Fleetify cloud sync choice. Closing also
                 // purges what is still queued, if the backend has opened its
                 // outbox by now. Nothing orders this after that, so rows
-                // older builds queued are dropped by the outbox itself.
+                // older builds queued are dropped by the outbox itself. (The
+                // PostHog gate was restored at the top of this task; doing it
+                // again here could reopen it after a failed opt-out save.)
                 if let Ok(dir) = handle.path().app_data_dir() {
                     let cfg = crate::shell::config::load_config_from(&dir);
-                    let telem = crate::shell::config::telemetry_from(&cfg);
-                    if telem.posthog_enabled {
-                        fleetify_backend::services::telemetry::posthog::set_enabled(true);
-                    }
                     fleetify_backend::services::telemetry::set_cloud_enabled(
                         crate::shell::config::cloud_sync_from(&cfg),
                     )

@@ -47,7 +47,7 @@ import { STUDIO_ENABLED } from "@/lib/feature-flags";
 import { useThemeStore, type ThemeMode } from "@/stores/theme-store";
 import { ThemeModeCards } from "@/components/theme/theme-mode-cards";
 import { capture, optIn, optOut } from "@/lib/posthog";
-import { sendPrivacyChoice } from "@/lib/privacy-choice";
+import { sendPrivacyChoice, type PrivacyChoiceOutcome } from "@/lib/privacy-choice";
 
 interface Props {
   user: AuthUser | null;
@@ -641,18 +641,28 @@ export function OnboardingChat({ user, onDone, startAt }: Props) {
       mode === "system" ? "System theme" : mode === "dark" ? "Dark theme" : "Light theme",
     );
     await pushAssistant(
-      `One more thing, ${firstName}. Want to see your sessions on your fleetify.dev dashboard? Fleetify would send session titles (the start of your first message), project folder names, the kind of each agent action, token usage and cost to your account. Never your code, file contents, commands or API keys. It stays off unless you turn it on, and you can change it anytime in **Settings → Privacy**.`,
+      `One more thing, ${firstName}. Want to see your sessions on your fleetify.dev dashboard? Fleetify would send session titles (the folder name, or a name you typed), project folder names, which agent and model each session uses, the kind of each agent action, token usage and cost, and a heartbeat every minute while it's open, to your account. Never your code, file contents, commands or API keys. It stays off unless you turn it on, and you can change it anytime in **Settings → Privacy**.`,
       "cloud-sync-consent",
     );
+  };
+
+  // One line when a privacy choice didn't take; onboarding carries on.
+  const reportPrivacyChoice = async ({ applied, error }: PrivacyChoiceOutcome) => {
+    if (!applied) {
+      await pushAssistant(
+        "I couldn't change that setting. You can try again in **Settings → Privacy**.",
+      );
+    } else if (error) {
+      await pushAssistant(`I couldn't save that choice: ${error}`);
+    }
   };
 
   const handleCloudSyncConsent = async (enabled: boolean) => {
     resolveLastWidget();
     pushUser(enabled ? "Turn on" : "Not now");
-    const { error } = await sendPrivacyChoice(
-      () => window.electronAPI?.telemetrySetCloudEnabled?.(enabled),
+    await reportPrivacyChoice(
+      await sendPrivacyChoice(() => window.electronAPI?.telemetrySetCloudEnabled?.(enabled)),
     );
-    if (error) await pushAssistant(`I couldn't save that choice: ${error}`);
     await pushAssistant(
       "Last thing — would you help us improve Fleetify? We'd send usage data (which screens, which providers, how long onboarding takes), linked to your account. Never message content, API keys or file paths. You can change this anytime in **Settings → Privacy**.",
       "telemetry-consent",
@@ -664,22 +674,24 @@ export function OnboardingChat({ user, onDone, startAt }: Props) {
   const handleTelemetryConsent = async (enabled: boolean) => {
     resolveLastWidget();
     pushUser(enabled ? "Sure, help out" : "Not now");
-    // Flip the SDK first so a yes starts capturing immediately,
-    // a no suppresses any pending autocapture before the IPC lands.
+    // Start or stop the renderer's analytics first, so a no takes effect
+    // before the IPC lands.
     if (enabled) optIn(); else optOut();
-    const { applied, error } = await sendPrivacyChoice(
+    const outcome = await sendPrivacyChoice(
       () => window.electronAPI?.telemetrySetPosthogEnabled?.(enabled),
     );
-    // The backend never got an opt-in: stop capturing again, as Settings →
-    // Privacy would show it off.
-    const optedIn = enabled && applied;
-    if (enabled && !applied) optOut();
-    if (error) await pushAssistant(`I couldn't save that choice: ${error}`);
-    await pushAssistant(
-      optedIn
-        ? "Thanks — that helps us see what to improve. You can switch it off any time."
-        : "No problem. You can opt in later from **Settings → Privacy** if you change your mind.",
-    );
+    // The backend never got an opt-in: stop again, as Settings → Privacy
+    // would show it off.
+    const optedIn = enabled && outcome.applied;
+    if (enabled && !outcome.applied) optOut();
+    await reportPrivacyChoice(outcome);
+    if (outcome.applied) {
+      await pushAssistant(
+        optedIn
+          ? "Thanks — that helps us see what to improve. You can switch it off any time."
+          : "No problem. You can opt in later from **Settings → Privacy** if you change your mind.",
+      );
+    }
     await pushAssistant(
       `That's the lot, ${firstName}. Hit **Enter Fleet** whenever you're ready.`,
     );

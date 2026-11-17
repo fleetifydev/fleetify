@@ -6,10 +6,10 @@
  *     Fleetify cloud channel).
  *   - Product analytics: usage data for PostHog.
  *
- * Both read the saved choice from `telemetryGetConfig` and change it through
- * their own Tauri command, which flips the backend's live gate and saves the
- * flag. Neither goes through `saveConfigPatch`: a whole-config write could put
- * back a stale `telemetry` section.
+ * Both show the backend's live gate from `telemetryGetConfig` and change it
+ * through their own Tauri command, which saves the flag and then sets the
+ * gate. Neither goes through `saveConfigPatch`: a whole-config write could
+ * put back a stale `telemetry` section.
  *
  * A switch shows the new choice at once. If the command never reached the
  * backend, the switch flips back and says so. If the backend took the change
@@ -104,7 +104,7 @@ export function PrivacyCard() {
   return (
     <CardShell>
       <Row title={DASHBOARD_SYNC}
-           desc="Shows your sessions on your fleetify.dev dashboard. Sends session titles (the start of your first message), project folder names, the kind of each agent action, token usage and cost, linked to your account. Never your code, file contents, commands or API keys. Off by default."
+           desc="Shows your sessions on your fleetify.dev dashboard. Sends session titles (the folder name, or a name you typed), project folder names, which agent and model each session uses, the kind of each agent action, token usage and cost, and a heartbeat every minute while Fleetify is open, linked to your account. Never your code, file contents, commands or API keys. Off by default."
            error={cloudError}>
         <Toggle on={cloud} label={DASHBOARD_SYNC} onChange={() => void toggleCloud()} />
       </Row>

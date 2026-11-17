@@ -170,11 +170,9 @@ export function App() {
   useEffect(() => {
     if (!window.fleetify) { setScreen("splash"); return; }
 
-    // Bootstrap PostHog as soon as we know the backend is wired —
-    // before the auth gate so the anonymous funnel (welcome → sign-in)
-    // is also captured under the same device_id. SDK is no-op while
-    // opt-out: `posthog_enabled = false` (the default) → SDK loads but
-    // suppresses sends; consent flips it via `telemetrySetPosthogEnabled`.
+    // Product analytics: hand the wrapper the backend's device id and the
+    // live opt-in. posthog-js starts only when that is on (off by default);
+    // otherwise it isn't loaded until the user opts in.
     void window.electronAPI?.telemetryGetConfig?.()
       .then((cfg) => initPostHog({
         distinctId: cfg.distinct_id,
@@ -243,11 +241,10 @@ export function App() {
     localStorage.setItem("fleet:onboarded", "1");
     localStorage.setItem("fleet:user", JSON.stringify(user));
     setAuthedUser(user);
-    // PostHog identity merge — frontend was emitting under the anonymous
-    // device_id; calling identify(user_id) fires $identify with
-    // $anon_distinct_id set, so PostHog server-side merges the two
-    // persons. No-op when SDK isn't initialised (opt-out or no key).
-    identifyUser(user.id, { is_new: isNew, name: user.name, email: user.email });
+    // Product analytics: link the device's events to the account, with the
+    // user id only. Sends nothing while product analytics is off; the id is
+    // used if the user opts in later in this session.
+    identifyUser(user.id);
 
     // Read the durable config once. We persist the display name with a
     // read-merge-write (config_set is a full replace), and crucially we do

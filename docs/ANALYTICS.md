@@ -26,7 +26,8 @@ Six event kinds, built in
 `crates/fleetify-backend/src/services/telemetry/emitters.rs`. Before an
 event is queued, and again just before it is sent, `cloud_view` deletes
 its `activity_summary` and cuts its `project_path` down to the folder
-name. What is left is everything that leaves the machine:
+name (`~` for your home folder itself). What is left is everything that
+leaves the machine:
 
 | Event (`kind`) | When | Fields |
 |---|---|---|
@@ -43,15 +44,14 @@ Each event also carries its `kind`, and goes out as
 What the fields hold:
 
 - **`session_title`**: the session's title when it is created, at most
-  200 characters. Titles come from your first message when Fleetify names
-  a session after it: a Studio session is named after the first 48
-  characters of its prompt, unless you type a name. Other sessions start
-  with the name you give them, the project folder's name, or a placeholder
-  such as "New agent". Renaming a session later sends nothing.
+  200 characters: the project folder's name, a name you typed (such as a
+  routine's name), or a fixed label such as "Staff Agent" for the Fleet
+  hub's own session. Renaming a session later, by hand or automatically,
+  sends nothing.
 - **`project_path`**: the folder name only, such as `fleetify` for
-  `/home/you/code/fleetify`, never the full path. The Fleet hub's own
-  session has no project folder and uses your home folder, so it sends
-  that folder's name, which is usually your OS user name.
+  `/home/you/code/fleetify`, never the full path. Your home folder itself
+  is sent as `~`, so the Fleet hub's own session, which runs there, does
+  not send your OS user name.
 - **`activity_kind`**: one of `file_edit`, `file_read`, `command`,
   `web_fetch`, `plan`, `todo`, `tool` or `error`. Activity summaries (the
   command, file path, URL, search query, prompt or to-do text behind an
@@ -91,12 +91,21 @@ change still applies until Fleetify restarts.
 
 ### What PostHog receives
 
+Fleetify doesn't load posthog-js, the PostHog library in the renderer,
+until you opt in. While product analytics is off, the renderer sends
+PostHog nothing at all. Once it is on, posthog-js never fetches remote
+config or feature flags from PostHog and loads no scripts from it.
+Turning it off again stops every further request, including events
+posthog-js had queued or was retrying.
+
 Every event carries a stable per-machine `distinct_id`: the same UUID
 v4 persisted in `~/.fleetify/device.json`. After OAuth sign-in,
-Fleetify calls `posthog.identify(user_id)` with your name and email, so
-PostHog links this device's events, earlier ones included, to your
-Fleetify account (via `$anon_distinct_id`). From then on the app's own
-events use your `user_id` as their `distinct_id`; backend events keep the
+Fleetify calls `posthog.identify(user_id)` with the id only (no name,
+email or other person properties), so PostHog links this device's
+events, earlier ones included, to your Fleetify account (via
+`$anon_distinct_id`). If you sign in before turning product analytics
+on, that happens when you turn it on. From then on the app's own events
+use your `user_id` as their `distinct_id`; backend events keep the
 device id, which PostHog has linked to you. Product analytics is linked
 to your account, not anonymous.
 
@@ -145,33 +154,31 @@ These fire from `src/lib/posthog.ts` callers in the renderer.
 | `message_sent` | Chat send button | `session_id_short` (first 8 chars), `text_length`, `has_attachments`, `attachment_count` |
 | `message_error` | Send failed (network / auth) | `session_id_short`, `error_message` |
 | `session_default_set` | Settings → Providers → Sessions Default picker | `provider_id` |
-| `frontend_error` | `window.onerror` or `unhandledrejection` | `source`, `message`, `filename?`, `line?`, `col?`, `stack?` |
-| `$identify` | After OAuth sign-in | `is_new`, `name`, `email` (via `$set`), `$anon_distinct_id` = previous device_id |
+| `frontend_error` | `window.onerror` or `unhandledrejection` | `source`, `error_type` (the error's class, such as `TypeError`, or its JS type; never its message or stack) |
+| `$identify` | After OAuth sign-in, or at opt-in if you signed in first | `$anon_distinct_id` = previous device_id |
 
-**Autocapture is also on** — PostHog records click / pageleave events for
-DOM elements in the renderer. Element text isn't masked, so a click event
-includes the text of the button or link you clicked, which can be a
-session name or a folder path shown in the app. We do NOT enable Session
-Replay (no keystroke / DOM recording).
+**Autocapture is off.** The renderer sends only the events in the table
+above: no clicks, element text or attributes, no exception or dead-click
+capture, and no Session Replay (no keystroke / DOM recording).
 
 ### Hashed vs raw IDs
 
-Anything that could correlate Fleetify-internal state to a person —
-`session_id`, `project_path` — is hashed with SHA-256 and truncated to 16
-hex chars before crossing the wire. PostHog can group events into
-sessions without learning Fleetify's internal IDs.
+Backend events hash `session_id` and `project_path` with SHA-256,
+truncated to 16 hex chars, before they leave the machine. The renderer's
+`message_sent` and `message_error` events send `session_id_short`, the
+first 8 characters of the raw session id (a random UUID).
 
 ---
 
 ## How to opt out of product analytics
 
 - **At onboarding:** the product analytics question, the last one before
-  "Enter Fleet", is opt-IN. Clicking "Not now" keeps it off — no events
-  leave the machine.
+  "Enter Fleet", is opt-IN. Clicking "Not now" keeps it off, and nothing
+  is sent to PostHog.
 - **Later:** **Settings → General → Privacy → Product analytics**.
   Flipping it off:
-  1. Calls `posthog.opt_out_capturing()` in the renderer — new
-     autocapture events stop instantly.
+  1. Opts posthog-js out in the renderer and drops every request it
+     would still make, including events it had queued or was retrying.
   2. Invokes the `telemetry_set_posthog_enabled(false)` Tauri command,
      which (a) persists the flag in `fleet.config.json`, and (b) closes
      the backend's runtime gate so no new `session_started` /

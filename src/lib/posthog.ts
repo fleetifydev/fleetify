@@ -1,31 +1,68 @@
 /**
  * PostHog product analytics — thin wrapper around posthog-js.
  *
- * Three-tier gating mirrors the Rust backend:
- *   1. Compile-time: `VITE_POSTHOG_KEY` unset at build → every function
- *      is a no-op, `isReady()` returns false. The SDK isn't even loaded.
- *   2. Initial state: `opts.enabled === false` on `initPostHog()` → SDK
- *      starts opted-out, so autocapture is suppressed until `optIn()`.
- *   3. Live opt-out: `optOut()` flips the SDK off without re-initing.
+ * posthog-js is not loaded until the user opts in (Settings → Privacy →
+ * Product analytics, or the last onboarding question). While product
+ * analytics is off nothing here imports or starts it, so the renderer makes
+ * no request to PostHog: no events, no remote config, no feature flags.
  *
- * `distinct_id` comes from the Rust backend's persisted `device_id`
- * (via the `telemetry_get_config` Tauri command). After OAuth sign-in,
- * `identifyUser(user_id, props)` merges the anonymous person into the
- * authenticated person via PostHog's `$anon_distinct_id` link — that
- * way pre-signin events stay attached to the same user post-signin.
+ * Once started, it sends only the events Fleetify captures itself
+ * (`INIT_OPTIONS`). Everything posthog-js would otherwise do on its own is
+ * off: autocapture, exception, dead-click, heatmap and web-vitals capture,
+ * session replay, surveys, product tours and conversations. It also never
+ * fetches remote config or flags from PostHog or loads scripts from it.
  *
- * The SDK is lazy-loaded via dynamic import so cold-start ships fewer
- * KB of JS when the user opts out (or builds without a key).
+ * Turning it off again in the same session opts posthog-js out and drops
+ * every request it would still make (see `guardRequests`).
+ *
+ * `distinct_id` is the Rust backend's persisted `device_id` (from the
+ * `telemetry_get_config` command), so renderer and backend events land on
+ * one PostHog person. `identifyUser(user_id)` links that person to the
+ * account, with the id only.
+ *
+ * `VITE_POSTHOG_KEY` unset at build → every function is a no-op.
  */
 
-import type { PostHog } from "posthog-js";
+import type { PostHog, PostHogConfig } from "posthog-js";
 
-const KEY = import.meta.env.VITE_POSTHOG_KEY as string | undefined;
-const HOST =
-  (import.meta.env.VITE_POSTHOG_HOST as string | undefined) ??
-  "https://us.i.posthog.com";
+const projectKey = () => (import.meta.env.VITE_POSTHOG_KEY as string | undefined) || undefined;
+const apiHost = () =>
+  (import.meta.env.VITE_POSTHOG_HOST as string | undefined) || "https://us.i.posthog.com";
 
-let phPromise: Promise<PostHog | null> | null = null;
+/**
+ * Everything posthog-js would send or fetch beyond Fleetify's own events
+ * is off. Each of these is checked against the posthog-js source:
+ * remote config and `/flags` are skipped with `advanced_disable_flags`;
+ * the explicit `capture_*` / `disable_*` values also beat server-side
+ * settings that older builds may have stored locally; and no extension
+ * script is fetched from PostHog's asset host.
+ */
+const INIT_OPTIONS = {
+  autocapture: false,
+  capture_pageview: false,
+  capture_pageleave: false,
+  capture_dead_clicks: false,
+  capture_exceptions: false,
+  capture_heatmaps: false,
+  capture_performance: false,
+  disable_session_recording: true,
+  disable_surveys: true,
+  disable_conversations: true,
+  disable_product_tours: true,
+  disable_web_experiments: true,
+  advanced_disable_flags: true,
+  disable_external_dependency_loading: true,
+  persistence: "localStorage",
+} satisfies Partial<PostHogConfig>;
+
+/** The user's current choice. */
+let enabled = false;
+/** Set once the user chooses in this session; the launch read can't undo it. */
+let chosen = false;
+let distinctId: string | null = null;
+/** An account to identify once posthog-js runs (sign-in before opt-in). */
+let pendingUserId: string | null = null;
+let loading: Promise<void> | null = null;
 let phInstance: PostHog | null = null;
 
 function platformHint(): string {
@@ -37,76 +74,102 @@ function platformHint(): string {
   return "unknown";
 }
 
+/** True while posthog-js runs and the user has it on. */
 export function isReady(): boolean {
-  return phInstance !== null;
+  return phInstance !== null && enabled;
 }
 
 /**
- * Lazy-init posthog-js with the backend-supplied distinct_id and the
- * user's persisted opt-in state. Idempotent — second call returns the
- * same instance. No-op when `VITE_POSTHOG_KEY` was unset at build time.
+ * Called once at launch with the backend's device id and the saved choice.
+ * Starts posthog-js only when that choice is on; otherwise it isn't loaded.
  */
 export async function initPostHog(opts: {
   distinctId: string;
   enabled: boolean;
 }): Promise<void> {
-  if (!KEY) return;
-  if (phInstance) return;
-  if (!phPromise) {
-    phPromise = import("posthog-js")
-      .then((mod) => {
-        const posthog = mod.default;
-        posthog.init(KEY, {
-          api_host: HOST,
-          autocapture: true,
-          // No router — we emit $pageview manually on screen/mainView
-          // changes from App.tsx (PR 3).
-          capture_pageview: false,
-          persistence: "localStorage",
-          // Session replay is excluded in v1 (privacy surface + extra
-          // PostHog quota). Considered for a separate later PR with
-          // its own re-consent step.
-          disable_session_recording: true,
-          opt_out_capturing_by_default: !opts.enabled,
-          bootstrap: { distinctID: opts.distinctId },
+  distinctId = opts.distinctId;
+  if (!chosen) enabled = opts.enabled;
+  if (enabled) await start();
+}
+
+function start(): Promise<void> {
+  const key = projectKey();
+  if (phInstance || !key || !distinctId) return Promise.resolve();
+  if (!loading) {
+    const bootstrapId = distinctId;
+    loading = import("posthog-js")
+      .then(({ default: posthog }) => {
+        // Turned off again while it was loading: don't start it.
+        if (!enabled || phInstance) return;
+        posthog.init(key, {
+          ...INIT_OPTIONS,
+          api_host: apiHost(),
+          bootstrap: { distinctID: bootstrapId },
           loaded: (ph) => {
             ph.register({ platform: platformHint() });
           },
         });
+        guardRequests(posthog);
+        // An older build may have stored an opt-out, which would keep
+        // posthog-js silent despite this opt-in. No $opt_in event: it isn't
+        // one of the events we document.
+        if (posthog.has_opted_out_capturing()) {
+          posthog.opt_in_capturing({ captureEventName: false });
+        }
+        // Older builds identified users with their name and email, which
+        // posthog-js keeps for flag requests. Drop them.
+        posthog.resetPersonPropertiesForFlags();
         phInstance = posthog;
-        return posthog;
+        identifyPending();
       })
       .catch((e) => {
         // Don't tank the renderer if the SDK chunk fails to load —
-        // capture/identify/pageview become no-ops, the rest of the app
-        // continues normally.
+        // capture/identify/pageview stay no-ops.
         console.warn("[posthog] SDK load failed:", e);
-        return null;
+      })
+      .finally(() => {
+        loading = null;
       });
   }
-  await phPromise;
+  return loading;
 }
 
 /**
- * Tell PostHog the current user is `userId` and set person properties.
- * Fires a `$identify` event whose payload includes the previous
- * `distinct_id` as `$anon_distinct_id` — PostHog merges the two
- * persons server-side so pre-signin events stay attached.
+ * posthog-js's own opt-out stops new captures, but it still flushes the
+ * events it has queued and retries failed sends. Every request it makes
+ * goes through `_send_request` (posthog-js 1.376), so drop them there while
+ * the user has product analytics off.
  */
-export function identifyUser(
-  userId: string,
-  props?: Record<string, unknown>,
-): void {
-  if (!phInstance) return;
-  phInstance.identify(userId, props ?? {});
+function guardRequests(posthog: PostHog): void {
+  const send = posthog._send_request.bind(posthog);
+  posthog._send_request = (options) => {
+    if (enabled) send(options);
+  };
+}
+
+function identifyPending(): void {
+  if (!phInstance || !enabled || !pendingUserId) return;
+  phInstance.identify(pendingUserId);
+  pendingUserId = null;
+}
+
+/**
+ * Link product analytics to the signed-in account: the user id only, no
+ * name, email or other person properties. While product analytics is off
+ * nothing is sent; the id is kept in memory and used if the user opts in
+ * later in this session.
+ */
+export function identifyUser(userId: string): void {
+  pendingUserId = userId;
+  identifyPending();
 }
 
 export function capture(
   event: string,
   props?: Record<string, unknown>,
 ): void {
-  if (!phInstance) return;
-  phInstance.capture(event, props ?? {});
+  if (!isReady()) return;
+  phInstance?.capture(event, props ?? {});
 }
 
 /**
@@ -114,19 +177,28 @@ export function capture(
  * so screen / mainView subscribers call this directly (PR 3).
  */
 export function pageview(path: string, title?: string): void {
-  if (!phInstance) return;
-  phInstance.capture("$pageview", {
+  if (!isReady()) return;
+  phInstance?.capture("$pageview", {
     $current_url: path,
     ...(title ? { title } : {}),
   });
 }
 
+/** The user turned product analytics on: start posthog-js, or resume it. */
 export function optIn(): void {
-  if (!phInstance) return;
-  phInstance.opt_in_capturing();
+  enabled = true;
+  chosen = true;
+  if (!phInstance) {
+    void start();
+    return;
+  }
+  phInstance.opt_in_capturing({ captureEventName: false });
+  identifyPending();
 }
 
+/** The user turned product analytics off: nothing more leaves the renderer. */
 export function optOut(): void {
-  if (!phInstance) return;
-  phInstance.opt_out_capturing();
+  enabled = false;
+  chosen = true;
+  phInstance?.opt_out_capturing();
 }
