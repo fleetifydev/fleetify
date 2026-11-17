@@ -19,6 +19,8 @@
 //! `capabilities/default.json` covers local origins only, so the app's own
 //! origin is the one remote origin that can call anything.
 
+use std::any::Any;
+use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -253,13 +255,23 @@ pub fn ui_files_missing_message(missing: &UiDirError, logs_dir: Option<&Path>) -
 }
 
 /// The text of the dialog for a start that failed: the backend's error
-/// ([`backend_failure_message`]), or no UI files to serve
-/// ([`ui_files_missing_message`]).
+/// ([`backend_failure_message`]), no UI files to serve
+/// ([`ui_files_missing_message`]), or no IPC permissions for the window's
+/// app origin ([`permissions_failure_message`]).
 pub fn start_failure_message(failure: &StartFailure, port: u16, logs_dir: Option<&Path>) -> String {
     match failure {
         StartFailure::Backend(error) => backend_failure_message(error, port, logs_dir),
         StartFailure::UiFilesMissing(missing) => ui_files_missing_message(missing, logs_dir),
+        StartFailure::Permissions(error) => permissions_failure_message(error, logs_dir),
     }
+}
+
+/// The text of that dialog when the window's app origin couldn't get its
+/// IPC permissions (`error`, from [`grant_app_origin`]): what went wrong, and
+/// where the log files are, as [`backend_failure_message`] says it.
+pub fn permissions_failure_message(error: &str, logs_dir: Option<&Path>) -> String {
+    let logs = logs_line(logs_dir);
+    format!("Fleetify couldn't give its interface the permissions it needs:\n\n{error}\n\n{logs}")
 }
 
 /// The dialogs' last line: where the log files are (`logs_dir`, from
@@ -394,9 +406,10 @@ pub async fn load_app_when_ready(
     reveal(&window, boot_start);
 }
 
-/// Says the backend can't start, or that there are no UI files to serve,
-/// then quits: a native error dialog with the text from
-/// [`start_failure_message`], and the app exits once it is dismissed.
+/// Says the backend can't start, that there are no UI files to serve, or
+/// that the interface couldn't get its permissions, then quits: a native
+/// error dialog with the text from [`start_failure_message`], and the app
+/// exits once it is dismissed.
 /// Without the backend the app can't work, and a placeholder that never ends
 /// would hide why.
 ///
@@ -409,6 +422,7 @@ fn report_start_failure(window: &WebviewWindow, failure: &StartFailure, port: u1
     let what = match failure {
         StartFailure::Backend(_) => "the embedded backend can't start",
         StartFailure::UiFilesMissing(_) => "the UI files are missing",
+        StartFailure::Permissions(_) => "the interface couldn't get its permissions",
     };
     tracing::error!(
         target: "fleetify::startup",
@@ -515,6 +529,40 @@ pub fn runtime_remote_origin(
         _ => false,
     };
     (!local).then_some(origin)
+}
+
+/// Grants `origin` its IPC permissions ([`runtime_capability`]), at setup,
+/// before the window is built. A release build has no other grant, so a
+/// failure stops the start (`StartFailure::Permissions`). It comes back as
+/// its text, from an `Err` or from a panic: tauri 2.11.2 panics instead of
+/// erring when it can't resolve the capability (`ipc/authority.rs`). The app
+/// exits right after, so the lock that panic poisons is never used again.
+pub fn grant_app_origin<R: tauri::Runtime>(
+    manager: &impl Manager<R>,
+    origin: &str,
+) -> Result<(), String> {
+    grant_outcome(std::panic::catch_unwind(AssertUnwindSafe(|| {
+        manager.add_capability(runtime_capability(origin))
+    })))
+}
+
+/// The grant's outcome, from what `add_capability` returned or how it
+/// panicked: `Ok`, or what went wrong, as text.
+pub fn grant_outcome(caught: std::thread::Result<tauri::Result<()>>) -> Result<(), String> {
+    match caught {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(panic) => Err(panic_message(panic.as_ref())),
+    }
+}
+
+/// A panic's message: its payload when that is text.
+fn panic_message(panic: &(dyn Any + Send)) -> String {
+    match (panic.downcast_ref::<&str>(), panic.downcast_ref::<String>()) {
+        (Some(message), _) => (*message).to_string(),
+        (None, Some(message)) => message.clone(),
+        (None, None) => "it panicked without a message".to_string(),
+    }
 }
 
 /// What `capabilities/default.json` grants, for `origin` alone and the main
@@ -905,6 +953,89 @@ mod tests {
                 Some(logs.path())
             ),
             ui_files_missing_message(&missing, Some(logs.path()))
+        );
+        assert_eq!(
+            start_failure_message(
+                &StartFailure::Permissions("app-commands not found".into()),
+                8765,
+                Some(logs.path())
+            ),
+            permissions_failure_message("app-commands not found", Some(logs.path()))
+        );
+    }
+
+    // ── a failed grant ──
+
+    #[test]
+    fn a_grant_that_works_lets_the_start_go_on() {
+        assert_eq!(grant_outcome(Ok(Ok(()))), Ok(()));
+    }
+
+    #[test]
+    fn a_grant_that_fails_is_a_start_failure_with_its_error() {
+        let error = grant_outcome(Ok(Err(tauri::Error::AssetNotFound("app-origin".into()))))
+            .expect_err("an Err from add_capability");
+        assert!(error.contains("app-origin"), "{error}");
+    }
+
+    #[test]
+    fn a_grant_that_panics_is_a_start_failure_with_the_panic_message() {
+        // tauri 2.11.2 panics, not errs, when it can't resolve a capability
+        // (ipc/authority.rs: `Resolved::resolve(..).unwrap()`).
+        let caught = std::panic::catch_unwind(|| -> tauri::Result<()> {
+            panic!("UnknownPermission: app-commands")
+        });
+        let error = grant_outcome(caught).expect_err("a panic");
+        assert!(error.contains("UnknownPermission: app-commands"), "{error}");
+        let caught = std::panic::catch_unwind(|| -> tauri::Result<()> {
+            panic!("{} not found", "app-commands")
+        });
+        let error = grant_outcome(caught).expect_err("a formatted panic");
+        assert!(error.contains("app-commands not found"), "{error}");
+        // A panic whose payload isn't text still stops the start.
+        let caught =
+            std::panic::catch_unwind(|| -> tauri::Result<()> { std::panic::panic_any(7_u8) });
+        assert!(grant_outcome(caught).is_err());
+    }
+
+    #[test]
+    fn a_failed_grant_ends_the_wait_like_a_backend_that_fails() {
+        // The same path: the backend never starts, the window never loads
+        // the app, and the error dialog shows before the app quits.
+        let failed = BackendStart::Failed(StartFailure::Permissions("resolve failed".into()));
+        for (answered, waited, placeholder_shown) in [
+            (false, Duration::ZERO, false),
+            (true, Duration::from_millis(300), false),
+            (false, SLOW_START * 40, true),
+        ] {
+            assert_eq!(
+                next_step(&failed, answered, waited, placeholder_shown),
+                Step::ReportFailure,
+                "answered {answered}, waited {waited:?}, placeholder {placeholder_shown}"
+            );
+        }
+        assert_eq!(backend_start_seen(&failed, true), failed);
+    }
+
+    #[test]
+    fn the_failed_grant_message_names_the_error_and_the_logs() {
+        let logs = tempfile::tempdir().unwrap();
+        let message = permissions_failure_message("resolve failed", Some(logs.path()));
+        assert!(
+            message.starts_with("Fleetify couldn't give its interface the permissions it needs"),
+            "{message}"
+        );
+        assert!(message.contains("\n\nresolve failed\n\n"), "{message}");
+        assert!(
+            message.contains(&format!("The log files are in {}", logs.path().display())),
+            "{message}"
+        );
+        // Not the backend's message: no server, no port.
+        assert!(!message.contains("local server"), "{message}");
+        let without_logs = permissions_failure_message("resolve failed", None);
+        assert!(
+            without_logs.ends_with("Fleetify could not write its log files."),
+            "{without_logs}"
         );
     }
 

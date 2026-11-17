@@ -329,23 +329,31 @@ pub fn run() {
             // origin alone and the main webview: always in release (the
             // embedded backend on http://127.0.0.1:<port>), and in debug only
             // when Vite isn't the local devUrl. No other remote origin can
-            // call anything. Added before the window is built.
+            // call anything. Added before the window is built. A release
+            // build has no other grant, so a failed one stops the start: the
+            // backend task below reports it instead of starting the backend,
+            // and the window shows the error dialog, then the app quits.
             let local_app_url =
                 shell::startup_window::local_app_url(app.config(), tauri::is_dev());
-            if let Some(origin) = shell::startup_window::runtime_remote_origin(
+            let grant = match shell::startup_window::runtime_remote_origin(
                 release,
                 backend,
                 vite,
                 local_app_url.as_ref(),
             ) {
-                match app.add_capability(shell::startup_window::runtime_capability(&origin)) {
-                    Ok(()) => tracing::info!(%origin, "IPC allowed from the app origin"),
-                    Err(e) => tracing::error!(
-                        %origin,
-                        "allowing IPC from the app origin failed, so the app can't call its own commands: {e}"
-                    ),
+                Some(origin) => {
+                    let grant = shell::startup_window::grant_app_origin(app, &origin);
+                    match &grant {
+                        Ok(()) => tracing::info!(%origin, "IPC allowed from the app origin"),
+                        Err(e) => tracing::error!(
+                            %origin,
+                            "allowing IPC from the app origin failed, so the app can't call its own commands: {e}"
+                        ),
+                    }
+                    grant
                 }
-            }
+                None => Ok(()),
+            };
 
             // No splash — by explicit user preference. The main
             // window is built `.visible(false)` on a local placeholder
@@ -451,6 +459,15 @@ pub fn run() {
                 shell::ui_files::served_ui_dir(release, || app.path().resource_dir());
             let app_data_dir = app.path().app_data_dir().ok();
             tauri::async_runtime::spawn(async move {
+                if let Err(error) = grant {
+                    tracing::error!(
+                        "the interface has no permissions, so the backend won't start: {error}"
+                    );
+                    let _ = backend_start_tx.send(shell::backend_ready::BackendStart::Failed(
+                        shell::backend_ready::StartFailure::Permissions(error),
+                    ));
+                    return;
+                }
                 let sd = match ui_files {
                     Ok(sd) => sd,
                     Err(missing) => {
@@ -612,7 +629,8 @@ pub fn run() {
             // and show + focus it once the app page has loaded, so it
             // doesn't flash white. Past 15s the window shows the placeholder
             // and the wait goes on with no cap. A backend that can't start,
-            // or has no UI files to serve, ends it: an error dialog, then
+            // has no UI files to serve, or wasn't started because the
+            // interface got no permissions, ends it: an error dialog, then
             // the app quits.
             tauri::async_runtime::spawn(shell::startup_window::load_app_when_ready(
                 main_window,
