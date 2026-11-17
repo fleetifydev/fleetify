@@ -450,6 +450,11 @@ pub fn run() {
             let addr: SocketAddr = format!("127.0.0.1:{backend}").parse().unwrap();
             let sd = static_dir();
             let app_data_dir = app.path().app_data_dir().ok();
+            // The backend's start, for the main window: it loads the app only
+            // after the bind, and says so when the backend can't start (see
+            // shell::startup_window::load_app_when_ready).
+            let (backend_start_tx, backend_start_rx) =
+                tokio::sync::watch::channel(shell::startup_window::BackendStart::Pending);
             tauri::async_runtime::spawn(async move {
                 let routing_setup = match app_data_dir {
                     Some(dir) => {
@@ -474,9 +479,13 @@ pub fn run() {
                             backend_bind_ms = boot_start.elapsed().as_millis() as u64,
                             "embedded backend up on {addr}"
                         );
+                        let _ = backend_start_tx.send(shell::startup_window::BackendStart::Bound);
                     }
                     Err(e) => {
-                        tracing::error!("backend failed to start: {e}");
+                        tracing::error!("backend failed to start: {e:#}");
+                        let _ = backend_start_tx.send(shell::startup_window::BackendStart::Failed(
+                            format!("{e:#}"),
+                        ));
                     }
                 }
             });
@@ -531,10 +540,10 @@ pub fn run() {
                 // Wait for the embedded backend to answer its health route
                 // before we try to reach it. 200ms × 20 = 4s upper bound
                 // covers a cold Rust startup on a slow disk; past it, the
-                // warm-up runs anyway.
-                let port = std::env::var("FLEETIFY_BACKEND_PORT").unwrap_or_else(|_| "8765".into());
+                // warm-up runs anyway. Same port the backend binds, parsed
+                // once above.
                 let ready = crate::shell::backend_ready::wait_for_backend(
-                    &crate::shell::backend_ready::health_url(&port),
+                    &crate::shell::backend_ready::health_url(&backend.to_string()),
                     20,
                     std::time::Duration::from_millis(200),
                 )
@@ -576,16 +585,19 @@ pub fn run() {
                 crate::shell::integrations_cache::prime_gh_cli().await;
             });
 
-            // Reveal-when-ready: poll the webview URL until it answers
-            // HTTP (any response counts, even a 404 the renderer can
-            // surface), then load the app in the window and show + focus
-            // it once the app page has loaded, so it doesn't flash white.
-            // Past 15s without an answer the window shows the placeholder
-            // and polling goes on with no cap.
+            // Reveal-when-ready: once the backend reports its bind, poll the
+            // webview URL until it answers HTTP (any response counts, even a
+            // 404 the renderer can surface), then load the app in the window
+            // and show + focus it once the app page has loaded, so it
+            // doesn't flash white. Past 15s the window shows the placeholder
+            // and the wait goes on with no cap. A backend that can't start
+            // ends it: an error dialog, then the app quits.
             tauri::async_runtime::spawn(shell::startup_window::load_app_when_ready(
                 main_window,
                 app_url,
                 app_page_loaded,
+                backend_start_rx,
+                backend,
                 boot_start,
             ));
 

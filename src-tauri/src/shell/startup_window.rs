@@ -6,23 +6,27 @@
 //! ("Could not connect to 127.0.0.1: Connection refused") and never retried,
 //! so a slow start left a dead window. Now the window starts, hidden, on a
 //! placeholder page that Tauri serves itself (scheme [`PLACEHOLDER_SCHEME`]).
-//! It loads the app once the app's URL answers and is shown when the app page
-//! has finished loading. If the app has not answered within [`SLOW_START`],
-//! the window is shown with the placeholder, "Starting Fleetify…", and the
-//! app loads as soon as it answers.
+//! It loads the app once the embedded backend has reported its bind and the
+//! app's URL answers, and is shown when the app page has finished loading. If
+//! the app is not ready within [`SLOW_START`], the window is shown with the
+//! placeholder, "Starting Fleetify…", and the app loads as soon as it can. If
+//! the backend can't start at all, an error dialog says why and the app quits.
 //!
 //! It also works out the app's origin ([`app_origin`]) and, when that origin
 //! is not one `capabilities/default.json` allows IPC from, the capability to
 //! add for it at setup ([`runtime_remote_origin`], [`runtime_capability`]).
 
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tauri::http::{header, Response, StatusCode};
 use tauri::ipc::CapabilityBuilder;
 use tauri::webview::{PageLoadEvent, PageLoadPayload};
-use tauri::{Url, WebviewWindow};
-use tokio::sync::Notify;
+use tauri::{Manager, Url, WebviewWindow};
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+use tokio::sync::{watch, Notify};
 
 /// Label of the main window.
 pub const MAIN_WINDOW: &str = "main";
@@ -122,57 +126,148 @@ pub fn is_app_page(page: &Url, app_url: &Url) -> bool {
     page.origin() == app_url.origin()
 }
 
+/// Tells a finished load of the app from the engine's other load events.
+///
+/// Only a `Finished` for an app page that follows a `Started` for one counts.
+/// WebKitGTK reports a cancelled navigation as load-failed and then
+/// `Finished`, with the URL already the app's but no `Started` (Committed):
+/// that one must not show a window the app hasn't painted. wry reports
+/// `Started` at commit on every engine (WebKitGTK Committed, WebView2
+/// ContentLoading, WKWebView didCommitNavigation).
+#[derive(Debug, Default)]
+pub struct AppLoadGuard {
+    /// Whether the load in progress began with a `Started` for an app page.
+    app_load_started: AtomicBool,
+}
+
+impl AppLoadGuard {
+    /// Takes one page-load event, for an app page or not. True when it
+    /// finishes a load of the app that began with a `Started` for it. Each
+    /// `Finished` ends the load in progress, so the next one needs a new
+    /// `Started`.
+    pub fn finished_app_load(&self, event: PageLoadEvent, app_page: bool) -> bool {
+        match event {
+            PageLoadEvent::Started => {
+                self.app_load_started.store(app_page, Ordering::SeqCst);
+                false
+            }
+            PageLoadEvent::Finished => {
+                let started = self.app_load_started.swap(false, Ordering::SeqCst);
+                app_page && started
+            }
+        }
+    }
+}
+
 /// A page-load handler for the main window: signals `app_page_loaded` each
-/// time a page of the app at `app_url` finishes loading. A signal sent
-/// before anyone waits is kept, so an early load is never missed.
+/// time a page of the app at `app_url` finishes loading, as
+/// [`AppLoadGuard`] tells it. A signal sent before anyone waits is kept, so
+/// an early load is never missed.
 pub fn signal_app_page_loaded(
     app_url: Url,
     app_page_loaded: Arc<Notify>,
 ) -> impl Fn(WebviewWindow, PageLoadPayload<'_>) + Send + Sync + 'static {
+    let guard = AppLoadGuard::default();
     move |_window, payload| {
-        if payload.event() == PageLoadEvent::Finished && is_app_page(payload.url(), &app_url) {
+        if guard.finished_app_load(payload.event(), is_app_page(payload.url(), &app_url)) {
             app_page_loaded.notify_one();
         }
     }
 }
 
+/// What the embedded backend's task has reported about its start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackendStart {
+    /// No report yet: `serve_with_routing_setup` is still running.
+    Pending,
+    /// It returned `Ok`: the backend listens on its port.
+    Bound,
+    /// It returned `Err` (the error and its causes), or its task ended
+    /// without a report.
+    Failed(String),
+}
+
+/// The backend's start as the startup task sees it: `reported` is the last
+/// report, and `reporter_gone` says its task has ended. A task that ended
+/// without a report (it panicked) counts as failed, or the wait would never
+/// end.
+pub fn backend_start_seen(reported: &BackendStart, reporter_gone: bool) -> BackendStart {
+    match reported {
+        BackendStart::Pending if reporter_gone => {
+            BackendStart::Failed("its startup task stopped before it reported".to_string())
+        }
+        other => other.clone(),
+    }
+}
+
+/// Title of the dialog shown when the backend can't start.
+pub const BACKEND_FAILURE_TITLE: &str = "Fleetify can't start";
+
+/// The text of that dialog: what failed (`error`, with its causes), on which
+/// port, and where the log files are (`logs_dir`, from
+/// `shell::logging::logs_dir()`: `None` when no log folder could be set up).
+pub fn backend_failure_message(error: &str, port: u16, logs_dir: Option<&Path>) -> String {
+    let logs = match logs_dir {
+        Some(dir) => format!("The log files are in {}", dir.display()),
+        None => "Fleetify could not set up its log folder, so no log was written.".to_string(),
+    };
+    format!("Fleetify couldn't start its local server on port {port}:\n\n{error}\n\n{logs}")
+}
+
 /// What the startup task does after one poll of the app's URL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
-    /// The app answered: load it in the window.
+    /// The backend is bound and the app answered: load it in the window.
     LoadApp,
     /// The app is slow to answer: show the window with the placeholder.
     ShowPlaceholder,
+    /// The backend can't start: stop polling and say so.
+    ReportFailure,
     /// Poll again.
     KeepWaiting,
 }
 
-/// The next step after one poll: whether the app answered, how long the task
-/// has waited, and whether the placeholder is on screen already. Polling has
-/// no cap: past [`SLOW_START`] the placeholder goes up once, and the app
-/// still loads the moment it answers.
-pub fn next_step(app_answered: bool, waited: Duration, placeholder_shown: bool) -> Step {
-    if app_answered {
-        Step::LoadApp
-    } else if waited >= SLOW_START && !placeholder_shown {
-        Step::ShowPlaceholder
-    } else {
-        Step::KeepWaiting
+/// The next step after one poll: the backend's start, whether the app
+/// answered, how long the task has waited, and whether the placeholder is on
+/// screen already.
+///
+/// The app loads only once the backend has reported its bind *and* the app
+/// answers: before the bind, an answer comes from something else on the port.
+/// A backend that failed to start ends the wait. Otherwise polling has no
+/// cap: past [`SLOW_START`] the placeholder goes up once, and the app still
+/// loads the moment it can.
+pub fn next_step(
+    backend: &BackendStart,
+    app_answered: bool,
+    waited: Duration,
+    placeholder_shown: bool,
+) -> Step {
+    match backend {
+        BackendStart::Failed(_) => Step::ReportFailure,
+        BackendStart::Bound if app_answered => Step::LoadApp,
+        _ if waited >= SLOW_START && !placeholder_shown => Step::ShowPlaceholder,
+        _ => Step::KeepWaiting,
     }
 }
 
-/// Loads the app in `window` once `app_url` answers, then shows the window.
+/// Loads the app in `window` once the embedded backend has bound and
+/// `app_url` answers, then shows the window.
 ///
-/// The window was built hidden on the placeholder page. Any HTTP answer from
-/// `app_url` counts, as before: even a 404 lets the renderer show the
-/// failure. The window then loads the app and is shown when the app page has
-/// finished loading (`app_page_loaded`, from [`signal_app_page_loaded`]), or
-/// after [`PAGE_LOAD_FALLBACK`]. Past [`SLOW_START`] without an answer it is
-/// shown with the placeholder, and the app loads once it answers.
+/// The window was built hidden on the placeholder page. `backend` carries the
+/// backend task's report (see [`BackendStart`]); `app_url` is polled only
+/// once it reports the bind, and any HTTP answer counts then, as before: even
+/// a 404 lets the renderer show the failure. The window then loads the app
+/// and is shown when the app page has finished loading (`app_page_loaded`,
+/// from [`signal_app_page_loaded`]), or after [`PAGE_LOAD_FALLBACK`]. Past
+/// [`SLOW_START`] it is shown with the placeholder, and the app loads once it
+/// can. If the backend can't start, polling stops and an error dialog says
+/// so; the app quits when it is dismissed.
 pub async fn load_app_when_ready(
     window: WebviewWindow,
     app_url: Url,
     app_page_loaded: Arc<Notify>,
+    backend: watch::Receiver<BackendStart>,
+    backend_port: u16,
     boot_start: Instant,
 ) {
     let client = reqwest::Client::builder()
@@ -182,14 +277,25 @@ pub async fn load_app_when_ready(
     let started = Instant::now();
     let mut placeholder_shown = false;
     loop {
-        let answered = client.get(app_url.as_str()).send().await.is_ok();
-        match next_step(answered, started.elapsed(), placeholder_shown) {
+        // Cloned at once: a watch borrow must not be held across an await.
+        let reported = backend.borrow().clone();
+        let start = backend_start_seen(&reported, backend.has_changed().is_err());
+        let answered =
+            start == BackendStart::Bound && client.get(app_url.as_str()).send().await.is_ok();
+        match next_step(&start, answered, started.elapsed(), placeholder_shown) {
             Step::LoadApp => break,
+            Step::ReportFailure => {
+                if let BackendStart::Failed(error) = &start {
+                    report_backend_failure(&window, error, backend_port);
+                }
+                return;
+            }
             Step::ShowPlaceholder => {
                 tracing::warn!(
                     target: "fleetify::startup",
                     waited_ms = started.elapsed().as_millis() as u64,
-                    "{app_url} has not answered yet; showing the startup placeholder"
+                    backend_bound = start == BackendStart::Bound,
+                    "the app is not ready at {app_url} yet; showing the startup placeholder"
                 );
                 reveal(&window, boot_start);
                 placeholder_shown = true;
@@ -221,6 +327,38 @@ pub async fn load_app_when_ready(
     }
     tokio::time::sleep(PAINT_GRACE).await;
     reveal(&window, boot_start);
+}
+
+/// Says the backend can't start, then quits: a native error dialog with the
+/// text from [`backend_failure_message`], and the app exits once it is
+/// dismissed. Without the backend the app can't work, and a placeholder that
+/// never ends would hide why.
+///
+/// The quit is a handled one, so it marks the shutdown clean: exiting skips
+/// the main window's `Destroyed` event, which otherwise does, and the next
+/// launch would report a crash. Tauri 2.11.2's wry runtime ends the event
+/// loop with `ControlFlow::Exit` whatever code `exit` gets, so the process
+/// status is 0 even though 1 is asked for.
+fn report_backend_failure(window: &WebviewWindow, error: &str, port: u16) {
+    tracing::error!(
+        target: "fleetify::startup",
+        port,
+        "the embedded backend can't start; showing the error, then quitting"
+    );
+    let app = window.app_handle().clone();
+    let on_dismiss = app.clone();
+    app.dialog()
+        .message(backend_failure_message(
+            error,
+            port,
+            crate::shell::logging::logs_dir(),
+        ))
+        .title(BACKEND_FAILURE_TITLE)
+        .kind(MessageDialogKind::Error)
+        .show(move |_| {
+            crate::shell::logging::mark_clean_shutdown();
+            on_dismiss.exit(1);
+        });
 }
 
 /// Shows and focuses the window, and logs the cold start: setup() entry to
@@ -410,43 +548,185 @@ mod tests {
 
     #[test]
     fn the_app_loads_as_soon_as_it_answers() {
+        let bound = BackendStart::Bound;
         let soon = Duration::from_millis(300);
-        assert_eq!(next_step(true, soon, false), Step::LoadApp);
-        assert_eq!(next_step(true, SLOW_START * 4, false), Step::LoadApp);
+        assert_eq!(next_step(&bound, true, soon, false), Step::LoadApp);
+        assert_eq!(
+            next_step(&bound, true, SLOW_START * 4, false),
+            Step::LoadApp
+        );
         // After the placeholder went up, too.
-        assert_eq!(next_step(true, SLOW_START * 4, true), Step::LoadApp);
+        assert_eq!(next_step(&bound, true, SLOW_START * 4, true), Step::LoadApp);
     }
 
     #[test]
     fn the_window_stays_hidden_while_startup_is_quick() {
-        assert_eq!(
-            next_step(false, Duration::from_millis(300), false),
-            Step::KeepWaiting
-        );
-        assert_eq!(
-            next_step(false, SLOW_START - Duration::from_millis(1), false),
-            Step::KeepWaiting
-        );
+        for backend in [BackendStart::Pending, BackendStart::Bound] {
+            assert_eq!(
+                next_step(&backend, false, Duration::from_millis(300), false),
+                Step::KeepWaiting
+            );
+            assert_eq!(
+                next_step(
+                    &backend,
+                    false,
+                    SLOW_START - Duration::from_millis(1),
+                    false
+                ),
+                Step::KeepWaiting
+            );
+        }
     }
 
     #[test]
     fn a_slow_start_shows_the_placeholder_once_and_keeps_waiting() {
-        assert_eq!(next_step(false, SLOW_START, false), Step::ShowPlaceholder);
-        assert_eq!(
-            next_step(false, SLOW_START + Duration::from_secs(1), false),
-            Step::ShowPlaceholder
-        );
-        // Already on screen: no cap, just keep polling.
-        assert_eq!(next_step(false, SLOW_START, true), Step::KeepWaiting);
-        assert_eq!(
-            next_step(false, Duration::from_secs(600), true),
-            Step::KeepWaiting
-        );
+        // Slow either way: the backend still binding (a keychain prompt), or
+        // bound while the app doesn't answer yet (Vite in debug builds).
+        for backend in [BackendStart::Pending, BackendStart::Bound] {
+            assert_eq!(
+                next_step(&backend, false, SLOW_START, false),
+                Step::ShowPlaceholder
+            );
+            assert_eq!(
+                next_step(&backend, false, SLOW_START + Duration::from_secs(1), false),
+                Step::ShowPlaceholder
+            );
+            // Already on screen: no cap, just keep polling.
+            assert_eq!(
+                next_step(&backend, false, SLOW_START, true),
+                Step::KeepWaiting
+            );
+            assert_eq!(
+                next_step(&backend, false, Duration::from_secs(600), true),
+                Step::KeepWaiting
+            );
+        }
     }
 
     #[test]
     fn the_slow_start_threshold_is_the_old_reveal_cap() {
         assert_eq!(SLOW_START, Duration::from_secs(15));
+    }
+
+    // ── the backend's start ──
+
+    #[test]
+    fn an_answer_before_the_backend_reports_its_bind_is_not_the_app() {
+        // Something else on the port answers before, or instead of, the
+        // backend: AnkiConnect listens on 127.0.0.1:8765 by default.
+        let pending = BackendStart::Pending;
+        assert_eq!(
+            next_step(&pending, true, Duration::from_millis(300), false),
+            Step::KeepWaiting
+        );
+        assert_eq!(
+            next_step(&pending, true, SLOW_START, false),
+            Step::ShowPlaceholder
+        );
+        assert_eq!(
+            next_step(&pending, true, SLOW_START * 4, true),
+            Step::KeepWaiting
+        );
+    }
+
+    #[test]
+    fn a_backend_that_fails_to_start_ends_the_wait() {
+        let failed = BackendStart::Failed("Address already in use (os error 98)".into());
+        for (answered, waited, placeholder_shown) in [
+            (false, Duration::ZERO, false),
+            (true, Duration::from_millis(300), false),
+            (false, SLOW_START, false),
+            (false, SLOW_START * 40, true),
+        ] {
+            assert_eq!(
+                next_step(&failed, answered, waited, placeholder_shown),
+                Step::ReportFailure,
+                "answered {answered}, waited {waited:?}, placeholder {placeholder_shown}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_backend_task_that_ends_without_reporting_counts_as_failed() {
+        // Its task panicked: the sender went away with the start still pending.
+        let BackendStart::Failed(error) = backend_start_seen(&BackendStart::Pending, true) else {
+            panic!("a start nobody can report any more is a failed one");
+        };
+        assert!(!error.is_empty());
+        assert_eq!(
+            backend_start_seen(&BackendStart::Pending, false),
+            BackendStart::Pending
+        );
+        // A report outlives the task that sent it.
+        assert_eq!(
+            backend_start_seen(&BackendStart::Bound, true),
+            BackendStart::Bound
+        );
+        let failed = BackendStart::Failed("database is locked".into());
+        assert_eq!(backend_start_seen(&failed, true), failed);
+    }
+
+    #[test]
+    fn the_failure_message_names_the_error_the_port_and_the_logs() {
+        let message = backend_failure_message(
+            "Address already in use (os error 98)",
+            8765,
+            Some(Path::new("/home/user/.local/state/fleetify/logs")),
+        );
+        assert!(
+            message.contains("Address already in use (os error 98)"),
+            "{message}"
+        );
+        assert!(message.contains("8765"), "{message}");
+        assert!(
+            message.contains("/home/user/.local/state/fleetify/logs"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn the_failure_message_without_a_log_folder_still_names_the_error_and_port() {
+        let message = backend_failure_message("loading config: invalid TOML", 8899, None);
+        assert!(
+            message.contains("loading config: invalid TOML"),
+            "{message}"
+        );
+        assert!(message.contains("8899"), "{message}");
+        assert!(!message.contains("None"), "{message}");
+    }
+
+    // ── the app page's load ──
+
+    #[test]
+    fn a_finished_load_of_the_app_after_it_started_counts() {
+        let guard = AppLoadGuard::default();
+        assert!(!guard.finished_app_load(PageLoadEvent::Started, true));
+        assert!(guard.finished_app_load(PageLoadEvent::Finished, true));
+    }
+
+    #[test]
+    fn a_cancelled_navigation_to_the_app_does_not_count() {
+        // WebKitGTK reports it as load-failed, then Finished with the URL
+        // already the app's, and no Started (Committed) for it.
+        let guard = AppLoadGuard::default();
+        assert!(!guard.finished_app_load(PageLoadEvent::Finished, true));
+        // After the placeholder's own load, too.
+        let guard = AppLoadGuard::default();
+        assert!(!guard.finished_app_load(PageLoadEvent::Started, false));
+        assert!(!guard.finished_app_load(PageLoadEvent::Finished, false));
+        assert!(!guard.finished_app_load(PageLoadEvent::Finished, true));
+    }
+
+    #[test]
+    fn each_finished_load_of_the_app_needs_its_own_start() {
+        let guard = AppLoadGuard::default();
+        assert!(!guard.finished_app_load(PageLoadEvent::Started, true));
+        assert!(guard.finished_app_load(PageLoadEvent::Finished, true));
+        assert!(!guard.finished_app_load(PageLoadEvent::Finished, true));
+        // A load of another page started since: its Finished isn't the app's.
+        assert!(!guard.finished_app_load(PageLoadEvent::Started, true));
+        assert!(!guard.finished_app_load(PageLoadEvent::Started, false));
+        assert!(!guard.finished_app_load(PageLoadEvent::Finished, true));
     }
 
     // ── IPC from the app's origin ──
