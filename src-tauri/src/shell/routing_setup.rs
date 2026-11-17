@@ -97,10 +97,20 @@ pub fn build(app_data_dir: &Path, user_id: Option<&str>) -> RoutingSetup {
 /// Fire-and-forget: failures are logged but never propagated to the IPC
 /// caller. The config + keychain are already updated regardless, so the
 /// next backend boot will pick up the change even if this round-trip
-/// fails (e.g. backend not yet listening, transient I/O hiccup).
+/// fails (e.g. a transient I/O hiccup).
+///
+/// The router keys go only to the app's own backend, once it has reported
+/// its bind (`backend_ready::bound_port`); before that nothing is sent.
 pub async fn reload_backend(app: &tauri::AppHandle) {
     use tauri::Manager;
 
+    let Some(port) = crate::shell::backend_ready::bound_port() else {
+        tracing::warn!(
+            target: "fleet-shell",
+            "routing reload: the app's backend hasn't reported its bind; not sending keys"
+        );
+        return;
+    };
     let Ok(dir) = app.path().app_data_dir() else {
         tracing::warn!(target: "fleet-shell", "routing reload: app_data_dir unavailable");
         return;
@@ -108,7 +118,6 @@ pub async fn reload_backend(app: &tauri::AppHandle) {
     let uid = crate::shell::auth::get_user_id().await;
     let setup = build(&dir, uid.as_deref());
 
-    let port = std::env::var("FLEETIFY_BACKEND_PORT").unwrap_or_else(|_| "8765".into());
     let secret = match std::env::var("FLEETIFY_INTERNAL_SECRET") {
         Ok(s) => s,
         Err(_) => {
@@ -119,7 +128,7 @@ pub async fn reload_backend(app: &tauri::AppHandle) {
             return;
         }
     };
-    let url = format!("http://127.0.0.1:{port}/api/internal/routing/reload");
+    let url = crate::shell::backend_ready::backend_url(port, "/api/internal/routing/reload");
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))

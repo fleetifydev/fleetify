@@ -145,11 +145,10 @@ pub async fn migrate_api_keys_to_keychain(app: &tauri::AppHandle) {
 
     // Hydrate the backend key cache so the freshly-migrated keys are
     // usable on the very next chat turn, not after the next restart.
-    // Race-tolerant: providers_setup::reload_backend logs + skips when
-    // the backend's not listening yet, which happens during the
-    // startup window between serve() spawning and the listener
-    // binding. The reload that fires on the first Settings mutation
-    // (or the next reload trigger) will catch up.
+    // Race-tolerant: providers_setup::reload_backend sends nothing until
+    // the app's backend has reported its bind. When this runs first, the
+    // boot warm-up after the bind reads the keychain, migrated keys
+    // included; the next reload trigger catches anything later.
     crate::shell::providers_setup::reload_backend(app).await;
 }
 

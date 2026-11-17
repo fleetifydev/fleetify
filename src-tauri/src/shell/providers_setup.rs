@@ -9,16 +9,27 @@
 //! Fire-and-forget: failures land in tracing, never propagate to the
 //! IPC caller. Config + keychain are the source of truth regardless, so
 //! the next boot will rebuild the cache cleanly even if this fails.
+//!
+//! Keys go only to the app's own backend, once it has reported its bind
+//! (`backend_ready::bound_port`): until then nothing is sent, not even the
+//! request for its account list, whose answer decides which keychain
+//! entries go out.
 
 use std::collections::HashMap;
 
 use serde_json::json;
 use tauri::Manager;
 
-use crate::shell::{auth, config, providers_link};
+use crate::shell::{auth, backend_ready, config, providers_link};
 
 pub async fn reload_backend(app: &tauri::AppHandle) {
-    let port = std::env::var("FLEETIFY_BACKEND_PORT").unwrap_or_else(|_| "8765".into());
+    let Some(port) = backend_ready::bound_port() else {
+        tracing::warn!(
+            target: "fleet-shell",
+            "providers reload: the app's backend hasn't reported its bind; not sending keys"
+        );
+        return;
+    };
     let secret = match std::env::var("FLEETIFY_INTERNAL_SECRET") {
         Ok(s) => s,
         Err(_) => {
@@ -77,9 +88,9 @@ pub async fn reload_backend(app: &tauri::AppHandle) {
     // each labeled key from the keychain, and push them as `account_keys`
     // alongside the legacy System keys above. CLI agents need nothing here —
     // their isolation is a HOME override resolved from the DB at dispatch.
-    let account_keys = build_account_keys(&client, &port, &secret).await;
+    let account_keys = build_account_keys(&client, port, &secret).await;
 
-    let url = format!("http://127.0.0.1:{port}/api/internal/providers/reload");
+    let url = backend_ready::backend_url(port, "/api/internal/providers/reload");
     let payload = json!({
         "keys": keys,
         "cloudflare_account_id": cloudflare_account_id,
@@ -124,10 +135,10 @@ pub async fn reload_backend(app: &tauri::AppHandle) {
 /// System keys still load.
 async fn build_account_keys(
     client: &reqwest::Client,
-    port: &str,
+    port: u16,
     secret: &str,
 ) -> Vec<serde_json::Value> {
-    let url = format!("http://127.0.0.1:{port}/api/internal/accounts/http");
+    let url = backend_ready::backend_url(port, "/api/internal/accounts/http");
     let resp = match client
         .get(&url)
         .header("X-Fleet-Internal", secret)
@@ -174,17 +185,25 @@ async fn build_account_keys(
 /// HttpHealthCache so the first chat turn doesn't see a "No API key"
 /// error and Settings → Models doesn't flash a "Testing…" state.
 ///
-/// Fire-and-forget. If the backend isn't listening yet, the inner
-/// HTTP calls fail and log — the next user-driven IPC will rerun
-/// reload_backend, and the user can hit Test in Settings to refresh
-/// health manually. No retry loop: the boot path stays simple.
+/// Fire-and-forget. lib.rs runs it only once the backend has reported its
+/// bind and answered its health route; without that it sends nothing
+/// (`backend_ready::bound_port`). The next user-driven IPC reruns
+/// reload_backend, and the user can hit Test in Settings to refresh health
+/// manually. No retry loop: the boot path stays simple.
 pub async fn warm_providers_at_boot(app: &tauri::AppHandle) {
+    let Some(port) = backend_ready::bound_port() else {
+        tracing::warn!(
+            target: "fleet-shell",
+            "warm-health: the app's backend hasn't reported its bind; not sending anything"
+        );
+        return;
+    };
+
     // 1) hydrate PROVIDER_KEYS from the keychain.
     reload_backend(app).await;
 
     // 2) hit /api/internal/providers/warm-health to fan-out health
     //    probes against every keyed provider.
-    let port = std::env::var("FLEETIFY_BACKEND_PORT").unwrap_or_else(|_| "8765".into());
     let secret = match std::env::var("FLEETIFY_INTERNAL_SECRET") {
         Ok(s) => s,
         Err(_) => {
@@ -195,7 +214,7 @@ pub async fn warm_providers_at_boot(app: &tauri::AppHandle) {
             return;
         }
     };
-    let url = format!("http://127.0.0.1:{port}/api/internal/providers/warm-health");
+    let url = backend_ready::backend_url(port, "/api/internal/providers/warm-health");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()

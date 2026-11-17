@@ -1,17 +1,124 @@
-//! Waiting for the embedded backend at startup, before the warm-up talks
-//! to it.
+//! The embedded backend this process starts: its one parsed port, whether
+//! it has bound (the only condition under which the shell sends it secrets),
+//! and the wait for its health route before the boot warm-up talks to it.
 //!
-//! The wait used to poll `/health`, which the backend never served, so
-//! every launch sat out the whole timeout before the warm-up ran. It now
-//! polls the backend's own health route, `fleetify_backend::HEALTH_PATH`,
-//! and counts the backend up when that answers `{"status":"ok"}`. The
-//! timeout stays as the fallback: the warm-up then runs anyway.
+//! The health wait used to poll `/health`, which the backend never served,
+//! so every launch sat out the whole timeout. It now polls the backend's own
+//! health route, `fleetify_backend::HEALTH_PATH`, and counts the backend up
+//! when that answers `{"status":"ok"}`. The warm-up no longer runs anyway
+//! when it times out, nor before the backend has reported its bind.
 
+use std::sync::OnceLock;
 use std::time::Duration;
+
+use tokio::sync::watch;
 
 /// How long one poll may take. The backend answers its health route at
 /// once; this only bounds a port that accepts and never answers.
 const POLL_TIMEOUT: Duration = Duration::from_millis(500);
+
+// ── The backend this process starts ──
+//
+// The shell sends the backend secrets: provider and router keys, and the
+// internal secret on every internal call. They go only to the backend this
+// process started, and only once it has reported its bind. Before that, or
+// after a failed bind, whatever answers on the port is something else
+// (AnkiConnect listens on 127.0.0.1:8765 by default), and the backend sets
+// FLEETIFY_INTERNAL_SECRET before it binds, so that variable proves nothing.
+
+/// What the embedded backend's task has reported about its start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackendStart {
+    /// No report yet: `serve_with_routing_setup` is still running.
+    Pending,
+    /// It returned `Ok`: the backend listens on its port.
+    Bound,
+    /// It returned `Err` (the error and its causes), or its task ended
+    /// without a report.
+    Failed(String),
+}
+
+/// The embedded backend's port when `FLEETIFY_BACKEND_PORT` is unset or not
+/// a port.
+pub const DEFAULT_PORT: u16 = 8765;
+
+/// The port the embedded backend binds, from `FLEETIFY_BACKEND_PORT`'s
+/// value: [`DEFAULT_PORT`] when it is unset or not a port. A typo'd port is
+/// logged rather than ignored: it otherwise looks like "the backend won't
+/// connect". lib.rs reads the variable once and passes it here; everything
+/// else gets the port from [`bound_port`].
+pub fn port_from_env(value: Option<&str>) -> u16 {
+    match value {
+        None => DEFAULT_PORT,
+        Some(value) => value.parse().unwrap_or_else(|_| {
+            tracing::warn!(
+                value = %value,
+                "FLEETIFY_BACKEND_PORT is not a valid port; falling back to {DEFAULT_PORT}"
+            );
+            DEFAULT_PORT
+        }),
+    }
+}
+
+/// Where secrets may go given the backend's start: its `port` once it has
+/// reported its bind, nowhere before that or after a failed start.
+pub fn secrets_port(start: &BackendStart, port: u16) -> Option<u16> {
+    (*start == BackendStart::Bound).then_some(port)
+}
+
+/// The URL of `path` on the backend at `port`.
+pub fn backend_url(port: u16, path: &str) -> String {
+    format!("http://127.0.0.1:{port}{path}")
+}
+
+/// The backend this process starts: the port it binds, and its start
+/// reports.
+#[derive(Debug)]
+pub struct TrackedBackend {
+    port: u16,
+    start: watch::Receiver<BackendStart>,
+}
+
+impl TrackedBackend {
+    /// Its port while it is bound (see [`secrets_port`]).
+    pub fn bound_port(&self) -> Option<u16> {
+        secrets_port(&self.start.borrow(), self.port)
+    }
+}
+
+/// The backend this process starts. Set once, at setup.
+static BACKEND: OnceLock<TrackedBackend> = OnceLock::new();
+
+/// Records the backend this process starts: the port it binds (from
+/// [`port_from_env`]) and the receiver of its start reports. Called once, in
+/// setup, before anything could send it a secret.
+pub fn track(port: u16, start: watch::Receiver<BackendStart>) {
+    let _ = BACKEND.set(TrackedBackend { port, start });
+}
+
+/// The port to send secrets to: the app's own backend's, once it has
+/// reported its bind. `None` before that, after a failed start, or when no
+/// backend is tracked. Every sender returns without sending on `None`.
+pub fn bound_port() -> Option<u16> {
+    BACKEND.get().and_then(TrackedBackend::bound_port)
+}
+
+/// Waits for the backend's start to be decided: true once it reports its
+/// bind, false when it fails or its task ends without reporting (it
+/// panicked). The boot warm-up runs only on true.
+pub async fn wait_until_bound(mut start: watch::Receiver<BackendStart>) -> bool {
+    loop {
+        match &*start.borrow_and_update() {
+            BackendStart::Bound => return true,
+            BackendStart::Failed(_) => return false,
+            BackendStart::Pending => {}
+        }
+        // Err only once the sender is gone with nothing new: no bind came.
+        if start.changed().await.is_err() {
+            return false;
+        }
+    }
+}
 
 /// The backend's health URL on `port`.
 pub fn health_url(port: &str) -> String {
@@ -168,5 +275,144 @@ mod tests {
             .await
             .expect("each poll must time out on its own");
         assert!(!ready);
+    }
+
+    // ── The backend this process starts ──
+
+    fn tracked(port: u16, start: BackendStart) -> (watch::Sender<BackendStart>, TrackedBackend) {
+        let (tx, rx) = watch::channel(start);
+        (tx, TrackedBackend { port, start: rx })
+    }
+
+    #[test]
+    fn secrets_go_only_to_a_backend_that_reported_its_bind() {
+        // Before the bind, or after a failed one, whatever answers on the
+        // port is something else (AnkiConnect listens on 127.0.0.1:8765).
+        assert_eq!(secrets_port(&BackendStart::Pending, 8765), None);
+        let failed = BackendStart::Failed("Address already in use (os error 98)".into());
+        assert_eq!(secrets_port(&failed, 8765), None);
+        assert_eq!(secrets_port(&BackendStart::Bound, 8765), Some(8765));
+    }
+
+    #[test]
+    fn the_reloads_send_nothing_until_the_backend_reports_its_bind() {
+        // What every sender asks before it sends: pending, nothing is sent.
+        let (tx, backend) = tracked(8899, BackendStart::Pending);
+        assert_eq!(backend.bound_port(), None);
+        // Bound: the reload runs, to the backend's own port.
+        tx.send(BackendStart::Bound).unwrap();
+        assert_eq!(backend.bound_port(), Some(8899));
+
+        let (tx, backend) = tracked(8899, BackendStart::Pending);
+        tx.send(BackendStart::Failed("database is locked".into()))
+            .unwrap();
+        assert_eq!(backend.bound_port(), None, "failed: nothing is sent");
+        drop(tx);
+        assert_eq!(backend.bound_port(), None);
+    }
+
+    #[test]
+    fn nothing_is_sent_while_no_backend_is_tracked() {
+        // No test tracks a backend: setup does, once, in the app.
+        assert_eq!(bound_port(), None);
+    }
+
+    #[tokio::test]
+    async fn the_warm_up_waits_for_the_bind() {
+        let (tx, rx) = watch::channel(BackendStart::Pending);
+        let wait = tokio::spawn(wait_until_bound(rx));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!wait.is_finished(), "still pending: no warm-up yet");
+        tx.send(BackendStart::Bound).unwrap();
+        assert!(wait.await.unwrap(), "bound: the warm-up runs");
+    }
+
+    #[tokio::test]
+    async fn the_warm_up_is_skipped_when_the_backend_fails_to_start() {
+        let (tx, rx) = watch::channel(BackendStart::Pending);
+        let wait = tokio::spawn(wait_until_bound(rx));
+        tx.send(BackendStart::Failed(
+            "Address already in use (os error 98)".into(),
+        ))
+        .unwrap();
+        assert!(!wait.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn the_warm_up_is_skipped_when_the_backend_never_reports() {
+        // Its task panicked: the sender went away with the start pending.
+        let (tx, rx) = watch::channel(BackendStart::Pending);
+        drop(tx);
+        let bound = tokio::time::timeout(Duration::from_secs(5), wait_until_bound(rx))
+            .await
+            .expect("the wait ends once nothing can report any more");
+        assert!(!bound);
+    }
+
+    #[tokio::test]
+    async fn a_bind_reported_just_before_the_task_ended_still_counts() {
+        let (tx, rx) = watch::channel(BackendStart::Pending);
+        tx.send(BackendStart::Bound).unwrap();
+        drop(tx);
+        assert!(wait_until_bound(rx).await);
+    }
+
+    // ── One parsed port ──
+
+    #[test]
+    fn the_port_comes_from_the_env_value_with_8765_as_the_fallback() {
+        assert_eq!(port_from_env(None), 8765);
+        assert_eq!(port_from_env(Some("8899")), 8899);
+        for invalid in ["", "not-a-port", "70000", "-1", " 8899"] {
+            assert_eq!(port_from_env(Some(invalid)), 8765, "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn an_invalid_port_sends_every_caller_to_the_port_the_backend_binds() {
+        // lib.rs binds port_from_env(FLEETIFY_BACKEND_PORT) and tracks that
+        // same port; every sender takes it from bound_port() and builds its
+        // URL with backend_url.
+        let (_tx, backend) = tracked(port_from_env(Some("not-a-port")), BackendStart::Bound);
+        let port = backend.bound_port().unwrap();
+        assert_eq!(port, 8765);
+        for path in [
+            "/api/internal/providers/reload",
+            "/api/internal/accounts/http",
+            "/api/internal/providers/warm-health",
+            "/api/internal/routing/reload",
+        ] {
+            assert_eq!(
+                backend_url(port, path),
+                format!("http://127.0.0.1:8765{path}")
+            );
+        }
+    }
+
+    #[test]
+    fn only_lib_rs_reads_the_backend_port_from_the_environment() {
+        // Built at run time so this test's own source doesn't match.
+        let read = format!("env::var(\"{}\")", "FLEETIFY_BACKEND_PORT");
+        for (file, source) in [
+            (
+                "shell/providers_setup.rs",
+                include_str!("providers_setup.rs"),
+            ),
+            ("shell/routing_setup.rs", include_str!("routing_setup.rs")),
+            ("shell/migration.rs", include_str!("migration.rs")),
+            ("shell/startup_window.rs", include_str!("startup_window.rs")),
+            ("shell/backend_ready.rs", include_str!("backend_ready.rs")),
+            ("shell/ipc/mod.rs", include_str!("ipc/mod.rs")),
+        ] {
+            assert!(
+                !source.contains(&read),
+                "{file} reads the port itself: use backend_ready::bound_port()"
+            );
+        }
+        assert_eq!(
+            include_str!("../lib.rs").matches(&read).count(),
+            1,
+            "lib.rs reads FLEETIFY_BACKEND_PORT once, into port_from_env"
+        );
     }
 }

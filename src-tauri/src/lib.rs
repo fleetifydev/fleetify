@@ -35,21 +35,6 @@ fn vite_port() -> u16 {
     }
 }
 
-/// Parse `FLEETIFY_BACKEND_PORT` with a hard-coded 8765 fallback. The
-/// embedded backend binds this port; the webview URL in release mode
-/// (and the Vite dev proxy in debug mode) target the same port.
-fn backend_port() -> u16 {
-    match std::env::var("FLEETIFY_BACKEND_PORT") {
-        Ok(s) => s.parse().unwrap_or_else(|_| {
-            // Surface the misconfiguration instead of silently binding 8765 —
-            // a typo'd port otherwise looks like "the backend won't connect".
-            tracing::warn!(value = %s, "FLEETIFY_BACKEND_PORT is not a valid port; falling back to 8765");
-            8765
-        }),
-        Err(_) => 8765,
-    }
-}
-
 fn static_dir() -> Option<PathBuf> {
     if cfg!(debug_assertions) {
         None
@@ -333,9 +318,23 @@ pub fn run() {
 
             // The ports, parsed once: the main window loads the app from
             // one of them (shell::startup_window::app_origin), and the
-            // embedded backend binds `backend` below.
+            // embedded backend binds `backend` below. FLEETIFY_BACKEND_PORT
+            // is read here only; everything else gets that port from
+            // shell::backend_ready.
             let release = !cfg!(debug_assertions);
-            let (backend, vite) = (backend_port(), vite_port());
+            let backend = shell::backend_ready::port_from_env(
+                std::env::var("FLEETIFY_BACKEND_PORT").ok().as_deref(),
+            );
+            let vite = vite_port();
+
+            // The backend's start: the main window loads the app only after
+            // its bind and says so when it can't start (see
+            // shell::startup_window::load_app_when_ready), and the shell
+            // sends it keys or the internal secret only once it is bound
+            // (shell::backend_ready::bound_port).
+            let (backend_start_tx, backend_start_rx) =
+                tokio::sync::watch::channel(shell::backend_ready::BackendStart::Pending);
+            shell::backend_ready::track(backend, backend_start_rx.clone());
 
             // IPC from the app's origin. capabilities/default.json covers
             // only local origins (devUrl in dev mode). The origin the window
@@ -457,11 +456,6 @@ pub fn run() {
             let addr: SocketAddr = format!("127.0.0.1:{backend}").parse().unwrap();
             let sd = static_dir();
             let app_data_dir = app.path().app_data_dir().ok();
-            // The backend's start, for the main window: it loads the app only
-            // after the bind, and says so when the backend can't start (see
-            // shell::startup_window::load_app_when_ready).
-            let (backend_start_tx, backend_start_rx) =
-                tokio::sync::watch::channel(shell::startup_window::BackendStart::Pending);
             tauri::async_runtime::spawn(async move {
                 let routing_setup = match app_data_dir {
                     Some(dir) => {
@@ -486,11 +480,11 @@ pub fn run() {
                             backend_bind_ms = boot_start.elapsed().as_millis() as u64,
                             "embedded backend up on {addr}"
                         );
-                        let _ = backend_start_tx.send(shell::startup_window::BackendStart::Bound);
+                        let _ = backend_start_tx.send(shell::backend_ready::BackendStart::Bound);
                     }
                     Err(e) => {
                         tracing::error!("backend failed to start: {e:#}");
-                        let _ = backend_start_tx.send(shell::startup_window::BackendStart::Failed(
+                        let _ = backend_start_tx.send(shell::backend_ready::BackendStart::Failed(
                             format!("{e:#}"),
                         ));
                     }
@@ -518,9 +512,10 @@ pub fn run() {
             // the keychain and prime HttpHealthCache so the first chat
             // turn doesn't hit "No API key" and Settings → Models
             // opens with final pills instead of the "Testing…" flash.
-            // Waits for the embedded backend to bind before hitting it
-            // (200ms × 20 = 4s upper bound covers a cold Rust startup).
+            // Runs only once the embedded backend has reported its bind
+            // and answers its health route; otherwise it is skipped.
             let handle = app.handle().clone();
+            let warm_up_start = backend_start_rx.clone();
             tauri::async_runtime::spawn(async move {
                 // Both telemetry gates start closed in the backend. Open the
                 // ones that are on right away rather than after the warm-up
@@ -544,24 +539,34 @@ pub fn run() {
                     fleetify_backend::services::telemetry::set_cloud_enabled(true).await;
                 }
 
-                // Wait for the embedded backend to answer its health route
-                // before we try to reach it. 200ms × 20 = 4s upper bound
-                // covers a cold Rust startup on a slow disk; past it, the
-                // warm-up runs anyway. Same port the backend binds, parsed
-                // once above.
-                let ready = crate::shell::backend_ready::wait_for_backend(
-                    &crate::shell::backend_ready::health_url(&backend.to_string()),
-                    20,
-                    std::time::Duration::from_millis(200),
-                )
-                .await;
-                if !ready {
-                    tracing::warn!("backend health check timed out; warming up anyway");
+                // The warm-up sends provider keys and the internal secret, so
+                // it talks only to the app's own backend: it waits for the
+                // bind, then for the health route (200ms × 20 = 4s covers a
+                // cold Rust startup on a slow disk). A backend that fails,
+                // never reports, or doesn't answer gets nothing: before the
+                // bind, whatever answers on the port is something else. The
+                // next reload trigger (a Settings change) sends the keys.
+                if crate::shell::backend_ready::wait_until_bound(warm_up_start).await {
+                    let ready = crate::shell::backend_ready::wait_for_backend(
+                        &crate::shell::backend_ready::health_url(&backend.to_string()),
+                        20,
+                        std::time::Duration::from_millis(200),
+                    )
+                    .await;
+                    if ready {
+                        crate::shell::providers_setup::warm_providers_at_boot(&handle).await;
+                        // Hydrate the backend clone service with the linked
+                        // GitHub token so private-repo clones authenticate
+                        // from the first try.
+                        crate::shell::github_link::push_clone_token().await;
+                    } else {
+                        tracing::warn!(
+                            "backend health check timed out; skipping the provider warm-up"
+                        );
+                    }
+                } else {
+                    tracing::warn!("the embedded backend didn't start; skipping the provider warm-up");
                 }
-                crate::shell::providers_setup::warm_providers_at_boot(&handle).await;
-                // Hydrate the backend clone service with the linked GitHub
-                // token so private-repo clones authenticate from the first try.
-                crate::shell::github_link::push_clone_token().await;
 
                 // Finish the Fleetify cloud sync restore: close the gate if
                 // the launch decision kept sync off, or if the saved choice

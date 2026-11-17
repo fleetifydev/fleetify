@@ -31,6 +31,8 @@ use tauri::{Manager, Url, WebviewWindow};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tokio::sync::{watch, Notify};
 
+use crate::shell::backend_ready::BackendStart;
+
 /// Label of the main window.
 pub const MAIN_WINDOW: &str = "main";
 
@@ -176,18 +178,6 @@ pub fn signal_app_page_loaded(
             app_page_loaded.notify_one();
         }
     }
-}
-
-/// What the embedded backend's task has reported about its start.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BackendStart {
-    /// No report yet: `serve_with_routing_setup` is still running.
-    Pending,
-    /// It returned `Ok`: the backend listens on its port.
-    Bound,
-    /// It returned `Err` (the error and its causes), or its task ended
-    /// without a report.
-    Failed(String),
 }
 
 /// The backend's start as the startup task sees it: `reported` is the last
