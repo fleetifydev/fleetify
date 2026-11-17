@@ -9,14 +9,71 @@ use serde_json::{json, Value};
 
 const CONFIG_FILE: &str = "fleet.config.json";
 
-/// Load JSON config; returns `{}` when the file doesn't exist or fails to
-/// parse (parity with the Electron store's "no file = empty object").
+/// Load JSON config; `{}` when the file doesn't exist (parity with the
+/// Electron store's "no file = empty object") or can't be read.
+///
+/// A file that reads but isn't a JSON object (a hand edit with a stray
+/// comma, say) is moved aside to `fleet.config.json.corrupt-<unix-ms>`
+/// before `{}` comes back. Every setter reads, merges and writes the whole
+/// file, so leaving it in place would let the next save silently drop
+/// every other setting.
 pub fn load_config_from(path: &Path) -> Value {
     let file = path.join(CONFIG_FILE);
-    match std::fs::read_to_string(&file) {
-        Ok(text) => serde_json::from_str(&text).unwrap_or_else(|_| json!({})),
-        Err(_) => json!({}),
+    // Bytes, not a String: a file that isn't UTF-8 isn't JSON either, and
+    // must be kept like any other corrupt config.
+    let bytes = match std::fs::read(&file) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return json!({}),
+        Err(e) => {
+            tracing::warn!(error = %e, "couldn't read {CONFIG_FILE}; using defaults");
+            return json!({});
+        }
+    };
+    let problem = match serde_json::from_slice::<Value>(&bytes) {
+        Ok(cfg @ Value::Object(_)) => return cfg,
+        Ok(_) => "not a JSON object".to_string(),
+        // A position and a fixed message, never the file's text.
+        Err(e) => e.to_string(),
+    };
+    back_up_corrupt_config(path, &file, &problem);
+    json!({})
+}
+
+/// Move the unparseable `file` aside to `fleet.config.json.corrupt-<unix-ms>`
+/// in `dir`, or copy it there when it can't be moved. Logs the backup's
+/// name only: not the folder (its path usually holds the user's name), and
+/// never the content.
+fn back_up_corrupt_config(dir: &Path, file: &Path, problem: &str) {
+    let name = format!("{CONFIG_FILE}.corrupt-{}", unix_ms());
+    let backup = dir.join(&name);
+    let kept = match std::fs::rename(file, &backup) {
+        Ok(()) => Ok(()),
+        // A load running at the same time moved it first and logged that.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(moving) => std::fs::copy(file, &backup)
+            .map(|_| ())
+            .map_err(|copying| format!("move: {moving}; copy: {copying}")),
+    };
+    match kept {
+        Ok(()) => tracing::warn!(
+            problem = %problem,
+            backup = %name,
+            "{CONFIG_FILE} isn't a JSON object; backed it up and started from defaults"
+        ),
+        Err(error) => tracing::warn!(
+            problem = %problem,
+            error = %error,
+            "{CONFIG_FILE} isn't a JSON object and couldn't be backed up; started from defaults"
+        ),
     }
+}
+
+/// Milliseconds since the Unix epoch, or 0 when the clock is set before it.
+fn unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Save JSON config atomically (write `.tmp` then rename, so a crash
@@ -219,14 +276,27 @@ pub fn telemetry_from(cfg: &Value) -> TelemetryConfig {
         .unwrap_or_default()
 }
 
+/// Write `telem` into the `"telemetry"` section field by field, so keys the
+/// struct doesn't know, or couldn't parse, survive: a malformed sibling
+/// (which sends [`telemetry_from`] to its defaults) must not cost the user
+/// their saved cloud sync choice. `None` fields are skipped; they neither
+/// write `null` nor remove a saved value.
 pub fn telemetry_set(cfg: &mut Value, telem: &TelemetryConfig) {
-    let val = serde_json::to_value(telem).unwrap_or_else(|_| json!({}));
-    match cfg {
-        Value::Object(map) => {
-            map.insert("telemetry".into(), val);
-        }
-        _ => {
-            *cfg = json!({ "telemetry": val });
+    let Ok(Value::Object(fields)) = serde_json::to_value(telem) else {
+        return;
+    };
+    if !cfg.is_object() {
+        *cfg = json!({});
+    }
+    let section = &mut cfg["telemetry"];
+    if !section.is_object() {
+        *section = json!({});
+    }
+    if let Some(section) = section.as_object_mut() {
+        for (key, value) in fields {
+            if !value.is_null() {
+                section.insert(key, value);
+            }
         }
     }
 }
@@ -241,25 +311,52 @@ pub fn persist_cloud_choice(dir: &Path, enabled: bool) -> Result<(), String> {
     let mut telem = telemetry_from(&cfg);
     telem.cloud_sync_enabled = Some(enabled);
     if enabled && !was_enabled && telem.cloud_sync_enabled_at.is_none() {
-        telem.cloud_sync_enabled_at = Some(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0),
-        );
+        telem.cloud_sync_enabled_at = Some(unix_ms());
     }
     telemetry_set(&mut cfg, &telem);
     save_config_to(dir, &cfg).map_err(|e| format!("Couldn't save the cloud sync setting: {e}"))
+}
+
+/// Save the PostHog product analytics switch in `dir`'s `fleet.config.json`:
+/// read-merge-write `telemetry.posthog_enabled`, stamping
+/// `posthog_enabled_at` on the first opt-in only (turning it off, or on
+/// again later, keeps that time). `Err` carries a message fit for the user.
+pub fn persist_posthog_choice(dir: &Path, enabled: bool) -> Result<(), String> {
+    let mut cfg = load_config_from(dir);
+    let mut telem = telemetry_from(&cfg);
+    let was_enabled = telem.posthog_enabled;
+    telem.posthog_enabled = enabled;
+    if enabled && !was_enabled && telem.posthog_enabled_at.is_none() {
+        telem.posthog_enabled_at = Some(unix_ms());
+    }
+    telemetry_set(&mut cfg, &telem);
+    save_config_to(dir, &cfg)
+        .map_err(|e| format!("Couldn't save the product analytics setting: {e}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The `fleet.config.json.corrupt-<unix-ms>` backups in `dir`.
+    fn corrupt_backups(dir: &Path) -> Vec<std::path::PathBuf> {
+        let prefix = format!("{CONFIG_FILE}.corrupt-");
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                let name = path.file_name().unwrap().to_str().unwrap();
+                name.strip_prefix(&prefix)
+                    .is_some_and(|ms| ms.parse::<u128>().is_ok())
+            })
+            .collect()
+    }
+
     #[test]
-    fn load_empty_when_missing() {
+    fn a_missing_file_loads_as_empty_without_a_backup() {
         let tmp = tempfile::tempdir().unwrap();
         assert_eq!(load_config_from(tmp.path()), json!({}));
+        assert!(corrupt_backups(tmp.path()).is_empty());
     }
 
     #[test]
@@ -271,10 +368,80 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_file_falls_back_to_empty() {
+    fn a_valid_file_loads_unchanged_without_a_backup() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join(CONFIG_FILE), "{not valid json").unwrap();
+        std::fs::write(
+            tmp.path().join(CONFIG_FILE),
+            r#"{"theme": "dark", "providers": {"a": 1}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            load_config_from(tmp.path()),
+            json!({"theme": "dark", "providers": {"a": 1}})
+        );
+        assert!(corrupt_backups(tmp.path()).is_empty());
+        assert!(tmp.path().join(CONFIG_FILE).exists());
+    }
+
+    #[test]
+    fn a_corrupt_file_is_backed_up_and_loads_as_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original = br#"{"providers": {"a": 1},"#;
+        std::fs::write(tmp.path().join(CONFIG_FILE), original).unwrap();
+
         assert_eq!(load_config_from(tmp.path()), json!({}));
+        let backups = corrupt_backups(tmp.path());
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        assert_eq!(std::fs::read(&backups[0]).unwrap(), original);
+        assert!(!tmp.path().join(CONFIG_FILE).exists());
+    }
+
+    #[test]
+    fn a_file_that_is_not_an_object_is_backed_up_too() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(CONFIG_FILE), "[1,2]").unwrap();
+
+        assert_eq!(load_config_from(tmp.path()), json!({}));
+        let backups = corrupt_backups(tmp.path());
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        assert_eq!(std::fs::read(&backups[0]).unwrap(), b"[1,2]");
+        assert!(!tmp.path().join(CONFIG_FILE).exists());
+    }
+
+    #[test]
+    fn a_file_that_is_not_utf8_is_backed_up_too() {
+        // JSON must be UTF-8, so these bytes are a corrupt config like any
+        // other, not an unreadable file to leave for the next save.
+        let tmp = tempfile::tempdir().unwrap();
+        let original = b"{\"theme\": \"\xff\xfe\"}";
+        std::fs::write(tmp.path().join(CONFIG_FILE), original).unwrap();
+
+        assert_eq!(load_config_from(tmp.path()), json!({}));
+        let backups = corrupt_backups(tmp.path());
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        assert_eq!(std::fs::read(&backups[0]).unwrap(), original);
+        assert!(!tmp.path().join(CONFIG_FILE).exists());
+    }
+
+    #[test]
+    fn a_save_after_a_corrupt_load_leaves_the_backup_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original = br#"{"providers": {"a": 1},"#;
+        std::fs::write(tmp.path().join(CONFIG_FILE), original).unwrap();
+
+        persist_cloud_choice(tmp.path(), true).unwrap();
+
+        let backups = corrupt_backups(tmp.path());
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        assert_eq!(std::fs::read(&backups[0]).unwrap(), original);
+        // The new file holds only what the setter wrote.
+        let cfg = load_config_from(tmp.path());
+        assert_eq!(
+            cfg.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["telemetry"],
+            "{cfg}"
+        );
+        assert_eq!(cfg["telemetry"]["cloud_sync_enabled"], json!(true));
     }
 
     #[test]
@@ -488,9 +655,31 @@ mod tests {
     }
 
     #[test]
+    fn telemetry_set_merges_into_the_saved_section() {
+        let mut cfg = json!({
+            "theme": "dark",
+            "telemetry": {"future_flag": 1, "posthog_enabled_at": 42}
+        });
+        let t = TelemetryConfig {
+            posthog_enabled: true,
+            ..Default::default()
+        };
+        telemetry_set(&mut cfg, &t);
+        // Unknown keys stay; `None` fields neither write `null` nor remove
+        // a saved value.
+        assert_eq!(
+            cfg,
+            json!({
+                "theme": "dark",
+                "telemetry": {"future_flag": 1, "posthog_enabled_at": 42, "posthog_enabled": true}
+            })
+        );
+    }
+
+    #[test]
     fn posthog_toggle_keeps_the_cloud_sync_choice() {
-        // telemetry_set_posthog_enabled reads the telemetry section into
-        // TelemetryConfig and writes the whole struct back.
+        // persist_posthog_choice reads the telemetry section into
+        // TelemetryConfig and merges the struct back.
         let mut cfg = json!({
             "telemetry": {"cloud_sync_enabled": true, "cloud_sync_enabled_at": 42}
         });
@@ -537,6 +726,78 @@ mod tests {
         let err = persist_cloud_choice(&file.join("settings"), false).unwrap_err();
         assert!(
             err.starts_with("Couldn't save the cloud sync setting: "),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn persisting_the_posthog_choice_writes_the_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        save_config_to(
+            tmp.path(),
+            &json!({"theme": "dark", "telemetry": {"cloud_sync_enabled": false}}),
+        )
+        .unwrap();
+
+        persist_posthog_choice(tmp.path(), true).unwrap();
+        let cfg = load_config_from(tmp.path());
+        assert_eq!(cfg["telemetry"]["posthog_enabled"], json!(true));
+        assert!(
+            cfg["telemetry"]["posthog_enabled_at"].is_i64(),
+            "first opt-in stamped: {cfg}"
+        );
+        assert_eq!(
+            cfg["telemetry"]["cloud_sync_enabled"],
+            json!(false),
+            "cloud choice kept"
+        );
+        assert_eq!(cfg["theme"], json!("dark"), "other settings kept");
+        let first_opt_in = cfg["telemetry"]["posthog_enabled_at"].clone();
+
+        persist_posthog_choice(tmp.path(), false).unwrap();
+        let mut cfg = load_config_from(tmp.path());
+        assert_eq!(cfg["telemetry"]["posthog_enabled"], json!(false));
+        assert_eq!(cfg["telemetry"]["posthog_enabled_at"], first_opt_in);
+        assert_eq!(cfg["telemetry"]["cloud_sync_enabled"], json!(false));
+
+        // Opting in again keeps the first opt-in time. A stamp no clock
+        // would write shows a fresh one even within the same millisecond.
+        cfg["telemetry"]["posthog_enabled_at"] = json!(42);
+        save_config_to(tmp.path(), &cfg).unwrap();
+        persist_posthog_choice(tmp.path(), true).unwrap();
+        let cfg = load_config_from(tmp.path());
+        assert_eq!(cfg["telemetry"]["posthog_enabled"], json!(true));
+        assert_eq!(cfg["telemetry"]["posthog_enabled_at"], json!(42));
+        assert_eq!(cfg["telemetry"]["cloud_sync_enabled"], json!(false));
+    }
+
+    #[test]
+    fn a_malformed_telemetry_field_does_not_cost_the_cloud_choice() {
+        let tmp = tempfile::tempdir().unwrap();
+        save_config_to(
+            tmp.path(),
+            &json!({"telemetry": {"posthog_enabled": "yes", "cloud_sync_enabled": false}}),
+        )
+        .unwrap();
+
+        persist_posthog_choice(tmp.path(), true).unwrap();
+        let cfg = load_config_from(tmp.path());
+        assert_eq!(
+            cfg["telemetry"]["cloud_sync_enabled"],
+            json!(false),
+            "{cfg}"
+        );
+        assert_eq!(cfg["telemetry"]["posthog_enabled"], json!(true), "{cfg}");
+    }
+
+    #[test]
+    fn persisting_the_posthog_choice_reports_a_failed_save() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A folder where the config file belongs can't be replaced by one.
+        std::fs::create_dir(tmp.path().join(CONFIG_FILE)).unwrap();
+        let err = persist_posthog_choice(tmp.path(), false).unwrap_err();
+        assert!(
+            err.starts_with("Couldn't save the product analytics setting: "),
             "{err}"
         );
     }

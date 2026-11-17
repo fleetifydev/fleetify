@@ -61,12 +61,22 @@ pub async fn config_get(app: tauri::AppHandle) -> serde_json::Value {
     }
 }
 
+/// Replaces `fleet.config.json` with `config`. A failed save answers
+/// `{ ok: false, error }`.
 #[tauri::command]
 pub async fn config_set(app: tauri::AppHandle, config: serde_json::Value) -> serde_json::Value {
-    if let Ok(dir) = app.path().app_data_dir() {
-        let _ = config::save_config_to(&dir, &config);
+    let saved = match app.path().app_data_dir() {
+        Ok(dir) => config::save_config_to(&dir, &config)
+            .map_err(|e| format!("Couldn't save Fleetify's settings: {e}")),
+        Err(e) => Err(format!("Couldn't find Fleetify's settings folder: {e}")),
+    };
+    match saved {
+        Ok(()) => serde_json::json!({ "ok": true }),
+        Err(error) => {
+            tracing::warn!(error = %error, "settings not saved");
+            serde_json::json!({ "ok": false, "error": error })
+        }
     }
-    serde_json::json!({ "ok": true })
 }
 
 // ── Telemetry config (PostHog + Fleetify cloud sync) ──────────────
@@ -130,33 +140,37 @@ pub async fn telemetry_set_cloud_enabled(
     }
 }
 
+/// Settings → Privacy's product analytics (PostHog) switch. Saves the
+/// choice (`config::persist_posthog_choice`), then flips the backend's
+/// PostHog gate live.
+///
+/// The gate follows the switch for this session even when the save fails,
+/// but the saved choice then still decides the next launch, so the failure
+/// is reported: `{ ok: false, error }`.
 #[tauri::command]
 pub async fn telemetry_set_posthog_enabled(
     app: tauri::AppHandle,
     enabled: bool,
 ) -> serde_json::Value {
-    if let Ok(dir) = app.path().app_data_dir() {
-        let mut cfg = config::load_config_from(&dir);
-        let mut telem = config::telemetry_from(&cfg);
-        let was_enabled = telem.posthog_enabled;
-        telem.posthog_enabled = enabled;
-        // Stamp the first opt-in time so funnels can split "fresh"
-        // consenters from long-standing users. Clearing the flag does
-        // NOT wipe the timestamp — useful for support if the user
-        // toggles off then back on.
-        if enabled && !was_enabled {
-            telem.posthog_enabled_at = Some(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0),
-            );
-        }
-        config::telemetry_set(&mut cfg, &telem);
-        let _ = config::save_config_to(&dir, &cfg);
+    let saved = match app.path().app_data_dir() {
+        Ok(dir) => config::persist_posthog_choice(&dir, enabled),
+        Err(e) => Err(format!("Couldn't find Fleetify's settings folder: {e}")),
+    };
+    if let Err(error) = &saved {
+        tracing::warn!(
+            error = %error,
+            enabled,
+            "product analytics setting not saved; it applies until Fleetify restarts"
+        );
     }
     fleetify_backend::services::telemetry::posthog::set_enabled(enabled);
-    serde_json::json!({ "ok": true })
+    match saved {
+        Ok(()) => serde_json::json!({ "ok": true }),
+        Err(error) => serde_json::json!({
+            "ok": false,
+            "error": format!("{error}. The change applies until Fleetify restarts."),
+        }),
+    }
 }
 
 // ── shell ─────────────────────────────────────────────────────────
