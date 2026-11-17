@@ -334,6 +334,10 @@ pub fn next_step(
 /// [`SLOW_START`] it is shown with the placeholder, and the app loads once it
 /// can. If the backend can't start, or has no UI files to serve, polling
 /// stops and an error dialog says so; the app quits when it is dismissed.
+///
+/// The poll never goes through a proxy (`fleetify_core::loopback`): a proxy
+/// in the environment that isn't running would otherwise keep the window on
+/// the placeholder for good.
 pub async fn load_app_when_ready(
     window: WebviewWindow,
     app_url: Url,
@@ -342,18 +346,24 @@ pub async fn load_app_when_ready(
     backend_port: u16,
     boot_start: Instant,
 ) {
-    let client = reqwest::Client::builder()
+    let client = fleetify_core::loopback::http_client_builder()
         .timeout(POLL_TIMEOUT)
         .build()
-        .unwrap_or_default();
+        .inspect_err(|e| {
+            tracing::error!(
+                target: "fleetify::startup",
+                "can't build the HTTP client that polls {app_url} ({e}); \
+                 loading the app once the backend reports its bind"
+            );
+        })
+        .ok();
     let started = Instant::now();
     let mut placeholder_shown = false;
     loop {
         // observe_start clones the report at once: a watch borrow must not
         // be held across an await.
         let start = observe_start(&backend);
-        let answered =
-            start == BackendStart::Bound && client.get(app_url.as_str()).send().await.is_ok();
+        let answered = start == BackendStart::Bound && app_answers(client.as_ref(), &app_url).await;
         match next_step(&start, answered, started.elapsed(), placeholder_shown) {
             Step::LoadApp => break,
             Step::ReportFailure => {
@@ -404,6 +414,16 @@ pub async fn load_app_when_ready(
     }
     tokio::time::sleep(PAINT_GRACE).await;
     reveal(&window, boot_start);
+}
+
+/// Whether `app_url` gives any HTTP answer, asked with `client`. Without a
+/// client (one that can't be built, which only a TLS backend that can't start
+/// causes) nothing can be asked, and the backend's bind has to do.
+async fn app_answers(client: Option<&reqwest::Client>, app_url: &Url) -> bool {
+    match client {
+        Some(client) => client.get(app_url.as_str()).send().await.is_ok(),
+        None => true,
+    }
 }
 
 /// Says the backend can't start, that there are no UI files to serve, or

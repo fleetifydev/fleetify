@@ -18,4 +18,6 @@ tokio = { version = "1", default-features = false, features = ["rt", "macros", "
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
+# fleetify_core::loopback: the no-proxy client builder for calls to the backend.
+fleetify-core.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

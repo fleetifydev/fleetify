@@ -143,12 +143,20 @@ pub fn health_url(port: &str) -> String {
 }
 
 /// Polls `url` up to `attempts` times, `interval` apart, until the backend
-/// answers. True once it did; false when the time ran out.
+/// answers. True once it did; false when the time ran out. Never through a
+/// proxy (`fleetify_core::loopback`): one that isn't running would make the
+/// backend look down.
 pub async fn wait_for_backend(url: &str, attempts: u32, interval: Duration) -> bool {
-    let client = reqwest::Client::builder()
+    let client = match fleetify_core::loopback::http_client_builder()
         .timeout(POLL_TIMEOUT)
         .build()
-        .unwrap_or_default();
+    {
+        Ok(client) => client,
+        Err(e) => {
+            tracing::warn!("can't build the HTTP client that polls the backend: {e}");
+            return false;
+        }
+    };
     for _ in 0..attempts {
         if answers_ok(&client, url).await {
             return true;
@@ -454,5 +462,51 @@ mod tests {
             1,
             "lib.rs reads FLEETIFY_BACKEND_PORT once, into port_from_env"
         );
+    }
+
+    #[test]
+    fn the_clients_of_the_apps_own_backend_never_use_a_proxy() {
+        // reqwest's own builders use the proxy in HTTP_PROXY / ALL_PROXY,
+        // with no exemption for loopback. Built at run time so this test's
+        // own source doesn't match.
+        let shared = format!("fleetify_core::loopback::{}()", "http_client_builder");
+        let proxied = [
+            format!("reqwest::Client::{}()", "new"),
+            format!("reqwest::Client::{}()", "builder"),
+            format!("Client::{}()", "default"),
+        ];
+        for (file, source) in [
+            (
+                "shell/providers_setup.rs",
+                include_str!("providers_setup.rs"),
+            ),
+            ("shell/routing_setup.rs", include_str!("routing_setup.rs")),
+            ("shell/backend_ready.rs", include_str!("backend_ready.rs")),
+            ("shell/startup_window.rs", include_str!("startup_window.rs")),
+            (
+                "crates/memory-mcp/src/main.rs",
+                include_str!("../../../crates/memory-mcp/src/main.rs"),
+            ),
+            (
+                "crates/dispatch-mcp/src/main.rs",
+                include_str!("../../../crates/dispatch-mcp/src/main.rs"),
+            ),
+            (
+                "crates/browser-mcp/src/main.rs",
+                include_str!("../../../crates/browser-mcp/src/main.rs"),
+            ),
+        ] {
+            assert!(
+                source.contains(&shared),
+                "{file} doesn't build its client with {shared}"
+            );
+            for builder in &proxied {
+                assert!(
+                    !source.contains(builder.as_str()),
+                    "{file} builds a client with {builder}, which sends the app's \
+                     secrets through a proxy from the environment: use {shared}"
+                );
+            }
+        }
     }
 }

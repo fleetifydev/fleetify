@@ -107,7 +107,11 @@ async fn call_action(name: &str, args: Value) -> Result<Value, String> {
     let backend =
         std::env::var("FLEETIFY_BACKEND_URL").unwrap_or_else(|_| "http://127.0.0.1:8765".into());
     let secret = std::env::var("FLEETIFY_INTERNAL_SECRET").unwrap_or_default();
-    let client = reqwest::Client::new();
+    // Never through a proxy, which would see the internal secret
+    // (fleetify_core::loopback).
+    let client = fleetify_core::loopback::http_client_builder()
+        .build()
+        .map_err(|e| format!("HTTP client: {e}"))?;
     let resp = client
         .post(format!("{backend}/api/internal/browser/action"))
         .header("x-fleet-internal", secret)

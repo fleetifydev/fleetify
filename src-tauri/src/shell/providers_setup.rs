@@ -79,10 +79,21 @@ pub async fn reload_backend(app: &tauri::AppHandle) {
         }
     }
 
-    let client = reqwest::Client::builder()
+    // Never through a proxy: these are the keys (fleetify_core::loopback).
+    let client = match fleetify_core::loopback::http_client_builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
-        .unwrap_or_default();
+    {
+        Ok(client) => client,
+        Err(e) => {
+            tracing::warn!(
+                target: "fleet-shell",
+                error = %e,
+                "providers reload: couldn't build the HTTP client; not sending keys"
+            );
+            return;
+        }
+    };
 
     // Multi-account: enumerate HTTP provider accounts from the backend, read
     // each labeled key from the keychain, and push them as `account_keys`
@@ -215,10 +226,20 @@ pub async fn warm_providers_at_boot(app: &tauri::AppHandle) {
         }
     };
     let url = backend_ready::backend_url(port, "/api/internal/providers/warm-health");
-    let client = reqwest::Client::builder()
+    let client = match fleetify_core::loopback::http_client_builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
-        .unwrap_or_default();
+    {
+        Ok(client) => client,
+        Err(e) => {
+            tracing::warn!(
+                target: "fleet-shell",
+                error = %e,
+                "warm-health: couldn't build the HTTP client (next manual Test will refresh)"
+            );
+            return;
+        }
+    };
     match client
         .post(&url)
         .header("X-Fleet-Internal", &secret)

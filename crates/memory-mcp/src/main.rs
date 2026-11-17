@@ -153,6 +153,14 @@ fn env_or(k: &str, default: &str) -> String {
     std::env::var(k).unwrap_or_else(|_| default.to_string())
 }
 
+/// The client for calls to the backend: never through a proxy, which would
+/// see the bearer token (`fleetify_core::loopback`).
+fn backend_client() -> Result<reqwest::Client, String> {
+    fleetify_core::loopback::http_client_builder()
+        .build()
+        .map_err(|e| format!("HTTP client: {e}"))
+}
+
 async fn remember(args: Value) -> Result<Value, String> {
     let session_id = std::env::var("FLEETIFY_SESSION_ID")
         .map_err(|_| "FLEETIFY_SESSION_ID env var missing".to_string())?;
@@ -166,7 +174,7 @@ async fn remember(args: Value) -> Result<Value, String> {
         return Err("title and content are required".into());
     }
     let url = format!("{backend}/api/sessions/{session_id}/memory");
-    let r = reqwest::Client::new()
+    let r = backend_client()?
         .post(&url)
         .bearer_auth(&bearer)
         .json(&json!({ "title": title, "content": content, "kind": kind }))
@@ -191,7 +199,7 @@ async fn recall(args: Value) -> Result<Value, String> {
         .unwrap_or(10)
         .clamp(1, 50);
     let url = format!("{backend}/api/sessions/{session_id}/memory?limit={limit}");
-    let r = reqwest::Client::new()
+    let r = backend_client()?
         .get(&url)
         .bearer_auth(&bearer)
         .send()

@@ -6,3 +6,10 @@ license.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+# `loopback::http_client_builder`, the one builder every client of the app's
+# own backend uses (the shell and the MCP sidecars). No features: each user
+# brings its own TLS and json features.
+reqwest = { version = "0.12", default-features = false }
+
+[dev-dependencies]
+tokio.workspace = true

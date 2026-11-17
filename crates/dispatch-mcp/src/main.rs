@@ -156,6 +156,14 @@ fn env_or(k: &str, default: &str) -> String {
     std::env::var(k).unwrap_or_else(|_| default.to_string())
 }
 
+/// The client for calls to the backend: never through a proxy, which would
+/// see the internal secret (`fleetify_core::loopback`).
+fn backend_client() -> Result<reqwest::Client, String> {
+    fleetify_core::loopback::http_client_builder()
+        .build()
+        .map_err(|e| format!("HTTP client: {e}"))
+}
+
 fn check_rate(session_id: &str) -> Result<(), String> {
     static LOG: std::sync::OnceLock<Mutex<HashMap<String, Vec<Instant>>>> =
         std::sync::OnceLock::new();
@@ -205,7 +213,7 @@ async fn dispatch_to_agent(args: Value) -> Result<Value, String> {
     // chat via the SessionManager fanout (the caller is treated as
     // the "staff" here for routing purposes).
     let url = format!("{backend}/api/internal/dispatch");
-    let r = reqwest::Client::new()
+    let r = backend_client()?
         .post(&url)
         .header("X-Fleet-Internal", &secret)
         .json(&json!({
@@ -273,7 +281,7 @@ async fn spawn_agent(args: Value) -> Result<Value, String> {
     }
 
     let url = format!("{backend}/api/internal/spawn");
-    let r = reqwest::Client::new()
+    let r = backend_client()?
         .post(&url)
         .header("X-Fleet-Internal", &secret)
         .json(&Value::Object(body))

@@ -130,10 +130,21 @@ pub async fn reload_backend(app: &tauri::AppHandle) {
     };
     let url = crate::shell::backend_ready::backend_url(port, "/api/internal/routing/reload");
 
-    let client = reqwest::Client::builder()
+    // Never through a proxy: these are the router keys (fleetify_core::loopback).
+    let client = match fleetify_core::loopback::http_client_builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
-        .unwrap_or_default();
+    {
+        Ok(client) => client,
+        Err(e) => {
+            tracing::warn!(
+                target: "fleet-shell",
+                error = %e,
+                "routing reload: couldn't build the HTTP client; not sending keys"
+            );
+            return;
+        }
+    };
     match client
         .post(&url)
         .header("X-Fleet-Internal", &secret)
