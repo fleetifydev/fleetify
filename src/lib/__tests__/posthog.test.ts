@@ -6,7 +6,8 @@
  *   makes no request at all.
  * - Once the user opts in, it starts with automatic capture, remote config,
  *   feature flags and external scripts all off.
- * - identify sends the account id only.
+ * - identify sends the account id only, and no event carries the person
+ *   properties posthog-js would add on its own.
  * - After an opt-out in the same session, nothing it would still send gets
  *   through.
  */
@@ -53,6 +54,7 @@ const EXPECTED_OPTIONS = {
   persistence: "localStorage",
   bootstrap: { distinctID: "device-1" },
   loaded: expect.any(Function),
+  before_send: expect.any(Function),
 };
 
 /** Let the wrapper's dynamic import of posthog-js finish. */
@@ -193,6 +195,43 @@ describe("identify", () => {
     await analytics.initPostHog({ distinctId: "device-1", enabled: true });
     analytics.identifyUser("user-1");
     expect(ph.identify.mock.calls).toEqual([["user-1"]]);
+  });
+
+  it("removes the person properties posthog-js adds before any event is sent", async () => {
+    await analytics.initPostHog({ distinctId: "device-1", enabled: true });
+    const { before_send } = ph.init.mock.calls[0][1] as {
+      before_send: (event: unknown) => unknown;
+    };
+    // What posthog-js 1.376 builds for identify: the account id and the
+    // anonymous id, plus $set_once with the first address and referrer it saw.
+    const identify = {
+      uuid: "u-1",
+      event: "$identify",
+      properties: {
+        distinct_id: "user-1",
+        $anon_distinct_id: "device-1",
+        $os: "Linux",
+        $set: { name: "Mira" },
+        $set_once: { plan: "pro" },
+      },
+      $set: {},
+      $set_once: {
+        $initial_current_url: "http://127.0.0.1:8765/",
+        $initial_referrer: "$direct",
+        $current_url: "http://127.0.0.1:8765/",
+      },
+      timestamp: new Date(0),
+    };
+    expect(before_send(identify)).toEqual({
+      uuid: "u-1",
+      event: "$identify",
+      properties: { distinct_id: "user-1", $anon_distinct_id: "device-1", $os: "Linux" },
+      timestamp: new Date(0),
+    });
+    // The event posthog-js handed over is left as it was.
+    expect(identify.$set_once).toBeDefined();
+    // posthog-js passes null on to the next hook once one drops an event.
+    expect(before_send(null)).toBeNull();
   });
 
   it("links a sign-in made before the opt-in once the user opts in", async () => {

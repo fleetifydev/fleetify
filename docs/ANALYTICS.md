@@ -94,22 +94,32 @@ change still applies until Fleetify restarts.
 
 Fleetify doesn't load posthog-js, the PostHog library in the renderer,
 until you opt in. While product analytics is off, the renderer sends
-PostHog nothing at all, and at launch it removes what older versions
-stored for posthog-js in the app's local storage. Once it is on,
-posthog-js never fetches remote config or feature flags from PostHog and
-loads no scripts from it. Turning it off again stops every further
-request, including events posthog-js had queued or was retrying.
+PostHog nothing at all. At each launch while it is off, the renderer
+also deletes `ph_<project key>_posthog`, the local-storage entry where
+older versions kept posthog-js's state, including the name and email
+they identified you with. posthog-js's consent flag,
+`__ph_opt_in_out_<project key>`, stays: it records only whether you
+opted in or out. Once product analytics is on, posthog-js never fetches
+remote config or feature flags from PostHog and loads no scripts from
+it. Turning it off again stops every further request, including events
+posthog-js had queued or was retrying.
 
 Every event carries a stable per-machine `distinct_id`: the same UUID
 v4 persisted in `~/.fleetify/device.json`. When you sign in, and at each
 launch while you're signed in, Fleetify calls `posthog.identify(user_id)`
-with the id only (no name, email or other person properties), so PostHog
-links this device's events, earlier ones included, to your Fleetify
-account (via `$anon_distinct_id`). While product analytics is off that
-sends nothing; if you turn it on later, it happens then. From then on
-the app's own events use your `user_id` as their `distinct_id`; backend
-events keep the device id, which PostHog has linked to you. Product
-analytics is linked to your account, not anonymous.
+with the id only, so PostHog links this device's events, earlier ones
+included, to your Fleetify account (via `$anon_distinct_id`). While
+product analytics is off that sends nothing; if you turn it on later, it
+happens then. From then on the app's own events use your `user_id` as
+their `distinct_id`; backend events keep the device id, which PostHog
+has linked to you. Product analytics is linked to your account, not
+anonymous.
+
+On its own, posthog-js would also attach person properties to some
+events: `$set_once` with the first address and referrer it saw, such as
+`$initial_current_url` and `$initial_referrer`. Fleetify removes `$set`
+and `$set_once` from every event before posthog-js queues it, so the app
+sends no name, email or other person property.
 
 ### Backend events (Rust)
 
@@ -150,14 +160,30 @@ These fire from `src/lib/posthog.ts` callers in the renderer.
 
 | Event | Trigger | Properties |
 |---|---|---|
-| `$pageview` | Screen transition (splash → welcome → setup → onboarding-chat → main) | `$current_url` (`/<screen>`), `title` |
+| `$pageview` | Screen transition (splash → welcome → setup → onboarding-chat → main) | `$current_url` (`/<screen>`), `title` (the page title, `Fleetify — AI Agent Orchestrator`) |
 | `onboarding_started` | OnboardingChat first mount | — |
 | `onboarding_completed` | Onboarding's last question answered | `telemetry_opt_in` |
 | `message_sent` | Chat send button | `session_id_short` (first 8 chars), `text_length`, `has_attachments`, `attachment_count` |
 | `message_error` | Send failed (network / auth) | `session_id_short`, `error_type` (the error's class, never its message) |
 | `session_default_set` | Settings → Providers → Sessions Default picker | `provider_id` |
 | `frontend_error` | `window.onerror` or `unhandledrejection` | `source`, `error_type` (the error's class, such as `TypeError`, or its JS type; never its message or stack) |
-| `$identify` | At sign-in, at each launch while signed in, or at opt-in | `$anon_distinct_id` = previous device_id |
+| `$identify` | At sign-in, at each launch while signed in, or at opt-in | `distinct_id` = your `user_id`, `$anon_distinct_id` = previous device_id |
+
+posthog-js adds its standard properties to every event, such as `$os`,
+`$os_version`, `$browser`, `$browser_version`, `$device_type`,
+`$raw_user_agent` (the WebView's user agent), `$screen_height`,
+`$screen_width`, `$viewport_height`, `$viewport_width`, `$timezone`,
+`$timezone_offset`, `$browser_language`, `$current_url`, `$host` and
+`$pathname` (the app window's local address, such as
+`http://127.0.0.1:8765/`; `$pageview` sets its own `$current_url`),
+`$referrer` and `$referring_domain` (`$direct` in the app), the same
+address for the session's first screen (`$session_entry_url`,
+`$session_entry_host`, …), `$device_id` (the device id above),
+`$user_id` once you're identified, `$session_id`, `$window_id`, `$lib`
+and `$lib_version` (posthog-js and its version), `$insert_id`, `$time`
+and `token` (the project key). Fleetify adds `platform` (`win32`,
+`darwin` or `linux`). PostHog's servers may copy some of these, such as
+`$browser`, `$os` and `$current_url`, onto your person profile.
 
 **Autocapture is off.** The renderer sends only the events in the table
 above: no clicks, element text or attributes, no exception or dead-click

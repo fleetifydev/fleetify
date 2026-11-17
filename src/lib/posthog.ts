@@ -18,12 +18,13 @@
  * `distinct_id` is the Rust backend's persisted `device_id` (from the
  * `telemetry_get_config` command), so renderer and backend events land on
  * one PostHog person. `identifyUser(user_id)` links that person to the
- * account, with the id only.
+ * account, with the id only: no event carries person properties
+ * (`dropPersonProperties`).
  *
  * `VITE_POSTHOG_KEY` unset at build → every function is a no-op.
  */
 
-import type { PostHog, PostHogConfig } from "posthog-js";
+import type { CaptureResult, PostHog, PostHogConfig } from "posthog-js";
 
 const projectKey = () => (import.meta.env.VITE_POSTHOG_KEY as string | undefined) || undefined;
 const apiHost = () =>
@@ -54,6 +55,21 @@ const INIT_OPTIONS = {
   disable_external_dependency_loading: true,
   persistence: "localStorage",
 } satisfies Partial<PostHogConfig>;
+
+/**
+ * posthog-js adds person properties of its own: `$identify`, and the first
+ * event after each launch once the user is identified, get `$set_once` with
+ * the first address and referrer it saw on this device and in this session
+ * (`$initial_current_url`, `$initial_referrer`, `$current_url`, …, and every
+ * campaign key). Fleetify identifies with the id only, so `before_send`
+ * strips `$set` and `$set_once` from every event before it is queued.
+ */
+function dropPersonProperties(event: CaptureResult | null): CaptureResult | null {
+  if (!event) return event;
+  const { $set: _set, $set_once: _setOnce, ...rest } = event;
+  const { $set: _propsSet, $set_once: _propsSetOnce, ...properties } = event.properties;
+  return { ...rest, properties };
+}
 
 /** The user's current choice. */
 let enabled = false;
@@ -130,6 +146,7 @@ function start(): Promise<void> {
           loaded: (ph) => {
             ph.register({ platform: platformHint() });
           },
+          before_send: dropPersonProperties,
         });
         guardRequests(posthog);
         // An older build may have stored an opt-out, which would keep
