@@ -386,7 +386,7 @@ pub async fn clipboard_write(text: String) -> serde_json::Value {
 // panel reports its slot's logical rect; we position the child webview
 // there and keep it in sync on scroll / resize. Login state + a site's
 // remembered theme PERSIST across launches via a fixed profile id.
-const BROWSER_EMBED_LABEL: &str = "browser-embed";
+pub(crate) const BROWSER_EMBED_LABEL: &str = "browser-embed";
 const BROWSER_EMBED_PROFILE: [u8; 16] = *b"fleetbrowser0001";
 // A CURRENT Safari UA so sites (Google) serve their MODERN layout instead of
 // the legacy fallback the bare WKWebView UA gets. Kept as Safari (NOT Chrome)

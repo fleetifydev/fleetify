@@ -27,6 +27,11 @@ use tokio::sync::Notify;
 /// Label of the main window.
 pub const MAIN_WINDOW: &str = "main";
 
+/// Label of the main window's webview: a webview window's webview takes the
+/// window's label (`WebviewWindowBuilder::new`). The browser panel is another
+/// webview in the same window, with a label of its own.
+pub const MAIN_WEBVIEW: &str = MAIN_WINDOW;
+
 /// The custom URI scheme the placeholder page is served on. Tauri registers
 /// a scheme for every webview; only the main window is served the page.
 pub const PLACEHOLDER_SCHEME: &str = "fleetify-startup";
@@ -239,8 +244,14 @@ fn reveal(window: &WebviewWindow, boot_start: Instant) {
 /// dev server and the embedded backend on their default ports.
 const STATIC_REMOTE_ORIGINS: [&str; 2] = ["http://localhost:3000", "http://127.0.0.1:8765"];
 
-/// The permissions `capabilities/default.json` grants.
-const IPC_PERMISSIONS: [&str; 3] = ["core:default", "core:event:default", "dialog:allow-open"];
+/// The permissions `capabilities/default.json` grants: the core ones, and
+/// every app command (the `app-commands` set, `permissions/app-commands.toml`).
+const IPC_PERMISSIONS: [&str; 4] = [
+    "core:default",
+    "core:event:default",
+    "dialog:allow-open",
+    "app-commands",
+];
 
 /// Identifier of the capability added at runtime for a configured origin.
 const RUNTIME_CAPABILITY: &str = "configured-origin";
@@ -266,14 +277,16 @@ pub fn runtime_remote_origin(release: bool, backend_port: u16, vite_port: u16) -
     (!STATIC_REMOTE_ORIGINS.contains(&origin.as_str())).then_some(origin)
 }
 
-/// What `capabilities/default.json` grants, for `origin` and the main window
-/// only. The static file is left as it is; this is added at setup.
+/// What `capabilities/default.json` grants, for `origin` and the main webview
+/// only, as there: a window scope would also match the browser panel, a child
+/// webview in the main window. The static file is left as it is; this is
+/// added at setup.
 pub fn runtime_capability(origin: &str) -> CapabilityBuilder {
     IPC_PERMISSIONS.iter().fold(
         CapabilityBuilder::new(RUNTIME_CAPABILITY)
             .remote(origin.to_string())
             .local(false)
-            .window(MAIN_WINDOW),
+            .webview(MAIN_WEBVIEW),
         |capability, permission| capability.permission(*permission),
     )
 }
@@ -438,12 +451,77 @@ mod tests {
 
     // ── IPC from the app's origin ──
 
-    use tauri::ipc::RuntimeCapability;
-    use tauri::utils::acl::capability::CapabilityFile;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use tauri::ipc::{Origin, RuntimeAuthority, RuntimeCapability};
+    use tauri::utils::acl::capability::{Capability, CapabilityFile};
+    use tauri::utils::acl::manifest::Manifest;
+    use tauri::utils::acl::resolved::Resolved;
+    use tauri::utils::acl::APP_ACL_KEY;
+    use tauri::utils::platform::Target;
+
+    use crate::app_commands::APP_COMMANDS;
+    use crate::shell::ipc::BROWSER_EMBED_LABEL;
 
     /// `capabilities/default.json`, which the runtime capability mirrors.
     fn default_capability() -> serde_json::Value {
         serde_json::from_str(include_str!("../../capabilities/default.json")).unwrap()
+    }
+
+    /// The ACL tauri-build compiled for this crate, as `generate_context!`
+    /// embeds it: the plugin and app manifests, and the capability files.
+    fn compiled_acl() -> (BTreeMap<String, Manifest>, BTreeMap<String, Capability>) {
+        let manifests = include_str!(concat!(env!("OUT_DIR"), "/acl-manifests.json"));
+        let capabilities = include_str!(concat!(env!("OUT_DIR"), "/capabilities.json"));
+        (
+            serde_json::from_str(manifests).unwrap(),
+            serde_json::from_str(capabilities).unwrap(),
+        )
+    }
+
+    /// The IPC authority the app runs with: the compiled ACL, resolved the way
+    /// `generate_context!` resolves it (`RuntimeAuthority::new` is what its
+    /// `runtime_authority!` expands to), plus the capability setup adds for a
+    /// configured backend port, 8899 here.
+    fn app_authority() -> RuntimeAuthority {
+        let (acl, capabilities) = compiled_acl();
+        let resolved = Resolved::resolve(&acl, capabilities, Target::current()).unwrap();
+        let mut authority = RuntimeAuthority::new(acl, resolved);
+        authority
+            .add_capability(runtime_capability("http://127.0.0.1:8899"))
+            .unwrap();
+        authority
+    }
+
+    /// Where the main webview loads the app from: a local origin (`devUrl`
+    /// in debug builds), the two static remote ones, and a configured port.
+    fn app_origins() -> Vec<Origin> {
+        let remote = |url: &str| Origin::Remote {
+            url: url.parse().unwrap(),
+        };
+        vec![
+            Origin::Local,
+            remote("http://127.0.0.1:8765/"),
+            remote("http://localhost:3000/"),
+            remote("http://127.0.0.1:8899/settings"),
+        ]
+    }
+
+    /// Checked by name on top of every app command: commands the UI can't do
+    /// without, and core ones from `default.json`'s other permissions.
+    const SPOT_CHECKS: [&str; 6] = [
+        "auth_sign_in",
+        "config_get",
+        "window_start_dragging",
+        "plugin:app|version",
+        "plugin:event|listen",
+        "plugin:dialog|open",
+    ];
+
+    /// `allow-<command>`: the permission tauri-build generates for an app
+    /// command, underscores turned into hyphens.
+    fn allow_permission(command: &str) -> String {
+        format!("allow-{}", command.replace('_', "-"))
     }
 
     #[test]
@@ -512,8 +590,13 @@ mod tests {
             Some(vec!["http://127.0.0.1:8899".to_string()])
         );
         assert!(!capability.local, "it allows that one remote origin only");
-        assert_eq!(serde_json::json!(capability.windows), default["windows"]);
-        assert_eq!(capability.windows, [MAIN_WINDOW]);
+        assert_eq!(serde_json::json!(capability.webviews), default["webviews"]);
+        assert_eq!(capability.webviews, [MAIN_WEBVIEW]);
+        assert!(
+            capability.windows.is_empty(),
+            "scoped by webview, as default.json is: {:?}",
+            capability.windows
+        );
         let permissions: Vec<&str> = capability
             .permissions
             .iter()
@@ -524,5 +607,105 @@ mod tests {
             serde_json::json!(capability.identifier),
             default["identifier"]
         );
+    }
+
+    #[test]
+    fn default_json_grants_the_core_permissions_and_the_app_commands() {
+        let default = default_capability();
+        let permissions = default["permissions"].as_array().unwrap();
+        for permission in [
+            "core:default",
+            "core:event:default",
+            "dialog:allow-open",
+            "app-commands",
+        ] {
+            assert!(
+                permissions.contains(&serde_json::json!(permission)),
+                "default.json doesn't grant {permission}: {permissions:?}"
+            );
+        }
+        assert_eq!(default["permissions"], serde_json::json!(IPC_PERMISSIONS));
+    }
+
+    #[test]
+    fn default_json_applies_to_the_main_webview_only() {
+        let default = default_capability();
+        assert_eq!(default["webviews"], serde_json::json!([MAIN_WEBVIEW]));
+        // A window scope matches every webview in that window: the browser
+        // panel's child webview in the main window too.
+        assert!(
+            default.get("windows").is_none(),
+            "default.json is scoped by window: {}",
+            default["windows"]
+        );
+        // Local origins (`devUrl` in debug builds) are covered as well: with
+        // an app manifest, Tauri checks app commands from them too.
+        let capability: Capability = serde_json::from_value(default).unwrap();
+        assert!(capability.local);
+    }
+
+    #[test]
+    fn the_app_commands_set_allows_exactly_the_app_commands() {
+        let (acl, _) = compiled_acl();
+        let app = acl
+            .get(APP_ACL_KEY)
+            .expect("build.rs declares the app's ACL manifest");
+        let set = app
+            .permission_sets
+            .get("app-commands")
+            .expect("permissions/app-commands.toml defines the app-commands set");
+        let listed: BTreeSet<String> = set.permissions.iter().cloned().collect();
+        assert_eq!(
+            listed.len(),
+            set.permissions.len(),
+            "the app-commands set lists a permission twice"
+        );
+        let expected: BTreeSet<String> = APP_COMMANDS.iter().map(|c| allow_permission(c)).collect();
+        let missing: Vec<_> = expected.difference(&listed).collect();
+        let extra: Vec<_> = listed.difference(&expected).collect();
+        assert!(
+            missing.is_empty() && extra.is_empty(),
+            "permissions/app-commands.toml must list allow-<command> for exactly APP_COMMANDS.\n\
+             missing: {missing:?}\n\
+             not an app command: {extra:?}"
+        );
+        for command in APP_COMMANDS {
+            let permission = &app.permissions[&allow_permission(command)];
+            assert_eq!(permission.commands.allow, [command.to_string()]);
+            assert!(permission.commands.deny.is_empty());
+        }
+    }
+
+    #[test]
+    fn the_main_webview_can_call_every_app_command_from_the_app_origins() {
+        let authority = app_authority();
+        for origin in app_origins() {
+            for command in SPOT_CHECKS.iter().chain(APP_COMMANDS) {
+                assert!(
+                    authority
+                        .resolve_access(command, MAIN_WINDOW, MAIN_WEBVIEW, &origin)
+                        .is_some(),
+                    "{command} is refused to the main webview from {origin}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_browser_panel_can_call_no_command_at_all() {
+        // The browser panel is a child webview in the main window. Even on a
+        // page from one of the app's own origins it gets nothing: no app
+        // command and no core one.
+        let authority = app_authority();
+        for origin in app_origins() {
+            for command in SPOT_CHECKS.iter().chain(APP_COMMANDS) {
+                assert!(
+                    authority
+                        .resolve_access(command, MAIN_WINDOW, BROWSER_EMBED_LABEL, &origin)
+                        .is_none(),
+                    "{command} is allowed to the browser panel from {origin}"
+                );
+            }
+        }
     }
 }

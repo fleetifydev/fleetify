@@ -4,6 +4,11 @@
 
 mod shell;
 
+// The app's commands, by name: its ACL manifest. build.rs compiles this file
+// in for tauri-build; the crate itself only needs it for tests.
+#[cfg(test)]
+mod app_commands;
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -335,7 +340,7 @@ pub fn run() {
             // IPC from the app's origin. capabilities/default.json allows
             // only the default ports (Vite on 3000, the backend on 8765);
             // any other configured port gets the same permissions for its
-            // own origin, on the main window only. Added before the window
+            // own origin, on the main webview only. Added before the window
             // loads the app.
             if let Some(origin) =
                 shell::startup_window::runtime_remote_origin(release, backend, vite)
