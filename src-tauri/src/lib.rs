@@ -259,6 +259,12 @@ pub fn run() {
         .manage(shell::voice::DownloadCancelState(std::sync::Arc::new(
             std::sync::atomic::AtomicBool::new(false),
         )))
+        // The page the main window starts on, until the app answers (see
+        // shell::startup_window).
+        .register_uri_scheme_protocol(
+            shell::startup_window::PLACEHOLDER_SCHEME,
+            |ctx, _request| shell::startup_window::placeholder_response(ctx.webview_label()),
+        )
         .setup(|app| {
             // X errors are FATAL in GDK by default: one async BadWindow (e.g.
             // a GDK XTranslateCoordinates racing a webview teardown, or the
@@ -324,19 +330,32 @@ pub fn run() {
             });
 
             // No splash — by explicit user preference. The main
-            // window is built `.visible(false)` and stays hidden until
-            // both the embedded backend AND the webview's target URL
-            // (Vite in debug, the backend in release) are reachable.
-            // Direct WebviewWindow handle clone (no get_webview_window
-            // lookup) avoids the AppHandle race the earlier version
-            // hit on Windows. Trade-off: from t=0 to URL-ready (~3-7s
-            // depending on Vite cold-start) the user sees nothing on
-            // screen. That's the price of "no visible loading state".
+            // window is built `.visible(false)` on a local placeholder
+            // page and stays hidden until the app's URL (Vite in debug,
+            // the embedded backend in release) answers and the app page
+            // has loaded in it. It never loads that URL before then: the
+            // engine doesn't retry a first navigation that failed, so a
+            // slow backend bind used to leave its error page on screen.
+            // A start slower than 15s shows the window with the
+            // placeholder ("Starting Fleetify…") until the app loads.
+            // See shell::startup_window. Direct WebviewWindow handle
+            // clone (no get_webview_window lookup) avoids the AppHandle
+            // race the earlier version hit on Windows.
+            let app_url: tauri::Url = webview_url().parse().expect("valid webview url");
+            let app_page_loaded = std::sync::Arc::new(tokio::sync::Notify::new());
             let builder = WebviewWindowBuilder::new(
                 app,
-                "main",
-                WebviewUrl::External(webview_url().parse().expect("valid webview url")),
+                shell::startup_window::MAIN_WINDOW,
+                WebviewUrl::CustomProtocol(
+                    shell::startup_window::PLACEHOLDER_URL
+                        .parse()
+                        .expect("valid placeholder url"),
+                ),
             )
+            .on_page_load(shell::startup_window::signal_app_page_loaded(
+                app_url.clone(),
+                app_page_loaded.clone(),
+            ))
             .title("Fleetify")
             // Cold-start at the ONBOARDING size (760×740) rather than
             // the MAIN size (1500×960). Reveal-when-ready paints the
@@ -530,39 +549,18 @@ pub fn run() {
                 crate::shell::integrations_cache::prime_gh_cli().await;
             });
 
-            // Reveal-when-ready: poll the webview URL until it
-            // answers HTTP, then show + focus. Any non-connection-
-            // error response counts as "up" (even 404 → renderer can
-            // surface the failure). 15s wall-clock cap so a stuck
-            // dev server doesn't leave the user with a permanently
-            // invisible app. 120ms grace before show() lets the
-            // first React frame paint so we don't flash white.
-            let webview_url_owned: String = webview_url();
-            let main_for_reveal = main_window.clone();
-            tauri::async_runtime::spawn(async move {
-                let client = reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_millis(500))
-                    .build()
-                    .expect("reqwest client");
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-                while std::time::Instant::now() < deadline {
-                    if client.get(&webview_url_owned).send().await.is_ok() {
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(120)).await;
-                if let Err(e) = main_for_reveal.show() {
-                    tracing::warn!("show main window failed: {e}");
-                } else {
-                    tracing::info!(
-                        target: "fleetify::startup",
-                        cold_start_ms = boot_start.elapsed().as_millis() as u64,
-                        "main window revealed"
-                    );
-                }
-                let _ = main_for_reveal.set_focus();
-            });
+            // Reveal-when-ready: poll the webview URL until it answers
+            // HTTP (any response counts, even a 404 the renderer can
+            // surface), then load the app in the window and show + focus
+            // it once the app page has loaded, so it doesn't flash white.
+            // Past 15s without an answer the window shows the placeholder
+            // and polling goes on with no cap.
+            tauri::async_runtime::spawn(shell::startup_window::load_app_when_ready(
+                main_window,
+                app_url,
+                app_page_loaded,
+                boot_start,
+            ));
 
             // Loopback bearer bridge :8770 (telemetry token source / parity).
             // FLEETIFY_NOAUTH=1 has no consumer to feed and no token to
