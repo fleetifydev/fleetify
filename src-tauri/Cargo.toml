@@ -86,6 +86,10 @@ x11-dl = "2"
 
 [dev-dependencies]
 tempfile = "3"
+# The vendored runtime (root Cargo.toml's [patch.crates-io]), for the tests of
+# its postMessage IPC patch (vendor/tauri-runtime-wry/FLEETIFY_PATCH.md).
+# No features: tauri enables the ones it needs.
+tauri-runtime-wry = { version = "2", default-features = false }
 
 [features]
 # On-device Whisper ships by DEFAULT so the offline voice engine works out

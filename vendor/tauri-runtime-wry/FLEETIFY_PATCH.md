@@ -1,9 +1,18 @@
-# Vendored `tauri-runtime-wry` — Fleetify patch (v2)
+# Vendored `tauri-runtime-wry` — Fleetify patches
 
 This directory is a **verbatim copy of `tauri-runtime-wry` 2.11.2** from crates.io
-with one behavioural change (in two parts). It exists only so we can carry that
-change via `[patch.crates-io]` (see the workspace root `Cargo.toml`). Everything
-else is upstream, unmodified.
+with two changes. It exists only so we can carry them via `[patch.crates-io]`
+(see the workspace root `Cargo.toml`). Everything else is upstream, unmodified.
+Each change is marked in `src/lib.rs`:
+
+1. `FLEETIFY PATCH v2`: positioned child webviews on Linux (the right-panel
+   browser). See [Patch v2](#patch-v2-positioned-child-webviews-on-linux).
+2. `FLEETIFY PATCH postmessage-ipc` (security): on WebKitGTK, every
+   postMessage IPC request gets an origin no capability matches, so a frame
+   inside the app can't use the app page's permissions. See
+   [Patch postmessage-ipc](#patch-postmessage-ipc-frames-cant-use-the-app-pages-permissions).
+
+# Patch v2: positioned child webviews on Linux
 
 ## Why
 
@@ -93,7 +102,60 @@ instead.
 Only `WindowChild` is changed. `WindowContent` (the non-`unstable` main webview
 path) is byte-for-byte upstream.
 
-## How to refresh on a Tauri bump
+# Patch postmessage-ipc: frames can't use the app page's permissions
+
+## Why
+
+Tauri 2.11.2 accepts IPC two ways: the `ipc://` custom protocol, and wry's
+postMessage channel (`window.ipc.postMessage`, on WebKitGTK
+`window.webkit.messageHandlers.ipc`). On WebKitGTK the postMessage channel
+can't tell frames apart:
+
+1. **wry tags every message with the main frame's URL.** wry 0.55's WebKitGTK
+   backend builds each request with `webview.uri()`, whichever frame posted it
+   (`src/webkitgtk/mod.rs`, `attach_ipc_handler`).
+2. **Tauri takes that URL as the origin and checks only the invoke key.**
+   `ipc/protocol.rs` (`handle_ipc_message`) uses the request's URI as the
+   origin; `Webview::on_message` compares the key, then resolves the ACL for
+   that origin.
+3. **The key isn't a secret from pages.** Tauri injects `ipc-protocol.js`,
+   which holds the app's one invoke key, into every webview it builds, the
+   right-panel browser included, so a page loaded there can capture it.
+4. **So a frame gets the app page's permissions.** A cross-origin frame
+   inside the main webview (the Preview pane, showing a project's dev server
+   or any typed URL) that holds the key can post a request for any command
+   the app page has: since the release grant, every app command, `pty_spawn`
+   included.
+
+macOS and Windows are not affected: wry reports the sending frame's own URL
+on macOS (`WKScriptMessage.frameInfo`), and WebView2 tags messages with the
+top document's URL, where frames can't post. The `ipc://` path isn't either:
+its requests carry the sending frame's own `Origin`, which the ACL refuses.
+
+## The change
+
+In `src/lib.rs` (search `FLEETIFY PATCH postmessage-ipc`):
+
+- `postmessage_ipc_request(request, webkitgtk)`: on WebKitGTK it replaces the
+  request's URI with `POSTMESSAGE_IPC_ORIGIN`
+  (`http://postmessage-ipc.invalid/`) and leaves the message alone; elsewhere
+  it returns the request unchanged. `WEBKITGTK` says which builds rewrite.
+- `create_ipc_handler` passes every request through it before handing it to
+  Tauri.
+
+No capability matches that origin and `.invalid` never resolves, so Tauri
+refuses every command such a request asks for, with its usual "not allowed"
+error through the caller's error callback. The app's own IPC keeps working
+through `ipc://`. All three are `#[doc(hidden)] pub` so the app's tests
+(`src-tauri/src/shell/startup_window.rs`, "IPC from frames inside the app")
+can check the rewrite, check the origin against the app's real ACL, and check
+that `create_ipc_handler` still calls it.
+
+**Rewritten, not dropped:** `ipc-protocol.js` moves a page to postMessage for
+good after one failed custom-protocol request. A dropped message would leave
+the caller's promise pending forever; a refusal surfaces as an error.
+
+# How to refresh on a Tauri bump
 
 `[patch.crates-io]` requires this copy's version to equal the
 `tauri-runtime-wry` that `tauri` depends on, otherwise Cargo silently ignores
@@ -103,18 +165,32 @@ the patch.
 2. Re-copy that version's `Cargo.toml`, `build.rs`, `README.md`, `LICENSE_*`,
    and `src/` from `~/.cargo/registry/src/.../tauri-runtime-wry-<version>/`
    over this directory.
-3. Re-apply the v2 changes (search upstream for the
-   `// only way to account for menu bar height` comment for the WindowChild
-   arm; grep this repo's git history for `FLEETIFY PATCH v2` to recover the
-   full diff).
+3. Re-apply both patches. Grep this repo's git history for `FLEETIFY PATCH`
+   to recover the full diffs.
+   - v2: search upstream for the `// only way to account for menu bar height`
+     comment for the WindowChild arm.
+   - postmessage-ipc: the three items go before `create_ipc_handler`, and its
+     closure starts with `let request = postmessage_ipc_request(request,
+     WEBKITGTK);`. First check that the new wry still tags WebKitGTK messages
+     with `webview.uri()` and that Tauri still takes the request's URI as
+     the origin; if either changed, re-assess rather than re-apply blindly.
 4. Update the version note in the root `Cargo.toml` patch comment.
-5. `cargo check -p fleetify-app`, then run the app and drive the right-panel
-   browser: position/resize, element-select typing + cursor, close panel (no
-   zombie frame), open the page inspector (no crash).
+5. `cargo test -p fleetify-app startup_window`: the postmessage-ipc tests
+   don't compile without the patch's items and fail if the handler stops
+   calling the rewrite.
+6. Run the app and drive the right-panel browser: position/resize,
+   element-select typing + cursor, close panel (no zombie frame), open the
+   page inspector (no crash). Check that the app's own IPC still works on
+   Linux (it goes through `ipc://`).
 
-## How to remove (once upstream is fixed)
+# How to remove (once upstream is fixed)
 
-When a Tauri release positions Linux child webviews correctly **with working
-keyboard focus and cursor updates**, delete this `vendor/` directory and the
-`[patch.crates-io]` block in the root `Cargo.toml`. No application code changes
-are needed — `add_child` / `set_bounds` are already the right calls.
+- **v2:** when a Tauri release positions Linux child webviews correctly
+  **with working keyboard focus and cursor updates**. No application code
+  changes are needed: `add_child` / `set_bounds` are already the right calls.
+- **postmessage-ipc:** when wry's WebKitGTK backend reports the sending
+  frame's own URL (or Tauri stops trusting the postMessage URL), and the
+  app's tests are moved to whatever upstream offers.
+
+Once both are gone, delete this `vendor/` directory and the
+`[patch.crates-io]` block in the root `Cargo.toml`.

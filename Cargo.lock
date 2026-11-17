@@ -1611,6 +1611,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-macos-fps",
+ "tauri-runtime-wry",
  "tempfile",
  "tiny_http",
  "tokio",

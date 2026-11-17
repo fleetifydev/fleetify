@@ -5539,6 +5539,56 @@ You may have it installed on another user account, but it is not available for t
   })
 }
 
+/// FLEETIFY PATCH postmessage-ipc (see vendor/tauri-runtime-wry/FLEETIFY_PATCH.md):
+/// the URL every postMessage IPC request carries on WebKitGTK instead of the
+/// one wry gives it. No capability matches it, and `.invalid` never resolves
+/// (RFC 6761), so no page can have it: Tauri refuses whatever command such a
+/// request asks for, with its usual "not allowed" error.
+#[doc(hidden)]
+pub const POSTMESSAGE_IPC_ORIGIN: &str = "http://postmessage-ipc.invalid/";
+
+/// FLEETIFY PATCH postmessage-ipc: whether this build's webviews are
+/// WebKitGTK (wry's `gtk` targets: Linux and the BSDs).
+#[doc(hidden)]
+pub const WEBKITGTK: bool = cfg!(any(
+  target_os = "linux",
+  target_os = "dragonfly",
+  target_os = "freebsd",
+  target_os = "netbsd",
+  target_os = "openbsd"
+));
+
+/// FLEETIFY PATCH postmessage-ipc: a postMessage IPC request as Tauri gets
+/// it. On WebKitGTK (`webkitgtk`) its URI becomes [`POSTMESSAGE_IPC_ORIGIN`];
+/// the message itself is untouched. Elsewhere the request is unchanged.
+///
+/// Why: wry's WebKitGTK backend tags every postMessage request with
+/// `webview.uri()`, the main frame's URL, whichever frame posted it. Tauri
+/// takes that URL as the request's origin and checks only the invoke key,
+/// which it injects into every webview it builds, the browser panel
+/// included, so any page there can learn it. A cross-origin frame inside the
+/// main webview that holds the key (the Preview pane) would then get every
+/// command the app page has. The app's own IPC goes through the `ipc://`
+/// custom protocol, whose requests carry the sending frame's own `Origin`.
+///
+/// The request is rewritten, not dropped: `ipc-protocol.js` moves a page to
+/// postMessage for good after one failed custom-protocol request, and a
+/// dropped message would leave its promise pending forever. A refusal reaches
+/// the caller's error callback instead.
+///
+/// macOS is unchanged because wry reports the sending frame's own URL there
+/// (`WKScriptMessage.frameInfo`), Windows because WebView2 tags messages with
+/// the top document's URL and frames can't reach `chrome.webview`.
+#[doc(hidden)]
+pub fn postmessage_ipc_request(request: Request<String>, webkitgtk: bool) -> Request<String> {
+  if !webkitgtk {
+    return request;
+  }
+  let (mut parts, body) = request.into_parts();
+  parts.uri = http::Uri::from_static(POSTMESSAGE_IPC_ORIGIN);
+  Request::from_parts(parts, body)
+}
+
 /// Create a wry ipc handler from a tauri ipc handler.
 fn create_ipc_handler<T: UserEvent>(
   _kind: WebviewKind,
@@ -5549,6 +5599,9 @@ fn create_ipc_handler<T: UserEvent>(
   ipc_handler: Option<WebviewIpcHandler<T, Wry<T>>>,
 ) -> Box<IpcHandler> {
   Box::new(move |request| {
+    // FLEETIFY PATCH postmessage-ipc: on WebKitGTK the request's URL is the
+    // main frame's, not the sender's; give it an origin nothing matches.
+    let request = postmessage_ipc_request(request, WEBKITGTK);
     if let Some(handler) = &ipc_handler {
       handler(
         DetachedWebview {

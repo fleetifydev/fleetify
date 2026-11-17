@@ -1499,4 +1499,167 @@ mod tests {
         assert!(refused(&remote("http://127.0.0.1:8765/")));
         assert!(!refused(&remote("http://127.0.0.1:8899/")));
     }
+
+    // ── IPC from frames inside the app (WebKitGTK postMessage) ──
+    //
+    // wry's WebKitGTK backend tags every postMessage IPC request with the
+    // main frame's URL, whichever frame sent it, and Tauri checks the ACL
+    // against that URL. A cross-origin frame in the main webview holding the
+    // invoke key (the Preview pane) would get the app page's permissions.
+    // The vendored runtime gives those requests an origin no capability
+    // matches (vendor/tauri-runtime-wry/FLEETIFY_PATCH.md).
+
+    use tauri_runtime_wry::{postmessage_ipc_request, POSTMESSAGE_IPC_ORIGIN, WEBKITGTK};
+
+    /// A postMessage IPC request as wry's WebKitGTK backend hands it over:
+    /// the main frame's URL, and the message the page posted.
+    fn posted_request(main_frame_url: &str, body: &str) -> tauri::http::Request<String> {
+        tauri::http::Request::builder()
+            .uri(main_frame_url)
+            .body(body.to_string())
+            .unwrap()
+    }
+
+    /// A message with the invoke key, as `ipc-protocol.js` posts it.
+    const POSTED_PTY_SPAWN: &str = r#"{"cmd":"pty_spawn","callback":1,"error":2,"payload":{},"options":{},"__TAURI_INVOKE_KEY__":"key"}"#;
+
+    /// Where Tauri takes an IPC request's origin from: the request's URI
+    /// (`ipc/protocol.rs`, `handle_ipc_message`).
+    fn request_url(request: &tauri::http::Request<String>) -> Url {
+        Url::parse(&request.uri().to_string()).unwrap()
+    }
+
+    /// The origin Tauri checks an IPC request from `url` as, for an http URL
+    /// (`Webview::is_local_url`): local when it shares the origin of the
+    /// run's local app URL (`devUrl` in dev mode), remote otherwise.
+    fn acl_origin(url: &Url, local_app_url: Option<&Url>) -> Origin {
+        match local_app_url {
+            Some(local) if local.origin() == url.origin() => Origin::Local,
+            _ => Origin::Remote { url: url.clone() },
+        }
+    }
+
+    #[test]
+    fn postmessage_ipc_requests_get_an_origin_of_their_own_on_webkitgtk() {
+        let rewritten = postmessage_ipc_request(
+            posted_request("http://127.0.0.1:8765/settings", POSTED_PTY_SPAWN),
+            true,
+        );
+        assert_eq!(rewritten.uri().to_string(), POSTMESSAGE_IPC_ORIGIN);
+        assert_eq!(
+            rewritten.body(),
+            POSTED_PTY_SPAWN,
+            "the message is untouched"
+        );
+
+        // wry reports the sending frame's own URL on macOS, and iframes
+        // can't post at all on Windows: nothing changes there.
+        let kept = postmessage_ipc_request(
+            posted_request("http://127.0.0.1:8765/settings", POSTED_PTY_SPAWN),
+            false,
+        );
+        assert_eq!(kept.uri().to_string(), "http://127.0.0.1:8765/settings");
+        assert_eq!(kept.body(), POSTED_PTY_SPAWN);
+
+        // This build: WebKitGTK on Linux and the BSDs (wry's gtk targets).
+        let gtk = cfg!(any(
+            target_os = "linux",
+            target_os = "dragonfly",
+            target_os = "freebsd",
+            target_os = "netbsd",
+            target_os = "openbsd"
+        ));
+        assert_eq!(WEBKITGTK, gtk);
+        let here = postmessage_ipc_request(
+            posted_request("http://localhost:3000/", POSTED_PTY_SPAWN),
+            WEBKITGTK,
+        );
+        let expected = if gtk {
+            POSTMESSAGE_IPC_ORIGIN
+        } else {
+            "http://localhost:3000/"
+        };
+        assert_eq!(here.uri().to_string(), expected);
+    }
+
+    #[test]
+    fn a_frame_cant_borrow_the_app_pages_permissions_through_postmessage_ipc() {
+        // The origin is never one Tauri treats as the app's own: not its
+        // tauri:// or custom schemes, not devUrl, and `.invalid` never
+        // resolves (RFC 6761), so no page can ever have it.
+        let sentinel = url(POSTMESSAGE_IPC_ORIGIN);
+        assert_eq!(sentinel.scheme(), "http");
+        assert_eq!(sentinel.host_str(), Some("postmessage-ipc.invalid"));
+        assert_ne!(sentinel.origin(), dev_url().origin());
+        // pty_spawn, the command that runs a shell, is checked with the rest.
+        assert!(APP_COMMANDS.contains(&"pty_spawn"));
+
+        let debug =
+            |vite| authority_with(runtime_remote_origin(false, 8765, vite, Some(&dev_url())));
+        // Each way the app runs: its authority, the main page's URL (what
+        // wry tags a frame's message with) and the run's local app URL.
+        let runs = [
+            (
+                "debug, Vite on devUrl",
+                debug(3000),
+                "http://localhost:3000/",
+                Some(dev_url()),
+            ),
+            (
+                "debug, Vite on another port",
+                debug(3017),
+                "http://localhost:3017/",
+                Some(dev_url()),
+            ),
+            (
+                "release",
+                release_authority(8765),
+                "http://127.0.0.1:8765/",
+                None,
+            ),
+            (
+                "release, backend on another port",
+                release_authority(8899),
+                "http://127.0.0.1:8899/settings",
+                None,
+            ),
+        ];
+        for (run, authority, main_frame_url, local_app_url) in runs {
+            // As on WebKitGTK, whatever this test runs on: which builds
+            // rewrite is the test above's and the next one's business.
+            let request =
+                postmessage_ipc_request(posted_request(main_frame_url, POSTED_PTY_SPAWN), true);
+            let origin = acl_origin(&request_url(&request), local_app_url.as_ref());
+            for webview in [MAIN_WEBVIEW, BROWSER_EMBED_LABEL] {
+                for command in SPOT_CHECKS.iter().chain(APP_COMMANDS) {
+                    assert!(
+                        authority
+                            .resolve_access(command, MAIN_WINDOW, webview, &origin)
+                            .is_none(),
+                        "{run}: a postMessage request from a frame on {main_frame_url} \
+                         can call {command} in webview {webview:?} (origin {origin})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_vendored_runtime_rewrites_every_postmessage_ipc_request() {
+        // A re-vendor must keep the patch: the handler wry calls for every
+        // postMessage request hands Tauri the rewritten request. (A Windows
+        // checkout may have CRLF line endings.)
+        let runtime =
+            include_str!("../../../vendor/tauri-runtime-wry/src/lib.rs").replace("\r\n", "\n");
+        let start = runtime
+            .find("fn create_ipc_handler")
+            .expect("the vendored runtime has create_ipc_handler");
+        let handler = &runtime[start..];
+        let handler = &handler[..handler.find("\n}\n").expect("the function ends")];
+        assert!(
+            handler.contains("postmessage_ipc_request(request, WEBKITGTK)"),
+            "create_ipc_handler must pass every request through \
+             postmessage_ipc_request(request, WEBKITGTK):\n{handler}"
+        );
+    }
 }
