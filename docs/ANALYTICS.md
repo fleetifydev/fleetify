@@ -47,11 +47,12 @@ What the fields hold:
   200 characters: the project folder's name, a name you typed (such as a
   routine's name), or a fixed label such as "Staff Agent" for the Fleet
   hub's own session. Renaming a session later, by hand or automatically,
-  sends nothing.
+  sends nothing. For a session in your home folder, a title equal to that
+  folder's name is sent as `~`.
 - **`project_path`**: the folder name only, such as `fleetify` for
   `/home/you/code/fleetify`, never the full path. Your home folder itself
-  is sent as `~`, so the Fleet hub's own session, which runs there, does
-  not send your OS user name.
+  is sent as `~` (also when you reach it through a symlink), so the Fleet
+  hub's own session, which runs there, does not send your OS user name.
 - **`activity_kind`**: one of `file_edit`, `file_read`, `command`,
   `web_fetch`, `plan`, `todo`, `tool` or `error`. Activity summaries (the
   command, file path, URL, search query, prompt or to-do text behind an
@@ -93,21 +94,22 @@ change still applies until Fleetify restarts.
 
 Fleetify doesn't load posthog-js, the PostHog library in the renderer,
 until you opt in. While product analytics is off, the renderer sends
-PostHog nothing at all. Once it is on, posthog-js never fetches remote
-config or feature flags from PostHog and loads no scripts from it.
-Turning it off again stops every further request, including events
-posthog-js had queued or was retrying.
+PostHog nothing at all, and at launch it removes what older versions
+stored for posthog-js in the app's local storage. Once it is on,
+posthog-js never fetches remote config or feature flags from PostHog and
+loads no scripts from it. Turning it off again stops every further
+request, including events posthog-js had queued or was retrying.
 
 Every event carries a stable per-machine `distinct_id`: the same UUID
-v4 persisted in `~/.fleetify/device.json`. After OAuth sign-in,
-Fleetify calls `posthog.identify(user_id)` with the id only (no name,
-email or other person properties), so PostHog links this device's
-events, earlier ones included, to your Fleetify account (via
-`$anon_distinct_id`). If you sign in before turning product analytics
-on, that happens when you turn it on. From then on the app's own events
-use your `user_id` as their `distinct_id`; backend events keep the
-device id, which PostHog has linked to you. Product analytics is linked
-to your account, not anonymous.
+v4 persisted in `~/.fleetify/device.json`. When you sign in, and at each
+launch while you're signed in, Fleetify calls `posthog.identify(user_id)`
+with the id only (no name, email or other person properties), so PostHog
+links this device's events, earlier ones included, to your Fleetify
+account (via `$anon_distinct_id`). While product analytics is off that
+sends nothing; if you turn it on later, it happens then. From then on
+the app's own events use your `user_id` as their `distinct_id`; backend
+events keep the device id, which PostHog has linked to you. Product
+analytics is linked to your account, not anonymous.
 
 ### Backend events (Rust)
 
@@ -152,10 +154,10 @@ These fire from `src/lib/posthog.ts` callers in the renderer.
 | `onboarding_started` | OnboardingChat first mount | — |
 | `onboarding_completed` | Onboarding's last question answered | `telemetry_opt_in` |
 | `message_sent` | Chat send button | `session_id_short` (first 8 chars), `text_length`, `has_attachments`, `attachment_count` |
-| `message_error` | Send failed (network / auth) | `session_id_short`, `error_message` |
+| `message_error` | Send failed (network / auth) | `session_id_short`, `error_type` (the error's class, never its message) |
 | `session_default_set` | Settings → Providers → Sessions Default picker | `provider_id` |
 | `frontend_error` | `window.onerror` or `unhandledrejection` | `source`, `error_type` (the error's class, such as `TypeError`, or its JS type; never its message or stack) |
-| `$identify` | After OAuth sign-in, or at opt-in if you signed in first | `$anon_distinct_id` = previous device_id |
+| `$identify` | At sign-in, at each launch while signed in, or at opt-in | `$anon_distinct_id` = previous device_id |
 
 **Autocapture is off.** The renderer sends only the events in the table
 above: no clicks, element text or attributes, no exception or dead-click

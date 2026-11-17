@@ -204,6 +204,10 @@ export function App() {
         };
         localStorage.setItem("fleet:user", JSON.stringify(user));
         setAuthedUser(user);
+        // Product analytics: link this launch to the account too, with the id
+        // only. Sends nothing while product analytics is off; the id is used
+        // if the user opts in later in this session.
+        identifyUser(user.id);
         // Returning users who haven't completed the intro yet land in the
         // chat-style onboarding once; everyone who already finished it (on
         // any port / run mode) goes straight to main.

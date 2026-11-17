@@ -81,7 +81,8 @@ export function isReady(): boolean {
 
 /**
  * Called once at launch with the backend's device id and the saved choice.
- * Starts posthog-js only when that choice is on; otherwise it isn't loaded.
+ * Starts posthog-js only when that choice is on; otherwise it isn't loaded,
+ * and what an older build stored for it is removed.
  */
 export async function initPostHog(opts: {
   distinctId: string;
@@ -89,7 +90,28 @@ export async function initPostHog(opts: {
 }): Promise<void> {
   distinctId = opts.distinctId;
   if (!chosen) enabled = opts.enabled;
-  if (enabled) await start();
+  if (enabled) {
+    await start();
+  } else if (!phInstance) {
+    removeStoredState();
+  }
+}
+
+/**
+ * Older builds started posthog-js for everyone, and it kept its state in
+ * localStorage, including the name and email they identified users with.
+ * Remove that entry (named as posthog-js names it) and nothing else,
+ * without loading posthog-js to do it.
+ */
+function removeStoredState(): void {
+  const key = projectKey();
+  if (!key) return;
+  const token = key.replace(/\+/g, "PL").replace(/\//g, "SL").replace(/=/g, "EQ");
+  try {
+    localStorage.removeItem(`ph_${token}_posthog`);
+  } catch {
+    /* storage unavailable: nothing to remove */
+  }
 }
 
 function start(): Promise<void> {

@@ -1,5 +1,6 @@
 import { createSessionsWebSocket } from "@/lib/api";
 import { awaitConfigPatch } from "@/lib/session-config-sync";
+import { errorType } from "@/lib/log";
 import { useChatStore, pushChatAuthRequired, markAuthSignedIn, pushChatError, pushGrokLogin } from "@/stores/chat-store";
 import { useAppStore } from "@/stores/app-store";
 import type { WSServerMessage, ImageBlock } from "@/types/chat";
@@ -1875,9 +1876,10 @@ class WSManager {
     } catch (err) {
       useChatStore.getState().clearStreaming(sessionId);
       void import("@/lib/posthog").then(({ capture }) => {
+        // The error's class only: its message can carry paths or tokens.
         capture("message_error", {
           session_id_short: sessionId.slice(0, 8),
-          error_message: err instanceof Error ? err.message : String(err),
+          error_type: errorType(err),
         });
       });
       throw err;

@@ -136,9 +136,10 @@ export const log = {
 /**
  * What kind of error it was: the class name (`TypeError`, `AbortError`, …)
  * for an Error, otherwise its JS type. Never its message or stack, which can
- * carry file paths, message text or tokens.
+ * carry file paths, message text or tokens. Product analytics events use it
+ * instead of the error itself.
  */
-function errorType(value: unknown): string {
+export function errorType(value: unknown): string {
   if (value instanceof Error) return (value.name || "Error").slice(0, 64);
   if (value === null || value === undefined) return "unknown";
   return typeof value;

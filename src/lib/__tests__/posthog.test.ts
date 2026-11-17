@@ -79,6 +79,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  localStorage.clear();
 });
 
 describe("product analytics while it is off", () => {
@@ -104,6 +105,35 @@ describe("product analytics while it is off", () => {
     await settle();
     expect(ph.init).not.toHaveBeenCalled();
     expect(analytics.isReady()).toBe(false);
+  });
+});
+
+describe("what older builds left behind", () => {
+  it("removes posthog-js's stored state at launch while product analytics is off, and nothing else", async () => {
+    localStorage.setItem("ph_phc_test_posthog", JSON.stringify({ $stored_person_properties: { name: "Mira" } }));
+    localStorage.setItem("__ph_opt_in_out_phc_test", "0");
+    localStorage.setItem("ph_phc_other_posthog", "{}");
+    localStorage.setItem("fleet:onboarded", "1");
+    await analytics.initPostHog({ distinctId: "device-1", enabled: false });
+    expect(localStorage.getItem("ph_phc_test_posthog")).toBeNull();
+    expect(localStorage.getItem("__ph_opt_in_out_phc_test")).toBe("0");
+    expect(localStorage.getItem("ph_phc_other_posthog")).toBe("{}");
+    expect(localStorage.getItem("fleet:onboarded")).toBe("1");
+    // Without loading posthog-js to do it.
+    expect(loads.count).toBe(0);
+  });
+
+  it("names the entry the way posthog-js does", async () => {
+    vi.stubEnv("VITE_POSTHOG_KEY", "phc_a+b/c=");
+    localStorage.setItem("ph_phc_aPLbSLcEQ_posthog", "{}");
+    await analytics.initPostHog({ distinctId: "device-1", enabled: false });
+    expect(localStorage.getItem("ph_phc_aPLbSLcEQ_posthog")).toBeNull();
+  });
+
+  it("keeps posthog-js's stored state when product analytics is on", async () => {
+    localStorage.setItem("ph_phc_test_posthog", "{}");
+    await analytics.initPostHog({ distinctId: "device-1", enabled: true });
+    expect(localStorage.getItem("ph_phc_test_posthog")).toBe("{}");
   });
 });
 
