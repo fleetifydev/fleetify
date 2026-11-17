@@ -88,6 +88,9 @@ document.addEventListener("mousedown", function (e) {
       },
       openExternal: function (url) { return invoke("shell_open_external", { url: String(url || "") }); },
       showItemInFolder: function (p) { return invoke("shell_show_item_in_folder", { path: String(p || "") }); },
+      // A local folder or document file (never a link): shell_open_path
+      // opens only those, as ShellExecute on Windows runs anything else.
+      openPath: function (p) { return invoke("shell_open_path", { path: String(p || "") }); },
       writeText: function (t) { return invoke("clipboard_write", { text: String(t || "") }); },
       minimizeWindow: function () { return invoke("window_minimize"); },
       maximizeWindow: function () { return invoke("window_maximize"); },

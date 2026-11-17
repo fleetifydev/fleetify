@@ -672,7 +672,7 @@ function folderBasename(path?: string): string {
 
 /** Per-item actions menu (⋯): open file location / open raw file / copy path,
  *  plus Edit / Delete for authored items. Reuses the app's portal-popover idiom. */
-function RowMenu({
+export function RowMenu({
   item, onEdit, onDelete,
 }: {
   item: LibraryItem;
@@ -726,7 +726,7 @@ function RowMenu({
     if (path) window.electronAPI?.showItemInFolder?.(path)?.catch(() => {});
   };
   const openRaw = () => {
-    if (path) window.electronAPI?.openExternal?.(path)?.catch(() => {});
+    if (path) window.electronAPI?.openPath?.(path)?.catch(() => {});
   };
   const copyPath = () => {
     if (path) navigator.clipboard?.writeText(path)?.catch(() => {});

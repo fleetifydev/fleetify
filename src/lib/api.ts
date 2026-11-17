@@ -34,8 +34,6 @@ declare global {
       detectEditors(): Promise<{ editors: { id: string; label: string }[] }>;
       /** Launch a project directory in the chosen editor (id from detectEditors). */
       openInEditor(editorId: string, path: string): Promise<{ ok: boolean; error?: string }>;
-      /** Open a URL or local path in the system's default handler. */
-      openExternal(target: string): Promise<{ ok: boolean; error?: string }>;
     };
   }
 }

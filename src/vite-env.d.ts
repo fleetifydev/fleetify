@@ -301,6 +301,9 @@ interface Window {
     ) => () => void;
     openExternal: (url: string) => Promise<boolean>;
     showItemInFolder: (path: string) => Promise<boolean>;
+    /** Open a local folder, or a document file (Markdown, JSON, TOML, YAML,
+     *  text…), with the system's default handler. Anything else is refused. */
+    openPath: (path: string) => Promise<{ ok: boolean; error?: string }>;
     writeText: (text: string) => Promise<boolean>;
 
     // ── PTY bridge ──

@@ -32,6 +32,7 @@ pub const APP_COMMANDS: &[&str] = &[
     "telemetry_set_cloud_enabled",
     "shell_open_external",
     "shell_show_item_in_folder",
+    "shell_open_path",
     "detect_editors",
     "open_in_editor",
     "clipboard_write",

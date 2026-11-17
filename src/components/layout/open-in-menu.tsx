@@ -36,7 +36,7 @@ export function OpenInMenu({ projectPath }: { projectPath?: string | null }) {
   }, [projectPath]);
 
   const openFolder = useCallback(() => {
-    if (projectPath) void window.fleetify?.openExternal?.(projectPath);
+    if (projectPath) void window.electronAPI?.openPath?.(projectPath);
     setOpen(false);
   }, [projectPath]);
 

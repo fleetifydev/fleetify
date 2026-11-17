@@ -106,6 +106,7 @@ pub fn run() {
             shell::ipc::telemetry_set_cloud_enabled,
             shell::ipc::shell_open_external,
             shell::ipc::shell_show_item_in_folder,
+            shell::ipc::shell_open_path,
             shell::ipc::detect_editors,
             shell::ipc::open_in_editor,
             shell::ipc::clipboard_write,

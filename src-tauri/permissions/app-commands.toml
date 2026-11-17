@@ -20,6 +20,7 @@ permissions = [
   "allow-telemetry-set-cloud-enabled",
   "allow-shell-open-external",
   "allow-shell-show-item-in-folder",
+  "allow-shell-open-path",
   "allow-detect-editors",
   "allow-open-in-editor",
   "allow-clipboard-write",

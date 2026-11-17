@@ -220,6 +220,27 @@ pub async fn shell_open_external(url: String) -> serde_json::Value {
     }
 }
 
+/// What the renderer is told for a path `shell_open_path` won't open.
+const PATH_REFUSED: &str = "This file can't be opened from Fleetify.";
+
+/// Opens a local folder, or a document file, with the system's default
+/// handler: Library → "Open raw file" and the "Open in" menu's "Open folder".
+/// Only an absolute path to an existing folder, or to a file with a document
+/// extension, is opened (`open_external::is_document_or_folder`): on Windows,
+/// ShellExecute runs executables, scripts and shortcuts.
+#[tauri::command]
+pub async fn shell_open_path(path: String) -> serde_json::Value {
+    use fleetify_backend::open_external::{is_document_or_folder, open_path};
+    let path = std::path::PathBuf::from(path);
+    if !is_document_or_folder(&path) {
+        return serde_json::json!({ "ok": false, "error": PATH_REFUSED });
+    }
+    match open_path(&path) {
+        Ok(()) => serde_json::json!({ "ok": true }),
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+    }
+}
+
 #[tauri::command]
 pub async fn shell_show_item_in_folder(path: String) -> serde_json::Value {
     // Reveal the item in the OS file manager with the file *selected* —
@@ -4632,6 +4653,26 @@ pub async fn providers_set_cloudflare_account_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_path_that_isnt_a_folder_or_document_is_refused_with_a_message() {
+        // Refused before anything is launched: nothing opens here.
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("setup.exe");
+        std::fs::write(&exe, b"").unwrap();
+        for path in [
+            exe.to_string_lossy().into_owned(),
+            dir.path().join("missing.md").to_string_lossy().into_owned(),
+            "notes.md".to_string(),
+            String::new(),
+        ] {
+            assert_eq!(
+                shell_open_path(path.clone()).await,
+                serde_json::json!({ "ok": false, "error": PATH_REFUSED }),
+                "{path:?}"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn a_link_that_isnt_web_or_mail_is_refused_with_a_message() {

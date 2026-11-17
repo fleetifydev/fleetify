@@ -14,7 +14,8 @@
 //! - [`open_url`] validates, then opens the serialized URL, never the raw
 //!   input.
 //! - [`open_path`] opens a file or folder the app chose itself; it must be
-//!   an absolute path.
+//!   an absolute path. A path the UI asks for must also pass
+//!   [`is_document_or_folder`].
 //!
 //! On Windows they launch through `ShellExecuteExW` (`open::that_detached`
 //! with the crate's `shellexecute-on-windows` feature): no command shell,
@@ -126,6 +127,39 @@ pub fn open_path(path: &Path) -> io::Result<()> {
         ));
     }
     launch(path.as_os_str())
+}
+
+/// Extensions of the files the UI may open (`shell_open_path`), compared
+/// case-insensitively: the documents and config files the Library lists
+/// (`.md` and Cursor's `.mdc` rules, `.toml`, `.json`, `.yaml`, OpenCode's
+/// `.ts` plugin hooks) and a few plain-text kinds. Nothing Windows runs:
+/// ShellExecute starts executables, scripts and shortcuts.
+pub const DOCUMENT_EXTENSIONS: [&str; 11] = [
+    "md", "markdown", "mdc", "txt", "json", "jsonc", "yaml", "yml", "toml", "log", "ts",
+];
+
+/// Whether the UI may open `path` ([`open_path`] through `shell_open_path`):
+/// an absolute path to an existing folder, or to a regular file with one of
+/// the [`DOCUMENT_EXTENSIONS`].
+pub fn is_document_or_folder(path: &Path) -> bool {
+    if !path.is_absolute() {
+        return false;
+    }
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if metadata.is_dir() {
+        return true;
+    }
+    metadata.is_file()
+        && path
+            .extension()
+            .and_then(OsStr::to_str)
+            .is_some_and(|extension| {
+                DOCUMENT_EXTENSIONS
+                    .iter()
+                    .any(|document| document.eq_ignore_ascii_case(extension))
+            })
 }
 
 /// The one call into the system opener. On Windows, `ShellExecuteExW`
@@ -246,6 +280,66 @@ mod tests {
                 "{raw:?}"
             );
         }
+    }
+
+    /// A file named `name` in `dir`, created empty.
+    fn file_in(dir: &Path, name: &str) -> std::path::PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, b"").unwrap();
+        path
+    }
+
+    #[test]
+    fn a_folder_or_a_document_the_library_lists_may_be_opened_from_the_ui() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(is_document_or_folder(dir.path()), "a folder");
+        for name in [
+            "SKILL.md",
+            "NOTES.MD",
+            "rule.mdc",
+            "notes.markdown",
+            "readme.txt",
+            "settings.json",
+            "tsconfig.jsonc",
+            "HOOK.yaml",
+            "ci.yml",
+            "reviewer.toml",
+            "fleet.log",
+            "plugin.ts",
+        ] {
+            let path = file_in(dir.path(), name);
+            assert!(is_document_or_folder(&path), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_program_script_shortcut_or_extensionless_file_is_not_opened_from_the_ui() {
+        // On Windows ShellExecute runs these: executables, scripts, shortcuts.
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "setup.exe",
+            "SETUP.EXE",
+            "run.bat",
+            "run.cmd",
+            "run.ps1",
+            "app.lnk",
+            "run.sh",
+            "handler.py",
+            "script.js",
+            "Makefile",
+        ] {
+            let path = file_in(dir.path(), name);
+            assert!(!is_document_or_folder(&path), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_relative_or_missing_path_is_not_opened_from_the_ui() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!is_document_or_folder(Path::new("notes.md")));
+        assert!(!is_document_or_folder(Path::new("./docs")));
+        assert!(!is_document_or_folder(&dir.path().join("missing.md")));
+        assert!(!is_document_or_folder(&dir.path().join("missing-folder")));
     }
 
     #[test]
