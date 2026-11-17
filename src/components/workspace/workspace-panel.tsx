@@ -28,6 +28,7 @@ import {
 import { XtermShell } from "@/components/workspace/xterm-shell";
 import { useChatStore, selectSession, type ProcessEvent } from "@/stores/chat-store";
 import { usePinnedSession } from "@/lib/session-pins";
+import { parseStoredMessages } from "@/lib/session-messages";
 import { MessageContent, StreamingMessage } from "@/components/chat/message-content";
 import { wsManager } from "@/services/ws-manager";
 import { useThemeStore } from "@/stores/theme-store";
@@ -3140,19 +3141,28 @@ export function SubagentContent({ task }: { task: import("@/stores/chat-store").
   // state in the deps, the re-run's cleanup cancelled the fetch it had just
   // started, and its result never landed. The cleanup still drops a late
   // result once the task changes, the pane unmounts, or the fetch is no longer
-  // needed (a fresher transcript streamed in first).
+  // needed (a fresher transcript streamed in first). A fetch dropped before it
+  // settled gives the slot back, so returning to the task fetches it again.
   const fetchedFor = useRef<string | null>(null);
   useEffect(() => {
     if (!needsFetch || fetchedFor.current === taskId) return;
     fetchedFor.current = taskId;
     let cancelled = false;
+    // Set first thing in the handlers: storing the rows re-renders, and the
+    // cleanup that re-render runs must already see the fetch as settled.
+    let settled = false;
     fetchMessages(taskId).then(rows => {
+      settled = true;
       if (cancelled) return;
       if (Array.isArray(rows) && rows.length > 0) {
-        setMessages(taskId, rows as Parameters<typeof setMessages>[1]);
+        // The endpoint returns `content` as JSON text; MessageContent needs blocks.
+        setMessages(taskId, parseStoredMessages(rows));
       }
-    }).catch(() => { /* best-effort */ });
-    return () => { cancelled = true; };
+    }).catch(() => { settled = true; /* best-effort */ });
+    return () => {
+      cancelled = true;
+      if (!settled && fetchedFor.current === taskId) fetchedFor.current = null;
+    };
   }, [taskId, needsFetch, setMessages]);
 
   // Prefer the worker session's full chat history when available —

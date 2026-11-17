@@ -66,6 +66,7 @@ import {
 } from "@/services/routines-runtime";
 import { useChatStore } from "@/stores/chat-store";
 import { usePinnedSession } from "@/lib/session-pins";
+import { parseStoredMessages } from "@/lib/session-messages";
 import { apiFetch, fetchMessages } from "@/lib/api";
 import { MarkdownBody, rowSummary } from "@/components/chat/message-content";
 import type { Session } from "@/types/session";
@@ -2482,8 +2483,10 @@ function RoutineDetail({ routine, onBack, onRequestDelete, onEdit, onOpenRun }: 
    Renders the run's session messages inline (instructions + assistant
    responses + tool calls) so the user can see what happened WITHOUT
    leaving the Routines surface. An "Open in chat" pill is available
-   for the few times the full chat is needed. */
-function RunDetailView({ routineId, runId, onBack }: {
+   for the few times the full chat is needed.
+
+   Exported for its unit test only. */
+export function RunDetailView({ routineId, runId, onBack }: {
   routineId: string; runId: string; onBack: () => void;
 }) {
   const allRuns = useRuns();
@@ -2523,8 +2526,9 @@ function RunDetailView({ routineId, runId, onBack }: {
     Promise.resolve().then(() => {
       if (cancelled) return;
       setLoading(true);
+      // The endpoint returns `content` as JSON text; MessageCard walks blocks.
       fetchMessages(sid)
-        .then((msgs: ChatMessage[]) => { if (!cancelled) setMessages(sid, msgs); })
+        .then(rows => { if (!cancelled) setMessages(sid, parseStoredMessages(rows)); })
         .catch(e => { if (!cancelled) setFetchError(e instanceof Error ? e.message : "Could not load messages"); })
         .finally(() => { if (!cancelled) setLoading(false); });
     });

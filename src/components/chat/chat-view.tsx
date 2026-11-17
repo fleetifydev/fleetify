@@ -12,6 +12,7 @@ import { CursorQuestionCard } from "./cursor-question-card";
 import { CursorPlanCard } from "./cursor-plan-card";
 import { SessionToolbar } from "./session-toolbar";
 import { fetchMessages, fetchClaudeHistory, createSession, clearSessionMessages, updateSession as apiUpdateSession, stopSession, restartSession, analyzeFleetResponse, fetchAgentModels, planFleet, delegateFleet, type PlanDispatch } from "@/lib/api";
+import { parseStoredMessage } from "@/lib/session-messages";
 import { registerConfigPatch } from "@/lib/session-config-sync";
 import { usesInAppTitleBar, folderName } from "@/lib/utils";
 import { formatShortcut } from "@/lib/keyboard-shortcuts";
@@ -785,15 +786,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   }, [effectiveSessionId]);
 
   // Shared message parser — lifted so both effects below can use it
-  const parseContent = useCallback((m: { content: string | ContentBlock[]; [k: string]: unknown }) => {
-    let content: ContentBlock[];
-    try {
-      content = typeof m.content === "string" ? JSON.parse(m.content as string) : (m.content as ContentBlock[]);
-    } catch {
-      content = [{ type: "text" as const, text: typeof m.content === "string" ? m.content : "" }];
-    }
-    return { ...m, content } as ChatMessage;
-  }, []);
+  const parseContent = parseStoredMessage;
 
   // Load message history every time the user opens a session.
   //

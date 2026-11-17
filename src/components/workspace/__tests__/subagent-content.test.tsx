@@ -17,8 +17,15 @@ import { sweepInactiveSessions } from "@/lib/session-eviction";
 import type { Session } from "@/types/session";
 
 const text = (t: string) => ({ type: "text" as const, text: t });
+/** A chat-store message, the shape streaming leaves in memory. */
 const message = (id: string, t: string) => ({
   id, role: "assistant" as const, content: [text(t)], timestamp: new Date(0).toISOString(),
+});
+/** A row exactly as GET /sessions/:id/messages returns it. The backend keeps
+ *  `content` as JSON-encoded text (crates/fleetify-backend/src/models/message.rs). */
+const row = (sessionId: string, id: string, t: string) => ({
+  id, session_id: sessionId, role: "assistant", content: JSON.stringify([text(t)]),
+  model: null, usage_json: null, cost_usd: 0, timestamp: new Date(0).toISOString(),
 });
 const worker = (id: string) => ({ id, title: id } as Session);
 const messagesOf = (sid: string) => useChatStore.getState().sessions[sid]?.messages ?? [];
@@ -45,6 +52,7 @@ const finishedTask = (id: string): SubagentTask => ({
 });
 
 const transcript = [message("m-1", "full worker transcript")];
+const transcriptRows = [row("worker-1", "m-1", "full worker transcript")];
 
 /** Holds every fetchMessages call open until the test settles it, so a test
  *  decides when, and in what order, transcripts arrive. */
@@ -62,7 +70,7 @@ function holdFetches() {
 
 beforeEach(() => {
   vi.mocked(fetchMessages).mockReset();
-  vi.mocked(fetchMessages).mockResolvedValue(transcript);
+  vi.mocked(fetchMessages).mockResolvedValue(transcriptRows);
   useChatStore.setState({ sessions: {} });
   // The user is in the parent agent's chat. The worker is not the active,
   // staff or split-pane session, so only a pin keeps the sweep off it.
@@ -111,14 +119,16 @@ describe("SubagentContent (Agent pane)", () => {
 
 describe("SubagentContent fetching a transcript that isn't in memory", () => {
   it("fetches the worker's transcript and shows it instead of the dispatch log", async () => {
-    // Regression: the effect kept the attempted id in state listed in its own
-    // deps. Recording the attempt re-ran the effect, whose cleanup dropped the
-    // fetch it had just started, so the pane never left the dispatch log.
+    // Regressions: (1) the effect kept the attempted id in state listed in its
+    // own deps, so recording the attempt re-ran it and the cleanup dropped the
+    // fetch it had just started. (2) Once results landed, the raw rows (content
+    // still a JSON string) were stored as-is and MessageContent threw on them,
+    // taking the whole app down.
     const settle = holdFetches();
     render(<SubagentContent task={finishedTask("worker-1")} />);
     expect(screen.getByText("lossy dispatch log")).toBeInTheDocument(); // until it lands
 
-    await settle("worker-1", transcript);
+    await settle("worker-1", transcriptRows);
 
     expect(screen.getByText("full worker transcript")).toBeInTheDocument();
     expect(screen.queryByText("lossy dispatch log")).not.toBeInTheDocument();
@@ -131,11 +141,27 @@ describe("SubagentContent fetching a transcript that isn't in memory", () => {
     const { rerender } = render(<SubagentContent task={finishedTask("worker-1")} />);
     rerender(<SubagentContent task={finishedTask("worker-2")} />);
 
-    await settle("worker-1", transcript); // the old task's answer arrives late
+    await settle("worker-1", transcriptRows); // the old task's answer arrives late
     expect(messagesOf("worker-1")).toHaveLength(0);
 
-    await settle("worker-2", [message("m-2", "second worker transcript")]);
+    await settle("worker-2", [row("worker-2", "m-2", "second worker transcript")]);
     expect(screen.getByText("second worker transcript")).toBeInTheDocument();
+  });
+
+  it("fetches a task again when the pane comes back to it after its first fetch was dropped", async () => {
+    // Regression: a dropped attempt still counted as the task's one fetch. With
+    // worker-1's fetch in flight the pane moved to worker-2 (already in memory,
+    // so no fetch) and back, and worker-1 was never fetched again.
+    useAppStore.setState({ sessions: [worker("worker-1"), worker("worker-2")] });
+    useChatStore.getState().setMessages("worker-2", [message("m-2", "second worker transcript")]);
+    const settle = holdFetches();
+    const { rerender } = render(<SubagentContent task={finishedTask("worker-1")} />);
+    rerender(<SubagentContent task={finishedTask("worker-2")} />);
+    rerender(<SubagentContent task={finishedTask("worker-1")} />);
+
+    expect(vi.mocked(fetchMessages).mock.calls.map(([id]) => id)).toEqual(["worker-1", "worker-1"]);
+    await settle("worker-1", transcriptRows);
+    expect(screen.getByText("full worker transcript")).toBeInTheDocument();
   });
 
   it("drops a fetch that lands after the pane closed", async () => {
@@ -143,7 +169,7 @@ describe("SubagentContent fetching a transcript that isn't in memory", () => {
     const { unmount } = render(<SubagentContent task={finishedTask("worker-1")} />);
     unmount();
 
-    await settle("worker-1", transcript);
+    await settle("worker-1", transcriptRows);
 
     expect(messagesOf("worker-1")).toHaveLength(0);
   });
@@ -153,7 +179,7 @@ describe("SubagentContent fetching a transcript that isn't in memory", () => {
     render(<SubagentContent task={finishedTask("worker-1")} />);
     act(() => useChatStore.getState().setMessages("worker-1", [message("m-live", "live transcript")]));
 
-    await settle("worker-1", transcript); // an older snapshot, arriving late
+    await settle("worker-1", transcriptRows); // an older snapshot, arriving late
 
     expect(messagesOf("worker-1").map(m => m.id)).toEqual(["m-live"]);
     expect(screen.getByText("live transcript")).toBeInTheDocument();
