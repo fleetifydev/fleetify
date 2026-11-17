@@ -10,7 +10,8 @@
 //! rewrites `icon` to a `data:` URI (already allowed by the CSP's `img-src`).
 //! The WebView makes no third-party request at all, and icons survive offline.
 //!
-//! Everything here is best-effort: any failure leaves `icon` untouched.
+//! Everything here is best-effort: an icon that cannot be fetched keeps an
+//! expired cached copy if there is one, and otherwise its URL.
 //!
 //! A catalog load fetches each distinct icon URL once, a few at a time, and
 //! waits at most `INLINE_BUDGET` for them. An icon still downloading then
@@ -22,6 +23,13 @@
 //! resolver so nothing is checked first and resolved again later. It never
 //! uses a proxy and never follows a redirect, and a URL that just failed is
 //! left alone for `FAILURE_TTL` instead of stalling every catalog load.
+//!
+//! An icon the fence refuses, in `fetch_target` or in the resolver, is
+//! dropped rather than kept as a URL. The WebView would load that URL itself,
+//! with its own DNS and with any cookies for the host, and the CSP lets it
+//! load any https image: it would make the very request refused here. Only
+//! an expired cached copy, which is local, may stand in for such an icon. A
+//! refusal is remembered for `FAILURE_TTL`, like a failure.
 //!
 //! One residual risk: a NAT64 network-specific prefix (RFC 6052) cannot be
 //! told apart from ordinary global unicast, so on a network that translates
@@ -71,10 +79,10 @@ fn cache_dir() -> PathBuf {
         .join("icons")
 }
 
-/// The URL to fetch for a manifest `icon`, or `None` when it must be left
-/// alone: already inline, not https, or pointed somewhere a third-party
+/// The URL to fetch for a manifest `icon`, or `None` when it must not be
+/// fetched: already inline, not https, or pointed somewhere a third-party
 /// manifest has no business sending the backend (credentials, IP literals,
-/// local names).
+/// local names). Apart from an inline icon, such an icon is then dropped.
 pub fn fetch_target(icon: &str) -> Option<reqwest::Url> {
     let url = reqwest::Url::parse(icon.trim()).ok()?;
     if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
@@ -160,15 +168,30 @@ fn embedded_ipv4(v6: Ipv6Addr) -> Option<Ipv4Addr> {
 /// `addrs` unchanged when every one is public, otherwise an error. All or
 /// nothing: a name that answers with a private address next to public ones
 /// is pointing somewhere it should not.
-pub(crate) fn public_only(addrs: Vec<SocketAddr>) -> Result<Vec<SocketAddr>, &'static str> {
+pub(crate) fn public_only(addrs: Vec<SocketAddr>) -> Result<Vec<SocketAddr>, NonPublicAddress> {
     if addrs.is_empty() {
-        Err("the icon host has no addresses")
+        Err(NonPublicAddress)
     } else if addrs.iter().all(|a| is_public_ip(a.ip())) {
         Ok(addrs)
     } else {
-        Err("the icon host resolves to a non-public address")
+        Err(NonPublicAddress)
     }
 }
+
+/// [`public_only`]'s refusal: the icon host resolves to no address at all,
+/// or to one [`is_public_ip`] refuses. Unlike a lookup that fails or times
+/// out, this is the policy saying no, so the icon is dropped rather than
+/// left for the WebView to load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NonPublicAddress;
+
+impl std::fmt::Display for NonPublicAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the icon host resolves to a non-public address, or to none")
+    }
+}
+
+impl std::error::Error for NonPublicAddress {}
 
 /// The icon client's DNS resolver. The connector dials exactly the addresses
 /// returned here, all vetted by [`public_only`], so a name cannot pass a
@@ -178,14 +201,48 @@ pub(crate) struct PublicOnlyResolver;
 impl Resolve for PublicOnlyResolver {
     fn resolve(&self, name: Name) -> Resolving {
         let host = name.as_str().to_owned();
-        Box::pin(async move {
-            let found = tokio::time::timeout(DNS_TIMEOUT, tokio::net::lookup_host((host, 0)))
-                .await
-                .map_err(|_| "the icon host lookup timed out")??;
-            let vetted = public_only(found.collect())?;
-            Ok(Box::new(vetted.into_iter()) as Addrs)
-        })
+        Box::pin(vet_lookup(tokio::net::lookup_host((host, 0))))
     }
+}
+
+/// The error type of a reqwest resolver.
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// [`PublicOnlyResolver`]'s answer: the addresses `lookup` finds, if
+/// [`public_only`] passes them. Only that check fails with
+/// [`NonPublicAddress`]. A lookup that errors or outlasts `DNS_TIMEOUT` is
+/// an ordinary error, so it counts as transient.
+async fn vet_lookup<I>(lookup: impl Future<Output = std::io::Result<I>>) -> Result<Addrs, BoxError>
+where
+    I: Iterator<Item = SocketAddr>,
+{
+    let found = tokio::time::timeout(DNS_TIMEOUT, lookup)
+        .await
+        .map_err(|_| "the icon host lookup timed out")??;
+    let vetted = public_only(found.collect())?;
+    Ok(Box::new(vetted.into_iter()))
+}
+
+/// Whether `err` is, or wraps, [`NonPublicAddress`]. reqwest buries a
+/// resolver's error a few layers down: in 0.12 that is reqwest's error, then
+/// hyper-util's client error, then its connector's "dns error". The whole
+/// `source()` chain is searched rather than one assumed layer.
+fn is_refusal(err: &(dyn std::error::Error + 'static)) -> bool {
+    std::iter::successors(Some(err), |e| e.source()).any(|e| e.is::<NonPublicAddress>())
+}
+
+/// What one icon fetch came to.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// The icon, as a `data:` URI.
+    Inlined(String),
+    /// The fence refused the icon's host. The icon is dropped, or shows an
+    /// expired cached copy: as a URL it would send the WebView to that host.
+    Refused,
+    /// Anything else: a timeout, a dead host, an HTTP error, a body that is
+    /// not an acceptable image. The icon keeps an expired cached copy, or
+    /// else its URL.
+    Failed,
 }
 
 /// The client for icon fetches. Only [`PublicOnlyResolver`] turns names into
@@ -234,6 +291,10 @@ impl FailureCache {
 }
 
 static FAILURES: LazyLock<FailureCache> = LazyLock::new(|| FailureCache::new(FAILURE_TTL));
+
+/// URLs whose host was refused, and when. Within `FAILURE_TTL` such an icon
+/// counts as refused without a fetch, so not even DNS is asked again.
+static REFUSALS: LazyLock<FailureCache> = LazyLock::new(|| FailureCache::new(FAILURE_TTL));
 
 /// Encode a fetched body as a `data:` URI, or `None` when it is not an
 /// acceptable image. The content type is what rejects a 200-with-HTML block
@@ -286,8 +347,18 @@ pub fn write_cached(dir: &Path, url: &str, data_uri: &str) {
 
 /// Fetch one icon and encode it. Split from [`fetch_target`] so the transport
 /// rules can be exercised against a local server.
-pub async fn fetch_data_uri(client: &reqwest::Client, url: reqwest::Url) -> Option<String> {
-    let mut resp = client.get(url).send().await.ok()?;
+pub async fn fetch_data_uri(client: &reqwest::Client, url: reqwest::Url) -> Outcome {
+    match client.get(url).send().await {
+        Ok(resp) => read_icon(resp)
+            .await
+            .map_or(Outcome::Failed, Outcome::Inlined),
+        Err(err) if is_refusal(&err) => Outcome::Refused,
+        Err(_) => Outcome::Failed,
+    }
+}
+
+/// The icon `resp` carries, as a `data:` URI, or `None` when it is not one.
+async fn read_icon(mut resp: reqwest::Response) -> Option<String> {
     if !resp.status().is_success()
         || resp
             .content_length()
@@ -315,15 +386,20 @@ pub async fn fetch_data_uri(client: &reqwest::Client, url: reqwest::Url) -> Opti
 /// Fetch one icon as a `data:` URI. A URL that failed within `FAILURE_TTL`
 /// is not tried again: retrying it would make every catalog load wait out
 /// the same failure.
-async fn inline_one(client: reqwest::Client, url: reqwest::Url) -> Option<String> {
+async fn inline_one(client: reqwest::Client, url: reqwest::Url) -> Outcome {
     if FAILURES.is_recent(url.as_str(), Instant::now()) {
-        return None;
+        return Outcome::Failed;
     }
-    let uri = fetch_data_uri(&client, url.clone()).await;
-    if uri.is_none() {
+    let outcome = fetch_data_uri(&client, url.clone()).await;
+    if matches!(outcome, Outcome::Failed) {
         FAILURES.record(url.as_str(), Instant::now());
     }
-    uri
+    outcome
+}
+
+/// Whether `icon` is already inline: a `data:` URI, which loads nothing.
+fn is_inline(icon: &str) -> bool {
+    reqwest::Url::parse(icon.trim()).is_ok_and(|url| url.scheme() == "data")
 }
 
 /// Rewrite every fetchable `icon` in `manifests` to a `data:` URI, in place.
@@ -339,72 +415,99 @@ async fn inline_all_in(dir: &Path, manifests: &mut [&mut PluginManifest]) {
 }
 
 /// [`inline_all_in`] with the fetch injected. `fetch` only ever sees a URL
-/// that [`fetch_target`] accepted and that has no fresh copy in the cache.
+/// that [`fetch_target`] accepted, that has no fresh copy in the cache and
+/// whose host was not refused within `FAILURE_TTL`.
 ///
 /// Each distinct URL is fetched once, at most [`ICON_CONCURRENCY`] at a
 /// time, and this returns when every fetch is done or [`INLINE_BUDGET`] has
 /// passed. An icon whose fetch failed or is still running gets an expired
-/// cached copy if there is one and otherwise stays its URL. The fetches run
-/// on a task of their own, so those still running finish anyway and fill
-/// the cache for the next load.
+/// cached copy if there is one and otherwise stays its URL. A refused icon
+/// never stays its URL: one [`fetch_target`] refuses is dropped, and one
+/// whose host was refused gets an expired cached copy if there is one and
+/// is otherwise dropped. The fetches run on a task of their own, so those
+/// still running finish anyway and fill the cache, or [`REFUSALS`], for the
+/// next load.
 async fn inline_all_with<F, Fut>(dir: &Path, manifests: &mut [&mut PluginManifest], fetch: F)
 where
     F: Fn(reqwest::Url) -> Fut,
-    Fut: Future<Output = Option<String>> + Send + 'static,
+    Fut: Future<Output = Outcome> + Send + 'static,
 {
     let mut shown_by: HashMap<reqwest::Url, Vec<usize>> = HashMap::new();
-    for (i, m) in manifests.iter().enumerate() {
-        if let Some(url) = m.icon.as_deref().and_then(fetch_target) {
+    for (i, m) in manifests.iter_mut().enumerate() {
+        let Some(icon) = m.icon.as_deref() else {
+            continue;
+        };
+        if let Some(url) = fetch_target(icon) {
             shown_by.entry(url).or_default().push(i);
+        } else if !is_inline(icon) {
+            // Refused. As a URL it would send the WebView there instead.
+            m.icon = None;
         }
     }
     // Catalog order, so the first icons on the page are fetched first.
     let mut wanted: Vec<_> = shown_by.into_iter().collect();
     wanted.sort_unstable_by_key(|(_, at)| at[0]);
 
-    let mut uris: Vec<_> = wanted
+    // What each URL came to so far; `None` until its fetch reports.
+    let now = Instant::now();
+    let mut outcomes: Vec<_> = wanted
         .iter()
-        .map(|(url, _)| read_cached(dir, url.as_str(), CACHE_TTL))
+        .map(|(url, _)| match read_cached(dir, url.as_str(), CACHE_TTL) {
+            Some(uri) => Some(Outcome::Inlined(uri)),
+            None if REFUSALS.is_recent(url.as_str(), now) => Some(Outcome::Refused),
+            None => None,
+        })
         .collect();
     let fetches: Vec<_> = wanted
         .iter()
         .enumerate()
-        .filter(|&(k, _)| uris[k].is_none())
+        .filter(|&(k, _)| outcomes[k].is_none())
         .map(|(k, (url, _))| (k, url.clone(), fetch(url.clone())))
         .collect();
     if !fetches.is_empty() {
         let mut arrived = spawn_fetches(dir.to_path_buf(), fetches);
         let deadline = tokio::time::Instant::now() + INLINE_BUDGET;
-        while let Ok(Some((k, uri))) = tokio::time::timeout_at(deadline, arrived.recv()).await {
-            uris[k] = uri;
+        while let Ok(Some((k, outcome))) = tokio::time::timeout_at(deadline, arrived.recv()).await {
+            outcomes[k] = Some(outcome);
         }
     }
-    for ((url, at), uri) in wanted.into_iter().zip(uris) {
-        // Offline, down or slow: an expired copy still beats a blank tile.
-        let Some(uri) = uri.or_else(|| read_cached(dir, url.as_str(), Duration::MAX)) else {
-            continue;
+    for ((url, at), outcome) in wanted.into_iter().zip(outcomes) {
+        let icon = match outcome {
+            Some(Outcome::Inlined(uri)) => Some(uri),
+            // A local copy makes no request; the URL would make the very
+            // request that was refused. Without a copy the icon goes.
+            Some(Outcome::Refused) => read_cached(dir, url.as_str(), Duration::MAX),
+            // Offline, down or slow: an expired copy still beats a blank
+            // tile, and without one the icon stays its URL.
+            Some(Outcome::Failed) | None => {
+                let Some(uri) = read_cached(dir, url.as_str(), Duration::MAX) else {
+                    continue;
+                };
+                Some(uri)
+            }
         };
         for i in at {
-            manifests[i].icon = Some(uri.clone());
+            manifests[i].icon = icon.clone();
         }
     }
 }
 
 /// Run `fetches` on a task of their own, [`ICON_CONCURRENCY`] at a time,
-/// caching each icon as it arrives and reporting it, with its slot, on the
-/// returned channel.
+/// caching each icon and recording each refusal as it arrives, and
+/// reporting every outcome, with its slot, on the returned channel.
 ///
 /// The task does not stop when the caller stops listening, so a slow icon
-/// still lands in the cache. It ends when the last fetch does, and each real
-/// fetch is bounded by `FETCH_TIMEOUT`. A runtime that shuts down drops the
-/// task without polling it again, which cancels the fetches; a cache write
-/// is synchronous and atomic, so none is left half-done.
+/// still lands in the cache, and a slow refusal in [`REFUSALS`]. It ends
+/// when the last fetch does, and each real fetch is bounded by
+/// `FETCH_TIMEOUT`. A runtime that shuts down drops the task without polling
+/// it again, which cancels the fetches; a cache write is synchronous and
+/// atomic, so none is left half-done.
 fn spawn_fetches<Fut>(
     dir: PathBuf,
     fetches: Vec<(usize, reqwest::Url, Fut)>,
-) -> tokio::sync::mpsc::UnboundedReceiver<(usize, Option<String>)>
+) -> tokio::sync::mpsc::UnboundedReceiver<(usize, Outcome)>
 where
-    Fut: Future<Output = Option<String>> + Send + 'static,
+    Fut: Future<Output = Outcome> + Send + 'static,
 {
     use futures_util::StreamExt;
 
@@ -413,12 +516,14 @@ where
         let mut done = futures_util::stream::iter(fetches)
             .map(|(k, url, fetch)| async move { (k, url, fetch.await) })
             .buffer_unordered(ICON_CONCURRENCY);
-        while let Some((k, url, uri)) = done.next().await {
-            if let Some(uri) = &uri {
-                write_cached(&dir, url.as_str(), uri);
+        while let Some((k, url, outcome)) = done.next().await {
+            match &outcome {
+                Outcome::Inlined(uri) => write_cached(&dir, url.as_str(), uri),
+                Outcome::Refused => REFUSALS.record(url.as_str(), Instant::now()),
+                Outcome::Failed => {}
             }
             // Fails only once the caller's budget has run out.
-            let _ = tx.send((k, uri));
+            let _ = tx.send((k, outcome));
         }
     });
     rx
@@ -596,6 +701,44 @@ mod tests {
         (addr, dials)
     }
 
+    /// Whether vetting `found` ended in a refusal. Panics if it was let
+    /// through, since every caller expects an error.
+    fn refused(found: Result<Addrs, BoxError>) -> bool {
+        match found {
+            Ok(_) => panic!("the lookup was let through"),
+            Err(err) => is_refusal(&*err),
+        }
+    }
+
+    /// Only an answer `public_only` rejects is a refusal. A lookup that
+    /// fails, or outlasts `DNS_TIMEOUT`, is transient: the icon keeps its
+    /// URL and is tried again later.
+    #[tokio::test(start_paused = true)]
+    async fn the_resolver_refuses_only_a_non_public_answer() {
+        type Found = std::vec::IntoIter<SocketAddr>;
+        let answer = |ip: &str| -> std::io::Result<Found> {
+            Ok(vec![SocketAddr::new(ip.parse().unwrap(), 0)].into_iter())
+        };
+
+        assert!(refused(vet_lookup(async { answer("127.0.0.1") }).await));
+        assert!(refused(vet_lookup(async { answer("10.0.0.1") }).await));
+        let none: std::io::Result<Found> = Ok(Vec::new().into_iter());
+        assert!(refused(vet_lookup(async { none }).await));
+
+        let failed: std::io::Result<Found> = Err(std::io::Error::other("no such host"));
+        assert!(!refused(vet_lookup(async { failed }).await));
+        let started = tokio::time::Instant::now();
+        let hung = std::future::pending::<std::io::Result<Found>>();
+        assert!(!refused(vet_lookup(hung).await));
+        assert_eq!(started.elapsed(), DNS_TIMEOUT);
+
+        let public: Vec<_> = vet_lookup(async { answer("8.8.8.8") })
+            .await
+            .expect("a public answer passes")
+            .collect();
+        assert_eq!(public, [SocketAddr::new("8.8.8.8".parse().unwrap(), 0)]);
+    }
+
     /// The resolver is what the icon client's connector dials through, so a
     /// name that resolves to loopback never gets a connection at all.
     #[tokio::test]
@@ -607,6 +750,24 @@ mod tests {
             .send()
             .await;
         assert!(sent.is_err());
+        assert_eq!(
+            dials.load(Ordering::SeqCst),
+            0,
+            "a loopback address was dialled"
+        );
+    }
+
+    /// Past `fetch_target`, the resolver is the policy. Its refusal reaches
+    /// `inline_one` through reqwest's error, and comes back `Refused`, not
+    /// `Failed`, without a connection.
+    #[tokio::test]
+    async fn inline_one_reports_a_resolver_refusal_as_refused() {
+        let (addr, dials) = hang_up_listener().await;
+        // `fetch_target` would refuse this name too. `inline_one` is handed
+        // it directly, so the resolver is the check that refuses it.
+        let url = reqwest::Url::parse(&format!("https://localhost:{}/i.png", addr.port())).unwrap();
+        let outcome = inline_one(icon_client().unwrap(), url).await;
+        assert_eq!(outcome, Outcome::Refused);
         assert_eq!(
             dials.load(Ordering::SeqCst),
             0,
@@ -744,19 +905,14 @@ mod tests {
         let url = fetch_target(&icon).unwrap();
         let dir = tempfile::tempdir().unwrap();
 
-        assert!(inline_one(client.clone(), url).await.is_none());
+        // A connection that drops is transient, not a refusal.
+        assert_eq!(inline_one(client.clone(), url).await, Outcome::Failed);
         assert_eq!(dials.load(Ordering::SeqCst), 1);
         assert!(FAILURES.is_recent(&icon, Instant::now()));
 
         // Within FAILURE_TTL the host is not dialled again, yet an expired
         // copy is still served rather than a blank tile.
-        write_cached(dir.path(), &icon, "data:image/png;base64,AAAA");
-        std::fs::File::options()
-            .write(true)
-            .open(cache_path(dir.path(), &icon))
-            .unwrap()
-            .set_modified(SystemTime::now() - CACHE_TTL - Duration::from_secs(60))
-            .unwrap();
+        write_expired_copy(dir.path(), &icon, "data:image/png;base64,AAAA");
         let mut m = manifest("failing", &icon);
         inline_all_with(dir.path(), &mut [&mut m], |url| {
             inline_one(client.clone(), url)
@@ -774,6 +930,17 @@ mod tests {
         .unwrap()
     }
 
+    /// A cached copy of `url` that is already past `CACHE_TTL`.
+    fn write_expired_copy(dir: &Path, url: &str, data_uri: &str) {
+        write_cached(dir, url, data_uri);
+        std::fs::File::options()
+            .write(true)
+            .open(cache_path(dir, url))
+            .unwrap()
+            .set_modified(SystemTime::now() - CACHE_TTL - Duration::from_secs(60))
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn inline_all_fetches_each_url_once() {
         let dir = tempfile::tempdir().unwrap();
@@ -785,7 +952,7 @@ mod tests {
         inline_all_with(dir.path(), &mut refs, |_| {
             calls.fetch_add(1, Ordering::SeqCst);
             let uri = uri.clone();
-            async move { Some(uri) }
+            async move { Outcome::Inlined(uri) }
         })
         .await;
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -803,7 +970,7 @@ mod tests {
         let calls = AtomicUsize::new(0);
         inline_all_with(dir.path(), &mut [&mut m], |_| {
             calls.fetch_add(1, Ordering::SeqCst);
-            async { None }
+            async { Outcome::Failed }
         })
         .await;
         assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -828,11 +995,150 @@ mod tests {
         let mut refs: Vec<_> = ms.iter_mut().collect();
         inline_all_with(dir.path(), &mut refs, |url| {
             asked.lock().push(url.to_string());
-            async { None }
+            async { Outcome::Failed }
         })
         .await;
         assert_eq!(*asked.lock(), ["https://icons.example.com/ok.svg"]);
         assert_eq!(ms[4].icon.as_deref(), Some(inline));
+    }
+
+    /// `fetch_target` refuses an IP literal outright. Left as a URL, the
+    /// icon would send the WebView to that address instead.
+    #[tokio::test]
+    async fn inline_all_drops_an_icon_at_a_non_public_ip_literal() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!is_public_ip("10.0.0.1".parse().unwrap()));
+        let mut m = manifest("private", "https://10.0.0.1/i.png");
+        let calls = AtomicUsize::new(0);
+        inline_all_with(dir.path(), &mut [&mut m], |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Outcome::Failed }
+        })
+        .await;
+        assert_eq!(m.icon, None);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// Whatever `fetch_target` refuses is dropped, except an icon that is
+    /// already inline: a `data:` URI loads nothing.
+    #[tokio::test]
+    async fn inline_all_drops_every_refused_icon_but_keeps_inline_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let refused = [
+            "http://icons.example.com/plain.svg",
+            "https://[::1]/i.png",
+            "https://user:pw@icons.example.com/i.png",
+            "https://printer.local/i.png",
+            "//10.0.0.1/i.png",
+            "icons/logo.svg",
+        ];
+        let inline = "data:image/png;base64,AAAA";
+        let mut ms: Vec<_> = refused
+            .iter()
+            .chain([&inline])
+            .map(|icon| manifest("p", icon))
+            .collect();
+        let calls = AtomicUsize::new(0);
+        let mut refs: Vec<_> = ms.iter_mut().collect();
+        inline_all_with(dir.path(), &mut refs, |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Outcome::Failed }
+        })
+        .await;
+        for (icon, m) in refused.iter().zip(&ms) {
+            assert_eq!(m.icon, None, "{icon} should be dropped");
+        }
+        assert_eq!(ms[refused.len()].icon.as_deref(), Some(inline));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// The production wiring end to end: the name resolves to loopback, so
+    /// the icon is dropped and the listener behind it is never dialled.
+    #[tokio::test]
+    async fn inline_all_drops_a_name_that_resolves_to_loopback_without_dialling() {
+        let (addr, dials) = hang_up_listener().await;
+        let dir = tempfile::tempdir().unwrap();
+        let icon = format!("https://localhost:{}/i.png", addr.port());
+        let mut m = manifest("loopback", &icon);
+        inline_all_in(dir.path(), &mut [&mut m]).await;
+        assert_eq!(m.icon, None);
+        assert_eq!(
+            dials.load(Ordering::SeqCst),
+            0,
+            "a loopback address was dialled"
+        );
+    }
+
+    /// A transient failure is no reason to hide the icon: it keeps its URL.
+    #[tokio::test]
+    async fn inline_all_keeps_the_url_of_an_icon_whose_fetch_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let icon = "https://flaky-icons.example/logo.svg";
+        let mut m = manifest("flaky", icon);
+        inline_all_with(dir.path(), &mut [&mut m], |_| async { Outcome::Failed }).await;
+        assert_eq!(m.icon.as_deref(), Some(icon));
+    }
+
+    /// A refusal is remembered: the next load drops the icon without
+    /// fetching it, so not even DNS is asked again.
+    #[tokio::test]
+    async fn inline_all_drops_a_refused_icon_again_without_fetching() {
+        let dir = tempfile::tempdir().unwrap();
+        let icon = "https://rebinding-icons.example/logo.svg";
+        let mut first = manifest("first", icon);
+        inline_all_with(dir.path(), &mut [&mut first], |_| async {
+            Outcome::Refused
+        })
+        .await;
+        assert_eq!(first.icon, None);
+
+        let mut second = manifest("second", icon);
+        let calls = AtomicUsize::new(0);
+        inline_all_with(dir.path(), &mut [&mut second], |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Outcome::Failed }
+        })
+        .await;
+        assert_eq!(second.icon, None);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// An expired copy is a local `data:` URI, so it may stand in for a
+    /// refused icon. The URL may not.
+    #[tokio::test]
+    async fn inline_all_serves_a_refused_icon_from_an_expired_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let icon = "https://refused-icons.example/old.svg";
+        write_expired_copy(dir.path(), icon, "data:image/png;base64,AAAA");
+        let mut m = manifest("refused", icon);
+        inline_all_with(dir.path(), &mut [&mut m], |_| async { Outcome::Refused }).await;
+        assert_eq!(m.icon.as_deref(), Some("data:image/png;base64,AAAA"));
+    }
+
+    /// A refusal that lands after the budget does not change that load, but
+    /// the background fetch still records it for the next one.
+    #[tokio::test(start_paused = true)]
+    async fn inline_all_remembers_a_refusal_that_lands_after_the_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let icon = "https://late-refusal-icons.example/logo.svg";
+        let mut first = manifest("first", icon);
+        inline_all_with(dir.path(), &mut [&mut first], |_| async {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            Outcome::Refused
+        })
+        .await;
+        assert_eq!(first.icon.as_deref(), Some(icon));
+
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        let mut second = manifest("second", icon);
+        let calls = AtomicUsize::new(0);
+        inline_all_with(dir.path(), &mut [&mut second], |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Outcome::Failed }
+        })
+        .await;
+        assert_eq!(second.icon, None);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     /// Tokio's clock is paused, so the fetcher sleeps and the budget runs
@@ -845,13 +1151,29 @@ mod tests {
         let started = tokio::time::Instant::now();
         inline_all_with(dir.path(), &mut [&mut m], |_| async {
             tokio::time::sleep(Duration::from_secs(10)).await;
-            to_data_uri("image/svg+xml", SVG)
+            Outcome::Inlined(to_data_uri("image/svg+xml", SVG).unwrap())
         })
         .await;
         let waited = started.elapsed();
         assert!(waited < Duration::from_secs(4), "waited {waited:?}");
         assert!(waited >= INLINE_BUDGET, "gave up after only {waited:?}");
         assert_eq!(m.icon.as_deref(), Some(icon));
+    }
+
+    /// A fetch still running when the budget runs out leaves the icon its
+    /// expired copy, if there is one, rather than its URL.
+    #[tokio::test(start_paused = true)]
+    async fn inline_all_serves_an_expired_copy_when_the_budget_runs_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let icon = "https://slow-icons.example/aged.svg";
+        write_expired_copy(dir.path(), icon, "data:image/png;base64,AAAA");
+        let mut m = manifest("aged", icon);
+        inline_all_with(dir.path(), &mut [&mut m], |_| async {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            Outcome::Inlined(to_data_uri("image/svg+xml", SVG).unwrap())
+        })
+        .await;
+        assert_eq!(m.icon.as_deref(), Some("data:image/png;base64,AAAA"));
     }
 
     #[tokio::test(start_paused = true)]
@@ -864,7 +1186,7 @@ mod tests {
             let uri = uri.clone();
             async move {
                 tokio::time::sleep(Duration::from_secs(10)).await;
-                Some(uri)
+                Outcome::Inlined(uri)
             }
         })
         .await;
@@ -894,7 +1216,7 @@ mod tests {
                 peak.fetch_max(now, Ordering::SeqCst);
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 in_flight.fetch_sub(1, Ordering::SeqCst);
-                to_data_uri("image/svg+xml", SVG)
+                Outcome::Inlined(to_data_uri("image/svg+xml", SVG).unwrap())
             }
         })
         .await;
@@ -939,8 +1261,11 @@ mod tests {
             .mount(&server)
             .await;
         let url = reqwest::Url::parse(&format!("{}/logo.svg", server.uri())).unwrap();
-        let uri = fetch_data_uri(&reqwest::Client::new(), url).await.unwrap();
-        assert!(uri.starts_with("data:image/svg+xml;base64,"));
+        let got = fetch_data_uri(&reqwest::Client::new(), url).await;
+        assert!(
+            matches!(&got, Outcome::Inlined(uri) if uri.starts_with("data:image/svg+xml;base64,")),
+            "got {got:?}"
+        );
     }
 
     #[tokio::test]
@@ -954,6 +1279,8 @@ mod tests {
             .mount(&server)
             .await;
         let url = reqwest::Url::parse(&format!("{}/blocked.svg", server.uri())).unwrap();
-        assert!(fetch_data_uri(&reqwest::Client::new(), url).await.is_none());
+        // An HTTP error is transient, not a refusal.
+        let got = fetch_data_uri(&reqwest::Client::new(), url).await;
+        assert_eq!(got, Outcome::Failed);
     }
 }
