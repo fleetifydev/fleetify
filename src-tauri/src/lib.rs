@@ -300,6 +300,19 @@ pub fn run() {
             // Auth module emits `fleet:auth-event` via this handle.
             shell::auth::set_app_handle(app.handle().clone());
 
+            // Decide Fleetify cloud sync for this launch before anything
+            // else reads or writes fleet.config.json: ahead of the key
+            // migration below, and of the renderer (no command runs until
+            // setup returns). A file that is there but can't be read or
+            // parsed keeps sync off and gets an explicit opt-out saved, so
+            // no later save can drop the user's earlier choice. The early
+            // open and the final restore below both follow this decision.
+            let cloud_open_at_launch = app
+                .path()
+                .app_data_dir()
+                .map(|dir| shell::config::startup_cloud_decision(&dir))
+                .unwrap_or(false);
+
             // One-shot lift of any plaintext `cfg.apiKeys` entries into
             // the OS keychain. Idempotent — empty / already-migrated
             // configs are a no-op. Runs on the async runtime so a slow
@@ -448,24 +461,25 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 // Both telemetry gates start closed in the backend. Open the
-                // ones the user turned on right away rather than after the
-                // warm-up below: `telemetry_get_config` reports the live
-                // gates, and the renderer reads it as soon as it loads (it
-                // decides then whether to start posthog-js). It also keeps
-                // the backend's first heartbeat and early session events.
-                // The PostHog gate is only a flag, so it can open before
-                // serve() has set up the PostHog sink. Closing the cloud gate
-                // waits for the restore at the end of this task. Rows older
-                // builds queued depend on neither: the outbox drops them
-                // itself when it opens, before anything can read them.
+                // ones that are on right away rather than after the warm-up
+                // below: `telemetry_get_config` reports the live gates, and
+                // the renderer reads it as soon as it loads (it decides then
+                // whether to start posthog-js). It also keeps the backend's
+                // first heartbeat and early session events. The PostHog gate
+                // is only a flag, so it can open before serve() has set up
+                // the PostHog sink. The cloud gate follows the launch
+                // decision made at the top of setup; closing it waits for
+                // the restore at the end of this task. Rows older builds
+                // queued depend on neither: the outbox drops them itself
+                // when it opens, before anything can read them.
                 if let Ok(dir) = handle.path().app_data_dir() {
                     let cfg = crate::shell::config::load_config_from(&dir);
                     if crate::shell::config::telemetry_from(&cfg).posthog_enabled {
                         fleetify_backend::services::telemetry::posthog::set_enabled(true);
                     }
-                    if crate::shell::config::cloud_sync_from(&cfg) {
-                        fleetify_backend::services::telemetry::set_cloud_enabled(true).await;
-                    }
+                }
+                if cloud_open_at_launch {
+                    fleetify_backend::services::telemetry::set_cloud_enabled(true).await;
                 }
 
                 // Wait for the embedded backend to answer its health route
@@ -488,23 +502,22 @@ pub fn run() {
                 crate::shell::github_link::push_clone_token().await;
 
                 // Finish the Fleetify cloud sync restore: close the gate if
-                // the saved choice is off. Closing also purges what is still
-                // queued, if the backend has opened its outbox by now.
-                // Nothing orders this after that, so rows older builds
-                // queued are dropped by the outbox itself. It never opens
-                // the gate, and it does nothing if Settings changed it since
-                // launch: reapplying the saved choice here would undo a
-                // switch whose save failed. (The PostHog gate was restored
-                // at the top of this task, for the same reason.)
-                let saved_on = handle
-                    .path()
-                    .app_data_dir()
-                    .map(|dir| {
-                        crate::shell::config::cloud_sync_from(
-                            &crate::shell::config::load_config_from(&dir),
-                        )
-                    })
-                    .unwrap_or(false);
+                // the launch decision kept sync off, or if the saved choice
+                // is off now (a file that can't be read or parsed counts as
+                // off). Closing also purges what is still queued, if the
+                // backend has opened its outbox by now. Nothing orders this
+                // after that, so rows older builds queued are dropped by the
+                // outbox itself. It never opens the gate, and it does
+                // nothing if Settings changed it since launch: reapplying
+                // the saved choice here would undo a switch whose save
+                // failed. (The PostHog gate was restored at the top of this
+                // task, for the same reason.)
+                let saved_on = cloud_open_at_launch
+                    && handle
+                        .path()
+                        .app_data_dir()
+                        .map(|dir| crate::shell::config::saved_cloud_choice(&dir))
+                        .unwrap_or(false);
                 crate::shell::ipc::finish_cloud_sync_restore(saved_on).await;
             });
 

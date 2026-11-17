@@ -13,6 +13,19 @@ use sha2::{Digest, Sha256};
 
 const CONFIG_FILE: &str = "fleet.config.json";
 
+/// What [`load_config_with_status`] found at `fleet.config.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigLoad {
+    /// There is no file: a fresh install, or a reset one.
+    Missing,
+    /// The file parsed to a JSON object.
+    Ok,
+    /// The file was read but isn't a JSON object; a copy was kept.
+    Corrupt,
+    /// The file is there but couldn't be read.
+    Unreadable,
+}
+
 /// Load JSON config; `{}` when the file doesn't exist (parity with the
 /// Electron store's "no file = empty object") or can't be read. One leading
 /// UTF-8 BOM, which some Windows editors write, is ignored.
@@ -23,27 +36,38 @@ const CONFIG_FILE: &str = "fleet.config.json";
 /// and writes the whole file, so the next save replaces it and would
 /// otherwise silently drop every other setting. The file itself is never
 /// touched here: by now it may hold something other than what was read.
+///
+/// [`load_config_with_status`] also says which of these it found.
 pub fn load_config_from(path: &Path) -> Value {
+    load_config_with_status(path).0
+}
+
+/// [`load_config_from`], plus what it found. Both a missing file and a
+/// broken one load as `{}`; a caller for which they must differ reads the
+/// status.
+pub fn load_config_with_status(path: &Path) -> (Value, ConfigLoad) {
     let file = path.join(CONFIG_FILE);
     // Bytes, not a String: a file that isn't UTF-8 isn't JSON either, and
     // must be kept like any other corrupt config.
     let bytes = match std::fs::read(&file) {
         Ok(bytes) => bytes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return json!({}),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return (json!({}), ConfigLoad::Missing)
+        }
         Err(e) => {
             tracing::warn!(error = %e, "couldn't read {CONFIG_FILE}; using defaults");
-            return json!({});
+            return (json!({}), ConfigLoad::Unreadable);
         }
     };
     let content = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
     let problem = match serde_json::from_slice::<Value>(content) {
-        Ok(cfg @ Value::Object(_)) => return cfg,
+        Ok(cfg @ Value::Object(_)) => return (cfg, ConfigLoad::Ok),
         Ok(_) => "not a JSON object".to_string(),
         // A position and a fixed message, never the file's text.
         Err(e) => e.to_string(),
     };
     back_up_corrupt_config(path, &bytes, &problem);
-    json!({})
+    (json!({}), ConfigLoad::Corrupt)
 }
 
 /// Keep `bytes`, read from a corrupt config, in `dir` as
@@ -367,6 +391,49 @@ pub fn persist_cloud_choice(dir: &Path, enabled: bool) -> Result<(), String> {
     }
     telemetry_set(&mut cfg, &telem);
     save_config_to(dir, &cfg).map_err(|e| format!("Couldn't save the cloud sync setting: {e}"))
+}
+
+/// Whether this launch may open the cloud sync gate, decided once at
+/// startup from `dir`'s `fleet.config.json`: the saved choice
+/// ([`cloud_sync_from`]) when the file loads, the default when there is no
+/// file yet.
+///
+/// A file that is there but can't be read or parsed fails closed, since an
+/// earlier opt-out may be what it no longer shows: sync stays off for this
+/// launch, and an explicit opt-out is saved ([`persist_cloud_choice`]) so
+/// later launches stay off too, until the user turns sync back on. If that
+/// save fails, sync still stays off for this launch.
+pub fn startup_cloud_decision(dir: &Path) -> bool {
+    let (cfg, status) = load_config_with_status(dir);
+    let condition = match status {
+        ConfigLoad::Missing | ConfigLoad::Ok => return cloud_sync_from(&cfg),
+        ConfigLoad::Corrupt => "corrupt",
+        ConfigLoad::Unreadable => "unreadable",
+    };
+    // The condition only: never the file's content, nor its folder (whose
+    // path usually holds the user's name).
+    match persist_cloud_choice(dir, false) {
+        Ok(()) => tracing::warn!(
+            condition,
+            "{CONFIG_FILE} is {condition}; cloud sync is off until it is turned back on"
+        ),
+        Err(error) => tracing::warn!(
+            condition,
+            error = %error,
+            "{CONFIG_FILE} is {condition}; cloud sync stays off for this launch, \
+             but turning it off couldn't be saved"
+        ),
+    }
+    false
+}
+
+/// What `dir`'s `fleet.config.json` says about cloud sync now, for the end
+/// of the startup restore: the saved choice when the file loads or isn't
+/// there, and off when it is there but can't be read or parsed. Saves
+/// nothing.
+pub fn saved_cloud_choice(dir: &Path) -> bool {
+    let (cfg, status) = load_config_with_status(dir);
+    matches!(status, ConfigLoad::Missing | ConfigLoad::Ok) && cloud_sync_from(&cfg)
 }
 
 /// Save the PostHog product analytics switch in `dir`'s `fleet.config.json`:
@@ -733,6 +800,169 @@ mod tests {
             "{cfg}"
         );
         assert_eq!(cfg["telemetry"]["cloud_sync_enabled"], json!(true));
+    }
+
+    #[test]
+    fn the_load_status_says_what_was_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join(CONFIG_FILE);
+        assert_eq!(
+            load_config_with_status(tmp.path()),
+            (json!({}), ConfigLoad::Missing)
+        );
+
+        std::fs::write(&file, b"\xEF\xBB\xBF{\"theme\": \"dark\"}").unwrap();
+        assert_eq!(
+            load_config_with_status(tmp.path()),
+            (json!({"theme": "dark"}), ConfigLoad::Ok)
+        );
+
+        std::fs::write(&file, "{\"theme\": ").unwrap();
+        assert_eq!(
+            load_config_with_status(tmp.path()),
+            (json!({}), ConfigLoad::Corrupt)
+        );
+        std::fs::write(&file, "[1,2]").unwrap();
+        assert_eq!(
+            load_config_with_status(tmp.path()),
+            (json!({}), ConfigLoad::Corrupt)
+        );
+
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        assert_eq!(
+            load_config_with_status(tmp.path()),
+            (json!({}), ConfigLoad::Unreadable)
+        );
+    }
+
+    #[test]
+    fn a_corrupt_config_keeps_sync_off_and_saves_the_opt_out() {
+        let tmp = tempfile::tempdir().unwrap();
+        // An opt-out cut short: the saved choice can't be read back.
+        let original = br#"{"telemetry": {"cloud_sync_enabled": false"#;
+        std::fs::write(tmp.path().join(CONFIG_FILE), original).unwrap();
+
+        assert!(
+            !startup_cloud_decision(tmp.path()),
+            "a corrupt config keeps sync off"
+        );
+
+        // The opt-out is saved, so later launches stay off as well...
+        let cfg: Value = serde_json::from_slice(&live_bytes(tmp.path()).unwrap()).unwrap();
+        assert_eq!(
+            cfg["telemetry"]["cloud_sync_enabled"],
+            json!(false),
+            "{cfg}"
+        );
+        assert!(
+            !startup_cloud_decision(tmp.path()),
+            "the next launch stays off"
+        );
+        // ...and the corrupt bytes are still kept.
+        let backups = corrupt_backups(tmp.path());
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        assert_eq!(std::fs::read(&backups[0]).unwrap(), original);
+    }
+
+    #[test]
+    fn an_unreadable_config_keeps_sync_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A folder where the file belongs: it is there but can't be read,
+        // and nothing can replace it, so the opt-out can't be saved either.
+        std::fs::create_dir(tmp.path().join(CONFIG_FILE)).unwrap();
+
+        assert!(!startup_cloud_decision(tmp.path()));
+        assert!(
+            tmp.path().join(CONFIG_FILE).is_dir(),
+            "the save failed, and sync still stays off"
+        );
+        assert!(corrupt_backups(tmp.path()).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_config_that_can_be_replaced_gets_the_opt_out() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join(CONFIG_FILE);
+        std::fs::write(&file, r#"{"telemetry": {"cloud_sync_enabled": false}}"#).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&file).is_ok() {
+            eprintln!("skipped: permissions don't stop this user's reads (root?)");
+            return;
+        }
+
+        assert!(!startup_cloud_decision(tmp.path()));
+        let cfg = load_config_from(tmp.path());
+        assert_eq!(
+            cfg["telemetry"]["cloud_sync_enabled"],
+            json!(false),
+            "{cfg}"
+        );
+    }
+
+    #[test]
+    fn a_missing_config_follows_the_default_and_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(startup_cloud_decision(tmp.path()), CLOUD_SYNC_DEFAULT);
+        assert!(
+            !tmp.path().join(CONFIG_FILE).exists(),
+            "a fresh install saves no choice"
+        );
+    }
+
+    #[test]
+    fn a_readable_config_decides_by_its_saved_choice() {
+        for (saved, open) in [
+            (json!({"telemetry": {"cloud_sync_enabled": true}}), true),
+            (json!({"telemetry": {"cloud_sync_enabled": false}}), false),
+            (json!({"telemetryEnabled": false}), false),
+            (json!({"theme": "dark"}), CLOUD_SYNC_DEFAULT),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            save_config_to(tmp.path(), &saved).unwrap();
+            assert_eq!(startup_cloud_decision(tmp.path()), open, "{saved}");
+            assert_eq!(load_config_from(tmp.path()), saved, "left as it was");
+        }
+    }
+
+    #[test]
+    fn the_restore_reads_a_broken_config_as_off_and_saves_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original = br#"{"telemetry": {"cloud_sync_enabled": true}"#;
+        std::fs::write(tmp.path().join(CONFIG_FILE), original).unwrap();
+        assert!(!saved_cloud_choice(tmp.path()));
+        assert_eq!(
+            live_bytes(tmp.path()).as_deref(),
+            Some(&original[..]),
+            "nothing saved"
+        );
+
+        let unreadable = tempfile::tempdir().unwrap();
+        std::fs::create_dir(unreadable.path().join(CONFIG_FILE)).unwrap();
+        assert!(!saved_cloud_choice(unreadable.path()));
+    }
+
+    #[test]
+    fn the_restore_reads_a_missing_or_readable_config_as_saved() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(saved_cloud_choice(tmp.path()), CLOUD_SYNC_DEFAULT);
+        assert!(!tmp.path().join(CONFIG_FILE).exists(), "nothing saved");
+
+        save_config_to(
+            tmp.path(),
+            &json!({"telemetry": {"cloud_sync_enabled": true}}),
+        )
+        .unwrap();
+        assert!(saved_cloud_choice(tmp.path()));
+        save_config_to(
+            tmp.path(),
+            &json!({"telemetry": {"cloud_sync_enabled": false}}),
+        )
+        .unwrap();
+        assert!(!saved_cloud_choice(tmp.path()));
     }
 
     #[test]
