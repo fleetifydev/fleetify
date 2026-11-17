@@ -17,6 +17,10 @@
 //! resolver so nothing is checked first and resolved again later. It never
 //! uses a proxy and never follows a redirect, and a URL that just failed is
 //! left alone for `FAILURE_TTL` instead of stalling every catalog load.
+//!
+//! One residual risk: a NAT64 network-specific prefix (RFC 6052) cannot be
+//! told apart from ordinary global unicast, so on a network that translates
+//! one, a name can still reach an internal IPv4 address through it.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -115,11 +119,15 @@ pub fn is_public_ip(ip: IpAddr) -> bool {
             if let Some(v4) = embedded_ipv4(v6) {
                 return is_public_ip(IpAddr::V4(v4));
             }
-            let head = v6.segments()[0];
-            let unique_local = (head & 0xfe00) == 0xfc00; // fc00::/7
-            let link_local = (head & 0xffc0) == 0xfe80; // fe80::/10
-            let site_local = (head & 0xffc0) == 0xfec0; // fec0::/10, deprecated
-            !(v6.is_multicast() || unique_local || link_local || site_local)
+            // Only global unicast can be a public host. Multicast, fc00::/7,
+            // fe80::/10, fec0::/10 and every other special block fall
+            // outside 2000::/3. Inside it, 2001::/23 and the documentation
+            // ranges 2001:db8::/32 and 3fff::/20 are carved out.
+            let s = v6.segments();
+            let global_unicast = (s[0] & 0xe000) == 0x2000; // 2000::/3
+            let ietf = s[0] == 0x2001 && s[1] < 0x0200; // 2001::/23
+            let docs = (s[0] == 0x2001 && s[1] == 0x0db8) || (s[0] == 0x3fff && s[1] < 0x1000);
+            global_unicast && !ietf && !docs
         }
     }
 }
@@ -431,6 +439,38 @@ mod tests {
                 !is_public_ip(rejected.parse().unwrap()),
                 "{rejected} must be rejected"
             );
+        }
+    }
+
+    #[test]
+    fn is_public_ip_treats_only_global_unicast_ipv6_as_public() {
+        // Special-purpose IPv6 beyond the embedded-IPv4 forms: local-use and
+        // out-of-/96 NAT64, SIIT, discard-only, 2001::/23 (Teredo,
+        // benchmarking), documentation and SRv6.
+        let rejected = [
+            "64:ff9b:1::a00:1",
+            "64:ff9b::1:a00:1",
+            "::ffff:0:a00:1",
+            "100::1",
+            "100:0:0:1::1",
+            "2001::1",
+            "2001:2::1",
+            "2001:db8::1",
+            "3fff::1",
+            "5f00::1",
+        ];
+        let judged_public: Vec<&str> = rejected
+            .into_iter()
+            .filter(|ip| is_public_ip(ip.parse().unwrap()))
+            .collect();
+        assert!(
+            judged_public.is_empty(),
+            "must be rejected: {judged_public:?}"
+        );
+        // 2001:4860:: sits just past 2001::/23: carving out the special
+        // ranges must not swallow their public neighbours.
+        for ip in ["2a00:1450::1", "2001:4860:4860::8888"] {
+            assert!(is_public_ip(ip.parse().unwrap()), "{ip} must be allowed");
         }
     }
 
