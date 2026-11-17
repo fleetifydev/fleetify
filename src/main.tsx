@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { AppErrorBoundary } from "./components/app-error-boundary";
 import { installGlobalErrorCapture, log } from "./lib/log";
+import { installDropGuard } from "./lib/drop-guard";
 
 // Initialize theme from localStorage
 const saved = localStorage.getItem("fleet-theme");
@@ -34,6 +35,10 @@ log.info("renderer.boot", "renderer mounted", {
 // session menu) still fire, so our custom menus keep working. DevTools
 // stays reachable via F12 / Ctrl+Shift+I.
 window.addEventListener("contextmenu", e => e.preventDefault());
+
+// A link, URL or file dropped where nothing handles it would load in the
+// window in place of the app. Elements that take drops still get theirs.
+installDropGuard(window);
 
 // A render error shows a recovery screen instead of a blank window.
 createRoot(document.getElementById("root")!).render(

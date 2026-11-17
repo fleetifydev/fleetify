@@ -9,9 +9,13 @@
  * - Any other `https:` image shows a "Load image from <host>" button and
  *   loads only after a click.
  * - Every other scheme, and relative paths, show the alt text.
+ *
+ * Links in them go through `MarkdownLink`: another site opens in the system
+ * browser, never in the app's own window.
  */
 import { useState, type ComponentPropsWithoutRef } from "react";
 import { defaultUrlTransform, type Components, type UrlTransform } from "react-markdown";
+import { MarkdownLink } from "@/components/markdown-link";
 
 /** Hosts whose images load without asking: GitHub's image hosts and badges. */
 const IMAGE_HOSTS = new Set([
@@ -90,4 +94,5 @@ export function MarkdownImage({ src, alt, title }: ComponentPropsWithoutRef<"img
 /** Props both renderers give `ReactMarkdown`. */
 export const markdownComponents: Components = {
   img: ({ node: _node, ...props }) => <MarkdownImage {...props} />,
+  a: ({ node: _node, ...props }) => <MarkdownLink {...props} />,
 };

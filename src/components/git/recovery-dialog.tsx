@@ -19,6 +19,7 @@ import { useEffect, useState } from "react";
 import { claimEscape } from "@/hooks/use-escape-to-stop";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { markdownLinkComponents } from "@/components/markdown-link";
 import {
   Loader2, X, AlertTriangle, ShieldCheck, ShieldAlert, ShieldX,
   RefreshCw, ChevronRight, CheckCircle2,
@@ -251,7 +252,7 @@ export function RecoveryDialog({
                 <div style={{ fontSize: 11, color: "var(--c-dim)", textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 4 }}>
                   Diagnosis · {cliLabel}
                 </div>
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{diagnosis.summary}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownLinkComponents}>{diagnosis.summary}</ReactMarkdown>
               </div>
 
               <div style={{ marginBottom: 10 }}>

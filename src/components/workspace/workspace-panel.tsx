@@ -31,6 +31,7 @@ import { useChatStore, selectSession, type ProcessEvent } from "@/stores/chat-st
 import { usePinnedSession } from "@/lib/session-pins";
 import { parseStoredMessages } from "@/lib/session-messages";
 import { MessageContent, StreamingMessage } from "@/components/chat/message-content";
+import { MarkdownLink } from "@/components/markdown-link";
 import { wsManager } from "@/services/ws-manager";
 import { useThemeStore } from "@/stores/theme-store";
 import { getTheme } from "@/lib/themes";
@@ -2148,7 +2149,7 @@ function PlanWorkspace({ sessionId }: { sessionId: string | null }) {
   );
 }
 
-const planMdComponents = {
+export const planMdComponents = {
   h1: ({ children }: { children?: React.ReactNode }) => <h1 style={{ fontSize:17, fontWeight:700, letterSpacing:"-0.015em", margin:"4px 0 12px", color:"var(--foreground)" }}>{children}</h1>,
   h2: ({ children }: { children?: React.ReactNode }) => <h2 style={{ fontSize:14, fontWeight:600, letterSpacing:"-0.01em", margin:"20px 0 8px", color:"var(--foreground)" }}>{children}</h2>,
   h3: ({ children }: { children?: React.ReactNode }) => <h3 style={{ fontSize:12.5, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.08em", margin:"18px 0 6px", color:"var(--muted-foreground)" }}>{children}</h3>,
@@ -2158,6 +2159,7 @@ const planMdComponents = {
   li: ({ children }: { children?: React.ReactNode }) => <li style={{ margin:"3px 0", color:"var(--card-foreground)" }}>{children}</li>,
   strong: ({ children }: { children?: React.ReactNode }) => <strong style={{ fontWeight:600, color:"var(--foreground)" }}>{children}</strong>,
   em: ({ children }: { children?: React.ReactNode }) => <em style={{ color:"var(--card-foreground)" }}>{children}</em>,
+  a: ({ href, children }: { href?: string; children?: React.ReactNode }) => <MarkdownLink href={href}>{children}</MarkdownLink>,
   code: ({ children, className }: { children?: React.ReactNode; className?: string }) => {
     const isBlock = !!className;
     if (isBlock) {
@@ -5593,7 +5595,7 @@ function FileView() {
 /* Renders markdown source as a styled document matching the sidebar
    dark theme. Used by FileView when a .md/.mdx file is open in preview
    mode. Reuses the ReactMarkdown + remark-gfm already loaded for chat. */
-function MarkdownPreview({ source }: { source: string }) {
+export function MarkdownPreview({ source }: { source: string }) {
   const c: React.CSSProperties = {
     flex: 1, minHeight: 0,
     overflowY: "auto",
@@ -5654,9 +5656,9 @@ function MarkdownPreview({ source }: { source: string }) {
             );
           },
           a: ({ href, children }) => (
-            <a href={href} style={{ color: "#a78bfa", textDecoration: "underline", textDecorationColor: "rgba(167,139,250,0.35)" }}>
+            <MarkdownLink href={href} style={{ color: "#a78bfa", textDecoration: "underline", textDecorationColor: "rgba(167,139,250,0.35)" }}>
               {children}
-            </a>
+            </MarkdownLink>
           ),
           table: ({ children }) => (
             <div style={{

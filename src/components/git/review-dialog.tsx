@@ -16,6 +16,7 @@ import { useEffect, useState } from "react";
 import { claimEscape } from "@/hooks/use-escape-to-stop";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { markdownLinkComponents } from "@/components/markdown-link";
 import { Loader2, RefreshCw, X, ScanEye, Copy, Check } from "lucide-react";
 import { git } from "@/lib/git-api";
 import { glog } from "@/lib/git-log";
@@ -206,7 +207,7 @@ export function ReviewDialog({
           )}
           {phase === "ready" && (
             <div className="review-md" style={{ fontFamily: "inherit" }}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{review}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownLinkComponents}>{review}</ReactMarkdown>
             </div>
           )}
         </div>
