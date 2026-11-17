@@ -13,6 +13,7 @@
 //! allowed; never activity summaries, full paths, prompt / file content
 //! or command stdio.
 
+use std::path::Path;
 use std::sync::OnceLock;
 
 use anyhow::Result;
@@ -59,18 +60,43 @@ fn iso_utc(dt: DateTime<Utc>) -> String {
 /// queries, sub-agent prompts, todo text), which the dashboard never
 /// shows. Cuts `project_path` to its last component: the full path
 /// carries the OS user name, and the dashboard shows only a short label.
-/// A path with no component left (empty, `null`, not a string) becomes
-/// `null`; a payload without the key stays without it. Every other key is
-/// unchanged.
+/// The home folder itself becomes `~`, since its own name is usually the
+/// OS user name. A path with no component left (empty, `null`, not a
+/// string) becomes `null`; a payload without the key stays without it.
+/// Every other key is unchanged.
 pub(crate) fn cloud_view(payload: &Value) -> Value {
+    cloud_view_for_home(payload, &fleetify_core::user_home())
+}
+
+/// `cloud_view` against a given home folder.
+fn cloud_view_for_home(payload: &Value, home: &Path) -> Value {
     let mut view = payload.clone();
     if let Some(fields) = view.as_object_mut() {
         fields.remove("activity_summary");
         if let Some(path) = fields.get_mut("project_path") {
-            *path = project_folder(path.as_str()).map_or(Value::Null, Value::from);
+            *path = match path.as_str() {
+                Some(p) if is_home_folder(p, home, cfg!(windows)) => Value::from("~"),
+                p => project_folder(p).map_or(Value::Null, Value::from),
+            };
         }
     }
     view
+}
+
+/// Whether `path` is the home folder itself, trailing separators ignored.
+/// On Windows (`windows`) case doesn't count and `/` matches `\`, as in the
+/// file system.
+fn is_home_folder(path: &str, home: &Path, windows: bool) -> bool {
+    let normalise = |p: &str| {
+        let p = p.trim_end_matches(['/', '\\']);
+        if windows {
+            p.replace('\\', "/").to_lowercase()
+        } else {
+            p.to_string()
+        }
+    };
+    let path = normalise(path);
+    !path.is_empty() && path == normalise(&home.to_string_lossy())
 }
 
 /// Last component of a path, split on `/` and `\` alike, trailing
@@ -643,6 +669,43 @@ mod cloud_sync_tests {
         assert_eq!(folder(json!("C:\\Users\\u\\proj")), json!("proj"));
         assert_eq!(folder(json!("")), Value::Null);
         assert_eq!(folder(Value::Null), Value::Null);
+
+        // The home folder itself goes out as `~`: its name is usually the
+        // OS user name, and the Fleet hub's own session runs there.
+        let label = |path: Value| {
+            cloud_view_for_home(&json!({ "project_path": path }), Path::new("/home/u"))
+                ["project_path"]
+                .clone()
+        };
+        assert_eq!(label(json!("/home/u")), json!("~"));
+        assert_eq!(label(json!("/home/u/")), json!("~"));
+        // Folders under home keep their names, even one named like the user.
+        assert_eq!(label(json!("/home/u/work/fleetify")), json!("fleetify"));
+        assert_eq!(label(json!("/home/u/u")), json!("u"));
+        // Only the home folder itself: not a sibling that starts the same.
+        assert_eq!(label(json!("/home/user")), json!("user"));
+        assert_eq!(label(json!("")), Value::Null);
+        // Case and separator style count off Windows, not on it.
+        assert!(!is_home_folder("/home/U", Path::new("/home/u"), false));
+        assert!(is_home_folder(
+            "C:\\Users\\U\\",
+            Path::new("c:\\users\\u"),
+            true
+        ));
+        assert!(is_home_folder(
+            "C:/Users/U",
+            Path::new("C:\\Users\\U"),
+            true
+        ));
+        assert!(!is_home_folder(
+            "C:\\Users\\U\\proj",
+            Path::new("C:\\Users\\U"),
+            true
+        ));
+        assert!(!is_home_folder("", Path::new(""), false));
+        // `cloud_view` compares against the real home folder.
+        let home = fleetify_core::user_home();
+        assert_eq!(folder(json!(home.to_string_lossy())), json!("~"));
 
         let start = json!({
             "kind": "session_start",
