@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { useRef, type ReactNode } from "react";
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import { render, screen, fireEvent, act, cleanup } from "@testing-library/react";
 
 // The composer (MoreActionsMenu lives inside it) needs these stubbed to mount
 // in happy-dom; SessionRulesChip loads its rules when it opens.
@@ -14,8 +14,11 @@ vi.mock("@/lib/api", async (importOriginal) => {
     getSessionRules: vi.fn(async () => ""),
   };
 });
+// The terminal view mounts a live xterm shell per terminal; its picker is
+// what's under test.
+vi.mock("@/components/workspace/xterm-shell", () => ({ XtermShell: () => null }));
 
-import { usePaneEscapeToStop, ChatContextMenu, PanelViewMenu } from "../chat-view";
+import { usePaneEscapeToStop, ChatContextMenu, ChatDecisionCard, PanelViewMenu } from "../chat-view";
 import { UnifiedModelPicker } from "../unified-model-picker";
 import { ComposerDropMenu } from "../composer-drop-menu";
 import { ToolMatrixEditor } from "../tool-matrix-editor";
@@ -23,17 +26,27 @@ import { SessionRulesChip } from "../session-rules-chip";
 import { SessionToolbar } from "../session-toolbar";
 import { ChatInput } from "../chat-input";
 import { MessageContent } from "../message-content";
+import { PermissionDialog } from "../permission-dialog";
 import { PrChecksPopover } from "@/components/git/pr-checks-popover";
 import { AuthChoicePopover } from "@/components/git/auth-choice-popover";
 import { BranchPickerMenu } from "@/components/git/branch-picker-menu";
+import { FileTree, TerminalView } from "@/components/workspace/workspace-panel";
+import { BrowserView } from "@/components/workspace/views/browser-view";
+import { SessionRow } from "@/components/dashboard/fleet-panel";
+import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useAppStore } from "@/stores/app-store";
+import { useChatStore, type PermissionRequest } from "@/stores/chat-store";
+import { useFleetStore } from "@/stores/fleet-store";
+import { selectModeMenuLabel } from "@/lib/element-ref";
 import type { PickerGroup } from "@/lib/picker-groups";
 import type { ChatMessage } from "@/types/chat";
+import type { Session } from "@/types/session";
 
 /** A chat surface with Escape-to-stop registered exactly as ChatView
  *  registers it in the single view (`usePaneEscapeToStop`, no pane index),
- *  plus a composer to hold focus. The popover under test renders inside it,
- *  as popovers do in the app. */
+ *  plus a composer to hold focus. A chat popover renders inside it; a menu
+ *  from outside the chat renders beside it (`outside`), as each does in the
+ *  app. */
 function Stream({ streaming, onStop, children }: {
   streaming: boolean;
   onStop: () => void;
@@ -59,20 +72,22 @@ const ORDERS: Order[] = ["stream first", "popover first"];
 /** Lets pending promise callbacks (lazy loads, probes) settle inside act. */
 const settle = () => act(async () => {});
 
-async function mountInStream(order: Order, ui: ReactNode, open?: () => void) {
+/** Mounts the popover in a chat, or beside it when it lives `outside` the
+ *  chat (the workspace panel, the Fleet panel, the browser view). */
+async function mountInStream(order: Order, ui: ReactNode, open?: () => unknown, outside = false) {
   const onStop = vi.fn();
-  const chat = (streaming: boolean, content: ReactNode) => (
-    <Stream streaming={streaming} onStop={onStop}>{content}</Stream>
-  );
+  const chat = (streaming: boolean, content: ReactNode) => outside
+    ? <><Stream streaming={streaming} onStop={onStop} />{content}</>
+    : <Stream streaming={streaming} onStop={onStop}>{content}</Stream>;
   if (order === "stream first") {
     const view = render(chat(true, null));
     view.rerender(chat(true, ui));
-    open?.();
+    await open?.();
     await settle();
     return { onStop };
   }
   const view = render(chat(false, ui));
-  open?.();
+  await open?.();
   await settle();
   view.rerender(chat(true, ui));
   return { onStop };
@@ -86,8 +101,11 @@ interface PopoverCase {
   ui: (onClose: () => void) => ReactNode;
   /** Opens a popover that opens on a click (or event). Absent: open while
    *  mounted, and closing is the parent's job, so the test checks onClose. */
-  open?: () => void;
+  open?: () => unknown;
   isOpen?: () => boolean;
+  /** Renders beside the chat rather than inside it, as menus outside the
+   *  chat surface do in the app. */
+  outside?: boolean;
   /** Where focus is when Escape is pressed. Default: the composer, i.e.
    *  outside the popover. That is the hard case: no target check can see the
    *  popover, so only the popover's own handler can claim the key. */
@@ -125,6 +143,40 @@ const DISPATCH_RESULT: ChatMessage = {
     summary: "All green.",
   }],
 };
+
+/** The file tree reads its folder through the fs API: one file. */
+function stubFsApi() {
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(
+    String(url).startsWith("/api/fs/dir") ? JSON.stringify([{ name: "a.ts", path: "/repo/a.ts", type: "file" }]) : "{}",
+    { status: 200 },
+  )));
+}
+
+/** The browser view drives a native webview through Tauri and mirrors the
+ *  agent's browser over a WebSocket. Stub both, off the network. */
+function stubBrowserShell() {
+  (window as unknown as { __TAURI__?: unknown }).__TAURI__ = {
+    core: { invoke: vi.fn(async () => ({ ok: true })) },
+    event: { listen: vi.fn(async () => () => {}) },
+  };
+  vi.stubGlobal("WebSocket", class {
+    readyState = 3;
+    onmessage: unknown = null;
+    onclose: unknown = null;
+    send() {}
+    close() {}
+  });
+}
+
+/** Loads a page, which enables the browser's page controls (Select mode). */
+async function openBrowserPage() {
+  const url = screen.getByPlaceholderText("Search or enter URL");
+  fireEvent.change(url, { target: { value: "example.com" } });
+  fireEvent.keyDown(url, { key: "Enter" });
+  await settle();
+}
+
+const WORKER = { id: "agent-9", title: "Worker", status: "idle", created_at: "2026-11-17T00:00:00Z" } as Session;
 
 const CASES: PopoverCase[] = [
   {
@@ -226,18 +278,87 @@ const CASES: PopoverCase[] = [
       />
     ),
   },
+  // ── Outside the chat surface ──
+  {
+    // Shelved with the file tree (QuadrantWorkspace is unrouted), but it
+    // closes on Escape like the rest.
+    name: "File-tree context menu (workspace)",
+    outside: true,
+    setup: stubFsApi,
+    ui: () => <FileTree root="/repo" selectedPath="" onSelect={vi.fn()} />,
+    open: async () => { fireEvent.contextMenu(await screen.findByText("a.ts")); },
+    isOpen: () => screen.queryByText("Copy Path") !== null,
+  },
+  {
+    name: "Terminal picker (workspace)",
+    outside: true,
+    ui: () => <TerminalView />,
+    open: () => fireEvent.click(screen.getByText("Terminal")),
+    isOpen: () => screen.queryByText("Rename terminal") !== null,
+  },
+  {
+    name: "Session row menu (Fleet panel)",
+    outside: true,
+    ui: () => <SessionRow session={WORKER} detail={undefined} onOpen={vi.fn()} onOpenChat={vi.fn()} />,
+    open: () => fireEvent.contextMenu(screen.getByText("Worker")),
+    isOpen: () => screen.queryByText("Open chat") !== null,
+  },
+  {
+    name: "History popover (browser)",
+    outside: true,
+    setup: stubBrowserShell,
+    ui: () => <BrowserView />,
+    open: () => fireEvent.click(screen.getByTitle("History & bookmarks")),
+    isOpen: () => screen.queryByPlaceholderText("Search") !== null,
+  },
+  {
+    name: "Overflow menu (browser)",
+    outside: true,
+    setup: stubBrowserShell,
+    ui: () => <BrowserView />,
+    open: () => fireEvent.click(screen.getByTitle("More")),
+    isOpen: () => screen.queryByText("Hard Reload") !== null,
+  },
+  {
+    name: "Select-mode popover (browser)",
+    outside: true,
+    setup: stubBrowserShell,
+    ui: () => <BrowserView />,
+    open: async () => {
+      await openBrowserPage();
+      fireEvent.click(screen.getByTitle("Select mode"));
+    },
+    isOpen: () => screen.queryByText(selectModeMenuLabel("copy:css")) !== null,
+  },
+  {
+    // Not a popover: Escape leaves the browser's full screen the same way.
+    name: "Full screen (browser)",
+    outside: true,
+    setup: stubBrowserShell,
+    ui: () => <BrowserView />,
+    open: () => act(() => { useAppStore.getState().setRightPanelFullscreen(true); }),
+    isOpen: () => useAppStore.getState().rightPanelFullscreen,
+  },
 ];
 
 beforeEach(() => {
   // The single view; the dispatch reply box only shows in the Fleet chat.
-  useAppStore.setState({ splitPaneIds: [], focusedPaneIdx: 0, activeSessionId: null, staffSessionId: "staff-1" });
+  useAppStore.setState({
+    splitPaneIds: [], focusedPaneIdx: 0, activeSessionId: null, staffSessionId: "staff-1",
+    rightPanelFullscreen: false,
+  });
 });
 
 afterEach(() => {
+  // Unmount while the stubs are still in place: the browser view closes its
+  // native webview through Tauri as it unmounts.
+  cleanup();
   delete (window as unknown as { electronAPI?: unknown }).electronAPI;
+  delete (window as unknown as { __TAURI__?: unknown }).__TAURI__;
+  vi.unstubAllGlobals();
 });
 
-describe("An Escape that closes a chat popover does not stop the stream", () => {
+describe("An Escape that closes a popover does not stop the chat's stream", () => {
   it("control: with no popover open, Escape stops the stream", async () => {
     // Proves the harness's stop listener is live, so every "not called"
     // below means the popover claimed the key.
@@ -250,7 +371,7 @@ describe("An Escape that closes a chat popover does not stop the stream", () => 
     it.each(ORDERS)("closes it and leaves the stream running (%s)", async (order) => {
       c.setup?.();
       const onClose = vi.fn();
-      const { onStop } = await mountInStream(order, c.ui(onClose), c.open);
+      const { onStop } = await mountInStream(order, c.ui(onClose), c.open, c.outside);
       if (c.isOpen) expect(c.isOpen()).toBe(true);
 
       fireEvent.keyDown(c.target?.() ?? screen.getByLabelText("composer"), { key: "Escape" });
@@ -258,6 +379,67 @@ describe("An Escape that closes a chat popover does not stop the stream", () => 
       if (c.isOpen) expect(c.isOpen()).toBe(false);
       else expect(onClose).toHaveBeenCalledTimes(1);
       expect(onStop).not.toHaveBeenCalled();
+    });
+  });
+});
+
+/** The app shell's global shortcuts, registered as AppShell registers them. */
+function Shell({ children }: { children?: ReactNode }) {
+  const root = useRef<HTMLDivElement>(null);
+  useKeyboardShortcuts(root);
+  return <div ref={root}>{children}</div>;
+}
+
+const QUESTION: PermissionRequest = { id: "req-1", tool_name: "AskUserQuestion", command: "Which database?" };
+
+/** An agent chat with nothing streaming, so Escape on the page goes back to
+ *  Fleet, and a pending AskUserQuestion card, which Escape skips. Listeners
+ *  register in app order: the shell's at mount, the card's when it arrives,
+ *  the popover's when it opens. Popovers listen on `document` or in React,
+ *  so their handler runs before both of those `window` listeners. */
+async function mountInShell(ui: ReactNode, open?: () => unknown) {
+  const onDeny = vi.fn();
+  const view = render(<Shell />);
+  view.rerender(
+    <Shell>
+      <PermissionDialog request={QUESTION} onAllow={vi.fn()} onAllowAlways={vi.fn()} onDeny={onDeny} />
+      {ui}
+    </Shell>,
+  );
+  await open?.();
+  await settle();
+  return { onDeny };
+}
+
+describe("An Escape that closes a popover does nothing else", () => {
+  beforeEach(() => {
+    useAppStore.setState({ activeSessionId: "agent-1" });
+    useChatStore.setState({ sessions: {} });
+  });
+
+  it("control: with no popover open, Escape goes back to Fleet and skips the pending question", async () => {
+    // Proves both window listeners are live, so every "stayed" and "not
+    // called" below means the popover claimed the key.
+    const { onDeny } = await mountInShell(null);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(useAppStore.getState().activeSessionId).toBeNull();
+    expect(onDeny).toHaveBeenCalledTimes(1);
+  });
+
+  describe.each(CASES)("$name", (c) => {
+    it("closes it, stays in the agent chat and leaves the pending question alone", async () => {
+      c.setup?.();
+      const onClose = vi.fn();
+      const { onDeny } = await mountInShell(c.ui(onClose), c.open);
+      if (c.isOpen) expect(c.isOpen()).toBe(true);
+
+      // On the page, not in a field: back-to-Fleet leaves fields alone anyway.
+      fireEvent.keyDown(c.target?.() ?? document.body, { key: "Escape" });
+
+      if (c.isOpen) expect(c.isOpen()).toBe(false);
+      else expect(onClose).toHaveBeenCalledTimes(1);
+      expect(useAppStore.getState().activeSessionId).toBe("agent-1");
+      expect(onDeny).not.toHaveBeenCalled();
     });
   });
 });
@@ -277,5 +459,26 @@ describe("The transcript menu writes into its own chat's composer", () => {
       window.removeEventListener("fleet:focus-input", onFocusInput);
     }
     expect(seen).toEqual([{ text: "Explain the following:\n\n> selected words", sessionId: "agent-a" }]);
+  });
+});
+
+describe("The decision card writes into its own chat's composer", () => {
+  it("names its session on the fleet:focus-input that \"Answer below\" sends", () => {
+    // Same reason as the transcript menu: its pane may not be focused yet.
+    useFleetStore.getState().setMode("agent-a", "copilot");
+    useFleetStore.getState().pushDecision({
+      id: "d-1", sessionId: "agent-a", kind: "ask", reasoning: "The schema is undecided.",
+      question: "Which database should I use?", createdAt: 0,
+    });
+    const seen: unknown[] = [];
+    const onFocusInput = (e: Event) => seen.push((e as CustomEvent).detail);
+    window.addEventListener("fleet:focus-input", onFocusInput);
+    try {
+      render(<ChatDecisionCard sessionId="agent-a" onSend={vi.fn()} />);
+      fireEvent.click(screen.getByText("Answer below"));
+    } finally {
+      window.removeEventListener("fleet:focus-input", onFocusInput);
+    }
+    expect(seen).toEqual([{ text: "Which database should I use?", sessionId: "agent-a" }]);
   });
 });

@@ -43,6 +43,7 @@ import {
 } from "lucide-react";
 import { memo, useMemo, useState, useCallback, useEffect, useRef } from "react";
 import { SessionContextMenu } from "@/components/layout/session-context-menu";
+import { claimEscape } from "@/hooks/use-escape-to-stop";
 import { countActive, countIdle } from "@/components/dashboard/fleet-panel/fleet-stats";
 import { activeWorkingMs, formatWorkingTime } from "@/components/dashboard/fleet-panel/working-time";
 import { useAppStore } from "@/stores/app-store";
@@ -386,7 +387,8 @@ function InsightsList({ insights }: { insights: Insight[] }) {
 
 /* ── Session row ───────────────────────────────────────────────── */
 
-const SessionRow = memo(function SessionRow({ session, detail, onOpen, onOpenChat }: {
+/** Exported for tests. */
+export const SessionRow = memo(function SessionRow({ session, detail, onOpen, onOpenChat }: {
   session: Session; detail: SessionDetail | undefined; onOpen: (id: string) => void;
   /** Jump straight to the chat, bypassing the detail pane. Only the
    *  right-click menu uses it; a left click still opens the detail. */
@@ -400,7 +402,13 @@ const SessionRow = memo(function SessionRow({ session, detail, onOpen, onOpenCha
   useEffect(() => {
     if (!menu) return;
     const away = (e: MouseEvent) => { if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenu(null); };
-    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setMenu(null); };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      // Claim the key so closing the menu does nothing else: the Fleet chat
+      // keeps streaming. This document listener runs before its window one.
+      claimEscape(e);
+      setMenu(null);
+    };
     document.addEventListener("mousedown", away);
     document.addEventListener("keydown", esc);
     return () => { document.removeEventListener("mousedown", away); document.removeEventListener("keydown", esc); };
@@ -845,8 +853,9 @@ function AskFleetCard({ buildSnapshot, initialOpen, initialQuestion }: {
 
 /* ── What Fleet knows about you ─────────────────────────────────
    The user-scoped personal memory Fleet draws on. Read + add + delete;
-   `auto` rows (Fleet learned them) are badged so the user can prune. */
-function FleetMemoryCard() {
+   `auto` rows (Fleet learned them) are badged so the user can prune.
+   Exported for tests. */
+export function FleetMemoryCard() {
   const [open, setOpen] = useState(false);
   const [rows, setRows] = useState<UserMemory[] | null>(null);
   const [adding, setAdding] = useState(false);

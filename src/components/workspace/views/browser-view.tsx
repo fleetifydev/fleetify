@@ -14,6 +14,8 @@ import {
 } from "lucide-react";
 import { PaneCloseContext } from "@/components/workspace/pane-close-context";
 import { SANS } from "@/components/workspace/typography";
+import { useIsInPane, usePaneSessionId } from "@/components/chat/pane-session-context";
+import { claimEscape } from "@/hooks/use-escape-to-stop";
 import {
   SELECT_MODES, copyTextSafe, parsePickPayload, parseSelectMode, pickToRefDetail,
   selectModeLabel, selectModeMenuLabel, type SelectMode,
@@ -76,6 +78,15 @@ function BrowserView() {
   useEffect(() => { selectingRef.current = selecting; }, [selecting]);
   const selectModeRef = useRef<SelectMode>("ask");
   useEffect(() => { selectModeRef.current = selectMode; }, [selectMode]);
+  // The session whose composer takes this view's element picks. In a split
+  // pane that is the pane's own, so a pick lands in the pane that armed
+  // Select even while another pane is focused. Outside a pane it is none,
+  // and the single view's one composer takes the pick. A mirror for the
+  // once-registered pick listener below.
+  const inPane = useIsInPane();
+  const paneSessionId = usePaneSessionId();
+  const pickSessionRef = useRef<string | null>(null);
+  useEffect(() => { pickSessionRef.current = inPane ? paneSessionId : null; }, [inPane, paneSessionId]);
   const fullscreen = useAppStore((s) => s.rightPanelFullscreen);
   const setRightPanelFullscreen = useAppStore((s) => s.setRightPanelFullscreen);
   const [urlFocused, setUrlFocused] = useState(false);
@@ -269,25 +280,31 @@ function BrowserView() {
   // suggestions) — the native webview renders above the DOM.
   useEffect(() => { popoverOpenRef.current = histOpen || menuOpen || modeOpen || showSuggest; }, [histOpen, menuOpen, modeOpen, showSuggest]);
 
-  // Close the popovers on an outside click / Escape.
+  // Close the popovers on an outside click / Escape. The Escape listener is
+  // on `document`, which runs before every `window` listener, and claims the
+  // key: closing a popover must not also stop the chat's stream.
   useEffect(() => {
     if (!histOpen && !menuOpen && !modeOpen) return;
     const close = () => { setHistOpen(false); setMenuOpen(false); setModeOpen(false); };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      claimEscape(e);
+      close();
+    };
     window.addEventListener("mousedown", close);
-    window.addEventListener("keydown", onKey);
-    return () => { window.removeEventListener("mousedown", close); window.removeEventListener("keydown", onKey); };
+    document.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("mousedown", close); document.removeEventListener("keydown", onKey); };
   }, [histOpen, menuOpen, modeOpen]);
 
-  // Escape leaves full screen. Registered only while full screen is on, so it
-  // never competes with the popover/menu Escape handlers above.
+  // Escape leaves full screen. Registered only while full screen is on. Like
+  // the popovers above, it claims the key from `document`.
   useEffect(() => {
     if (!fullscreen) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); setRightPanelFullscreen(false); }
+      if (e.key === "Escape") { claimEscape(e); setRightPanelFullscreen(false); }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
   }, [fullscreen, setRightPanelFullscreen]);
 
   // Leaving the pane must not strand the layout in full screen with no way
@@ -350,6 +367,8 @@ function BrowserView() {
           prompt: msg.prompt || "",
           // The box's Send dispatches the agent turn immediately; Add stages.
           autosend: !!msg.submit,
+          // In a split pane, this pane's composer takes it (pickSessionRef).
+          sessionId: pickSessionRef.current,
         },
       }));
     }).then((f) => { un = f; });

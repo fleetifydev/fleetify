@@ -15,6 +15,7 @@ import remarkGfm from "remark-gfm";
 import { useAppStore, type WorkspaceView } from "@/stores/app-store";
 import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import { usePaneSessionId, useIsInPane } from "@/components/chat/pane-session-context";
+import { claimEscape } from "@/hooks/use-escape-to-stop";
 import { useActiveCwd } from "@/components/workspace/use-active-cwd";
 import { PaneCloseContext } from "@/components/workspace/pane-close-context";
 import { PreviewView } from "@/components/workspace/views/preview-view";
@@ -127,7 +128,13 @@ function ContextMenu({ x, y, items, onClose }: { x: number; y: number; items: Ct
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const handler = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) onClose(); };
-    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      // Claim the key so closing the menu does nothing else: the chat beside
+      // it keeps streaming. This document listener runs before its window one.
+      claimEscape(e);
+      onClose();
+    };
     document.addEventListener("mousedown", handler);
     document.addEventListener("keydown", esc);
     return () => { document.removeEventListener("mousedown", handler); document.removeEventListener("keydown", esc); };
@@ -417,7 +424,8 @@ const iconBtn: React.CSSProperties = {
 };
 
 /* ─── File Tree Sidebar ─── */
-function FileTree({ root, selectedPath, onSelect }: {
+/** Shelved with QuadrantWorkspace (unrouted). Exported for tests. */
+export function FileTree({ root, selectedPath, onSelect }: {
   root: string; selectedPath: string; onSelect: (e: FsEntry) => void;
 }) {
   const [entries, setEntries] = useState<FsEntry[]>([]);
@@ -588,8 +596,9 @@ async function getLanguageExtension(ext: string) {
 /* ── Per-Fleet-theme CodeMirror skin ──
    Uses oneDark highlight style (syntax colors) on all dark themes,
    but overrides the background/gutter/cursor to match the active Fleet theme.
+   Exported for tests.
 */
-async function buildEditorExtensions(
+export async function buildEditorExtensions(
   colorThemeId: string,
   isDark: boolean,
   ext: string,
@@ -4225,7 +4234,8 @@ function PlaceholderView({ view }: { view: WorkspaceView }) {
    nails the chrome (tabs, actions, frame) and mounts a placeholder
    stream so the surface reads correctly at first paint.
    ══════════════════════════════════════════════════════════ */
-function TerminalView() {
+/** Exported for tests. */
+export function TerminalView() {
   const requestClose = useContext(PaneCloseContext);
 
   // Resolve the cwd the shell should open in. Preference order:
@@ -4261,7 +4271,14 @@ function TerminalView() {
     const onDoc = (e: MouseEvent) => {
       if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) setPickerOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setPickerOpen(false); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      // Claim the key so closing the picker does nothing else: the chat
+      // beside it keeps streaming. This document listener runs before its
+      // window one.
+      claimEscape(e);
+      setPickerOpen(false);
+    };
     document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);
     return () => {

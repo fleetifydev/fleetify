@@ -28,7 +28,7 @@ import { ProviderLogo } from "@/components/ui/provider-logo";
 import { RoutingChip } from "@/components/settings/routers/routing-chip";
 import { commandsForContext, type SlashCmdDef } from "@/lib/slash-commands";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
-import { isOnScreen } from "@/hooks/use-escape-to-stop";
+import { isOnScreen, claimEscape, escapeWasClaimed } from "@/hooks/use-escape-to-stop";
 import { paneOwnsInput } from "./pane-session-context";
 import { UnifiedModelPicker, type Effort as UMEffort } from "./unified-model-picker";
 import { buildPickerGroups, effortForDiscoveredModel, resolveDispatchTool, resolveModelChip, type PickerModel } from "@/lib/picker-groups";
@@ -591,9 +591,10 @@ function MoreActionsMenu({
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      // Claim the key so Escape-to-stop leaves the stream running. This
-      // document listener always runs before that window one.
-      e.preventDefault();
+      // Claim the key so closing the menu does nothing else: no stop, no
+      // back to Fleet, no permission deny. This document listener runs
+      // before those window ones.
+      claimEscape(e);
       setOpen(false);
     };
     document.addEventListener("mousedown", onDoc);
@@ -1103,7 +1104,9 @@ export function ModelChip({
  *  `fleet:add-element-ref`). Every mounted composer hears it, one per pane in
  *  a split view, but only one may act. An event that names a session goes to
  *  that session's composer. One that names none goes to the pane that owns
- *  input: the focused pane, or the single view's composer. */
+ *  input: the focused pane, or the single view's composer. A named event
+ *  whose session has no mounted composer is dropped; it never falls back to
+ *  the focused pane, which is a different chat. */
 function takesComposerEvent(target: unknown, sessionId: string | null | undefined, paneIdx: number | undefined): boolean {
   if (typeof target === "string") return target === sessionId;
   return paneOwnsInput(paneIdx, useAppStore.getState().focusedPaneIdx);
@@ -1173,12 +1176,14 @@ export function ChatInput({
   // a split view shows every pane's card at once, so only the pane that
   // owns input answers (the focused pane, the same rule as Escape-to-stop).
   // On-screen guarded so closing Settings / Library with Esc doesn't deny a
-  // request on the chat parked underneath.
+  // request on the chat parked underneath. An Escape a popover claimed to
+  // close itself doesn't deny either (`escapeWasClaimed`).
   useEffect(() => {
     if (!permissionRequest) return;
     const handler = (e: KeyboardEvent) => {
       // Other keys return first, so typing never pays for the style walk.
       if (e.key !== "Escape" && !(e.key === "Enter" && e.metaKey)) return;
+      if (escapeWasClaimed(e)) return;
       if (!paneOwnsInput(paneIdx, useAppStore.getState().focusedPaneIdx)) return;
       if (!isOnScreen(wrapperRef.current)) return;
       if (e.key === "Escape") {

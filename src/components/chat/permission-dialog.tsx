@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import type { PermissionRequest } from "@/stores/chat-store";
 import { useAppStore } from "@/stores/app-store";
 import { formatShortcut } from "@/lib/keyboard-shortcuts";
-import { isOnScreen } from "@/hooks/use-escape-to-stop";
+import { isOnScreen, escapeWasClaimed } from "@/hooks/use-escape-to-stop";
 import { paneOwnsInput } from "./pane-session-context";
 
 interface Props {
@@ -80,13 +80,18 @@ export function PermissionDialog({
    * Parked guard: App.tsx keeps the shell mounted under `display: none`
    * while Settings or Library is open, so this listener outlives the
    * card's visibility. The Escape that closes either of them must not
-   * also deny the request hidden underneath. */
+   * also deny the request hidden underneath.
+   *
+   * Claim guard: the Escape that closes a popover is claimed by it
+   * (`escapeWasClaimed`), and must not also skip the question. The
+   * Escape that stops the stream is not a claim, so it still does. */
   const rootRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       // Only Esc and ⌘↵ / ⌘⇧↵ act. Return on any other key first, so
       // ordinary typing never pays for isOnScreen's computed-style walk.
       if (e.key !== "Escape" && !(e.key === "Enter" && e.metaKey)) return;
+      if (escapeWasClaimed(e)) return;
       if (!paneOwnsInput(paneIdx, useAppStore.getState().focusedPaneIdx)) return;
       if (!isOnScreen(rootRef.current)) return;
       if (e.key === "Escape") {

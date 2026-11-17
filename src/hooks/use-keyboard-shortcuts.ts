@@ -235,10 +235,19 @@ export const SHORTCUT_BINDINGS: ShortcutBinding[] = [
   {
     // Escape — go back to Fleet if in an agent view and not streaming. Skips
     // when focus is in an editable / dialog / keep-focus element (those own
-    // their Esc), so it never destroys a draft mid-compose.
+    // their Esc), so it never destroys a draft mid-compose. Also skips an
+    // Escape that a popover or menu already claimed to close itself.
     id: "back-to-fleet",
     matches: (e, mod, shift) => e.key === "Escape" && !mod && !shift,
     run: (e, { state, chatState }) => {
+      // An Escape another handler already acted on is not ours. Mostly that
+      // is a popover or menu claiming the Escape that closes it
+      // (`claimEscape`) from a document listener or a React handler, both of
+      // which run before this window listener. This one registers once, at
+      // shell mount, so the chat's own window listeners (stop, permission
+      // card) normally come after it. If one ever ran first, it acted on
+      // this Escape too.
+      if (e.defaultPrevented) return;
       const target = e.target as HTMLElement | null;
       const inEditable =
         !!target && (

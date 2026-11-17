@@ -14,6 +14,7 @@ vi.mock("@/lib/api", () => ({
 }));
 
 import { useKeyboardShortcuts, SHORTCUT_BINDINGS } from "../use-keyboard-shortcuts";
+import { claimEscape } from "../use-escape-to-stop";
 import { useAppStore } from "@/stores/app-store";
 import { useChatStore, type SessionChatState } from "@/stores/chat-store";
 import { wsManager } from "@/services/ws-manager";
@@ -89,6 +90,42 @@ describe("useKeyboardShortcuts while the shell is parked", () => {
   it("lets only abort-all through a parked shell", () => {
     const parkedIds = SHORTCUT_BINDINGS.filter(b => b.worksWhileParked).map(b => b.id);
     expect(parkedIds).toEqual(["abort-all"]);
+  });
+});
+
+// A popover, menu or overlay that closes on Escape claims it (claimEscape)
+// from a document listener or a React handler, which run before this hook's
+// window listener. That Escape closed something; it must not also leave the
+// agent chat.
+describe("back-to-fleet leaves a claimed Escape alone", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useAppStore.setState({ sessions: [], activeSessionId: "agent-1", staffSessionId: "staff" });
+    useChatStore.setState({ sessions: {} });
+  });
+
+  /** Presses Escape on the page while a popover's document listener claims it. */
+  const escapeClaimedByPopover = () => {
+    const popover = (e: KeyboardEvent) => { if (e.key === "Escape") claimEscape(e); };
+    document.addEventListener("keydown", popover);
+    try {
+      fireEvent.keyDown(document.body, { key: "Escape" });
+    } finally {
+      document.removeEventListener("keydown", popover);
+    }
+  };
+
+  it("stays in the agent chat when a popover claimed the Escape to close itself", () => {
+    render(<Shell parked={false} />);
+    escapeClaimedByPopover();
+    expect(useAppStore.getState().activeSessionId).toBe("agent-1");
+  });
+
+  it("still goes back to Fleet on the next, unclaimed Escape", () => {
+    render(<Shell parked={false} />);
+    escapeClaimedByPopover();
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(useAppStore.getState().activeSessionId).toBeNull();
   });
 });
 

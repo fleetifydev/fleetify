@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { claimEscape } from "@/hooks/use-escape-to-stop";
 import type { ToolMatrixCapability } from "@/lib/providers-api";
 
 export interface ToolMatrixEditorProps {
@@ -18,9 +19,10 @@ export function ToolMatrixEditor({ matrix, overrides, onChange }: ToolMatrixEdit
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      // Claim the key so the chat's Escape-to-stop leaves the stream
-      // running. This document listener always runs before that window one.
-      e.preventDefault();
+      // Claim the key so closing this does nothing else: no stop, no back
+      // to Fleet, no permission deny. This document listener runs before
+      // those window ones.
+      claimEscape(e);
       setOpen(false);
     };
     document.addEventListener("mousedown", onDoc);

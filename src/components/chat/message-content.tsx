@@ -20,6 +20,7 @@ import { ChevronRight, Copy, Check, ArrowRightLeft, CheckCircle2, AlertCircle, T
 import { createSessionMemory } from "@/lib/api";
 import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { claimEscape } from "@/hooks/use-escape-to-stop";
 import { useChatStore, selectSession } from "@/stores/chat-store";
 import { useAppStore } from "@/stores/app-store";
 import { useTypewriter } from "@/hooks/use-typewriter";
@@ -2745,10 +2746,10 @@ function DispatchResultCard({ block }: { block: import("@/types/chat").DispatchR
                 sendReply();
               }
               if (e.key === "Escape") {
-                // Claim the key so Escape-to-stop leaves the Fleet chat's
-                // stream running. React handlers run before that window
-                // listener.
-                e.preventDefault();
+                // Claim the key so closing the box does nothing else: no
+                // stop, no back to Fleet, no permission deny. React
+                // handlers run before those window listeners.
+                claimEscape(e.nativeEvent);
                 setReplyOpen(false);
                 setReplyText("");
               }

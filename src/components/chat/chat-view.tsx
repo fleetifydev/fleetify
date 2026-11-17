@@ -18,7 +18,7 @@ import { registerConfigPatch } from "@/lib/session-config-sync";
 import { usesInAppTitleBar, folderName } from "@/lib/utils";
 import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
-import { useEscapeToStop } from "@/hooks/use-escape-to-stop";
+import { useEscapeToStop, claimEscape } from "@/hooks/use-escape-to-stop";
 import { resolveStartupDefault, hermesHealModel, HERMES_DEFAULT_SENTINEL, contextWindowForModel, buildPickerGroups, resolveDispatchTool } from "@/lib/picker-groups";
 import { providers } from "@/lib/providers-api";
 import { useDiscoveredModelsStore } from "@/stores/discovered-models-store";
@@ -2709,21 +2709,9 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                   Self-gated: returns null when the session is in
                   manual mode or has no pending decision. */}
               {!isControlCenter && effectiveSessionId && (
-                <FleetDecisionCard
+                <ChatDecisionCard
                   sessionId={effectiveSessionId}
                   onSend={(text) => handleAgentSend(text)}
-                  onAnswer={(question) => {
-                    // Pre-fill the user's input with the question
-                    // verbatim so they can edit or append before
-                    // sending. Fires through the same custom event
-                    // the @-mention picker uses to nudge the input.
-                    // Names this chat's session so the text lands in this
-                    // pane's composer even if the pane isn't focused yet
-                    // (see ChatContextMenu's sessionId).
-                    window.dispatchEvent(new CustomEvent("fleet:focus-input", {
-                      detail: { text: question, sessionId: effectiveSessionId },
-                    }));
-                  }}
                 />
               )}
               {/* Home delegation — the composer as a "delegate a goal" input.
@@ -2921,6 +2909,29 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   );
 }
 
+/** The Fleet decision card in a chat's composer slot. Exported for tests. */
+export function ChatDecisionCard({ sessionId, onSend }: {
+  sessionId: string;
+  onSend: (text: string) => void;
+}) {
+  return (
+    <FleetDecisionCard
+      sessionId={sessionId}
+      onSend={onSend}
+      onAnswer={(question) => {
+        // Pre-fill the user's input with the question verbatim so they can
+        // edit or append before sending. Fires through the same custom event
+        // the @-mention picker uses to nudge the input. Names this chat's
+        // session so the text lands in this pane's composer even if the pane
+        // isn't focused yet (see ChatContextMenu's sessionId).
+        window.dispatchEvent(new CustomEvent("fleet:focus-input", {
+          detail: { text: question, sessionId },
+        }));
+      }}
+    />
+  );
+}
+
 /** Right-click menu on a transcript selection. Exported for tests. */
 export function ChatContextMenu({ x, y, text, sessionId, onClose }: {
   x: number; y: number; text: string;
@@ -2940,9 +2951,10 @@ export function ChatContextMenu({ x, y, text, sessionId, onClose }: {
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      // Claim the key so Escape-to-stop leaves the stream running. This
-      // document listener always runs before that window one.
-      e.preventDefault();
+      // Claim the key so closing this does nothing else: no stop, no back
+      // to Fleet, no permission deny. This document listener runs before
+      // those window ones.
+      claimEscape(e);
       onClose();
     };
     document.addEventListener("mousedown", onDown);
@@ -3310,9 +3322,10 @@ export function PanelViewMenu({
     };
     const esc = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      // Claim the key so Escape-to-stop leaves the stream running. This
-      // document listener always runs before that window one.
-      e.preventDefault();
+      // Claim the key so closing this does nothing else: no stop, no back
+      // to Fleet, no permission deny. This document listener runs before
+      // those window ones.
+      claimEscape(e);
       setMenuOpen(false);
     };
     document.addEventListener("mousedown", click);
