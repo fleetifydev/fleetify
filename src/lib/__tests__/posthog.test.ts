@@ -10,6 +10,7 @@
  *   properties posthog-js would add on its own.
  * - After an opt-out in the same session, nothing it would still send gets
  *   through.
+ * - Signing out forgets the account, without loading posthog-js to do it.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
@@ -22,6 +23,7 @@ const ph = vi.hoisted(() => ({
   opt_out_capturing: vi.fn(),
   has_opted_out_capturing: vi.fn(),
   resetPersonPropertiesForFlags: vi.fn(),
+  reset: vi.fn(),
   _send_request: vi.fn(),
 }));
 /** How many times posthog-js was loaded (once per fresh module registry). */
@@ -273,5 +275,54 @@ describe("opting out in the same session", () => {
     ph._send_request({ url: "/e/", data: {} });
     expect(send).toHaveBeenCalledTimes(1);
     expect(ph.init).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("signing out", () => {
+  it("resets a running posthog-js to a new anonymous id and keeps Fleetify's platform property", async () => {
+    await analytics.initPostHog({ distinctId: "device-1", enabled: true });
+    analytics.identifyUser("user-1");
+    ph.register.mockClear();
+    analytics.resetIdentity();
+    // Not reset(true): $device_id stays this install's id.
+    expect(ph.reset.mock.calls).toEqual([[]]);
+    // reset() clears every super property, Fleetify's own included.
+    expect(ph.register).toHaveBeenCalledWith({ platform: expect.any(String) });
+    expect(ph.opt_out_capturing).not.toHaveBeenCalled();
+  });
+
+  it("forgets an account that was waiting for posthog-js to load", async () => {
+    await analytics.initPostHog({ distinctId: "device-1", enabled: false });
+    analytics.optIn(); // posthog-js starts loading
+    analytics.identifyUser("user-1"); // kept until it runs
+    analytics.resetIdentity();
+    await settle();
+    expect(ph.init).toHaveBeenCalledTimes(1);
+    expect(ph.identify).not.toHaveBeenCalled();
+  });
+
+  it("loads nothing while product analytics is off, and still forgets the account", async () => {
+    await analytics.initPostHog({ distinctId: "device-1", enabled: false });
+    analytics.identifyUser("user-1");
+    analytics.resetIdentity();
+    await settle();
+    expect(loads.count).toBe(0);
+    expect(ph.reset).not.toHaveBeenCalled();
+    // Opting in later in this session identifies no one.
+    analytics.optIn();
+    await settle();
+    expect(ph.init).toHaveBeenCalledTimes(1);
+    expect(ph.identify).not.toHaveBeenCalled();
+  });
+
+  it("keeps posthog-js opted out when the user turned product analytics off in this session", async () => {
+    await analytics.initPostHog({ distinctId: "device-1", enabled: true });
+    analytics.optOut();
+    ph.opt_out_capturing.mockClear();
+    analytics.resetIdentity();
+    expect(ph.reset).toHaveBeenCalledTimes(1);
+    // reset() also clears posthog-js's stored consent.
+    expect(ph.opt_out_capturing).toHaveBeenCalledTimes(1);
+    expect(analytics.isReady()).toBe(false);
   });
 });

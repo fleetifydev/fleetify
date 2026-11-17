@@ -115,6 +115,13 @@ their `distinct_id`; backend events keep the device id, which PostHog
 has linked to you. Product analytics is linked to your account, not
 anonymous.
 
+When you sign out, Fleetify makes posthog-js forget your account: until
+Fleetify restarts, the app's events carry a new random `distinct_id`
+that isn't linked to any account. Backend events still carry the device
+id, and so do the app's events after a restart until you sign in;
+PostHog may keep that id linked to an account that signed in on this
+device before.
+
 On its own, posthog-js would also attach person properties to some
 events: `$set_once` with the first address and referrer it saw, such as
 `$initial_current_url` and `$initial_referrer`. Fleetify removes `$set`

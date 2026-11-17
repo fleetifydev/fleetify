@@ -203,6 +203,24 @@ export function identifyUser(userId: string): void {
   identifyPending();
 }
 
+/**
+ * The user signed out. Forget the account, so whoever signs in next on this
+ * machine isn't linked to it: the id kept for a later opt-in goes, and a
+ * running posthog-js resets to a new anonymous id. posthog-js isn't loaded
+ * for this; when it isn't running, it holds no account to forget.
+ */
+export function resetIdentity(): void {
+  pendingUserId = null;
+  if (!phInstance) return;
+  // Not reset(true): $device_id stays this install's id.
+  phInstance.reset();
+  // reset() clears every super property, Fleetify's own included…
+  phInstance.register({ platform: platformHint() });
+  // …and posthog-js's stored consent, so an opt-out made in this session
+  // has to be stored again.
+  if (!enabled) phInstance.opt_out_capturing();
+}
+
 export function capture(
   event: string,
   props?: Record<string, unknown>,
