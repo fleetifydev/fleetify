@@ -59,6 +59,88 @@ describe("useEscapeToStop", () => {
   });
 });
 
+/** One stream, two registrations — as in the app, where ChatView registers on
+ *  its surface and ChatInput registers again on its wrapper. Both are on screen,
+ *  so both listeners see the same keypress. */
+function TwoRegistrations({ onStopA, onStopB }: { onStopA: () => void; onStopB: () => void }) {
+  const surface = useRef<HTMLDivElement>(null);
+  useEscapeToStop(surface, true, onStopA);
+  useEscapeToStop(surface, true, onStopB);
+  return <div ref={surface}>chat</div>;
+}
+
+describe("useEscapeToStop stops a stream once", () => {
+  it("runs the stop callbacks once in total for two registrations on one surface", () => {
+    // Regression: both listeners used to abort, so one Escape stopped the
+    // stream twice.
+    const onStopA = vi.fn();
+    const onStopB = vi.fn();
+    render(<TwoRegistrations onStopA={onStopA} onStopB={onStopB} />);
+    pressEscape();
+    expect(onStopA.mock.calls.length + onStopB.mock.calls.length).toBe(1);
+  });
+});
+
+describe("useEscapeToStop leaves Escape to an overlay", () => {
+  it("does not stop while a modal dialog is open", () => {
+    const onStop = vi.fn();
+    render(
+      <>
+        <Harness parked={false} active onStop={onStop} />
+        <div role="dialog" aria-modal="true">Help</div>
+      </>,
+    );
+    pressEscape();
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it("does not stop when Escape is pressed inside a dialog", () => {
+    const onStop = vi.fn();
+    const { getByText } = render(
+      <>
+        <Harness parked={false} active onStop={onStop} />
+        <div role="dialog"><button>Close</button></div>
+      </>,
+    );
+    fireEvent.keyDown(getByText("Close"), { key: "Escape" });
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it("does not stop when Escape is pressed inside a widget that keeps focus", () => {
+    const onStop = vi.fn();
+    const { getByText } = render(
+      <>
+        <Harness parked={false} active onStop={onStop} />
+        <div data-keep-focus="true"><button>Pick</button></div>
+      </>,
+    );
+    fireEvent.keyDown(getByText("Pick"), { key: "Escape" });
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it("does not stop when an overlay already handled the Escape", () => {
+    // Help and the confirm dialog close on a document-level Escape and call
+    // preventDefault, which runs before the window-level listener here.
+    const onStop = vi.fn();
+    render(<Harness parked={false} active onStop={onStop} />);
+    const overlay = (e: KeyboardEvent) => e.preventDefault();
+    document.addEventListener("keydown", overlay);
+    try {
+      fireEvent.keyDown(document.body, { key: "Escape" });
+    } finally {
+      document.removeEventListener("keydown", overlay);
+    }
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it("still stops when Escape is pressed inside the chat itself", () => {
+    const onStop = vi.fn();
+    const { getByText } = render(<Harness parked={false} active onStop={onStop} />);
+    fireEvent.keyDown(getByText("chat"), { key: "Escape" });
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("isOnScreen", () => {
   // Shared by every global key handler a chat surface registers — Escape-to-stop
   // above, and chat-input's permission shortcuts (Esc = deny, \u2318\u21b5 = allow).

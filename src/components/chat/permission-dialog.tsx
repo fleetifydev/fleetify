@@ -1,7 +1,8 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { PermissionRequest } from "@/stores/chat-store";
 import { useAppStore } from "@/stores/app-store";
 import { formatShortcut } from "@/lib/keyboard-shortcuts";
+import { isOnScreen } from "@/hooks/use-escape-to-stop";
 
 interface Props {
   request: PermissionRequest;
@@ -73,12 +74,22 @@ export function PermissionDialog({
    * is up on agent A and the user is now focused on agent B, hitting
    * Esc to close some other popover used to silently deny A's
    * permission request because this listener was still bound. Now we
-   * read the active session at handler time and bail if it's not us. */
+   * read the active session at handler time and bail if it's not us.
+   *
+   * Parked guard: App.tsx keeps the shell mounted under `display: none`
+   * while Settings or Library is open, so this listener outlives the
+   * card's visibility. The Escape that closes either of them must not
+   * also deny the request hidden underneath. */
+  const rootRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Only Esc and ⌘↵ / ⌘⇧↵ act. Return on any other key first, so
+      // ordinary typing never pays for isOnScreen's computed-style walk.
+      if (e.key !== "Escape" && !(e.key === "Enter" && e.metaKey)) return;
       // Lazy import to avoid a circular module; lookup is cheap.
       const active = useAppStore.getState().activeSessionId;
       if (active && active !== sessionId) return;
+      if (!isOnScreen(rootRef.current)) return;
       if (e.key === "Escape") {
         e.preventDefault();
         onDeny(request.id, request.tool_name);
@@ -110,7 +121,7 @@ export function PermissionDialog({
           before the BranchStrip so the two cards read as a stacked
           pair, not as one element. Theme-adaptive (#161616 in dark,
           #ffffff in light) so it works for both. */}
-      <div style={{
+      <div ref={rootRef} style={{
         animation: "permCardIn 0.18s cubic-bezier(0.22, 1, 0.36, 1) both",
       }}>
         <div style={{
