@@ -49,6 +49,20 @@ export function usePaneSessionId(): string | null {
   return ctx === undefined ? storeId : ctx;
 }
 
+/** Whether the chat in pane `paneIdx` owns input that names no pane: Escape
+ *  (stop the stream, answer a permission card) and the composer's broadcast
+ *  events (`fleet:focus-input`, `fleet:add-element-ref`). A split view mounts
+ *  one chat per pane, all on screen at once, so only the focused pane may act.
+ *  The single view has no `paneIdx` and always owns it.
+ *
+ *  Why `focusedPaneIdx` and not `activeSessionId`: the store keeps
+ *  `focusedPaneIdx` clamped to a live pane, and it drives the highlighted
+ *  border. Adding a third pane, or removing or moving one, can leave
+ *  `activeSessionId` pointing at another pane, or at none. */
+export function paneOwnsInput(paneIdx: number | undefined, focusedPaneIdx: number): boolean {
+  return paneIdx === undefined || focusedPaneIdx === paneIdx;
+}
+
 /** True iff this hook is called inside a PaneSessionProvider.
  *  Use this when you need to BRANCH on "am I rendered inside a
  *  split pane" vs "am I rendered in the legacy single-view path"

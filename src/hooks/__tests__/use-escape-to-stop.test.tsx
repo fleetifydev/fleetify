@@ -59,9 +59,11 @@ describe("useEscapeToStop", () => {
   });
 });
 
-/** One stream, two registrations — as in the app, where ChatView registers on
- *  its surface and ChatInput registers again on its wrapper. Both are on screen,
- *  so both listeners see the same keypress. */
+/** One stream, two registrations on one surface. The app registers once per
+ *  chat view (ChatView, through usePaneEscapeToStop); ChatInput no longer
+ *  registers. So this does not mirror the app: it guards against a stray
+ *  duplicate registration. Both listeners see the same keypress, and the
+ *  stream must still stop only once. */
 function TwoRegistrations({ onStopA, onStopB }: { onStopA: () => void; onStopB: () => void }) {
   const surface = useRef<HTMLDivElement>(null);
   useEscapeToStop(surface, true, onStopA);
@@ -97,8 +99,10 @@ describe("useEscapeToStop leaves Escape to an overlay", () => {
   });
 
   it("still stops while a non-modal popover is open", () => {
-    // The Create PR auth picker is role="dialog" aria-modal="false". With
-    // focus outside it, it does not own Escape.
+    // Like the Create PR auth picker (role="dialog" aria-modal="false"). Being
+    // open, with focus outside it, does not claim Escape. A popover that closes
+    // on Escape claims that key itself with preventDefault (popover-escape
+    // tests); this one has no handler.
     const onStop = vi.fn();
     render(
       <>

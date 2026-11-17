@@ -3,10 +3,12 @@ import type { PermissionRequest } from "@/stores/chat-store";
 import { useAppStore } from "@/stores/app-store";
 import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import { isOnScreen } from "@/hooks/use-escape-to-stop";
+import { paneOwnsInput } from "./pane-session-context";
 
 interface Props {
   request: PermissionRequest;
-  sessionId: string;
+  /** The split-view pane this card is in; undefined in the single view. */
+  paneIdx?: number;
   onAllow: (id: string, toolName: string) => void;
   onAllowAlways: (id: string, toolName: string) => void;
   onDeny: (id: string, toolName: string) => void;
@@ -56,7 +58,7 @@ const VARIANT_META: Record<CardVariant, { label: string; accentColor: string }> 
 
 export function PermissionDialog({
   request,
-  sessionId,
+  paneIdx,
   onAllow,
   onAllowAlways,
   onDeny,
@@ -69,12 +71,11 @@ export function PermissionDialog({
 
   /* Keyboard shortcuts.
    *
-   * Active-session guard: a window-level keydown fires regardless of
-   * which agent the user is currently viewing. If a permission dialog
-   * is up on agent A and the user is now focused on agent B, hitting
-   * Esc to close some other popover used to silently deny A's
-   * permission request because this listener was still bound. Now we
-   * read the active session at handler time and bail if it's not us.
+   * Pane guard: a window-level keydown fires whichever pane the user is
+   * in. A split view shows every pane's card at once, so only the pane
+   * that owns input may answer: the focused pane, the same rule as
+   * Escape-to-stop (`paneOwnsInput`). The single view always owns it. The
+   * focused pane is read at handler time, so it is never stale.
    *
    * Parked guard: App.tsx keeps the shell mounted under `display: none`
    * while Settings or Library is open, so this listener outlives the
@@ -86,9 +87,7 @@ export function PermissionDialog({
       // Only Esc and ⌘↵ / ⌘⇧↵ act. Return on any other key first, so
       // ordinary typing never pays for isOnScreen's computed-style walk.
       if (e.key !== "Escape" && !(e.key === "Enter" && e.metaKey)) return;
-      // Lazy import to avoid a circular module; lookup is cheap.
-      const active = useAppStore.getState().activeSessionId;
-      if (active && active !== sessionId) return;
+      if (!paneOwnsInput(paneIdx, useAppStore.getState().focusedPaneIdx)) return;
       if (!isOnScreen(rootRef.current)) return;
       if (e.key === "Escape") {
         e.preventDefault();
@@ -103,7 +102,7 @@ export function PermissionDialog({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [request.id, request.tool_name, sessionId, onAllow, onAllowAlways, onDeny, isQuestion]);
+  }, [request.id, request.tool_name, paneIdx, onAllow, onAllowAlways, onDeny, isQuestion]);
 
   return (
     <>

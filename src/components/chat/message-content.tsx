@@ -2745,6 +2745,10 @@ function DispatchResultCard({ block }: { block: import("@/types/chat").DispatchR
                 sendReply();
               }
               if (e.key === "Escape") {
+                // Claim the key so Escape-to-stop leaves the Fleet chat's
+                // stream running. React handlers run before that window
+                // listener.
+                e.preventDefault();
                 setReplyOpen(false);
                 setReplyText("");
               }

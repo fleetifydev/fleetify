@@ -1,7 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, fireEvent } from "@testing-library/react";
 import { PermissionDialog } from "../permission-dialog";
-import { useAppStore } from "@/stores/app-store";
 import type { PermissionRequest } from "@/stores/chat-store";
 
 const request: PermissionRequest = {
@@ -22,7 +21,6 @@ function Shell({ parked, onAllow = vi.fn(), onDeny = vi.fn() }: {
     <div style={{ display: parked ? "none" : "contents" }}>
       <PermissionDialog
         request={request}
-        sessionId="agent-1"
         onAllow={onAllow}
         onAllowAlways={vi.fn()}
         onDeny={onDeny}
@@ -32,10 +30,6 @@ function Shell({ parked, onAllow = vi.fn(), onDeny = vi.fn() }: {
 }
 
 describe("PermissionDialog while the shell is parked", () => {
-  beforeEach(() => {
-    useAppStore.setState({ activeSessionId: "agent-1" });
-  });
-
   afterEach(() => {
     vi.restoreAllMocks();
   });

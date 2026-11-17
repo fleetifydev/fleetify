@@ -16,7 +16,13 @@ export function ToolMatrixEditor({ matrix, overrides, onChange }: ToolMatrixEdit
     const onDoc = (e: MouseEvent) => {
       if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      // Claim the key so the chat's Escape-to-stop leaves the stream
+      // running. This document listener always runs before that window one.
+      e.preventDefault();
+      setOpen(false);
+    };
     document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);
     return () => {

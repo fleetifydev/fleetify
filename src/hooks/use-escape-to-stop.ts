@@ -16,9 +16,14 @@ export function isOnScreen(el: Element | null): boolean {
 /** True when this Escape belongs to something other than the chat underneath:
  *
  *  - `defaultPrevented`: a handler that ran first already acted on it. An
- *    overlay's Escape handler calls preventDefault before it closes. That
- *    matters most when its listener runs ahead of ours: by the time ours runs,
- *    the overlay may already be gone from the DOM.
+ *    overlay's or popover's Escape handler calls preventDefault before it
+ *    closes. That matters most when its listener runs ahead of ours: by the
+ *    time ours runs, the overlay may already be gone from the DOM. A listener
+ *    on `document`, or a React handler, always runs ahead of this `window`
+ *    one, whatever order they registered in; the chat popovers rely on that.
+ *    A popover listening on `window` could register after us, so it would
+ *    have to be visible here instead (focus inside `data-keep-focus`, or
+ *    `aria-modal`).
  *  - The key was pressed inside a dialog or a `data-keep-focus` widget.
  *  - A modal is open, wherever focus is. Any `aria-modal="true"` element
  *    counts, whatever its role (the confirm dialog is an `alertdialog`). This

@@ -94,7 +94,11 @@ export function ComposerDropMenu({ anchorRef, open, onClose, align = "left", sty
       onClose();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      // Claim the key so the chat's Escape-to-stop leaves the stream
+      // running. This document listener always runs before that window one.
+      e.preventDefault();
+      onClose();
     };
     document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);

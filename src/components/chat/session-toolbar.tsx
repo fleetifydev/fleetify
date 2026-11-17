@@ -295,7 +295,11 @@ export function SessionToolbar({
       }
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpenMenu(null);
+      if (e.key !== "Escape") return;
+      // Claim the key so the chat's Escape-to-stop leaves the stream
+      // running. This document listener always runs before that window one.
+      e.preventDefault();
+      setOpenMenu(null);
     };
     document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);

@@ -110,7 +110,11 @@ export function UnifiedModelPicker({
       if (!rootRef.current?.contains(e.target as Node)) onClose();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      // Claim the key so the chat's Escape-to-stop leaves the stream
+      // running. This document listener always runs before that window one.
+      e.preventDefault();
+      onClose();
     };
     document.addEventListener("mousedown", onDown, true);
     document.addEventListener("keydown", onKey);

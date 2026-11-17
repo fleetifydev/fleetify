@@ -82,6 +82,9 @@ export function AuthChoicePopover({ onChoose, onDismiss }: Props) {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (pending === "cli") return;
+      // Claim the key so the chat's Escape-to-stop leaves the stream
+      // running. This document listener always runs before that window one.
+      e.preventDefault();
       onDismiss();
     };
     document.addEventListener("mousedown", onDown);
