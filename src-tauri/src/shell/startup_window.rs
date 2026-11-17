@@ -10,11 +10,16 @@
 //! has finished loading. If the app has not answered within [`SLOW_START`],
 //! the window is shown with the placeholder, "Starting Fleetify…", and the
 //! app loads as soon as it answers.
+//!
+//! It also works out the app's origin ([`app_origin`]) and, when that origin
+//! is not one `capabilities/default.json` allows IPC from, the capability to
+//! add for it at setup ([`runtime_remote_origin`], [`runtime_capability`]).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tauri::http::{header, Response, StatusCode};
+use tauri::ipc::CapabilityBuilder;
 use tauri::webview::{PageLoadEvent, PageLoadPayload};
 use tauri::{Url, WebviewWindow};
 use tokio::sync::Notify;
@@ -228,6 +233,51 @@ fn reveal(window: &WebviewWindow, boot_start: Instant) {
     let _ = window.set_focus();
 }
 
+// ── IPC from the app's origin ──
+
+/// The remote origins `capabilities/default.json` allows IPC from: the Vite
+/// dev server and the embedded backend on their default ports.
+const STATIC_REMOTE_ORIGINS: [&str; 2] = ["http://localhost:3000", "http://127.0.0.1:8765"];
+
+/// The permissions `capabilities/default.json` grants.
+const IPC_PERMISSIONS: [&str; 3] = ["core:default", "core:event:default", "dialog:allow-open"];
+
+/// Identifier of the capability added at runtime for a configured origin.
+const RUNTIME_CAPABILITY: &str = "configured-origin";
+
+/// The origin the main window loads the app from. Debug builds load the Vite
+/// dev server (`VITE_PORT`, default 3000); release builds load the embedded
+/// backend serving the bundled dist (`FLEETIFY_BACKEND_PORT`, default 8765).
+/// Honouring the ports is what lets the `dev:tauri:wt` script (and the
+/// parallel-worktree workflow it enables) run two app instances side by side.
+pub fn app_origin(release: bool, backend_port: u16, vite_port: u16) -> String {
+    if release {
+        format!("http://127.0.0.1:{backend_port}")
+    } else {
+        format!("http://localhost:{vite_port}")
+    }
+}
+
+/// The app's origin when `capabilities/default.json` doesn't allow IPC from
+/// it: a release build on a backend port other than 8765, or a debug build
+/// on a Vite port other than 3000. `None` on the default ports.
+pub fn runtime_remote_origin(release: bool, backend_port: u16, vite_port: u16) -> Option<String> {
+    let origin = app_origin(release, backend_port, vite_port);
+    (!STATIC_REMOTE_ORIGINS.contains(&origin.as_str())).then_some(origin)
+}
+
+/// What `capabilities/default.json` grants, for `origin` and the main window
+/// only. The static file is left as it is; this is added at setup.
+pub fn runtime_capability(origin: &str) -> CapabilityBuilder {
+    IPC_PERMISSIONS.iter().fold(
+        CapabilityBuilder::new(RUNTIME_CAPABILITY)
+            .remote(origin.to_string())
+            .local(false)
+            .window(MAIN_WINDOW),
+        |capability, permission| capability.permission(*permission),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,5 +434,95 @@ mod tests {
     #[test]
     fn the_slow_start_threshold_is_the_old_reveal_cap() {
         assert_eq!(SLOW_START, Duration::from_secs(15));
+    }
+
+    // ── IPC from the app's origin ──
+
+    use tauri::ipc::RuntimeCapability;
+    use tauri::utils::acl::capability::CapabilityFile;
+
+    /// `capabilities/default.json`, which the runtime capability mirrors.
+    fn default_capability() -> serde_json::Value {
+        serde_json::from_str(include_str!("../../capabilities/default.json")).unwrap()
+    }
+
+    #[test]
+    fn the_app_loads_from_the_backend_in_release_and_from_vite_in_debug() {
+        assert_eq!(app_origin(true, 8765, 3000), "http://127.0.0.1:8765");
+        assert_eq!(app_origin(true, 8899, 3017), "http://127.0.0.1:8899");
+        assert_eq!(app_origin(false, 8765, 3000), "http://localhost:3000");
+        assert_eq!(app_origin(false, 8899, 3017), "http://localhost:3017");
+    }
+
+    #[test]
+    fn the_default_ports_need_no_runtime_capability() {
+        assert_eq!(runtime_remote_origin(true, 8765, 3000), None);
+        assert_eq!(runtime_remote_origin(false, 8765, 3000), None);
+        // Each build loads from its own port only.
+        assert_eq!(runtime_remote_origin(true, 8765, 3017), None);
+        assert_eq!(runtime_remote_origin(false, 8899, 3000), None);
+    }
+
+    #[test]
+    fn a_configured_backend_port_gets_its_origin_in_release() {
+        assert_eq!(
+            runtime_remote_origin(true, 8899, 3000),
+            Some("http://127.0.0.1:8899".to_string())
+        );
+    }
+
+    #[test]
+    fn a_configured_vite_port_gets_its_origin_in_debug() {
+        assert_eq!(
+            runtime_remote_origin(false, 8765, 3017),
+            Some("http://localhost:3017".to_string())
+        );
+    }
+
+    #[test]
+    fn the_runtime_origin_is_where_the_window_loads_the_app() {
+        for (release, backend, vite) in
+            [(true, 8899, 3000), (false, 8765, 3017), (true, 9000, 4000)]
+        {
+            let origin = runtime_remote_origin(release, backend, vite).unwrap();
+            assert_eq!(origin, app_origin(release, backend, vite));
+            let app_url: Url = origin.parse().unwrap();
+            assert!(is_app_page(&app_url.join("/settings").unwrap(), &app_url));
+        }
+    }
+
+    #[test]
+    fn the_static_origins_are_the_ones_default_json_allows() {
+        assert_eq!(
+            default_capability()["remote"]["urls"],
+            serde_json::json!(STATIC_REMOTE_ORIGINS)
+        );
+    }
+
+    #[test]
+    fn the_runtime_capability_is_default_json_for_one_origin() {
+        let default = default_capability();
+        let CapabilityFile::Capability(capability) =
+            runtime_capability("http://127.0.0.1:8899").build()
+        else {
+            panic!("a single capability");
+        };
+        assert_eq!(
+            capability.remote.map(|remote| remote.urls),
+            Some(vec!["http://127.0.0.1:8899".to_string()])
+        );
+        assert!(!capability.local, "it allows that one remote origin only");
+        assert_eq!(serde_json::json!(capability.windows), default["windows"]);
+        assert_eq!(capability.windows, [MAIN_WINDOW]);
+        let permissions: Vec<&str> = capability
+            .permissions
+            .iter()
+            .map(|permission| permission.identifier().get())
+            .collect();
+        assert_eq!(serde_json::json!(permissions), default["permissions"]);
+        assert_ne!(
+            serde_json::json!(capability.identifier),
+            default["identifier"]
+        );
     }
 }

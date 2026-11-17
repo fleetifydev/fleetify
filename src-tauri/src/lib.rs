@@ -17,19 +17,16 @@ use tauri::{Manager, WebviewUrl};
 /// Boot shim reconstructing `window.electronAPI` / `window.fleetify`.
 const PRELOAD: &str = include_str!("preload.js");
 
-/// URL the main webview is pointed at. Debug builds load the Vite dev
-/// server (`VITE_PORT`, default 3000); release builds load the
-/// embedded backend serving the bundled dist (`FLEETIFY_BACKEND_PORT`,
-/// default 8765). Honouring the env vars is what lets the
-/// `dev:tauri:wt` script (and the parallel-worktree workflow it
-/// enables) run two app instances on different ports side-by-side.
-fn webview_url() -> String {
-    if cfg!(debug_assertions) {
-        let port = std::env::var("VITE_PORT").unwrap_or_else(|_| "3000".into());
-        format!("http://localhost:{port}")
-    } else {
-        let port = std::env::var("FLEETIFY_BACKEND_PORT").unwrap_or_else(|_| "8765".into());
-        format!("http://127.0.0.1:{port}")
+/// Parse `VITE_PORT` with a 3000 fallback, as `vite.config.ts` does. Debug
+/// builds load the app from the Vite dev server on this port (see
+/// `shell::startup_window::app_origin`).
+fn vite_port() -> u16 {
+    match std::env::var("VITE_PORT") {
+        Ok(s) => s.parse().unwrap_or_else(|_| {
+            tracing::warn!(value = %s, "VITE_PORT is not a valid port; falling back to 3000");
+            3000
+        }),
+        Err(_) => 3000,
     }
 }
 
@@ -329,6 +326,29 @@ pub fn run() {
                 shell::migration::migrate_api_keys_to_keychain(&app_for_migration).await;
             });
 
+            // The ports, parsed once: the main window loads the app from
+            // one of them (shell::startup_window::app_origin), and the
+            // embedded backend binds `backend` below.
+            let release = !cfg!(debug_assertions);
+            let (backend, vite) = (backend_port(), vite_port());
+
+            // IPC from the app's origin. capabilities/default.json allows
+            // only the default ports (Vite on 3000, the backend on 8765);
+            // any other configured port gets the same permissions for its
+            // own origin, on the main window only. Added before the window
+            // loads the app.
+            if let Some(origin) =
+                shell::startup_window::runtime_remote_origin(release, backend, vite)
+            {
+                match app.add_capability(shell::startup_window::runtime_capability(&origin)) {
+                    Ok(()) => tracing::info!(%origin, "IPC allowed from the configured app origin"),
+                    Err(e) => tracing::warn!(
+                        %origin,
+                        "allowing IPC from the configured app origin failed: {e}"
+                    ),
+                }
+            }
+
             // No splash — by explicit user preference. The main
             // window is built `.visible(false)` on a local placeholder
             // page and stays hidden until the app's URL (Vite in debug,
@@ -341,7 +361,9 @@ pub fn run() {
             // See shell::startup_window. Direct WebviewWindow handle
             // clone (no get_webview_window lookup) avoids the AppHandle
             // race the earlier version hit on Windows.
-            let app_url: tauri::Url = webview_url().parse().expect("valid webview url");
+            let app_url: tauri::Url = shell::startup_window::app_origin(release, backend, vite)
+                .parse()
+                .expect("valid webview url");
             let app_page_loaded = std::sync::Arc::new(tokio::sync::Notify::new());
             let builder = WebviewWindowBuilder::new(
                 app,
@@ -420,7 +442,7 @@ pub fn run() {
             // Weave, LiteLLM) already registered when the user had them
             // connected. Fresh installs hand over an empty setup and
             // the backend boots with builtin + DirectGateway only.
-            let addr: SocketAddr = format!("127.0.0.1:{}", backend_port()).parse().unwrap();
+            let addr: SocketAddr = format!("127.0.0.1:{backend}").parse().unwrap();
             let sd = static_dir();
             let app_data_dir = app.path().app_data_dir().ok();
             tauri::async_runtime::spawn(async move {
