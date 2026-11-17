@@ -27,6 +27,7 @@ import {
 } from "@/lib/api";
 import { XtermShell } from "@/components/workspace/xterm-shell";
 import { useChatStore, selectSession, type ProcessEvent } from "@/stores/chat-store";
+import { usePinnedSession } from "@/lib/session-pins";
 import { MessageContent, StreamingMessage } from "@/components/chat/message-content";
 import { wsManager } from "@/services/ws-manager";
 import { useThemeStore } from "@/stores/theme-store";
@@ -3107,8 +3108,10 @@ function AgentPaneView({ sessionId }: { sessionId: string | null }) {
  * messages directly (full detail). Otherwise we fall back to the
  * compact `task.content` log that Claude SDK Task tool / Codex
  * spawnAgent dispatches populate.
+ *
+ * Exported for its unit test only.
  */
-function SubagentContent({ task }: { task: import("@/stores/chat-store").SubagentTask }) {
+export function SubagentContent({ task }: { task: import("@/stores/chat-store").SubagentTask }) {
   // Stable refs — selectors that returned `??[]`/`find()` re-create a
   // value every render, so Zustand sees a new reference each tick and
   // re-runs the component forever. Pull the slice directly; let it be
@@ -3117,6 +3120,12 @@ function SubagentContent({ task }: { task: import("@/stores/chat-store").Subagen
   const workerSessionState = useChatStore(s => s.sessions[task.id]);
   const workerMessages = workerSessionState?.messages;
   const setMessages = useChatStore(s => s.setMessages);
+  // A Fleet worker is normally not the active, staff or split-pane session, so
+  // once it stops streaming the inactive-session sweep would empty its
+  // transcript, and this pane would drop to the lossy dispatch log below. Pin
+  // it while the pane shows it. A sub-agent with no session of its own has
+  // nothing to pin.
+  usePinnedSession(workerSession ? task.id : null);
 
   // When the task is backed by a real session (Fleet dispatch) but
   // chat-store hasn't loaded its messages yet (user never opened it),
