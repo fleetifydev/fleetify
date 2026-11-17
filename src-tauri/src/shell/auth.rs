@@ -315,6 +315,30 @@ fn capture_code() -> Result<Cb, AuthError> {
     })
 }
 
+/// The identity provider's authorize page that sign-in opens in the
+/// browser: `base` is [`auth_base`], with the PKCE `challenge`, the loopback
+/// `redirect_uri` and `state` from [`capture_code`], and the API `resource`.
+fn authorize_url(
+    base: &str,
+    redirect_uri: &str,
+    state: &str,
+    challenge: &str,
+    resource: &str,
+) -> Result<url::Url, AuthError> {
+    let mut u = url::Url::parse(&format!("{base}/oauth2/authorize"))
+        .map_err(|e| AuthError::new(e.to_string(), "auth"))?;
+    u.query_pairs_mut()
+        .append_pair("client_id", CLIENT_ID)
+        .append_pair("redirect_uri", redirect_uri)
+        .append_pair("response_type", "code")
+        .append_pair("scope", DEFAULT_SCOPES)
+        .append_pair("state", state)
+        .append_pair("code_challenge", challenge)
+        .append_pair("code_challenge_method", "S256")
+        .append_pair("resource", resource);
+    Ok(u)
+}
+
 pub async fn sign_in() -> Result<Tokens, AuthError> {
     if is_no_auth() {
         return Ok(noauth_tokens());
@@ -322,19 +346,14 @@ pub async fn sign_in() -> Result<Tokens, AuthError> {
     let (verifier, challenge) = new_pkce();
     let cb = capture_code()?;
 
-    let mut u = url::Url::parse(&format!("{}/oauth2/authorize", auth_base()))
-        .map_err(|e| AuthError::new(e.to_string(), "auth"))?;
-    u.query_pairs_mut()
-        .append_pair("client_id", CLIENT_ID)
-        .append_pair("redirect_uri", &cb.redirect_uri)
-        .append_pair("response_type", "code")
-        .append_pair("scope", DEFAULT_SCOPES)
-        .append_pair("state", &cb.state)
-        .append_pair("code_challenge", &challenge)
-        .append_pair("code_challenge_method", "S256")
-        .append_pair("resource", &resource());
-
-    open::that(u.as_str())
+    let u = authorize_url(
+        &auth_base(),
+        &cb.redirect_uri,
+        &cb.state,
+        &challenge,
+        &resource(),
+    )?;
+    fleetify_backend::open_external::open_url(u.as_str())
         .map_err(|e| AuthError::new(format!("browser-failed: {e}"), "browser"))?;
 
     let rx = cb.rx;
@@ -532,6 +551,32 @@ pub async fn get_access_token(force: bool) -> Option<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sign_in_page_is_a_link_the_opener_accepts() {
+        // Sign-in opens the authorize page through open_external, which
+        // refuses anything but a clean web link: it must not refuse this one.
+        let (_verifier, challenge) = new_pkce();
+        for (base, resource) in [
+            ("https://fleetify.dev/api/auth", "https://fleetify.dev/api"),
+            ("http://localhost:3001/api/auth", "http://127.0.0.1:8765"),
+        ] {
+            let url = authorize_url(
+                base,
+                "http://127.0.0.1:53682/callback",
+                "c3RhdGUtd2l0aC1zb21lLWJ5dGVz",
+                &challenge,
+                resource,
+            )
+            .unwrap();
+            let opened = fleetify_backend::open_external::validate_external_url(url.as_str())
+                .unwrap_or_else(|e| panic!("{url}: {e}"));
+            assert_eq!(opened.as_str(), url.as_str());
+            assert!(opened
+                .as_str()
+                .starts_with(&format!("{base}/oauth2/authorize?")));
+        }
+    }
 
     /// Tokens the shell requests must pass the embedded backend's checks:
     /// the backend expects `iss` = the shell's auth base and `aud` = the

@@ -39,7 +39,6 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 sha2 = "0.10"
 base64 = "0.22"
 rand = "0.8"
-open = "5"
 tiny_http = "0.12"
 url = "2"
 arboard = "3"

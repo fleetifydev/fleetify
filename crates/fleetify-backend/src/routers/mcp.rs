@@ -134,7 +134,7 @@ async fn config_path() -> Json<Value> {
 
 async fn open_config() -> Json<Value> {
     let p = mcp_registry::registry_path();
-    match open::that(&p) {
+    match crate::open_external::open_path(&p) {
         Ok(_) => Json(json!({ "ok": true })),
         Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
     }

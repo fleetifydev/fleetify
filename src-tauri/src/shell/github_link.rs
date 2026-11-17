@@ -309,7 +309,7 @@ pub async fn begin_oauth(app: AppHandle, mode: &str) -> Value {
 
     // 2. Open browser (clipboard fallback). We surface the URL via a
     //    broadcast event so the dialog can show a copy-link toast.
-    let open_ok = ::open::that(&authorize_url).is_ok();
+    let open_ok = browser_opened(&authorize_url);
     if !open_ok {
         tracing::warn!(target: LOG_TARGET, "begin_oauth: browser launch failed, falling back to clipboard");
         let clip_ok = arboard::Clipboard::new()
@@ -608,10 +608,17 @@ pub async fn open_installation() -> Value {
             .unwrap_or_else(|| "https://github.com/settings/installations".to_string()),
         None => "https://github.com/settings/installations".to_string(),
     };
-    match ::open::that(&url) {
-        Ok(_) => json!({ "ok": true }),
+    match fleetify_backend::open_external::open_url(&url) {
+        Ok(()) => json!({ "ok": true }),
         Err(e) => json!({ "ok": false, "error": e.to_string() }),
     }
+}
+
+/// Opens GitHub's authorize page in the browser. False when that failed,
+/// or the URL the cloud sent is not a web link `open_external` accepts:
+/// begin_oauth then copies it to the clipboard and shows it instead.
+fn browser_opened(authorize_url: &str) -> bool {
+    fleetify_backend::open_external::open_url(authorize_url).is_ok()
 }
 
 /// Parse `gh api user/repos …` output (a raw GitHub REST repo array) into
@@ -885,6 +892,14 @@ fn urlencoding_minimal(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_authorize_url_that_cant_be_opened_takes_the_clipboard_fallback() {
+        // Refused before anything is launched: no browser starts here.
+        for url in ["javascript:alert(1)", "https://x%22&calc.exe&%22y.com/", ""] {
+            assert!(!browser_opened(url), "{url:?}");
+        }
+    }
 
     #[test]
     fn urlencoding_matches_js_encodeuricomponent() {

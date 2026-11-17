@@ -769,8 +769,15 @@ pub async fn open_pr(folder: &Path, pr_number: Option<i64>) -> Value {
             pr_page_url(&url, None)
         }
     };
-    match ::open::that(&target) {
-        Ok(_) => json!({ "ok": true, "url": target }),
+    open_pr_page(target)
+}
+
+/// Opens the PR page at `target` in the browser. It is built from the
+/// repository's remote URL or from `gh` output, so the repository controls
+/// it: `open_external` refuses anything but a clean web link.
+fn open_pr_page(target: String) -> Value {
+    match fleetify_backend::open_external::open_url(&target) {
+        Ok(()) => json!({ "ok": true, "url": target }),
         Err(e) => json!({ "ok": false, "error": e.to_string() }),
     }
 }
@@ -2704,6 +2711,21 @@ fn ssh_to_https(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pr_page_a_remote_crafted_is_refused_not_opened() {
+        // A remote URL can carry a `"` into the host; on Windows the old
+        // opener handed it to `cmd`. Refused before anything is launched.
+        let crafted = r#"https://x"&calc.exe&"y.com/owner/repo/pull/1"#.to_string();
+        let answer = open_pr_page(crafted);
+        assert_eq!(answer["ok"], false, "{answer}");
+        assert!(
+            answer["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("can't be opened")),
+            "{answer}"
+        );
+    }
 
     #[test]
     fn parse_actions_run_job_extracts_ids() {

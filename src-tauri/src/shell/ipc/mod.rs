@@ -206,10 +206,16 @@ pub async fn telemetry_set_posthog_enabled(
 }
 
 // ── shell ─────────────────────────────────────────────────────────
+/// What the renderer is told for a link `shell_open_external` won't open:
+/// anything but a web or email link (see `fleetify_backend::open_external`).
+const LINK_REFUSED: &str = "This link can't be opened: only web and email links are supported.";
+
 #[tauri::command]
 pub async fn shell_open_external(url: String) -> serde_json::Value {
-    match ::open::that(&url) {
-        Ok(_) => serde_json::json!({ "ok": true }),
+    use fleetify_backend::open_external::{open_url, OpenError};
+    match open_url(&url) {
+        Ok(()) => serde_json::json!({ "ok": true }),
+        Err(OpenError::Rejected(_)) => serde_json::json!({ "ok": false, "error": LINK_REFUSED }),
         Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
     }
 }
@@ -294,16 +300,14 @@ fn reveal_in_file_manager(path: &std::path::Path) -> Result<(), String> {
                 // erroring out on a box without a FileManager1
                 // implementation (sway+thunar<4.18, headless CI, etc.).
                 let parent = path.parent().unwrap_or(path);
-                ::open::that(parent)
-                    .map(|_| ())
+                fleetify_backend::open_external::open_path(parent)
                     .map_err(|e| format!("dbus-send unavailable and xdg-open fallback failed: {e}"))
             }
         }
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
-        ::open::that(path.parent().unwrap_or(path))
-            .map(|_| ())
+        fleetify_backend::open_external::open_path(path.parent().unwrap_or(path))
             .map_err(|e| e.to_string())
     }
 }
@@ -2837,7 +2841,7 @@ pub async fn shell_install_ollama() -> serde_json::Value {
     match res {
         Ok(o) if o.status.success() => serde_json::json!({ "ok": true }),
         _ => {
-            let _ = ::open::that(download_url);
+            let _ = fleetify_backend::open_external::open_url(download_url);
             serde_json::json!({
                 "ok": false,
                 "error": "installer did not complete; opened ollama.com/download"
@@ -3137,7 +3141,7 @@ pub fn logs_open_folder() -> serde_json::Value {
     // Reuse the same OS-correct opener `shell_show_item_in_folder`
     // uses for files: passing the directory reveals it.
     let path_str = log_dir.to_string_lossy().to_string();
-    if let Err(e) = open::that(&path_str) {
+    if let Err(e) = fleetify_backend::open_external::open_path(log_dir) {
         return serde_json::json!({
             "ok": false,
             "error": format!("open log folder: {e}")
@@ -4628,6 +4632,23 @@ pub async fn providers_set_cloudflare_account_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_link_that_isnt_web_or_mail_is_refused_with_a_message() {
+        // Refused before anything is launched: no browser starts here.
+        for url in [
+            "javascript:alert(1)",
+            "file:///C:/Windows/System32/calc.exe",
+            "https://x%22&calc.exe&%22y.com/",
+            "",
+        ] {
+            assert_eq!(
+                shell_open_external(url.to_string()).await,
+                serde_json::json!({ "ok": false, "error": LINK_REFUSED }),
+                "{url:?}"
+            );
+        }
+    }
 
     #[test]
     fn ollama_auth_header_only_when_key_present() {

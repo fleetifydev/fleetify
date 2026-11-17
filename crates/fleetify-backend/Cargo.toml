@@ -29,7 +29,11 @@ futures-util = "0.3"
 chromiumoxide = "0.9"
 http = "1"
 regex = "1"
-open = "5"
+# shellexecute-on-windows: `that_detached` opens through ShellExecuteExW, not
+# `cmd /c start`, which would act on `"`, `&` and `%` in what it opens.
+# Only `open_external` may call it (clippy.toml).
+open = { version = "5", features = ["shellexecute-on-windows"] }
+url = "2"
 rand = "0.8"
 parking_lot = "0.12"
 # Used by the Gemini bridge to resolve the `gemini` binary explicitly on

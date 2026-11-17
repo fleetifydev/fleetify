@@ -1,0 +1,16 @@
+# Every crate in the workspace reads this file.
+
+# The `open` crate's launchers go through `cmd /c start` on Windows, which
+# acts on `"`, `&` and `%` in what it opens. The app opens links and paths
+# only through fleetify_backend::open_external, which validates links and
+# launches through ShellExecuteExW on Windows.
+disallowed-methods = [
+  { path = "open::that", reason = "use fleetify_backend::open_external::{open_url, open_path}" },
+  { path = "open::with", reason = "use fleetify_backend::open_external::{open_url, open_path}" },
+  { path = "open::that_in_background", reason = "use fleetify_backend::open_external::{open_url, open_path}" },
+  { path = "open::with_in_background", reason = "use fleetify_backend::open_external::{open_url, open_path}" },
+  { path = "open::that_detached", reason = "use fleetify_backend::open_external::{open_url, open_path}" },
+  { path = "open::with_detached", reason = "use fleetify_backend::open_external::{open_url, open_path}" },
+  { path = "open::commands", reason = "use fleetify_backend::open_external::{open_url, open_path}" },
+  { path = "open::with_command", reason = "use fleetify_backend::open_external::{open_url, open_path}" },
+]

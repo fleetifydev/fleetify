@@ -2179,18 +2179,7 @@ async fn run_send_flow(
             opened_in_browser: _,
         } = &ev
         {
-            let opened = match ::open::that(url) {
-                Ok(_) => true,
-                Err(e) => {
-                    tracing::warn!(
-                        provider = %provider,
-                        url = %url,
-                        error = %e,
-                        "open browser for auth URL failed; renderer falls back to clickable link"
-                    );
-                    false
-                }
-            };
+            let opened = open_auth_url(provider, url);
             BridgeEvent::AuthRequired {
                 provider: provider.clone(),
                 url: url.clone(),
@@ -3626,18 +3615,7 @@ async fn run_dispatched_task(
                     opened_in_browser: _,
                 } = &ev
                 {
-                    let opened = match ::open::that(url) {
-                        Ok(_) => true,
-                        Err(e) => {
-                            tracing::warn!(
-                                provider = %provider,
-                                url = %url,
-                                error = %e,
-                                "open browser for auth URL failed; renderer falls back to clickable link"
-                            );
-                            false
-                        }
-                    };
+                    let opened = open_auth_url(provider, url);
                     BridgeEvent::AuthRequired {
                         provider: provider.clone(),
                         url: url.clone(),
@@ -4146,10 +4124,42 @@ fn push_text(content: &mut Vec<Value>, kind: &str, chunk: &str) {
     content.push(json!({"type": kind, "text": chunk}));
 }
 
+/// Opens a provider's sign-in URL (`AuthRequired`) in the browser. False
+/// when that failed, so the renderer's info card shows the link to click
+/// instead. The URL comes from the provider CLI's output: `open_external`
+/// refuses anything but a clean web or email link.
+fn open_auth_url(provider: &str, url: &str) -> bool {
+    match crate::open_external::open_url(url) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(
+                provider = %provider,
+                url = %url,
+                error = %e,
+                "open browser for auth URL failed; renderer falls back to clickable link"
+            );
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::init_pool;
+
+    #[test]
+    fn an_auth_url_from_a_provider_cli_that_isnt_a_web_link_is_not_opened() {
+        // The renderer then shows the link to click. Refused before anything
+        // is launched: no browser starts here.
+        for url in [
+            "javascript:alert(1)",
+            "file:///C:/Windows/System32/calc.exe",
+            "https://x%22&calc.exe&%22y.com/",
+        ] {
+            assert!(!open_auth_url("gemini", url), "{url:?}");
+        }
+    }
 
     async fn fresh_pool() -> sqlx::SqlitePool {
         init_pool("sqlite::memory:").await.expect("init_pool")
