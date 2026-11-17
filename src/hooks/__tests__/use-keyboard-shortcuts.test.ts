@@ -95,8 +95,9 @@ describe("Mod+Shift letter shortcuts ignore the case of the key", () => {
 // `key` is the character the key types with Shift applied (Ctrl and Meta are
 // ignored, Shift is not). So on Windows and Linux, Ctrl+Shift+. reports ">" on
 // a US layout and ":" on German, never "." — a plain `key === "."` matcher
-// never fires there. Each event below is what the Linux engine (WebKitGTK 4.1)
-// reported for a real Ctrl+Shift press on that layout.
+// never fires there. Each Ctrl+Shift event below is what the Linux engine
+// (WebKitGTK 4.1) reported for a real press on that layout; the macOS one
+// follows w3c-keyname's note that Cmd+Shift can leave Shift out of `key`.
 describe("toggle-right-panel matches Mod+Shift+.", () => {
   const chord = { ctrlKey: true, shiftKey: true };
 
@@ -126,9 +127,13 @@ describe("toggle-right-panel matches Mod+Shift+.", () => {
     expect(hits("toggle-right-panel", { ...chord, key: "Ю", code: "Period" })).toBe(false);
   });
 
-  it("ignores ':' from other keys, so US Ctrl+Shift+; stays free and Turkish Q's '.' key misses", () => {
+  it("leaves AZERTY's Ctrl+/ to the Files editor's toggle-comment: '/' is Shift on the Period key there", () => {
+    expect(hits("toggle-right-panel", { ...chord, key: "/", code: "Period" })).toBe(false);
+  });
+
+  it("matches Turkish Q and Latvian modern, whose '.' key is Slash with ':' on Shift, but not US Ctrl+Shift+;", () => {
     expect(hits("toggle-right-panel", { ...chord, key: ":", code: "Semicolon" })).toBe(false);
-    expect(hits("toggle-right-panel", { ...chord, key: ":", code: "Slash" })).toBe(false);
+    expect(hits("toggle-right-panel", { ...chord, key: ":", code: "Slash" })).toBe(true);
   });
 
   it("still needs both Mod and Shift", () => {

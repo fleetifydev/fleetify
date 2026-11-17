@@ -21,9 +21,6 @@ function toast(title: string, summary: string, success: boolean) {
   if (success) console.info(line); else console.warn(line);
 }
 
-/** True when `key` is a single letter in any script (Dvorak's V, Turkish Q's Ç…). */
-const isLetter = (key: string) => /^\p{L}$/u.test(key);
-
 interface ShortcutCtx {
   state: ReturnType<typeof useAppStore.getState>;
   chatState: ReturnType<typeof useChatStore.getState>;
@@ -120,14 +117,18 @@ export const SHORTCUT_BINDINGS: ShortcutBinding[] = [
   },
   {
     // Cmd+Shift+. — toggle right panel. `key` includes Shift, so the chord
-    // reports ">" on a US layout and ":" on German, while macOS may still say
-    // ".". The physical Period key covers layouts whose Shift+. is ":", but
-    // not where that key types a letter: on Dvorak it is V, and taking
-    // Ctrl+Shift+V there would swallow paste.
+    // reports ">" on US-style layouts and Dvorak, "." on AZERTY (Shift+;) and
+    // on macOS when Cmd hides Shift, and ":" where Shift+. is ":" — on the
+    // Period key (German, Nordic, Spanish, Italian, Swiss, Czech, Hungarian,
+    // Turkish F) or the Slash key (Turkish Q, Latvian modern; Brazilian
+    // ABNT2's ;: key sends the same event, and nothing else binds it).
+    // Nothing looser: on the Period key, AZERTY's Ctrl+/ reports "/" (the
+    // Files editor's toggle-comment) and Dvorak's Ctrl+Shift+V reports "V"
+    // (paste). Russian-style layouts, where Shift+. is ",", still miss it.
     id: "toggle-right-panel",
     matches: (e, mod, shift) =>
       mod && shift &&
-      (e.key === "." || e.key === ">" || (e.code === "Period" && !isLetter(e.key))),
+      (e.key === "." || e.key === ">" || (e.key === ":" && (e.code === "Period" || e.code === "Slash"))),
     run: (e, { state }) => { e.preventDefault(); state.toggleRightPanel(); },
   },
   {
