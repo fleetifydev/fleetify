@@ -12,6 +12,11 @@
 //!
 //! Everything here is best-effort: any failure leaves `icon` untouched.
 //!
+//! A catalog load fetches each distinct icon URL once, a few at a time, and
+//! waits at most `INLINE_BUDGET` for them. An icon still downloading then
+//! keeps its URL (or an expired cached copy) for that load, and the download
+//! goes on to fill the cache for the next one.
+//!
 //! Manifests are third-party input, so the fetch is fenced in. The client
 //! dials only addresses `is_public_ip` accepts, vetted inside its own DNS
 //! resolver so nothing is checked first and resolved again later. It never
@@ -23,8 +28,10 @@
 //! one, a name can still reach an internal IPv4 address through it.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -44,6 +51,11 @@ const DNS_TIMEOUT: Duration = Duration::from_secs(3);
 const CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 /// How long a URL whose fetch failed is skipped before it is tried again.
 const FAILURE_TTL: Duration = Duration::from_secs(600);
+/// Most icon fetches one catalog load runs at once.
+const ICON_CONCURRENCY: usize = 8;
+/// How long a catalog load waits for its icons. A fetch still running then
+/// finishes in the background and fills the cache for the next load.
+const INLINE_BUDGET: Duration = Duration::from_secs(3);
 
 const ALLOWED_MIME: &[&str] = &[
     "image/svg+xml",
@@ -253,14 +265,22 @@ pub fn read_cached(dir: &Path, url: &str, ttl: Duration) -> Option<String> {
     uri.starts_with("data:image/").then_some(uri)
 }
 
+/// Numbers this process's cache temp files. With the pid in the name too, no
+/// two writes share a temp file, even across processes sharing a cache dir.
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 pub fn write_cached(dir: &Path, url: &str, data_uri: &str) {
     if std::fs::create_dir_all(dir).is_err() {
         return;
     }
     let path = cache_path(dir, url);
-    let tmp = path.with_extension("tmp");
-    if std::fs::write(&tmp, data_uri).is_ok() {
-        let _ = std::fs::rename(&tmp, &path);
+    // Fill a temp file of this write's own, then rename it into place. With
+    // one shared temp name, a writer could rename a file another writer was
+    // still filling, and a reader would see it half-written.
+    let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("{}.{n}.tmp", std::process::id()));
+    if std::fs::write(&tmp, data_uri).is_err() || std::fs::rename(&tmp, &path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
 }
 
@@ -292,24 +312,18 @@ pub async fn fetch_data_uri(client: &reqwest::Client, url: reqwest::Url) -> Opti
     to_data_uri(&content_type, &body)
 }
 
-async fn inline_one(client: &reqwest::Client, dir: &Path, icon: &str) -> Option<String> {
-    let url = fetch_target(icon)?;
-    if let Some(hit) = read_cached(dir, url.as_str(), CACHE_TTL) {
-        return Some(hit);
+/// Fetch one icon as a `data:` URI. A URL that failed within `FAILURE_TTL`
+/// is not tried again: retrying it would make every catalog load wait out
+/// the same failure.
+async fn inline_one(client: reqwest::Client, url: reqwest::Url) -> Option<String> {
+    if FAILURES.is_recent(url.as_str(), Instant::now()) {
+        return None;
     }
-    // Retrying a URL that just failed would make every catalog load wait out
-    // the same failure; until FAILURE_TTL passes, go straight to the old copy.
-    if !FAILURES.is_recent(url.as_str(), Instant::now()) {
-        match fetch_data_uri(client, url.clone()).await {
-            Some(uri) => {
-                write_cached(dir, url.as_str(), &uri);
-                return Some(uri);
-            }
-            None => FAILURES.record(url.as_str(), Instant::now()),
-        }
+    let uri = fetch_data_uri(&client, url.clone()).await;
+    if uri.is_none() {
+        FAILURES.record(url.as_str(), Instant::now());
     }
-    // Offline or the host is down: an expired copy still beats a blank tile.
-    read_cached(dir, url.as_str(), Duration::MAX)
+    uri
 }
 
 /// Rewrite every fetchable `icon` in `manifests` to a `data:` URI, in place.
@@ -321,22 +335,99 @@ async fn inline_all_in(dir: &Path, manifests: &mut [&mut PluginManifest]) {
     let Some(client) = icon_client() else {
         return;
     };
-    let jobs = manifests.iter().enumerate().filter_map(|(i, m)| {
-        let icon = m.icon.clone()?;
-        let client = &client;
-        Some(async move { (i, inline_one(client, dir, &icon).await) })
-    });
-    for (i, uri) in futures_util::future::join_all(jobs).await {
-        if let (Some(uri), Some(m)) = (uri, manifests.get_mut(i)) {
-            m.icon = Some(uri);
+    inline_all_with(dir, manifests, |url| inline_one(client.clone(), url)).await;
+}
+
+/// [`inline_all_in`] with the fetch injected. `fetch` only ever sees a URL
+/// that [`fetch_target`] accepted and that has no fresh copy in the cache.
+///
+/// Each distinct URL is fetched once, at most [`ICON_CONCURRENCY`] at a
+/// time, and this returns when every fetch is done or [`INLINE_BUDGET`] has
+/// passed. An icon whose fetch failed or is still running gets an expired
+/// cached copy if there is one and otherwise stays its URL. The fetches run
+/// on a task of their own, so those still running finish anyway and fill
+/// the cache for the next load.
+async fn inline_all_with<F, Fut>(dir: &Path, manifests: &mut [&mut PluginManifest], fetch: F)
+where
+    F: Fn(reqwest::Url) -> Fut,
+    Fut: Future<Output = Option<String>> + Send + 'static,
+{
+    let mut shown_by: HashMap<reqwest::Url, Vec<usize>> = HashMap::new();
+    for (i, m) in manifests.iter().enumerate() {
+        if let Some(url) = m.icon.as_deref().and_then(fetch_target) {
+            shown_by.entry(url).or_default().push(i);
         }
     }
+    // Catalog order, so the first icons on the page are fetched first.
+    let mut wanted: Vec<_> = shown_by.into_iter().collect();
+    wanted.sort_unstable_by_key(|(_, at)| at[0]);
+
+    let mut uris: Vec<_> = wanted
+        .iter()
+        .map(|(url, _)| read_cached(dir, url.as_str(), CACHE_TTL))
+        .collect();
+    let fetches: Vec<_> = wanted
+        .iter()
+        .enumerate()
+        .filter(|&(k, _)| uris[k].is_none())
+        .map(|(k, (url, _))| (k, url.clone(), fetch(url.clone())))
+        .collect();
+    if !fetches.is_empty() {
+        let mut arrived = spawn_fetches(dir.to_path_buf(), fetches);
+        let deadline = tokio::time::Instant::now() + INLINE_BUDGET;
+        while let Ok(Some((k, uri))) = tokio::time::timeout_at(deadline, arrived.recv()).await {
+            uris[k] = uri;
+        }
+    }
+    for ((url, at), uri) in wanted.into_iter().zip(uris) {
+        // Offline, down or slow: an expired copy still beats a blank tile.
+        let Some(uri) = uri.or_else(|| read_cached(dir, url.as_str(), Duration::MAX)) else {
+            continue;
+        };
+        for i in at {
+            manifests[i].icon = Some(uri.clone());
+        }
+    }
+}
+
+/// Run `fetches` on a task of their own, [`ICON_CONCURRENCY`] at a time,
+/// caching each icon as it arrives and reporting it, with its slot, on the
+/// returned channel.
+///
+/// The task does not stop when the caller stops listening, so a slow icon
+/// still lands in the cache. It ends when the last fetch does, and each real
+/// fetch is bounded by `FETCH_TIMEOUT`. A runtime that shuts down drops the
+/// task without polling it again, which cancels the fetches; a cache write
+/// is synchronous and atomic, so none is left half-done.
+fn spawn_fetches<Fut>(
+    dir: PathBuf,
+    fetches: Vec<(usize, reqwest::Url, Fut)>,
+) -> tokio::sync::mpsc::UnboundedReceiver<(usize, Option<String>)>
+where
+    Fut: Future<Output = Option<String>> + Send + 'static,
+{
+    use futures_util::StreamExt;
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let mut done = futures_util::stream::iter(fetches)
+            .map(|(k, url, fetch)| async move { (k, url, fetch.await) })
+            .buffer_unordered(ICON_CONCURRENCY);
+        while let Some((k, url, uri)) = done.next().await {
+            if let Some(uri) = &uri {
+                write_cached(&dir, url.as_str(), uri);
+            }
+            // Fails only once the caller's budget has run out.
+            let _ = tx.send((k, uri));
+        }
+    });
+    rx
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -570,6 +661,64 @@ mod tests {
         assert!(read_cached(dir.path(), url, Duration::ZERO).is_none());
     }
 
+    /// Writers racing on one URL must each put a whole file in place, so a
+    /// reader sees one complete value or another, never a prefix or a mix.
+    #[test]
+    fn write_cached_concurrent_writers_never_expose_partial_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let url = "https://api.iconify.design/logos:aws.svg";
+        // A length and a filler of its own per writer, so a torn or
+        // interleaved file cannot pass for any whole value.
+        let values: Vec<String> = (0..16u8)
+            .map(|i| {
+                let fill = char::from(b'A' + i).to_string();
+                let body = fill.repeat((usize::from(i) + 1) * 4096);
+                format!("data:image/png;base64,{body}")
+            })
+            .collect();
+        let writers_done = AtomicBool::new(false);
+        let torn = std::thread::scope(|s| {
+            let reader = s.spawn(|| loop {
+                let finished = writers_done.load(Ordering::SeqCst);
+                if let Some(got) = read_cached(dir, url, CACHE_TTL) {
+                    if !values.contains(&got) {
+                        return Some(got.len());
+                    }
+                }
+                if finished {
+                    return None;
+                }
+            });
+            let writers: Vec<_> = values
+                .iter()
+                .map(|v| s.spawn(move || (0..50).for_each(|_| write_cached(dir, url, v))))
+                .collect();
+            for w in writers {
+                w.join().unwrap();
+            }
+            writers_done.store(true, Ordering::SeqCst);
+            reader.join().unwrap()
+        });
+        assert_eq!(torn, None, "a reader saw a torn file of that many bytes");
+        assert!(values.contains(&read_cached(dir, url, CACHE_TTL).unwrap()));
+        let left: Vec<_> = std::fs::read_dir(dir).unwrap().flatten().collect();
+        assert_eq!(left.len(), 1, "temp files left behind: {left:?}");
+    }
+
+    /// Temp names are unique, so one a failed write leaves behind would never
+    /// be reused: every failure would add a file.
+    #[test]
+    fn write_cached_removes_its_temp_file_when_the_rename_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let url = "https://api.iconify.design/logos:aws.svg";
+        // A directory where the cache file belongs, so the rename fails.
+        std::fs::create_dir(cache_path(tmp.path(), url)).unwrap();
+        write_cached(tmp.path(), url, "data:image/png;base64,AAAA");
+        let left: Vec<_> = std::fs::read_dir(tmp.path()).unwrap().flatten().collect();
+        assert_eq!(left.len(), 1, "temp files left behind: {left:?}");
+    }
+
     #[test]
     fn failure_cache_suppresses_retries_within_ttl() {
         let c = FailureCache::new(Duration::from_secs(600));
@@ -592,9 +741,10 @@ mod tests {
             .build()
             .unwrap();
         let icon = format!("https://{host}/logo.svg");
+        let url = fetch_target(&icon).unwrap();
         let dir = tempfile::tempdir().unwrap();
 
-        assert!(inline_one(&client, dir.path(), &icon).await.is_none());
+        assert!(inline_one(client.clone(), url).await.is_none());
         assert_eq!(dials.load(Ordering::SeqCst), 1);
         assert!(FAILURES.is_recent(&icon, Instant::now()));
 
@@ -607,11 +757,154 @@ mod tests {
             .unwrap()
             .set_modified(SystemTime::now() - CACHE_TTL - Duration::from_secs(60))
             .unwrap();
-        assert_eq!(
-            inline_one(&client, dir.path(), &icon).await.as_deref(),
-            Some("data:image/png;base64,AAAA")
-        );
+        let mut m = manifest("failing", &icon);
+        inline_all_with(dir.path(), &mut [&mut m], |url| {
+            inline_one(client.clone(), url)
+        })
+        .await;
+        assert_eq!(m.icon.as_deref(), Some("data:image/png;base64,AAAA"));
         assert_eq!(dials.load(Ordering::SeqCst), 1);
+    }
+
+    fn manifest(name: &str, icon: &str) -> PluginManifest {
+        serde_json::from_value(serde_json::json!({
+            "name": name, "version": "1.0.0", "providers": ["claude"], "declares": {},
+            "icon": icon,
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn inline_all_fetches_each_url_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let icon = "https://icons.example.com/shared.svg";
+        let uri = to_data_uri("image/svg+xml", SVG).unwrap();
+        let mut ms: Vec<_> = (0..3).map(|i| manifest(&format!("p{i}"), icon)).collect();
+        let calls = AtomicUsize::new(0);
+        let mut refs: Vec<_> = ms.iter_mut().collect();
+        inline_all_with(dir.path(), &mut refs, |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            let uri = uri.clone();
+            async move { Some(uri) }
+        })
+        .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        for m in &ms {
+            assert_eq!(m.icon.as_deref(), Some(uri.as_str()));
+        }
+    }
+
+    #[tokio::test]
+    async fn inline_all_uses_a_fresh_cached_copy_without_fetching() {
+        let dir = tempfile::tempdir().unwrap();
+        let icon = "https://icons.example.com/cached.svg";
+        write_cached(dir.path(), icon, "data:image/png;base64,AAAA");
+        let mut m = manifest("cached", icon);
+        let calls = AtomicUsize::new(0);
+        inline_all_with(dir.path(), &mut [&mut m], |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { None }
+        })
+        .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(m.icon.as_deref(), Some("data:image/png;base64,AAAA"));
+    }
+
+    /// The SSRF policy lives in `fetch_target`, ahead of any fetcher: an IP
+    /// literal never reaches the resolver that would otherwise vet it.
+    #[tokio::test]
+    async fn inline_all_only_fetches_what_fetch_target_accepts() {
+        let dir = tempfile::tempdir().unwrap();
+        let inline = "data:image/png;base64,AAAA";
+        let icons = [
+            "https://icons.example.com/ok.svg",
+            "http://icons.example.com/plain.svg",
+            "https://10.0.0.1/i.png",
+            "https://localhost/i.png",
+            inline,
+        ];
+        let mut ms: Vec<_> = icons.iter().map(|icon| manifest("p", icon)).collect();
+        let asked = Mutex::new(Vec::new());
+        let mut refs: Vec<_> = ms.iter_mut().collect();
+        inline_all_with(dir.path(), &mut refs, |url| {
+            asked.lock().push(url.to_string());
+            async { None }
+        })
+        .await;
+        assert_eq!(*asked.lock(), ["https://icons.example.com/ok.svg"]);
+        assert_eq!(ms[4].icon.as_deref(), Some(inline));
+    }
+
+    /// Tokio's clock is paused, so the fetcher sleeps and the budget runs
+    /// out in virtual time: no real waiting, and nothing to race.
+    #[tokio::test(start_paused = true)]
+    async fn inline_all_returns_within_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let icon = "https://slow-icons.example/logo.svg";
+        let mut m = manifest("slow", icon);
+        let started = tokio::time::Instant::now();
+        inline_all_with(dir.path(), &mut [&mut m], |_| async {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            to_data_uri("image/svg+xml", SVG)
+        })
+        .await;
+        let waited = started.elapsed();
+        assert!(waited < Duration::from_secs(4), "waited {waited:?}");
+        assert!(waited >= INLINE_BUDGET, "gave up after only {waited:?}");
+        assert_eq!(m.icon.as_deref(), Some(icon));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn inline_all_keeps_filling_the_cache_after_the_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let icon = "https://slow-icons.example/late.svg";
+        let uri = to_data_uri("image/svg+xml", SVG).unwrap();
+        let mut m = manifest("late", icon);
+        inline_all_with(dir.path(), &mut [&mut m], |_| {
+            let uri = uri.clone();
+            async move {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                Some(uri)
+            }
+        })
+        .await;
+        assert_eq!(m.icon.as_deref(), Some(icon));
+        assert_eq!(read_cached(dir.path(), icon, CACHE_TTL), None);
+
+        // The fetch outlives the load that gave up on it, so the next load
+        // finds the icon in the cache.
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        assert_eq!(read_cached(dir.path(), icon, CACHE_TTL), Some(uri));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn inline_all_runs_at_most_icon_concurrency_fetches_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ms: Vec<_> = (0..ICON_CONCURRENCY + 2)
+            .map(|i| format!("https://icons.example.com/{i}.svg"))
+            .map(|icon| manifest("p", &icon))
+            .collect();
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let mut refs: Vec<_> = ms.iter_mut().collect();
+        inline_all_with(dir.path(), &mut refs, |_| {
+            let (in_flight, peak) = (Arc::clone(&in_flight), Arc::clone(&peak));
+            async move {
+                let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+                to_data_uri("image/svg+xml", SVG)
+            }
+        })
+        .await;
+        // In parallel but never past the cap. Two one-second rounds fit the
+        // budget, so every icon arrives.
+        assert_eq!(peak.load(Ordering::SeqCst), ICON_CONCURRENCY);
+        for m in &ms {
+            let icon = m.icon.as_deref().unwrap();
+            assert!(icon.starts_with("data:image/svg+xml;"), "kept {icon}");
+        }
     }
 
     /// Live network. Proves the premise of this module end to end: the
