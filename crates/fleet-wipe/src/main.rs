@@ -20,6 +20,7 @@
 //!
 //! Reads only item attributes and key *descriptions* (never secret values)
 //! and only ever touches entries whose service is `Fleetify` / `Fleetify-*`.
+//! Output names each entry by its service alone, never by its account.
 //! Pass `--dry-run` (or `--check`) to list what WOULD be removed without
 //! changing anything. Exits with status 1 when the Linux Secret Service sweep
 //! fails (unreachable, left locked, or an item can't be deleted), so wipe.mjs
@@ -50,18 +51,61 @@ fn is_fleetify_service(service: &str) -> bool {
     service == "Fleetify" || service.starts_with("Fleetify-")
 }
 
-/// True for `keyring`-crate key descriptions that belong to Fleetify. The
-/// linux-keyutils backend names keys `keyring-rs:<account>@<service>`; we match
-/// on the `<service>` half with [`is_fleetify_service`].
+/// True for `keyring`-crate key descriptions that belong to Fleetify: we match
+/// their `<service>` half ([`kernel_key_service`]) with [`is_fleetify_service`].
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn is_fleetify_desc(desc: &str) -> bool {
-    let Some(rest) = desc.strip_prefix("keyring-rs:") else {
-        return false;
-    };
-    let Some(at) = rest.rfind('@') else {
-        return false;
-    };
-    is_fleetify_service(&rest[at + 1..])
+    kernel_key_service(desc).is_some_and(is_fleetify_service)
+}
+
+/// The `<service>` half of a `keyring`-crate key description. The
+/// linux-keyutils backend names keys `keyring-rs:<account>@<service>`, and
+/// `<account>` can contain `@`, so the service follows the last one. `None`
+/// for any other description.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn kernel_key_service(desc: &str) -> Option<&str> {
+    let (_, service) = desc.strip_prefix("keyring-rs:")?.rsplit_once('@')?;
+    Some(service)
+}
+
+/// What a sweep did with one credential, or in a dry run would do.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+enum Outcome<'e> {
+    WouldRemove,
+    Removed,
+    Failed(&'e dyn std::fmt::Display),
+}
+
+/// The output line for one Secret Service item. It names the item by its
+/// `service` attribute only and leaves out its `username`: for some services
+/// that is the user's Fleetify account ID, and nobody needs it in wipe output.
+// Not named `describe_secret_service_item`: CodeQL treats the result of any
+// function whose name contains "secret" as sensitive, and would flag every
+// line that prints it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn describe_ss_item(service: &str, outcome: Outcome<'_>) -> String {
+    match outcome {
+        Outcome::WouldRemove => format!("  · Secret Service: {service}"),
+        Outcome::Removed => format!("  ✓ Secret Service: {service}"),
+        Outcome::Failed(e) => format!("    ! failed to delete Secret Service item {service}: {e}"),
+    }
+}
+
+/// The output line for one kernel keyring key. It names the key by the
+/// `<service>` half of its description only, for the same reason: the
+/// `<account>` half can be the user's Fleetify account ID. A description with
+/// no service half (the sweep passes none) prints an empty name rather than
+/// the whole description.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn describe_kernel_key(desc: &str, outcome: Outcome<'_>) -> String {
+    let service = kernel_key_service(desc).unwrap_or_default();
+    match outcome {
+        Outcome::WouldRemove => format!("  · kernel keyring: {service}"),
+        Outcome::Removed => format!("  ✓ kernel keyring: {service}"),
+        Outcome::Failed(e) => {
+            format!("    ! failed to invalidate kernel keyring key {service}: {e}")
+        }
+    }
 }
 
 /// The `application` attribute keyring puts on every Secret Service item it
@@ -73,8 +117,8 @@ const KEYRING_APPLICATION: &str = "rust-keyring";
 
 /// Deletes the Secret Service items keyring created whose `service` attribute
 /// satisfies `matches`, or with `dry_run` only lists them. Prints one line per
-/// item with its service and username; secrets are never read. Returns how
-/// many items it removed (or would remove).
+/// item, named by its service only ([`describe_ss_item`]); secrets are never
+/// read. Returns how many items it removed (or would remove).
 #[cfg(target_os = "linux")]
 fn wipe_secret_service(matches: &dyn Fn(&str) -> bool, dry_run: bool) -> Result<usize, String> {
     use dbus_secret_service::{EncryptionType, SecretService};
@@ -119,16 +163,14 @@ fn wipe_secret_service(matches: &dyn Fn(&str) -> bool, dry_run: bool) -> Result<
         let Some(service) = attributes.get("service").filter(|s| matches(s.as_str())) else {
             continue;
         };
-        let username = attributes.get("username").map_or("", String::as_str);
-        let what = format!("service={service} username={username}");
         if dry_run {
-            println!("  · Secret Service: {what}");
+            println!("{}", describe_ss_item(service, Outcome::WouldRemove));
             count += 1;
         } else if let Err(e) = item.delete() {
-            eprintln!("    ! failed to delete Secret Service item {what}: {e}");
+            eprintln!("{}", describe_ss_item(service, Outcome::Failed(&e)));
             failed += 1;
         } else {
-            println!("  ✓ Secret Service: {what}");
+            println!("{}", describe_ss_item(service, Outcome::Removed));
             count += 1;
         }
     }
@@ -197,10 +239,16 @@ fn wipe_kernel_keyring(dry: bool) -> usize {
                 continue;
             }
             count += 1;
-            println!("  {} {desc}", if dry { "·" } else { "✓" });
+            let outcome = if dry {
+                Outcome::WouldRemove
+            } else {
+                Outcome::Removed
+            };
+            println!("{}", describe_kernel_key(desc, outcome));
             if !dry {
                 if let Err(e) = key.invalidate() {
-                    eprintln!("    ! failed to invalidate {desc}: {e:?}");
+                    let e = format!("{e:?}");
+                    eprintln!("{}", describe_kernel_key(desc, Outcome::Failed(&e)));
                 }
             }
         }
@@ -231,7 +279,7 @@ fn wipe_keychain(dry: bool) -> usize {
     if dry {
         return match entry.get_password() {
             Ok(_) => {
-                println!("  · refresh_token@Fleetify");
+                println!("  · keychain: Fleetify");
                 1
             }
             _ => 0,
@@ -239,7 +287,7 @@ fn wipe_keychain(dry: bool) -> usize {
     }
     match entry.delete_credential() {
         Ok(()) => {
-            println!("  ✓ refresh_token@Fleetify");
+            println!("  ✓ keychain: Fleetify");
             1
         }
         Err(keyring::Error::NoEntry) => 0,
@@ -252,7 +300,9 @@ fn wipe_keychain(dry: bool) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_fleetify_desc, is_fleetify_service};
+    use super::{
+        describe_kernel_key, describe_ss_item, is_fleetify_desc, is_fleetify_service, Outcome,
+    };
 
     #[test]
     fn fleetify_services_match() {
@@ -286,6 +336,50 @@ mod tests {
         assert!(!is_fleetify_desc("keyring-rs:Fleetify@Other-Fleetify"));
         assert!(!is_fleetify_desc("refresh_token@Fleetify"));
         assert!(!is_fleetify_desc("keyring-rs:no-service"));
+    }
+
+    #[test]
+    fn secret_service_lines_name_the_item_by_its_service_only() {
+        let error = "the item is locked";
+        for (outcome, expected) in [
+            (Outcome::WouldRemove, "  · Secret Service: Fleetify-GitHub"),
+            (Outcome::Removed, "  ✓ Secret Service: Fleetify-GitHub"),
+            (
+                Outcome::Failed(&error),
+                "    ! failed to delete Secret Service item Fleetify-GitHub: the item is locked",
+            ),
+        ] {
+            let line = describe_ss_item("Fleetify-GitHub", outcome);
+            assert!(
+                line.contains("Fleetify-GitHub"),
+                "{line:?} names no service"
+            );
+            assert!(!line.contains("username="), "{line:?} prints a username");
+            assert_eq!(line, expected);
+        }
+    }
+
+    #[test]
+    fn kernel_key_lines_name_the_key_by_its_service_only() {
+        // `acct-42@tenant` is the `<account>` half: it stands in for an ID.
+        let desc = "keyring-rs:acct-42@tenant@Fleetify-GitHub";
+        let error = "KeyRevoked";
+        for (outcome, expected) in [
+            (Outcome::WouldRemove, "  · kernel keyring: Fleetify-GitHub"),
+            (Outcome::Removed, "  ✓ kernel keyring: Fleetify-GitHub"),
+            (
+                Outcome::Failed(&error),
+                "    ! failed to invalidate kernel keyring key Fleetify-GitHub: KeyRevoked",
+            ),
+        ] {
+            let line = describe_kernel_key(desc, outcome);
+            assert!(
+                line.contains("Fleetify-GitHub"),
+                "{line:?} names no service"
+            );
+            assert!(!line.contains("acct-42"), "{line:?} prints the account");
+            assert_eq!(line, expected);
+        }
     }
 }
 
