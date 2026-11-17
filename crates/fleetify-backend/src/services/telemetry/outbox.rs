@@ -6,7 +6,7 @@
 //! Path: `<HOME>/.fleetify/telemetry-outbox.sqlite`. Created lazily on
 //! first use; same directory as device.json.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::Result;
@@ -50,6 +50,51 @@ pub async fn init_at(path: PathBuf) -> Result<()> {
     if POOL.get().is_some() {
         return Ok(());
     }
+    let pool = open(&path).await?;
+    let _ = POOL.set(pool);
+    Ok(())
+}
+
+/// `PRAGMA user_version` of an outbox whose rows were all queued under the
+/// cloud-sync consent gate, already minimised (`emitters::cloud_view`).
+/// A database at 0 comes from an older build, which queued every event,
+/// whatever the user chose, with activity summaries and full project paths.
+const OUTBOX_VERSION: i64 = 1;
+
+/// One-time data migrations. 0 → 1 drops every row: an older build queued
+/// them without consent and unminimised. Idempotent: a database already at
+/// `OUTBOX_VERSION` keeps its rows. Runs in `open`, so before `init_at`
+/// publishes the pool: no reader can see what it drops, whatever order
+/// startup runs in.
+async fn migrate(pool: &SqlitePool) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    let (version,): (i64,) = sqlx::query_as("PRAGMA user_version")
+        .fetch_one(&mut *tx)
+        .await?;
+    if version >= OUTBOX_VERSION {
+        return Ok(());
+    }
+    let dropped = sqlx::query("DELETE FROM telemetry_outbox")
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    sqlx::query(&format!("PRAGMA user_version = {OUTBOX_VERSION}"))
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    if dropped > 0 {
+        tracing::info!(
+            target: "fleetify.telemetry",
+            dropped,
+            "outbox: dropped events queued by builds without the cloud-sync consent gate"
+        );
+    }
+    Ok(())
+}
+
+/// Open the outbox at `path`: schema, legacy prune, one-time migrations.
+/// `init_at` publishes the pool only after this returns.
+async fn open(path: &Path) -> Result<SqlitePool> {
     let url = format!("sqlite://{}", path.to_string_lossy().replace('\\', "/"));
     let opts = SqliteConnectOptions::from_str(&url)?
         .create_if_missing(true)
@@ -85,12 +130,13 @@ pub async fn init_at(path: PathBuf) -> Result<()> {
         );
     }
 
-    let _ = POOL.set(pool);
-    Ok(())
+    migrate(&pool).await?;
+    Ok(pool)
 }
 
-/// Whether `init()` / `init_at()` has opened the pool. False in no-auth
-/// dev mode and after a failed init; nothing can be queued then.
+/// Whether `init()` / `init_at()` has opened the pool. False until the
+/// backend's startup gets there, in no-auth dev mode and after a failed
+/// init. Nothing can be queued or read then.
 pub(crate) fn is_initialised() -> bool {
     POOL.get().is_some()
 }
@@ -233,6 +279,128 @@ pub(crate) mod tests {
         let pending = peek_pending(10).await.unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].0, "evt-2");
+    }
+
+    // The migration tests below run on their own scratch databases, never
+    // on the process-wide POOL, so they need no TEST_LOCK.
+
+    /// An outbox file with the schema and no migrations: user_version 0,
+    /// like the database an older build leaves behind.
+    async fn unmigrated(path: &Path) -> SqlitePool {
+        let opts = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+        sqlx::query(DDL).execute(&pool).await.unwrap();
+        pool
+    }
+
+    async fn insert_row(pool: &SqlitePool, id: &str, payload: Value) {
+        sqlx::query("INSERT INTO telemetry_outbox (id, payload, enqueued_at) VALUES (?, ?, 0)")
+            .bind(id)
+            .bind(payload.to_string())
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn rows(pool: &SqlitePool) -> i64 {
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM telemetry_outbox")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        n
+    }
+
+    async fn user_version(pool: &SqlitePool) -> i64 {
+        let (v,): (i64,) = sqlx::query_as("PRAGMA user_version")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        v
+    }
+
+    #[tokio::test]
+    async fn migration_clears_rows_left_by_older_builds() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = unmigrated(&dir.path().join("ob.sqlite")).await;
+        insert_row(
+            &pool,
+            "old-1",
+            json!({ "kind": "activity", "activity_summary": "export TOKEN=x" }),
+        )
+        .await;
+        insert_row(
+            &pool,
+            "old-2",
+            json!({ "kind": "session_start", "project_path": "/home/u/work/fleetify" }),
+        )
+        .await;
+        assert_eq!(user_version(&pool).await, 0);
+
+        migrate(&pool).await.unwrap();
+        assert_eq!(rows(&pool).await, 0, "rows from older builds dropped");
+        assert_eq!(user_version(&pool).await, 1);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn rows_queued_after_the_migration_survive_the_next_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ob.sqlite");
+        let pool = unmigrated(&path).await;
+        migrate(&pool).await.unwrap();
+        insert_row(&pool, "new-1", json!({ "kind": "status_change" })).await;
+        pool.close().await;
+
+        // Next launch: the same file is opened and migrated again.
+        let pool = unmigrated(&path).await;
+        migrate(&pool).await.unwrap();
+        assert_eq!(
+            rows(&pool).await,
+            1,
+            "a row queued after the migration survives"
+        );
+        assert_eq!(user_version(&pool).await, 1);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn migration_marks_a_fresh_outbox_current() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = unmigrated(&dir.path().join("ob.sqlite")).await;
+        migrate(&pool).await.unwrap();
+        assert_eq!(user_version(&pool).await, 1);
+        assert_eq!(rows(&pool).await, 0);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn the_outbox_init_at_publishes_holds_no_rows_from_older_builds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ob.sqlite");
+        let legacy = unmigrated(&path).await;
+        insert_row(
+            &legacy,
+            "old-1",
+            json!({ "kind": "activity", "activity_summary": "rm -rf secret" }),
+        )
+        .await;
+        legacy.close().await;
+
+        // `open` is everything `init_at` does before it publishes the pool.
+        let pool = open(&path).await.unwrap();
+        assert_eq!(
+            rows(&pool).await,
+            0,
+            "older builds' rows visible to readers"
+        );
+        assert_eq!(user_version(&pool).await, 1);
+        pool.close().await;
     }
 
     #[tokio::test]

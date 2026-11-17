@@ -450,9 +450,10 @@ pub fn run() {
                 // Fleetify cloud sync starts closed in the backend. If the
                 // user turned it on, open it right away rather than after
                 // the warm-up below, so the backend's first heartbeat and
-                // early session events aren't dropped. Closing (and its
-                // purge) waits for the restore at the end of this task, once
-                // the backend has opened its outbox.
+                // early session events aren't dropped. Closing waits for the
+                // restore at the end of this task. Rows older builds queued
+                // depend on neither: the outbox drops them itself when it
+                // opens, before anything can read them.
                 if let Ok(dir) = handle.path().app_data_dir() {
                     let cfg = crate::shell::config::load_config_from(&dir);
                     if crate::shell::config::cloud_sync_from(&cfg) {
@@ -485,9 +486,10 @@ pub fn run() {
                 // consented to. Fresh installs land on default-off
                 // because telemetry_from returns Default on missing.
                 //
-                // Then restore the Fleetify cloud sync choice. A closed
-                // gate also purges anything still queued, including rows
-                // older builds queued while the channel was always on.
+                // Then restore the Fleetify cloud sync choice. Closing also
+                // purges what is still queued, if the backend has opened its
+                // outbox by now. Nothing orders this after that, so rows
+                // older builds queued are dropped by the outbox itself.
                 if let Ok(dir) = handle.path().app_data_dir() {
                     let cfg = crate::shell::config::load_config_from(&dir);
                     let telem = crate::shell::config::telemetry_from(&cfg);

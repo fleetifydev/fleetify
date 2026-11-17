@@ -7,8 +7,11 @@
 //! has restored the user's choice. While it is closed:
 //! - `emitters::enqueue_payload` writes nothing to the cloud outbox;
 //! - `ws_client::run_ws_client_loop` fetches no bearer, requests no ticket
-//!   and holds no socket;
-//! - the outbox stays empty, because every close purges it.
+//!   and holds no socket.
+//!
+//! Closing it purges the outbox, so nothing queued is sent later. Rows an
+//! older build queued (without consent, unminimised) never depend on that:
+//! the outbox drops them itself when it opens (`outbox::migrate`).
 //!
 //! The PostHog sink has its own consent gate (`posthog::set_enabled`);
 //! this one does not touch it.
@@ -29,9 +32,10 @@ pub fn cloud_enabled() -> bool {
 /// Turn cloud sync on or off: store the flag, purge the outbox when off,
 /// then wake the WS loop so it connects or drops its socket.
 ///
-/// Every `false` purges, not only an on→off change: the startup restore of
-/// a closed gate also clears rows that older builds queued while the
-/// channel was always on.
+/// Every `false` purges, not only an on→off change, so the startup restore
+/// of a closed gate also clears whatever this build queued earlier — when
+/// the outbox is open by then. Nothing orders that restore after the
+/// backend opens the outbox; see `purge_outbox`.
 pub async fn set_cloud_enabled(on: bool) {
     CLOUD_ENABLED.store(on, Ordering::SeqCst);
     if !on {
@@ -43,7 +47,10 @@ pub async fn set_cloud_enabled(on: bool) {
 
 async fn purge_outbox() {
     if !outbox::is_initialised() {
-        // No-auth dev mode or a failed init: nothing can have been queued.
+        // Not open yet (the startup restore can run before the backend
+        // opens it), or never (no-auth dev mode, failed init). Nothing can
+        // be read or sent without it, and when it opens it drops what older
+        // builds queued before any reader sees it (`outbox::migrate`).
         tracing::debug!(
             target: "fleetify.telemetry",
             "cloud sync off: outbox not open, nothing to purge"

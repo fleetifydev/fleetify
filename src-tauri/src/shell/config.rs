@@ -231,6 +231,27 @@ pub fn telemetry_set(cfg: &mut Value, telem: &TelemetryConfig) {
     }
 }
 
+/// Save the Fleetify cloud sync switch in `dir`'s `fleet.config.json`:
+/// read-merge-write `telemetry.cloud_sync_enabled`, stamping
+/// `cloud_sync_enabled_at` on the first opt-in only (turning it off, or on
+/// again later, keeps that time). `Err` carries a message fit for the user.
+pub fn persist_cloud_choice(dir: &Path, enabled: bool) -> Result<(), String> {
+    let mut cfg = load_config_from(dir);
+    let was_enabled = cloud_sync_from(&cfg);
+    let mut telem = telemetry_from(&cfg);
+    telem.cloud_sync_enabled = Some(enabled);
+    if enabled && !was_enabled && telem.cloud_sync_enabled_at.is_none() {
+        telem.cloud_sync_enabled_at = Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+        );
+    }
+    telemetry_set(&mut cfg, &telem);
+    save_config_to(dir, &cfg).map_err(|e| format!("Couldn't save the cloud sync setting: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -478,6 +499,46 @@ mod tests {
         telemetry_set(&mut cfg, &t);
         assert_eq!(cfg["telemetry"]["cloud_sync_enabled"], json!(true));
         assert_eq!(cfg["telemetry"]["cloud_sync_enabled_at"], json!(42));
+    }
+
+    #[test]
+    fn persisting_the_cloud_choice_writes_the_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        save_config_to(tmp.path(), &json!({"theme": "dark"})).unwrap();
+
+        persist_cloud_choice(tmp.path(), true).unwrap();
+        let cfg = load_config_from(tmp.path());
+        assert_eq!(cfg["telemetry"]["cloud_sync_enabled"], json!(true));
+        assert!(
+            cfg["telemetry"]["cloud_sync_enabled_at"].is_i64(),
+            "first opt-in stamped: {cfg}"
+        );
+        assert_eq!(cfg["theme"], json!("dark"), "other settings kept");
+        let first_opt_in = cfg["telemetry"]["cloud_sync_enabled_at"].clone();
+
+        persist_cloud_choice(tmp.path(), false).unwrap();
+        let cfg = load_config_from(tmp.path());
+        assert_eq!(cfg["telemetry"]["cloud_sync_enabled"], json!(false));
+        assert_eq!(cfg["telemetry"]["cloud_sync_enabled_at"], first_opt_in);
+
+        // Opting in again keeps the first opt-in time.
+        persist_cloud_choice(tmp.path(), true).unwrap();
+        let cfg = load_config_from(tmp.path());
+        assert_eq!(cfg["telemetry"]["cloud_sync_enabled"], json!(true));
+        assert_eq!(cfg["telemetry"]["cloud_sync_enabled_at"], first_opt_in);
+    }
+
+    #[test]
+    fn persisting_the_cloud_choice_reports_a_failed_save() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("a-file");
+        std::fs::write(&file, "not a folder").unwrap();
+        // The settings folder would have to live under a regular file.
+        let err = persist_cloud_choice(&file.join("settings"), false).unwrap_err();
+        assert!(
+            err.starts_with("Couldn't save the cloud sync setting: "),
+            "{err}"
+        );
     }
 
     #[test]

@@ -97,34 +97,37 @@ pub async fn telemetry_get_config(app: tauri::AppHandle) -> serde_json::Value {
     })
 }
 
-/// Settings → Privacy's Fleetify-cloud sync switch. Persists
-/// `telemetry.cloud_sync_enabled`, then sets the backend gate: turning it
+/// Settings → Privacy's Fleetify-cloud sync switch. Saves the choice
+/// (`config::persist_cloud_choice`), then sets the backend gate: turning it
 /// off purges anything still queued and drops the dashboard socket.
+///
+/// The gate follows the switch for this session even when the save fails,
+/// but the saved choice then still decides the next launch, so the failure
+/// is reported: `{ ok: false, error }`.
 #[tauri::command]
 pub async fn telemetry_set_cloud_enabled(
     app: tauri::AppHandle,
     enabled: bool,
 ) -> serde_json::Value {
-    if let Ok(dir) = app.path().app_data_dir() {
-        let mut cfg = config::load_config_from(&dir);
-        let was_enabled = config::cloud_sync_from(&cfg);
-        let mut telem = config::telemetry_from(&cfg);
-        telem.cloud_sync_enabled = Some(enabled);
-        // Stamp the first opt-in only; later off → on changes and turning
-        // it off keep the original time.
-        if enabled && !was_enabled && telem.cloud_sync_enabled_at.is_none() {
-            telem.cloud_sync_enabled_at = Some(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0),
-            );
-        }
-        config::telemetry_set(&mut cfg, &telem);
-        let _ = config::save_config_to(&dir, &cfg);
+    let saved = match app.path().app_data_dir() {
+        Ok(dir) => config::persist_cloud_choice(&dir, enabled),
+        Err(e) => Err(format!("Couldn't find Fleetify's settings folder: {e}")),
+    };
+    if let Err(error) = &saved {
+        tracing::warn!(
+            error = %error,
+            enabled,
+            "cloud sync setting not saved; it applies until Fleetify restarts"
+        );
     }
     fleetify_backend::services::telemetry::set_cloud_enabled(enabled).await;
-    serde_json::json!({ "ok": true })
+    match saved {
+        Ok(()) => serde_json::json!({ "ok": true }),
+        Err(error) => serde_json::json!({
+            "ok": false,
+            "error": format!("{error}. The change applies until Fleetify restarts."),
+        }),
+    }
 }
 
 #[tauri::command]
