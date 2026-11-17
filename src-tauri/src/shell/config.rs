@@ -5,6 +5,8 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -97,15 +99,44 @@ fn unix_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Save JSON config atomically (write `.tmp` then rename, so a crash
-/// mid-write doesn't corrupt the existing config file).
+/// Numbers this process's config temp files. With the pid in the name too,
+/// no two saves share a temp file, even across processes sharing the folder.
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Held around each save's write and rename. The privacy setters and the
+/// renderer's `config_set` can save at the same time; one at a time, the
+/// last rename wins whole.
+static SAVE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Save JSON config atomically: fill a temp file of this save's own
+/// (`fleet.config.json.<pid>.<n>.tmp`), flush it to disk, then rename it over
+/// the live file. A crash mid-save leaves the old file whole, and a save
+/// never renames a temp file another save is still filling. A failed save
+/// removes its temp file.
 pub fn save_config_to(path: &Path, cfg: &Value) -> std::io::Result<()> {
     std::fs::create_dir_all(path)?;
     let file = path.join(CONFIG_FILE);
-    let tmp = path.join(format!("{CONFIG_FILE}.tmp"));
-    std::fs::write(&tmp, serde_json::to_string_pretty(cfg).unwrap_or_default())?;
-    std::fs::rename(&tmp, &file)?;
-    Ok(())
+    let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.join(format!("{CONFIG_FILE}.{}.{n}.tmp", std::process::id()));
+    let body = serde_json::to_string_pretty(cfg).unwrap_or_default();
+    // A save that panicked while holding the lock left nothing half-done
+    // that the next one depends on.
+    let _guard = SAVE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let saved = write_synced(&tmp, body.as_bytes()).and_then(|()| std::fs::rename(&tmp, &file));
+    if saved.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    saved
+}
+
+/// Write `bytes` to a new file at `path` and flush it to disk, so the rename
+/// that follows can never publish an empty or partial file after a crash.
+fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut out = std::fs::File::create(path)?;
+    out.write_all(bytes)?;
+    out.sync_all()
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -400,6 +431,136 @@ mod tests {
         let v = json!({"theme":"dark","apiKeys":{"openai":"sk-test"}});
         save_config_to(tmp.path(), &v).unwrap();
         assert_eq!(load_config_from(tmp.path()), v);
+    }
+
+    /// Temp files left in `dir`.
+    fn temp_files(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect()
+    }
+
+    /// Reads `dir`'s live config over and over until stopped, as the app
+    /// does on every load, and lists each read that found it torn. Unix
+    /// only: there a rename replaces the file atomically even while a reader
+    /// has it open. On Windows an open reader can make the rename itself
+    /// fail, which is not what the test below asks.
+    #[cfg(unix)]
+    struct TornReader {
+        done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        reads: std::thread::JoinHandle<Vec<String>>,
+    }
+
+    #[cfg(unix)]
+    impl TornReader {
+        fn start(dir: std::sync::Arc<std::path::PathBuf>, filler_len: usize) -> Self {
+            let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let stop = std::sync::Arc::clone(&done);
+            let reads = std::thread::spawn(move || {
+                let mut torn = Vec::new();
+                while !stop.load(Ordering::Relaxed) {
+                    let Ok(bytes) = std::fs::read(dir.join(CONFIG_FILE)) else {
+                        torn.push("missing".to_string());
+                        continue;
+                    };
+                    match serde_json::from_slice::<Value>(&bytes) {
+                        Ok(cfg) if cfg["filler"].as_str().map(str::len) == Some(filler_len) => {}
+                        _ => torn.push(format!("{} bytes", bytes.len())),
+                    }
+                }
+                torn
+            });
+            Self { done, reads }
+        }
+
+        fn stop(self) -> Vec<String> {
+            self.done.store(true, Ordering::Relaxed);
+            self.reads.join().unwrap()
+        }
+    }
+
+    #[test]
+    fn concurrent_saves_all_succeed_and_the_live_file_always_parses() {
+        use std::sync::Arc;
+
+        // The privacy setters and the renderer's config_set can save at the
+        // same time. Large enough that one write takes a while, so they
+        // overlap.
+        const FILLER: usize = 256 * 1024;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = Arc::new(tmp.path().to_path_buf());
+        let filler = Arc::new("x".repeat(FILLER));
+        save_config_to(&dir, &json!({ "writer": -1, "filler": *filler })).unwrap();
+
+        #[cfg(unix)]
+        let reader = TornReader::start(Arc::clone(&dir), FILLER);
+
+        let writers: Vec<_> = (0..8)
+            .map(|writer| {
+                let (dir, filler) = (Arc::clone(&dir), Arc::clone(&filler));
+                std::thread::spawn(move || {
+                    (0..12)
+                        .map(|i| {
+                            save_config_to(
+                                &dir,
+                                &json!({ "writer": writer, "i": i, "filler": *filler }),
+                            )
+                            .map_err(|e| e.to_string())
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let failed: Vec<String> = writers
+            .into_iter()
+            .flat_map(|w| w.join().unwrap())
+            .filter_map(Result::err)
+            .collect();
+        #[cfg(unix)]
+        let torn = reader.stop();
+
+        assert!(failed.is_empty(), "saves that failed: {failed:?}");
+        #[cfg(unix)]
+        assert!(torn.is_empty(), "reads of a torn live file: {torn:?}");
+        let cfg = load_config_from(&dir);
+        assert_eq!(cfg["filler"].as_str().map(str::len), Some(FILLER));
+        assert!(temp_files(&dir).is_empty(), "{:?}", temp_files(&dir));
+        assert!(corrupt_backups(&dir).is_empty());
+    }
+
+    #[test]
+    fn a_failed_save_leaves_no_temp_file_and_the_old_file_whole() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A folder where the live file should be: the write works, the rename
+        // over it fails.
+        let live = tmp.path().join(CONFIG_FILE);
+        std::fs::create_dir(&live).unwrap();
+        std::fs::write(live.join("keep"), "x").unwrap();
+
+        assert!(save_config_to(tmp.path(), &json!({ "theme": "dark" })).is_err());
+
+        assert!(
+            temp_files(tmp.path()).is_empty(),
+            "{:?}",
+            temp_files(tmp.path())
+        );
+        assert_eq!(std::fs::read(live.join("keep")).unwrap(), b"x");
+    }
+
+    #[test]
+    fn a_save_never_writes_through_another_saves_temp_file() {
+        // The old fixed temp name, as a save from another writer would be
+        // filling it. Each save now has a temp file of its own.
+        let tmp = tempfile::tempdir().unwrap();
+        let other = tmp.path().join(format!("{CONFIG_FILE}.tmp"));
+        std::fs::write(&other, "half-written").unwrap();
+
+        save_config_to(tmp.path(), &json!({ "theme": "dark" })).unwrap();
+
+        assert_eq!(std::fs::read(&other).unwrap(), b"half-written");
+        assert_eq!(load_config_from(tmp.path()), json!({ "theme": "dark" }));
     }
 
     #[test]
