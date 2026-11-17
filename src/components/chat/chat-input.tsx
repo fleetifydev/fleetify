@@ -7,7 +7,7 @@ import {
   Sparkles, Undo2, Wand2, MoreHorizontal,
   Plug, RefreshCw, ArrowUp, SquareMousePointer,
 } from "lucide-react";
-import { folderName } from "@/lib/utils";
+import { folderName, getPlatform } from "@/lib/utils";
 import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import { humanizeToolName } from "@/lib/tool-names";
 import { searchProjectFiles, apiFetch, type FileSearchEntry, updateSession as apiUpdateSession, enhancePrompt } from "@/lib/api";
@@ -28,7 +28,7 @@ import { ProviderLogo } from "@/components/ui/provider-logo";
 import { RoutingChip } from "@/components/settings/routers/routing-chip";
 import { commandsForContext, type SlashCmdDef } from "@/lib/slash-commands";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
-import { isOnScreen, claimEscape, cardKeyOwnedElsewhere } from "@/hooks/use-escape-to-stop";
+import { isOnScreen, claimEscape, cardShortcut, cardShortcutOwnedElsewhere } from "@/hooks/use-escape-to-stop";
 import { paneOwnsInput } from "./pane-session-context";
 import { UnifiedModelPicker, type Effort as UMEffort } from "./unified-model-picker";
 import { buildPickerGroups, effortForDiscoveredModel, resolveDispatchTool, resolveModelChip, type PickerModel } from "@/lib/picker-groups";
@@ -1172,29 +1172,30 @@ export function ChatInput({
   const permVerb = permissionRequest
     ? (permissionRequest.tool_description ?? PERM_VERB[permTool] ?? humanizeToolName(permTool).toLowerCase())
     : "";
-  // Keyboard: Esc → deny, ⌘↵ → allow, ⌘⇧↵ → always allow. Pane guarded:
-  // a split view shows every pane's card at once, so only the pane that
-  // owns input answers (the focused pane, the same rule as Escape-to-stop).
-  // On-screen guarded so closing Settings / Library with Esc doesn't deny a
-  // request on the chat parked underneath. A key that belongs elsewhere
-  // answers nothing (`cardKeyOwnedElsewhere`): one a popover or modal claimed
-  // to close itself, one typed in a field outside this chat, or any key while
-  // a modal is open.
+  // Keyboard: Esc → deny, Mod+Enter → allow, Mod+Shift+Enter → always
+  // allow, with Mod as the labels show it: ⌘ on macOS, Ctrl elsewhere
+  // (`cardShortcut`). Pane guarded: a split view shows every pane's card at
+  // once, so only the pane that owns input answers (the focused pane, the
+  // same rule as Escape-to-stop). On-screen guarded so closing Settings /
+  // Library with Esc doesn't deny a request on the chat parked underneath.
+  // A key that belongs elsewhere answers nothing
+  // (`cardShortcutOwnedElsewhere`): one a popover or modal claimed to close
+  // itself, one typed in a field outside this chat, any key while a modal is
+  // open, and a Mod+Enter typed in any field or already acted on.
   useEffect(() => {
     if (!permissionRequest) return;
+    const platform = getPlatform();
     const handler = (e: KeyboardEvent) => {
       // Other keys return first, so typing never pays for the style walk.
-      if (e.key !== "Escape" && !(e.key === "Enter" && e.metaKey)) return;
-      if (cardKeyOwnedElsewhere(e, wrapperRef.current)) return;
+      const shortcut = cardShortcut(e, platform);
+      if (!shortcut) return;
+      if (cardShortcutOwnedElsewhere(e, shortcut, wrapperRef.current)) return;
       if (!paneOwnsInput(paneIdx, useAppStore.getState().focusedPaneIdx)) return;
       if (!isOnScreen(wrapperRef.current)) return;
-      if (e.key === "Escape") {
-        e.preventDefault(); onPermissionDeny?.(permissionRequest.id, permissionRequest.tool_name);
-      } else if (e.key === "Enter" && e.metaKey && e.shiftKey) {
-        e.preventDefault(); onPermissionAllowAlways?.(permissionRequest.id, permissionRequest.tool_name);
-      } else if (e.key === "Enter" && e.metaKey) {
-        e.preventDefault(); onPermissionAllow?.(permissionRequest.id, permissionRequest.tool_name);
-      }
+      e.preventDefault();
+      if (shortcut === "deny") onPermissionDeny?.(permissionRequest.id, permissionRequest.tool_name);
+      else if (shortcut === "allowAlways") onPermissionAllowAlways?.(permissionRequest.id, permissionRequest.tool_name);
+      else onPermissionAllow?.(permissionRequest.id, permissionRequest.tool_name);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);

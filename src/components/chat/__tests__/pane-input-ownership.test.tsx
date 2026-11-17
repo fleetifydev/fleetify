@@ -37,6 +37,14 @@ import { BrowserView } from "@/components/workspace/views/browser-view";
 import { useEscapeToStop, claimEscape } from "@/hooks/use-escape-to-stop";
 import { useAppStore } from "@/stores/app-store";
 import type { PermissionRequest } from "@/stores/chat-store";
+import { getPlatform } from "@/lib/utils";
+
+// The cards' Mod is Ctrl on Windows and Linux, ⌘ on macOS. happy-dom
+// reports Linux, so these tests press Ctrl.
+const MOD = { ctrlKey: true } as const;
+it("runs on the platform whose Mod these tests press", () => {
+  expect(getPlatform()).toBe("linux");
+});
 
 const PANES = ["agent-a", "agent-b"];
 
@@ -106,10 +114,10 @@ describe("Permission cards answer keys only in the pane that owns input", () => 
       expect(deny[1]).toHaveBeenCalledWith("req-1", "Bash");
     });
 
-    it("Meta+Enter allows only the focused pane's card", () => {
+    it("Mod+Enter allows only the focused pane's card", () => {
       splitView(1, "agent-a");
       const { allow } = renderPanes();
-      fireEvent.keyDown(document.body, { key: "Enter", metaKey: true });
+      fireEvent.keyDown(document.body, { key: "Enter", ...MOD });
       expect(allow[0]).not.toHaveBeenCalled();
       expect(allow[1]).toHaveBeenCalledTimes(1);
     });
@@ -242,11 +250,11 @@ function renderCardInChat(kind: CardKind) {
   return answer;
 }
 
-/** Every key a card answers: Escape, ⌘↵ and ⌘⇧↵. */
+/** Every key a card answers: Escape, Mod+Enter and Mod+Shift+Enter. */
 function pressCardKeys(target: Element) {
   fireEvent.keyDown(target, { key: "Escape" });
-  fireEvent.keyDown(target, { key: "Enter", metaKey: true });
-  fireEvent.keyDown(target, { key: "Enter", metaKey: true, shiftKey: true });
+  fireEvent.keyDown(target, { key: "Enter", ...MOD });
+  fireEvent.keyDown(target, { key: "Enter", ...MOD, shiftKey: true });
 }
 
 function expectPending(answer: ReturnType<typeof renderCardInChat>) {
@@ -258,7 +266,7 @@ function expectPending(answer: ReturnType<typeof renderCardInChat>) {
 describe("A key typed in a field outside the chat does not answer its permission card", () => {
   // A pending card is exactly when focus is somewhere else: the composer is
   // locked while it waits.
-  it.each(CARD_KINDS)("%s: Escape, ⌘↵ and ⌘⇧↵ typed in the sidebar search leave it pending", (kind) => {
+  it.each(CARD_KINDS)("%s: Escape, Mod+Enter and Mod+Shift+Enter typed in the sidebar search leave it pending", (kind) => {
     splitView(1);
     const answer = renderCardInChat(kind);
     pressCardKeys(screen.getByLabelText("sidebar search"));
@@ -284,7 +292,7 @@ describe("A key typed in a field outside the chat does not answer its permission
 });
 
 describe("While a modal is open, the permission card answers no key", () => {
-  it.each(CARD_KINDS)("%s: Escape, ⌘↵ and ⌘⇧↵ leave it pending, and it answers again once the modal is gone", (kind) => {
+  it.each(CARD_KINDS)("%s: Escape, Mod+Enter and Mod+Shift+Enter leave it pending, and it answers again once the modal is gone", (kind) => {
     // A modal whose Escape listener registered after the card's: the card's
     // handler runs while the modal is still open. (The other order is the
     // modal's claim, tested with each modal.)

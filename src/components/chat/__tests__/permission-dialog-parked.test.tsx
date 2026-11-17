@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, fireEvent } from "@testing-library/react";
 import { PermissionDialog } from "../permission-dialog";
 import type { PermissionRequest } from "@/stores/chat-store";
+import { getPlatform } from "@/lib/utils";
 
 const request: PermissionRequest = {
   id: "req-1",
@@ -49,11 +50,20 @@ describe("PermissionDialog while the shell is parked", () => {
     expect(onDeny).toHaveBeenCalledWith("req-1", "AskUserQuestion");
   });
 
-  it("does not answer the request on Meta+Enter while parked", () => {
+  it("does not answer the request on Mod+Enter while parked", () => {
+    // happy-dom reports Linux, where the cards' Mod is Ctrl.
+    expect(getPlatform()).toBe("linux");
     const onAllow = vi.fn();
     render(<Shell parked onAllow={onAllow} />);
-    fireEvent.keyDown(window, { key: "Enter", metaKey: true });
+    fireEvent.keyDown(window, { key: "Enter", ctrlKey: true });
     expect(onAllow).not.toHaveBeenCalled();
+  });
+
+  it("answers the request on Mod+Enter while it is visible", () => {
+    const onAllow = vi.fn();
+    render(<Shell parked={false} onAllow={onAllow} />);
+    fireEvent.keyDown(window, { key: "Enter", ctrlKey: true });
+    expect(onAllow).toHaveBeenCalledTimes(1);
   });
 
   it("does not compute styles for keys it does not handle", () => {

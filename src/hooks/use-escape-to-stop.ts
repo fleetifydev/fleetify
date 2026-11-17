@@ -1,4 +1,5 @@
 import { useEffect, type RefObject } from "react";
+import type { Platform } from "@/lib/utils";
 
 /** False when `el` or any ancestor is `display: none`.
  *
@@ -84,8 +85,23 @@ export function typedInFieldOutside(target: EventTarget | null, surface: Element
   return !surface?.contains(target);
 }
 
-/** True when a permission card must leave this key (Escape, ⌘↵ or ⌘⇧↵)
- *  alone. `card` is the card's root element.
+/** What a permission card does with a key. */
+export type CardShortcut = "deny" | "allow" | "allowAlways";
+
+/** The permission-card shortcut `e` is, on `platform`: Escape denies,
+ *  Mod+Enter allows and Mod+Shift+Enter always allows. Mod is the key the
+ *  cards' labels show (`formatShortcut(["Mod", …])`, also from
+ *  `getPlatform`): ⌘ on macOS, Ctrl on Windows and Linux. So Ctrl+Enter on
+ *  macOS, and the Windows or Super key elsewhere, is not a shortcut. */
+export function cardShortcut(e: KeyboardEvent, platform: Platform): CardShortcut | null {
+  if (e.key === "Escape") return "deny";
+  if (e.key !== "Enter" || !(platform === "mac" ? e.metaKey : e.ctrlKey)) return null;
+  return e.shiftKey ? "allowAlways" : "allow";
+}
+
+/** True when a permission card must leave this key (Escape, Mod+Enter or
+ *  Mod+Shift+Enter) alone. `card` is the card's root element. The cards
+ *  call it through `cardShortcutOwnedElsewhere`.
  *
  *  - A popover or modal claimed it to close itself (`escapeWasClaimed`).
  *  - It was typed in a field outside the card's chat (`typedInFieldOutside`).
@@ -101,6 +117,26 @@ export function cardKeyOwnedElsewhere(e: KeyboardEvent, card: Element | null): b
   if (escapeWasClaimed(e)) return true;
   if (typedInFieldOutside(e.target, card?.closest("[data-chat-surface]") ?? card)) return true;
   return modalOpen();
+}
+
+/** True when a permission card must leave `shortcut` alone.
+ *
+ *  Escape follows `cardKeyOwnedElsewhere`. Mod+Enter and Mod+Shift+Enter
+ *  are also left alone when another handler already acted on them
+ *  (`defaultPrevented`), or when they were typed in any field, this chat's
+ *  included. While a card waits the composer is locked and the card has no
+ *  fields, so a field with focus is another box whose own Mod+Enter sends,
+ *  such as the Fleet dispatch reply box. */
+export function cardShortcutOwnedElsewhere(
+  e: KeyboardEvent,
+  shortcut: CardShortcut,
+  card: Element | null,
+): boolean {
+  if (shortcut !== "deny") {
+    if (e.defaultPrevented) return true;
+    if (e.target instanceof Element && e.target.closest(FIELD)) return true;
+  }
+  return cardKeyOwnedElsewhere(e, card);
 }
 
 /** Escape aborts the in-flight response of one chat surface. The model:

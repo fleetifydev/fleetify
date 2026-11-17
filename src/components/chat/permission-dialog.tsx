@@ -2,7 +2,8 @@ import { useEffect, useRef } from "react";
 import type { PermissionRequest } from "@/stores/chat-store";
 import { useAppStore } from "@/stores/app-store";
 import { formatShortcut } from "@/lib/keyboard-shortcuts";
-import { isOnScreen, cardKeyOwnedElsewhere } from "@/hooks/use-escape-to-stop";
+import { getPlatform } from "@/lib/utils";
+import { isOnScreen, cardShortcut, cardShortcutOwnedElsewhere } from "@/hooks/use-escape-to-stop";
 import { paneOwnsInput } from "./pane-session-context";
 
 interface Props {
@@ -82,30 +83,32 @@ export function PermissionDialog({
    * card's visibility. The Escape that closes either of them must not
    * also deny the request hidden underneath.
    *
-   * Elsewhere guard (`cardKeyOwnedElsewhere`): a key that belongs to
+   * Elsewhere guard (`cardShortcutOwnedElsewhere`): a key that belongs to
    * something else answers nothing. That is the Escape a popover or modal
    * claimed to close itself, a key typed in a field outside this chat,
-   * and any key while a modal is open. The Escape that stops the stream
-   * is not a claim, so it still skips the question. */
+   * any key while a modal is open, and a Mod+Enter typed in any field or
+   * already acted on by another handler. The Escape that stops the stream
+   * is not a claim, so it still skips the question.
+   *
+   * Mod is the key the labels show (`cardShortcut`): ⌘ on macOS, Ctrl on
+   * Windows and Linux. */
   const rootRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
+    const platform = getPlatform();
     const handler = (e: KeyboardEvent) => {
-      // Only Esc and ⌘↵ / ⌘⇧↵ act. Return on any other key first, so
-      // ordinary typing never pays for isOnScreen's computed-style walk.
-      if (e.key !== "Escape" && !(e.key === "Enter" && e.metaKey)) return;
-      if (cardKeyOwnedElsewhere(e, rootRef.current)) return;
+      // Only Esc and Mod+Enter / Mod+Shift+Enter act. Return on any other
+      // key first, so ordinary typing never pays for isOnScreen's
+      // computed-style walk.
+      const shortcut = cardShortcut(e, platform);
+      if (!shortcut) return;
+      if (cardShortcutOwnedElsewhere(e, shortcut, rootRef.current)) return;
       if (!paneOwnsInput(paneIdx, useAppStore.getState().focusedPaneIdx)) return;
       if (!isOnScreen(rootRef.current)) return;
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onDeny(request.id, request.tool_name);
-      } else if (e.key === "Enter" && e.metaKey && e.shiftKey && !isQuestion) {
-        e.preventDefault();
-        onAllowAlways(request.id, request.tool_name);
-      } else if (e.key === "Enter" && e.metaKey) {
-        e.preventDefault();
-        onAllow(request.id, request.tool_name);
-      }
+      e.preventDefault();
+      if (shortcut === "deny") onDeny(request.id, request.tool_name);
+      // A question can't be always-allowed: Mod+Shift+Enter answers it once.
+      else if (shortcut === "allowAlways" && !isQuestion) onAllowAlways(request.id, request.tool_name);
+      else onAllow(request.id, request.tool_name);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
