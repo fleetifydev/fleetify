@@ -5,7 +5,7 @@ import { wsManager } from "@/services/ws-manager";
 import { stopSession, archiveSession } from "@/lib/api";
 import { git } from "@/lib/git-api";
 import { getPlatform, type Platform } from "@/lib/utils";
-import { isOnScreen } from "@/hooks/use-escape-to-stop";
+import { isOnScreen, modalOpen } from "@/hooks/use-escape-to-stop";
 
 /** Resolve the active session's project folder, or null if Fleet view. */
 function activeFolder(): string | null {
@@ -236,7 +236,8 @@ export const SHORTCUT_BINDINGS: ShortcutBinding[] = [
     // Escape — go back to Fleet if in an agent view and not streaming. Skips
     // when focus is in an editable / dialog / keep-focus element (those own
     // their Esc), so it never destroys a draft mid-compose. Also skips an
-    // Escape that a popover or menu already claimed to close itself.
+    // Escape that a popover or menu already claimed to close itself, and any
+    // Escape while a modal is open.
     id: "back-to-fleet",
     matches: (e, mod, shift) => e.key === "Escape" && !mod && !shift,
     run: (e, { state, chatState }) => {
@@ -258,9 +259,20 @@ export const SHORTCUT_BINDINGS: ShortcutBinding[] = [
           !!target.closest("[data-keep-focus='true']")
         );
       if (inEditable) return;
-      const { activeSessionId, staffSessionId } = state;
-      if (activeSessionId && activeSessionId !== staffSessionId) {
-        const cs = chatState.sessions[activeSessionId];
+      // Every key is the modal's while one is open, also when focus is
+      // outside it and the modal's own listener hasn't run yet.
+      if (modalOpen()) return;
+      // The session this Escape would stop. In a split view that is the
+      // focused pane's (the one Escape-to-stop serves); activeSessionId can
+      // name another session, e.g. the pane just closed. If that one is idle
+      // while the focused pane streams, acting here (preventDefault) would
+      // make the stop skip.
+      const { activeSessionId, staffSessionId, splitPaneIds, focusedPaneIdx } = state;
+      const sessionId = splitPaneIds.length > 1
+        ? splitPaneIds[Math.min(focusedPaneIdx, splitPaneIds.length - 1)] ?? null
+        : activeSessionId;
+      if (sessionId && sessionId !== staffSessionId) {
+        const cs = chatState.sessions[sessionId];
         if (!(cs?.isStreaming)) {
           e.preventDefault();
           state.setActiveSession(null);
