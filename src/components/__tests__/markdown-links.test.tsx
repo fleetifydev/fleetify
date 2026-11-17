@@ -4,7 +4,7 @@
  * app's commands answer only its own origin, the page could do nothing but
  * strand the user. A link to another site opens in the system browser; a
  * link to another page of the app's origin does nothing; a fragment
- * (`#usage`) still scrolls in place.
+ * (`#usage`) still scrolls in place, without touching the app's URL.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, createEvent } from "@testing-library/react";
@@ -68,8 +68,18 @@ function expectLinksToStayInTheApp() {
   expect(openExternal).toHaveBeenLastCalledWith("http://localhost:3000/");
   // Another page of the app's own origin: nothing happens.
   expect(followedInPlace("setup")).toBe(false);
-  // A fragment of the page scrolls in place.
-  expect(followedInPlace("usage")).toBe(true);
+  // A fragment scrolls to its element; the app's URL and hash stay as they
+  // are (the app reads its own hash: `#logos` shows a dev-only gallery).
+  const target = document.createElement("h2");
+  target.id = "usage";
+  const scroll = vi.fn();
+  target.scrollIntoView = scroll;
+  document.body.appendChild(target);
+  const before = window.location.href;
+  expect(followedInPlace("usage")).toBe(false);
+  expect(scroll).toHaveBeenCalledTimes(1);
+  expect(window.location.href).toBe(before);
+  target.remove();
   expect(openExternal).toHaveBeenCalledTimes(2);
 }
 

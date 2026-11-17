@@ -23,6 +23,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { claimEscape } from "@/hooks/use-escape-to-stop";
 import { useChatStore, selectSession } from "@/stores/chat-store";
 import { useAppStore } from "@/stores/app-store";
+import { MarkdownLink } from "@/components/markdown-link";
 import { useTypewriter } from "@/hooks/use-typewriter";
 import { highlightToHtml, highlightLines, langFromPath } from "@/lib/shiki";
 import { folderName } from "@/lib/utils";
@@ -1221,17 +1222,18 @@ function MarkdownBodyInner({ text }: { text: string }) {
           </a>
         );
       }
+      // Anything else goes where a link may take the user (MarkdownLink): the
+      // system browser for another site, never the app's own window. A
+      // target="_blank" link opened nothing: Tauri's webview swallows it.
       return (
-        <a
+        <MarkdownLink
           href={href}
-          target="_blank"
-          rel="noreferrer"
           style={{ color: "#58a6ff", textDecoration: "none" }}
           onMouseEnter={e => e.currentTarget.style.textDecoration = "underline"}
           onMouseLeave={e => e.currentTarget.style.textDecoration = "none"}
         >
           {children}
-        </a>
+        </MarkdownLink>
       );
     },
   }), [openFile, projectRoot]);

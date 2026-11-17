@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { linkTarget, openExternalUrl } from "@/lib/links";
+import { linkTarget, openExternalUrl, openLink, scrollToFragment } from "@/lib/links";
 
 /** The page a release build shows: the embedded backend's origin. */
 const APP = "http://127.0.0.1:8765/";
@@ -7,10 +7,13 @@ const APP = "http://127.0.0.1:8765/";
 const DEV = "http://localhost:3000/";
 
 describe("linkTarget", () => {
-  it("leaves a fragment of the current page to the webview", () => {
-    expect(linkTarget("#usage", APP)).toEqual({ kind: "anchor" });
-    expect(linkTarget("#", APP)).toEqual({ kind: "anchor" });
-    expect(linkTarget("http://127.0.0.1:8765/#usage", APP)).toEqual({ kind: "anchor" });
+  it("reads a fragment of the current page as the element to scroll to", () => {
+    expect(linkTarget("#usage", APP)).toEqual({ kind: "anchor", id: "usage" });
+    expect(linkTarget("#", APP)).toEqual({ kind: "anchor", id: "" });
+    expect(linkTarget("http://127.0.0.1:8765/#usage", APP)).toEqual({ kind: "anchor", id: "usage" });
+    expect(linkTarget("#caf%C3%A9", APP)).toEqual({ kind: "anchor", id: "café" });
+    // A fragment that doesn't decode is kept as it is.
+    expect(linkTarget("#100%", APP)).toEqual({ kind: "anchor", id: "100%" });
   });
 
   it("sends a link to another site to the system browser", () => {
@@ -55,6 +58,51 @@ describe("linkTarget", () => {
     ]) {
       expect(linkTarget(href, APP), String(href)).toEqual({ kind: "blocked" });
     }
+  });
+});
+
+describe("scrollToFragment", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("scrolls to the element and leaves the page's URL alone", () => {
+    // The app reads its own hash (`#logos` swaps the app for a dev gallery):
+    // a link must never set it.
+    const heading = document.createElement("h2");
+    heading.id = "logos";
+    document.body.appendChild(heading);
+    const scroll = vi.fn();
+    heading.scrollIntoView = scroll;
+    const before = window.location.href;
+    scrollToFragment("logos");
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(window.location.href).toBe(before);
+    expect(window.location.hash).toBe("");
+  });
+
+  it("does nothing when no element has that id", () => {
+    expect(() => scrollToFragment("nowhere")).not.toThrow();
+    expect(() => scrollToFragment("")).not.toThrow();
+    expect(window.location.hash).toBe("");
+  });
+});
+
+describe("openLink", () => {
+  const win = window as unknown as { electronAPI?: unknown };
+  afterEach(() => {
+    delete win.electronAPI;
+  });
+
+  it("opens a web or mail link in the system browser, and nothing else", () => {
+    const openExternal = vi.fn(() => Promise.resolve(true));
+    win.electronAPI = { openExternal };
+    openLink("https://example.com/source");
+    openLink("mailto:team@example.com");
+    for (const href of ["javascript:alert(1)", "file:///etc/hosts", "#usage", "/settings", "", undefined]) {
+      openLink(href);
+    }
+    expect(openExternal.mock.calls).toEqual([["https://example.com/source"], ["mailto:team@example.com"]]);
   });
 });
 

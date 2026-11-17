@@ -7,11 +7,12 @@
  * URL's hostname via Google's s2 favicon endpoint — cheap, no extra
  * deps, no auth — with a graceful fallback to a generic link icon
  * when the image errors. The whole row is a button that opens the
- * source in a new tab (Tauri's shell_open_external if available,
- * window.open otherwise).
+ * source in the system browser (`openLink`): a web or mail link only, as
+ * the source URLs come from the provider.
  */
 import { Link as LinkIcon, Globe } from "lucide-react";
 import type { CitationBlock } from "@/types/chat";
+import { openLink } from "@/lib/links";
 
 function hostname(url: string): string {
   try {
@@ -27,17 +28,6 @@ function faviconUrl(url: string): string | null {
     return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(h)}&sz=32`;
   } catch {
     return null;
-  }
-}
-
-function openLink(url: string) {
-  // Tauri provides shell_open_external via the preload bridge so links
-  // open in the user's default browser instead of inside the webview.
-  const w = window as unknown as { electronAPI?: { openExternal?: (u: string) => unknown } };
-  if (w.electronAPI?.openExternal) {
-    void w.electronAPI.openExternal(url);
-  } else {
-    window.open(url, "_blank", "noopener,noreferrer");
   }
 }
 

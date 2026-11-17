@@ -2,13 +2,23 @@
  * A drop that nothing on the page takes would make the engine load what was
  * dropped (a link, a URL, a file) in place of the app. The guard takes those
  * drops and does nothing with them. "Taken" is what the engine sees: a
- * cancelled dragenter / dragover / drop event.
+ * cancelled dragenter / dragover / drop event. The app's own drags are left
+ * to their targets, which decide the cursor themselves.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { installDropGuard, isTextEntry } from "@/lib/drop-guard";
 
 type DragType = "dragenter" | "dragover" | "drop";
 const DRAG_TYPES: DragType[] = ["dragenter", "dragover", "drop"];
+
+/** What a drag from outside the app carries: a file, a link, text, HTML. */
+const FILE = ["Files"];
+const LINK = ["text/uri-list", "text/plain"];
+const TEXT = ["text/plain"];
+const HTML = ["text/html", "text/plain"];
+/** The app's own drags: a sidebar session, a workspace pane. */
+const SESSION = ["application/x-fleet-session-id"];
+const PANE = ["application/fleet-pane"];
 
 let uninstall: () => void;
 beforeEach(() => {
@@ -19,10 +29,12 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-/** Dispatches a drag event of `type` on `target`, as the engine would. */
-function drag(type: DragType, target: Element, dataTransfer?: DataTransfer): Event {
+/** Dispatches a drag event of `type` carrying `types` on `target`, as the
+ *  engine would. happy-dom's DataTransfer lists a file by its MIME type, not
+ *  as "Files", so the drag data is a plain object. */
+function drag(type: DragType, target: Element, types: string[], files: File[] = []): Event {
   const event = new Event(type, { bubbles: true, cancelable: true });
-  if (dataTransfer) Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+  Object.defineProperty(event, "dataTransfer", { value: { types, files } });
   target.dispatchEvent(event);
   return event;
 }
@@ -36,12 +48,32 @@ function add(html: string): HTMLElement {
 }
 
 describe("a drop nothing on the page handles never navigates the window", () => {
-  it("is taken anywhere else: a dropped link, URL, text or file goes nowhere", () => {
+  it("takes a file, link, text or HTML drop from outside the app anywhere else", () => {
     const sidebar = add("<nav><a href='https://example.com/'>a link</a></nav>");
     for (const target of [sidebar, sidebar.firstElementChild!, document.body]) {
-      for (const type of DRAG_TYPES) {
-        expect(drag(type, target).defaultPrevented, `${type} on ${target.tagName}`).toBe(true);
+      for (const types of [FILE, LINK, TEXT, HTML]) {
+        for (const type of DRAG_TYPES) {
+          expect(drag(type, target, types).defaultPrevented, `${type} ${types} on ${target.tagName}`).toBe(true);
+        }
       }
+    }
+  });
+
+  it("leaves the app's own drags to their targets", () => {
+    // The sidebar leaves an illegal drop target uncancelled on purpose, so
+    // the cursor says no-drop: the guard must not cancel it either.
+    const row = add("<div class='session-row'></div>");
+    for (const types of [SESSION, PANE, [...SESSION, "text/plain"]]) {
+      for (const type of DRAG_TYPES) {
+        expect(drag(type, row, types).defaultPrevented, `${type} ${types}`).toBe(false);
+      }
+    }
+  });
+
+  it("leaves a drag of nothing the engine would load alone", () => {
+    const panel = add("<div></div>");
+    for (const types of [[], ["application/json"]]) {
+      expect(drag("drop", panel, types).defaultPrevented, `${types}`).toBe(false);
     }
   });
 
@@ -55,14 +87,13 @@ describe("a drop nothing on the page handles never navigates the window", () => 
       const files = (event as DragEvent).dataTransfer?.files ?? [];
       received.push(...Array.from(files, (file) => file.name));
     });
-    const files = new DataTransfer();
-    files.items.add(new File(["# notes"], "notes.md", { type: "text/markdown" }));
-    expect(drag("dragover", composer, files).defaultPrevented).toBe(true);
-    expect(drag("drop", composer, files).defaultPrevented).toBe(true);
+    const notes = new File(["# notes"], "notes.md", { type: "text/markdown" });
+    expect(drag("dragover", composer, FILE, [notes]).defaultPrevented).toBe(true);
+    expect(drag("drop", composer, FILE, [notes]).defaultPrevented).toBe(true);
     expect(received).toEqual(["notes.md"]);
   });
 
-  it("lets the engine drop text into a field you can type in", () => {
+  it("lets the engine drop text or a link into a field you can type in", () => {
     const fields = [
       add("<textarea></textarea>"),
       add("<input type='text'>"),
@@ -72,8 +103,19 @@ describe("a drop nothing on the page handles never navigates the window", () => 
     ];
     for (const field of fields) {
       expect(isTextEntry(field), field.outerHTML).toBe(true);
+      for (const types of [TEXT, LINK, HTML]) {
+        for (const type of DRAG_TYPES) {
+          expect(drag(type, field, types).defaultPrevented, `${type} ${types} on ${field.outerHTML}`).toBe(false);
+        }
+      }
+    }
+  });
+
+  it("cancels a file drop nothing handles, even over a text field", () => {
+    // A text field can't take a file, and the engine may load it instead.
+    for (const field of [add("<textarea></textarea>"), add("<input type='text'>")]) {
       for (const type of DRAG_TYPES) {
-        expect(drag(type, field).defaultPrevented, `${type} on ${field.outerHTML}`).toBe(false);
+        expect(drag(type, field, FILE).defaultPrevented, `${type} on ${field.outerHTML}`).toBe(true);
       }
     }
   });
@@ -87,13 +129,13 @@ describe("a drop nothing on the page handles never navigates the window", () => 
       add("<button>Send</button>"),
     ]) {
       expect(isTextEntry(field), field.outerHTML).toBe(false);
-      expect(drag("drop", field).defaultPrevented, field.outerHTML).toBe(true);
+      expect(drag("drop", field, LINK).defaultPrevented, field.outerHTML).toBe(true);
     }
   });
 
   it("stops when it is uninstalled", () => {
     uninstall();
     const panel = add("<div></div>");
-    expect(drag("drop", panel).defaultPrevented).toBe(false);
+    expect(drag("drop", panel, LINK).defaultPrevented).toBe(false);
   });
 });
