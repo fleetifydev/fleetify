@@ -1115,9 +1115,9 @@ function ThemeWidget({ onConfirm }: { onConfirm: (mode: ThemeMode) => void }) {
 
 /* ── ConsentWidget — two-button choice for a privacy step ──
    Used for dashboard sync (on by default: keep it on or turn it off) and
-   product analytics (off by default: opt in or not). Either choice
-   resolves the widget and advances onboarding — refusal is not a
-   blocker.                                                           */
+   product analytics (off by default: opt in or not). Both buttons look
+   the same, so neither choice is pushed. Either choice resolves the
+   widget and advances onboarding — refusal is not a blocker.         */
 function ConsentWidget({
   yesLabel,
   noLabel,
@@ -1133,6 +1133,18 @@ function ConsentWidget({
     setBusy(true);
     onChoice(enabled);
   };
+  const buttonStyle: CSSProperties = {
+    padding: "9px 16px",
+    borderRadius: 8,
+    background: "var(--secondary)",
+    color: "var(--c-high)",
+    border: "1px solid rgba(255,255,255,0.08)",
+    cursor: busy ? "default" : "pointer",
+    fontSize: 13,
+    fontWeight: 500,
+    opacity: busy ? 0.6 : 1,
+    transition: "all 0.2s ease",
+  };
   return (
     <div
       style={{
@@ -1142,40 +1154,10 @@ function ConsentWidget({
         flexWrap: "wrap",
       }}
     >
-      <button
-        onClick={() => pick(true)}
-        disabled={busy}
-        style={{
-          padding: "9px 16px",
-          borderRadius: 8,
-          background: ONB_BTN_BG,
-          color: ONB_BTN_FG,
-          border: "none",
-          cursor: busy ? "default" : "pointer",
-          fontSize: 13,
-          fontWeight: 600,
-          opacity: busy ? 0.6 : 1,
-          transition: "all 0.2s ease",
-        }}
-      >
+      <button onClick={() => pick(true)} disabled={busy} style={buttonStyle}>
         {yesLabel}
       </button>
-      <button
-        onClick={() => pick(false)}
-        disabled={busy}
-        style={{
-          padding: "9px 16px",
-          borderRadius: 8,
-          background: "var(--secondary)",
-          color: "var(--c-high)",
-          border: "1px solid rgba(255,255,255,0.08)",
-          cursor: busy ? "default" : "pointer",
-          fontSize: 13,
-          fontWeight: 500,
-          opacity: busy ? 0.6 : 1,
-          transition: "all 0.2s ease",
-        }}
-      >
+      <button onClick={() => pick(false)} disabled={busy} style={buttonStyle}>
         {noLabel}
       </button>
     </div>

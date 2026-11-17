@@ -94,6 +94,24 @@ describe("onboarding privacy questions", () => {
     expect(enterFleet()).toBeDisabled();
   });
 
+  it("gives both choices of each privacy step the same look, in the same order", async () => {
+    /** Both buttons share one inline style, the quiet one, yes before no. */
+    function expectEqualWeight(yes: string, no: string) {
+      const yesButton = screen.getByRole("button", { name: yes });
+      const noButton = screen.getByRole("button", { name: no });
+      expect(yesButton.getAttribute("style")).toBe(noButton.getAttribute("style"));
+      expect(yesButton.getAttribute("style")).toContain("var(--secondary)");
+      expect(yesButton.style.fontWeight).toBe("500");
+      expect(
+        yesButton.compareDocumentPosition(noButton) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    }
+    await pickTheme();
+    expectEqualWeight("Keep it on", "Turn it off");
+    await answer("Keep it on");
+    expectEqualWeight("Sure, help out", "Not now");
+  });
+
   it("Keep it on saves dashboard sync on, then asks about product analytics verbatim", async () => {
     await pickTheme();
     await answer("Keep it on");
