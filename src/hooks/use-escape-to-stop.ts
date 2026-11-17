@@ -15,28 +15,33 @@ export function isOnScreen(el: Element | null): boolean {
 
 /** True when this Escape belongs to something other than the chat underneath:
  *
- *  - `defaultPrevented`: a handler that ran first already acted on it. Help and
- *    the confirm dialog do this from `document`, ahead of any window listener.
- *    So does the first of two Escape-to-stop registrations for one stream, so
- *    the second one skips.
+ *  - `defaultPrevented`: a handler that ran first already acted on it. An
+ *    overlay's Escape handler calls preventDefault before it closes. That
+ *    matters most when its listener runs ahead of ours: by the time ours runs,
+ *    the overlay may already be gone from the DOM.
  *  - The key was pressed inside a dialog or a `data-keep-focus` widget.
- *  - A modal dialog is open, wherever focus is. */
+ *  - A modal is open, wherever focus is. Any `aria-modal="true"` element
+ *    counts, whatever its role (the confirm dialog is an `alertdialog`). This
+ *    covers an overlay whose own listener has not run yet. */
 export function escapeOwnedElsewhere(e: KeyboardEvent): boolean {
   if (e.defaultPrevented) return true;
   const target = e.target;
   if (target instanceof Element && target.closest("[role='dialog'], [data-keep-focus='true']")) return true;
-  return document.querySelector("[role='dialog'][aria-modal='true']") !== null;
+  return document.querySelector("[aria-modal='true']") !== null;
 }
 
-/** Escape aborts the in-flight response — but only for a chat surface the user
- *  can actually see. Settings and Library close on Escape too; without the
- *  visibility check that same keypress reached the parked chat underneath and
- *  cut its stream mid-answer.
+/** Escape aborts the in-flight response of one chat surface. The model:
  *
- *  It also leaves alone an Escape that something else owns
- *  (`escapeOwnedElsewhere`). That covers an open overlay. It also covers the
- *  second registration for the same stream: ChatView and ChatInput both
- *  register, and both are on screen. */
+ *  - One registration per chat view. ChatView registers. ChatInput, which sits
+ *    inside it, does not.
+ *  - The caller passes `active` only while that chat is streaming and owns the
+ *    key. In a split view, that means the focused pane. Every pane is on screen,
+ *    so visibility alone cannot pick one (see `usePaneEscapeToStop` in
+ *    chat-view.tsx).
+ *  - The chat must be on screen. Settings and Library park the shell under
+ *    `display: none`, and the Escape that closes them must not reach the chat.
+ *  - An Escape that something else already owns (`escapeOwnedElsewhere`) is
+ *    left alone. That covers an open overlay, or a handler that acted first. */
 export function useEscapeToStop(
   surface: RefObject<Element | null>,
   active: boolean,

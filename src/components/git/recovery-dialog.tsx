@@ -121,7 +121,9 @@ export function RecoveryDialog({
   }, [folder, errorMessage, tool, context, baseBranch]);
 
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    // preventDefault marks the key handled, so Escape-to-stop on the chat
+    // underneath leaves it alone.
+    const h = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); onClose(); } };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
@@ -172,6 +174,7 @@ export function RecoveryDialog({
       <div
         onClick={e => e.stopPropagation()}
         role="dialog"
+        aria-modal="true"
         aria-label="Recovery"
         style={{
           width: "min(640px, 92vw)",

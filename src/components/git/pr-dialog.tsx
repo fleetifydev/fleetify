@@ -151,7 +151,9 @@ export function PRDialog({
   // not slip past the disabled Create button while it's in flight.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && phase !== "creating") onClose();
+      // preventDefault marks the key handled, so Escape-to-stop on the chat
+      // underneath leaves it alone.
+      if (e.key === "Escape" && phase !== "creating") { e.preventDefault(); onClose(); }
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && phase === "compose") {
         e.preventDefault();
         if (title.trim() && authReady && authMethod !== "none" && !genField) submit();
@@ -213,6 +215,9 @@ export function PRDialog({
     >
       <div
         onClick={e => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Pull request"
         style={{
           width: 600, maxWidth: "100%", maxHeight: "88vh",
           display: "flex", flexDirection: "column",

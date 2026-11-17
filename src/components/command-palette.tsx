@@ -420,8 +420,13 @@ export function CommandPalette({ open, onClose, onAction }: Props) {
         }}
       />
 
-      {/* Modal */}
+      {/* Modal. aria-modal makes Escape-to-stop leave this Escape alone even
+          though this listener runs after the chat's: it re-registers every
+          time the palette opens. */}
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Command palette"
         style={{
           position: "fixed",
           top: "14vh",

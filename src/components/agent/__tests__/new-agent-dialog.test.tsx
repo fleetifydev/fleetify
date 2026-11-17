@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { escapeOwnedElsewhere } from "@/hooks/use-escape-to-stop";
 
 const { createSessionMock } = vi.hoisted(() => ({
   createSessionMock: vi.fn().mockResolvedValue({ id: "s1" }),
@@ -156,5 +157,23 @@ describe("NewAgentDialog — use_worktree wiring + folderInGit", () => {
 
     // Restore for downstream tests
     Object.defineProperty(window, "electronAPI", { configurable: true, value: original });
+  });
+});
+
+// The dialog is drawn over the chat. Escape-to-stop must leave alone the Escape
+// that closes it, whichever listener runs first. Before the dialog's handler
+// runs, the open dialog is an aria-modal surface. After it runs, the key is
+// marked handled.
+describe("NewAgentDialog owns Escape", () => {
+  it("is a modal surface while open and marks Escape handled when it closes", async () => {
+    const { NewAgentDialog } = await loadDialog();
+    const onClose = vi.fn();
+    render(<NewAgentDialog onClose={onClose} />);
+    const modal = document.querySelectorAll("[aria-modal='true']");
+    expect(modal).toHaveLength(1);
+    expect(modal[0]).toHaveAccessibleName("New Agent");
+    expect(escapeOwnedElsewhere(new KeyboardEvent("keydown", { key: "Escape" }))).toBe(true);
+    expect(fireEvent.keyDown(document.body, { key: "Escape" })).toBe(false); // preventDefault was called
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

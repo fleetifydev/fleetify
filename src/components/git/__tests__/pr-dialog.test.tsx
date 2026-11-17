@@ -70,6 +70,7 @@ vi.mock("@/lib/git-api", async () => {
 vi.mock("@/lib/github-link-api", () => ({ github: ghMock }));
 
 import { PRDialog } from "../pr-dialog";
+import { escapeOwnedElsewhere } from "@/hooks/use-escape-to-stop";
 
 const samplePayload = {
   access_token: "gho_x", refresh_token: "ghr_y",
@@ -373,5 +374,24 @@ describe("PRDialog feature-branch carve", () => {
   it("omits featureBranch when the session is already on its feature branch", async () => {
     const opts = await submitWith(undefined);
     expect("featureBranch" in opts).toBe(false);
+  });
+});
+
+// Escape-to-stop leaves alone an Escape that an overlay owns, whichever window
+// listener runs first. Before the dialog's handler runs, the open dialog is an
+// aria-modal surface. After it runs, the key is marked handled.
+describe("PRDialog owns Escape", () => {
+  it("is a modal surface while open and marks Escape handled when it closes", async () => {
+    gitMock.hasGhCli.mockResolvedValue({ ok: true, version: "2.55.0", authed: true, ghLogin: "octocat" });
+    ghMock.getLink.mockResolvedValue({ ok: false, link: null });
+    const onClose = vi.fn();
+    render(<PRDialog folder="/some/repo" branch="feat/x" baseBranch="main" onClose={onClose} />);
+    await waitFor(() => expect(screen.getByText(/@octocat/)).toBeInTheDocument());
+    const modal = document.querySelectorAll("[aria-modal='true']");
+    expect(modal).toHaveLength(1);
+    expect(modal[0]).toHaveAccessibleName("Pull request");
+    expect(escapeOwnedElsewhere(new KeyboardEvent("keydown", { key: "Escape" }))).toBe(true);
+    expect(fireEvent.keyDown(document.body, { key: "Escape" })).toBe(false); // preventDefault was called
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

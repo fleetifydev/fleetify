@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState, useMemo, memo } from "react";
+import { useEffect, useRef, useCallback, useState, useMemo, memo, type RefObject } from "react";
 import Lenis from "lenis";
 import { useAppStore, COMPOSER_CHAT_KEY } from "@/stores/app-store";
 import { useChatStore, selectSession, typeOutAssistantMessage, pushChatError } from "@/stores/chat-store";
@@ -158,6 +158,29 @@ const MessageList = memo(function MessageList({
     </>
   );
 });
+
+/** Escape aborts this chat's stream. Each chat view registers once.
+ *
+ *  A split view mounts one ChatView per pane, and every pane is on screen, so
+ *  only the focused pane may own the key. Window listeners fire in the order
+ *  they were registered, which is the order the streams started. Without this
+ *  gate, Escape stopped the pane that started streaming first, not the one the
+ *  user was in.
+ *
+ *  Why `focusedPaneIdx` and not `activeSessionId`: `focusedPaneIdx` is always
+ *  clamped to a live pane and drives the highlighted border. `activeSessionId`
+ *  goes stale when a third pane is added or a pane is removed.
+ *
+ *  The single (non-split) view has no `paneIdx`, so it always owns Escape. */
+export function usePaneEscapeToStop(
+  surface: RefObject<Element | null>,
+  paneIdx: number | undefined,
+  streaming: boolean,
+  onStop: () => void,
+): void {
+  const ownsEscape = useAppStore((s) => paneIdx === undefined || s.focusedPaneIdx === paneIdx);
+  useEscapeToStop(surface, streaming && ownsEscape, onStop);
+}
 
 export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   /** When set, this ChatView instance is rendering inside a split-
@@ -967,9 +990,9 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     if (effectiveSessionId) wsManager.abort(effectiveSessionId);
   }, [effectiveSessionId]);
 
-  // Global ESC to abort streaming
+  // Global ESC to abort streaming. In a split view, only the focused pane's.
   const surfaceRef = useRef<HTMLDivElement>(null);
-  useEscapeToStop(surfaceRef, isStreaming, handleStop);
+  usePaneEscapeToStop(surfaceRef, paneIdx, isStreaming, handleStop);
 
   const handleModelChange = useCallback((sessionId: string, modelId: string) => {
     updateSession(sessionId, { model_name: modelId });

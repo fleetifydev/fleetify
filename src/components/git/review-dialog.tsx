@@ -91,8 +91,10 @@ export function ReviewDialog({
   };
 
   // ESC closes the dialog. Matches the Create PR dialog's affordance.
+  // preventDefault marks the key handled, so Escape-to-stop on the chat
+  // underneath leaves it alone.
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const h = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); onClose(); } };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
@@ -120,6 +122,7 @@ export function ReviewDialog({
       <div
         onClick={e => e.stopPropagation()}
         role="dialog"
+        aria-modal="true"
         aria-label="Code review"
         style={{
           width: "min(720px, 92vw)",

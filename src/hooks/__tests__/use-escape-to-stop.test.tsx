@@ -82,16 +82,32 @@ describe("useEscapeToStop stops a stream once", () => {
 });
 
 describe("useEscapeToStop leaves Escape to an overlay", () => {
-  it("does not stop while a modal dialog is open", () => {
+  // Any aria-modal surface counts, whatever its role: Help is a dialog, while
+  // the confirm dialog is an alertdialog.
+  it.each(["dialog", "alertdialog"])("does not stop while a modal %s is open", (role) => {
     const onStop = vi.fn();
     render(
       <>
         <Harness parked={false} active onStop={onStop} />
-        <div role="dialog" aria-modal="true">Help</div>
+        <div role={role} aria-modal="true">Modal</div>
       </>,
     );
     pressEscape();
     expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it("still stops while a non-modal popover is open", () => {
+    // The Create PR auth picker is role="dialog" aria-modal="false". With
+    // focus outside it, it does not own Escape.
+    const onStop = vi.fn();
+    render(
+      <>
+        <Harness parked={false} active onStop={onStop} />
+        <div role="dialog" aria-modal="false">Popover</div>
+      </>,
+    );
+    pressEscape();
+    expect(onStop).toHaveBeenCalledTimes(1);
   });
 
   it("does not stop when Escape is pressed inside a dialog", () => {

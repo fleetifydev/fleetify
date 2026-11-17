@@ -55,7 +55,9 @@ export function PreflightDialog({
   const [progress, setProgress] = useState<{ done: number; total: number; current?: string }>({ done: 0, total: 0 });
 
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === "Escape") onCancel(); };
+    // preventDefault marks the key handled, so Escape-to-stop on the chat
+    // underneath leaves it alone.
+    const h = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); onCancel(); } };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [onCancel]);
@@ -123,6 +125,7 @@ export function PreflightDialog({
       <div
         onClick={e => e.stopPropagation()}
         role="dialog"
+        aria-modal="true"
         aria-label="Pre-flight checks"
         style={{
           width: "min(640px, 92vw)",

@@ -333,6 +333,9 @@ function Pane({
     <div
       ref={wrapRef}
       onClick={onFocus}
+      // Keyboard focus (Tab) moving into the pane focuses it too, not only a
+      // click. Escape-to-stop follows the focused pane.
+      onFocusCapture={onFocus}
       onDragOver={(e) => {
         if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
         e.preventDefault();

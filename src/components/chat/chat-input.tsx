@@ -28,7 +28,7 @@ import { ProviderLogo } from "@/components/ui/provider-logo";
 import { RoutingChip } from "@/components/settings/routers/routing-chip";
 import { commandsForContext, type SlashCmdDef } from "@/lib/slash-commands";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
-import { useEscapeToStop, isOnScreen } from "@/hooks/use-escape-to-stop";
+import { isOnScreen } from "@/hooks/use-escape-to-stop";
 import { UnifiedModelPicker, type Effort as UMEffort } from "./unified-model-picker";
 import { buildPickerGroups, effortForDiscoveredModel, resolveDispatchTool, resolveModelChip, type PickerModel } from "@/lib/picker-groups";
 import { permissionCapabilityFor, permissionModesFor, defaultPermissionMode, isLoudMode, toolMatrixFor, parseToolOverrides, sandboxOptionsFor } from "@/lib/capabilities";
@@ -1445,8 +1445,8 @@ export function ChatInput({
     else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
   }, [slashIndex, slashOpen, slashQuery]);
 
-  /* ESC → stop streaming */
-  useEscapeToStop(wrapperRef, !!streaming, onStop);
+  // Escape → stop streaming is registered once, by ChatView, on the surface
+  // that contains this composer (usePaneEscapeToStop).
 
   /* auto-resize textarea */
   const adjust = useCallback(() => {

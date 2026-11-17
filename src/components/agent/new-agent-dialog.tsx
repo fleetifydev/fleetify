@@ -307,7 +307,9 @@ export function NewAgentView({ onClose }: Props) {
   }, [showTpl]);
   useEffect(() => { setTimeout(() => pathRef.current?.focus(), 80); }, []);
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    // preventDefault marks the key handled, so Escape-to-stop on the chat
+    // underneath leaves it alone.
+    const h = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); onClose(); } };
     document.addEventListener("keydown", h); return () => document.removeEventListener("keydown", h);
   }, [onClose]);
   useEffect(() => {
@@ -598,7 +600,7 @@ export function NewAgentView({ onClose }: Props) {
 
       {/* Center wrapper */}
       <div style={{ position:"fixed", inset:0, zIndex:901, display:"flex", alignItems:"center", justifyContent:"center", pointerEvents:"none" }}>
-        <div className="na-md" style={{
+        <div className="na-md" role="dialog" aria-modal="true" aria-label="New Agent" style={{
           pointerEvents:"auto", width:480, maxHeight:"88vh",
           display:"flex", flexDirection:"column",
           background:"var(--card)",
