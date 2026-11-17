@@ -174,10 +174,39 @@ mod tests {
         assert_eq!(after.matches("fleetify:rule:x START").count(), 1);
     }
 
+    /// Pins `USERPROFILE` under the shared `home_lock`, so it cannot land in
+    /// the middle of a sibling test that pinned its own home. The old value
+    /// comes back on drop, so also when the test panics, and before the lock
+    /// is released.
+    struct PinnedUserProfile {
+        prev: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl PinnedUserProfile {
+        fn new(value: &str) -> Self {
+            let lock = crate::test_support::home_lock()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let prev = std::env::var_os("USERPROFILE");
+            std::env::set_var("USERPROFILE", value);
+            Self { prev, _lock: lock }
+        }
+    }
+
+    impl Drop for PinnedUserProfile {
+        fn drop(&mut self) {
+            match self.prev.take() {
+                Some(v) => std::env::set_var("USERPROFILE", v),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+        }
+    }
+
     #[test]
     fn rule_file_targets_per_provider() {
         // provider_home reads USERPROFILE/HOME; just assert the file name logic.
-        std::env::set_var("USERPROFILE", "/tmp/fakehome");
+        let _home = PinnedUserProfile::new("/tmp/fakehome");
         assert!(rule_file("claude-code").unwrap().ends_with("CLAUDE.md"));
         assert!(rule_file("codex-cli").unwrap().ends_with("AGENTS.md"));
         assert!(rule_file("github-copilot")
