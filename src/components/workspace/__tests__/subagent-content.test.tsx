@@ -17,6 +17,11 @@ import { sweepInactiveSessions } from "@/lib/session-eviction";
 import type { Session } from "@/types/session";
 
 const text = (t: string) => ({ type: "text" as const, text: t });
+const message = (id: string, t: string) => ({
+  id, role: "assistant" as const, content: [text(t)], timestamp: new Date(0).toISOString(),
+});
+const worker = (id: string) => ({ id, title: id } as Session);
+const messagesOf = (sid: string) => useChatStore.getState().sessions[sid]?.messages ?? [];
 
 /** A finished Fleet dispatch. Its `content` is the lossy dispatch-stream log
  *  that the pane falls back to when the worker's own transcript is missing. */
@@ -39,9 +44,21 @@ const finishedTask = (id: string): SubagentTask => ({
   activeToolCalls: {},
 });
 
-const transcript = [
-  { id: "m-1", role: "assistant" as const, content: [text("full worker transcript")], timestamp: new Date(0).toISOString() },
-];
+const transcript = [message("m-1", "full worker transcript")];
+
+/** Holds every fetchMessages call open until the test settles it, so a test
+ *  decides when, and in what order, transcripts arrive. */
+function holdFetches() {
+  const pending = new Map<string, (rows: unknown) => void>();
+  vi.mocked(fetchMessages).mockImplementation(
+    (id: string) => new Promise((resolve) => { pending.set(id, resolve); }),
+  );
+  return async (id: string, rows: unknown) => {
+    const resolve = pending.get(id);
+    if (!resolve) throw new Error(`no fetch is pending for ${id}`);
+    await act(async () => { resolve(rows); });
+  };
+}
 
 beforeEach(() => {
   vi.mocked(fetchMessages).mockReset();
@@ -53,7 +70,7 @@ beforeEach(() => {
     activeSessionId: "parent",
     staffSessionId: "staff",
     splitPaneIds: [],
-    sessions: [{ id: "worker-1", title: "worker" } as Session],
+    sessions: [worker("worker-1")],
   });
 });
 
@@ -89,5 +106,68 @@ describe("SubagentContent (Agent pane)", () => {
     // `subagentTasks`, which the sweep never touches. There is no session to keep.
     render(<SubagentContent task={finishedTask("sdk-task-1")} />);
     expect(pinnedSessionIds()).toEqual([]);
+  });
+});
+
+describe("SubagentContent fetching a transcript that isn't in memory", () => {
+  it("fetches the worker's transcript and shows it instead of the dispatch log", async () => {
+    // Regression: the effect kept the attempted id in state listed in its own
+    // deps. Recording the attempt re-ran the effect, whose cleanup dropped the
+    // fetch it had just started, so the pane never left the dispatch log.
+    const settle = holdFetches();
+    render(<SubagentContent task={finishedTask("worker-1")} />);
+    expect(screen.getByText("lossy dispatch log")).toBeInTheDocument(); // until it lands
+
+    await settle("worker-1", transcript);
+
+    expect(screen.getByText("full worker transcript")).toBeInTheDocument();
+    expect(screen.queryByText("lossy dispatch log")).not.toBeInTheDocument();
+    expect(fetchMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a fetch that lands after the pane moved to another task, and fetches the new one", async () => {
+    useAppStore.setState({ sessions: [worker("worker-1"), worker("worker-2")] });
+    const settle = holdFetches();
+    const { rerender } = render(<SubagentContent task={finishedTask("worker-1")} />);
+    rerender(<SubagentContent task={finishedTask("worker-2")} />);
+
+    await settle("worker-1", transcript); // the old task's answer arrives late
+    expect(messagesOf("worker-1")).toHaveLength(0);
+
+    await settle("worker-2", [message("m-2", "second worker transcript")]);
+    expect(screen.getByText("second worker transcript")).toBeInTheDocument();
+  });
+
+  it("drops a fetch that lands after the pane closed", async () => {
+    const settle = holdFetches();
+    const { unmount } = render(<SubagentContent task={finishedTask("worker-1")} />);
+    unmount();
+
+    await settle("worker-1", transcript);
+
+    expect(messagesOf("worker-1")).toHaveLength(0);
+  });
+
+  it("drops a fetch that lands after a fresher transcript streamed in", async () => {
+    const settle = holdFetches();
+    render(<SubagentContent task={finishedTask("worker-1")} />);
+    act(() => useChatStore.getState().setMessages("worker-1", [message("m-live", "live transcript")]));
+
+    await settle("worker-1", transcript); // an older snapshot, arriving late
+
+    expect(messagesOf("worker-1").map(m => m.id)).toEqual(["m-live"]);
+    expect(screen.getByText("live transcript")).toBeInTheDocument();
+  });
+
+  it("fetches at most once per task id", async () => {
+    const settle = holdFetches();
+    render(<SubagentContent task={finishedTask("worker-1")} />);
+    await settle("worker-1", []); // nothing recorded yet: the pane stays on the log
+
+    // The transcript arrives from elsewhere, then goes away again.
+    act(() => useChatStore.getState().setMessages("worker-1", transcript));
+    act(() => useChatStore.getState().setMessages("worker-1", []));
+
+    expect(fetchMessages).toHaveBeenCalledTimes(1);
   });
 });

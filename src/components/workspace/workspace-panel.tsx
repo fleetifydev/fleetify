@@ -3135,11 +3135,17 @@ export function SubagentContent({ task }: { task: import("@/stores/chat-store").
   // lossy — no tool inputs/outputs).
   const taskId = task.id;
   const needsFetch = !!workerSession && (!workerMessages || workerMessages.length === 0);
-  const [fetchedFor, setFetchedFor] = useState<string | null>(null);
+  // The task id last fetched for: at most one fetch per task id. A ref, not
+  // state, so recording the attempt cannot re-run this effect. When it was
+  // state in the deps, the re-run's cleanup cancelled the fetch it had just
+  // started, and its result never landed. The cleanup still drops a late
+  // result once the task changes, the pane unmounts, or the fetch is no longer
+  // needed (a fresher transcript streamed in first).
+  const fetchedFor = useRef<string | null>(null);
   useEffect(() => {
-    if (!needsFetch || fetchedFor === taskId) return;
+    if (!needsFetch || fetchedFor.current === taskId) return;
+    fetchedFor.current = taskId;
     let cancelled = false;
-    setFetchedFor(taskId);
     fetchMessages(taskId).then(rows => {
       if (cancelled) return;
       if (Array.isArray(rows) && rows.length > 0) {
@@ -3147,7 +3153,7 @@ export function SubagentContent({ task }: { task: import("@/stores/chat-store").
       }
     }).catch(() => { /* best-effort */ });
     return () => { cancelled = true; };
-  }, [taskId, needsFetch, fetchedFor, setMessages]);
+  }, [taskId, needsFetch, setMessages]);
 
   // Prefer the worker session's full chat history when available —
   // that's what surfaces every tool call with its real input + output,
