@@ -72,4 +72,4 @@ when the user's session invokes their tools.
 
 ## License
 
-MIT (per `Cargo.toml` workspace.package.license).
+Licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE) for attribution.
