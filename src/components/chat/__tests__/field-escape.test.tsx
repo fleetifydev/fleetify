@@ -16,28 +16,56 @@ vi.mock("@/lib/api", async (importOriginal) => {
     }]),
   };
 });
+// The terminal view mounts a live xterm shell per terminal; its rename field
+// is what's under test.
+vi.mock("@/components/workspace/xterm-shell", () => ({ XtermShell: () => null }));
 
 import { usePaneEscapeToStop } from "../chat-view";
+import { PermissionDialog } from "../permission-dialog";
 import { Sidebar } from "@/components/layout/sidebar";
 import { FleetMemoryCard } from "@/components/dashboard/fleet-panel";
 import { BrowserView } from "@/components/workspace/views/browser-view";
-import { FileTree, buildEditorExtensions } from "@/components/workspace/workspace-panel";
+import { FileTree, TerminalView, buildEditorExtensions } from "@/components/workspace/workspace-panel";
 import { useAppStore } from "@/stores/app-store";
+import type { PermissionRequest } from "@/stores/chat-store";
 
 /** A streaming chat that registers Escape-to-stop as ChatView does in the
- *  single view, with its composer inside. The field under test renders
- *  beside it, outside the chat surface, as it does in the app. */
-function Page({ onStop, children }: { onStop: () => void; children?: ReactNode }) {
+ *  single view, marked as ChatView marks it (data-chat-surface), with its
+ *  composer and any pending permission card inside. The field under test
+ *  renders beside it, outside the chat surface, as it does in the app. */
+function Page({ onStop, card, children }: { onStop: () => void; card?: ReactNode; children?: ReactNode }) {
   const surface = useRef<HTMLDivElement>(null);
   usePaneEscapeToStop(surface, undefined, true, onStop);
   return (
     <>
-      <div ref={surface}>
+      <div ref={surface} data-chat-surface="">
         <textarea aria-label="composer" />
+        {card}
       </div>
       <div data-testid="outside">{children}</div>
     </>
   );
+}
+
+const QUESTION: PermissionRequest = { id: "req-1", tool_name: "AskUserQuestion", command: "Which database?" };
+
+/** Mounts the page with its stream running, then a pending AskUserQuestion
+ *  card, in the order they arrive in the app: the stop listener registers
+ *  when the stream starts, the card's when the card arrives. */
+function renderPage(ui: ReactNode) {
+  const onStop = vi.fn();
+  const onDeny = vi.fn();
+  const page = (withCard: boolean) => (
+    <Page
+      onStop={onStop}
+      card={withCard ? <PermissionDialog request={QUESTION} onAllow={vi.fn()} onAllowAlways={vi.fn()} onDeny={onDeny} /> : null}
+    >
+      {ui}
+    </Page>
+  );
+  const view = render(page(false));
+  view.rerender(page(true));
+  return { onStop, onDeny };
 }
 
 /** Lets pending promise callbacks (loads, lazy imports) settle inside act. */
@@ -141,6 +169,16 @@ const FIELDS: FieldCase[] = [
     handled: () => screen.queryByPlaceholderText("Filter files…") === null,
   },
   {
+    name: "rename field (workspace terminal)",
+    ui: () => <TerminalView />,
+    field: async () => {
+      fireEvent.click(screen.getByText("Terminal"));
+      fireEvent.click(screen.getByText("Rename terminal"));
+      return outside().getByDisplayValue("Terminal 1");
+    },
+    handled: () => screen.queryByDisplayValue("Terminal 1") === null,
+  },
+  {
     // Shelved with the file tree, like the filter.
     name: "rename field (workspace file tree)",
     setup: stubFsApi,
@@ -170,23 +208,22 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("Escape typed in a field outside the chat does not stop the chat's stream", () => {
-  it("control: Escape typed in the composer, inside the chat, still stops it", async () => {
+describe("Escape typed in a field outside the chat leaves the chat alone", () => {
+  it("control: Escape typed in the composer, inside the chat, still stops it and answers the card", async () => {
     // With the sidebar search open beside it: what counts is where the
     // Escape was typed, not what else is on screen.
     useAppStore.setState({ sidebarSearchOpen: true });
-    const onStop = vi.fn();
-    render(<Page onStop={onStop}><Sidebar /></Page>);
+    const { onStop, onDeny } = renderPage(<Sidebar />);
     await settle();
     fireEvent.keyDown(screen.getByLabelText("composer"), { key: "Escape" });
     expect(onStop).toHaveBeenCalledTimes(1);
+    expect(onDeny).toHaveBeenCalledTimes(1);
   });
 
   describe.each(FIELDS)("$name", (c) => {
-    it("the field handles the Escape and the stream keeps running", async () => {
+    it("the field handles the Escape; the stream keeps running and the card stays pending", async () => {
       c.setup?.();
-      const onStop = vi.fn();
-      render(<Page onStop={onStop}>{c.ui()}</Page>);
+      const { onStop, onDeny } = renderPage(c.ui());
       await settle();
       const field = await c.field();
 
@@ -194,6 +231,7 @@ describe("Escape typed in a field outside the chat does not stop the chat's stre
 
       expect(c.handled(field)).toBe(true);
       expect(onStop).not.toHaveBeenCalled();
+      expect(onDeny).not.toHaveBeenCalled();
     });
   });
 });

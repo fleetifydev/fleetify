@@ -2104,7 +2104,9 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   }, [isControlCenter, agentSessions.map(s => s.id).join(","), ensureSession, setMessages, parseContent]);
 
   return (
-    <div ref={surfaceRef} style={{
+    // data-chat-surface marks this chat's extent for the permission cards: a
+    // key typed in a field outside it isn't theirs (cardKeyOwnedElsewhere).
+    <div ref={surfaceRef} data-chat-surface="" style={{
       flex: 1, display: "flex", background: "var(--card)", overflow: "hidden", position: "relative",
       // Transcript font scale — exposed as a CSS variable so any
       // descendant that opts in (`font-size: calc(13px * var(--chat-font-scale))`)
@@ -3036,8 +3038,8 @@ export function ChatContextMenu({ x, y, text, sessionId, onClose }: {
    read as `lalala / lalala` once the session title was derived from
    the same basename. Showing the full path makes the two halves
    carry distinct information again. Long paths middle-truncate to
-   keep the header from blowing out. */
-function SessionBreadcrumb({
+   keep the header from blowing out. Exported for tests. */
+export function SessionBreadcrumb({
   projectPath,
   worktreePath,
   title,
@@ -3204,7 +3206,9 @@ function SessionBreadcrumb({
           onChange={e => setDraft(e.target.value)}
           onKeyDown={e => {
             if (e.key === "Enter") { e.preventDefault(); commit(); }
-            else if (e.key === "Escape") { e.preventDefault(); setEditing(false); }
+            // Claim it: cancelling the rename must not also deny a pending
+            // permission card.
+            else if (e.key === "Escape") { claimEscape(e.nativeEvent); setEditing(false); }
           }}
           onBlur={commit}
           spellCheck={false}

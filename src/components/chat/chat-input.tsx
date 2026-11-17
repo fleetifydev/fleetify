@@ -28,7 +28,7 @@ import { ProviderLogo } from "@/components/ui/provider-logo";
 import { RoutingChip } from "@/components/settings/routers/routing-chip";
 import { commandsForContext, type SlashCmdDef } from "@/lib/slash-commands";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
-import { isOnScreen, claimEscape, escapeWasClaimed } from "@/hooks/use-escape-to-stop";
+import { isOnScreen, claimEscape, cardKeyOwnedElsewhere } from "@/hooks/use-escape-to-stop";
 import { paneOwnsInput } from "./pane-session-context";
 import { UnifiedModelPicker, type Effort as UMEffort } from "./unified-model-picker";
 import { buildPickerGroups, effortForDiscoveredModel, resolveDispatchTool, resolveModelChip, type PickerModel } from "@/lib/picker-groups";
@@ -1176,14 +1176,16 @@ export function ChatInput({
   // a split view shows every pane's card at once, so only the pane that
   // owns input answers (the focused pane, the same rule as Escape-to-stop).
   // On-screen guarded so closing Settings / Library with Esc doesn't deny a
-  // request on the chat parked underneath. An Escape a popover claimed to
-  // close itself doesn't deny either (`escapeWasClaimed`).
+  // request on the chat parked underneath. A key that belongs elsewhere
+  // answers nothing (`cardKeyOwnedElsewhere`): one a popover or modal claimed
+  // to close itself, one typed in a field outside this chat, or any key while
+  // a modal is open.
   useEffect(() => {
     if (!permissionRequest) return;
     const handler = (e: KeyboardEvent) => {
       // Other keys return first, so typing never pays for the style walk.
       if (e.key !== "Escape" && !(e.key === "Enter" && e.metaKey)) return;
-      if (escapeWasClaimed(e)) return;
+      if (cardKeyOwnedElsewhere(e, wrapperRef.current)) return;
       if (!paneOwnsInput(paneIdx, useAppStore.getState().focusedPaneIdx)) return;
       if (!isOnScreen(wrapperRef.current)) return;
       if (e.key === "Escape") {

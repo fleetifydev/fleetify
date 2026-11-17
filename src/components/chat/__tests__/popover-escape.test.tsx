@@ -18,7 +18,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
 // what's under test.
 vi.mock("@/components/workspace/xterm-shell", () => ({ XtermShell: () => null }));
 
-import { usePaneEscapeToStop, ChatContextMenu, ChatDecisionCard, PanelViewMenu } from "../chat-view";
+import { usePaneEscapeToStop, ChatContextMenu, ChatDecisionCard, PanelViewMenu, SessionBreadcrumb } from "../chat-view";
 import { UnifiedModelPicker } from "../unified-model-picker";
 import { ComposerDropMenu } from "../composer-drop-menu";
 import { ToolMatrixEditor } from "../tool-matrix-editor";
@@ -44,9 +44,9 @@ import type { Session } from "@/types/session";
 
 /** A chat surface with Escape-to-stop registered exactly as ChatView
  *  registers it in the single view (`usePaneEscapeToStop`, no pane index),
- *  plus a composer to hold focus. A chat popover renders inside it; a menu
- *  from outside the chat renders beside it (`outside`), as each does in the
- *  app. */
+ *  marked as ChatView marks it (data-chat-surface), plus a composer to hold
+ *  focus. A chat popover renders inside it; a menu from outside the chat
+ *  renders beside it (`outside`), as each does in the app. */
 function Stream({ streaming, onStop, children }: {
   streaming: boolean;
   onStop: () => void;
@@ -55,7 +55,7 @@ function Stream({ streaming, onStop, children }: {
   const surface = useRef<HTMLDivElement>(null);
   usePaneEscapeToStop(surface, undefined, streaming, onStop);
   return (
-    <div ref={surface}>
+    <div ref={surface} data-chat-surface="">
       <textarea aria-label="composer" />
       {children}
     </div>
@@ -249,6 +249,14 @@ const CASES: PopoverCase[] = [
     target: () => screen.getByPlaceholderText("Follow-up to Worker…"),
   },
   {
+    // Not a popover either: the chat header's inline title rename.
+    name: "session title rename (chat header)",
+    ui: () => <SessionBreadcrumb projectPath="/repo" title="Fix the outbox" onRename={vi.fn()} />,
+    open: () => fireEvent.click(screen.getByTitle("Rename session")),
+    isOpen: () => screen.queryByDisplayValue("Fix the outbox") !== null,
+    target: () => screen.getByDisplayValue("Fix the outbox"),
+  },
+  {
     name: "PrChecksPopover",
     ui: (onClose) => (
       <PrChecksPopover
@@ -393,17 +401,22 @@ function Shell({ children }: { children?: ReactNode }) {
 const QUESTION: PermissionRequest = { id: "req-1", tool_name: "AskUserQuestion", command: "Which database?" };
 
 /** An agent chat with nothing streaming, so Escape on the page goes back to
- *  Fleet, and a pending AskUserQuestion card, which Escape skips. Listeners
- *  register in app order: the shell's at mount, the card's when it arrives,
- *  the popover's when it opens. Popovers listen on `document` or in React,
- *  so their handler runs before both of those `window` listeners. */
-async function mountInShell(ui: ReactNode, open?: () => unknown) {
+ *  Fleet, and a pending AskUserQuestion card in it, which Escape skips.
+ *  Listeners register in app order: the shell's at mount, the card's when it
+ *  arrives, the popover's when it opens. Popovers listen on `document` or in
+ *  React, so their handler runs before both of those `window` listeners. A
+ *  chat popover renders inside the chat surface, a menu from outside the
+ *  chat beside it, so a field in a chat popover counts as inside the chat. */
+async function mountInShell(ui: ReactNode, open?: () => unknown, outside = false) {
   const onDeny = vi.fn();
   const view = render(<Shell />);
   view.rerender(
     <Shell>
-      <PermissionDialog request={QUESTION} onAllow={vi.fn()} onAllowAlways={vi.fn()} onDeny={onDeny} />
-      {ui}
+      <div data-chat-surface="">
+        <PermissionDialog request={QUESTION} onAllow={vi.fn()} onAllowAlways={vi.fn()} onDeny={onDeny} />
+        {outside ? null : ui}
+      </div>
+      {outside ? ui : null}
     </Shell>,
   );
   await open?.();
@@ -430,7 +443,7 @@ describe("An Escape that closes a popover does nothing else", () => {
     it("closes it, stays in the agent chat and leaves the pending question alone", async () => {
       c.setup?.();
       const onClose = vi.fn();
-      const { onDeny } = await mountInShell(c.ui(onClose), c.open);
+      const { onDeny } = await mountInShell(c.ui(onClose), c.open, c.outside);
       if (c.isOpen) expect(c.isOpen()).toBe(true);
 
       // On the page, not in a field: back-to-Fleet leaves fields alone anyway.

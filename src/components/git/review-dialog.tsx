@@ -13,6 +13,7 @@
  * to the Diff Viewer (future work).
  */
 import { useEffect, useState } from "react";
+import { claimEscape } from "@/hooks/use-escape-to-stop";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Loader2, RefreshCw, X, ScanEye, Copy, Check } from "lucide-react";
@@ -91,10 +92,10 @@ export function ReviewDialog({
   };
 
   // ESC closes the dialog. Matches the Create PR dialog's affordance.
-  // preventDefault marks the key handled, so Escape-to-stop on the chat
-  // underneath leaves it alone.
+  // Claiming the key means the chat underneath neither stops its stream nor
+  // answers a pending permission card with it.
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); onClose(); } };
+    const h = (e: KeyboardEvent) => { if (e.key === "Escape") { claimEscape(e); onClose(); } };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);

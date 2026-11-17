@@ -10,6 +10,7 @@
  * the new PR URL with an "Open in GitHub" affordance.
  */
 import { useEffect, useRef, useState } from "react";
+import { claimEscape } from "@/hooks/use-escape-to-stop";
 import { X, GitPullRequest, Loader2, ExternalLink, Check, Sparkles } from "lucide-react";
 import { git, defaultPRTitle } from "@/lib/git-api";
 import { formatShortcut } from "@/lib/keyboard-shortcuts";
@@ -151,9 +152,9 @@ export function PRDialog({
   // not slip past the disabled Create button while it's in flight.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // preventDefault marks the key handled, so Escape-to-stop on the chat
-      // underneath leaves it alone.
-      if (e.key === "Escape" && phase !== "creating") { e.preventDefault(); onClose(); }
+      // Claim the key, so the chat underneath neither stops its stream nor
+      // answers a pending permission card with it.
+      if (e.key === "Escape" && phase !== "creating") { claimEscape(e); onClose(); }
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && phase === "compose") {
         e.preventDefault();
         if (title.trim() && authReady && authMethod !== "none" && !genField) submit();

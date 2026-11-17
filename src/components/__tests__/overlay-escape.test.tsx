@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, fireEvent } from "@testing-library/react";
 import { CommandPalette } from "../command-palette";
 import { FeedbackModal } from "../feedback-modal";
-import { escapeOwnedElsewhere } from "@/hooks/use-escape-to-stop";
+import { escapeOwnedElsewhere, escapeWasClaimed } from "@/hooks/use-escape-to-stop";
 
 const modalSurfaces = () => document.querySelectorAll("[aria-modal='true']");
 
@@ -12,13 +12,17 @@ function modalSurface(): Element {
   return modalSurfaces()[0]!;
 }
 
-/** Escape-to-stop leaves alone an Escape that an overlay owns. That holds
- *  whichever window listener runs first:
+/** Escape-to-stop and the permission cards leave alone an Escape that an
+ *  overlay owns. That holds whichever window listener runs first:
  *  - before the overlay's handler runs, the open overlay is an aria-modal surface;
- *  - after it runs, the handler has marked the key handled. */
+ *  - after it runs, the handler has claimed the key (claimEscape), which marks
+ *    it handled for the stop and tells the cards it was used. */
 function expectOwnsEscape(close: () => void) {
   expect(escapeOwnedElsewhere(new KeyboardEvent("keydown", { key: "Escape" }))).toBe(true);
-  expect(fireEvent.keyDown(document.body, { key: "Escape" })).toBe(false); // preventDefault was called
+  const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+  fireEvent(document.body, escape);
+  expect(escape.defaultPrevented).toBe(true);
+  expect(escapeWasClaimed(escape)).toBe(true);
   expect(close).toHaveBeenCalledTimes(1);
 }
 

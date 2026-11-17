@@ -13,6 +13,7 @@
  * through the RecoveryDialog *after* the dispatcher fails, not here.
  */
 import { useEffect, useState } from "react";
+import { claimEscape } from "@/hooks/use-escape-to-stop";
 import {
   Loader2, X, AlertTriangle, CheckCircle2, Wrench,
 } from "lucide-react";
@@ -55,9 +56,9 @@ export function PreflightDialog({
   const [progress, setProgress] = useState<{ done: number; total: number; current?: string }>({ done: 0, total: 0 });
 
   useEffect(() => {
-    // preventDefault marks the key handled, so Escape-to-stop on the chat
-    // underneath leaves it alone.
-    const h = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); onCancel(); } };
+    // Claim the key, so the chat underneath neither stops its stream nor
+    // answers a pending permission card with it.
+    const h = (e: KeyboardEvent) => { if (e.key === "Escape") { claimEscape(e); onCancel(); } };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [onCancel]);

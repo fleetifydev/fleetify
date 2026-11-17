@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { claimEscape } from "@/hooks/use-escape-to-stop";
 import { X, FolderOpen, Clock, ChevronDown, Check, Sparkles, Wand2 } from "lucide-react";
 import { ClaudeLogo, OpenAILogo, KimiLogo } from "@/components/ui/provider-logo";
 import { createSession, fetchClaudeSessions, fetchCodexSessions, apiFetch, type ClaudeSession } from "@/lib/api";
@@ -307,9 +308,9 @@ export function NewAgentView({ onClose }: Props) {
   }, [showTpl]);
   useEffect(() => { setTimeout(() => pathRef.current?.focus(), 80); }, []);
   useEffect(() => {
-    // preventDefault marks the key handled, so Escape-to-stop on the chat
-    // underneath leaves it alone.
-    const h = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); onClose(); } };
+    // Claim the key, so the chat underneath neither stops its stream nor
+    // answers a pending permission card with it.
+    const h = (e: KeyboardEvent) => { if (e.key === "Escape") { claimEscape(e); onClose(); } };
     document.addEventListener("keydown", h); return () => document.removeEventListener("keydown", h);
   }, [onClose]);
   useEffect(() => {

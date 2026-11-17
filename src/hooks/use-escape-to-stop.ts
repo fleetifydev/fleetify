@@ -57,25 +57,50 @@ export function escapeOwnedElsewhere(e: KeyboardEvent): boolean {
   if (e.defaultPrevented) return true;
   const target = e.target;
   if (target instanceof Element && target.closest("[role='dialog'], [data-keep-focus='true']")) return true;
+  return modalOpen();
+}
+
+/** True while a modal is open: any `aria-modal="true"` element, whatever its
+ *  role. Every key is the modal's then, not the chat's underneath. */
+export function modalOpen(): boolean {
   return document.querySelector("[aria-modal='true']") !== null;
 }
 
 /** Elements that take typing. */
 const FIELD = "input, textarea, select, [contenteditable]:not([contenteditable='false'])";
 
-/** True when Escape was typed in a field outside `surface`: an input,
+/** True when a key was typed in a field outside `surface`: an input,
  *  textarea, select or contenteditable element (CodeMirror's editor is one)
  *  that is not part of this chat. Examples are the sidebar search, the
- *  workspace panel's inputs and the browser's address bar. That Escape
- *  belongs to the field.
+ *  workspace panel's inputs and the browser's address bar. That key belongs
+ *  to the field: it neither stops the stream nor answers a permission card.
  *
  *  The composer is inside the surface, so Escape typed there still stops the
  *  stream. The check reads the event's target, so it holds even when the
  *  field's own handler has already removed it: a detached field is not in
  *  the surface. */
-function typedInFieldOutside(target: EventTarget | null, surface: Element | null): boolean {
+export function typedInFieldOutside(target: EventTarget | null, surface: Element | null): boolean {
   if (!(target instanceof Element) || !target.closest(FIELD)) return false;
   return !surface?.contains(target);
+}
+
+/** True when a permission card must leave this key (Escape, ⌘↵ or ⌘⇧↵)
+ *  alone. `card` is the card's root element.
+ *
+ *  - A popover or modal claimed it to close itself (`escapeWasClaimed`).
+ *  - It was typed in a field outside the card's chat (`typedInFieldOutside`).
+ *    The chat is the card's nearest `[data-chat-surface]` (ChatView's root),
+ *    or the card itself outside one. While a card waits, the composer is
+ *    locked, so focus is usually somewhere else.
+ *  - A modal is open (`modalOpen`), wherever focus is. That covers a modal
+ *    whose own listener has not run yet; its claim covers the other order.
+ *
+ *  Escape-to-stop's own preventDefault does not count, so the Escape that
+ *  stops a stream still answers its card. */
+export function cardKeyOwnedElsewhere(e: KeyboardEvent, card: Element | null): boolean {
+  if (escapeWasClaimed(e)) return true;
+  if (typedInFieldOutside(e.target, card?.closest("[data-chat-surface]") ?? card)) return true;
+  return modalOpen();
 }
 
 /** Escape aborts the in-flight response of one chat surface. The model:

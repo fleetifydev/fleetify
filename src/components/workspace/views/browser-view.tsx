@@ -355,6 +355,12 @@ function BrowserView() {
         console.error("[browser-select] in-page picker error:", msg.message || "unknown");
         return;
       }
+      // Tauri hands every pick to every mounted browser view. Only the view
+      // whose Select is armed made it. Another view can be mounted out of
+      // sight: the global right panel stays mounted at zero width when
+      // closed. The page can only send a pick while armed, because turning
+      // Select off closes its box.
+      if (!selectingRef.current) return;
       setSelecting(false);
       if (msg.action === "dismiss") return;
       const detail = pickToRefDetail(msg);

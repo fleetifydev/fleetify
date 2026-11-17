@@ -70,7 +70,7 @@ vi.mock("@/lib/git-api", async () => {
 vi.mock("@/lib/github-link-api", () => ({ github: ghMock }));
 
 import { PRDialog } from "../pr-dialog";
-import { escapeOwnedElsewhere } from "@/hooks/use-escape-to-stop";
+import { escapeOwnedElsewhere, escapeWasClaimed } from "@/hooks/use-escape-to-stop";
 
 const samplePayload = {
   access_token: "gho_x", refresh_token: "ghr_y",
@@ -391,7 +391,12 @@ describe("PRDialog owns Escape", () => {
     expect(modal).toHaveLength(1);
     expect(modal[0]).toHaveAccessibleName("Pull request");
     expect(escapeOwnedElsewhere(new KeyboardEvent("keydown", { key: "Escape" }))).toBe(true);
-    expect(fireEvent.keyDown(document.body, { key: "Escape" })).toBe(false); // preventDefault was called
+    // The handler claims the key: marked handled for the stop, and used as far
+    // as a pending permission card is concerned.
+    const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    fireEvent(document.body, escape);
+    expect(escape.defaultPrevented).toBe(true);
+    expect(escapeWasClaimed(escape)).toBe(true);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

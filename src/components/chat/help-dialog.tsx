@@ -11,6 +11,7 @@
  * are the universal set.
  */
 import { useEffect, useState } from "react";
+import { claimEscape } from "@/hooks/use-escape-to-stop";
 import { X } from "lucide-react";
 import {
   KEYBOARD_SHORTCUTS,
@@ -80,7 +81,8 @@ export function HelpDialog({
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); onClose(); }
+      // Claim it: closing must not also stop a stream or deny a card.
+      if (e.key === "Escape") { claimEscape(e); onClose(); }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);

@@ -27,7 +27,7 @@ vi.mock("../chat-view", async () => {
 // tests need. It renders only where paneRightOpen says so.
 vi.mock("@/components/workspace/workspace-panel", async () => {
   const { BrowserView } = await import("@/components/workspace/views/browser-view");
-  return { WorkspacePanel: () => <BrowserView /> };
+  return { WorkspacePanel: () => <div data-testid="pane browser"><BrowserView /></div> };
 });
 
 import { ChatInput } from "../chat-input";
@@ -211,6 +211,100 @@ describe("A claimed Escape does not answer the focused pane's permission card", 
   );
 });
 
+type CardKind = "the composer's inline card" | "the AskUserQuestion card (PermissionDialog)";
+const CARD_KINDS: CardKind[] = ["the composer's inline card", "the AskUserQuestion card (PermissionDialog)"];
+
+/** The focused pane's card pending inside its chat surface, as ChatView
+ *  marks it (data-chat-surface). The chat also holds a field of its own
+ *  outside the card (its header's title rename), and beside the chat is a
+ *  field from outside it (the sidebar search). */
+function renderCardInChat(kind: CardKind) {
+  const answer = { deny: vi.fn(), allow: vi.fn(), allowAlways: vi.fn() };
+  render(
+    <>
+      <div data-chat-surface="">
+        <input aria-label="chat title" />
+        {kind === "the composer's inline card" ? (
+          <ChatInput
+            onSend={vi.fn()} sessionId="agent-b" paneIdx={1} locked permissionRequest={bash("req-1")}
+            onPermissionDeny={answer.deny} onPermissionAllow={answer.allow} onPermissionAllowAlways={answer.allowAlways}
+          />
+        ) : (
+          <PermissionDialog
+            request={question("req-1")} paneIdx={1}
+            onAllow={answer.allow} onAllowAlways={answer.allowAlways} onDeny={answer.deny}
+          />
+        )}
+      </div>
+      <input aria-label="sidebar search" />
+    </>,
+  );
+  return answer;
+}
+
+/** Every key a card answers: Escape, ⌘↵ and ⌘⇧↵. */
+function pressCardKeys(target: Element) {
+  fireEvent.keyDown(target, { key: "Escape" });
+  fireEvent.keyDown(target, { key: "Enter", metaKey: true });
+  fireEvent.keyDown(target, { key: "Enter", metaKey: true, shiftKey: true });
+}
+
+function expectPending(answer: ReturnType<typeof renderCardInChat>) {
+  expect(answer.deny).not.toHaveBeenCalled();
+  expect(answer.allow).not.toHaveBeenCalled();
+  expect(answer.allowAlways).not.toHaveBeenCalled();
+}
+
+describe("A key typed in a field outside the chat does not answer its permission card", () => {
+  // A pending card is exactly when focus is somewhere else: the composer is
+  // locked while it waits.
+  it.each(CARD_KINDS)("%s: Escape, ⌘↵ and ⌘⇧↵ typed in the sidebar search leave it pending", (kind) => {
+    splitView(1);
+    const answer = renderCardInChat(kind);
+    pressCardKeys(screen.getByLabelText("sidebar search"));
+    expectPending(answer);
+  });
+
+  it.each(CARD_KINDS)("%s: Escape typed in a field inside the chat, outside the card, still answers it", (kind) => {
+    // The rule is about fields outside the chat, found through the surface,
+    // not through the card's own root. (In the app the title rename claims
+    // its Escape; this field doesn't.)
+    splitView(1);
+    const answer = renderCardInChat(kind);
+    fireEvent.keyDown(screen.getByLabelText("chat title"), { key: "Escape" });
+    expect(answer.deny).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(CARD_KINDS)("%s: Escape pressed on the page still answers it", (kind) => {
+    splitView(1);
+    const answer = renderCardInChat(kind);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(answer.deny).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("While a modal is open, the permission card answers no key", () => {
+  it.each(CARD_KINDS)("%s: Escape, ⌘↵ and ⌘⇧↵ leave it pending, and it answers again once the modal is gone", (kind) => {
+    // A modal whose Escape listener registered after the card's: the card's
+    // handler runs while the modal is still open. (The other order is the
+    // modal's claim, tested with each modal.)
+    splitView(1);
+    const answer = renderCardInChat(kind);
+    const modal = document.createElement("div");
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    document.body.appendChild(modal);
+    try {
+      pressCardKeys(document.body);
+      expectPending(answer);
+    } finally {
+      modal.remove();
+    }
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(answer.deny).toHaveBeenCalledTimes(1);
+  });
+});
+
 /* ── Broadcast composer events ── */
 
 const renderGrid = () => render(<SplitPaneGrid dragging={false} onPaneDropEdge={vi.fn()} />);
@@ -300,17 +394,18 @@ describe("Broadcast composer events reach only the composer that owns input", ()
 /* ── Browser element picks ── */
 
 describe("A browser pick goes to the composer of the pane whose browser made it", () => {
-  /** Tauri event listeners the browser view registered, by event name. */
-  const tauriListeners = new Map<string, (e: { payload: unknown }) => void>();
+  /** The browser views' `browser-embed:pick` listeners, one per mounted view. */
+  const pickListeners = new Set<(e: { payload: unknown }) => void>();
 
   beforeEach(() => {
-    tauriListeners.clear();
+    pickListeners.clear();
     (window as unknown as { __TAURI__?: unknown }).__TAURI__ = {
       core: { invoke: vi.fn(async () => ({ ok: true })) },
       event: {
         listen: vi.fn(async (name: string, cb: (e: { payload: unknown }) => void) => {
-          tauriListeners.set(name, cb);
-          return () => { tauriListeners.delete(name); };
+          if (name !== "browser-embed:pick") return () => {};
+          pickListeners.add(cb);
+          return () => { pickListeners.delete(cb); };
         }),
       },
     };
@@ -332,16 +427,28 @@ describe("A browser pick goes to the composer of the pane whose browser made it"
     useAppStore.setState({ paneRightOpen: {} });
   });
 
-  /** The in-page picker posting a pick, as the native webview does. */
+  /** The in-page picker posting a pick, as the native webview does. Tauri
+   *  broadcasts it to every browser view that listens. */
   const pick = () => act(() => {
-    tauriListeners.get("browser-embed:pick")!({ payload: encodeURIComponent(JSON.stringify(PICK)) });
+    for (const listener of pickListeners) listener({ payload: encodeURIComponent(JSON.stringify(PICK)) });
   });
+
+  /** Loads a page in a browser view, which enables Select, then arms it. */
+  async function armSelect(view: Pick<typeof screen, "getByPlaceholderText" | "getByTitle">) {
+    const url = view.getByPlaceholderText("Search or enter URL");
+    fireEvent.change(url, { target: { value: "localhost:3000" } });
+    fireEvent.keyDown(url, { key: "Enter" });
+    await act(async () => {});
+    fireEvent.click(view.getByTitle("Select an element → composer"));
+  }
 
   it("lands in pane 0 from pane 0's browser, while pane 1 is focused", async () => {
     // Select was armed in pane 0's browser, then the user moved to pane 1.
     splitView(1);
     useAppStore.setState({ paneRightOpen: { "agent-a": true } });
     renderGrid();
+    await armSelect(within(screen.getByTestId("pane browser")));
+    act(() => { useAppStore.setState({ focusedPaneIdx: 1 }); });
     pick();
     await nextFrames();
     expect(within(surfaceOf(0)).getByTitle(CHIP_TITLE)).toBeInTheDocument();
@@ -362,9 +469,32 @@ describe("A browser pick goes to the composer of the pane whose browser made it"
         <BrowserView />
       </>,
     );
+    await armSelect(screen);
     pick();
     await nextFrames();
     expect(screen.getByTitle(CHIP_TITLE)).toBeInTheDocument();
     expect((screen.getByPlaceholderText("composer") as HTMLTextAreaElement).value).toBe("Fix this button");
+  });
+
+  it("an unarmed browser view ignores the pick, so only the armed pane takes it", async () => {
+    // The global right panel stays mounted at width 0 when closed, so a
+    // browser opened there in the single view keeps listening after the user
+    // splits the view. It names no session, so the focused pane would take
+    // the pick too, and with Send its agent would get a turn.
+    splitView(1);
+    useAppStore.setState({ paneRightOpen: { "agent-a": true } });
+    render(
+      <>
+        <SplitPaneGrid dragging={false} onPaneDropEdge={vi.fn()} />
+        <div data-testid="hidden global panel"><BrowserView /></div>
+      </>,
+    );
+    await armSelect(within(screen.getByTestId("pane browser")));
+    act(() => { useAppStore.setState({ focusedPaneIdx: 1 }); });
+    pick();
+    await nextFrames();
+    expect(within(surfaceOf(0)).getAllByTitle(CHIP_TITLE)).toHaveLength(1);
+    expect(within(surfaceOf(1)).queryByTitle(CHIP_TITLE)).toBeNull();
+    expect(composer(1).value).toBe("");
   });
 });

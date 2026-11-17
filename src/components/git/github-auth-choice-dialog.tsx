@@ -12,6 +12,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { claimEscape } from "@/hooks/use-escape-to-stop";
 import { Github, Terminal, Loader2, X } from "lucide-react";
 
 export type GithubAuthMethod = "oauth" | "cli";
@@ -60,7 +61,8 @@ export function GithubAuthChoiceDialog({ onChoose, onDismiss }: Props) {
   // could lose track of a half-completed auth round-trip.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && pending === null) onDismiss();
+      // Claim it: closing must not also stop a stream or deny a card.
+      if (e.key === "Escape" && pending === null) { claimEscape(e); onDismiss(); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

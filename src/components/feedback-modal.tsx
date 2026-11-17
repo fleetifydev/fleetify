@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { claimEscape } from "@/hooks/use-escape-to-stop";
 import { X, Image as ImageIcon, Loader2, Check, AlertCircle, Paperclip } from "lucide-react";
 import { formatShortcut } from "@/lib/keyboard-shortcuts";
 
@@ -54,9 +55,9 @@ export function FeedbackModal({ open, onClose }: Props) {
 
   useEffect(() => {
     if (!open) return;
-    // preventDefault marks the key handled, so Escape-to-stop on the chat
-    // underneath leaves it alone.
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); onClose(); } };
+    // Claim the key, so the chat underneath neither stops its stream nor
+    // answers a pending permission card with it.
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { claimEscape(e); onClose(); } };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);

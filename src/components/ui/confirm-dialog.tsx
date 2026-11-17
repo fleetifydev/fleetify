@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { claimEscape } from "@/hooks/use-escape-to-stop";
 
 /* In-app confirm modal — replaces the OS-native window.confirm so the
    dialog matches the rest of the theme (dark surface, app font, app
@@ -28,7 +29,8 @@ export function ConfirmDialog({
   useEffect(() => { confirmRef.current?.focus(); }, []);
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+      // Claim it: cancelling must not also stop a stream or deny a card.
+      if (e.key === "Escape") { claimEscape(e); onCancel(); }
       if (e.key === "Enter")  { e.preventDefault(); onConfirm(); }
     };
     document.addEventListener("keydown", h);

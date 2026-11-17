@@ -5,6 +5,7 @@
  * (see create-item-dialog) and the Fleet ask-user feel.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
+import { claimEscape } from "@/hooks/use-escape-to-stop";
 import { Search, X, FileText } from "lucide-react";
 import { listPrompts, filterPrompts, type PromptSummary } from "@/lib/prompts-api";
 
@@ -46,7 +47,8 @@ export function PromptsPicker({
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); onClose(); }
+      // Claim it: closing must not also stop a stream or deny a card.
+      if (e.key === "Escape") { claimEscape(e); onClose(); }
       else if (e.key === "ArrowDown") { e.preventDefault(); setIndex((i) => Math.min(i + 1, filtered.length - 1)); }
       else if (e.key === "ArrowUp") { e.preventDefault(); setIndex((i) => Math.max(i - 1, 0)); }
       else if (e.key === "Enter") {
@@ -61,7 +63,7 @@ export function PromptsPicker({
   if (!open) return null;
 
   return (
-    <div onClick={onClose} style={overlay}>
+    <div onClick={onClose} style={overlay} role="dialog" aria-modal="true" aria-label="Prompts">
       <div onClick={(e) => e.stopPropagation()} style={card}>
         <div style={searchRow}>
           <Search size={15} style={{ color: "var(--c-dim)", flexShrink: 0 }} />

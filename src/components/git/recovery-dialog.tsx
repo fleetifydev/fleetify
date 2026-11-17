@@ -16,6 +16,7 @@
  *   failed      → recovery itself errored; show message + Close
  */
 import { useEffect, useState } from "react";
+import { claimEscape } from "@/hooks/use-escape-to-stop";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -121,9 +122,9 @@ export function RecoveryDialog({
   }, [folder, errorMessage, tool, context, baseBranch]);
 
   useEffect(() => {
-    // preventDefault marks the key handled, so Escape-to-stop on the chat
-    // underneath leaves it alone.
-    const h = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); onClose(); } };
+    // Claim the key, so the chat underneath neither stops its stream nor
+    // answers a pending permission card with it.
+    const h = (e: KeyboardEvent) => { if (e.key === "Escape") { claimEscape(e); onClose(); } };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
