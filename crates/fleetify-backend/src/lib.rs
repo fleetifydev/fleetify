@@ -26,7 +26,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
-pub use http::app;
+pub use http::{app, HEALTH_PATH};
 
 pub struct ServerHandle {
     local_addr: SocketAddr,

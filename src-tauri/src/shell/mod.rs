@@ -4,6 +4,7 @@
 
 pub mod ai_git;
 pub mod auth;
+pub mod backend_ready;
 pub mod bearer;
 pub mod config;
 pub mod feedback;

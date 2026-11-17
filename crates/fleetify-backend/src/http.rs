@@ -12,6 +12,10 @@ use crate::routers::{
     sessions, ssh, user, workflows, workspace, AppState,
 };
 
+/// The health route. It answers `{"status":"ok","version":…}`, and the
+/// shell polls it at startup before its warm-up talks to the backend.
+pub const HEALTH_PATH: &str = "/healthz";
+
 /// Build the axum app. Single origin: `/healthz`, `/api/*` (auth'd),
 /// `/events/status` SSE, and the built React assets (when `static_dir`).
 /// CORS mirrors the Python: localhost:3000 / 127.0.0.1:3000, creds, *.
@@ -65,7 +69,7 @@ pub fn app(state: AppState, static_dir: Option<PathBuf>) -> Router {
     let internal_api = internal::router().merge(browser::internal_router());
 
     let routed = Router::new()
-        .route("/healthz", get(healthz))
+        .route(HEALTH_PATH, get(healthz))
         .nest("/api", api)
         .nest("/api/internal", internal_api)
         .merge(events::router())

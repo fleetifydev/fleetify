@@ -468,18 +468,19 @@ pub fn run() {
                     }
                 }
 
-                // Wait for the embedded backend to bind its port before
-                // we try to reach it. 200ms × 20 = 4s upper bound covers
-                // a cold Rust startup on a slow disk.
+                // Wait for the embedded backend to answer its health route
+                // before we try to reach it. 200ms × 20 = 4s upper bound
+                // covers a cold Rust startup on a slow disk; past it, the
+                // warm-up runs anyway.
                 let port = std::env::var("FLEETIFY_BACKEND_PORT").unwrap_or_else(|_| "8765".into());
-                let health_url = format!("http://127.0.0.1:{port}/health");
-                for _ in 0..20 {
-                    if let Ok(r) = reqwest::get(&health_url).await {
-                        if r.status().is_success() {
-                            break;
-                        }
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                let ready = crate::shell::backend_ready::wait_for_backend(
+                    &crate::shell::backend_ready::health_url(&port),
+                    20,
+                    std::time::Duration::from_millis(200),
+                )
+                .await;
+                if !ready {
+                    tracing::warn!("backend health check timed out; warming up anyway");
                 }
                 crate::shell::providers_setup::warm_providers_at_boot(&handle).await;
                 // Hydrate the backend clone service with the linked GitHub
