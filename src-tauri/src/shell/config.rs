@@ -3,20 +3,24 @@
 //! JSON-on-disk used by the original.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::Path;
 
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 const CONFIG_FILE: &str = "fleet.config.json";
 
 /// Load JSON config; `{}` when the file doesn't exist (parity with the
-/// Electron store's "no file = empty object") or can't be read.
+/// Electron store's "no file = empty object") or can't be read. One leading
+/// UTF-8 BOM, which some Windows editors write, is ignored.
 ///
 /// A file that reads but isn't a JSON object (a hand edit with a stray
-/// comma, say) is moved aside to `fleet.config.json.corrupt-<unix-ms>`
-/// before `{}` comes back. Every setter reads, merges and writes the whole
-/// file, so leaving it in place would let the next save silently drop
-/// every other setting.
+/// comma, say) also gives `{}`, after a copy of the bytes read is kept as
+/// `fleet.config.json.corrupt-<content hash>`. Every setter reads, merges
+/// and writes the whole file, so the next save replaces it and would
+/// otherwise silently drop every other setting. The file itself is never
+/// touched here: by now it may hold something other than what was read.
 pub fn load_config_from(path: &Path) -> Value {
     let file = path.join(CONFIG_FILE);
     // Bytes, not a String: a file that isn't UTF-8 isn't JSON either, and
@@ -29,41 +33,58 @@ pub fn load_config_from(path: &Path) -> Value {
             return json!({});
         }
     };
-    let problem = match serde_json::from_slice::<Value>(&bytes) {
+    let content = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+    let problem = match serde_json::from_slice::<Value>(content) {
         Ok(cfg @ Value::Object(_)) => return cfg,
         Ok(_) => "not a JSON object".to_string(),
         // A position and a fixed message, never the file's text.
         Err(e) => e.to_string(),
     };
-    back_up_corrupt_config(path, &file, &problem);
+    back_up_corrupt_config(path, &bytes, &problem);
     json!({})
 }
 
-/// Move the unparseable `file` aside to `fleet.config.json.corrupt-<unix-ms>`
-/// in `dir`, or copy it there when it can't be moved. Logs the backup's
-/// name only: not the folder (its path usually holds the user's name), and
-/// never the content.
-fn back_up_corrupt_config(dir: &Path, file: &Path, problem: &str) {
-    let name = format!("{CONFIG_FILE}.corrupt-{}", unix_ms());
+/// Keep `bytes`, read from a corrupt config, in `dir` as
+/// `fleet.config.json.corrupt-<first 16 hex characters of their SHA-256>`.
+/// Named by content, so loading the same bytes again finds the copy already
+/// kept and stays quiet, and no other copy is ever overwritten. Logs the
+/// backup's file name only: not the folder (its path usually holds the
+/// user's name), and never the content.
+fn back_up_corrupt_config(dir: &Path, bytes: &[u8], problem: &str) {
+    let hash: String = Sha256::digest(bytes)[..8]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let name = format!("{CONFIG_FILE}.corrupt-{hash}");
     let backup = dir.join(&name);
-    let kept = match std::fs::rename(file, &backup) {
-        Ok(()) => Ok(()),
-        // A load running at the same time moved it first and logged that.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
-        Err(moving) => std::fs::copy(file, &backup)
-            .map(|_| ())
-            .map_err(|copying| format!("move: {moving}; copy: {copying}")),
+    let written = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&backup)
+    {
+        Ok(mut out) => {
+            let wrote = out.write_all(bytes);
+            drop(out);
+            if wrote.is_err() {
+                // A partial copy would pass for a kept one at the next load.
+                let _ = std::fs::remove_file(&backup);
+            }
+            wrote
+        }
+        // These exact bytes are already kept.
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return,
+        Err(e) => Err(e),
     };
-    match kept {
+    match written {
         Ok(()) => tracing::warn!(
             problem = %problem,
             backup = %name,
-            "{CONFIG_FILE} isn't a JSON object; backed it up and started from defaults"
+            "{CONFIG_FILE} isn't a JSON object; kept a copy and used defaults"
         ),
         Err(error) => tracing::warn!(
             problem = %problem,
             error = %error,
-            "{CONFIG_FILE} isn't a JSON object and couldn't be backed up; started from defaults"
+            "{CONFIG_FILE} isn't a JSON object and no copy could be kept; used defaults"
         ),
     }
 }
@@ -338,18 +359,32 @@ pub fn persist_posthog_choice(dir: &Path, enabled: bool) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// The `fleet.config.json.corrupt-<unix-ms>` backups in `dir`.
+    /// The `fleet.config.json.corrupt-*` backups in `dir`. Each must be
+    /// named by 16 lowercase hex characters (its content hash).
     fn corrupt_backups(dir: &Path) -> Vec<std::path::PathBuf> {
         let prefix = format!("{CONFIG_FILE}.corrupt-");
-        std::fs::read_dir(dir)
+        let backups: Vec<_> = std::fs::read_dir(dir)
             .unwrap()
             .map(|entry| entry.unwrap().path())
             .filter(|path| {
                 let name = path.file_name().unwrap().to_str().unwrap();
-                name.strip_prefix(&prefix)
-                    .is_some_and(|ms| ms.parse::<u128>().is_ok())
+                name.starts_with(&prefix)
             })
-            .collect()
+            .collect();
+        for path in &backups {
+            let name = path.file_name().unwrap().to_str().unwrap();
+            let hash = &name[prefix.len()..];
+            assert!(
+                hash.len() == 16 && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+                "backup not named by 16 lowercase hex characters: {name}"
+            );
+        }
+        backups
+    }
+
+    /// What `fleet.config.json` in `dir` holds now; `None` once it's gone.
+    fn live_bytes(dir: &Path) -> Option<Vec<u8>> {
+        std::fs::read(dir.join(CONFIG_FILE)).ok()
     }
 
     #[test]
@@ -390,10 +425,20 @@ mod tests {
         std::fs::write(tmp.path().join(CONFIG_FILE), original).unwrap();
 
         assert_eq!(load_config_from(tmp.path()), json!({}));
+        assert_eq!(
+            live_bytes(tmp.path()).as_deref(),
+            Some(&original[..]),
+            "live file untouched"
+        );
         let backups = corrupt_backups(tmp.path());
         assert_eq!(backups.len(), 1, "{backups:?}");
         assert_eq!(std::fs::read(&backups[0]).unwrap(), original);
-        assert!(!tmp.path().join(CONFIG_FILE).exists());
+        // Named by the first 16 hex characters of the bytes' SHA-256
+        // (`printf '%s' '{"providers": {"a": 1},' | sha256sum`).
+        assert_eq!(
+            backups[0].file_name().unwrap(),
+            "fleet.config.json.corrupt-16e4fbebb8eabfec"
+        );
     }
 
     #[test]
@@ -402,10 +447,14 @@ mod tests {
         std::fs::write(tmp.path().join(CONFIG_FILE), "[1,2]").unwrap();
 
         assert_eq!(load_config_from(tmp.path()), json!({}));
+        assert_eq!(
+            live_bytes(tmp.path()).as_deref(),
+            Some(&b"[1,2]"[..]),
+            "live file untouched"
+        );
         let backups = corrupt_backups(tmp.path());
         assert_eq!(backups.len(), 1, "{backups:?}");
         assert_eq!(std::fs::read(&backups[0]).unwrap(), b"[1,2]");
-        assert!(!tmp.path().join(CONFIG_FILE).exists());
     }
 
     #[test]
@@ -417,10 +466,91 @@ mod tests {
         std::fs::write(tmp.path().join(CONFIG_FILE), original).unwrap();
 
         assert_eq!(load_config_from(tmp.path()), json!({}));
+        assert_eq!(
+            live_bytes(tmp.path()).as_deref(),
+            Some(&original[..]),
+            "live file untouched"
+        );
         let backups = corrupt_backups(tmp.path());
         assert_eq!(backups.len(), 1, "{backups:?}");
         assert_eq!(std::fs::read(&backups[0]).unwrap(), original);
-        assert!(!tmp.path().join(CONFIG_FILE).exists());
+    }
+
+    #[test]
+    fn loading_the_same_corrupt_file_twice_keeps_one_backup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original = br#"{"providers": {"a": 1},"#;
+        std::fs::write(tmp.path().join(CONFIG_FILE), original).unwrap();
+
+        assert_eq!(load_config_from(tmp.path()), json!({}));
+        assert_eq!(load_config_from(tmp.path()), json!({}));
+        assert_eq!(
+            live_bytes(tmp.path()).as_deref(),
+            Some(&original[..]),
+            "live file untouched"
+        );
+        let backups = corrupt_backups(tmp.path());
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        assert_eq!(std::fs::read(&backups[0]).unwrap(), original);
+    }
+
+    #[test]
+    fn a_changed_corrupt_file_gets_a_second_backup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = br#"{"providers": {"a": 1},"#;
+        let second = br#"{"providers": {"a": 2},"#;
+        std::fs::write(tmp.path().join(CONFIG_FILE), first).unwrap();
+        assert_eq!(load_config_from(tmp.path()), json!({}));
+
+        std::fs::write(tmp.path().join(CONFIG_FILE), second).unwrap();
+        assert_eq!(load_config_from(tmp.path()), json!({}));
+        assert_eq!(
+            live_bytes(tmp.path()).as_deref(),
+            Some(&second[..]),
+            "live file untouched"
+        );
+        let mut kept: Vec<Vec<u8>> = corrupt_backups(tmp.path())
+            .iter()
+            .map(|path| std::fs::read(path).unwrap())
+            .collect();
+        kept.sort();
+        assert_eq!(kept, [first.to_vec(), second.to_vec()]);
+    }
+
+    #[test]
+    fn a_valid_file_with_a_bom_loads_without_a_backup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original = b"\xEF\xBB\xBF{\"theme\": \"dark\", \"providers\": {\"a\": 1}}";
+        std::fs::write(tmp.path().join(CONFIG_FILE), original).unwrap();
+
+        assert_eq!(
+            load_config_from(tmp.path()),
+            json!({"theme": "dark", "providers": {"a": 1}})
+        );
+        assert!(corrupt_backups(tmp.path()).is_empty());
+        assert_eq!(live_bytes(tmp.path()).as_deref(), Some(&original[..]));
+    }
+
+    #[test]
+    fn a_corrupt_file_with_a_bom_is_backed_up_whole() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original = b"\xEF\xBB\xBF{\"providers\": {\"a\": 1},";
+        std::fs::write(tmp.path().join(CONFIG_FILE), original).unwrap();
+
+        assert_eq!(load_config_from(tmp.path()), json!({}));
+        assert_eq!(
+            live_bytes(tmp.path()).as_deref(),
+            Some(&original[..]),
+            "live file untouched"
+        );
+        let backups = corrupt_backups(tmp.path());
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        assert_eq!(std::fs::read(&backups[0]).unwrap(), original, "BOM kept");
+        // Named by the hash of the raw bytes, BOM included.
+        assert_eq!(
+            backups[0].file_name().unwrap(),
+            "fleet.config.json.corrupt-421aca0a03c1d36a"
+        );
     }
 
     #[test]
@@ -434,8 +564,8 @@ mod tests {
         let backups = corrupt_backups(tmp.path());
         assert_eq!(backups.len(), 1, "{backups:?}");
         assert_eq!(std::fs::read(&backups[0]).unwrap(), original);
-        // The new file holds only what the setter wrote.
-        let cfg = load_config_from(tmp.path());
+        // The live file now holds only what the setter wrote.
+        let cfg: Value = serde_json::from_slice(&live_bytes(tmp.path()).unwrap()).unwrap();
         assert_eq!(
             cfg.as_object().unwrap().keys().collect::<Vec<_>>(),
             ["telemetry"],
