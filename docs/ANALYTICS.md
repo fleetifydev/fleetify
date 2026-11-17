@@ -13,8 +13,9 @@ Privacy**.
 Onboarding ends with one step for each. The first tells you what
 dashboard sync sends and that it is on, with two buttons: **Keep it on**
 and **Turn it off**. The second asks about product analytics, and **Not
-now** leaves it off. If you leave onboarding before answering, dashboard
-sync stays on and product analytics stays off.
+now** leaves it off. On a new installation, dashboard sync starts once
+you answer the dashboard step; after that it is on unless you turn it
+off. If you leave onboarding before answering, both channels stay off.
 
 ---
 
@@ -27,18 +28,19 @@ with your sign-in token and this install's device id (a random UUID kept in
 
 ### On by default, with a switch
 
-Dashboard sync is on unless you turn it off. Before you enter Fleet,
-onboarding tells you what it sends, and either of its buttons saves your
-choice. **Settings → General → Privacy → Dashboard sync** turns it off,
-or back on, at any time. If you turned off the **Anonymous usage
+On a new installation, dashboard sync starts once you answer the
+dashboard step during onboarding; after that it is on unless you turn it
+off. That step tells you what it sends, and either of its buttons saves
+your choice. **Settings → General → Privacy → Dashboard sync** turns it
+off, or back on, at any time. If you turned off the **Anonymous usage
 analytics** switch in an earlier version, sync stays off.
 
-When Fleetify can't tell what you chose, it keeps sync off. If your
-settings file (`fleet.config.json`) is there but can't be read or parsed,
-sync stays off for that launch, and Fleetify saves it as off, so it stays
-off until you turn it back on. A file that couldn't be parsed is first
-copied next to it as `fleet.config.json.corrupt-<hash>`. With no settings
-file at all, as on a new install, sync starts on.
+A settings file (`fleet.config.json`) that exists but can't be read or
+parsed keeps sync off until you turn it on again: sync stays off for that
+launch, and Fleetify saves it as off. A file that couldn't be parsed is
+first copied next to it as `fleet.config.json.corrupt-<hash>`; one that
+couldn't be read is moved aside, whole, as
+`fleet.config.json.unreadable-<timestamp>`.
 
 ### What dashboard sync sends
 

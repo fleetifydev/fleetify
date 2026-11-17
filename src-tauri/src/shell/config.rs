@@ -310,7 +310,7 @@ pub fn git_attribution_from(cfg: &Value) -> bool {
 /// is the saved switch — `None` until the user flips it; read it through
 /// [`cloud_sync_from`], which also covers the legacy flag and the default
 /// (on). `cloud_sync_enabled_at` records the first opt-in (Unix ms): the
-/// first time sync is turned on from off.
+/// first time a saved opt-out is turned back on.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct TelemetryConfig {
     #[serde(default)]
@@ -382,9 +382,10 @@ pub fn telemetry_set(cfg: &mut Value, telem: &TelemetryConfig) {
 /// Save the Fleetify cloud sync switch in `dir`'s `fleet.config.json`:
 /// read-merge-write `telemetry.cloud_sync_enabled`, stamping
 /// `cloud_sync_enabled_at` on the first opt-in only (turning it off, or on
-/// again later, keeps that time). Keeping sync on while it is on by default
-/// saves the choice but is no opt-in, so it stamps nothing. `Err` carries a
-/// message fit for the user.
+/// again later, keeps that time). Saving `true` while the saved setting is
+/// already on, as it is by default, records the choice but is no opt-in, so
+/// it stamps nothing: also onboarding's "Keep it on" on a new install, whose
+/// gate opens only then. `Err` carries a message fit for the user.
 pub fn persist_cloud_choice(dir: &Path, enabled: bool) -> Result<(), String> {
     let mut cfg = load_config_from(dir);
     let was_enabled = cloud_sync_from(&cfg);
@@ -398,37 +399,123 @@ pub fn persist_cloud_choice(dir: &Path, enabled: bool) -> Result<(), String> {
 }
 
 /// Whether this launch may open the cloud sync gate, decided once at
-/// startup from `dir`'s `fleet.config.json`: the saved choice
-/// ([`cloud_sync_from`]) when the file loads, the default when there is no
-/// file yet.
+/// startup from `dir`'s `fleet.config.json`.
+///
+/// A new install keeps sync off until the user answers onboarding's
+/// dashboard step, whose buttons save the choice and set the gate: with no
+/// file, or a file that holds neither a saved choice nor
+/// `onboardingComplete: true`, sync stays off and nothing is written. Past
+/// either, the saved choice decides ([`cloud_sync_from`], so with none, the
+/// default).
 ///
 /// A file that is there but can't be read or parsed fails closed, since an
 /// earlier opt-out may be what it no longer shows: sync stays off for this
 /// launch, and an explicit opt-out is saved ([`persist_cloud_choice`]) so
-/// later launches stay off too, until the user turns sync back on. If that
-/// save fails, sync still stays off for this launch.
+/// later launches stay off too, until the user turns sync back on. An
+/// unreadable file is moved aside first, so its bytes are kept. If the save
+/// fails, the file is put back, and sync still stays off for this launch.
 pub fn startup_cloud_decision(dir: &Path) -> bool {
+    decide_cloud_at_startup(dir, |dir| persist_cloud_choice(dir, false))
+}
+
+/// [`startup_cloud_decision`], with the opt-out save passed in so a test
+/// can make it fail.
+fn decide_cloud_at_startup(
+    dir: &Path,
+    save_opt_out: impl FnOnce(&Path) -> Result<(), String>,
+) -> bool {
     let (cfg, status) = load_config_with_status(dir);
     let condition = match status {
-        ConfigLoad::Missing | ConfigLoad::Ok => return cloud_sync_from(&cfg),
+        ConfigLoad::Missing => return false,
+        ConfigLoad::Ok => return cloud_choice_or_onboarded(&cfg) && cloud_sync_from(&cfg),
         ConfigLoad::Corrupt => "corrupt",
         ConfigLoad::Unreadable => "unreadable",
     };
-    // The condition only: never the file's content, nor its folder (whose
-    // path usually holds the user's name).
-    match persist_cloud_choice(dir, false) {
-        Ok(()) => tracing::warn!(
+    // A file that can't be read can't be copied either, so it is moved
+    // aside whole before the opt-out takes its place. A corrupt file was
+    // read, and the load already kept a copy.
+    let aside = match status {
+        ConfigLoad::Unreadable => move_unreadable_aside(dir),
+        _ => None,
+    };
+    // The condition and the aside's file name only: never the file's
+    // content, nor its folder (whose path usually holds the user's name).
+    match (save_opt_out(dir), &aside) {
+        (Ok(()), Some(kept)) => tracing::warn!(
+            condition,
+            kept = %kept,
+            "{CONFIG_FILE} is {condition}; moved it aside, and cloud sync is off \
+             until it is turned back on"
+        ),
+        (Ok(()), None) => tracing::warn!(
             condition,
             "{CONFIG_FILE} is {condition}; cloud sync is off until it is turned back on"
         ),
-        Err(error) => tracing::warn!(
-            condition,
-            error = %error,
-            "{CONFIG_FILE} is {condition}; cloud sync stays off for this launch, \
-             but turning it off couldn't be saved"
-        ),
+        (Err(error), _) => {
+            // Put the file back: with none there, the next launch would take
+            // this for a new install.
+            if let Some(kept) = &aside {
+                if let Err(e) = std::fs::rename(dir.join(kept), dir.join(CONFIG_FILE)) {
+                    tracing::warn!(
+                        condition,
+                        kept = %kept,
+                        error = %e,
+                        "{CONFIG_FILE} was moved aside and couldn't be put back"
+                    );
+                }
+            }
+            tracing::warn!(
+                condition,
+                error = %error,
+                "{CONFIG_FILE} is {condition}; cloud sync stays off for this launch, \
+                 but turning it off couldn't be saved"
+            );
+        }
     }
     false
+}
+
+/// Whether `cfg` holds a saved cloud sync choice (`telemetry.cloud_sync_enabled`
+/// is a bool) or says onboarding is finished (top-level `onboardingComplete`
+/// is `true`, which the renderer writes). Until one of them does, a new
+/// install keeps sync off.
+fn cloud_choice_or_onboarded(cfg: &Value) -> bool {
+    let chose = cfg
+        .get("telemetry")
+        .and_then(|t| t.get("cloud_sync_enabled"))
+        .is_some_and(Value::is_boolean);
+    let onboarded = cfg.get("onboardingComplete").and_then(Value::as_bool) == Some(true);
+    chose || onboarded
+}
+
+/// Moves `dir`'s unreadable `fleet.config.json` aside, to a name of its own
+/// ([`free_aside_name`]). A rename needs only write access to the folder and
+/// keeps the file whole: its bytes, owner and mode. A folder is never moved;
+/// a link is moved itself, never what it points to. Returns the new name, or
+/// `None` when nothing was moved.
+fn move_unreadable_aside(dir: &Path) -> Option<String> {
+    let live = dir.join(CONFIG_FILE);
+    let movable = std::fs::symlink_metadata(&live).is_ok_and(|m| !m.is_dir());
+    if !movable {
+        return None;
+    }
+    let name = free_aside_name(dir, unix_ms());
+    std::fs::rename(&live, dir.join(&name)).ok()?;
+    Some(name)
+}
+
+/// `fleet.config.json.unreadable-<ms>`, or the same with `-<n>` added when
+/// `dir` already has a file by that name, so no earlier copy is replaced
+/// (the clock can repeat, or sit at 0 when it is set before 1970).
+fn free_aside_name(dir: &Path, ms: i64) -> String {
+    let base = format!("{CONFIG_FILE}.unreadable-{ms}");
+    let mut name = base.clone();
+    let mut n = 1u32;
+    while std::fs::symlink_metadata(dir.join(&name)).is_ok() {
+        name = format!("{base}-{n}");
+        n += 1;
+    }
+    name
 }
 
 /// What `dir`'s `fleet.config.json` says about cloud sync now, for the end
@@ -863,17 +950,45 @@ mod tests {
             !startup_cloud_decision(tmp.path()),
             "the next launch stays off"
         );
-        // ...and the corrupt bytes are still kept.
+        // ...and the corrupt bytes are still kept, as a copy: a file that
+        // could be read is never moved aside.
         let backups = corrupt_backups(tmp.path());
         assert_eq!(backups.len(), 1, "{backups:?}");
         assert_eq!(std::fs::read(&backups[0]).unwrap(), original);
+        assert!(unreadable_asides(tmp.path()).is_empty());
+    }
+
+    /// The `fleet.config.json.unreadable-*` files in `dir`, each named by
+    /// a time in Unix ms, maybe with `-<n>` added.
+    fn unreadable_asides(dir: &Path) -> Vec<std::path::PathBuf> {
+        let prefix = format!("{CONFIG_FILE}.unreadable-");
+        let asides: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                let name = path.file_name().unwrap().to_str().unwrap();
+                name.starts_with(&prefix)
+            })
+            .collect();
+        for path in &asides {
+            let name = path.file_name().unwrap().to_str().unwrap();
+            let suffix = &name[prefix.len()..];
+            assert!(
+                suffix
+                    .split('-')
+                    .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit())),
+                "aside not named by a time: {name}"
+            );
+        }
+        asides
     }
 
     #[test]
     fn an_unreadable_config_keeps_sync_off() {
         let tmp = tempfile::tempdir().unwrap();
-        // A folder where the file belongs: it is there but can't be read,
-        // and nothing can replace it, so the opt-out can't be saved either.
+        // A folder where the file belongs: it is there but can't be read. A
+        // folder is never moved aside, and nothing can replace it, so the
+        // opt-out can't be saved either.
         std::fs::create_dir(tmp.path().join(CONFIG_FILE)).unwrap();
 
         assert!(!startup_cloud_decision(tmp.path()));
@@ -881,17 +996,22 @@ mod tests {
             tmp.path().join(CONFIG_FILE).is_dir(),
             "the save failed, and sync still stays off"
         );
+        assert!(
+            unreadable_asides(tmp.path()).is_empty(),
+            "a folder is never moved"
+        );
         assert!(corrupt_backups(tmp.path()).is_empty());
     }
 
     #[cfg(unix)]
     #[test]
-    fn an_unreadable_config_that_can_be_replaced_gets_the_opt_out() {
+    fn an_unreadable_config_is_moved_aside_and_gets_the_opt_out() {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::tempdir().unwrap();
         let file = tmp.path().join(CONFIG_FILE);
-        std::fs::write(&file, r#"{"telemetry": {"cloud_sync_enabled": false}}"#).unwrap();
+        let original = br#"{"theme": "dark", "telemetry": {"cloud_sync_enabled": false}}"#;
+        std::fs::write(&file, original).unwrap();
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
         if std::fs::read(&file).is_ok() {
             eprintln!("skipped: permissions don't stop this user's reads (root?)");
@@ -899,37 +1019,162 @@ mod tests {
         }
 
         assert!(!startup_cloud_decision(tmp.path()));
+
+        // The opt-out took the file's place...
         let cfg = load_config_from(tmp.path());
         assert_eq!(
             cfg["telemetry"]["cloud_sync_enabled"],
             json!(false),
             "{cfg}"
         );
+        // ...and the unreadable file is kept whole beside it, mode and all.
+        let asides = unreadable_asides(tmp.path());
+        assert_eq!(asides.len(), 1, "{asides:?}");
+        let kept = std::fs::metadata(&asides[0]).unwrap();
+        assert_eq!(kept.len(), original.len() as u64);
+        assert_eq!(kept.permissions().mode() & 0o777, 0o000, "mode kept");
+        std::fs::set_permissions(&asides[0], std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(std::fs::read(&asides[0]).unwrap(), original);
+    }
+
+    /// Makes `dir`'s `fleet.config.json` a link to a folder, which nobody
+    /// can read, root included, and which isn't a folder itself. Returns the
+    /// folder.
+    #[cfg(unix)]
+    fn link_to_a_folder(dir: &Path) -> std::path::PathBuf {
+        let target = dir.join("elsewhere");
+        std::fs::create_dir(&target).unwrap();
+        std::os::unix::fs::symlink(&target, dir.join(CONFIG_FILE)).unwrap();
+        target
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_link_is_moved_aside_and_its_folder_stays() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = link_to_a_folder(tmp.path());
+
+        assert!(!startup_cloud_decision(tmp.path()));
+
+        let cfg = load_config_from(tmp.path());
+        assert_eq!(
+            cfg["telemetry"]["cloud_sync_enabled"],
+            json!(false),
+            "{cfg}"
+        );
+        let asides = unreadable_asides(tmp.path());
+        assert_eq!(asides.len(), 1, "{asides:?}");
+        assert_eq!(
+            std::fs::read_link(&asides[0]).unwrap(),
+            target,
+            "the link itself was moved"
+        );
+        assert!(target.is_dir(), "the folder stays where it was");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_config_is_put_back_when_the_opt_out_cant_be_saved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = link_to_a_folder(tmp.path());
+
+        let open = decide_cloud_at_startup(tmp.path(), |dir| {
+            assert!(
+                std::fs::symlink_metadata(dir.join(CONFIG_FILE)).is_err(),
+                "moved aside before the save"
+            );
+            Err("Couldn't save the cloud sync setting: disk full".to_string())
+        });
+
+        assert!(!open, "sync stays off for this launch");
+        assert_eq!(
+            std::fs::read_link(tmp.path().join(CONFIG_FILE)).unwrap(),
+            target,
+            "put back, so the next launch doesn't take it for a new install"
+        );
+        assert!(unreadable_asides(tmp.path()).is_empty());
     }
 
     #[test]
-    fn a_missing_config_opens_sync_and_writes_nothing() {
+    fn an_aside_name_never_replaces_an_earlier_one() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(startup_cloud_decision(tmp.path()), "a fresh install is on");
-        assert!(
-            !tmp.path().join(CONFIG_FILE).exists(),
-            "a fresh install saves no choice"
+        assert_eq!(
+            free_aside_name(tmp.path(), 42),
+            "fleet.config.json.unreadable-42"
+        );
+        std::fs::write(tmp.path().join("fleet.config.json.unreadable-42"), "kept").unwrap();
+        std::fs::write(tmp.path().join("fleet.config.json.unreadable-42-1"), "kept").unwrap();
+        assert_eq!(
+            free_aside_name(tmp.path(), 42),
+            "fleet.config.json.unreadable-42-2"
         );
     }
 
     #[test]
-    fn a_readable_config_decides_by_its_saved_choice() {
-        for (saved, open) in [
-            (json!({"telemetry": {"cloud_sync_enabled": true}}), true),
-            (json!({"telemetry": {"cloud_sync_enabled": false}}), false),
-            (json!({"telemetryEnabled": false}), false),
-            (json!({"theme": "dark"}), CLOUD_SYNC_DEFAULT),
-        ] {
-            let tmp = tempfile::tempdir().unwrap();
-            save_config_to(tmp.path(), &saved).unwrap();
-            assert_eq!(startup_cloud_decision(tmp.path()), open, "{saved}");
-            assert_eq!(load_config_from(tmp.path()), saved, "left as it was");
-        }
+    fn a_missing_config_keeps_sync_off_and_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(
+            !startup_cloud_decision(tmp.path()),
+            "a new install waits for the onboarding notice"
+        );
+        assert!(
+            !tmp.path().join(CONFIG_FILE).exists(),
+            "a new install saves no choice"
+        );
+    }
+
+    /// The startup decision for a readable `fleet.config.json` holding
+    /// `cfg`, which it must leave as it was.
+    fn decide_on(cfg: &Value) -> bool {
+        let tmp = tempfile::tempdir().unwrap();
+        save_config_to(tmp.path(), cfg).unwrap();
+        let open = startup_cloud_decision(tmp.path());
+        assert_eq!(&load_config_from(tmp.path()), cfg, "left as it was");
+        open
+    }
+
+    #[test]
+    fn a_config_with_no_choice_before_onboarding_keeps_sync_off() {
+        assert!(!decide_on(&json!({"theme": "dark"})));
+        assert!(!decide_on(
+            &json!({"userName": "Mira", "onboardingComplete": false})
+        ));
+        // Only `true` counts as finished.
+        assert!(!decide_on(&json!({"onboardingComplete": "true"})));
+    }
+
+    #[test]
+    fn an_onboarded_config_with_no_choice_gets_the_default() {
+        assert_eq!(
+            decide_on(&json!({"theme": "dark", "onboardingComplete": true})),
+            CLOUD_SYNC_DEFAULT
+        );
+        // An opt-out from the old switch still counts.
+        assert!(!decide_on(
+            &json!({"onboardingComplete": true, "telemetryEnabled": false})
+        ));
+    }
+
+    #[test]
+    fn an_explicit_opt_in_opens_sync_before_onboarding() {
+        assert!(decide_on(
+            &json!({"telemetry": {"cloud_sync_enabled": true}})
+        ));
+        assert!(decide_on(&json!({
+            "telemetry": {"cloud_sync_enabled": true},
+            "onboardingComplete": false
+        })));
+    }
+
+    #[test]
+    fn an_explicit_opt_out_keeps_sync_off_after_onboarding() {
+        assert!(!decide_on(&json!({
+            "telemetry": {"cloud_sync_enabled": false},
+            "onboardingComplete": true
+        })));
+        assert!(!decide_on(
+            &json!({"telemetry": {"cloud_sync_enabled": false}})
+        ));
     }
 
     #[test]
@@ -1262,9 +1507,10 @@ mod tests {
 
     #[test]
     fn keeping_sync_on_saves_the_choice_without_an_opt_in_time() {
-        // Onboarding's "Keep it on" saves an explicit choice. Sync was
-        // already on by default, so it isn't an opt-in: only turning sync on
-        // from off is stamped.
+        // Onboarding's "Keep it on" saves an explicit choice. The saved
+        // setting was already on (the default), so it isn't an opt-in, even
+        // on a new install whose gate opens only then: only turning a saved
+        // opt-out back on is stamped.
         let tmp = tempfile::tempdir().unwrap();
         save_config_to(tmp.path(), &json!({"theme": "dark"})).unwrap();
 
