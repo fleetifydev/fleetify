@@ -241,12 +241,14 @@ Pre-1.0 this still triggers only a minor bump (we're 0.x — semver lets us brea
 
 ## Telemetry & analytics
 
-Fleetify ships two independent telemetry channels. Both are off until the
-user turns them on; `docs/ANALYTICS.md` lists what each one sends.
+Fleetify ships two independent telemetry channels. Dashboard sync is on by
+default and can be turned off in Settings → Privacy; product analytics is
+off until the user turns it on. `docs/ANALYTICS.md` lists what each one
+sends.
 
 | Channel | Vendor | Default | Toggle | Outbox |
 |---|---|---|---|---|
-| Dashboard sync | Fleetify cloud (`fleetify.dev`, WebSocket) | **OFF** | Settings → Privacy → "Dashboard sync" | `~/.fleetify/telemetry-outbox.sqlite` |
+| Dashboard sync | Fleetify cloud (`fleetify.dev`, WebSocket) | **ON** | Settings → Privacy → "Dashboard sync" | `~/.fleetify/telemetry-outbox.sqlite` |
 | Product analytics | PostHog Cloud (US, HTTP `/batch`) | **OFF** | Settings → Privacy → "Product analytics" | `~/.fleetify/posthog-outbox.sqlite` |
 
 ### PostHog integration

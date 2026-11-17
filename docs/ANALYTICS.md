@@ -1,15 +1,20 @@
 # Fleetify analytics — what we send, what we don't
 
-Fleetify has two independent telemetry channels. Both are off until you
-turn them on, and both are switched in **Settings → General → Privacy**.
+Fleetify has two independent telemetry channels. Dashboard sync is on by
+default, and you can turn it off at any time; product analytics is off
+until you turn it on. Both are switched in **Settings → General →
+Privacy**.
 
 | Channel | Destination | Default | Settings |
 |---|---|---|---|
-| `Dashboard sync` | Fleetify cloud (`fleetify.dev`) | **OFF** | Privacy → Dashboard sync |
+| `Dashboard sync` | Fleetify cloud (`fleetify.dev`) | **ON** | Privacy → Dashboard sync |
 | `Product analytics` | PostHog Cloud (US) | **OFF** | Privacy → Product analytics |
 
-Onboarding asks about each one in turn. "Not now" leaves it off, and so
-does leaving onboarding before you answer.
+Onboarding ends with one step for each. The first tells you what
+dashboard sync sends and that it is on, with two buttons: **Keep it on**
+and **Turn it off**. The second asks about product analytics, and **Not
+now** leaves it off. If you leave onboarding before answering, dashboard
+sync stays on and product analytics stays off.
 
 ---
 
@@ -19,6 +24,21 @@ Shows your sessions on your fleetify.dev dashboard. It is linked to your
 Fleetify account: while it is on, the app asks `fleetify.dev` for a ticket
 with your sign-in token and this install's device id (a random UUID kept in
 `~/.fleetify/device.json`), then keeps one WebSocket open to it.
+
+### On by default, with a switch
+
+Dashboard sync is on unless you turn it off. Before you enter Fleet,
+onboarding tells you what it sends, and either of its buttons saves your
+choice. **Settings → General → Privacy → Dashboard sync** turns it off,
+or back on, at any time. If you turned off the **Anonymous usage
+analytics** switch in an earlier version, sync stays off.
+
+When Fleetify can't tell what you chose, it keeps sync off. If your
+settings file (`fleet.config.json`) is there but can't be read or parsed,
+sync stays off for that launch, and Fleetify saves it as off, so it stays
+off until you turn it back on. A file that couldn't be parsed is first
+copied next to it as `fleet.config.json.corrupt-<hash>`. With no settings
+file at all, as on a new install, sync starts on.
 
 ### What dashboard sync sends
 

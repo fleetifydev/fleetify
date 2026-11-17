@@ -3,9 +3,10 @@ import { render, screen, fireEvent, act, within } from "@testing-library/react";
 import { OnboardingChat } from "../onboarding-chat";
 import { capture, optIn, optOut } from "@/lib/posthog";
 
-// The two privacy questions that close onboarding: dashboard sync, then
-// product analytics. Both are opt-in, so the only way to switch either on is
-// an explicit yes; a failed save is reported and never blocks the finish.
+// The two privacy steps that close onboarding. Dashboard sync is on by
+// default, so its step says what it sends and offers to turn it off; either
+// button saves the choice. Product analytics stays opt-in: only an explicit
+// yes turns it on. A failed save is reported and never blocks the finish.
 
 // No network on mount: the provider scan is the only api call on this path.
 vi.mock("@/lib/api", async (importOriginal) => ({
@@ -22,8 +23,11 @@ vi.mock("@/lib/posthog", () => ({
 
 const USER = { id: "u-1", name: "Mira Tester", email: "mira@example.com" };
 
-const DASHBOARD_QUESTION =
-  "One more thing, Mira. Want to see your sessions on your fleetify.dev dashboard? Fleetify would send session titles (the folder name, or a name you typed), project folder names, which agent and model each session uses, the kind of each agent action, token usage and cost, and a heartbeat every minute while it's open, to your account. Never your code, file contents, commands or API keys. It stays off unless you turn it on, and you can change it anytime in **Settings → Privacy**.";
+const DASHBOARD_DISCLOSURE =
+  "One more thing, Mira. Your sessions will show up on your fleetify.dev dashboard. To do that, Fleetify sends session titles (the folder name, or a name you typed), project folder names, which agent and model each session uses, the kind of each agent action, token usage and cost, and a heartbeat every minute while it's open, to your account. Never your code, file contents, commands or API keys. It's on by default — you can turn it off now or anytime in **Settings → Privacy**.";
+const SYNC_KEPT_ON = "Great — your sessions will appear on your dashboard.";
+const SYNC_TURNED_OFF =
+  "Dashboard sync is off. You can turn it on anytime in **Settings → Privacy**.";
 const ANALYTICS_QUESTION =
   "Last thing — would you help us improve Fleetify? We'd send usage data (which screens, which providers, how long onboarding takes), linked to your account. Never message content, API keys or file paths. You can change this anytime in **Settings → Privacy**.";
 const NOT_CHANGED =
@@ -61,7 +65,7 @@ function line(markdown: string): HTMLElement {
   return screen.getByText((_, el) => el?.tagName === "P" && el.textContent === text);
 }
 
-/** Both questions end on a bold **Settings → Privacy**. */
+/** These lines end on a bold **Settings → Privacy**. */
 function expectQuestion(markdown: string) {
   expect(within(line(markdown)).getByText("Settings → Privacy").tagName).toBe("STRONG");
 }
@@ -81,37 +85,39 @@ async function answer(button: string) {
 const enterFleet = () => screen.getByRole("button", { name: /enter fleet/i });
 
 describe("onboarding privacy questions", () => {
-  it("asks about dashboard sync right after the theme step, verbatim", async () => {
+  it("discloses dashboard sync right after the theme step, verbatim", async () => {
     await pickTheme();
-    expectQuestion(DASHBOARD_QUESTION);
-    expect(screen.getByRole("button", { name: "Turn on" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Not now" })).toBeInTheDocument();
+    expectQuestion(DASHBOARD_DISCLOSURE);
+    expect(screen.getByRole("button", { name: "Keep it on" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Turn it off" })).toBeInTheDocument();
     expect(api.telemetrySetCloudEnabled).not.toHaveBeenCalled();
     expect(enterFleet()).toBeDisabled();
   });
 
-  it("Turn on switches dashboard sync on, then asks about product analytics verbatim", async () => {
+  it("Keep it on saves dashboard sync on, then asks about product analytics verbatim", async () => {
     await pickTheme();
-    await answer("Turn on");
+    await answer("Keep it on");
     expect(api.telemetrySetCloudEnabled.mock.calls).toEqual([[true]]);
-    expect(screen.getByText("Turn on", { selector: "p" })).toBeInTheDocument(); // the user's bubble
+    expect(screen.getByText("Keep it on", { selector: "p" })).toBeInTheDocument(); // the user's bubble
+    line(SYNC_KEPT_ON);
     expectQuestion(ANALYTICS_QUESTION);
     expect(screen.getByRole("button", { name: "Sure, help out" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Not now" })).toBeInTheDocument();
     expect(api.telemetrySetPosthogEnabled).not.toHaveBeenCalled();
   });
 
-  it("Not now leaves dashboard sync off, then asks about product analytics", async () => {
+  it("Turn it off saves dashboard sync off, then asks about product analytics", async () => {
     await pickTheme();
-    await answer("Not now");
+    await answer("Turn it off");
     expect(api.telemetrySetCloudEnabled.mock.calls).toEqual([[false]]);
-    expect(screen.getByText("Not now", { selector: "p" })).toBeInTheDocument();
+    expect(screen.getByText("Turn it off", { selector: "p" })).toBeInTheDocument();
+    expectQuestion(SYNC_TURNED_OFF);
     expectQuestion(ANALYTICS_QUESTION);
   });
 
-  it("Not now to both never opts in, and onboarding finishes", async () => {
+  it("Turn it off, then Not now, never opts in to product analytics, and onboarding finishes", async () => {
     await pickTheme();
-    await answer("Not now");
+    await answer("Turn it off");
     await answer("Not now");
     expect(api.telemetrySetCloudEnabled.mock.calls).toEqual([[false]]);
     expect(api.telemetrySetPosthogEnabled.mock.calls).toEqual([[false]]);
@@ -128,8 +134,10 @@ describe("onboarding privacy questions", () => {
     api.telemetrySetCloudEnabled.mockResolvedValueOnce({ ok: false, error: cloudError });
     api.telemetrySetPosthogEnabled.mockResolvedValueOnce({ ok: false, error: posthogError });
     await pickTheme();
-    await answer("Turn on");
+    await answer("Turn it off");
     line(`I couldn't save that choice: ${cloudError}`);
+    // The backend still turned sync off for this session.
+    expectQuestion(SYNC_TURNED_OFF);
     expectQuestion(ANALYTICS_QUESTION);
     await answer("Sure, help out");
     line(`I couldn't save that choice: ${posthogError}`);
@@ -143,8 +151,14 @@ describe("onboarding privacy questions", () => {
     api.telemetrySetCloudEnabled.mockRejectedValueOnce(new Error("ipc down"));
     api.telemetrySetPosthogEnabled.mockRejectedValueOnce(new Error("ipc down"));
     await pickTheme();
-    await answer("Turn on");
+    await answer("Turn it off");
     expectQuestion(NOT_CHANGED);
+    // Nothing turned sync off, so nothing may say it is off.
+    const offLine = SYNC_TURNED_OFF.replace(/\*\*/g, "");
+    expect(
+      screen.queryByText((_, el) => el?.tagName === "P" && el.textContent === offLine),
+    ).toBeNull();
+    expect(screen.queryByText(/Dashboard sync is off/)).toBeNull();
     expectQuestion(ANALYTICS_QUESTION);
     await answer("Sure, help out");
     const plain = NOT_CHANGED.replace(/\*\*/g, "");

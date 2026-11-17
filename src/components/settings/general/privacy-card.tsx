@@ -1,10 +1,11 @@
 /**
  * Privacy card — Settings → General.
  *
- * Two switches, both off until the user turns them on:
+ * Two switches:
  *   - Dashboard sync: sessions on the user's fleetify.dev dashboard (the
- *     Fleetify cloud channel).
- *   - Product analytics: usage data for PostHog.
+ *     Fleetify cloud channel). On by default.
+ *   - Product analytics: usage data for PostHog. Off until the user turns
+ *     it on.
  *
  * Both show the backend's live gate from `telemetryGetConfig` and change it
  * through their own Tauri command, which saves the flag and then sets the
@@ -104,7 +105,7 @@ export function PrivacyCard() {
   return (
     <CardShell>
       <Row title={DASHBOARD_SYNC}
-           desc="Shows your sessions on your fleetify.dev dashboard. Sends session titles (the folder name, or a name you typed), project folder names, which agent and model each session uses, the kind of each agent action, token usage and cost, and a heartbeat every minute while Fleetify is open, linked to your account. Never your code, file contents, commands or API keys. Off by default."
+           desc="Shows your sessions on your fleetify.dev dashboard. Sends session titles (the folder name, or a name you typed), project folder names, which agent and model each session uses, the kind of each agent action, token usage and cost, and a heartbeat every minute while Fleetify is open, linked to your account. Never your code, file contents, commands or API keys. On by default."
            error={cloudError}>
         <Toggle on={cloud} label={DASHBOARD_SYNC} onChange={() => void toggleCloud()} />
       </Row>

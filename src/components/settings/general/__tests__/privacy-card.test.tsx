@@ -9,7 +9,7 @@ vi.mock("@/lib/posthog", () => ({
 }));
 
 const DASHBOARD_SYNC_DESC =
-  "Shows your sessions on your fleetify.dev dashboard. Sends session titles (the folder name, or a name you typed), project folder names, which agent and model each session uses, the kind of each agent action, token usage and cost, and a heartbeat every minute while Fleetify is open, linked to your account. Never your code, file contents, commands or API keys. Off by default.";
+  "Shows your sessions on your fleetify.dev dashboard. Sends session titles (the folder name, or a name you typed), project folder names, which agent and model each session uses, the kind of each agent action, token usage and cost, and a heartbeat every minute while Fleetify is open, linked to your account. Never your code, file contents, commands or API keys. On by default.";
 const PRODUCT_ANALYTICS_DESC =
   "Usage data that helps us see which features matter (for example, whether onboarding is too long), linked to your account after you sign in. Never message content, API keys or file paths. Off by default.";
 const UNSAVED =

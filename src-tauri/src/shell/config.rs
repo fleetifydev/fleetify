@@ -297,7 +297,7 @@ pub fn git_attribution_from(cfg: &Value) -> bool {
         .unwrap_or(true)
 }
 
-/// The two telemetry consents, at `fleet.config.json::telemetry` (parallel
+/// The two telemetry switches, at `fleet.config.json::telemetry` (parallel
 /// to `routing` / `providers`).
 ///
 /// PostHog product analytics: default `posthog_enabled` is `false` —
@@ -308,8 +308,9 @@ pub fn git_attribution_from(cfg: &Value) -> bool {
 ///
 /// Fleetify cloud sync (the fleetify.dev dashboard): `cloud_sync_enabled`
 /// is the saved switch — `None` until the user flips it; read it through
-/// [`cloud_sync_from`], which also covers the legacy flag and the default.
-/// `cloud_sync_enabled_at` records the first opt-in (Unix ms).
+/// [`cloud_sync_from`], which also covers the legacy flag and the default
+/// (on). `cloud_sync_enabled_at` records the first opt-in (Unix ms): the
+/// first time sync is turned on from off.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct TelemetryConfig {
     #[serde(default)]
@@ -323,8 +324,9 @@ pub struct TelemetryConfig {
 }
 
 /// Whether Fleetify cloud sync is on for a user who never flipped the
-/// switch. The owner's decision; nothing else may hard-code it.
-pub const CLOUD_SYNC_DEFAULT: bool = false;
+/// switch: on, disclosed at onboarding, and turned off in Settings →
+/// Privacy. The owner's decision; nothing else may hard-code it.
+pub const CLOUD_SYNC_DEFAULT: bool = true;
 
 /// Whether Fleetify cloud sync is on. In order:
 /// 1. `telemetry.cloud_sync_enabled`, when it is a bool;
@@ -380,7 +382,9 @@ pub fn telemetry_set(cfg: &mut Value, telem: &TelemetryConfig) {
 /// Save the Fleetify cloud sync switch in `dir`'s `fleet.config.json`:
 /// read-merge-write `telemetry.cloud_sync_enabled`, stamping
 /// `cloud_sync_enabled_at` on the first opt-in only (turning it off, or on
-/// again later, keeps that time). `Err` carries a message fit for the user.
+/// again later, keeps that time). Keeping sync on while it is on by default
+/// saves the choice but is no opt-in, so it stamps nothing. `Err` carries a
+/// message fit for the user.
 pub fn persist_cloud_choice(dir: &Path, enabled: bool) -> Result<(), String> {
     let mut cfg = load_config_from(dir);
     let was_enabled = cloud_sync_from(&cfg);
@@ -904,9 +908,9 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_config_follows_the_default_and_writes_nothing() {
+    fn a_missing_config_opens_sync_and_writes_nothing() {
         let tmp = tempfile::tempdir().unwrap();
-        assert_eq!(startup_cloud_decision(tmp.path()), CLOUD_SYNC_DEFAULT);
+        assert!(startup_cloud_decision(tmp.path()), "a fresh install is on");
         assert!(
             !tmp.path().join(CONFIG_FILE).exists(),
             "a fresh install saves no choice"
@@ -1147,6 +1151,19 @@ mod tests {
     }
 
     #[test]
+    fn sync_is_on_unless_the_user_turned_it_off() {
+        assert!(cloud_sync_from(&json!({})), "on for a user who never chose");
+        assert!(
+            !cloud_sync_from(&json!({"telemetry": {"cloud_sync_enabled": false}})),
+            "an explicit opt-out"
+        );
+        assert!(
+            !cloud_sync_from(&json!({"telemetryEnabled": false})),
+            "an opt-out from the old switch"
+        );
+    }
+
+    #[test]
     fn cloud_sync_honours_the_saved_choice() {
         assert!(cloud_sync_from(
             &json!({"telemetry": {"cloud_sync_enabled": true}})
@@ -1214,7 +1231,12 @@ mod tests {
     #[test]
     fn persisting_the_cloud_choice_writes_the_key() {
         let tmp = tempfile::tempdir().unwrap();
-        save_config_to(tmp.path(), &json!({"theme": "dark"})).unwrap();
+        // Sync is on by default, so an opt-in needs an earlier opt-out.
+        save_config_to(
+            tmp.path(),
+            &json!({"theme": "dark", "telemetry": {"cloud_sync_enabled": false}}),
+        )
+        .unwrap();
 
         persist_cloud_choice(tmp.path(), true).unwrap();
         let cfg = load_config_from(tmp.path());
@@ -1236,6 +1258,21 @@ mod tests {
         let cfg = load_config_from(tmp.path());
         assert_eq!(cfg["telemetry"]["cloud_sync_enabled"], json!(true));
         assert_eq!(cfg["telemetry"]["cloud_sync_enabled_at"], first_opt_in);
+    }
+
+    #[test]
+    fn keeping_sync_on_saves_the_choice_without_an_opt_in_time() {
+        // Onboarding's "Keep it on" saves an explicit choice. Sync was
+        // already on by default, so it isn't an opt-in: only turning sync on
+        // from off is stamped.
+        let tmp = tempfile::tempdir().unwrap();
+        save_config_to(tmp.path(), &json!({"theme": "dark"})).unwrap();
+
+        persist_cloud_choice(tmp.path(), true).unwrap();
+        let cfg = load_config_from(tmp.path());
+        assert_eq!(cfg["telemetry"]["cloud_sync_enabled"], json!(true));
+        assert_eq!(cfg["telemetry"].get("cloud_sync_enabled_at"), None, "{cfg}");
+        assert_eq!(cfg["theme"], json!("dark"), "other settings kept");
     }
 
     #[test]

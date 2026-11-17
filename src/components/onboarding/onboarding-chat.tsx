@@ -631,17 +631,19 @@ export function OnboardingChat({ user, onDone, startAt }: Props) {
       "theme",
     );
 
-  // Theme picked (already applied live) → the two privacy questions, the last
-  // steps before "Enter Fleet": dashboard sync, then product analytics. Both
-  // are off by default and only an explicit yes turns one on. A choice that
-  // wasn't saved gets one line saying so; it never blocks onboarding.
+  // Theme picked (already applied live) → the two privacy steps, the last
+  // ones before "Enter Fleet": dashboard sync, then product analytics.
+  // Dashboard sync is on by default, so its step says what it sends and
+  // offers to turn it off; either button saves the choice. Product analytics
+  // stays off unless the user says yes. A choice that wasn't saved gets one
+  // line saying so; it never blocks onboarding.
   const handleThemeConfirm = async (mode: ThemeMode) => {
     resolveLastWidget();
     pushUser(
       mode === "system" ? "System theme" : mode === "dark" ? "Dark theme" : "Light theme",
     );
     await pushAssistant(
-      `One more thing, ${firstName}. Want to see your sessions on your fleetify.dev dashboard? Fleetify would send session titles (the folder name, or a name you typed), project folder names, which agent and model each session uses, the kind of each agent action, token usage and cost, and a heartbeat every minute while it's open, to your account. Never your code, file contents, commands or API keys. It stays off unless you turn it on, and you can change it anytime in **Settings → Privacy**.`,
+      `One more thing, ${firstName}. Your sessions will show up on your fleetify.dev dashboard. To do that, Fleetify sends session titles (the folder name, or a name you typed), project folder names, which agent and model each session uses, the kind of each agent action, token usage and cost, and a heartbeat every minute while it's open, to your account. Never your code, file contents, commands or API keys. It's on by default — you can turn it off now or anytime in **Settings → Privacy**.`,
       "cloud-sync-consent",
     );
   };
@@ -659,10 +661,20 @@ export function OnboardingChat({ user, onDone, startAt }: Props) {
 
   const handleCloudSyncConsent = async (enabled: boolean) => {
     resolveLastWidget();
-    pushUser(enabled ? "Turn on" : "Not now");
-    await reportPrivacyChoice(
-      await sendPrivacyChoice(() => window.electronAPI?.telemetrySetCloudEnabled?.(enabled)),
+    pushUser(enabled ? "Keep it on" : "Turn it off");
+    const outcome = await sendPrivacyChoice(
+      () => window.electronAPI?.telemetrySetCloudEnabled?.(enabled),
     );
+    await reportPrivacyChoice(outcome);
+    // Only a choice the backend took is acknowledged: a call that never
+    // reached it left sync as it was.
+    if (outcome.applied) {
+      await pushAssistant(
+        enabled
+          ? "Great — your sessions will appear on your dashboard."
+          : "Dashboard sync is off. You can turn it on anytime in **Settings → Privacy**.",
+      );
+    }
     await pushAssistant(
       "Last thing — would you help us improve Fleetify? We'd send usage data (which screens, which providers, how long onboarding takes), linked to your account. Never message content, API keys or file paths. You can change this anytime in **Settings → Privacy**.",
       "telemetry-consent",
@@ -1056,7 +1068,7 @@ function Bubble({
         <ThemeWidget onConfirm={onThemeConfirm} />
       )}
       {!msg.typing && !msg.resolved && msg.widget === "cloud-sync-consent" && (
-        <ConsentWidget yesLabel="Turn on" noLabel="Not now" onChoice={onCloudSyncConsent} />
+        <ConsentWidget yesLabel="Keep it on" noLabel="Turn it off" onChoice={onCloudSyncConsent} />
       )}
       {!msg.typing && !msg.resolved && msg.widget === "telemetry-consent" && (
         <ConsentWidget yesLabel="Sure, help out" noLabel="Not now" onChoice={onTelemetryConsent} />
@@ -1101,10 +1113,11 @@ function ThemeWidget({ onConfirm }: { onConfirm: (mode: ThemeMode) => void }) {
   );
 }
 
-/* ── ConsentWidget — two-button opt-in for a privacy question ──
-   Used for dashboard sync and product analytics, both off by default.
-   Either choice resolves the widget and advances onboarding — refusal
-   is not a blocker.                                                  */
+/* ── ConsentWidget — two-button choice for a privacy step ──
+   Used for dashboard sync (on by default: keep it on or turn it off) and
+   product analytics (off by default: opt in or not). Either choice
+   resolves the widget and advances onboarding — refusal is not a
+   blocker.                                                           */
 function ConsentWidget({
   yesLabel,
   noLabel,
