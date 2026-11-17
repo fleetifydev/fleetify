@@ -12,10 +12,10 @@
  * fields are optional on FleetConfig; defaults applied here mirror the
  * documented intent in `vite-env.d.ts`.
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Folder, X } from "lucide-react";
 import { CardShell, Row, Toggle } from "./_primitives";
-import { saveConfigPatch } from "./_config";
+import { useConfigCard } from "./_config";
 
 interface FleetCfgShim {
   defaultFolder?: string;
@@ -24,30 +24,19 @@ interface FleetCfgShim {
 }
 
 type ElectronShim = {
-  getConfig?: () => Promise<FleetCfgShim | null>;
   openFolderDialog?: () => Promise<string | null>;
 };
 function electron(): ElectronShim {
   return (window as unknown as { electronAPI?: ElectronShim }).electronAPI ?? {};
 }
 
+const LAUNCH_ON_STARTUP = "Launch on system startup";
+const RESTORE_LAST_SESSION = "Restore last session";
+
 export function StartupCard() {
-  const [cfg, setCfg] = useState<FleetCfgShim>({});
-  const [loaded, setLoaded] = useState(false);
+  // A failed save puts the control back and shows why under its row.
+  const { cfg, loaded, patch, errorFor } = useConfigCard<FleetCfgShim>();
   const [folderHover, setFolderHover] = useState(false);
-
-  useEffect(() => {
-    let mounted = true;
-    electron().getConfig?.()
-      .then(c => { if (mounted) { setCfg(c ?? {}); setLoaded(true); } })
-      .catch(() => { if (mounted) setLoaded(true); });
-    return () => { mounted = false; };
-  }, []);
-
-  const patch = async (next: Partial<FleetCfgShim>) => {
-    setCfg(prev => ({ ...prev, ...next }));
-    try { await saveConfigPatch(next); } catch { /* best effort */ }
-  };
 
   const launchOnStartup = cfg.launchOnStartup ?? false;
   const restoreLastSession = cfg.restoreLastSession ?? true;
@@ -68,16 +57,21 @@ export function StartupCard() {
 
   return (
     <CardShell>
-      <Row title="Launch on system startup"
-           desc="Open Fleetify when you sign in.">
-        <Toggle on={launchOnStartup} onChange={() => void patch({ launchOnStartup: !launchOnStartup })} />
+      <Row title={LAUNCH_ON_STARTUP}
+           desc="Open Fleetify when you sign in."
+           error={errorFor("launchOnStartup")}>
+        <Toggle on={launchOnStartup} label={LAUNCH_ON_STARTUP}
+                onChange={() => void patch({ launchOnStartup: !launchOnStartup })} />
       </Row>
-      <Row title="Restore last session"
-           desc="Reopen the agent and workspace you were on.">
-        <Toggle on={restoreLastSession} onChange={() => void patch({ restoreLastSession: !restoreLastSession })} />
+      <Row title={RESTORE_LAST_SESSION}
+           desc="Reopen the agent and workspace you were on."
+           error={errorFor("restoreLastSession")}>
+        <Toggle on={restoreLastSession} label={RESTORE_LAST_SESSION}
+                onChange={() => void patch({ restoreLastSession: !restoreLastSession })} />
       </Row>
       <Row title="Default workspace folder"
            desc="New agents start here unless overridden."
+           error={errorFor("defaultFolder")}
            last>
         <div
           onMouseEnter={() => setFolderHover(true)}

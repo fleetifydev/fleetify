@@ -12,10 +12,10 @@
  *
  * Reads/writes the four boolean prefs via `electronAPI.getConfig/setConfig`.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { Volume2 } from "lucide-react";
 import { CardShell, Row, Toggle } from "./_primitives";
-import { saveConfigPatch } from "./_config";
+import { useConfigCard } from "./_config";
 
 interface NotificationsCfg {
   notificationsEnabled?: boolean;
@@ -24,12 +24,11 @@ interface NotificationsCfg {
   doNotDisturb?: boolean;
 }
 
-type ElectronShim = {
-  getConfig?: () => Promise<NotificationsCfg | null>;
-};
-function electron(): ElectronShim {
-  return (window as unknown as { electronAPI?: ElectronShim }).electronAPI ?? {};
-}
+const DESKTOP_NOTIFICATIONS = "Desktop notifications";
+const COMPLETION_SOUND = "Completion sound";
+const NOTIFY_ON_ERRORS = "Notify on errors";
+const NOTIFY_ON_BUDGET = "Notify on budget warnings";
+const DO_NOT_DISTURB = "Do Not Disturb";
 
 /* Local mirror of the legacy `useToggle("completion-sound", false)` hook
    from settings-page.tsx. Same key, same on-disk representation ("1" /
@@ -70,22 +69,9 @@ function playBeep() {
 }
 
 export function NotificationsCard() {
-  const [cfg, setCfg] = useState<NotificationsCfg>({});
-  const [loaded, setLoaded] = useState(false);
+  // A failed save puts the switch back and shows why under its row.
+  const { cfg, loaded, patch, errorFor } = useConfigCard<NotificationsCfg>();
   const [completionSound, toggleCompletionSound] = useSoundToggle();
-
-  useEffect(() => {
-    let mounted = true;
-    electron().getConfig?.()
-      .then(c => { if (mounted) { setCfg(c ?? {}); setLoaded(true); } })
-      .catch(() => { if (mounted) setLoaded(true); });
-    return () => { mounted = false; };
-  }, []);
-
-  const patch = async (next: Partial<NotificationsCfg>) => {
-    setCfg(prev => ({ ...prev, ...next }));
-    try { await saveConfigPatch(next); } catch { /* best effort */ }
-  };
 
   const master = cfg.notificationsEnabled ?? true;
   const dnd = cfg.doNotDisturb ?? false;
@@ -99,10 +85,12 @@ export function NotificationsCard() {
 
   return (
     <CardShell>
-      <Row title="Desktop notifications" desc="Show OS notifications for agent events.">
-        <Toggle on={master} onChange={() => void patch({ notificationsEnabled: !master })} />
+      <Row title={DESKTOP_NOTIFICATIONS} desc="Show OS notifications for agent events."
+           error={errorFor("notificationsEnabled")}>
+        <Toggle on={master} label={DESKTOP_NOTIFICATIONS}
+                onChange={() => void patch({ notificationsEnabled: !master })} />
       </Row>
-      <Row title="Completion sound" desc="Play a short ding when an agent finishes a task.">
+      <Row title={COMPLETION_SOUND} desc="Play a short ding when an agent finishes a task.">
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button
             onClick={() => playBeep()}
@@ -117,17 +105,22 @@ export function NotificationsCard() {
           >
             <Volume2 size={12} />
           </button>
-          <Toggle on={completionSound} onChange={toggleCompletionSound} />
+          <Toggle on={completionSound} label={COMPLETION_SOUND} onChange={toggleCompletionSound} />
         </div>
       </Row>
-      <Row title="Notify on errors" desc="Alert when an agent crashes or hits a fatal error." disabled={childrenDisabled}>
-        <Toggle on={notifyErrors} onChange={() => void patch({ notifyErrorsEnabled: !notifyErrors })} />
+      <Row title={NOTIFY_ON_ERRORS} desc="Alert when an agent crashes or hits a fatal error." disabled={childrenDisabled}
+           error={errorFor("notifyErrorsEnabled")}>
+        <Toggle on={notifyErrors} label={NOTIFY_ON_ERRORS}
+                onChange={() => void patch({ notifyErrorsEnabled: !notifyErrors })} />
       </Row>
-      <Row title="Notify on budget warnings" desc="Alert when an agent approaches its budget cap." disabled={childrenDisabled}>
-        <Toggle on={notifyBudget} onChange={() => void patch({ notifyBudgetEnabled: !notifyBudget })} />
+      <Row title={NOTIFY_ON_BUDGET} desc="Alert when an agent approaches its budget cap." disabled={childrenDisabled}
+           error={errorFor("notifyBudgetEnabled")}>
+        <Toggle on={notifyBudget} label={NOTIFY_ON_BUDGET}
+                onChange={() => void patch({ notifyBudgetEnabled: !notifyBudget })} />
       </Row>
-      <Row title="Do Not Disturb" desc="Mute all notifications until you toggle off." last>
-        <Toggle on={dnd} onChange={() => void patch({ doNotDisturb: !dnd })} />
+      <Row title={DO_NOT_DISTURB} desc="Mute all notifications until you toggle off."
+           error={errorFor("doNotDisturb")} last>
+        <Toggle on={dnd} label={DO_NOT_DISTURB} onChange={() => void patch({ doNotDisturb: !dnd })} />
       </Row>
     </CardShell>
   );

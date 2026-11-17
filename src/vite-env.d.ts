@@ -154,7 +154,9 @@ interface Window {
       files: Record<string, string>;
     }) => Promise<{ path?: string; written?: string[]; error?: string }>;
     getConfig: () => Promise<FleetConfig | null>;
-    setConfig: (config: FleetConfig) => Promise<boolean>;
+    /** Replaces fleet.config.json. A save that failed answers
+     *  `{ ok: false, error }` instead of throwing. */
+    setConfig: (config: FleetConfig) => Promise<{ ok: boolean; error?: string }>;
     /** Read backend-owned telemetry config: stable per-machine
      *  distinct_id (= device.json device_id), and whether product
      *  analytics (PostHog) and Fleetify cloud sync are on right now (the

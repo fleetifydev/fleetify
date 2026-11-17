@@ -7,7 +7,7 @@ beforeEach(() => {
   localStorage.clear();
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     getConfig: vi.fn(async () => ({})),
-    setConfig: vi.fn(async () => true),
+    setConfig: vi.fn(async () => ({ ok: true })),
     openFolderDialog: vi.fn(async () => null),
   };
 });
@@ -52,7 +52,7 @@ describe("GeneralSection — cards share one config file", () => {
       getConfig: vi.fn(async () => ({ ...stored })),
       setConfig: vi.fn(async (next: Record<string, unknown>) => {
         stored = next;
-        return true;
+        return { ok: true };
       }),
       openFolderDialog: vi.fn(async () => null),
     };
@@ -84,7 +84,7 @@ describe("StartupCard — default workspace folder clear", () => {
   it("does not render the X when no folder is set", async () => {
     (window as unknown as { electronAPI: unknown }).electronAPI = {
       getConfig: vi.fn(async () => ({})),
-      setConfig: vi.fn(async () => true),
+      setConfig: vi.fn(async () => ({ ok: true })),
       openFolderDialog: vi.fn(async () => null),
     };
     render(<GeneralSection />);
@@ -99,7 +99,7 @@ describe("StartupCard — default workspace folder clear", () => {
   it("renders the X clear button on hover when a folder is set", async () => {
     (window as unknown as { electronAPI: unknown }).electronAPI = {
       getConfig: vi.fn(async () => ({ defaultFolder: "/Users/me/code" })),
-      setConfig: vi.fn(async () => true),
+      setConfig: vi.fn(async () => ({ ok: true })),
       openFolderDialog: vi.fn(async () => null),
     };
     render(<GeneralSection />);
@@ -114,7 +114,7 @@ describe("StartupCard — default workspace folder clear", () => {
   });
 
   it("clicking the X clears defaultFolder and persists the change", async () => {
-    const setConfig = vi.fn(async () => true);
+    const setConfig = vi.fn(async () => ({ ok: true }));
     (window as unknown as { electronAPI: unknown }).electronAPI = {
       getConfig: vi.fn(async () => ({ defaultFolder: "/Users/me/code" })),
       setConfig,

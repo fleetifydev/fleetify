@@ -8,21 +8,15 @@
  * Check-now button are visibly disabled with a hint in the master
  * row's description.
  */
-import { useEffect, useState } from "react";
 import { CardShell, Row, Toggle } from "./_primitives";
-import { saveConfigPatch } from "./_config";
+import { useConfigCard } from "./_config";
 
 interface UpdatesCfg {
   updatesAuto?: boolean;
   updatesChannel?: "stable" | "beta" | "canary";
 }
 
-type ElectronShim = {
-  getConfig?: () => Promise<UpdatesCfg | null>;
-};
-function electron(): ElectronShim {
-  return (window as unknown as { electronAPI?: ElectronShim }).electronAPI ?? {};
-}
+const AUTOMATIC_UPDATES = "Automatic updates";
 
 declare const __APP_VERSION__: string | undefined;
 
@@ -36,21 +30,8 @@ function appVersion(): string {
 }
 
 export function UpdatesCard() {
-  const [cfg, setCfg] = useState<UpdatesCfg>({});
-  const [loaded, setLoaded] = useState(false);
-
-  useEffect(() => {
-    let mounted = true;
-    electron().getConfig?.()
-      .then(c => { if (mounted) { setCfg(c ?? {}); setLoaded(true); } })
-      .catch(() => { if (mounted) setLoaded(true); });
-    return () => { mounted = false; };
-  }, []);
-
-  const patch = async (next: Partial<UpdatesCfg>) => {
-    setCfg(prev => ({ ...prev, ...next }));
-    try { await saveConfigPatch(next); } catch { /* best effort */ }
-  };
+  // A failed save puts the control back and shows why under its row.
+  const { cfg, loaded, patch, errorFor } = useConfigCard<UpdatesCfg>();
 
   if (!loaded) {
     return <CardShell><div style={{ padding: 16, fontSize: 13, color: "var(--c-low)" }}>Loading…</div></CardShell>;
@@ -67,12 +48,14 @@ export function UpdatesCard() {
 
   return (
     <CardShell>
-      <Row title="Automatic updates" desc={updaterReady
+      <Row title={AUTOMATIC_UPDATES} desc={updaterReady
         ? "Download and install in the background when available."
-        : "Download and install in the background when available. (Coming soon)"}>
-        <Toggle on={auto} onChange={() => void patch({ updatesAuto: !auto })} />
+        : "Download and install in the background when available. (Coming soon)"}
+           error={errorFor("updatesAuto")}>
+        <Toggle on={auto} label={AUTOMATIC_UPDATES} onChange={() => void patch({ updatesAuto: !auto })} />
       </Row>
-      <Row title="Update channel" desc="Pick how often you receive new features.">
+      <Row title="Update channel" desc="Pick how often you receive new features."
+           error={errorFor("updatesChannel")}>
         <select
           value={channel}
           onChange={(e) => void patch({ updatesChannel: e.target.value as UpdatesCfg["updatesChannel"] })}

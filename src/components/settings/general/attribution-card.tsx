@@ -7,39 +7,19 @@
  * `gitAttribution: false` to fleet.config.json, which the shell reads on
  * every Create-PR.
  */
-import { useEffect, useState } from "react";
 import { CardShell, Row, Toggle } from "./_primitives";
-import { saveConfigPatch } from "./_config";
+import { useConfigCard } from "./_config";
 
 interface AttributionCfg {
   gitAttribution?: boolean;
 }
 
-type ElectronShim = {
-  getConfig?: () => Promise<AttributionCfg | null>;
-};
-function electron(): ElectronShim {
-  return (window as unknown as { electronAPI?: ElectronShim }).electronAPI ?? {};
-}
-
 const TITLE = "Credit Fleetify in commits and pull requests";
 
 export function AttributionCard() {
-  const [cfg, setCfg] = useState<AttributionCfg>({});
-  const [loaded, setLoaded] = useState(false);
-
-  useEffect(() => {
-    let mounted = true;
-    electron().getConfig?.()
-      .then(c => { if (mounted) { setCfg(c ?? {}); setLoaded(true); } })
-      .catch(() => { if (mounted) setLoaded(true); });
-    return () => { mounted = false; };
-  }, []);
-
-  const patch = async (next: Partial<AttributionCfg>) => {
-    setCfg(prev => ({ ...prev, ...next }));
-    try { await saveConfigPatch(next); } catch { /* best effort */ }
-  };
+  // A failed save puts the switch back and shows why: the switch must not
+  // say off while the file still says on, since Create PR reads the file.
+  const { cfg, loaded, patch, errorFor } = useConfigCard<AttributionCfg>();
 
   if (!loaded) {
     return <CardShell><div style={{ padding: 16, fontSize: 13, color: "var(--c-low)" }}>Loading…</div></CardShell>;
@@ -53,6 +33,7 @@ export function AttributionCard() {
     <CardShell>
       <Row title={TITLE}
            desc='Adds a "Co-Authored-By: Fleetify" line to commits Fleetify makes and a short footer to pull requests it opens.'
+           error={errorFor("gitAttribution")}
            last>
         <Toggle on={attribution} label={TITLE}
                 onChange={() => void patch({ gitAttribution: !attribution })} />
