@@ -337,19 +337,26 @@ pub fn run() {
             let release = !cfg!(debug_assertions);
             let (backend, vite) = (backend_port(), vite_port());
 
-            // IPC from the app's origin. capabilities/default.json allows
-            // only the default ports (Vite on 3000, the backend on 8765);
-            // any other configured port gets the same permissions for its
-            // own origin, on the main webview only. Added before the window
-            // loads the app.
-            if let Some(origin) =
-                shell::startup_window::runtime_remote_origin(release, backend, vite)
-            {
+            // IPC from the app's origin. capabilities/default.json covers
+            // only local origins (devUrl in dev mode). The origin the window
+            // loads the app from gets the same permissions here, for that
+            // origin alone and the main webview: always in release (the
+            // embedded backend on http://127.0.0.1:<port>), and in debug only
+            // when Vite isn't the local devUrl. No other remote origin can
+            // call anything. Added before the window is built.
+            let local_app_url =
+                shell::startup_window::local_app_url(app.config(), tauri::is_dev());
+            if let Some(origin) = shell::startup_window::runtime_remote_origin(
+                release,
+                backend,
+                vite,
+                local_app_url.as_ref(),
+            ) {
                 match app.add_capability(shell::startup_window::runtime_capability(&origin)) {
-                    Ok(()) => tracing::info!(%origin, "IPC allowed from the configured app origin"),
-                    Err(e) => tracing::warn!(
+                    Ok(()) => tracing::info!(%origin, "IPC allowed from the app origin"),
+                    Err(e) => tracing::error!(
                         %origin,
-                        "allowing IPC from the configured app origin failed: {e}"
+                        "allowing IPC from the app origin failed, so the app can't call its own commands: {e}"
                     ),
                 }
             }

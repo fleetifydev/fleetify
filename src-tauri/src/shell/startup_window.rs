@@ -13,8 +13,10 @@
 //! the backend can't start at all, an error dialog says why and the app quits.
 //!
 //! It also works out the app's origin ([`app_origin`]) and, when that origin
-//! is not one `capabilities/default.json` allows IPC from, the capability to
-//! add for it at setup ([`runtime_remote_origin`], [`runtime_capability`]).
+//! is remote, the capability that grants it IPC at setup
+//! ([`runtime_remote_origin`], [`runtime_capability`]).
+//! `capabilities/default.json` covers local origins only, so the app's own
+//! origin is the one remote origin that can call anything.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,6 +25,7 @@ use std::time::{Duration, Instant};
 
 use tauri::http::{header, Response, StatusCode};
 use tauri::ipc::CapabilityBuilder;
+use tauri::utils::config::FrontendDist;
 use tauri::webview::{PageLoadEvent, PageLoadPayload};
 use tauri::{Manager, Url, WebviewWindow};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
@@ -377,10 +380,13 @@ fn reveal(window: &WebviewWindow, boot_start: Instant) {
 }
 
 // ── IPC from the app's origin ──
-
-/// The remote origins `capabilities/default.json` allows IPC from: the Vite
-/// dev server and the embedded backend on their default ports.
-const STATIC_REMOTE_ORIGINS: [&str; 2] = ["http://localhost:3000", "http://127.0.0.1:8765"];
+//
+// `capabilities/default.json` covers local origins only: the ones Tauri
+// treats as the app's own (`devUrl` in dev mode, its custom schemes). The
+// origin the main window loads the app from, when it is remote, gets the same
+// permissions at setup, for that origin alone. No other remote origin can
+// call anything: the main webview has no navigation guard, so a page it ends
+// up on elsewhere must find no IPC.
 
 /// The permissions `capabilities/default.json` grants: the core ones, and
 /// every app command (the `app-commands` set, `permissions/app-commands.toml`).
@@ -391,8 +397,8 @@ const IPC_PERMISSIONS: [&str; 4] = [
     "app-commands",
 ];
 
-/// Identifier of the capability added at runtime for a configured origin.
-const RUNTIME_CAPABILITY: &str = "configured-origin";
+/// Identifier of the capability added at runtime for the app's origin.
+const RUNTIME_CAPABILITY: &str = "app-origin";
 
 /// The origin the main window loads the app from. Debug builds load the Vite
 /// dev server (`VITE_PORT`, default 3000); release builds load the embedded
@@ -407,18 +413,47 @@ pub fn app_origin(release: bool, backend_port: u16, vite_port: u16) -> String {
     }
 }
 
-/// The app's origin when `capabilities/default.json` doesn't allow IPC from
-/// it: a release build on a backend port other than 8765, or a debug build
-/// on a Vite port other than 3000. `None` on the default ports.
-pub fn runtime_remote_origin(release: bool, backend_port: u16, vite_port: u16) -> Option<String> {
-    let origin = app_origin(release, backend_port, vite_port);
-    (!STATIC_REMOTE_ORIGINS.contains(&origin.as_str())).then_some(origin)
+/// The http(s) URL Tauri treats as the app's own, local origin, besides its
+/// `tauri://` assets and custom schemes: `devUrl` in dev mode (`dev` is
+/// `tauri::is_dev()`: a build without Tauri's `custom-protocol` feature, such
+/// as `tauri dev`), and otherwise `frontendDist` when it is a URL. It mirrors
+/// Tauri's `get_app_url`, which `Webview::is_local_url` checks an IPC
+/// request's origin against.
+pub fn local_app_url(config: &tauri::Config, dev: bool) -> Option<Url> {
+    if dev {
+        config.build.dev_url.clone()
+    } else {
+        match &config.build.frontend_dist {
+            Some(FrontendDist::Url(url)) => Some(url.clone()),
+            _ => None,
+        }
+    }
 }
 
-/// What `capabilities/default.json` grants, for `origin` and the main webview
-/// only, as there: a window scope would also match the browser panel, a child
-/// webview in the main window. The static file is left as it is; this is
-/// added at setup.
+/// The origin setup grants IPC at runtime: the one the main window loads the
+/// app from ([`app_origin`]), unless it is the origin of `local_app_url` (see
+/// [`local_app_url`]), which Tauri treats as local and `default.json` covers.
+/// A release build always gets one, for its embedded backend on
+/// `http://127.0.0.1:<backend port>`. A debug build gets one only when Vite is
+/// not the local `devUrl`.
+pub fn runtime_remote_origin(
+    release: bool,
+    backend_port: u16,
+    vite_port: u16,
+    local_app_url: Option<&Url>,
+) -> Option<String> {
+    let origin = app_origin(release, backend_port, vite_port);
+    let local = match (local_app_url, Url::parse(&origin)) {
+        (Some(local), Ok(app)) => local.origin() == app.origin(),
+        _ => false,
+    };
+    (!local).then_some(origin)
+}
+
+/// What `capabilities/default.json` grants, for `origin` alone and the main
+/// webview only, as there: a window scope would also match the browser
+/// panel, a child webview in the main window. Added at setup, before the
+/// window is built.
 pub fn runtime_capability(origin: &str) -> CapabilityBuilder {
     IPC_PERMISSIONS.iter().fold(
         CapabilityBuilder::new(RUNTIME_CAPABILITY)
@@ -748,6 +783,20 @@ mod tests {
         serde_json::from_str(include_str!("../../capabilities/default.json")).unwrap()
     }
 
+    /// The app's `tauri.conf.json`.
+    fn app_config() -> tauri::Config {
+        serde_json::from_str(include_str!("../../tauri.conf.json")).unwrap()
+    }
+
+    /// Its `devUrl`.
+    fn dev_url() -> Url {
+        url("http://localhost:3000")
+    }
+
+    fn remote(s: &str) -> Origin {
+        Origin::Remote { url: url(s) }
+    }
+
     /// The ACL tauri-build compiled for this crate, as `generate_context!`
     /// embeds it: the plugin and app manifests, and the capability files.
     fn compiled_acl() -> (BTreeMap<String, Manifest>, BTreeMap<String, Capability>) {
@@ -759,31 +808,49 @@ mod tests {
         )
     }
 
-    /// The IPC authority the app runs with: the compiled ACL, resolved the way
-    /// `generate_context!` resolves it (`RuntimeAuthority::new` is what its
-    /// `runtime_authority!` expands to), plus the capability setup adds for a
-    /// configured backend port, 8899 here.
-    fn app_authority() -> RuntimeAuthority {
+    /// The IPC authority of one app run: the compiled ACL, resolved and built
+    /// the way `generate_context!` does it (`runtime_authority!`), plus the
+    /// capability setup adds for `runtime_origin`, when there is one.
+    fn authority_with(runtime_origin: Option<String>) -> RuntimeAuthority {
         let (acl, capabilities) = compiled_acl();
         let resolved = Resolved::resolve(&acl, capabilities, Target::current()).unwrap();
-        let mut authority = RuntimeAuthority::new(acl, resolved);
-        authority
-            .add_capability(runtime_capability("http://127.0.0.1:8899"))
-            .unwrap();
+        let mut authority = tauri::runtime_authority!(acl, resolved);
+        if let Some(origin) = runtime_origin {
+            authority
+                .add_capability(runtime_capability(&origin))
+                .unwrap();
+        }
         authority
     }
 
-    /// Where the main webview loads the app from: a local origin (`devUrl`
-    /// in debug builds), the two static remote ones, and a configured port.
-    fn app_origins() -> Vec<Origin> {
-        let remote = |url: &str| Origin::Remote {
-            url: url.parse().unwrap(),
-        };
+    /// A release build with its backend on `backend_port`, as setup sets up
+    /// its IPC.
+    fn release_authority(backend_port: u16) -> RuntimeAuthority {
+        authority_with(runtime_remote_origin(true, backend_port, 3000, None))
+    }
+
+    /// Each way the app runs: its IPC authority, and the origin its main
+    /// webview loads the app from.
+    fn app_runs() -> Vec<(&'static str, RuntimeAuthority, Origin)> {
+        let debug =
+            |vite| authority_with(runtime_remote_origin(false, 8765, vite, Some(&dev_url())));
         vec![
-            Origin::Local,
-            remote("http://127.0.0.1:8765/"),
-            remote("http://localhost:3000/"),
-            remote("http://127.0.0.1:8899/settings"),
+            ("debug, Vite on devUrl", debug(3000), Origin::Local),
+            (
+                "debug, Vite on another port",
+                debug(3017),
+                remote("http://localhost:3017/"),
+            ),
+            (
+                "release",
+                release_authority(8765),
+                remote("http://127.0.0.1:8765/"),
+            ),
+            (
+                "release, backend on another port",
+                release_authority(8899),
+                remote("http://127.0.0.1:8899/settings"),
+            ),
         ]
     }
 
@@ -813,36 +880,70 @@ mod tests {
     }
 
     #[test]
-    fn the_default_ports_need_no_runtime_capability() {
-        assert_eq!(runtime_remote_origin(true, 8765, 3000), None);
-        assert_eq!(runtime_remote_origin(false, 8765, 3000), None);
-        // Each build loads from its own port only.
-        assert_eq!(runtime_remote_origin(true, 8765, 3017), None);
-        assert_eq!(runtime_remote_origin(false, 8899, 3000), None);
-    }
-
-    #[test]
-    fn a_configured_backend_port_gets_its_origin_in_release() {
+    fn a_release_build_gets_its_backend_origin_on_every_port() {
+        // Flipped from Task 14: the default port gets the runtime capability
+        // too, now that default.json allows no remote origin.
         assert_eq!(
-            runtime_remote_origin(true, 8899, 3000),
+            runtime_remote_origin(true, 8765, 3000, None),
+            Some("http://127.0.0.1:8765".to_string())
+        );
+        assert_eq!(
+            runtime_remote_origin(true, 8899, 3017, None),
             Some("http://127.0.0.1:8899".to_string())
+        );
+        // A release build without Tauri's custom-protocol feature (`cargo
+        // build --release`) treats devUrl as local; the backend isn't it.
+        assert_eq!(
+            runtime_remote_origin(true, 8765, 3000, Some(&dev_url())),
+            Some("http://127.0.0.1:8765".to_string())
         );
     }
 
     #[test]
-    fn a_configured_vite_port_gets_its_origin_in_debug() {
+    fn a_debug_build_on_the_local_dev_url_needs_no_runtime_capability() {
+        // Tauri treats devUrl as local, and default.json covers local origins.
         assert_eq!(
-            runtime_remote_origin(false, 8765, 3017),
+            runtime_remote_origin(false, 8765, 3000, Some(&dev_url())),
+            None
+        );
+        assert_eq!(
+            runtime_remote_origin(false, 8899, 3000, Some(&url("http://localhost:3000/"))),
+            None
+        );
+        // dev:tauri:wt moves devUrl to the worktree's Vite port.
+        assert_eq!(
+            runtime_remote_origin(false, 8765, 3017, Some(&url("http://localhost:3017"))),
+            None
+        );
+    }
+
+    #[test]
+    fn a_debug_build_off_the_local_dev_url_gets_its_vite_origin() {
+        assert_eq!(
+            runtime_remote_origin(false, 8765, 3017, Some(&dev_url())),
             Some("http://localhost:3017".to_string())
+        );
+        // No local devUrl: a debug build of the bundle (`tauri build --debug`).
+        assert_eq!(
+            runtime_remote_origin(false, 8765, 3000, None),
+            Some("http://localhost:3000".to_string())
+        );
+        // The same port on another host is another origin.
+        assert_eq!(
+            runtime_remote_origin(false, 8765, 3000, Some(&url("http://127.0.0.1:3000"))),
+            Some("http://localhost:3000".to_string())
         );
     }
 
     #[test]
     fn the_runtime_origin_is_where_the_window_loads_the_app() {
-        for (release, backend, vite) in
-            [(true, 8899, 3000), (false, 8765, 3017), (true, 9000, 4000)]
-        {
-            let origin = runtime_remote_origin(release, backend, vite).unwrap();
+        for (release, backend, vite, local) in [
+            (true, 8765, 3000, None),
+            (true, 8899, 3000, None),
+            (false, 8765, 3017, Some(dev_url())),
+            (true, 9000, 4000, None),
+        ] {
+            let origin = runtime_remote_origin(release, backend, vite, local.as_ref()).unwrap();
             assert_eq!(origin, app_origin(release, backend, vite));
             let app_url: Url = origin.parse().unwrap();
             assert!(is_app_page(&app_url.join("/settings").unwrap(), &app_url));
@@ -850,10 +951,17 @@ mod tests {
     }
 
     #[test]
-    fn the_static_origins_are_the_ones_default_json_allows() {
+    fn the_local_app_url_is_dev_url_in_dev_mode_only() {
+        // Mirrors Tauri's get_app_url, which is_local_url checks origins
+        // against: devUrl in dev mode, a frontendDist URL otherwise.
+        let mut config = app_config();
+        assert_eq!(local_app_url(&config, true), Some(dev_url()));
+        // A release bundle serves the bundled dist (`../dist`) on tauri://.
+        assert_eq!(local_app_url(&config, false), None);
+        config.build.frontend_dist = Some(FrontendDist::Url(url("http://127.0.0.1:9000")));
         assert_eq!(
-            default_capability()["remote"]["urls"],
-            serde_json::json!(STATIC_REMOTE_ORIGINS)
+            local_app_url(&config, false),
+            Some(url("http://127.0.0.1:9000"))
         );
     }
 
@@ -918,9 +1026,22 @@ mod tests {
             "default.json is scoped by window: {}",
             default["windows"]
         );
-        // Local origins (`devUrl` in debug builds) are covered as well: with
-        // an app manifest, Tauri checks app commands from them too.
+    }
+
+    #[test]
+    fn default_json_allows_local_origins_only() {
+        let default = default_capability();
+        // No remote origin at all: setup grants the app's own at runtime
+        // (runtime_capability), and nothing else is ever allowed.
+        assert!(
+            default.get("remote").is_none(),
+            "default.json allows remote origins: {}",
+            default["remote"]
+        );
+        // Local origins (devUrl in dev mode) are covered: with an app
+        // manifest, Tauri checks app commands from them too.
         let capability: Capability = serde_json::from_value(default).unwrap();
+        assert!(capability.remote.is_none());
         assert!(capability.local);
     }
 
@@ -957,15 +1078,14 @@ mod tests {
     }
 
     #[test]
-    fn the_main_webview_can_call_every_app_command_from_the_app_origins() {
-        let authority = app_authority();
-        for origin in app_origins() {
+    fn the_main_webview_can_call_every_app_command_from_the_app_origin() {
+        for (run, authority, origin) in app_runs() {
             for command in SPOT_CHECKS.iter().chain(APP_COMMANDS) {
                 assert!(
                     authority
                         .resolve_access(command, MAIN_WINDOW, MAIN_WEBVIEW, &origin)
                         .is_some(),
-                    "{command} is refused to the main webview from {origin}"
+                    "{run}: {command} is refused to the main webview from {origin}"
                 );
             }
         }
@@ -974,18 +1094,45 @@ mod tests {
     #[test]
     fn the_browser_panel_can_call_no_command_at_all() {
         // The browser panel is a child webview in the main window. Even on a
-        // page from one of the app's own origins it gets nothing: no app
-        // command and no core one.
-        let authority = app_authority();
-        for origin in app_origins() {
+        // page from the app's own origin it gets nothing: no app command and
+        // no core one.
+        for (run, authority, origin) in app_runs() {
             for command in SPOT_CHECKS.iter().chain(APP_COMMANDS) {
                 assert!(
                     authority
                         .resolve_access(command, MAIN_WINDOW, BROWSER_EMBED_LABEL, &origin)
                         .is_none(),
-                    "{command} is allowed to the browser panel from {origin}"
+                    "{run}: {command} is allowed to the browser panel from {origin}"
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_release_build_refuses_the_dev_server_origin() {
+        // The main webview has no navigation guard: a page it ends up on at
+        // http://localhost:3000, a user's own dev server say, gets nothing.
+        let authority = release_authority(8765);
+        let refused = |origin: &Origin| {
+            authority
+                .resolve_access("pty_spawn", MAIN_WINDOW, MAIN_WEBVIEW, origin)
+                .is_none()
+        };
+        assert!(refused(&remote("http://localhost:3000/")));
+        // Its own origin still gets it: the refusal is about the origin.
+        assert!(!refused(&remote("http://127.0.0.1:8765/")));
+    }
+
+    #[test]
+    fn a_release_build_on_another_port_refuses_the_default_backend_origin() {
+        // Something else may answer on 8765 (AnkiConnect listens there).
+        let authority = release_authority(8899);
+        let refused = |origin: &Origin| {
+            authority
+                .resolve_access("pty_spawn", MAIN_WINDOW, MAIN_WEBVIEW, origin)
+                .is_none()
+        };
+        assert!(refused(&remote("http://127.0.0.1:8765/")));
+        assert!(!refused(&remote("http://127.0.0.1:8899/")));
     }
 }

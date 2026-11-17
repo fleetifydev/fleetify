@@ -9,10 +9,14 @@
 // `capabilities/default.json` grants that set to the main webview only.
 //
 // With a manifest declared, Tauri checks every app command against the ACL,
-// from local origins too: a command missing here is refused at runtime. A
-// test keeps this list equal to the `generate_handler!` block.
+// from local origins too: a command missing here is refused at runtime.
+// build.rs checks this list against the `generate_handler!` block
+// ([`manifest_drift`]) and fails the build when they differ; a test runs the
+// same check.
 //
 // No `//!` docs here: build.rs pulls this file in with `include!`.
+
+use std::collections::BTreeSet;
 
 /// Every command registered in `lib.rs`'s `tauri::generate_handler!`.
 pub const APP_COMMANDS: &[&str] = &[
@@ -150,65 +154,127 @@ pub const APP_COMMANDS: &[&str] = &[
     "feedback_send",
 ];
 
+/// The commands `lib_rs`, the text of `lib.rs`, registers in its one
+/// `generate_handler!` block, by name (the last segment of each path), in
+/// order. An error says what it couldn't read.
+pub fn registered_commands(lib_rs: &str) -> Result<Vec<&str>, String> {
+    const OPEN: &str = "generate_handler![";
+    let mut blocks = lib_rs.match_indices(OPEN);
+    let (Some((at, _)), None) = (blocks.next(), blocks.next()) else {
+        return Err(
+            "lib.rs must register its commands in exactly one generate_handler! block".into(),
+        );
+    };
+    let start = at + OPEN.len();
+    let len = lib_rs[start..]
+        .find(']')
+        .ok_or("the generate_handler! block in lib.rs never closes")?;
+    lib_rs[start..start + len]
+        .lines()
+        .map(|line| line.find("//").map_or(line, |comment| &line[..comment]))
+        .flat_map(|line| line.split(','))
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(|path| {
+            if path
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
+            {
+                Ok(path.rsplit("::").next().unwrap_or(path))
+            } else {
+                Err(format!("not a command path in generate_handler!: {path}"))
+            }
+        })
+        .collect()
+}
+
+/// How `registered` (from [`registered_commands`]) and [`APP_COMMANDS`]
+/// differ, as a message that says what to fix; `None` when they list the same
+/// commands, each once.
+pub fn manifest_drift(registered: &[&str]) -> Option<String> {
+    let registered_set: BTreeSet<&str> = registered.iter().copied().collect();
+    let listed: BTreeSet<&str> = APP_COMMANDS.iter().copied().collect();
+    let mut problems = Vec::new();
+    if registered_set.len() != registered.len() {
+        problems.push("lib.rs registers a command twice".to_string());
+    }
+    if listed.len() != APP_COMMANDS.len() {
+        problems.push("APP_COMMANDS lists a command twice".to_string());
+    }
+    let unlisted: Vec<_> = registered_set.difference(&listed).collect();
+    if !unlisted.is_empty() {
+        problems.push(format!(
+            "registered in lib.rs but missing from APP_COMMANDS, so refused at runtime: {unlisted:?}"
+        ));
+    }
+    let unregistered: Vec<_> = listed.difference(&registered_set).collect();
+    if !unregistered.is_empty() {
+        problems.push(format!(
+            "in APP_COMMANDS but not registered in lib.rs: {unregistered:?}"
+        ));
+    }
+    (!problems.is_empty()).then(|| {
+        format!(
+            "src/app_commands.rs must list exactly the commands lib.rs registers in \
+             generate_handler!. Add a new command to APP_COMMANDS and its allow-<command> \
+             to permissions/app-commands.toml.\n{}",
+            problems.join("\n")
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
-    use super::APP_COMMANDS;
-
-    /// The commands `lib.rs` registers in its `generate_handler!` block, by
-    /// name (the last segment of each path), in order.
-    fn registered_commands() -> Vec<&'static str> {
-        const LIB_RS: &str = include_str!("lib.rs");
-        const OPEN: &str = "generate_handler![";
-        assert_eq!(
-            LIB_RS.matches(OPEN).count(),
-            1,
-            "lib.rs registers its commands in one generate_handler! block"
-        );
-        let start = LIB_RS.find(OPEN).unwrap() + OPEN.len();
-        let len = LIB_RS[start..]
-            .find(']')
-            .expect("the generate_handler! block closes");
-        LIB_RS[start..start + len]
-            .lines()
-            .map(|line| line.find("//").map_or(line, |comment| &line[..comment]))
-            .flat_map(|line| line.split(','))
-            .map(str::trim)
-            .filter(|path| !path.is_empty())
-            .map(|path| {
-                assert!(
-                    path.chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':'),
-                    "not a command path in generate_handler!: {path}"
-                );
-                path.rsplit("::").next().unwrap_or(path)
-            })
-            .collect()
-    }
+    use super::{manifest_drift, registered_commands, APP_COMMANDS};
 
     #[test]
     fn the_app_manifest_lists_every_registered_command() {
-        let registered = registered_commands();
-        let registered_set: BTreeSet<&str> = registered.iter().copied().collect();
-        let listed: BTreeSet<&str> = APP_COMMANDS.iter().copied().collect();
-        assert_eq!(
-            registered_set.len(),
-            registered.len(),
-            "lib.rs registers a command twice"
-        );
-        assert_eq!(
-            listed.len(),
-            APP_COMMANDS.len(),
-            "APP_COMMANDS lists a command twice"
-        );
-        let unlisted: Vec<_> = registered_set.difference(&listed).collect();
-        let unregistered: Vec<_> = listed.difference(&registered_set).collect();
+        // build.rs runs the same check and fails the build on a mismatch.
+        let registered = registered_commands(include_str!("lib.rs")).unwrap();
+        assert!(registered.contains(&"auth_sign_in"), "{registered:?}");
+        if let Some(drift) = manifest_drift(&registered) {
+            panic!("{drift}");
+        }
+    }
+
+    #[test]
+    fn a_drift_says_which_commands_to_fix() {
+        let mut registered: Vec<&str> = APP_COMMANDS
+            .iter()
+            .copied()
+            .filter(|command| *command != "config_get")
+            .collect();
+        registered.push("a_new_command");
+        let drift = manifest_drift(&registered).expect("the lists differ");
         assert!(
-            unlisted.is_empty() && unregistered.is_empty(),
-            "APP_COMMANDS (src/app_commands.rs) must list exactly the commands lib.rs registers.\n\
-             registered but not listed, so refused at runtime: {unlisted:?}\n\
-             listed but not registered: {unregistered:?}"
+            drift.contains(r#"so refused at runtime: ["a_new_command"]"#),
+            "{drift}"
         );
+        assert!(
+            drift.contains(r#"not registered in lib.rs: ["config_get"]"#),
+            "{drift}"
+        );
+        registered.push("a_new_command");
+        let twice = manifest_drift(&registered).expect("a command twice");
+        assert!(
+            twice.contains("lib.rs registers a command twice"),
+            "{twice}"
+        );
+        assert_eq!(manifest_drift(APP_COMMANDS), None);
+    }
+
+    #[test]
+    fn the_generate_handler_block_is_read_by_command_name() {
+        let lib_rs = "builder\n    .invoke_handler(tauri::generate_handler![\n        \
+                      shell::ipc::config_get, // a comment\n        app_log,\n    ])\n";
+        assert_eq!(
+            registered_commands(lib_rs),
+            Ok(vec!["config_get", "app_log"])
+        );
+        // Anything it can't read is an error, not a silently shorter list.
+        assert!(registered_commands("no handler block").is_err());
+        assert!(registered_commands("generate_handler![a] generate_handler![b]").is_err());
+        assert!(registered_commands("generate_handler![#[cfg(unix)] a]").is_err());
+        assert!(registered_commands("generate_handler![a").is_err());
     }
 }

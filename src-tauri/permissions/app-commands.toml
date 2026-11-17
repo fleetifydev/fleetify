@@ -1,7 +1,8 @@
 # Every app command. capabilities/default.json grants this set to the main
-# webview, and so does the capability setup adds for a configured port
-# (src/shell/startup_window.rs). tauri-build generates each allow-* from the
-# command list in src/app_commands.rs; a test keeps this set equal to it.
+# webview from local origins, and the capability setup adds grants it from
+# the app's own origin (src/shell/startup_window.rs). tauri-build generates
+# each allow-* from the command list in src/app_commands.rs; a test keeps
+# this set equal to it.
 
 [[set]]
 identifier = "app-commands"

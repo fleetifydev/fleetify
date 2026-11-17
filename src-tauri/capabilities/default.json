@@ -1,10 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Core perms + the app's commands on the embedded-backend origin (dev Vite + prod axum), for the main webview only: never the browser panel's child webview",
+  "description": "Core perms + the app's commands from local origins only (devUrl in dev mode), for the main webview only: never the browser panel's child webview. The app's own http origin gets the same at setup (src/shell/startup_window.rs); no other remote origin gets anything",
   "webviews": ["main"],
-  "remote": {
-    "urls": ["http://localhost:3000", "http://127.0.0.1:8765"]
-  },
   "permissions": ["core:default", "core:event:default", "dialog:allow-open", "app-commands"]
 }
