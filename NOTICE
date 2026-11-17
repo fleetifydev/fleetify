@@ -5,8 +5,10 @@ This product includes software developed by The Fleetify Authors
 (https://github.com/fleetifydev/fleetify).
 
 This product includes a modified copy of tauri-runtime-wry
-(https://github.com/tauri-apps/tauri), Copyright (c) 2017 - Present
-Tauri Programme within The Commons Conservancy, licensed under
-Apache-2.0 OR MIT. See vendor/tauri-runtime-wry/.
+(https://github.com/tauri-apps/tauri), licensed under Apache-2.0 OR MIT,
+which carries these copyright notices:
+    Copyright 2019-2024 Tauri Programme within The Commons Conservancy
+    Copyright (c) 2017 - Present Tauri Apps Contributors
+See vendor/tauri-runtime-wry/.
 
 Third-party dependency notices ship with each release in THIRD-PARTY-NOTICES.
