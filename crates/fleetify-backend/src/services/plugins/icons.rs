@@ -11,12 +11,22 @@
 //! The WebView makes no third-party request at all, and icons survive offline.
 //!
 //! Everything here is best-effort: any failure leaves `icon` untouched.
+//!
+//! Manifests are third-party input, so the fetch is fenced in. The client
+//! dials only addresses `is_public_ip` accepts, vetted inside its own DNS
+//! resolver so nothing is checked first and resolved again later. It never
+//! uses a proxy and never follows a redirect, and a URL that just failed is
+//! left alone for `FAILURE_TTL` instead of stalling every catalog load.
 
-use std::net::IpAddr;
+use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant, SystemTime};
 
 use base64::Engine;
+use parking_lot::Mutex;
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use sha2::{Digest, Sha256};
 
 use super::types::PluginManifest;
@@ -24,8 +34,12 @@ use super::types::PluginManifest;
 /// Icons are tiny; anything bigger is not an icon.
 const MAX_ICON_BYTES: usize = 256 * 1024;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(8);
+/// A lookup still unanswered by now is not worth the rest of `FETCH_TIMEOUT`.
+const DNS_TIMEOUT: Duration = Duration::from_secs(3);
 /// Icons change far less often than the catalog that references them.
 const CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
+/// How long a URL whose fetch failed is skipped before it is tried again.
+const FAILURE_TTL: Duration = Duration::from_secs(600);
 
 const ALLOWED_MIME: &[&str] = &[
     "image/svg+xml",
@@ -76,31 +90,130 @@ pub fn is_public_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
             let o = v4.octets();
+            let this_network = o[0] == 0; // 0.0.0.0/8, incl. 0.0.0.0
             let cgnat = o[0] == 100 && (o[1] & 0xc0) == 64; // 100.64.0.0/10
+            let ietf_protocol = o[..3] == [192, 0, 0]; // 192.0.0.0/24
+            let benchmarking = o[0] == 198 && (o[1] & 0xfe) == 18; // 198.18.0.0/15
+            let reserved = o[0] >= 240; // 240.0.0.0/4, incl. 255.255.255.255
             !(v4.is_loopback()
                 || v4.is_private()
                 || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
                 || v4.is_multicast()
                 || v4.is_documentation()
-                || cgnat)
+                || this_network
+                || cgnat
+                || ietf_protocol
+                || benchmarking
+                || reserved)
         }
         IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
+            if v6.is_loopback() || v6.is_unspecified() {
+                return false;
+            }
+            // An address that carries an IPv4 one can end up at that IPv4
+            // address, so the IPv4 address decides.
+            if let Some(v4) = embedded_ipv4(v6) {
                 return is_public_ip(IpAddr::V4(v4));
             }
             let head = v6.segments()[0];
             let unique_local = (head & 0xfe00) == 0xfc00; // fc00::/7
             let link_local = (head & 0xffc0) == 0xfe80; // fe80::/10
-            !(v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                || unique_local
-                || link_local)
+            let site_local = (head & 0xffc0) == 0xfec0; // fec0::/10, deprecated
+            !(v6.is_multicast() || unique_local || link_local || site_local)
         }
     }
 }
+
+/// The IPv4 address inside an IPv4-compatible (`::a.b.c.d`), IPv4-mapped
+/// (`::ffff:a.b.c.d`), 6to4 (`2002:aabb:ccdd::/48`) or NAT64
+/// (`64:ff9b::a.b.c.d`) address.
+fn embedded_ipv4(v6: Ipv6Addr) -> Option<Ipv4Addr> {
+    let v4 = |hi: u16, lo: u16| Ipv4Addr::from((u32::from(hi) << 16) | u32::from(lo));
+    match v6.segments() {
+        [0x2002, hi, lo, ..] => Some(v4(hi, lo)),
+        [0x64, 0xff9b, 0, 0, 0, 0, hi, lo] => Some(v4(hi, lo)),
+        // The IPv4-compatible and the IPv4-mapped forms.
+        _ => v6.to_ipv4(),
+    }
+}
+
+/// `addrs` unchanged when every one is public, otherwise an error. All or
+/// nothing: a name that answers with a private address next to public ones
+/// is pointing somewhere it should not.
+pub(crate) fn public_only(addrs: Vec<SocketAddr>) -> Result<Vec<SocketAddr>, &'static str> {
+    if addrs.is_empty() {
+        Err("the icon host has no addresses")
+    } else if addrs.iter().all(|a| is_public_ip(a.ip())) {
+        Ok(addrs)
+    } else {
+        Err("the icon host resolves to a non-public address")
+    }
+}
+
+/// The icon client's DNS resolver. The connector dials exactly the addresses
+/// returned here, all vetted by [`public_only`], so a name cannot pass a
+/// check on one answer and then be dialled on another (DNS rebinding).
+pub(crate) struct PublicOnlyResolver;
+
+impl Resolve for PublicOnlyResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let host = name.as_str().to_owned();
+        Box::pin(async move {
+            let found = tokio::time::timeout(DNS_TIMEOUT, tokio::net::lookup_host((host, 0)))
+                .await
+                .map_err(|_| "the icon host lookup timed out")??;
+            let vetted = public_only(found.collect())?;
+            Ok(Box::new(vetted.into_iter()) as Addrs)
+        })
+    }
+}
+
+/// The client for icon fetches. Only [`PublicOnlyResolver`] turns names into
+/// addresses. There is no proxy, because a proxy would resolve the name
+/// itself and dial whatever it found.
+fn icon_client() -> Option<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(FETCH_TIMEOUT)
+        .user_agent("Fleet-Marketplace/0.1")
+        // A redirect could land anywhere; an icon that needs one stays a URL.
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .dns_resolver(Arc::new(PublicOnlyResolver))
+        .build()
+        .ok()
+}
+
+/// URLs whose last fetch failed, and when. A dead or slow icon host then
+/// costs one `FETCH_TIMEOUT` per `ttl` instead of one per catalog load.
+pub(crate) struct FailureCache {
+    ttl: Duration,
+    failed: Mutex<HashMap<String, Instant>>,
+}
+
+impl FailureCache {
+    fn new(ttl: Duration) -> Self {
+        Self {
+            ttl,
+            failed: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn is_recent(&self, url: &str, now: Instant) -> bool {
+        self.failed
+            .lock()
+            .get(url)
+            .is_some_and(|&at| now.saturating_duration_since(at) < self.ttl)
+    }
+
+    fn record(&self, url: &str, now: Instant) {
+        let mut failed = self.failed.lock();
+        // Expired entries are dead weight: the map holds one TTL's worth.
+        failed.retain(|_, at| now.saturating_duration_since(*at) < self.ttl);
+        failed.insert(url.to_owned(), now);
+    }
+}
+
+static FAILURES: LazyLock<FailureCache> = LazyLock::new(|| FailureCache::new(FAILURE_TTL));
 
 /// Encode a fetched body as a `data:` URI, or `None` when it is not an
 /// acceptable image. The content type is what rejects a 200-with-HTML block
@@ -171,37 +284,24 @@ pub async fn fetch_data_uri(client: &reqwest::Client, url: reqwest::Url) -> Opti
     to_data_uri(&content_type, &body)
 }
 
-/// Every address the host resolves to must be public. Closes the gap
-/// [`fetch_target`] cannot: a harmless-looking name pointing at 127.0.0.1.
-async fn resolves_publicly(url: &reqwest::Url) -> bool {
-    let Some(host) = url.host_str() else {
-        return false;
-    };
-    let Ok(addrs) = tokio::net::lookup_host((host, 443)).await else {
-        return false;
-    };
-    let addrs: Vec<_> = addrs.collect();
-    !addrs.is_empty() && addrs.iter().all(|a| is_public_ip(a.ip()))
-}
-
 async fn inline_one(client: &reqwest::Client, dir: &Path, icon: &str) -> Option<String> {
     let url = fetch_target(icon)?;
     if let Some(hit) = read_cached(dir, url.as_str(), CACHE_TTL) {
         return Some(hit);
     }
-    let fetched = if resolves_publicly(&url).await {
-        fetch_data_uri(client, url.clone()).await
-    } else {
-        None
-    };
-    match fetched {
-        Some(uri) => {
-            write_cached(dir, url.as_str(), &uri);
-            Some(uri)
+    // Retrying a URL that just failed would make every catalog load wait out
+    // the same failure; until FAILURE_TTL passes, go straight to the old copy.
+    if !FAILURES.is_recent(url.as_str(), Instant::now()) {
+        match fetch_data_uri(client, url.clone()).await {
+            Some(uri) => {
+                write_cached(dir, url.as_str(), &uri);
+                return Some(uri);
+            }
+            None => FAILURES.record(url.as_str(), Instant::now()),
         }
-        // Offline or the host is down: an expired copy still beats a blank tile.
-        None => read_cached(dir, url.as_str(), Duration::MAX),
     }
+    // Offline or the host is down: an expired copy still beats a blank tile.
+    read_cached(dir, url.as_str(), Duration::MAX)
 }
 
 /// Rewrite every fetchable `icon` in `manifests` to a `data:` URI, in place.
@@ -210,13 +310,7 @@ pub async fn inline_all(manifests: &mut [&mut PluginManifest]) {
 }
 
 async fn inline_all_in(dir: &Path, manifests: &mut [&mut PluginManifest]) {
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(FETCH_TIMEOUT)
-        .user_agent("Fleet-Marketplace/0.1")
-        // A redirect could land anywhere; an icon that needs one stays a URL.
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-    else {
+    let Some(client) = icon_client() else {
         return;
     };
     let jobs = manifests.iter().enumerate().filter_map(|(i, m)| {
@@ -234,6 +328,7 @@ async fn inline_all_in(dir: &Path, manifests: &mut [&mut PluginManifest]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -296,6 +391,99 @@ mod tests {
     }
 
     #[test]
+    fn is_public_ip_rejects_reserved_and_embedded_private_ranges() {
+        for ip in [
+            "0.1.2.3",
+            "100.64.0.1",
+            "192.0.0.8",
+            "198.18.0.1",
+            "198.19.255.255",
+            "240.0.0.1",
+            "255.255.255.255",
+            "::127.0.0.1",
+            "2002:7f00:1::1",
+            "64:ff9b::a00:1",
+            "fec0::1",
+        ] {
+            assert!(!is_public_ip(ip.parse().unwrap()), "{ip} must be rejected");
+        }
+        for ip in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"] {
+            assert!(is_public_ip(ip.parse().unwrap()), "{ip} must be allowed");
+        }
+    }
+
+    #[test]
+    fn is_public_ip_judges_an_embedded_ipv4_by_that_address() {
+        // Each form once around public 8.8.10.0 and once around private
+        // 10.0.0.1. The halves differ in class, so reading the wrong
+        // segments flips the verdict.
+        for (allowed, rejected) in [
+            ("::8.8.10.0", "::10.0.0.1"),
+            ("::ffff:8.8.10.0", "::ffff:10.0.0.1"),
+            ("2002:808:a00::1", "2002:a00:1::1"),
+            ("64:ff9b::808:a00", "64:ff9b::a00:1"),
+        ] {
+            assert!(
+                is_public_ip(allowed.parse().unwrap()),
+                "{allowed} must be allowed"
+            );
+            assert!(
+                !is_public_ip(rejected.parse().unwrap()),
+                "{rejected} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn public_only_is_all_or_nothing() {
+        let p: SocketAddr = "8.8.8.8:0".parse().unwrap();
+        let l: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        assert!(public_only(vec![]).is_err());
+        assert!(public_only(vec![p, l]).is_err());
+        assert_eq!(public_only(vec![p]).unwrap(), vec![p]);
+    }
+
+    #[tokio::test]
+    async fn resolver_refuses_a_name_that_resolves_to_loopback() {
+        let name: reqwest::dns::Name = "localhost".parse().unwrap();
+        assert!(PublicOnlyResolver.resolve(name).await.is_err());
+    }
+
+    /// A local TCP listener that counts every connection and hangs up at
+    /// once, so a fetch through it fails fast and each dial is observable.
+    async fn hang_up_listener() -> (SocketAddr, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let dials = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&dials);
+        tokio::spawn(async move {
+            while let Ok((conn, _)) = listener.accept().await {
+                seen.fetch_add(1, Ordering::SeqCst);
+                drop(conn);
+            }
+        });
+        (addr, dials)
+    }
+
+    /// The resolver is what the icon client's connector dials through, so a
+    /// name that resolves to loopback never gets a connection at all.
+    #[tokio::test]
+    async fn icon_client_never_dials_a_name_that_resolves_to_loopback() {
+        let (addr, dials) = hang_up_listener().await;
+        let client = icon_client().unwrap();
+        let sent = client
+            .get(format!("https://localhost:{}/icon.svg", addr.port()))
+            .send()
+            .await;
+        assert!(sent.is_err());
+        assert_eq!(
+            dials.load(Ordering::SeqCst),
+            0,
+            "a loopback address was dialled"
+        );
+    }
+
+    #[test]
     fn to_data_uri_encodes_an_svg() {
         let uri = to_data_uri("image/svg+xml; charset=utf-8", SVG).unwrap();
         let b64 = uri.strip_prefix("data:image/svg+xml;base64,").unwrap();
@@ -340,6 +528,50 @@ mod tests {
         .is_none());
         // A zero TTL means everything is already stale.
         assert!(read_cached(dir.path(), url, Duration::ZERO).is_none());
+    }
+
+    #[test]
+    fn failure_cache_suppresses_retries_within_ttl() {
+        let c = FailureCache::new(Duration::from_secs(600));
+        let t0 = Instant::now();
+        c.record("https://x.test/i.png", t0);
+        assert!(c.is_recent("https://x.test/i.png", t0 + Duration::from_secs(599)));
+        assert!(!c.is_recent("https://x.test/i.png", t0 + Duration::from_secs(601)));
+        assert!(!c.is_recent("https://y.test/i.png", t0));
+    }
+
+    /// One dead icon host must not cost every catalog load a fresh timeout.
+    #[tokio::test]
+    async fn inline_one_skips_the_network_for_a_recently_failed_url() {
+        let (addr, dials) = hang_up_listener().await;
+        let host = "failing-icons.example";
+        // No proxy: an HTTPS_PROXY in the environment would bypass `resolve`.
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .resolve(host, addr)
+            .build()
+            .unwrap();
+        let icon = format!("https://{host}/logo.svg");
+        let dir = tempfile::tempdir().unwrap();
+
+        assert!(inline_one(&client, dir.path(), &icon).await.is_none());
+        assert_eq!(dials.load(Ordering::SeqCst), 1);
+        assert!(FAILURES.is_recent(&icon, Instant::now()));
+
+        // Within FAILURE_TTL the host is not dialled again, yet an expired
+        // copy is still served rather than a blank tile.
+        write_cached(dir.path(), &icon, "data:image/png;base64,AAAA");
+        std::fs::File::options()
+            .write(true)
+            .open(cache_path(dir.path(), &icon))
+            .unwrap()
+            .set_modified(SystemTime::now() - CACHE_TTL - Duration::from_secs(60))
+            .unwrap();
+        assert_eq!(
+            inline_one(&client, dir.path(), &icon).await.as_deref(),
+            Some("data:image/png;base64,AAAA")
+        );
+        assert_eq!(dials.load(Ordering::SeqCst), 1);
     }
 
     /// Live network. Proves the premise of this module end to end: the
