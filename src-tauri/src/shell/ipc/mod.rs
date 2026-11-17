@@ -2493,7 +2493,9 @@ fn strip_ansi(s: &str) -> String {
 // One-time device codes are formatted "XXXX-XXXX" — 4 alphanumerics, a
 // dash, then 4 more. gh prints them after "code:" so we anchor on that.
 fn parse_device_code(line: &str) -> Option<String> {
-    let lower = line.to_lowercase();
+    // ASCII-only lowercasing keeps every byte offset, so `pos` is valid in
+    // `line` too. Unicode lowercasing can change lengths (`İ` 2 → 3 bytes).
+    let lower = line.to_ascii_lowercase();
     let pos = lower.find("code:")?;
     let rest = &line[pos + 5..];
     let candidate: String = rest
@@ -4744,6 +4746,42 @@ mod tests {
         bad.insert("../escape.txt".to_string(), "x".to_string());
         let v4 = scaffold_plugin_impl(&parent, "other-plugin", &bad);
         assert!(v4["error"].as_str().unwrap().contains("unsafe path"));
+    }
+
+    #[test]
+    fn parse_device_code_reads_the_gh_prompt() {
+        assert_eq!(
+            parse_device_code("! First copy your one-time code: ABCD-1234"),
+            Some("ABCD-1234".to_string())
+        );
+        assert_eq!(
+            parse_device_code("code: abcd-1234"),
+            Some("ABCD-1234".to_string())
+        );
+        assert_eq!(
+            parse_device_code("Press Enter to open github.com in your browser..."),
+            None
+        );
+        assert_eq!(parse_device_code("code: ABCD1234"), None);
+    }
+
+    /// Regression: the offset of `code:` came from a Unicode-lowercased copy
+    /// of the line. `İ` lowercases from 2 bytes to 3, so the slice of the
+    /// original line started 5 bytes too far and missed the code.
+    #[test]
+    fn parse_device_code_after_non_ascii_text() {
+        assert_eq!(
+            parse_device_code("İİİİİ code: ABCD-1234"),
+            Some("ABCD-1234".to_string())
+        );
+    }
+
+    /// The same stale offset could land inside a letter or past the end of
+    /// the line, and the panic failed the whole sign-in.
+    #[test]
+    fn parse_device_code_does_not_panic_after_non_ascii_text() {
+        assert_eq!(parse_device_code("İİ code: İİİİ"), None);
+        assert_eq!(parse_device_code("İİİİİİİİİİ code:"), None);
     }
 }
 
