@@ -21,6 +21,9 @@ function toast(title: string, summary: string, success: boolean) {
   if (success) console.info(line); else console.warn(line);
 }
 
+/** True when `key` is a single letter in any script (Dvorak's V, Turkish Q's Ç…). */
+const isLetter = (key: string) => /^\p{L}$/u.test(key);
+
 interface ShortcutCtx {
   state: ReturnType<typeof useAppStore.getState>;
   chatState: ReturnType<typeof useChatStore.getState>;
@@ -62,9 +65,10 @@ export const SHORTCUT_BINDINGS: ShortcutBinding[] = [
     },
   },
   {
-    // Cmd+Shift+S — toggle sidebar
+    // Cmd+Shift+S — toggle sidebar. Case-insensitive like the other letter
+    // bindings: Caps Lock, or Cmd+Shift on macOS, can deliver "s".
     id: "toggle-sidebar",
-    matches: (e, mod, shift) => mod && shift && e.key === "S",
+    matches: (e, mod, shift) => mod && shift && e.key.toLowerCase() === "s",
     run: (e, { state }) => { e.preventDefault(); state.toggleSidebar(); },
   },
   {
@@ -115,9 +119,15 @@ export const SHORTCUT_BINDINGS: ShortcutBinding[] = [
     },
   },
   {
-    // Cmd+Shift+. — toggle right panel
+    // Cmd+Shift+. — toggle right panel. `key` includes Shift, so the chord
+    // reports ">" on a US layout and ":" on German, while macOS may still say
+    // ".". The physical Period key covers layouts whose Shift+. is ":", but
+    // not where that key types a letter: on Dvorak it is V, and taking
+    // Ctrl+Shift+V there would swallow paste.
     id: "toggle-right-panel",
-    matches: (e, mod, shift) => mod && shift && e.key === ".",
+    matches: (e, mod, shift) =>
+      mod && shift &&
+      (e.key === "." || e.key === ">" || (e.code === "Period" && !isLetter(e.key))),
     run: (e, { state }) => { e.preventDefault(); state.toggleRightPanel(); },
   },
   {
@@ -197,20 +207,27 @@ export const SHORTCUT_BINDINGS: ShortcutBinding[] = [
   },
   {
     // Cmd+Shift+A — abort all running agents. An emergency stop, so it also
-    // works while Settings or Library hides the shell.
+    // works while Settings or Library hides the shell, and it ignores case:
+    // Caps Lock, or Cmd+Shift on macOS, can deliver "a".
     id: "abort-all",
     worksWhileParked: true,
-    matches: (e, mod, shift) => mod && shift && e.key === "A",
-    run: (e, { state }) => {
+    matches: (e, mod, shift) => mod && shift && e.key.toLowerCase() === "a",
+    run: (e, { state, chatState }) => {
       e.preventDefault();
-      const running = state.sessions.filter(
-        s =>
-          (s.status === "running" || s.status === "waiting" || s.status === "starting") &&
-          s.id !== state.staffSessionId,
-      );
-      for (const s of running) {
-        wsManager.abort(s.id).catch(() => {});
-        stopSession(s.id).catch(() => {});
+      // Every live agent: app-store status running / waiting / starting, plus
+      // any chat still streaming, which the Fleet panel also shows as running.
+      // A Set, so an agent that is both is stopped once.
+      const ids = new Set<string>();
+      for (const s of state.sessions) {
+        if (s.status === "running" || s.status === "waiting" || s.status === "starting") ids.add(s.id);
+      }
+      for (const [id, chat] of Object.entries(chatState.sessions)) {
+        if (chat.isStreaming) ids.add(id);
+      }
+      if (state.staffSessionId) ids.delete(state.staffSessionId);
+      for (const id of ids) {
+        wsManager.abort(id).catch(() => {});
+        stopSession(id).catch(() => {});
       }
     },
   },

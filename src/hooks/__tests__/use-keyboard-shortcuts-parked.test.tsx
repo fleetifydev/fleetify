@@ -15,7 +15,9 @@ vi.mock("@/lib/api", () => ({
 
 import { useKeyboardShortcuts, SHORTCUT_BINDINGS } from "../use-keyboard-shortcuts";
 import { useAppStore } from "@/stores/app-store";
+import { useChatStore, type SessionChatState } from "@/stores/chat-store";
 import { wsManager } from "@/services/ws-manager";
+import { stopSession } from "@/lib/api";
 import type { Session } from "@/types/session";
 
 /** Mirrors App.tsx, which parks AppShell under `display: none` while Settings
@@ -30,13 +32,18 @@ function Shell({ parked }: { parked: boolean }) {
   );
 }
 
-/** An agent mid-stream. abort-all picks agents by their app-store status. */
-const streaming = (id: string) => ({ id, status: "running" }) as unknown as Session;
+/** An app-store session with the given status. */
+const session = (id: string, status: Session["status"]) => ({ id, status }) as unknown as Session;
+const running = (id: string) => session(id, "running");
+
+/** Chat-store state of an agent whose reply is still streaming in. */
+const chatStreaming = { isStreaming: true } as unknown as SessionChatState;
 
 describe("useKeyboardShortcuts while the shell is parked", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useAppStore.setState({ sessions: [], activeSessionId: "agent-1", staffSessionId: "staff" });
+    useChatStore.setState({ sessions: {} });
   });
 
   afterEach(() => {
@@ -58,9 +65,18 @@ describe("useKeyboardShortcuts while the shell is parked", () => {
   it("still aborts every streaming agent with Cmd+Shift+A while the shell is parked", () => {
     // shell under display:none, two streaming agents
     render(<Shell parked />);
-    useAppStore.setState({ sessions: [streaming("agent-1"), streaming("agent-2")] });
+    useAppStore.setState({ sessions: [running("agent-1"), running("agent-2")] });
     fireEvent.keyDown(window, { key: "A", metaKey: true, shiftKey: true });
     expect(wsManager.abort).toHaveBeenCalledTimes(2);
+    expect(stopSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("aborts on the event Caps Lock produces, where Ctrl+Shift+A reports key 'a'", () => {
+    render(<Shell parked />);
+    useAppStore.setState({ sessions: [running("agent-1"), running("agent-2")] });
+    fireEvent.keyDown(window, { key: "a", code: "KeyA", ctrlKey: true, shiftKey: true });
+    expect(wsManager.abort).toHaveBeenCalledTimes(2);
+    expect(stopSession).toHaveBeenCalledTimes(2);
   });
 
   it("does not compute styles for keys no binding handles", () => {
@@ -73,5 +89,50 @@ describe("useKeyboardShortcuts while the shell is parked", () => {
   it("lets only abort-all through a parked shell", () => {
     const parkedIds = SHORTCUT_BINDINGS.filter(b => b.worksWhileParked).map(b => b.id);
     expect(parkedIds).toEqual(["abort-all"]);
+  });
+});
+
+// The Fleet panel shows an agent as running — with a Stop button — when its
+// app-store status says so OR its chat is still streaming. Abort-all has to
+// stop everything that panel would let you stop.
+describe("abort-all picks every agent the UI shows as running", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useAppStore.setState({ sessions: [], activeSessionId: null, staffSessionId: "staff" });
+    useChatStore.setState({ sessions: {} });
+  });
+
+  const abortAll = () => fireEvent.keyDown(window, { key: "A", metaKey: true, shiftKey: true });
+
+  it("aborts an agent that is idle in the app store but still streaming in its chat", () => {
+    render(<Shell parked={false} />);
+    useAppStore.setState({ sessions: [session("agent-1", "idle")] });
+    useChatStore.setState({ sessions: { "agent-1": chatStreaming } });
+    abortAll();
+    expect(wsManager.abort).toHaveBeenCalledTimes(1);
+    expect(wsManager.abort).toHaveBeenCalledWith("agent-1");
+    expect(stopSession).toHaveBeenCalledTimes(1);
+    expect(stopSession).toHaveBeenCalledWith("agent-1");
+  });
+
+  it("aborts an agent that is running and streaming exactly once", () => {
+    render(<Shell parked={false} />);
+    useAppStore.setState({ sessions: [running("agent-1")] });
+    useChatStore.setState({ sessions: { "agent-1": chatStreaming } });
+    abortAll();
+    expect(wsManager.abort).toHaveBeenCalledTimes(1);
+    expect(stopSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("never aborts the staff session, even while it runs and streams", () => {
+    render(<Shell parked={false} />);
+    useAppStore.setState({ sessions: [running("staff"), session("agent-1", "idle")] });
+    useChatStore.setState({ sessions: { staff: chatStreaming, "agent-1": chatStreaming } });
+    abortAll();
+    expect(wsManager.abort).toHaveBeenCalledTimes(1);
+    expect(wsManager.abort).toHaveBeenCalledWith("agent-1");
+    expect(wsManager.abort).not.toHaveBeenCalledWith("staff");
+    expect(stopSession).toHaveBeenCalledTimes(1);
+    expect(stopSession).not.toHaveBeenCalledWith("staff");
   });
 });
