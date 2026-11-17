@@ -486,21 +486,25 @@ pub fn run() {
                 // token so private-repo clones authenticate from the first try.
                 crate::shell::github_link::push_clone_token().await;
 
-                // Restore the Fleetify cloud sync choice. Closing also
-                // purges what is still queued, if the backend has opened its
-                // outbox by now. Nothing orders this after that, so rows
-                // older builds queued are dropped by the outbox itself. (The
-                // PostHog gate was restored at the top of this task; doing it
-                // again here could reopen it after a failed opt-out save.)
-                if let Ok(dir) = handle.path().app_data_dir() {
-                    let cfg = crate::shell::config::load_config_from(&dir);
-                    fleetify_backend::services::telemetry::set_cloud_enabled(
-                        crate::shell::config::cloud_sync_from(&cfg),
-                    )
-                    .await;
-                } else {
-                    fleetify_backend::services::telemetry::set_cloud_enabled(false).await;
-                }
+                // Finish the Fleetify cloud sync restore: close the gate if
+                // the saved choice is off. Closing also purges what is still
+                // queued, if the backend has opened its outbox by now.
+                // Nothing orders this after that, so rows older builds
+                // queued are dropped by the outbox itself. It never opens
+                // the gate, and it does nothing if Settings changed it since
+                // launch: reapplying the saved choice here would undo a
+                // switch whose save failed. (The PostHog gate was restored
+                // at the top of this task, for the same reason.)
+                let saved_on = handle
+                    .path()
+                    .app_data_dir()
+                    .map(|dir| {
+                        crate::shell::config::cloud_sync_from(
+                            &crate::shell::config::load_config_from(&dir),
+                        )
+                    })
+                    .unwrap_or(false);
+                crate::shell::ipc::finish_cloud_sync_restore(saved_on).await;
             });
 
             // Prime the integrations cache in parallel — only needs the

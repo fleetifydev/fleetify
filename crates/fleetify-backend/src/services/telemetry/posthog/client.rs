@@ -41,8 +41,7 @@ impl Client {
     }
 
     /// POST a batch of events. Each event is already a PostHog-shaped
-    /// payload from `mapper::to_posthog_event` (or a synthesised
-    /// `$identify` from `mod::identify_local`).
+    /// payload from `mapper::to_posthog_event`.
     pub async fn send_batch(&self, events: Vec<Value>) -> BatchOutcome {
         if events.is_empty() {
             return BatchOutcome::Acked;

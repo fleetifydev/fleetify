@@ -17,11 +17,11 @@
 //!      tick so flipping the gate off stops sends within ~10 s.
 //!
 //! The frontend's posthog-js handles its own consent / opt-out via the
-//! same flag echoed through the `telemetry_get_config` Tauri command.
+//! same gate, reported by the `telemetry_get_config` Tauri command.
 //! Distinct IDs are kept in sync: backend uses the persisted `device_id`;
 //! the frontend bootstraps posthog-js with the same id and calls
-//! `posthog.identify(user_id, ...)` after OAuth so PostHog merges the
-//! anonymous person into the authenticated one.
+//! `posthog.identify(user_id)` (the id only) for a signed-in user, so
+//! PostHog links the device's events to the account.
 
 mod client;
 mod mapper;
@@ -121,30 +121,6 @@ pub async fn enqueue_if_enabled(fleetify_payload: &Value) {
     let event_id = uuid::Uuid::new_v4().to_string();
     if let Err(e) = outbox::enqueue(&event_id, &event).await {
         tracing::warn!(target: "fleetify.posthog", "enqueue failed: {e}");
-        return;
-    }
-    worker::event_available().notify_one();
-}
-
-/// Server-side `$identify`. Fires when the backend learns about an
-/// authenticated user_id (post-OAuth). The frontend posthog-js also
-/// calls identify(); both flow into the same PostHog person via the
-/// `$anon_distinct_id` link.
-pub async fn identify_local(user_id: &str, props: serde_json::Map<String, Value>) {
-    if !is_enabled() || project_key().is_none() {
-        return;
-    }
-    let event = serde_json::json!({
-        "event": "$identify",
-        "distinct_id": user_id,
-        "properties": {
-            "$set": Value::Object(props),
-            "$anon_distinct_id": distinct_id(),
-        },
-    });
-    let event_id = uuid::Uuid::new_v4().to_string();
-    if let Err(e) = outbox::enqueue(&event_id, &event).await {
-        tracing::warn!(target: "fleetify.posthog", "identify enqueue failed: {e}");
         return;
     }
     worker::event_available().notify_one();

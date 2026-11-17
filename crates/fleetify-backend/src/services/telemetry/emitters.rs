@@ -68,35 +68,93 @@ pub(crate) fn cloud_view(payload: &Value) -> Value {
     cloud_view_for_home(payload, &fleetify_core::user_home())
 }
 
-/// `cloud_view` against a given home folder.
+/// `cloud_view` against a given home folder. The home folder counts as
+/// given and in its canonical form: `HOME` may be a symlink while project
+/// paths are stored canonical (`validate_project_path`).
 fn cloud_view_for_home(payload: &Value, home: &Path) -> Value {
+    let canonical = fleetify_core::canonicalize_or_keep(home);
+    let homes = [home, canonical.as_path()];
+    let rules = PathRules::current();
     let mut view = payload.clone();
     if let Some(fields) = view.as_object_mut() {
         fields.remove("activity_summary");
-        if let Some(path) = fields.get_mut("project_path") {
-            *path = match path.as_str() {
-                Some(p) if is_home_folder(p, home, cfg!(windows)) => Value::from("~"),
-                p => project_folder(p).map_or(Value::Null, Value::from),
+        let path = fields
+            .get("project_path")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let at_home = path
+            .as_deref()
+            .is_some_and(|p| homes.iter().any(|h| is_home_folder(p, h, rules)));
+        if let Some(project_path) = fields.get_mut("project_path") {
+            *project_path = if at_home {
+                Value::from("~")
+            } else {
+                project_folder(path.as_deref()).map_or(Value::Null, Value::from)
             };
+        }
+        if at_home {
+            // An untitled session is named after its folder, so a session
+            // in the home folder would carry the OS user name as its title.
+            let names: Vec<String> = homes
+                .iter()
+                .map(|h| h.to_string_lossy().into_owned())
+                .chain(path)
+                .filter_map(|p| project_folder(Some(&p)).map(str::to_owned))
+                .collect();
+            if let Some(title) = fields.get_mut("session_title") {
+                if title
+                    .as_str()
+                    .is_some_and(|t| names.iter().any(|n| rules.same(t, n)))
+                {
+                    *title = Value::from("~");
+                }
+            }
         }
     }
     view
 }
 
-/// Whether `path` is the home folder itself, trailing separators ignored.
-/// On Windows (`windows`) case doesn't count and `/` matches `\`, as in the
-/// file system.
-fn is_home_folder(path: &str, home: &Path, windows: bool) -> bool {
-    let normalise = |p: &str| {
-        let p = p.trim_end_matches(['/', '\\']);
-        if windows {
-            p.replace('\\', "/").to_lowercase()
+/// How this OS's file system compares paths.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PathRules {
+    /// Linux: case and separators count.
+    Exact,
+    /// macOS (APFS, HFS+ by default): case doesn't count; `\` is a
+    /// character, not a separator.
+    IgnoreCase,
+    /// Windows: case doesn't count and `/` matches `\`.
+    Windows,
+}
+
+impl PathRules {
+    fn current() -> Self {
+        if cfg!(windows) {
+            Self::Windows
+        } else if cfg!(target_os = "macos") {
+            Self::IgnoreCase
         } else {
-            p.to_string()
+            Self::Exact
         }
-    };
-    let path = normalise(path);
-    !path.is_empty() && path == normalise(&home.to_string_lossy())
+    }
+
+    fn normalise(self, path: &str) -> String {
+        match self {
+            Self::Exact => path.to_string(),
+            Self::IgnoreCase => path.to_lowercase(),
+            Self::Windows => path.replace('\\', "/").to_lowercase(),
+        }
+    }
+
+    fn same(self, a: &str, b: &str) -> bool {
+        self.normalise(a) == self.normalise(b)
+    }
+}
+
+/// Whether `path` is the home folder itself, trailing separators ignored.
+fn is_home_folder(path: &str, home: &Path, rules: PathRules) -> bool {
+    let trim = |p: &str| p.trim_end_matches(['/', '\\']).to_string();
+    let path = trim(path);
+    !path.is_empty() && rules.same(&path, &trim(&home.to_string_lossy()))
 }
 
 /// Last component of a path, split on `/` and `\` alike, trailing
@@ -685,24 +743,26 @@ mod cloud_sync_tests {
         // Only the home folder itself: not a sibling that starts the same.
         assert_eq!(label(json!("/home/user")), json!("user"));
         assert_eq!(label(json!("")), Value::Null);
-        // Case and separator style count off Windows, not on it.
-        assert!(!is_home_folder("/home/U", Path::new("/home/u"), false));
+        // Case and separator style count on Linux. Windows ignores both;
+        // macOS (APFS, HFS+) ignores case but keeps `\` as a character.
+        let exact = PathRules::Exact;
+        let mac = PathRules::IgnoreCase;
+        let win = PathRules::Windows;
+        assert!(!is_home_folder("/home/U", Path::new("/home/u"), exact));
+        assert!(is_home_folder("/Users/U", Path::new("/Users/u"), mac));
+        assert!(!is_home_folder("/Users/u/x", Path::new("/Users/u\\x"), mac));
         assert!(is_home_folder(
             "C:\\Users\\U\\",
             Path::new("c:\\users\\u"),
-            true
+            win
         ));
-        assert!(is_home_folder(
-            "C:/Users/U",
-            Path::new("C:\\Users\\U"),
-            true
-        ));
+        assert!(is_home_folder("C:/Users/U", Path::new("C:\\Users\\U"), win));
         assert!(!is_home_folder(
             "C:\\Users\\U\\proj",
             Path::new("C:\\Users\\U"),
-            true
+            win
         ));
-        assert!(!is_home_folder("", Path::new(""), false));
+        assert!(!is_home_folder("", Path::new(""), exact));
         // `cloud_view` compares against the real home folder.
         let home = fleetify_core::user_home();
         assert_eq!(folder(json!(home.to_string_lossy())), json!("~"));
@@ -734,6 +794,58 @@ mod cloud_sync_tests {
             start.as_object().unwrap().len(),
             "keys added or lost: {v}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_home_folder_is_sent_as_tilde() {
+        // HOME may be a symlink while project paths are stored canonical
+        // (`validate_project_path`), so the canonical home counts too.
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real-home");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("home-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let stored = fleetify_core::canonicalize_or_keep(&real);
+
+        let view = cloud_view_for_home(&json!({ "project_path": stored.to_string_lossy() }), &link);
+        assert_eq!(view["project_path"], json!("~"));
+        // A folder under the real home keeps its name.
+        let under = stored.join("work");
+        let view = cloud_view_for_home(&json!({ "project_path": under.to_string_lossy() }), &link);
+        assert_eq!(view["project_path"], json!("work"));
+    }
+
+    #[test]
+    fn a_session_named_after_the_home_folder_is_sent_as_tilde() {
+        // The composer names an untitled session after its folder, so a
+        // session in the home folder would carry the OS user name.
+        let home = Path::new("/home/u");
+        let view = |path: &str, title: &str| {
+            cloud_view_for_home(
+                &json!({ "project_path": path, "session_title": title }),
+                home,
+            )
+        };
+        let at_home = view("/home/u", "u");
+        assert_eq!(at_home["project_path"], json!("~"));
+        assert_eq!(at_home["session_title"], json!("~"));
+        // Other titles of a home session are kept.
+        assert_eq!(
+            view("/home/u", "Staff Agent")["session_title"],
+            json!("Staff Agent")
+        );
+        assert_eq!(
+            view("/home/u", "u notes")["session_title"],
+            json!("u notes")
+        );
+        // A folder named like the user, but not home, keeps both.
+        let elsewhere = view("/home/u/u", "u");
+        assert_eq!(elsewhere["project_path"], json!("u"));
+        assert_eq!(elsewhere["session_title"], json!("u"));
+        // No title, no project: nothing is added.
+        let bare = cloud_view_for_home(&json!({ "project_path": "/home/u" }), home);
+        assert!(bare.get("session_title").is_none());
     }
 
     #[tokio::test]

@@ -106,6 +106,39 @@ fn telemetry_config_now(distinct_id: String) -> serde_json::Value {
     })
 }
 
+/// Whether Settings has set cloud sync since launch. The startup restore
+/// (lib.rs) ends seconds after launch, after the warm-up, and must not undo
+/// a choice the user made meanwhile, including one whose save failed. The
+/// setter and the restore both hold this lock while they touch the gate, so
+/// whichever runs second sees the other.
+static CLOUD_SYNC_SET_SINCE_LAUNCH: tokio::sync::Mutex<bool> = tokio::sync::Mutex::const_new(false);
+
+/// Settings' change to the cloud gate: records that the user chose, then
+/// applies it.
+async fn set_cloud_sync(set_since_launch: &tokio::sync::Mutex<bool>, enabled: bool) {
+    let mut set = set_since_launch.lock().await;
+    *set = true;
+    fleetify_backend::services::telemetry::set_cloud_enabled(enabled).await;
+}
+
+/// The end of the startup restore. It can only close the gate: when the
+/// saved choice is off (closing also purges what is still queued), and only
+/// if Settings hasn't set it since launch. It never opens the gate; the
+/// early restore already opened it when the saved choice is on.
+async fn finish_cloud_sync_restore_with(
+    set_since_launch: &tokio::sync::Mutex<bool>,
+    saved_on: bool,
+) {
+    let set = set_since_launch.lock().await;
+    if !*set && !saved_on {
+        fleetify_backend::services::telemetry::set_cloud_enabled(false).await;
+    }
+}
+
+pub(crate) async fn finish_cloud_sync_restore(saved_on: bool) {
+    finish_cloud_sync_restore_with(&CLOUD_SYNC_SET_SINCE_LAUNCH, saved_on).await;
+}
+
 /// Settings → Privacy's Fleetify-cloud sync switch. Saves the choice
 /// (`config::persist_cloud_choice`), then sets the backend gate: turning it
 /// off purges anything still queued and drops the dashboard socket.
@@ -129,7 +162,7 @@ pub async fn telemetry_set_cloud_enabled(
             "cloud sync setting not saved; it applies until Fleetify restarts"
         );
     }
-    fleetify_backend::services::telemetry::set_cloud_enabled(enabled).await;
+    set_cloud_sync(&CLOUD_SYNC_SET_SINCE_LAUNCH, enabled).await;
     match saved {
         Ok(()) => serde_json::json!({ "ok": true }),
         Err(error) => serde_json::json!({
@@ -4839,30 +4872,42 @@ mod telemetry_config_tests {
     use super::*;
     use fleetify_backend::services::telemetry::{cloud_enabled, posthog, set_cloud_enabled};
 
+    use tauri::async_runtime::block_on;
+
+    /// The gates are process-wide, so the tests that flip them take turns.
+    static GATES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Puts both gates back as they were, also when the test fails.
     struct RestoreGates {
         posthog: bool,
         cloud: bool,
     }
 
+    impl RestoreGates {
+        fn now() -> Self {
+            Self {
+                posthog: posthog::is_enabled(),
+                cloud: cloud_enabled(),
+            }
+        }
+    }
+
     impl Drop for RestoreGates {
         fn drop(&mut self) {
             posthog::set_enabled(self.posthog);
-            tauri::async_runtime::block_on(set_cloud_enabled(self.cloud));
+            block_on(set_cloud_enabled(self.cloud));
         }
     }
 
     #[test]
     fn telemetry_config_reports_the_live_gates() {
-        let _restore = RestoreGates {
-            posthog: posthog::is_enabled(),
-            cloud: cloud_enabled(),
-        };
+        let _turn = GATES.lock().unwrap_or_else(|e| e.into_inner());
+        let _restore = RestoreGates::now();
 
         // After a failed save the gates differ from the saved choices, and a
         // re-mounted Settings card has to show the gates.
         posthog::set_enabled(true);
-        tauri::async_runtime::block_on(set_cloud_enabled(false));
+        block_on(set_cloud_enabled(false));
         assert_eq!(
             telemetry_config_now("device-1".into()),
             serde_json::json!({
@@ -4873,7 +4918,7 @@ mod telemetry_config_tests {
         );
 
         posthog::set_enabled(false);
-        tauri::async_runtime::block_on(set_cloud_enabled(true));
+        block_on(set_cloud_enabled(true));
         assert_eq!(
             telemetry_config_now("device-1".into()),
             serde_json::json!({
@@ -4882,5 +4927,42 @@ mod telemetry_config_tests {
                 "cloud_enabled": true,
             })
         );
+    }
+    #[test]
+    fn startup_restore_closes_sync_when_the_saved_choice_is_off() {
+        let _turn = GATES.lock().unwrap_or_else(|e| e.into_inner());
+        let _restore = RestoreGates::now();
+        let set_since_launch = tokio::sync::Mutex::new(false);
+        block_on(set_cloud_enabled(true));
+        block_on(finish_cloud_sync_restore_with(&set_since_launch, false));
+        assert!(!cloud_enabled());
+    }
+
+    #[test]
+    fn startup_restore_never_opens_sync() {
+        // The early restore opens the gate when the saved choice is on; the
+        // late one only ever closes it.
+        let _turn = GATES.lock().unwrap_or_else(|e| e.into_inner());
+        let _restore = RestoreGates::now();
+        let set_since_launch = tokio::sync::Mutex::new(false);
+        block_on(set_cloud_enabled(false));
+        block_on(finish_cloud_sync_restore_with(&set_since_launch, true));
+        assert!(!cloud_enabled());
+    }
+
+    #[test]
+    fn startup_restore_keeps_a_choice_made_in_settings_since_launch() {
+        // The save failed, so the saved choice still says the opposite of
+        // what the user picked this session. The restore must not undo it.
+        let _turn = GATES.lock().unwrap_or_else(|e| e.into_inner());
+        let _restore = RestoreGates::now();
+        let set_since_launch = tokio::sync::Mutex::new(false);
+        block_on(set_cloud_sync(&set_since_launch, true));
+        block_on(finish_cloud_sync_restore_with(&set_since_launch, false));
+        assert!(cloud_enabled(), "a turned-on gate stays on");
+
+        block_on(set_cloud_sync(&set_since_launch, false));
+        block_on(finish_cloud_sync_restore_with(&set_since_launch, true));
+        assert!(!cloud_enabled(), "a turned-off gate stays off");
     }
 }
