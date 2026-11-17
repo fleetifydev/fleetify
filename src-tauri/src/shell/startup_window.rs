@@ -193,16 +193,48 @@ pub fn backend_start_seen(reported: &BackendStart, reporter_gone: bool) -> Backe
     }
 }
 
+/// The two reads the startup task makes of the backend's start reports.
+trait StartReports {
+    /// Whether the reporting task has ended.
+    fn reporter_gone(&self) -> bool;
+    /// The last report.
+    fn last_report(&self) -> BackendStart;
+}
+
+impl StartReports for watch::Receiver<BackendStart> {
+    fn reporter_gone(&self) -> bool {
+        self.has_changed().is_err()
+    }
+
+    fn last_report(&self) -> BackendStart {
+        self.borrow().clone()
+    }
+}
+
+/// The backend's start now, from `reports`: whether the reporter is gone,
+/// read first, then its last report. The other order could read a pending
+/// report, then find the task gone because it reported its bind and ended in
+/// between: a false "can't start". Read this way, a reporter seen gone has
+/// sent all it ever will, so the report read after is final.
+fn observe_start(reports: &impl StartReports) -> BackendStart {
+    let gone = reports.reporter_gone();
+    let last = reports.last_report();
+    backend_start_seen(&last, gone)
+}
+
 /// Title of the dialog shown when the backend can't start.
 pub const BACKEND_FAILURE_TITLE: &str = "Fleetify can't start";
 
 /// The text of that dialog: what failed (`error`, with its causes), on which
-/// port, and where the log files are (`logs_dir`, from
-/// `shell::logging::logs_dir()`: `None` when no log folder could be set up).
+/// port, and where the log files are: `logs_dir`, from
+/// `shell::logging::logs_dir()`, when that folder exists; otherwise it says
+/// the logs could not be written.
 pub fn backend_failure_message(error: &str, port: u16, logs_dir: Option<&Path>) -> String {
-    let logs = match logs_dir {
+    // logging::init records its folder even when creating it failed: name it
+    // only when it is there.
+    let logs = match logs_dir.filter(|dir| dir.is_dir()) {
         Some(dir) => format!("The log files are in {}", dir.display()),
-        None => "Fleetify could not set up its log folder, so no log was written.".to_string(),
+        None => "Fleetify could not write its log files.".to_string(),
     };
     format!("Fleetify couldn't start its local server on port {port}:\n\n{error}\n\n{logs}")
 }
@@ -270,14 +302,19 @@ pub async fn load_app_when_ready(
     let started = Instant::now();
     let mut placeholder_shown = false;
     loop {
-        // Cloned at once: a watch borrow must not be held across an await.
-        let reported = backend.borrow().clone();
-        let start = backend_start_seen(&reported, backend.has_changed().is_err());
+        // observe_start clones the report at once: a watch borrow must not
+        // be held across an await.
+        let start = observe_start(&backend);
         let answered =
             start == BackendStart::Bound && client.get(app_url.as_str()).send().await.is_ok();
         match next_step(&start, answered, started.elapsed(), placeholder_shown) {
             Step::LoadApp => break,
             Step::ReportFailure => {
+                // No "Starting Fleetify…" behind the error: the start is over.
+                // The dialog has no parent, so it shows without the window.
+                if let Err(e) = window.hide() {
+                    tracing::warn!("hide main window failed: {e}");
+                }
                 if let BackendStart::Failed(error) = &start {
                     report_backend_failure(&window, error, backend_port);
                 }
@@ -693,10 +730,11 @@ mod tests {
 
     #[test]
     fn the_failure_message_names_the_error_the_port_and_the_logs() {
+        let logs = tempfile::tempdir().unwrap();
         let message = backend_failure_message(
             "Address already in use (os error 98)",
             8765,
-            Some(Path::new("/home/user/.local/state/fleetify/logs")),
+            Some(logs.path()),
         );
         assert!(
             message.contains("Address already in use (os error 98)"),
@@ -704,20 +742,86 @@ mod tests {
         );
         assert!(message.contains("8765"), "{message}");
         assert!(
-            message.contains("/home/user/.local/state/fleetify/logs"),
+            message.contains(&format!("The log files are in {}", logs.path().display())),
             "{message}"
         );
     }
 
     #[test]
     fn the_failure_message_without_a_log_folder_still_names_the_error_and_port() {
-        let message = backend_failure_message("loading config: invalid TOML", 8899, None);
-        assert!(
-            message.contains("loading config: invalid TOML"),
-            "{message}"
+        // logging::init records its folder even when creating it failed: a
+        // folder that isn't there is never named.
+        let parent = tempfile::tempdir().unwrap();
+        let never_created = parent.path().join("logs");
+        for logs_dir in [Some(never_created.as_path()), None] {
+            let message = backend_failure_message("loading config: invalid TOML", 8899, logs_dir);
+            assert!(
+                message.contains("loading config: invalid TOML"),
+                "{message}"
+            );
+            assert!(message.contains("8899"), "{message}");
+            assert!(
+                message.contains("Fleetify could not write its log files."),
+                "{message}"
+            );
+            assert!(!message.contains("The log files are in"), "{message}");
+            assert!(!message.contains("None"), "{message}");
+        }
+    }
+
+    // ── reading the backend's start ──
+
+    /// Start reports that change between the startup task's two reads: the
+    /// backend reports its bind, and its task ends, right after the first.
+    struct BindsBetweenTheReads(std::cell::Cell<bool>);
+
+    impl BindsBetweenTheReads {
+        /// True for the first read only.
+        fn first_read(&self) -> bool {
+            !self.0.replace(true)
+        }
+    }
+
+    impl StartReports for BindsBetweenTheReads {
+        fn reporter_gone(&self) -> bool {
+            !self.first_read()
+        }
+
+        fn last_report(&self) -> BackendStart {
+            if self.first_read() {
+                BackendStart::Pending
+            } else {
+                BackendStart::Bound
+            }
+        }
+    }
+
+    #[test]
+    fn a_bind_reported_between_the_two_reads_is_not_a_failed_start() {
+        // Liveness is read first: the reporter was alive then, so the report
+        // read after it, the bind, stands. Read the other way round, the
+        // pending report and the ended task would make a false "can't start".
+        let reports = BindsBetweenTheReads(std::cell::Cell::new(false));
+        assert_eq!(observe_start(&reports), BackendStart::Bound);
+    }
+
+    #[test]
+    fn the_start_is_read_from_the_reports_as_they_stand() {
+        let (tx, rx) = watch::channel(BackendStart::Pending);
+        assert_eq!(observe_start(&rx), BackendStart::Pending);
+        tx.send(BackendStart::Bound).unwrap();
+        drop(tx);
+        assert_eq!(
+            observe_start(&rx),
+            BackendStart::Bound,
+            "a bind outlives its task"
         );
-        assert!(message.contains("8899"), "{message}");
-        assert!(!message.contains("None"), "{message}");
+        let (tx, rx) = watch::channel(BackendStart::Pending);
+        drop(tx);
+        assert!(
+            matches!(observe_start(&rx), BackendStart::Failed(_)),
+            "a task that ended without a report never bound"
+        );
     }
 
     // ── the app page's load ──
