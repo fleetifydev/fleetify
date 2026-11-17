@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { useAppStore } from "@/stores/app-store";
 import { useChatStore } from "@/stores/chat-store";
 import { sweepInactiveSessions, visibleSessionIds } from "../session-eviction";
+import { pinSession } from "../session-pins";
 
 const msg = (id: string) => ({
   id,
@@ -62,5 +63,58 @@ describe("sweepInactiveSessions", () => {
 
     expect(transcript("staff")).toHaveLength(0);
     expect(transcript("agent-1")).toHaveLength(1);
+  });
+});
+
+describe("sweepInactiveSessions — pinned sessions", () => {
+  // Pins are module state: release every one a test takes, even after a
+  // failed assertion, so none leaks into the next test.
+  const held: Array<() => void> = [];
+  const pin = (id: string) => {
+    const release = pinSession(id);
+    held.push(release);
+    return release;
+  };
+  afterEach(() => {
+    for (const release of held.splice(0)) release();
+  });
+
+  it("keeps a pinned session that no chat view shows, alongside the visible one", () => {
+    // Regression: a Workflows run detail went blank about 20s after it opened.
+    // It fetches the run's transcript once, and the sweep emptied it because
+    // only chat views counted as "on screen".
+    pin("run-1");
+    useChatStore.getState().addMessage("staff", msg("m-1"));
+    useChatStore.getState().addMessage("run-1", msg("m-2"));
+    useChatStore.getState().addMessage("agent-1", msg("m-3"));
+
+    sweepInactiveSessions();
+
+    expect(transcript("staff")).toHaveLength(1);   // visible
+    expect(transcript("run-1")).toHaveLength(1);   // pinned
+    expect(transcript("agent-1")).toHaveLength(0); // neither: still reclaimed
+  });
+
+  it("evicts the session on the next sweep once its pin is released", () => {
+    const release = pin("run-1");
+    useChatStore.getState().addMessage("run-1", msg("m-1"));
+    sweepInactiveSessions();
+    expect(transcript("run-1")).toHaveLength(1);
+
+    release();
+    sweepInactiveSessions();
+
+    expect(transcript("run-1")).toHaveLength(0);
+  });
+
+  it("keeps a session pinned twice and released once", () => {
+    const first = pin("run-1");
+    pin("run-1");
+    useChatStore.getState().addMessage("run-1", msg("m-1"));
+
+    first();
+    sweepInactiveSessions();
+
+    expect(transcript("run-1")).toHaveLength(1);
   });
 });

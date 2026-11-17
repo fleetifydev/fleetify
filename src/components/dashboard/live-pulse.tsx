@@ -27,6 +27,7 @@ import {
   ClipboardList, ListTodo, Cpu, DollarSign,
 } from "lucide-react";
 import { useChatStore } from "@/stores/chat-store";
+import { usePinnedSessions } from "@/lib/session-pins";
 import { useShallow } from "zustand/react/shallow";
 import type { Session } from "@/types/session";
 import { GroupLabel } from "./pulse-bits";
@@ -153,6 +154,11 @@ interface Props {
 }
 
 export function LivePulse({ sessions, onJump, cap = 50 }: Props) {
+  // The feed's response and prompt rows come from the messages of every
+  // session in `sessions`, and nothing here reloads one, so keep the
+  // inactive-session sweep off all of them while the feed is mounted.
+  usePinnedSessions(sessions.map(s => s.id));
+
   // ── Narrow selectors split into 3 flat projections ──
   // `useShallow` compares its result with shallow Object.is per key.
   // The earlier "one projection that builds wrapper objects per

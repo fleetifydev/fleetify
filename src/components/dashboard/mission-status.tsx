@@ -18,6 +18,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { useChatStore } from "@/stores/chat-store";
+import { usePinnedSessions } from "@/lib/session-pins";
 import type { Session } from "@/types/session";
 import {
   Sparkline,
@@ -50,6 +51,10 @@ function fmtCostBig(cost: number): string {
 
 export function MissionStatus({ sessions, stats }: Props) {
   const chatSessions = useChatStore(s => s.sessions);
+  // The cost, burn-rate, throughput and sparkline readouts sum the messages of
+  // every session in `sessions`, and nothing here reloads one, so keep the
+  // inactive-session sweep off all of them while the strip is mounted.
+  usePinnedSessions(sessions.map(s => s.id));
 
   // Tick once per second so the agent-hours readout looks alive while
   // anything is streaming. No-op when nothing is live (the effect tears

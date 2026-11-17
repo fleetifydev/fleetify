@@ -1,5 +1,6 @@
 import { useAppStore } from "@/stores/app-store";
 import { useChatStore } from "@/stores/chat-store";
+import { pinnedSessionIds } from "@/lib/session-pins";
 
 type VisibilityState = {
   activeSessionId: string | null;
@@ -22,7 +23,15 @@ export function visibleSessionIds(app: VisibilityState): string[] {
 /** Renderer-memory sweep: drop the re-fetchable transcript of every session
  *  that is neither visible nor streaming. Lossless for a hidden session
  *  (chat-view re-fetches from SQLite when it is opened) — but NOT for a visible
- *  one, because chat-view only re-fetches when the session id changes. */
+ *  one, because chat-view only re-fetches when the session id changes.
+ *
+ *  "Visible" also covers the pinned sessions (session-pins.ts): the ones a
+ *  surface outside chat-view has on screen, such as a Workflows run detail.
+ *  Nothing reloads a transcript for those surfaces, so emptying it would blank
+ *  them. */
 export function sweepInactiveSessions(): void {
-  useChatStore.getState().evictInactive(visibleSessionIds(useAppStore.getState()));
+  useChatStore.getState().evictInactive([
+    ...visibleSessionIds(useAppStore.getState()),
+    ...pinnedSessionIds(),
+  ]);
 }

@@ -65,6 +65,7 @@ import {
   type Schedule, type Provider, type PermissionMode, type Target,
 } from "@/services/routines-runtime";
 import { useChatStore } from "@/stores/chat-store";
+import { usePinnedSession } from "@/lib/session-pins";
 import { apiFetch, fetchMessages } from "@/lib/api";
 import { MarkdownBody, rowSummary } from "@/components/chat/message-content";
 import type { Session } from "@/types/session";
@@ -2499,6 +2500,11 @@ function RunDetailView({ routineId, runId, onBack }: {
   const chatMessages = useChatStore(s =>
     run?.sessionId ? (s.sessions[run.sessionId]?.messages as ChatMessage[] | undefined) : undefined,
   );
+  // The fetch below runs once per session id, so keep the inactive-session
+  // sweep off this transcript while it is on screen. Without the pin it was
+  // emptied ~20 s in: a run's session is not the one a chat view shows, so
+  // the sweep counted it as hidden.
+  usePinnedSession(run?.sessionId);
   const setMessages = useChatStore(s => s.setMessages);
   const ensureSession = useChatStore(s => s.ensureSession);
   const [loading, setLoading] = useState(false);
