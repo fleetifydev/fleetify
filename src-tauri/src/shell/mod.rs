@@ -23,4 +23,5 @@ pub mod pty;
 pub mod routers_link;
 pub mod routing_setup;
 pub mod startup_window;
+pub mod ui_files;
 pub mod voice;

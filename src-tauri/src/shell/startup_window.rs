@@ -10,7 +10,8 @@
 //! app's URL answers, and is shown when the app page has finished loading. If
 //! the app is not ready within [`SLOW_START`], the window is shown with the
 //! placeholder, "Starting Fleetify…", and the app loads as soon as it can. If
-//! the backend can't start at all, an error dialog says why and the app quits.
+//! the backend can't start at all, or a release build has no UI files to
+//! serve (see `shell::ui_files`), an error dialog says why and the app quits.
 //!
 //! It also works out the app's origin ([`app_origin`]) and, when that origin
 //! is remote, the capability that grants it IPC at setup
@@ -31,7 +32,8 @@ use tauri::{Manager, Url, WebviewWindow};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tokio::sync::{watch, Notify};
 
-use crate::shell::backend_ready::BackendStart;
+use crate::shell::backend_ready::{BackendStart, StartFailure};
+use crate::shell::ui_files::UiDirError;
 
 /// Label of the main window.
 pub const MAIN_WINDOW: &str = "main";
@@ -186,9 +188,9 @@ pub fn signal_app_page_loaded(
 /// end.
 pub fn backend_start_seen(reported: &BackendStart, reporter_gone: bool) -> BackendStart {
     match reported {
-        BackendStart::Pending if reporter_gone => {
-            BackendStart::Failed("its startup task stopped before it reported".to_string())
-        }
+        BackendStart::Pending if reporter_gone => BackendStart::Failed(StartFailure::Backend(
+            "its startup task stopped before it reported".to_string(),
+        )),
         other => other.clone(),
     }
 }
@@ -230,13 +232,46 @@ pub const BACKEND_FAILURE_TITLE: &str = "Fleetify can't start";
 /// `shell::logging::logs_dir()`, when that folder exists; otherwise it says
 /// the logs could not be written.
 pub fn backend_failure_message(error: &str, port: u16, logs_dir: Option<&Path>) -> String {
+    let logs = logs_line(logs_dir);
+    format!("Fleetify couldn't start its local server on port {port}:\n\n{error}\n\n{logs}")
+}
+
+/// The text of that dialog when a release build has no UI files to serve
+/// (`missing`, from `shell::ui_files`): reinstall, where it looked for them,
+/// and where the log files are, as [`backend_failure_message`] says it.
+pub fn ui_files_missing_message(missing: &UiDirError, logs_dir: Option<&Path>) -> String {
+    let looked = match missing {
+        UiDirError::NoIndexHtml(dir) => format!("Fleetify looked for them in {}", dir.display()),
+        UiDirError::NoResourceDir(error) => {
+            format!("Fleetify couldn't find its install folder: {error}")
+        }
+    };
+    let logs = logs_line(logs_dir);
+    format!(
+        "Fleetify's interface files are missing. Please reinstall Fleetify.\n\n{looked}\n\n{logs}"
+    )
+}
+
+/// The text of the dialog for a start that failed: the backend's error
+/// ([`backend_failure_message`]), or no UI files to serve
+/// ([`ui_files_missing_message`]).
+pub fn start_failure_message(failure: &StartFailure, port: u16, logs_dir: Option<&Path>) -> String {
+    match failure {
+        StartFailure::Backend(error) => backend_failure_message(error, port, logs_dir),
+        StartFailure::UiFilesMissing(missing) => ui_files_missing_message(missing, logs_dir),
+    }
+}
+
+/// The dialogs' last line: where the log files are (`logs_dir`, from
+/// `shell::logging::logs_dir()`) when that folder exists, otherwise that
+/// they could not be written.
+fn logs_line(logs_dir: Option<&Path>) -> String {
     // logging::init records its folder even when creating it failed: name it
     // only when it is there.
-    let logs = match logs_dir.filter(|dir| dir.is_dir()) {
+    match logs_dir.filter(|dir| dir.is_dir()) {
         Some(dir) => format!("The log files are in {}", dir.display()),
         None => "Fleetify could not write its log files.".to_string(),
-    };
-    format!("Fleetify couldn't start its local server on port {port}:\n\n{error}\n\n{logs}")
+    }
 }
 
 /// What the startup task does after one poll of the app's URL.
@@ -285,8 +320,8 @@ pub fn next_step(
 /// and is shown when the app page has finished loading (`app_page_loaded`,
 /// from [`signal_app_page_loaded`]), or after [`PAGE_LOAD_FALLBACK`]. Past
 /// [`SLOW_START`] it is shown with the placeholder, and the app loads once it
-/// can. If the backend can't start, polling stops and an error dialog says
-/// so; the app quits when it is dismissed.
+/// can. If the backend can't start, or has no UI files to serve, polling
+/// stops and an error dialog says so; the app quits when it is dismissed.
 pub async fn load_app_when_ready(
     window: WebviewWindow,
     app_url: Url,
@@ -315,8 +350,8 @@ pub async fn load_app_when_ready(
                 if let Err(e) = window.hide() {
                     tracing::warn!("hide main window failed: {e}");
                 }
-                if let BackendStart::Failed(error) = &start {
-                    report_backend_failure(&window, error, backend_port);
+                if let BackendStart::Failed(failure) = &start {
+                    report_start_failure(&window, failure, backend_port);
                 }
                 return;
             }
@@ -359,27 +394,32 @@ pub async fn load_app_when_ready(
     reveal(&window, boot_start);
 }
 
-/// Says the backend can't start, then quits: a native error dialog with the
-/// text from [`backend_failure_message`], and the app exits once it is
-/// dismissed. Without the backend the app can't work, and a placeholder that
-/// never ends would hide why.
+/// Says the backend can't start, or that there are no UI files to serve,
+/// then quits: a native error dialog with the text from
+/// [`start_failure_message`], and the app exits once it is dismissed.
+/// Without the backend the app can't work, and a placeholder that never ends
+/// would hide why.
 ///
 /// The quit is a handled one, so it marks the shutdown clean: exiting skips
 /// the main window's `Destroyed` event, which otherwise does, and the next
 /// launch would report a crash. Tauri 2.11.2's wry runtime ends the event
 /// loop with `ControlFlow::Exit` whatever code `exit` gets, so the process
 /// status is 0 even though 1 is asked for.
-fn report_backend_failure(window: &WebviewWindow, error: &str, port: u16) {
+fn report_start_failure(window: &WebviewWindow, failure: &StartFailure, port: u16) {
+    let what = match failure {
+        StartFailure::Backend(_) => "the embedded backend can't start",
+        StartFailure::UiFilesMissing(_) => "the UI files are missing",
+    };
     tracing::error!(
         target: "fleetify::startup",
         port,
-        "the embedded backend can't start; showing the error, then quitting"
+        "{what}; showing the error, then quitting"
     );
     let app = window.app_handle().clone();
     let on_dismiss = app.clone();
     app.dialog()
-        .message(backend_failure_message(
-            error,
+        .message(start_failure_message(
+            failure,
             port,
             crate::shell::logging::logs_dir(),
         ))
@@ -693,7 +733,9 @@ mod tests {
 
     #[test]
     fn a_backend_that_fails_to_start_ends_the_wait() {
-        let failed = BackendStart::Failed("Address already in use (os error 98)".into());
+        let failed = BackendStart::Failed(StartFailure::Backend(
+            "Address already in use (os error 98)".into(),
+        ));
         for (answered, waited, placeholder_shown) in [
             (false, Duration::ZERO, false),
             (true, Duration::from_millis(300), false),
@@ -708,10 +750,38 @@ mod tests {
         }
     }
 
+    /// The report when a release build has no UI files to serve.
+    fn ui_files_missing() -> BackendStart {
+        BackendStart::Failed(StartFailure::UiFilesMissing(UiDirError::NoIndexHtml(
+            "/usr/lib/Fleetify/dist".into(),
+        )))
+    }
+
+    #[test]
+    fn missing_ui_files_end_the_wait_like_a_backend_that_fails() {
+        // The same path: the error dialog, then the app quits. Nothing is
+        // loaded, and a report outlives the task that sent it.
+        let missing = ui_files_missing();
+        for (answered, waited, placeholder_shown) in [
+            (false, Duration::ZERO, false),
+            (false, SLOW_START, false),
+            (false, SLOW_START * 40, true),
+        ] {
+            assert_eq!(
+                next_step(&missing, answered, waited, placeholder_shown),
+                Step::ReportFailure,
+                "waited {waited:?}, placeholder {placeholder_shown}"
+            );
+        }
+        assert_eq!(backend_start_seen(&missing, true), missing);
+    }
+
     #[test]
     fn a_backend_task_that_ends_without_reporting_counts_as_failed() {
         // Its task panicked: the sender went away with the start still pending.
-        let BackendStart::Failed(error) = backend_start_seen(&BackendStart::Pending, true) else {
+        let BackendStart::Failed(StartFailure::Backend(error)) =
+            backend_start_seen(&BackendStart::Pending, true)
+        else {
             panic!("a start nobody can report any more is a failed one");
         };
         assert!(!error.is_empty());
@@ -724,7 +794,7 @@ mod tests {
             backend_start_seen(&BackendStart::Bound, true),
             BackendStart::Bound
         );
-        let failed = BackendStart::Failed("database is locked".into());
+        let failed = BackendStart::Failed(StartFailure::Backend("database is locked".into()));
         assert_eq!(backend_start_seen(&failed, true), failed);
     }
 
@@ -767,6 +837,75 @@ mod tests {
             assert!(!message.contains("The log files are in"), "{message}");
             assert!(!message.contains("None"), "{message}");
         }
+    }
+
+    /// The first line of the dialog when the UI files are missing.
+    const REINSTALL: &str = "Fleetify's interface files are missing. Please reinstall Fleetify.";
+
+    #[test]
+    fn the_missing_ui_files_message_says_to_reinstall_and_names_the_folder_and_the_logs() {
+        let logs = tempfile::tempdir().unwrap();
+        let dist = Path::new("/usr/lib/Fleetify/dist");
+        let message = ui_files_missing_message(
+            &UiDirError::NoIndexHtml(dist.to_path_buf()),
+            Some(logs.path()),
+        );
+        assert!(message.starts_with(REINSTALL), "{message}");
+        assert!(
+            message.contains(&format!("Fleetify looked for them in {}", dist.display())),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!("The log files are in {}", logs.path().display())),
+            "{message}"
+        );
+        // Not the backend's message: no server, no port.
+        assert!(!message.contains("local server"), "{message}");
+    }
+
+    #[test]
+    fn the_missing_ui_files_message_without_a_resource_folder_or_a_log_folder() {
+        let parent = tempfile::tempdir().unwrap();
+        let never_created = parent.path().join("logs");
+        for logs_dir in [Some(never_created.as_path()), None] {
+            let message = ui_files_missing_message(
+                &UiDirError::NoResourceDir("unknown path".into()),
+                logs_dir,
+            );
+            assert!(message.starts_with(REINSTALL), "{message}");
+            assert!(
+                message.contains("Fleetify couldn't find its install folder: unknown path"),
+                "{message}"
+            );
+            assert!(
+                message.contains("Fleetify could not write its log files."),
+                "{message}"
+            );
+            assert!(!message.contains("The log files are in"), "{message}");
+        }
+    }
+
+    #[test]
+    fn each_start_failure_gets_its_own_message() {
+        let logs = tempfile::tempdir().unwrap();
+        let error = "Address already in use (os error 98)";
+        assert_eq!(
+            start_failure_message(
+                &StartFailure::Backend(error.into()),
+                8765,
+                Some(logs.path())
+            ),
+            backend_failure_message(error, 8765, Some(logs.path()))
+        );
+        let missing = UiDirError::NoIndexHtml("/usr/lib/Fleetify/dist".into());
+        assert_eq!(
+            start_failure_message(
+                &StartFailure::UiFilesMissing(missing.clone()),
+                8765,
+                Some(logs.path())
+            ),
+            ui_files_missing_message(&missing, Some(logs.path()))
+        );
     }
 
     // ── reading the backend's start ──

@@ -10,7 +10,6 @@ mod shell;
 mod app_commands;
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
 
 use tauri::webview::WebviewWindowBuilder;
 #[cfg(target_os = "macos")]
@@ -32,18 +31,6 @@ fn vite_port() -> u16 {
             3000
         }),
         Err(_) => 3000,
-    }
-}
-
-fn static_dir() -> Option<PathBuf> {
-    if cfg!(debug_assertions) {
-        None
-    } else {
-        let beside_exe = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("dist")))
-            .filter(|p| p.exists());
-        Some(beside_exe.unwrap_or_else(|| PathBuf::from("dist")))
     }
 }
 
@@ -454,9 +441,31 @@ pub fn run() {
             // connected. Fresh installs hand over an empty setup and
             // the backend boots with builtin + DirectGateway only.
             let addr: SocketAddr = format!("127.0.0.1:{backend}").parse().unwrap();
-            let sd = static_dir();
+            // The UI files it serves: in release, `dist` in the install's
+            // resource folder and nowhere else (shell::ui_files); in debug
+            // none, as Vite serves the UI. With no UI files to serve, the
+            // backend never starts: its task reports that as a failed
+            // start, so the window shows the error dialog and the app quits
+            // (shell::startup_window).
+            let ui_files =
+                shell::ui_files::served_ui_dir(release, || app.path().resource_dir());
             let app_data_dir = app.path().app_data_dir().ok();
             tauri::async_runtime::spawn(async move {
+                let sd = match ui_files {
+                    Ok(sd) => sd,
+                    Err(missing) => {
+                        tracing::error!(
+                            "the UI files are missing, so the backend won't start: {missing}"
+                        );
+                        let _ = backend_start_tx.send(shell::backend_ready::BackendStart::Failed(
+                            shell::backend_ready::StartFailure::UiFilesMissing(missing),
+                        ));
+                        return;
+                    }
+                };
+                if let Some(dir) = &sd {
+                    tracing::info!("serving the UI files from {}", dir.display());
+                }
                 let routing_setup = match app_data_dir {
                     Some(dir) => {
                         let uid = shell::auth::get_user_id().await;
@@ -485,7 +494,7 @@ pub fn run() {
                     Err(e) => {
                         tracing::error!("backend failed to start: {e:#}");
                         let _ = backend_start_tx.send(shell::backend_ready::BackendStart::Failed(
-                            format!("{e:#}"),
+                            shell::backend_ready::StartFailure::Backend(format!("{e:#}")),
                         ));
                     }
                 }
@@ -602,8 +611,9 @@ pub fn run() {
             // 404 the renderer can surface), then load the app in the window
             // and show + focus it once the app page has loaded, so it
             // doesn't flash white. Past 15s the window shows the placeholder
-            // and the wait goes on with no cap. A backend that can't start
-            // ends it: an error dialog, then the app quits.
+            // and the wait goes on with no cap. A backend that can't start,
+            // or has no UI files to serve, ends it: an error dialog, then
+            // the app quits.
             tauri::async_runtime::spawn(shell::startup_window::load_app_when_ready(
                 main_window,
                 app_url,

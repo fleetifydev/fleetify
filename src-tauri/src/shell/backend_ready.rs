@@ -13,6 +13,8 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 
+use crate::shell::ui_files::UiDirError;
+
 /// How long one poll may take. The backend answers its health route at
 /// once; this only bounds a port that accepts and never answers.
 const POLL_TIMEOUT: Duration = Duration::from_millis(500);
@@ -33,9 +35,19 @@ pub enum BackendStart {
     Pending,
     /// It returned `Ok`: the backend listens on its port.
     Bound,
-    /// It returned `Err` (the error and its causes), or its task ended
-    /// without a report.
-    Failed(String),
+    /// It didn't start, and won't: see [`StartFailure`].
+    Failed(StartFailure),
+}
+
+/// Why the embedded backend didn't start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartFailure {
+    /// `serve_with_routing_setup` returned `Err` (the error and its causes),
+    /// or its task ended without a report.
+    Backend(String),
+    /// A release build found no UI files to serve, so the backend was never
+    /// started: it would have served a blank window (see `shell::ui_files`).
+    UiFilesMissing(UiDirError),
 }
 
 /// The embedded backend's port when `FLEETIFY_BACKEND_PORT` is unset or not
@@ -289,9 +301,20 @@ mod tests {
         // Before the bind, or after a failed one, whatever answers on the
         // port is something else (AnkiConnect listens on 127.0.0.1:8765).
         assert_eq!(secrets_port(&BackendStart::Pending, 8765), None);
-        let failed = BackendStart::Failed("Address already in use (os error 98)".into());
+        let failed = BackendStart::Failed(StartFailure::Backend(
+            "Address already in use (os error 98)".into(),
+        ));
         assert_eq!(secrets_port(&failed, 8765), None);
+        assert_eq!(secrets_port(&ui_files_missing(), 8765), None);
         assert_eq!(secrets_port(&BackendStart::Bound, 8765), Some(8765));
+    }
+
+    /// The report when a release build has no UI files: the backend is
+    /// never started.
+    fn ui_files_missing() -> BackendStart {
+        BackendStart::Failed(StartFailure::UiFilesMissing(UiDirError::NoIndexHtml(
+            "/usr/lib/Fleetify/dist".into(),
+        )))
     }
 
     #[test]
@@ -304,8 +327,10 @@ mod tests {
         assert_eq!(backend.bound_port(), Some(8899));
 
         let (tx, backend) = tracked(8899, BackendStart::Pending);
-        tx.send(BackendStart::Failed("database is locked".into()))
-            .unwrap();
+        tx.send(BackendStart::Failed(StartFailure::Backend(
+            "database is locked".into(),
+        )))
+        .unwrap();
         assert_eq!(backend.bound_port(), None, "failed: nothing is sent");
         drop(tx);
         assert_eq!(backend.bound_port(), None);
@@ -331,10 +356,20 @@ mod tests {
     async fn the_warm_up_is_skipped_when_the_backend_fails_to_start() {
         let (tx, rx) = watch::channel(BackendStart::Pending);
         let wait = tokio::spawn(wait_until_bound(rx));
-        tx.send(BackendStart::Failed(
+        tx.send(BackendStart::Failed(StartFailure::Backend(
             "Address already in use (os error 98)".into(),
-        ))
+        )))
         .unwrap();
+        assert!(!wait.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn the_warm_up_is_skipped_when_the_ui_files_are_missing() {
+        // The backend's task reports it and ends without starting it.
+        let (tx, rx) = watch::channel(BackendStart::Pending);
+        let wait = tokio::spawn(wait_until_bound(rx));
+        tx.send(ui_files_missing()).unwrap();
+        drop(tx);
         assert!(!wait.await.unwrap());
     }
 
