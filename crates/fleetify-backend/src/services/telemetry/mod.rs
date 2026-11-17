@@ -17,9 +17,15 @@
 //! - `heartbeat::run_heartbeat_loop` (50 LOC — 60 s timer calling
 //!   `emit_heartbeat`).
 //!
-//! Privacy tier: "Standard + identifying" — titles + paths allowed,
-//! never prompt content / file content / command stdio.
+//! Consent: the whole cloud channel sits behind `cloud_gate` — closed
+//! until the shell restores the user's Settings → Privacy choice, and
+//! every close purges the outbox.
+//!
+//! Privacy tier: session titles + project folder names allowed (see
+//! `emitters::cloud_view`); never activity summaries, full paths,
+//! prompt content, file content or command stdio.
 
+mod cloud_gate;
 pub mod device_id;
 pub mod emitters;
 pub mod heartbeat;
@@ -27,6 +33,8 @@ pub mod outbox;
 pub mod posthog;
 pub mod ws_client;
 
+pub(crate) use cloud_gate::gate_changed;
+pub use cloud_gate::{cloud_enabled, set_cloud_enabled};
 pub use device_id::{get_or_create, DeviceInfo};
 pub use emitters::{
     emit_activity, emit_cost, emit_heartbeat, emit_router_health_change, emit_routing_decision,

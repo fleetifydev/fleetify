@@ -10,7 +10,12 @@
 //!   client → server: `{ "v":1, "type":"event", "id":"<uuid>", "payload":{…} }`
 //!   server → client: `{ "v":1, "type":"ack",   "id":"<uuid>" }`
 //!
+//! Consent: nothing here runs while cloud sync is off (`cloud_gate`). The
+//! loop idles without a bearer, a ticket or a socket, and a connected
+//! socket is closed as soon as the gate closes.
+//!
 //! Failure modes:
+//! - cloud sync off             → idle until it is turned on; no requests
 //! - bearer not signed in       → long pause; no requests
 //! - bearer fetch / ticket fail → exponential backoff
 //! - WS upgrade 401             → backoff + refresh
@@ -24,12 +29,14 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::Message;
 
-use super::{device_id, emitters, outbox};
+use super::{cloud_enabled, device_id, emitters, gate_changed, outbox};
 
 pub const WIRE_VERSION: u32 = 1;
 const BACKOFF_INITIAL_S: u64 = 1;
 const BACKOFF_MAX_S: u64 = 30;
 const MAX_EVENTS_PER_FLUSH: i64 = 200;
+/// How long a close frame may take when sync is turned off mid-connection.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The realtime endpoints live on the identity provider's origin:
 /// production in release builds, `FLEETIFY_ISSUER` (default: the local
@@ -64,16 +71,18 @@ pub type BearerSource = Arc<
         + Sync,
 >;
 
-/// Long-running task. Connects to the realtime endpoint, replays the
-/// outbox, listens for acks, reconnects with exponential backoff.
+/// Long-running task. While cloud sync is on: connects to the realtime
+/// endpoint, replays the outbox, listens for acks, reconnects with
+/// exponential backoff. While it is off: waits for it to be turned on.
 /// Never returns (cancellation expected on shutdown).
 pub async fn run_ws_client_loop(bearer_source: BearerSource) {
     let mut backoff_secs = BACKOFF_INITIAL_S;
     loop {
+        wait_until_cloud_enabled().await;
         match one_connection_attempt(&bearer_source).await {
             Ok(_) => {
-                // Clean disconnect (e.g. server closed). Reset backoff so
-                // we reconnect quickly.
+                // Clean disconnect (server closed, or sync turned off).
+                // Reset backoff so we reconnect quickly.
                 backoff_secs = BACKOFF_INITIAL_S;
             }
             Err(e) => {
@@ -85,6 +94,20 @@ pub async fn run_ws_client_loop(bearer_source: BearerSource) {
                 backoff_secs = (backoff_secs * 2).min(BACKOFF_MAX_S);
             }
         }
+    }
+}
+
+/// Returns once cloud sync is on. The `notified()` future is created
+/// before the flag is checked: it receives `notify_waiters()` from the
+/// moment it exists, so a gate change landing between the check and the
+/// await still wakes it.
+async fn wait_until_cloud_enabled() {
+    loop {
+        let changed = gate_changed().notified();
+        if cloud_enabled() {
+            return;
+        }
+        changed.await;
     }
 }
 
@@ -102,6 +125,10 @@ async fn one_connection_attempt(bearer_source: &BearerSource) -> Result<()> {
         target: "fleetify.telemetry.ws",
         "→ bearer acquired (len={}, prefix={})", bearer.len(), bearer_preview
     );
+    // Sync may have been turned off while the bearer was being fetched.
+    if !cloud_enabled() {
+        return Ok(());
+    }
 
     // 1. Fetch a ticket.
     let device = device_id::get_or_create();
@@ -116,6 +143,9 @@ async fn one_connection_attempt(bearer_source: &BearerSource) -> Result<()> {
         "← ticket acquired (len={}, prefix={})",
         ticket.len(), redact_token(&ticket)
     );
+    if !cloud_enabled() {
+        return Ok(());
+    }
 
     // 2. Open the WS. Ticket is sent as the SECOND value in the
     //    `Sec-WebSocket-Protocol` subprotocol list (cloud's auth
@@ -170,8 +200,22 @@ async fn one_connection_attempt(bearer_source: &BearerSource) -> Result<()> {
     let ping_interval = Duration::from_secs(30);
 
     loop {
+        // Created before the check, like in `wait_until_cloud_enabled`: a
+        // close landing after the check still wakes the select below.
+        let gate = gate_changed().notified();
+        tokio::pin!(gate);
+        if !cloud_enabled() {
+            tracing::info!(
+                target: "fleetify.telemetry.ws",
+                "cloud sync turned off; closing the socket"
+            );
+            let _ = tokio::time::timeout(CLOSE_TIMEOUT, write.close()).await;
+            return Ok(());
+        }
         tokio::select! {
             biased;
+            // Gate change: the check at the top of the loop acts on it.
+            _ = &mut gate => {}
             // Outbox drainer
             _ = notify.notified() => {
                 let pending = outbox::peek_pending(MAX_EVENTS_PER_FLUSH).await?;
@@ -180,13 +224,12 @@ async fn one_connection_attempt(bearer_source: &BearerSource) -> Result<()> {
                 }
                 tracing::info!(target: "fleetify.telemetry.ws", "→ sending {} events", pending.len());
                 for (event_id, payload) in pending {
-                    let envelope = json!({
-                        "v": WIRE_VERSION,
-                        "type": "event",
-                        "id": event_id,
-                        "payload": payload,
-                    });
-                    let frame = serde_json::to_string(&envelope)?;
+                    // Turned off mid-batch: stop here. The purge has
+                    // dropped the rest; the loop top closes the socket.
+                    if !cloud_enabled() {
+                        break;
+                    }
+                    let frame = event_frame(&event_id, &payload)?;
                     tracing::info!(
                         target: "fleetify.telemetry.ws",
                         "→ send event id={} frame={}",
@@ -243,6 +286,20 @@ async fn one_connection_attempt(bearer_source: &BearerSource) -> Result<()> {
             }
         }
     }
+}
+
+/// The wire frame for one outbox row. Sends the row's cloud view: new rows
+/// are minimised when queued (and the view leaves them unchanged), but rows
+/// queued by older builds may still carry activity summaries and full
+/// project paths.
+fn event_frame(event_id: &str, payload: &Value) -> Result<String> {
+    let envelope = json!({
+        "v": WIRE_VERSION,
+        "type": "event",
+        "id": event_id,
+        "payload": emitters::cloud_view(payload),
+    });
+    Ok(serde_json::to_string(&envelope)?)
 }
 
 async fn handle_inbound(text: &str) {
@@ -420,6 +477,91 @@ fn urlencoding_minimal(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::telemetry::cloud_gate::test_support::GateGuard;
+    use crate::services::telemetry::set_cloud_enabled;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn ws_loop_stays_idle_while_the_gate_is_closed() {
+        let _g = outbox::tests::TEST_LOCK.lock().await;
+        let _gate = GateGuard::new();
+        set_cloud_enabled(false).await;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let source: BearerSource = Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { None })
+        });
+
+        let run =
+            tokio::time::timeout(Duration::from_millis(300), run_ws_client_loop(source)).await;
+        assert!(
+            run.is_err(),
+            "the loop never returns; the timeout must fire"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "no bearer may be fetched while cloud sync is off"
+        );
+    }
+
+    #[tokio::test]
+    async fn ws_loop_wakes_up_when_the_gate_opens() {
+        let _g = outbox::tests::TEST_LOCK.lock().await;
+        let _gate = GateGuard::new();
+        set_cloud_enabled(false).await;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        // Not signed in: the loop then pauses for BACKOFF_MAX_S, so it asks once.
+        let source: BearerSource = Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { None })
+        });
+        let task = tokio::spawn(run_ws_client_loop(source));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        set_cloud_enabled(true).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while calls.load(Ordering::SeqCst) == 0 && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        task.abort();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "opening the gate must wake the idle loop"
+        );
+    }
+
+    #[test]
+    fn event_frames_send_only_the_cloud_view() {
+        // A row an older build queued: it still has the summary and the full path.
+        let frame = event_frame(
+            "evt-1",
+            &json!({
+                "kind": "activity",
+                "local_session_id": "s1",
+                "activity_kind": "command",
+                "activity_summary": "export TOKEN=x",
+                "project_path": "/home/u/work/fleetify",
+            }),
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&frame).unwrap();
+        assert_eq!(v["v"], WIRE_VERSION);
+        assert_eq!(v["type"], "event");
+        assert_eq!(v["id"], "evt-1");
+        assert_eq!(v["payload"]["activity_kind"], "command");
+        assert!(
+            v["payload"].get("activity_summary").is_none(),
+            "summary on the wire: {frame}"
+        );
+        assert_eq!(v["payload"]["project_path"], "fleetify");
+    }
 
     #[test]
     fn ws_url_translates_http_to_ws_and_https_to_wss() {

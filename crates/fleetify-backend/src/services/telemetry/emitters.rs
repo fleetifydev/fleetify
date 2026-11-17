@@ -4,13 +4,14 @@
 //! Each `emit_*` function:
 //!   1. Truncates user-supplied strings to wire-safe lengths.
 //!   2. Generates a client-assigned UUID v4 to identify the event.
-//!   3. Persists the event via `outbox::enqueue`.
-//!   4. Pulses `event_available` so the (eventual) WS client flushes
-//!      the new event immediately instead of waiting on its poll
-//!      cadence.
+//!   3. While cloud sync is on (`cloud_gate`), persists the event's
+//!      `cloud_view` via `outbox::enqueue`.
+//!   4. Pulses `event_available` so the WS client flushes the new event
+//!      immediately instead of waiting on its poll cadence.
 //!
-//! Privacy tier: titles + paths allowed, never prompt / file content /
-//! command stdio.
+//! Privacy tier for the cloud: session titles and project folder names
+//! allowed; never activity summaries, full paths, prompt / file content
+//! or command stdio.
 
 use std::sync::OnceLock;
 
@@ -53,6 +54,35 @@ fn iso_utc(dt: DateTime<Utc>) -> String {
     dt.to_rfc3339()
 }
 
+/// The copy of a payload the Fleetify cloud gets. Drops
+/// `activity_summary` (agent shell commands, file paths, URLs, search
+/// queries, sub-agent prompts, todo text), which the dashboard never
+/// shows. Cuts `project_path` to its last component: the full path
+/// carries the OS user name, and the dashboard shows only a short label.
+/// A path with no component left (empty, `null`, not a string) becomes
+/// `null`; a payload without the key stays without it. Every other key is
+/// unchanged.
+pub(crate) fn cloud_view(payload: &Value) -> Value {
+    let mut view = payload.clone();
+    if let Some(fields) = view.as_object_mut() {
+        fields.remove("activity_summary");
+        if let Some(path) = fields.get_mut("project_path") {
+            *path = project_folder(path.as_str()).map_or(Value::Null, Value::from);
+        }
+    }
+    view
+}
+
+/// Last component of a path, split on `/` and `\` alike, trailing
+/// separators ignored. `None` when nothing is left.
+fn project_folder(path: Option<&str>) -> Option<&str> {
+    path?
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|folder| !folder.is_empty())
+}
+
 async fn enqueue_payload(payload: Value) -> Result<()> {
     // No-auth dev mode: never enqueue. The WS client and heartbeat loop
     // are also skipped at startup, so without this guard the outbox
@@ -60,11 +90,29 @@ async fn enqueue_payload(payload: Value) -> Result<()> {
     if crate::auth::is_no_auth() {
         return Ok(());
     }
-    let event_id = uuid::Uuid::new_v4().to_string();
-    outbox::enqueue(&event_id, &payload).await?;
-    // Fan out to the PostHog sink. No-op when the runtime gate is
-    // closed or POSTHOG_API_KEY was unset at build time.
+    let cloud = if super::cloud_enabled() {
+        enqueue_for_cloud(&payload).await
+    } else {
+        Ok(())
+    };
+    // Fan out to the PostHog sink whatever the cloud gate says: it has its
+    // own consent gate, and its mapper hashes the full project path and
+    // drops summaries, so it gets the original payload. No-op when its
+    // gate is closed or POSTHOG_API_KEY is unset.
     super::posthog::enqueue_if_enabled(&payload).await;
+    cloud
+}
+
+async fn enqueue_for_cloud(payload: &Value) -> Result<()> {
+    let event_id = uuid::Uuid::new_v4().to_string();
+    outbox::enqueue(&event_id, &cloud_view(payload)).await?;
+    if !super::cloud_enabled() {
+        // Sync was turned off while this row was being written, and the
+        // purge may have run before it landed. Drop it so nothing stays
+        // queued.
+        outbox::mark_acked(&event_id).await?;
+        return Ok(());
+    }
     tracing::info!(
         target: "fleetify.telemetry.emit",
         "telemetry: enqueued kind={} id={} session={}",
@@ -561,19 +609,139 @@ mod tests {
 }
 
 #[cfg(test)]
+mod cloud_sync_tests {
+    use super::*;
+    use crate::services::telemetry::cloud_gate::test_support::GateGuard;
+    use crate::services::telemetry::set_cloud_enabled;
+
+    async fn pending_for(session_id: &str) -> Vec<Value> {
+        outbox::peek_pending(1_000)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(_, p)| p)
+            .filter(|p| p["local_session_id"] == session_id)
+            .collect()
+    }
+
+    #[test]
+    fn cloud_view_drops_activity_summary_and_keeps_only_the_project_folder() {
+        let activity = json!({
+            "kind": "activity",
+            "activity_kind": "bash",
+            "activity_summary": "export TOKEN=x",
+        });
+        let v = cloud_view(&activity);
+        assert!(v.get("activity_summary").is_none(), "summary sent: {v}");
+        assert_eq!(v["activity_kind"], "bash");
+        assert_eq!(v["kind"], "activity");
+
+        let folder =
+            |path: Value| cloud_view(&json!({ "project_path": path }))["project_path"].clone();
+        assert_eq!(folder(json!("/home/u/work/fleetify")), json!("fleetify"));
+        assert_eq!(folder(json!("/home/u/work/fleetify/")), json!("fleetify"));
+        assert_eq!(folder(json!("C:\\Users\\u\\proj")), json!("proj"));
+        assert_eq!(folder(json!("")), Value::Null);
+        assert_eq!(folder(Value::Null), Value::Null);
+
+        let start = json!({
+            "kind": "session_start",
+            "local_session_id": "s1",
+            "tool": "claude-code",
+            "model": "claude-sonnet-4-6",
+            "status": "running",
+            "session_title": "Fix the flaky build",
+            "project_path": "/home/u/work/fleetify",
+            "occurred_at": "2026-11-17T10:00:00+00:00",
+        });
+        let v = cloud_view(&start);
+        for key in [
+            "kind",
+            "local_session_id",
+            "tool",
+            "model",
+            "status",
+            "session_title",
+            "occurred_at",
+        ] {
+            assert_eq!(v[key], start[key], "{key} changed");
+        }
+        assert_eq!(
+            v.as_object().unwrap().len(),
+            start.as_object().unwrap().len(),
+            "keys added or lost: {v}"
+        );
+    }
+
+    #[tokio::test]
+    async fn enqueue_skips_the_cloud_outbox_while_the_gate_is_closed() {
+        let _g = outbox::tests::TEST_LOCK.lock().await;
+        outbox::tests::ensure_inited().await;
+        let _gate = GateGuard::new();
+
+        set_cloud_enabled(false).await;
+        let before = outbox::count().await.unwrap();
+        emit_status_change("s-gate-closed", "running", Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(
+            outbox::count().await.unwrap(),
+            before,
+            "a closed gate must not queue cloud events"
+        );
+
+        set_cloud_enabled(true).await;
+        emit_status_change("s-gate-open", "running", Utc::now())
+            .await
+            .unwrap();
+        // Count this test's row rather than the whole table: other modules'
+        // tests may emit while the gate is open here.
+        assert_eq!(
+            pending_for("s-gate-open").await.len(),
+            1,
+            "an open gate queues the event once"
+        );
+        assert!(outbox::count().await.unwrap() > before);
+    }
+
+    #[tokio::test]
+    async fn cloud_outbox_rows_never_contain_activity_summaries() {
+        let _g = outbox::tests::TEST_LOCK.lock().await;
+        outbox::tests::ensure_inited().await;
+        let _gate = GateGuard::new();
+
+        set_cloud_enabled(true).await;
+        emit_activity("s-summary", "command", Some("rm -rf secret"), Utc::now())
+            .await
+            .unwrap();
+
+        let rows = pending_for("s-summary").await;
+        assert_eq!(rows.len(), 1, "the activity event was queued");
+        assert_eq!(rows[0]["activity_kind"], "command");
+        assert!(
+            rows[0].get("activity_summary").is_none(),
+            "summary queued for the cloud: {}",
+            rows[0]
+        );
+    }
+}
+
+#[cfg(test)]
 mod routing_emitter_tests {
     use super::*;
+    use crate::services::telemetry::cloud_gate::test_support::GateGuard;
+    use crate::services::telemetry::set_cloud_enabled;
     use chrono::TimeZone;
-    use tokio::sync::Mutex;
 
     fn ts() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 5, 22, 12, 0, 0).unwrap()
     }
 
-    // Same rationale as `outbox::tests::TEST_LOCK` — these tests share a
-    // process-wide POOL OnceLock; serialise them through a tokio Mutex so
-    // a `reset()` in one test doesn't race another's assertions.
-    static TEST_LOCK: Mutex<()> = Mutex::const_new(());
+    // These tests share the process-wide POOL OnceLock and the cloud-sync
+    // gate with the outbox and gate tests, so they take the same lock
+    // (`outbox::tests::TEST_LOCK`): a `reset()` or a gate flip in one test
+    // must not race another's assertions.
+    use super::outbox::tests::TEST_LOCK;
 
     async fn ensure_outbox_inited() {
         let dir = tempfile::tempdir().unwrap();
@@ -743,6 +911,9 @@ mod routing_emitter_tests {
     async fn cost_with_decision_id_does_not_panic() {
         let _g = TEST_LOCK.lock().await;
         ensure_outbox_inited().await;
+        // Open the cloud gate so the event still reaches the outbox write.
+        let _gate = GateGuard::new();
+        set_cloud_enabled(true).await;
         let r = emit_cost(
             "s1",
             "claude-sonnet-4-6",
@@ -762,6 +933,9 @@ mod routing_emitter_tests {
     async fn cost_without_decision_id_does_not_panic() {
         let _g = TEST_LOCK.lock().await;
         ensure_outbox_inited().await;
+        // Open the cloud gate so the event still reaches the outbox write.
+        let _gate = GateGuard::new();
+        set_cloud_enabled(true).await;
         let r = emit_cost(
             "s1",
             "claude-sonnet-4-6",

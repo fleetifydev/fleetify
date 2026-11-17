@@ -154,12 +154,13 @@ interface Window {
     getConfig: () => Promise<FleetConfig | null>;
     setConfig: (config: FleetConfig) => Promise<boolean>;
     /** Read backend-owned telemetry config: stable per-machine
-     *  distinct_id (= device.json device_id) and persisted PostHog
-     *  opt-in flag. Called once at boot to bootstrap posthog-js with
-     *  the same id the Rust sink uses. */
+     *  distinct_id (= device.json device_id), the persisted PostHog
+     *  opt-in flag and whether Fleetify cloud sync is on. Called once at
+     *  boot to bootstrap posthog-js with the same id the Rust sink uses. */
     telemetryGetConfig?: () => Promise<{
       distinct_id: string;
       posthog_enabled: boolean;
+      cloud_enabled: boolean;
     }>;
     /** Flip the persisted PostHog opt-in AND the backend's live
      *  runtime gate. Used by the onboarding consent step and the
@@ -167,6 +168,9 @@ interface Window {
     telemetrySetPosthogEnabled?: (
       enabled: boolean
     ) => Promise<{ ok: boolean }>;
+    /** Flip the persisted Fleetify cloud sync switch AND the backend's
+     *  live gate. Turning it off purges anything still queued. */
+    telemetrySetCloudEnabled?: (enabled: boolean) => Promise<unknown>;
     openFolderDialog: () => Promise<string | null>;
     setWindowSize: (
       width: number,

@@ -164,22 +164,53 @@ pub fn git_attribution_from(cfg: &Value) -> bool {
         .unwrap_or(true)
 }
 
-/// PostHog product-analytics opt-in. Default `posthog_enabled` is `false` —
+/// The two telemetry consents, at `fleet.config.json::telemetry` (parallel
+/// to `routing` / `providers`).
+///
+/// PostHog product analytics: default `posthog_enabled` is `false` —
 /// flipped only by explicit user consent in the onboarding step or in
 /// Settings → Privacy. `posthog_enabled_at` records the first opt-in
 /// timestamp (Unix ms) so funnels can distinguish fresh consenters from
 /// users who've been enabled for ages.
 ///
-/// Lives at `fleet.config.json::telemetry` (parallel to `routing` /
-/// `providers`). The Fleetify cloud telemetry path is independent and
-/// remains gated by `FLEETIFY_NOAUTH` + the existing privacy-card
-/// `telemetryEnabled` flag; this struct only controls the PostHog sink.
+/// Fleetify cloud sync (the fleetify.dev dashboard): `cloud_sync_enabled`
+/// is the saved switch — `None` until the user flips it; read it through
+/// [`cloud_sync_from`], which also covers the legacy flag and the default.
+/// `cloud_sync_enabled_at` records the first opt-in (Unix ms).
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct TelemetryConfig {
     #[serde(default)]
     pub posthog_enabled: bool,
     #[serde(default)]
     pub posthog_enabled_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_sync_enabled: Option<bool>,
+    #[serde(default)]
+    pub cloud_sync_enabled_at: Option<i64>,
+}
+
+/// Whether Fleetify cloud sync is on for a user who never flipped the
+/// switch. The owner's decision; nothing else may hard-code it.
+pub const CLOUD_SYNC_DEFAULT: bool = false;
+
+/// Whether Fleetify cloud sync is on. In order:
+/// 1. `telemetry.cloud_sync_enabled`, when it is a bool;
+/// 2. `false` when the legacy top-level `telemetryEnabled` is exactly
+///    `false` — an explicit opt-out from the old switch still counts (its
+///    `true` does not: that switch was never read and defaulted to on);
+/// 3. [`CLOUD_SYNC_DEFAULT`].
+pub fn cloud_sync_from(cfg: &Value) -> bool {
+    if let Some(on) = cfg
+        .get("telemetry")
+        .and_then(|t| t.get("cloud_sync_enabled"))
+        .and_then(Value::as_bool)
+    {
+        return on;
+    }
+    if cfg.get("telemetryEnabled").and_then(Value::as_bool) == Some(false) {
+        return false;
+    }
+    CLOUD_SYNC_DEFAULT
 }
 
 pub fn telemetry_from(cfg: &Value) -> TelemetryConfig {
@@ -337,6 +368,7 @@ mod tests {
         let t = TelemetryConfig {
             posthog_enabled: true,
             posthog_enabled_at: Some(1_700_000_000_000),
+            ..Default::default()
         };
         telemetry_set(&mut cfg, &t);
         let back = telemetry_from(&cfg);
@@ -377,6 +409,7 @@ mod tests {
         let t = TelemetryConfig {
             posthog_enabled: true,
             posthog_enabled_at: Some(42),
+            ..Default::default()
         };
         telemetry_set(&mut cfg, &t);
 
@@ -387,6 +420,64 @@ mod tests {
         );
         assert!(telemetry_from(&cfg).posthog_enabled);
         assert_eq!(telemetry_from(&cfg).posthog_enabled_at, Some(42));
+    }
+
+    #[test]
+    fn cloud_sync_falls_back_to_the_default_when_unset_or_not_a_bool() {
+        assert_eq!(cloud_sync_from(&json!({})), CLOUD_SYNC_DEFAULT);
+        assert_eq!(cloud_sync_from(&Value::Null), CLOUD_SYNC_DEFAULT);
+        assert_eq!(cloud_sync_from(&json!("on")), CLOUD_SYNC_DEFAULT);
+        assert_eq!(
+            cloud_sync_from(&json!({"telemetry": {"cloud_sync_enabled": null}})),
+            CLOUD_SYNC_DEFAULT
+        );
+        assert_eq!(
+            cloud_sync_from(&json!({"telemetry": {"cloud_sync_enabled": "true"}})),
+            CLOUD_SYNC_DEFAULT
+        );
+    }
+
+    #[test]
+    fn cloud_sync_honours_the_saved_choice() {
+        assert!(cloud_sync_from(
+            &json!({"telemetry": {"cloud_sync_enabled": true}})
+        ));
+        assert!(!cloud_sync_from(
+            &json!({"telemetry": {"cloud_sync_enabled": false}})
+        ));
+    }
+
+    #[test]
+    fn cloud_sync_honours_an_old_explicit_opt_out() {
+        assert!(!cloud_sync_from(&json!({"telemetryEnabled": false})));
+        // The old switch was never read and defaulted to on, so `true`
+        // there is not a choice the user made.
+        assert_eq!(
+            cloud_sync_from(&json!({"telemetryEnabled": true})),
+            CLOUD_SYNC_DEFAULT
+        );
+    }
+
+    #[test]
+    fn saved_cloud_sync_choice_wins_over_the_old_flag() {
+        assert!(cloud_sync_from(&json!({
+            "telemetry": {"cloud_sync_enabled": true},
+            "telemetryEnabled": false
+        })));
+    }
+
+    #[test]
+    fn posthog_toggle_keeps_the_cloud_sync_choice() {
+        // telemetry_set_posthog_enabled reads the telemetry section into
+        // TelemetryConfig and writes the whole struct back.
+        let mut cfg = json!({
+            "telemetry": {"cloud_sync_enabled": true, "cloud_sync_enabled_at": 42}
+        });
+        let mut t = telemetry_from(&cfg);
+        t.posthog_enabled = true;
+        telemetry_set(&mut cfg, &t);
+        assert_eq!(cfg["telemetry"]["cloud_sync_enabled"], json!(true));
+        assert_eq!(cfg["telemetry"]["cloud_sync_enabled_at"], json!(42));
     }
 
     #[test]

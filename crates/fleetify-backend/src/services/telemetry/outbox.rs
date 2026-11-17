@@ -89,6 +89,12 @@ pub async fn init_at(path: PathBuf) -> Result<()> {
     Ok(())
 }
 
+/// Whether `init()` / `init_at()` has opened the pool. False in no-auth
+/// dev mode and after a failed init; nothing can be queued then.
+pub(crate) fn is_initialised() -> bool {
+    POOL.get().is_some()
+}
+
 fn pool_or_err() -> Result<&'static SqlitePool> {
     POOL.get()
         .ok_or_else(|| anyhow::anyhow!("telemetry outbox not initialised"))
@@ -157,8 +163,10 @@ pub async fn count() -> Result<i64> {
     Ok(n)
 }
 
-/// Drop everything. Tests + diagnostics ONLY — losing the outbox loses
-/// unacked events.
+/// Drop every queued event, unacked ones included. Serves opt-out:
+/// turning cloud sync off (`set_cloud_enabled(false)`) calls this so
+/// nothing stays queued to be sent later. Tests and diagnostics use it
+/// too. Anywhere else, losing the outbox loses unacked events.
 pub async fn reset() -> Result<()> {
     sqlx::query("DELETE FROM telemetry_outbox")
         .execute(pool_or_err()?)
@@ -167,24 +175,27 @@ pub async fn reset() -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
     use tokio::sync::Mutex;
 
-    // Tests in this module share one process-wide OnceLock<SqlitePool>.
+    // Every telemetry test that touches the process-wide
+    // OnceLock<SqlitePool> or the cloud-sync gate takes this one lock:
+    // the tests here, the emitter tests and the gate / WS-loop tests.
     // cargo test runs #[tokio::test] cases in parallel by default, so a
-    // sibling test calling `reset()` mid-roundtrip would wipe the events
-    // this test just enqueued and assertions would race. Serialise them
+    // sibling test calling `reset()` or flipping the gate mid-roundtrip
+    // would wipe the events this test just enqueued, or let them in when
+    // it expects them kept out, and assertions would race. Serialise them
     // through a tokio Mutex (held across awaits) — cheaper than a
-    // per-test pool, and the two tests run in <100 ms anyway.
-    static TEST_LOCK: Mutex<()> = Mutex::const_new(());
+    // per-test pool, and these tests run in well under a second.
+    pub(crate) static TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
     // Each test must use its OWN sqlite file because POOL is a process-
     // wide OnceLock — once initialised, subsequent init_at() calls are
     // no-ops. We initialise in the first test that runs (via
     // ensure_inited) and then mutate via the public API.
-    async fn ensure_inited() {
+    pub(crate) async fn ensure_inited() {
         let dir = tempfile::tempdir().unwrap();
         let _ = init_at(dir.path().join("ob.sqlite")).await;
         let _ = reset().await;

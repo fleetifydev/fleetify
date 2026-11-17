@@ -69,24 +69,62 @@ pub async fn config_set(app: tauri::AppHandle, config: serde_json::Value) -> ser
     serde_json::json!({ "ok": true })
 }
 
-// ── PostHog telemetry config ──────────────────────────────────────
-// Renderer fetches `{ distinct_id, posthog_enabled }` at boot to
-// initialise posthog-js with the same device_id the Rust backend uses,
-// so frontend + backend events flow to one PostHog person. Setter both
-// persists the flag AND flips the backend's runtime gate live so the
-// worker stops / starts without a restart.
+// ── Telemetry config (PostHog + Fleetify cloud sync) ──────────────
+// Renderer fetches `{ distinct_id, posthog_enabled, cloud_enabled }` at
+// boot; `distinct_id` initialises posthog-js with the same device_id the
+// Rust backend uses, so frontend + backend events flow to one PostHog
+// person. Each setter both persists its flag AND flips the matching
+// backend runtime gate live, so the PostHog worker / the cloud WS loop
+// stops or starts without a restart.
 
 #[tauri::command]
 pub async fn telemetry_get_config(app: tauri::AppHandle) -> serde_json::Value {
-    let posthog_enabled = match app.path().app_data_dir() {
-        Ok(dir) => config::telemetry_from(&config::load_config_from(&dir)).posthog_enabled,
-        Err(_) => false,
+    let (posthog_enabled, cloud_enabled) = match app.path().app_data_dir() {
+        Ok(dir) => {
+            let cfg = config::load_config_from(&dir);
+            (
+                config::telemetry_from(&cfg).posthog_enabled,
+                config::cloud_sync_from(&cfg),
+            )
+        }
+        Err(_) => (false, false),
     };
     let device = fleetify_backend::services::telemetry::device_id::get_or_create();
     serde_json::json!({
         "distinct_id": device.device_id,
         "posthog_enabled": posthog_enabled,
+        "cloud_enabled": cloud_enabled,
     })
+}
+
+/// Settings → Privacy's Fleetify-cloud sync switch. Persists
+/// `telemetry.cloud_sync_enabled`, then sets the backend gate: turning it
+/// off purges anything still queued and drops the dashboard socket.
+#[tauri::command]
+pub async fn telemetry_set_cloud_enabled(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> serde_json::Value {
+    if let Ok(dir) = app.path().app_data_dir() {
+        let mut cfg = config::load_config_from(&dir);
+        let was_enabled = config::cloud_sync_from(&cfg);
+        let mut telem = config::telemetry_from(&cfg);
+        telem.cloud_sync_enabled = Some(enabled);
+        // Stamp the first opt-in only; later off → on changes and turning
+        // it off keep the original time.
+        if enabled && !was_enabled && telem.cloud_sync_enabled_at.is_none() {
+            telem.cloud_sync_enabled_at = Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0),
+            );
+        }
+        config::telemetry_set(&mut cfg, &telem);
+        let _ = config::save_config_to(&dir, &cfg);
+    }
+    fleetify_backend::services::telemetry::set_cloud_enabled(enabled).await;
+    serde_json::json!({ "ok": true })
 }
 
 #[tauri::command]

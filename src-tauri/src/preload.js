@@ -83,6 +83,9 @@ document.addEventListener("mousedown", function (e) {
       telemetrySetPosthogEnabled: function (enabled) {
         return invoke("telemetry_set_posthog_enabled", { enabled: !!enabled });
       },
+      telemetrySetCloudEnabled: function (enabled) {
+        return invoke("telemetry_set_cloud_enabled", { enabled: !!enabled });
+      },
       openExternal: function (url) { return invoke("shell_open_external", { url: String(url || "") }); },
       showItemInFolder: function (p) { return invoke("shell_show_item_in_folder", { path: String(p || "") }); },
       writeText: function (t) { return invoke("clipboard_write", { text: String(t || "") }); },

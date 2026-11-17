@@ -129,6 +129,7 @@ pub fn run() {
             shell::ipc::config_set,
             shell::ipc::telemetry_get_config,
             shell::ipc::telemetry_set_posthog_enabled,
+            shell::ipc::telemetry_set_cloud_enabled,
             shell::ipc::shell_open_external,
             shell::ipc::shell_show_item_in_folder,
             shell::ipc::detect_editors,
@@ -446,6 +447,19 @@ pub fn run() {
             // (200ms × 20 = 4s upper bound covers a cold Rust startup).
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                // Fleetify cloud sync starts closed in the backend. If the
+                // user turned it on, open it right away rather than after
+                // the warm-up below, so the backend's first heartbeat and
+                // early session events aren't dropped. Closing (and its
+                // purge) waits for the restore at the end of this task, once
+                // the backend has opened its outbox.
+                if let Ok(dir) = handle.path().app_data_dir() {
+                    let cfg = crate::shell::config::load_config_from(&dir);
+                    if crate::shell::config::cloud_sync_from(&cfg) {
+                        fleetify_backend::services::telemetry::set_cloud_enabled(true).await;
+                    }
+                }
+
                 // Wait for the embedded backend to bind its port before
                 // we try to reach it. 200ms × 20 = 4s upper bound covers
                 // a cold Rust startup on a slow disk.
@@ -470,12 +484,22 @@ pub fn run() {
                 // runtime gate to match what the user previously
                 // consented to. Fresh installs land on default-off
                 // because telemetry_from returns Default on missing.
+                //
+                // Then restore the Fleetify cloud sync choice. A closed
+                // gate also purges anything still queued, including rows
+                // older builds queued while the channel was always on.
                 if let Ok(dir) = handle.path().app_data_dir() {
                     let cfg = crate::shell::config::load_config_from(&dir);
                     let telem = crate::shell::config::telemetry_from(&cfg);
                     if telem.posthog_enabled {
                         fleetify_backend::services::telemetry::posthog::set_enabled(true);
                     }
+                    fleetify_backend::services::telemetry::set_cloud_enabled(
+                        crate::shell::config::cloud_sync_from(&cfg),
+                    )
+                    .await;
+                } else {
+                    fleetify_backend::services::telemetry::set_cloud_enabled(false).await;
                 }
             });
 
@@ -533,6 +557,7 @@ pub fn run() {
                 // Telemetry WS client → fleetify.dev. Bearer pulled from
                 // shell::auth.get_access_token() lazily per attempt so a
                 // mid-flow refresh is picked up at the next reconnect.
+                // Idles (no bearer, no socket) while cloud sync is off.
                 tauri::async_runtime::spawn(async {
                     let source: fleetify_backend::services::telemetry::BearerSource =
                         std::sync::Arc::new(|| {
