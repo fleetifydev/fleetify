@@ -77,9 +77,11 @@ pub fn port_from_env(value: Option<&str>) -> u16 {
     }
 }
 
-/// Where secrets may go given the backend's start: its `port` once it has
-/// reported its bind, nowhere before that or after a failed start.
-pub fn secrets_port(start: &BackendStart, port: u16) -> Option<u16> {
+/// The backend's `port` once it has reported its bind; `None` before that or
+/// after a failed start. Everything that sends provider keys or the internal
+/// secret asks this first, so nothing goes to another program holding the
+/// port. Those calls stay on loopback: `backend_url` is always `127.0.0.1`.
+pub fn port_if_bound(start: &BackendStart, port: u16) -> Option<u16> {
     (*start == BackendStart::Bound).then_some(port)
 }
 
@@ -97,9 +99,9 @@ pub struct TrackedBackend {
 }
 
 impl TrackedBackend {
-    /// Its port while it is bound (see [`secrets_port`]).
+    /// Its port while it is bound (see [`port_if_bound`]).
     pub fn bound_port(&self) -> Option<u16> {
-        secrets_port(&self.start.borrow(), self.port)
+        port_if_bound(&self.start.borrow(), self.port)
     }
 }
 
@@ -313,13 +315,13 @@ mod tests {
     fn secrets_go_only_to_a_backend_that_reported_its_bind() {
         // Before the bind, or after a failed one, whatever answers on the
         // port is something else (AnkiConnect listens on 127.0.0.1:8765).
-        assert_eq!(secrets_port(&BackendStart::Pending, 8765), None);
+        assert_eq!(port_if_bound(&BackendStart::Pending, 8765), None);
         let failed = BackendStart::Failed(StartFailure::Backend(
             "Address already in use (os error 98)".into(),
         ));
-        assert_eq!(secrets_port(&failed, 8765), None);
-        assert_eq!(secrets_port(&ui_files_missing(), 8765), None);
-        assert_eq!(secrets_port(&BackendStart::Bound, 8765), Some(8765));
+        assert_eq!(port_if_bound(&failed, 8765), None);
+        assert_eq!(port_if_bound(&ui_files_missing(), 8765), None);
+        assert_eq!(port_if_bound(&BackendStart::Bound, 8765), Some(8765));
     }
 
     /// The report when a release build has no UI files: the backend is
