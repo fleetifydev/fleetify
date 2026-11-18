@@ -126,15 +126,15 @@ describe("OnboardingChat install IPC", () => {
     expect(ids.length).toBe(catalog.length + studioProviders.length);
   });
 
-  it("renders a Continue button gated on at least one ready provider", () => {
+  it("renders an always-enabled Continue button (no provider is mandatory)", () => {
     // The main-agent picker used to appear automatically after a
     // fixed timer; users complained it fired before they finished
     // pasting keys. The widget now exposes onContinue and renders
-    // a ContinueRow at the bottom, enabled only when isProviderReady
-    // returns true for at least one row.
+    // a ContinueRow at the bottom. It is always enabled: the user can
+    // finish provider setup later from Settings → Providers.
     expect(onboardingSrc).toMatch(/<ContinueRow\b/);
     expect(onboardingSrc).toMatch(/function ContinueRow\b/);
-    expect(onboardingSrc).toMatch(/providers\.some\(\s*\(\s*p\s*\)\s*=>\s*isProviderReady\b/);
+    expect(onboardingSrc).toMatch(/<ContinueRow[\s\S]{0,250}?\benabled\s*\n\s*onContinue=/);
   });
 
   it("filters the main-agent picker to ready providers", () => {
@@ -179,9 +179,11 @@ describe("OnboardingChat install IPC", () => {
     // DeepSeek / Grok / Kimi API / Perplexity / NVIDIA NIM don't have
     // env-var buckets on the scan probe — falling through to the
     // empty-label branch left them with a bare dot in the picker
-    // while OpenAI / Google AI still said "Add key". Mirror those
-    // by adding a `p.kind === "api"` fallback in getInstallInfo.
-    expect(onboardingSrc).toMatch(/p\.kind\s*===\s*"api"[\s\S]{0,200}label:\s*"Add key"/);
+    // while OpenAI / Google AI still said "Add key". The picker now
+    // groups every `p.kind === "api"` provider into its "API" section,
+    // whose action is "Add key".
+    expect(onboardingSrc).toMatch(/const apiKind\s*=\s*phaseProviders\.filter\(\(p\)\s*=>\s*p\.kind\s*===\s*"api"\)/);
+    expect(onboardingSrc).toMatch(/title:\s*"API",\s*list:\s*apiKind,[\s\S]{0,80}label:\s*"Add key"/);
   });
 
   it("KeyEntryRow supports a saved mode with masked preview and Edit", () => {

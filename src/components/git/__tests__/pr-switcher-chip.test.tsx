@@ -39,14 +39,16 @@ describe("prIconColor draft handling", () => {
   });
 });
 
-describe("PrSwitcherChip dot", () => {
-  const dotOf = (container: HTMLElement) => {
-    // The status dot is the chip button's first span (6×6 rounded).
-    const dot = container.querySelector("button span") as HTMLElement;
-    return dot.style.background;
+describe("PrSwitcherChip state label", () => {
+  const stateOf = (container: HTMLElement) => {
+    // The state word ("Open", "Draft", …) is the chip button's last span,
+    // coloured by state.
+    const spans = container.querySelectorAll<HTMLElement>("button span");
+    const label = spans[spans.length - 1] as HTMLElement;
+    return { word: label.textContent, color: label.style.color };
   };
 
-  it("renders a gray dot for a selected draft PR", () => {
+  it("labels a selected draft PR 'Draft' in gray", () => {
     const { container } = render(
       <PrSwitcherChip
         openPrs={[repoPr({ isDraft: true })]}
@@ -56,10 +58,10 @@ describe("PrSwitcherChip dot", () => {
         onOpenUrl={vi.fn()}
       />,
     );
-    expect(dotOf(container)).toBe("var(--c-dim)");
+    expect(stateOf(container)).toEqual({ word: "Draft", color: "var(--c-dim)" });
   });
 
-  it("renders a green dot for an active (non-draft) PR", () => {
+  it("labels an active (non-draft) PR 'Open' in green", () => {
     const { container } = render(
       <PrSwitcherChip
         openPrs={[repoPr()]}
@@ -70,7 +72,7 @@ describe("PrSwitcherChip dot", () => {
       />,
     );
     // The DOM style engine normalizes rgb() with spaces after commas.
-    expect(dotOf(container)).toBe("rgb(64, 180, 120)");
+    expect(stateOf(container)).toEqual({ word: "Open", color: "rgb(64, 180, 120)" });
   });
 
   it("falls back to the prList entry's draft flag before the detail poll lands", () => {
@@ -83,6 +85,6 @@ describe("PrSwitcherChip dot", () => {
         onOpenUrl={vi.fn()}
       />,
     );
-    expect(dotOf(container)).toBe("var(--c-dim)");
+    expect(stateOf(container)).toEqual({ word: "Draft", color: "var(--c-dim)" });
   });
 });

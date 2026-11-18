@@ -149,6 +149,9 @@ mod tests {
 
     #[test]
     fn override_env_wins_when_set_and_exists() {
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         // The dev/CI box has *some* path that exists; use the test binary
         // itself as a stand-in for a Python the user pinned via env. The
         // function only checks `.exists()`, not whether it's actually a
@@ -162,6 +165,9 @@ mod tests {
 
     #[test]
     fn override_env_ignored_when_path_missing() {
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         std::env::set_var(
             "FLEETIFY_EMBEDDED_PYTHON",
             "/definitely/not/a/real/path/python",

@@ -2180,10 +2180,9 @@ function ScanWidget({
   );
 }
 
-/** Continue affordance at the bottom of the verify list. Disabled
- *  until at least one provider in the list is fully ready — gating
- *  the parent's main-agent picker / readout cascade on something the
- *  user can actually drive a chat with. */
+/** Continue affordance at the bottom of the verify list. The list
+ *  always renders it enabled: no provider is mandatory, and the user
+ *  can finish setup later from Settings → Providers. */
 function ContinueRow({
   enabled,
   onContinue,

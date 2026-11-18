@@ -88,7 +88,19 @@ mod tests {
             .build()
             .unwrap();
         runtime.block_on(async {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            // The parent picked the proxy's port by binding it and letting it
+            // go, so the OS may hand that same port to this server. A second
+            // bind made while the first listener still holds it gets another.
+            let proxy = std::env::var("HTTP_PROXY").unwrap();
+            let proxy_port = reqwest::Url::parse(&proxy).unwrap().port().unwrap();
+            let first = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let listener = if first.local_addr().unwrap().port() == proxy_port {
+                let second = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                drop(first);
+                second
+            } else {
+                first
+            };
             let url = format!("http://127.0.0.1:{}/", listener.local_addr().unwrap().port());
             tokio::spawn(async move {
                 while let Ok((mut socket, _)) = listener.accept().await {

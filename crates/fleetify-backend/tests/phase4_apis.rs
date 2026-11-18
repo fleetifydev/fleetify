@@ -50,6 +50,10 @@ async fn phase4_apis_smoke() {
     });
     std::env::set_var("FLEETIFY_ISSUER", format!("http://{jwks_addr}"));
     std::env::set_var("FLEET_DB_URL", "sqlite::memory:");
+    // Plugins and workflows are read from FLEETIFY_HOME: an empty temp dir
+    // keeps the test off the developer's real ~/.fleetify.
+    let fleetify_home = tempfile::tempdir().unwrap();
+    std::env::set_var("FLEETIFY_HOME", fleetify_home.path());
 
     // 3. Mint a JWT for user "u".
     let mut header = Header::new(jsonwebtoken::Algorithm::RS256);
@@ -163,7 +167,8 @@ async fn phase4_apis_smoke() {
         .unwrap();
     assert_eq!(r.status(), 200);
 
-    // ── /api/plugins/install requires repo_url ──
+    // ── /api/plugins/install addresses a plugin by source_id + scope ──
+    // The old `{repo_url}` body no longer deserializes.
     let r = client
         .post(format!("{base}/api/plugins/install"))
         .header("Authorization", &auth)
@@ -171,13 +176,21 @@ async fn phase4_apis_smoke() {
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status(), 200);
-    let v: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(v["ok"], false);
-    assert!(v["error"]
-        .as_str()
-        .unwrap()
-        .contains("repo_url is required"));
+    assert_eq!(r.status(), 422);
+
+    // A source the caller has no row for (the one deleted above) is a 404.
+    let r = client
+        .post(format!("{base}/api/plugins/install"))
+        .header("Authorization", &auth)
+        .json(&serde_json::json!({
+            "source_id": source_id,
+            "scope": { "scope_type": "user" }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+    assert!(r.text().await.unwrap().contains("not found"));
 
     // ── /api/workflows lists 0 (no plugins installed in test home) ──
     let r = client
