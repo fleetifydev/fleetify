@@ -24,6 +24,7 @@ import { claimEscape } from "@/hooks/use-escape-to-stop";
 import { useChatStore, selectSession } from "@/stores/chat-store";
 import { useAppStore } from "@/stores/app-store";
 import { MarkdownLink } from "@/components/markdown-link";
+import { AskImage, markdownUrlTransform } from "@/components/marketplace/detail/markdown-image";
 import { useTypewriter } from "@/hooks/use-typewriter";
 import { highlightToHtml, highlightLines, langFromPath } from "@/lib/shiki";
 import { folderName } from "@/lib/utils";
@@ -1035,6 +1036,8 @@ const mdComponents: Components = {
     );
   },
   strong({ children }) { return <strong style={{ fontWeight: 600, color: "var(--c-high)" }}>{children}</strong>; },
+  // A remote image loads only after a click.
+  img: AskImage,
   // `a` is intentionally NOT defined here — MarkdownBody injects a
   // store-aware version so file-shaped hrefs can route to openFile()
   // instead of opening externally.
@@ -1240,7 +1243,9 @@ function MarkdownBodyInner({ text }: { text: string }) {
 
   return (
     <div style={{ color: "var(--foreground)" }}>
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={components}>{stripInternalTokens(text)}</ReactMarkdown>
+      {/* markdownUrlTransform keeps a `data:` image, which react-markdown's
+          default drops. */}
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={components} urlTransform={markdownUrlTransform}>{stripInternalTokens(text)}</ReactMarkdown>
     </div>
   );
 }

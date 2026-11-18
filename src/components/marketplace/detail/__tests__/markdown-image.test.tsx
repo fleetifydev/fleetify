@@ -56,3 +56,43 @@ describe("imageSource", () => {
     }
   });
 });
+
+describe("imageSource under the ask policy", () => {
+  it("asks before loading from every https: host, the allowed ones included", () => {
+    expect(imageSource("https://img.shields.io/x", "ask")).toEqual({
+      kind: "ask", src: "https://img.shields.io/x", host: "img.shields.io",
+    });
+    for (const host of [
+      "raw.githubusercontent.com",
+      "github.com",
+      "camo.githubusercontent.com",
+      "avatars.githubusercontent.com",
+      "evil.example",
+    ]) {
+      expect(imageSource(`https://${host}/a/b.png`, "ask")).toEqual({ kind: "ask", src: `https://${host}/a/b.png`, host });
+    }
+  });
+
+  it("leaves the default policy as the allowlist", () => {
+    expect(imageSource("https://img.shields.io/x")).toEqual({ kind: "load", src: "https://img.shields.io/x" });
+    expect(imageSource("https://img.shields.io/x", "allowlist")).toEqual({ kind: "load", src: "https://img.shields.io/x" });
+  });
+
+  it("still loads data: images, and shows the alt text for everything else", () => {
+    expect(imageSource("data:image/png;base64,iVBORw0KGgo=", "ask")).toEqual({
+      kind: "load", src: "data:image/png;base64,iVBORw0KGgo=",
+    });
+    for (const src of [
+      "data:text/html;base64,PGgxPg==",
+      "http://x.example/a.png",
+      "file:///etc/hosts",
+      "javascript:alert(1)",
+      "./a.png",
+      "//cdn.example.net/a.png",
+      "",
+      undefined,
+    ]) {
+      expect(imageSource(src, "ask")).toEqual({ kind: "alt" });
+    }
+  });
+});

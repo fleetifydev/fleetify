@@ -10,7 +10,7 @@ import {
   AlertTriangle, AlertCircle, CheckCircle2, Eye, CheckSquare, Layers, Folder,
   Plus, ArrowRight,
 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useAppStore, type WorkspaceView } from "@/stores/app-store";
 import { formatShortcut } from "@/lib/keyboard-shortcuts";
@@ -33,6 +33,7 @@ import { usePinnedSession } from "@/lib/session-pins";
 import { parseStoredMessages } from "@/lib/session-messages";
 import { MessageContent, StreamingMessage } from "@/components/chat/message-content";
 import { MarkdownLink } from "@/components/markdown-link";
+import { AskImage } from "@/components/marketplace/detail/markdown-image";
 import { wsManager } from "@/services/ws-manager";
 import { useThemeStore } from "@/stores/theme-store";
 import { getTheme } from "@/lib/themes";
@@ -2183,6 +2184,8 @@ export const planMdComponents = {
   strong: ({ children }: { children?: React.ReactNode }) => <strong style={{ fontWeight:600, color:"var(--foreground)" }}>{children}</strong>,
   em: ({ children }: { children?: React.ReactNode }) => <em style={{ color:"var(--card-foreground)" }}>{children}</em>,
   a: ({ href, children }: { href?: string; children?: React.ReactNode }) => <MarkdownLink href={href}>{children}</MarkdownLink>,
+  // A remote image loads only after a click.
+  img: AskImage,
   code: ({ children, className }: { children?: React.ReactNode; className?: string }) => {
     const isBlock = !!className;
     if (isBlock) {
@@ -5615,6 +5618,103 @@ function FileView() {
   );
 }
 
+/* The preview's markdown components, made once: a component made anew on
+   each render is a new component to React, which would mount the whole
+   document afresh, and an image loaded with a click would be back behind
+   its button. */
+const markdownPreviewComponents: Components = {
+  h1: ({ children }) => <h1 style={{ fontSize: 19, fontWeight: 700, color: "#efefef", margin: "0 0 12px", lineHeight: 1.3 }}>{children}</h1>,
+  h2: ({ children }) => <h2 style={{ fontSize: 15, fontWeight: 700, color: "#e6e6e6", margin: "24px 0 8px", paddingBottom: 5, borderBottom: "1px solid rgba(255,255,255,0.07)" }}>{children}</h2>,
+  h3: ({ children }) => <h3 style={{ fontSize: 13.5, fontWeight: 700, color: "#dedede", margin: "18px 0 6px" }}>{children}</h3>,
+  h4: ({ children }) => <h4 style={{ fontSize: 13, fontWeight: 600, color: "#d0d0d0", margin: "14px 0 4px" }}>{children}</h4>,
+  p:  ({ children }) => <p  style={{ margin: "0 0 10px", color: "#b0b0b0" }}>{children}</p>,
+  strong: ({ children }) => <strong style={{ fontWeight: 700, color: "#e8e8e8" }}>{children}</strong>,
+  em:     ({ children }) => <em     style={{ fontStyle: "italic", color: "#c8c8c8" }}>{children}</em>,
+  hr: () => <hr style={{ border: "none", borderTop: "1px solid rgba(255,255,255,0.08)", margin: "18px 0" }} />,
+  ul: ({ children }) => <ul style={{ paddingLeft: 20, margin: "0 0 10px" }}>{children}</ul>,
+  ol: ({ children }) => <ol style={{ paddingLeft: 20, margin: "0 0 10px" }}>{children}</ol>,
+  li: ({ children }) => <li style={{ marginBottom: 3, color: "#b0b0b0" }}>{children}</li>,
+  blockquote: ({ children }) => (
+    <blockquote style={{
+      borderLeft: "3px solid rgba(167,139,250,0.40)",
+      margin: "0 0 10px", paddingLeft: 14,
+      color: "#888",
+    }}>{children}</blockquote>
+  ),
+  code: ({ className, children, ...props }) => {
+    const isBlock = className?.startsWith("language-");
+    if (isBlock) {
+      return (
+        <pre style={{
+          background: "rgba(0,0,0,0.30)",
+          border: "1px solid rgba(255,255,255,0.06)",
+          borderRadius: 6, padding: "10px 14px",
+          overflowX: "auto", margin: "0 0 12px",
+        }}>
+          <code style={{ fontFamily: MONO, fontSize: 12, color: "#d0d0d0", lineHeight: 1.55 }} {...props}>
+            {children}
+          </code>
+        </pre>
+      );
+    }
+    return (
+      <code style={{
+        fontFamily: MONO, fontSize: "0.85em",
+        background: "rgba(255,255,255,0.09)",
+        border: "1px solid rgba(255,255,255,0.06)",
+        borderRadius: 4, padding: "1px 5px",
+        color: "#ddd",
+      }} {...props}>{children}</code>
+    );
+  },
+  a: ({ href, children }) => (
+    <MarkdownLink href={href} style={{ color: "#a78bfa", textDecoration: "underline", textDecorationColor: "rgba(167,139,250,0.35)" }}>
+      {children}
+    </MarkdownLink>
+  ),
+  // A remote image loads only after a click.
+  img: AskImage,
+  table: ({ children }) => (
+    <div style={{
+      margin: "14px 0",
+      borderRadius: 9,
+      overflow: "hidden",
+      border: "1px solid var(--c-brd)",
+      background: "var(--background)",
+    }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>{children}</table>
+    </div>
+  ),
+  th: ({ children }) => (
+    <th style={{
+      padding: "9px 14px",
+      borderBottom: "1px solid var(--c-brd)",
+      textAlign: "left",
+      fontWeight: 600,
+      color: "var(--c-dim)",
+      fontSize: 10.5,
+      letterSpacing: "0.06em",
+      textTransform: "uppercase",
+      background: "var(--c-srf)",
+      verticalAlign: "middle",
+    }}>
+      {children}
+    </th>
+  ),
+  td: ({ children }) => (
+    <td style={{
+      padding: "10px 14px",
+      borderBottom: "1px solid var(--c-brd)",
+      color: "var(--c-high)",
+      fontSize: 13,
+      lineHeight: 1.45,
+      verticalAlign: "middle",
+    }}>
+      {children}
+    </td>
+  ),
+};
+
 /* Renders markdown source as a styled document matching the sidebar
    dark theme. Used by FileView when a .md/.mdx file is open in preview
    mode. Reuses the ReactMarkdown + remark-gfm already loaded for chat. */
@@ -5633,96 +5733,7 @@ export function MarkdownPreview({ source }: { source: string }) {
     <div style={c}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        components={{
-          h1: ({ children }) => <h1 style={{ fontSize: 19, fontWeight: 700, color: "#efefef", margin: "0 0 12px", lineHeight: 1.3 }}>{children}</h1>,
-          h2: ({ children }) => <h2 style={{ fontSize: 15, fontWeight: 700, color: "#e6e6e6", margin: "24px 0 8px", paddingBottom: 5, borderBottom: "1px solid rgba(255,255,255,0.07)" }}>{children}</h2>,
-          h3: ({ children }) => <h3 style={{ fontSize: 13.5, fontWeight: 700, color: "#dedede", margin: "18px 0 6px" }}>{children}</h3>,
-          h4: ({ children }) => <h4 style={{ fontSize: 13, fontWeight: 600, color: "#d0d0d0", margin: "14px 0 4px" }}>{children}</h4>,
-          p:  ({ children }) => <p  style={{ margin: "0 0 10px", color: "#b0b0b0" }}>{children}</p>,
-          strong: ({ children }) => <strong style={{ fontWeight: 700, color: "#e8e8e8" }}>{children}</strong>,
-          em:     ({ children }) => <em     style={{ fontStyle: "italic", color: "#c8c8c8" }}>{children}</em>,
-          hr: () => <hr style={{ border: "none", borderTop: "1px solid rgba(255,255,255,0.08)", margin: "18px 0" }} />,
-          ul: ({ children }) => <ul style={{ paddingLeft: 20, margin: "0 0 10px" }}>{children}</ul>,
-          ol: ({ children }) => <ol style={{ paddingLeft: 20, margin: "0 0 10px" }}>{children}</ol>,
-          li: ({ children }) => <li style={{ marginBottom: 3, color: "#b0b0b0" }}>{children}</li>,
-          blockquote: ({ children }) => (
-            <blockquote style={{
-              borderLeft: "3px solid rgba(167,139,250,0.40)",
-              margin: "0 0 10px", paddingLeft: 14,
-              color: "#888",
-            }}>{children}</blockquote>
-          ),
-          code: ({ className, children, ...props }) => {
-            const isBlock = className?.startsWith("language-");
-            if (isBlock) {
-              return (
-                <pre style={{
-                  background: "rgba(0,0,0,0.30)",
-                  border: "1px solid rgba(255,255,255,0.06)",
-                  borderRadius: 6, padding: "10px 14px",
-                  overflowX: "auto", margin: "0 0 12px",
-                }}>
-                  <code style={{ fontFamily: MONO, fontSize: 12, color: "#d0d0d0", lineHeight: 1.55 }} {...props}>
-                    {children}
-                  </code>
-                </pre>
-              );
-            }
-            return (
-              <code style={{
-                fontFamily: MONO, fontSize: "0.85em",
-                background: "rgba(255,255,255,0.09)",
-                border: "1px solid rgba(255,255,255,0.06)",
-                borderRadius: 4, padding: "1px 5px",
-                color: "#ddd",
-              }} {...props}>{children}</code>
-            );
-          },
-          a: ({ href, children }) => (
-            <MarkdownLink href={href} style={{ color: "#a78bfa", textDecoration: "underline", textDecorationColor: "rgba(167,139,250,0.35)" }}>
-              {children}
-            </MarkdownLink>
-          ),
-          table: ({ children }) => (
-            <div style={{
-              margin: "14px 0",
-              borderRadius: 9,
-              overflow: "hidden",
-              border: "1px solid var(--c-brd)",
-              background: "var(--background)",
-            }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>{children}</table>
-            </div>
-          ),
-          th: ({ children }) => (
-            <th style={{
-              padding: "9px 14px",
-              borderBottom: "1px solid var(--c-brd)",
-              textAlign: "left",
-              fontWeight: 600,
-              color: "var(--c-dim)",
-              fontSize: 10.5,
-              letterSpacing: "0.06em",
-              textTransform: "uppercase",
-              background: "var(--c-srf)",
-              verticalAlign: "middle",
-            }}>
-              {children}
-            </th>
-          ),
-          td: ({ children }) => (
-            <td style={{
-              padding: "10px 14px",
-              borderBottom: "1px solid var(--c-brd)",
-              color: "var(--c-high)",
-              fontSize: 13,
-              lineHeight: 1.45,
-              verticalAlign: "middle",
-            }}>
-              {children}
-            </td>
-          ),
-        }}
+        components={markdownPreviewComponents}
       >
         {source}
       </ReactMarkdown>

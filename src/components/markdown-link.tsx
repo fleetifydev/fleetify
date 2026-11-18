@@ -8,6 +8,7 @@
 import type { ComponentPropsWithoutRef, MouseEvent } from "react";
 import type { Components } from "react-markdown";
 import { linkTarget, openExternalUrl, scrollToFragment } from "@/lib/links";
+import { AskImage } from "@/components/marketplace/detail/markdown-image";
 
 /** Follows a click on a link to `href` without ever navigating the app's
  *  window: another site opens in the system browser, a fragment scrolls to
@@ -25,7 +26,11 @@ export function MarkdownLink({ href, onClick: _onClick, ...props }: ComponentPro
   return <a {...props} href={href} rel="noreferrer" onClick={(event) => followLink(event, href)} />;
 }
 
-/** `components` for a `ReactMarkdown` that customises nothing but links. */
+/** `components` for a `ReactMarkdown` that customises nothing but links and
+ *  images: a remote image loads only after a click (`AskImage`). */
 export const markdownLinkComponents: Components = {
   a: ({ node: _node, ...props }) => <MarkdownLink {...props} />,
+  // Looked up when an image renders, not as `img: AskImage`: markdown-image
+  // imports this module too, so this map can be built before AskImage is.
+  img: (props) => <AskImage {...props} />,
 };
