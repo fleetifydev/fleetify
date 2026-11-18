@@ -13,9 +13,10 @@
  *   leaves it alone, and the element's handlers run as before.
  * - The app's own drags (sidebar sessions, workspace panes) are left to their
  *   targets. The sidebar leaves an illegal target uncancelled on purpose, so
- *   the cursor says no-drop. Only a drag that started in this document counts
- *   as the app's own: WebView2 carries a web page's custom types across
- *   processes, so a drag from a browser can carry them too.
+ *   the cursor says no-drop. Only a drag that started in this document with
+ *   an app type counts as the app's own, until it ends: WebView2 carries a
+ *   web page's custom types across processes, so a drag from a browser can
+ *   carry them too.
  * - Text or a link dropped into a field you can type in is left to the
  *   engine, which inserts it there. A file is cancelled even there: a text
  *   field can't take it, and the engine may load it instead.
@@ -66,34 +67,48 @@ export function guardTakes(
   return types.some((type) => LOADABLE_TYPES.includes(type)) && !isTextEntry(target);
 }
 
+/** The types a drag event carries. */
+function dragTypes(event: Event): string[] {
+  return Array.from((event as DragEvent).dataTransfer?.types ?? []);
+}
+
 /** Installs the guard on `target`'s window events. Returns what removes it. */
 export function installDropGuard(target: Window = window): () => void {
-  // Whether a drag that started in this document is in flight: the engine
-  // fires dragstart on its source, and dragend when it ends. A drop ends it
-  // too, in case the source left the document and its dragend never comes.
-  // A dragstart the app cancelled starts no drag (a workspace pane cancels
-  // one while it isn't armed), and no dragend follows it.
+  // Whether one of the app's own drags is in flight: the engine fires
+  // dragstart on its source, after the source's handler set an app type, and
+  // dragend when it ends.
+  // - Only a dragstart carrying an app type counts. One the app cancelled
+  //   starts no drag (a workspace pane cancels one while it isn't armed), and
+  //   no dragend follows it.
+  // - A source that left the document mid-drag still gets its dragend, but
+  //   the event no longer reaches the window: the source itself is listened
+  //   to as well.
+  // - A drop ends it, and so does the next press, should no dragend come.
   let dragFromApp = false;
-  const started = (event: Event) => {
-    if (!event.defaultPrevented) dragFromApp = true;
-  };
   const ended = () => {
     dragFromApp = false;
   };
+  const started = (event: Event) => {
+    if (event.defaultPrevented) return;
+    if (!dragTypes(event).some((type) => APP_DRAG_TYPES.includes(type))) return;
+    dragFromApp = true;
+    event.target?.addEventListener("dragend", ended, { once: true });
+  };
   const take = (event: Event) => {
     if (event.defaultPrevented) return;
-    const types = Array.from((event as DragEvent).dataTransfer?.types ?? []);
-    if (guardTakes(types, event.target, dragFromApp)) event.preventDefault();
+    if (guardTakes(dragTypes(event), event.target, dragFromApp)) event.preventDefault();
   };
   const events = ["dragenter", "dragover", "drop"] as const;
   target.addEventListener("dragstart", started);
   target.addEventListener("dragend", ended);
+  target.addEventListener("pointerdown", ended);
   for (const type of events) target.addEventListener(type, take);
   // After `take`, so the drop is judged before the flag clears.
   target.addEventListener("drop", ended);
   return () => {
     target.removeEventListener("dragstart", started);
     target.removeEventListener("dragend", ended);
+    target.removeEventListener("pointerdown", ended);
     for (const type of events) target.removeEventListener(type, take);
     target.removeEventListener("drop", ended);
   };

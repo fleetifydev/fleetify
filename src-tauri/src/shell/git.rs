@@ -408,9 +408,11 @@ pub async fn get_context(folder: &Path) -> Value {
         json!(branch)
     };
 
+    // The renderer gets this URL: without the credentials an origin remote
+    // can hold (`https://user:token@…`).
     let (rc_r, remote, _) = git(&["remote", "get-url", "origin"], folder).await;
     let remote_https = if rc_r == 0 {
-        Some(ssh_to_https(remote.trim()))
+        Some(without_credentials(&ssh_to_https(remote.trim())))
     } else {
         None
     };
@@ -3186,6 +3188,22 @@ mod tests {
         // (and the field is always present so the renderer can read it).
         assert_eq!(v["baseBehind"], 0);
         assert!(v.get("error").is_none());
+    }
+
+    #[tokio::test]
+    async fn the_context_carries_no_credentials_from_the_remote() {
+        // The renderer gets remoteHttpsUrl: an origin remote like
+        // https://user:token@host/… must not hand it the token.
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        fresh_repo(tmp.path()).await;
+        let remote = "https://user:tok@github.com/foo/bar.git";
+        let (rc, _, err) = git(&["remote", "add", "origin", remote], tmp.path()).await;
+        assert_eq!(rc, 0, "git remote add: {err}");
+        let v = get_context(tmp.path()).await;
+        assert_eq!(v["remoteHttpsUrl"], "https://github.com/foo/bar.git");
     }
 
     #[test]
