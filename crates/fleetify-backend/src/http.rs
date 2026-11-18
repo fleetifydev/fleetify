@@ -46,9 +46,9 @@ pub fn app(state: AppState, static_dir: Option<PathBuf>, policy: AccessPolicy) -
         .merge(crate::studio::router());
 
     // Loopback-gated internal endpoints (no JWT auth — the
-    // X-Fleet-Internal header is the only authenticator). Kept off
-    // `/api` so a renderer hitting it without the header just gets
-    // 404 instead of a misleading 401.
+    // X-Fleet-Internal header is the only authenticator). Mounted at
+    // `/api/internal`, which the access guard asks for no API token: the
+    // shell and the agents' helper processes call them with the secret.
     let internal_api = internal::router().merge(browser::internal_router());
 
     let routed = Router::new()

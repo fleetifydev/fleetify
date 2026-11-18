@@ -1,5 +1,5 @@
 //! Phase 1d /ws/sessions protocol smoke (no `claude` CLI required):
-//!   - auth via ?token=, ping→pong
+//!   - auth via ?token= (plus the API token in ?api_token=), ping→pong
 //!   - subscribe owned session → init
 //!   - subscribe foreign id → error
 //!
@@ -7,12 +7,13 @@
 //! e2e in Tauri dev. The fidelity-critical stream-json parser is unit-
 //! tested in `bridges::claude::tests`.
 
-use std::net::SocketAddr;
+mod common;
+
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
-use fleetify_backend::access::ApiToken;
-use fleetify_backend::ServeOptions;
+use common::TestServer;
+use fleetify_backend::access::API_TOKEN_QUERY;
 use futures_util::{SinkExt, StreamExt};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use rsa::pkcs8::EncodePrivateKey;
@@ -55,12 +56,9 @@ async fn ws_sessions_subscribe_and_ping() {
     std::env::set_var("FLEETIFY_ISSUER", &origin);
     std::env::set_var("FLEETIFY_AUDIENCE", "http://127.0.0.1:8765");
 
-    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let h = fleetify_backend::serve(addr, ServeOptions::api_only(ApiToken::generate()))
-        .await
-        .expect("serve");
-    let base = format!("http://{}", h.local_addr());
-    let ws_base = format!("ws://{}", h.local_addr());
+    let server = TestServer::start().await;
+    let base = server.url("");
+    let ws_base = format!("ws://{}", server.addr());
 
     let mut header = Header::new(jsonwebtoken::Algorithm::RS256);
     header.kid = Some("test".into());
@@ -76,8 +74,9 @@ async fn ws_sessions_subscribe_and_ping() {
     )
     .unwrap();
 
-    // Create a real session via REST (needed for owned-subscribe).
-    let client = reqwest::Client::new();
+    // Create a real session via REST (needed for owned-subscribe). The
+    // client sends the API token.
+    let client = server.client();
     let s: Value = client
         .post(format!("{base}/api/sessions"))
         .bearer_auth(&token)
@@ -90,11 +89,13 @@ async fn ws_sessions_subscribe_and_ping() {
         .unwrap();
     let sid = s["id"].as_str().unwrap().to_string();
 
-    // Connect WS with the bearer in the query.
-    let (mut ws, _) =
-        tokio_tungstenite::connect_async(format!("{ws_base}/ws/sessions?token={token}"))
-            .await
-            .expect("ws connect");
+    // Connect WS with the bearer and the API token in the query.
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!(
+        "{ws_base}/ws/sessions?token={token}&{API_TOKEN_QUERY}={}",
+        server.token.as_str()
+    ))
+    .await
+    .expect("ws connect");
 
     // ping → pong
     ws.send(Frame::Text(json!({"type":"ping"}).to_string()))
@@ -126,7 +127,7 @@ async fn ws_sessions_subscribe_and_ping() {
     assert_eq!(err["session_id"], "00000000-0000-0000-0000-000000000000");
 
     let _ = ws.close(None).await;
-    h.shutdown();
+    server.handle.shutdown();
 }
 
 async fn recv_json<S>(ws: &mut S) -> Value

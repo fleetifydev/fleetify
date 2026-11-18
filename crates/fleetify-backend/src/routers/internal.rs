@@ -6,9 +6,10 @@
 //! `X-Fleet-Internal: <secret>` header (the secret is generated at
 //! backend startup and injected into the MCP's env via
 //! `ClaudeBridge::build_mcp_config`). JWT auth is skipped — the
-//! secret is the only authenticator here, and the endpoint is
-//! intentionally not in `/api` so missing config can't accidentally
-//! expose it to a CORS-allowed renderer call.
+//! secret is the only authenticator here. These routes are mounted
+//! under `/api/internal`, which the access guard (`crate::access`)
+//! asks for no API token, so each handler's secret check is what
+//! admits a request.
 //!
 //! Faithful with the Python `dispatch_mcp.py` flow:
 //!   1. Resolve `agent` (UUID or case-insensitive title) → session_id.

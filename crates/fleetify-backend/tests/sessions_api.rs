@@ -2,12 +2,12 @@
 //! Mocks the IdP JWKS, mints a JWT, then exercises the faithful /api flow:
 //! /healthz shape, POST/GET /api/sessions round-trip, 401 without bearer.
 
-use std::net::SocketAddr;
+mod common;
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
-use fleetify_backend::access::ApiToken;
-use fleetify_backend::ServeOptions;
+use common::TestServer;
 use jsonwebtoken::{encode, EncodingKey, Header};
 use rsa::pkcs8::EncodePrivateKey;
 use rsa::traits::PublicKeyParts;
@@ -55,11 +55,8 @@ async fn sessions_api_round_trip_with_auth() {
     std::env::set_var("FLEETIFY_AUDIENCE", "http://127.0.0.1:8765");
 
     // 4. Boot the real backend.
-    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let handle = fleetify_backend::serve(addr, ServeOptions::api_only(ApiToken::generate()))
-        .await
-        .expect("serve");
-    let base = format!("http://{}", handle.local_addr());
+    let server = TestServer::start().await;
+    let base = server.url("");
 
     // 5. Mint a valid JWT (iss = auth_base, aud = expected).
     let mut header = Header::new(jsonwebtoken::Algorithm::RS256);
@@ -76,7 +73,8 @@ async fn sessions_api_round_trip_with_auth() {
     )
     .unwrap();
 
-    let client = reqwest::Client::new();
+    // Every request carries the API token; the bearer is per request.
+    let client = server.client();
 
     // /healthz shape (parity {"status":"ok","version":"0.1.0"}).
     let hz: serde_json::Value = client
@@ -128,5 +126,5 @@ async fn sessions_api_round_trip_with_auth() {
         .unwrap();
     assert!(list.as_array().unwrap().iter().any(|x| x["id"] == s["id"]));
 
-    handle.shutdown();
+    server.handle.shutdown();
 }

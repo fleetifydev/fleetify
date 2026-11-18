@@ -175,10 +175,19 @@ pub(crate) fn should_load_dotenv(release_build: bool) -> bool {
     !release_build
 }
 
+/// `FLEETIFY_REQUIRE_API_TOKEN=1`: a debug build asks for the API token even
+/// when it runs with `FLEETIFY_NOAUTH=1`. A release build never reads the
+/// variable; it always asks ([`access::token_required`]).
+fn api_token_forced() -> bool {
+    cfg!(debug_assertions) && std::env::var("FLEETIFY_REQUIRE_API_TOKEN").as_deref() == Ok("1")
+}
+
 /// Bind `addr` and start serving on a background task, with the UI files,
 /// external routers and API token in `opts`. The access guard
 /// ([`access::guard`]) answers only requests addressed to the port actually
-/// bound.
+/// bound, and asks API requests for the token unless this is a debug build
+/// running with `FLEETIFY_NOAUTH=1` (and without
+/// `FLEETIFY_REQUIRE_API_TOKEN=1`). Both are read once, here.
 pub async fn serve(addr: SocketAddr, opts: ServeOptions) -> anyhow::Result<ServerHandle> {
     let ServeOptions {
         static_dir,
@@ -406,9 +415,20 @@ pub async fn serve(addr: SocketAddr, opts: ServeOptions) -> anyhow::Result<Serve
     let bg_pool = state.auth.pool.clone();
     let bg_sm = state.sm;
     let bg_cfg = state.app_cfg.clone();
+    let token_required = access::token_required(
+        !cfg!(debug_assertions),
+        auth::is_no_auth(),
+        api_token_forced(),
+    );
+    tracing::info!(
+        target: "fleet-backend",
+        api_token_required = token_required,
+        "access policy"
+    );
     let policy = access::AccessPolicy {
         port: local_addr.port(),
         token: api_token,
+        token_required,
     };
     let router = app(state, static_dir, policy);
     tokio::spawn(async move {
@@ -597,5 +617,21 @@ mod dotenv_tests {
     fn dotenv_is_read_only_by_debug_builds() {
         assert!(!should_load_dotenv(true));
         assert!(should_load_dotenv(false));
+    }
+}
+
+#[cfg(test)]
+mod api_token_tests {
+    use super::api_token_forced;
+
+    #[test]
+    fn only_require_api_token_1_forces_the_token_and_only_in_debug_builds() {
+        // No other lib test reads this variable (none calls serve()).
+        std::env::set_var("FLEETIFY_REQUIRE_API_TOKEN", "1");
+        assert_eq!(api_token_forced(), cfg!(debug_assertions));
+        std::env::set_var("FLEETIFY_REQUIRE_API_TOKEN", "true");
+        assert!(!api_token_forced());
+        std::env::remove_var("FLEETIFY_REQUIRE_API_TOKEN");
+        assert!(!api_token_forced());
     }
 }
