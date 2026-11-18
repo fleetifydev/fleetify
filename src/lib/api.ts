@@ -1,4 +1,5 @@
 import type { EffortCapability } from "@/lib/providers-api";
+import { withApiToken, withApiTokenQuery } from "@/lib/api-token";
 
 const API_BASE = "/api";
 
@@ -74,13 +75,19 @@ async function authHeaders(): Promise<Record<string, string>> {
  *  retries once. A second 401 ends the session: we sign out via the
  *  main process and dispatch fleet:logout so App.tsx can route back to
  *  the sign-in screen. Exported so other modules (plugin-api, mcp-api,
- *  WorkflowsPage, etc.) share the same retry + sign-out semantics. */
+ *  WorkflowsPage, etc.) share the same retry + sign-out semantics.
+ *  Every request also carries the backend's per-run API token. */
 export async function apiFetch(input: RequestInfo, init?: RequestInit): Promise<Response> {
-  const baseHeaders = (init?.headers ?? {}) as Record<string, string>;
-  let res = await fetch(input, { ...init, headers: { ...baseHeaders, ...(await authHeaders()) } });
+  const send = async () => {
+    const withToken = await withApiToken(init);
+    const headers = new Headers(withToken.headers);
+    for (const [name, value] of Object.entries(await authHeaders())) headers.set(name, value);
+    return fetch(input, { ...withToken, headers });
+  };
+  let res = await send();
   if (res.status === 401) {
     await window.fleetify?.getAccessToken({ force: true });
-    res = await fetch(input, { ...init, headers: { ...baseHeaders, ...(await authHeaders()) } });
+    res = await send();
     if (res.status === 401) {
       await window.fleetify?.signOut();
       window.dispatchEvent(new Event("fleet:logout"));
@@ -88,6 +95,14 @@ export async function apiFetch(input: RequestInfo, init?: RequestInit): Promise<
     }
   }
   return res;
+}
+
+/** A backend request that needs only the per-run API token: routes that
+ *  take no access token (the workspace file API, the folder picker, the
+ *  agent scan, …). No JWT, so no refresh-and-retry and no sign-out on a
+ *  401; use `apiFetch` for the routes that check who is signed in. */
+export async function backendFetch(input: string, init?: RequestInit): Promise<Response> {
+  return fetch(input, await withApiToken(init));
 }
 
 // ── SSH (Remote tab) ────────────────────────────────────────────
@@ -763,7 +778,7 @@ export async function dispatchFollowUp(
 }
 
 export async function fetchGroups() {
-  const res = await fetch(`${API_BASE}/groups`);
+  const res = await backendFetch(`${API_BASE}/groups`);
   if (!res.ok) throw new Error("Failed to fetch groups");
   return res.json();
 }
@@ -1051,13 +1066,13 @@ export interface PathValidation {
 }
 
 export async function validatePath(path: string): Promise<PathValidation> {
-  const res = await fetch(`${API_BASE}/fs/validate?path=${encodeURIComponent(path)}`);
+  const res = await backendFetch(`${API_BASE}/fs/validate?path=${encodeURIComponent(path)}`);
   if (!res.ok) throw new Error("Failed to validate path");
   return res.json();
 }
 
 export async function fetchDefaultPath(): Promise<string> {
-  const res = await fetch(`${API_BASE}/fs/default`);
+  const res = await backendFetch(`${API_BASE}/fs/default`);
   if (!res.ok) throw new Error("Failed to fetch default path");
   const data = (await res.json()) as { path: string };
   return data.path;
@@ -1065,7 +1080,7 @@ export async function fetchDefaultPath(): Promise<string> {
 
 export async function pickFolder(initial?: string): Promise<string> {
   const qs = initial ? `?initial=${encodeURIComponent(initial)}` : "";
-  const res = await fetch(`${API_BASE}/fs/pick${qs}`);
+  const res = await backendFetch(`${API_BASE}/fs/pick${qs}`);
   if (!res.ok) throw new Error("Failed to open folder picker");
   const data = (await res.json()) as { path: string };
   return data.path;
@@ -1380,22 +1395,23 @@ export async function analyzeFleetResponse(
 /** Connect to the shared interactive browser stream. Binary messages are
  *  live JPEG frames (DOWN); JSON text messages are user input (UP) —
  *  `{type:"navigate"|"click"|"scroll"|"type"|"key"|"back"|"forward"|"reload", …}`.
- *  Unauthenticated (loopback) for now; the page content is just the agent's
- *  browser viewport. */
-export function createBrowserWebSocket(): WebSocket {
+ *  No access token (loopback); the page content is just the agent's
+ *  browser viewport. The URL carries the per-run API token. */
+export async function createBrowserWebSocket(): Promise<WebSocket> {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return new WebSocket(`${protocol}//${window.location.host}/ws/browser`);
+  return new WebSocket(await withApiTokenQuery(`${protocol}//${window.location.host}/ws/browser`));
 }
 
 export async function createChatWebSocket(sessionId: string): Promise<WebSocket> {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const host = window.location.host;
   // WebSocket browsers don't expose a way to send Authorization headers,
-  // so the JWT rides as a query param. Backend validates + ownership-checks
-  // before accepting any messages on the socket.
+  // so the JWT rides as a query param, next to the per-run API token.
+  // Backend validates + ownership-checks before accepting any messages on
+  // the socket.
   const t = await window.fleetify?.getAccessToken();
   const qs = t?.token ? `?token=${encodeURIComponent(t.token)}` : "";
-  return new WebSocket(`${protocol}//${host}/ws/chat/${sessionId}${qs}`);
+  return new WebSocket(await withApiTokenQuery(`${protocol}//${host}/ws/chat/${sessionId}${qs}`));
 }
 
 /** Open the multiplexed sessions socket — ONE physical connection
@@ -1420,7 +1436,7 @@ export async function createSessionsWebSocket(): Promise<WebSocket> {
     throw new Error("No access token — sign in required");
   }
   const qs = `?token=${encodeURIComponent(t.token)}`;
-  return new WebSocket(`${protocol}//${host}/ws/sessions${qs}`);
+  return new WebSocket(await withApiTokenQuery(`${protocol}//${host}/ws/sessions${qs}`));
 }
 
 // ── Routing summary (Fleet right sidebar Router section) ──────

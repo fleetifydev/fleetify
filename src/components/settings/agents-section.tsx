@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
+import { backendFetch } from "@/lib/api";
 import { AgentCard, type AgentScanEntry } from "./agents/agent-card";
 
 const sectionHeader: React.CSSProperties = {
@@ -16,7 +17,7 @@ const sectionHeader: React.CSSProperties = {
 
 async function fetchAgentScan(refresh: boolean): Promise<Record<string, AgentScanEntry>> {
   try {
-    const r = await fetch(`/api/agents/scan${refresh ? "?refresh=1" : ""}`, {
+    const r = await backendFetch(`/api/agents/scan${refresh ? "?refresh=1" : ""}`, {
       credentials: "include",
     });
     if (!r.ok) return {};

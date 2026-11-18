@@ -17,7 +17,7 @@ import { SpawnFormCard } from "./spawn-form-card";
 import { ChatError } from "./chat-error";
 import { LogoMark } from "@/components/brand/logo-mark";
 import { ChevronRight, Copy, Check, ArrowRightLeft, CheckCircle2, AlertCircle, Terminal, FileText, Globe, Search, Cpu, CheckSquare, FolderSearch, Pencil, Wrench, Brain, MoveHorizontal, Trash2, FolderOpen, Download, Code2, BarChart2, BookOpen, Image, CornerDownLeft, Send, Bookmark, BookmarkCheck, RotateCcw, X, Clock, ArrowUp, Database } from "lucide-react";
-import { createSessionMemory } from "@/lib/api";
+import { createSessionMemory, backendFetch } from "@/lib/api";
 import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { claimEscape } from "@/hooks/use-escape-to-stop";
@@ -611,7 +611,7 @@ function ReadFilePreview({ filePath }: { filePath: string }) {
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/fs/file?path=${encodeURIComponent(filePath)}`)
+    backendFetch(`/api/fs/file?path=${encodeURIComponent(filePath)}`)
       .then((r) => r.json())
       .then((j: { content?: string; error?: string }) => {
         if (cancelled) return;

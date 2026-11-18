@@ -20,6 +20,7 @@ import {
   SELECT_MODES, copyTextSafe, parsePickPayload, parseSelectMode, pickToRefDetail,
   selectModeLabel, selectModeMenuLabel, type SelectMode,
 } from "@/lib/element-ref";
+import { withApiTokenQuery } from "@/lib/api-token";
 import { useAppStore } from "@/stores/app-store";
 
 /* ── Browser pane ──
@@ -211,25 +212,36 @@ function BrowserView() {
   }, []);
 
   // Agent CDP → panel: mirror the backend browser's URL into the native webview.
+  // The URL carries the API token, which takes an await: `closed` keeps a
+  // socket from opening once the effect is cleaned up.
   useEffect(() => {
+    let closed = false;
     let ws: WebSocket | null = null;
-    try {
-      const proto = location.protocol === "https:" ? "wss:" : "ws:";
-      ws = new WebSocket(`${proto}//${location.host}/ws/browser-url`);
-      mirrorWsRef.current = ws;
-      ws.onmessage = (ev) => {
-        try {
-          const m = JSON.parse(typeof ev.data === "string" ? ev.data : "") as { type?: string; url?: string };
-          if (m.type === "url" && typeof m.url === "string" && m.url && m.url !== lastMirror.current) {
-            lastMirror.current = m.url;
-            setEditUrl(m.url);
-            openOrNavigate(m.url);
-          }
-        } catch { /* ignore */ }
-      };
-      ws.onclose = () => { if (mirrorWsRef.current === ws) mirrorWsRef.current = null; };
-    } catch { /* no mirroring */ }
-    return () => { ws?.close(); if (mirrorWsRef.current === ws) mirrorWsRef.current = null; };
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    void withApiTokenQuery(`${proto}//${location.host}/ws/browser-url`).then((url) => {
+      if (closed) return;
+      try {
+        const socket = new WebSocket(url);
+        ws = socket;
+        mirrorWsRef.current = socket;
+        socket.onmessage = (ev) => {
+          try {
+            const m = JSON.parse(typeof ev.data === "string" ? ev.data : "") as { type?: string; url?: string };
+            if (m.type === "url" && typeof m.url === "string" && m.url && m.url !== lastMirror.current) {
+              lastMirror.current = m.url;
+              setEditUrl(m.url);
+              openOrNavigate(m.url);
+            }
+          } catch { /* ignore */ }
+        };
+        socket.onclose = () => { if (mirrorWsRef.current === socket) mirrorWsRef.current = null; };
+      } catch { /* no mirroring */ }
+    });
+    return () => {
+      closed = true;
+      ws?.close();
+      if (mirrorWsRef.current === ws) mirrorWsRef.current = null;
+    };
   }, [openOrNavigate]);
 
   // Page titles arrive separately (content script → meta channel) — fold them

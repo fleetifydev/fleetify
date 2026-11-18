@@ -23,9 +23,10 @@ import { BrowserView } from "@/components/workspace/views/browser-view";
 import { MONO, SANS } from "@/components/workspace/typography";
 import {
   fetchSessionMemory, createSessionMemory, deleteSessionMemory,
-  fetchMessages,
+  fetchMessages, backendFetch,
   type SessionMemoryItem,
 } from "@/lib/api";
+import { withApiTokenQuery } from "@/lib/api-token";
 import { XtermShell } from "@/components/workspace/xterm-shell";
 import { useChatStore, selectSession, type ProcessEvent } from "@/stores/chat-store";
 import { usePinnedSession } from "@/lib/session-pins";
@@ -62,7 +63,7 @@ type GitStatus = "M" | "U" | "A" | "D" | null;
 
 /* ─── API ─── */
 async function apiDir(p: string): Promise<FsEntry[]> {
-  try { const r = await fetch(`/api/fs/dir?path=${encodeURIComponent(p)}`); return r.ok ? r.json() : []; } catch { return []; }
+  try { const r = await backendFetch(`/api/fs/dir?path=${encodeURIComponent(p)}`); return r.ok ? r.json() : []; } catch { return []; }
 }
 
 /* Folders first, alphabetical within each kind. Mirrors VS Code's
@@ -91,10 +92,10 @@ function entriesEqual(a: FsEntry[] | null, b: FsEntry[]): boolean {
   return true;
 }
 async function apiFile(p: string): Promise<{ content?: string; error?: string }> {
-  try { const r = await fetch(`/api/fs/file?path=${encodeURIComponent(p)}`); return r.ok ? r.json() : { error: "Failed" }; } catch { return { error: "Failed" }; }
+  try { const r = await backendFetch(`/api/fs/file?path=${encodeURIComponent(p)}`); return r.ok ? r.json() : { error: "Failed" }; } catch { return { error: "Failed" }; }
 }
 async function apiGit(p: string): Promise<GitInfo> {
-  try { const r = await fetch(`/api/fs/git?path=${encodeURIComponent(p)}`); return r.ok ? r.json() : {}; } catch { return {}; }
+  try { const r = await backendFetch(`/api/fs/git?path=${encodeURIComponent(p)}`); return r.ok ? r.json() : {}; } catch { return {}; }
 }
 type DiffScope = "auto" | "working" | "branch";
 type DiffResult = {
@@ -109,18 +110,18 @@ async function apiGitDiff(p: string, file?: string, scope: DiffScope = "auto"): 
     const params = new URLSearchParams({ path: p });
     if (file) params.set("file", file);
     if (scope !== "auto") params.set("scope", scope);
-    const r = await fetch(`/api/fs/git/diff?${params.toString()}`);
+    const r = await backendFetch(`/api/fs/git/diff?${params.toString()}`);
     return r.ok ? r.json() : { error: "Failed" };
   } catch { return { error: "Failed" }; }
 }
 async function apiCreate(path: string, type: "file" | "folder"): Promise<boolean> {
-  try { const r = await fetch("/api/fs/create", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ path, type }) }); return r.ok; } catch { return false; }
+  try { const r = await backendFetch("/api/fs/create", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ path, type }) }); return r.ok; } catch { return false; }
 }
 async function apiDelete(path: string): Promise<boolean> {
-  try { const r = await fetch(`/api/fs/delete?path=${encodeURIComponent(path)}`, { method:"DELETE" }); return r.ok; } catch { return false; }
+  try { const r = await backendFetch(`/api/fs/delete?path=${encodeURIComponent(path)}`, { method:"DELETE" }); return r.ok; } catch { return false; }
 }
 async function apiRename(path: string, name: string): Promise<{ ok: boolean; path?: string }> {
-  try { const r = await fetch("/api/fs/rename", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ path, name }) }); return r.ok ? r.json() : { ok: false }; } catch { return { ok: false }; }
+  try { const r = await backendFetch("/api/fs/rename", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ path, name }) }); return r.ok ? r.json() : { ok: false }; } catch { return { ok: false }; }
 }
 
 /* ─── Context Menu ─── */
@@ -552,7 +553,7 @@ export function FileTree({ root, selectedPath, onSelect }: {
 /* ─── Save API ─── */
 async function apiSave(path: string, content: string): Promise<boolean> {
   try {
-    const r = await fetch("/api/fs/file", {
+    const r = await backendFetch("/api/fs/file", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path, content }),
@@ -1072,7 +1073,9 @@ function TerminalPanel({ cwd, termKey }: { cwd: string; termKey: string }) {
       term.open(termRef.current!);
       fit.fit();
       const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const ws = new WebSocket(`${proto}//${window.location.host}/ws/terminal?cwd=${encodeURIComponent(cwd)}`);
+      const ws = new WebSocket(
+        await withApiTokenQuery(`${proto}//${window.location.host}/ws/terminal?cwd=${encodeURIComponent(cwd)}`),
+      );
       ws.onopen = () => term.focus();
       ws.onmessage = e => term.write(e.data);
       ws.onerror = () => term.writeln("\r\n\x1b[33m⚠ Terminal unavailable\x1b[0m");

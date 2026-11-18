@@ -13,6 +13,7 @@
 import { useAppStore } from "@/stores/app-store";
 import { useChatStore } from "@/stores/chat-store";
 import { exportChat } from "@/lib/export-chat";
+import { apiFetch } from "@/lib/api";
 import {
   Pin, PinOff, Type, GitFork, Download, Square, RotateCcw, RefreshCw, Trash2,
   MessageSquare,
@@ -70,7 +71,7 @@ export function SessionContextMenu({ x, y, menuRef, session, onClose, onOpen, on
   const doRename = () => {
     const n = prompt("Rename:", session.title);
     if (n) {
-      fetch(`/api/sessions/${session.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: n }) })
+      apiFetch(`/api/sessions/${session.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: n }) })
         .then(() => updateSession(session.id, { title: n }));
     }
   };

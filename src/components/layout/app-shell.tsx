@@ -27,6 +27,7 @@ import { useDiscoveredModelsStore } from "@/stores/discovered-models-store";
 import { providers } from "@/lib/providers-api";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { fetchSessions, deleteEmptyDrafts, updateSession as apiUpdateSession } from "@/lib/api";
+import { withApiTokenQuery } from "@/lib/api-token";
 import type { Session, SessionStatus } from "@/types/session";
 
 // Clamp bounds for the shared sidebar width (the value itself lives in
@@ -350,15 +351,20 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
   // freeze: a session that finished mid-blip stays "running" in the
   // sidebar until the user reloads. We restart the connection ourselves
   // on error with a small backoff so the indicators recover.
+  //
+  // The URL carries the API token, which takes an await; `cancelled` is
+  // checked after it so no stream opens once the effect is cleaned up.
   const sseRef = useRef<EventSource | null>(null);
   useEffect(() => {
     let cancelled = false;
     let backoffMs = 1000;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const open = () => {
+    const open = async () => {
       if (cancelled) return;
-      const es = new EventSource("/events/status");
+      const url = await withApiTokenQuery("/events/status");
+      if (cancelled) return;
+      const es = new EventSource(url);
       sseRef.current = es;
       es.onopen = () => { backoffMs = 1000; }; // reset on success
       es.onmessage = (event) => {
@@ -376,11 +382,11 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
         if (sseRef.current === es) sseRef.current = null;
         if (cancelled) return;
         if (reconnectTimer) clearTimeout(reconnectTimer);
-        reconnectTimer = setTimeout(open, backoffMs);
+        reconnectTimer = setTimeout(() => { void open(); }, backoffMs);
         backoffMs = Math.min(backoffMs * 2, 30_000);
       };
     };
-    open();
+    void open();
 
     return () => {
       cancelled = true;
