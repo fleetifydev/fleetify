@@ -128,8 +128,6 @@ fn refuse(reason: &'static str, req: &Request) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
     use axum::body::Body;
     use axum::http::Request;
     use axum::middleware::from_fn_with_state;
@@ -138,6 +136,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+    use crate::test_support::LogCapture;
 
     #[test]
     fn the_backends_own_address_is_allowed_in_any_letter_case() {
@@ -284,43 +283,5 @@ mod tests {
         assert!(text.contains("method=POST"), "{text}");
         assert!(text.contains(r#"path="/api/x""#), "{text}");
         assert!(!text.contains("SECRET"), "the query string was logged");
-    }
-
-    /// Everything logged on this thread while it lives, as plain text.
-    struct LogCapture {
-        lines: Arc<Mutex<Vec<u8>>>,
-        _guard: tracing::subscriber::DefaultGuard,
-    }
-
-    impl LogCapture {
-        fn start() -> Self {
-            let lines = Arc::new(Mutex::new(Vec::new()));
-            let sink = Arc::clone(&lines);
-            let subscriber = tracing_subscriber::fmt()
-                .with_max_level(tracing::Level::TRACE)
-                .with_ansi(false)
-                .with_writer(move || CaptureWriter(Arc::clone(&sink)))
-                .finish();
-            Self {
-                lines,
-                _guard: tracing::subscriber::set_default(subscriber),
-            }
-        }
-
-        fn text(&self) -> String {
-            String::from_utf8_lossy(&self.lines.lock().unwrap()).into_owned()
-        }
-    }
-
-    struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
-
-    impl std::io::Write for CaptureWriter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
     }
 }

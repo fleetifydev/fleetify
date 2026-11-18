@@ -31,6 +31,19 @@ async fn get_with_host(server: &TestServer, path: &str, host: &str) -> reqwest::
         .unwrap()
 }
 
+/// The response's body is plain text, as the guard's 403 is.
+fn assert_plain_text(resp: &reqwest::Response) {
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        content_type.starts_with("text/plain"),
+        "content-type: {content_type:?}"
+    );
+}
+
 /// Send `request` over a plain TCP connection and return the raw response.
 async fn raw_exchange(addr: SocketAddr, request: &str) -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -67,6 +80,7 @@ async fn another_host_gets_a_plain_text_403_on_every_path() {
 
     let resp = get_with_host(&server, "/healthz", &evil).await;
     assert_eq!(resp.status(), 403);
+    assert_plain_text(&resp);
     assert_eq!(resp.text().await.unwrap(), "forbidden");
 
     // A path no route matches: the 404 is behind the check too.
@@ -110,6 +124,8 @@ async fn a_cross_origin_preflight_gets_no_cors_headers() {
         .send()
         .await
         .unwrap();
+    // It reached the router: the guard would have answered 403.
+    assert_ne!(resp.status(), 403, "the guard refused the preflight");
     assert!(
         resp.headers().get("access-control-allow-origin").is_none(),
         "CORS headers sent: {:?}",

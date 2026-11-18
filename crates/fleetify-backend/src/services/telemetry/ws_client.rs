@@ -504,6 +504,7 @@ mod tests {
     use super::*;
     use crate::services::telemetry::cloud_gate::test_support::GateGuard;
     use crate::services::telemetry::set_cloud_enabled;
+    use crate::test_support::LogCapture;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[tokio::test]
@@ -603,44 +604,6 @@ mod tests {
             ws_url_for("127.0.0.1:3001/"),
             "ws://127.0.0.1:3001/api/realtime/connect"
         );
-    }
-
-    /// Everything logged on this thread while the guard lives, as plain text.
-    struct LogCapture {
-        lines: Arc<std::sync::Mutex<Vec<u8>>>,
-        _guard: tracing::subscriber::DefaultGuard,
-    }
-
-    impl LogCapture {
-        fn start() -> Self {
-            let lines = Arc::new(std::sync::Mutex::new(Vec::new()));
-            let sink = Arc::clone(&lines);
-            let subscriber = tracing_subscriber::fmt()
-                .with_max_level(tracing::Level::TRACE)
-                .with_ansi(false)
-                .with_writer(move || CaptureWriter(Arc::clone(&sink)))
-                .finish();
-            Self {
-                lines,
-                _guard: tracing::subscriber::set_default(subscriber),
-            }
-        }
-
-        fn text(&self) -> String {
-            String::from_utf8_lossy(&self.lines.lock().unwrap()).into_owned()
-        }
-    }
-
-    struct CaptureWriter(Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl std::io::Write for CaptureWriter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
     }
 
     const BEARER: &str = "bearer-0123456789-SECRET-abcdef";
