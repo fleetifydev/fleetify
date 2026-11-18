@@ -14,6 +14,8 @@ import type { ProviderTile } from "@/lib/providers-api";
 vi.mock("@/lib/api", () => ({
   fetchAgentModels: vi.fn(async () => ({ models: [], current: null })),
   fetchProviderModels: vi.fn(async () => []),
+  // discoverLive probes the catalog first; "unchanged" skips the model heal.
+  revalidateCatalog: vi.fn(async () => ({ changed: false, probed: false, commit: null, tag: null })),
   // OnboardingChat (pulled in transitively) imports these; never called here.
   apiScanProviders: vi.fn(async () => null),
   checkPythonRuntime: vi.fn(async () => null),
