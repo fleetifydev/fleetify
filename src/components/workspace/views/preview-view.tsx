@@ -4,7 +4,9 @@
  * Deliberately NOT a browser: no address bar, no history, no tabs. The user
  * navigates inside their own app; anything more is what the Browser view is
  * for. The URL comes from the dev-server sniffer reading terminal output, and
- * can be pinned by hand when detection misses.
+ * can be pinned by hand when detection misses: a local dev server only
+ * (localhost or 127.0.0.1), the hosts the app's Content-Security-Policy lets
+ * it frame.
  *
  * An iframe rather than the native webview: the webview renders ABOVE the DOM
  * (see BrowserView), which would occlude this pane's own header for no benefit
@@ -22,11 +24,15 @@ function normalise(raw: string): string {
   return /^https?:\/\//.test(t) ? t : `http://${t}`;
 }
 
+/** Shown when a pinned address isn't a local dev server (`isLoopbackDevUrl`). */
+const LOCAL_ONLY = "Preview shows local dev servers only (localhost or 127.0.0.1).";
+
 export function PreviewView() {
   const cwd = useActiveCwd() ?? "";
   const requestClose = useContext(PaneCloseContext);
   const url = useDevServerStore(selectDevUrl(cwd));
   const [draft, setDraft] = useState("");
+  const [refused, setRefused] = useState(false);
   // Bumping this remounts the iframe — the only way to force a reload of a
   // cross-origin document we are not allowed to reach into.
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -100,13 +106,13 @@ export function PreviewView() {
             <form
               onSubmit={e => {
                 e.preventDefault();
-                if (draft.trim()) setManualUrl(cwd, normalise(draft));
+                if (draft.trim()) setRefused(!setManualUrl(cwd, normalise(draft)));
               }}
               style={{ display: "flex", gap: 6 }}
             >
               <input
                 value={draft}
-                onChange={e => setDraft(e.target.value)}
+                onChange={e => { setDraft(e.target.value); setRefused(false); }}
                 placeholder="localhost:3000"
                 aria-label="Preview address"
                 style={{
@@ -126,6 +132,11 @@ export function PreviewView() {
                 Open
               </button>
             </form>
+          )}
+          {refused && (
+            <div role="alert" style={{ fontSize: 11.5, color: "var(--c-err)", textAlign: "center", maxWidth: 250, lineHeight: 1.5 }}>
+              {LOCAL_ONLY}
+            </div>
           )}
         </div>
       )}

@@ -11,7 +11,7 @@
  * the individual chunk, so the split case still resolves.
  */
 import { create } from "zustand";
-import { detectDevServerUrl } from "@/lib/dev-server-url";
+import { detectDevServerUrl, isLoopbackDevUrl } from "@/lib/dev-server-url";
 
 /** Enough to hold any boot banner; small enough to re-scan on every chunk. */
 const TAIL_CAP = 4096;
@@ -47,12 +47,18 @@ export function feedPtyChunk(cwd: string, chunk: string): void {
   });
 }
 
-/** Pin an address for `cwd`, or pass null to fall back to detection. */
-export function setManualUrl(cwd: string, url: string | null): void {
-  if (!cwd) return;
+/**
+ * Pin an address for `cwd`, or pass null to fall back to detection. Only a
+ * local dev server can be pinned (`isLoopbackDevUrl`). Returns whether the
+ * pin changed.
+ */
+export function setManualUrl(cwd: string, url: string | null): boolean {
+  if (!cwd) return false;
+  if (url !== null && !isLoopbackDevUrl(url)) return false;
   useDevServerStore.setState(s => ({
     byCwd: { ...s.byCwd, [cwd]: { ...(s.byCwd[cwd] ?? EMPTY), manual: url } },
   }));
+  return true;
 }
 
 /** Manual pin wins; otherwise the detected URL; otherwise null. */

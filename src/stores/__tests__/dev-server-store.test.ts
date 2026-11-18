@@ -41,6 +41,21 @@ describe("dev-server-store", () => {
     expect(read(CWD)).toBe("http://localhost:9999");
   });
 
+  it("refuses to pin an address that is not a local dev server", () => {
+    feedPtyChunk(CWD, "http://localhost:3000\n");
+    expect(setManualUrl(CWD, "https://example.com")).toBe(false);
+    expect(setManualUrl(CWD, "http://192.168.1.2:3000")).toBe(false);
+    expect(read(CWD)).toBe("http://localhost:3000");
+    expect(useDevServerStore.getState().byCwd[CWD].manual).toBeNull();
+  });
+
+  it("says when it pinned an address", () => {
+    expect(setManualUrl(CWD, "http://127.0.0.1:4000")).toBe(true);
+    expect(read(CWD)).toBe("http://127.0.0.1:4000");
+    expect(setManualUrl(CWD, null)).toBe(true);
+    expect(read(CWD)).toBeNull();
+  });
+
   it("clearing the manual URL falls back to detected", () => {
     feedPtyChunk(CWD, "http://localhost:3000\n");
     setManualUrl(CWD, "http://localhost:9999");

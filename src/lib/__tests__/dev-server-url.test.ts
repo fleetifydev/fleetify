@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { detectDevServerUrl } from "@/lib/dev-server-url";
+import { detectDevServerUrl, isLoopbackDevUrl } from "@/lib/dev-server-url";
 
 describe("detectDevServerUrl", () => {
   it("finds a Vite banner (ANSI-coloured)", () => {
@@ -42,5 +42,31 @@ describe("detectDevServerUrl", () => {
 
   it("returns null for unrelated output", () => {
     expect(detectDevServerUrl("$ npm run build\n✓ built in 1.2s")).toBeNull();
+  });
+});
+
+describe("isLoopbackDevUrl", () => {
+  it.each([
+    "http://localhost:5173",
+    "http://127.0.0.1:3000/x",
+    "https://localhost:8443",
+  ])("accepts %s", (url) => {
+    expect(isLoopbackDevUrl(url)).toBe(true);
+  });
+
+  it.each([
+    "http://192.168.1.2:3000",
+    "https://example.com",
+    "http://[::1]:3000",
+    "http://0.0.0.0:3000",
+    "javascript:alert(1)",
+    // A name that only starts like a loopback host.
+    "http://localhost.example.com:3000",
+    "http://127.0.0.1.example.com:3000",
+    "file:///etc/passwd",
+    "localhost:3000",
+    "",
+  ])("refuses %s", (url) => {
+    expect(isLoopbackDevUrl(url)).toBe(false);
   });
 });

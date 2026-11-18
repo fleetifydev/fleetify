@@ -40,3 +40,20 @@ export function detectDevServerUrl(text: string): string | null {
   for (const m of clean.matchAll(LOOPBACK)) port = m[1] ?? port;
   return port ? `http://localhost:${port}` : null;
 }
+
+/**
+ * Whether the Preview pane may frame `url`: http or https on `localhost` or
+ * `127.0.0.1`, the two hosts the app's Content-Security-Policy lets it frame
+ * (`frame-src`). Detection already collapses every loopback spelling to
+ * `localhost`; this guards the address a user pins by hand.
+ */
+export function isLoopbackDevUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+  return parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+}
