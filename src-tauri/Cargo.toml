@@ -90,7 +90,8 @@ x11-dl = "2"
 [dev-dependencies]
 tempfile = "3"
 # The vendored runtime (root Cargo.toml's [patch.crates-io]), for the tests of
-# its postMessage IPC patch (vendor/tauri-runtime-wry/FLEETIFY_PATCH.md).
+# its postMessage IPC and IPC-free Browser panel patches
+# (vendor/tauri-runtime-wry/FLEETIFY_PATCH.md).
 # No features: tauri enables the ones it needs.
 tauri-runtime-wry = { version = "2", default-features = false }
 

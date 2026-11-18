@@ -1675,4 +1675,128 @@ mod tests {
              postmessage_ipc_request(request, WEBKITGTK):\n{handler}"
         );
     }
+
+    // ── The Browser panel gets no Tauri IPC ──
+    //
+    // The Browser panel loads any website, and none of its features use IPC:
+    // its script reports back through navigations the app intercepts, and
+    // the app drives it with native eval. The vendored runtime builds the
+    // webview with its label without an IPC handler, without Tauri's
+    // initialization scripts (the invoke key is in one) and, on macOS and
+    // Windows, without the `ipc` scheme. It keeps only the scripts that start
+    // with the marker (vendor/tauri-runtime-wry/FLEETIFY_PATCH.md).
+
+    /// The vendored runtime's source. (A Windows checkout may have CRLF line
+    /// endings.)
+    fn vendored_runtime() -> String {
+        include_str!("../../../vendor/tauri-runtime-wry/src/lib.rs").replace("\r\n", "\n")
+    }
+
+    /// `src/shell/ipc/mod.rs`, which builds the Browser panel.
+    fn ipc_module() -> String {
+        include_str!("ipc/mod.rs").replace("\r\n", "\n")
+    }
+
+    #[test]
+    fn the_browser_panel_and_the_vendored_runtime_agree_on_its_label_and_marker() {
+        let runtime = vendored_runtime();
+        let ipc = ipc_module();
+        assert!(
+            runtime.contains(r#"pub const IPC_FREE_WEBVIEW_LABEL: &str = "browser-embed";"#),
+            "the vendored runtime must give the webview labelled \"browser-embed\" no IPC"
+        );
+        assert!(
+            ipc.contains(r#"pub(crate) const BROWSER_EMBED_LABEL: &str = "browser-embed";"#),
+            "the Browser panel must keep the label \"browser-embed\""
+        );
+        assert_eq!(BROWSER_EMBED_LABEL, "browser-embed");
+
+        assert!(
+            runtime.contains(
+                r#"pub const IPC_FREE_SCRIPT_MARKER: &str = "/* fleetify:browser-embed */";"#
+            ),
+            "the vendored runtime must keep the scripts marked /* fleetify:browser-embed */"
+        );
+        let (_, select_js) = ipc
+            .split_once(r##"const SELECT_JS: &str = r#""##)
+            .expect("ipc/mod.rs defines SELECT_JS as a raw string");
+        assert!(
+            select_js.starts_with("/* fleetify:browser-embed */\n"),
+            "SELECT_JS must start with the line /* fleetify:browser-embed */, or the \
+             Browser panel loses its element picker"
+        );
+
+        assert!(runtime.contains("FLEETIFY PATCH ipc-free-webview"));
+        assert!(runtime.contains("fn keep_script_in_ipc_free_webview("));
+    }
+
+    #[test]
+    fn the_vendored_runtime_builds_the_browser_panel_without_ipc() {
+        // A re-vendor must keep the patch's three call sites in
+        // create_webview, in this order. Whitespace is collapsed so a
+        // reformat doesn't matter.
+        let runtime = vendored_runtime();
+        let start = runtime
+            .find("fn create_webview<")
+            .expect("the vendored runtime has create_webview");
+        let create = &runtime[start..];
+        let create = &create[..create.find("\n}\n").expect("the function ends")];
+        let create = create.split_whitespace().collect::<Vec<_>>().join(" ");
+        let steps = [
+            // The Browser panel...
+            "let ipc_free = label == IPC_FREE_WEBVIEW_LABEL;",
+            // ...gets no IPC handler,
+            "if !ipc_free { webview_builder = webview_builder.with_ipc_handler(create_ipc_handler(",
+            // only the initialization scripts that carry the marker,
+            "for script in webview_attributes.initialization_scripts {",
+            "if ipc_free && !keep_script_in_ipc_free_webview(&script.script) { continue; }",
+            ".with_initialization_script_for_main_only(script.script, script.for_main_frame_only);",
+            // and no `ipc` scheme where each webview registers its own.
+            "for (scheme, protocol) in uri_scheme_protocols {",
+            r#"if ipc_free && scheme == "ipc" { continue; }"#,
+            ".with_asynchronous_custom_protocol(",
+        ];
+        let mut rest = create.as_str();
+        for step in steps {
+            let at = rest.find(step).unwrap_or_else(|| {
+                panic!("create_webview must have, after the steps before it:\n{step}")
+            });
+            rest = &rest[at + step.len()..];
+        }
+        assert_eq!(
+            runtime.matches(".with_ipc_handler(").count(),
+            1,
+            "create_webview's guarded call must be the runtime's only IPC handler"
+        );
+    }
+
+    use tauri_runtime_wry::{
+        keep_script_in_ipc_free_webview, IPC_FREE_SCRIPT_MARKER, IPC_FREE_WEBVIEW_LABEL,
+    };
+
+    use crate::shell::ipc::SELECT_JS;
+
+    #[test]
+    fn the_browser_panel_keeps_its_select_script_and_none_of_tauris() {
+        assert_eq!(BROWSER_EMBED_LABEL, IPC_FREE_WEBVIEW_LABEL);
+        assert_eq!(IPC_FREE_SCRIPT_MARKER, "/* fleetify:browser-embed */");
+        assert!(SELECT_JS.starts_with(&format!("{IPC_FREE_SCRIPT_MARKER}\n")));
+        assert!(keep_script_in_ipc_free_webview(SELECT_JS));
+        assert!(keep_script_in_ipc_free_webview(&format!(
+            "\n  {IPC_FREE_SCRIPT_MARKER}\n(function () {{}})();"
+        )));
+        // Tauri's scripts don't start with the marker: the first one it adds
+        // defines __TAURI_INTERNALS__, and the invoke key comes in another.
+        for script in [
+            "\n        Object.defineProperty(window, 'isTauri', {\n          value: true,\n        });\n",
+            "window.__TAURI_INTERNALS__.invoke('pty_spawn'); /* fleetify:browser-embed */",
+            "/* fleetify:browser */",
+            "",
+        ] {
+            assert!(
+                !keep_script_in_ipc_free_webview(script),
+                "the Browser panel would get {script:?}"
+            );
+        }
+    }
 }

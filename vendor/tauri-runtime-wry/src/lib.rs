@@ -4872,6 +4872,32 @@ fn fleet_sync_fixed_child(window: &Window, webview: &wry::WebView, bounds: wry::
   widget.set_size_request(size.width, size.height);
 }
 
+/// FLEETIFY PATCH ipc-free-webview (see vendor/tauri-runtime-wry/FLEETIFY_PATCH.md):
+/// the label of the webview that gets no Tauri IPC: the app's Browser panel,
+/// which loads any website and has no feature that uses IPC. For it,
+/// `create_webview` installs no IPC handler, adds only the initialization
+/// scripts [`keep_script_in_ipc_free_webview`] accepts, and on macOS and
+/// Windows registers no `ipc` scheme. On Linux the schemes belong to the
+/// shared web context; requests from the panel carry no invoke key there, so
+/// Tauri refuses them before it looks at the command.
+#[doc(hidden)]
+pub const IPC_FREE_WEBVIEW_LABEL: &str = "browser-embed";
+
+/// FLEETIFY PATCH ipc-free-webview: how an initialization script that the app
+/// wants in that webview starts.
+#[doc(hidden)]
+pub const IPC_FREE_SCRIPT_MARKER: &str = "/* fleetify:browser-embed */";
+
+/// FLEETIFY PATCH ipc-free-webview: whether the webview labelled
+/// [`IPC_FREE_WEBVIEW_LABEL`] gets this initialization script. Only scripts
+/// that start with [`IPC_FREE_SCRIPT_MARKER`], after any whitespace, do.
+/// Tauri's own don't: they define `__TAURI_INTERNALS__` and `__TAURI__`, and
+/// one of them holds the invoke key.
+#[doc(hidden)]
+pub fn keep_script_in_ipc_free_webview(script: &str) -> bool {
+  script.trim_start().starts_with(IPC_FREE_SCRIPT_MARKER)
+}
+
 fn create_webview<T: UserEvent>(
   kind: WebviewKind,
   window: &Window,
@@ -5288,21 +5314,45 @@ You may have it installed on another user account, but it is not available for t
     }
   }
 
-  webview_builder = webview_builder.with_ipc_handler(create_ipc_handler(
-    kind,
-    window_id.clone(),
-    id,
-    context.clone(),
-    label.clone(),
-    ipc_handler,
-  ));
+  // FLEETIFY PATCH ipc-free-webview: the Browser panel gets no IPC handler,
+  // only the initialization scripts that carry the marker (none of Tauri's)
+  // and, below, no `ipc` scheme. See IPC_FREE_WEBVIEW_LABEL.
+  let ipc_free = label == IPC_FREE_WEBVIEW_LABEL;
+
+  if !ipc_free {
+    webview_builder = webview_builder.with_ipc_handler(create_ipc_handler(
+      kind,
+      window_id.clone(),
+      id,
+      context.clone(),
+      label.clone(),
+      ipc_handler,
+    ));
+  }
 
   for script in webview_attributes.initialization_scripts {
+    if ipc_free && !keep_script_in_ipc_free_webview(&script.script) {
+      continue;
+    }
     webview_builder = webview_builder
       .with_initialization_script_for_main_only(script.script, script.for_main_frame_only);
   }
 
   for (scheme, protocol) in uri_scheme_protocols {
+    // FLEETIFY PATCH ipc-free-webview: no `ipc` scheme for the Browser panel
+    // where each webview registers its own schemes. On Linux they belong to
+    // the web context, which the panel shares with the app's webview (below).
+    #[cfg(not(any(
+      target_os = "linux",
+      target_os = "dragonfly",
+      target_os = "freebsd",
+      target_os = "netbsd",
+      target_os = "openbsd"
+    )))]
+    if ipc_free && scheme == "ipc" {
+      continue;
+    }
+
     // on Linux the custom protocols are associated with the web context
     // and you cannot register a scheme more than once
     #[cfg(any(

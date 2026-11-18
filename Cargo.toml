@@ -65,14 +65,15 @@ incremental = true
 # unaffected (it strips symbols).
 debug = "line-tables-only"
 
-# Vendored fork of tauri-runtime-wry 2.11.2 with two changes, documented in
+# Vendored fork of tauri-runtime-wry 2.11.2 with three changes, documented in
 # vendor/tauri-runtime-wry/FLEETIFY_PATCH.md: the Linux embedded browser
 # (right-panel webview) can be positioned instead of stacking full-width at the
-# bottom of the window (upstream bug: tauri-apps/tauri #13071 / #10420), and on
+# bottom of the window (upstream bug: tauri-apps/tauri #13071 / #10420), on
 # WebKitGTK a frame inside the app can't use the app page's IPC permissions
-# through postMessage. Everything else is a verbatim copy of the published
-# crate. Remove this patch (and the vendor/ dir) once upstream fixes both. The
-# version must stay equal to the tauri-runtime-wry that `tauri` pulls in, or
-# Cargo will ignore the patch.
+# through postMessage, and the embedded browser gets no Tauri IPC at all.
+# Everything else is a verbatim copy of the published crate. Remove this patch
+# (and the vendor/ dir) once upstream covers all three. The version must stay
+# equal to the tauri-runtime-wry that `tauri` pulls in, or Cargo will ignore
+# the patch.
 [patch.crates-io]
 tauri-runtime-wry = { path = "vendor/tauri-runtime-wry" }

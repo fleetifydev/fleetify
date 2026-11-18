@@ -1,7 +1,7 @@
 # Vendored `tauri-runtime-wry` — Fleetify patches
 
 This directory is a **verbatim copy of `tauri-runtime-wry` 2.11.2** from crates.io
-with two changes. It exists only so we can carry them via `[patch.crates-io]`
+with three changes. It exists only so we can carry them via `[patch.crates-io]`
 (see the workspace root `Cargo.toml`). Everything else is upstream, unmodified.
 Each change is marked in `src/lib.rs`:
 
@@ -11,6 +11,10 @@ Each change is marked in `src/lib.rs`:
    postMessage IPC request gets an origin no capability matches, so a frame
    inside the app can't use the app page's permissions. See
    [Patch postmessage-ipc](#patch-postmessage-ipc-frames-cant-use-the-app-pages-permissions).
+3. `FLEETIFY PATCH ipc-free-webview` (security): the Browser panel's webview
+   (label `browser-embed`) gets no Tauri IPC: no handler, none of Tauri's
+   initialization scripts, and no `ipc` scheme where schemes are per webview.
+   See [Patch ipc-free-webview](#patch-ipc-free-webview-the-browser-panel-gets-no-tauri-ipc).
 
 # Patch v2: positioned child webviews on Linux
 
@@ -155,6 +159,75 @@ that `create_ipc_handler` still calls it.
 good after one failed custom-protocol request. A dropped message would leave
 the caller's promise pending forever; a refusal surfaces as an error.
 
+# Patch ipc-free-webview: the Browser panel gets no Tauri IPC
+
+## Why
+
+The Browser panel is a child webview of the main window, labelled
+`browser-embed` (`BROWSER_EMBED_LABEL` in `src-tauri/src/shell/ipc/mod.rs`).
+It shows whatever site the user or an agent opens. Tauri 2.11.2 builds every
+webview the same way, with no per-webview switch (`manager/webview.rs`,
+`prepare_pending_webview` and `prepare_webview`):
+
+- an IPC handler for postMessage requests;
+- its initialization scripts, ahead of the app's: `__TAURI_INTERNALS__`, the
+  `withGlobalTauri` API (`__TAURI__`), the IPC and event glue, plugin scripts,
+  and `core.js`, which holds the app's invoke key;
+- its `ipc` custom scheme.
+
+The panel uses none of them:
+
+- its one script, `SELECT_JS`, reports back by navigating to
+  `https://fleet.internal/{pick|meta|read}/…`; the app's `on_navigation`
+  handler reads the payload and cancels the navigation;
+- the app drives it from Rust with native calls: `eval`, `navigate`,
+  `set_bounds`, `close`, `clear_all_browsing_data`;
+- its URL reaches the app through the native `on_page_load` handler.
+
+The ACL already gives this webview no command: `capabilities/default.json`
+applies to the main webview only, and `startup_window.rs` tests that. With
+IPC gone as well, pages in the panel never get the invoke key, and nothing
+they send reaches Tauri's command handling. That includes channel data
+(`plugin:__TAURI_CHANNEL__|fetch`), which Tauri serves without an ACL check;
+the app uses no `Channel` today.
+
+## The change
+
+In `src/lib.rs` (search `FLEETIFY PATCH ipc-free-webview`):
+
+- `IPC_FREE_WEBVIEW_LABEL` (`"browser-embed"`), `IPC_FREE_SCRIPT_MARKER`
+  (`"/* fleetify:browser-embed */"`) and
+  `keep_script_in_ipc_free_webview(script)`, which accepts a script only if it
+  starts with the marker, after any whitespace. All three sit just before
+  `create_webview` and are `#[doc(hidden)] pub` for the app's tests.
+- In `create_webview`, for the webview with that label (`ipc_free`):
+  - no `with_ipc_handler(create_ipc_handler(…))`;
+  - the initialization-script loop skips every script
+    `keep_script_in_ipc_free_webview` rejects. Only the app's marked scripts
+    remain; `SELECT_JS` starts with the marker line.
+  - on macOS and Windows, the custom-protocol loop skips `ipc`.
+
+What is left, per platform:
+
+- **Linux (WebKitGTK):** custom schemes are registered once per web context,
+  and the panel shares the app webview's (same data directory), so `ipc://`
+  still answers there. The panel's requests have no invoke key, and Tauri
+  refuses a request without the right key before it looks at the command
+  (`ipc/protocol.rs`, `Webview::on_message`). wry still registers its `ipc`
+  message handler and defines `window.ipc`, but with no handler it discards
+  every message.
+- **macOS:** wry still defines `window.ipc`, but there is no `ipc` message
+  handler behind it and no `ipc` scheme.
+- **Windows:** wry still defines `window.ipc` and listens for messages, but
+  with no handler it discards them. With no `ipc` scheme, requests to
+  `http://ipc.localhost` from the panel aren't intercepted.
+
+The app's tests (`src-tauri/src/shell/startup_window.rs`, "The Browser panel
+gets no Tauri IPC") check that the app's label and `SELECT_JS` match the
+patch, run `keep_script_in_ipc_free_webview` on `SELECT_JS` and on scripts
+like Tauri's, and check that `create_webview` keeps the three call sites, in
+order.
+
 # How to refresh on a Tauri bump
 
 `[patch.crates-io]` requires this copy's version to equal the
@@ -165,7 +238,7 @@ the patch.
 2. Re-copy that version's `Cargo.toml`, `build.rs`, `README.md`, `LICENSE_*`,
    and `src/` from `~/.cargo/registry/src/.../tauri-runtime-wry-<version>/`
    over this directory.
-3. Re-apply both patches. Grep this repo's git history for `FLEETIFY PATCH`
+3. Re-apply the patches. Grep this repo's git history for `FLEETIFY PATCH`
    to recover the full diffs.
    - v2: search upstream for the `// only way to account for menu bar height`
      comment for the WindowChild arm.
@@ -174,14 +247,27 @@ the patch.
      WEBKITGTK);`. First check that the new wry still tags WebKitGTK messages
      with `webview.uri()` and that Tauri still takes the request's URI as
      the origin; if either changed, re-assess rather than re-apply blindly.
+   - ipc-free-webview: the three items go before `create_webview`. In
+     `create_webview`, set `let ipc_free = label == IPC_FREE_WEBVIEW_LABEL;`,
+     wrap the `with_ipc_handler(create_ipc_handler(…))` call in
+     `if !ipc_free`, skip rejected scripts at the top of the
+     `webview_attributes.initialization_scripts` loop, and skip `ipc` at the
+     top of the `uri_scheme_protocols` loop outside the WebKitGTK targets.
+     First check that Tauri still hands over its own scripts in
+     `initialization_scripts` and registers `ipc` through
+     `uri_scheme_protocols`, and that it added no other way for a webview to
+     reach IPC; if it did, re-assess.
 4. Update the version note in the root `Cargo.toml` patch comment.
-5. `cargo test -p fleetify-app startup_window`: the postmessage-ipc tests
-   don't compile without the patch's items and fail if the handler stops
-   calling the rewrite.
+5. `cargo test -p fleetify-app startup_window`: the postmessage-ipc and
+   ipc-free-webview tests don't compile without the patches' items, and
+   fail if the handler stops calling the rewrite or `create_webview` loses
+   one of its three call sites.
 6. Run the app and drive the right-panel browser: position/resize,
    element-select typing + cursor, close panel (no zombie frame), open the
    page inspector (no crash). Check that the app's own IPC still works on
-   Linux (it goes through `ipc://`).
+   Linux (it goes through `ipc://`). Open a page in the Browser panel that
+   shows `typeof window.__TAURI_INTERNALS__`: it must be `undefined`, and
+   Select must still hand a picked element to the chat.
 
 # How to remove (once upstream is fixed)
 
@@ -191,6 +277,8 @@ the patch.
 - **postmessage-ipc:** when wry's WebKitGTK backend reports the sending
   frame's own URL (or Tauri stops trusting the postMessage URL), and the
   app's tests are moved to whatever upstream offers.
+- **ipc-free-webview:** when Tauri can build a webview with no IPC handler,
+  scripts or `ipc` scheme, and the Browser panel is built that way.
 
-Once both are gone, delete this `vendor/` directory and the
+Once all three are gone, delete this `vendor/` directory and the
 `[patch.crates-io]` block in the root `Cargo.toml`.

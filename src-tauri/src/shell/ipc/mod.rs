@@ -427,6 +427,10 @@ pub async fn clipboard_write(text: String) -> serde_json::Value {
 // panel reports its slot's logical rect; we position the child webview
 // there and keep it in sync on scroll / resize. Login state + a site's
 // remembered theme PERSIST across launches via a fixed profile id.
+/// The Browser panel's webview label. The vendored runtime builds the webview
+/// with this label without Tauri IPC (`IPC_FREE_WEBVIEW_LABEL`, see
+/// vendor/tauri-runtime-wry/FLEETIFY_PATCH.md), so the two must stay equal;
+/// the startup_window tests check it.
 pub(crate) const BROWSER_EMBED_LABEL: &str = "browser-embed";
 const BROWSER_EMBED_PROFILE: [u8; 16] = *b"fleetbrowser0001";
 // A CURRENT Safari UA so sites (Google) serve their MODERN layout instead of
@@ -455,7 +459,11 @@ const READ_MARKER: &str = "fleet.internal/read/";
 // React/Vue component + dev source when detectable). Everything posts back
 // via the fragment sentinel; {action:"copy"|"dismiss"} messages ride the
 // same channel.
-const SELECT_JS: &str = r#"(function () {
+// Its first line is the marker the vendored runtime keeps it by: the panel
+// gets no Tauri initialization scripts, only the app's marked ones
+// (`IPC_FREE_SCRIPT_MARKER`).
+pub(crate) const SELECT_JS: &str = r#"/* fleetify:browser-embed */
+(function () {
   if (window.__fleetSelInit) return; window.__fleetSelInit = true;
   var active = false, mode = 'ask', box = null, last = null, promptHost = null, menuHost = null, bubbleHost = null, swallowClick = false, promptKey = null, cursorStyle = null;
   // Press beats click: pages like YouTube and Google sign-in install their
@@ -1037,8 +1045,9 @@ pub async fn browser_embed_create(
         .user_agent(BROWSER_EMBED_UA)
         // Element-select content script (see SELECT_JS). Runs at document
         // start on every page; the picked element is handed back via a URL
-        // fragment sentinel which we read in on_navigation below — so the
-        // visited site is NEVER granted IPC access to the app.
+        // fragment sentinel which we read in on_navigation below. It is the
+        // only script this webview gets: the vendored runtime gives it no
+        // Tauri IPC (see BROWSER_EMBED_LABEL).
         .initialization_script(SELECT_JS)
         .on_navigation(move |url| {
             // The content script hands data back by NAVIGATING to a sentinel
