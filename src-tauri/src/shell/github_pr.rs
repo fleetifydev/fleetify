@@ -13,7 +13,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::git::run;
+use super::git::{run, without_credentials};
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -30,9 +30,12 @@ pub struct Origin {
 
 /// Parse a remote URL into (host, owner, repo). Supports both
 /// `https://github.com/<owner>/<repo>[.git]` and
-/// `git@github.com:<owner>/<repo>[.git]`.
+/// `git@github.com:<owner>/<repo>[.git]`. The credentials an https remote
+/// can hold (`https://user:token@github.com/…`) are dropped first, so they
+/// never end up in the host.
 pub fn parse_origin(url: &str) -> Option<Origin> {
-    let trimmed = url.trim().trim_end_matches('/');
+    let url = without_credentials(url.trim());
+    let trimmed = url.trim_end_matches('/');
     // https form
     if let Some(rest) = trimmed
         .strip_prefix("https://")
@@ -200,8 +203,10 @@ async fn add_origin_remote(folder: &Path, owner: &str, repo: &str) -> Value {
             Duration::from_secs(5),
         )
         .await;
+        // The existing origin can hold credentials (`https://user:token@…`);
+        // the answer goes without them.
         if rc == 0 && !out.trim().is_empty() {
-            return json!({ "ok": true, "url": out.trim() });
+            return json!({ "ok": true, "url": without_credentials(out.trim()) });
         }
     }
     fail("ORIGIN_ADD_FAILED", err.trim())
@@ -1113,6 +1118,38 @@ mod tests {
 
         // Garbage.
         assert!(parse_origin("not-a-url").is_none());
+    }
+
+    #[test]
+    fn parse_origin_drops_the_credentials_an_origin_url_can_hold() {
+        // They used to end up in the host, which then wasn't github.com.
+        let o = parse_origin("https://user:tok@github.com/o/r.git").unwrap();
+        assert_eq!(o.host, "github.com");
+        assert_eq!(o.owner, "o");
+        assert_eq!(o.repo, "r");
+    }
+
+    #[tokio::test]
+    async fn adding_origin_answers_an_existing_one_without_its_credentials() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folder = tmp.path();
+        let (rc, _, _) = run("git", &["init"], folder, Duration::from_secs(10)).await;
+        if rc != 0 {
+            return; // no usable git here
+        }
+        let origin = "https://u:t@github.com/o/r.git";
+        let (rc, _, err) = run(
+            "git",
+            &["remote", "add", "origin", origin],
+            folder,
+            Duration::from_secs(10),
+        )
+        .await;
+        assert_eq!(rc, 0, "git remote add: {err}");
+        assert_eq!(
+            add_origin_remote(folder, "o", "r").await,
+            json!({ "ok": true, "url": "https://github.com/o/r.git" })
+        );
     }
 
     #[test]

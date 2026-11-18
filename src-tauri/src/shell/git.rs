@@ -750,16 +750,43 @@ fn pr_page_url(repo_url: &str, pr_number: Option<i64>) -> String {
     }
 }
 
-/// `url` without its username and password, when it has any.
-fn without_credentials(url: &str) -> String {
+/// `url` without its username and password, when it has any. A URL that
+/// doesn't parse loses them the way free text does
+/// ([`redact_url_credentials`]).
+pub(crate) fn without_credentials(url: &str) -> String {
     match url::Url::parse(url) {
         Ok(mut parsed) if !parsed.username().is_empty() || parsed.password().is_some() => {
             let _ = parsed.set_username("");
             let _ = parsed.set_password(None);
             parsed.to_string()
         }
-        _ => url.to_string(),
+        Ok(_) => url.to_string(),
+        Err(_) => redact_url_credentials(url),
     }
+}
+
+/// `text` without the userinfo (`user:token@`, `token@`) of the URLs in it:
+/// every `scheme://userinfo@host` becomes `scheme://host`. For free text that
+/// can quote a remote URL, such as `git remote -v` output. An scp-style
+/// `git@host:path` has no `://` and stays as it is. The userinfo ends at the
+/// last `@` before the authority ends (at `/`, `?`, `#` or whitespace), so a
+/// password holding an `@` goes too.
+pub(crate) fn redact_url_credentials(text: &str) -> String {
+    let mut redacted = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("://") {
+        let (head, tail) = rest.split_at(start + "://".len());
+        redacted.push_str(head);
+        let authority_end = tail
+            .find(|c: char| matches!(c, '/' | '?' | '#') || c.is_whitespace())
+            .unwrap_or(tail.len());
+        rest = match tail[..authority_end].rfind('@') {
+            Some(userinfo_end) => &tail[userinfo_end + 1..],
+            None => tail,
+        };
+    }
+    redacted.push_str(rest);
+    redacted
 }
 
 pub async fn open_pr(folder: &Path, pr_number: Option<i64>) -> Value {
@@ -1275,6 +1302,21 @@ async fn ensure_repo_for_link(
     None
 }
 
+/// One line of `create_pr_via_gh`'s trace, which is logged and handed back
+/// to the renderer when a step fails: `ok · <label> · <detail>`, the detail
+/// cut to 200 characters. The detail goes without the credentials a remote
+/// URL in it can hold (`https://user:token@…`), removed before the cut so
+/// that a URL cut short keeps none of them.
+fn trace_line(label: &str, ok: bool, detail: &str) -> String {
+    let status = if ok { "ok" } else { "FAIL" };
+    let detail: String = redact_url_credentials(detail).chars().take(200).collect();
+    if detail.is_empty() {
+        format!("{status} · {label}")
+    } else {
+        format!("{status} · {label} · {detail}")
+    }
+}
+
 /// Full faithful port of `createPRViaGh` from main.cjs. Validates and
 /// initialises the repo, carves the feature branch, auto-commits any
 /// pending changes with an AI-generated message, ensures an `origin`
@@ -1311,12 +1353,7 @@ pub async fn create_pr_via_gh(
 
     let mut trace: Vec<String> = Vec::new();
     let mut note = |label: &str, ok: bool, detail: &str| {
-        let trimmed: String = detail.chars().take(200).collect();
-        let line = if trimmed.is_empty() {
-            format!("{} · {label}", if ok { "ok" } else { "FAIL" })
-        } else {
-            format!("{} · {label} · {trimmed}", if ok { "ok" } else { "FAIL" })
-        };
+        let line = trace_line(label, ok, detail);
         tracing::info!(target: "createPR/gh", "{line}");
         trace.push(line);
     };
@@ -1723,6 +1760,8 @@ pub async fn create_pr_via_gh(
     )
     .await;
     let has_remote = probe_rc == 0 && !probe_out.trim().is_empty();
+    // The trace line drops the credentials the origin URL can hold
+    // (`trace_line`).
     note(
         "probe origin",
         has_remote,
@@ -3204,6 +3243,104 @@ mod tests {
         assert_eq!(rc, 0, "git remote add: {err}");
         let v = get_context(tmp.path()).await;
         assert_eq!(v["remoteHttpsUrl"], "https://github.com/foo/bar.git");
+    }
+
+    #[test]
+    fn free_text_loses_the_credentials_of_every_url_in_it() {
+        // `git remote -v`: the https remote loses its credentials; the
+        // scp-style one has no `://` and stays as it is.
+        assert_eq!(
+            redact_url_credentials(
+                "origin\thttps://user:tok@github.com/o/r.git (fetch)\n\
+                 origin\tgit@github.com:o/r.git (push)\n"
+            ),
+            "origin\thttps://github.com/o/r.git (fetch)\n\
+             origin\tgit@github.com:o/r.git (push)\n"
+        );
+        assert_eq!(
+            redact_url_credentials("https://tok@host/x"),
+            "https://host/x"
+        );
+        assert_eq!(
+            redact_url_credentials("from https://a:b@one.example/x to http://c@two.example/y"),
+            "from https://one.example/x to http://two.example/y"
+        );
+    }
+
+    #[test]
+    fn only_the_userinfo_of_a_url_is_removed() {
+        // The userinfo ends at the authority's last `@`, so a password
+        // holding an `@` goes too. An `@` past the host belongs to the path,
+        // or to the next word.
+        assert_eq!(
+            redact_url_credentials("https://u:p@ss@host"),
+            "https://host"
+        );
+        assert_eq!(
+            redact_url_credentials("https://host/a@b c@d"),
+            "https://host/a@b c@d"
+        );
+        assert_eq!(
+            redact_url_credentials("see https://host or t@x"),
+            "see https://host or t@x"
+        );
+        assert_eq!(
+            redact_url_credentials("mail t@x, no url"),
+            "mail t@x, no url"
+        );
+    }
+
+    #[test]
+    fn a_remote_url_that_doesnt_parse_still_loses_its_credentials() {
+        // The port isn't a number, so the URL parser refuses the whole URL.
+        assert_eq!(
+            without_credentials("https://u:t@github.com:notaport/o/r.git"),
+            "https://github.com:notaport/o/r.git"
+        );
+    }
+
+    #[test]
+    fn a_trace_line_carries_no_credentials_from_a_remote_url() {
+        assert_eq!(
+            trace_line("probe origin", true, "https://u:t@github.com/o/r.git"),
+            "ok · probe origin · https://github.com/o/r.git"
+        );
+        // A detail is cut to 200 characters. Here the cut falls inside the
+        // credentials, so they must go first.
+        let detail = format!("{} https://user:token@github.com/o/r.git", "x".repeat(185));
+        let line = trace_line("push HEAD", false, &detail);
+        assert!(!line.contains("user"), "{line}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_pr_trace_carries_no_credentials_from_the_remote() {
+        // Create PR logs its trace and hands it back when a step fails. The
+        // push URL is a missing local path, so the push fails here, without
+        // the network, after the trace has recorded the origin.
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("proj");
+        std::fs::create_dir_all(&repo).unwrap();
+        fresh_repo(&repo).await;
+        let origin = "https://u:t@github.com/o/r.git";
+        let (rc, _, err) = git(&["remote", "add", "origin", origin], &repo).await;
+        assert_eq!(rc, 0, "git remote add: {err}");
+        let nowhere = tmp.path().join("no-such-remote");
+        let nowhere = nowhere.to_string_lossy();
+        let (rc, _, err) = git(&["remote", "set-url", "--push", "origin", &nowhere], &repo).await;
+        assert_eq!(rc, 0, "git remote set-url --push: {err}");
+
+        let reply = create_pr_via_gh(&repo, "t", Some("b"), None, false, None, None, false).await;
+
+        assert_eq!(reply["code"], "GH_STEP_FAILED", "{reply}");
+        let error = reply["error"].as_str().unwrap_or_default();
+        assert!(
+            error.contains("ok · probe origin · https://github.com/o/r.git"),
+            "{error}"
+        );
+        assert!(!error.contains("u:t@"), "{error}");
     }
 
     #[test]

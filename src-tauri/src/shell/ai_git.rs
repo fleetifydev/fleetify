@@ -552,6 +552,14 @@ pub fn has_shell_meta(s: &str) -> bool {
     s.contains("&&") || s.contains("||") || s.contains(">>") || s.contains("<<")
 }
 
+/// `git remote -v` for `diagnose_failure`'s prompt, without the credentials
+/// a remote URL can hold (`https://user:token@…`): the prompt goes to the
+/// user's AI provider. `None` when git can't list the remotes.
+async fn remotes_for_prompt(folder: &Path) -> Option<String> {
+    let (ok, out) = git_out(folder, &["remote", "-v"], Duration::from_secs(5)).await;
+    ok.then(|| git::redact_url_credentials(&out))
+}
+
 pub async fn diagnose_failure(
     folder: String,
     error_message: String,
@@ -582,7 +590,7 @@ pub async fn diagnose_failure(
         Duration::from_secs(5),
     )
     .await;
-    let (rm_ok, rm_out) = git_out(&path, &["remote", "-v"], Duration::from_secs(5)).await;
+    let remotes = remotes_for_prompt(&path).await;
 
     let prompt = format!(
         "You are diagnosing a Git / GitHub failure inside a Fleetify session. Read the error message and the repository state below, then emit STRICT JSON with these keys:\n\n\
@@ -611,7 +619,7 @@ current branch: {}\n\n\
         if br_ok && !br_out.is_empty() { br_out.clone() } else { "(unknown)".to_string() },
         if st_ok { st_out } else { "(unavailable)".to_string() },
         if lg_ok { lg_out } else { "(unavailable)".to_string() },
-        if rm_ok { rm_out } else { "(unavailable)".to_string() },
+        remotes.unwrap_or_else(|| "(unavailable)".to_string()),
     );
 
     let (ok, cli, raw, err) =
@@ -860,6 +868,27 @@ mod tests {
         assert!(!ctx.uncommitted, "committed range should be used as-is");
         assert!(ctx.diff.contains("export const a = 3"));
         assert!(!ctx.log.trim().is_empty(), "commit log should be populated");
+    }
+
+    /// The failure diagnosis sends `git remote -v` to the user's AI provider.
+    #[tokio::test]
+    async fn the_diagnosis_prompt_lists_remotes_without_credentials() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("proj");
+        std::fs::create_dir_all(&repo).unwrap();
+        if !seed_repo(&repo).await {
+            return;
+        }
+        let origin = "https://u:t@github.com/o/r.git";
+        assert!(git_ok(&["remote", "add", "origin", origin], &repo).await);
+
+        assert_eq!(
+            remotes_for_prompt(&repo).await.as_deref(),
+            Some(
+                "origin\thttps://github.com/o/r.git (fetch)\n\
+                 origin\thttps://github.com/o/r.git (push)\n"
+            )
+        );
     }
 
     /// Regression: Fleetify is Türkiye-first, so AI-written subjects are often
