@@ -25,6 +25,7 @@ pub const APP_COMMANDS: &[&str] = &[
     "auth_userinfo",
     "auth_get_access_token",
     "auth_get_state",
+    "backend_api_token",
     "config_get",
     "config_set",
     "telemetry_get_config",

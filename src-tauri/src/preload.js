@@ -44,6 +44,8 @@ document.addEventListener("mousedown", function (e) {
       return invoke("auth_get_access_token", { force: !!(opts && opts.force) });
     },
     getState: function () { return invoke("auth_get_state"); },
+    // This run's backend API token (the `backend_api_token` command).
+    getApiToken: function () { return invoke("backend_api_token"); },
     onAuthEvent: function (cb) {
       var unlisten = null;
       var e = ev();

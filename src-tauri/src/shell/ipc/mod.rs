@@ -49,6 +49,15 @@ pub async fn auth_get_state() -> serde_json::Value {
     auth::get_state().await
 }
 
+// ── window.fleetify.getApiToken ───────────────────────────────────
+// This run's backend API token: setup (lib.rs) generates it, manages it and
+// passes it to the embedded backend. The renderer asks for it here.
+
+#[tauri::command]
+pub fn backend_api_token(token: tauri::State<'_, fleetify_backend::access::ApiToken>) -> String {
+    token.as_str().to_owned()
+}
+
 // ── window.electronAPI.{getConfig,setConfig} ──────────────────────
 // Persisted under Tauri's per-app data dir (parity with the Electron
 // `electron-store`-style JSON-on-disk the original used).

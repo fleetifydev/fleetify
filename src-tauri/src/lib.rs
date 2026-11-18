@@ -99,6 +99,7 @@ pub fn run() {
             shell::ipc::auth_userinfo,
             shell::ipc::auth_get_access_token,
             shell::ipc::auth_get_state,
+            shell::ipc::backend_api_token,
             shell::ipc::config_get,
             shell::ipc::config_set,
             shell::ipc::telemetry_get_config,
@@ -324,6 +325,13 @@ pub fn run() {
                 tokio::sync::watch::channel(shell::backend_ready::BackendStart::Pending);
             shell::backend_ready::track(backend, backend_start_rx.clone());
 
+            // This run's backend API token. The backend task below starts
+            // the backend with it, and the renderer asks for it with the
+            // `backend_api_token` command, which can answer as soon as the
+            // window exists.
+            let api_token = fleetify_backend::access::ApiToken::generate();
+            app.manage(api_token.clone());
+
             // IPC from the app's origin. capabilities/default.json covers
             // only local origins (devUrl in dev mode). The origin the window
             // loads the app from gets the same permissions here, for that
@@ -499,7 +507,7 @@ pub fn run() {
                 let opts = fleetify_backend::ServeOptions {
                     static_dir: sd,
                     routing_setup,
-                    api_token: fleetify_backend::access::ApiToken::generate(),
+                    api_token,
                 };
                 match fleetify_backend::serve(addr, opts).await {
                     Ok(handle) => {

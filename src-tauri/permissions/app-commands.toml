@@ -13,6 +13,7 @@ permissions = [
   "allow-auth-userinfo",
   "allow-auth-get-access-token",
   "allow-auth-get-state",
+  "allow-backend-api-token",
   "allow-config-get",
   "allow-config-set",
   "allow-telemetry-get-config",

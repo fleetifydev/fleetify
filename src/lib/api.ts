@@ -11,6 +11,8 @@ declare global {
       userinfo:       () => Promise<any>;
       getAccessToken: (opts?: { force?: boolean }) => Promise<{ token: string; expiresAt: number } | null>;
       getState:       () => Promise<{ signedIn: boolean; user?: any; noAuth?: boolean }>;
+      /** This run's backend API token (the shell's `backend_api_token` command). */
+      getApiToken:    () => Promise<string>;
       // Renderer → main bridge for the sidebar's "Give Feedback" modal.
       // The token is attached in main so the renderer never has to
       // touch it; the response is the {ok, data?, error?} envelope the
