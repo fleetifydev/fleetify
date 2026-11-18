@@ -22,7 +22,8 @@ async fn start() -> TestServer {
 
 /// `GET path` with `host` as the Host header.
 async fn get_with_host(server: &TestServer, path: &str, host: &str) -> reqwest::Response {
-    reqwest::Client::new()
+    server
+        .client()
         .get(server.url(path))
         .header(reqwest::header::HOST, host)
         .send()
@@ -50,7 +51,12 @@ async fn raw_exchange(addr: SocketAddr, request: &str) -> String {
 #[tokio::test]
 async fn healthz_answers_on_its_own_address() {
     let server = start().await;
-    let resp = reqwest::get(server.url("/healthz")).await.unwrap();
+    let resp = server
+        .client()
+        .get(server.url("/healthz"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
 }
 
@@ -96,7 +102,8 @@ async fn a_request_without_a_host_is_refused() {
 #[tokio::test]
 async fn a_cross_origin_preflight_gets_no_cors_headers() {
     let server = start().await;
-    let resp = reqwest::Client::new()
+    let resp = server
+        .client()
         .request(reqwest::Method::OPTIONS, server.url("/api/groups"))
         .header("Origin", "http://localhost:3000")
         .header("Access-Control-Request-Method", "POST")
@@ -123,7 +130,7 @@ async fn the_ui_files_are_behind_the_host_check() {
     })
     .await;
 
-    let served = reqwest::get(server.url("/")).await.unwrap();
+    let served = server.client().get(server.url("/")).send().await.unwrap();
     assert_eq!(served.status(), 200);
     assert!(served.text().await.unwrap().contains("FLEET-UI"));
 

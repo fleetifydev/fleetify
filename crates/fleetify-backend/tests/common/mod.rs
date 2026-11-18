@@ -1,6 +1,6 @@
 //! Shared by the integration tests: the real backend, started with
-//! `serve()` on an ephemeral loopback port. A test file pulls it in with
-//! `mod common;`.
+//! `serve()` on an ephemeral loopback port, and an HTTP client for it. A
+//! test file pulls it in with `mod common;`.
 //!
 //! It sets no environment variables: each test still sets the ones it needs
 //! (`FLEET_DB_URL`, `FLEETIFY_NOAUTH`, …) before it starts a server, and the
@@ -50,5 +50,15 @@ impl TestServer {
     /// `http://127.0.0.1:<port><path>`.
     pub fn url(&self, path: &str) -> String {
         format!("http://{}{path}", self.addr())
+    }
+
+    /// A client for this server. Every request it sends carries
+    /// `default_headers`, unless the request sets that header itself.
+    pub fn client(&self) -> reqwest::Client {
+        let default_headers = reqwest::header::HeaderMap::new();
+        reqwest::Client::builder()
+            .default_headers(default_headers)
+            .build()
+            .expect("build the test client")
     }
 }
