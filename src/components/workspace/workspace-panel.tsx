@@ -114,14 +114,34 @@ async function apiGitDiff(p: string, file?: string, scope: DiffScope = "auto"): 
     return r.ok ? r.json() : { error: "Failed" };
   } catch { return { error: "Failed" }; }
 }
-async function apiCreate(path: string, type: "file" | "folder"): Promise<boolean> {
-  try { const r = await backendFetch("/api/fs/create", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ path, type }) }); return r.ok; } catch { return false; }
+/* The file actions send the bodies routers/workspace.rs reads (CreateBody,
+   DeleteBody, RenameBody) and get `{ ok, error? }` back. Success is that
+   `ok`: a failed action still answers 200. */
+async function fileAction(url: string, method: "POST" | "DELETE", body: unknown): Promise<boolean> {
+  try {
+    const r = await backendFetch(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const reply = (await r.json()) as { ok?: unknown } | null;
+    return reply?.ok === true;
+  } catch { return false; }
 }
-async function apiDelete(path: string): Promise<boolean> {
-  try { const r = await backendFetch(`/api/fs/delete?path=${encodeURIComponent(path)}`, { method:"DELETE" }); return r.ok; } catch { return false; }
+export async function apiCreate(path: string, type: "file" | "folder"): Promise<boolean> {
+  return fileAction("/api/fs/create", "POST", { path, is_dir: type === "folder" });
 }
-async function apiRename(path: string, name: string): Promise<{ ok: boolean; path?: string }> {
-  try { const r = await backendFetch("/api/fs/rename", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ path, name }) }); return r.ok ? r.json() : { ok: false }; } catch { return { ok: false }; }
+export async function apiDelete(path: string): Promise<boolean> {
+  return fileAction("/api/fs/delete", "DELETE", { path });
+}
+/* Rename within the same folder: `to` is the parent of `path` plus `name`,
+   joined with the separator `path` itself uses (`/`, or `\` on Windows). A
+   name that is empty, `.`, `..` or has a separator is refused unsent. */
+export async function apiRename(path: string, name: string): Promise<{ ok: boolean; path?: string }> {
+  if (name === "" || name === "." || name === ".." || /[\\/]/.test(name)) return { ok: false };
+  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  const to = cut === -1 ? name : path.slice(0, cut + 1) + name;
+  return { ok: await fileAction("/api/fs/rename", "POST", { from: path, to }), path: to };
 }
 
 /* ─── Context Menu ─── */
