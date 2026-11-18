@@ -225,18 +225,16 @@ const PATH_REFUSED: &str = "This file can't be opened from Fleetify.";
 
 /// Opens a local folder, or a document file, with the system's default
 /// handler: Library → "Open raw file" and the "Open in" menu's "Open folder".
-/// Only an absolute path to an existing folder, or to a file with a document
-/// extension, is opened (`open_external::is_document_or_folder`): on Windows,
-/// ShellExecute runs executables, scripts and shortcuts.
+/// `open_external::open_ui_path` resolves the path and opens it only when it
+/// is an existing folder, or a file with a document extension: on Windows,
+/// ShellExecute runs executables, scripts and shortcuts. A Windows network
+/// path is refused before anything looks at it.
 #[tauri::command]
 pub async fn shell_open_path(path: String) -> serde_json::Value {
-    use fleetify_backend::open_external::{is_document_or_folder, open_path};
-    let path = std::path::PathBuf::from(path);
-    if !is_document_or_folder(&path) {
-        return serde_json::json!({ "ok": false, "error": PATH_REFUSED });
-    }
-    match open_path(&path) {
+    use fleetify_backend::open_external::{open_ui_path, OpenPathError};
+    match open_ui_path(std::path::Path::new(&path)) {
         Ok(()) => serde_json::json!({ "ok": true }),
+        Err(OpenPathError::Refused(_)) => serde_json::json!({ "ok": false, "error": PATH_REFUSED }),
         Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
     }
 }
@@ -260,13 +258,22 @@ pub async fn shell_show_item_in_folder(path: String) -> serde_json::Value {
     //     which Nautilus/Nemo/Dolphin/Caja all implement. Falls back to
     //     `xdg-open <parent>` (no selection) when the D-Bus service is
     //     unavailable — better than failing entirely on a minimal WM.
-    let p = std::path::PathBuf::from(&path);
-    if !p.exists() {
-        return serde_json::json!({
-            "ok": false,
-            "error": format!("path does not exist: {}", p.display())
-        });
-    }
+    //
+    // The path is checked and resolved first (`open_external::path_to_reveal`):
+    // a Windows network path is refused before anything looks at it, since
+    // even checking that it exists signs in to the host, and the file manager
+    // is handed the resolved path.
+    use fleetify_backend::open_external::{path_to_reveal, PathRefused};
+    let p = match path_to_reveal(std::path::Path::new(&path)) {
+        Ok(resolved) => resolved,
+        Err(PathRefused::Unresolvable(_)) => {
+            return serde_json::json!({
+                "ok": false,
+                "error": format!("path does not exist: {path}")
+            });
+        }
+        Err(_) => return serde_json::json!({ "ok": false, "error": PATH_REFUSED }),
+    };
     let result = reveal_in_file_manager(&p);
     match result {
         Ok(()) => serde_json::json!({ "ok": true }),
@@ -4668,6 +4675,26 @@ mod tests {
         ] {
             assert_eq!(
                 shell_open_path(path.clone()).await,
+                serde_json::json!({ "ok": false, "error": PATH_REFUSED }),
+                "{path:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_item_that_cant_be_shown_is_refused_before_the_file_manager_starts() {
+        // The path is checked and resolved first: nothing is revealed here.
+        // (A relative path is refused even when it exists: it would be
+        // resolved against the working directory.)
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.md").to_string_lossy().into_owned();
+        assert_eq!(
+            shell_show_item_in_folder(missing.clone()).await,
+            serde_json::json!({ "ok": false, "error": format!("path does not exist: {missing}") })
+        );
+        for path in ["notes.md", ""] {
+            assert_eq!(
+                shell_show_item_in_folder(path.to_string()).await,
                 serde_json::json!({ "ok": false, "error": PATH_REFUSED }),
                 "{path:?}"
             );
