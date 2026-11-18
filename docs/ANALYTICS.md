@@ -8,7 +8,11 @@ Privacy**.
 | Channel | Destination | Default | Settings |
 |---|---|---|---|
 | `Dashboard sync` | Fleetify cloud (`fleetify.dev`) | **ON** | Privacy → Dashboard sync |
-| `Product analytics` | PostHog Cloud (US) | **OFF** | Privacy → Product analytics |
+| `Product analytics` | PostHog Cloud (EU, Frankfurt) | **OFF** | Privacy → Product analytics |
+
+PostHog derives an approximate location, such as the country and city,
+from the IP address each event comes from; Fleetify's PostHog project
+then discards the address.
 
 Onboarding ends with one step for each. The first tells you what
 dashboard sync sends and that it is on, with two buttons: **Keep it on**

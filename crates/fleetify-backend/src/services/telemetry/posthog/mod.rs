@@ -48,13 +48,19 @@ pub fn project_key() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// PostHog host. Defaults to US cloud; override at runtime with
-/// `POSTHOG_HOST=https://eu.i.posthog.com` (or a self-hosted URL).
+/// The default PostHog host: PostHog Cloud's EU region. The renderer
+/// keeps the same default in `src/lib/posthog.ts`.
+pub const DEFAULT_HOST: &str = "https://eu.i.posthog.com";
+
+/// PostHog host: `POSTHOG_HOST` from the process environment at call
+/// time, or [`DEFAULT_HOST`] when it is unset or empty. A project in
+/// PostHog's US region, or a self-hosted instance, sets `POSTHOG_HOST`
+/// to its own URL.
 pub fn host() -> String {
     std::env::var("POSTHOG_HOST")
         .ok()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "https://us.i.posthog.com".to_string())
+        .unwrap_or_else(|| DEFAULT_HOST.to_string())
 }
 
 /// Distinct ID = the persisted device_id from `device_id::get_or_create`.
@@ -131,12 +137,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn host_defaults_to_us_cloud() {
-        // When POSTHOG_HOST is unset at build time, default to US.
-        // (Local tests inherit the build-time value of option_env!, so
-        // this just sanity-checks the string is well-formed.)
-        let h = host();
-        assert!(h.starts_with("http"), "host should be a URL: {h}");
+    fn host_defaults_to_eu() {
+        // POSTHOG_HOST is process-wide: change it only under the crate's
+        // env lock, and put back whatever was there before asserting.
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var_os("POSTHOG_HOST");
+        std::env::remove_var("POSTHOG_HOST");
+        let unset = host();
+        std::env::set_var("POSTHOG_HOST", "");
+        let empty = host();
+        match prev {
+            Some(v) => std::env::set_var("POSTHOG_HOST", v),
+            None => std::env::remove_var("POSTHOG_HOST"),
+        }
+        assert_eq!(unset, "https://eu.i.posthog.com");
+        assert_eq!(empty, "https://eu.i.posthog.com");
     }
 
     #[test]

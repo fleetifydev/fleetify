@@ -119,7 +119,7 @@ function main() {
     // calls `dotenvy::dotenv()` at startup, so a workspace-root `.env`
     // (gitignored; see `.env.example` for the template) feeds straight
     // in without any wrapper shell-export step. Defaults live in code:
-    // backend defaults POSTHOG_HOST to `https://us.i.posthog.com`, the
+    // backend defaults POSTHOG_HOST to `https://eu.i.posthog.com`, the
     // renderer's `src/lib/posthog.ts` does the same for VITE_POSTHOG_HOST.
     //
     // NOTE: do NOT add explicit `POSTHOG_API_KEY: process.env... ?? ''`

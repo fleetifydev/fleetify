@@ -38,7 +38,7 @@ let analytics: typeof import("@/lib/posthog");
 let send: ReturnType<typeof vi.fn>;
 
 const EXPECTED_OPTIONS = {
-  api_host: "https://us.i.posthog.com",
+  api_host: "https://eu.i.posthog.com",
   autocapture: false,
   capture_pageview: false,
   capture_pageleave: false,

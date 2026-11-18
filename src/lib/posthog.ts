@@ -27,8 +27,9 @@
 import type { CaptureResult, PostHog, PostHogConfig } from "posthog-js";
 
 const projectKey = () => (import.meta.env.VITE_POSTHOG_KEY as string | undefined) || undefined;
+/** `VITE_POSTHOG_HOST`, or PostHog Cloud's EU region (the backend's `posthog::DEFAULT_HOST`). */
 const apiHost = () =>
-  (import.meta.env.VITE_POSTHOG_HOST as string | undefined) || "https://us.i.posthog.com";
+  (import.meta.env.VITE_POSTHOG_HOST as string | undefined) || "https://eu.i.posthog.com";
 
 /**
  * Everything posthog-js would send or fetch beyond Fleetify's own events
