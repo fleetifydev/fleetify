@@ -36,6 +36,20 @@ fn vite_port() -> u16 {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebKitGTK sends even the app's own page loads through the proxy in
+    // `http_proxy`/`HTTP_PROXY`, so the loopback hosts join `NO_PROXY` (read
+    // first by hyper-util) and `no_proxy` (read first by curl).
+    // Runs first: WebKit's network process copies the environment when the first webview starts.
+    #[cfg(target_os = "linux")]
+    {
+        let no_proxy = fleetify_core::loopback::no_proxy_with_loopback(
+            std::env::var("NO_PROXY").ok().as_deref(),
+            std::env::var("no_proxy").ok().as_deref(),
+        );
+        std::env::set_var("NO_PROXY", &no_proxy);
+        std::env::set_var("no_proxy", &no_proxy);
+    }
+
     // Tracing init moved into `setup()` so the file appender can use
     // Tauri's resolved `app_log_dir()` (Windows: %LOCALAPPDATA%, macOS:
     // ~/Library/Logs, Linux: ~/.local/state). The WorkerGuard returned

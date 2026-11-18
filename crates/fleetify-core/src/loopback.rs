@@ -12,11 +12,41 @@
 //! MCP sidecars, starts from [`http_client_builder`]. Clients that reach the
 //! internet (providers, the issuer, GitHub) don't: they keep honouring the
 //! user's proxy.
+//!
+//! WebKitGTK, the webview on Linux, sends its page loads, the app's own
+//! included, through the proxy in `http_proxy` or `HTTP_PROXY` too, unless
+//! the host is in the no-proxy list. So on Linux the shell adds the loopback
+//! hosts to `NO_PROXY` and `no_proxy` with [`no_proxy_with_loopback`] before
+//! the first webview starts. The processes the app starts inherit the list.
 
 /// A reqwest client builder for calls to a service the app runs on this
 /// machine. It never uses a proxy, whatever the environment says.
 pub fn http_client_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder().no_proxy()
+}
+
+/// The hosts the app's own services are reached at, as no-proxy entries.
+pub const LOOPBACK_NO_PROXY: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
+
+/// A no-proxy list that keeps the user's entries and adds
+/// [`LOOPBACK_NO_PROXY`].
+///
+/// It holds the entries of `upper` (`NO_PROXY`), then those of `lower`
+/// (`no_proxy`), then the loopback hosts, joined with `,`. Entries are
+/// trimmed, empty ones are dropped, and a repeat (ignoring ASCII case) is
+/// dropped too, so the first spelling stays.
+pub fn no_proxy_with_loopback(upper: Option<&str>, lower: Option<&str>) -> String {
+    let listed = upper
+        .into_iter()
+        .chain(lower)
+        .flat_map(|list| list.split(','));
+    let mut entries: Vec<&str> = Vec::new();
+    for entry in listed.chain(LOOPBACK_NO_PROXY).map(str::trim) {
+        if !entry.is_empty() && !entries.iter().any(|kept| kept.eq_ignore_ascii_case(entry)) {
+            entries.push(entry);
+        }
+    }
+    entries.join(",")
 }
 
 #[cfg(test)]
@@ -124,5 +154,59 @@ mod tests {
             let response = client.get(&url).send().await.expect("the request failed");
             assert_eq!(response.text().await.unwrap(), "loopback");
         });
+    }
+
+    #[test]
+    fn no_proxy_without_a_list_is_the_loopback_hosts() {
+        assert_eq!(
+            no_proxy_with_loopback(None, None),
+            "localhost,127.0.0.1,::1"
+        );
+    }
+
+    #[test]
+    fn no_proxy_keeps_the_users_entries_first() {
+        assert_eq!(
+            no_proxy_with_loopback(Some("corp.example"), None),
+            "corp.example,localhost,127.0.0.1,::1"
+        );
+    }
+
+    #[test]
+    fn no_proxy_takes_the_upper_case_list_then_the_lower_case_one() {
+        assert_eq!(
+            no_proxy_with_loopback(Some("a"), Some("b")),
+            "a,b,localhost,127.0.0.1,::1"
+        );
+    }
+
+    #[test]
+    fn no_proxy_trims_entries_and_drops_empty_and_repeated_ones() {
+        assert_eq!(
+            no_proxy_with_loopback(Some(" localhost , 127.0.0.1,,x "), None),
+            "localhost,127.0.0.1,x,::1"
+        );
+    }
+
+    #[test]
+    fn no_proxy_keeps_a_wildcard() {
+        assert_eq!(
+            no_proxy_with_loopback(Some("*"), None),
+            "*,localhost,127.0.0.1,::1"
+        );
+    }
+
+    #[test]
+    fn no_proxy_drops_a_repeat_in_another_case_keeping_the_first_spelling() {
+        assert_eq!(
+            no_proxy_with_loopback(Some("Corp.Example,LOCALHOST"), Some("corp.example,::1")),
+            "Corp.Example,LOCALHOST,::1,127.0.0.1"
+        );
+    }
+
+    #[test]
+    fn no_proxy_is_unchanged_when_both_variables_already_hold_it() {
+        let set = "corp.example,localhost,127.0.0.1,::1";
+        assert_eq!(no_proxy_with_loopback(Some(set), Some(set)), set);
     }
 }
