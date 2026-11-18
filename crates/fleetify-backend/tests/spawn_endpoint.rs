@@ -6,6 +6,9 @@
 
 use std::net::SocketAddr;
 
+use fleetify_backend::access::ApiToken;
+use fleetify_backend::ServeOptions;
+
 fn enable_noauth() {
     std::env::set_var("FLEETIFY_NOAUTH", "1");
     std::env::set_var("FLEETIFY_ISSUER", "http://127.0.0.1:1");
@@ -21,7 +24,9 @@ fn enable_noauth() {
 async fn spawn_endpoints() {
     enable_noauth();
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let handle = fleetify_backend::serve(addr, None).await.expect("serve");
+    let handle = fleetify_backend::serve(addr, ServeOptions::api_only(ApiToken::generate()))
+        .await
+        .expect("serve");
     let base = format!("http://{}", handle.local_addr());
     let client = reqwest::Client::new();
     let tmp = std::env::temp_dir().to_string_lossy().to_string();

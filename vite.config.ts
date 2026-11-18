@@ -90,9 +90,11 @@ export default defineConfig({
     return {
       port: vitePort,
       strictPort: true,
+      // changeOrigin on every entry: the backend answers only requests
+      // whose Host is its own (127.0.0.1:<backend port>), WebSockets too.
       proxy: {
         "/api":     { target: httpTarget, changeOrigin: true },
-        "/ws":      { target: wsTarget,   ws: true },
+        "/ws":      { target: wsTarget,   ws: true, changeOrigin: true },
         "/events":  { target: httpTarget, changeOrigin: true },
         "/healthz": { target: httpTarget, changeOrigin: true },
       },

@@ -9,6 +9,8 @@ use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
+use fleetify_backend::access::ApiToken;
+use fleetify_backend::ServeOptions;
 use jsonwebtoken::{encode, EncodingKey, Header};
 use rsa::pkcs8::EncodePrivateKey;
 use rsa::traits::PublicKeyParts;
@@ -72,7 +74,9 @@ async fn phase4_apis_smoke() {
 
     // 4. Start backend on an ephemeral port.
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let handle = fleetify_backend::serve(addr, None).await.unwrap();
+    let handle = fleetify_backend::serve(addr, ServeOptions::api_only(ApiToken::generate()))
+        .await
+        .unwrap();
     let base = format!("http://{}", handle.local_addr());
 
     let client = reqwest::Client::new();

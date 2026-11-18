@@ -119,8 +119,8 @@ provider.
 The Tauri shell composes a `RoutingSetup { enabled, active_decision_router,
 active_proxy_gateway, resolved: {id → {api_key, base_url}} }` from
 `fleet.config.json` + the OS keychain and hands it to the backend at boot
-(`serve_with_routing_setup`) or POSTs it to `/api/internal/routing/reload` while
-running. `RoutingOrchestrator::reload_from_setup` wipes external registry
+(`serve`, in its `ServeOptions`) or POSTs it to `/api/internal/routing/reload`
+while running. `RoutingOrchestrator::reload_from_setup` wipes external registry
 entries and re-hydrates Not Diamond / Weave / LiteLLM **without an app
 restart**, so connect/disconnect/activate from Settings → Routers takes effect
 live.

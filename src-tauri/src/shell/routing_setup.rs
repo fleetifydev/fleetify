@@ -1,8 +1,8 @@
 //! Compose the embedded backend's `RoutingSetup` from on-disk config
 //! (`fleet.config.json`) and the per-user keychain. Called once from the
-//! Tauri setup hook before `fleetify_backend::serve_with_routing_setup`
-//! so external routers (Not Diamond, Weave, LiteLLM) are registered with
-//! the orchestrator at boot.
+//! Tauri setup hook before `fleetify_backend::serve` (which gets it in
+//! its `ServeOptions`) so external routers (Not Diamond, Weave, LiteLLM)
+//! are registered with the orchestrator at boot.
 //!
 //! Also re-used by every `routers_*` IPC mutation: after writing config
 //! plus keychain the IPC handler rebuilds the `RoutingSetup` from disk

@@ -1,7 +1,7 @@
 //! Resolved router credentials passed from the Tauri shell into the
 //! embedded backend at startup. The shell reads `fleet.config.json`
 //! plus the per-user keychain, composes a `RoutingSetup`, and hands
-//! it to `serve_with_routing_setup()` — keeping the backend Tauri-
+//! it to `serve()` (in its `ServeOptions`) — keeping the backend Tauri-
 //! agnostic while still allowing it to register external routers
 //! (Not Diamond, Weave, LiteLLM) without round-tripping IPC at boot.
 
@@ -21,11 +21,11 @@ pub struct ResolvedRouterCredential {
 /// live IPC-triggered reload.
 ///
 /// Composed on the Tauri side from `fleet.config.json` + the user's
-/// keychain entries, then either passed into `serve_with_routing_setup()`
-/// at boot or POSTed to `/api/internal/routing/reload` while the backend
-/// is already running. `enabled` is the master "intelligent routing"
-/// toggle; the two `active_*` ids are the saved user selections (default
-/// builtin / none-proxy when unset).
+/// keychain entries, then either passed into `serve()` (in its
+/// `ServeOptions`) at boot or POSTed to `/api/internal/routing/reload`
+/// while the backend is already running. `enabled` is the master
+/// "intelligent routing" toggle; the two `active_*` ids are the saved user
+/// selections (default builtin / none-proxy when unset).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RoutingSetup {
     pub enabled: bool,

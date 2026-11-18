@@ -8,6 +8,9 @@
 
 use std::net::SocketAddr;
 
+use fleetify_backend::access::ApiToken;
+use fleetify_backend::ServeOptions;
+
 fn enable_noauth() {
     std::env::set_var("FLEETIFY_NOAUTH", "1");
     // Point JWKS at a dead address — the bypass must NOT touch it. If the
@@ -26,7 +29,9 @@ async fn protected_route_skips_bearer_when_noauth_enabled() {
     );
 
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let handle = fleetify_backend::serve(addr, None).await.expect("serve");
+    let handle = fleetify_backend::serve(addr, ServeOptions::api_only(ApiToken::generate()))
+        .await
+        .expect("serve");
     let base = format!("http://{}", handle.local_addr());
 
     // No Authorization header — would normally 401 NotAuthenticated.

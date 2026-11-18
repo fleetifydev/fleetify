@@ -6,6 +6,8 @@ use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
+use fleetify_backend::access::ApiToken;
+use fleetify_backend::ServeOptions;
 use jsonwebtoken::{encode, EncodingKey, Header};
 use rsa::pkcs8::EncodePrivateKey;
 use rsa::traits::PublicKeyParts;
@@ -54,7 +56,9 @@ async fn sessions_api_round_trip_with_auth() {
 
     // 4. Boot the real backend.
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let handle = fleetify_backend::serve(addr, None).await.expect("serve");
+    let handle = fleetify_backend::serve(addr, ServeOptions::api_only(ApiToken::generate()))
+        .await
+        .expect("serve");
     let base = format!("http://{}", handle.local_addr());
 
     // 5. Mint a valid JWT (iss = auth_base, aud = expected).

@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
-use axum::http::{HeaderValue, Method};
+use axum::middleware::from_fn_with_state;
 use axum::{routing::get, Json, Router};
 use serde_json::{json, Value};
-use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
+use crate::access::{self, AccessPolicy};
 use crate::routers::{
     accounts, auth as auth_router, browser, chat, docker, events, fleet, fs, groups, internal,
     library, marketplace, mcp, messages, plugins, prompt, prompts, providers, routing, runtime,
@@ -18,27 +18,10 @@ pub const HEALTH_PATH: &str = "/healthz";
 
 /// Build the axum app. Single origin: `/healthz`, `/api/*` (auth'd),
 /// `/events/status` SSE, and the built React assets (when `static_dir`).
-/// CORS mirrors the Python: localhost:3000 / 127.0.0.1:3000, creds, *.
-pub fn app(state: AppState, static_dir: Option<PathBuf>) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin([
-            "http://localhost:3000".parse::<HeaderValue>().unwrap(),
-            "http://127.0.0.1:3000".parse::<HeaderValue>().unwrap(),
-        ])
-        .allow_credentials(true)
-        .allow_methods([
-            Method::GET,
-            Method::POST,
-            Method::PATCH,
-            Method::DELETE,
-            Method::OPTIONS,
-            Method::PUT,
-        ])
-        // Starlette's `allow_headers=["*"]` + credentials maps to
-        // mirroring the requested headers in tower-http (Any + credentials
-        // is rejected at construction).
-        .allow_headers(tower_http::cors::AllowHeaders::mirror_request());
-
+/// No CORS: the app's pages come from this origin (or, in dev, through the
+/// Vite proxy). [`access::guard`] wraps all of it, the static files and the
+/// 404s included.
+pub fn app(state: AppState, static_dir: Option<PathBuf>, policy: AccessPolicy) -> Router {
     let api = sessions::router()
         .merge(messages::router())
         .merge(groups::router())
@@ -75,13 +58,15 @@ pub fn app(state: AppState, static_dir: Option<PathBuf>) -> Router {
         .merge(events::router())
         .merge(chat::router())
         .merge(browser::ws_router())
-        .with_state(state)
-        .layer(cors);
+        .with_state(state);
 
-    match static_dir {
+    let routed = match static_dir {
         Some(dir) => routed.fallback_service(ServeDir::new(dir)),
         None => routed,
-    }
+    };
+    // Last, so it is the outermost layer: axum applies a layer only to the
+    // routes and fallback added before it.
+    routed.layer(from_fn_with_state(policy, access::guard))
 }
 
 async fn healthz() -> Json<Value> {

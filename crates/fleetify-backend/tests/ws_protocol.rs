@@ -11,6 +11,8 @@ use std::net::SocketAddr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
+use fleetify_backend::access::ApiToken;
+use fleetify_backend::ServeOptions;
 use futures_util::{SinkExt, StreamExt};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use rsa::pkcs8::EncodePrivateKey;
@@ -54,7 +56,9 @@ async fn ws_sessions_subscribe_and_ping() {
     std::env::set_var("FLEETIFY_AUDIENCE", "http://127.0.0.1:8765");
 
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let h = fleetify_backend::serve(addr, None).await.expect("serve");
+    let h = fleetify_backend::serve(addr, ServeOptions::api_only(ApiToken::generate()))
+        .await
+        .expect("serve");
     let base = format!("http://{}", h.local_addr());
     let ws_base = format!("ws://{}", h.local_addr());
 

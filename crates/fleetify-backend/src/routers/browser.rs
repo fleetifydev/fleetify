@@ -210,10 +210,7 @@ async fn action(
         .get("x-fleet-internal")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    if !crate::routers::internal::constant_time_eq(
-        presented.as_bytes(),
-        st.internal_secret.as_bytes(),
-    ) {
+    if !crate::access::constant_time_eq(presented.as_bytes(), st.internal_secret.as_bytes()) {
         return Err(StatusCode::FORBIDDEN);
     }
     Ok(Json(match browser::action(&b.name, &b.args).await {

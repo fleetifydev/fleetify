@@ -9,7 +9,7 @@
 //! Three-tier gating, fail-closed:
 //!   1. Environment: `POSTHOG_API_KEY` present in the process env when
 //!      `init()` runs (loaded from `.env` by `dotenvy` at the top of
-//!      `serve_with_routing_setup`, or set in the shell). Unset →
+//!      `serve`, or set in the shell). Unset →
 //!      `init` is a no-op, `enqueue_if_enabled` short-circuits.
 //!   2. Runtime: `ENABLED` AtomicBool. Tauri shell flips it via the
 //!      `telemetry_set_posthog_enabled` command after user consent.

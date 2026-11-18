@@ -5,6 +5,7 @@
 
 mod http;
 
+pub mod access;
 pub mod agentic;
 pub mod auth;
 pub mod bridges;
@@ -103,20 +104,31 @@ async fn normalize_legacy_verbatim_project_paths(pool: &sqlx::SqlitePool) {
     }
 }
 
-/// Bind `addr` and start serving on a background task. `static_dir` is the
-/// built React asset directory for single-origin serving (`None` = API only).
-///
-/// Convenience wrapper around `serve_with_routing_setup` for callers that
-/// don't have hydrated router credentials (tests, headless dev runs).
-/// External routers stay un-registered — only builtin + DirectGateway are
-/// available, and the master toggle defaults to OFF.
-pub async fn serve(addr: SocketAddr, static_dir: Option<PathBuf>) -> anyhow::Result<ServerHandle> {
-    serve_with_routing_setup(
-        addr,
-        static_dir,
-        services::routing::setup::RoutingSetup::default(),
-    )
-    .await
+/// What [`serve`] starts with.
+pub struct ServeOptions {
+    /// The built React asset directory for single-origin serving (`None` =
+    /// API only).
+    pub static_dir: Option<PathBuf>,
+    /// The external routers to hydrate the routing orchestrator with. The
+    /// Tauri shell composes it from `fleet.config.json` + the per-user
+    /// keychain, so the backend stays Tauri-agnostic.
+    pub routing_setup: services::routing::setup::RoutingSetup,
+    /// This run's API token. The shell gives the same token to the renderer.
+    pub api_token: access::ApiToken,
+}
+
+impl ServeOptions {
+    /// For callers that don't have hydrated router credentials (tests,
+    /// headless dev runs): no UI files, and external routers stay
+    /// un-registered — only builtin + DirectGateway are available, and the
+    /// master toggle defaults to OFF.
+    pub fn api_only(api_token: access::ApiToken) -> Self {
+        Self {
+            static_dir: None,
+            routing_setup: services::routing::setup::RoutingSetup::default(),
+            api_token,
+        }
+    }
 }
 
 /// Whether this instance should isolate its sessions DB under FLEETIFY_HOME:
@@ -163,15 +175,16 @@ pub(crate) fn should_load_dotenv(release_build: bool) -> bool {
     !release_build
 }
 
-/// Bind `addr` and start serving, hydrating the routing orchestrator with
-/// the supplied `routing_setup`. The Tauri shell composes the setup from
-/// `fleet.config.json` + the per-user keychain before invoking this so
-/// the backend stays Tauri-agnostic.
-pub async fn serve_with_routing_setup(
-    addr: SocketAddr,
-    static_dir: Option<PathBuf>,
-    routing_setup: services::routing::setup::RoutingSetup,
-) -> anyhow::Result<ServerHandle> {
+/// Bind `addr` and start serving on a background task, with the UI files,
+/// external routers and API token in `opts`. The access guard
+/// ([`access::guard`]) answers only requests addressed to the port actually
+/// bound.
+pub async fn serve(addr: SocketAddr, opts: ServeOptions) -> anyhow::Result<ServerHandle> {
+    let ServeOptions {
+        static_dir,
+        routing_setup,
+        api_token,
+    } = opts;
     // Debug builds load the first `.env` found walking up from the working
     // directory (the workspace root's under `npm run dev:tauri`) into the
     // process environment. Existing env vars are NOT overridden — a real
@@ -393,7 +406,11 @@ pub async fn serve_with_routing_setup(
     let bg_pool = state.auth.pool.clone();
     let bg_sm = state.sm;
     let bg_cfg = state.app_cfg.clone();
-    let router = app(state, static_dir);
+    let policy = access::AccessPolicy {
+        port: local_addr.port(),
+        token: api_token,
+    };
+    let router = app(state, static_dir, policy);
     tokio::spawn(async move {
         let server = axum::serve(listener, router).with_graceful_shutdown(async {
             let _ = shutdown_rx.await;

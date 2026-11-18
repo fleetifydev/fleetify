@@ -31,7 +31,7 @@ const POLL_TIMEOUT: Duration = Duration::from_millis(500);
 /// What the embedded backend's task has reported about its start.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendStart {
-    /// No report yet: `serve_with_routing_setup` is still running.
+    /// No report yet: `serve` is still running.
     Pending,
     /// It returned `Ok`: the backend listens on its port.
     Bound,
@@ -42,7 +42,7 @@ pub enum BackendStart {
 /// Why the embedded backend didn't start.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartFailure {
-    /// `serve_with_routing_setup` returned `Err` (the error and its causes),
+    /// `serve` returned `Err` (the error and its causes),
     /// or its task ended without a report.
     Backend(String),
     /// A release build found no UI files to serve, so the backend was never

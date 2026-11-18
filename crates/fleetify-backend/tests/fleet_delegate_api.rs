@@ -11,6 +11,9 @@
 
 use std::net::SocketAddr;
 
+use fleetify_backend::access::ApiToken;
+use fleetify_backend::ServeOptions;
+
 fn enable_noauth() {
     std::env::set_var("FLEETIFY_NOAUTH", "1");
     std::env::set_var("FLEETIFY_ISSUER", "http://127.0.0.1:1");
@@ -22,7 +25,9 @@ fn enable_noauth() {
 async fn delegate_without_staff_session_is_400() {
     enable_noauth();
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let handle = fleetify_backend::serve(addr, None).await.expect("serve");
+    let handle = fleetify_backend::serve(addr, ServeOptions::api_only(ApiToken::generate()))
+        .await
+        .expect("serve");
     let base = format!("http://{}", handle.local_addr());
 
     let resp = reqwest::Client::new()
@@ -43,7 +48,9 @@ async fn delegate_without_staff_session_is_400() {
 async fn delegate_empty_dispatches_is_400() {
     enable_noauth();
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let handle = fleetify_backend::serve(addr, None).await.expect("serve");
+    let handle = fleetify_backend::serve(addr, ServeOptions::api_only(ApiToken::generate()))
+        .await
+        .expect("serve");
     let base = format!("http://{}", handle.local_addr());
 
     let resp = reqwest::Client::new()
@@ -59,7 +66,9 @@ async fn delegate_empty_dispatches_is_400() {
 async fn delegate_status_unknown_batch_is_404() {
     enable_noauth();
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let handle = fleetify_backend::serve(addr, None).await.expect("serve");
+    let handle = fleetify_backend::serve(addr, ServeOptions::api_only(ApiToken::generate()))
+        .await
+        .expect("serve");
     let base = format!("http://{}", handle.local_addr());
 
     let resp = reqwest::Client::new()

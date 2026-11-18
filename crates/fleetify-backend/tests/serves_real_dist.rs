@@ -6,6 +6,9 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use fleetify_backend::access::ApiToken;
+use fleetify_backend::ServeOptions;
+
 #[tokio::test]
 #[ignore = "requires dist/ from `npm run build`; run with --ignored"]
 async fn serves_real_react_bundle_and_healthz_same_origin() {
@@ -17,7 +20,15 @@ async fn serves_real_react_bundle_and_healthz_same_origin() {
     );
 
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let h = fleetify_backend::serve(addr, Some(dist)).await.unwrap();
+    let h = fleetify_backend::serve(
+        addr,
+        ServeOptions {
+            static_dir: Some(dist),
+            ..ServeOptions::api_only(ApiToken::generate())
+        },
+    )
+    .await
+    .unwrap();
     let base = format!("http://{}", h.local_addr());
 
     // /healthz coexists with static serving.

@@ -496,7 +496,12 @@ pub fn run() {
                         fleetify_backend::services::routing::setup::RoutingSetup::default()
                     }
                 };
-                match fleetify_backend::serve_with_routing_setup(addr, sd, routing_setup).await {
+                let opts = fleetify_backend::ServeOptions {
+                    static_dir: sd,
+                    routing_setup,
+                    api_token: fleetify_backend::access::ApiToken::generate(),
+                };
+                match fleetify_backend::serve(addr, opts).await {
                     Ok(handle) => {
                         std::mem::forget(handle);
                         // backend_bind_ms splits the boot path: this is the
