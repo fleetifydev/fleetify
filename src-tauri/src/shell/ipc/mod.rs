@@ -384,28 +384,39 @@ pub async fn detect_editors() -> serde_json::Value {
     serde_json::json!({ "editors": editors })
 }
 
-/// Launch the project directory in the chosen editor. Spawns the
-/// resolved absolute binary with the path as its sole argument — same
-/// detached-spawn pattern as `reveal_in_file_manager`, no shell.
+/// The path to open in an editor, checked and resolved the way Reveal checks
+/// it (`open_external::path_to_reveal`), or the message the renderer is told
+/// when it is refused. It must be absolute and exist, and a Windows network
+/// or device path is refused before anything looks at it, since even
+/// checking that it exists signs in to the host.
+fn editor_target(path: &str) -> Result<std::path::PathBuf, String> {
+    use fleetify_backend::open_external::{path_to_reveal, PathRefused};
+    path_to_reveal(std::path::Path::new(path)).map_err(|refused| match refused {
+        PathRefused::Unresolvable(_) => format!("path does not exist: {path}"),
+        _ => PATH_REFUSED.to_string(),
+    })
+}
+
+/// Launch the project directory in the chosen editor. The path is checked
+/// first (`editor_target`), then the resolved absolute binary is spawned
+/// with the resolved path as its sole argument — same detached-spawn
+/// pattern as `reveal_in_file_manager`, no shell.
 #[tauri::command]
 pub async fn open_in_editor(editor_id: String, path: String) -> serde_json::Value {
     let Some(bin) = editor_bin(&editor_id) else {
         return serde_json::json!({ "ok": false, "error": format!("unknown editor: {editor_id}") });
     };
-    let p = std::path::PathBuf::from(&path);
-    if !p.exists() {
-        return serde_json::json!({
-            "ok": false,
-            "error": format!("path does not exist: {}", p.display())
-        });
-    }
+    let target = match editor_target(&path) {
+        Ok(target) => target,
+        Err(error) => return serde_json::json!({ "ok": false, "error": error }),
+    };
     let exe = match which::which(bin) {
         Ok(e) => e,
         Err(e) => {
             return serde_json::json!({ "ok": false, "error": format!("{bin} not found: {e}") })
         }
     };
-    match std::process::Command::new(exe).arg(&p).spawn() {
+    match std::process::Command::new(exe).arg(&target).spawn() {
         Ok(_) => serde_json::json!({ "ok": true }),
         Err(e) => serde_json::json!({ "ok": false, "error": format!("launch {bin}: {e}") }),
     }
@@ -4971,6 +4982,60 @@ mod editor_tests {
             "/no/such/path/zzz-fleet-test".into(),
         ));
         assert_eq!(r["ok"], false);
+    }
+
+    #[test]
+    fn a_relative_or_missing_path_is_not_opened_in_an_editor() {
+        // A relative path is refused even when it exists ("." does): it
+        // would be resolved against the working directory.
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing").to_string_lossy().into_owned();
+        for path in ["relative/dir", "."] {
+            assert_eq!(
+                editor_target(path),
+                Err(PATH_REFUSED.to_string()),
+                "{path:?}"
+            );
+        }
+        assert_eq!(
+            editor_target(&missing),
+            Err(format!("path does not exist: {missing}"))
+        );
+    }
+
+    #[test]
+    fn an_existing_folder_opens_in_an_editor_by_its_canonical_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("proj")).unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let canonical = fleetify_core::canonicalize_no_verbatim(&dir.path().join("proj")).unwrap();
+        for path in [
+            dir.path().join("proj"),
+            dir.path().join("sub").join("..").join("proj"),
+        ] {
+            assert_eq!(
+                editor_target(&path.to_string_lossy()),
+                Ok(canonical.clone()),
+                "{path:?}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_network_path_is_not_opened_in_an_editor() {
+        assert_eq!(
+            editor_target(r"\\server\share\x"),
+            Err(PATH_REFUSED.to_string())
+        );
+    }
+
+    #[test]
+    fn open_in_editor_checks_the_path_before_looking_for_the_editor() {
+        // Refused before the editor is looked up: nothing is launched here.
+        let r =
+            tauri::async_runtime::block_on(open_in_editor("vscode".into(), "relative/dir".into()));
+        assert_eq!(r, serde_json::json!({ "ok": false, "error": PATH_REFUSED }));
     }
 }
 
