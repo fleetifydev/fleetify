@@ -35,7 +35,7 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tokio::sync::{watch, Notify};
 
 use crate::shell::backend_ready::{BackendStart, StartFailure};
-use crate::shell::ui_files::UiDirError;
+use crate::shell::ui_files::UiFilesMissing;
 
 /// Label of the main window.
 pub const MAIN_WINDOW: &str = "main";
@@ -239,18 +239,18 @@ pub fn backend_failure_message(error: &str, port: u16, logs_dir: Option<&Path>) 
 }
 
 /// The text of that dialog when a release build has no UI files to serve
-/// (`missing`, from `shell::ui_files`): reinstall, where it looked for them,
-/// and where the log files are, as [`backend_failure_message`] says it.
-pub fn ui_files_missing_message(missing: &UiDirError, logs_dir: Option<&Path>) -> String {
-    let looked = match missing {
-        UiDirError::NoIndexHtml(dir) => format!("Fleetify looked for them in {}", dir.display()),
-        UiDirError::NoResourceDir(error) => {
-            format!("Fleetify couldn't find its install folder: {error}")
+/// (`missing`, from `shell::ui_files`): reinstall, what is missing, and
+/// where the log files are, as [`backend_failure_message`] says it.
+pub fn ui_files_missing_message(missing: &UiFilesMissing, logs_dir: Option<&Path>) -> String {
+    let what = match missing {
+        UiFilesMissing::NotEmbedded => "This copy of Fleetify was built without them.",
+        UiFilesMissing::NoIndexHtml => {
+            "The interface files built into this copy of Fleetify have no index.html."
         }
     };
     let logs = logs_line(logs_dir);
     format!(
-        "Fleetify's interface files are missing. Please reinstall Fleetify.\n\n{looked}\n\n{logs}"
+        "Fleetify's interface files are missing. Please reinstall Fleetify.\n\n{what}\n\n{logs}"
     )
 }
 
@@ -820,9 +820,7 @@ mod tests {
 
     /// The report when a release build has no UI files to serve.
     fn ui_files_missing() -> BackendStart {
-        BackendStart::Failed(StartFailure::UiFilesMissing(UiDirError::NoIndexHtml(
-            "/usr/lib/Fleetify/dist".into(),
-        )))
+        BackendStart::Failed(StartFailure::UiFilesMissing(UiFilesMissing::NoIndexHtml))
     }
 
     #[test]
@@ -911,16 +909,14 @@ mod tests {
     const REINSTALL: &str = "Fleetify's interface files are missing. Please reinstall Fleetify.";
 
     #[test]
-    fn the_missing_ui_files_message_says_to_reinstall_and_names_the_folder_and_the_logs() {
+    fn the_missing_ui_files_message_says_to_reinstall_and_what_is_missing_and_the_logs() {
         let logs = tempfile::tempdir().unwrap();
-        let dist = Path::new("/usr/lib/Fleetify/dist");
-        let message = ui_files_missing_message(
-            &UiDirError::NoIndexHtml(dist.to_path_buf()),
-            Some(logs.path()),
-        );
+        let message = ui_files_missing_message(&UiFilesMissing::NoIndexHtml, Some(logs.path()));
         assert!(message.starts_with(REINSTALL), "{message}");
         assert!(
-            message.contains(&format!("Fleetify looked for them in {}", dist.display())),
+            message.contains(
+                "The interface files built into this copy of Fleetify have no index.html."
+            ),
             "{message}"
         );
         assert!(
@@ -932,17 +928,14 @@ mod tests {
     }
 
     #[test]
-    fn the_missing_ui_files_message_without_a_resource_folder_or_a_log_folder() {
+    fn the_missing_ui_files_message_for_a_build_without_them_and_no_log_folder() {
         let parent = tempfile::tempdir().unwrap();
         let never_created = parent.path().join("logs");
         for logs_dir in [Some(never_created.as_path()), None] {
-            let message = ui_files_missing_message(
-                &UiDirError::NoResourceDir("unknown path".into()),
-                logs_dir,
-            );
+            let message = ui_files_missing_message(&UiFilesMissing::NotEmbedded, logs_dir);
             assert!(message.starts_with(REINSTALL), "{message}");
             assert!(
-                message.contains("Fleetify couldn't find its install folder: unknown path"),
+                message.contains("This copy of Fleetify was built without them."),
                 "{message}"
             );
             assert!(
@@ -965,7 +958,7 @@ mod tests {
             ),
             backend_failure_message(error, 8765, Some(logs.path()))
         );
-        let missing = UiDirError::NoIndexHtml("/usr/lib/Fleetify/dist".into());
+        let missing = UiFilesMissing::NoIndexHtml;
         assert_eq!(
             start_failure_message(
                 &StartFailure::UiFilesMissing(missing.clone()),

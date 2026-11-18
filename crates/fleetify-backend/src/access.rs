@@ -123,7 +123,9 @@ pub enum Verdict {
 ///      UI);
 ///    - any method under `/api/internal/` (the handlers check the internal
 ///      secret);
-///    - `GET /api/mcp/auth/callback`.
+///    - `GET /api/mcp/auth/callback`;
+///    - `POST /api/csp-report` ([`crate::ui::CSP_REPORT_PATH`]): the browser
+///      sends CSP violation reports itself, without the token.
 /// 4. The token in the header is allowed.
 /// 5. The token in the query is allowed on a WebSocket upgrade under `/ws/`
 ///    and on `GET /events/status`.
@@ -164,6 +166,7 @@ fn needs_no_token(facts: &RequestFacts<'_>) -> bool {
         || (read && !api)
         || path.starts_with("/api/internal/")
         || (*method == Method::GET && path == MCP_AUTH_CALLBACK_PATH)
+        || (*method == Method::POST && path == crate::ui::CSP_REPORT_PATH)
 }
 
 /// Rule 5 of [`decide`]: where the query token counts.
@@ -465,6 +468,24 @@ mod tests {
                 "the OAuth callback",
                 facts(&get, "/api/mcp/auth/callback"),
                 ALLOW,
+            ),
+            (
+                "a CSP violation report",
+                facts(&post, "/api/csp-report"),
+                ALLOW,
+            ),
+            (
+                "a GET of the CSP report path",
+                facts(&get, "/api/csp-report"),
+                NO_TOKEN,
+            ),
+            (
+                "a CSP violation report from a bad host",
+                RequestFacts {
+                    host: evil,
+                    ..facts(&post, "/api/csp-report")
+                },
+                BAD_HOST,
             ),
             ("a POST to the UI", facts(&post, "/"), NO_TOKEN),
             (

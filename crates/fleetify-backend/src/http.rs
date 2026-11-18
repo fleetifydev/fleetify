@@ -1,9 +1,9 @@
-use std::path::PathBuf;
-
+use axum::extract::DefaultBodyLimit;
+use axum::http::{Method, Uri};
 use axum::middleware::from_fn_with_state;
-use axum::{routing::get, Json, Router};
+use axum::routing::{get, post};
+use axum::{Json, Router};
 use serde_json::{json, Value};
-use tower_http::services::ServeDir;
 
 use crate::access::{self, AccessPolicy};
 use crate::routers::{
@@ -11,17 +11,18 @@ use crate::routers::{
     library, marketplace, mcp, messages, plugins, prompt, prompts, providers, routing, runtime,
     sessions, ssh, user, workflows, workspace, AppState,
 };
+use crate::ui::{self, UiAssets, UiFiles};
 
 /// The health route. It answers `{"status":"ok","version":…}`, and the
 /// shell polls it at startup before its warm-up talks to the backend.
 pub const HEALTH_PATH: &str = "/healthz";
 
 /// Build the axum app. Single origin: `/healthz`, `/api/*` (auth'd),
-/// `/events/status` SSE, and the built React assets (when `static_dir`).
-/// No CORS: the app's pages come from this origin (or, in dev, through the
-/// Vite proxy). [`access::guard`] wraps all of it, the static files and the
-/// 404s included.
-pub fn app(state: AppState, static_dir: Option<PathBuf>, policy: AccessPolicy) -> Router {
+/// `/events/status` SSE, the CSP report route, and, with `ui`, the release
+/// UI's files as the fallback ([`crate::ui`]). No CORS: the app's pages come
+/// from this origin (or, in dev, through the Vite proxy). [`access::guard`]
+/// wraps all of it, the UI files and the 404s included.
+pub fn app(state: AppState, ui: Option<UiAssets>, policy: AccessPolicy) -> Router {
     let api = sessions::router()
         .merge(messages::router())
         .merge(groups::router())
@@ -53,6 +54,10 @@ pub fn app(state: AppState, static_dir: Option<PathBuf>, policy: AccessPolicy) -
 
     let routed = Router::new()
         .route(HEALTH_PATH, get(healthz))
+        .route(
+            ui::CSP_REPORT_PATH,
+            post(ui::csp_report).layer(DefaultBodyLimit::max(ui::CSP_REPORT_MAX_BYTES)),
+        )
         .nest("/api", api)
         .nest("/api/internal", internal_api)
         .merge(events::router())
@@ -60,8 +65,16 @@ pub fn app(state: AppState, static_dir: Option<PathBuf>, policy: AccessPolicy) -
         .merge(browser::ws_router())
         .with_state(state);
 
-    let routed = match static_dir {
-        Some(dir) => routed.fallback_service(ServeDir::new(dir)),
+    // The nested routers have no fallback of their own, so a path under
+    // `/api` that no route matches ends here too: an empty 404.
+    let routed = match ui {
+        Some(assets) => {
+            let files = UiFiles::new(assets, policy.port);
+            routed.fallback(move |method: Method, uri: Uri| {
+                let files = files.clone();
+                async move { files.respond(&method, uri.path()) }
+            })
+        }
         None => routed,
     };
     // Last, so it is the outermost layer: axum applies a layer only to the

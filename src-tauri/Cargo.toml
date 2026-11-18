@@ -41,6 +41,9 @@ base64 = "0.22"
 rand = "0.8"
 tiny_http = "0.12"
 url = "2"
+# Decodes the request paths the embedded UI files are looked up by
+# (shell::ui_files). Already in the tree through url and tauri.
+percent-encoding = "2"
 arboard = "3"
 portable-pty = "0.9"
 # `shell_install_provider` resolves the user's Python via PATHEXT-aware

@@ -11,6 +11,7 @@
 #![allow(dead_code)]
 
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use fleetify_backend::access::{ApiToken, API_TOKEN_HEADER};
 use fleetify_backend::{ServeOptions, ServerHandle};
@@ -76,4 +77,23 @@ impl TestServer {
             .build()
             .expect("build the test client")
     }
+}
+
+/// Send `request` over a plain TCP connection to `addr` and return the raw
+/// response. Meant for HTTP/1.0 requests, which the server answers and then
+/// closes.
+pub async fn raw_exchange(addr: SocketAddr, request: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let exchange = async {
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        response
+    };
+    let response = tokio::time::timeout(Duration::from_secs(10), exchange)
+        .await
+        .expect("the server closes an HTTP/1.0 connection after its response");
+    String::from_utf8_lossy(&response).into_owned()
 }

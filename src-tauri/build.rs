@@ -13,19 +13,19 @@ fn main() {
         panic!("{drift}");
     }
 
-    // The release UI ships as a bundled resource: `bundle.resources` in
-    // tauri.conf.json maps the built `../dist` to `dist` in the install's
-    // resource folder, the only place a release build serves it from
-    // (shell::ui_files). tauri-build copies the resources into the target
-    // folder on every build, debug ones too, and fails when a path is
-    // missing; `../dist` exists only after a frontend build, which
-    // `tauri build` runs first. Make sure the folder is there, empty if need
-    // be, so a build without one (CI's Rust job, `tauri dev` on a fresh
-    // clone) still compiles. A release binary built that way has no UI files
-    // and says so at startup. Watching the folder copies it again once a
-    // frontend build fills it.
-    std::fs::create_dir_all("../dist").expect("creating ../dist for bundle.resources");
-    println!("cargo:rerun-if-changed=../dist");
+    // A `tauri build` embeds the built UI (`frontendDist`, `../dist`) in the
+    // binary, and a release build serves exactly those files
+    // (shell::ui_files). Its beforeBuildCommand runs the frontend build
+    // first. Without index.html the binary would only show the
+    // missing-files dialog, so the build stops here instead. Dev builds
+    // (`tauri dev`, a plain `cargo build`, CI's clippy and tests) embed
+    // nothing and need no `../dist`.
+    if !tauri_build::is_dev() {
+        println!("cargo:rerun-if-changed=../dist/index.html");
+        if !std::path::Path::new("../dist/index.html").is_file() {
+            panic!("the UI isn't built: run npm run build before tauri build");
+        }
+    }
 
     // The app's ACL manifest. tauri-build generates an `allow-*` and a
     // `deny-*` permission for every app command, in

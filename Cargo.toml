@@ -21,7 +21,7 @@ fleetify-core = { path = "crates/fleetify-core" }
 fleetify-backend = { path = "crates/fleetify-backend" }
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", features = ["ws"] }
-tower-http = { version = "0.6", features = ["fs", "trace"] }
+tower-http = { version = "0.6", features = ["trace"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

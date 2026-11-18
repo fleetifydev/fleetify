@@ -20,6 +20,7 @@ pub mod session_manager;
 pub mod studio;
 #[cfg(test)]
 pub mod test_support;
+pub mod ui;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -106,9 +107,10 @@ async fn normalize_legacy_verbatim_project_paths(pool: &sqlx::SqlitePool) {
 
 /// What [`serve`] starts with.
 pub struct ServeOptions {
-    /// The built React asset directory for single-origin serving (`None` =
-    /// API only).
-    pub static_dir: Option<PathBuf>,
+    /// The release UI's files, which the shell embeds in the binary and the
+    /// backend serves on its own origin ([`ui`]). `None` serves the API
+    /// only: a debug build loads its UI from the Vite dev server.
+    pub ui: Option<ui::UiAssets>,
     /// The external routers to hydrate the routing orchestrator with. The
     /// Tauri shell composes it from `fleet.config.json` + the per-user
     /// keychain, so the backend stays Tauri-agnostic.
@@ -124,7 +126,7 @@ impl ServeOptions {
     /// master toggle defaults to OFF.
     pub fn api_only(api_token: access::ApiToken) -> Self {
         Self {
-            static_dir: None,
+            ui: None,
             routing_setup: services::routing::setup::RoutingSetup::default(),
             api_token,
         }
@@ -190,7 +192,7 @@ fn api_token_forced() -> bool {
 /// `FLEETIFY_REQUIRE_API_TOKEN=1`). Both are read once, here.
 pub async fn serve(addr: SocketAddr, opts: ServeOptions) -> anyhow::Result<ServerHandle> {
     let ServeOptions {
-        static_dir,
+        ui,
         routing_setup,
         api_token,
     } = opts;
@@ -430,7 +432,7 @@ pub async fn serve(addr: SocketAddr, opts: ServeOptions) -> anyhow::Result<Serve
         token: api_token,
         token_required,
     };
-    let router = app(state, static_dir, policy);
+    let router = app(state, ui, policy);
     tokio::spawn(async move {
         let server = axum::serve(listener, router).with_graceful_shutdown(async {
             let _ = shutdown_rx.await;

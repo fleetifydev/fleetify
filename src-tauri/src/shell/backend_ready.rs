@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 
-use crate::shell::ui_files::UiDirError;
+use crate::shell::ui_files::UiFilesMissing;
 
 /// How long one poll may take. The backend answers its health route at
 /// once; this only bounds a port that accepts and never answers.
@@ -47,7 +47,7 @@ pub enum StartFailure {
     Backend(String),
     /// A release build found no UI files to serve, so the backend was never
     /// started: it would have served a blank window (see `shell::ui_files`).
-    UiFilesMissing(UiDirError),
+    UiFilesMissing(UiFilesMissing),
     /// The window's app origin couldn't be granted its IPC permissions (the
     /// error, or the panic's message), so the backend was never started: the
     /// release UI could call none of the app's commands (see
@@ -327,9 +327,7 @@ mod tests {
     /// The report when a release build has no UI files: the backend is
     /// never started.
     fn ui_files_missing() -> BackendStart {
-        BackendStart::Failed(StartFailure::UiFilesMissing(UiDirError::NoIndexHtml(
-            "/usr/lib/Fleetify/dist".into(),
-        )))
+        BackendStart::Failed(StartFailure::UiFilesMissing(UiFilesMissing::NoIndexHtml))
     }
 
     #[test]

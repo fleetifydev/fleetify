@@ -10,11 +10,9 @@
 
 mod common;
 
-use std::net::SocketAddr;
-use std::time::Duration;
-
-use common::TestServer;
+use common::{raw_exchange, TestServer};
 use fleetify_backend::access::{ApiToken, API_TOKEN_HEADER, API_TOKEN_QUERY};
+use fleetify_backend::ui::{UiAsset, UiAssets};
 use fleetify_backend::ServeOptions;
 use tokio_tungstenite::tungstenite::Error as WsError;
 
@@ -52,23 +50,6 @@ fn assert_plain_text(resp: &reqwest::Response) {
         content_type.starts_with("text/plain"),
         "content-type: {content_type:?}"
     );
-}
-
-/// Send `request` over a plain TCP connection and return the raw response.
-async fn raw_exchange(addr: SocketAddr, request: &str) -> String {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let exchange = async {
-        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        stream.write_all(request.as_bytes()).await.unwrap();
-        let mut response = Vec::new();
-        stream.read_to_end(&mut response).await.unwrap();
-        response
-    };
-    let response = tokio::time::timeout(Duration::from_secs(10), exchange)
-        .await
-        .expect("the server closes an HTTP/1.0 connection after its response");
-    String::from_utf8_lossy(&response).into_owned()
 }
 
 #[tokio::test]
@@ -143,16 +124,20 @@ async fn a_cross_origin_preflight_gets_no_cors_headers() {
     );
 }
 
-/// The guard is the outermost layer, so the static-file fallback is behind
-/// it too: the UI is served to its own address, without a token, and
-/// refused to any other.
+/// The guard is the outermost layer, so the UI fallback is behind it too:
+/// the UI is served to its own address, without a token, and refused to any
+/// other.
 #[tokio::test]
 async fn the_ui_files_are_behind_the_host_check() {
     in_memory_db();
-    let ui = tempfile::tempdir().unwrap();
-    std::fs::write(ui.path().join("index.html"), "<!doctype html>FLEET-UI").unwrap();
+    let index = UiAssets::new(|path| {
+        (path == "/" || path == "/index.html").then(|| UiAsset {
+            bytes: b"<!doctype html>FLEET-UI".to_vec(),
+            mime_type: "text/html".into(),
+        })
+    });
     let server = TestServer::start_with(ServeOptions {
-        static_dir: Some(ui.path().to_path_buf()),
+        ui: Some(index),
         ..ServeOptions::api_only(ApiToken::generate())
     })
     .await;

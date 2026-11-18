@@ -472,14 +472,14 @@ pub fn run() {
             // connected. Fresh installs hand over an empty setup and
             // the backend boots with builtin + DirectGateway only.
             let addr: SocketAddr = format!("127.0.0.1:{backend}").parse().unwrap();
-            // The UI files it serves: in release, `dist` in the install's
-            // resource folder and nowhere else (shell::ui_files); in debug
-            // none, as Vite serves the UI. With no UI files to serve, the
-            // backend never starts: its task reports that as a failed
-            // start, so the window shows the error dialog and the app quits
+            // The UI files it serves: in release, the ones built into the
+            // binary and nothing else (shell::ui_files); in debug none, as
+            // Vite serves the UI. With no UI files to serve, the backend
+            // never starts: its task reports that as a failed start, so the
+            // window shows the error dialog and the app quits
             // (shell::startup_window).
             let ui_files =
-                shell::ui_files::served_ui_dir(release, || app.path().resource_dir());
+                shell::ui_files::served_ui(release, tauri::is_dev(), app.asset_resolver());
             let app_data_dir = app.path().app_data_dir().ok();
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = grant {
@@ -491,8 +491,8 @@ pub fn run() {
                     ));
                     return;
                 }
-                let sd = match ui_files {
-                    Ok(sd) => sd,
+                let ui = match ui_files {
+                    Ok(ui) => ui,
                     Err(missing) => {
                         tracing::error!(
                             "the UI files are missing, so the backend won't start: {missing}"
@@ -503,9 +503,6 @@ pub fn run() {
                         return;
                     }
                 };
-                if let Some(dir) = &sd {
-                    tracing::info!("serving the UI files from {}", dir.display());
-                }
                 let routing_setup = match app_data_dir {
                     Some(dir) => {
                         let uid = shell::auth::get_user_id().await;
@@ -519,7 +516,7 @@ pub fn run() {
                     }
                 };
                 let opts = fleetify_backend::ServeOptions {
-                    static_dir: sd,
+                    ui,
                     routing_setup,
                     api_token,
                 };
