@@ -33,16 +33,27 @@ pub const LOOPBACK_NO_PROXY: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
 ///
 /// It holds the entries of `upper` (`NO_PROXY`), then those of `lower`
 /// (`no_proxy`), then the loopback hosts, joined with `,`. Entries are
-/// trimmed, empty ones are dropped, and a repeat (ignoring ASCII case) is
-/// dropped too, so the first spelling stays.
+/// trimmed and ASCII-lowercased, and empty or repeated ones are dropped.
+/// Lowercase is the form that matches: libproxy compares host names
+/// case-sensitively, and a parsed URL's host is lowercase.
+///
+/// If either list has an entry that is exactly `*`, the result is `*` alone.
+/// That already exempts every host, and curl (git too) treats the list as
+/// match-all only when the whole value is `*`.
 pub fn no_proxy_with_loopback(upper: Option<&str>, lower: Option<&str>) -> String {
-    let listed = upper
+    let listed: Vec<&str> = upper
         .into_iter()
         .chain(lower)
-        .flat_map(|list| list.split(','));
-    let mut entries: Vec<&str> = Vec::new();
-    for entry in listed.chain(LOOPBACK_NO_PROXY).map(str::trim) {
-        if !entry.is_empty() && !entries.iter().any(|kept| kept.eq_ignore_ascii_case(entry)) {
+        .flat_map(|list| list.split(','))
+        .map(str::trim)
+        .collect();
+    if listed.contains(&"*") {
+        return "*".to_owned();
+    }
+    let mut entries: Vec<String> = Vec::new();
+    for entry in listed.into_iter().chain(LOOPBACK_NO_PROXY) {
+        let entry = entry.to_ascii_lowercase();
+        if !entry.is_empty() && !entries.contains(&entry) {
             entries.push(entry);
         }
     }
@@ -189,18 +200,33 @@ mod tests {
     }
 
     #[test]
-    fn no_proxy_keeps_a_wildcard() {
+    fn no_proxy_with_a_wildcard_is_the_wildcard_alone() {
+        assert_eq!(no_proxy_with_loopback(Some("*"), None), "*");
+    }
+
+    #[test]
+    fn no_proxy_with_a_wildcard_among_other_entries_is_the_wildcard_alone() {
+        assert_eq!(no_proxy_with_loopback(Some("a, * ,b"), Some("c")), "*");
+        assert_eq!(no_proxy_with_loopback(Some("a"), Some(" * ")), "*");
+    }
+
+    #[test]
+    fn no_proxy_treats_a_wildcard_inside_an_entry_as_an_ordinary_entry() {
         assert_eq!(
-            no_proxy_with_loopback(Some("*"), None),
-            "*,localhost,127.0.0.1,::1"
+            no_proxy_with_loopback(Some("*.corp.example"), None),
+            "*.corp.example,localhost,127.0.0.1,::1"
         );
     }
 
     #[test]
-    fn no_proxy_drops_a_repeat_in_another_case_keeping_the_first_spelling() {
+    fn no_proxy_lowercases_entries_so_a_repeat_in_another_case_is_dropped() {
+        assert_eq!(
+            no_proxy_with_loopback(Some("LOCALHOST"), None),
+            "localhost,127.0.0.1,::1"
+        );
         assert_eq!(
             no_proxy_with_loopback(Some("Corp.Example,LOCALHOST"), Some("corp.example,::1")),
-            "Corp.Example,LOCALHOST,::1,127.0.0.1"
+            "corp.example,localhost,::1,127.0.0.1"
         );
     }
 
