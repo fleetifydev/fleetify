@@ -249,7 +249,7 @@ sends.
 | Channel | Vendor | Default | Toggle | Outbox |
 |---|---|---|---|---|
 | Dashboard sync | Fleetify cloud (`fleetify.dev`, WebSocket) | **ON** | Settings → Privacy → "Dashboard sync" | `~/.fleetify/telemetry-outbox.sqlite` |
-| Product analytics | PostHog Cloud (US, HTTP `/batch`) | **OFF** | Settings → Privacy → "Product analytics" | `~/.fleetify/posthog-outbox.sqlite` |
+| Product analytics | PostHog Cloud (EU, Frankfurt, HTTP `/batch`) | **OFF** | Settings → Privacy → "Product analytics" | `~/.fleetify/posthog-outbox.sqlite` |
 
 ### PostHog integration
 
