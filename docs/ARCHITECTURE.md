@@ -15,8 +15,8 @@ plus cloud HTTP model providers (OpenAI, OpenRouter, …).
 ```
 ┌───────────────────────────── Tauri v2 process ─────────────────────────────┐
 │  src-tauri (fleetify-app)                                                   │
-│   ├─ shell::auth          OIDC sign-in; bearer exposed on 127.0.0.1:8770    │
-│   │                       (loopback bearer-bridge, no token across IPC)     │
+│   ├─ shell::auth          OIDC sign-in; holds the access token              │
+│   │                       (the renderer asks for it over IPC)               │
 │   └─ setup() ─ calls ──▶  fleetify_backend::serve(127.0.0.1:8765, dist)     │
 │                              │  (library, no main.rs — runs as a tokio task)│
 │                              ├─ React UI (built dist/)                       │

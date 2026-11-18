@@ -1,6 +1,6 @@
 //! Tauri v2 shell. `shell/` reimplements the Electron main process
-//! (Phase 1b: auth + bearer bridge + auth IPC). `setup` starts the embedded
-//! backend, the bearer bridge, and the main window.
+//! (Phase 1b: auth + auth IPC). `setup` starts the embedded backend and the
+//! main window.
 
 mod shell;
 
@@ -655,14 +655,9 @@ pub fn run() {
                 boot_start,
             ));
 
-            // Loopback bearer bridge :8770 (telemetry token source / parity).
-            // FLEETIFY_NOAUTH=1 has no consumer to feed and no token to
-            // emit, so skip the listener entirely.
+            // FLEETIFY_NOAUTH=1 has only a placeholder token, nothing the
+            // cloud would accept, so the telemetry client doesn't start.
             if !shell::auth::is_no_auth() {
-                tauri::async_runtime::spawn(async {
-                    shell::bearer::run().await;
-                });
-
                 // Telemetry WS client → fleetify.dev. Bearer pulled from
                 // shell::auth.get_access_token() lazily per attempt so a
                 // mid-flow refresh is picked up at the next reconnect.

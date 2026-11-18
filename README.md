@@ -64,9 +64,9 @@ cargo tauri build
 `fleetify-backend` is library-only — no `main.rs`. The Tauri shell calls
 `fleetify_backend::serve(addr, static_dir).await` from its `setup` hook;
 the server runs as a tokio task in the same process. Sign-in lives in
-the Tauri shell (`shell::auth`); the bearer is exposed to the backend
-via `127.0.0.1:8770` (loopback bearer-bridge) so the React UI can use
-the cookie-less OIDC flow without leaking the token across IPC. The 3
+the Tauri shell (`shell::auth`), which holds the access token. The React
+UI asks for it over IPC (`auth_get_access_token`); the telemetry client
+gets it in-process from `shell::auth`. The 3
 MCP-server binaries connect upward to `127.0.0.1:8765/api/sessions/...`
 when the user's session invokes their tools.
 

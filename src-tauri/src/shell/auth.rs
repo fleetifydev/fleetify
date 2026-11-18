@@ -383,7 +383,7 @@ pub async fn sign_in() -> Result<Tokens, AuthError> {
     Ok(tokens)
 }
 
-pub async fn refresh_if_needed(force: bool) -> Result<Tokens, AuthError> {
+async fn refresh_if_needed(force: bool) -> Result<Tokens, AuthError> {
     if is_no_auth() {
         return Ok(noauth_tokens());
     }
