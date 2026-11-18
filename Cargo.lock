@@ -1672,6 +1672,7 @@ dependencies = [
  "uuid",
  "walkdir",
  "which 6.0.3",
+ "windows-sys 0.61.2",
  "winreg 0.52.0",
  "wiremock",
 ]

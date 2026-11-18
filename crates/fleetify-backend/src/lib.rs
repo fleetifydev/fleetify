@@ -4,6 +4,7 @@
 //! calls it from its setup hook.
 
 mod http;
+mod listener;
 
 pub mod access;
 pub mod agentic;
@@ -26,7 +27,6 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
 pub use http::{app, HEALTH_PATH};
@@ -395,7 +395,7 @@ pub async fn serve(addr: SocketAddr, opts: ServeOptions) -> anyhow::Result<Serve
     // without us having to plumb AppState all the way down.
     std::env::set_var("FLEETIFY_INTERNAL_SECRET", internal_secret.as_str());
 
-    let listener = TcpListener::bind(addr).await?;
+    let listener = listener::bind_exclusive(addr)?;
     let local_addr = listener.local_addr()?;
     // Pin the loopback URL the spawned MCP sidecars (and the in-process
     // fleet_permission MCP-over-HTTP server) resolve, to the port we ACTUALLY
