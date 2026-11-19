@@ -15,20 +15,13 @@ import { useEffect, useRef, useState } from "react";
 import { ExternalLink, Copy, Check, AlertCircle, RotateCw } from "lucide-react";
 import type { GrokLoginBlock } from "@/types/chat";
 import { copyText } from "@/lib/clipboard";
+import { openExternalUrl } from "@/lib/links";
 import { providers as providersApi } from "@/lib/providers-api";
 import { wsManager } from "@/services/ws-manager";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 
 interface Props {
   block: GrokLoginBlock;
-}
-
-/** Open a URL in the OS default browser (the Tauri webview swallows
- *  `target="_blank"`), matching AuthRequiredCard's bridge path. */
-function openExternal(url: string): void {
-  const w = window as unknown as { electronAPI?: { openExternal?: (u: string) => unknown } };
-  if (w.electronAPI?.openExternal) void w.electronAPI.openExternal(url);
-  else window.open(url, "_blank", "noopener,noreferrer");
 }
 
 function providerLabel(provider: string): string {
@@ -101,7 +94,7 @@ export function GrokLoginCard({ block }: Props) {
         // a real terminal, but not reliably under our PTY. Once only.
         if (!openedRef.current) {
           openedRef.current = true;
-          openExternal(clean);
+          openExternalUrl(clean);
         }
       }
       const parsedCode = text.match(CODE_IN_URL_RE)?.[1] ?? text.match(CODE_LINE_RE)?.[1] ?? null;
@@ -230,7 +223,7 @@ export function GrokLoginCard({ block }: Props) {
                 href={url}
                 onClick={(e) => {
                   e.preventDefault();
-                  openExternal(url);
+                  openExternalUrl(url);
                 }}
                 style={actionLink}
               >

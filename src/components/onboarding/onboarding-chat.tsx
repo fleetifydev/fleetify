@@ -21,6 +21,7 @@ import { type CSSProperties, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { markdownLinkComponents } from "@/components/markdown-link";
+import { openExternalUrl } from "@/lib/links";
 import {
   ArrowRight,
   Check,
@@ -2393,13 +2394,7 @@ function ReopenAuthButton({ url }: { url: string }) {
       type="button"
       title="Re-open sign-in in browser"
       aria-label="Re-open sign-in in browser"
-      onClick={() => {
-        if (window.electronAPI?.openExternal) {
-          window.electronAPI.openExternal(url).catch(() => {});
-        } else {
-          window.open(url, "_blank", "noopener,noreferrer");
-        }
-      }}
+      onClick={() => openExternalUrl(url)}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{

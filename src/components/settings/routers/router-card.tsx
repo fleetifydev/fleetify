@@ -35,6 +35,7 @@ import { Check, ExternalLink } from "lucide-react";
 
 import { routers, type RouterMode, type RouterTile } from "@/lib/routers-api";
 import { ConnectionStatusPill } from "@/components/settings/shared/connection-status-pill";
+import { followLink } from "@/components/markdown-link";
 
 type Category = "decision" | "proxy";
 
@@ -493,9 +494,11 @@ export function RouterCard({ tile, category, meta, onChanged }: Props) {
           {meta.docsUrl && (
             <a
               href={meta.docsUrl}
-              target="_blank"
               rel="noopener noreferrer"
-              onClick={stop}
+              onClick={(e) => {
+                stop(e);
+                followLink(e, meta.docsUrl);
+              }}
               style={{
                 fontSize: 11.5,
                 color: "#60a5fa",

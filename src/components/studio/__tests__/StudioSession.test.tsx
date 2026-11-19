@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, cleanup, createEvent } from "@testing-library/react";
 import { StudioSession } from "../StudioSession";
 
 vi.mock("@/lib/studio-api", () => ({
@@ -71,5 +71,85 @@ describe("StudioSession", () => {
     await waitFor(() =>
       expect(m.generate).toHaveBeenCalledWith("s1", "nano_banana_2", { prompt: "make it blue", image: "job-123" }),
     );
+  });
+});
+
+// "Download" on a result. A remote result used to be a `download` link with
+// `target="_blank"`: the webview ignores `download` for another site's file,
+// and refuses the new window, so it did nothing. It now opens in the system
+// browser. A file the page itself holds (a `data:` URL, or a `blob:` URL of
+// the page's own origin) is still saved in place.
+describe("StudioSession Download", () => {
+  const win = window as unknown as {
+    electronAPI?: unknown;
+    happyDOM?: { setURL(url: string): void };
+  };
+  let openExternal: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    // The release app's page: the embedded backend's origin.
+    win.happyDOM?.setURL("http://127.0.0.1:8765/");
+    openExternal = vi.fn(() => Promise.resolve(true));
+    win.electronAPI = { openExternal };
+  });
+  afterEach(() => {
+    delete win.electronAPI;
+  });
+
+  /** Renders a session whose one result is the image at `url`, and returns
+   *  its Download link. */
+  async function downloadLinkFor(url: string): Promise<HTMLElement> {
+    vi.mocked(studioApi.listMessages).mockResolvedValue([
+      { role: "user", content: JSON.stringify([{ type: "text", text: "a dog" }]) },
+      { role: "assistant", content: JSON.stringify([{ type: "artifact", artifact_type: "image", content: url }]) },
+    ]);
+    render(<StudioSession sessionId="s1" />);
+    return screen.findByRole("link", { name: "Download" });
+  }
+
+  /** Clicks `link` with `window.open` stubbed, and reports whether the click
+   *  was left to the webview (nothing cancelled it, so the webview saves the
+   *  file) and which new windows it asked for. happy-dom follows a click
+   *  nothing cancelled with `window.open(href, target || "_self")`: a `_self`
+   *  call is that, and any other target is a new window. */
+  function click(link: HTMLElement): { leftToWebview: boolean; windowOpens: unknown[][] } {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    try {
+      const event = createEvent.click(link);
+      fireEvent(link, event);
+      return {
+        leftToWebview: !event.defaultPrevented,
+        windowOpens: open.mock.calls.filter(([, target]) => target !== "_self"),
+      };
+    } finally {
+      open.mockRestore();
+    }
+  }
+
+  it("opens a remote result in the system browser, never a new window", async () => {
+    const link = await downloadLinkFor("https://cdn.example.com/jobs/j1/dog.png");
+    expect(link).toHaveAttribute("href", "https://cdn.example.com/jobs/j1/dog.png");
+    expect(link).not.toHaveAttribute("target");
+    expect(click(link)).toEqual({ leftToWebview: false, windowOpens: [] });
+    expect(openExternal).toHaveBeenCalledWith("https://cdn.example.com/jobs/j1/dog.png");
+  });
+
+  it.each([
+    ["a data: URL", "data:image/png;base64,iVBORw0KGgo="],
+    ["a blob: URL of the page's origin", "blob:http://127.0.0.1:8765/5b1f0c2e-42"],
+  ])("saves %s in place", async (_kind, url) => {
+    const link = await downloadLinkFor(url);
+    expect(link).toHaveAttribute("download");
+    expect(link).not.toHaveAttribute("target");
+    expect(click(link)).toEqual({ leftToWebview: true, windowOpens: [] });
+    expect(openExternal).not.toHaveBeenCalled();
+  });
+
+  it("neither saves nor opens a blob: URL of another origin", async () => {
+    const link = await downloadLinkFor("blob:https://elsewhere.example/5b1f0c2e-42");
+    expect(link).not.toHaveAttribute("download");
+    expect(link).not.toHaveAttribute("target");
+    expect(click(link)).toEqual({ leftToWebview: false, windowOpens: [] });
+    expect(openExternal).not.toHaveBeenCalled();
   });
 });

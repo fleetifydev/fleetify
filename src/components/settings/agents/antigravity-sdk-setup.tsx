@@ -1,4 +1,5 @@
 import { Loader2, ExternalLink } from "lucide-react";
+import { followLink } from "@/components/markdown-link";
 
 interface Props {
   python: PythonRuntimeResult;
@@ -36,6 +37,9 @@ const linkBtn: React.CSSProperties = {
   gap: 6,
   width: "fit-content",
 };
+
+/** Where the "Download Python" link goes. */
+const PYTHON_DOWNLOAD_URL = "https://www.python.org/downloads/";
 
 /**
  * Shared Setup affordance for the Antigravity SDK provider, rendered
@@ -79,9 +83,9 @@ export function AntigravitySdkSetupRow({
           first, then click Setup.
         </div>
         <a
-          href="https://www.python.org/downloads/"
-          target="_blank"
+          href={PYTHON_DOWNLOAD_URL}
           rel="noreferrer"
+          onClick={(e) => followLink(e, PYTHON_DOWNLOAD_URL)}
           style={linkBtn}
         >
           Download Python <ExternalLink size={11} />

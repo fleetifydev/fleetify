@@ -28,6 +28,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Download, X, Trash2, ChevronDown } from "lucide-react";
 import { providers as providersApi } from "@/lib/providers-api";
+import { followLink } from "@/components/markdown-link";
 
 type Cap = "tools" | "thinking" | "vision" | "embedding";
 
@@ -53,6 +54,9 @@ const CURATED_LOCAL_MODELS: CuratedModel[] = [
   { name: "llava", blurb: "Vision-language multimodal model", caps: ["vision"], sizes: ["7b", "13b", "34b"] },
   { name: "nomic-embed-text", blurb: "High-quality text embeddings", caps: ["embedding"], sizes: [] },
 ];
+
+/** Where the "Ollama library" link goes: every tag the free-text pull takes. */
+const OLLAMA_LIBRARY_URL = "https://ollama.com/library";
 
 const GREEN = "rgb(64,180,120)";
 
@@ -368,9 +372,9 @@ export function OllamaModelBrowser({
       <div style={{ fontSize: 11, color: "var(--c-dim)", marginTop: 3 }}>
         Pull a curated model below, or any tag from the{" "}
         <a
-          href="https://ollama.com/library"
-          target="_blank"
+          href={OLLAMA_LIBRARY_URL}
           rel="noreferrer"
+          onClick={(e) => followLink(e, OLLAMA_LIBRARY_URL)}
           style={{ color: "var(--c-low)" }}
         >
           Ollama library

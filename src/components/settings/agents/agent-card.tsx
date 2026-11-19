@@ -19,6 +19,7 @@ import { ConnectionStatusPill } from "@/components/settings/shared/connection-st
 import { Toggle } from "@/components/settings/general/_primitives";
 import { AntigravitySdkSetupRow } from "./antigravity-sdk-setup";
 import { AccountsManager } from "@/components/settings/shared/accounts-manager";
+import { followLink } from "@/components/markdown-link";
 import "@/components/settings/settings-ui.css";
 import { checkPythonRuntime } from "@/lib/api";
 
@@ -31,6 +32,9 @@ export interface AgentScanEntry {
   install_hint: string;
   login_hint: string;
 }
+
+/** Where the Gemini API key field's "Get a key from Google AI Studio" link goes. */
+const AI_STUDIO_KEY_URL = "https://aistudio.google.com/apikey";
 
 function DefaultBadge() {
   return <span className="s-tag">Default</span>;
@@ -419,9 +423,9 @@ export function AgentCard({
               </div>
               <div style={{ fontSize: 11, color: "var(--c-dim)", display: "flex", alignItems: "center", gap: 4 }}>
                 <a
-                  href="https://aistudio.google.com/apikey"
-                  target="_blank"
+                  href={AI_STUDIO_KEY_URL}
                   rel="noreferrer"
+                  onClick={(e) => followLink(e, AI_STUDIO_KEY_URL)}
                   style={{ color: "var(--c-link, #4F8AFF)", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}
                 >
                   Get a key from Google AI Studio <ExternalLink size={10} />

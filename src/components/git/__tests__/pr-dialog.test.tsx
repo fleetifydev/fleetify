@@ -10,7 +10,7 @@
  *   - REPO_NOT_INSTALLED → RepoNotInstalledBlock with Install/Retry
  *   - AUTH_EXPIRED → AuthExpiredBlock with Reconnect
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
 
 // ── Hoist + define IPC mocks ─────────────────────────────────────────
@@ -398,5 +398,49 @@ describe("PRDialog owns Escape", () => {
     expect(escape.defaultPrevented).toBe(true);
     expect(escapeWasClaimed(escape)).toBe(true);
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Tauri's webview refuses new windows, so the "install gh CLI" link used to
+// open nothing (it was a `target="_blank"` link). It opens the install page
+// in the system browser.
+describe("PRDialog — install gh CLI link", () => {
+  const win = window as unknown as { electronAPI?: unknown };
+  let openExternal: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    gitMock.hasGhCli.mockReset();
+    ghMock.getLink.mockReset();
+    ghMock.beginOAuth.mockReset();
+    openExternal = vi.fn(() => Promise.resolve(true));
+    win.electronAPI = { openExternal };
+  });
+  afterEach(() => {
+    delete win.electronAPI;
+  });
+
+  /** Runs `action` with `window.open` stubbed and returns the calls it got.
+   *  happy-dom follows a link click nothing cancelled with `window.open(href,
+   *  target)`, so no call also means the click stayed in the app. */
+  function windowOpensDuring(action: () => void): unknown[][] {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    try {
+      action();
+      return [...open.mock.calls];
+    } finally {
+      open.mockRestore();
+    }
+  }
+
+  it("opens the install page in the system browser, never a new window", async () => {
+    gitMock.hasGhCli.mockResolvedValue({ ok: false, version: null, authed: false, ghLogin: null });
+    ghMock.getLink.mockResolvedValue({ ok: false, link: null });
+    ghMock.beginOAuth.mockResolvedValue({ ok: false, code: "USER_DECLINED", error: "user dismissed" });
+    renderDialog();
+    const link = await screen.findByRole("link", { name: /install gh CLI/i });
+    expect(link).toHaveAttribute("href", "https://cli.github.com/manual/installation");
+    expect(link).not.toHaveAttribute("target");
+    expect(windowOpensDuring(() => fireEvent.click(link))).toEqual([]);
+    expect(openExternal).toHaveBeenCalledWith("https://cli.github.com/manual/installation");
   });
 });

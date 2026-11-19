@@ -16,6 +16,7 @@ import {
   CircleSlash, RefreshCw, FolderGit2,
 } from "lucide-react";
 import { truncateMid, folderName } from "@/lib/utils";
+import { openExternalUrl } from "@/lib/links";
 import { PRDialog } from "@/components/git/pr-dialog";
 import { ReviewDialog } from "@/components/git/review-dialog";
 import { AuthChoicePopover } from "@/components/git/auth-choice-popover";
@@ -64,19 +65,6 @@ type GitContext = {
   baseBehind?: number;
   remoteHttpsUrl: string | null;
 };
-
-/** Hand a URL to the OS browser. Prefers the shell bridge (so the link leaves
- *  the webview) and falls back to `window.open` in a plain-web/dev context
- *  where the bridge isn't injected — same shape as the chat/marketplace
- *  helpers. Best-effort: a rejected bridge call must never break the click. */
-function openExternalUrl(url: string): void {
-  const w = window as unknown as { electronAPI?: { openExternal?: (u: string) => Promise<unknown> } };
-  if (w.electronAPI?.openExternal) {
-    void Promise.resolve(w.electronAPI.openExternal(url)).catch(() => {});
-  } else {
-    window.open(url, "_blank", "noopener,noreferrer");
-  }
-}
 
 /** Branch names that conventionally serve as the integration branch
  *  when `baseBranch` is unknown. Used to detect "on default branch"

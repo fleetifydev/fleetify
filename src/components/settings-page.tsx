@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 import { usesInAppTitleBar } from "@/lib/utils";
 import { copyText } from "@/lib/clipboard";
+import { openExternalUrl } from "@/lib/links";
 import { getFleetRules, setFleetRules } from "@/lib/api";
 import { useAppStore } from "@/stores/app-store";
 // Dormant — the Settings → Appearance picker is commented out below but
@@ -435,14 +436,7 @@ function AccountSection() {
   // Profile fields (display name, email, account ID) are managed in the
   // hosted dashboard, not in-app. The "Change settings" link at the bottom
   // sends the user there; everything in this section is read-only.
-  const openHostedSettings = () => {
-    const url = "https://app.fleetify.dev/dashboard/settings";
-    if (window.electronAPI?.openExternal) {
-      window.electronAPI.openExternal(url).catch(() => {});
-    } else {
-      window.open(url, "_blank", "noopener,noreferrer");
-    }
-  };
+  const openHostedSettings = () => openExternalUrl("https://app.fleetify.dev/dashboard/settings");
 
   const copyId = async () => {
     if (!accountId) return;

@@ -60,13 +60,11 @@ export function scrollToFragment(id: string): void {
 
 /** Opens `url` with the system's default handler, through the app's bridge
  *  (the `shell_open_external` command). Where there is no bridge, the
- *  renderer in a plain browser, it opens a new tab instead. */
+ *  renderer in a plain browser, it does nothing: the app never asks its
+ *  webview for a new window, which Tauri's webview refuses anyway. A rejected
+ *  bridge call never reaches the caller. */
 export function openExternalUrl(url: string): void {
-  if (window.electronAPI?.openExternal) {
-    window.electronAPI.openExternal(url).catch(() => {});
-  } else {
-    window.open(url, "_blank", "noopener,noreferrer");
-  }
+  void Promise.resolve(window.electronAPI?.openExternal?.(url)).catch(() => {});
 }
 
 /** Opens `href` in the system browser when it links to another site or is a

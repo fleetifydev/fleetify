@@ -15,6 +15,7 @@ import { X, GitPullRequest, Loader2, ExternalLink, Check, Sparkles } from "lucid
 import { git, defaultPRTitle } from "@/lib/git-api";
 import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import { github, type GitHubLinkPayload } from "@/lib/github-link-api";
+import { followLink } from "@/components/markdown-link";
 
 type Phase = "compose" | "creating" | "done" | "error";
 
@@ -621,6 +622,9 @@ const popoverItem: React.CSSProperties = {
   cursor: "pointer",
 };
 
+/** Where the "install gh CLI" link goes. */
+const GH_CLI_INSTALL_URL = "https://cli.github.com/manual/installation";
+
 function ConnectGitHubBlock({ connecting, browserFallbackUrl, onConnect }: {
   connecting: boolean;
   browserFallbackUrl: string | null;
@@ -665,8 +669,9 @@ function ConnectGitHubBlock({ connecting, browserFallbackUrl, onConnect }: {
           {connecting ? <><Loader2 size={11} style={{ animation: "spin 1.2s linear infinite" }} /> Tarayıcı bekleniyor…</> : "Connect GitHub"}
         </button>
         <a
-          href="https://cli.github.com/manual/installation"
-          target="_blank" rel="noreferrer"
+          href={GH_CLI_INSTALL_URL}
+          rel="noreferrer"
+          onClick={(e) => followLink(e, GH_CLI_INSTALL_URL)}
           style={{ fontSize: 11.5, color: "var(--c-dim)", textDecoration: "none" }}
         >
           or install gh CLI →

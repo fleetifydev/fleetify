@@ -27,6 +27,7 @@ import { useAppStore } from "@/stores/app-store";
 import type { PluginInstall, PluginManifest } from "@/types/plugin";
 import { pluginLabel } from "@/types/plugin";
 import { safeExternalUrl } from "@/lib/utils";
+import { followLink } from "@/components/markdown-link";
 
 interface Props {
   source_id: string;
@@ -330,7 +331,8 @@ export function InstallDialog({
                       const safe = safeExternalUrl(req.url);
                       return safe ? (
                         <a
-                          href={safe} target="_blank" rel="noreferrer"
+                          href={safe} rel="noreferrer"
+                          onClick={(e) => followLink(e, safe)}
                           style={{
                             fontSize: 11, color: "var(--c-dim)",
                             display: "inline-flex", alignItems: "center", gap: 3,

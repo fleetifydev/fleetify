@@ -3,6 +3,7 @@ import { ExternalLink } from "lucide-react";
 import { getPluginSecrets, setPluginSecrets } from "@/lib/plugin-api";
 import type { SecretRequirement, SecretStatus } from "@/types/plugin";
 import { safeExternalUrl } from "@/lib/utils";
+import { followLink } from "@/components/markdown-link";
 
 /** Write-only secret editor for an installed plugin. Loads set-status
  *  (never values) and writes only changed keys. An empty field clears
@@ -63,7 +64,7 @@ export function SecretsEditor({
               <span>{row.label}</span>
               {row.set && <span style={savedPill}>saved</span>}
               {safe && (
-                <a href={safe} target="_blank" rel="noreferrer" style={getLink}>
+                <a href={safe} rel="noreferrer" onClick={(e) => followLink(e, safe)} style={getLink}>
                   Get <ExternalLink size={9} />
                 </a>
               )}

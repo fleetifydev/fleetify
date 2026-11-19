@@ -19,6 +19,7 @@ import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { ModelPickerChecklist, useEffectiveModels } from "./model-picker-checklist";
 import { ConnectionStatusPill } from "@/components/settings/shared/connection-status-pill";
 import { Toggle } from "@/components/settings/general/_primitives";
+import { openExternalUrl } from "@/lib/links";
 
 // Cloudflare's deep-link to the Workers AI dashboard page. From there the
 // user picks "Use REST API" → "Create a Workers AI API Token" — Cloudflare's
@@ -32,14 +33,6 @@ import { Toggle } from "@/components/settings/general/_primitives";
 // way to mint a token with Workers AI permissions.
 function workersAiTokenUrl(): string {
   return "https://dash.cloudflare.com/?to=/:account/ai/workers-ai";
-}
-
-function openExternal(url: string) {
-  const w = window as unknown as {
-    electronAPI?: { openExternal?: (u: string) => Promise<unknown> };
-  };
-  if (w.electronAPI?.openExternal) void w.electronAPI.openExternal(url);
-  else window.open(url, "_blank", "noopener");
 }
 
 const inputStyle: React.CSSProperties = {
@@ -300,7 +293,7 @@ export function CloudflareConfigCard({
                 page, copy your <strong>Account ID</strong>. 3. Paste both below.
               </div>
               <button
-                onClick={() => openExternal(workersAiTokenUrl())}
+                onClick={() => openExternalUrl(workersAiTokenUrl())}
                 style={{ ...ghostBtn, marginBottom: 12 }}
                 aria-label="Open Cloudflare Workers AI"
               >

@@ -120,9 +120,11 @@ describe("openExternalUrl", () => {
     expect(openExternal).toHaveBeenCalledWith("https://example.com/");
   });
 
-  it("opens a new tab where there is no bridge (the renderer in a browser)", () => {
+  it("does nothing where there is no bridge (the renderer in a browser)", () => {
+    // Tauri's webview refuses new windows, so the app never asks for one.
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     openExternalUrl("https://example.com/");
-    expect(open).toHaveBeenCalledWith("https://example.com/", "_blank", "noopener,noreferrer");
+    openLink("https://example.com/");
+    expect(open).not.toHaveBeenCalled();
   });
 });

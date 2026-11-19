@@ -8,6 +8,7 @@ import { useState } from "react";
 import { ExternalLink, Plus, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
 import { usePluginStore } from "@/stores/plugin-store";
 import { safeExternalUrl } from "@/lib/utils";
+import { followLink } from "@/components/markdown-link";
 import { AddSourceDialog } from "./AddSourceDialog";
 
 export function SourcesTab() {
@@ -126,14 +127,17 @@ function SourceRow({
         )}
         {safeUrl ? (
           <a
-            href={safeUrl} target="_blank" rel="noreferrer"
+            href={safeUrl} rel="noreferrer"
             style={{
               display: "inline-flex", alignItems: "center", gap: 4,
               fontSize: 11, color: "var(--c-ghost)",
               marginTop: 4, textDecoration: "none",
               fontFamily: "var(--font-mono)",
             }}
-            onClick={e => e.stopPropagation()}
+            onClick={e => {
+              e.stopPropagation();
+              followLink(e, safeUrl);
+            }}
           >
             {source.repo_url} <ExternalLink size={9} />
           </a>

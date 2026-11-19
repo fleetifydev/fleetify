@@ -24,20 +24,7 @@ import { computeUpdateInfo } from "@/lib/plugin-update";
 import type { CatalogPlugin, PluginDetail, PluginInstall } from "@/types/plugin";
 import { pluginLabel } from "@/types/plugin";
 import { safeExternalUrl, usesInAppTitleBar } from "@/lib/utils";
-
-/** Open a URL in the user's default browser. In Tauri a bare
- *  `<a target="_blank">` navigates the webview instead of opening externally,
- *  so route through the preload bridge (matching the sidebar's openDocs), with
- *  a window.open fallback for the plain-web/dev case. */
-function openExternalUrl(url: string) {
-  const safe = safeExternalUrl(url);
-  if (!safe) return;
-  if (window.electronAPI?.openExternal) {
-    window.electronAPI.openExternal(safe).catch(() => {});
-  } else {
-    window.open(safe, "_blank", "noopener,noreferrer");
-  }
-}
+import { followLink } from "@/components/markdown-link";
 
 interface Props {
   source_id: string;
@@ -768,7 +755,7 @@ function InfoCard({
         {repoUrl ? (
           <a
             href={repoUrl}
-            onClick={(e) => { e.preventDefault(); openExternalUrl(repoUrl); }}
+            onClick={(e) => followLink(e, repoUrl)}
             style={linkStyle}
           >
             {repoLabel} <ExternalLink size={10} />
@@ -779,7 +766,7 @@ function InfoCard({
         <Row label="Homepage">
           <a
             href={homepage}
-            onClick={(e) => { e.preventDefault(); openExternalUrl(homepage); }}
+            onClick={(e) => followLink(e, homepage)}
             style={linkStyle}
           >
             {homepage.replace(/^https?:\/\//, "")} <ExternalLink size={10} />

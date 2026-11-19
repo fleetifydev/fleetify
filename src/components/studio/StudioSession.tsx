@@ -5,6 +5,7 @@ import { useAppStore } from "@/stores/app-store";
 import { usesInAppTitleBar } from "@/lib/utils";
 import { LogoMark } from "@/components/brand/logo-mark";
 import { studioApi, type HfModel, type HfModelParam } from "@/lib/studio-api";
+import { followLink } from "@/components/markdown-link";
 
 interface Block { type: string; text?: string; artifact_type?: string; content?: string; job_id?: string; saved_path?: string | null; }
 interface GenAsset { url: string; kind: "image" | "video"; jobId?: string; }
@@ -28,6 +29,21 @@ const userBubble: CSSProperties = {
 
 const leaf = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
 const fileName = (url: string) => url.split("/").pop()?.split("?")[0] || "asset";
+
+/** Whether the webview can save the file at `url` itself, through a
+ *  `download` link: a `data:` URL, or a `blob:` URL of the page's own origin.
+ *  The webview ignores `download` for another site's file and would load it
+ *  in place of the app, so such a result opens in the system browser instead
+ *  (`followLink`). */
+function savesInPlace(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === "data:") return true;
+    return parsed.protocol === "blob:" && parsed.origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Live Studio session — a chat-style generation surface. The transcript shows
@@ -229,7 +245,9 @@ export function StudioSession({ sessionId }: { sessionId: string }) {
                       {a.kind === "image" && a.jobId && (
                         <button onClick={() => startEdit(a)} style={linkBtn}>Edit</button>
                       )}
-                      <a href={a.url} download={fileName(a.url)} target="_blank" rel="noreferrer" style={linkStyle}>Download</a>
+                      {savesInPlace(a.url)
+                        ? <a href={a.url} download={fileName(a.url)} style={linkStyle}>Download</a>
+                        : <a href={a.url} rel="noreferrer" onClick={(e) => followLink(e, a.url)} style={linkStyle}>Download</a>}
                     </div>
                   </div>
                 ))}

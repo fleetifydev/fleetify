@@ -2,26 +2,11 @@ import { useState } from "react";
 import { ExternalLink, Copy, Check } from "lucide-react";
 import type { AuthRequiredBlock } from "@/types/chat";
 import { copyText } from "@/lib/clipboard";
+import { openExternalUrl } from "@/lib/links";
 import { wsManager } from "@/services/ws-manager";
 
 interface AuthRequiredCardProps {
   block: AuthRequiredBlock;
-}
-
-/** Open a URL in the OS default browser. In the Tauri webview a plain
- *  `<a target="_blank">` is swallowed (no new tab, no OS browser), so we
- *  route through the preload `openExternal` bridge — the same path the
- *  backend uses — and only fall back to `window.open` in a plain web
- *  dev view. */
-function openExternal(url: string): void {
-  const w = window as unknown as {
-    electronAPI?: { openExternal?: (u: string) => unknown };
-  };
-  if (w.electronAPI?.openExternal) {
-    void w.electronAPI.openExternal(url);
-  } else {
-    window.open(url, "_blank", "noopener,noreferrer");
-  }
 }
 
 const actionStyle: React.CSSProperties = {
@@ -167,7 +152,7 @@ export function AuthRequiredCard({ block }: AuthRequiredCardProps) {
             // bridge instead. preventDefault stops the dead in-webview
             // navigation. The href stays for accessibility + right-click.
             e.preventDefault();
-            openExternal(url);
+            openExternalUrl(url);
           }}
           onMouseEnter={(e) => hover(e, true)}
           onMouseLeave={(e) => hover(e, false)}
