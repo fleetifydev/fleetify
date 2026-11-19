@@ -118,10 +118,12 @@ fn telemetry_config_now(distinct_id: String) -> serde_json::Value {
 }
 
 /// Whether Settings has set cloud sync since launch. The startup restore
-/// (lib.rs) ends seconds after launch, after the warm-up, and must not undo
-/// a choice the user made meanwhile, including one whose save failed. The
-/// setter and the restore both hold this lock while they touch the gate, so
-/// whichever runs second sees the other.
+/// (lib.rs) runs at the end of the boot warm-up task: after the backend has
+/// reported its start, a wait with no time limit, and once it has bound,
+/// after the health wait (up to 14 s) and the warm-up. It can end long after
+/// launch, and must not undo a choice the user made meanwhile, including one
+/// whose save failed. The setter and the restore both hold this lock while
+/// they touch the gate, so whichever runs second sees the other.
 static CLOUD_SYNC_SET_SINCE_LAUNCH: tokio::sync::Mutex<bool> = tokio::sync::Mutex::const_new(false);
 
 /// Settings' change to the cloud gate: records that the user chose, then

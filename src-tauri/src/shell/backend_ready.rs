@@ -350,6 +350,16 @@ mod tests {
     }
 
     #[test]
+    fn bound_port_survives_the_reporter_dropping_its_sender() {
+        // The backend's task reports the bind and ends, dropping its sender.
+        // The port stays the one to send to for the rest of the run.
+        let (tx, backend) = tracked(8899, BackendStart::Pending);
+        tx.send(BackendStart::Bound).unwrap();
+        drop(tx);
+        assert_eq!(backend.bound_port(), Some(8899));
+    }
+
+    #[test]
     fn nothing_is_sent_while_no_backend_is_tracked() {
         // No test tracks a backend: setup does, once, in the app.
         assert_eq!(bound_port(), None);
@@ -437,31 +447,52 @@ mod tests {
         }
     }
 
+    /// Every `.rs` file under `dir`, at any depth.
+    fn rust_files(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                rust_files(&path, files);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                files.push(path);
+            }
+        }
+    }
+
     #[test]
     fn only_lib_rs_reads_the_backend_port_from_the_environment() {
-        // Built at run time so this test's own source doesn't match.
-        let read = format!("env::var(\"{}\")", "FLEETIFY_BACKEND_PORT");
-        for (file, source) in [
-            (
-                "shell/providers_setup.rs",
-                include_str!("providers_setup.rs"),
-            ),
-            ("shell/routing_setup.rs", include_str!("routing_setup.rs")),
-            ("shell/migration.rs", include_str!("migration.rs")),
-            ("shell/startup_window.rs", include_str!("startup_window.rs")),
-            ("shell/backend_ready.rs", include_str!("backend_ready.rs")),
-            ("shell/ipc/mod.rs", include_str!("ipc/mod.rs")),
+        // The variable's name as a string literal: env::var, var_os, env!
+        // and option_env! all take it so. Built at run time so this test's
+        // own source doesn't match.
+        let name = format!("\"{}\"", ["FLEETIFY", "BACKEND", "PORT"].join("_"));
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        rust_files(&src, &mut files);
+        // The walk sees the whole shell, not just the top of it.
+        for file in [
+            src.join("lib.rs"),
+            src.join("shell").join("backend_ready.rs"),
+            src.join("shell").join("ipc").join("mod.rs"),
         ] {
-            assert!(
-                !source.contains(&read),
-                "{file} reads the port itself: use backend_ready::bound_port()"
-            );
+            assert!(files.contains(&file), "{} wasn't scanned", file.display());
         }
-        assert_eq!(
-            include_str!("../lib.rs").matches(&read).count(),
-            1,
-            "lib.rs reads FLEETIFY_BACKEND_PORT once, into port_from_env"
-        );
+        for file in &files {
+            let source = std::fs::read_to_string(file).unwrap();
+            let reads = source.matches(&name).count();
+            if *file == src.join("lib.rs") {
+                assert_eq!(
+                    reads, 1,
+                    "lib.rs reads FLEETIFY_BACKEND_PORT once, into port_from_env"
+                );
+            } else {
+                assert_eq!(
+                    reads,
+                    0,
+                    "{} reads the port itself: use backend_ready::bound_port()",
+                    file.display()
+                );
+            }
+        }
     }
 
     #[test]

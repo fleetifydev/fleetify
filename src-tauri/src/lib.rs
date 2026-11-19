@@ -622,11 +622,16 @@ pub fn run() {
 
                 // The warm-up sends provider keys and the internal secret, so
                 // it talks only to the app's own backend: it waits for the
-                // bind, then for the health route (200ms × 20 = 4s covers a
-                // cold Rust startup on a slow disk). A backend that fails,
-                // never reports, or doesn't answer gets nothing: before the
-                // bind, whatever answers on the port is something else. The
-                // next reload trigger (a Settings change) sends the keys.
+                // bind, then for the health route. The bind wait has no time
+                // limit of its own: it ends when the backend's task reports
+                // its start, or ends without reporting. The health wait is
+                // up to 20 polls, each capped at 500 ms (backend_ready's
+                // POLL_TIMEOUT) and followed by a 200 ms pause: at most 14 s
+                // after the bind, and a single poll when the backend answers
+                // at once. A backend that fails, never reports, or doesn't
+                // answer gets nothing: before the bind, whatever answers on
+                // the port is something else. The next reload trigger (a
+                // Settings change) sends the keys.
                 if crate::shell::backend_ready::wait_until_bound(warm_up_start).await {
                     // Hydrate the backend clone service with the linked
                     // GitHub token so private-repo clones authenticate
