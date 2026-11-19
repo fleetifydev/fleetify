@@ -4,7 +4,7 @@
 //! StrictHostKeyChecking=accept-new so first contact registers a key
 //! without an interactive prompt.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -86,7 +86,9 @@ fn home() -> PathBuf {
     )
 }
 
-fn build_ssh_args(t: &SshTarget) -> Vec<String> {
+/// `home` is the directory a leading `~` in the identity file stands for;
+/// callers pass `home()`.
+fn build_ssh_args(t: &SshTarget, home: &Path) -> Vec<String> {
     let mut args = vec![
         "-o".into(),
         "BatchMode=yes".into(),
@@ -101,9 +103,9 @@ fn build_ssh_args(t: &SshTarget) -> Vec<String> {
         // Expand ~ so the user can paste "~/.ssh/id_ed25519" without
         // the shell interpreting it.
         let expanded = if let Some(rest) = idf.strip_prefix("~/") {
-            home().join(rest).to_string_lossy().into_owned()
+            home.join(rest).to_string_lossy().into_owned()
         } else if idf == "~" {
-            home().to_string_lossy().into_owned()
+            home.to_string_lossy().into_owned()
         } else {
             idf.to_string()
         };
@@ -246,7 +248,7 @@ fn parse_ssh_config(text: &str) -> Vec<Value> {
 
 async fn test_target(Json(t): Json<SshTarget>) -> Result<Json<Value>, ApiError> {
     validate(&t)?;
-    let mut cmd = build_ssh_args(&t);
+    let mut cmd = build_ssh_args(&t, &home());
     cmd.push("echo".into());
     cmd.push("ok".into());
     let (rc, out, err) = run_ssh_cmd(&cmd, 8).await;
@@ -284,7 +286,7 @@ async fn list_dir(Json(req): Json<ListDirReq>) -> Result<Json<Value>, ApiError> 
           printf '\\n'; \
         done"
     );
-    let mut cmd = build_ssh_args(&req.target);
+    let mut cmd = build_ssh_args(&req.target, &home());
     cmd.push("sh".into());
     cmd.push("-c".into());
     cmd.push(script);
@@ -414,18 +416,34 @@ mod tests {
 
     #[test]
     fn build_ssh_args_expands_tilde_in_identity_file() {
-        let t = SshTarget {
-            host: "h".into(),
-            user: "u".into(),
-            port: 22,
-            identity_file: Some("~/.ssh/id_ed25519".into()),
+        // The home is passed in, not read from USERPROFILE / HOME, which
+        // other tests point at temp dirs. It has a `~` of its own, like a
+        // Windows 8.3 short name (the CI runner's is `RUNNER~1`): only a
+        // leading `~` stands for the home.
+        let home = if cfg!(windows) {
+            PathBuf::from(r"C:\Users\RUNNER~1")
+        } else {
+            PathBuf::from("/home/RUNNER~1")
         };
-        let args = build_ssh_args(&t);
+        let identity_arg = |identity_file: &str| {
+            let t = SshTarget {
+                host: "h".into(),
+                user: "u".into(),
+                port: 22,
+                identity_file: Some(identity_file.into()),
+            };
+            let args = build_ssh_args(&t, &home);
+            let idx = args.iter().position(|a| a == "-i").unwrap();
+            args[idx + 1].clone()
+        };
         // -i argument is the home-expanded path, not the literal "~".
-        let idx = args.iter().position(|a| a == "-i").unwrap();
-        let path = &args[idx + 1];
-        assert!(path.contains(".ssh"));
-        assert!(!path.contains('~'));
+        assert_eq!(
+            identity_arg("~/.ssh/id_ed25519"),
+            home.join(".ssh/id_ed25519").to_string_lossy()
+        );
+        assert_eq!(identity_arg("~"), home.to_string_lossy());
+        // A `~` anywhere else is part of the path and stays as written.
+        assert_eq!(identity_arg("keys/RUNNER~1/id"), "keys/RUNNER~1/id");
     }
 
     #[test]

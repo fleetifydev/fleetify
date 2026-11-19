@@ -730,8 +730,11 @@ mod tests {
         let ws = Workspace::new(dir.path()).unwrap();
         let cmd = if cfg!(windows) {
             // `ping -n N` waits N-1 seconds; 30 pings = 29s wall. Plenty
-            // to exceed our 1s timeout.
-            "ping -n 30 127.0.0.1 >NUL"
+            // to exceed our 1s timeout. Named by full path so cmd.exe
+            // doesn't search PATH for it: on the Windows CI runner that
+            // search fails in the test process ("'ping' is not
+            // recognized"), and PATH lookup isn't what this test checks.
+            r"%SystemRoot%\System32\ping.exe -n 30 127.0.0.1 >NUL"
         } else {
             "sleep 30"
         };
