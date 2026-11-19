@@ -1,10 +1,11 @@
 /**
- * A marketplace source's repository link opens in the system browser. It
- * used to be a `target="_blank"` link, and Tauri's webview refuses new
- * windows: clicking it opened nothing.
+ * A marketplace source's repository link opens in the system browser, and
+ * the click never loads the repository in place of the app. It used to be a
+ * `target="_blank"` link, and Tauri's webview refuses new windows: clicking
+ * it opened nothing.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, createEvent } from "@testing-library/react";
 import { usePluginStore } from "@/stores/plugin-store";
 import { SourcesTab } from "../SourcesTab";
 
@@ -30,26 +31,29 @@ afterEach(() => {
   usePluginStore.setState({ sources: [] });
 });
 
-/** Runs `action` with `window.open` stubbed and returns the calls it got.
- *  happy-dom follows a link click nothing cancelled with `window.open(href,
- *  target)`, so no call also means the click stayed in the app. */
-function windowOpensDuring(action: () => void): unknown[][] {
+/** Clicks `link` and reports what the app did with the click: whether it
+ *  left the click to the webview (nothing cancelled it, so the webview loads
+ *  the link in place of the app), and the `window.open` calls the app's code
+ *  made. happy-dom follows a link through its own window object, not the
+ *  global `window.open`, so the stub sees app code only. */
+function click(link: HTMLElement): { leftToWebview: boolean; windowOpens: unknown[][] } {
   const open = vi.spyOn(window, "open").mockReturnValue(null);
   try {
-    action();
-    return [...open.mock.calls];
+    const event = createEvent.click(link);
+    fireEvent(link, event);
+    return { leftToWebview: !event.defaultPrevented, windowOpens: [...open.mock.calls] };
   } finally {
     open.mockRestore();
   }
 }
 
 describe("SourcesTab", () => {
-  it("opens a source's repository in the system browser, never a new window", () => {
+  it("opens a source's repository in the system browser, not in the app's window", () => {
     render(<SourcesTab />);
     const link = screen.getByRole("link", { name: REPO });
     expect(link).toHaveAttribute("href", REPO);
     expect(link).not.toHaveAttribute("target");
-    expect(windowOpensDuring(() => fireEvent.click(link))).toEqual([]);
+    expect(click(link)).toEqual({ leftToWebview: false, windowOpens: [] });
     expect(openExternal).toHaveBeenCalledWith(REPO);
   });
 });

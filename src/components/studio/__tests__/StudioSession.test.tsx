@@ -107,20 +107,18 @@ describe("StudioSession Download", () => {
     return screen.findByRole("link", { name: "Download" });
   }
 
-  /** Clicks `link` with `window.open` stubbed, and reports whether the click
-   *  was left to the webview (nothing cancelled it, so the webview saves the
-   *  file) and which new windows it asked for. happy-dom follows a click
-   *  nothing cancelled with `window.open(href, target || "_self")`: a `_self`
-   *  call is that, and any other target is a new window. */
+  /** Clicks `link` and reports what the app did with the click: whether it
+   *  left the click to the webview (nothing cancelled it, so the webview
+   *  saves the file, or loads the link in place of the app), and the
+   *  `window.open` calls the app's code made. happy-dom follows a link
+   *  through its own window object, not the global `window.open`, so the
+   *  stub sees app code only. */
   function click(link: HTMLElement): { leftToWebview: boolean; windowOpens: unknown[][] } {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     try {
       const event = createEvent.click(link);
       fireEvent(link, event);
-      return {
-        leftToWebview: !event.defaultPrevented,
-        windowOpens: open.mock.calls.filter(([, target]) => target !== "_self"),
-      };
+      return { leftToWebview: !event.defaultPrevented, windowOpens: [...open.mock.calls] };
     } finally {
       open.mockRestore();
     }

@@ -11,7 +11,7 @@
  *   - AUTH_EXPIRED → AuthExpiredBlock with Reconnect
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, act, createEvent } from "@testing-library/react";
 
 // ── Hoist + define IPC mocks ─────────────────────────────────────────
 const { gitMock, ghMock } = vi.hoisted(() => {
@@ -403,7 +403,8 @@ describe("PRDialog owns Escape", () => {
 
 // Tauri's webview refuses new windows, so the "install gh CLI" link used to
 // open nothing (it was a `target="_blank"` link). It opens the install page
-// in the system browser.
+// in the system browser, and the click never loads the page in place of the
+// app.
 describe("PRDialog — install gh CLI link", () => {
   const win = window as unknown as { electronAPI?: unknown };
   let openExternal: ReturnType<typeof vi.fn>;
@@ -419,20 +420,23 @@ describe("PRDialog — install gh CLI link", () => {
     delete win.electronAPI;
   });
 
-  /** Runs `action` with `window.open` stubbed and returns the calls it got.
-   *  happy-dom follows a link click nothing cancelled with `window.open(href,
-   *  target)`, so no call also means the click stayed in the app. */
-  function windowOpensDuring(action: () => void): unknown[][] {
+  /** Clicks `link` and reports what the app did with the click: whether it
+   *  left the click to the webview (nothing cancelled it, so the webview
+   *  loads the link in place of the app), and the `window.open` calls the
+   *  app's code made. happy-dom follows a link through its own window
+   *  object, not the global `window.open`, so the stub sees app code only. */
+  function click(link: HTMLElement): { leftToWebview: boolean; windowOpens: unknown[][] } {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     try {
-      action();
-      return [...open.mock.calls];
+      const event = createEvent.click(link);
+      fireEvent(link, event);
+      return { leftToWebview: !event.defaultPrevented, windowOpens: [...open.mock.calls] };
     } finally {
       open.mockRestore();
     }
   }
 
-  it("opens the install page in the system browser, never a new window", async () => {
+  it("opens the install page in the system browser, not in the app's window", async () => {
     gitMock.hasGhCli.mockResolvedValue({ ok: false, version: null, authed: false, ghLogin: null });
     ghMock.getLink.mockResolvedValue({ ok: false, link: null });
     ghMock.beginOAuth.mockResolvedValue({ ok: false, code: "USER_DECLINED", error: "user dismissed" });
@@ -440,7 +444,7 @@ describe("PRDialog — install gh CLI link", () => {
     const link = await screen.findByRole("link", { name: /install gh CLI/i });
     expect(link).toHaveAttribute("href", "https://cli.github.com/manual/installation");
     expect(link).not.toHaveAttribute("target");
-    expect(windowOpensDuring(() => fireEvent.click(link))).toEqual([]);
+    expect(click(link)).toEqual({ leftToWebview: false, windowOpens: [] });
     expect(openExternal).toHaveBeenCalledWith("https://cli.github.com/manual/installation");
   });
 });
