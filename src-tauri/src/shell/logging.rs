@@ -38,7 +38,8 @@ use std::time::{Duration, SystemTime};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 use tracing::Level;
-use tracing_appender::non_blocking::WorkerGuard;
+use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
+use tracing_appender::rolling::{InitError, RollingFileAppender, Rotation};
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
@@ -130,21 +131,15 @@ pub fn init(app: &AppHandle) -> Option<WorkerGuard> {
             eprintln!("[logging] no usable log dir — falling back to temp dir");
             std::env::temp_dir().join("fleetify-logs")
         });
-    if let Err(e) = fs::create_dir_all(&log_dir) {
-        eprintln!("[logging] mkdir {log_dir:?} failed: {e} — file logging disabled");
+    // Recorded even when the folder can't be created or written: callers
+    // check that it exists before they name it.
+    let _ = LOG_DIR.set(log_dir.clone());
+    let Some((file_writer, guard)) = file_writer(&log_dir) else {
         // Even without file output, still wire stderr so we don't
         // regress the existing dev experience.
-        let _ = LOG_DIR.set(log_dir);
         init_stderr_only();
         return None;
-    }
-    let _ = LOG_DIR.set(log_dir.clone());
-
-    // Daily rotation → fleetify.log.YYYY-MM-DD. The non-blocking
-    // writer ships records via a worker thread; UI / agent code never
-    // blocks on disk.
-    let file_appender = tracing_appender::rolling::daily(&log_dir, LOG_FILE_PREFIX);
-    let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
+    };
 
     // EnvFilter default: info for everything, plus our crates explicitly
     // (so `fleetify=info` style overrides don't accidentally drop our
@@ -194,6 +189,37 @@ pub fn init(app: &AppHandle) -> Option<WorkerGuard> {
     init_panic_hook();
 
     Some(guard)
+}
+
+/// The non-blocking writer into today's log file in `log_dir`, and the
+/// guard that keeps its flush thread alive. `None` when the folder can't be
+/// created or written: the log then goes to stderr only.
+fn file_writer(log_dir: &Path) -> Option<(NonBlocking, WorkerGuard)> {
+    if let Err(e) = fs::create_dir_all(log_dir) {
+        eprintln!("[logging] mkdir {log_dir:?} failed: {e} — file logging disabled");
+        return None;
+    }
+    match file_appender(log_dir) {
+        // The non-blocking writer ships records via a worker thread; UI /
+        // agent code never blocks on disk.
+        Ok(appender) => Some(tracing_appender::non_blocking(appender)),
+        Err(e) => {
+            eprintln!(
+                "[logging] opening a log file in {log_dir:?} failed: {e} — file logging disabled"
+            );
+            None
+        }
+    }
+}
+
+/// Today's log file in `log_dir`, rotated daily: fleetify.log.YYYY-MM-DD.
+/// An error when it can't be opened, such as in a folder that exists but
+/// isn't writable, where `tracing_appender::rolling::daily` panics.
+fn file_appender(log_dir: &Path) -> Result<RollingFileAppender, InitError> {
+    RollingFileAppender::builder()
+        .rotation(Rotation::DAILY)
+        .filename_prefix(LOG_FILE_PREFIX)
+        .build(log_dir)
 }
 
 /// Mark the shutdown as clean — call from a `Tauri::on_window_event(Destroyed)`
@@ -637,5 +663,53 @@ mod tests {
         let r = redact(s);
         assert!(r.contains("<redacted-jwt>"));
         assert!(r.contains("after"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_log_folder_that_cant_be_written_leaves_stderr_only_instead_of_panicking() {
+        use std::os::unix::fs::PermissionsExt;
+        // The folder is there, so creating it succeeds; opening today's
+        // file in it is what fails.
+        let parent = tempfile::tempdir().unwrap();
+        let log_dir = parent.path().join("logs");
+        fs::create_dir(&log_dir).unwrap();
+        fs::set_permissions(&log_dir, fs::Permissions::from_mode(0o500)).unwrap();
+        // Root writes through the mode bits: nothing to check then.
+        let probe = log_dir.join("probe");
+        if fs::write(&probe, b"").is_ok() {
+            let _ = fs::remove_file(&probe);
+            eprintln!("skipped: this user can write into a 0o500 folder");
+            return;
+        }
+        assert!(
+            file_writer(&log_dir).is_none(),
+            "no log file can be opened, so the log goes to stderr only"
+        );
+    }
+
+    #[test]
+    fn a_writable_log_folder_gets_the_daily_file_the_janitor_and_export_expect() {
+        // Not created yet: file_writer creates it.
+        let parent = tempfile::tempdir().unwrap();
+        let log_dir = parent.path().join("logs");
+        let (mut writer, guard) = file_writer(&log_dir).expect("a writable folder gets a file");
+        io::Write::write_all(&mut writer, b"{}\n").unwrap();
+        drop(writer);
+        drop(guard);
+        let names: Vec<String> = fs::read_dir(&log_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names.len(), 1, "{names:?}");
+        let date = names[0]
+            .strip_prefix(&format!("{LOG_FILE_PREFIX}."))
+            .unwrap_or_else(|| panic!("{} isn't fleetify.log.<date>", names[0]));
+        let parts: Vec<&str> = date.split('-').collect();
+        assert!(
+            parts.iter().map(|part| part.len()).eq([4, 2, 2])
+                && date.chars().all(|c| c.is_ascii_digit() || c == '-'),
+            "{date} isn't YYYY-MM-DD"
+        );
     }
 }

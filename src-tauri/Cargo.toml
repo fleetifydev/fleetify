@@ -20,6 +20,10 @@ fleetify-core.workspace = true
 fleetify-backend.workspace = true
 tauri = { version = "2", features = ["macos-private-api", "image-png", "unstable"] }
 tauri-plugin-dialog = "2"
+# Opening Fleetify while it runs focuses the running window instead of
+# starting a second copy (release builds only, see lib.rs). Cargo.lock holds
+# 2.4.5, the newest release that works with tauri 2.11: 2.5 needs tauri 2.12.
+tauri-plugin-single-instance = "2"
 tokio.workspace = true
 tracing.workspace = true
 # Workspace already pins tracing-subscriber@0.3 with env-filter + json
@@ -86,6 +90,10 @@ tauri-plugin-macos-fps = "0.1"
 # lockfile via tao/wry.
 [target.'cfg(target_os = "linux")'.dependencies]
 x11-dl = "2"
+# The single-instance plugin's D-Bus library, so lib.rs can check that it
+# reads the session bus address before registering the plugin, whose Linux
+# setup panics when it can't. Keep it on the plugin's zbus version.
+zbus = "5.9"
 
 [dev-dependencies]
 tempfile = "3"

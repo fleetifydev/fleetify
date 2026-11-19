@@ -93,7 +93,23 @@ pub fn run() {
         }
     }
 
-    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    // Opening Fleetify while it runs focuses the running window
+    // (focus_main_window), and the new process exits before it opens a
+    // window or binds the backend's port. Registered before the other
+    // plugins: they set up in that order while the app is built, before
+    // setup() runs. Release builds only: debug builds share the bundle
+    // identifier the plugin keys on, and `dev:tauri:wt` runs beside
+    // `dev:tauri` by design. A cfg!() branch, not #[cfg], so debug builds
+    // still type-check the release arm.
+    let builder = tauri::Builder::default();
+    let builder = if cfg!(debug_assertions) || !single_instance_can_start() {
+        builder
+    } else {
+        builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            focus_main_window(app)
+        }))
+    };
+    let builder = builder.plugin(tauri_plugin_dialog::init());
 
     // macOS 13–15 (Ventura–Sequoia): WKWebView caps requestAnimationFrame
     // and the renderer's page-update tick at ~60 Hz regardless of the
@@ -291,6 +307,14 @@ pub fn run() {
             // flush thread lives as long as the process.
             if let Some(guard) = shell::logging::init(app.handle()) {
                 app.manage(guard);
+            }
+            // The single-instance check ran before the log was up: say here
+            // why a second launch won't find this one.
+            if !cfg!(debug_assertions) && !single_instance_can_start() {
+                tracing::warn!(
+                    "single instance is off: the D-Bus session bus address can't be read, \
+                     so opening Fleetify again won't focus this window"
+                );
             }
 
             // Auth module emits `fleet:auth-event` via this handle.
@@ -569,7 +593,8 @@ pub fn run() {
             // turn doesn't hit "No API key" and Settings → Models
             // opens with final pills instead of the "Testing…" flash.
             // Runs only once the embedded backend has reported its bind
-            // and answers its health route; otherwise it is skipped.
+            // and answers its health route; otherwise it is skipped. The
+            // GitHub clone token is handed over once the backend has bound.
             let handle = app.handle().clone();
             let warm_up_start = backend_start_rx.clone();
             tauri::async_runtime::spawn(async move {
@@ -603,6 +628,11 @@ pub fn run() {
                 // bind, whatever answers on the port is something else. The
                 // next reload trigger (a Settings change) sends the keys.
                 if crate::shell::backend_ready::wait_until_bound(warm_up_start).await {
+                    // Hydrate the backend clone service with the linked
+                    // GitHub token so private-repo clones authenticate
+                    // from the first try. It is handed over in this process,
+                    // not over HTTP, so it doesn't wait for the health route.
+                    crate::shell::github_link::push_clone_token().await;
                     let ready = crate::shell::backend_ready::wait_for_backend(
                         &crate::shell::backend_ready::health_url(&backend.to_string()),
                         20,
@@ -611,10 +641,6 @@ pub fn run() {
                     .await;
                     if ready {
                         crate::shell::providers_setup::warm_providers_at_boot(&handle).await;
-                        // Hydrate the backend clone service with the linked
-                        // GitHub token so private-repo clones authenticate
-                        // from the first try.
-                        crate::shell::github_link::push_clone_token().await;
                     } else {
                         tracing::warn!(
                             "backend health check timed out; skipping the provider warm-up"
@@ -711,4 +737,161 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Brings the main window to the front when Fleetify is opened again while
+/// it runs (the single-instance plugin's callback): shown, since it starts
+/// hidden, restored if minimized, and focused. Failures are logged; it never
+/// panics.
+fn focus_main_window(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window(shell::startup_window::MAIN_WINDOW) else {
+        tracing::warn!("Fleetify was opened again, but its main window doesn't exist yet");
+        return;
+    };
+    if let Err(e) = window.show() {
+        tracing::warn!("showing the main window for a second launch failed: {e}");
+    }
+    if let Err(e) = window.unminimize() {
+        tracing::warn!("restoring the main window for a second launch failed: {e}");
+    }
+    if let Err(e) = window.set_focus() {
+        tracing::warn!("focusing the main window for a second launch failed: {e}");
+    }
+}
+
+/// Whether the single-instance plugin can be registered. On Linux it finds
+/// the running copy over the D-Bus session bus, and its setup (2.4.5)
+/// unwraps zbus's reading of that bus's address: a `DBUS_SESSION_BUS_ADDRESS`
+/// zbus can't read, such as `disabled:`, `/dev/null`, `autolaunch:` or an
+/// empty value where there is no session bus, would panic before any window
+/// exists. Without a readable address no running copy can be found anyway,
+/// so the app starts as the only one. An address that reads fine but leads
+/// to no bus is handled by the plugin: it starts the app without single
+/// instance.
+#[cfg(target_os = "linux")]
+fn single_instance_can_start() -> bool {
+    zbus::Address::session().is_ok()
+}
+
+/// Whether the single-instance plugin can be registered: always, as it
+/// needs no D-Bus here.
+#[cfg(not(target_os = "linux"))]
+fn single_instance_can_start() -> bool {
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    /// lib.rs up to this module: the code the app runs, without the strings
+    /// these tests look for. LF line endings, whatever the checkout has.
+    fn app_source() -> String {
+        let source = include_str!("lib.rs").replace("\r\n", "\n");
+        let tests = source
+            .find(&format!("#[cfg(test)]\nmod {} {{", "tests"))
+            .expect("lib.rs has this test module");
+        source[..tests].to_string()
+    }
+
+    #[test]
+    fn a_release_build_registers_the_single_instance_plugin_before_any_other() {
+        // Search strings built at run time, so this test never matches itself.
+        let source = app_source();
+        let builder = source
+            .find(&format!("tauri::Builder::{}()", "default"))
+            .expect("run() builds the app with tauri::Builder::default()");
+        let after_builder = &source[builder..];
+        let first_plugin = after_builder
+            .find(".plugin(")
+            .expect("the builder registers plugins");
+        assert!(
+            after_builder[first_plugin..].starts_with(&format!(
+                ".plugin({}::init(",
+                "tauri_plugin_single_instance"
+            )),
+            "the single-instance plugin must be the first plugin registered, so a \
+             second launch exits before any other plugin or setup runs"
+        );
+        // Gated by a cfg!(debug_assertions) branch, in its release arm: debug
+        // builds share the bundle identifier the plugin keys on, and
+        // dev:tauri:wt runs beside dev:tauri.
+        let before_plugin = &after_builder[..first_plugin];
+        let gate = before_plugin
+            .find(&format!("if cfg!({})", "debug_assertions"))
+            .expect("the plugin is gated by a cfg!(debug_assertions) branch");
+        assert!(
+            before_plugin[gate..].contains("} else {"),
+            "the plugin is registered in the release arm, not the debug one"
+        );
+    }
+
+    /// The test below, by the name the test harness gives it.
+    #[cfg(target_os = "linux")]
+    const SESSION_BUS_TEST: &str =
+        "tests::single_instance_is_off_when_zbus_cant_read_the_session_bus_address";
+
+    /// Runs in child processes of this test binary, one per session bus
+    /// address, so no test changes this process's environment.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn single_instance_is_off_when_zbus_cant_read_the_session_bus_address() {
+        const EXPECTED: &str = "FLEETIFY_TEST_SINGLE_INSTANCE";
+        if let Ok(expected) = std::env::var(EXPECTED) {
+            // In a child: this process's environment is the case.
+            assert_eq!(super::single_instance_can_start(), expected == "on");
+            return;
+        }
+        // No bus socket in it: what zbus falls back to without an address.
+        let runtime_dir = tempfile::tempdir().unwrap();
+        let cases = [
+            // Set when there is no session bus. zbus can't read them, and
+            // the plugin's Linux setup panics on what it can't read.
+            (Some("disabled:"), "off"),
+            (Some("/dev/null"), "off"),
+            (Some("autolaunch:"), "off"),
+            (Some(""), "off"),
+            // Read fine, though no bus answers there: the plugin then starts
+            // the app without single instance by itself.
+            (Some("unix:path=/nonexistent/fleetify-test/bus"), "on"),
+            (None, "on"),
+        ];
+        for (address, expected) in cases {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child
+                .args(["--exact", SESSION_BUS_TEST, "--test-threads=1"])
+                .env(EXPECTED, expected)
+                .env("XDG_RUNTIME_DIR", runtime_dir.path());
+            match address {
+                Some(address) => child.env("DBUS_SESSION_BUS_ADDRESS", address),
+                None => child.env_remove("DBUS_SESSION_BUS_ADDRESS"),
+            };
+            let output = child.output().unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "address {address:?}: single instance should be {expected}\n{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    /// The plugin's Linux setup also unwraps the D-Bus name and object path
+    /// it builds from the bundle identifier (`com.fleetify.app`).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_single_instance_dbus_name_built_from_the_identifier_is_valid() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let identifier = config["identifier"].as_str().unwrap();
+        // As the plugin builds them (platform_impl/linux.rs).
+        let name = format!("{identifier}.SingleInstance");
+        let path = format!("/{}", name.replace('.', "/").replace('-', "_"));
+        assert!(
+            zbus::names::WellKnownName::try_from(name.as_str()).is_ok(),
+            "{name}"
+        );
+        assert!(
+            zbus::zvariant::ObjectPath::try_from(path.as_str()).is_ok(),
+            "{path}"
+        );
+    }
 }
