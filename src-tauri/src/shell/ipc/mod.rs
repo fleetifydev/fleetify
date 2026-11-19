@@ -3381,17 +3381,18 @@ pub async fn routers_connect(
         return serde_json::json!({ "ok": false, "code": "KEYCHAIN", "error": e });
     }
     if let Ok(dir) = app.path().app_data_dir() {
-        let mut cfg = config::load_config_from(&dir);
-        let mut routing = config::routing_from(&cfg);
-        routing.connected_routers.insert(
-            id.clone(),
-            config::ConnectedRouter {
-                connected: true,
-                metadata,
-            },
-        );
-        config::routing_set(&mut cfg, &routing);
-        if let Err(e) = config::save_config_to(&dir, &cfg) {
+        let saved = config::update_config(&dir, |cfg| {
+            let mut routing = config::routing_from(cfg);
+            routing.connected_routers.insert(
+                id.clone(),
+                config::ConnectedRouter {
+                    connected: true,
+                    metadata,
+                },
+            );
+            config::routing_set(cfg, &routing);
+        });
+        if let Err(e) = saved {
             return serde_json::json!({ "ok": false, "code": "CONFIG", "error": e.to_string() });
         }
     }
@@ -3407,17 +3408,17 @@ pub async fn routers_disconnect(app: tauri::AppHandle, id: String) -> serde_json
         let _ = crate::shell::routers_link::delete_secret(&id, &uid);
     }
     if let Ok(dir) = app.path().app_data_dir() {
-        let mut cfg = config::load_config_from(&dir);
-        let mut routing = config::routing_from(&cfg);
-        routing.connected_routers.remove(&id);
-        if routing.active_decision_router == id {
-            routing.active_decision_router = "builtin".into();
-        }
-        if routing.active_proxy_gateway == id {
-            routing.active_proxy_gateway = "none-proxy".into();
-        }
-        config::routing_set(&mut cfg, &routing);
-        let _ = config::save_config_to(&dir, &cfg);
+        let _ = config::update_config(&dir, |cfg| {
+            let mut routing = config::routing_from(cfg);
+            routing.connected_routers.remove(&id);
+            if routing.active_decision_router == id {
+                routing.active_decision_router = "builtin".into();
+            }
+            if routing.active_proxy_gateway == id {
+                routing.active_proxy_gateway = "none-proxy".into();
+            }
+            config::routing_set(cfg, &routing);
+        });
     }
     crate::shell::routing_setup::reload_backend(&app).await;
     serde_json::json!({ "ok": true })
@@ -3432,15 +3433,21 @@ pub async fn routers_set_active(
     let Ok(dir) = app.path().app_data_dir() else {
         return serde_json::json!({ "ok": false, "error": "no app data dir" });
     };
-    let mut cfg = config::load_config_from(&dir);
-    let mut routing = config::routing_from(&cfg);
-    match category.as_str() {
-        "decision" => routing.active_decision_router = id,
-        "proxy" => routing.active_proxy_gateway = id,
+    // Checked before anything is saved.
+    let decision = match category.as_str() {
+        "decision" => true,
+        "proxy" => false,
         _ => return serde_json::json!({ "ok": false, "error": "invalid category" }),
-    }
-    config::routing_set(&mut cfg, &routing);
-    let _ = config::save_config_to(&dir, &cfg);
+    };
+    let _ = config::update_config(&dir, |cfg| {
+        let mut routing = config::routing_from(cfg);
+        if decision {
+            routing.active_decision_router = id;
+        } else {
+            routing.active_proxy_gateway = id;
+        }
+        config::routing_set(cfg, &routing);
+    });
     crate::shell::routing_setup::reload_backend(&app).await;
     serde_json::json!({ "ok": true })
 }
@@ -3450,11 +3457,11 @@ pub async fn routers_set_master_toggle(app: tauri::AppHandle, enabled: bool) -> 
     let Ok(dir) = app.path().app_data_dir() else {
         return serde_json::json!({ "ok": false, "error": "no app data dir" });
     };
-    let mut cfg = config::load_config_from(&dir);
-    let mut routing = config::routing_from(&cfg);
-    routing.enabled = enabled;
-    config::routing_set(&mut cfg, &routing);
-    let _ = config::save_config_to(&dir, &cfg);
+    let _ = config::update_config(&dir, |cfg| {
+        let mut routing = config::routing_from(cfg);
+        routing.enabled = enabled;
+        config::routing_set(cfg, &routing);
+    });
     crate::shell::routing_setup::reload_backend(&app).await;
     serde_json::json!({ "ok": true })
 }
@@ -3627,11 +3634,12 @@ pub async fn providers_set_key(
         return serde_json::json!({ "ok": false, "code": "KEYCHAIN", "error": e });
     }
     if let Ok(dir) = app.path().app_data_dir() {
-        let mut cfg = config::load_config_from(&dir);
-        let mut providers = config::providers_from(&cfg);
-        providers.connected.insert(id.clone(), true);
-        config::providers_set(&mut cfg, &providers);
-        if let Err(e) = config::save_config_to(&dir, &cfg) {
+        let saved = config::update_config(&dir, |cfg| {
+            let mut providers = config::providers_from(cfg);
+            providers.connected.insert(id.clone(), true);
+            config::providers_set(cfg, &providers);
+        });
+        if let Err(e) = saved {
             return serde_json::json!({ "ok": false, "code": "CONFIG", "error": e.to_string() });
         }
     }
@@ -3665,11 +3673,11 @@ pub async fn providers_delete_key(app: tauri::AppHandle, id: String) -> serde_js
         let _ = crate::shell::providers_link::delete_secret(&id, &uid);
     }
     if let Ok(dir) = app.path().app_data_dir() {
-        let mut cfg = config::load_config_from(&dir);
-        let mut providers = config::providers_from(&cfg);
-        providers.connected.insert(id.clone(), false);
-        config::providers_set(&mut cfg, &providers);
-        let _ = config::save_config_to(&dir, &cfg);
+        let _ = config::update_config(&dir, |cfg| {
+            let mut providers = config::providers_from(cfg);
+            providers.connected.insert(id.clone(), false);
+            config::providers_set(cfg, &providers);
+        });
     }
     crate::shell::providers_setup::reload_backend(&app).await;
     fleetify_backend::services::telemetry::emitters::emit_provider_disconnected(&id).await;
@@ -3876,11 +3884,12 @@ pub async fn providers_set_enabled(
         return serde_json::json!({ "ok": false, "code": "UNKNOWN_PROVIDER", "error": format!("unknown provider {id}") });
     }
     if let Ok(dir) = app.path().app_data_dir() {
-        let mut cfg = config::load_config_from(&dir);
-        let mut providers = config::providers_from(&cfg);
-        providers.connected.insert(id.clone(), enabled);
-        config::providers_set(&mut cfg, &providers);
-        if let Err(e) = config::save_config_to(&dir, &cfg) {
+        let saved = config::update_config(&dir, |cfg| {
+            let mut providers = config::providers_from(cfg);
+            providers.connected.insert(id.clone(), enabled);
+            config::providers_set(cfg, &providers);
+        });
+        if let Err(e) = saved {
             return serde_json::json!({ "ok": false, "code": "CONFIG", "error": e.to_string() });
         }
     } else {
@@ -3919,16 +3928,17 @@ pub async fn providers_set_connected_bulk(
     let Ok(dir) = app.path().app_data_dir() else {
         return serde_json::json!({ "ok": false, "code": "CONFIG", "error": "no app data dir" });
     };
-    let mut cfg = config::load_config_from(&dir);
-    let mut providers = config::providers_from(&cfg);
-    for (id, on) in &connected {
-        providers.connected.insert(id.clone(), *on);
-    }
-    if let Some(agents) = enabled_agents {
-        providers.enabled_agents = agents;
-    }
-    config::providers_set(&mut cfg, &providers);
-    if let Err(e) = config::save_config_to(&dir, &cfg) {
+    let saved = config::update_config(&dir, |cfg| {
+        let mut providers = config::providers_from(cfg);
+        for (id, on) in &connected {
+            providers.connected.insert(id.clone(), *on);
+        }
+        if let Some(agents) = enabled_agents {
+            providers.enabled_agents = agents;
+        }
+        config::providers_set(cfg, &providers);
+    });
+    if let Err(e) = saved {
         return serde_json::json!({ "ok": false, "code": "CONFIG", "error": e.to_string() });
     }
     crate::shell::providers_setup::reload_backend(&app).await;
@@ -3966,8 +3976,7 @@ pub async fn providers_set_default(
     let Ok(dir) = app.path().app_data_dir() else {
         return serde_json::json!({ "ok": false, "code": "CONFIG", "error": "no app data dir" });
     };
-    let mut cfg = config::load_config_from(&dir);
-    match &mut cfg {
+    let saved = config::update_config(&dir, |cfg| match cfg {
         serde_json::Value::Object(map) => {
             map.insert(
                 "defaultProvider".into(),
@@ -3978,13 +3987,13 @@ pub async fn providers_set_default(
             }
         }
         _ => {
-            cfg = serde_json::json!({
-                "defaultProvider": id,
-                "defaultModel": default_model,
+            *cfg = serde_json::json!({
+                "defaultProvider": id.clone(),
+                "defaultModel": default_model.clone(),
             });
         }
-    }
-    if let Err(e) = config::save_config_to(&dir, &cfg) {
+    });
+    if let Err(e) = saved {
         return serde_json::json!({ "ok": false, "code": "CONFIG", "error": e.to_string() });
     }
     // No backend reload needed — `defaultProvider` is consumed
@@ -4604,11 +4613,12 @@ pub async fn providers_set_enabled_models(
     let Ok(dir) = app.path().app_data_dir() else {
         return serde_json::json!({ "ok": false, "error": "no app data dir" });
     };
-    let mut cfg = config::load_config_from(&dir);
-    let mut providers = config::providers_from(&cfg);
-    providers.enabled_models.insert(id, models);
-    config::providers_set(&mut cfg, &providers);
-    if let Err(e) = config::save_config_to(&dir, &cfg) {
+    let saved = config::update_config(&dir, |cfg| {
+        let mut providers = config::providers_from(cfg);
+        providers.enabled_models.insert(id, models);
+        config::providers_set(cfg, &providers);
+    });
+    if let Err(e) = saved {
         return serde_json::json!({ "ok": false, "code": "CONFIG", "error": e.to_string() });
     }
     // Picker reads renderer-side state via the Zustand store, which the
@@ -4624,16 +4634,18 @@ pub async fn providers_set_ollama_base_url(
     let Ok(dir) = app.path().app_data_dir() else {
         return serde_json::json!({ "ok": false, "error": "no app data dir" });
     };
-    let mut cfg = config::load_config_from(&dir);
-    let mut providers = config::providers_from(&cfg);
     let trimmed = base_url.trim().to_string();
-    providers.ollama_base_url = if trimmed.is_empty() {
+    let base_url = if trimmed.is_empty() {
         None
     } else {
         Some(trimmed)
     };
-    config::providers_set(&mut cfg, &providers);
-    if let Err(e) = config::save_config_to(&dir, &cfg) {
+    let saved = config::update_config(&dir, |cfg| {
+        let mut providers = config::providers_from(cfg);
+        providers.ollama_base_url = base_url;
+        config::providers_set(cfg, &providers);
+    });
+    if let Err(e) = saved {
         return serde_json::json!({ "ok": false, "code": "CONFIG", "error": e.to_string() });
     }
     crate::shell::providers_setup::reload_backend(&app).await;
@@ -4648,16 +4660,18 @@ pub async fn providers_set_ollama_cloud_base_url(
     let Ok(dir) = app.path().app_data_dir() else {
         return serde_json::json!({ "ok": false, "error": "no app data dir" });
     };
-    let mut cfg = config::load_config_from(&dir);
-    let mut providers = config::providers_from(&cfg);
     let trimmed = base_url.trim().to_string();
-    providers.ollama_cloud_base_url = if trimmed.is_empty() {
+    let base_url = if trimmed.is_empty() {
         None
     } else {
         Some(trimmed)
     };
-    config::providers_set(&mut cfg, &providers);
-    if let Err(e) = config::save_config_to(&dir, &cfg) {
+    let saved = config::update_config(&dir, |cfg| {
+        let mut providers = config::providers_from(cfg);
+        providers.ollama_cloud_base_url = base_url;
+        config::providers_set(cfg, &providers);
+    });
+    if let Err(e) = saved {
         return serde_json::json!({ "ok": false, "code": "CONFIG", "error": e.to_string() });
     }
     crate::shell::providers_setup::reload_backend(&app).await;
@@ -4672,16 +4686,18 @@ pub async fn providers_set_cloudflare_account_id(
     let Ok(dir) = app.path().app_data_dir() else {
         return serde_json::json!({ "ok": false, "error": "no app data dir" });
     };
-    let mut cfg = config::load_config_from(&dir);
-    let mut providers = config::providers_from(&cfg);
     let trimmed = account_id.trim().to_string();
-    providers.cloudflare_account_id = if trimmed.is_empty() {
+    let account_id = if trimmed.is_empty() {
         None
     } else {
         Some(trimmed)
     };
-    config::providers_set(&mut cfg, &providers);
-    if let Err(e) = config::save_config_to(&dir, &cfg) {
+    let saved = config::update_config(&dir, |cfg| {
+        let mut providers = config::providers_from(cfg);
+        providers.cloudflare_account_id = account_id;
+        config::providers_set(cfg, &providers);
+    });
+    if let Err(e) = saved {
         return serde_json::json!({ "ok": false, "code": "CONFIG", "error": e.to_string() });
     }
     crate::shell::providers_setup::reload_backend(&app).await;

@@ -129,11 +129,11 @@ fn unix_ms() -> i64 {
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Held across every write of `fleet.config.json`: the whole load, change
-/// and save of [`update_config`], each [`save_config_to`], and the startup
-/// opt-out. One at a time, the last rename wins whole, and a writer that
-/// goes through [`update_config`] starts from the file the last one left.
-/// It isn't reentrant: nothing that runs while it is held may take it
-/// again.
+/// and save of [`update_config`], and the startup opt-out. The privacy
+/// switches, the provider setters, the key migration and the renderer's
+/// `config_set` can all write at once; one at a time, each starts from the
+/// file the last one left, and the last rename wins whole. It isn't
+/// reentrant: nothing that runs while it is held may take it again.
 static SAVE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Takes [`SAVE_LOCK`]. A writer that panicked while holding it left
@@ -175,9 +175,10 @@ pub fn update_config<T>(dir: &Path, change: impl FnOnce(&mut Value) -> T) -> std
     Ok(out)
 }
 
-/// Replace `fleet.config.json` with `cfg` under [`SAVE_LOCK`]. A change to
-/// the saved config goes through [`update_config`] instead, which loads it
-/// under the same lock.
+/// Replace `fleet.config.json` with `cfg` under [`SAVE_LOCK`]. For tests,
+/// which seed the file: the app changes a saved config only through
+/// [`update_config`], which loads it under the same lock.
+#[cfg(test)]
 pub fn save_config_to(path: &Path, cfg: &Value) -> std::io::Result<()> {
     let _guard = lock_saves();
     write_locked(path, cfg)
