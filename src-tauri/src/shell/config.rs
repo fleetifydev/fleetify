@@ -7,6 +7,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, SystemTime};
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -246,6 +247,79 @@ pub fn replace_config_keeping_telemetry(dir: &Path, new: Value) -> std::io::Resu
         }
         *cfg = Value::Object(new);
     })
+}
+
+/// How old a config temp file has to be before the startup sweep removes
+/// it ([`sweep_stale_temp_files`]). A save fills and renames its temp file
+/// in a moment, so one this old was left by a save that never finished: a
+/// crash, or a full disk.
+pub const STALE_TEMP_AGE: Duration = Duration::from_secs(600);
+
+/// Whether the startup sweep may remove `file_name`, last modified at
+/// `modified`: a save's temp file (`fleet.config.json.<pid>.<n>.tmp`) from a
+/// process other than `own_pid`, or the old fixed `fleet.config.json.tmp`,
+/// older than [`STALE_TEMP_AGE`] at `now`. A modification time after `now`
+/// gives no age, so the file stays.
+fn is_stale_temp(file_name: &str, modified: SystemTime, now: SystemTime, own_pid: u32) -> bool {
+    let Some(middle) = file_name
+        .strip_prefix(CONFIG_FILE)
+        .and_then(|rest| rest.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let another_runs = match middle.strip_prefix('.').and_then(|m| m.split_once('.')) {
+        Some((pid, n)) => {
+            digits(pid) && digits(n) && pid.parse::<u32>().is_ok_and(|pid| pid != own_pid)
+        }
+        // The old fixed name, from before each save had a temp file of its
+        // own.
+        None => middle.is_empty(),
+    };
+    another_runs
+        && now
+            .duration_since(modified)
+            .is_ok_and(|age| age > STALE_TEMP_AGE)
+}
+
+/// Removes `dir`'s stale config temp files ([`is_stale_temp`]) and returns
+/// how many went. Startup runs it before anything reads or writes the
+/// config. Best effort: an entry it can't inspect or remove stays. Only
+/// regular files are removed: never a folder, nor a link or what it points
+/// to.
+pub fn sweep_stale_temp_files(dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let now = SystemTime::now();
+    let own_pid = std::process::id();
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        // Read from the file itself, not the listing (which Windows may
+        // update late), and of a link the link: it isn't followed.
+        let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        let stale = meta.is_file()
+            && meta
+                .modified()
+                .is_ok_and(|modified| is_stale_temp(name, modified, now, own_pid));
+        if stale && std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        // A count only: the folder's path usually holds the user's name.
+        tracing::info!(
+            removed,
+            "removed {CONFIG_FILE} temp files left by saves that never finished"
+        );
+    }
+    removed
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1501,6 +1575,99 @@ mod tests {
             free_aside_name(tmp.path(), 42),
             "fleet.config.json.unreadable-42-2"
         );
+    }
+
+    #[test]
+    fn a_temp_file_is_stale_only_when_another_run_left_it_long_ago() {
+        let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let ago = |secs: u64| now - Duration::from_secs(secs);
+        let own_pid = 4242;
+        let cases = [
+            // This run's own, however old: it may be filling it.
+            ("fleet.config.json.4242.0.tmp", ago(60 * 60), false),
+            // Another run's, 11 minutes old.
+            ("fleet.config.json.4243.7.tmp", ago(11 * 60), true),
+            // Another run's, 1 minute old: that run may still be saving.
+            ("fleet.config.json.4243.7.tmp", ago(60), false),
+            // Older than 10 minutes, not 10 minutes exactly.
+            ("fleet.config.json.4243.7.tmp", ago(10 * 60), false),
+            // A time after now (the clock moved back): no age to go by.
+            (
+                "fleet.config.json.4243.7.tmp",
+                now + Duration::from_secs(60),
+                false,
+            ),
+            // The old fixed name, from before each save had its own.
+            ("fleet.config.json.tmp", ago(60 * 60), true),
+            ("fleet.config.json.tmp", ago(60), false),
+            // The live file, the kept copies, and names not of this shape.
+            ("fleet.config.json", ago(60 * 60), false),
+            (
+                "fleet.config.json.corrupt-16e4fbebb8eabfec",
+                ago(60 * 60),
+                false,
+            ),
+            (
+                "fleet.config.json.unreadable-1700000000000",
+                ago(60 * 60),
+                false,
+            ),
+            ("fleet.config.json.4243.tmp", ago(60 * 60), false),
+            ("fleet.config.json.+4243.7.tmp", ago(60 * 60), false),
+            ("fleet.config.json.backup.7.tmp", ago(60 * 60), false),
+            ("other.json.4243.7.tmp", ago(60 * 60), false),
+        ];
+        for (name, modified, stale) in cases {
+            assert_eq!(
+                is_stale_temp(name, modified, now, own_pid),
+                stale,
+                "{name} at {:?} ago",
+                now.duration_since(modified).ok()
+            );
+        }
+    }
+
+    #[test]
+    fn the_startup_sweep_removes_only_stale_temp_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let long_ago = SystemTime::now() - Duration::from_secs(60 * 60);
+        let other_pid = std::process::id().wrapping_add(1);
+        let own = format!("{CONFIG_FILE}.{}.0.tmp", std::process::id());
+        let stale = format!("{CONFIG_FILE}.{other_pid}.0.tmp");
+        let fresh = format!("{CONFIG_FILE}.{other_pid}.1.tmp");
+        let legacy = format!("{CONFIG_FILE}.tmp");
+        let kept_copy = format!("{CONFIG_FILE}.corrupt-16e4fbebb8eabfec");
+        let live = CONFIG_FILE.to_string();
+        for (name, old) in [
+            (&own, true),
+            (&stale, true),
+            (&fresh, false),
+            (&legacy, true),
+            (&kept_copy, true),
+            (&live, true),
+        ] {
+            let path = tmp.path().join(name);
+            std::fs::write(&path, "{}").unwrap();
+            if old {
+                std::fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_modified(long_ago)
+                    .unwrap();
+            }
+        }
+
+        assert_eq!(sweep_stale_temp_files(tmp.path()), 2);
+
+        let mut left: Vec<String> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        let mut kept = vec![own, fresh, kept_copy, live];
+        kept.sort();
+        assert_eq!(left, kept);
     }
 
     #[test]

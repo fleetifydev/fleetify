@@ -303,10 +303,15 @@ pub fn run() {
             // parsed keeps sync off and gets an explicit opt-out saved, so
             // no later save can drop the user's earlier choice. The early
             // open and the final restore below both follow this decision.
+            // Before it, the sweep removes temp files that earlier runs'
+            // unfinished saves left behind.
             let cloud_open_at_launch = app
                 .path()
                 .app_data_dir()
-                .map(|dir| shell::config::startup_cloud_decision(&dir))
+                .map(|dir| {
+                    shell::config::sweep_stale_temp_files(&dir);
+                    shell::config::startup_cloud_decision(&dir)
+                })
                 .unwrap_or(false);
 
             // One-shot lift of any plaintext `cfg.apiKeys` entries into
