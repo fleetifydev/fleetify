@@ -65,7 +65,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # Each runner image gets its own Rust cache: a cache saved on one image
+      # carries that image's MSVC paths (whisper-rs-sys's CMake build dir) and
+      # breaks the build on another image during an image rollout.
+      - name: Runner image version (cache key)
+        shell: pwsh
+        run: '"IMAGE_VERSION=$env:ImageVersion" >> $env:GITHUB_ENV'
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.IMAGE_VERSION }}
       # The 4 fleet-*-mcp sidecars are standalone workspace bins, NOT deps of
       # src-tauri — nothing compiles them implicitly. But Tauri's externalBin
       # build script resolves `binaries/fleet-*-mcp-<triple>` at build time, so
