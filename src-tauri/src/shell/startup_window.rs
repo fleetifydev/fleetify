@@ -13,6 +13,13 @@
 //! the backend can't start at all, or a release build has no UI files to
 //! serve (see `shell::ui_files`), an error dialog says why and the app quits.
 //!
+//! Once the app page has loaded, the window never goes back to the
+//! placeholder ([`guard_main_navigation`]): a back navigation (Alt+Left on
+//! Windows, or `history.back()` past the app's first page) would show
+//! "Starting Fleetify…" for good. The placeholder's body is a drag region, so
+//! the window, which has no title bar to drag it by, can be moved while it
+//! waits.
+//!
 //! It also works out the app's origin ([`app_origin`]) and, when that origin
 //! is remote, the capability that grants it IPC at setup
 //! ([`runtime_remote_origin`], [`runtime_capability`]).
@@ -74,7 +81,9 @@ const PAINT_GRACE: Duration = Duration::from_millis(120);
 
 /// The page the main window shows until the app loads. It loads nothing:
 /// inline styles only, colours from the system scheme (the app's own light
-/// theme and its default dark theme, from `src/globals.css`).
+/// theme and its default dark theme, from `src/globals.css`). Its body is a
+/// drag region: the preload turns a mousedown in it into
+/// `window_start_dragging`, as in the app's title bar.
 pub const PLACEHOLDER_HTML: &str = r#"<!doctype html>
 <html lang="en">
 <head>
@@ -100,15 +109,20 @@ body {
 }
 </style>
 </head>
-<body>
+<body class="drag-region">
 <p>Starting Fleetify…</p>
 </body>
 </html>
 "#;
 
-/// The placeholder's Content-Security-Policy: its inline styles and nothing
-/// else, so the engine itself refuses any resource.
-const PLACEHOLDER_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'";
+/// The placeholder's Content-Security-Policy: its inline styles, and
+/// requests to Tauri's IPC for the drag (`ipc://localhost` on Linux and
+/// macOS, `http://ipc.localhost` on Windows). The engine itself refuses
+/// anything else. Were the IPC refused, Tauri would fall back to its
+/// postMessage channel, which gets no permissions on Linux (see the vendored
+/// runtime's patch).
+const PLACEHOLDER_CSP: &str =
+    "default-src 'none'; style-src 'unsafe-inline'; connect-src ipc: http://ipc.localhost";
 
 /// The placeholder scheme's answer to a request from `webview_label`: the
 /// page for the main window, an empty 404 for any other webview (the
@@ -168,20 +182,71 @@ impl AppLoadGuard {
     }
 }
 
+/// Set once the app page, not the placeholder, has finished loading in the
+/// main window ([`signal_app_page_loaded`]). From then on the window never
+/// goes back to the placeholder ([`guard_main_navigation`]).
+static APP_LOADED: AtomicBool = AtomicBool::new(false);
+
+/// Takes one page-load event of the main window, for an app page or not,
+/// through `guard`: true when it finishes a load of the app, as
+/// [`AppLoadGuard`] tells it, and then sets `app_loaded`. The placeholder's
+/// own load never does.
+fn record_page_load(
+    guard: &AppLoadGuard,
+    app_loaded: &AtomicBool,
+    event: PageLoadEvent,
+    app_page: bool,
+) -> bool {
+    let finished = guard.finished_app_load(event, app_page);
+    if finished {
+        app_loaded.store(true, Ordering::SeqCst);
+    }
+    finished
+}
+
 /// A page-load handler for the main window: signals `app_page_loaded` each
 /// time a page of the app at `app_url` finishes loading, as
-/// [`AppLoadGuard`] tells it. A signal sent before anyone waits is kept, so
-/// an early load is never missed.
+/// [`AppLoadGuard`] tells it, and marks the app loaded (`APP_LOADED`). A
+/// signal sent before anyone waits is kept, so an early load is never missed.
 pub fn signal_app_page_loaded(
     app_url: Url,
     app_page_loaded: Arc<Notify>,
 ) -> impl Fn(WebviewWindow, PageLoadPayload<'_>) + Send + Sync + 'static {
     let guard = AppLoadGuard::default();
     move |_window, payload| {
-        if guard.finished_app_load(payload.event(), is_app_page(payload.url(), &app_url)) {
+        let app_page = is_app_page(payload.url(), &app_url);
+        if record_page_load(&guard, &APP_LOADED, payload.event(), app_page) {
             app_page_loaded.notify_one();
         }
     }
+}
+
+/// True when `url` is the placeholder page: any URL on its scheme
+/// ([`PLACEHOLDER_URL`] on Linux and macOS), or the form Windows loads it
+/// in, `http://fleetify-startup.localhost/`, as wry serves a custom scheme
+/// there (`https://` for a window with `useHttpsScheme`). These are the
+/// forms Tauri's `Webview::is_local_url` takes for a custom scheme's pages.
+pub fn is_placeholder_url(url: &Url) -> bool {
+    let windows_form = matches!(url.scheme(), "http" | "https")
+        && url
+            .host_str()
+            .and_then(|host| host.strip_suffix(".localhost"))
+            == Some(PLACEHOLDER_SCHEME);
+    url.scheme() == PLACEHOLDER_SCHEME || windows_form
+}
+
+/// Whether the main window may navigate to `url`: anywhere but the
+/// placeholder once the app has loaded (`app_loaded`). It denies nothing
+/// else: WebKitGTK and WKWebView ask about the main webview's iframes too,
+/// and an allowlist would block the Preview pane's.
+pub fn allow_main_navigation(url: &Url, app_loaded: bool) -> bool {
+    !(app_loaded && is_placeholder_url(url))
+}
+
+/// The main window's navigation handler: [`allow_main_navigation`], with
+/// whether the app has loaded in the window yet (`APP_LOADED`).
+pub fn guard_main_navigation(url: &Url) -> bool {
+    allow_main_navigation(url, APP_LOADED.load(Ordering::SeqCst))
 }
 
 /// The backend's start as the startup task sees it: `reported` is the last
@@ -486,8 +551,8 @@ fn reveal(window: &WebviewWindow, boot_start: Instant) {
 // treats as the app's own (`devUrl` in dev mode, its custom schemes). The
 // origin the main window loads the app from, when it is remote, gets the same
 // permissions at setup, for that origin alone. No other remote origin can
-// call anything: the main webview has no navigation guard, so a page it ends
-// up on elsewhere must find no IPC.
+// call anything: the main webview's navigation guard only keeps it off the
+// placeholder, so a page it ends up on elsewhere must find no IPC.
 
 /// The permissions `capabilities/default.json` grants: the core ones, and
 /// every app command (the `app-commands` set, `permissions/app-commands.toml`).
@@ -671,12 +736,25 @@ mod tests {
             response.headers()[header::CONTENT_TYPE],
             "text/html; charset=utf-8"
         );
-        // The engine itself refuses anything but the inline styles.
+        // The engine itself refuses anything but the inline styles and
+        // Tauri's IPC, which the drag goes through: `ipc://localhost` on
+        // Linux and macOS, `http://ipc.localhost` on Windows.
         assert_eq!(
             response.headers()[header::CONTENT_SECURITY_POLICY],
-            "default-src 'none'; style-src 'unsafe-inline'"
+            "default-src 'none'; style-src 'unsafe-inline'; connect-src ipc: http://ipc.localhost"
         );
         assert_eq!(response.body().as_slice(), PLACEHOLDER_HTML.as_bytes());
+    }
+
+    #[test]
+    fn the_placeholder_can_be_dragged() {
+        // The preload turns a mousedown in a .drag-region into
+        // window_start_dragging, as in the app's title bar: the window has
+        // no decorations, and the placeholder fills it.
+        assert!(
+            PLACEHOLDER_HTML.contains(r#"<body class="drag-region">"#),
+            "the placeholder's body is not a drag region"
+        );
     }
 
     #[test]
@@ -1141,6 +1219,116 @@ mod tests {
         assert!(!guard.finished_app_load(PageLoadEvent::Finished, true));
     }
 
+    // ── no way back to the placeholder ──
+
+    /// The placeholder's URL as the engines load it: on its own scheme on
+    /// Linux and macOS, and as wry serves a custom scheme on Windows.
+    const PLACEHOLDER_FORMS: [&str; 2] = [PLACEHOLDER_URL, "http://fleetify-startup.localhost/"];
+
+    #[test]
+    fn the_placeholder_is_recognised_as_each_engine_loads_it() {
+        for placeholder in PLACEHOLDER_FORMS {
+            assert!(is_placeholder_url(&url(placeholder)), "{placeholder}");
+        }
+        // The scheme serves the page at every path. A window with
+        // useHttpsScheme would load the Windows form over https.
+        for placeholder in [
+            "fleetify-startup://localhost/index.html?step=2#top",
+            "http://fleetify-startup.localhost/anything",
+            "https://fleetify-startup.localhost/",
+        ] {
+            assert!(is_placeholder_url(&url(placeholder)), "{placeholder}");
+        }
+    }
+
+    #[test]
+    fn no_other_url_is_the_placeholder() {
+        for other in [
+            "http://127.0.0.1:8765/",
+            "http://localhost:3000/",
+            "http://localhost:5173/",
+            "http://localhost/",
+            "https://example.com/",
+            "about:blank",
+            "about:srcdoc",
+            // Tauri's own schemes, as Linux and macOS load them and as
+            // Windows does.
+            "ipc://localhost/window_start_dragging",
+            "http://ipc.localhost/window_start_dragging",
+            "tauri://localhost/",
+            "http://tauri.localhost/",
+        ] {
+            assert!(!is_placeholder_url(&url(other)), "{other}");
+        }
+    }
+
+    #[test]
+    fn the_window_loads_the_placeholder_before_the_app_has_loaded() {
+        // The window is built on it.
+        for placeholder in PLACEHOLDER_FORMS {
+            assert!(
+                allow_main_navigation(&url(placeholder), false),
+                "{placeholder}"
+            );
+        }
+    }
+
+    #[test]
+    fn once_the_app_has_loaded_the_window_never_goes_back_to_the_placeholder() {
+        for placeholder in PLACEHOLDER_FORMS {
+            assert!(
+                !allow_main_navigation(&url(placeholder), true),
+                "{placeholder}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_guard_denies_nothing_but_the_placeholder() {
+        // WebKitGTK and WKWebView ask about the main webview's iframes too:
+        // the Preview pane loads the user's dev server (Vite on 5173, say).
+        for other in [
+            "http://127.0.0.1:8765/",
+            "http://127.0.0.1:8765/settings?tab=privacy#top",
+            "http://localhost:3000/",
+            "http://localhost:5173/",
+            "about:blank",
+        ] {
+            for app_loaded in [false, true] {
+                assert!(
+                    allow_main_navigation(&url(other), app_loaded),
+                    "{other}, app loaded: {app_loaded}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_apps_load_sets_the_app_loaded_flag_and_the_placeholders_does_not() {
+        let guard = AppLoadGuard::default();
+        let app_loaded = AtomicBool::new(false);
+        // One page-load event, for an app page or not.
+        let record = |event, app_page| record_page_load(&guard, &app_loaded, event, app_page);
+        let loaded = || app_loaded.load(Ordering::SeqCst);
+        // The placeholder's own load.
+        assert!(!record(PageLoadEvent::Started, false));
+        assert!(!record(PageLoadEvent::Finished, false));
+        assert!(!loaded(), "set by the placeholder's load");
+        // A cancelled navigation to the app: WebKitGTK reports a Finished
+        // with the app's URL and no Started.
+        assert!(!record(PageLoadEvent::Finished, true));
+        assert!(!loaded(), "set by a cancelled navigation");
+        // The app's load: set once it has finished.
+        assert!(!record(PageLoadEvent::Started, true));
+        assert!(!loaded(), "set before the app's load finished");
+        assert!(record(PageLoadEvent::Finished, true));
+        assert!(loaded());
+        // And it stays set, whatever loads later.
+        assert!(!record(PageLoadEvent::Started, false));
+        assert!(!record(PageLoadEvent::Finished, false));
+        assert!(loaded());
+    }
+
     // ── IPC from the app's origin ──
 
     use std::collections::{BTreeMap, BTreeSet};
@@ -1469,6 +1657,27 @@ mod tests {
     }
 
     #[test]
+    fn the_placeholder_can_start_a_window_drag_in_every_run() {
+        // Tauri checks IPC from a page on a custom scheme it serves as from a
+        // local origin (`Webview::is_local_url`): the placeholder, on its own
+        // scheme, or at http://fleetify-startup.localhost on Windows.
+        // default.json covers local origins, in release builds too.
+        for (run, authority, _) in app_runs() {
+            assert!(
+                authority
+                    .resolve_access(
+                        "window_start_dragging",
+                        MAIN_WINDOW,
+                        MAIN_WEBVIEW,
+                        &Origin::Local
+                    )
+                    .is_some(),
+                "{run}: the placeholder can't start a window drag"
+            );
+        }
+    }
+
+    #[test]
     fn the_browser_panel_can_call_no_command_at_all() {
         // The browser panel is a child webview in the main window. Even on a
         // page from the app's own origin it gets nothing: no app command and
@@ -1487,8 +1696,9 @@ mod tests {
 
     #[test]
     fn a_release_build_refuses_the_dev_server_origin() {
-        // The main webview has no navigation guard: a page it ends up on at
-        // http://localhost:3000, a user's own dev server say, gets nothing.
+        // The main webview's navigation guard only keeps it off the
+        // placeholder: a page it ends up on at http://localhost:3000, a
+        // user's own dev server say, gets nothing.
         let authority = release_authority(8765);
         let refused = |origin: &Origin| {
             authority

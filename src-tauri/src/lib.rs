@@ -416,7 +416,9 @@ pub fn run() {
             // slow backend bind used to leave its error page on screen.
             // A start slower than 15s shows the window with the
             // placeholder ("Starting Fleetify…") until the app loads.
-            // See shell::startup_window. Direct WebviewWindow handle
+            // Once the app has loaded, the window can't navigate back to
+            // the placeholder (guard_main_navigation; it denies nothing
+            // else). See shell::startup_window. Direct WebviewWindow handle
             // clone (no get_webview_window lookup) avoids the AppHandle
             // race the earlier version hit on Windows.
             let app_url: tauri::Url = shell::startup_window::app_origin(release, backend, vite)
@@ -436,6 +438,7 @@ pub fn run() {
                 app_url.clone(),
                 app_page_loaded.clone(),
             ))
+            .on_navigation(shell::startup_window::guard_main_navigation)
             .title("Fleetify")
             // Cold-start at the ONBOARDING size (760×740) rather than
             // the MAIN size (1500×960). Reveal-when-ready paints the
@@ -854,6 +857,31 @@ mod tests {
         assert!(
             bound < spawn,
             "the push starts only once the backend has bound"
+        );
+    }
+
+    #[test]
+    fn the_main_window_has_the_navigation_guard() {
+        // Without it, the window can go back to the startup placeholder once
+        // the app has loaded, and stay there. Whitespace removed, so line
+        // wrapping doesn't matter.
+        let source: String = app_source().split_whitespace().collect();
+        let builder = source
+            .find(&format!(
+                "WebviewWindowBuilder::new(app,shell::startup_window::{},",
+                "MAIN_WINDOW"
+            ))
+            .expect("setup() builds the main window");
+        let built = builder
+            + source[builder..]
+                .find(".build()?")
+                .expect("the main window is built");
+        assert!(
+            source[builder..built].contains(&format!(
+                ".on_navigation(shell::startup_window::{})",
+                "guard_main_navigation"
+            )),
+            "the main window's builder must install guard_main_navigation"
         );
     }
 
