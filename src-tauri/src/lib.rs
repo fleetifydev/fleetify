@@ -594,7 +594,8 @@ pub fn run() {
             // opens with final pills instead of the "Testing…" flash.
             // Runs only once the embedded backend has reported its bind
             // and answers its health route; otherwise it is skipped. The
-            // GitHub clone token is handed over once the backend has bound.
+            // GitHub clone token is handed over in a task of its own once
+            // the backend has bound.
             let handle = app.handle().clone();
             let warm_up_start = backend_start_rx.clone();
             tauri::async_runtime::spawn(async move {
@@ -624,20 +625,26 @@ pub fn run() {
                 // it talks only to the app's own backend: it waits for the
                 // bind, then for the health route. The bind wait has no time
                 // limit of its own: it ends when the backend's task reports
-                // its start, or ends without reporting. The health wait is
-                // up to 20 polls, each capped at 500 ms (backend_ready's
-                // POLL_TIMEOUT) and followed by a 200 ms pause: at most 14 s
-                // after the bind, and a single poll when the backend answers
-                // at once. A backend that fails, never reports, or doesn't
-                // answer gets nothing: before the bind, whatever answers on
-                // the port is something else. The next reload trigger (a
-                // Settings change) sends the keys.
+                // its start, or ends without reporting. The health wait
+                // starts right after the bind: up to 20 polls, each capped
+                // at 500 ms (backend_ready's POLL_TIMEOUT) and followed by a
+                // 200 ms pause, so at most 14 s, and a single poll when the
+                // backend answers at once. That bound is the health wait's
+                // alone: the clone-token push runs in its own task. A
+                // backend that fails, never reports, or doesn't answer gets
+                // nothing: before the bind, whatever answers on the port is
+                // something else. The next reload trigger (a Settings
+                // change) sends the keys.
                 if crate::shell::backend_ready::wait_until_bound(warm_up_start).await {
                     // Hydrate the backend clone service with the linked
-                    // GitHub token so private-repo clones authenticate
-                    // from the first try. It is handed over in this process,
-                    // not over HTTP, so it doesn't wait for the health route.
-                    crate::shell::github_link::push_clone_token().await;
+                    // GitHub token so private-repo clones authenticate from
+                    // the first try. It is handed over in this process, not
+                    // over HTTP, so it needs the bind but not the health
+                    // route. Its own task, as reading the link can take a
+                    // while (keychain, userinfo, `gh auth token`): neither
+                    // the health wait nor the warm-up waits for it. Only the
+                    // clone routes read the token, on the user's request.
+                    tauri::async_runtime::spawn(crate::shell::github_link::push_clone_token());
                     let ready = crate::shell::backend_ready::wait_for_backend(
                         &crate::shell::backend_ready::health_url(&backend.to_string()),
                         20,
@@ -826,6 +833,27 @@ mod tests {
         assert!(
             before_plugin[gate..].contains("} else {"),
             "the plugin is registered in the release arm, not the debug one"
+        );
+    }
+
+    #[test]
+    fn the_startup_clone_token_push_runs_in_its_own_task_after_the_bind() {
+        // Reading the link can take a while (keychain, userinfo, `gh auth
+        // token`): neither the health wait nor the provider warm-up may wait
+        // for it. Whitespace removed, so line wrapping doesn't matter.
+        let source: String = app_source().split_whitespace().collect();
+        let call = format!("github_link::{}()", "push_clone_token");
+        assert_eq!(source.matches(&call).count(), 1, "run() pushes it once");
+        let spawned = format!("tauri::async_runtime::spawn(crate::shell::{call})");
+        let spawn = source
+            .find(&spawned)
+            .expect("the startup push is spawned as its own task, not awaited");
+        let bound = source
+            .find(&format!("{}(warm_up_start)", "wait_until_bound"))
+            .expect("the warm-up waits for the bind");
+        assert!(
+            bound < spawn,
+            "the push starts only once the backend has bound"
         );
     }
 
