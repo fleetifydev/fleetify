@@ -431,6 +431,10 @@ async fn exec_run_command(input: &Value, ws: &Workspace) -> Result<String> {
         // Kill the process group on drop (set via tokio's kill_on_drop)
         // so a timed-out child doesn't linger after we move on.
         .kill_on_drop(true);
+    // cmd.exe truncates an inherited PATH over 8191 chars, after which not
+    // even System32 programs are found; the dev launch chain grows PATH past
+    // that. Give the shell the user's canonical PATH. No-op off Windows.
+    crate::bridges::apply_clean_path(&mut cmd);
 
     let child = cmd.spawn().map_err(|e| anyhow!("spawn failed: {e}"))?;
     let out = tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait_with_output())
@@ -730,10 +734,9 @@ mod tests {
         let ws = Workspace::new(dir.path()).unwrap();
         let cmd = if cfg!(windows) {
             // `ping -n N` waits N-1 seconds; 30 pings = 29s wall. Plenty
-            // to exceed our 1s timeout. Named by full path so cmd.exe
-            // doesn't search PATH for it: on the Windows CI runner that
-            // search fails in the test process ("'ping' is not
-            // recognized"), and PATH lookup isn't what this test checks.
+            // to exceed our 1s timeout. Named by full path: cmd.exe
+            // truncates a long PATH (the next test covers that), and the
+            // full path keeps this test about the timeout alone.
             r"%SystemRoot%\System32\ping.exe -n 30 127.0.0.1 >NUL"
         } else {
             "sleep 30"
@@ -749,6 +752,60 @@ mod tests {
         .await;
         assert!(r.is_error, "expected timeout error, got: {}", r.content);
         assert!(r.content.contains("timed out"));
+    }
+
+    #[cfg(windows)]
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn run_command_finds_programs_when_inherited_path_is_too_long() {
+        // cmd.exe truncates a PATH over 8191 chars, and then even System32
+        // programs are "not recognized". The dev launch chain grows PATH
+        // past that, so run_command must not hand the shell the inherited one.
+        //
+        // PATH is process-wide: hold the env lock across the run, and put
+        // the original back on the way out, even if an assertion fails.
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        struct RestorePath(Option<std::ffi::OsString>);
+        impl Drop for RestorePath {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(path) => std::env::set_var("PATH", path),
+                    None => std::env::remove_var("PATH"),
+                }
+            }
+        }
+        let original = std::env::var_os("PATH");
+        let _restore = RestorePath(original.clone());
+
+        // Junk entries alone go past the limit; the real PATH follows them.
+        let mut long = std::ffi::OsString::new();
+        let mut i = 0;
+        while long.len() <= 8191 {
+            long.push(format!(r"C:\fleetify-test-path-padding\{i:04};"));
+            i += 1;
+        }
+        if let Some(path) = &original {
+            long.push(path);
+        }
+        std::env::set_var("PATH", &long);
+
+        let dir = tempdir().unwrap();
+        let ws = Workspace::new(dir.path()).unwrap();
+        let r = ex(
+            &call("run_command", serde_json::json!({"command": "where cmd"})),
+            &ws,
+            Mode::Autonomous,
+        )
+        .await;
+        assert!(!r.is_error, "got: {}", r.content);
+        assert!(r.content.contains("exit code: 0"), "got: {}", r.content);
+        assert!(
+            r.content.to_ascii_lowercase().contains("cmd.exe"),
+            "got: {}",
+            r.content
+        );
     }
 
     #[tokio::test]
