@@ -90,8 +90,7 @@ jobs:
       # twice. -D warnings makes any lint a failure; the workspace is clean.
       - name: Clippy (compile + lint)
         run: cargo clippy --workspace --all-targets -- -D warnings
-      # Test stays ADVISORY: ~6 tests fail on the Windows runner from
-      # path-separator (`\` vs `/`) + env assumptions, unrelated to app logic.
+      # Test stays ADVISORY (continue-on-error) and runs on the Windows runner.
       # Bounded so a test that hangs (binds a port / spawns a process and waits)
       # can't wedge the job — continue-on-error keeps a timeout non-blocking.
       # --no-fail-fast: a failing test target must not stop the rest from running.
