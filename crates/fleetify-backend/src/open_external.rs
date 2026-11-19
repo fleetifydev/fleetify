@@ -37,7 +37,7 @@
 use std::ffi::OsStr;
 use std::fmt;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use url::Url;
 
@@ -260,7 +260,8 @@ pub fn open_ui_path(path: &Path) -> Result<(), OpenPathError> {
 /// (`shell_show_item_in_folder`). Nothing is launched: a fallback that opens
 /// its folder goes through [`open_path`]. The whole path is resolved and
 /// checked, but what comes back is the item itself in its resolved folder:
-/// a symlink is selected, not its target.
+/// a symlink is selected, not its target. An unusual name (on Windows, one
+/// that reads as a drive path) falls back to the resolved path.
 pub fn path_to_reveal(path: &Path) -> Result<PathBuf, PathRefused> {
     checked_path(path, Check::Reveal, PathRules::current(), &SystemFs)
 }
@@ -455,8 +456,9 @@ impl PathFs for SystemFs {
 /// 4. The resolved path is returned: it is what gets opened, never `path`.
 ///    An item to reveal is returned as itself, in its resolved folder
 ///    (`fs.resolve(parent)` joined with its name), so the file manager
-///    selects what was clicked: a symlink, not where it leads. A root, or a
-///    path ending in `..`, has no name to keep and is revealed as resolved.
+///    selects what was clicked: a symlink, not where it leads. A root, a
+///    path ending in `..`, or a name that isn't one plain component on its
+///    own ([`is_plain_name`]) is revealed as resolved: the path checked.
 fn checked_path(
     path: &Path,
     check: Check,
@@ -482,7 +484,7 @@ fn checked_path(
     // a fallback that opens its folder goes through `open_path`.
     if check == Check::Reveal {
         return match (path.parent(), path.file_name()) {
-            (Some(parent), Some(name)) => fs
+            (Some(parent), Some(name)) if is_plain_name(name) => fs
                 .resolve(parent)
                 .map(|folder| folder.join(name))
                 .map_err(unresolvable),
@@ -498,6 +500,18 @@ fn checked_path(
         }
     }
     Ok(resolved)
+}
+
+/// Whether `name`, on its own, is one plain path component, which `join`
+/// appends to a folder. On Windows a name that starts with a drive letter
+/// and `:` (`Z::$DATA` names the default stream of a file `Z`) reads as a
+/// path on that drive, and `join` would put it in the folder's place.
+fn is_plain_name(name: &OsStr) -> bool {
+    let mut components = Path::new(name).components();
+    matches!(
+        (components.next(), components.next()),
+        (Some(Component::Normal(_)), None)
+    )
 }
 
 /// Whether the app runs under WSL, decided the way `open::that` decides to
@@ -1053,6 +1067,41 @@ mod tests {
         // revealed as it resolves.
         assert_eq!(reveal("p/sub/.."), Ok(abs("p")));
         assert_eq!(reveal(""), Ok(abs("")));
+    }
+
+    #[test]
+    fn only_a_plain_name_is_joined_to_the_revealed_folder() {
+        for name in ["readme.md", ".hidden", "Evil.app"] {
+            assert!(is_plain_name(OsStr::new(name)), "{name:?}");
+        }
+        // Nothing, `.`, `..`, a root, or more than one component.
+        for name in ["", ".", "..", "/x", "a/b"] {
+            assert!(!is_plain_name(OsStr::new(name)), "{name:?}");
+        }
+        // On Windows a drive letter and `:` start a prefix (`Z::$DATA` names
+        // a file's stream) and `\` separates; elsewhere these are plain names.
+        for name in ["Z:", "Z::$DATA", r"a\b"] {
+            assert_eq!(is_plain_name(OsStr::new(name)), !cfg!(windows), "{name:?}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_revealed_name_that_reads_as_a_drive_path_falls_back_to_the_checked_path() {
+        // `p\Z::$DATA` is the default stream of the file `p\Z`, which is what
+        // it resolves to. On its own the name reads as a path on drive Z, so
+        // it isn't joined to the folder: the resolved path that was checked
+        // comes back.
+        let fs = FakeFs(vec![
+            (abs("p"), abs("p"), Kind::Folder),
+            (abs("p/Z::$DATA"), abs("p/Z"), Kind::File),
+        ]);
+        let revealed = checked_path(&abs("p/Z::$DATA"), Check::Reveal, windows(), &fs);
+        assert!(
+            revealed.as_ref().is_ok_and(|path| path.is_absolute()),
+            "{revealed:?}"
+        );
+        assert_eq!(revealed, Ok(abs("p/Z")));
     }
 
     #[test]
