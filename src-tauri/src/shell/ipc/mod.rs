@@ -277,7 +277,8 @@ pub async fn shell_show_item_in_folder(path: String) -> serde_json::Value {
     // The path is checked and resolved first (`open_external::path_to_reveal`):
     // a Windows network path is refused before anything looks at it, since
     // even checking that it exists signs in to the host, and the file manager
-    // is handed the resolved path.
+    // is handed the item itself in its resolved folder (a symlink, not its
+    // target).
     use fleetify_backend::open_external::{path_to_reveal, PathRefused};
     let p = match path_to_reveal(std::path::Path::new(&path)) {
         Ok(resolved) => resolved,

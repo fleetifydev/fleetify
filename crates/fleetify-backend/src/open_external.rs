@@ -20,9 +20,11 @@
 //!   [`open_ui_path`] a folder or document the UI asks for, and
 //!   [`path_to_reveal`] resolves an item to show in the file manager. All
 //!   three refuse a Windows network or device path before anything touches
-//!   it, resolve the path, check what it resolved to (an absolute path; from
-//!   the UI, a folder or a document; no package on macOS; no character
-//!   PowerShell acts on under WSL), and open that resolved path.
+//!   it, resolve the path, and check what it resolved to (an absolute path;
+//!   from the UI, a folder or a document; for what is launched, no package
+//!   on macOS and no character PowerShell acts on under WSL). The first two
+//!   open that resolved path; Reveal shows the item itself in its resolved
+//!   folder, so a symlink is selected rather than its target.
 //!
 //! On Windows they launch through `ShellExecuteExW` (`open::that_detached`
 //! with the crate's `shellexecute-on-windows` feature): no command shell,
@@ -256,7 +258,9 @@ pub fn open_ui_path(path: &Path) -> Result<(), OpenPathError> {
 
 /// The path of an existing item to show, selected, in the file manager
 /// (`shell_show_item_in_folder`). Nothing is launched: a fallback that opens
-/// its folder goes through [`open_path`].
+/// its folder goes through [`open_path`]. The whole path is resolved and
+/// checked, but what comes back is the item itself in its resolved folder:
+/// a symlink is selected, not its target.
 pub fn path_to_reveal(path: &Path) -> Result<PathBuf, PathRefused> {
     checked_path(path, Check::Reveal, PathRules::current(), &SystemFs)
 }
@@ -322,16 +326,19 @@ fn is_verbatim_disk_path(path: &str) -> bool {
         })
 }
 
-/// Whether `path`'s last component has one of the
-/// [`MACOS_PACKAGE_EXTENSIONS`]: on macOS, `open` would launch it.
+/// Whether `path`'s last component names a package: lowercased, it ends in
+/// `.` and one of the [`MACOS_PACKAGE_EXTENSIONS`], so a folder named just
+/// `.app` counts too (`Path::extension` sees no extension in a dot name).
+/// On macOS, `open` would launch it.
 pub fn is_macos_package(path: &Path) -> bool {
-    path.extension()
-        .and_then(OsStr::to_str)
-        .is_some_and(|extension| {
-            MACOS_PACKAGE_EXTENSIONS
-                .iter()
-                .any(|package| package.eq_ignore_ascii_case(extension))
-        })
+    let Some(name) = path.file_name() else {
+        return false;
+    };
+    let name = name.to_string_lossy().to_lowercase();
+    MACOS_PACKAGE_EXTENSIONS.iter().any(|extension| {
+        name.strip_suffix(extension)
+            .is_some_and(|stem| stem.ends_with('.'))
+    })
 }
 
 /// Whether a path is refused because the app runs under WSL (`is_wsl`):
@@ -446,6 +453,10 @@ impl PathFs for SystemFs {
 ///    isn't checked for a network path: a mapped network drive resolves to
 ///    its share, and resolving has already made any connection.)
 /// 4. The resolved path is returned: it is what gets opened, never `path`.
+///    An item to reveal is returned as itself, in its resolved folder
+///    (`fs.resolve(parent)` joined with its name), so the file manager
+///    selects what was clicked: a symlink, not where it leads. A root, or a
+///    path ending in `..`, has no name to keep and is revealed as resolved.
 fn checked_path(
     path: &Path,
     check: Check,
@@ -458,9 +469,8 @@ fn checked_path(
     if !path.is_absolute() {
         return Err(PathRefused::Relative);
     }
-    let resolved = fs
-        .resolve(path)
-        .map_err(|error| PathRefused::Unresolvable(error.to_string()))?;
+    let unresolvable = |error: io::Error| PathRefused::Unresolvable(error.to_string());
+    let resolved = fs.resolve(path).map_err(unresolvable)?;
     if check == Check::FromUi {
         match fs.kind(&resolved) {
             Ok(Kind::Folder) => {}
@@ -470,14 +480,21 @@ fn checked_path(
     }
     // Revealing selects the item in the file manager and launches nothing;
     // a fallback that opens its folder goes through `open_path`.
-    if check != Check::Reveal {
-        if rules.macos && is_macos_package(&resolved) {
-            return Err(PathRefused::Package);
-        }
-        if rules.wsl {
-            if let Some(c) = powershell_character(&resolved) {
-                return Err(PathRefused::UnsafeCharacter(c));
-            }
+    if check == Check::Reveal {
+        return match (path.parent(), path.file_name()) {
+            (Some(parent), Some(name)) => fs
+                .resolve(parent)
+                .map(|folder| folder.join(name))
+                .map_err(unresolvable),
+            _ => Ok(resolved),
+        };
+    }
+    if rules.macos && is_macos_package(&resolved) {
+        return Err(PathRefused::Package);
+    }
+    if rules.wsl {
+        if let Some(c) = powershell_character(&resolved) {
+            return Err(PathRefused::UnsafeCharacter(c));
         }
     }
     Ok(resolved)
@@ -963,15 +980,15 @@ mod tests {
         // `Z:\…` on a drive the user mapped resolves to its share's UNC path.
         // Only a network path given as one is refused: by the time a path
         // has resolved, any connection has been made.
-        let fs = FakeFs(vec![(
-            abs("p/notes.md"),
-            PathBuf::from(r"\\nas\projects\notes.md"),
-            Kind::File,
-        )]);
+        let share = PathBuf::from(r"\\nas\projects");
+        let fs = FakeFs(vec![
+            (abs("p"), share.clone(), Kind::Folder),
+            (abs("p/notes.md"), share.join("notes.md"), Kind::File),
+        ]);
         for check in CHECKS {
             assert_eq!(
                 checked_path(&abs("p/notes.md"), check, windows(), &fs),
-                Ok(PathBuf::from(r"\\nas\projects\notes.md")),
+                Ok(share.join("notes.md")),
                 "{check:?}"
             );
         }
@@ -980,6 +997,7 @@ mod tests {
     #[test]
     fn the_resolved_path_is_checked_and_is_what_gets_opened() {
         let fs = FakeFs(vec![
+            (abs("p"), abs("p"), Kind::Folder),
             (abs("p/notes.md"), abs("p/notes.md"), Kind::File),
             // Document-named symlinks: to a script, and to a document.
             (abs("p/readme.md"), abs("p/run.bat"), Kind::File),
@@ -999,12 +1017,42 @@ mod tests {
         );
         assert_eq!(check("p/docs", Check::FromUi), Ok(abs("shared/docs")));
         assert_eq!(check("p/notes.md", Check::FromUi), Ok(abs("p/notes.md")));
-        // The app's own paths and revealed items are resolved too.
+        // The app's own paths are resolved too.
         assert_eq!(
             check("p/latest.md", Check::AppChosen),
             Ok(abs("p/v2/notes.md"))
         );
-        assert_eq!(check("p/readme.md", Check::Reveal), Ok(abs("p/run.bat")));
+        // A revealed item is checked by where it leads, but it is the item
+        // that was clicked that gets selected: the symlink, not its target.
+        assert_eq!(check("p/readme.md", Check::Reveal), Ok(abs("p/readme.md")));
+    }
+
+    #[test]
+    fn a_revealed_item_is_shown_as_itself_in_its_resolved_folder() {
+        // The folder is resolved (`alias` leads to `p`) and the name is kept:
+        // the file manager opens the real folder and selects what was
+        // clicked, a symlink rather than where it leads.
+        let fs = FakeFs(vec![
+            (abs("p"), abs("p"), Kind::Folder),
+            (abs("alias"), abs("p"), Kind::Folder),
+            (abs("alias/readme.md"), abs("scripts/run.bat"), Kind::File),
+            (abs("p/sub/.."), abs("p"), Kind::Folder),
+            (abs(""), abs(""), Kind::Folder),
+        ]);
+        let reveal =
+            |path: &str| checked_path(&abs(path), Check::Reveal, PathRules::default(), &fs);
+        assert_eq!(reveal("alias/readme.md"), Ok(abs("p/readme.md")));
+        // The whole path is still resolved first: a link that leads nowhere
+        // is refused, though its folder exists.
+        assert!(
+            matches!(reveal("p/dangling.md"), Err(PathRefused::Unresolvable(_))),
+            "{:?}",
+            reveal("p/dangling.md")
+        );
+        // A root, or a path ending in `..`, has no name to keep: it is
+        // revealed as it resolves.
+        assert_eq!(reveal("p/sub/.."), Ok(abs("p")));
+        assert_eq!(reveal(""), Ok(abs("")));
     }
 
     #[test]
@@ -1012,6 +1060,9 @@ mod tests {
         for name in [
             "Evil.app",
             "EVIL.APP",
+            "Foo.APP",
+            // A dot name: no extension as `Path::extension` reads it.
+            ".app",
             "x.appex",
             "x.bundle",
             "Foo.framework",
@@ -1038,10 +1089,34 @@ mod tests {
     }
 
     #[test]
+    fn on_macos_a_folder_named_just_dot_app_is_never_launched() {
+        // `Path::extension` sees no extension in a dot name, but `.app` ends
+        // in `.app` like any app bundle's name: the lowercased name decides.
+        let dir = tempfile::tempdir().unwrap();
+        let macos = PathRules {
+            macos: true,
+            ..PathRules::default()
+        };
+        for (name, refused) in [(".app", true), ("Foo.APP", true), ("app", false)] {
+            let folder = dir.path().join(name);
+            std::fs::create_dir(&folder).unwrap();
+            for check in [Check::AppChosen, Check::FromUi] {
+                let checked = checked_path(&folder, check, macos, &SystemFs);
+                if refused {
+                    assert_eq!(checked, Err(PathRefused::Package), "{check:?} {name}");
+                } else {
+                    assert!(checked.is_ok(), "{check:?} {name}: {checked:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn on_macos_a_path_that_resolves_to_a_package_is_never_launched() {
         // `open <dir>` launches an app bundle, and a git checkout of one
         // carries no quarantine flag. A symlink is resolved first.
         let fs = FakeFs(vec![
+            (abs("p"), abs("p"), Kind::Folder),
             (abs("p/Evil.app"), abs("p/Evil.app"), Kind::Folder),
             (abs("p/project"), abs("p/Evil.app"), Kind::Folder),
             (
@@ -1065,9 +1140,14 @@ mod tests {
             // A folder inside a package opens as a folder.
             assert!(checked_path(&abs("p/Evil.app/Contents"), check, macos, &fs).is_ok());
         }
-        // Revealing selects it in Finder (`open -R`), which launches nothing.
+        // Revealing selects the clicked item in Finder (`open -R`), which
+        // launches nothing: the link itself, and a package as itself.
         assert_eq!(
             checked_path(&abs("p/project"), Check::Reveal, macos, &fs),
+            Ok(abs("p/project"))
+        );
+        assert_eq!(
+            checked_path(&abs("p/Evil.app"), Check::Reveal, macos, &fs),
             Ok(abs("p/Evil.app"))
         );
         // Elsewhere it is a folder like any other.
@@ -1118,5 +1198,56 @@ mod tests {
             from_ui(&dir.path().join("latest.md")),
             Ok(std::fs::canonicalize(&notes).unwrap())
         );
+    }
+
+    #[test]
+    fn a_revealed_file_is_shown_in_its_resolved_folder() {
+        // On every platform: on Windows the folder comes back with its long
+        // name and without the `\\?\` prefix, as the file manager takes it.
+        let dir = tempfile::tempdir().unwrap();
+        let notes = file_in(dir.path(), "notes.md");
+        let folder = fleetify_core::canonicalize_no_verbatim(dir.path()).unwrap();
+        assert_eq!(path_to_reveal(&notes), Ok(folder.join("notes.md")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn revealing_a_symlink_selects_the_link_not_its_target() {
+        // `real/readme.md` leads to `run.bat` in another folder. The file
+        // manager must open `real` and select `readme.md`, the item that was
+        // clicked, also when `real` is reached through a symlink (`alias`).
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let script = file_in(dir.path(), "run.bat");
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        symlink(&script, real.join("readme.md")).unwrap();
+        symlink(&real, dir.path().join("alias")).unwrap();
+        let folder = std::fs::canonicalize(&real).unwrap();
+        for path in [real.join("readme.md"), dir.path().join("alias/readme.md")] {
+            assert_eq!(
+                path_to_reveal(&path),
+                Ok(folder.join("readme.md")),
+                "{path:?}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn revealing_a_link_to_a_network_path_is_refused() {
+        // Revealing still resolves the whole path, the link's target
+        // included, before it selects the link: a link to a share that
+        // can't be reached (there is no host `server` here) is refused, not
+        // shown.
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("notes.md");
+        if let Err(error) = std::os::windows::fs::symlink_file(r"\\server\share\x", &link) {
+            // Creating a symlink needs developer mode or an administrator.
+            eprintln!("skipped: no symlink can be created here ({error})");
+            return;
+        }
+        let revealed = path_to_reveal(&link);
+        assert!(revealed.is_err(), "{revealed:?}");
     }
 }
