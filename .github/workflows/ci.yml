@@ -94,10 +94,11 @@ jobs:
       # path-separator (`\` vs `/`) + env assumptions, unrelated to app logic.
       # Bounded so a test that hangs (binds a port / spawns a process and waits)
       # can't wedge the job — continue-on-error keeps a timeout non-blocking.
+      # --no-fail-fast: a failing test target must not stop the rest from running.
       - name: Test (advisory)
         continue-on-error: true
         timeout-minutes: 12
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
       # Prebuilt cargo-audit binary — `cargo install --locked` compiles it from
       # source (several minutes) and pushed the job past its timeout. This pulls
       # a release binary in seconds. Bounded + continue-on-error so a slow or
