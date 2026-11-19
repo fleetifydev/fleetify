@@ -50,6 +50,18 @@ import { useThemeStore, type ThemeMode } from "@/stores/theme-store";
 import { ThemeModeCards } from "@/components/theme/theme-mode-cards";
 import { capture, optIn, optOut } from "@/lib/posthog";
 import { sendPrivacyChoice, type PrivacyChoiceOutcome } from "@/lib/privacy-choice";
+import { ConsentWidget, type ConsentChoice } from "@/components/onboarding/consent-widget";
+import {
+  DASHBOARD_SYNC_QUESTION,
+  dashboardSyncQuestion,
+  readCloudChoice,
+} from "@/components/onboarding/dashboard-sync-question";
+
+/** Product analytics stays off unless the user says yes. */
+const PRODUCT_ANALYTICS_CHOICES: readonly [ConsentChoice, ConsentChoice] = [
+  { label: "Sure, help out", enabled: true },
+  { label: "Not now", enabled: false },
+];
 
 interface Props {
   user: AuthUser | null;
@@ -257,6 +269,9 @@ export function OnboardingChat({ user, onDone, startAt }: Props) {
   const [show, setShow] = useState(false);
   const [done, setDone] = useState(false);
   const [selections, setSelections] = useState<Selections>({});
+  // The dashboard sync question as asked: its buttons and the user's reply
+  // bubble follow the variant the step's text used.
+  const [syncQuestion, setSyncQuestion] = useState(DASHBOARD_SYNC_QUESTION);
   // Mirror of `selections` accessible from async handlers without
   // closing over a stale snapshot. The gh-auth probe writes
   // `existingGithub` after handlers were declared, so the GitHub-step
@@ -636,18 +651,19 @@ export function OnboardingChat({ user, onDone, startAt }: Props) {
   // Theme picked (already applied live) → the two privacy steps, the last
   // ones before "Enter Fleet": dashboard sync, then product analytics.
   // Dashboard sync is on by default, so its step says what it sends and
-  // offers to turn it off; either button saves the choice. Product analytics
-  // stays off unless the user says yes. A choice that wasn't saved gets one
-  // line saying so; it never blocks onboarding.
+  // offers to turn it off; either button saves the choice. When onboarding
+  // runs again after the user turned sync off, the step says it is off and
+  // offers to keep it off or turn it on instead. Product analytics stays off
+  // unless the user says yes. A choice that wasn't saved gets one line
+  // saying so; it never blocks onboarding.
   const handleThemeConfirm = async (mode: ThemeMode) => {
     resolveLastWidget();
     pushUser(
       mode === "system" ? "System theme" : mode === "dark" ? "Dark theme" : "Light theme",
     );
-    await pushAssistant(
-      `One more thing, ${firstName}. Your sessions will show up on your fleetify.dev dashboard. To do that, Fleetify sends session titles (the folder name, or a name you typed), project folder names, which agent and model each session uses, the kind of each agent action, token usage and cost, and a heartbeat every minute while it's open, to your account. Never your code, file contents, commands or API keys. It's on by default — you can turn it off now or anytime in **Settings → Privacy**.`,
-      "cloud-sync-consent",
-    );
+    const question = dashboardSyncQuestion(await readCloudChoice());
+    setSyncQuestion(question);
+    await pushAssistant(`One more thing, ${firstName}. ${question.text}`, "cloud-sync-consent");
   };
 
   // One line when a privacy choice didn't take; onboarding carries on.
@@ -663,7 +679,7 @@ export function OnboardingChat({ user, onDone, startAt }: Props) {
 
   const handleCloudSyncConsent = async (enabled: boolean) => {
     resolveLastWidget();
-    pushUser(enabled ? "Keep it on" : "Turn it off");
+    pushUser(syncQuestion.choices.find((choice) => choice.enabled === enabled)?.label ?? "");
     const outcome = await sendPrivacyChoice(
       () => window.electronAPI?.telemetrySetCloudEnabled?.(enabled),
     );
@@ -859,6 +875,7 @@ export function OnboardingChat({ user, onDone, startAt }: Props) {
             onMainAgentPick={handleMainAgentPick}
             onGithubResult={handleGithubResult}
             onThemeConfirm={handleThemeConfirm}
+            cloudSyncChoices={syncQuestion.choices}
             onCloudSyncConsent={handleCloudSyncConsent}
             onTelemetryConsent={handleTelemetryConsent}
             onKeySaved={(id) => inlineSavedRef.current.add(id)}
@@ -936,6 +953,7 @@ export function Bubble({
   onMainAgentPick,
   onGithubResult,
   onThemeConfirm,
+  cloudSyncChoices = DASHBOARD_SYNC_QUESTION.choices,
   onCloudSyncConsent,
   onTelemetryConsent,
   onKeySaved,
@@ -964,6 +982,9 @@ export function Bubble({
       | { skipped: true },
   ) => void;
   onThemeConfirm: (mode: ThemeMode) => void;
+  /** The dashboard sync step's buttons, as its text asked (on by default
+   *  unless the saved choice is off). */
+  cloudSyncChoices?: readonly [ConsentChoice, ConsentChoice];
   onCloudSyncConsent: (enabled: boolean) => void;
   onTelemetryConsent: (enabled: boolean) => void;
   /** Threaded through to ScanWidget so OnboardingChat can stash the
@@ -1072,10 +1093,10 @@ export function Bubble({
         <ThemeWidget onConfirm={onThemeConfirm} />
       )}
       {!msg.typing && !msg.resolved && msg.widget === "cloud-sync-consent" && (
-        <ConsentWidget yesLabel="Keep it on" noLabel="Turn it off" onChoice={onCloudSyncConsent} />
+        <ConsentWidget choices={cloudSyncChoices} onChoice={onCloudSyncConsent} />
       )}
       {!msg.typing && !msg.resolved && msg.widget === "telemetry-consent" && (
-        <ConsentWidget yesLabel="Sure, help out" noLabel="Not now" onChoice={onTelemetryConsent} />
+        <ConsentWidget choices={PRODUCT_ANALYTICS_CHOICES} onChoice={onTelemetryConsent} />
       )}
     </div>
   );
@@ -1113,57 +1134,6 @@ function ThemeWidget({ onConfirm }: { onConfirm: (mode: ThemeMode) => void }) {
           <ArrowRight size={12} strokeWidth={2.4} />
         </button>
       </div>
-    </div>
-  );
-}
-
-/* ── ConsentWidget — two-button choice for a privacy step ──
-   Used for dashboard sync (on by default: keep it on or turn it off) and
-   product analytics (off by default: opt in or not). Both buttons look
-   the same, so neither choice is pushed. Either choice resolves the
-   widget and advances onboarding — refusal is not a blocker.         */
-function ConsentWidget({
-  yesLabel,
-  noLabel,
-  onChoice,
-}: {
-  yesLabel: string;
-  noLabel: string;
-  onChoice: (enabled: boolean) => void;
-}) {
-  const [busy, setBusy] = useState(false);
-  const pick = (enabled: boolean) => {
-    if (busy) return;
-    setBusy(true);
-    onChoice(enabled);
-  };
-  const buttonStyle: CSSProperties = {
-    padding: "9px 16px",
-    borderRadius: 8,
-    background: "var(--secondary)",
-    color: "var(--c-high)",
-    border: "1px solid rgba(255,255,255,0.08)",
-    cursor: busy ? "default" : "pointer",
-    fontSize: 13,
-    fontWeight: 500,
-    opacity: busy ? 0.6 : 1,
-    transition: "all 0.2s ease",
-  };
-  return (
-    <div
-      style={{
-        display: "flex",
-        gap: 8,
-        marginTop: 10,
-        flexWrap: "wrap",
-      }}
-    >
-      <button onClick={() => pick(true)} disabled={busy} style={buttonStyle}>
-        {yesLabel}
-      </button>
-      <button onClick={() => pick(false)} disabled={busy} style={buttonStyle}>
-        {noLabel}
-      </button>
     </div>
   );
 }

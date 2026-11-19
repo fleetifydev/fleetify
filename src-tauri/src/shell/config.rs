@@ -466,10 +466,11 @@ pub fn git_attribution_from(cfg: &Value) -> bool {
 /// users who've been enabled for ages.
 ///
 /// Fleetify cloud sync (the fleetify.dev dashboard): `cloud_sync_enabled`
-/// is the saved switch — `None` until the user flips it; read it through
-/// [`cloud_sync_from`], which also covers the legacy flag and the default
-/// (on). `cloud_sync_enabled_at` records the first opt-in (Unix ms): the
-/// first time a saved opt-out is turned back on.
+/// is the saved switch — `None` until the user answers the dashboard
+/// question or flips the switch; read it through [`cloud_choice_from`],
+/// which also covers the legacy flag, or [`cloud_sync_from`], which adds the
+/// default (on). `cloud_sync_enabled_at` records the first opt-in (Unix
+/// ms): the first time a saved opt-out is turned back on.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct TelemetryConfig {
     #[serde(default)]
@@ -482,29 +483,39 @@ pub struct TelemetryConfig {
     pub cloud_sync_enabled_at: Option<i64>,
 }
 
-/// Whether Fleetify cloud sync is on for a user who never flipped the
-/// switch: on, disclosed at onboarding, and turned off in Settings →
-/// Privacy. The owner's decision; nothing else may hard-code it.
+/// The Fleetify cloud sync setting of a user who hasn't chosen: on. The
+/// dashboard question says so (onboarding's step, or the renderer's notice
+/// for an install that finished onboarding before that step existed), and
+/// its "Keep it on" saves it. Sync itself starts only once a choice is
+/// saved ([`startup_cloud_decision`]). Settings → Privacy turns it off. The
+/// owner's decision; nothing else may hard-code it.
 pub const CLOUD_SYNC_DEFAULT: bool = true;
 
-/// Whether Fleetify cloud sync is on. In order:
+/// The cloud sync choice saved in `cfg`, if any. In order:
 /// 1. `telemetry.cloud_sync_enabled`, when it is a bool;
-/// 2. `false` when the legacy top-level `telemetryEnabled` is exactly
+/// 2. `Some(false)` when the legacy top-level `telemetryEnabled` is exactly
 ///    `false` — an explicit opt-out from the old switch still counts (its
 ///    `true` does not: that switch was never read and defaulted to on);
-/// 3. [`CLOUD_SYNC_DEFAULT`].
-pub fn cloud_sync_from(cfg: &Value) -> bool {
+/// 3. `None`: the user hasn't chosen.
+fn cloud_choice_from(cfg: &Value) -> Option<bool> {
     if let Some(on) = cfg
         .get("telemetry")
         .and_then(|t| t.get("cloud_sync_enabled"))
         .and_then(Value::as_bool)
     {
-        return on;
+        return Some(on);
     }
     if cfg.get("telemetryEnabled").and_then(Value::as_bool) == Some(false) {
-        return false;
+        return Some(false);
     }
-    CLOUD_SYNC_DEFAULT
+    None
+}
+
+/// Whether the Fleetify cloud sync setting is on: the saved choice
+/// ([`cloud_choice_from`]), or [`CLOUD_SYNC_DEFAULT`] when there is none.
+/// It doesn't open the gate: only a saved choice does.
+pub fn cloud_sync_from(cfg: &Value) -> bool {
+    cloud_choice_from(cfg).unwrap_or(CLOUD_SYNC_DEFAULT)
 }
 
 pub fn telemetry_from(cfg: &Value) -> TelemetryConfig {
@@ -543,9 +554,10 @@ pub fn telemetry_set(cfg: &mut Value, telem: &TelemetryConfig) {
 /// ([`update_config`]), stamping `cloud_sync_enabled_at` on the first opt-in
 /// only (turning it off, or on again later, keeps that time). Saving `true`
 /// while the saved setting is already on, as it is by default, records the
-/// choice but is no opt-in, so it stamps nothing: also onboarding's "Keep it
-/// on" on a new install, whose gate opens only then. `Err` carries a message
-/// fit for the user; a file that can't be read or parsed is left as it is.
+/// choice but is no opt-in, so it stamps nothing: also the dashboard
+/// question's "Keep it on", though the gate opens only then. `Err` carries
+/// a message fit for the user; a file that can't be read or parsed is left
+/// as it is.
 pub fn persist_cloud_choice(dir: &Path, enabled: bool) -> Result<(), String> {
     update_config(dir, |cfg| set_cloud_choice(cfg, enabled))
         .map_err(|e| format!("Couldn't save the cloud sync setting: {e}"))
@@ -565,12 +577,14 @@ fn set_cloud_choice(cfg: &mut Value, enabled: bool) {
 /// Whether this launch may open the cloud sync gate, decided once at
 /// startup from `dir`'s `fleet.config.json`.
 ///
-/// A new install keeps sync off until the user answers onboarding's
-/// dashboard step, whose buttons save the choice and set the gate: with no
-/// file, or a file that holds neither a saved choice nor
-/// `onboardingComplete: true`, sync stays off and nothing is written. Past
-/// either, the saved choice decides ([`cloud_sync_from`], so with none, the
-/// default).
+/// Only a saved choice opens it ([`cloud_choice_from`]): sync stays off,
+/// and nothing is written, until the user answers the dashboard question,
+/// whose buttons save the choice and set the gate. A new install answers it
+/// in onboarding. An install that finished onboarding before that step
+/// existed has `onboardingComplete: true` and no choice, as does one whose
+/// renderer marked onboarding finished from its old localStorage marker:
+/// the renderer asks it once (`DashboardSyncNotice`), and until then sync
+/// stays off here too.
 ///
 /// A file that is there but can't be read or parsed fails closed, since an
 /// earlier opt-out may be what it no longer shows: sync stays off for this
@@ -593,7 +607,7 @@ fn decide_cloud_at_startup(
     let (cfg, status) = load_config_with_status(dir);
     let condition = match status {
         ConfigLoad::Missing => return false,
-        ConfigLoad::Ok => return cloud_choice_or_onboarded(&cfg) && cloud_sync_from(&cfg),
+        ConfigLoad::Ok => return cloud_choice_from(&cfg) == Some(true),
         ConfigLoad::Corrupt => "corrupt",
         ConfigLoad::Unreadable => "unreadable",
     };
@@ -665,19 +679,6 @@ fn replace_with_opt_out(
     Ok(aside)
 }
 
-/// Whether `cfg` holds a saved cloud sync choice (`telemetry.cloud_sync_enabled`
-/// is a bool) or says onboarding is finished (top-level `onboardingComplete`
-/// is `true`, which the renderer writes). Until one of them does, a new
-/// install keeps sync off.
-fn cloud_choice_or_onboarded(cfg: &Value) -> bool {
-    let chose = cfg
-        .get("telemetry")
-        .and_then(|t| t.get("cloud_sync_enabled"))
-        .is_some_and(Value::is_boolean);
-    let onboarded = cfg.get("onboardingComplete").and_then(Value::as_bool) == Some(true);
-    chose || onboarded
-}
-
 /// Moves `dir`'s unreadable `fleet.config.json` aside, to a name of its own
 /// ([`free_aside_name`]). A rename needs only write access to the folder and
 /// keeps the file whole: its bytes, owner and mode. A folder is never moved;
@@ -708,13 +709,18 @@ fn free_aside_name(dir: &Path, ms: i64) -> String {
     name
 }
 
-/// What `dir`'s `fleet.config.json` says about cloud sync now, for the end
-/// of the startup restore: the saved choice when the file loads or isn't
-/// there, and off when it is there but can't be read or parsed. Saves
-/// nothing.
-pub fn saved_cloud_choice(dir: &Path) -> bool {
+/// The cloud sync choice `dir`'s `fleet.config.json` holds now, for the end
+/// of the startup restore and for the renderer, which asks the dashboard
+/// question while there is none: the saved choice ([`cloud_choice_from`])
+/// when the file loads, `None` when it holds none or isn't there, and
+/// `Some(false)` when it is there but can't be read or parsed, as startup
+/// keeps sync off for such a file. Saves nothing to it.
+pub fn saved_cloud_choice(dir: &Path) -> Option<bool> {
     let (cfg, status) = load_config_with_status(dir);
-    matches!(status, ConfigLoad::Missing | ConfigLoad::Ok) && cloud_sync_from(&cfg)
+    match status {
+        ConfigLoad::Missing | ConfigLoad::Ok => cloud_choice_from(&cfg),
+        ConfigLoad::Corrupt | ConfigLoad::Unreadable => Some(false),
+    }
 }
 
 /// Save the PostHog product analytics switch in `dir`'s `fleet.config.json`:
@@ -1699,24 +1705,36 @@ mod tests {
         assert!(!decide_on(
             &json!({"userName": "Mira", "onboardingComplete": false})
         ));
-        // Only `true` counts as finished.
         assert!(!decide_on(&json!({"onboardingComplete": "true"})));
     }
 
     #[test]
-    fn an_onboarded_config_with_no_choice_gets_the_default() {
-        assert_eq!(
-            decide_on(&json!({"theme": "dark", "onboardingComplete": true})),
-            CLOUD_SYNC_DEFAULT
-        );
-        // An opt-out from the old switch still counts.
+    fn an_onboarded_config_with_no_choice_keeps_sync_off() {
+        // Finished onboarding before it asked about dashboard sync, or
+        // marked finished by the renderer from its old localStorage marker:
+        // the renderer asks once (DashboardSyncNotice), and sync waits for
+        // the answer.
+        assert!(!decide_on(
+            &json!({"theme": "dark", "onboardingComplete": true})
+        ));
+        // A value that isn't a bool is no choice.
+        assert!(!decide_on(&json!({
+            "telemetry": {"cloud_sync_enabled": "true"},
+            "onboardingComplete": true
+        })));
+        // The old switch's `true` was never a choice: that switch was never
+        // read and defaulted to on...
+        assert!(!decide_on(
+            &json!({"onboardingComplete": true, "telemetryEnabled": true})
+        ));
+        // ...but its `false` is an opt-out.
         assert!(!decide_on(
             &json!({"onboardingComplete": true, "telemetryEnabled": false})
         ));
     }
 
     #[test]
-    fn an_explicit_opt_in_opens_sync_before_onboarding() {
+    fn a_saved_opt_in_opens_sync_whether_or_not_onboarding_is_finished() {
         assert!(decide_on(
             &json!({"telemetry": {"cloud_sync_enabled": true}})
         ));
@@ -1724,10 +1742,19 @@ mod tests {
             "telemetry": {"cloud_sync_enabled": true},
             "onboardingComplete": false
         })));
+        assert!(decide_on(&json!({
+            "telemetry": {"cloud_sync_enabled": true},
+            "onboardingComplete": true
+        })));
+        // A saved choice wins over the old switch.
+        assert!(decide_on(&json!({
+            "telemetry": {"cloud_sync_enabled": true},
+            "telemetryEnabled": false
+        })));
     }
 
     #[test]
-    fn an_explicit_opt_out_keeps_sync_off_after_onboarding() {
+    fn a_saved_opt_out_keeps_sync_off_whether_or_not_onboarding_is_finished() {
         assert!(!decide_on(&json!({
             "telemetry": {"cloud_sync_enabled": false},
             "onboardingComplete": true
@@ -1738,11 +1765,45 @@ mod tests {
     }
 
     #[test]
-    fn the_restore_reads_a_broken_config_as_off_and_saves_nothing() {
+    fn the_saved_choice_is_the_switch_or_an_old_opt_out() {
+        let none: [Value; 6] = [
+            json!({}),
+            json!({"onboardingComplete": true}),
+            json!({"telemetry": {"cloud_sync_enabled": null}}),
+            json!({"telemetry": {"cloud_sync_enabled": "false"}}),
+            json!({"telemetry": "off"}),
+            json!({"telemetryEnabled": true}),
+        ];
+        for cfg in none {
+            assert_eq!(cloud_choice_from(&cfg), None, "{cfg}");
+        }
+        assert_eq!(
+            cloud_choice_from(&json!({"telemetry": {"cloud_sync_enabled": true}})),
+            Some(true)
+        );
+        assert_eq!(
+            cloud_choice_from(&json!({"telemetry": {"cloud_sync_enabled": false}})),
+            Some(false)
+        );
+        assert_eq!(
+            cloud_choice_from(&json!({"telemetryEnabled": false})),
+            Some(false)
+        );
+        assert_eq!(
+            cloud_choice_from(&json!({
+                "telemetry": {"cloud_sync_enabled": true},
+                "telemetryEnabled": false
+            })),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn the_saved_choice_of_a_broken_config_is_off_and_reading_it_saves_nothing() {
         let tmp = tempfile::tempdir().unwrap();
         let original = br#"{"telemetry": {"cloud_sync_enabled": true}"#;
         std::fs::write(tmp.path().join(CONFIG_FILE), original).unwrap();
-        assert!(!saved_cloud_choice(tmp.path()));
+        assert_eq!(saved_cloud_choice(tmp.path()), Some(false));
         assert_eq!(
             live_bytes(tmp.path()).as_deref(),
             Some(&original[..]),
@@ -1751,27 +1812,31 @@ mod tests {
 
         let unreadable = tempfile::tempdir().unwrap();
         std::fs::create_dir(unreadable.path().join(CONFIG_FILE)).unwrap();
-        assert!(!saved_cloud_choice(unreadable.path()));
+        assert_eq!(saved_cloud_choice(unreadable.path()), Some(false));
     }
 
     #[test]
-    fn the_restore_reads_a_missing_or_readable_config_as_saved() {
+    fn the_saved_choice_of_a_missing_or_readable_config_is_what_it_holds() {
         let tmp = tempfile::tempdir().unwrap();
-        assert_eq!(saved_cloud_choice(tmp.path()), CLOUD_SYNC_DEFAULT);
+        assert_eq!(saved_cloud_choice(tmp.path()), None);
         assert!(!tmp.path().join(CONFIG_FILE).exists(), "nothing saved");
 
+        save_config_to(tmp.path(), &json!({"onboardingComplete": true})).unwrap();
+        assert_eq!(saved_cloud_choice(tmp.path()), None);
         save_config_to(
             tmp.path(),
             &json!({"telemetry": {"cloud_sync_enabled": true}}),
         )
         .unwrap();
-        assert!(saved_cloud_choice(tmp.path()));
+        assert_eq!(saved_cloud_choice(tmp.path()), Some(true));
         save_config_to(
             tmp.path(),
             &json!({"telemetry": {"cloud_sync_enabled": false}}),
         )
         .unwrap();
-        assert!(!saved_cloud_choice(tmp.path()));
+        assert_eq!(saved_cloud_choice(tmp.path()), Some(false));
+        save_config_to(tmp.path(), &json!({"telemetryEnabled": false})).unwrap();
+        assert_eq!(saved_cloud_choice(tmp.path()), Some(false));
     }
 
     #[test]
@@ -2067,9 +2132,9 @@ mod tests {
 
     #[test]
     fn keeping_sync_on_saves_the_choice_without_an_opt_in_time() {
-        // Onboarding's "Keep it on" saves an explicit choice. The saved
-        // setting was already on (the default), so it isn't an opt-in, even
-        // on a new install whose gate opens only then: only turning a saved
+        // The dashboard question's "Keep it on" saves an explicit choice.
+        // The saved setting was already on (the default), so it isn't an
+        // opt-in, even though the gate opens only then: only turning a saved
         // opt-out back on is stamped.
         let tmp = tempfile::tempdir().unwrap();
         save_config_to(tmp.path(), &json!({"theme": "dark"})).unwrap();

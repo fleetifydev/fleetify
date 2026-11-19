@@ -25,6 +25,10 @@ const USER = { id: "u-1", name: "Mira Tester", email: "mira@example.com" };
 
 const DASHBOARD_DISCLOSURE =
   "One more thing, Mira. Your sessions will show up on your fleetify.dev dashboard. To do that, Fleetify sends session titles (the folder name, or a name you typed), project folder names, which agent and model each session uses, the kind of each agent action, token usage and cost, and a heartbeat every minute while it's open, to your account. Never your code, file contents, commands or API keys. It's on by default — you can turn it off now or anytime in **Settings → Privacy**.";
+/** The dashboard step when the saved choice is off: what sync sends, then
+ *  that it is off. */
+const DASHBOARD_DISCLOSURE_WHEN_OFF =
+  "One more thing, Mira. Your sessions will show up on your fleetify.dev dashboard. To do that, Fleetify sends session titles (the folder name, or a name you typed), project folder names, which agent and model each session uses, the kind of each agent action, token usage and cost, and a heartbeat every minute while it's open, to your account. Never your code, file contents, commands or API keys. Dashboard sync is off. You can keep it off or turn it on.";
 const SYNC_KEPT_ON = "Great — your sessions will appear on your dashboard.";
 const SYNC_TURNED_OFF =
   "Dashboard sync is off. You can turn it on anytime in **Settings → Privacy**.";
@@ -34,7 +38,12 @@ const NOT_CHANGED =
   "I couldn't change that setting. You can try again in **Settings → Privacy**.";
 
 type Mock = ReturnType<typeof vi.fn>;
-let api: { telemetrySetCloudEnabled: Mock; telemetrySetPosthogEnabled: Mock };
+let api: {
+  telemetrySetCloudEnabled: Mock;
+  telemetrySetPosthogEnabled: Mock;
+  /** Absent unless a test sets it: the step then can't read a saved choice. */
+  telemetryGetConfig?: Mock;
+};
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -163,6 +172,69 @@ describe("onboarding privacy questions", () => {
     expect(optIn).toHaveBeenCalledTimes(1);
     expect(optOut).not.toHaveBeenCalled();
     expect(enterFleet()).toBeEnabled();
+  });
+
+  describe("when onboarding runs again", () => {
+    /** What `telemetryGetConfig` reports as the saved dashboard sync choice. */
+    function savedChoice(cloudChoice: boolean | null) {
+      api.telemetryGetConfig = vi.fn(async () => ({
+        distinct_id: "device-1",
+        posthog_enabled: false,
+        cloud_enabled: false,
+        cloud_choice: cloudChoice,
+      }));
+    }
+
+    it("says dashboard sync is off when the saved choice is off, and offers to keep it off or turn it on", async () => {
+      savedChoice(false);
+      await pickTheme();
+      line(DASHBOARD_DISCLOSURE_WHEN_OFF);
+      const keepOff = screen.getByRole("button", { name: "Keep it off" });
+      const turnOn = screen.getByRole("button", { name: "Turn it on" });
+      expect(keepOff.getAttribute("style")).toBe(turnOn.getAttribute("style"));
+      expect(keepOff.compareDocumentPosition(turnOn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Keep it on" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Turn it off" })).toBeNull();
+      expect(screen.queryByText(/It's on by default/)).toBeNull();
+      expect(api.telemetrySetCloudEnabled).not.toHaveBeenCalled();
+    });
+
+    it("Keep it off saves dashboard sync off", async () => {
+      savedChoice(false);
+      await pickTheme();
+      await answer("Keep it off");
+      expect(api.telemetrySetCloudEnabled.mock.calls).toEqual([[false]]);
+      expect(screen.getByText("Keep it off", { selector: "p" })).toBeInTheDocument();
+      expectQuestion(SYNC_TURNED_OFF);
+      expectQuestion(ANALYTICS_QUESTION);
+    });
+
+    it("Turn it on saves dashboard sync on", async () => {
+      savedChoice(false);
+      await pickTheme();
+      await answer("Turn it on");
+      expect(api.telemetrySetCloudEnabled.mock.calls).toEqual([[true]]);
+      expect(screen.getByText("Turn it on", { selector: "p" })).toBeInTheDocument();
+      line(SYNC_KEPT_ON);
+      expectQuestion(ANALYTICS_QUESTION);
+    });
+
+    it("keeps the on-by-default question when the saved choice is on, or there is none", async () => {
+      savedChoice(true);
+      const first = render(<OnboardingChat user={USER} onDone={() => {}} startAt="theme" />);
+      await settle();
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      await settle();
+      expectQuestion(DASHBOARD_DISCLOSURE);
+      expect(screen.getByRole("button", { name: "Keep it on" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Turn it off" })).toBeInTheDocument();
+      first.unmount();
+
+      savedChoice(null);
+      await pickTheme();
+      expectQuestion(DASHBOARD_DISCLOSURE);
+      expect(screen.getByRole("button", { name: "Keep it on" })).toBeInTheDocument();
+    });
   });
 
   it("still finishes when a consent call never reaches the backend", async () => {

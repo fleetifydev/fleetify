@@ -666,22 +666,24 @@ pub fn run() {
                 }
 
                 // Finish the Fleetify cloud sync restore: close the gate if
-                // the launch decision kept sync off, or if the saved choice
-                // is off now (a file that can't be read or parsed counts as
+                // the launch decision kept sync off, or if no saved choice
+                // says on now (a file that can't be read or parsed counts as
                 // off). Closing also purges what is still queued, if the
                 // backend has opened its outbox by now. Nothing orders this
                 // after that, so rows older builds queued are dropped by the
                 // outbox itself. It never opens the gate, and it does
-                // nothing if Settings changed it since launch: reapplying
-                // the saved choice here would undo a switch whose save
-                // failed. (The PostHog gate was restored at the top of this
-                // task, for the same reason.)
+                // nothing if the user set it since launch (Settings, or the
+                // dashboard question): reapplying the saved choice here
+                // would undo a switch whose save failed. (The PostHog gate
+                // was restored at the top of this task, for the same
+                // reason.)
                 let saved_on = cloud_open_at_launch
                     && handle
                         .path()
                         .app_data_dir()
-                        .map(|dir| crate::shell::config::saved_cloud_choice(&dir))
-                        .unwrap_or(false);
+                        .is_ok_and(|dir| {
+                            crate::shell::config::saved_cloud_choice(&dir) == Some(true)
+                        });
                 crate::shell::ipc::finish_cloud_sync_restore(saved_on).await;
             });
 

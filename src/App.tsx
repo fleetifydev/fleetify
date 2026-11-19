@@ -4,6 +4,7 @@ import { AppShell } from "@/components/layout/app-shell";
 import { SplashScreen } from "@/components/onboarding/splash-screen";
 import { WelcomeScreen } from "@/components/onboarding/welcome-screen";
 import { SetupScreen } from "@/components/onboarding/setup-screen";
+import { DashboardSyncNotice } from "@/components/onboarding/dashboard-sync-notice";
 import { useAppStore } from "@/stores/app-store";
 import { usePluginStore } from "@/stores/plugin-store";
 import { clearToken, type AuthUser } from "@/lib/api";
@@ -231,6 +232,7 @@ export function App() {
       handleAuthEvent(event, {
         onSignedOut: () => {
           clearToken();
+          setAuthedUser(null);
           setScreen("welcome");
         },
       }),
@@ -353,6 +355,7 @@ export function App() {
       } catch { /* fall through to normal logout on IPC failure */ }
       try { await window.fleetify?.signOut(); } catch { /* best-effort */ }
       clearToken();
+      setAuthedUser(null);
       setSettingsOpen(false);
       setScreen("welcome");
     };
@@ -437,6 +440,13 @@ export function App() {
           <OnboardingChat user={authedUser} onDone={handleOnboardingDone} />
         </Suspense>
       )}
+
+      {/* The dashboard sync question for an install that finished
+          onboarding before onboarding asked it: the main screen is past
+          the intro, and the notice asks only while no choice is saved.
+          Mounted for the whole session, so an answer isn't asked again
+          after signing in again. */}
+      <DashboardSyncNotice signedIn={authedUser !== null} introComplete={screen === "main"} />
 
       {/* Only mount the palette once it has actually been opened.
           Without this guard the lazy import would resolve immediately

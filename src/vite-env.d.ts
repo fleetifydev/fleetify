@@ -129,8 +129,9 @@ interface FleetConfig {
   /** Update channel — Stable / Beta / Canary. Default "stable". */
   updatesChannel?: "stable" | "beta" | "canary";
   /** Legacy: written by the old privacy card's analytics switch; nothing
-   *  writes it now. An explicit `false` still means dashboard sync off
-   *  while no newer choice is saved (`cloud_sync_from` in the shell). */
+   *  writes it now. An explicit `false` still counts as a saved dashboard
+   *  sync opt-out while no newer choice is saved (`cloud_choice_from` in
+   *  the shell). */
   telemetryEnabled?: boolean;
   /** Legacy: written by the old "Crash reports" switch. Nothing reads it. */
   crashReportsEnabled?: boolean;
@@ -161,11 +162,15 @@ interface Window {
      *  distinct_id (= device.json device_id), and whether product
      *  analytics (PostHog) and Fleetify cloud sync are on right now (the
      *  backend's live gates). Called at boot to decide whether to start
-     *  posthog-js, with the same id the Rust sink uses. */
+     *  posthog-js, with the same id the Rust sink uses. `cloud_choice` is
+     *  the saved dashboard sync choice, null while there is none: sync
+     *  stays off until the dashboard question is answered (onboarding's
+     *  step, or <DashboardSyncNotice>). */
     telemetryGetConfig?: () => Promise<{
       distinct_id: string;
       posthog_enabled: boolean;
       cloud_enabled: boolean;
+      cloud_choice: boolean | null;
     }>;
     /** Flip the persisted PostHog opt-in AND the backend's live
      *  runtime gate. Used by the onboarding consent step and the

@@ -91,44 +91,59 @@ pub async fn config_set(app: tauri::AppHandle, config: serde_json::Value) -> ser
 }
 
 // ── Telemetry config (PostHog + Fleetify cloud sync) ──────────────
-// Renderer fetches `{ distinct_id, posthog_enabled, cloud_enabled }` at
-// boot; `distinct_id` initialises posthog-js with the same device_id the
-// Rust backend uses, so frontend + backend events flow to one PostHog
-// person. Each setter both persists its flag AND flips the matching
-// backend runtime gate live, so the PostHog worker / the cloud WS loop
-// stops or starts without a restart.
+// Renderer fetches `{ distinct_id, posthog_enabled, cloud_enabled,
+// cloud_choice }` at boot; `distinct_id` initialises posthog-js with the
+// same device_id the Rust backend uses, so frontend + backend events flow
+// to one PostHog person. Each setter both persists its flag AND flips the
+// matching backend runtime gate live, so the PostHog worker / the cloud WS
+// loop stops or starts without a restart.
 
 #[tauri::command]
-pub async fn telemetry_get_config() -> serde_json::Value {
+pub async fn telemetry_get_config(app: tauri::AppHandle) -> serde_json::Value {
     let device = fleetify_backend::services::telemetry::device_id::get_or_create();
-    telemetry_config_now(device.device_id)
+    let config_dir = app.path().app_data_dir().ok();
+    telemetry_config_now(device.device_id, config_dir.as_deref())
 }
 
-/// The two flags are the backend's live gates, not the saved choices. They
-/// differ after a failed save (the gate still follows the switch for this
-/// session), and the Settings card has to show what is actually on. The
-/// shell sets both gates from the saved choices as soon as it starts
-/// (lib.rs), before the warm-up, so the renderer's launch read sees them.
-fn telemetry_config_now(distinct_id: String) -> serde_json::Value {
+/// The two `_enabled` flags are the backend's live gates, not the saved
+/// choices. They differ after a failed save (the gate still follows the
+/// switch for this session), and the Settings card has to show what is
+/// actually on. The shell sets both gates from the saved choices as soon as
+/// it starts (lib.rs), before the warm-up, so the renderer's launch read
+/// sees them.
+///
+/// `cloud_choice` is the dashboard sync choice saved in `config_dir`
+/// (`config::saved_cloud_choice`): `true` or `false`, or `null` when there
+/// is none. The renderer asks the dashboard question once while it is
+/// `null` (`DashboardSyncNotice`), and the gate stays closed until then. A
+/// settings folder that can't be found counts as a settings file that
+/// can't be read: off.
+fn telemetry_config_now(
+    distinct_id: String,
+    config_dir: Option<&std::path::Path>,
+) -> serde_json::Value {
+    let cloud_choice = config_dir.map_or(Some(false), config::saved_cloud_choice);
     serde_json::json!({
         "distinct_id": distinct_id,
         "posthog_enabled": fleetify_backend::services::telemetry::posthog::is_enabled(),
         "cloud_enabled": fleetify_backend::services::telemetry::cloud_enabled(),
+        "cloud_choice": cloud_choice,
     })
 }
 
-/// Whether Settings has set cloud sync since launch. The startup restore
-/// (lib.rs) runs at the end of the boot warm-up task: after the backend has
-/// reported its start, a wait with no time limit, and once it has bound,
-/// after the health wait (up to 14 s) and the provider warm-up. The
-/// clone-token push runs in a task of its own and isn't waited for. The
-/// restore can end long after launch, and must not undo a choice the user
-/// made meanwhile, including one whose save failed. The setter and the
-/// restore both hold this lock while they touch the gate, so whichever runs
-/// second sees the other.
+/// Whether the user has set cloud sync since launch, in Settings or by
+/// answering the dashboard question (`telemetry_set_cloud_enabled`). The
+/// startup restore (lib.rs) runs at the end of the boot warm-up task: after
+/// the backend has reported its start, a wait with no time limit, and once
+/// it has bound, after the health wait (up to 14 s) and the provider
+/// warm-up. The clone-token push runs in a task of its own and isn't waited
+/// for. The restore can end long after launch, and must not undo a choice
+/// the user made meanwhile, including one whose save failed. The setter and
+/// the restore both hold this lock while they touch the gate, so whichever
+/// runs second sees the other.
 static CLOUD_SYNC_SET_SINCE_LAUNCH: tokio::sync::Mutex<bool> = tokio::sync::Mutex::const_new(false);
 
-/// Settings' change to the cloud gate: records that the user chose, then
+/// The user's change to the cloud gate: records that the user chose, then
 /// applies it.
 async fn set_cloud_sync(set_since_launch: &tokio::sync::Mutex<bool>, enabled: bool) {
     let mut set = set_since_launch.lock().await;
@@ -136,10 +151,10 @@ async fn set_cloud_sync(set_since_launch: &tokio::sync::Mutex<bool>, enabled: bo
     fleetify_backend::services::telemetry::set_cloud_enabled(enabled).await;
 }
 
-/// The end of the startup restore. It can only close the gate: when the
-/// saved choice is off (closing also purges what is still queued), and only
-/// if Settings hasn't set it since launch. It never opens the gate; the
-/// early restore already opened it when the saved choice is on.
+/// The end of the startup restore. It can only close the gate: when no
+/// saved choice says on (closing also purges what is still queued), and
+/// only if the user hasn't set it since launch. It never opens the gate;
+/// the early restore already opened it when the saved choice is on.
 async fn finish_cloud_sync_restore_with(
     set_since_launch: &tokio::sync::Mutex<bool>,
     saved_on: bool,
@@ -154,9 +169,10 @@ pub(crate) async fn finish_cloud_sync_restore(saved_on: bool) {
     finish_cloud_sync_restore_with(&CLOUD_SYNC_SET_SINCE_LAUNCH, saved_on).await;
 }
 
-/// Settings → Privacy's Fleetify-cloud sync switch. Saves the choice
-/// (`config::persist_cloud_choice`), then sets the backend gate: turning it
-/// off purges anything still queued and drops the dashboard socket.
+/// Settings → Privacy's Fleetify-cloud sync switch, and the dashboard
+/// question's buttons. Saves the choice (`config::persist_cloud_choice`),
+/// then sets the backend gate: turning it off purges anything still queued
+/// and drops the dashboard socket.
 ///
 /// The gate follows the switch for this session even when the save fails,
 /// but the saved choice then still decides the next launch, so the failure
@@ -5098,30 +5114,69 @@ mod telemetry_config_tests {
     fn telemetry_config_reports_the_live_gates() {
         let _turn = GATES.lock().unwrap_or_else(|e| e.into_inner());
         let _restore = RestoreGates::now();
+        let dir = tempfile::tempdir().unwrap();
 
         // After a failed save the gates differ from the saved choices, and a
         // re-mounted Settings card has to show the gates.
         posthog::set_enabled(true);
         block_on(set_cloud_enabled(false));
         assert_eq!(
-            telemetry_config_now("device-1".into()),
+            telemetry_config_now("device-1".into(), Some(dir.path())),
             serde_json::json!({
                 "distinct_id": "device-1",
                 "posthog_enabled": true,
                 "cloud_enabled": false,
+                "cloud_choice": null,
             })
         );
 
         posthog::set_enabled(false);
         block_on(set_cloud_enabled(true));
         assert_eq!(
-            telemetry_config_now("device-1".into()),
+            telemetry_config_now("device-1".into(), Some(dir.path())),
             serde_json::json!({
                 "distinct_id": "device-1",
                 "posthog_enabled": false,
                 "cloud_enabled": true,
+                "cloud_choice": null,
             })
         );
+    }
+
+    #[test]
+    fn telemetry_config_reports_the_saved_cloud_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let reported = |dir: Option<&std::path::Path>| {
+            telemetry_config_now("device-1".into(), dir)["cloud_choice"].clone()
+        };
+
+        // Nothing saved yet, or an install that finished onboarding before
+        // it asked: no choice, so the renderer asks.
+        assert_eq!(reported(Some(dir.path())), serde_json::Value::Null);
+        config::save_config_to(dir.path(), &serde_json::json!({"onboardingComplete": true}))
+            .unwrap();
+        assert_eq!(reported(Some(dir.path())), serde_json::Value::Null);
+
+        config::persist_cloud_choice(dir.path(), true).unwrap();
+        assert_eq!(reported(Some(dir.path())), serde_json::json!(true));
+        config::persist_cloud_choice(dir.path(), false).unwrap();
+        assert_eq!(reported(Some(dir.path())), serde_json::json!(false));
+
+        // An opt-out from the old switch is a choice too.
+        let legacy = tempfile::tempdir().unwrap();
+        config::save_config_to(
+            legacy.path(),
+            &serde_json::json!({"telemetryEnabled": false}),
+        )
+        .unwrap();
+        assert_eq!(reported(Some(legacy.path())), serde_json::json!(false));
+
+        // A settings file that can't be read, or a settings folder that
+        // can't be found, keeps sync off, as startup does.
+        let unreadable = tempfile::tempdir().unwrap();
+        std::fs::create_dir(unreadable.path().join("fleet.config.json")).unwrap();
+        assert_eq!(reported(Some(unreadable.path())), serde_json::json!(false));
+        assert_eq!(reported(None), serde_json::json!(false));
     }
     #[test]
     fn startup_restore_closes_sync_when_the_saved_choice_is_off() {
