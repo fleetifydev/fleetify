@@ -70,12 +70,14 @@ pub async fn config_get(app: tauri::AppHandle) -> serde_json::Value {
     }
 }
 
-/// Replaces `fleet.config.json` with `config`. A failed save answers
-/// `{ ok: false, error }`.
+/// Replaces `fleet.config.json` with `config`, except the `telemetry`
+/// section: that keeps what the file holds, since only the privacy switches
+/// save it (`config::replace_config_keeping_telemetry`). A failed save
+/// answers `{ ok: false, error }`.
 #[tauri::command]
 pub async fn config_set(app: tauri::AppHandle, config: serde_json::Value) -> serde_json::Value {
     let saved = match app.path().app_data_dir() {
-        Ok(dir) => config::save_config_to(&dir, &config)
+        Ok(dir) => config::replace_config_keeping_telemetry(&dir, config)
             .map_err(|e| format!("Couldn't save Fleetify's settings: {e}")),
         Err(e) => Err(format!("Couldn't find Fleetify's settings folder: {e}")),
     };

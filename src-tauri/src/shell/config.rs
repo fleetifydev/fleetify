@@ -4,9 +4,9 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -32,10 +32,11 @@ pub enum ConfigLoad {
 ///
 /// A file that reads but isn't a JSON object (a hand edit with a stray
 /// comma, say) also gives `{}`, after a copy of the bytes read is kept as
-/// `fleet.config.json.corrupt-<content hash>`. Every setter reads, merges
-/// and writes the whole file, so the next save replaces it and would
-/// otherwise silently drop every other setting. The file itself is never
-/// touched here: by now it may hold something other than what was read.
+/// `fleet.config.json.corrupt-<content hash>`. Setters leave such a file as
+/// it is ([`update_config`]); startup replaces it with a cloud sync opt-out
+/// ([`startup_cloud_decision`]), and the copy keeps every other setting. The
+/// file itself is never touched here: by now it may hold something other
+/// than what was read.
 ///
 /// [`load_config_with_status`] also says which of these it found.
 pub fn load_config_from(path: &Path) -> Value {
@@ -127,32 +128,82 @@ fn unix_ms() -> i64 {
 /// no two saves share a temp file, even across processes sharing the folder.
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Held around each save's write and rename. The privacy setters and the
-/// renderer's `config_set` can save at the same time; one at a time, the
-/// last rename wins whole.
+/// Held across every write of `fleet.config.json`: the whole load, change
+/// and save of [`update_config`], each [`save_config_to`], and the startup
+/// opt-out. One at a time, the last rename wins whole, and a writer that
+/// goes through [`update_config`] starts from the file the last one left.
+/// It isn't reentrant: nothing that runs while it is held may take it
+/// again.
 static SAVE_LOCK: Mutex<()> = Mutex::new(());
 
-/// Save JSON config atomically: fill a temp file of this save's own
-/// (`fleet.config.json.<pid>.<n>.tmp`), flush it to disk, then rename it over
-/// the live file. A crash mid-save leaves the old file whole, and a save
-/// never renames a temp file another save is still filling. A failed save
-/// removes its temp file.
-pub fn save_config_to(path: &Path, cfg: &Value) -> std::io::Result<()> {
-    std::fs::create_dir_all(path)?;
-    let file = path.join(CONFIG_FILE);
-    let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let tmp = path.join(format!("{CONFIG_FILE}.{}.{n}.tmp", std::process::id()));
-    let body = serde_json::to_string_pretty(cfg).unwrap_or_default();
-    // A save that panicked while holding the lock left nothing half-done
-    // that the next one depends on.
-    let _guard = SAVE_LOCK
+/// Takes [`SAVE_LOCK`]. A writer that panicked while holding it left
+/// nothing half-done that the next one depends on: the live file only ever
+/// changes by a rename.
+fn lock_saves() -> MutexGuard<'static, ()> {
+    SAVE_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let saved = write_synced(&tmp, body.as_bytes()).and_then(|()| std::fs::rename(&tmp, &file));
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Load `dir`'s `fleet.config.json`, apply `change`, and save the result,
+/// all under [`SAVE_LOCK`], so a change another writer saves meanwhile is
+/// never lost. Returns what `change` returns. A missing file starts as `{}`.
+///
+/// `change` runs with the lock held, so it is synchronous and does no I/O:
+/// callers check their input, and do keychain or network work, before.
+///
+/// A file that is there but can't be read, or isn't a JSON object, gives
+/// `Err` of kind [`std::io::ErrorKind::InvalidData`]: `change` doesn't run
+/// and nothing is written, since a save would drop every other setting.
+/// Startup handles such a file ([`startup_cloud_decision`]).
+pub fn update_config<T>(dir: &Path, change: impl FnOnce(&mut Value) -> T) -> std::io::Result<T> {
+    let _guard = lock_saves();
+    let (mut cfg, status) = load_config_with_status(dir);
+    let problem = match status {
+        ConfigLoad::Missing | ConfigLoad::Ok => None,
+        ConfigLoad::Corrupt => Some("isn't a valid settings file"),
+        ConfigLoad::Unreadable => Some("couldn't be read"),
+    };
+    if let Some(problem) = problem {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{CONFIG_FILE} {problem}, so it was left as it is"),
+        ));
+    }
+    let out = change(&mut cfg);
+    write_locked(dir, &cfg)?;
+    Ok(out)
+}
+
+/// Replace `fleet.config.json` with `cfg` under [`SAVE_LOCK`]. A change to
+/// the saved config goes through [`update_config`] instead, which loads it
+/// under the same lock.
+pub fn save_config_to(path: &Path, cfg: &Value) -> std::io::Result<()> {
+    let _guard = lock_saves();
+    write_locked(path, cfg)
+}
+
+/// Save JSON config atomically; the caller holds [`SAVE_LOCK`]. Fill a temp
+/// file of this save's own (`fleet.config.json.<pid>.<n>.tmp`), flush it to
+/// disk, then rename it over the live file. A crash mid-save leaves the old
+/// file whole, and a save never renames a temp file another save is still
+/// filling. A failed save removes its temp file.
+fn write_locked(dir: &Path, value: &Value) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let tmp = new_temp_path(dir);
+    let body = serde_json::to_string_pretty(value).unwrap_or_default();
+    let saved = write_synced(&tmp, body.as_bytes())
+        .and_then(|()| std::fs::rename(&tmp, dir.join(CONFIG_FILE)));
     if saved.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
     saved
+}
+
+/// A path in `dir` for a save's temp file that no other save uses.
+fn new_temp_path(dir: &Path) -> PathBuf {
+    let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    dir.join(format!("{CONFIG_FILE}.{}.{n}.tmp", std::process::id()))
 }
 
 /// Write `bytes` to a new file at `path` and flush it to disk, so the rename
@@ -161,6 +212,39 @@ fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut out = std::fs::File::create(path)?;
     out.write_all(bytes)?;
     out.sync_all()
+}
+
+/// What the renderer's `config_set` saves: `new` replaces the whole file,
+/// except `telemetry`, which keeps what the file holds, and stays absent
+/// when the file has none. The privacy switches save that section through
+/// their own commands, and the renderer's copy of it may be stale: written
+/// back, it could turn a saved opt-out back on, or record a choice the user
+/// never made.
+///
+/// A `new` that isn't a JSON object gives `Err` of kind
+/// [`std::io::ErrorKind::InvalidInput`] and nothing is written: the next
+/// launch would take such a file for a corrupt one.
+pub fn replace_config_keeping_telemetry(dir: &Path, new: Value) -> std::io::Result<()> {
+    let Value::Object(mut new) = new else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the settings aren't a JSON object",
+        ));
+    };
+    update_config(dir, move |cfg| {
+        match cfg
+            .as_object_mut()
+            .and_then(|saved| saved.remove("telemetry"))
+        {
+            Some(telemetry) => {
+                new.insert("telemetry".into(), telemetry);
+            }
+            None => {
+                new.remove("telemetry");
+            }
+        }
+        *cfg = Value::Object(new);
+    })
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -380,22 +464,27 @@ pub fn telemetry_set(cfg: &mut Value, telem: &TelemetryConfig) {
 }
 
 /// Save the Fleetify cloud sync switch in `dir`'s `fleet.config.json`:
-/// read-merge-write `telemetry.cloud_sync_enabled`, stamping
-/// `cloud_sync_enabled_at` on the first opt-in only (turning it off, or on
-/// again later, keeps that time). Saving `true` while the saved setting is
-/// already on, as it is by default, records the choice but is no opt-in, so
-/// it stamps nothing: also onboarding's "Keep it on" on a new install, whose
-/// gate opens only then. `Err` carries a message fit for the user.
+/// merge `telemetry.cloud_sync_enabled` into the file under the config lock
+/// ([`update_config`]), stamping `cloud_sync_enabled_at` on the first opt-in
+/// only (turning it off, or on again later, keeps that time). Saving `true`
+/// while the saved setting is already on, as it is by default, records the
+/// choice but is no opt-in, so it stamps nothing: also onboarding's "Keep it
+/// on" on a new install, whose gate opens only then. `Err` carries a message
+/// fit for the user; a file that can't be read or parsed is left as it is.
 pub fn persist_cloud_choice(dir: &Path, enabled: bool) -> Result<(), String> {
-    let mut cfg = load_config_from(dir);
-    let was_enabled = cloud_sync_from(&cfg);
-    let mut telem = telemetry_from(&cfg);
+    update_config(dir, |cfg| set_cloud_choice(cfg, enabled))
+        .map_err(|e| format!("Couldn't save the cloud sync setting: {e}"))
+}
+
+/// [`persist_cloud_choice`]'s change, made to a config in memory.
+fn set_cloud_choice(cfg: &mut Value, enabled: bool) {
+    let was_enabled = cloud_sync_from(cfg);
+    let mut telem = telemetry_from(cfg);
     telem.cloud_sync_enabled = Some(enabled);
     if enabled && !was_enabled && telem.cloud_sync_enabled_at.is_none() {
         telem.cloud_sync_enabled_at = Some(unix_ms());
     }
-    telemetry_set(&mut cfg, &telem);
-    save_config_to(dir, &cfg).map_err(|e| format!("Couldn't save the cloud sync setting: {e}"))
+    telemetry_set(cfg, &telem);
 }
 
 /// Whether this launch may open the cloud sync gate, decided once at
@@ -410,20 +499,22 @@ pub fn persist_cloud_choice(dir: &Path, enabled: bool) -> Result<(), String> {
 ///
 /// A file that is there but can't be read or parsed fails closed, since an
 /// earlier opt-out may be what it no longer shows: sync stays off for this
-/// launch, and an explicit opt-out is saved ([`persist_cloud_choice`]) so
-/// later launches stay off too, until the user turns sync back on. An
-/// unreadable file is moved aside first, so its bytes are kept. If the save
-/// fails, the file is put back, and sync still stays off for this launch.
+/// launch, and an explicit opt-out takes the file's place, so later launches
+/// stay off too, until the user turns sync back on. The opt-out is written
+/// first; only then is an unreadable file moved aside, so its bytes are
+/// kept, and if the opt-out can't take its place, the file is put back.
+/// Either way sync stays off for this launch.
 pub fn startup_cloud_decision(dir: &Path) -> bool {
-    decide_cloud_at_startup(dir, |dir| persist_cloud_choice(dir, false))
+    decide_cloud_at_startup(dir, write_synced)
 }
 
-/// [`startup_cloud_decision`], with the opt-out save passed in so a test
-/// can make it fail.
+/// [`startup_cloud_decision`], with the writer of the opt-out's temp file
+/// passed in so a test can make it fail.
 fn decide_cloud_at_startup(
     dir: &Path,
-    save_opt_out: impl FnOnce(&Path) -> Result<(), String>,
+    write_temp: impl FnOnce(&Path, &[u8]) -> std::io::Result<()>,
 ) -> bool {
+    let _guard = lock_saves();
     let (cfg, status) = load_config_with_status(dir);
     let condition = match status {
         ConfigLoad::Missing => return false,
@@ -431,48 +522,72 @@ fn decide_cloud_at_startup(
         ConfigLoad::Corrupt => "corrupt",
         ConfigLoad::Unreadable => "unreadable",
     };
-    // A file that can't be read can't be copied either, so it is moved
-    // aside whole before the opt-out takes its place. A corrupt file was
-    // read, and the load already kept a copy.
-    let aside = match status {
-        ConfigLoad::Unreadable => move_unreadable_aside(dir),
-        _ => None,
-    };
     // The condition and the aside's file name only: never the file's
     // content, nor its folder (whose path usually holds the user's name).
-    match (save_opt_out(dir), &aside) {
-        (Ok(()), Some(kept)) => tracing::warn!(
+    match replace_with_opt_out(dir, status, write_temp) {
+        Ok(Some(kept)) => tracing::warn!(
             condition,
             kept = %kept,
             "{CONFIG_FILE} is {condition}; moved it aside, and cloud sync is off \
              until it is turned back on"
         ),
-        (Ok(()), None) => tracing::warn!(
+        Ok(None) => tracing::warn!(
             condition,
             "{CONFIG_FILE} is {condition}; cloud sync is off until it is turned back on"
         ),
-        (Err(error), _) => {
-            // Put the file back: with none there, the next launch would take
-            // this for a new install.
-            if let Some(kept) = &aside {
-                if let Err(e) = std::fs::rename(dir.join(kept), dir.join(CONFIG_FILE)) {
-                    tracing::warn!(
-                        condition,
-                        kept = %kept,
-                        error = %e,
-                        "{CONFIG_FILE} was moved aside and couldn't be put back"
-                    );
-                }
-            }
-            tracing::warn!(
-                condition,
-                error = %error,
-                "{CONFIG_FILE} is {condition}; cloud sync stays off for this launch, \
-                 but turning it off couldn't be saved"
-            );
-        }
+        Err(error) => tracing::warn!(
+            condition,
+            error = %error,
+            "{CONFIG_FILE} is {condition}; cloud sync stays off for this launch, \
+             but turning it off couldn't be saved"
+        ),
     }
     false
+}
+
+/// Puts an explicit cloud sync opt-out in the place of `dir`'s corrupt or
+/// unreadable `fleet.config.json` (`status`); the caller holds
+/// [`SAVE_LOCK`]. Returns the name an unreadable file was moved aside to.
+///
+/// `write_temp` writes the opt-out to a temp file first, so a failed write
+/// leaves everything where it was. Only then is an unreadable file moved
+/// aside ([`move_unreadable_aside`]): one that can't be read can't be copied
+/// either, and a move keeps it whole. A corrupt file was read, and its load
+/// already kept a copy, so the opt-out simply replaces it. If the opt-out
+/// can't be renamed into place, a moved file is put back: with no file
+/// there, the next launch would take this for a new install.
+fn replace_with_opt_out(
+    dir: &Path,
+    status: ConfigLoad,
+    write_temp: impl FnOnce(&Path, &[u8]) -> std::io::Result<()>,
+) -> std::io::Result<Option<String>> {
+    let mut opt_out = json!({});
+    set_cloud_choice(&mut opt_out, false);
+    let body = serde_json::to_string_pretty(&opt_out).unwrap_or_default();
+    let tmp = new_temp_path(dir);
+    if let Err(error) = write_temp(&tmp, body.as_bytes()) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
+    let aside = match status {
+        ConfigLoad::Unreadable => move_unreadable_aside(dir),
+        _ => None,
+    };
+    let live = dir.join(CONFIG_FILE);
+    if let Err(error) = std::fs::rename(&tmp, &live) {
+        let _ = std::fs::remove_file(&tmp);
+        if let Some(kept) = &aside {
+            if let Err(e) = std::fs::rename(dir.join(kept), &live) {
+                tracing::warn!(
+                    kept = %kept,
+                    error = %e,
+                    "{CONFIG_FILE} was moved aside and couldn't be put back"
+                );
+            }
+        }
+        return Err(error);
+    }
+    Ok(aside)
 }
 
 /// Whether `cfg` holds a saved cloud sync choice (`telemetry.cloud_sync_enabled`
@@ -528,20 +643,22 @@ pub fn saved_cloud_choice(dir: &Path) -> bool {
 }
 
 /// Save the PostHog product analytics switch in `dir`'s `fleet.config.json`:
-/// read-merge-write `telemetry.posthog_enabled`, stamping
-/// `posthog_enabled_at` on the first opt-in only (turning it off, or on
-/// again later, keeps that time). `Err` carries a message fit for the user.
+/// merge `telemetry.posthog_enabled` into the file under the config lock
+/// ([`update_config`]), stamping `posthog_enabled_at` on the first opt-in
+/// only (turning it off, or on again later, keeps that time). `Err` carries
+/// a message fit for the user; a file that can't be read or parsed is left
+/// as it is.
 pub fn persist_posthog_choice(dir: &Path, enabled: bool) -> Result<(), String> {
-    let mut cfg = load_config_from(dir);
-    let mut telem = telemetry_from(&cfg);
-    let was_enabled = telem.posthog_enabled;
-    telem.posthog_enabled = enabled;
-    if enabled && !was_enabled && telem.posthog_enabled_at.is_none() {
-        telem.posthog_enabled_at = Some(unix_ms());
-    }
-    telemetry_set(&mut cfg, &telem);
-    save_config_to(dir, &cfg)
-        .map_err(|e| format!("Couldn't save the product analytics setting: {e}"))
+    update_config(dir, |cfg| {
+        let mut telem = telemetry_from(cfg);
+        let was_enabled = telem.posthog_enabled;
+        telem.posthog_enabled = enabled;
+        if enabled && !was_enabled && telem.posthog_enabled_at.is_none() {
+            telem.posthog_enabled_at = Some(unix_ms());
+        }
+        telemetry_set(cfg, &telem);
+    })
+    .map_err(|e| format!("Couldn't save the product analytics setting: {e}"))
 }
 
 #[cfg(test)]
@@ -722,6 +839,176 @@ mod tests {
     }
 
     #[test]
+    fn update_config_keeps_every_change_from_two_writers_at_once() {
+        use std::sync::Arc;
+
+        // The privacy switches, the provider setters and the renderer's
+        // config_set can all save at the same time. Each load-change-save
+        // has to start from the one before it, or a change is lost.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = Arc::new(tmp.path().to_path_buf());
+        let writers: Vec<_> = ["a", "b"]
+            .into_iter()
+            .map(|key| {
+                let dir = Arc::clone(&dir);
+                std::thread::spawn(move || {
+                    for _ in 0..200 {
+                        update_config(&dir, |cfg| {
+                            let n = cfg[key].as_u64().unwrap_or(0);
+                            cfg[key] = json!(n + 1);
+                        })
+                        .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+
+        let cfg = load_config_from(&dir);
+        assert_eq!((&cfg["a"], &cfg["b"]), (&json!(200), &json!(200)), "{cfg}");
+        assert!(temp_files(&dir).is_empty(), "{:?}", temp_files(&dir));
+    }
+
+    #[test]
+    fn update_config_leaves_a_file_it_cant_parse_as_it_is() {
+        let tmp = tempfile::tempdir().unwrap();
+        // An opt-out cut short: a save over it would drop the opt-out, and
+        // every other setting with it.
+        let original = br#"{"theme": "dark", "telemetry": {"cloud_sync_enabled": false"#;
+        std::fs::write(tmp.path().join(CONFIG_FILE), original).unwrap();
+
+        let mut ran = false;
+        let err = update_config(tmp.path(), |cfg| {
+            ran = true;
+            cfg["theme"] = json!("light");
+        })
+        .unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{err}");
+        assert!(!ran, "the change never ran");
+        assert_eq!(
+            live_bytes(tmp.path()).as_deref(),
+            Some(&original[..]),
+            "live file untouched"
+        );
+        assert!(
+            temp_files(tmp.path()).is_empty(),
+            "{:?}",
+            temp_files(tmp.path())
+        );
+    }
+
+    #[test]
+    fn update_config_leaves_a_file_it_cant_read_as_it_is() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A folder where the file belongs: it is there but can't be read.
+        let live = tmp.path().join(CONFIG_FILE);
+        std::fs::create_dir(&live).unwrap();
+        std::fs::write(live.join("keep"), "x").unwrap();
+
+        let mut ran = false;
+        let err = update_config(tmp.path(), |_| ran = true).unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{err}");
+        assert!(!ran, "the change never ran");
+        assert_eq!(std::fs::read(live.join("keep")).unwrap(), b"x");
+        assert!(
+            temp_files(tmp.path()).is_empty(),
+            "{:?}",
+            temp_files(tmp.path())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_config_leaves_a_file_without_read_permission_as_it_is() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join(CONFIG_FILE);
+        let original = br#"{"theme": "dark", "telemetry": {"cloud_sync_enabled": false}}"#;
+        std::fs::write(&file, original).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&file).is_ok() {
+            eprintln!("skipped: permissions don't stop this user's reads (root?)");
+            return;
+        }
+
+        let err = update_config(tmp.path(), |cfg| cfg["theme"] = json!("light")).unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{err}");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), original, "file untouched");
+    }
+
+    #[test]
+    fn the_renderers_save_keeps_the_saved_telemetry_choice() {
+        let tmp = tempfile::tempdir().unwrap();
+        save_config_to(
+            tmp.path(),
+            &json!({
+                "theme": "dark",
+                "userName": "Mira",
+                "telemetry": {"cloud_sync_enabled": false, "posthog_enabled": false}
+            }),
+        )
+        .unwrap();
+
+        // A stale renderer copy, read before the user turned both off.
+        replace_config_keeping_telemetry(
+            tmp.path(),
+            json!({
+                "theme": "light",
+                "launchOnStartup": true,
+                "telemetry": {"cloud_sync_enabled": true, "posthog_enabled": true}
+            }),
+        )
+        .unwrap();
+
+        // The payload replaces the whole file, except the telemetry section.
+        assert_eq!(
+            load_config_from(tmp.path()),
+            json!({
+                "theme": "light",
+                "launchOnStartup": true,
+                "telemetry": {"cloud_sync_enabled": false, "posthog_enabled": false}
+            })
+        );
+    }
+
+    #[test]
+    fn the_renderers_save_cant_record_a_telemetry_choice() {
+        // A saved `cloud_sync_enabled` counts as the user's answer to the
+        // dashboard notice; only the privacy switches may write one.
+        let tmp = tempfile::tempdir().unwrap();
+        let payload = json!({"theme": "light", "telemetry": {"cloud_sync_enabled": true}});
+
+        // No file yet...
+        replace_config_keeping_telemetry(tmp.path(), payload.clone()).unwrap();
+        assert_eq!(load_config_from(tmp.path()), json!({"theme": "light"}));
+
+        // ...and a file without the section.
+        save_config_to(tmp.path(), &json!({"theme": "dark"})).unwrap();
+        replace_config_keeping_telemetry(tmp.path(), payload).unwrap();
+        assert_eq!(load_config_from(tmp.path()), json!({"theme": "light"}));
+    }
+
+    #[test]
+    fn the_renderers_save_refuses_settings_that_are_not_an_object() {
+        let tmp = tempfile::tempdir().unwrap();
+        save_config_to(tmp.path(), &json!({"theme": "dark"})).unwrap();
+        let before = live_bytes(tmp.path());
+
+        for payload in [json!(null), json!([1, 2]), json!("theme")] {
+            let err = replace_config_keeping_telemetry(tmp.path(), payload).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{err}");
+        }
+        assert_eq!(live_bytes(tmp.path()), before, "live file untouched");
+    }
+
+    #[test]
     fn a_valid_file_loads_unchanged_without_a_backup() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -873,24 +1160,27 @@ mod tests {
     }
 
     #[test]
-    fn a_save_after_a_corrupt_load_leaves_the_backup_alone() {
+    fn a_setter_leaves_a_corrupt_file_and_its_backup_alone() {
         let tmp = tempfile::tempdir().unwrap();
         let original = br#"{"providers": {"a": 1},"#;
         std::fs::write(tmp.path().join(CONFIG_FILE), original).unwrap();
 
-        persist_cloud_choice(tmp.path(), true).unwrap();
+        let err = persist_cloud_choice(tmp.path(), true).unwrap_err();
 
+        assert!(
+            err.starts_with("Couldn't save the cloud sync setting: "),
+            "{err}"
+        );
+        // A save would drop every other setting: the file stays as it was,
+        // for startup to handle, and its copy is kept.
+        assert_eq!(
+            live_bytes(tmp.path()).as_deref(),
+            Some(&original[..]),
+            "live file untouched"
+        );
         let backups = corrupt_backups(tmp.path());
         assert_eq!(backups.len(), 1, "{backups:?}");
         assert_eq!(std::fs::read(&backups[0]).unwrap(), original);
-        // The live file now holds only what the setter wrote.
-        let cfg: Value = serde_json::from_slice(&live_bytes(tmp.path()).unwrap()).unwrap();
-        assert_eq!(
-            cfg.as_object().unwrap().keys().collect::<Vec<_>>(),
-            ["telemetry"],
-            "{cfg}"
-        );
-        assert_eq!(cfg["telemetry"]["cloud_sync_enabled"], json!(true));
     }
 
     #[test]
@@ -1001,6 +1291,11 @@ mod tests {
             "a folder is never moved"
         );
         assert!(corrupt_backups(tmp.path()).is_empty());
+        assert!(
+            temp_files(tmp.path()).is_empty(),
+            "{:?}",
+            temp_files(tmp.path())
+        );
     }
 
     #[cfg(unix)]
@@ -1074,17 +1369,80 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn an_unreadable_config_is_put_back_when_the_opt_out_cant_be_saved() {
+    fn the_opt_out_is_on_disk_before_an_unreadable_config_is_moved_aside() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = link_to_a_folder(tmp.path());
+        let live = tmp.path().join(CONFIG_FILE);
+
+        let mut in_place_while_writing = None;
+        let open = decide_cloud_at_startup(tmp.path(), |path, bytes| {
+            in_place_while_writing = Some(std::fs::read_link(&live).ok());
+            write_synced(path, bytes)
+        });
+
+        assert!(!open);
+        assert_eq!(
+            in_place_while_writing,
+            Some(Some(target.clone())),
+            "nothing is moved until the opt-out is written"
+        );
+        let cfg = load_config_from(tmp.path());
+        assert_eq!(
+            cfg["telemetry"]["cloud_sync_enabled"],
+            json!(false),
+            "{cfg}"
+        );
+        let asides = unreadable_asides(tmp.path());
+        assert_eq!(asides.len(), 1, "{asides:?}");
+        assert_eq!(std::fs::read_link(&asides[0]).unwrap(), target);
+        assert!(
+            temp_files(tmp.path()).is_empty(),
+            "{:?}",
+            temp_files(tmp.path())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_opt_out_write_leaves_an_unreadable_config_where_it_was() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = link_to_a_folder(tmp.path());
+        let live = tmp.path().join(CONFIG_FILE);
+
+        let mut in_place_while_writing = None;
+        let open = decide_cloud_at_startup(tmp.path(), |_, _| {
+            in_place_while_writing = Some(std::fs::read_link(&live).ok());
+            Err(std::io::Error::other("disk full"))
+        });
+
+        assert!(!open, "sync stays off for this launch");
+        assert_eq!(
+            in_place_while_writing,
+            Some(Some(target.clone())),
+            "nothing is moved until the opt-out is written"
+        );
+        assert_eq!(
+            std::fs::read_link(&live).unwrap(),
+            target,
+            "still in place, so the next launch doesn't take it for a new install"
+        );
+        assert!(unreadable_asides(tmp.path()).is_empty());
+        assert!(
+            temp_files(tmp.path()).is_empty(),
+            "{:?}",
+            temp_files(tmp.path())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_config_is_put_back_when_the_opt_out_cant_take_its_place() {
         let tmp = tempfile::tempdir().unwrap();
         let target = link_to_a_folder(tmp.path());
 
-        let open = decide_cloud_at_startup(tmp.path(), |dir| {
-            assert!(
-                std::fs::symlink_metadata(dir.join(CONFIG_FILE)).is_err(),
-                "moved aside before the save"
-            );
-            Err("Couldn't save the cloud sync setting: disk full".to_string())
-        });
+        // The write reports success but leaves no file, so the rename into
+        // place fails after the move aside.
+        let open = decide_cloud_at_startup(tmp.path(), |_, _| Ok(()));
 
         assert!(!open, "sync stays off for this launch");
         assert_eq!(
@@ -1093,6 +1451,40 @@ mod tests {
             "put back, so the next launch doesn't take it for a new install"
         );
         assert!(unreadable_asides(tmp.path()).is_empty());
+        assert!(
+            temp_files(tmp.path()).is_empty(),
+            "{:?}",
+            temp_files(tmp.path())
+        );
+    }
+
+    #[test]
+    fn a_failed_opt_out_write_leaves_a_corrupt_config_and_its_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original = br#"{"telemetry": {"cloud_sync_enabled": false"#;
+        std::fs::write(tmp.path().join(CONFIG_FILE), original).unwrap();
+
+        // The write fails part-way, as on a full disk: its temp file is
+        // already there, half filled.
+        let open = decide_cloud_at_startup(tmp.path(), |path, bytes| {
+            std::fs::write(path, &bytes[..bytes.len() / 2])?;
+            Err(std::io::Error::other("disk full"))
+        });
+
+        assert!(!open, "sync stays off for this launch");
+        assert_eq!(
+            live_bytes(tmp.path()).as_deref(),
+            Some(&original[..]),
+            "still in place"
+        );
+        let backups = corrupt_backups(tmp.path());
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        assert_eq!(std::fs::read(&backups[0]).unwrap(), original);
+        assert!(
+            temp_files(tmp.path()).is_empty(),
+            "{:?}",
+            temp_files(tmp.path())
+        );
     }
 
     #[test]
