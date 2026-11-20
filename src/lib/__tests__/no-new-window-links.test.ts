@@ -9,8 +9,11 @@
  *   - a string that names the new-window target: `"_blank"` itself, which
  *     covers `target="_blank"` in any spelling, or markup such as
  *     `<a target="_blank">` inside a string;
- *   - any use of `window.open` (also `globalThis.open`, `self.open`).
- * Comments are not code, so they may still mention either.
+ *   - any use of `window.open` (also `globalThis.open`, `self.open`);
+ *   - a terminal's `WebLinksAddon` made without a link handler: its default
+ *     handler opens the link with `window.open`. Terminals pass
+ *     `(_event, uri) => openLink(uri)` (`@/lib/links`).
+ * Comments are not code, so they may still mention any of them.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
@@ -59,6 +62,21 @@ function isWindowOpen(node: ts.Node): boolean {
   return key === "open" && ts.isIdentifier(owner) && WINDOW_GLOBALS.has(owner.text);
 }
 
+/** Whether `node` makes a `WebLinksAddon` with no link handler, or an
+ *  `undefined` one, so that the addon's own `window.open` handler runs. */
+function isWebLinksAddonWithoutHandler(node: ts.Node): boolean {
+  if (!ts.isNewExpression(node)) return false;
+  const callee = unwrap(node.expression);
+  const name = ts.isIdentifier(callee)
+    ? callee.text
+    : ts.isPropertyAccessExpression(callee)
+      ? callee.name.text
+      : undefined;
+  if (name !== "WebLinksAddon") return false;
+  const handler = node.arguments?.[0] && unwrap(node.arguments[0]);
+  return handler === undefined || (ts.isIdentifier(handler) && handler.text === "undefined");
+}
+
 /** Whether `node` is a string, or a template's literal text, that names the
  *  new-window target. */
 function namesNewWindow(node: ts.Node): boolean {
@@ -75,7 +93,7 @@ function newWindowRequests(file: string, text: string): string[] {
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, false, kind);
   const lines = new Set<number>();
   const visit = (node: ts.Node): void => {
-    if (namesNewWindow(node) || isWindowOpen(node)) {
+    if (namesNewWindow(node) || isWindowOpen(node) || isWebLinksAddonWithoutHandler(node)) {
       lines.add(source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1);
     }
     ts.forEachChild(node, visit);
@@ -85,7 +103,7 @@ function newWindowRequests(file: string, text: string): string[] {
 }
 
 describe("no renderer code opens a new window", () => {
-  it("the check catches new-window links and window.open, and nothing else", () => {
+  it("the check catches new-window links, window.open and handlerless terminal links, and nothing else", () => {
     const caught = [
       '<a href={url} target="_blank" rel="noreferrer">Docs</a>',
       "<a href={url} target='_blank'>Docs</a>",
@@ -103,6 +121,10 @@ describe("no renderer code opens a new window", () => {
       'link.setAttribute("target", "_blank");',
       "const html = '<a href=\"x\" target=\"_blank\">x</a>';",
       'const html = `<a href="${url}" target=_blank>x</a>`;',
+      "term.loadAddon(new WebLinksAddon());",
+      "const links = new WebLinksAddon;",
+      "term.loadAddon(new WebLinksAddon(undefined, { urlRegex }));",
+      "term.loadAddon(new addons.WebLinksAddon());",
     ];
     const ignored = [
       '// a target="_blank" link opens nothing in Tauri',
@@ -116,6 +138,10 @@ describe("no renderer code opens a new window", () => {
       "const is_blank = line.trim() === '';",
       'const option = "allow_blank";',
       "<p>Links with target=\"_blank\" open nothing here.</p>",
+      "term.loadAddon(new WebLinksAddon((_event, uri) => openLink(uri)));",
+      "term.loadAddon(new WebLinksAddon(handleLink, { urlRegex }));",
+      "term.loadAddon(new FitAddon());",
+      "// new WebLinksAddon() opens links with window.open",
     ];
     for (const text of caught) expect(newWindowRequests("x.tsx", text), text).toHaveLength(1);
     for (const text of ignored) expect(newWindowRequests("x.tsx", text), text).toEqual([]);
@@ -131,6 +157,9 @@ describe("no renderer code opens a new window", () => {
 
   it("no source links to a new window or calls window.open", () => {
     const offenders = sources().flatMap(({ file, text }) => newWindowRequests(file, text));
-    expect(offenders, "open external links with followLink or openExternalUrl").toEqual([]);
+    expect(
+      offenders,
+      "open external links with followLink or openExternalUrl, and terminal links with openLink",
+    ).toEqual([]);
   });
 });

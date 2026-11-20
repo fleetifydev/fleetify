@@ -11,6 +11,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
+import { openLink } from "@/lib/links";
 
 interface Props {
   ptyId: string;
@@ -38,7 +39,10 @@ export function AccountLoginTerminal({ ptyId, onExit }: Props) {
     });
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
-    term.loadAddon(new WebLinksAddon());
+    // The addon's own handler opens a link with window.open, which the
+    // webview refuses: links, such as a sign-in URL, go to the system
+    // browser instead.
+    term.loadAddon(new WebLinksAddon((_event, uri) => openLink(uri)));
     term.open(container);
 
     const onData = term.onData((d) => window.electronAPI?.ptyWrite(ptyId, d));

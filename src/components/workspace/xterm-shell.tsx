@@ -13,6 +13,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
+import { openLink } from "@/lib/links";
 import { feedPtyChunk } from "@/stores/dev-server-store";
 
 interface Props {
@@ -73,7 +74,9 @@ export function XtermShell({ cwd, shell }: Props) {
 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
-    term.loadAddon(new WebLinksAddon());
+    // The addon's own handler opens a link with window.open, which the
+    // webview refuses: links go to the system browser instead.
+    term.loadAddon(new WebLinksAddon((_event, uri) => openLink(uri)));
 
     term.open(container);
     // (Previously printed an "xterm mounted · requested cwd: …" line
