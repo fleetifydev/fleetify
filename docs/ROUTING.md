@@ -3,7 +3,10 @@
 Fleetify ships a full **provider-routing engine** — given a chat/dispatch
 turn, it can pick the best `(agent, model)` instead of running whatever the
 user pinned. **"Auto"** is the one-click, user-facing front end of that
-engine, powered by **Fleet's own Not Diamond key**. This document covers both:
+engine: it routes through Not Diamond with **Fleet's own key** when
+`NOTDIAMOND_API_KEY` is set in the environment, and through the offline
+built-in router otherwise, which is what an installed Fleetify does unless its
+environment sets the key (§5). This document covers both:
 the engine (layers, routers, gateways, persistence) and the Auto feature built
 on top of it.
 

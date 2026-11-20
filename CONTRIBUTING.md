@@ -92,13 +92,14 @@ cargo test --workspace --no-fail-fast                   # Rust tests (advisory)
 npm run lint                                            # ESLint
 npx tsc -b tsconfig.build.json --noEmit                 # TypeScript type check
 npm test                                                # renderer tests, Vitest (advisory)
+python3 -c "import yaml"                                # PyYAML, which the script tests need
 node --test "scripts/ci/*.test.mjs" "scripts/release/*.test.mjs"   # tests of the repository's own scripts
 ```
 
 The two steps marked advisory don't block a merge, and every other step does. Treat a red test as red all the same: check whether it also fails on `main`, and don't leave a new failure behind. CI also runs `cargo audit` and `npm audit --omit=dev`, both advisory.
 
 - CI runs the Rust checks on Windows, so code behind `cfg(windows)` gets compiled and linted there even when your machine skips it.
-- The script tests read YAML with Python 3 and PyYAML: `sudo apt install python3-yaml` on Debian and Ubuntu, `pip install pyyaml` elsewhere. Without PyYAML, those checks skip on your machine; CI requires it.
+- The script tests read YAML with Python 3 and PyYAML: `sudo apt install python3-yaml` on Debian and Ubuntu, `pip install pyyaml` elsewhere. Without PyYAML, those checks skip on your machine; CI checks for it first (the `import yaml` step), so they can't skip there.
 - Pull requests also need a [conventional title](#titles) and a [sign-off on every commit](#sign-off-your-commits-dco), each enforced by its own check.
 - A change to a Cargo manifest, `Cargo.lock` or `deny.toml` also runs cargo-deny, which checks dependency licences and security advisories and doesn't block a merge. Locally: `cargo deny check licenses advisories bans sources`.
 
@@ -119,8 +120,8 @@ fix(git): keep the branch picker open after a refresh
 | Type | Use it for | Changelog | Version bump before 1.0 |
 |---|---|---|---|
 | `feat` | a new capability that users can see | Features | minor (0.2.0 → 0.3.0) |
-| `fix` | a fix for a bug that users can see | Bug fixes | patch (0.2.0 → 0.2.1) |
-| `perf` | a speed or memory gain, with no change in behaviour | Performance | patch |
+| `fix` | a fix for a bug that users can see | Bug Fixes | patch (0.2.0 → 0.2.1) |
+| `perf` | a speed or memory gain, with no change in behaviour | Performance Improvements | patch |
 | `deps` | a dependency update | Dependencies | patch |
 | `revert` | undoing an earlier change | Reverts | patch |
 | `docs`, `chore`, `refactor`, `test`, `ci`, `build`, `style` | changes users don't see: docs, tests, CI, refactoring, formatting, build scripts | not listed | none, and no release |

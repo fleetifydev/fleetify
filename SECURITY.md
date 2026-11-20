@@ -73,7 +73,7 @@ We don't run a bug bounty yet, so we can't pay for reports. We credit every vali
 This applies from the first release on. Every release on the [Releases page](https://github.com/fleetifydev/fleetify/releases) will come with:
 
 - a `SHA256SUMS` file, which lists the SHA-256 checksum of each file in the release;
-- GitHub build provenance attestations, which show that a file was built by this repository's release workflow.
+- GitHub build provenance attestations, which show that a file was built by this repository's GitHub Actions.
 
 To check a download, compare its checksum with its line in `SHA256SUMS`, using `sha256sum <file>` on Linux, `shasum -a 256 <file>` on macOS or `Get-FileHash <file>` in PowerShell. Then check where it was built with the [GitHub CLI](https://cli.github.com):
 

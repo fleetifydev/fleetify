@@ -59,12 +59,13 @@ of an installed Fleetify. In a git worktree it also picks its own ports; the
 banner it prints shows the slot, the ports and the folder.
 [CONTRIBUTING.md](../CONTRIBUTING.md#running-fleetify) explains the slots.
 
-Two other scripts start a debug build:
+Three other scripts start a debug build:
 
 | Script | What it runs |
 |---|---|
 | `npm run dev:noauth` | No sign-in, the default ports, and the shared `~/.fleetify`. |
 | `npm run dev:tauri` | Real sign-in against an identity provider on `http://localhost:3001`, which it needs running. |
+| `npm run prod` | Real sign-in against production (`https://fleetify.dev`), the default ports and the shared `~/.fleetify`. On Windows it also opens WebView2's remote debugging port, 9222. |
 
 ### Test
 
@@ -92,7 +93,9 @@ The Tauri bundler first builds the sidecars and the UI in release mode
 your OS under `target/release/bundle/`: the NSIS installer on Windows, the
 `.app` and `.dmg` on macOS, and the `.deb`, `.rpm` and AppImage on Linux. A
 release build pins the production endpoints, ignores the debug-only
-variables below, and asks for a Fleetify account.
+variables below, and asks for a Fleetify account. `npm run prod:build` runs
+the same build; the production variables it sets are the ones a release build
+pins anyway.
 
 The `[profile.release]` table in the workspace `Cargo.toml` optimizes for
 size: `opt-level = "s"`, fat LTO, one codegen unit, and stripped symbols.

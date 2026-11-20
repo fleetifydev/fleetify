@@ -117,23 +117,26 @@ into ~140 phantom failures that have nothing to do with the code.
 
 ### E2E / smoke testing
 
-Always use `npm run dev:tauri:wt` (not `npm run dev:tauri`) so the test instance doesn't collide with whatever you have running for normal dev. Then drive it with the **agent-browser skill** for UI walkthroughs:
+Always use `npm run dev:tauri:wt` (not `npm run dev:tauri`) so the test instance doesn't collide with whatever you have running for normal dev. Then drive the real app window with a browser- or desktop-automation tool for UI walkthroughs:
 
 ```
-1. From the worktree being tested, run:    npm run dev:tauri:wt
+1. From the checkout being tested, run:    npm run dev:tauri:wt
 2. The boot banner prints the slot + ports.
 3. The Tauri window opens against the slot's VITE_PORT.
-4. Use the agent-browser skill to:
-   - Attach to the rendered webview (or http://localhost:<VITE_PORT>)
+4. Drive that window with the automation tool. A plain browser tab on
+   VITE_PORT is no substitute: it doesn't get past sign-in, because the UI
+   needs the Tauri bridge.
    - Drive the golden-path scenario the PR claims to fix
    - Capture screenshots for the PR description
 5. Tear down: Ctrl-C in the terminal kills the Tauri process; the
    worktree's FLEETIFY_HOME is preserved across re-runs (deterministic slot).
 ```
 
+**On Linux,** what works: run the real window under Xvfb (inside `dbus-run-session` with a temporary `HOME`, so it touches neither your display nor your data), drive it with `xdotool`, and take screenshots of the virtual display. For setup the UI would make slow, such as creating sessions, call the backend's API on `127.0.0.1:<FLEETIFY_BACKEND_PORT>` directly; that works in a plain no-auth run, while under `FLEETIFY_REQUIRE_API_TOKEN=1` the API asks for the per-run token.
+
 For a webview-driven smoke run, start it as `FLEETIFY_REQUIRE_API_TOKEN=1 npm run dev:tauri:wt`: the run is no-auth by default, which also turns off the per-run API token check, and this keeps the check on (see `docs/RUNNING.md`).
 
-**Don't fake an E2E pass.** Type-checking + unit tests verify *code correctness*; only running the actual app verifies *feature correctness*. If you can't drive the UI (no display, no agent-browser available), say so explicitly in the PR rather than claiming a green smoke test.
+**Don't fake an E2E pass.** Type-checking + unit tests verify *code correctness*; only running the actual app verifies *feature correctness*. If you can't drive the UI (no display, no automation tool available), say so explicitly in the PR rather than claiming a green smoke test.
 
 ### Tests that change behavior
 
@@ -190,7 +193,7 @@ docs/                      # ARCHITECTURE.md, RUNNING.md, INSTALL.md, ANALYTICS.
 |---|---|---|
 | `feat:` / `feat(scope):` | **minor** (0.2.0 → 0.3.0) | Features |
 | `fix:` / `fix(scope):` | **patch** (0.2.0 → 0.2.1) | Bug Fixes |
-| `perf:` | **patch** | Performance |
+| `perf:` | **patch** | Performance Improvements |
 | `deps:` | **patch** | Dependencies |
 | `revert:` | **patch** | Reverts |
 | `feat!:` / footer `BREAKING CHANGE:` | **minor** pre-1.0 / **major** post-1.0 | Features (with `!`) |

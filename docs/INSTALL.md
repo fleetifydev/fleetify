@@ -18,11 +18,14 @@ Fleetify runs on macOS 11 or later. Its macOS build is signed with Fleetify's ow
 
 1. Download the `.dmg` for your Mac: the `aarch64` one for Apple silicon, the `x64` one for an Intel Mac.
 2. Open the `.dmg` and drag **Fleetify** into **Applications**.
-3. Open Fleetify. macOS refuses to open it and says it can't verify the app. Click **Done**.
-4. Choose **Apple menu → System Settings → Privacy & Security**, and scroll down to **Security**. Next to the message about Fleetify, click **Open Anyway**. The button stays there for about an hour after you tried to open the app.
-5. Enter your login password. When macOS asks again, click **Open**.
+3. Open Fleetify. macOS refuses to open it and says it can't verify the app. Close the warning, without moving Fleetify to the Trash.
+4. Open the security settings:
+   - macOS 13 or later: choose **Apple menu → System Settings**, click **Privacy & Security** in the sidebar, and scroll down to **Security**;
+   - macOS 11 or 12: choose **Apple menu → System Preferences → Security & Privacy**, then click **General**.
+5. Next to the message about Fleetify, click **Open**, then **Open Anyway**; on some versions the first button already reads **Open Anyway**. The button is there for about an hour after you tried to open the app.
+6. When macOS asks for your login password, enter it, then click **OK**. If it shows its warning once more, click **Open**.
 
-macOS saves Fleetify as an exception, so it opens normally from then on. On macOS 14 and earlier you can instead Control-click Fleetify in Applications and choose **Open**; macOS 15 removed that shortcut for apps that aren't notarized.
+macOS saves Fleetify as an exception, so it opens normally from then on. On macOS 14 and earlier you can instead Control-click Fleetify in the Applications folder in Finder and choose **Open**; macOS 15 removed that shortcut for apps that aren't notarized.
 
 ### The microphone permission
 
@@ -32,7 +35,7 @@ Voice dictation asks for access to the microphone the first time you use it. mac
 
 Fleetify runs on Windows 10 and 11, 64-bit. Its installer isn't signed, so Microsoft Defender SmartScreen warns you before it runs.
 
-1. Download the installer, the file that ends in `x64-setup.exe`.
+1. Download the installer, the file that ends in `x64-setup.exe`. Your browser may warn that the file isn't commonly downloaded. In Microsoft Edge, choose **…** next to the download, then **Keep**, **Show more** and **Keep anyway**; other browsers offer a similar **Keep** option.
 2. Open it. Windows shows **Windows protected your PC**. Click **More info**: the dialog shows the file name and **Unknown publisher**. Check the file name, then click **Run anyway**.
 3. Follow the installer. It installs Fleetify for your user account only, in `%LOCALAPPDATA%\Fleetify`, so it doesn't ask for administrator rights. If Windows lacks the Microsoft Edge WebView2 runtime, which Fleetify needs, the installer downloads it.
 
@@ -42,7 +45,7 @@ If there's no **Run anyway** button, a policy set by your organisation blocks ap
 
 On Windows 11, Smart App Control, when it is on, blocks unsigned apps that Microsoft's cloud service can't vouch for, and it has no exception for a single app. Expect it to block Fleetify.
 
-To run Fleetify then, you have to turn it off: **Windows Security → App & browser control → Smart App Control settings**. It also protects you from other unsigned apps, so weigh that first. Recent Windows 11 updates let you turn it back on later; on older versions, turning it back on means resetting or reinstalling Windows.
+To run Fleetify then, you have to turn it off: **Windows Security → App & browser control → Smart App Control settings**. It also protects you from other unsigned apps, so weigh that first. Turning it back on later may not be simple. Microsoft says that recent Windows updates let you turn it on again in the Windows Security app without a clean installation. It also says that when Smart App Control is off because optional diagnostic data is turned off, "you'll need to reset this PC, or reinstall Windows, and select Send optional diagnostic data during the setup process" to turn it on.
 
 ## Linux
 
@@ -117,7 +120,7 @@ Uninstalling removes the app but not your data, and it changes nothing on fleeti
 
 ### Remove your data
 
-Quit Fleetify first. Fleetify's own data, such as your Library, installed plugins, MCP servers, device ID and telemetry queues, is in `~/.fleetify`, or in the folder `FLEETIFY_HOME` names if you set it. The rest depends on your OS.
+Quit Fleetify first. Fleetify's own data, such as your sessions and chat history (`fleet.db`), your Library, installed plugins, MCP servers, device ID and telemetry queues, is in `~/.fleetify`, or in the folder `FLEETIFY_HOME` names if you set it. The rest depends on your OS.
 
 **macOS:**
 
@@ -159,4 +162,6 @@ The installers don't include a reset tool, but a [source checkout](../README.md#
 cargo run -p fleet-wipe -- --dry-run
 ```
 
-It names each entry by its service only. To delete them, run it again without `--dry-run`; `--check` does the same as `--dry-run`. It has no `--help`, and without either flag it deletes straight away. On Linux it removes every Fleetify item from the Secret Service and from the kernel keyring cache. On macOS and Windows it removes only your sign-in, so delete the other entries by hand, as listed above. It doesn't touch any files.
+It names each entry by its service only, and changes nothing. To delete the entries, run `cargo run -p fleet-wipe`. It accepts only `--dry-run` and its alias `--check`. Any other argument, including `--help` or a misspelt `--dry-run`, deletes the entries at once, without asking.
+
+On Linux it removes every Fleetify item from the Secret Service and from the kernel keyring cache. On macOS and Windows it removes only your sign-in, so delete the other entries by hand, as listed above. It doesn't touch any files.

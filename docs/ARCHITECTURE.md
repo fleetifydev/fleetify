@@ -77,9 +77,11 @@ Providers, models, MCP servers, and routing are all layered on top of this spine
 `mcp_servers.json` (user MCP registry), `plugins/`, `marketplace-cache/`,
 `library/`, `models-cache/`. The folder is `$FLEETIFY_HOME` when that is set.
 The sessions database, `fleet.db`, goes here in development runs
-([RUNNING.md](RUNNING.md#environment) has the rule). API keys are **not** here —
-they live in the OS keychain. [INSTALL.md](INSTALL.md#remove-your-data) lists
-every other place an installed Fleetify keeps data.
+([RUNNING.md](RUNNING.md#environment) has today's rule), and from the first
+public release (v0.2.0) on, release builds keep it here too. API keys are
+**not** here — they live in the OS keychain.
+[INSTALL.md](INSTALL.md#remove-your-data) lists every place an installed
+Fleetify keeps data, this folder included.
 
 ---
 
