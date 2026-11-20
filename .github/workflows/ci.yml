@@ -67,10 +67,14 @@ jobs:
           components: rustfmt, clippy
       # Each runner image gets its own Rust cache: a cache saved on one image
       # carries that image's MSVC paths (whisper-rs-sys's CMake build dir) and
-      # breaks the build on another image during an image rollout.
+      # breaks the build on another image during an image rollout. The key is
+      # the image type and version; without a version the step fails rather
+      # than share one cache across images.
       - name: Runner image version (cache key)
         shell: pwsh
-        run: '"IMAGE_VERSION=$env:ImageVersion" >> $env:GITHUB_ENV'
+        run: |
+          if (-not $env:ImageVersion) { throw 'The runner sets no ImageVersion, which the Rust cache key needs.' }
+          "IMAGE_VERSION=$env:ImageOS-$env:ImageVersion" >> $env:GITHUB_ENV
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ env.IMAGE_VERSION }}
