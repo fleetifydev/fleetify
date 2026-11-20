@@ -143,6 +143,13 @@ jobs:
       - name: Unit tests (advisory)
         continue-on-error: true
         run: npm test
+      # The node:test suites of the repo's own scripts: the DCO check and the
+      # GitHub config (scripts/ci), the release secret scanner (scripts/release).
+      # A hard gate, because they are deterministic and fast. The YAML checks
+      # need python3 with PyYAML, which ubuntu-latest has; without it they skip
+      # and say why.
+      - name: Script tests
+        run: node --test "scripts/ci/*.test.mjs" "scripts/release/*.test.mjs"
       - name: Audit (advisory)
         continue-on-error: true
         run: npm audit --omit=dev
