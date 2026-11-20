@@ -1,12 +1,13 @@
 /**
- * The file tree's actions against the backend's file API
- * (crates/fleetify-backend/src/routers/workspace.rs): create sends
+ * The file tree's actions and the editors' save against the backend's file
+ * API (crates/fleetify-backend/src/routers/workspace.rs): create sends
  * `{ path, is_dir }`, delete sends `DELETE` with `{ path }` as its JSON body,
- * rename sends `{ from, to }`. Each answers `{ ok, error? }`, and the actions
- * report success from that `ok`, not from the HTTP status.
+ * rename sends `{ from, to }`, save sends `PUT` with `{ path, content }`. Each
+ * answers `{ ok, error? }`, and the actions report success from that `ok`,
+ * not from the HTTP status.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiCreate, apiDelete, apiRename } from "@/components/workspace/workspace-panel";
+import { apiCreate, apiDelete, apiRename, apiSave } from "@/components/workspace/workspace-panel";
 
 /** A stubbed fetch that answers every request with `body` as JSON. */
 function answering(body: unknown, status = 200) {
@@ -111,5 +112,25 @@ describe("workspace file actions", () => {
     await expect(apiCreate("/repo/x", "file")).resolves.toBe(false);
     await expect(apiDelete("/repo/x")).resolves.toBe(false);
     await expect(apiRename("/repo/x", "y")).resolves.toMatchObject({ ok: false });
+  });
+
+  it("save sends PUT with the path and content and reports the reply's ok", async () => {
+    const saved = answering({ ok: true });
+    vi.stubGlobal("fetch", saved);
+
+    await expect(apiSave("/repo/a.ts", "let a = 1;\n")).resolves.toBe(true);
+    expect(sent(saved)).toEqual({
+      url: "/api/fs/file",
+      method: "PUT",
+      contentType: "application/json",
+      body: { path: "/repo/a.ts", content: "let a = 1;\n" },
+    });
+
+    // write_file answers 200 with `ok: false` when the write fails.
+    vi.stubGlobal("fetch", answering({ ok: false, error: "permission denied" }));
+    await expect(apiSave("/repo/a.ts", "x")).resolves.toBe(false);
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("forbidden", { status: 403 })));
+    await expect(apiSave("/repo/a.ts", "x")).resolves.toBe(false);
   });
 });

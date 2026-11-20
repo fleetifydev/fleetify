@@ -115,10 +115,11 @@ async function apiGitDiff(p: string, file?: string, scope: DiffScope = "auto"): 
     return r.ok ? r.json() : { error: "Failed" };
   } catch { return { error: "Failed" }; }
 }
-/* The file actions send the bodies routers/workspace.rs reads (CreateBody,
-   DeleteBody, RenameBody) and get `{ ok, error? }` back. Success is that
-   `ok`: a failed action still answers 200. */
-async function fileAction(url: string, method: "POST" | "DELETE", body: unknown): Promise<boolean> {
+/* The file actions and the editors' save send the bodies routers/workspace.rs
+   reads (CreateBody, DeleteBody, RenameBody, WriteBody) and get
+   `{ ok, error? }` back. Success is that `ok`: a failed action still
+   answers 200. */
+async function fileAction(url: string, method: "POST" | "DELETE" | "PUT", body: unknown): Promise<boolean> {
   try {
     const r = await backendFetch(url, {
       method,
@@ -572,15 +573,8 @@ export function FileTree({ root, selectedPath, onSelect }: {
 }
 
 /* ─── Save API ─── */
-async function apiSave(path: string, content: string): Promise<boolean> {
-  try {
-    const r = await backendFetch("/api/fs/file", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path, content }),
-    });
-    return r.ok;
-  } catch { return false; }
+export async function apiSave(path: string, content: string): Promise<boolean> {
+  return fileAction("/api/fs/file", "PUT", { path, content });
 }
 
 
