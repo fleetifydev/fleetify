@@ -1,0 +1,43 @@
+# DCO: every commit in a pull request needs a Developer Certificate of Origin
+# sign-off, the "Signed-off-by: Name <email>" line that `git commit -s` adds
+# (https://developercertificate.org). Commits by bots (Dependabot, the Fleetify
+# Release Bot app) and merge commits (such as GitHub's "Update branch" makes)
+# are exempt. The rules and the API reading live in scripts/ci/check-dco.mjs,
+# tested by scripts/ci/check-dco.test.mjs.
+#
+# The main ruleset requires a check named DCO, which is this job's name:
+# renaming the job leaves every pull request waiting for a check that never
+# reports.
+#
+# `edited` is among the triggers because retargeting a pull request to another
+# base branch changes which commits it contains.
+name: DCO
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+concurrency:
+  group: dco-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  dco:
+    name: DCO
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check sign-offs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/ci/check-dco.mjs
