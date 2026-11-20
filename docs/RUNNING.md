@@ -6,12 +6,14 @@ running as a single Tauri v2 process with an embedded `axum` server.
 ## Architecture in one paragraph
 
 `crates/fleetify-backend` is a **library** crate (no `main.rs`). Its
-`serve(addr, static_dir)` entry point binds an `axum` router on
+`serve(addr, ServeOptions)` entry point binds an `axum` router on
 `127.0.0.1:8765` and returns a `ServerHandle`. The Tauri binary
 (`src-tauri/fleetify-app`) calls `fleetify_backend::serve(...)` from its
-`setup` hook on a tokio task — same process, same address space. The
-embedded UI (built React app from `../dist`) is served from the same
-origin, so there's no CORS in prod and no port forwarding anywhere.
+`setup` hook on a tokio task — same process, same address space. A
+release build serves the UI from files embedded in the binary, on the
+same origin and under a Content-Security-Policy, so there's no CORS in
+prod and no port forwarding anywhere. A debug build loads the UI from the
+Vite dev server.
 
 ```
 fleetify-app.exe (single Tauri binary)

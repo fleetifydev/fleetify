@@ -4,9 +4,11 @@
 
 use std::sync::{Arc, Mutex};
 
-/// Mutex tests must hold while mutating `HOME` / `USERPROFILE`.
-/// Multiple modules' tests touch these env vars; serialising on a
-/// single static keeps them from racing each other.
+/// The crate-wide lock for any change to the process environment. Tests
+/// hold it while they set or remove a variable (`HOME`, `USERPROFILE`,
+/// `FLEETIFY_HOME`, `POSTHOG_HOST`, …), and while they read one that
+/// another test changes. Many modules' tests touch the environment;
+/// serialising on a single static keeps them from racing each other.
 pub fn home_lock() -> &'static std::sync::Mutex<()> {
     static M: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
     M.get_or_init(|| std::sync::Mutex::new(()))
@@ -14,6 +16,11 @@ pub fn home_lock() -> &'static std::sync::Mutex<()> {
 
 /// Everything logged on this thread while it lives, as plain text. Tests
 /// use it to pin what a log line says, and what it never says.
+///
+/// Every lib test that reaches a logging callsite other tests also reach
+/// holds one, whether or not it reads the text: tracing caches a
+/// callsite's interest globally, and a test thread with no subscriber of
+/// its own can cache it as "never", so another test's capture sees no line.
 pub struct LogCapture {
     lines: Arc<Mutex<Vec<u8>>>,
     _guard: tracing::subscriber::DefaultGuard,

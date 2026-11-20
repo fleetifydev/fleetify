@@ -428,8 +428,10 @@ async fn exec_run_command(input: &Value, ws: &Workspace) -> Result<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        // Kill the process group on drop (set via tokio's kill_on_drop)
-        // so a timed-out child doesn't linger after we move on.
+        // On drop (tokio's kill_on_drop), kill the shell this spawned
+        // (`cmd` or `sh`), so a timed-out command doesn't keep it running.
+        // Only that process: it isn't a process group, so what the shell
+        // started can outlive it.
         .kill_on_drop(true);
     // cmd.exe truncates an inherited PATH over 8191 chars, after which not
     // even System32 programs are found; the dev launch chain grows PATH past

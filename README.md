@@ -53,22 +53,28 @@ cargo tauri build
 | Crate | Kind | Purpose |
 |---|---|---|
 | `crates/fleetify-core` | library | shared types (Session, Message, BridgeEvent, …) |
-| `crates/fleetify-backend` | library | embedded `axum` server (`fleetify_backend::serve(addr, dist_dir)`) |
+| `crates/fleetify-backend` | library | embedded `axum` server (`fleetify_backend::serve(addr, ServeOptions)`) |
 | `crates/memory-mcp` | binary `fleet-memory-mcp` | stdio MCP: `remember` + `recall` |
 | `crates/dispatch-mcp` | binary `fleet-dispatch-mcp` | stdio MCP: `dispatch_to_agent` |
 | `crates/reveng-mcp` | binary `fleet-reveng-mcp` | stdio MCP: `fetch_url` + `save_asset` |
+| `crates/browser-mcp` | binary `fleet-browser-mcp` | stdio MCP: browser tools, forwarded to the backend's shared browser |
 | `src-tauri` | binary `fleetify-app` | Tauri v2 shell (embeds `fleetify-backend`) |
 
 ## Architecture in 60 seconds
 
 `fleetify-backend` is library-only — no `main.rs`. The Tauri shell calls
-`fleetify_backend::serve(addr, static_dir).await` from its `setup` hook;
-the server runs as a tokio task in the same process. Sign-in lives in
-the Tauri shell (`shell::auth`), which holds the access token. The React
-UI asks for it over IPC (`auth_get_access_token`); the telemetry client
-gets it in-process from `shell::auth`. The 3
-MCP-server binaries connect upward to `127.0.0.1:8765/api/sessions/...`
-when the user's session invokes their tools.
+`fleetify_backend::serve(addr, ServeOptions).await` from its `setup` hook;
+the server runs as a tokio task in the same process. A release build
+serves the UI from files embedded in the binary, on the same origin and
+under a Content-Security-Policy; a debug build loads it from the Vite dev
+server. Sign-in lives in the Tauri shell (`shell::auth`), which holds the
+access token. The React UI asks for it over IPC (`auth_get_access_token`);
+the telemetry client gets it in-process from `shell::auth`. Of the four
+MCP sidecars, `fleet-dispatch-mcp` and `fleet-browser-mcp` call the
+backend's `/api/internal/*` routes with the internal secret, and
+`fleet-reveng-mcp` doesn't call the backend. `fleet-memory-mcp` calls
+`/api/sessions/{id}/memory` and expects a bearer token in
+`FLEETIFY_BEARER`, which the app doesn't set: that route is a known issue.
 
 ## License
 

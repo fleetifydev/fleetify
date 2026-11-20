@@ -194,8 +194,9 @@ pub fn host_allowed(host: Option<&str>, port: u16) -> bool {
     })
 }
 
-/// Constant-time byte-slice equality. Tiny implementation — fine for
-/// 32-byte secrets like the loopback token.
+/// Constant-time byte-slice equality. Tiny implementation — fine for short
+/// secrets like the API token and the internal secret, 64 hex characters
+/// each.
 pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;

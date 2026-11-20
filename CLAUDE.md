@@ -121,6 +121,8 @@ Always use `npm run dev:tauri:wt` (not `npm run dev:tauri`) so the test instance
    worktree's FLEETIFY_HOME is preserved across re-runs (deterministic slot).
 ```
 
+For a webview-driven smoke run, start it as `FLEETIFY_REQUIRE_API_TOKEN=1 npm run dev:tauri:wt`: the run is no-auth by default, which also turns off the per-run API token check, and this keeps the check on (see `docs/RUNNING.md`).
+
 **Don't fake an E2E pass.** Type-checking + unit tests verify *code correctness*; only running the actual app verifies *feature correctness*. If you can't drive the UI (no display, no agent-browser available), say so explicitly in the PR rather than claiming a green smoke test.
 
 ### Tests that change behavior

@@ -17,9 +17,9 @@ plus cloud HTTP model providers (OpenAI, OpenRouter, …).
 │  src-tauri (fleetify-app)                                                   │
 │   ├─ shell::auth          OIDC sign-in; holds the access token              │
 │   │                       (the renderer asks for it over IPC)               │
-│   └─ setup() ─ calls ──▶  fleetify_backend::serve(127.0.0.1:8765, dist)     │
+│   └─ setup() ─ calls ──▶  fleetify_backend::serve(127.0.0.1:8765, opts)     │
 │                              │  (library, no main.rs — runs as a tokio task)│
-│                              ├─ React UI (built dist/)                       │
+│                              ├─ React UI (release: embedded files + CSP)     │
 │                              ├─ REST API (/api/...)                          │
 │                              └─ WebSocket chat (/ws/...)                     │
 │                                                                             │

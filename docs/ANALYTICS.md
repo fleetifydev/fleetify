@@ -22,8 +22,9 @@ step; after that it is on unless you turn it off. If you leave
 onboarding before answering, both channels stay off. If you go through
 onboarding again after turning dashboard sync off, that step says it is
 off, with **Keep it off** and **Turn it on**. If you finished onboarding
-before it had the dashboard step, Fleetify asks you that question once,
-after you sign in, and sends nothing to the dashboard until you answer.
+before it had the dashboard step, Fleetify asks you that question one
+time, once you're signed in, and sends nothing to the dashboard until you
+answer.
 
 ---
 
@@ -36,14 +37,14 @@ with your sign-in token and this install's device id (a random UUID kept in
 
 ### On by default, with a switch
 
-Dashboard sync starts only once your choice is saved. On a new
+Dashboard sync starts only once you answer. On a new
 installation, that is when you answer the dashboard step during
 onboarding; after that it is on unless you turn it off. That step tells
 you what it sends, and either of its buttons saves your choice. An
 installation that finished onboarding before that step existed has no
 saved choice, so Fleetify asks it the same question, with the same two
-buttons, once, after you sign in. Nothing is sent to the dashboard until
-you answer. If your answer can't be saved, it holds until Fleetify
+buttons, one time, once you're signed in. Nothing is sent to the dashboard
+until you answer. If your answer can't be saved, it holds until Fleetify
 restarts, and the next launch asks again.
 **Settings → General → Privacy → Dashboard sync** turns it off, or back
 on, at any time. If you turned off the **Anonymous usage analytics**
@@ -160,9 +161,9 @@ Backend events still carry the device id, and so do the app's events
 after a restart until you sign in; PostHog may keep that id linked to an
 account that signed in on this device before.
 
-The product analytics choice and the device id belong to your OS user
-profile, not to your Fleetify account: every account that signs in to
-Fleetify as the same OS user shares them.
+The product analytics and dashboard sync choices and the device id belong
+to your OS user profile, not to your Fleetify account: every account that
+signs in to Fleetify as the same OS user shares them.
 
 On its own, posthog-js would also attach person properties to some
 events: `$set_once` with the first address and referrer it saw, such as
