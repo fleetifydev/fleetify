@@ -1398,6 +1398,10 @@ pub async fn window_close(app: tauri::AppHandle) -> serde_json::Value {
 /// the size we're about to apply makes it correct regardless of when the GTK
 /// resize lands. Clamps non-negative so a window larger than the monitor pins
 /// to the monitor origin rather than running off the top-left.
+///
+/// macOS centers with the window's own `center()` instead (`window_set_size`),
+/// so there only the tests call this.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn centered_top_left(
     mon_x: f64,
     mon_y: f64,
