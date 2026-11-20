@@ -1,0 +1,113 @@
+# cargo-deny: dependency licences, security advisories, duplicate crates and
+# where crates come from, for the whole workspace. Run it locally with
+#
+#   cargo deny check licenses advisories bans sources
+#
+# CI runs the same check on pull requests that change a Cargo manifest,
+# Cargo.lock or this file, and weekly (.github/workflows/deny.yml). It is not
+# a required check.
+
+[graph]
+# Every feature of every workspace crate, so an optional dependency can't slip
+# past the licence and advisory checks.
+all-features = true
+
+[advisories]
+# Unmaintained and unsound crates count wherever they sit in the tree, as in
+# `cargo audit`. cargo-deny's default ("workspace") only looks at the crates a
+# workspace member depends on directly.
+unmaintained = "all"
+unsound = "all"
+# Each entry names its triage. Drop an entry once its crate is fixed or gone:
+# cargo-deny warns about an ignore that no longer matches anything.
+ignore = [
+  # rsa dev-only: fleetify-backend's integration tests sign JWTs with it.
+  { id = "RUSTSEC-2023-0071", reason = "rsa dev-only: a fleetify-backend dev-dependency for signing test JWTs; no shipped binary links rsa" },
+
+  # zip write-only use: Fleetify only writes zips (the log export,
+  # zip::ZipWriter with the deflate feature only). Every one of these is in
+  # reading or extracting an archive.
+  { id = "RUSTSEC-2026-0367", reason = "zip write-only use: extraction keeps SUID/SGID bits; Fleetify never extracts a zip" },
+  { id = "RUSTSEC-2026-0368", reason = "zip write-only use: ZipArchive::extract creates symlinks that point outside the destination; Fleetify never extracts a zip" },
+  { id = "RUSTSEC-2026-0369", reason = "zip write-only use: extraction applies permissions through symlinks; Fleetify never extracts a zip" },
+  { id = "RUSTSEC-2026-0429", reason = "zip write-only use: ZipArchive::extract aborts on a symlink entry with a huge declared size; Fleetify never extracts a zip" },
+  { id = "RUSTSEC-2026-0545", reason = "zip write-only use: AES entries are read without checking their authentication code; Fleetify never reads a zip and doesn't enable aes-crypto" },
+  { id = "RUSTSEC-2026-0548", reason = "zip write-only use: ZipStreamReader extracts under local-header names; Fleetify never reads a zip" },
+
+  # chrono: unmaintained, every version.
+  { id = "RUSTSEC-2026-0543", reason = "chrono: unmaintained with no fixed release; fleetify-app and fleetify-backend use it directly and through sqlx 0.8's chrono feature" },
+
+  # A fixed release exists, but fleetify-backend hasn't moved to it yet.
+  # portable-pty: serial 0.4 and pin-utils (through nix 0.25), both
+  # unmaintained, come only from portable-pty 0.8; portable-pty 0.9 uses
+  # neither.
+  { id = "RUSTSEC-2017-0008", reason = "fleetify-backend still on portable-pty 0.8 (src-tauri is on 0.9); bump tracked in the post-release backlog" },
+  { id = "RUSTSEC-2026-0441", reason = "fleetify-backend still on portable-pty 0.8 (src-tauri is on 0.9); bump tracked in the post-release backlog" },
+  # sqlx: sqlx-sqlite 0.8 holds libsqlite3-sys at 0.30, whose bundled SQLite
+  # (older than 3.54) can return uninitialized memory for a database and -wal
+  # file with different page sizes. The backend's database runs in WAL mode
+  # (crates/fleetify-backend/src/db.rs).
+  { id = "RUSTSEC-2026-0459", reason = "fleetify-backend still on sqlx 0.8 (sqlx-sqlite 0.8 caps libsqlite3-sys below the fixed 0.39); sqlx 0.9.1 admits it — bump tracked in the post-release backlog (pre-RC if cheap)" },
+
+  # Upstream: the fix needs a dependency release Fleetify can't take yet.
+  { id = "RUSTSEC-2025-0075", reason = "tauri-utils upstream: unic-char-range (unmaintained) via urlpattern 0.3, a tauri-utils 2.9 dependency" },
+  { id = "RUSTSEC-2025-0080", reason = "tauri-utils upstream: unic-common (unmaintained) via urlpattern 0.3, a tauri-utils 2.9 dependency" },
+  { id = "RUSTSEC-2025-0081", reason = "tauri-utils upstream: unic-char-property (unmaintained) via urlpattern 0.3, a tauri-utils 2.9 dependency" },
+  { id = "RUSTSEC-2025-0098", reason = "tauri-utils upstream: unic-ucd-version (unmaintained) via urlpattern 0.3, a tauri-utils 2.9 dependency" },
+  { id = "RUSTSEC-2025-0100", reason = "tauri-utils upstream: unic-ucd-ident (unmaintained) via urlpattern 0.3, a tauri-utils 2.9 dependency" },
+  { id = "RUSTSEC-2024-0429", reason = "tauri upstream: glib 0.18's VariantStrIter is unsound; gtk-rs 0.18 is tauri 2's Linux GTK3 stack (tao, wry, muda) and Fleetify doesn't use VariantStrIter" },
+  { id = "RUSTSEC-2024-0370", reason = "tauri upstream: proc-macro-error (unmaintained, compile time only) via glib-macros and gtk3-macros 0.18, tauri 2's Linux GTK3 stack" },
+
+  # zbus-5 unmaintained via tauri-plugin-single-instance 2.4.5, the newest
+  # release for tauri 2.11 (see src-tauri/Cargo.toml): zbus 6 absorbed these
+  # crates. keyring upstream: keyring 3's optional secret-service 4 puts a
+  # zbus 4 copy of the same crates in Cargo.lock, which no build compiles.
+  { id = "RUSTSEC-2026-0370", reason = "zbus-5 unmaintained via tauri-plugin-single-instance 2.4.5: zvariant, merged into zbus 6; its zbus 4 copy in Cargo.lock is keyring upstream" },
+  { id = "RUSTSEC-2026-0371", reason = "zbus-5 unmaintained via tauri-plugin-single-instance 2.4.5: zbus_names, merged into zbus 6; its zbus 4 copy in Cargo.lock is keyring upstream" },
+  { id = "RUSTSEC-2026-0372", reason = "zbus-5 unmaintained via tauri-plugin-single-instance 2.4.5: zvariant_derive, merged into zbus 6; its zbus 4 copy in Cargo.lock is keyring upstream" },
+]
+
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "BSL-1.0",
+  "MPL-2.0",
+  "CC0-1.0",
+  "0BSD",
+]
+# The list is policy, not an inventory: an allowed licence that no crate uses
+# today isn't worth a warning.
+unused-allowed-license = "allow"
+# Licences outside the list, each allowed only for the crate that needs it.
+exceptions = [
+  # webpki-roots is Mozilla's list of CA certificates, the TLS trust roots for
+  # rustls (reqwest, tokio-tungstenite). CDLA-Permissive-2.0 is a permissive
+  # licence for data.
+  { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
+  # whisper-rs and whisper-rs-sys bind whisper.cpp for on-device voice
+  # dictation (src-tauri's default local-whisper feature). The Unlicense puts
+  # them in the public domain.
+  { allow = ["Unlicense"], crate = "whisper-rs" },
+  { allow = ["Unlicense"], crate = "whisper-rs-sys" },
+]
+
+[bans]
+# Two versions of one crate are reported but don't fail the check.
+multiple-versions = "warn"
+
+[sources]
+# crates.io only. vendor/tauri-runtime-wry is a path dependency (the root
+# Cargo.toml's [patch.crates-io]); a path crate has no registry or git source,
+# so this check accepts it without an entry.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

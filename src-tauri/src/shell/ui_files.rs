@@ -304,6 +304,18 @@ mod tests {
     }
 
     #[test]
+    fn the_bundle_declares_apache_without_a_click_through() {
+        // The bundler puts `license` in the rpm License header.
+        let config = tauri_conf();
+        let bundle = &config["bundle"];
+        assert_eq!(bundle["license"], "Apache-2.0", "bundle: {bundle}");
+        // No licenseFile: Apache-2.0 needs no click-through (NSIS "I Agree" page, DMG prompt).
+        for key in ["licenseFile", "license-file"] {
+            assert!(bundle.get(key).is_none(), "bundle.{key}: {bundle}");
+        }
+    }
+
+    #[test]
     fn tauri_adds_no_csp_of_its_own() {
         // The backend sends the policy with every UI file. Tauri's would
         // only rewrite the embedded index.html (nonces, hashes) for a
