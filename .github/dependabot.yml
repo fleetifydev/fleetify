@@ -21,7 +21,7 @@
 # in vendor/tauri-runtime-wry/FLEETIFY_PATCH.md.
 #
 # Commit messages, and so pull request titles, use conventional types that the
-# PR title check in ci.yml accepts: `deps:` for Cargo crates and npm runtime
+# PR title check in pr-title.yml accepts: `deps:` for Cargo crates and npm runtime
 # dependencies, `chore:` for npm dev dependencies, `ci:` for GitHub Actions.
 # Dependabot titles a pull request `deps:` as soon as one runtime dependency is
 # in it, hence npm's separate groups. `chore:` and `ci:` bumps stay out of the

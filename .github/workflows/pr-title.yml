@@ -1,0 +1,58 @@
+# The PR title check. Pull requests are squash-merged, so a pull request's
+# title becomes its commit's subject on main, which release-please reads to
+# write the changelog and pick the next version. The title must therefore be
+# a Conventional Commit with one of the types below, the ones in the "Titles"
+# table of CONTRIBUTING.md.
+#
+# The check has a workflow of its own so that editing a title reruns it:
+# GitHub reports the edit as `edited`, which CI doesn't run on, and this
+# workflow reruns without CI. `synchronize` makes it report on each new head
+# commit as well, which is where the main ruleset looks for it.
+#
+# The main ruleset requires a check named "Conventional PR title", which is
+# this job's name: renaming the job leaves every pull request waiting for a
+# check that never reports.
+#
+# pull_request rather than pull_request_target: the check reads the title, and
+# the read-only token a fork's pull request gets is enough for that.
+name: PR title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pr-title:
+    name: Conventional PR title
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # The action reads the pull request's current title through the API, and
+    # checks out nothing.
+    permissions:
+      pull-requests: read
+    steps:
+      # Pinned to the release's commit, so the reference can't move.
+      - uses: amannn/action-semantic-pull-request@2252a14e810aa9b85c2d560bd7070c802206ecf6 # v6.1.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            perf
+            deps
+            revert
+            docs
+            chore
+            refactor
+            test
+            ci
+            build
+            style

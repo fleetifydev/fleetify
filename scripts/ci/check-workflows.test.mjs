@@ -13,6 +13,12 @@
  * rustup puts a `+toolchain` argument, RUSTUP_TOOLCHAIN and `rustup override`
  * before it.
  *
+ * The main ruleset requires checks by name, and a job reports its check under
+ * its own name, so each required check must be exactly one job, in a workflow
+ * that runs on every pull request. The PR title check also reruns when a
+ * title is edited, and the Linux clippy job installs the packages that
+ * CONTRIBUTING.md lists.
+ *
  * Node has no YAML parser and the repo takes no dependency for a test, so the
  * workflows are parsed by Python's PyYAML, as in check-github-config.test.mjs.
  * Where `python3 -c "import yaml"` fails, the workflow checks skip and say
@@ -26,9 +32,32 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const WORKFLOWS = ".github/workflows";
+
+/** The check pr-title.yml's one job reports. */
+const PR_TITLE_CHECK = "Conventional PR title";
+
+/**
+ * The checks the main ruleset requires: a pull request merges once each has
+ * passed on its head commit. A job reports its check under its name, so a
+ * renamed job, or a changed matrix, leaves every pull request waiting for a
+ * check that never comes. The two clippy checks join the ruleset after their
+ * first green run on main.
+ */
+const REQUIRED = [
+  PR_TITLE_CHECK,
+  "Rust (fmt + clippy + test)",
+  "Renderer (lint + test + types)",
+  "DCO",
+  "Rust clippy (ubuntu-22.04)",
+  "Rust clippy (macos-15)",
+];
+
+/** The pull request activity types a workflow runs on when it names none. */
+const DEFAULT_PULL_REQUEST_TYPES = ["opened", "synchronize", "reopened"];
 
 const PARSE_YAML =
   "import yaml,json,sys; print(json.dumps(yaml.safe_load(open(sys.argv[1], encoding='utf-8'))))";
@@ -188,6 +217,102 @@ const OVERRIDES = [
 const setsToolchainVariable = (env) =>
   env !== null && typeof env === "object" && Object.hasOwn(env, "RUSTUP_TOOLCHAIN");
 
+/** A workflow's triggers, as a mapping from each event to its settings (null when it has none). */
+function triggersOf(workflow) {
+  const on = workflow.true ?? workflow.on;
+  if (typeof on === "string") return { [on]: null };
+  if (Array.isArray(on)) return Object.fromEntries(on.map((event) => [event, null]));
+  return on ?? {};
+}
+
+/**
+ * Why a workflow's jobs might not report on a pull request's head commit, or
+ * undefined when they always do. That takes the pull_request trigger, with no
+ * path filter and with the default activity types among its own.
+ */
+function pullRequestGap(workflow) {
+  const on = triggersOf(workflow);
+  if (!Object.hasOwn(on, "pull_request")) return "doesn't run on pull_request";
+  const settings = on.pull_request ?? {};
+  const filters = ["paths", "paths-ignore"].filter((key) => Object.hasOwn(settings, key));
+  if (filters.length > 0) return `filters pull requests by ${filters.join(" and ")}`;
+  if (settings.types === undefined) return undefined;
+  const missing = DEFAULT_PULL_REQUEST_TYPES.filter((type) => ![settings.types].flat().includes(type));
+  return missing.length > 0 ? `doesn't run on ${missing.join(", ")}` : undefined;
+}
+
+/**
+ * A job's matrix combinations, as GitHub expands them: every mix of the values
+ * its lists give, less those an `exclude` entry matches, then the `include`
+ * entries. An include entry joins each combination whose original values it
+ * doesn't change, and becomes a combination of its own when it joins none. A
+ * job without a matrix has one, empty, combination, as does a matrix given as
+ * an expression, which only a run can expand.
+ */
+function matrixCombinations(matrix) {
+  if (matrix === null || typeof matrix !== "object") return [{}];
+  const { include = [], exclude = [], ...lists } = matrix;
+  let base = Object.keys(lists).length > 0 ? [{}] : [];
+  for (const [key, values] of Object.entries(lists)) {
+    base = base.flatMap((combo) => [values].flat().map((value) => ({ ...combo, [key]: value })));
+  }
+  const hasAll = (combo, entry) =>
+    Object.entries(entry).every(([key, value]) => key in combo && isDeepStrictEqual(combo[key], value));
+  const keeps = (combo, entry) =>
+    Object.entries(entry).every(([key, value]) => !(key in combo) || isDeepStrictEqual(combo[key], value));
+  base = base.filter((combo) => !exclude.some((entry) => hasAll(combo, entry)));
+  const combos = base.map((combo) => ({ ...combo }));
+  for (const entry of include) {
+    const joins = base.flatMap((combo, i) => (keeps(combo, entry) ? [i] : []));
+    for (const i of joins) Object.assign(combos[i], entry);
+    if (joins.length === 0) combos.push({ ...entry });
+  }
+  return combos.length > 0 ? combos : [{}];
+}
+
+/**
+ * The names a job's checks report under: its `name`, or its id when it has
+ * none, once per matrix combination. A `${{ matrix.<key> }}` in the name
+ * becomes the combination's value; a name with no expression gets the
+ * combination's values appended, as GitHub does: "Build (ubuntu-22.04)".
+ */
+function checkNames(id, job) {
+  const name = typeof job.name === "string" ? job.name : id;
+  return matrixCombinations(job.strategy?.matrix).map((combo) => {
+    const values = Object.values(combo);
+    if (values.length === 0) return name;
+    if (!name.includes("${{")) return `${name} (${values.join(", ")})`;
+    return name.replace(/\$\{\{\s*matrix\.([\w-]+)\s*\}\}/g, (expression, key) =>
+      key in combo ? String(combo[key]) : expression,
+    );
+  });
+}
+
+/** The first fenced code block in the section under a Markdown heading, such as "### Linux". */
+function codeBlockUnder(rel, heading) {
+  const text = read(rel).replace(/\r\n/g, "\n");
+  const start = text.indexOf(`\n${heading}\n`);
+  assert.ok(start !== -1, `${rel} has no "${heading}" heading`);
+  const rest = text.slice(start + heading.length + 2);
+  const block = rest.match(/^```[\w-]*\n([\s\S]*?)^```/m);
+  assert.ok(block && !/^#{1,6} /m.test(rest.slice(0, block.index)), `${rel} has no code block under "${heading}"`);
+  return block[1];
+}
+
+/** The packages that the `apt install` and `apt-get install` commands in shell text install, sorted. */
+function aptPackages(text) {
+  return text
+    .replace(/\\\r?\n/g, " ")
+    .split(/&&|;|\n/)
+    .flatMap((command) => {
+      const words = command.trim().split(/\s+/);
+      const apt = words.findIndex((word) => word === "apt" || word === "apt-get");
+      const install = words.indexOf("install", apt + 1);
+      return apt === -1 || install === -1 ? [] : words.slice(install + 1).filter((word) => !word.startsWith("-"));
+    })
+    .sort();
+}
+
 describe("Rust toolchain", () => {
   test("rust-toolchain.toml pins an exact release", () => {
     const channel = tomlString("rust-toolchain.toml", "toolchain", "channel");
@@ -244,6 +369,83 @@ describe("Rust toolchain", () => {
       problems,
       [],
       `${problems.join("\n")}\nEach outranks rust-toolchain.toml, so cargo would build with a toolchain the pin didn't choose.`,
+    );
+  });
+});
+
+describe("Linux packages", () => {
+  yamlTest("the Linux clippy job installs CONTRIBUTING's Linux packages", () => {
+    const documented = aptPackages(codeBlockUnder("CONTRIBUTING.md", "### Linux"));
+    assert.ok(documented.length > 0, "CONTRIBUTING.md's Linux section installs no packages with apt");
+    const job = load(`${WORKFLOWS}/ci.yml`).jobs?.["rust-unix"];
+    assert.ok(job, "ci.yml has no rust-unix job");
+    const installed = (job.steps ?? []).flatMap((step) => aptPackages(scriptOf(step))).sort();
+    // The job is what proves the documented list builds Fleetify.
+    assert.deepEqual(
+      installed,
+      documented,
+      "ci.yml's rust-unix job and CONTRIBUTING.md's Linux section must install the same packages",
+    );
+  });
+});
+
+describe("required checks", () => {
+  yamlTest("every required check is a job", () => {
+    const reporters = new Map();
+    for (const { rel, id, job } of workflowJobs()) {
+      for (const name of checkNames(id, job)) {
+        reporters.set(name, [...(reporters.get(name) ?? []), `${rel} job ${id}`]);
+      }
+    }
+    const problems = REQUIRED.flatMap((check) => {
+      const jobs = reporters.get(check) ?? [];
+      if (jobs.length === 0) return [`no job reports "${check}"`];
+      return jobs.length > 1 ? [`"${check}" is reported ${jobs.length} times, by ${jobs.join(", ")}`] : [];
+    });
+    assert.deepEqual(problems, [], `${problems.join("\n")}\nThe main ruleset requires each of these checks by name.`);
+  });
+
+  yamlTest("the required checks run on every pull request", () => {
+    const problems = [];
+    for (const { rel, workflow } of workflows()) {
+      const checks = Object.entries(workflow.jobs ?? {})
+        .flatMap(([id, job]) => checkNames(id, job))
+        .filter((name) => REQUIRED.includes(name));
+      const gap = checks.length > 0 ? pullRequestGap(workflow) : undefined;
+      if (gap) problems.push(`${rel}, which reports ${checks.map((c) => `"${c}"`).join(", ")}, ${gap}`);
+    }
+    assert.deepEqual(
+      problems,
+      [],
+      `${problems.join("\n")}\nA pull request waits for a required check until it reports on the head commit.`,
+    );
+  });
+
+  // An edited title fires `edited`, which ci.yml doesn't run on, so the check
+  // lives in a workflow of its own; `synchronize` makes it report on each new
+  // head commit too, which is where the ruleset looks for it.
+  yamlTest("the PR title check reruns when a title is edited", () => {
+    const rel = `${WORKFLOWS}/pr-title.yml`;
+    const workflow = load(rel);
+    const on = triggersOf(workflow);
+    // pull_request_target would run on a fork's pull request with the base repository's token.
+    assert.ok(!Object.hasOwn(on, "pull_request_target"), `${rel} runs on pull_request_target; use pull_request`);
+    const types = [on.pull_request?.types ?? []].flat();
+    assert.deepEqual(
+      [...types].sort(),
+      ["edited", "opened", "reopened", "synchronize"],
+      `${rel} must run on the pull request types opened, edited, synchronize and reopened, and only ` +
+        `those; it runs on ${types.join(", ") || "none"}`,
+    );
+    const names = Object.values(workflow.jobs ?? {}).map((job) => job.name);
+    assert.deepEqual(names, [PR_TITLE_CHECK], `${rel} must have one job, named "${PR_TITLE_CHECK}"`);
+    const inCi = Object.entries(load(`${WORKFLOWS}/ci.yml`).jobs ?? {})
+      .filter(([, job]) => job.name === PR_TITLE_CHECK)
+      .map(([id]) => id);
+    assert.deepEqual(
+      inCi,
+      [],
+      `ci.yml's job ${inCi.join(", ")} is named "${PR_TITLE_CHECK}" too, and an edited title doesn't rerun it`,
     );
   });
 });

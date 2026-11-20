@@ -6,10 +6,17 @@
 #   compiles whisper.cpp via whisper-rs-sys. That needs CMake + a C++ toolchain
 #   and libclang (bindgen). windows-latest preinstalls all three (MSVC, CMake,
 #   LLVM/Clang on PATH), so no extra setup step is required; if a future runner
-#   image drops libclang, set LIBCLANG_PATH on the rust job.
+#   image drops libclang, set LIBCLANG_PATH on the rust job. macos-15 ships
+#   them too (Xcode's clang and libclang, Homebrew's CMake); on ubuntu-22.04
+#   the rust-unix job installs them from apt, with Tauri's GTK and WebKitGTK
+#   libraries.
 # - The Rust job runs on windows-latest because that is the project's real
 #   target (keyring `windows-native`, `winreg`, ConPTY) and matches the local
-#   commands devs run.
+#   commands devs run. The rust-unix job compiles and lints the workspace on
+#   Linux and macOS as well, so code behind `cfg(target_os = "linux")` or
+#   `cfg(target_os = "macos")` can't break unseen until a release build.
+# - The PR title check runs in pr-title.yml, so that editing a title reruns it
+#   without rerunning this workflow.
 # - `cargo audit` / `npm audit` are advisory for now (continue-on-error) so a
 #   single transitive advisory (e.g. rsa RUSTSEC-2023-0071) doesn't wall every
 #   PR. Flip them to blocking once the known advisories are triaged.
@@ -26,34 +33,8 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: read
 
 jobs:
-  pr-title:
-    name: Conventional PR title
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      # The PR title is the changelog entry (release-please contract). Enforce
-      # the conventional-commit prefix set we actually use.
-      - uses: amannn/action-semantic-pull-request@v5
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          types: |
-            feat
-            fix
-            perf
-            deps
-            revert
-            docs
-            chore
-            refactor
-            test
-            ci
-            build
-            style
-
   rust:
     name: Rust (fmt + clippy + test)
     runs-on: windows-latest
@@ -132,6 +113,63 @@ jobs:
         continue-on-error: true
         timeout-minutes: 5
         run: cargo audit
+
+  # Clippy on Linux and macOS: it compiles the workspace for each OS, tests
+  # included (--all-targets), so code behind their cfgs is built before a
+  # release build is. Fmt, which reads the same on every OS, and running the
+  # tests stay with the rust job.
+  rust-unix:
+    name: Rust clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # A cold cache compiles the whole workspace, whisper.cpp included.
+    timeout-minutes: 40
+    strategy:
+      # Each OS reports a check of its own, so one failing doesn't cancel the other.
+      fail-fast: false
+      matrix:
+        # ubuntu-22.04 is the oldest Ubuntu that Fleetify supports.
+        os: [ubuntu-22.04, macos-15]
+    # Cargo colours its output only on a terminal, which a job's log isn't.
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      # As in the rust job: the release that rust-toolchain.toml pins.
+      - name: Rust toolchain (rust-toolchain.toml)
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+      # The Linux packages from CONTRIBUTING.md, which a script test keeps in
+      # step with this list: what Tauri builds against, plus CMake and libclang
+      # for whisper.cpp and the ALSA and D-Bus headers. The job is what shows
+      # that the documented list builds Fleetify.
+      - name: System packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl wget file pkg-config cmake libclang-dev \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libdbus-1-dev patchelf
+      # As in the rust job: one Rust cache per runner image, since a cache
+      # built on one image can carry paths (Xcode's, CMake's) that another
+      # image lacks. Both images set ImageOS and ImageVersion.
+      - name: Runner image version (cache key)
+        shell: bash
+        run: |
+          if [ -z "${ImageVersion:-}" ]; then
+            echo "::error::The runner sets no ImageVersion, which the Rust cache key needs."
+            exit 1
+          fi
+          echo "IMAGE_VERSION=${ImageOS:-}-${ImageVersion}" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.IMAGE_VERSION }}
+      # As in the rust job: Tauri's build script needs the sidecars staged
+      # under this OS's target triple.
+      - name: Stage MCP sidecars (Tauri externalBin)
+        run: node scripts/build-sidecars.mjs
+      - name: Clippy (compile + lint)
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
   web:
     name: Renderer (lint + test + types)

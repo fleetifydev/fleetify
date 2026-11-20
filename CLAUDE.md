@@ -41,7 +41,7 @@ git branch -d feat/your-feature
 | `docs:` | `docs/` | `docs/release-runbook` |
 | `chore:` / `refactor:` / `test:` | matching prefix | `test/branch-strip-mocks` |
 
-CI enforces conventional-commit PR titles with `amannn/action-semantic-pull-request` (`.github/workflows/ci.yml`).
+CI enforces conventional-commit PR titles with `amannn/action-semantic-pull-request` (`.github/workflows/pr-title.yml`); editing a PR's title reruns the check.
 
 ---
 
@@ -98,8 +98,9 @@ node --test "scripts/ci/*.test.mjs" "scripts/release/*.test.mjs"   # script test
 
 Run all of these locally **before pushing**. CI runs the same set on every PR,
 plus `cargo audit` and `npm audit --omit=dev`, both advisory. The Rust steps run
-on Windows in CI, so code behind `cfg(windows)` is compiled and linted there even
-when your machine skips it.
+on Windows in CI, and clippy runs on Linux and macOS as well, so code behind one
+OS's `cfg`, such as `cfg(windows)`, is compiled and linted even when your machine
+skips it.
 
 The script tests read YAML with Python 3 and PyYAML (`python3-yaml` on Debian and
 Ubuntu, `pip install pyyaml` elsewhere). Without PyYAML those checks skip on your
