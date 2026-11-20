@@ -166,6 +166,12 @@ The installers don't include a reset tool, but a [source checkout](../README.md#
 cargo run -p fleet-wipe -- --dry-run
 ```
 
-It names each entry by its service only, and changes nothing. To delete the entries, run `cargo run -p fleet-wipe`. It accepts only `--dry-run` and its alias `--check`. Any other argument, including `--help` or a misspelt `--dry-run`, deletes the entries at once, without asking.
+It names each entry by its service only, and changes nothing. To delete the entries:
+
+```bash
+cargo run -p fleet-wipe -- --yes
+```
+
+`--help` lists the options, and any other argument is refused without changing anything, as is a run with no arguments.
 
 On Linux it removes every Fleetify item from the Secret Service and from the kernel keyring cache. On macOS and Windows it removes only your sign-in, so delete the other entries by hand, as listed above. It doesn't touch any files.

@@ -256,10 +256,11 @@ function wipeKeychainMac() {
 // `Fleetify` / `Fleetify-*` (the OIDC refresh token plus GitHub / voice /
 // provider / router keys), and invalidates the `keyring-rs:*@Fleetify*` keys
 // that builds before the Secret Service store left in the kernel keyring. No
-// secret-tool needed. fleet-wipe exits non-zero when its Secret Service sweep
-// fails (unreachable, left locked, or an item can't be deleted).
+// secret-tool needed. It deletes only when passed `--yes`; without it, it
+// prints its usage and exits 2, changing nothing. It exits 1 when its Secret
+// Service sweep fails (unreachable, left locked, or an item can't be deleted).
 function wipeKeychainLinux() {
-  const run = spawnSync("cargo", ["run", "-q", "-p", "fleet-wipe"], { encoding: "utf8" });
+  const run = spawnSync("cargo", ["run", "-q", "-p", "fleet-wipe", "--", "--yes"], { encoding: "utf8" });
   if (run.error) {
     console.log("  ✗ keychain               FAILED     could not run fleet-wipe via cargo");
     console.log(`    ${run.error.message}`);

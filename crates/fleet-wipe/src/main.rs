@@ -21,15 +21,89 @@
 //! Reads only item attributes and key *descriptions* (never secret values)
 //! and only ever touches entries whose service is `Fleetify` / `Fleetify-*`.
 //! Output names each entry by its service alone, never by its account.
-//! Pass `--dry-run` (or `--check`) to list what WOULD be removed without
-//! changing anything. Exits with status 1 when the Linux Secret Service sweep
-//! fails (unreachable, left locked, or an item can't be deleted), so wipe.mjs
+//!
+//! Only `--yes` deletes; `--dry-run` (or `--check`) lists what WOULD be
+//! removed without changing anything. No arguments, any other argument, or
+//! `--yes` with `--dry-run` prints the usage and exits with status 2 without
+//! touching the store, and `--help` prints it and exits 0 ([`parse_args`]).
+//! Exits with status 1 when the Linux Secret Service sweep fails
+//! (unreachable, left locked, or an item can't be deleted), so wipe.mjs
 //! reports the failure.
 
+/// What the command line asks for; see [`parse_args`].
+#[derive(Debug, PartialEq, Eq)]
+enum Command {
+    /// Sweep the credential store; with `dry_run`, only list what it would remove.
+    Wipe { dry_run: bool },
+    /// Print [`USAGE`] and exit.
+    Help,
+}
+
+/// The `--help` text, also printed to stderr after a refused command line.
+const USAGE: &str = "\
+Usage: fleet-wipe (--dry-run | --yes)
+
+Removes Fleetify's entries from the OS credential store.
+
+  --dry-run    list what it would remove, and change nothing (alias: --check)
+  --yes        remove them
+  -h, --help   print this help";
+
+/// Parses the arguments after the program name. It touches no credential
+/// store. `-h` or `--help` anywhere wins; otherwise the arguments must be
+/// `--dry-run` / `--check` or `--yes`, repeats allowed. No arguments, any other
+/// argument, or `--yes` with `--dry-run` is an error, so a bare run, a typo or
+/// a stray argument never deletes anything.
+fn parse_args<I, S>(args: I) -> Result<Command, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut dry_run = false;
+    let mut yes = false;
+    let mut unknown = None;
+    for arg in args {
+        match arg.as_ref() {
+            "-h" | "--help" => return Ok(Command::Help),
+            "--dry-run" | "--check" => dry_run = true,
+            "--yes" => yes = true,
+            other => {
+                // Name the first one, but keep looking for --help.
+                if unknown.is_none() {
+                    unknown = Some(other.to_owned());
+                }
+            }
+        }
+    }
+    if let Some(arg) = unknown {
+        return Err(format!("unknown argument: {arg}"));
+    }
+    match (dry_run, yes) {
+        (true, true) => Err("--yes and --dry-run can't be combined".to_owned()),
+        (true, false) => Ok(Command::Wipe { dry_run: true }),
+        (false, true) => Ok(Command::Wipe { dry_run: false }),
+        (false, false) => Err("say --dry-run to preview or --yes to delete".to_owned()),
+    }
+}
+
 fn main() {
-    let dry = std::env::args()
+    // An argument that isn't valid Unicode can't be a flag. Lossy conversion
+    // turns it into an unknown argument, refused like any other, where
+    // `std::env::args` would panic.
+    let args = std::env::args_os()
         .skip(1)
-        .any(|a| a == "--dry-run" || a == "--check");
+        .map(|a| a.to_string_lossy().into_owned());
+    let dry = match parse_args(args) {
+        Ok(Command::Wipe { dry_run }) => dry_run,
+        Ok(Command::Help) => {
+            println!("{USAGE}");
+            return;
+        }
+        Err(message) => {
+            eprintln!("fleet-wipe: {message}\n\n{USAGE}");
+            std::process::exit(2);
+        }
+    };
     let verb = if dry { "would remove" } else { "removed" };
     match wipe(dry) {
         Ok(removed) => println!("fleet-wipe: {verb} {removed} Fleetify credential(s)"),
@@ -380,6 +454,130 @@ mod tests {
             assert!(!line.contains("acct-42"), "{line:?} prints the account");
             assert_eq!(line, expected);
         }
+    }
+}
+
+/// The command line is parsed without touching any credential store, so these
+/// tests can never wipe anything.
+#[cfg(test)]
+mod args_tests {
+    use super::{parse_args, Command, USAGE};
+
+    fn parse(args: &[&str]) -> Result<Command, String> {
+        parse_args(args)
+    }
+
+    #[test]
+    fn no_arguments_is_an_error_not_a_wipe() {
+        assert_eq!(
+            parse(&[]),
+            Err("say --dry-run to preview or --yes to delete".to_string())
+        );
+    }
+
+    #[test]
+    fn dry_run_and_check_preview() {
+        let cases: &[&[&str]] = &[
+            &["--dry-run"],
+            &["--check"],
+            &["--dry-run", "--check"],
+            &["--check", "--check"],
+        ];
+        for args in cases {
+            assert_eq!(parse(args), Ok(Command::Wipe { dry_run: true }), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn yes_deletes() {
+        let cases: &[&[&str]] = &[&["--yes"], &["--yes", "--yes"]];
+        for args in cases {
+            assert_eq!(
+                parse(args),
+                Ok(Command::Wipe { dry_run: false }),
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn help_wins_and_never_wipes() {
+        let cases: &[&[&str]] = &[
+            &["--help"],
+            &["-h"],
+            &["--yes", "--help"],
+            &["-h", "--yes"],
+            &["--dry-run", "--yes", "--help"],
+            &["--dryrun", "-h"],
+        ];
+        for args in cases {
+            assert_eq!(parse(args), Ok(Command::Help), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn unknown_argument_is_refused() {
+        let error = parse(&["--dryrun"]).expect_err("a misspelt --dry-run must be refused");
+        assert!(error.contains("--dryrun"), "{error:?} doesn't name it");
+        assert_eq!(error, "unknown argument: --dryrun");
+
+        // Near misses of --yes, and a stray argument next to it, never delete.
+        let cases: &[(&[&str], &str)] = &[
+            (&["--yes", "--force"], "--force"),
+            (&["--force", "--yes"], "--force"),
+            (&["-y"], "-y"),
+            (&["yes"], "yes"),
+            (&["--YES"], "--YES"),
+            (&["--yes=true"], "--yes=true"),
+            (&["--"], "--"),
+        ];
+        for &(args, unknown) in cases {
+            assert_eq!(
+                parse(args),
+                Err(format!("unknown argument: {unknown}")),
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn yes_with_dry_run_is_refused() {
+        let cases: &[&[&str]] = &[
+            &["--yes", "--dry-run"],
+            &["--dry-run", "--yes"],
+            &["--check", "--yes"],
+            &["--yes", "--check", "--yes"],
+        ];
+        for args in cases {
+            assert_eq!(
+                parse(args),
+                Err("--yes and --dry-run can't be combined".to_string()),
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn usage_names_every_flag() {
+        assert!(
+            USAGE.starts_with("Usage: fleet-wipe (--dry-run | --yes)"),
+            "{USAGE}"
+        );
+        for flag in ["--dry-run", "--check", "--yes", "-h", "--help"] {
+            assert!(USAGE.contains(flag), "the usage doesn't list {flag}");
+        }
+    }
+
+    /// `npm run wipe` clears Linux credentials through fleet-wipe, which
+    /// deletes only with `--yes`. Reads scripts/wipe.mjs as text; never runs it.
+    #[test]
+    fn wipe_mjs_passes_yes() {
+        let script = include_str!("../../../scripts/wipe.mjs");
+        let call = r#"["run", "-q", "-p", "fleet-wipe", "--", "--yes"]"#;
+        assert!(
+            script.contains(call),
+            "scripts/wipe.mjs doesn't run fleet-wipe with {call}"
+        );
     }
 }
 
