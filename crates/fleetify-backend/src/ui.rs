@@ -17,7 +17,7 @@
 //!
 //! Browsers send what the policy blocks to [`CSP_REPORT_PATH`], which needs
 //! no API token (`access::decide`), and each report becomes one warning on
-//! the `fleetify.csp` target.
+//! the `fleetify.csp` target, at most 20 a minute (`crate::log_budget`).
 //!
 //! Tauri's own policy (`app.security.csp`) is off: it applies only to the
 //! `tauri://` protocol, which the app doesn't load, and it would rewrite
@@ -30,6 +30,7 @@ use axum::body::Bytes;
 use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 
+use crate::log_budget::{monotonic_ms, LogBudget};
 use crate::services::telemetry::posthog::DEFAULT_HOST;
 
 /// One embedded UI file.
@@ -188,17 +189,35 @@ impl UiFiles {
 }
 
 /// `POST` [`CSP_REPORT_PATH`]: a browser's report of something the policy
-/// blocked. It is logged and answered 204 whatever the body holds; the route
-/// refuses a body over [`CSP_REPORT_MAX_BYTES`] with 413 before this runs.
-pub(crate) async fn csp_report(body: Bytes) -> StatusCode {
-    let (directive, blocked) = violation(&body);
-    tracing::warn!(
-        target: "fleetify.csp",
-        directive = directive.as_str(),
-        blocked = blocked.as_str(),
-        "content security policy violation"
-    );
+/// blocked. It is logged by [`log_violation`] within `log`, the route's
+/// budget, and answered 204 whatever the body holds; the route refuses a
+/// body over [`CSP_REPORT_MAX_BYTES`] with 413 before this runs.
+pub(crate) async fn csp_report(log: Arc<LogBudget>, body: Bytes) -> StatusCode {
+    log_violation(&log, monotonic_ms(), &body);
     StatusCode::NO_CONTENT
+}
+
+/// A report's log line, within `budget` at `now_ms` ([`LogBudget`]): the
+/// directive and what was blocked ([`violation`]). Once the budget's window
+/// ends, one line says how many reports it held back.
+fn log_violation(budget: &LogBudget, now_ms: u64, body: &[u8]) {
+    let admission = budget.admit(now_ms);
+    if admission.suppressed > 0 {
+        tracing::warn!(
+            target: "fleetify.csp",
+            "{} more content security policy violations suppressed",
+            admission.suppressed
+        );
+    }
+    if admission.log {
+        let (directive, blocked) = violation(body);
+        tracing::warn!(
+            target: "fleetify.csp",
+            directive = directive.as_str(),
+            blocked = blocked.as_str(),
+            "content security policy violation"
+        );
+    }
 }
 
 /// The directive a report (`{"csp-report": {…}}`, what `report-uri` sends)
@@ -225,12 +244,23 @@ fn directive_name(raw: &str) -> Option<&str> {
     looks_like_one.then_some(name)
 }
 
+/// The longest host a logged `blocked-uri` keeps: a DNS name's limit.
+const MAX_BLOCKED_HOST_BYTES: usize = 253;
+/// The longest scheme or keyword a logged `blocked-uri` keeps.
+const MAX_BLOCKED_WORD_BYTES: usize = 40;
+
 /// A report's `blocked-uri` without its path or query: `scheme://host[:port]`
 /// for a URL, the scheme alone for one without a host (`data`, `blob`), and
-/// a keyword (`inline`, `eval`, …) as it is. Anything else is `"unknown"`.
+/// a keyword (`inline`, `eval`, …) as it is. A host over
+/// [`MAX_BLOCKED_HOST_BYTES`], a scheme or keyword over
+/// [`MAX_BLOCKED_WORD_BYTES`] and anything else is `"unknown"`.
 fn blocked_source(raw: &str) -> String {
     if let Ok(url) = url::Url::parse(raw) {
+        if url.scheme().len() > MAX_BLOCKED_WORD_BYTES {
+            return "unknown".to_string();
+        }
         return match url.host_str().filter(|host| !host.is_empty()) {
+            Some(host) if host.len() > MAX_BLOCKED_HOST_BYTES => "unknown".to_string(),
             Some(host) => match url.port() {
                 Some(port) => format!("{}://{host}:{port}", url.scheme()),
                 None => format!("{}://{host}", url.scheme()),
@@ -239,7 +269,7 @@ fn blocked_source(raw: &str) -> String {
         };
     }
     let keyword = !raw.is_empty()
-        && raw.len() <= 40
+        && raw.len() <= MAX_BLOCKED_WORD_BYTES
         && raw.bytes().all(|b| b.is_ascii_lowercase() || b == b'-');
     if keyword {
         raw.to_string()
@@ -402,6 +432,35 @@ mod tests {
     }
 
     #[test]
+    fn a_blocked_host_over_253_bytes_or_a_long_scheme_is_unknown() {
+        // Four 61-byte labels with their dots, then `example`; the first
+        // label grows to make the host 253 and 254 bytes long.
+        let labels = format!("{}example", format!("{}.", "a".repeat(60)).repeat(4));
+        let (at_limit, over) = (format!("ab{labels}"), format!("abc{labels}"));
+        assert_eq!((at_limit.len(), over.len()), (253, 254));
+
+        assert_eq!(
+            blocked_source(&format!("https://{at_limit}/x.js")),
+            format!("https://{at_limit}")
+        );
+        assert_eq!(blocked_source(&format!("https://{over}/x.js")), "unknown");
+        assert_eq!(blocked_source(&format!("https://{over}:9000/")), "unknown");
+        // A host the URL parser doesn't check, of a scheme it doesn't know.
+        let opaque = "a".repeat(300);
+        assert_eq!(blocked_source(&format!("custom://{opaque}/")), "unknown");
+        // A scheme without a host is kept only as short as a keyword.
+        assert_eq!(
+            blocked_source(&format!("{}:x", "a".repeat(40))),
+            "a".repeat(40)
+        );
+        assert_eq!(blocked_source(&format!("{}:x", "a".repeat(41))), "unknown");
+        assert_eq!(
+            blocked_source(&format!("{}://h.example/", "a".repeat(41))),
+            "unknown"
+        );
+    }
+
+    #[test]
     fn a_report_names_its_directive_and_what_was_blocked() {
         let report = br#"{"csp-report":{
             "document-uri":"http://127.0.0.1:8765/",
@@ -432,11 +491,13 @@ mod tests {
         assert_eq!(violation(report), ("unknown".into(), "eval".into()));
     }
 
-    /// The report route as `http::app` mounts it.
+    /// The report route as `http::app` mounts it, with a budget of its own.
     fn report_route() -> Router {
+        let log = Arc::new(LogBudget::default());
         Router::new().route(
             CSP_REPORT_PATH,
-            post(csp_report).layer(DefaultBodyLimit::max(CSP_REPORT_MAX_BYTES)),
+            post(move |body: Bytes| csp_report(Arc::clone(&log), body))
+                .layer(DefaultBodyLimit::max(CSP_REPORT_MAX_BYTES)),
         )
     }
 
@@ -479,6 +540,35 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(over.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    /// A start time far enough from 0 that the first report opens a window.
+    const T0: u64 = 10 * LogBudget::WINDOW_MS;
+
+    #[test]
+    fn reports_past_20_a_minute_are_held_back_and_counted_after_the_window() {
+        let logs = LogCapture::start();
+        let budget = LogBudget::default();
+        let body = br#"{"csp-report":{"effective-directive":"img-src","blocked-uri":"https://x.example/a.png"}}"#;
+
+        for _ in 0..20 {
+            log_violation(&budget, T0, body);
+        }
+        log_violation(&budget, T0 + LogBudget::WINDOW_MS - 1, body);
+        let text = logs.text();
+        let lines = |text: &str| text.matches("policy violation directive=").count();
+        assert_eq!(lines(&text), 20, "{text}");
+        assert!(!text.contains("suppressed"), "{text}");
+
+        log_violation(&budget, T0 + LogBudget::WINDOW_MS, body);
+        let text = logs.text();
+        let summary = text.find("1 more content security policy violations suppressed");
+        let next = text.rfind(r#"directive="img-src""#);
+        assert!(
+            summary.is_some_and(|summary| next.is_some_and(|next| summary < next)),
+            "no summary line before the next window's first report: {text}"
+        );
+        assert_eq!(lines(&text), 21, "{text}");
     }
 
     /// UI files keyed by request path.

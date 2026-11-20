@@ -14,7 +14,9 @@
 //!   renderer can't give a header, may carry it in the `api_token` query
 //!   parameter instead.
 //!
-//! Anything else gets a plain-text 403.
+//! Anything else gets a plain-text 403. Each refusal is logged on the
+//! `fleetify.access` target with its path cut short, at most 20 lines a
+//! minute (`crate::log_budget`).
 
 use std::borrow::Cow;
 use std::fmt;
@@ -26,6 +28,8 @@ use axum::http::{header, HeaderMap, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use rand::RngCore;
+
+use crate::log_budget::{monotonic_ms, LogBudget};
 
 /// The request header that carries the per-run token.
 pub const API_TOKEN_HEADER: &str = "x-fleetify-token";
@@ -80,6 +84,9 @@ pub struct AccessPolicy {
     pub token: ApiToken,
     /// Whether API requests need the token; see [`token_required`].
     pub token_required: bool,
+    /// The budget for the refusals' log lines, which every clone [`guard`]
+    /// gets shares.
+    pub(crate) refusal_log: Arc<LogBudget>,
 }
 
 /// Whether API requests need the token: always in a release build
@@ -217,7 +224,7 @@ pub async fn guard(State(policy): State<AccessPolicy>, req: Request, next: Next)
     };
     match verdict {
         Verdict::Allow => next.run(req).await,
-        Verdict::Forbidden(reason) => refuse(reason, &req),
+        Verdict::Forbidden(reason) => refuse(reason, &req, &policy.refusal_log),
     }
 }
 
@@ -271,17 +278,51 @@ fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
     upgrade && connection
 }
 
-/// The 403. The log line has the path without its query string, which can
-/// carry a token.
-fn refuse(reason: &'static str, req: &Request) -> Response {
-    tracing::warn!(
-        target: "fleetify.access",
-        reason,
-        method = %req.method(),
-        path = req.uri().path(),
-        "request refused"
-    );
+/// The 403, logged by [`log_refusal`].
+fn refuse(reason: &'static str, req: &Request, log: &LogBudget) -> Response {
+    log_refusal(log, monotonic_ms(), reason, req.method(), req.uri().path());
     (StatusCode::FORBIDDEN, "forbidden").into_response()
+}
+
+/// A refusal's log line, within `budget` at `now_ms` ([`LogBudget`]). It has
+/// the path without its query string, which can carry a token, cut to
+/// [`LOGGED_PATH_MAX_BYTES`], and the path's full length in `path_len`.
+/// Once the budget's window ends, one line says how many refusals it held
+/// back.
+fn log_refusal(budget: &LogBudget, now_ms: u64, reason: &'static str, method: &Method, path: &str) {
+    let admission = budget.admit(now_ms);
+    if admission.suppressed > 0 {
+        tracing::warn!(
+            target: "fleetify.access",
+            "{} more refusals suppressed",
+            admission.suppressed
+        );
+    }
+    if admission.log {
+        tracing::warn!(
+            target: "fleetify.access",
+            reason,
+            method = %method,
+            path = cut_at_char_boundary(path, LOGGED_PATH_MAX_BYTES),
+            path_len = path.len(),
+            "request refused"
+        );
+    }
+}
+
+/// How much of a refused request's path its log line keeps, in bytes.
+const LOGGED_PATH_MAX_BYTES: usize = 200;
+
+/// `text` cut to at most `max` bytes, at a char boundary.
+fn cut_at_char_boundary(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }
 
 #[cfg(test)]
@@ -395,6 +436,7 @@ mod tests {
             port: 8765,
             token: ApiToken::generate(),
             token_required,
+            refusal_log: Arc::default(),
         }
     }
 
@@ -682,6 +724,9 @@ mod tests {
 
     #[tokio::test]
     async fn the_guard_checks_the_host_header_or_else_the_uri_authority() {
+        // Each test that reaches the refusal log line holds a capture: see
+        // `LogCapture`.
+        let _logs = LogCapture::start();
         let ok = (StatusCode::OK, "ok".to_string());
         let forbidden = (StatusCode::FORBIDDEN, "forbidden".to_string());
 
@@ -712,6 +757,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_guard_reads_the_token_header_and_counts_two_as_none() {
+        let _logs = LogCapture::start();
         let policy = policy(true);
         let token = policy.token.as_str();
         let status = |req: Request<Body>| async { through(&policy, req).await.0 };
@@ -737,6 +783,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_guard_takes_the_query_token_on_a_socket_upgrade_or_the_status_stream() {
+        let _logs = LogCapture::start();
         let policy = policy(true);
         let token = policy.token.as_str();
         let status = |req: Request<Body>| async { through(&policy, req).await.0 };
@@ -823,5 +870,61 @@ mod tests {
         assert!(text.contains("method=GET"), "{text}");
         assert!(text.contains(r#"path="/api/x""#), "{text}");
         assert!(!text.contains("SECRET"), "a token was logged");
+    }
+
+    #[test]
+    fn a_cut_keeps_at_most_max_bytes_and_ends_at_a_char_boundary() {
+        assert_eq!(cut_at_char_boundary("/api/x", 200), "/api/x");
+        assert_eq!(cut_at_char_boundary("/api/x", 6), "/api/x");
+        assert_eq!(cut_at_char_boundary("/api/x", 4), "/api");
+        // "é" is two bytes: a cut inside one ends before it.
+        let path = format!("/{}", "é".repeat(150));
+        assert_eq!(cut_at_char_boundary(&path, 200), &path[..199]);
+        assert_eq!(cut_at_char_boundary(&path, 201), &path[..201]);
+    }
+
+    #[tokio::test]
+    async fn a_long_path_is_logged_cut_to_200_bytes_with_its_length() {
+        let logs = LogCapture::start();
+        let path = format!("/api/{}", "a".repeat(5000));
+        let (status, _) = through(&policy(true), get_with(&path, &[])).await;
+        let text = logs.text();
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(
+            text.contains(&format!(r#"path="{}""#, &path[..200])),
+            "the path wasn't cut to 200 bytes: {} bytes logged",
+            text.len()
+        );
+        assert!(text.contains("path_len=5005"), "{text}");
+    }
+
+    /// A start time far enough from 0 that the first refusal opens a window.
+    const T0: u64 = 10 * LogBudget::WINDOW_MS;
+
+    #[test]
+    fn refusals_past_20_a_minute_are_held_back_and_counted_after_the_window() {
+        let logs = LogCapture::start();
+        let budget = LogBudget::default();
+        let refuse_at = |now_ms| log_refusal(&budget, now_ms, "token", &Method::GET, "/api/x");
+
+        for _ in 0..20 {
+            refuse_at(T0);
+        }
+        refuse_at(T0 + 1);
+        refuse_at(T0 + LogBudget::WINDOW_MS - 1);
+        let text = logs.text();
+        assert_eq!(text.matches("request refused").count(), 20, "{text}");
+        assert!(!text.contains("suppressed"), "{text}");
+
+        refuse_at(T0 + LogBudget::WINDOW_MS);
+        let text = logs.text();
+        let summary = text.find("2 more refusals suppressed");
+        let next = text.rfind("request refused");
+        assert!(
+            summary.is_some_and(|summary| next.is_some_and(|next| summary < next)),
+            "no summary line before the next window's first refusal: {text}"
+        );
+        assert_eq!(text.matches("request refused").count(), 21, "{text}");
     }
 }

@@ -4,6 +4,7 @@
 //! calls it from its setup hook.
 
 mod http;
+mod log_budget;
 
 pub mod access;
 pub mod agentic;
@@ -431,6 +432,7 @@ pub async fn serve(addr: SocketAddr, opts: ServeOptions) -> anyhow::Result<Serve
         port: local_addr.port(),
         token: api_token,
         token_required,
+        refusal_log: Default::default(),
     };
     let router = app(state, ui, policy);
     tokio::spawn(async move {

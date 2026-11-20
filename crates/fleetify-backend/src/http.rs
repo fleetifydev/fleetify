@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use axum::body::Bytes;
 use axum::extract::DefaultBodyLimit;
 use axum::http::{Method, Uri};
 use axum::middleware::from_fn_with_state;
@@ -6,6 +9,7 @@ use axum::{Json, Router};
 use serde_json::{json, Value};
 
 use crate::access::{self, AccessPolicy};
+use crate::log_budget::LogBudget;
 use crate::routers::{
     accounts, auth as auth_router, browser, chat, docker, events, fleet, fs, groups, internal,
     library, marketplace, mcp, messages, plugins, prompt, prompts, providers, routing, runtime,
@@ -52,11 +56,14 @@ pub fn app(state: AppState, ui: Option<UiAssets>, policy: AccessPolicy) -> Route
     // shell and the agents' helper processes call them with the secret.
     let internal_api = internal::router().merge(browser::internal_router());
 
+    // The report route's log lines have a budget of their own.
+    let csp_log = Arc::new(LogBudget::default());
     let routed = Router::new()
         .route(HEALTH_PATH, get(healthz))
         .route(
             ui::CSP_REPORT_PATH,
-            post(ui::csp_report).layer(DefaultBodyLimit::max(ui::CSP_REPORT_MAX_BYTES)),
+            post(move |body: Bytes| ui::csp_report(Arc::clone(&csp_log), body))
+                .layer(DefaultBodyLimit::max(ui::CSP_REPORT_MAX_BYTES)),
         )
         .nest("/api", api)
         .nest("/api/internal", internal_api)
