@@ -5017,6 +5017,56 @@ mod tests {
         assert_eq!(parse_device_code("İİ code: İİİİ"), None);
         assert_eq!(parse_device_code("İİİİİİİİİİ code:"), None);
     }
+
+    /// The diagnostics bundle a user attaches to a bug report: system info
+    /// first, then the rotated log files and nothing else from the log folder.
+    /// Entry names come from `name_raw`, whose signature zip 2 and zip 9 share
+    /// (`name` changed), so the same test checked the move between them.
+    #[test]
+    fn write_diagnostics_zip_keeps_system_info_first_and_only_log_files() {
+        use std::io::Read;
+
+        let logs = tempfile::tempdir().unwrap();
+        let log_text = "first line\nsecond line\n";
+        std::fs::write(logs.path().join("fleetify.log.2026-11-20"), log_text).unwrap();
+        std::fs::write(logs.path().join("crash.flag"), "").unwrap();
+        std::fs::write(logs.path().join("notes.txt"), "not a log").unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let out = out_dir.path().join("diagnostics.zip");
+
+        let bytes =
+            write_diagnostics_zip(logs.path(), &out, build_system_info("9.9.9-test")).unwrap();
+
+        assert_eq!(bytes, std::fs::metadata(&out).unwrap().len());
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
+        let names: Vec<String> = (0..archive.len())
+            .map(|i| String::from_utf8(archive.by_index(i).unwrap().name_raw().to_vec()).unwrap())
+            .collect();
+        assert_eq!(names, ["system-info.json", "logs/fleetify.log.2026-11-20"]);
+        for i in 0..archive.len() {
+            assert_eq!(
+                archive.by_index(i).unwrap().compression(),
+                zip::CompressionMethod::Deflated
+            );
+        }
+
+        let mut info = String::new();
+        archive
+            .by_index(0)
+            .unwrap()
+            .read_to_string(&mut info)
+            .unwrap();
+        let info: serde_json::Value = serde_json::from_str(&info).unwrap();
+        assert_eq!(info["app_version"], "9.9.9-test");
+
+        let mut log = String::new();
+        archive
+            .by_index(1)
+            .unwrap()
+            .read_to_string(&mut log)
+            .unwrap();
+        assert_eq!(log, log_text);
+    }
 }
 
 #[cfg(test)]

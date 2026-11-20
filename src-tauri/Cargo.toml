@@ -32,7 +32,7 @@ tracing-subscriber.workspace = true
 tracing-appender = "0.2"
 # Used by logs_export to bundle logs + system info into a single zip
 # the user can attach to a bug report.
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9.8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

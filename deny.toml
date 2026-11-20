@@ -24,25 +24,16 @@ ignore = [
   # rsa dev-only: fleetify-backend's integration tests sign JWTs with it.
   { id = "RUSTSEC-2023-0071", reason = "rsa dev-only: a fleetify-backend dev-dependency for signing test JWTs; no shipped binary links rsa" },
 
-  # zip write-only use: Fleetify only writes zips (the log export,
-  # zip::ZipWriter with the deflate feature only). Every one of these is in
-  # reading or extracting an archive.
-  { id = "RUSTSEC-2026-0367", reason = "zip write-only use: extraction keeps SUID/SGID bits; Fleetify never extracts a zip" },
-  { id = "RUSTSEC-2026-0368", reason = "zip write-only use: ZipArchive::extract creates symlinks that point outside the destination; Fleetify never extracts a zip" },
-  { id = "RUSTSEC-2026-0369", reason = "zip write-only use: extraction applies permissions through symlinks; Fleetify never extracts a zip" },
-  { id = "RUSTSEC-2026-0429", reason = "zip write-only use: ZipArchive::extract aborts on a symlink entry with a huge declared size; Fleetify never extracts a zip" },
-  { id = "RUSTSEC-2026-0545", reason = "zip write-only use: AES entries are read without checking their authentication code; Fleetify never reads a zip and doesn't enable aes-crypto" },
-  { id = "RUSTSEC-2026-0548", reason = "zip write-only use: ZipStreamReader extracts under local-header names; Fleetify never reads a zip" },
-
   # chrono: unmaintained, every version.
   { id = "RUSTSEC-2026-0543", reason = "chrono: unmaintained with no fixed release; fleetify-app and fleetify-backend use it directly and through sqlx 0.8's chrono feature" },
 
   # A fixed release exists, but fleetify-backend hasn't moved to it yet.
   # portable-pty: serial 0.4 and pin-utils (through nix 0.25), both
   # unmaintained, come only from portable-pty 0.8; portable-pty 0.9 uses
-  # neither.
-  { id = "RUSTSEC-2017-0008", reason = "fleetify-backend still on portable-pty 0.8 (src-tauri is on 0.9); bump tracked in the post-release backlog" },
-  { id = "RUSTSEC-2026-0441", reason = "fleetify-backend still on portable-pty 0.8 (src-tauri is on 0.9); bump tracked in the post-release backlog" },
+  # neither. The backend stays on 0.8 until its PTY bridge answers the
+  # cursor-position query that 0.9's Windows ConPTY sends at startup.
+  { id = "RUSTSEC-2017-0008", reason = "fleetify-backend stays on portable-pty 0.8 (src-tauri is on 0.9) until its PTY bridge answers 0.9's Windows ConPTY cursor-position query; bump tracked in the post-release backlog" },
+  { id = "RUSTSEC-2026-0441", reason = "fleetify-backend stays on portable-pty 0.8 (src-tauri is on 0.9) until its PTY bridge answers 0.9's Windows ConPTY cursor-position query; bump tracked in the post-release backlog" },
   # sqlx: sqlx-sqlite 0.8 holds libsqlite3-sys at 0.30, whose bundled SQLite
   # (older than 3.54) can return uninitialized memory for a database and -wal
   # file with different page sizes. The backend's database runs in WAL mode
