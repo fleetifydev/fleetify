@@ -685,16 +685,18 @@ mod tests {
     }
 
     /// Rule 3 alone, cell by cell. GET and HEAD are the reads: the rows try
-    /// them and other methods on /healthz, a UI path and each API prefix,
-    /// then the routes that need no token for any method or for one method.
+    /// them and other methods on the health path, a UI path and each API
+    /// prefix, then the routes that need no token for any method or for one
+    /// method. The health rows name HEALTH_PATH rather than its value, so they
+    /// keep testing its term should the path ever move under an API prefix.
     #[test]
     fn needs_no_token_truth_table() {
         let (get, head, post, options) = (Method::GET, Method::HEAD, Method::POST, Method::OPTIONS);
         // (method, path, whether it needs no token)
         let rows = [
-            (&get, "/healthz", true),
-            (&head, "/healthz", true),
-            (&post, "/healthz", false),
+            (&get, crate::HEALTH_PATH, true),
+            (&head, crate::HEALTH_PATH, true),
+            (&post, crate::HEALTH_PATH, false),
             (&get, "/index.html", true),
             (&head, "/index.html", true),
             (&options, "/index.html", false),
