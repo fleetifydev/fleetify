@@ -127,5 +127,5 @@ pub fn shutdown() {
 // part of the `Emitter` trait, which transitively uses Manager state.
 #[allow(dead_code)]
 fn _ensure_manager_in_scope(app: &AppHandle) {
-    let _ = app.get_webview_window("main");
+    let _ = app.get_window("main");
 }

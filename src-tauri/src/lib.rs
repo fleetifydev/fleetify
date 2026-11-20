@@ -758,10 +758,12 @@ pub fn run() {
 
 /// Brings the main window to the front when Fleetify is opened again while
 /// it runs (the single-instance plugin's callback): shown, since it starts
-/// hidden, restored if minimized, and focused. Failures are logged; it never
-/// panics.
+/// hidden, restored if minimized, and focused. It looks the window up with
+/// `get_window`: `get_webview_window` finds a window only while every webview
+/// in it has the window's label, so not while the Browser panel's child
+/// webview is attached. Failures are logged; it never panics.
 fn focus_main_window(app: &tauri::AppHandle) {
-    let Some(window) = app.get_webview_window(shell::startup_window::MAIN_WINDOW) else {
+    let Some(window) = app.get_window(shell::startup_window::MAIN_WINDOW) else {
         tracing::warn!("Fleetify was opened again, but its main window doesn't exist yet");
         return;
     };
@@ -884,6 +886,32 @@ mod tests {
                 "guard_main_navigation"
             )),
             "the main window's builder must install guard_main_navigation"
+        );
+    }
+
+    #[test]
+    fn a_second_launch_looks_the_main_window_up_as_a_window() {
+        // get_webview_window finds a window only while every webview in it
+        // has the window's label, which the main window hasn't while the
+        // Browser panel's child webview is attached: a second launch would
+        // bring nothing to the front. Whitespace removed, so line wrapping
+        // doesn't matter.
+        let source: String = app_source().split_whitespace().collect();
+        let focus = source
+            .find(&format!(
+                "fn{}(app:&tauri::AppHandle){{",
+                "focus_main_window"
+            ))
+            .expect("lib.rs has focus_main_window");
+        let lookup = source[focus..]
+            .find("app.get_")
+            .expect("focus_main_window looks the window up");
+        assert!(
+            source[focus + lookup..].starts_with(&format!(
+                "app.{}(shell::startup_window::MAIN_WINDOW)",
+                "get_window"
+            )),
+            "focus_main_window must look the main window up with get_window"
         );
     }
 

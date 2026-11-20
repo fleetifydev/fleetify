@@ -72,4 +72,32 @@ mod tests {
         }
         assert!(hits.is_empty(), "{hits:#?}");
     }
+
+    // get_webview_window finds a window only while every webview in it has
+    // the window's label. The main window has none of that kind while the
+    // Browser panel's child webview is attached, so the app looks a window
+    // up with get_window and a webview with get_webview. The needle is put
+    // together at run time, so the walk doesn't find it in this file.
+    #[test]
+    fn no_lookup_needs_a_window_with_a_single_webview() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let needle = format!("{}(", ["get", "webview", "window"].join("_"));
+        let files = files_under(&src);
+        assert!(
+            files.iter().any(|f| f.ends_with(file!())),
+            "the walk of {} never reached {}",
+            src.display(),
+            file!()
+        );
+        let hits: Vec<String> = files
+            .iter()
+            .filter(|file| file.is_file())
+            .filter(|file| {
+                let bytes = std::fs::read(file).expect("read a source file");
+                String::from_utf8_lossy(&bytes).contains(&needle)
+            })
+            .map(|file| file.display().to_string())
+            .collect();
+        assert!(hits.is_empty(), "{hits:#?} call {needle}");
+    }
 }

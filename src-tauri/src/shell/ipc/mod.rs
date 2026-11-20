@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::shell::startup_window::MAIN_WINDOW;
 use crate::shell::{
     ai_git, auth, config, feedback, git, github_link, head_watcher, logging, pty, voice,
 };
@@ -1343,8 +1344,12 @@ pub async fn browser_embed_close(app: tauri::AppHandle) -> serde_json::Value {
 }
 
 // ── window controls ──────────────────────────────────────────────
-fn main_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
-    app.get_webview_window("main")
+/// The main window, for the window controls below. Looked up as a window:
+/// `get_webview_window` finds a window only while every webview in it has
+/// the window's label, so not while the Browser panel's child webview is
+/// attached.
+fn main_window(app: &tauri::AppHandle) -> Option<tauri::Window> {
+    app.get_window(MAIN_WINDOW)
 }
 
 #[tauri::command]
@@ -4728,6 +4733,25 @@ pub async fn providers_set_cloudflare_account_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_controls_look_the_main_window_up_as_a_window() {
+        // Drag, minimize, maximize, close, resize and the taskbar icon go
+        // through main_window(). get_webview_window would find no window
+        // while the Browser panel's child webview is attached (see
+        // focus_main_window in lib.rs). Whitespace removed, so line wrapping
+        // doesn't matter; the needle is built at run time, so this test
+        // never matches itself.
+        let source: String = include_str!("mod.rs").split_whitespace().collect();
+        let wanted = format!(
+            "fn{}(app:&tauri::AppHandle)->Option<tauri::Window>{{app.{}(MAIN_WINDOW)}}",
+            "main_window", "get_window"
+        );
+        assert!(
+            source.contains(&wanted),
+            "main_window must be app.get_window(MAIN_WINDOW), a tauri::Window"
+        );
+    }
 
     #[tokio::test]
     async fn a_path_that_isnt_a_folder_or_document_is_refused_with_a_message() {
