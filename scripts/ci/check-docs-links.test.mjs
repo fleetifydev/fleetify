@@ -622,8 +622,8 @@ describe("the checker", () => {
       "https://github.com/jedisct1/minisign/releases/latest/download/minisign-win64.zip",
     ];
     assert.deepEqual(
-      refused.map((text) => preReleaseLinksIn(text).length > 0),
-      refused.map(() => true),
+      refused.map((text) => preReleaseLinksIn(text).length),
+      refused.map(() => 1),
     );
     assert.deepEqual(allowed.flatMap(preReleaseLinksIn), []);
   });

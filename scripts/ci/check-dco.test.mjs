@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { fetchPullCommits, findUnsignedCommits, formatFailure, isBot } from "./check-dco.mjs";
+import { fetchPullCommits, findUnsignedCommits, formatFailure, isBot, isMerge } from "./check-dco.mjs";
 
 const SCRIPT = fileURLToPath(new URL("./check-dco.mjs", import.meta.url));
 
@@ -80,12 +80,12 @@ describe("findUnsignedCommits", () => {
   });
 
   test("exempts an unsigned merge commit with two parents, as GitHub's Update branch makes", () => {
-    const commit = { ...human(SHA_1, "Merge branch 'main' into feature\n"), parents: 2 };
+    const commit = { ...human(SHA_1, "Merge branch 'main' into feature\n"), parentCount: 2 };
     assert.deepEqual(findUnsignedCommits([commit]), []);
   });
 
   test("still reports an unsigned human commit with a single parent", () => {
-    const commit = { ...human(SHA_1, "fix: thing\n"), parents: 1 };
+    const commit = { ...human(SHA_1, "fix: thing\n"), parentCount: 1 };
     assert.deepEqual(
       findUnsignedCommits([commit]).map((f) => f.sha),
       [SHA_1],
@@ -127,6 +127,43 @@ describe("findUnsignedCommits", () => {
       [SHA_1],
     );
   });
+
+  test("passes a sign-off in a message with Windows (CRLF) line endings", () => {
+    const commit = human(SHA_1, `fix: thing\r\n\r\nWhy it matters.\r\n\r\n${SIGNED_OFF}\r\n`);
+    assert.deepEqual(findUnsignedCommits([commit]), []);
+  });
+
+  for (const line of [
+    `${SIGNED_OFF} `,
+    `${SIGNED_OFF}\t`,
+    "signed-off-by: Jane Doe <jane@example.com>",
+    "Signed-Off-By: Jane Doe <jane@example.com>",
+  ]) {
+    test(`points a near-miss sign-off at trailing spaces and the exact spelling: ${JSON.stringify(line)}`, () => {
+      const failures = findUnsignedCommits([human(SHA_1, `fix: thing\n\n${line}\n`)]);
+      assert.deepEqual(
+        failures.map((f) => f.sha),
+        [SHA_1],
+      );
+      assert.match(failures[0].reason, /trailing spaces/);
+      assert.match(failures[0].reason, /spelling/);
+      assert.match(failures[0].reason, /Signed-off-by:/);
+    });
+  }
+});
+
+describe("isMerge", () => {
+  const cases = [
+    ["one parent", { parentCount: 1 }, false],
+    ["no parent count", {}, false],
+    ["two parents", { parentCount: 2 }, true],
+    ["three parents (an octopus merge)", { parentCount: 3 }, true],
+  ];
+  for (const [what, fields, expected] of cases) {
+    test(`${expected ? "takes" : "does not take"} a commit with ${what} for a merge`, () => {
+      assert.equal(isMerge({ sha: SHA_1, ...fields }), expected);
+    });
+  }
 });
 
 describe("isBot", () => {
@@ -185,6 +222,23 @@ describe("formatFailure", () => {
     ]) {
       assert.ok(text.includes(fix), `missing "${fix}":\n${text}`);
     }
+  });
+
+  test("rebases onto the pull request's base branch, which is main unless given", () => {
+    const failures = [{ sha: SHA_1, reason: "no sign-off" }];
+    assert.match(formatFailure(failures), /^ {2}git rebase --signoff upstream\/main$/m);
+    const text = formatFailure(failures, "release/0.2");
+    assert.match(text, /^ {2}git rebase --signoff upstream\/release\/0\.2$/m);
+    assert.doesNotMatch(text, /\/main\b/);
+  });
+
+  test("names the remote that points at this repository before the commands that use it", () => {
+    // Most contributors push from a fork, where origin is the fork.
+    const text = formatFailure([{ sha: SHA_1, reason: "no sign-off" }]);
+    const remote = text.indexOf("the remote that points at this repository");
+    assert.notEqual(remote, -1, text);
+    assert.ok(remote < text.indexOf("git fetch"), text);
+    assert.ok(remote < text.indexOf("git rebase --signoff"), text);
   });
 });
 
@@ -281,14 +335,16 @@ describe("against a stand-in for the GitHub API", () => {
   }
 
   let events = 0;
-  /** A pull_request event file, as GITHUB_EVENT_PATH points at. */
-  function eventFile(commits) {
+  /**
+   * A pull_request event file, as GITHUB_EVENT_PATH points at: `commits` is
+   * the pull request's commit count, `head` its head commit's sha (left out
+   * when null) and `base` the branch it targets.
+   */
+  function eventFile({ commits, head, base }) {
     const file = join(TMP, `event-${++events}.json`);
-    const event = {
-      action: "synchronize",
-      number: PR,
-      pull_request: { number: PR, state: "open", commits },
-    };
+    const pullRequest = { number: PR, state: "open", commits, base: { ref: base } };
+    if (head !== null) pullRequest.head = { sha: head };
+    const event = { action: "synchronize", number: PR, pull_request: pullRequest };
     writeFileSync(file, JSON.stringify(event));
     return file;
   }
@@ -311,11 +367,15 @@ describe("against a stand-in for the GitHub API", () => {
     });
   }
 
-  /** The variables the workflow provides, pointed at `api`. */
-  const vars = (api, commitCount) => ({
+  /**
+   * The variables the workflow provides, pointed at `api`, for a pull request
+   * of `commitCount` commits. Its head is the last of them, apiCommit(n), and
+   * its base main, unless `head` or `base` says otherwise.
+   */
+  const vars = (api, commitCount, { head = shaOf(commitCount), base = "main" } = {}) => ({
     GITHUB_TOKEN: TOKEN,
     GITHUB_REPOSITORY: REPO,
-    GITHUB_EVENT_PATH: eventFile(commitCount),
+    GITHUB_EVENT_PATH: eventFile({ commits: commitCount, head, base }),
     GITHUB_API_URL: api.url,
   });
 
@@ -358,6 +418,14 @@ describe("against a stand-in for the GitHub API", () => {
     assert.ok(output.includes(shaOf(117)), output);
     assert.ok(!output.includes(shaOf(116)), output);
     assert.ok(output.includes("git rebase --signoff"), output);
+  });
+
+  test("tells the contributor to rebase onto the pull request's own base branch", async (t) => {
+    const commits = [apiCommit(1, { message: "fix: forgot to sign off\n" })];
+    const api = await fakeGitHub(t, commits);
+    const result = await runCli(vars(api, commits.length, { base: "release/0.2" }));
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stderr, /^ {2}git rebase --signoff upstream\/release\/0\.2$/m);
   });
 
   test("passes a bot PR whose Dependabot and release-bot commits carry no sign-off", async (t) => {
@@ -426,5 +494,35 @@ describe("against a stand-in for the GitHub API", () => {
     const result = await runCli(vars(api, 0));
     assert.equal(result.status, 2, result.stdout + result.stderr);
     assert.doesNotMatch(result.stdout, /signed off/);
+  });
+
+  test("fails closed with exit 2 when a short page ends the list before the head commit", async (t) => {
+    // The API answers with the first 60 of the pull request's 130 commits, as
+    // if a page had come back short. Commit 117, past them, is unsigned.
+    const commits = Array.from({ length: 130 }, (_, i) => apiCommit(i + 1));
+    commits[116] = apiCommit(117, { message: "fix: hidden behind a short page\n" });
+    const api = await fakeGitHub(t, commits.slice(0, 60));
+    const result = await runCli(vars(api, commits.length));
+    assert.equal(result.status, 2, result.stdout + result.stderr);
+    assert.ok(result.stderr.includes(shaOf(130)), result.stderr);
+    assert.doesNotMatch(result.stdout, /signed off/);
+  });
+
+  test("fails closed with exit 2 when the branch moved after the event, so its head isn't listed", async (t) => {
+    // A force-push between the event and the listing: the API lists the new
+    // commits, none of which is the head the event names.
+    const api = await fakeGitHub(t, [apiCommit(1), apiCommit(2)]);
+    const result = await runCli(vars(api, 2, { head: shaOf(99) }));
+    assert.equal(result.status, 2, result.stdout + result.stderr);
+    assert.ok(result.stderr.includes(shaOf(99)), result.stderr);
+    assert.doesNotMatch(result.stdout, /signed off/);
+  });
+
+  test("exits 2 without asking the API when the event names no head commit", async (t) => {
+    const api = await fakeGitHub(t, [apiCommit(1)]);
+    const result = await runCli(vars(api, 1, { head: null }));
+    assert.equal(result.status, 2, result.stdout + result.stderr);
+    assert.match(result.stderr, /head/);
+    assert.equal(api.requests.length, 0);
   });
 });

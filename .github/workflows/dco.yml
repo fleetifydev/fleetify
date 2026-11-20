@@ -1,9 +1,9 @@
 # DCO: every commit in a pull request needs a Developer Certificate of Origin
 # sign-off, the "Signed-off-by: Name <email>" line that `git commit -s` adds
-# (https://developercertificate.org). Commits by bots (Dependabot, the Fleetify
-# Release Bot app) and merge commits (such as GitHub's "Update branch" makes)
-# are exempt. The rules and the API reading live in scripts/ci/check-dco.mjs,
-# tested by scripts/ci/check-dco.test.mjs.
+# (https://developercertificate.org). Commits by any GitHub App or bot, for
+# example Dependabot or the Fleetify Release Bot app, and merge commits (such as
+# GitHub's "Update branch" makes) are exempt. The rules and the API reading live
+# in scripts/ci/check-dco.mjs, tested by scripts/ci/check-dco.test.mjs.
 #
 # The main ruleset requires a check named DCO, which is this job's name:
 # renaming the job leaves every pull request waiting for a check that never

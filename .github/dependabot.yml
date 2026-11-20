@@ -12,8 +12,13 @@
 # Tauri upgrade means re-vendoring and reapplying the patches by hand. Cargo
 # therefore ignores tauri and every tauri-* crate (the plugins pull a newer
 # tauri in with them), plus wry and tao, which the vendored runtime depends on.
-# On the npm side, @tauri-apps/* gets patch updates only, because `tauri build`
-# rejects JS packages on another major.minor than the Rust tauri crate.
+# On the npm side, @tauri-apps/* gets patch updates only: `tauri build` fails
+# when @tauri-apps/api, or an @tauri-apps/plugin-* package, is on another
+# major.minor than its Rust crate, and @tauri-apps/cli stays on the same line
+# as a precaution. Dependabot's security updates bypass these ignore rules, so
+# a security pull request for tauri or @tauri-apps is an alert: apply the fix
+# through the manual vendored-runtime upgrade, "How to refresh on a Tauri bump"
+# in vendor/tauri-runtime-wry/FLEETIFY_PATCH.md.
 #
 # Commit messages, and so pull request titles, use conventional types that the
 # PR title check in ci.yml accepts: `deps:` for Cargo crates and npm runtime
@@ -52,7 +57,8 @@ updates:
       prefix: deps
       prefix-development: chore
     ignore:
-      # Must stay on the Rust tauri crate's major.minor; `tauri build` rejects a mismatch.
+      # api and plugin-* must match their Rust crate's major.minor, or `tauri build`
+      # fails; cli follows them as a precaution.
       - dependency-name: "@tauri-apps/*"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:

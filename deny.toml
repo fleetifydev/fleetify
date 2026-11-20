@@ -4,8 +4,8 @@
 #   cargo deny check licenses advisories bans sources
 #
 # CI runs the same check on pull requests that change a Cargo manifest,
-# Cargo.lock or this file, and weekly (.github/workflows/deny.yml). It is not
-# a required check.
+# Cargo.lock, this file or the workflow itself, weekly, and on demand
+# (.github/workflows/deny.yml). It is not a required check.
 
 [graph]
 # Every feature of every workspace crate, so an optional dependency can't slip

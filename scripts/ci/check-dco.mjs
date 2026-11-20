@@ -11,14 +11,17 @@
  * (and GITHUB_API_URL, which defaults to https://api.github.com).
  *
  * Two kinds of commit are exempt:
- *   - commits by bots (Dependabot, the Fleetify Release Bot app);
+ *   - commits by any GitHub App or bot, for example Dependabot or the
+ *     Fleetify Release Bot app: the author's GitHub login ends in "[bot]",
+ *     or the author email is a "[bot]" noreply address (see isBot);
  *   - merge commits, which have more than one parent. GitHub's "Update
  *     branch" button makes one on the contributor's behalf, without a
  *     sign-off, and common DCO checks skip them too.
  *
- * To try it against a real pull request:
+ * To try it against a real pull request, save the pull request as the
+ * event's pull_request, then run the check:
  *
- *   echo '{"pull_request":{"number":3}}' > /tmp/event.json
+ *   gh api repos/fleetifydev/fleetify/pulls/3 --jq '{pull_request: .}' > /tmp/event.json
  *   GITHUB_REPOSITORY=fleetifydev/fleetify GITHUB_TOKEN="$(gh auth token)" \
  *     GITHUB_EVENT_PATH=/tmp/event.json node scripts/ci/check-dco.mjs
  *
@@ -27,8 +30,9 @@
  *   1  at least one commit is missing a sign-off; the report names each one
  *      and the commands that fix it
  *   2  the check could not be completed: a variable is missing, the event
- *      has no pull request, or the API failed or hid commits. A check that
- *      cannot see every commit must fail rather than pass.
+ *      has no pull request or head commit, or the API failed, hid commits or
+ *      listed commits without the head commit. A check that cannot see every
+ *      commit must fail rather than pass.
  *
  * The token is never printed.
  */
@@ -41,7 +45,14 @@ import { fileURLToPath } from "node:url";
  *
  * How the sign-off has to relate to the commit (the author's name or email,
  * or the committer's) is deliberately left open. For now any well-formed
- * sign-off counts; tighten it here if the project decides to.
+ * sign-off counts; tighten it here if the project decides to. If it does,
+ * also key the bot exemption on something a commit can't fake, such as the
+ * pull request's author (`pull_request.user.type` is "Bot"): isBot trusts
+ * the commit's author email, which anyone can set, and that is harmless
+ * only while any sign-off passes.
+ *
+ * In a multiline regex, `$` also matches before a "\r", so a message with
+ * Windows line endings passes.
  *
  * Neither regex has the `g` flag, which keeps `test()` stateless.
  */
@@ -51,7 +62,8 @@ const MENTIONS_SIGN_OFF = /signed-off-by/i;
 const MISSING = "no Signed-off-by line";
 const MALFORMED =
   "no well-formed Signed-off-by line; it must read " +
-  '"Signed-off-by: Name <email>" on a line of its own';
+  '"Signed-off-by: Name <email>" on a line of its own. Check for trailing ' +
+  'spaces and the exact spelling "Signed-off-by:"';
 
 /** GitHub lists at most this many commits of a pull request. */
 const MAX_LISTED_COMMITS = 250;
@@ -76,11 +88,11 @@ export function isBot(commit) {
  * sign-off. A commit whose parent count is unknown is not a merge, so it is
  * checked.
  *
- * @param {{ parents?: number }} commit
+ * @param {{ parentCount?: number }} commit
  * @returns {boolean}
  */
 export function isMerge(commit) {
-  return (commit.parents ?? 0) > 1;
+  return (commit.parentCount ?? 0) > 1;
 }
 
 /**
@@ -88,7 +100,7 @@ export function isMerge(commit) {
  * and merge commits need none.
  *
  * @param {Array<{ sha: string, authorName: string, authorEmail: string,
- *   authorLogin: string | null, message: string, parents?: number }>} commits
+ *   authorLogin: string | null, message: string, parentCount?: number }>} commits
  * @returns {Array<{ sha: string, reason: string }>} empty when every commit passes
  */
 export function findUnsignedCommits(commits) {
@@ -105,12 +117,18 @@ export function findUnsignedCommits(commits) {
 
 /**
  * The report for a failed check: each commit with its reason, what a
- * sign-off certifies, and the commands that add one.
+ * sign-off certifies, and the commands that add one. `base` is the branch
+ * the pull request targets, its `base.ref`.
+ *
+ * Most contributors push from a fork, where `origin` is the fork, so the
+ * report names the remote that points at this repository before the commands
+ * that use it.
  *
  * @param {Array<{ sha: string, reason: string }>} failures
+ * @param {string} [base]
  * @returns {string}
  */
-export function formatFailure(failures) {
+export function formatFailure(failures, base = "main") {
   const count = failures.length === 1 ? "1 commit is" : `${failures.length} commits are`;
   return [
     `DCO: ${count} missing a sign-off.`,
@@ -134,14 +152,13 @@ export function formatFailure(failures) {
     "  git commit --amend -s --no-edit",
     "  git push --force-with-lease",
     "",
-    "Otherwise, sign off every commit on the branch:",
+    "Otherwise, sign off every commit on the branch. Below, upstream stands",
+    "for the remote that points at this repository; if you cloned it directly",
+    "rather than a fork, that is origin.",
     "",
-    "  git fetch origin",
-    "  git rebase --signoff origin/main",
+    "  git fetch upstream",
+    `  git rebase --signoff upstream/${base}`,
     "  git push --force-with-lease",
-    "",
-    "If origin is your fork, use the remote that points at this repository",
-    "instead, for example upstream/main.",
   ].join("\n");
 }
 
@@ -149,7 +166,7 @@ export function formatFailure(failures) {
  * An item of GET /repos/{repo}/pulls/{n}/commits in the shape
  * findUnsignedCommits takes. `author` is the GitHub account that the
  * commit's email belongs to, and null when it belongs to none; `parents` is
- * the array of parent commits.
+ * the array of parent commits, which parentCount counts.
  */
 function toCommit(item) {
   return {
@@ -158,7 +175,7 @@ function toCommit(item) {
     authorEmail: item.commit?.author?.email ?? "",
     authorLogin: item.author?.login ?? null,
     message: item.commit?.message ?? "",
-    parents: item.parents?.length ?? 0,
+    parentCount: item.parents?.length ?? 0,
   };
 }
 
@@ -237,6 +254,12 @@ async function main(env) {
     report("the event has no pull request number. The check runs on pull_request events.");
     return 2;
   }
+  const head = event.pull_request.head?.sha;
+  if (typeof head !== "string" || head === "") {
+    report("the event names no head commit (pull_request.head.sha). The check runs on pull_request events.");
+    return 2;
+  }
+  const base = event.pull_request.base?.ref;
 
   const apiUrl = (env.GITHUB_API_URL || "https://api.github.com").replace(/\/+$/, "");
   let commits;
@@ -261,10 +284,22 @@ async function main(env) {
     );
     return 2;
   }
+  // The listing stops at the first short page, so a page that came back short
+  // would hide the commits after it. The pull request's head commit comes last,
+  // so the list must hold it. Without it the list is incomplete, or the branch
+  // moved after the event: a force-push lists commits this run wasn't for.
+  if (!commits.some((commit) => String(commit.sha ?? "").toLowerCase() === head.toLowerCase())) {
+    report(
+      `GitHub's list of the commits of pull request #${pr} doesn't include its head commit ${head}, ` +
+        "so the list is incomplete or the branch changed while the check ran. Run the check again.",
+    );
+    return 2;
+  }
 
   const failures = findUnsignedCommits(commits);
   if (failures.length > 0) {
-    process.stderr.write(`${formatFailure(failures)}\n`);
+    const branch = typeof base === "string" && base !== "" ? base : undefined;
+    process.stderr.write(`${formatFailure(failures, branch)}\n`);
     return 1;
   }
 
