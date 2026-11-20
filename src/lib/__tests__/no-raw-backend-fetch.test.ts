@@ -7,15 +7,15 @@
  *     or `backendFetch`;
  *   - every file that opens a `WebSocket` or `EventSource` also calls
  *     `withApiTokenQuery`.
- * Tests are skipped, and so are `api.ts` and `api-token.ts`, which define the
- * helpers; `api.ts`'s socket builders are covered by api-token.test.ts.
+ * Tests are skipped. `api.ts` and `api-token.ts`, which define the helpers,
+ * are scanned too: `api.ts`'s own `fetch` calls take a caller's URL, and its
+ * socket builders add the token (also covered by api-token.test.ts).
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const SRC = resolve(__dirname, "../..");
-const HELPERS = new Set(["lib/api.ts", "lib/api-token.ts"]);
 
 /** A bare `fetch(` (also `window.fetch(`) whose first argument is a backend path. */
 const RAW_BACKEND_FETCH = /(?<![\w$])fetch\(\s*(?:["'`]\/(?:api|events)|`\$\{API_BASE\})/g;
@@ -27,7 +27,6 @@ function sources(): { file: string; text: string }[] {
     .map((file) => file.split(sep).join("/"))
     .filter((file) => /\.tsx?$/.test(file))
     .filter((file) => !file.split("/").includes("__tests__") && !/\.test\.tsx?$/.test(file))
-    .filter((file) => !HELPERS.has(file))
     .map((file) => ({ file, text: readFileSync(join(SRC, file), "utf8") }));
 }
 
@@ -64,7 +63,8 @@ describe("backend requests carry the API token", () => {
     const files = sources().map((s) => s.file);
     expect(files.length).toBeGreaterThan(100);
     expect(files).toContain("components/workspace/workspace-panel.tsx");
-    expect(files).not.toContain("lib/api.ts");
+    expect(files).toContain("lib/api.ts");
+    expect(files).toContain("lib/api-token.ts");
   });
 
   it("no source fetches a backend path without apiFetch or backendFetch", () => {

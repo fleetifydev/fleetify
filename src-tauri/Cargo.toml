@@ -92,7 +92,9 @@ tauri-plugin-macos-fps = "0.1"
 x11-dl = "2"
 # The single-instance plugin's D-Bus library, so lib.rs can check that it
 # reads the session bus address before registering the plugin, whose Linux
-# setup panics when it can't. Keep it on the plugin's zbus version.
+# setup panics when it can't. Keep it on the plugin's zbus version (a test in
+# lib.rs checks Cargo.lock). Remove it, with that check, once
+# tauri-plugin-single-instance is 2.5.4 or later.
 zbus = "5.9"
 
 [dev-dependencies]

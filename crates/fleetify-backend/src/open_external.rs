@@ -1138,6 +1138,15 @@ mod tests {
     }
 
     #[test]
+    fn the_macos_package_extensions_are_lowercase() {
+        // is_macos_package lowercases the name before it compares, so an
+        // entry with a capital letter would never match.
+        for extension in MACOS_PACKAGE_EXTENSIONS {
+            assert_eq!(extension, extension.to_lowercase(), "{extension}");
+        }
+    }
+
+    #[test]
     fn on_macos_a_folder_named_just_dot_app_is_never_launched() {
         // `Path::extension` sees no extension in a dot name, but `.app` ends
         // in `.app` like any app bundle's name: the lowercased name decides.

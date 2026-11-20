@@ -56,7 +56,8 @@ impl TestServer {
     /// A client for this server. Every request it sends carries the
     /// server's token in `X-Fleetify-Token`, unless the request sets that
     /// header itself. The header is marked sensitive, so the client's debug
-    /// output never shows it.
+    /// output never shows it. Like the other client, it ignores the proxy
+    /// variables: the server is on loopback.
     pub fn client(&self) -> reqwest::Client {
         let mut token = reqwest::header::HeaderValue::from_str(self.token.as_str())
             .expect("a token is a valid header value");
@@ -65,6 +66,7 @@ impl TestServer {
         default_headers.insert(API_TOKEN_HEADER, token);
         reqwest::Client::builder()
             .default_headers(default_headers)
+            .no_proxy()
             .build()
             .expect("build the test client")
     }
@@ -74,6 +76,7 @@ impl TestServer {
     /// drop a default header from one request, so this is a second client.
     pub fn client_without_token(&self) -> reqwest::Client {
         reqwest::Client::builder()
+            .no_proxy()
             .build()
             .expect("build the test client")
     }

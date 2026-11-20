@@ -10,21 +10,28 @@
 
 mod common;
 
+use std::sync::OnceLock;
+
 use common::{raw_exchange, TestServer};
 use fleetify_backend::access::{ApiToken, API_TOKEN_HEADER, API_TOKEN_QUERY};
 use fleetify_backend::ui::{UiAsset, UiAssets};
 use fleetify_backend::ServeOptions;
 use tokio_tungstenite::tungstenite::Error as WsError;
 
-/// An in-memory database, and auth on: `FLEETIFY_NOAUTH=1` would also turn
-/// off the token check these tests are about.
-fn in_memory_db() {
+/// An in-memory database, a home of its own, no helper polling, and auth
+/// on: `FLEETIFY_NOAUTH=1` would also turn off the token check these tests
+/// are about.
+fn test_env() {
+    static HOME: OnceLock<tempfile::TempDir> = OnceLock::new();
+    let home = HOME.get_or_init(|| tempfile::tempdir().unwrap());
     std::env::set_var("FLEET_DB_URL", "sqlite::memory:");
+    std::env::set_var("FLEETIFY_HOME", home.path());
+    std::env::set_var("FLEETIFY_CLAUDE_BG_AUTODETECT", "0");
     std::env::remove_var("FLEETIFY_NOAUTH");
 }
 
 async fn start() -> TestServer {
-    in_memory_db();
+    test_env();
     TestServer::start().await
 }
 
@@ -129,7 +136,7 @@ async fn a_cross_origin_preflight_gets_no_cors_headers() {
 /// other.
 #[tokio::test]
 async fn the_ui_files_are_behind_the_host_check() {
-    in_memory_db();
+    test_env();
     let index = UiAssets::new(|path| {
         (path == "/" || path == "/index.html").then(|| UiAsset {
             bytes: b"<!doctype html>FLEET-UI".to_vec(),

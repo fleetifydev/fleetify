@@ -787,6 +787,12 @@ fn focus_main_window(app: &tauri::AppHandle) {
 /// so the app starts as the only one. An address that reads fine but leads
 /// to no bus is handled by the plugin: it starts the app without single
 /// instance.
+///
+/// The check reads the address with the app's own zbus, so that zbus must be
+/// the plugin's (a test checks Cargo.lock). Remove this guard, and the zbus
+/// dependency in Cargo.toml, once tauri-plugin-single-instance is 2.5.4 or
+/// later: from 2.5.4 the plugin keeps the app launching when the session bus
+/// is unavailable. 2.5.x needs tauri 2.12.
 #[cfg(target_os = "linux")]
 fn single_instance_can_start() -> bool {
     zbus::Address::session().is_ok()
@@ -912,6 +918,79 @@ mod tests {
                 "get_window"
             )),
             "focus_main_window must look the main window up with get_window"
+        );
+    }
+
+    /// The zbus `package` depends on in Cargo.lock (`lock`): the version its
+    /// dependency entry names (`"zbus 5.19.0"`, maybe with a source after
+    /// it), or, for a bare `"zbus"`, the version of the only zbus there is.
+    fn zbus_dependency(lock: &str, package: &str) -> Option<String> {
+        let value = |block: &str, key: &str| {
+            block.lines().find_map(|line| {
+                line.strip_prefix(&format!("{key} = \""))?
+                    .strip_suffix('"')
+                    .map(str::to_string)
+            })
+        };
+        let blocks: Vec<&str> = lock.split("[[package]]").collect();
+        let block = blocks
+            .iter()
+            .find(|block| value(block, "name").as_deref() == Some(package))?;
+        let named = block.lines().find_map(|line| {
+            let entry = line
+                .trim()
+                .trim_end_matches(',')
+                .strip_prefix('"')?
+                .strip_suffix('"')?;
+            let mut words = entry.split_whitespace();
+            (words.next() == Some("zbus")).then(|| words.next().map(str::to_string))
+        })?;
+        named.or_else(|| {
+            let mut versions = blocks
+                .iter()
+                .filter(|block| value(block, "name").as_deref() == Some("zbus"))
+                .filter_map(|block| value(block, "version"));
+            match (versions.next(), versions.next()) {
+                (Some(version), None) => Some(version),
+                _ => None,
+            }
+        })
+    }
+
+    #[test]
+    fn the_app_and_the_single_instance_plugin_use_the_same_zbus() {
+        // single_instance_can_start reads the session bus address with the
+        // app's zbus to tell whether the plugin's zbus can read it: that
+        // holds only while both are the same zbus.
+        let two = "[[package]]\nname = \"fleetify-app\"\ndependencies = [\n \"zbus 4.4.0\",\n]\n\n\
+                   [[package]]\nname = \"tauri-plugin-single-instance\"\n\
+                   dependencies = [\n \"tokio\",\n \"zbus 5.19.0 (registry+x)\",\n]\n";
+        assert_eq!(
+            zbus_dependency(two, "fleetify-app").as_deref(),
+            Some("4.4.0")
+        );
+        assert_eq!(
+            zbus_dependency(two, "tauri-plugin-single-instance").as_deref(),
+            Some("5.19.0")
+        );
+        let one = "[[package]]\nname = \"zbus\"\nversion = \"5.19.0\"\n\n\
+                   [[package]]\nname = \"fleetify-app\"\n\
+                   dependencies = [\n \"zbus_names\",\n \"zbus\",\n]\n";
+        assert_eq!(
+            zbus_dependency(one, "fleetify-app").as_deref(),
+            Some("5.19.0")
+        );
+
+        let lock = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../Cargo.lock"),
+        )
+        .expect("read the workspace's Cargo.lock");
+        let app = zbus_dependency(&lock, "fleetify-app");
+        assert!(app.is_some(), "Cargo.lock lists fleetify-app's zbus");
+        assert_eq!(
+            app,
+            zbus_dependency(&lock, "tauri-plugin-single-instance"),
+            "fleetify-app and tauri-plugin-single-instance must use the same zbus"
         );
     }
 

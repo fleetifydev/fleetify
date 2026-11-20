@@ -630,12 +630,24 @@ mod api_token_tests {
 
     #[test]
     fn only_require_api_token_1_forces_the_token_and_only_in_debug_builds() {
-        // No other lib test reads this variable (none calls serve()).
+        // The variable is process-wide: change it only under the crate's
+        // env lock, and put back whatever was there before asserting.
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var_os("FLEETIFY_REQUIRE_API_TOKEN");
         std::env::set_var("FLEETIFY_REQUIRE_API_TOKEN", "1");
-        assert_eq!(api_token_forced(), cfg!(debug_assertions));
+        let one = api_token_forced();
         std::env::set_var("FLEETIFY_REQUIRE_API_TOKEN", "true");
-        assert!(!api_token_forced());
+        let other = api_token_forced();
         std::env::remove_var("FLEETIFY_REQUIRE_API_TOKEN");
-        assert!(!api_token_forced());
+        let unset = api_token_forced();
+        match prev {
+            Some(v) => std::env::set_var("FLEETIFY_REQUIRE_API_TOKEN", v),
+            None => std::env::remove_var("FLEETIFY_REQUIRE_API_TOKEN"),
+        }
+        assert_eq!(one, cfg!(debug_assertions));
+        assert!(!other);
+        assert!(!unset);
     }
 }

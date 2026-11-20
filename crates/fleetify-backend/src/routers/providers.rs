@@ -2610,8 +2610,14 @@ mod tests {
         }
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn python_module_probe_returns_installed_for_stdlib_module() {
+        // The probe reads FLEETIFY_EMBEDDED_PYTHON, which other tests set
+        // under the crate's env lock: hold it across the probe's awaits.
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let py_works = ["python3", "python", "py"].iter().any(|name| {
             std::process::Command::new(name)
                 .arg("--version")
@@ -2633,8 +2639,13 @@ mod tests {
         assert!(result.path.is_some(), "python path should be reported");
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn python_module_probe_returns_not_installed_for_bogus_module() {
+        // As above: the probe reads FLEETIFY_EMBEDDED_PYTHON.
+        let _g = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let py_works = ["python3", "python", "py"].iter().any(|name| {
             std::process::Command::new(name)
                 .arg("--version")
