@@ -124,9 +124,3 @@ Pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first and sig
 ## Licence
 
 Fleetify is licensed under the [Apache License 2.0](LICENSE); see [NOTICE](NOTICE). The Fleetify name and logo are not licensed under it: see [TRADEMARKS.md](TRADEMARKS.md). Claude Code, Codex and the other agents and services named here are trademarks of their owners, and Fleetify is not affiliated with them.
-
-<br>
-
-<p align="center">
-  <sub>Built in Türkiye by <a href="https://github.com/dorukozgen">Doruk Özgen</a> and <a href="https://github.com/CryonicsX">Hakan Karapınar</a>, with <a href="https://github.com/fleetifydev/fleetify/graphs/contributors">everyone who contributes</a>.</sub>
-</p>

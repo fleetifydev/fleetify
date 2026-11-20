@@ -59,8 +59,7 @@ const CONTACTS = ["security@fleetify.dev", "conduct@fleetify.dev", "hello@fleeti
  * discussions/categories/q-a, issues/new/choose or
  * actions/workflows/ci.yml/badge.svg, unless the entry is `exact`: nothing
  * exists under releases/ before the first release, so a download link there
- * would return 404. graphs/contributors is the README's credit to everyone who
- * contributes.
+ * would return 404.
  */
 const GITHUB_PAGES = [
   { path: "discussions" },
@@ -68,7 +67,6 @@ const GITHUB_PAGES = [
   { path: "issues" },
   { path: "actions/workflows/ci.yml" },
   { path: "releases", exact: true },
-  { path: "graphs/contributors", exact: true },
 ];
 
 /**
@@ -577,7 +575,6 @@ describe("the checker", () => {
       "https://github.com/fleetifydev/fleetify/security/advisories/new",
       "https://github.com/fleetifydev/fleetify/actions/workflows/ci.yml/badge.svg",
       "https://github.com/fleetifydev/fleetify/releases",
-      "https://github.com/fleetifydev/fleetify/graphs/contributors",
     ];
     const refused = [
       "https://github.com/fleetifydev/fleetify/releases/latest/download/SHA256SUMS",
@@ -585,6 +582,7 @@ describe("the checker", () => {
       "https://github.com/fleetifydev/fleetify/security/advisories",
       "https://github.com/fleetifydev/fleetify/issuesx",
       "https://github.com/fleetifydev/fleetify/graphs/traffic",
+      "https://github.com/fleetifydev/fleetify/graphs/contributors",
     ];
     assert.deepEqual(
       repoLinks(allowed.join("\n")).map(({ page }) => allowedPage(page)),

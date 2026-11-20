@@ -72,7 +72,3 @@ npm run dev:tauri:wt   # debug derlemesi: ayrı veri klasörü, giriş adımı y
 - Katkıya açığız: önce [CONTRIBUTING.md](CONTRIBUTING.md)'yi okuyun ve her commit'inize `git commit -s` ile sign-off ekleyin. Projede herkes [Davranış Kuralları](CODE_OF_CONDUCT.md)'na uyar.
 
 Fleetify, [Apache License 2.0](LICENSE) ile lisanslanmıştır ([NOTICE](NOTICE)). Fleetify adı ve logosu bu lisansın kapsamında değildir: [TRADEMARKS.md](TRADEMARKS.md). Burada adı geçen Claude Code, Codex ve diğer ajan ve hizmetler, sahiplerinin ticari markalarıdır; Fleetify'ın bunlarla bir bağlantısı yoktur.
-
-<p align="center">
-  <sub><a href="https://github.com/dorukozgen">Doruk Özgen</a> ve <a href="https://github.com/CryonicsX">Hakan Karapınar</a> tarafından Türkiye'de, <a href="https://github.com/fleetifydev/fleetify/graphs/contributors">katkıda bulunan herkesle</a> birlikte geliştiriliyor.</sub>
-</p>
