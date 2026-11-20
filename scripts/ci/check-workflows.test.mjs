@@ -211,12 +211,25 @@ const OVERRIDES = [
     pattern: /(^|[\s;&|(])(cargo|rustc|rustdoc|rustfmt|cargo-clippy|cargo-fmt|clippy-driver)\s+\+/,
   },
   { what: "runs `rustup run` or `rustup override`", pattern: /(^|[\s;&|(])rustup\s+(run|override)(\s|$)/ },
-  { what: "sets RUSTUP_TOOLCHAIN", pattern: /RUSTUP_TOOLCHAIN\s*=/ },
+  // An assignment, not a read: in a shell the name starts a word (`export X=…`,
+  // `X=… cargo`, `echo "X=…" >> "$GITHUB_ENV"`), and in PowerShell it follows
+  // `$env:`. A read such as `[ "$X" = … ]` has `$` or `${` before the name.
+  // Windows reads variable names in any case, so the match does too.
+  {
+    what: "sets RUSTUP_TOOLCHAIN",
+    pattern: /(^|[\s;&|("'])RUSTUP_TOOLCHAIN=|\$env:RUSTUP_TOOLCHAIN\s*=(?!=)/i,
+  },
 ];
 
-/** Whether an `env` mapping (of a workflow, a job or a step) sets RUSTUP_TOOLCHAIN. */
+/** What a script does, line by line, that OVERRIDES lists. */
+const overridesIn = (script) =>
+  OVERRIDES.filter(({ pattern }) => script.split("\n").some((line) => pattern.test(line))).map(({ what }) => what);
+
+/** Whether an `env` mapping (of a workflow, a job or a step) sets RUSTUP_TOOLCHAIN, in any case. */
 const setsToolchainVariable = (env) =>
-  env !== null && typeof env === "object" && Object.hasOwn(env, "RUSTUP_TOOLCHAIN");
+  env !== null &&
+  typeof env === "object" &&
+  Object.keys(env).some((name) => name.toUpperCase() === "RUSTUP_TOOLCHAIN");
 
 /** A workflow's triggers, as a mapping from each event to its settings (null when it has none). */
 function triggersOf(workflow) {
@@ -359,10 +372,7 @@ describe("Rust toolchain", () => {
         for (const [i, step] of (job.steps ?? []).entries()) {
           const where = `${rel}, job ${id}, ${stepLabel(step, i)}`;
           if (setsToolchainVariable(step.env)) problems.push(`${where} sets RUSTUP_TOOLCHAIN in its env`);
-          const lines = scriptOf(step).split("\n");
-          for (const { what, pattern } of OVERRIDES) {
-            if (lines.some((line) => pattern.test(line))) problems.push(`${where} ${what}`);
-          }
+          for (const what of overridesIn(scriptOf(step))) problems.push(`${where} ${what}`);
         }
       }
     }
@@ -371,6 +381,41 @@ describe("Rust toolchain", () => {
       [],
       `${problems.join("\n")}\nEach outranks rust-toolchain.toml, so cargo would build with a toolchain the pin didn't choose.`,
     );
+  });
+
+  test("the override check flags what outranks the pin, and not a read of RUSTUP_TOOLCHAIN", () => {
+    const flagged = [
+      "cargo +nightly clippy --workspace",
+      "rustc +1.99.0 --version",
+      "rustup override set nightly",
+      "rustup run nightly cargo build",
+      "export RUSTUP_TOOLCHAIN=nightly",
+      "RUSTUP_TOOLCHAIN=nightly cargo build",
+      "env RUSTUP_TOOLCHAIN=nightly cargo build",
+      'echo "RUSTUP_TOOLCHAIN=nightly" >> "$GITHUB_ENV"',
+      '"RUSTUP_TOOLCHAIN=nightly" >> $env:GITHUB_ENV',
+      "$env:RUSTUP_TOOLCHAIN = 'nightly'",
+      "$env:rustup_toolchain='nightly'",
+    ];
+    const passed = [
+      "rustup toolchain install",
+      "rustup show active-toolchain",
+      "rustup default nightly",
+      "cargo clippy --workspace --all-targets -- -D warnings",
+      'echo "$RUSTUP_TOOLCHAIN"',
+      '[ "$RUSTUP_TOOLCHAIN" = nightly ]',
+      "[ $RUSTUP_TOOLCHAIN = nightly ]",
+      "[[ $RUSTUP_TOOLCHAIN == nightly ]]",
+      '[ "${RUSTUP_TOOLCHAIN:-}" = "" ]',
+      "if ($env:RUSTUP_TOOLCHAIN -eq 'nightly') { exit 1 }",
+      "unset RUSTUP_TOOLCHAIN",
+    ];
+    const missed = flagged.filter((line) => overridesIn(line).length === 0);
+    assert.deepEqual(missed, [], "these lines outrank the pin, and the check misses them");
+    const wrong = passed.filter((line) => overridesIn(line).length > 0);
+    assert.deepEqual(wrong, [], "these lines don't outrank the pin, and the check flags them");
+    assert.ok(setsToolchainVariable({ rustup_toolchain: "nightly" }), "an env key sets the variable in any case");
+    assert.ok(!setsToolchainVariable({ RUSTUP_HOME: "/opt/rustup" }), "RUSTUP_HOME doesn't choose a toolchain");
   });
 });
 
