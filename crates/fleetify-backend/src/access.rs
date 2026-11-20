@@ -169,8 +169,7 @@ fn needs_no_token(facts: &RequestFacts<'_>) -> bool {
     let api = ["/api/", "/ws/", "/events/"]
         .iter()
         .any(|prefix| path.starts_with(prefix));
-    (read && path == crate::HEALTH_PATH)
-        || (read && !api)
+    (read && (path == crate::HEALTH_PATH || !api))
         || path.starts_with("/api/internal/")
         || (*method == Method::GET && path == MCP_AUTH_CALLBACK_PATH)
         || (*method == Method::POST && path == crate::ui::CSP_REPORT_PATH)
@@ -683,6 +682,39 @@ mod tests {
             ),
             Verdict::Forbidden("host")
         );
+    }
+
+    /// Rule 3 alone, cell by cell. GET and HEAD are the reads: the rows try
+    /// them and other methods on /healthz, a UI path and each API prefix,
+    /// then the routes that need no token for any method or for one method.
+    #[test]
+    fn needs_no_token_truth_table() {
+        let (get, head, post, options) = (Method::GET, Method::HEAD, Method::POST, Method::OPTIONS);
+        // (method, path, whether it needs no token)
+        let rows = [
+            (&get, "/healthz", true),
+            (&head, "/healthz", true),
+            (&post, "/healthz", false),
+            (&get, "/index.html", true),
+            (&head, "/index.html", true),
+            (&options, "/index.html", false),
+            (&get, "/api/groups", false),
+            (&head, "/api/groups", false),
+            (&post, "/api/groups", false),
+            (&get, "/ws/x", false),
+            (&get, "/events/x", false),
+            (&post, "/api/internal/x", true),
+            (&get, MCP_AUTH_CALLBACK_PATH, true),
+            (&post, crate::ui::CSP_REPORT_PATH, true),
+            (&post, "/assets/x", false),
+        ];
+        for (method, path, want) in rows {
+            assert_eq!(
+                needs_no_token(&facts(method, path)),
+                want,
+                "{method} {path}"
+            );
+        }
     }
 
     /// A few routes behind the guard with `policy`: what it answers.
