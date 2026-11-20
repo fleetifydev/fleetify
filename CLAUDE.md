@@ -132,7 +132,7 @@ Always use `npm run dev:tauri:wt` (not `npm run dev:tauri`) so the test instance
    worktree's FLEETIFY_HOME is preserved across re-runs (deterministic slot).
 ```
 
-**On Linux,** what works: run the real window under Xvfb (inside `dbus-run-session` with a temporary `HOME`, so it touches neither your display nor your data), drive it with `xdotool`, and take screenshots of the virtual display. For setup the UI would make slow, such as creating sessions, call the backend's API on `127.0.0.1:<FLEETIFY_BACKEND_PORT>` directly; that works in a plain no-auth run, while under `FLEETIFY_REQUIRE_API_TOKEN=1` the API asks for the per-run token.
+**On Linux,** what works: run the real window under Xvfb (inside `dbus-run-session` with a temporary `HOME`, so it touches neither your display nor your data), drive it with `xdotool`, and take screenshots of the virtual display. Keep `RUSTUP_HOME` and `CARGO_HOME` pointing at the real `~/.rustup` and `~/.cargo`: under a temporary `HOME`, rustup otherwise looks for its toolchains there and finds none. For setup the UI would make slow, such as creating sessions, call the backend's API on `127.0.0.1:<FLEETIFY_BACKEND_PORT>` directly. That needs a plain no-auth run, not `FLEETIFY_REQUIRE_API_TOKEN=1`: the per-run API token is reachable only through the webview's IPC, so a script can't get it.
 
 For a webview-driven smoke run, start it as `FLEETIFY_REQUIRE_API_TOKEN=1 npm run dev:tauri:wt`: the run is no-auth by default, which also turns off the per-run API token check, and this keeps the check on (see `docs/RUNNING.md`).
 
@@ -283,7 +283,7 @@ POSTHOG_HOST=https://eu.i.posthog.com
 VITE_POSTHOG_HOST=https://eu.i.posthog.com
 ```
 
-Then just run `npm run dev:tauri:wt` — no shell env juggling, no `cargo clean` needed because the keys are read at runtime now (was `option_env!` baked-at-compile, dropped in favour of runtime resolution). Shell-set env vars still win over `.env` so CI / production injection paths are unchanged.
+Then just run `npm run dev:tauri:wt` — no shell env juggling, no `cargo clean` needed because the keys are read at runtime now (was `option_env!` baked-at-compile, dropped in favour of runtime resolution). Shell-set env vars still win over `.env`. Release builds never load `.env`, and the backend reads `POSTHOG_API_KEY` only from the process environment, so a release build's backend sends PostHog events only when that variable is set in the environment Fleetify starts in. `VITE_POSTHOG_KEY`, by contrast, is compiled into the renderer when the UI is built.
 
 ### Full event list
 

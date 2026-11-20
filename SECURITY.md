@@ -31,9 +31,11 @@ Use either channel:
 
 - **Within 3 business days**, we acknowledge your report.
 - **Within 7 days** of your report, we triage it: we confirm whether it's a vulnerability, assess its severity and tell you what we plan to do.
-- **Within 90 days** of your report, we disclose it in coordination with you: we release a fix and publish a GitHub security advisory that credits you, unless you'd rather stay anonymous.
+- **Within 90 days** of your report, we aim to release a fix and publish a GitHub security advisory that credits you, unless you'd rather stay anonymous. If a fix needs longer, we agree a disclosure date with you.
 
-Please keep the details private until the advisory is published or 90 days have passed, whichever comes first.
+A vulnerability in the fleetify.dev cloud is fixed on the service itself, so there is no release and no advisory: we tell you when it's fixed, and credit you if you wish.
+
+Please keep the details private until the advisory is published or the disclosure date we agreed with you; for a cloud vulnerability, until we tell you it's fixed.
 
 ## Scope
 
@@ -66,7 +68,7 @@ If someone else takes legal action against you over research that followed this 
 
 ## Bug bounty
 
-We don't run a bug bounty yet, so we can't pay for reports. We credit every valid report in its advisory, unless you prefer otherwise.
+We don't run a bug bounty yet, so we can't pay for reports. We credit every valid report, unless you prefer otherwise.
 
 ## Verifying a release
 

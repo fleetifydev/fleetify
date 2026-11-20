@@ -35,11 +35,11 @@
 
 ## Fleetify ne yapar?
 
-Birden fazla kodlama ajanıyla çalışmak; terminaller, branch'ler ve paneller arasında sürekli gidip gelmek demek. Fleetify ajanlarınızı tek pencerede toplar: CLI ajanlarıyla ya da API modelleriyle oturum başlatın, hepsini Fleet hub'dan izleyin, paralel işleri git worktree'leriyle birbirinden ayırın. Library, Marketplace, Routines, yerleşik tarayıcı ve MCP sidecar'larıyla ilgili ayrıntılar [İngilizce README](README.md)'de.
+Birden fazla kodlama ajanıyla çalışmak; terminaller, branch'ler ve paneller arasında sürekli gidip gelmek demek. Fleetify ajanlarınızı tek pencerede toplar: CLI ajanlarıyla ya da API modelleriyle oturum başlatın, hepsini Fleet hub'dan izleyin, paralel işleri git worktree'leriyle birbirinden ayırın. Library, Marketplace, Routines, yerleşik tarayıcı ve MCP sidecar'larıyla ilgili ayrıntılar [İngilizce README](README.md)'de. Fleetify yaptığı commit'lere `Co-Authored-By: Fleetify` satırı, açtığı pull request'lerin sonuna da kısa bir not ekler; bunu **Settings → General → Attribution** bölümünden kapatabilirsiniz.
 
 ## Gereksinimler
 
-- **Ücretsiz bir Fleetify hesabı.** Kendi derledikleriniz de dâhil, release derlemeleri giriş yapmanızı ister; oturumlarınız, kayıtlı API anahtarlarınız ve fleetify.dev paneliniz bu hesaba bağlıdır. Geliştirme derlemelerinde giriş adımı atlanır (`npm run dev:tauri:wt`).
+- **Ücretsiz bir Fleetify hesabı.** Kendi derledikleriniz de dâhil, release derlemeleri giriş yapmanızı ister; oturumlarınız, kayıtlı API anahtarlarınız ve fleetify.dev paneliniz bu hesaba bağlıdır. `npm run dev:tauri:wt` ile başlatılan geliştirme derlemelerinde giriş adımı atlanır.
 - **macOS 11 ve üstü, Windows 10/11 ya da Linux.** Linux'ta WebKitGTK 4.1 gerekir: Ubuntu 22.04, Debian 12 ve sonrası uygundur.
 - **Bir ajan ya da model:** Claude Code, Codex ya da OpenCode gibi bir CLI ajanı, OpenAI ya da Anthropic gibi bir sağlayıcının API anahtarı veya bilgisayarınızda çalışan Ollama. Kurulum adımları [docs/AGENTS.md](docs/AGENTS.md) ve [docs/PROVIDERS.md](docs/PROVIDERS.md)'de.
 
@@ -62,7 +62,7 @@ npm run dev:tauri:wt   # debug derlemesi: ayrı veri klasörü, giriş adımı y
 
 ## Gizlilik ve telemetri
 
-**Dashboard sync** varsayılan olarak açıktır ve oturumlarınızı fleetify.dev panelinizde gösterir. Ajan, model, durum, token sayıları, maliyet, oturum başlığı ve proje klasörünün adı gibi bilgileri gönderir; kodunuzu, prompt'larınızı, komutlarınızı, tam dosya yollarını ya da API anahtarlarınızı asla göndermez. **Product analytics** (PostHog, AB sunucuları) siz açmadıkça kapalı kalır. Uygulamayı ilk açtığınızda ikisi de size sorulur; **Settings → General → Privacy** bölümünden istediğiniz zaman değiştirebilirsiniz. Gönderilen alanların tamamı [docs/ANALYTICS.md](docs/ANALYTICS.md)'de listeleniyor. Kullandığınız ajanlar ve model sağlayıcıları prompt'larınızı ve kodunuzu doğrudan ve kendi koşulları çerçevesinde alır. Sesle yazdırma varsayılan olarak Fleetify cloud üzerinden çalışır; **Settings → Voice** bölümünden kendi API anahtarınıza ya da **On-device** seçeneğine geçebilirsiniz. Fleetify yaptığı commit'lere `Co-Authored-By: Fleetify` satırı, açtığı pull request'lerin sonuna da kısa bir not ekler; bunu **Settings → General → Attribution** bölümünden kapatabilirsiniz.
+**Dashboard sync** varsayılan olarak açıktır ve oturumlarınızı fleetify.dev panelinizde gösterir. Ajan, model, durum, token sayıları, maliyet, oturum başlığı ve proje klasörünün adı gibi bilgileri gönderir; kodunuzu, prompt'larınızı, komutlarınızı, tam dosya yollarını ya da API anahtarlarınızı asla göndermez. **Product analytics** (PostHog, AB sunucuları) siz açmadıkça kapalı kalır. Uygulamayı ilk açtığınızda ikisi de size sorulur; **Settings → General → Privacy** bölümünden istediğiniz zaman değiştirebilirsiniz. Gönderilen alanların tamamı [docs/ANALYTICS.md](docs/ANALYTICS.md)'de listeleniyor. Kullandığınız ajanlar ve model sağlayıcıları prompt'larınızı ve kodunuzu doğrudan ve kendi koşulları çerçevesinde alır. Sesle yazdırma varsayılan olarak Fleetify cloud üzerinden çalışır; **Settings → Voice** bölümünden kendi API anahtarınıza ya da **On-device** seçeneğine geçebilirsiniz.
 
 ## Topluluk ve lisans
 

@@ -136,8 +136,10 @@ on the app without a Fleetify account or a network round-trip — release
 builds ignore the flag and pin the production endpoints.
 
 The backend also stops asking API requests for the per-run token that the
-shell hands the renderer, so the UI works from a plain browser tab. Add
-`FLEETIFY_REQUIRE_API_TOKEN=1` to keep that check on in a no-auth run.
+shell hands the renderer over IPC, so scripts can call the API directly. The
+UI itself still needs the app window: a plain browser tab has no Tauri bridge
+and stops at sign-in. Add `FLEETIFY_REQUIRE_API_TOKEN=1` to keep the token
+check on in a no-auth run.
 
 ### Where things live
 

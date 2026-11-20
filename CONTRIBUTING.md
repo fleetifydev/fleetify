@@ -15,7 +15,7 @@ Small fixes can go straight to a pull request. For a new feature or a bigger cha
 You need:
 
 - **Git.**
-- **Node 22**, the version in [`.nvmrc`](.nvmrc) and the one CI uses. A version manager such as nvm, fnm or Volta can read that file. Newer majors are untested, and Node 25 or later breaks the renderer tests: its built-in `localStorage` gets in the way of the test environment.
+- **Node 22**, the version in [`.nvmrc`](.nvmrc) and the one CI uses. A version manager such as nvm or fnm can read that file. Newer majors are untested, and Node 25 or later breaks the renderer tests: its built-in `localStorage` gets in the way of the test environment.
 - **Rust**, through [rustup](https://rustup.rs). [`rust-toolchain.toml`](rust-toolchain.toml) asks for the stable channel with rustfmt and clippy, and rustup installs them the first time you run `cargo` in the repository. CI lints with the newest stable release, so keep yours current with `rustup update stable`.
 - **The system packages for your OS**, below. Besides what Tauri v2 needs, the default build compiles whisper.cpp for on-device voice dictation, which takes CMake, a C++ compiler and libclang.
 - Optionally, **Python 3 with PyYAML**, which the script tests use to read YAML (see [the gates](#the-gates)).
@@ -73,9 +73,9 @@ This starts a debug build: it builds the MCP sidecars, starts the Vite dev serve
 
 **You don't need an account.** The script sets `FLEETIFY_NOAUTH=1` unless you set it yourself, so the app skips sign-in and runs as a local stand-in user. Release builds ignore the variable and need a free Fleetify account.
 
-**Each checkout gets its own instance.** In the main checkout, the script uses the default ports (3000 for Vite, 8765 for the embedded backend) and points `FLEETIFY_HOME`, the backend's data folder, at `~/.fleetify-wt-00`, away from the `~/.fleetify` of an installed Fleetify. In a [git worktree](https://git-scm.com/docs/git-worktree), it derives a slot from the worktree's name, with its own ports and data folder, so several worktrees can run side by side. The banner it prints shows the slot, the ports and the folder, and `npm run dev:tauri:wt -- 17` picks slot 17. Some state is shared by every instance, an installed Fleetify included: the settings file in the OS's app data folder and the webview's storage, which both belong to the app identifier `com.fleetify.app`.
+**Ports and data folder.** The script picks a slot from 0 to 99, which sets the ports and `FLEETIFY_HOME`, the backend's data folder; the banner it prints shows all three. A clone's main checkout gets slot 0: the default ports (3000 for Vite, 8765 for the embedded backend) and `~/.fleetify-wt-00`, away from the `~/.fleetify` of an installed Fleetify. An installed Fleetify listens on 8765 as well, so quit it first or pick another slot: `npm run dev:tauri:wt -- 1`. Two separate clones both get slot 0 too; give one of them another slot. In a [git worktree](https://git-scm.com/docs/git-worktree), the script derives the slot from the worktree's name, which lets several worktrees run side by side. Some state is shared by every instance, an installed Fleetify included: the settings file in the OS's app data folder and the webview's storage, which both belong to the app identifier `com.fleetify.app`.
 
-**Smoke tests.** In no-auth mode, the backend stops requiring the per-run API token on its requests, so the UI also works in a plain browser tab. When you test a change in the app window, start it as `FLEETIFY_REQUIRE_API_TOKEN=1 npm run dev:tauri:wt`, which keeps that check on, as in a release build.
+**Smoke tests.** In no-auth mode, the backend stops requiring the per-run API token, so scripts can call its API directly. The UI itself still needs the app window: a plain browser tab stops at sign-in. When you test a change in the app window, start it as `FLEETIFY_REQUIRE_API_TOKEN=1 npm run dev:tauri:wt`, which keeps the token check on, as in a release build.
 
 [docs/RUNNING.md](docs/RUNNING.md) lists the other environment variables. To run agents in the app, install an agent CLI or add a provider's API key in Settings: [docs/AGENTS.md](docs/AGENTS.md) and [docs/PROVIDERS.md](docs/PROVIDERS.md) list what Fleetify supports.
 
@@ -132,14 +132,14 @@ Mark a breaking change with `!` after the type or scope, as in `feat(api)!: drop
 
 ### Sign off your commits (DCO)
 
-Fleetify uses the [Developer Certificate of Origin](https://developercertificate.org) (DCO) 1.1 rather than a contributor licence agreement. When you sign off a commit, you certify that:
+Fleetify uses the [Developer Certificate of Origin](https://developercertificate.org) (DCO) 1.1 rather than a contributor licence agreement. When you sign off a commit, you certify the certificate's four points, summarised here:
 
 - you wrote the contribution, in whole or in part, and have the right to submit it under the project's open source licence; or
-- it builds on earlier work that is under a suitable open source licence, which lets you submit it, with your changes, under the same licence; or
+- it builds on earlier work that, to the best of your knowledge, is under a suitable open source licence, which gives you the right to submit it, with your changes, under the same licence (unless you are permitted to submit it under a different one); or
 - someone who certified one of the above gave it to you, and you haven't changed it;
-- and you understand that the contribution is public, and that a record of it, including your sign-off and the personal details in it, is kept indefinitely and may be redistributed.
+- and you understand that the contribution is public, and that a record of it, including your sign-off and the personal details in it, is kept indefinitely and may be redistributed in line with the project or the licences involved.
 
-[The certificate](https://developercertificate.org) is short; read it once before your first sign-off. To sign off, commit with `-s`:
+[The full certificate](https://developercertificate.org) is short; read it once before your first sign-off. To sign off, commit with `-s`:
 
 ```bash
 git commit -s -m "fix(git): keep the branch picker open after a refresh"
@@ -147,7 +147,7 @@ git commit -s -m "fix(git): keep the branch picker open after a refresh"
 
 Git ends the message with a line like `Signed-off-by: Your Name <your email>`, taken from your `user.name` and `user.email`. If you'd rather not publish your email address, set `user.email` to the noreply address GitHub gives you (under Settings → Emails).
 
-The DCO check fails a pull request that has a commit without a sign-off. Commits by bots and merge commits are exempt. To fix it, sign off the commits and update the pull request:
+The DCO check fails a pull request that has a commit without a sign-off. Commits by bots and merge commits are exempt. To fix it, sign off the commits and update the pull request. Below, `upstream` stands for the remote that points at this repository; if you cloned it directly rather than a fork, that is `origin`:
 
 ```bash
 # Only the last commit is missing it:
@@ -155,12 +155,10 @@ git commit --amend -s --no-edit
 git push --force-with-lease
 
 # Several commits are:
-git fetch origin
-git rebase --signoff origin/main
+git fetch upstream
+git rebase --signoff upstream/main
 git push --force-with-lease
 ```
-
-If `origin` is your fork, use the remote that points at this repository instead, for example `upstream/main`.
 
 ### Review and merging
 

@@ -76,10 +76,14 @@ Providers, models, MCP servers, and routing are all layered on top of this spine
 `device.json`, `telemetry-outbox.sqlite`, `posthog-outbox.sqlite`,
 `mcp_servers.json` (user MCP registry), `plugins/`, `marketplace-cache/`,
 `library/`, `models-cache/`. The folder is `$FLEETIFY_HOME` when that is set.
-The sessions database, `fleet.db`, goes here in development runs
-([RUNNING.md](RUNNING.md#environment) has today's rule), and from the first
-public release (v0.2.0) on, release builds keep it here too. API keys are
-**not** here — they live in the OS keychain.
+The sessions database, `fleet.db`, goes here when `FLEETIFY_HOME` is set or
+the run is no-auth (`FLEETIFY_NOAUTH=1`), as with `npm run dev:tauri:wt`.
+Otherwise, as with `npm run dev:tauri` or `npm run prod`, it is in the working
+directory today ([RUNNING.md](RUNNING.md#environment) has the rule). From the
+first public release (v0.2.0) on, release builds keep it here too. Provider
+API keys are **not** here: they live in the OS keychain. MCP servers' OAuth
+tokens and plugins' secret values do live here, in `mcp_secrets.json` and
+`plugin_secrets.json`.
 [INSTALL.md](INSTALL.md#remove-your-data) lists every place an installed
 Fleetify keeps data, this folder included.
 

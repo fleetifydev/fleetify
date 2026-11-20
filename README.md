@@ -70,7 +70,7 @@ Fleetify writes your Library items and installed plugins into each agent's own c
 
 ## Requirements
 
-- **A free Fleetify account.** Release builds, including ones you build yourself, need one, since your sessions, saved API keys and fleetify.dev dashboard are tied to it. Development builds skip sign-in (`npm run dev:tauri:wt`).
+- **A free Fleetify account.** Release builds, including ones you build yourself, need one, since your sessions, saved API keys and fleetify.dev dashboard are tied to it. A development build started with `npm run dev:tauri:wt` skips sign-in.
 - **macOS 11 or later, Windows 10 or 11, or Linux** with WebKitGTK 4.1 (Ubuntu 22.04, Debian 12 and newer).
 - **An agent or a model:** an agent CLI such as Claude Code, Codex or OpenCode, an API key for a provider such as OpenAI or Anthropic, or Ollama running locally.
 
@@ -82,7 +82,7 @@ Downloads arrive with the first public release (v0.2.0). Until then, [build from
 |---|---|---|
 | macOS | `.dmg` | Self-signed: macOS asks you to allow it once in **Privacy & Security** |
 | Windows | `.exe` installer, per user | Unsigned: SmartScreen shows a warning |
-| Linux | AppImage, `.deb`, `.rpm` | No signing prompt; make the AppImage executable first |
+| Linux | AppImage, `.deb`, `.rpm` | Unsigned: make the AppImage executable first; zypper asks before it installs the `.rpm` |
 
 [docs/INSTALL.md](docs/INSTALL.md) walks through each warning and shows how to verify a download.
 

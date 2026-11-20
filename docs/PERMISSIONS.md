@@ -63,11 +63,13 @@ Two overlays sit on top of the family:
 | OpenAI, Anthropic, DeepSeek, Grok, NVIDIA NIM, Kimi API, Gemini API, OpenRouter, Cloudflare Workers AI | Modes (Fleet agentic-runner tiers) | `default` → Ask permissions · `acceptEdits` → Accept edits · `bypassPermissions` → Bypass permissions |
 | Ollama (`ollama`), Ollama Cloud (`ollama-cloud`) | Modes (the same three tiers, from the lookup's default branch) | no effect: these turns run as single-shot chat, without tools |
 
-> HTTP providers run through Fleetify's own agentic runner, which maps the three tiers to its
-> autonomy levels: `default` → reads auto / writes & shell ask · `acceptEdits` → reads+writes
-> auto / shell ask · `bypassPermissions` → everything auto. Any other stored value runs as
-> `default`. Ollama and Ollama Cloud skip the runner (`routers/chat.rs`): their turns go out
-> single-shot, with no tools to authorize.
+> The tiers apply to chat turns. In a chat turn, HTTP providers run through Fleetify's own
+> agentic runner, which maps the three tiers to its autonomy levels: `default` → reads auto /
+> writes & shell ask · `acceptEdits` → reads+writes auto / shell ask · `bypassPermissions` →
+> everything auto. Any other stored value runs as `default`. Ollama and Ollama Cloud skip the
+> runner (`routers/chat.rs`): their turns go out single-shot, with no tools to authorize. A task
+> dispatched to an HTTP-provider session goes out single-shot too, through the same bridge as
+> Ollama's turns, so the tiers don't apply to it either.
 
 ---
 

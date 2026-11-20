@@ -129,6 +129,7 @@ Quit Fleetify first. Fleetify's own data, such as your sessions and chat history
 - webview data and caches: `~/Library/WebKit/com.fleetify.app`, `~/Library/HTTP Storages/com.fleetify.app` and `~/Library/Caches/com.fleetify.app`
 - logs: `~/Library/Logs/Fleetify`
 - window state and preferences, if present: `~/Library/Saved Application State/com.fleetify.app.savedState` and `~/Library/Preferences/com.fleetify.app.plist`
+- the built-in browser's profile: the `fleetify-browser-…` folders in `$TMPDIR`
 - credentials: open **Keychain Access**, search for `Fleetify`, and delete the items named `Fleetify` and `Fleetify-…`: your sign-in, the GitHub link, and the voice, provider and router API keys.
 
 **Windows:**
@@ -137,6 +138,7 @@ Quit Fleetify first. Fleetify's own data, such as your sessions and chat history
 - settings: `%APPDATA%\com.fleetify.app`
 - webview data: `%LOCALAPPDATA%\com.fleetify.app`
 - logs: `%LOCALAPPDATA%\Fleetify\logs`. The uninstaller leaves them, and with them the `%LOCALAPPDATA%\Fleetify` folder.
+- the built-in browser's profile: the `fleetify-browser-…` folders in `%TEMP%`
 - credentials: open **Control Panel → Credential Manager → Windows Credentials**, and remove each generic credential whose name contains `Fleetify`, such as `refresh_token.Fleetify`.
 
 **Linux:**
@@ -144,13 +146,15 @@ Quit Fleetify first. Fleetify's own data, such as your sessions and chat history
 - `~/.fleetify`
 - settings and webview data: `~/.local/share/com.fleetify.app`, and the cache in `~/.cache/com.fleetify.app`
 - logs: `~/.local/state/fleetify/logs`
+- the built-in browser's profile: the `fleetify-browser-…` folders in `/tmp`, or in `$TMPDIR` if it is set
 - credentials: in your keyring app, such as **Passwords and Keys** (Seahorse) or **KWallet Manager**, search for `Fleetify` and delete the items it finds. Fleetify also caches them in the kernel keyring, which clears when you restart.
 
 If you set `XDG_DATA_HOME`, `XDG_CACHE_HOME` or `XDG_STATE_HOME`, the Linux folders are under those instead.
 
-### In your projects and agents
+### In your projects, agents and Docker
 
 - A session that runs in a git worktree creates it in `.fleetify-worktrees/` inside the project, on a branch whose name starts with `fleet/`. Remove the ones you don't need with `git worktree remove`, then delete their branches.
+- In container mode, a container Fleetify started for a session, `fleetify-…`, stays in Docker until you delete the session, and so does the image it built from your Dockerfile, `fleetify-img-…`. Delete those sessions before you uninstall, or remove what's left with `docker rm -f` and `docker image rm`.
 - Session rules add a block marked `fleetify:rule:session-…` to the project's rule file, such as `CLAUDE.md`. Clearing a session's rules removes its block.
 - Library items and plugins you installed for an agent live in that agent's own configuration, for example in `~/.claude/skills/`. When you delete them in Fleetify, it removes what it wrote; after you uninstall, they stay. Delete the ones you don't want before you uninstall.
 
