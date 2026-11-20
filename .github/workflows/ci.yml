@@ -60,6 +60,9 @@ jobs:
     # The default build compiles whisper.cpp (cmake/C++) — heavy. Bound the job
     # so a hung advisory test or a pathological compile can't run for hours.
     timeout-minutes: 35
+    # Cargo colours its output only on a terminal, which a job's log isn't.
+    env:
+      CARGO_TERM_COLOR: always
     steps:
       - uses: actions/checkout@v4
       # The Rust release rust-toolchain.toml pins, with rustfmt and clippy:
