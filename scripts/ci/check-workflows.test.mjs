@@ -44,16 +44,17 @@ const PR_TITLE_CHECK = "Conventional PR title";
  * The checks the main ruleset requires: a pull request merges once each has
  * passed on its head commit. A job reports its check under its name, so a
  * renamed job, or a changed matrix, leaves every pull request waiting for a
- * check that never comes. The two clippy checks join the ruleset after their
- * first green run on main.
+ * check that never comes. The clippy checks name their platform, not their
+ * runner, so that moving to a newer runner image doesn't rename them; they
+ * join the ruleset after their first green run on main.
  */
 const REQUIRED = [
   PR_TITLE_CHECK,
   "Rust (fmt + clippy + test)",
   "Renderer (lint + test + types)",
   "DCO",
-  "Rust clippy (ubuntu-22.04)",
-  "Rust clippy (macos-15)",
+  "Rust clippy (linux)",
+  "Rust clippy (macos)",
 ];
 
 /** The pull request activity types a workflow runs on when it names none. */
@@ -274,7 +275,7 @@ function matrixCombinations(matrix) {
  * The names a job's checks report under: its `name`, or its id when it has
  * none, once per matrix combination. A `${{ matrix.<key> }}` in the name
  * becomes the combination's value; a name with no expression gets the
- * combination's values appended, as GitHub does: "Build (ubuntu-22.04)".
+ * combination's values appended, as GitHub does: "Build (linux)".
  */
 function checkNames(id, job) {
   const name = typeof job.name === "string" ? job.name : id;
@@ -380,7 +381,7 @@ describe("Linux packages", () => {
     const job = load(`${WORKFLOWS}/ci.yml`).jobs?.["rust-unix"];
     assert.ok(job, "ci.yml has no rust-unix job");
     const installed = (job.steps ?? []).flatMap((step) => aptPackages(scriptOf(step))).sort();
-    // The job is what proves the documented list builds Fleetify.
+    // The job shows the documented list is enough to compile the workspace on the runner image.
     assert.deepEqual(
       installed,
       documented,

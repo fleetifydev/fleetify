@@ -7,7 +7,7 @@
 #   and libclang (bindgen). windows-latest preinstalls all three (MSVC, CMake,
 #   LLVM/Clang on PATH), so no extra setup step is required; if a future runner
 #   image drops libclang, set LIBCLANG_PATH on the rust job. macos-15 ships
-#   them too (Xcode's clang and libclang, Homebrew's CMake); on ubuntu-22.04
+#   them too (Xcode's clang and libclang, Homebrew's CMake); on ubuntu-24.04
 #   the rust-unix job installs them from apt, with Tauri's GTK and WebKitGTK
 #   libraries.
 # - The Rust job runs on windows-latest because that is the project's real
@@ -119,7 +119,9 @@ jobs:
   # release build is. Fmt, which reads the same on every OS, and running the
   # tests stay with the rust job.
   rust-unix:
-    name: Rust clippy (${{ matrix.os }})
+    # Named by platform, not by runner: the main ruleset requires these checks
+    # by name, so moving to a newer runner image mustn't rename them.
+    name: Rust clippy (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
     # A cold cache compiles the whole workspace, whisper.cpp included.
     timeout-minutes: 40
@@ -127,8 +129,11 @@ jobs:
       # Each OS reports a check of its own, so one failing doesn't cancel the other.
       fail-fast: false
       matrix:
-        # ubuntu-22.04 is the oldest Ubuntu that Fleetify supports.
-        os: [ubuntu-22.04, macos-15]
+        include:
+          - platform: linux
+            os: ubuntu-24.04
+          - platform: macos
+            os: macos-15
     # Cargo colours its output only on a terminal, which a job's log isn't.
     env:
       CARGO_TERM_COLOR: always
@@ -142,8 +147,8 @@ jobs:
           rustup show active-toolchain
       # The Linux packages from CONTRIBUTING.md, which a script test keeps in
       # step with this list: what Tauri builds against, plus CMake and libclang
-      # for whisper.cpp and the ALSA and D-Bus headers. The job is what shows
-      # that the documented list builds Fleetify.
+      # for whisper.cpp and the ALSA and D-Bus headers. The job shows the
+      # documented list is enough to compile the workspace on the runner image.
       - name: System packages (Linux)
         if: runner.os == 'Linux'
         run: |
