@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 fleetify-core.workspace = true
 tokio.workspace = true
-tokio-tungstenite = { version = "0.24", default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -85,7 +85,7 @@ tempfile = "3"
 rsa = { version = "0.9", features = ["pem"] }
 rand = "0.8"
 tokio = { version = "1", features = ["full", "test-util"] }
-tokio-tungstenite = "0.24"
+tokio-tungstenite = "0.29"
 tower = { version = "0.5", features = ["util"] }
 # Captures log lines in tests that pin what is never logged.
 tracing-subscriber.workspace = true
