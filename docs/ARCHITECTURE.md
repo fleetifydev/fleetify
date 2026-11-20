@@ -76,11 +76,11 @@ Providers, models, MCP servers, and routing are all layered on top of this spine
 `device.json`, `telemetry-outbox.sqlite`, `posthog-outbox.sqlite`,
 `mcp_servers.json` (user MCP registry), `plugins/`, `marketplace-cache/`,
 `library/`, `models-cache/`. The folder is `$FLEETIFY_HOME` when that is set.
-The sessions database, `fleet.db`, goes here when `FLEETIFY_HOME` is set or
-the run is no-auth (`FLEETIFY_NOAUTH=1`), as with `npm run dev:tauri:wt`.
-Otherwise, as with `npm run dev:tauri` or `npm run prod`, it is in the working
-directory today ([RUNNING.md](RUNNING.md#environment) has the rule). From the
-first public release (v0.2.0) on, release builds keep it here too. Provider
+The sessions database, `fleet.db`, is always in this folder, never in the
+working directory. A no-auth run (`FLEETIFY_NOAUTH=1`) that doesn't set
+`FLEETIFY_HOME` uses `fleet-noauth.db` here instead, which keeps the stub
+user's sessions out of the signed-in user's database
+([RUNNING.md](RUNNING.md#environment) has the rule). Provider
 API keys are **not** here: they live in the OS keychain. MCP servers' OAuth
 tokens and plugins' secret values do live here, in `mcp_secrets.json` and
 `plugin_secrets.json`.

@@ -1,10 +1,13 @@
 //! Capability matrix — what each agent CAN do (tool-use, vision, model tiers).
-//! Loaded from `config/agents.toml` by the routing module's agent selector.
-//! Distinct from the bridge-launch config in `crates::config::AgentConfig`.
+//! Built from `config/agents.toml`, compiled into the binary, for the routing
+//! module's agent selector. Distinct from the bridge-launch config in
+//! `crates::config::AgentConfig`.
 
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+
+/// `config/agents.toml`, built in.
+pub const DEFAULT_AGENTS_TOML: &str = include_str!("../../../../../config/agents.toml");
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentCapability {
@@ -25,28 +28,10 @@ pub struct CapabilityMatrix {
 }
 
 impl CapabilityMatrix {
-    /// Load the capability matrix from an explicit path.
-    pub fn load(path: impl AsRef<Path>) -> std::io::Result<Self> {
-        let raw = std::fs::read_to_string(path.as_ref())?;
-        toml::from_str(&raw).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-    }
-
-    /// Search order parity with `crates::config::AppConfig::load`: cwd then workspace-root.
-    /// Returns the first file that exists, or NotFound.
+    /// Parses [`DEFAULT_AGENTS_TOML`]; never touches the filesystem.
     pub fn load_default() -> std::io::Result<Self> {
-        let candidates: Vec<PathBuf> = vec![
-            PathBuf::from("config/agents.toml"),
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/agents.toml"),
-        ];
-        for c in &candidates {
-            if c.exists() {
-                return Self::load(c);
-            }
-        }
-        Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "config/agents.toml not found",
-        ))
+        toml::from_str(DEFAULT_AGENTS_TOML)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 }
 
@@ -74,9 +59,9 @@ tiers = ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7"]
     }
 
     #[test]
-    fn loads_real_agents_toml() {
-        // Should find config/agents.toml via load_default's search.
-        let m = CapabilityMatrix::load_default().expect("config/agents.toml must be present");
+    fn the_built_in_matrix_has_the_core_agents() {
+        // The config/agents.toml compiled into the binary parses and has them.
+        let m = CapabilityMatrix::load_default().expect("the built-in config/agents.toml parses");
         assert!(m.agents.contains_key("claude-code"), "claude agent missing");
         assert!(m.agents.contains_key("openai"), "openai agent missing");
         assert!(m.agents.contains_key("codex-cli"), "codex agent missing");

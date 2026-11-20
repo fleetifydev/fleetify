@@ -24,7 +24,7 @@ pub mod test_support;
 pub mod ui;
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
@@ -134,40 +134,52 @@ impl ServeOptions {
     }
 }
 
-/// Whether this instance should isolate its sessions DB under FLEETIFY_HOME:
-/// true for worktree instances (FLEETIFY_HOME explicitly set) and no-auth dev
-/// runs (`FLEETIFY_NOAUTH=1`, debug-only). Keeps the NOAUTH "John Doe" stub
-/// fleet out of the real-auth prod DB.
-fn db_should_isolate() -> bool {
-    std::env::var("FLEETIFY_HOME")
-        .map(|v| !v.is_empty())
-        .unwrap_or(false)
-        || auth::is_no_auth()
-}
-
 /// Resolve the file-backed sessions DB path. Delegates the policy to
-/// [`resolve_db_path_in`] so it's unit-testable without touching the process
-/// environment.
+/// [`noauth_on_shared_home`] and [`resolve_db_path_in`] so it's unit-testable
+/// without touching the process environment.
 fn resolve_db_path(configured: &str) -> PathBuf {
+    let fleetify_home_var = std::env::var("FLEETIFY_HOME").ok();
     resolve_db_path_in(
         configured,
-        fleetify_core::fleetify_home(),
-        db_should_isolate(),
+        &fleetify_core::fleetify_home(),
+        noauth_on_shared_home(auth::is_no_auth(), fleetify_home_var.as_deref()),
     )
 }
 
+/// Whether a no-auth run (`FLEETIFY_NOAUTH=1`, debug-only) is on the shared
+/// home: `FLEETIFY_HOME` is unset or empty, as [`fleetify_core::fleetify_home`]
+/// reads it. A `dev:tauri:wt` instance is no-auth by default but sets
+/// `FLEETIFY_HOME`, so its home, and the `fleet.db` in it, are its own.
+fn noauth_on_shared_home(no_auth: bool, fleetify_home_var: Option<&str>) -> bool {
+    no_auth && fleetify_home_var.is_none_or(str::is_empty)
+}
+
 /// Pure resolution: an absolute configured path is used verbatim; a relative
-/// one is placed under `home` when `isolate`, else kept relative (prod's
-/// historical CWD-relative layout).
-fn resolve_db_path_in(configured: &str, home: PathBuf, isolate: bool) -> PathBuf {
-    let p = std::path::Path::new(configured);
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else if isolate {
-        home.join(p)
-    } else {
-        p.to_path_buf()
+/// one goes under `home`, never the working directory. With
+/// `noauth_on_shared_home` the file name becomes `<stem>-noauth.<ext>`
+/// (`fleet.db` → `fleet-noauth.db`), which keeps the no-auth "John Doe" stub
+/// user's sessions out of the signed-in user's DB. Sharing one DB broke
+/// cross-session dispatch: a dispatch target owned by one identity is
+/// invisible to a caller scoped to the other.
+fn resolve_db_path_in(configured: &str, home: &Path, noauth_on_shared_home: bool) -> PathBuf {
+    let configured = Path::new(configured);
+    if configured.is_absolute() {
+        return configured.to_path_buf();
     }
+    let path = home.join(configured);
+    if !noauth_on_shared_home {
+        return path;
+    }
+    let Some(stem) = path.file_stem() else {
+        return path;
+    };
+    let mut name = stem.to_os_string();
+    name.push("-noauth");
+    if let Some(ext) = path.extension() {
+        name.push(".");
+        name.push(ext);
+    }
+    path.with_file_name(name)
 }
 
 /// Whether startup loads a `.env` file into the process environment. Only
@@ -211,14 +223,13 @@ pub async fn serve(addr: SocketAddr, opts: ServeOptions) -> anyhow::Result<Serve
     // Lifespan parity: one-shot ~/.fleet → ~/.fleetify migration.
     services::migration::migrate_fleet_to_fleetify();
 
+    // The built-in config: nothing comes from the working directory, which
+    // for an installed app is wherever it was launched from.
     let cfg = config::AppConfig::load(None)?;
-    // Sessions DB. Tests pin FLEET_DB_URL=sqlite::memory:. Otherwise resolve a
-    // file path: a relative path is placed under FLEETIFY_HOME for worktree /
-    // no-auth dev instances so they DON'T share the prod DB. Sharing previously
-    // mixed the real user's fleet with the NOAUTH "John Doe" stub user, which
-    // broke cross-session dispatch — a dispatch target owned by one identity is
-    // invisible to a caller scoped to the other. Prod (no FLEETIFY_HOME, real
-    // auth) keeps the historical CWD-relative path untouched.
+    // Sessions DB. Tests pin FLEET_DB_URL=sqlite::memory:. Otherwise a file
+    // under the Fleetify home (`~/.fleetify/fleet.db`, or `$FLEETIFY_HOME`),
+    // with its own name for a no-auth run on the shared home (see
+    // `resolve_db_path_in`).
     let pool = match std::env::var("FLEET_DB_URL") {
         Ok(url) => db::init_pool(&url).await?,
         Err(_) => db::init_pool_at(&resolve_db_path(&cfg.database.path)).await?,
@@ -266,10 +277,11 @@ pub async fn serve(addr: SocketAddr, opts: ServeOptions) -> anyhow::Result<Serve
         use services::routing::traits::{DecisionRouter, ProxyGateway};
         use services::routing::RoutingOrchestrator;
 
-        // Capability matrix is best-effort: a missing or malformed
-        // config/agents.toml shouldn't kill the backend. The built-in
-        // router degrades to "no candidates" (still returns a defensive
-        // fallback decision) when its matrix is empty.
+        // Capability matrix is best-effort: the built-in config/agents.toml
+        // is pinned by a unit test, but a parse failure still shouldn't kill
+        // the backend. The built-in router degrades to "no candidates"
+        // (still returns a defensive fallback decision) when its matrix is
+        // empty.
         let matrix = CapabilityMatrix::load_default().unwrap_or_else(|e| {
             tracing::warn!(
                 target: "fleet-backend",
@@ -577,37 +589,63 @@ pub async fn serve(addr: SocketAddr, opts: ServeOptions) -> anyhow::Result<Serve
 
 #[cfg(test)]
 mod db_path_tests {
-    use super::resolve_db_path_in;
-    use std::path::PathBuf;
+    use super::{noauth_on_shared_home, resolve_db_path_in};
+    use std::path::{Path, PathBuf};
 
     #[test]
-    fn relative_path_isolated_under_home() {
-        let got = resolve_db_path_in("fleet.db", PathBuf::from("/home/.fleetify-wt-07"), true);
-        assert_eq!(got, PathBuf::from("/home/.fleetify-wt-07").join("fleet.db"));
+    fn no_auth_is_on_the_shared_home_unless_fleetify_home_is_set() {
+        // A `dev:tauri:wt` instance is no-auth by default but sets
+        // FLEETIFY_HOME, so it keeps `fleet.db` in a home of its own.
+        for (no_auth, fleetify_home_var, want) in [
+            (true, None, true),
+            (true, Some(""), true),
+            (true, Some("/x/.fleetify-wt-07"), false),
+            (false, None, false),
+        ] {
+            assert_eq!(
+                noauth_on_shared_home(no_auth, fleetify_home_var),
+                want,
+                "no_auth = {no_auth}, FLEETIFY_HOME = {fleetify_home_var:?}"
+            );
+        }
     }
 
     #[test]
-    fn relative_path_kept_relative_when_not_isolated() {
-        // Prod: no FLEETIFY_HOME / no NOAUTH -> historical CWD-relative path.
+    fn relative_path_goes_under_home() {
+        let home = Path::new("/h/.fleetify");
         assert_eq!(
-            resolve_db_path_in("fleet.db", PathBuf::from("/home/.fleetify"), false),
-            PathBuf::from("fleet.db")
+            resolve_db_path_in("fleet.db", home, false),
+            home.join("fleet.db")
         );
     }
 
     #[test]
-    fn absolute_path_used_verbatim_regardless_of_isolation() {
+    fn no_auth_on_the_shared_home_gets_its_own_file() {
+        let home = Path::new("/h/.fleetify");
+        assert_eq!(
+            resolve_db_path_in("fleet.db", home, true),
+            home.join("fleet-noauth.db")
+        );
+        // Only the file name changes; without an extension it is `<stem>-noauth`.
+        assert_eq!(
+            resolve_db_path_in("db/sessions", home, true),
+            home.join("db").join("sessions-noauth")
+        );
+    }
+
+    #[test]
+    fn absolute_path_used_verbatim() {
         let abs = if cfg!(windows) {
             r"C:\data\fleet.db"
         } else {
             "/data/fleet.db"
         };
         assert_eq!(
-            resolve_db_path_in(abs, PathBuf::from("/home/.fleetify"), true),
+            resolve_db_path_in(abs, Path::new("/home/.fleetify"), true),
             PathBuf::from(abs)
         );
         assert_eq!(
-            resolve_db_path_in(abs, PathBuf::from("/home/.fleetify"), false),
+            resolve_db_path_in(abs, Path::new("/home/.fleetify"), false),
             PathBuf::from(abs)
         );
     }

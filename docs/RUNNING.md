@@ -115,7 +115,7 @@ Variables marked *debug only* have no effect in a release build.
 | `FLEETIFY_DASHBOARD_URL` | `http://localhost:5174`       | *Debug only.* "Open dashboard" link target. Release builds use `https://app.fleetify.dev`. |
 | `FLEETIFY_HOME`          | `~/.fleetify`                 | Fleetify's data folder. |
 | `FLEETIFY_BACKEND_PORT`  | `8765`                        | Port of the embedded backend. |
-| `FLEET_DB_URL`           | (unset)                       | Override the sessions DB; tests set `sqlite::memory:`. Unset, it is `fleet.db` in `FLEETIFY_HOME` when that is set or in a no-auth run, and `fleet.db` in the working directory otherwise. |
+| `FLEET_DB_URL`           | (unset)                       | Override the sessions DB; tests set `sqlite::memory:`. Unset, it is `fleet.db` in `FLEETIFY_HOME`. A no-auth run that doesn't set `FLEETIFY_HOME` uses `fleet-noauth.db` there instead, which keeps the stub user's sessions out of the signed-in user's database. |
 | `FLEETIFY_MODELS_API`, `FLEETIFY_MODELS_TAG` | `https://fleetify.dev/api`, `main` | The model catalog's serving API and CDN tag; see [REMOTE_MODEL_CATALOG.md](REMOTE_MODEL_CATALOG.md). |
 | `GEMINI_API_KEY`         | (none)                        | Antigravity SDK: the API key to use when none is saved in Settings. |
 
@@ -145,8 +145,8 @@ check on in a no-auth run.
 
 | Path                                       | Contents |
 |--------------------------------------------|----------|
-| `~/.fleetify/` (or `$FLEETIFY_HOME`)       | `device.json` (stable per-machine UUID + name + platform), the telemetry queues (`telemetry-outbox.sqlite`, `posthog-outbox.sqlite`), `mcp_servers.json`, `plugins/`, `library/`, `models-cache/`, … |
-| `~/.fleetify-wt-<slot>/`                   | The same, for a `dev:tauri:wt` instance, plus its `fleet.db` |
+| `~/.fleetify/` (or `$FLEETIFY_HOME`)       | `fleet.db` (the sessions database; a no-auth run on `~/.fleetify/` uses `fleet-noauth.db`), `device.json` (stable per-machine UUID + name + platform), the telemetry queues (`telemetry-outbox.sqlite`, `posthog-outbox.sqlite`), `mcp_servers.json`, `plugins/`, `library/`, `models-cache/`, … |
+| `~/.fleetify-wt-<slot>/`                   | The same, for a `dev:tauri:wt` instance |
 | `fleet.config.json`                        | Settings, in the OS's app data folder for `com.fleetify.app` |
 | `<project>/.fleetify-worktrees/`           | Session-scoped git worktrees |
 | OS keychain `Fleetify`                     | OIDC refresh token |
@@ -171,3 +171,13 @@ test run left a process holding the binary. Close it with
 **WS client refuses to connect ("not signed in")**. Expected when no
 Fleetify account is signed in. The loop pauses 30s between attempts
 and picks up the token automatically once you sign in.
+
+**Sessions from an older dev build are gone**. Dev builds made before the
+sessions database moved to `~/.fleetify/` kept it in `src-tauri/fleet.db`.
+No-auth runs (`npm run dev:noauth`) kept theirs in `~/.fleetify/fleet.db`
+and now use `~/.fleetify/fleet-noauth.db`. To keep those sessions, follow
+these steps in order. Before starting a dev build of this version, quit
+Fleetify. If you used `npm run dev:noauth`, rename `~/.fleetify/fleet.db*`
+to `fleet-noauth.db*`. Delete any other `~/.fleetify/fleet.db*` that a newer
+build created. Then move `src-tauri/fleet.db*` (the `-wal` and `-shm` files
+with it) to `~/.fleetify/`.

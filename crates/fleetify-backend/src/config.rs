@@ -1,10 +1,16 @@
 //! Application config — mirrors the original `backend/app/config.py`
-//! (dataclasses + cwd→repo-root `config/default.toml` search order).
+//! dataclasses. The defaults are `config/default.toml`, compiled into the
+//! binary: an installed app's working directory is wherever it was launched
+//! from, so no build reads its config from there.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use anyhow::Context;
 use serde::Deserialize;
+
+/// `config/default.toml`, built in.
+pub const DEFAULT_CONFIG_TOML: &str = include_str!("../../../config/default.toml");
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
@@ -44,23 +50,17 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    /// Search order parity with Python: explicit path, else
-    /// `config/default.toml` in cwd, else `<workspace-root>/config/default.toml`.
+    /// `Some(path)`: read that file. `None`: the built-in defaults
+    /// ([`DEFAULT_CONFIG_TOML`]). Never reads the working directory.
     pub fn load(explicit: Option<&Path>) -> anyhow::Result<Self> {
-        let candidates: Vec<PathBuf> = match explicit {
-            Some(p) => vec![p.to_path_buf()],
-            None => vec![
-                PathBuf::from("config/default.toml"),
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/default.toml"),
-            ],
-        };
-        for c in &candidates {
-            if c.exists() {
-                let txt = std::fs::read_to_string(c)?;
-                return Ok(toml::from_str(&txt)?);
+        match explicit {
+            Some(path) => {
+                let txt = std::fs::read_to_string(path)
+                    .with_context(|| format!("reading {}", path.display()))?;
+                toml::from_str(&txt).with_context(|| format!("parsing {}", path.display()))
             }
+            None => toml::from_str(DEFAULT_CONFIG_TOML).context("parsing the built-in config"),
         }
-        anyhow::bail!("config/default.toml not found in {candidates:?}")
     }
 }
 

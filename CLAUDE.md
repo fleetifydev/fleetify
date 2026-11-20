@@ -167,7 +167,7 @@ docs/                      # ARCHITECTURE.md, RUNNING.md, INSTALL.md, ANALYTICS.
 
 ## Gotchas
 
-- **`~/.fleetify/` is shared between instances unless you use `FLEETIFY_HOME`.** `dev:tauri:wt` sets it per-slot; `dev:tauri` doesn't. Two `dev:tauri` instances writing to the same `telemetry-outbox.sqlite` *will* corrupt each other.
+- **`~/.fleetify/` is shared between instances unless you use `FLEETIFY_HOME`.** That includes the sessions DB, `fleet.db` (a no-auth run without `FLEETIFY_HOME` uses `fleet-noauth.db` there). `dev:tauri:wt` sets it per-slot; `dev:tauri` doesn't. Two `dev:tauri` instances writing to the same `fleet.db` or `telemetry-outbox.sqlite` *will* corrupt each other.
 
 - **Backend hard-codes `127.0.0.1:8765` only if `FLEETIFY_BACKEND_PORT` is unset.** Same for the Vite proxy targets. Don't add a new hardcoded port — read the env.
 

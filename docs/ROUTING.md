@@ -50,7 +50,7 @@ Complex). (Embedding-based intent clustering is a possible next step.)
 ### Layer 1 — `AgentSelector` + `CapabilityMatrix` (`agent_selector.rs`, `capability_matrix.rs`)
 
 `AgentSelector::rank(task)` filters the task's `allowed_agents` against the
-**capability matrix** (loaded from `config/agents.toml`: per-agent
+**capability matrix** (from `config/agents.toml`, compiled in: per-agent
 `supports_tool_use`, `supports_vision`, `max_context`, `mcp_support`, `acp`,
 `default_model`, `tiers`). Agents lacking tool-use are dropped when the prompt
 needs it (code block present or `file_count > 0`); if that empties the list it
@@ -321,7 +321,7 @@ for `routing_decisions` rows with `source = notdiamond`, or the backend log
 |---|---|
 | `services/routing/intent.rs` | Layer 0 — heuristic complexity classifier |
 | `services/routing/agent_selector.rs` | Layer 1 — capability-matched agent ranking |
-| `services/routing/capability_matrix.rs` | `config/agents.toml` loader (per-agent caps + tiers) |
+| `services/routing/capability_matrix.rs` | The capability matrix from `config/agents.toml`, compiled in (per-agent caps + tiers) |
 | `services/routing/traits.rs` | `DecisionRouter` / `ProxyGateway` traits + core types |
 | `services/routing/decision/builtin.rs` | Offline router (never errs) — the fallback |
 | `services/routing/decision/notdiamond.rs` | Not Diamond `modelSelect` client |
