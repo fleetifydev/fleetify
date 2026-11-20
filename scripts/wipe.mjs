@@ -3,8 +3,8 @@
  * wipe.mjs — Fleetify-side "factory reset". Removes every persisted
  * piece of state so the next launch behaves like a fresh install:
  *
- *   1. `~/.fleetify/`              — backend SQLite, telemetry outbox,
- *                                    device.json, plugin_state.json,
+ *   1. `~/.fleetify/`              — the sessions DB (`fleet.db`), telemetry
+ *                                    outbox, device.json, plugin_state.json,
  *                                    installed plugins.
  *   2. App config + webview data   — `fleet.config.json` PLUS the webview's
  *                                    localStorage / IndexedDB / cookies. These
@@ -37,13 +37,10 @@
  */
 
 import { rm, stat } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { spawnSync } from "node:child_process";
 import { homedir, platform } from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
 
 import {
   isFleetifyKeychainTarget,
@@ -55,7 +52,6 @@ const KEEP_KEYCHAIN = ARGS.has("--keep-keychain");
 
 const home = homedir();
 const plat = platform(); // "win32" | "darwin" | "linux"
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 // ── Targets ────────────────────────────────────────────────────────
 const targets = [
@@ -146,43 +142,6 @@ async function wipeDir(label, dir) {
     console.log(`  ✓ ${label.padEnd(22)} removed    ${dir}`);
   } catch (err) {
     console.log(`  ✗ ${label.padEnd(22)} FAILED     ${dir}`);
-    console.log(`    ${err.message}`);
-  }
-}
-
-// ── Session SQL wipe ───────────────────────────────────────────────
-// Clears all session data from a fleet.db without deleting the file,
-// so the schema and migrations table survive and the next launch skips
-// re-migration. Deletes child tables before parent to satisfy FKs even
-// when foreign_keys pragma is off.
-const SESSION_TABLES = [
-  "session_memory",
-  "session_activity",
-  "cost_events",
-  "messages",
-  "routing_decisions",
-  "sessions",
-  "groups",
-];
-
-function wipeSessionsInDb(label, dbPath) {
-  if (!existsSync(dbPath)) {
-    console.log(`  · ${label.padEnd(22)} skip       ${dbPath} (not found)`);
-    return;
-  }
-  try {
-    const db = new DatabaseSync(dbPath);
-    for (const table of SESSION_TABLES) {
-      try {
-        db.exec(`DELETE FROM ${table}`);
-      } catch {
-        // Table may not exist in older DBs — skip silently.
-      }
-    }
-    db.close();
-    console.log(`  ✓ ${label.padEnd(22)} cleared    ${dbPath}`);
-  } catch (err) {
-    console.log(`  ✗ ${label.padEnd(22)} FAILED     ${dbPath}`);
     console.log(`    ${err.message}`);
   }
 }
@@ -284,11 +243,6 @@ console.log("Fleetify wipe — clearing every persisted piece of state.\n");
 for (const t of targets) {
   await wipeDir(t.label, t.path);
 }
-
-// Clear sessions from the dev/prod DB (src-tauri/fleet.db). Preserves the
-// schema so the next launch skips migrations. The ~/.fleetify/ DB is already
-// gone via the backend-state wipe above.
-wipeSessionsInDb("sessions DB", path.join(projectRoot, "src-tauri", "fleet.db"));
 
 if (KEEP_KEYCHAIN) {
   console.log("  · keychain               skip       --keep-keychain passed");
