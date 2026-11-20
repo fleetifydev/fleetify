@@ -1,0 +1,75 @@
+name: Bug report
+description: Something in Fleetify doesn't work the way it should.
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please search the [existing issues](https://github.com/fleetifydev/fleetify/issues) first, in case it's already known.
+
+        Found a security vulnerability? Don't open an issue: [report it privately](https://github.com/fleetifydev/fleetify/security/advisories/new).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the bug. Quote any error message word for word, and add a screenshot if it shows the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The shortest sequence of steps that makes the bug happen.
+      placeholder: |
+        1. Open ...
+        2. Click ...
+        3. See ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Fleetify version
+      description: >-
+        Settings → General shows it, under "Check for updates". If you built
+        Fleetify from source, give the commit instead (`git rev-parse --short HEAD`).
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and version
+      placeholder: Windows 11 24H2, macOS 26.1, Ubuntu 24.04 (Wayland)
+    validations:
+      required: true
+  - type: input
+    id: agents
+    attributes:
+      label: Agents and providers involved
+      description: >-
+        The coding agents or model providers in use when it happened, with
+        versions or models if you know them. Write "none" if the bug doesn't
+        involve one.
+      placeholder: Claude Code, Codex, an Ollama model
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Fleetify writes one log file a day, named `fleetify.log.YYYY-MM-DD`, to:
+
+        - Linux: `~/.local/state/fleetify/logs/` (or `$XDG_STATE_HOME/fleetify/logs/` if you set `XDG_STATE_HOME`)
+        - macOS: `~/Library/Logs/Fleetify/`
+        - Windows: `%LOCALAPPDATA%\Fleetify\logs\`
+
+        Settings → Diagnostics → Open log folder opens it. Paste the lines from around the time of the bug. This issue is public, so first remove tokens, API keys, and any paths or names you don't want public.
+      render: text
