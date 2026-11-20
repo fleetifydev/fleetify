@@ -29,7 +29,7 @@ the registry.
 
 | Field | Meaning |
 |---|---|
-| `id` | Stable id used everywhere (`"claude"`, `"openai"`, `"hermes"`, …). The chat dispatch keys on it. |
+| `id` | Stable id used everywhere (`"claude-code"`, `"openai"`, `"hermes-agent"`, …). The chat dispatch keys on it. |
 | `display_name` | Human label in the UI. |
 | `kind` | `ProviderKind::{Cli, Api, LocalHttp}` — drives which subsystem handles it. |
 | `default_base_url` | HTTP base URL (or a template with `{account_id}` for Cloudflare). `""` for CLI agents. |
@@ -48,14 +48,15 @@ enum ProviderKind { Api, LocalHttp, Cli }
 ```
 
 - **`Cli`** — a local subprocess agent (Claude Code, Codex, Kimi,
-  OpenCode, Cursor, GitHub Copilot, Hermes, Antigravity CLI, Antigravity SDK).
+  OpenCode, Cursor, GitHub Copilot, Grok Build, Hermes, Antigravity CLI,
+  Antigravity SDK).
   Auth is **out-of-band** (the agent's own `login`); Fleetify never holds the
   credential. Models usually live inside the binary, so `default_models` is
   often empty and the real list is discovered at runtime (see
   [`MODEL_DISCOVERY.md`](MODEL_DISCOVERY.md)).
 - **`Api`** — a cloud OpenAI-compatible HTTP endpoint (OpenAI, Anthropic,
   DeepSeek, Grok, NVIDIA NIM, Kimi API, Gemini API, Perplexity, OpenRouter,
-  Cloudflare Workers AI). Auth is an API key Fleetify stores.
+  Cloudflare Workers AI, Ollama Cloud). Auth is an API key Fleetify stores.
 - **`LocalHttp`** — a local HTTP daemon with no auth (Ollama). Models are
   fetched live from `/api/tags`.
 
@@ -164,20 +165,21 @@ and constructs a **bridge** based on the session's `tool` (the provider id):
 WS  { type: "send", session_id, message }
         ▼  routers/chat.rs
 match session.tool {
-    "claude"                                   => AnyBridge::Claude(ClaudeBridge…)
+    "claude-code"                              => AnyBridge::Claude(ClaudeBridge…)
     "opencode"                                 => AnyBridge::OpenCode(…)   // ACP
-    "cursor"                                   => AnyBridge::Cursor(…)     // ACP
+    "cursor-cli"                               => AnyBridge::Cursor(…)     // ACP
     "github-copilot"                           => AnyBridge::GitHubCopilot(…) // ACP
-    "hermes"                                   => AnyBridge::Hermes(…)     // ACP
-    "codex"                                    => AnyBridge::Codex(…)      // app-server
-    "agy"                                      => AnyBridge::Antigravity(…)// PTY -p
+    "hermes-agent"                             => AnyBridge::Hermes(…)     // ACP
+    "kimi-code"                                => AnyBridge::Kimi(…)       // ACP
+    "grok-build"                               => AnyBridge::GrokCli(…)    // ACP
+    "codex-cli"                                => AnyBridge::Codex(…)      // app-server
+    "antigravity-cli"                          => AnyBridge::Antigravity(…)// PTY -p
     "antigravity-sdk"                          => AnyBridge::AntigravitySdk(…) // py sidecar
-    "openai"|"deepseek"|"grok"|"nvidia-nim"
+    "openai"|"anthropic"|"deepseek"|"grok"|"nvidia-nim"
       |"kimi-api"|"gemini-api"|"openrouter"
       |"cloudflare-workers-ai"                 => AnyBridge::Agentic(OpenAICompat…) // tool loop
-    "ollama"                                   => AnyBridge::OpenAICompat(…)        // single-shot
+    "ollama"|"ollama-cloud"                    => AnyBridge::OpenAICompat(…)        // single-shot
     "perplexity"                               => AnyBridge::Perplexity(…)
-    "kimi"                                     => AnyBridge::Kimi(…)
 }
         ▼
 any_bridge.send_message(text, BridgeContext) -> mpsc::Receiver<BridgeEvent>
@@ -193,7 +195,8 @@ any_bridge.send_message(text, BridgeContext) -> mpsc::Receiver<BridgeEvent>
   `extra_headers`, and `model_override` (used by the routing layer — see
   [`ROUTING.md`](ROUTING.md) — and the model picker).
 - HTTP providers are wrapped in the **agentic runner** (`AgenticBridgeRunner`) so
-  they get a real tool-use loop, except Ollama which stays single-shot.
+  they get a real tool-use loop, except Ollama and Ollama Cloud, which stay
+  single-shot.
 
 ---
 

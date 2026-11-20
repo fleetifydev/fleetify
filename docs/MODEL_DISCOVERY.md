@@ -1,11 +1,12 @@
 # Model Discovery & the Model Picker
 
 How the model list a user sees is sourced — from the static catalog, from a live
-CLI-agent probe, or from a provider's `/models` endpoint — and how those feed the
-unified picker.
+CLI-agent probe, from a provider's `/models` endpoint, or from the published
+remote catalog — and how those feed the unified picker.
 
 > Related: [`PROVIDER_ARCHITECTURE.md`](PROVIDER_ARCHITECTURE.md),
-> [`AGENT_BRIDGES.md`](AGENT_BRIDGES.md).
+> [`AGENT_BRIDGES.md`](AGENT_BRIDGES.md),
+> [`REMOTE_MODEL_CATALOG.md`](REMOTE_MODEL_CATALOG.md).
 
 ---
 
@@ -23,11 +24,12 @@ dynamicModels[id]  (runtime-discovered)   ▶  highest
 - **`default_models`** — curated `ModelSpec`s in the catalog (most HTTP providers,
   GitHub Copilot, Antigravity SDK).
 - **`CLI_MODELS`** — a hardcoded fallback in `picker-groups.ts` for CLI agents
-  whose models are baked into the binary (Claude/Codex/Gemini/Kimi) and as a
+  whose models are baked into the binary (Claude Code, Codex, Kimi, Antigravity) and as a
   cold-start placeholder for live-model agents (e.g. Hermes' `"Hermes (configured
   model)"`).
 - **`dynamicModels`** — discovered at runtime; **overrides** the others when
-  present. Two backend sources feed it (below).
+  present. Two backend endpoints feed it (below); both fall back to the remote
+  catalog when their live source comes back empty.
 
 ---
 
@@ -45,9 +47,13 @@ its static fallback. TTL-cached (120 s); `?refresh=1` bypasses.
 | id | How |
 |---|---|
 | `opencode` | runs `opencode models` (one id per line) |
-| `cursor` | a short ACP `session/new` probe (`bridges::cursor::list_models`) |
+| `cursor-cli` | a short ACP `session/new` probe (`bridges::cursor::list_models`) |
+| `grok-build` | a short ACP probe (`bridges::grok_cli::list_models`) |
 | `github-copilot` | `bridges::github_copilot::list_models` |
-| `hermes` | `bridges::hermes::list_provider_models` (every authenticated provider, ids `provider:model`) → falls back to a `session/new` probe (current provider only) |
+| `hermes-agent` | `bridges::hermes::list_provider_models` (every authenticated provider, ids `provider:model`) → falls back to a `session/new` probe (current provider only) |
+
+Any other agent (`claude-code`, `codex-cli`, `kimi-code`, `antigravity-cli`, …),
+or a live probe that comes back empty, falls through to the remote catalog.
 
 Hermes is special: it fans **one agent across multiple authenticated providers**.
 `list_provider_models` shells to the Hermes venv Python
@@ -57,8 +63,17 @@ Hermes is special: it fans **one agent across multiple authenticated providers**
 
 ### `GET /providers/{id}/models` — HTTP providers with a live catalog
 
-For OpenRouter (`/api/v1/models`, hundreds of models) and Cloudflare Workers AI.
-Returns `{ id, models:[{id,label,ctx?}] }`; longer TTL. Empty → curated fallback.
+Live for OpenRouter (`/api/v1/models`, hundreds of models), Cloudflare Workers
+AI, Grok (xAI) and Ollama Cloud. Returns `{ id, models:[{id,label,ctx?}] }`;
+longer TTL. Every other HTTP provider, or a live call that comes back empty,
+falls through to the remote catalog; empty there too → curated fallback.
+
+### The remote catalog
+
+The key-less baseline both endpoints fall back to: the published lineup from
+[`fleetifydev/models`](https://github.com/fleetifydev/models), fetched from
+`fleetify.dev/api` or the jsDelivr CDN and kept on disk for offline starts.
+[`REMOTE_MODEL_CATALOG.md`](REMOTE_MODEL_CATALOG.md) describes it.
 
 ---
 
@@ -76,11 +91,12 @@ which becomes the WS `available_models_update` message. The renderer stores it i
 
 The picker is fed from **both** paths, which must be reconciled:
 
-1. **Lazy HTTP discovery** — when the picker opens, `session-toolbar.tsx` and
-   `chat-input.tsx` fetch `/agents/{id}/models` for each live-model agent
-   (`opencode`, `cursor`, `github-copilot`, `hermes`) and
-   `/providers/{id}/models` for connected HTTP providers, into local
-   `discoveredModels`.
+1. **HTTP discovery** — `src/stores/discovered-models-store.ts` keeps one
+   app-wide cache. `hydrate` runs once per app run for the remote-catalog
+   agents (`claude-code`, `codex-cli`, `kimi-code`, `antigravity-cli`) and the
+   connected HTTP providers; `discoverLive` runs when a picker opens and adds the
+   live-probe agents (`opencode`, `cursor-cli`, `grok-build`, `github-copilot`,
+   `hermes-agent`), each a local CLI or ACP probe.
 2. **Startup pre-warm** — the backend warms the Hermes model cache at boot
    (`prewarm_hermes_models`, called from `lib.rs`'s startup task) so the first
    picker open is instant instead of flashing the placeholder.
@@ -90,7 +106,7 @@ These are **unioned** (not replaced) into the `dynamicModels` map passed to
 `buildPickerGroups`: the discovered catalog (which for Hermes spans *all*
 providers) is kept, and any live session models not already present are appended.
 (Replacing collapsed Hermes' multi-provider list to just the active provider on a
-running session — see the `feat/hermes` fixes.)
+running session.)
 
 ---
 
@@ -142,4 +158,6 @@ disagree.
 | Discovery endpoints + pre-warm | `crates/fleetify-backend/src/routers/providers.rs`, `crates/fleetify-backend/src/lib.rs` |
 | Hermes multi-provider inventory | `crates/fleetify-backend/src/bridges/hermes.rs` |
 | WS `available_models_update` | `crates/fleetify-backend/src/bridges/mod.rs`, `src/services/ws-manager.ts` |
+| Remote catalog fetch + disk cache | `crates/fleetify-backend/src/routers/providers.rs` (`fetch_remote_catalog`) |
+| App-wide discovered-models cache | `src/stores/discovered-models-store.ts` |
 | Toolbar / composer discovery + merge | `src/components/chat/session-toolbar.tsx`, `src/components/chat/chat-input.tsx` |

@@ -282,7 +282,7 @@ sqlite3 ~/.fleetify/posthog-outbox.sqlite \
   'SELECT count(*), MAX(attempt_count) FROM posthog_events'
 
 # What the worker last sent (filter the renderer logs):
-grep -F fleetify.posthog ~/.local/state/Fleetify/logs/fleetify.log.*
+grep -F fleetify.posthog ~/.local/state/fleetify/logs/fleetify.log.*
 ```
 
 PostHog Cloud's **Live events** tab is the simplest end-to-end check —

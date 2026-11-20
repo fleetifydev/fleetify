@@ -15,6 +15,10 @@
  *   release (PRE_RELEASE_LINKS);
  * - the only email addresses are the project's contacts (CONTACTS).
  *
+ * It also checks that CLAUDE.md, the working notes every contributor's coding
+ * agent reads, doesn't tell agents to add an AI co-author trailer: commits
+ * need only a DCO sign-off, and CONTRIBUTING.md covers AI-assisted work.
+ *
  *   node --test scripts/ci/check-docs-links.test.mjs
  *
  * A link counts where GitHub renders one: not inside a code block, a code span
@@ -417,6 +421,19 @@ describe("contact points", () => {
       ({ target }) => inRepo("SUPPORT.md", target)?.file === "SECURITY.md",
     );
     assert.ok(linksSecurity, "SUPPORT.md doesn't link SECURITY.md for vulnerabilities");
+  });
+});
+
+describe("working notes", () => {
+  test("CLAUDE.md asks for no AI co-author trailer", () => {
+    const text = read("CLAUDE.md");
+    const problems = [
+      { pattern: /co-authored-by:\s*claude/i, what: "a Co-Authored-By trailer that names Claude" },
+      { pattern: /co-author footer for ai-assisted commits/i, what: 'the "Co-author footer for AI-assisted commits" block' },
+    ]
+      .filter(({ pattern }) => pattern.test(text))
+      .map(({ pattern, what }) => `CLAUDE.md:${lineAt(text, text.search(pattern))}: ${what}`);
+    assertNone(problems, "CLAUDE.md asks coding agents for an AI co-author trailer; commits need only a DCO sign-off");
   });
 });
 

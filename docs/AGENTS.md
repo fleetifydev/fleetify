@@ -14,7 +14,7 @@ Settings → Agents as cards driven by `/api/agents/scan`.
 |---|---|---|---|---|
 | Claude Code | `claude-code` | `claude` | subprocess `--output-format stream-json` | `npm i -g @anthropic-ai/claude-code` · `claude login` |
 | Codex CLI | `codex-cli` | `codex` | `codex app-server` (JSON-RPC/stdio) | `npm i -g @openai/codex` · `codex login` |
-| Kimi Code CLI | `kimi-code` | `kimi` | (bridge present) | `npm i -g @moonshot-ai/kimi-code` · `kimi login` |
+| Kimi Code CLI | `kimi-code` | `kimi` | ACP (`kimi acp`) | `npm i -g @moonshot-ai/kimi-code` · `kimi login` |
 | OpenCode | `opencode` | `opencode` | ACP (`opencode acp`) | `npm i -g opencode-ai` · `opencode auth login` |
 | Cursor CLI | `cursor-cli` | `cursor-agent` | ACP (`cursor-agent acp`) + `cursor/*` extensions | shell installer · `cursor-agent login` |
 | GitHub Copilot CLI | `github-copilot` | `copilot` | ACP (`copilot --acp`) | `npm i -g @github/copilot` · `copilot login` |

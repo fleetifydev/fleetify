@@ -1,7 +1,9 @@
-# Running Fleetify (Rust + Tauri rebuild)
+# Running Fleetify from source
 
-Faithful port of the original Electron / FastAPI / Vite Fleetify build,
-running as a single Tauri v2 process with an embedded `axum` server.
+How to run, test and build Fleetify from a checkout, and how to configure a
+development build. [CONTRIBUTING.md](../CONTRIBUTING.md) covers the setup and
+the checks every pull request must pass; [INSTALL.md](INSTALL.md) covers
+installing a release.
 
 ## Architecture in one paragraph
 
@@ -16,18 +18,18 @@ prod and no port forwarding anywhere. A debug build loads the UI from the
 Vite dev server.
 
 ```
-fleetify-app.exe (single Tauri binary)
-  ├─ window (WebView) → http://127.0.0.1:8765/ → React UI
+fleetify-app (single Tauri binary)
+  ├─ window (WebView) → http://127.0.0.1:8765/ → React UI (debug: the Vite dev server)
   ├─ embedded axum @ 127.0.0.1:8765 (background task)
   │   ├─ /api/*      ← every router
   │   ├─ /ws/*       ← chat WebSocket
   │   ├─ /events/*   ← SSE
   │   └─ /healthz
-  ├─ Tauri IPC commands (~52)
+  ├─ Tauri IPC commands
   │   ├─ auth (sign-in / token / sign-out)
   │   ├─ fs / git / pty / dialog
   │   └─ AI git (commit msg / PR summary / review / diagnose / apply)
-  └─ Telemetry pipeline (background tasks)
+  └─ Telemetry pipeline (background tasks, see ANALYTICS.md)
       ├─ outbox (SQLite WAL at ~/.fleetify/telemetry-outbox.sqlite)
       ├─ heartbeat loop (every 60 s)
       └─ ws_client loop → wss://fleetify.dev/api/realtime/connect
@@ -37,39 +39,42 @@ fleetify-app.exe (single Tauri binary)
 
 ### Prereqs
 
-- **Rust** stable (≥ 1.80). Install via [rustup](https://rustup.rs).
-- **Node** 20+ and **npm** 10+ for the frontend.
-- **MSVC** build tools on Windows (LLVM/Spectre-mitigated libs — see
-  [`memory/windows_native_build.md`](../memory/windows_native_build.md)
-  if you hit linker errors for `keyring` or `portable-pty`).
-- Optional: **claude**, **codex**, **gemini**, **gh** CLIs on `PATH`
-  for the bridges and PR pipeline.
+- **Git**, **Node 22** and **Rust** (stable, through [rustup](https://rustup.rs)),
+  plus the system packages for your OS: [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup)
+  lists them.
+- Optional: agent CLIs such as **claude**, **codex** or **opencode** on `PATH`
+  for the CLI agents, and **gh** for the pull-request flow.
 
 ### Run
 
 ```bash
-# Backend + Tauri in dev mode. Vite picks 3000 for the frontend, the
-# embedded backend picks 8765, and the webview is pointed at the
-# frontend's devUrl with the IPC layer wired via preload.js.
-npm install            # one-time, frontend deps
-cargo tauri dev        # spawns Vite + the Tauri shell
+npm ci                 # frontend deps, exactly as package-lock.json pins them
+npm run dev:tauri:wt   # sidecars + Vite + the Tauri shell, in a debug build
 ```
 
-The first launch creates `~/.fleetify/` with `device.json`,
-`telemetry-outbox.sqlite`, and `fleet.db`. Sign in via the dialog and
-your refresh token lands in the OS keychain (`Fleetify` service).
+`dev:tauri:wt` builds the MCP sidecars, starts the Vite dev server and opens
+the app window. The build skips sign-in (`FLEETIFY_NOAUTH=1`) and keeps its
+data in its own folder, `~/.fleetify-wt-<slot>`, rather than the `~/.fleetify`
+of an installed Fleetify. In a git worktree it also picks its own ports; the
+banner it prints shows the slot, the ports and the folder.
+[CONTRIBUTING.md](../CONTRIBUTING.md#running-fleetify) explains the slots.
+
+Two other scripts start a debug build:
+
+| Script | What it runs |
+|---|---|
+| `npm run dev:noauth` | No sign-in, the default ports, and the shared `~/.fleetify`. |
+| `npm run dev:tauri` | Real sign-in against an identity provider on `http://localhost:3001`, which it needs running. |
 
 ### Test
 
+[CONTRIBUTING.md](../CONTRIBUTING.md#the-gates) lists the checks CI runs. To
+run one part of the Rust suite:
+
 ```bash
-# Backend unit tests (sqlx + bridges + services).
-cargo test -p fleetify-backend --lib
-
-# Tauri shell unit tests (auth, config, git, ai_git, etc.).
-cargo test -p fleetify-app --lib
-
-# Both at once.
-cargo test --workspace
+npm run build:sidecars                 # once: Tauri's build script needs the staged sidecars
+cargo test -p fleetify-backend --lib   # backend unit tests (sqlx + bridges + services)
+cargo test -p fleetify-app --lib       # Tauri shell unit tests (auth, config, git, ai_git, …)
 ```
 
 The suite is in-memory sqlx + duplex-pipe mocks for the bridges, so it
@@ -79,43 +84,53 @@ up.
 ### Build a release installer
 
 ```bash
-# Per-OS installers via the Tauri bundler. `--release` is implicit.
-cargo tauri build
-# Windows: target/release/bundle/msi/Fleetify_<version>_x64_en-US.msi
-# macOS:   target/release/bundle/dmg/Fleetify_<version>_aarch64.dmg
-# Linux:   target/release/bundle/deb/fleetify_<version>_amd64.deb
+npm run tauri build
 ```
 
-The `[profile.release]` table in the workspace `Cargo.toml` enables
-`lto = "thin"` + `codegen-units = 1` + `strip = "symbols"` so the
-shipped binary is ~20% smaller than a default release build.
+The Tauri bundler first builds the sidecars and the UI in release mode
+(`beforeBuildCommand` in `src-tauri/tauri.conf.json`), then the installers for
+your OS under `target/release/bundle/`: the NSIS installer on Windows, the
+`.app` and `.dmg` on macOS, and the `.deb`, `.rpm` and AppImage on Linux. A
+release build pins the production endpoints, ignores the debug-only
+variables below, and asks for a Fleetify account.
+
+The `[profile.release]` table in the workspace `Cargo.toml` optimizes for
+size: `opt-level = "s"`, fat LTO, one codegen unit, and stripped symbols.
 
 ## Configuration
 
 ### Environment
 
+Variables marked *debug only* have no effect in a release build.
+
 | Variable                 | Default                       | Effect |
 |--------------------------|-------------------------------|--------|
-| `FLEETIFY_ISSUER`        | `https://fleetify.dev` (prod) | OAuth + telemetry cloud endpoint |
-| `FLEETIFY_RESOURCE`      | `https://fleetify.dev/api`    | RFC 8707 resource indicator |
-| `FLEETIFY_DASHBOARD_URL` | `https://app.fleetify.dev`    | "Open dashboard" link target |
-| `FLEETIFY_NOAUTH`        | (unset)                       | `=1` ⇒ skip OAuth, sign in as a stub "John Doe", disable telemetry. Dev only. |
-| `FLEETIFY_REQUIRE_API_TOKEN` | (unset)                   | `=1` ⇒ the backend asks for the per-run API token even under `FLEETIFY_NOAUTH=1`. Dev only; release builds always ask for it. |
-| `FLEET_DB_URL`           | `sqlite://~/.fleetify/fleet.db?mode=rwc` | Override the local DB; tests set `sqlite::memory:` |
-| `GEMINI_API_KEY`         | (none)                        | Bypass interactive Gemini OAuth |
-| `GOOGLE_*`               | (none)                        | Vertex-AI auth (3 vars: API_KEY + PROJECT + LOCATION) |
+| `FLEETIFY_NOAUTH`        | (unset)                       | *Debug only.* `=1` ⇒ skip OAuth, sign in as a stub "John Doe", disable cloud telemetry. `dev:tauri:wt` sets it unless you set it yourself. |
+| `FLEETIFY_REQUIRE_API_TOKEN` | (unset)                   | *Debug only.* `=1` ⇒ the backend asks for the per-run API token even under `FLEETIFY_NOAUTH=1`. Release builds always ask for it. |
+| `FLEETIFY_ISSUER`        | `http://localhost:3001`       | *Debug only.* Identity provider for sign-in and dashboard sync. Release builds use `https://fleetify.dev`. |
+| `FLEETIFY_RESOURCE` (or `FLEETIFY_AUDIENCE`) | `http://127.0.0.1:8765` | *Debug only.* RFC 8707 resource indicator, the audience of the access token. Release builds use `https://fleetify.dev/api`. |
+| `FLEETIFY_DASHBOARD_URL` | `http://localhost:5174`       | *Debug only.* "Open dashboard" link target. Release builds use `https://app.fleetify.dev`. |
+| `FLEETIFY_HOME`          | `~/.fleetify`                 | Fleetify's data folder. |
+| `FLEETIFY_BACKEND_PORT`  | `8765`                        | Port of the embedded backend. |
+| `FLEET_DB_URL`           | (unset)                       | Override the sessions DB; tests set `sqlite::memory:`. Unset, it is `fleet.db` in `FLEETIFY_HOME` when that is set or in a no-auth run, and `fleet.db` in the working directory otherwise. |
+| `FLEETIFY_MODELS_API`, `FLEETIFY_MODELS_TAG` | `https://fleetify.dev/api`, `main` | The model catalog's serving API and CDN tag; see [REMOTE_MODEL_CATALOG.md](REMOTE_MODEL_CATALOG.md). |
+| `GEMINI_API_KEY`         | (none)                        | Antigravity SDK: the API key to use when none is saved in Settings. |
+
+Debug builds also load a `.env` file from the working directory or one of its
+parents; release builds never read one. `CLAUDE.md` shows the PostHog keys a
+`.env` can hold.
 
 #### `FLEETIFY_NOAUTH=1` — offline dev mode
 
-`npm run dev:noauth` boots the desktop UI without contacting the Fleetify
-identity provider. The Tauri shell stubs every `window.fleetify.*` call to a
-synthetic "John Doe" identity (`sub: noauth-john-doe`), the backend's
-`AuthUser` extractor and WS token resolver short-circuit to the same user,
-and the cloud telemetry WebSocket + heartbeat loop are skipped entirely.
-The "Sign in with Fleetify" screen is bypassed; "Sign out" stays visible
-in Settings but is inert. Use this when the IdP is down or to iterate on
-UI without a network round-trip — release builds ignore the flag (prod
-issuer/resource URLs are pinned at compile time).
+`npm run dev:tauri:wt` (or `npm run dev:noauth`) boots the desktop UI without
+contacting the Fleetify identity provider. The Tauri shell stubs every
+`window.fleetify.*` call to a synthetic "John Doe" identity
+(`sub: noauth-john-doe`), the backend's `AuthUser` extractor and WS token
+resolver short-circuit to the same user, and the cloud telemetry WebSocket +
+heartbeat loop are skipped entirely. The "Sign in with Fleetify" screen is
+bypassed; "Sign out" stays visible in Settings but is inert. Use this to work
+on the app without a Fleetify account or a network round-trip — release
+builds ignore the flag and pin the production endpoints.
 
 The backend also stops asking API requests for the per-run token that the
 shell hands the renderer, so the UI works from a plain browser tab. Add
@@ -125,44 +140,23 @@ shell hands the renderer, so the UI works from a plain browser tab. Add
 
 | Path                                       | Contents |
 |--------------------------------------------|----------|
-| `~/.fleetify/device.json`                  | Stable per-machine UUID + name + platform |
-| `~/.fleetify/telemetry-outbox.sqlite`      | Durable telemetry queue (WAL mode) |
-| `~/.fleetify/fleet.db`                     | Main sqlite (sessions, messages, costs, …) |
-| `~/.fleetify/plugins/<name>/`              | Installed plugin (parsed by `services::plugins::manifest`) |
-| `~/.fleetify-worktrees/`                   | Session-scoped git worktrees |
-| OS keychain `Fleetify` / `<sub>`           | OIDC refresh token |
-| OS keychain `Fleetify-GitHub` / `<sub>`    | GitHub link tokens |
+| `~/.fleetify/` (or `$FLEETIFY_HOME`)       | `device.json` (stable per-machine UUID + name + platform), the telemetry queues (`telemetry-outbox.sqlite`, `posthog-outbox.sqlite`), `mcp_servers.json`, `plugins/`, `library/`, `models-cache/`, … |
+| `~/.fleetify-wt-<slot>/`                   | The same, for a `dev:tauri:wt` instance, plus its `fleet.db` |
+| `fleet.config.json`                        | Settings, in the OS's app data folder for `com.fleetify.app` |
+| `<project>/.fleetify-worktrees/`           | Session-scoped git worktrees |
+| OS keychain `Fleetify`                     | OIDC refresh token |
+| OS keychain `Fleetify-GitHub` / `Fleetify-Voice` / `Fleetify-Provider-<id>` / `Fleetify-Router-<id>` | GitHub link tokens, the voice key, provider and router API keys |
 
-## Phase status
-
-See `docs/superpowers/specs/2026-05-19-fleetify-rust-tauri-rebuild-design.md`
-for the canonical phase plan. As of this commit:
-
-- **Phase 0** scaffold: complete
-- **Phase 1** runnable core (auth, sessions, chat WS): complete
-- **Phase 2** bridges + git pipeline: real Claude / OpenAI / Gemini /
-  Codex bridges, real workspace router, real AI-git surface
-  (generate / review / diagnose / apply). SdkBridge equivalent
-  (claude CLI control protocol + Fleet's 3 stdio MCP servers) is the
-  remaining substantial Phase-2 deliverable.
-- **Phase 3** orchestration: activity ledger, meta-cost tracker,
-  haiku circuit breaker live; LLM-calling components
-  (task_enricher / auto_planner / prompt_enhancer / compactor /
-  session_summarizer) land alongside the SdkBridge port.
-- **Phase 4** cloud integration: telemetry pipeline complete (device
-  id + outbox + emitters + heartbeat + WS client), plugin manifest
-  parser live, marketplace source CRUD live; installer +
-  materializers + catalog walk are follow-ups.
-- **Phase 5** hardening: release profile + bundler metadata live;
-  per-OS smoke installers + docs parity are follow-ups.
+[INSTALL.md](INSTALL.md#remove-your-data) gives the exact folders on each OS,
+logs included.
 
 ## Troubleshooting
 
-**npm install fails with `ERR_SSL_CIPHER_OPERATION_FAILED` on Windows**.
+**`npm ci` fails with `ERR_SSL_CIPHER_OPERATION_FAILED` on Windows**.
 This is OpenSSL 3.x's AES-NI bug in certain VMs. Prefix:
 
 ```powershell
-$env:OPENSSL_ia32cap = '~0x200000200000000'; npm install --maxsockets 1 --fetch-retries 5
+$env:OPENSSL_ia32cap = '~0x200000200000000'; npm ci --maxsockets 1 --fetch-retries 5
 ```
 
 **`tauri build` fails with `LNK1104 fleetify_backend-…exe`**. A previous

@@ -6,7 +6,7 @@ is driven by the single static catalog in
 [`PROVIDER_ARCHITECTURE.md`](PROVIDER_ARCHITECTURE.md) for *how* it all connects,
 and [`AGENTS.md`](AGENTS.md) for the CLI-agent details.
 
-The catalog currently ships **21 providers**: **10 CLI agents**, **10 cloud HTTP
+The catalog currently ships **22 providers**: **10 CLI agents**, **11 cloud HTTP
 APIs**, and **1 local HTTP** (Ollama).
 
 ---
@@ -42,6 +42,7 @@ holds the credential. Surface in Settings → Agents via `/api/agents/scan`.
 OpenAI-compatible endpoints; you supply an API key (stored in the OS keychain).
 HTTP providers run through the **agentic tool-use loop** (`AgenticBridgeRunner`)
 so they get real tool calls, not just chat — see [`AGENT_BRIDGES.md`](AGENT_BRIDGES.md).
+Ollama Cloud is the exception: like a local Ollama, it is chat only.
 
 | Provider | Catalog id | Base URL | Get a key |
 |---|---|---|---|
@@ -55,6 +56,7 @@ so they get real tool calls, not just chat — see [`AGENT_BRIDGES.md`](AGENT_BR
 | Perplexity | `perplexity` | `https://api.perplexity.ai` | <https://www.perplexity.ai/settings/api> |
 | OpenRouter | `openrouter` | `https://openrouter.ai/api/v1` | <https://openrouter.ai/keys> |
 | Cloudflare Workers AI | `cloudflare-workers-ai` | `https://api.cloudflare.com/.../accounts/{account_id}/ai/v1` | <https://dash.cloudflare.com/profile/api-tokens> (+ account id) |
+| Ollama Cloud | `ollama-cloud` | `https://ollama.com` | <https://ollama.com/settings/keys> |
 
 - **OpenRouter** is an aggregator: its full catalog (hundreds of models) is
   discovered live from `GET /api/v1/models` (proxied at
@@ -62,6 +64,11 @@ so they get real tool calls, not just chat — see [`AGENT_BRIDGES.md`](AGENT_BR
   static catalog ships only a small curated fallback.
 - **Cloudflare Workers AI** uses a base-URL template with `{account_id}`,
   substituted at dispatch from the saved account id.
+- **Ollama Cloud** is Ollama's hosted service, a sibling of the local Ollama
+  provider below. Its models are listed live from `GET /api/tags` (proxied at
+  `GET /providers/ollama-cloud/models`), and chat goes to its OpenAI-compatible
+  `/v1/chat/completions` without the tool-use loop. With no key saved, the bridge
+  falls back to `OLLAMA_API_KEY` from the environment.
 - **Grok (xAI)** shares its key and model lineup with the **Grok Build** CLI agent
   (above): the `XAI_API_KEY` you save here is the same key the `grok-build` bridge
   injects into its subprocess, and both draw from the same curated Grok lineup
@@ -73,7 +80,7 @@ so they get real tool calls, not just chat — see [`AGENT_BRIDGES.md`](AGENT_BR
 
 | Provider | Catalog id | Default URL | Notes |
 |---|---|---|---|
-| Ollama | `ollama` | `http://localhost:11434` | No auth. Auto-detects models via `/api/tags`; point Settings → Models at a LAN URL (e.g. `http://192.168.1.50:11434`) to drive a remote rig. |
+| Ollama | `ollama` | `http://localhost:11434` | No auth. Auto-detects models via `/api/tags`; point Settings → Models at a LAN URL (e.g. `http://192.168.1.50:11434`) to drive a remote rig. Chat only: no tool-use loop. |
 
 ---
 

@@ -5,7 +5,7 @@ A map of how Fleetify fits together, and an index into the deeper docs.
 Fleetify is a **single Tauri v2 process**: an embedded `axum` backend on
 `127.0.0.1:8765` serves the React UI, the REST API, and the WebSocket chat from
 the same origin. It's a multi-agent "cockpit" — run many AI coding agents
-(Claude Code, Codex, Gemini, Hermes, …) side by side, each in its own session,
+(Claude Code, Codex, OpenCode, Hermes, …) side by side, each in its own session,
 plus cloud HTTP model providers (OpenAI, OpenRouter, …).
 
 ---
@@ -34,7 +34,12 @@ plus cloud HTTP model providers (OpenAI, OpenRouter, …).
 | `crates/memory-mcp` | bin `fleet-memory-mcp` | stdio MCP: `remember` + `recall` |
 | `crates/dispatch-mcp` | bin `fleet-dispatch-mcp` | stdio MCP: `dispatch_to_agent` |
 | `crates/reveng-mcp` | bin `fleet-reveng-mcp` | stdio MCP: `fetch_url` + `discover_assets` + … |
+| `crates/browser-mcp` | bin `fleet-browser-mcp` | stdio MCP: `navigate` + `read_page` + `click` + … on the backend's shared headless browser (Chromium starts on first use) |
+| `crates/fleet-wipe` | bin `fleet-wipe` | development helper: removes Fleetify's entries from the OS credential store (`npm run wipe` calls it on Linux); not bundled |
 | `src-tauri` | bin `fleetify-app` | Tauri shell; embeds the backend (incl. the in-process permission MCP, served over HTTP — no sidecar) |
+
+The installers ship the four `fleet-*-mcp` sidecars next to `fleetify-app`
+(`bundle.externalBin` in `src-tauri/tauri.conf.json`).
 
 `src/` is the React + Vite renderer. State lives in Zustand stores
 (`src/stores/*`); the WebSocket client is `src/services/ws-manager.ts`.
@@ -68,9 +73,13 @@ Providers, models, MCP servers, and routing are all layered on top of this spine
 
 ## On-disk layout (`~/.fleetify/`)
 
-`device.json`, `fleet.db` (sessions/messages), `telemetry-outbox.sqlite`,
-`posthog-outbox.sqlite`, `mcp_servers.json` (user MCP registry), `plugins/`,
-`marketplace-cache/`. API keys are **not** here — they live in the OS keychain.
+`device.json`, `telemetry-outbox.sqlite`, `posthog-outbox.sqlite`,
+`mcp_servers.json` (user MCP registry), `plugins/`, `marketplace-cache/`,
+`library/`, `models-cache/`. The folder is `$FLEETIFY_HOME` when that is set.
+The sessions database, `fleet.db`, goes here in development runs
+([RUNNING.md](RUNNING.md#environment) has the rule). API keys are **not** here —
+they live in the OS keychain. [INSTALL.md](INSTALL.md#remove-your-data) lists
+every other place an installed Fleetify keeps data.
 
 ---
 
@@ -90,19 +99,23 @@ Providers, models, MCP servers, and routing are all layered on top of this spine
 - **[MODEL_DISCOVERY.md](MODEL_DISCOVERY.md)** — how the model list is sourced
   (catalog / live CLI probe / `/models`), the dual toolbar+composer feed, and the
   unified picker (including Hermes' per-provider dropdown).
+- **[REMOTE_MODEL_CATALOG.md](REMOTE_MODEL_CATALOG.md)** — the published model
+  catalog the app fetches at runtime, so new models ship without an app release.
 - **[ROUTING.md](ROUTING.md)** — the "Auto" model-routing engine.
 - **[ANALYTICS.md](ANALYTICS.md)** — the two telemetry channels (Fleetify cloud +
   PostHog) and every event/property.
 
 ### Reference (what's wired in)
-- **[PROVIDERS.md](PROVIDERS.md)** — the current 21 providers and what each is for.
+- **[PROVIDERS.md](PROVIDERS.md)** — the current 22 providers and what each is for.
 - **[AGENTS.md](AGENTS.md)** — the 10 CLI agents (binary, transport, install/login).
 
 ### Integration specs
 - **[OPENCODE_INTEGRATION_SPEC.md](OPENCODE_INTEGRATION_SPEC.md)**,
-  **[CURSOR_INTEGRATION_SPEC.md](CURSOR_INTEGRATION_SPEC.md)** — per-agent ACP
-  integration notes.
+  **[CURSOR_INTEGRATION_SPEC.md](CURSOR_INTEGRATION_SPEC.md)** — design notes
+  written when each ACP integration was added.
 
 ### Operations
-- **[RUNNING.md](RUNNING.md)** — dev / test / build / deploy.
-- **[PHASE_STATUS.md](PHASE_STATUS.md)** — phase-by-phase coverage matrix.
+- **[RUNNING.md](RUNNING.md)** — running from source: dev loop, tests, release
+  builds, configuration.
+- **[INSTALL.md](INSTALL.md)** — installing a release, verifying a download, and
+  uninstalling.

@@ -1,39 +1,35 @@
 # Fleetify — Working notes for Claude Code
 
-Concise context for any Claude Code session in this repo. Project overview lives in `README.md` and `docs/PHASE_STATUS.md`; this file is for *how to work*, not *what the code does*.
+Concise context for any coding-agent session in this repo. The project overview lives in `README.md`, and `docs/ARCHITECTURE.md` maps the code; this file is for *how to work*, not *what the code does*. The contributor rules (setup, gates, DCO sign-off, review) are in `CONTRIBUTING.md`: read it too.
 
 ---
 
-## Workflow: branch + worktree per feature
+## Workflow: a branch per feature
 
-**Every feature lands on its own branch in its own git worktree.** No work happens directly on `main`. The `dev:tauri:wt` helper (see below) is built around this.
-
-Flow for a new feature:
+**Every feature lands on its own branch.** No work happens directly on `main`. Creating the branch in the main checkout is fine:
 
 ```bash
-# 1. From main, create the feature branch (name: type/scope-short-summary)
-git branch feat/your-feature main
+# 1. From an up-to-date main, create the feature branch (name: type/scope-short-summary)
+git switch -c feat/your-feature main
 
-# 2. Add a worktree for it under .claude/worktrees/
-git worktree add .claude/worktrees/your-feature feat/your-feature
-
-# 3. Enter the worktree (or use EnterWorktree if you have the tool)
-cd .claude/worktrees/your-feature
-
-# 4. Work. Commit. Push.
+# 2. Work. Commit with a sign-off (git commit -s). Push.
 git push -u origin feat/your-feature
 
-# 5. Open a draft PR — `gh pr create --base main --draft`
+# 3. Open a draft PR — `gh pr create --base main --draft`
 ```
 
-When the PR merges, the worktree can be removed:
+**Worktrees are optional.** A git worktree gives a feature its own checkout, so parallel features don't fight for `target/`, `node_modules`, or the working tree, and `npm run dev:tauri:wt` (below) gives each worktree its own app instance. Each worktree has its own checkout but shares `.git` with the main repo:
 
 ```bash
+# Add a worktree for the branch under .claude/worktrees/ (.claude/ is gitignored)
+git branch feat/your-feature main
+git worktree add .claude/worktrees/your-feature feat/your-feature
+cd .claude/worktrees/your-feature   # or use EnterWorktree if you have the tool
+
+# When the PR merges, remove it:
 git worktree remove .claude/worktrees/your-feature
 git branch -d feat/your-feature
 ```
-
-**Why worktrees:** parallel features don't fight for `target/`, `node_modules`, or the working tree. Each worktree has its own checkout but shares `.git` with the main repo.
 
 **Branch naming:** match the conventional-commit prefix the PR uses.
 
@@ -45,7 +41,7 @@ git branch -d feat/your-feature
 | `docs:` | `docs/` | `docs/release-runbook` |
 | `chore:` / `refactor:` / `test:` | matching prefix | `test/branch-strip-mocks` |
 
-The CI workflow (when it lands — see PR #2) enforces conventional-commit PR titles via `amannn/action-semantic-pull-request`.
+CI enforces conventional-commit PR titles with `amannn/action-semantic-pull-request` (`.github/workflows/ci.yml`).
 
 ---
 
@@ -54,20 +50,23 @@ The CI workflow (when it lands — see PR #2) enforces conventional-commit PR ti
 Two boot modes; pick based on what you're doing.
 
 ```bash
-# Single instance, default ports, talks to your real ~/.fleetify session.
-npm run dev:tauri
-
 # Worktree-isolated instance — auto-detects you're in a linked worktree,
 # hashes the worktree name to a deterministic slot (1-99), picks unique
 # VITE_PORT / FLEETIFY_BACKEND_PORT / FLEETIFY_HOME so you can run it
 # alongside another instance from a sibling worktree. No-auth by default.
+# The main checkout gets slot 0: default ports, but its own FLEETIFY_HOME.
 npm run dev:tauri:wt
+
+# Single instance, default ports, talks to your real ~/.fleetify session,
+# with real sign-in against an identity provider on http://localhost:3001
+# (FLEETIFY_ISSUER). Without one running, sign-in fails: use dev:tauri:wt.
+npm run dev:tauri
 ```
 
 `dev:tauri:wt` env layout (computed at runtime by `scripts/dev-tauri-wt.mjs`):
 
 ```
-slot                  = sha256(worktree-name) % 99 + 1   (0 on main)
+slot                  = sha256(worktree-name) % 99 + 1   (0 in the main checkout)
 VITE_PORT             = 3000 + slot
 FLEETIFY_BACKEND_PORT = 8765 + slot
 FLEETIFY_HOME         = ~/.fleetify-wt-<slot, 2-digit>
@@ -82,18 +81,29 @@ Override the slot explicitly when needed: `npm run dev:tauri:wt -- 17`.
 
 ### Unit + integration (gates that run in CI)
 
+The steps of `.github/workflows/ci.yml`, in its order; CONTRIBUTING.md's "The gates" explains them for contributors:
+
 ```bash
-cargo fmt --all -- --check                           # format check      (HARD gate)
-cargo clippy --workspace --all-targets -- -D warnings # lint, deny-warnings (HARD gate)
-cargo test --workspace                               # rust unit + integration (advisory)
-npm run lint                                         # eslint            (HARD gate)
-npx tsc -b tsconfig.build.json --noEmit              # type-check        (HARD gate)
-npm test                                             # vitest (renderer) (advisory)
-npm run check:sidecars                               # sidecar drift guard (HARD gate)
+npm run check:sidecars                                  # sidecar drift guard           (HARD gate)
+npm run build:sidecars                                  # stage the MCP sidecars        (HARD gate; clippy + tests need them)
+cargo fmt --all -- --check                              # format check                  (HARD gate)
+cargo clippy --workspace --all-targets -- -D warnings   # compile + lint, deny-warnings (HARD gate)
+cargo test --workspace --no-fail-fast                   # rust unit + integration       (advisory)
+npm run lint                                            # eslint                        (HARD gate)
+npx tsc -b tsconfig.build.json --noEmit                 # type-check                    (HARD gate)
+npm test                                                # vitest (renderer)             (advisory)
+python3 -c "import yaml"                                # PyYAML for the script tests   (HARD gate)
+node --test "scripts/ci/*.test.mjs" "scripts/release/*.test.mjs"   # script tests (HARD gate)
 ```
 
-Run all of these locally **before pushing**. CI runs the same set on every PR
-(`.github/workflows/ci.yml`).
+Run all of these locally **before pushing**. CI runs the same set on every PR,
+plus `cargo audit` and `npm audit --omit=dev`, both advisory. The Rust steps run
+on Windows in CI, so code behind `cfg(windows)` is compiled and linted there even
+when your machine skips it.
+
+The script tests read YAML with Python 3 and PyYAML (`python3-yaml` on Debian and
+Ubuntu, `pip install pyyaml` elsewhere). Without PyYAML those checks skip on your
+machine; CI checks for it first, so they can't skip there.
 
 **"Advisory" means `continue-on-error: true` in CI — a red test does not block
 a merge.** That is a deliberate choice, not an invitation: failures accumulate
@@ -131,7 +141,7 @@ When you fix a bug, add the regression test first (TDD). When you change a contr
 
 ---
 
-## Workspace layout (quick reference, full table in README)
+## Workspace layout (quick reference; `docs/ARCHITECTURE.md` has the full map)
 
 ```
 crates/
@@ -146,8 +156,8 @@ crates/
 
 src-tauri/                 # Tauri v2 shell, embeds fleetify-backend in setup()
 src/                       # React + Vite renderer
-scripts/                   # build-sidecars.mjs, dev-tauri-wt.mjs, wipe.mjs
-docs/                      # RUNNING.md, PHASE_STATUS.md, ANALYTICS.md, etc.
+scripts/                   # build-sidecars.mjs, dev-tauri-wt.mjs, wipe.mjs, ci/ + release/ checks
+docs/                      # ARCHITECTURE.md, RUNNING.md, INSTALL.md, ANALYTICS.md, etc.
 ```
 
 ---
@@ -162,7 +172,7 @@ docs/                      # RUNNING.md, PHASE_STATUS.md, ANALYTICS.md, etc.
 
 - **`git add -A` will stage worktree gitlinks as submodules.** `.claude/` is in `.gitignore` precisely to block this, but `git add -A` from a parent directory can still get tricky. Prefer `git add -u` (tracked-only) or explicit file paths.
 
-- **MCP sidecar binaries are resolved relative to the running exe.** Each worktree has its own `target/`, so its own copy of `fleet-memory-mcp` / `fleet-dispatch-mcp` / `fleet-reveng-mcp`. No conflict between instances.
+- **MCP sidecar binaries are resolved relative to the running exe.** Each worktree has its own `target/`, so its own copy of `fleet-memory-mcp` / `fleet-dispatch-mcp` / `fleet-reveng-mcp` / `fleet-browser-mcp`. No conflict between instances.
 
 - **Tauri identifier is shared across instances** (`com.fleetify.app`). Webview profile dir (cookies, localStorage) is therefore shared too. Auth tokens live in OS keyring, not the webview, so this is mostly harmless — but expect localStorage state (theme, last-opened panel) to leak across worktrees.
 
@@ -172,14 +182,14 @@ docs/                      # RUNNING.md, PHASE_STATUS.md, ANALYTICS.md, etc.
 
 ## Commit etiquette — release-please contract
 
-**The PR title is the changelog entry.** Once release-please ships (see `docs/superpowers/specs/2026-05-22-github-workflows-design.md` §5), every merge to `main` is parsed by [release-please](https://github.com/googleapis/release-please) to derive the next semver bump and write `CHANGELOG.md`. The squashed commit subject is what release-please reads, and that subject is whatever the PR title was at merge time. **The PR title is the only thing that matters — individual commit subjects on the feature branch are advisory.**
+**The PR title is the changelog entry.** From the first public release (v0.2.0) on, [release-please](https://github.com/googleapis/release-please) parses every merge to `main` to derive the next semver bump and write `CHANGELOG.md`. The squashed commit subject is what release-please reads, and that subject is whatever the PR title was at merge time. **The PR title is the only thing that matters — individual commit subjects on the feature branch are advisory.**
 
 ### Prefix → version-bump + changelog effect
 
 | Prefix | Version bump (pre-1.0) | Changelog section |
 |---|---|---|
-| `feat:` / `feat(scope):` | **minor** (0.1.x → 0.2.0) | Features |
-| `fix:` / `fix(scope):` | **minor** pre-1.0 (`bump-minor-pre-major`) / **patch** post-1.0 | Bug Fixes |
+| `feat:` / `feat(scope):` | **minor** (0.2.0 → 0.3.0) | Features |
+| `fix:` / `fix(scope):` | **patch** (0.2.0 → 0.2.1) | Bug Fixes |
 | `perf:` | **patch** | Performance |
 | `deps:` | **patch** | Dependencies |
 | `revert:` | **patch** | Reverts |
@@ -192,7 +202,7 @@ docs/                      # RUNNING.md, PHASE_STATUS.md, ANALYTICS.md, etc.
 | `build:` | none | hidden |
 | `style:` | none | hidden (release-please doesn't define it; `amannn/action-semantic-pull-request` accepts it) |
 
-**Pre-1.0 footgun:** we're at 0.1.x today, so `bump-minor-pre-major: true` + `bump-patch-for-minor-pre-major: true` are both ON. That means **`fix:` bumps the minor while pre-1.0**, not the patch — surprising if you're used to the post-1.0 semantics. Stops mattering once we cut 1.0.
+**Before 1.0:** release-please runs with `bump-minor-pre-major: true` and `bump-patch-for-minor-pre-major: false`. So `feat:` bumps the minor, `fix:` bumps the patch, and a breaking change bumps the **minor**, not the major. From 1.0 on, a breaking change bumps the major. The first public release is 0.2.0.
 
 ### How to pick the right prefix
 
@@ -221,14 +231,11 @@ bare array.
 
 Pre-1.0 this still triggers only a minor bump (we're 0.x — semver lets us break things). Post-1.0 it forces a major bump.
 
-### Body + co-author
+### Body + sign-off
 
 - Body: explain *why*, not *what*. The diff shows what.
 - One logical change per commit on a feature branch. The PR can squash them, but reviewers read individual commits.
-- Co-author footer for AI-assisted commits:
-  ```
-  Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
-  ```
+- Every commit needs a DCO sign-off: commit with `git commit -s`. A check fails a pull request that has a commit without one. For AI-assisted work, see CONTRIBUTING.md → "AI-assisted contributions".
 
 ---
 
@@ -239,19 +246,19 @@ Pre-1.0 this still triggers only a minor bump (we're 0.x — semver lets us brea
 - **Don't `cargo fmt --all` mid-PR** without committing it as its own `style: cargo fmt` commit. Mixed fmt + logic commits are unreviewable.
 - **Don't add new hardcoded ports / paths.** Read from env with a sensible default. The worktree-isolation work was a 13-file refactor specifically because of this; let's not repeat it.
 - **Don't disable CI gates to make a PR green.** Fix the underlying issue, or split the fix into a separate prerequisite PR.
-- **Don't commit `docs/superpowers/` or `.claude/` contents.** Both are in `.gitignore`; they're local working state, not shipped artifacts.
+- **Don't commit `.claude/` contents.** It's in `.gitignore`; it's local working state (worktrees, agent settings), not a shipped artifact.
 
 ## Telemetry & analytics
 
 Fleetify ships two independent telemetry channels. Dashboard sync is on by
-default and can be turned off in Settings → Privacy; product analytics is
-off until the user turns it on. `docs/ANALYTICS.md` lists what each one
-sends.
+default and can be turned off in Settings → General → Privacy; product
+analytics is off until the user turns it on. `docs/ANALYTICS.md` lists what
+each one sends.
 
 | Channel | Vendor | Default | Toggle | Outbox |
 |---|---|---|---|---|
-| Dashboard sync | Fleetify cloud (`fleetify.dev`, WebSocket) | **ON** | Settings → Privacy → "Dashboard sync" | `~/.fleetify/telemetry-outbox.sqlite` |
-| Product analytics | PostHog Cloud (EU, Frankfurt, HTTP `/batch`) | **OFF** | Settings → Privacy → "Product analytics" | `~/.fleetify/posthog-outbox.sqlite` |
+| Dashboard sync | Fleetify cloud (`fleetify.dev`, WebSocket) | **ON** | Settings → General → Privacy → "Dashboard sync" | `~/.fleetify/telemetry-outbox.sqlite` |
+| Product analytics | PostHog Cloud (EU, Frankfurt, HTTP `/batch`) | **OFF** | Settings → General → Privacy → "Product analytics" | `~/.fleetify/posthog-outbox.sqlite` |
 
 ### PostHog integration
 
@@ -263,7 +270,7 @@ sends.
 
 ### Local dev
 
-Single source of truth is a `.env` file in the workspace root (gitignored — `.env.example` is the committed template). `dotenvy::dotenv()` runs at the top of `serve` so the Rust backend picks up the keys via `std::env::var`; Vite reads the same `.env` natively for the renderer.
+Single source of truth is a `.env` file in the workspace root (gitignored — `.env.example` is the committed template). In debug builds, `dotenvy::dotenv()` runs at the top of `serve` so the Rust backend picks up the keys via `std::env::var`; release builds never read `.env`. Vite reads the same `.env` natively for the renderer.
 
 ```
 # .env (gitignored)
@@ -278,13 +285,3 @@ Then just run `npm run dev:tauri:wt` — no shell env juggling, no `cargo clean`
 ### Full event list
 
 `docs/ANALYTICS.md` lists every event we emit, every property we drop, and the exact opt-out steps. Keep it in sync with the mapper (`crates/fleetify-backend/src/services/telemetry/posthog/mapper.rs`) and the `capture(...)` callers in `src/`.
-
-## graphify
-
-This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
-
-Rules:
-- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
-- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
-- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

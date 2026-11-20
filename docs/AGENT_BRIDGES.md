@@ -23,18 +23,19 @@ each one to the renderer over WebSocket. Every concrete bridge is a variant of
 
 | Variant | Provider(s) | Transport family |
 |---|---|---|
-| `Claude` | claude | subprocess `claude --output-format stream-json` |
-| `Codex` | codex | `codex app-server` (JSON-RPC over stdio) |
+| `Claude` | claude-code | subprocess `claude --output-format stream-json` |
+| `Codex` | codex-cli | `codex app-server` (JSON-RPC over stdio) |
 | `OpenCode` | opencode | **ACP** (`opencode acp`) |
-| `Cursor` | cursor | **ACP** (`cursor-agent acp`) + `cursor/*` extensions |
-| `Hermes` | hermes | **ACP** (`hermes acp`) |
+| `Cursor` | cursor-cli | **ACP** (`cursor-agent acp`) + `cursor/*` extensions |
+| `Hermes` | hermes-agent | **ACP** (`hermes acp`) |
 | `GitHubCopilot` | github-copilot | **ACP** (`copilot --acp`) |
-| `Antigravity` | agy | PTY `agy -p` (headless one-shot) |
+| `Kimi` | kimi-code | **ACP** (`kimi acp`) |
+| `GrokCli` | grok-build | **ACP** (`grok agent stdio`); http/sse MCP only |
+| `Antigravity` | antigravity-cli | PTY `agy -p` (headless one-shot) |
 | `AntigravitySdk` | antigravity-sdk | Python sidecar (NDJSON over stdout) |
-| `OpenAICompat` | ollama | HTTP `/chat/completions` SSE (single-shot) |
-| `Agentic` | openai / deepseek / grok / nvidia-nim / kimi-api / gemini-api / openrouter / cloudflare-workers-ai | HTTP-compat wrapped in a tool-use loop |
+| `OpenAICompat` | ollama / ollama-cloud | HTTP `/chat/completions` SSE (single-shot, no tools) |
+| `Agentic` | openai / anthropic / deepseek / grok / nvidia-nim / kimi-api / gemini-api / openrouter / cloudflare-workers-ai | HTTP-compat wrapped in a tool-use loop |
 | `Perplexity` | perplexity | HTTP SSE + citation/search parsing |
-| `Kimi` | kimi | HTTP-compat |
 | `OpenAI` | — | retired (test-only) |
 
 `BridgeContext { base_url_override, extra_headers, model_override }` carries
@@ -99,7 +100,7 @@ hard-capped per buffer) and finalizes the message on `status: done`.
 
 ### ACP (`bridges/acp.rs` — shared `AcpClient`)
 
-Gemini, OpenCode, Cursor, GitHub Copilot, and **Hermes** all speak the
+OpenCode, Cursor, GitHub Copilot, Kimi Code, Grok Build and **Hermes** all speak the
 [Agent Client Protocol](https://agentclientprotocol.com): JSON-RPC 2.0 over
 line-delimited stdio. `AcpClient` is transport-agnostic:
 

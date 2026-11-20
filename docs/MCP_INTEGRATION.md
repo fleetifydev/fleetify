@@ -40,18 +40,25 @@ Four stdio JSON-RPC 2.0 MCP servers, each a workspace crate emitting a
 | `crates/memory-mcp` | `fleet-memory-mcp` | `remember(title, content, kind?)`, `recall(query?, limit?)` | Project-scoped long-term memory that survives across sessions. Talks back to the backend at `/api/sessions/{id}/memory`. |
 | `crates/dispatch-mcp` | `fleet-dispatch-mcp` | `dispatch_to_agent(agent, task)` | Agent-to-agent task routing without returning to the user. Rate-limited (5 / 60 s / session); self-dispatch refused. POSTs `/api/internal/dispatch`. |
 | `crates/reveng-mcp` | `fleet-reveng-mcp` | `fetch_url`, `discover_assets`, `find_endpoints`, `save_asset` | Reverse-engineering toolkit (scrape + asset/endpoint discovery). Pure-local; writes under `<project>/.fleetify/reveng-assets/`. |
+| `crates/browser-mcp` | `fleet-browser-mcp` | `navigate`, `read_page`, `click`, `fill`, `inspect`, `back`, `forward`, `reload`, `screenshot`, `eval` | Browser automation. Owns no browser: it forwards each call to the backend's shared browser service (`POST /api/internal/browser/action`), so the agent and the user's Browser panel drive the same page. Headless Chromium starts on the first call. |
 | _(in-process, no binary)_ | HTTP `/api/internal/mcp/permission/{sid}` | `permission_prompt(tool_name, input)` | Claude-CLI permission gate (`--permission-prompt-tool`), served **in-process over HTTP** by the backend — not a sidecar binary. Claude connects with the session id in the URL + an `Authorization: Bearer <internal-secret>`. Wired only by the Claude bridge. |
 
 **Sidecars connect upward to the backend.** They receive their wiring via env
-vars set by the bridge at spawn:
+vars in their MCP config (`builtin_mcp_config`, §3):
 
-- `FLEETIFY_SESSION_ID` — scopes memory / rate-limits dispatch / looks up the permission session.
+- `FLEETIFY_SESSION_ID` — scopes memory / rate-limits dispatch.
 - `FLEETIFY_BACKEND_URL` — defaults to `http://127.0.0.1:8765`.
-- `FLEETIFY_INTERNAL_SECRET` — loopback shared secret (dispatch + permission), sent as `X-Fleet-Internal`.
-- `FLEETIFY_PROJECT_PATH` — reveng only, root for `save_asset`.
+- `FLEETIFY_INTERNAL_SECRET` — loopback shared secret, sent as `X-Fleet-Internal` (dispatch, browser). The permission MCP gets the same secret as `Authorization: Bearer` in its HTTP config.
 
 Exposed to the model as `mcp__<server>__<tool>`, e.g.
 `mcp__fleet_memory__remember`, `mcp__fleet_dispatch__dispatch_to_agent`.
+
+**Known issues:**
+
+- `fleet-memory-mcp` calls the backend with `Authorization: Bearer $FLEETIFY_BEARER`,
+  but nothing sets `FLEETIFY_BEARER`, so `remember` and `recall` currently fail.
+- `fleet-reveng-mcp`'s `save_asset` writes under `$FLEETIFY_PROJECT_PATH`, which
+  nothing sets either, so it fails too; the other reveng tools work.
 
 ---
 
@@ -70,10 +77,13 @@ build_merged_map(session_id, is_staff, agent_template) -> BTreeMap<String, Value
 2. Appends the gated built-ins from `builtin_names_for`:
    - `fleet_memory` — **always**.
    - `fleet_dispatch` — **non-staff only** (staff dispatch via a text protocol).
-   - `fleet_reveng` — only when `agent_template == "reverse_engineering"`.
+   - `fleet_browser` — **non-staff only**. Free until used: Chromium starts on
+     the first browse call.
+   - `fleet_reveng` — only when the session's agent template asks for it in its
+     `extra_mcp_servers`, as the built-in `reverse_engineering` template does.
    - `fleet_permission` — *not* here; the Claude bridge mounts it separately, as an in-process HTTP MCP (no sidecar).
 3. `builtin_mcp_config` resolves each built-in: the stdio sidecars
-   (memory/dispatch/reveng) → `{ type: "stdio", command, args, env, builtin: true }`;
+   (memory/dispatch/browser/reveng) → `{ type: "stdio", command, args, env, builtin: true }`;
    `fleet_permission` → `{ type: "http", url, headers, builtin: true }` pointing at
    the backend's own in-process MCP endpoint.
 4. `splice_oauth` injects stored OAuth Bearer tokens into http/sse `headers`
@@ -89,7 +99,7 @@ format-specific emitter:
 
 | Emitter | Output shape | Consumed by |
 |---|---|---|
-| `to_acp_servers(map)` | ACP `mcpServers` **array**; `headers`/`env` dicts → `[{name,value}]`; strips the internal `builtin` marker | Gemini, GitHub Copilot, OpenCode, Cursor, Hermes, **Kimi** (all ACP bridges) |
+| `to_acp_servers(map)` | ACP `mcpServers` **array**; `headers`/`env` dicts → `[{name,value}]`; strips the internal `builtin` marker | GitHub Copilot, OpenCode, Cursor, Hermes, **Kimi**, Grok Build (all ACP bridges; Grok Build filters it, §4) |
 | `to_codex_cli_args(map)` | flat `-c mcp_servers.<n>.<key>=<toml>` CLI args | Codex (`codex app-server`) |
 | `to_antigravity_cli_json(map)` | `{ "mcpServers": { … } }`; `url` → `serverUrl` for remote | Antigravity CLI (`agy`), written to a config file |
 | `to_sdk_mcp_servers(map)` | transport-tagged list; **omits `env` for stdio** (delivered out-of-band) | Antigravity SDK (Python) |
@@ -107,7 +117,7 @@ format-specific emitter:
 | Bridge | Mechanism |
 |---|---|
 | **Claude** (`bridges/claude.rs`) | `build_merged_map` → JSON → `claude -p --mcp-config <path>`. Adds `fleet_permission` (in-process HTTP MCP served by the backend) + `--permission-prompt-tool` whenever a permission handler is set (every non-staff session). |
-| **ACP** — Gemini / GitHub Copilot / OpenCode / Cursor / Hermes / **Kimi** | `build_merged_map` → `to_acp_servers` → `ensure_stdio_env` → sent in the ACP `session/new` request's `mcpServers`. |
+| **ACP** — GitHub Copilot / OpenCode / Cursor / Hermes / **Kimi** | `build_merged_map` → `to_acp_servers` → `ensure_stdio_env` → sent in the ACP `session/new` request's `mcpServers`. |
 | **Codex** (`bridges/codex.rs`) | `build_merged_map` → `to_codex_cli_args` → `-c mcp_servers.…` flags on `codex app-server`. |
 | **Antigravity CLI** (`bridges/antigravity.rs`) | `build_merged_map` → `to_antigravity_cli_json` → writes `~/.gemini/config/mcp_config.json`; cleans up its own keys after the turn (preserves user entries). |
 | **Antigravity SDK** (`bridges/antigravity_sdk.rs`) | `build_merged_map` → `to_sdk_mcp_servers` → Python SDK `mcp_servers` list. |
@@ -187,5 +197,5 @@ POST   /api/mcp/servers/{name}/auth/signout  clear stored secret
 | OAuth token store | `crates/fleetify-backend/src/services/mcp_secrets.rs` |
 | HTTP endpoints | `crates/fleetify-backend/src/routers/mcp.rs` |
 | Built-in sidecars | `crates/{memory,dispatch,reveng,browser}-mcp/` |
-| Per-bridge mounting | `crates/fleetify-backend/src/bridges/{claude,gemini,codex,antigravity,antigravity_sdk,opencode,cursor,hermes,github_copilot,kimi}.rs` |
+| Per-bridge mounting | `crates/fleetify-backend/src/bridges/{claude,codex,antigravity,antigravity_sdk,opencode,cursor,hermes,github_copilot,kimi,grok_cli}.rs` |
 | Sidecar drift guard | `npm run check:sidecars` (`scripts/build-sidecars.mjs --check`) |

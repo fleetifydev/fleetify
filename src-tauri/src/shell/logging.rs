@@ -5,7 +5,8 @@
 //!   • file       — NDJSON daily-rotated under the OS app log dir
 //!                  (Windows: %LOCALAPPDATA%\Fleetify\logs\,
 //!                   macOS:   ~/Library/Logs/Fleetify/,
-//!                   Linux:   ~/.local/state/Fleetify/logs/).
+//!                   Linux:   $XDG_STATE_HOME/fleetify/logs/, by default
+//!                            ~/.local/state/fleetify/logs/).
 //!                  One event per line so jq / grep / ELK ingest cleanly.
 //!
 //! Additional gear bolted on:
@@ -64,7 +65,7 @@ static LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
 /// Friendly per-OS log directory.
 ///
 /// `Tauri::app_log_dir()` defaults to the bundle identifier
-/// (`com.fleetify.fleetify`), which is the right answer for macOS-style
+/// (`com.fleetify.app`), which is the right answer for macOS-style
 /// reverse-DNS paths but looks like a malformed config file on Windows
 /// (where users expect `%LOCALAPPDATA%\<AppName>\`, the same pattern
 /// Slack / Discord / VS Code / Cursor use). Bundle identifier itself

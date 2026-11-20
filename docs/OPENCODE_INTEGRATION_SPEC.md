@@ -1,10 +1,12 @@
 # OpenCode CLI — Provider Integration Spec
 
-Status: **Implemented** (Phase 1 + live model switching) on
-`feat/opencode-provider`. Originated from a docs review
-(`opencode.ai/docs/cli`, `/docs/acp`), an architecture review of Fleetify's
-provider system, and a **live `opencode acp` protocol probe** (OpenCode
-`1.15.11`, Windows). See §10 for the shipped-vs-deferred breakdown.
+Design notes from when Fleetify's OpenCode integration was added; it has
+shipped. They came from a docs review (`opencode.ai/docs/cli`, `/docs/acp`), an
+architecture review of Fleetify's provider system, and a **live `opencode acp`
+protocol probe** (OpenCode `1.15.11`, Windows). The code has moved on since —
+the Gemini CLI bridge this spec takes as its model has been removed, for one —
+so `crates/fleetify-backend/src/bridges/opencode.rs` is the source of truth. See
+§10 for the shipped-vs-deferred breakdown.
 
 ## 1. Goal
 
@@ -283,14 +285,3 @@ the toolbar PATCHes `model_name` + sends `model_switch`. `tsc` + `eslint`
   menu.
 
 **Still deferred:** image inputs.
-
-**E2E not yet run.** Per CLAUDE.md, code-correctness gates pass (backend
-`cargo test` + `clippy -D warnings`; renderer `tsc` + `eslint` 0 errors +
-`vitest`) but feature correctness still needs a `npm run dev:tauri:wt`
-walkthrough driving an OpenCode turn + model/effort switch + a slash command.
-
-## Appendix — branch
-
-Implementation lands on `feat/opencode-provider` in its own worktree
-(`.claude/worktrees/opencode-provider`) per the repo workflow; PR title
-`feat(providers): add OpenCode CLI agent over ACP`.

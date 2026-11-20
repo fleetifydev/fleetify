@@ -1,14 +1,13 @@
 # Cursor CLI — Provider Integration Spec
 
-Status: **Implemented** (Phase 1 core + Phase 2 extension UI) on
-`feat/cursor-cli-acp`. Code-correctness gates green (`cargo test` +
-`clippy -D warnings` + `fmt`; `tsc` + `eslint` 0 errors + `vitest` 271 passed).
-E2E still pending a quota'd Cursor account (the probe account returns "Upgrade
-your plan"); see §10/§11. Originated from a docs review (`cursor.com/docs/cli/overview`, `/acp`,
+Design notes from when Fleetify's Cursor CLI integration was added; it has
+shipped. They came from a docs review (`cursor.com/docs/cli/overview`, `/acp`,
 `/reference/parameters`, `/reference/authentication`, `/reference/configuration`),
 an architecture review of Fleetify's provider system, and a **live
 `cursor-agent acp` protocol probe** (Cursor Agent `2026.05.28-a70ca7c`,
-Windows native install). See §11 for the shipped-vs-deferred breakdown.
+Windows native install). The code has moved on since, so
+`crates/fleetify-backend/src/bridges/cursor.rs` is the source of truth. See §11
+for the shipped-vs-deferred breakdown.
 
 ## 1. Goal
 
@@ -366,15 +365,3 @@ Accept/Reject). (Routed via the permission-style WS round-trip rather than new
 **Deferred:** `cursor/update_todos|task|generate_image` rich UI (handled via
 `on_notification` as no-ops in v1); intelligent-routing `AgentKind::Cursor`;
 image inputs; Max Mode / sandbox toggles.
-
-**E2E status:** NOT yet run via `dev:tauri:wt`. The probe account is out of
-quota ("Upgrade your plan to continue"), so a real model turn — and thus the
-streaming / live-card walkthrough — could not be exercised end to end. All
-protocol/plumbing paths are verified by the handshake probe + unit tests; the PR
-states this honestly (per CLAUDE.md — no faked E2E pass).
-
-## Appendix — branch
-
-Implementation lands on `feat/cursor-cli-acp` in its own worktree
-(`.claude/worktrees/cursor-cli-acp`) per the repo workflow; PR title
-`feat(providers): add Cursor CLI agent over ACP`.

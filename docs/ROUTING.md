@@ -12,7 +12,7 @@ a hard design invariant:
 
 | Surface | Which router | Whose key | Code entry point |
 |---|---|---|---|
-| **Picker → "Auto"** | Not Diamond | **Fleet's own** (`NOTDIAMOND_API_KEY` from `.env`) | `persist::fleet_auto_resolve` |
+| **Picker → "Auto"** | Not Diamond | **Fleet's own** (`NOTDIAMOND_API_KEY` from the environment) | `persist::fleet_auto_resolve` |
 | **Manual chat / dispatch-to-agent** | User's *active decision router* (builtin / their Not Diamond / Weave), gated on the master toggle | **User's** (OS keychain, via Settings → Routers) | `persist::resolve_routing_for_turn` / `resolve_routing_for_dispatch` → `st.routing` |
 
 Enabling Auto never touches the user's Settings → Routers config; the user's
@@ -42,8 +42,7 @@ Complex`). v1 is rule-based: an explicit `user_hint` wins; otherwise complex
 keywords (`refactor`, `migrate`, `architect`, `deadlock`, …) or `>20` files →
 `Complex`; simple keywords (`typo`, `rename`, `lint`) on a short, code-block-free
 prompt → `Trivial`; then word-count buckets (`<20` Simple, `<100` Medium, else
-Complex). (v1.1 plans embedding-based intent clustering — see the spec under
-`docs/superpowers/specs/`.)
+Complex). (Embedding-based intent clustering is a possible next step.)
 
 ### Layer 1 — `AgentSelector` + `CapabilityMatrix` (`agent_selector.rs`, `capability_matrix.rs`)
 
@@ -196,7 +195,7 @@ chat.rs calls `fleet_auto_resolve(pool, task, routes)` **instead of**
    model family the user can actually run, in execution-preference order:
 
    ```
-   Claude → Claude Code CLI, else Anthropic API (Phase 2, gated off)
+   Claude → Claude Code CLI, else Anthropic API (not wired yet, gated off)
    OpenAI → Codex CLI,       else OpenAI API
    Gemini → Gemini API       (no CLI path — the gemini-CLI agent was removed)
    ```
@@ -210,8 +209,9 @@ chat.rs calls `fleet_auto_resolve(pool, task, routes)` **instead of**
    Claudes: `claude-sonnet-4.6` → `claude-sonnet-4-6`) and the chosen
    `execution_tool` (e.g. `codex`, `gemini-api`) rides on
    `RoutingResolution.tool_override`.
-2. Read `NOTDIAMOND_API_KEY` from the environment (loaded from `.env` by
-   `dotenvy` at backend startup):
+2. Read `NOTDIAMOND_API_KEY` from the environment (debug builds also load it
+   from `.env` with `dotenvy` at backend startup; release builds never read
+   `.env`):
    - **key set** → `NotDiamondRouter::new(key).recommend(...)`; on `Ok`, use it;
      on any error (network / quota / auth), fall back to the offline router.
    - **key unset** → the offline built-in router picks from the same candidates.
@@ -235,7 +235,7 @@ existing bridge match builds the **routed provider's** bridge — never a litera
 let is_auto = session.model_name.as_deref() == Some("auto") || session.tool == "auto";
 // is_auto widens allowed_agents to [Claude, OpenAI, Gemini]; non-auto keeps a single-agent set.
 let resolution = if is_auto {
-    persist::fleet_auto_resolve(&st.auth.pool, &route_task).await        // Fleet's .env key
+    persist::fleet_auto_resolve(&st.auth.pool, &route_task).await        // Fleet's own key
 } else {
     persist::resolve_routing_for_turn(&st.auth.pool, &st.routing, …).await // user's orchestrator
 };
@@ -256,7 +256,7 @@ sub-agent) are untouched and continue to use the user's `st.routing`.
 | | **Auto** (picker) | **Routers** (Settings → Routers) |
 |---|---|---|
 | Trigger | Pick "Auto" in the picker | Connect a router + flip the master toggle |
-| Not Diamond key | Fleet's `NOTDIAMOND_API_KEY` (`.env`) | User's key (OS keychain) |
+| Not Diamond key | Fleet's `NOTDIAMOND_API_KEY` (environment) | User's key (OS keychain) |
 | Scope | Per-session, re-routes every turn, never pins | Per-turn for *manual* sessions; pins on first route |
 | Candidates | Active-provider-scoped pool (`auto_pool::select_routes`) — only families with a live execution path | The session's single agent family (or dispatch target) |
 | Code | `fleet_auto_resolve` | `resolve_routing_for_turn` / `_for_dispatch` via `st.routing` |
@@ -271,14 +271,17 @@ sub-agent) are untouched and continue to use the user's `st.routing`.
 `.env` (gitignored; `.env.example` is the committed template):
 
 ```
-# Read at runtime by the backend (std::env::var, dotenvy-loaded). Fleet's own
-# key — independent of any Not Diamond a user connects in Settings → Routers.
+# Read at runtime by the backend (std::env::var; debug builds load .env with
+# dotenvy). Fleet's own key — independent of any Not Diamond a user connects
+# in Settings → Routers.
 NOTDIAMOND_API_KEY=sk-...
 ```
 
 Unset ⇒ Auto silently falls back to the offline built-in router (still routes,
 just without Not Diamond's cross-provider intelligence). The key is **never**
-committed — it lives only in `.env`.
+committed — it lives only in `.env`. Release builds never read `.env`, so an
+installed Fleetify uses the built-in router for Auto unless its environment
+sets `NOTDIAMOND_API_KEY`.
 
 ### Routers (user-owned)
 
@@ -338,7 +341,7 @@ for `routing_decisions` rows with `source = notdiamond`, or the backend log
 - **Candidate pool is scoped to active providers** (`auto_pool`), so Auto only
   routes to a family with a live execution path. Claude runs via the Claude
   Code CLI; the **Anthropic API** fallback (for when Claude Code is off) is a
-  **Phase 2** item — a native Anthropic adapter — currently gated off.
+  planned item — a native Anthropic adapter — currently gated off.
 - **Models we have that Not Diamond doesn't know** (e.g. `claude-opus-4-8`,
   bare `gpt-5.4`) stay **manually selectable only** — they're excluded from the
   Auto pool. Adding them to *routing* would need a trained Not Diamond *custom
@@ -350,5 +353,5 @@ for `routing_decisions` rows with `source = notdiamond`, or the backend log
   (recommend-only; execution is on the user's own provider keys).
 - **`tradeoff` is hard-coded to `"cost"`.** Exposing `latency` / `quality` as a
   user preference is a natural extension.
-- **Classifier v1 is heuristic.** v1.1 plans embedding-based intent clustering
-  (Semantic Router) — see `docs/superpowers/specs/`.
+- **Classifier v1 is heuristic.** Embedding-based intent clustering (Semantic
+  Router) is a possible next step.
