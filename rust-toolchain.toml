@@ -1,3 +1,6 @@
+# CI and local builds use this exact Rust release. Moving to a newer one is
+# a change of its own.
 [toolchain]
-channel = "stable"
+channel = "1.100.0"
 components = ["rustfmt", "clippy"]
+profile = "minimal"

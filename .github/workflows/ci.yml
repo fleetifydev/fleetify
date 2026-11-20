@@ -62,9 +62,15 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      # The Rust release rust-toolchain.toml pins, with rustfmt and clippy:
+      # given no toolchain name, rustup installs the one that file names, so
+      # CI builds with the same compiler as a local run. Bash rather than the
+      # Windows default, PowerShell, so that a failed install fails the step.
+      - name: Rust toolchain (rust-toolchain.toml)
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
       # Each runner image gets its own Rust cache: a cache saved on one image
       # carries that image's MSVC paths (whisper-rs-sys's CMake build dir) and
       # breaks the build on another image during an image rollout. The key is

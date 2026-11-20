@@ -16,7 +16,7 @@ You need:
 
 - **Git.**
 - **Node 22**, the version in [`.nvmrc`](.nvmrc) and the one CI uses. A version manager such as nvm or fnm can read that file. Newer majors are untested, and Node 25 or later breaks the renderer tests: its built-in `localStorage` gets in the way of the test environment.
-- **Rust**, through [rustup](https://rustup.rs). [`rust-toolchain.toml`](rust-toolchain.toml) asks for the stable channel with rustfmt and clippy, and rustup installs them the first time you run `cargo` in the repository. CI lints with the newest stable release, so keep yours current with `rustup update stable`.
+- **Rust**, through [rustup](https://rustup.rs). [`rust-toolchain.toml`](rust-toolchain.toml) pins Rust 1.100.0 with rustfmt and clippy, and rustup installs it the first time you run `cargo` in the repository. CI uses the same version.
 - **The system packages for your OS**, below. Besides what Tauri v2 needs, the default build compiles whisper.cpp for on-device voice dictation, which takes CMake, a C++ compiler and libclang.
 - Optionally, **Python 3 with PyYAML**, which the script tests use to read YAML (see [the gates](#the-gates)).
 
