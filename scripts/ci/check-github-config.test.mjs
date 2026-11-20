@@ -45,7 +45,19 @@ const FORMS = {
   },
 };
 
-const ECOSYSTEMS = ["cargo", "npm", "github-actions"];
+/** Each Dependabot ecosystem, and the update types its one group collects. */
+const ECOSYSTEMS = {
+  // A 0.x minor bump can break a Rust build, so Cargo groups patches only.
+  cargo: ["patch"],
+  npm: ["minor", "patch"],
+  "github-actions": ["minor", "patch"],
+};
+
+/**
+ * Crates Dependabot must leave alone. The workspace patches tauri-runtime-wry
+ * from vendor/, so a Tauri upgrade means reapplying the patches by hand.
+ */
+const CARGO_IGNORED = ["tauri", "tauri-*", "wry", "tao"];
 
 /** The field types GitHub's form schema allows. */
 const FIELD_TYPES = ["markdown", "textarea", "input", "dropdown", "checkboxes", "upload"];
@@ -190,11 +202,18 @@ describe("dependabot.yml", () => {
     assert.equal(load(rel).version, 2);
   });
 
-  for (const ecosystem of ECOSYSTEMS) {
-    yamlTest(`updates ${ecosystem} weekly, at most 5 PRs, prefixed deps, minor and patch grouped`, () => {
-      const updates = load(rel).updates ?? [];
-      const entry = updates.find((u) => u["package-ecosystem"] === ecosystem && u.directory === "/");
-      assert.ok(entry, `no ${ecosystem} entry for directory /`);
+  /** The ecosystem's entry for directory /. */
+  function entryFor(ecosystem) {
+    const updates = load(rel).updates ?? [];
+    const entry = updates.find((u) => u["package-ecosystem"] === ecosystem && u.directory === "/");
+    assert.ok(entry, `no ${ecosystem} entry for directory /`);
+    return entry;
+  }
+
+  for (const [ecosystem, updateTypes] of Object.entries(ECOSYSTEMS)) {
+    const grouped = updateTypes.join(" and ");
+    yamlTest(`updates ${ecosystem} weekly, at most 5 PRs, prefixed deps, ${grouped} grouped`, () => {
+      const entry = entryFor(ecosystem);
       assert.equal(entry.schedule?.interval, "weekly");
       assert.equal(entry["open-pull-requests-limit"], 5);
       assert.equal(entry["commit-message"]?.prefix, "deps");
@@ -202,11 +221,26 @@ describe("dependabot.yml", () => {
       const groups = Object.values(entry.groups ?? {});
       assert.equal(groups.length, 1, `${ecosystem} needs exactly one group`);
       const [group] = groups;
-      assert.deepEqual([...(group["update-types"] ?? [])].sort(), ["minor", "patch"]);
+      assert.deepEqual(
+        [...(group["update-types"] ?? [])].sort(),
+        [...updateTypes].sort(),
+        `the ${ecosystem} group must collect exactly the ${grouped} updates`,
+      );
       // Without patterns a group covers every dependency; with them, "*" must be one.
       assert.ok((group.patterns ?? ["*"]).includes("*"), `the ${ecosystem} group must cover every dependency`);
     });
   }
+
+  yamlTest(`leaves ${CARGO_IGNORED.join(", ")} to manual upgrades`, () => {
+    const ignore = entryFor("cargo").ignore ?? [];
+    for (const name of CARGO_IGNORED) {
+      const rule = ignore.find((r) => r["dependency-name"] === name);
+      assert.ok(rule, `cargo doesn't ignore ${name}`);
+      // Narrowed to some versions or update types, the rule would let the rest through.
+      assert.equal(rule.versions, undefined, `the ${name} rule must ignore every version`);
+      assert.equal(rule["update-types"], undefined, `the ${name} rule must ignore every update type`);
+    }
+  });
 });
 
 describe("CODEOWNERS", () => {

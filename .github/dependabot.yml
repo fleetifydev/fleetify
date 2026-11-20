@@ -1,6 +1,16 @@
-# Dependabot version updates, checked weekly. Each ecosystem's minor and patch
-# updates arrive together in one grouped pull request; a major update gets a
-# pull request of its own.
+# Dependabot version updates, checked weekly.
+#
+# npm and GitHub Actions: minor and patch updates arrive together in one grouped
+# pull request per ecosystem, and a major update gets a pull request of its own.
+# Cargo groups patch updates only. A minor update to a 0.x crate can break the
+# build, so Cargo minor updates come one per pull request, like major ones.
+#
+# Tauri upgrades stay manual. The workspace patches tauri-runtime-wry from
+# vendor/ (see vendor/tauri-runtime-wry/FLEETIFY_PATCH.md), and Cargo silently
+# drops that patch once tauri asks for another version of the runtime, so a
+# Tauri upgrade means re-vendoring and reapplying the patches by hand. Cargo
+# therefore ignores tauri and every tauri-* crate (the plugins pull a newer
+# tauri in with them), plus wry and tao, which the vendored runtime pins.
 #
 # Commit messages, and so pull request titles, start with `deps:`, one of the
 # conventional types the PR title check in ci.yml accepts. Dependabot's commits
@@ -14,12 +24,16 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: deps
+    ignore:
+      - dependency-name: "tauri"
+      - dependency-name: "tauri-*"
+      - dependency-name: "wry"
+      - dependency-name: "tao"
     groups:
-      cargo-minor-patch:
+      cargo-patch:
         patterns:
           - "*"
         update-types:
-          - minor
           - patch
 
   - package-ecosystem: npm
