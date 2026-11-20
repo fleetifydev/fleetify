@@ -18,11 +18,14 @@ interface PluginTemplate {
   providers: string[]; mcp_servers: string[]; plugin: string; tags: string[];
 }
 
-const TIER_TO_MODEL: Record<string, Record<string, string>> = {
+/** A template's preferred tier → the model it starts on, per provider.
+ *  offline-defaults.test.ts checks Claude Code's `most_capable` against the
+ *  embedded catalog snapshot's default. */
+export const TIER_TO_MODEL: Record<string, Record<string, string>> = {
   "claude-code": {
     fastest: "claude-haiku-4-5-20251001",
     balanced: "claude-sonnet-4-6",
-    most_capable: "claude-opus-4-8",
+    most_capable: "claude-opus-5-5",
   },
   codex: {
     fastest: "gpt-5.2",
@@ -55,7 +58,7 @@ const AGENT_TEMPLATES = [
     name: "Reverse Engineer",
     description: "Login endpoint discovery, JS bundle analysis, proxy support",
     provider: "claude-code",
-    model: "claude-opus-4-8",
+    model: "claude-opus-5-5",
     systemPromptHint: "You are a web reverse-engineering specialist with proxied fetch + JS analysis tools.",
     // Maps to backend BuiltinTemplate id — unlocks the fleet_reveng MCP
     // server (fetch_url / discover_assets / find_endpoints / save_asset).
@@ -77,7 +80,7 @@ const AGENT_TEMPLATES = [
     name: "Code Reviewer",
     description: "Reviews code for bugs, style, security",
     provider: "claude-code",
-    model: "claude-opus-4-8",
+    model: "claude-opus-5-5",
     systemPromptHint: "You are an expert code reviewer. Analyze code for bugs, security vulnerabilities, and improvement opportunities.",
   },
   {
@@ -86,7 +89,7 @@ const AGENT_TEMPLATES = [
     name: "Researcher",
     description: "Deep research, report generation",
     provider: "claude-code",
-    model: "claude-opus-4-8",
+    model: "claude-opus-5-5",
     systemPromptHint: "You are a research specialist. Conduct thorough research and produce structured, cited reports.",
   },
   {
@@ -140,9 +143,12 @@ type TemplateId = typeof AGENT_TEMPLATES[number]["id"];
 
 const PROVIDERS = [
   { id: "claude-code", name: "Claude Code", icon: ClaudeLogo, models: [
-    { id: "claude-opus-4-8",          label: "Opus 4.8",   desc: "Most capable" },
+    { id: "claude-opus-5-5",          label: "Opus 5.5",   desc: "Most capable" },
     { id: "claude-sonnet-4-6",         label: "Sonnet 4.6", desc: "Balanced", default: true },
     { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5",  desc: "Fastest" },
+    // The previous default, kept so an agent seeded from a session on it
+    // shows the model it will start on.
+    { id: "claude-opus-4-8",           label: "Opus 4.8",   desc: "Previous Opus" },
   ]},
   { id: "codex-cli",  name: "Codex",  icon: OpenAILogo, models: [
     { id: "gpt-5.2", label: "GPT-5.2", desc: "Fastest" },

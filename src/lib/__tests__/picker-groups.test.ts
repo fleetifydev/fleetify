@@ -129,11 +129,11 @@ describe("buildPickerGroups", () => {
 
   // C4: the offline CLI fallback must carry the authored default so the picker
   // resolves the same default model as the remote catalog before discovery
-  // loads. claude-code's CLI_MODELS default is Opus 4.8.
-  it("flags the claude-code CLI fallback default as claude-opus-4-8", () => {
+  // loads. claude-code's CLI_MODELS default is Opus 5.5.
+  it("flags the claude-code CLI fallback default as claude-opus-5-5", () => {
     const groups = buildPickerGroups([baseTile("claude-code", "Claude Code", "cli")], ["claude-code"]);
     const claude = groups.find((g) => g.id === "claude-code");
-    expect(claude?.models.find((m) => m.default)?.id).toBe("claude-opus-4-8");
+    expect(claude?.models.find((m) => m.default)?.id).toBe("claude-opus-5-5");
     // Exactly one default per agent.
     expect(claude?.models.filter((m) => m.default)).toHaveLength(1);
   });
@@ -701,9 +701,9 @@ describe("resolveStartupDefault", () => {
     expect(r.tool).toBe("claude-code");
     // resolveStartupDefault now routes the final pick through
     // resolveSessionModel, so a stale model heals to the group's FLAGGED
-    // default (claude-opus-4-8 via the CLI_MODELS `default` flag), not the
+    // default (claude-opus-5-5 via the CLI_MODELS `default` flag), not the
     // first table entry (claude-fable-5).
-    expect(r.model).toBe("claude-opus-4-8");
+    expect(r.model).toBe("claude-opus-5-5");
   });
 
   it("falls back to the first connected tile and claude when none is default", () => {

@@ -267,6 +267,16 @@ const OPENAI_MODELS: &[ModelSpec] = &[
 // that `auto_pool::nd_model_to_dispatch` produces, so Auto's Anthropic-API
 // fallback runs the exact model it routed.
 const ANTHROPIC_API_MODELS: &[ModelSpec] = &[
+    // First = the offline default, matching the embedded catalog snapshot.
+    ModelSpec {
+        id: "claude-opus-5-5",
+        label: "Claude Opus 5.5",
+        context_window: Some("1M"),
+        note: None,
+        group: None,
+        endpoint: None,
+        supports_effort: false,
+    },
     ModelSpec {
         id: "claude-opus-4-8",
         label: "Claude Opus 4.8",
@@ -2694,6 +2704,7 @@ mod tests {
             "gpt-5-mini",
             "gpt-4.1",
             // ── Anthropic Claude API (platform.claude.com OpenAI-compat 2026-05-30) ──
+            "claude-opus-5-5", // Claude API model list + fleetifydev/models fb580a2, 2026-11-21
             "claude-opus-4-8",
             "claude-sonnet-4-6",
             "claude-haiku-4-5",

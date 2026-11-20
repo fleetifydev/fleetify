@@ -54,7 +54,27 @@ The effort levels each model supports come from a snapshot of the catalog that
 is embedded at build time, `crates/fleetify-backend/assets/models-snapshot.json`
 (read by `providers/catalog_snapshot.rs`), which doubles as an offline baseline.
 It is regenerated from the catalog's `dist/models.json` when effort metadata
-changes.
+or a default model changes. Fetch it at a pinned commit, and name that commit
+in the change that updates the file:
+
+```bash
+SHA=$(gh api repos/fleetifydev/models/commits/main --jq .sha)
+curl -fsSL "https://cdn.jsdelivr.net/gh/fleetifydev/models@$SHA/dist/models.json" \
+  -o crates/fleetify-backend/assets/models-snapshot.json
+```
+
+The snapshot supplies effort, not model lists: a first launch that reaches no
+catalog takes its models from defaults built into the app. The snapshot does
+record each provider's default, and `src/lib/__tests__/offline-defaults.test.ts`
+holds the built-in defaults to it. For Claude Code it checks the fallback
+default in `src/lib/picker-groups.ts`, the default row in
+`src/components/chat/chat-input.tsx`, the New Agent dialog's `most_capable`
+tier, the welcome card's labels and the `/compact` summariser in
+`services/compactor.rs`. For the Anthropic API it checks the first model of its
+list in `providers/catalog.rs`. A refresh that moves one of those defaults
+fails `npm test` until they follow. Move the default, and keep the previous
+model's labels for the sessions that still use it. The test doesn't check the
+New Agent dialog's model options or its templates, so move those by hand.
 
 ## 4. Adding or changing a model
 

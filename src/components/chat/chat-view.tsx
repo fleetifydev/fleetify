@@ -67,6 +67,17 @@ const MESSAGE_WINDOW_STEP = 80;
  *  would defeat MessageList's memo. */
 const NO_MESSAGES: ChatMessage[] = [];
 
+/** Model names for the welcome card's "Working in … with …" line. */
+export const WELCOME_MODEL_LABELS: Record<string, string> = {
+  "claude-opus-5-5": "Opus 5.5",
+  // Earlier defaults, kept so sessions created before Opus 5.5 still get
+  // the right label.
+  "claude-opus-4-8": "Opus 4.8",
+  "claude-opus-4-7": "Opus 4.7",
+  "claude-sonnet-4-6": "Sonnet 4.6",
+  "claude-haiku-4-5-20251001": "Haiku 4.5",
+};
+
 /** Keep the model chip honest: show an id the catalog still serves.
  *
  *  `resolveModelChip` only picks a LABEL, and it falls back to the embedded
@@ -1600,16 +1611,8 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     // them. They use the typewriter helper → land char-by-char.
     const sid = activeSessionId;
     const provider = activeSession.tool || "claude-code";
-    const modelLabelMap: Record<string, string> = {
-      "claude-opus-4-8": "Opus 4.8",
-      // Kept for sessions created before the Opus 4.8 default so their
-      // model chip still renders the right label.
-      "claude-opus-4-7": "Opus 4.7",
-      "claude-sonnet-4-6": "Sonnet 4.6",
-      "claude-haiku-4-5-20251001": "Haiku 4.5",
-    };
     const modelLabel = activeSession.model_name
-      ? (modelLabelMap[activeSession.model_name] || activeSession.model_name)
+      ? (WELCOME_MODEL_LABELS[activeSession.model_name] || activeSession.model_name)
       : "default model";
     const permLabelMap: Record<string, string> = {
       default: "Ask permission",

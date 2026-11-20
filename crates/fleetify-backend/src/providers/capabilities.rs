@@ -630,7 +630,7 @@ mod tests {
 
         // levels — Claude: full set (xhigh + max), default high.
         assert_eq!(
-            effort_capability("claude-code", "claude-opus-4-8"),
+            effort_capability("claude-code", "claude-opus-5"),
             Levels {
                 levels: vec![
                     "low".into(),
@@ -643,29 +643,36 @@ mod tests {
                 default: "high".into(),
             }
         );
-        // levels — Claude Sonnet drops xhigh but keeps max.
+        // levels — Claude Sonnet: xhigh + max, but no ultra_code.
         assert_eq!(
-            effort_capability("claude-code", "claude-sonnet-4-6"),
+            effort_capability("claude-code", "claude-sonnet-5"),
             Levels {
-                levels: vec!["low".into(), "medium".into(), "high".into(), "max".into()],
+                levels: vec![
+                    "low".into(),
+                    "medium".into(),
+                    "high".into(),
+                    "xhigh".into(),
+                    "max".into()
+                ],
                 default: "high".into(),
             }
         );
-        // levels — OpenAI GPT-5 family adds `minimal`, default medium.
+        // levels — OpenAI GPT-5.5: `none` up to `xhigh`, no `minimal`; default medium.
         assert_eq!(
             effort_capability("openai", "gpt-5.5"),
             Levels {
                 levels: vec![
-                    "minimal".into(),
+                    "none".into(),
                     "low".into(),
                     "medium".into(),
-                    "high".into()
+                    "high".into(),
+                    "xhigh".into()
                 ],
                 default: "medium".into(),
             }
         );
         // levels — Codex: no `minimal`, adds `xhigh`.
-        assert!(matches!(effort_capability("codex-cli", "gpt-5.2"),
+        assert!(matches!(effort_capability("codex-cli", "gpt-5.5"),
             Levels { levels, .. } if !levels.iter().any(|s| s == "minimal") && levels.iter().any(|s| s == "xhigh")));
 
         // budget — Gemini 2.5: flash can disable, pro cannot.
@@ -686,7 +693,7 @@ mod tests {
 
         // thinking_level — Gemini 3.x: [low, high], default high.
         assert_eq!(
-            effort_capability("gemini-api", "gemini-3.5-flash"),
+            effort_capability("gemini-api", "gemini-3.6-flash"),
             ThinkingLevel {
                 levels: vec!["low".into(), "high".into()],
                 default: "high".into(),
@@ -710,7 +717,7 @@ mod tests {
         );
         assert_eq!(effort_capability("openai", "gpt-4.1"), None);
         // Anthropic HTTP compat advertises no effort → None (CLI-only).
-        assert_eq!(effort_capability("anthropic", "claude-opus-4-8"), None);
+        assert_eq!(effort_capability("anthropic", "claude-opus-5-5"), None);
         // Unknown provider/model (absent from snapshot) → None.
         assert_eq!(effort_capability("ollama", "llama3"), None);
     }

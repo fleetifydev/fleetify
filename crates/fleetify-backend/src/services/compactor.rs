@@ -24,9 +24,9 @@ pub const MIN_CHAR_COUNT: i64 = 4000;
 const MAX_HISTORY_CHARS: usize = 120_000;
 const COMPACT_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Model used to summarise — Opus 4.8 per the product decision (higher-
+/// Model used to summarise — Opus 5.5 per the product decision (higher-
 /// quality summaries; the live progress bar covers the extra latency).
-const SUMMARIZER_MODEL: &str = "claude-opus-4-8";
+const SUMMARIZER_MODEL: &str = "claude-opus-5-5";
 /// Curve constant for the summarise-phase progress bar (see `summarize_pct`).
 /// Smaller = the bar rises faster early. Tuned so a typical summary's streamed
 /// activity (thinking + text) approaches ~90 % by the time the model finishes.

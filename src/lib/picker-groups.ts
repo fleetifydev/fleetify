@@ -55,13 +55,19 @@ const CLI_MODELS: Record<string, PickerModel[]> = {
       id: "claude-fable-5", label: "Fable 5", ctx: "1M",
       effort: EFFORT_NONE,
       supports_effort: false,
-      active: false, // retired — disabled in the picker (matches the catalog)
+      active: false, // disabled in this offline list only: the catalog and the embedded snapshot mark it active
     },
+    {
+      id: "claude-opus-5-5", label: "Opus 5.5", ctx: "1M",
+      effort: EFFORT_NONE,
+      supports_effort: false,
+      default: true,
+    },
+    // The previous default, kept so its sessions keep their label.
     {
       id: "claude-opus-4-8", label: "Opus 4.8", ctx: "200K",
       effort: EFFORT_NONE,
       supports_effort: false,
-      default: true,
     },
     {
       id: "claude-sonnet-4-6", label: "Sonnet 4.6", ctx: "200K",

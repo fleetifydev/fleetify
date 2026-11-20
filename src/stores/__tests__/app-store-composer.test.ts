@@ -201,19 +201,19 @@ describe("openComposer — provider/model default precedence", () => {
     expect(c.modelName).toBe("gpt-5.5");
   });
 
-  it("heals to claude-code's flagged default (claude-opus-4-8) when the Fleet provider has no/stale model", async () => {
+  it("heals to claude-code's flagged default (claude-opus-5-5) when the Fleet provider has no/stale model", async () => {
     // Was "uses the hardcoded baseline …": openComposer never swaps the "auto"
     // pseudo-provider for a concrete tile, so the previous "empty config ⇒
     // claude-code" assertion could never hold (and was already RED). This
     // instead exercises C5's real contract: a configured Fleet provider whose
-    // model is unset/stale heals to the provider's FLAGGED default — for
-    // claude-code that's claude-opus-4-8 via the CLI_MODELS `default` flag
-    // (not the first model, claude-fable-5).
+    // model is unset/stale heals to the provider's FLAGGED default. The
+    // discovered lineup below flags claude-opus-5-5, as the catalog does, and
+    // lists it second, so the heal has to follow the flag, not the order.
     useDiscoveredModelsStore.setState({
       models: {
         "claude-code": [
           { id: "claude-sonnet-4-6", label: "Sonnet 4.6", effort: { kind: "none" }, supports_effort: false },
-          { id: "claude-opus-4-8", label: "Opus 4.8", effort: { kind: "none" }, supports_effort: false, default: true },
+          { id: "claude-opus-5-5", label: "Opus 5.5", effort: { kind: "none" }, supports_effort: false, default: true },
         ],
       },
     });
@@ -226,7 +226,7 @@ describe("openComposer — provider/model default precedence", () => {
     await useAppStore.getState().openComposer();
     const c = useAppStore.getState().composer;
     expect(c.tool).toBe("claude-code");
-    expect(c.modelName).toBe("claude-opus-4-8");
+    expect(c.modelName).toBe("claude-opus-5-5");
   });
 
   it("seeds composer.effort from the Sessions Default effort when set", async () => {

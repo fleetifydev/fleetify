@@ -56,8 +56,14 @@ export const SOURCE_KINDS = [
 
 interface ModelOption { id: string; label: string; ctx: string }
 
+/** Claude Code's default model when nothing else is known: the embedded
+ *  catalog snapshot's `claude-code` default (offline-defaults.test.ts). */
+export const CLAUDE_DEFAULT_MODEL: ModelOption = { id: "claude-opus-5-5", label: "Opus 5.5", ctx: "1M" };
+
 const CLAUDE_MODELS: ModelOption[] = [
   { id: "claude-fable-5",            label: "Fable 5",    ctx: "1M"   },
+  CLAUDE_DEFAULT_MODEL,
+  // The previous default, kept so its sessions keep their label.
   { id: "claude-opus-4-8",           label: "Opus 4.8",   ctx: "200K" },
   { id: "claude-sonnet-4-6",         label: "Sonnet 4.6", ctx: "200K" },
   { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5",  ctx: "200K" },
@@ -135,7 +141,7 @@ function fmtModel(id: string | null | undefined, tool?: string | null): string {
   // Fallback: best-effort label inference from the id substring.
   const m = id.toLowerCase();
   if (m.includes("fable"))   return "Fable 5";
-  if (m.includes("opus"))    return "Opus 4.8";
+  if (m.includes("opus"))    return "Opus";
   if (m.includes("sonnet"))  return "Sonnet 4.6";
   if (m.includes("haiku"))   return "Haiku 4.5";
   if (m.includes("3.1-pro")) return "3.1 Pro";
