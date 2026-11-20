@@ -4,22 +4,27 @@
  *
  * - every relative link, image and reference definition, and every href, src
  *   and srcset in their HTML, points to a file that exists;
+ * - every image they show, as a markdown image or an img or source tag's src
+ *   or srcset, is a file in the repository;
  * - every #anchor matches a heading in the file it points into, slugged the
  *   way GitHub slugs headings;
  * - every link into github.com/fleetifydev/fleetify goes to a page on a short
  *   allow-list (GITHUB_PAGES), so none points at a page that doesn't exist,
  *   such as a release download before the first release;
+ * - none offers an install script or a download before the first public
+ *   release (PRE_RELEASE_LINKS);
  * - the only email addresses are the project's contacts (CONTACTS).
  *
  *   node --test scripts/ci/check-docs-links.test.mjs
  *
  * A link counts where GitHub renders one: not inside a code block, a code span
- * or an HTML comment. The github.com and address checks read the whole file,
- * since everything in it is published. Nothing here touches the network.
+ * or an HTML comment. The github.com, pre-release and address checks read the
+ * whole file, since everything in it is published. Nothing here touches the
+ * network.
  */
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -27,18 +32,18 @@ const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
 /**
  * The docs these checks cover. A doc marked `pending` arrives with a later
- * change, and its checks skip until it exists. Drop `pending` once the file
- * lands, so that losing it fails the checks.
+ * change, and its checks skip until it exists. Once the file lands, a check
+ * fails until `pending` goes, so that losing the file later fails too.
  */
 const DOCS = [
   { file: "README.md" },
-  { file: "README.tr.md", pending: "the Turkish README comes with the README rewrite" },
+  { file: "README.tr.md" },
   { file: "CONTRIBUTING.md" },
   { file: "SECURITY.md" },
   { file: "SUPPORT.md" },
   { file: "CODE_OF_CONDUCT.md" },
   { file: "TRADEMARKS.md" },
-  { file: "docs/INSTALL.md", pending: "the install guide comes with the docs review" },
+  { file: "docs/INSTALL.md" },
 ];
 
 /** The only email addresses the docs may show: security reports, the code of conduct, business. */
@@ -50,7 +55,8 @@ const CONTACTS = ["security@fleetify.dev", "conduct@fleetify.dev", "hello@fleeti
  * discussions/categories/q-a, issues/new/choose or
  * actions/workflows/ci.yml/badge.svg, unless the entry is `exact`: nothing
  * exists under releases/ before the first release, so a download link there
- * would return 404.
+ * would return 404. graphs/contributors is the README's credit to everyone who
+ * contributes.
  */
 const GITHUB_PAGES = [
   { path: "discussions" },
@@ -58,6 +64,28 @@ const GITHUB_PAGES = [
   { path: "issues" },
   { path: "actions/workflows/ci.yml" },
   { path: "releases", exact: true },
+  { path: "graphs/contributors", exact: true },
+];
+
+/**
+ * Addresses that serve nothing before the first public release (v0.2.0):
+ * fleetify.dev's install scripts and download page, and this repository's
+ * release downloads. A doc that offers one sends its readers to a 404. Another
+ * project's release assets stay linkable. Install one-liners sit in code
+ * blocks, so the whole file is read. P3 lifts this list when v0.2.0 ships.
+ */
+const PRE_RELEASE_LINKS = [
+  { pattern: /(?<![\w-])fleetify\.dev\/install\b/gi, what: "an install script" },
+  { pattern: /(?<![\w-])get\.fleetify\.dev/gi, what: "an install script" },
+  { pattern: /(?<![\w-])fleetify\.dev\/download/gi, what: "the download page" },
+  {
+    pattern: /github\.com\/fleetifydev\/fleetify\/releases\/(?:latest\/download|download\/)/gi,
+    what: "a release download",
+  },
+  {
+    pattern: /raw\.githubusercontent\.com\/fleetifydev\/fleetify\/[^\s"'`<>()[\]]*install/gi,
+    what: "an install script",
+  },
 ];
 
 /** An inline link or image, [text](destination "title"), allowing one level of brackets in the text. */
@@ -67,7 +95,8 @@ const INLINE_LINK =
 /** A link reference definition, [label]: destination. A footnote, [^1]: text, isn't one. */
 const REFERENCE_DEFINITION = /^[ \t]{0,3}\[(?!\^)((?:\\.|[^[\]\\])+)\]:[ \t]*\n?[ \t]*(<[^<>\n]*>|\S+)/gm;
 
-const HTML_TAG = /<[A-Za-z][^<>]*>/g;
+/** An HTML start tag. A quoted attribute value can hold a > or a <, as in alt="Settings > Providers". */
+const HTML_TAG = /<[A-Za-z](?:[^<>"']|"[^"]*"|'[^']*')*>/g;
 const HTML_URL_ATTRIBUTE = /\s(href|src|srcset)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi;
 const HTML_ANCHOR_ATTRIBUTE = /\s(?:id|name)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
 
@@ -117,6 +146,8 @@ const destination = (raw) => raw.replace(/^<([\s\S]*)>$/, "$1").replace(/\\([!-/
 /**
  * Every link destination in `markdown`, with its line: inline links and
  * images, reference definitions, and href, src and srcset in its HTML.
+ * `image` marks what the page shows rather than links to: a markdown image,
+ * or the src or srcset of an img or source tag.
  */
 function linkTargets(markdown) {
   const text = withoutCode(markdown);
@@ -124,24 +155,27 @@ function linkTargets(markdown) {
   const inline = (part, offset) => {
     for (const m of part.matchAll(INLINE_LINK)) {
       const at = offset + m.index;
-      if (m[3] !== undefined) found.push({ target: destination(m[3]), line: lineAt(text, at) });
+      if (m[3] !== undefined) found.push({ target: destination(m[3]), line: lineAt(text, at), image: m[1] === "!" });
       // The text can hold an image of its own: [![logo](logo.svg)](https://…).
       inline(m[2], at + m[1].length + 1);
     }
   };
   inline(text, 0);
   for (const m of text.matchAll(REFERENCE_DEFINITION)) {
-    found.push({ target: destination(m[2]), line: lineAt(text, m.index) });
+    found.push({ target: destination(m[2]), line: lineAt(text, m.index), image: false });
   }
   for (const tag of text.matchAll(HTML_TAG)) {
+    const element = /^<([A-Za-z][\w-]*)/.exec(tag[0])[1].toLowerCase();
     for (const attribute of tag[0].matchAll(HTML_URL_ATTRIBUTE)) {
+      const name = attribute[1].toLowerCase();
       const value = attribute[2] ?? attribute[3] ?? attribute[4];
       // srcset lists candidates, "url [descriptor]", separated by commas.
       const urls =
-        attribute[1].toLowerCase() === "srcset"
+        name === "srcset"
           ? value.split(",").map((candidate) => candidate.trim().split(/\s+/)[0])
           : [value];
-      for (const url of urls.filter(Boolean)) found.push({ target: url, line: lineAt(text, tag.index) });
+      const image = (element === "img" || element === "source") && name !== "href";
+      for (const url of urls.filter(Boolean)) found.push({ target: url, line: lineAt(text, tag.index), image });
     }
   }
   return found;
@@ -244,6 +278,25 @@ const allowedPage = (page) =>
 /** Every email address in `text`, with its line. */
 const emailsIn = (text) => [...text.matchAll(EMAIL)].map((m) => ({ email: m[0], line: lineAt(text, m.index) }));
 
+/** Every address in `text` that serves nothing before the first public release, with what it is and its line. */
+const preReleaseLinksIn = (text) =>
+  PRE_RELEASE_LINKS.flatMap(({ pattern, what }) =>
+    [...text.matchAll(pattern)].map((m) => ({ match: m[0], what, line: lineAt(text, m.index) })),
+  ).sort((a, b) => a.line - b.line);
+
+/** Whether `path` is a file, not a folder or nothing at all. */
+const isFile = (path) => existsSync(path) && statSync(path).isFile();
+
+/**
+ * The docs in `docs` still marked pending although `exists(file)` says the
+ * file is there, each as the problem to report: its checks would keep
+ * skipping if the file went missing again.
+ */
+const stalePending = (docs, exists) =>
+  docs
+    .filter(({ file, pending }) => pending && exists(file))
+    .map(({ file }) => `${file} exists now: drop pending from its entry in DOCS, so that losing the file fails the checks`);
+
 /** The text of `rel` (relative to the repo root), with Windows line endings normalised, failing clearly when it's missing. */
 function read(rel) {
   const file = join(ROOT, rel);
@@ -263,6 +316,13 @@ describe("docs", () => {
     return anchorCache.get(rel);
   };
 
+  test("no doc is still marked pending once it exists", () => {
+    assertNone(
+      stalePending(DOCS, (file) => existsSync(join(ROOT, file))),
+      "docs marked pending although they exist",
+    );
+  });
+
   for (const { file, pending } of DOCS) {
     const skip = pending && !existsSync(join(ROOT, file)) ? `${file} doesn't exist yet: ${pending}` : false;
 
@@ -279,6 +339,16 @@ describe("docs", () => {
         else if (!existsSync(join(ROOT, to.file))) problems.push(`${file}:${line}: ${target}: there is no ${to.file}`);
       }
       assertNone(problems, `${file} links to files that don't exist`);
+    });
+
+    test(`${file}: images are files that exist`, { skip }, () => {
+      const problems = [];
+      for (const { target, line, to, image } of localLinks()) {
+        if (!image) continue;
+        if (outsideRepo(to.file)) problems.push(`${file}:${line}: ${target} points outside the repository`);
+        else if (!isFile(join(ROOT, to.file))) problems.push(`${file}:${line}: ${target}: there is no image at ${to.file}`);
+      }
+      assertNone(problems, `${file} shows images that don't exist`);
     });
 
     test(`${file}: anchors match headings in the files they point into`, { skip }, () => {
@@ -301,6 +371,11 @@ describe("docs", () => {
         .map(({ url, line }) => `${file}:${line}: ${url}`);
       const allowed = GITHUB_PAGES.map(({ path, exact }) => (exact ? path : `${path}[/…]`)).join(", ");
       assertNone(problems, `${file} links to pages outside the allow-list (${allowed}); link a repository file relatively`);
+    });
+
+    test(`${file}: offers no install script or download before the first public release`, { skip }, () => {
+      const problems = preReleaseLinksIn(read(file)).map(({ match, what, line }) => `${file}:${line}: ${match} (${what})`);
+      assertNone(problems, `${file} sends readers to addresses that serve nothing until v0.2.0 ships; point them to building from source`);
     });
 
     test(`${file}: the only email addresses are the project contacts`, { skip }, () => {
@@ -414,6 +489,59 @@ describe("the checker", () => {
     );
   });
 
+  test("tells images from links: markdown images, and the src and srcset of img and source tags", () => {
+    const markdown = [
+      "![hero](docs/images/hero.png) and [a guide](docs/guide.md)",
+      "[![logo](public/logo.svg)](https://fleetify.dev)",
+      "<picture>",
+      '  <source media="(prefers-color-scheme: dark)" srcset="docs/images/dark.png">',
+      '  <img alt="" src="docs/images/light.png">',
+      "</picture>",
+      '<a href="SUPPORT.md"><img srcset="docs/images/a.png 1x, docs/images/a@2x.png 2x" src="docs/images/a.png"></a>',
+      "[ref]: docs/images/by-reference.png",
+    ].join("\n");
+    assert.deepEqual(
+      linkTargets(markdown)
+        .filter(({ image }) => image)
+        .map(({ target, line }) => `${line} ${target}`)
+        .sort(),
+      [
+        "1 docs/images/hero.png",
+        "2 public/logo.svg",
+        "4 docs/images/dark.png",
+        "5 docs/images/light.png",
+        "7 docs/images/a.png",
+        "7 docs/images/a.png",
+        "7 docs/images/a@2x.png",
+      ],
+    );
+  });
+
+  test("reads a tag whose quoted attribute holds a > or a <", () => {
+    const markdown = [
+      '<img alt="Settings > Providers" src="docs/images/settings.png">',
+      "<a title='a < b' href=\"SUPPORT.md\">help</a>",
+    ].join("\n");
+    assert.deepEqual(
+      linkTargets(markdown)
+        .map(({ target, image }) => `${target} ${image ? "image" : "link"}`)
+        .sort(),
+      ["SUPPORT.md link", "docs/images/settings.png image"],
+    );
+  });
+
+  test("fails a doc still marked pending once it exists, and only that doc", () => {
+    const docs = [
+      { file: "landed.md", pending: "arrives with a later change" },
+      { file: "coming.md", pending: "arrives with a later change" },
+      { file: "kept.md" },
+    ];
+    const exists = (file) => file !== "coming.md";
+    assert.deepEqual(stalePending(docs, exists), [
+      "landed.md exists now: drop pending from its entry in DOCS, so that losing the file fails the checks",
+    ]);
+  });
+
   test("resolves links from the linking file's folder, or the root for a leading /", () => {
     assert.deepEqual(inRepo("docs/INSTALL.md", "../SECURITY.md#scope"), { file: "SECURITY.md", anchor: "scope" });
     assert.deepEqual(inRepo("docs/INSTALL.md", "/README.md"), { file: "README.md", anchor: "" });
@@ -432,12 +560,14 @@ describe("the checker", () => {
       "https://github.com/fleetifydev/fleetify/security/advisories/new",
       "https://github.com/fleetifydev/fleetify/actions/workflows/ci.yml/badge.svg",
       "https://github.com/fleetifydev/fleetify/releases",
+      "https://github.com/fleetifydev/fleetify/graphs/contributors",
     ];
     const refused = [
       "https://github.com/fleetifydev/fleetify/releases/latest/download/SHA256SUMS",
       "https://github.com/fleetifydev/fleetify/blob/main/CONTRIBUTING.md",
       "https://github.com/fleetifydev/fleetify/security/advisories",
       "https://github.com/fleetifydev/fleetify/issuesx",
+      "https://github.com/fleetifydev/fleetify/graphs/traffic",
     ];
     assert.deepEqual(
       repoLinks(allowed.join("\n")).map(({ page }) => allowedPage(page)),
@@ -449,6 +579,36 @@ describe("the checker", () => {
     );
     // Other repositories and accounts are no concern of the allow-list.
     assert.deepEqual(repoLinks("https://github.com/fleetifydev/fleetify-example https://github.com/dorukozgen"), []);
+  });
+
+  test("refuses install scripts and downloads before the first release, but not words about them", () => {
+    const refused = [
+      "curl -fsSL https://fleetify.dev/install.sh | sh",
+      "irm https://fleetify.dev/install.ps1 | iex",
+      "curl -fsSL https://fleetify.dev/install | sh",
+      "curl -fsSL https://get.fleetify.dev | sh",
+      "[Download](https://fleetify.dev/download)",
+      "https://app.fleetify.dev/downloads/latest",
+      "https://github.com/fleetifydev/fleetify/releases/latest/download/SHA256SUMS",
+      "https://github.com/fleetifydev/fleetify/releases/download/v0.2.0/Fleetify.dmg",
+      "curl -fsSL https://raw.githubusercontent.com/fleetifydev/fleetify/main/scripts/install.sh | sh",
+    ];
+    const allowed = [
+      "Downloads, install one-liners and update support arrive with the first public release (v0.2.0).",
+      "the updater and the install scripts, once they ship",
+      "https://fleetify.dev and https://fleetify.dev/docs",
+      "https://github.com/fleetifydev/fleetify/releases",
+      "https://raw.githubusercontent.com/fleetifydev/fleetify/main/README.md",
+      "https://notfleetify.dev/download",
+      // Another project's release assets, such as a tool the install guide points to, stay linkable.
+      "https://github.com/jedisct1/minisign/releases/download/0.12/minisign-0.12-linux.tar.gz",
+      "https://github.com/jedisct1/minisign/releases/latest/download/minisign-win64.zip",
+    ];
+    assert.deepEqual(
+      refused.map((text) => preReleaseLinksIn(text).length > 0),
+      refused.map(() => true),
+    );
+    assert.deepEqual(allowed.flatMap(preReleaseLinksIn), []);
   });
 
   test("finds email addresses, but not handles, scoped packages, versions or @2x images", () => {
