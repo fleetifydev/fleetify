@@ -217,11 +217,12 @@ fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// What the renderer's `config_set` saves: `new` replaces the whole file,
-/// except `telemetry`, which keeps what the file holds, and stays absent
-/// when the file has none. The privacy switches save that section through
-/// their own commands, and the renderer's copy of it may be stale: written
-/// back, it could turn a saved opt-out back on, or record a choice the user
-/// never made.
+/// except `telemetry` and the legacy top-level `telemetryEnabled`, which
+/// keep what the file holds, and stay absent when the file has none. The
+/// privacy switches save that section through their own commands, and the
+/// renderer's copy of it may be stale: written back, it could turn a saved
+/// opt-out back on, or record a choice the user never made. The legacy key
+/// is the old switch's opt-out, which [`cloud_choice_from`] still reads.
 ///
 /// A `new` that isn't a JSON object gives `Err` of kind
 /// [`std::io::ErrorKind::InvalidInput`] and nothing is written: the next
@@ -234,15 +235,14 @@ pub fn replace_config_keeping_telemetry(dir: &Path, new: Value) -> std::io::Resu
         ));
     };
     update_config(dir, move |cfg| {
-        match cfg
-            .as_object_mut()
-            .and_then(|saved| saved.remove("telemetry"))
-        {
-            Some(telemetry) => {
-                new.insert("telemetry".into(), telemetry);
-            }
-            None => {
-                new.remove("telemetry");
+        for key in ["telemetry", "telemetryEnabled"] {
+            match cfg.as_object_mut().and_then(|saved| saved.remove(key)) {
+                Some(saved) => {
+                    new.insert(key.into(), saved);
+                }
+                None => {
+                    new.remove(key);
+                }
             }
         }
         *cfg = Value::Object(new);
@@ -513,8 +513,10 @@ fn cloud_choice_from(cfg: &Value) -> Option<bool> {
 
 /// Whether the Fleetify cloud sync setting is on: the saved choice
 /// ([`cloud_choice_from`]), or [`CLOUD_SYNC_DEFAULT`] when there is none.
-/// It doesn't open the gate: only a saved choice does.
-pub fn cloud_sync_from(cfg: &Value) -> bool {
+/// It doesn't open the gate: only a saved choice does. Private, as its
+/// `true` for a user who never chose is no choice; the rest of the app asks
+/// [`saved_cloud_choice`] or [`startup_cloud_decision`].
+fn cloud_sync_from(cfg: &Value) -> bool {
     cloud_choice_from(cfg).unwrap_or(CLOUD_SYNC_DEFAULT)
 }
 
@@ -1074,6 +1076,60 @@ mod tests {
         save_config_to(tmp.path(), &json!({"theme": "dark"})).unwrap();
         replace_config_keeping_telemetry(tmp.path(), payload).unwrap();
         assert_eq!(load_config_from(tmp.path()), json!({"theme": "light"}));
+    }
+
+    #[test]
+    fn the_renderers_save_keeps_the_legacy_opt_out() {
+        // A top-level `telemetryEnabled: false` still counts as a cloud sync
+        // opt-out (cloud_choice_from), so the renderer's copy may neither
+        // drop it nor change it, nor add one the file doesn't have.
+        let tmp = tempfile::tempdir().unwrap();
+        save_config_to(
+            tmp.path(),
+            &json!({"theme": "dark", "telemetryEnabled": false}),
+        )
+        .unwrap();
+
+        for payload in [
+            json!({"theme": "light"}),
+            json!({"theme": "light", "telemetryEnabled": true}),
+        ] {
+            replace_config_keeping_telemetry(tmp.path(), payload).unwrap();
+            assert_eq!(
+                load_config_from(tmp.path()),
+                json!({"theme": "light", "telemetryEnabled": false})
+            );
+            assert_eq!(saved_cloud_choice(tmp.path()), Some(false));
+        }
+
+        save_config_to(tmp.path(), &json!({"theme": "dark"})).unwrap();
+        replace_config_keeping_telemetry(
+            tmp.path(),
+            json!({"theme": "light", "telemetryEnabled": false}),
+        )
+        .unwrap();
+        assert_eq!(load_config_from(tmp.path()), json!({"theme": "light"}));
+    }
+
+    #[test]
+    fn the_setting_with_its_default_stays_private_to_this_module() {
+        // cloud_sync_from answers `true` for a user who never chose: a caller
+        // elsewhere could take that for a saved choice. The rest of the app
+        // asks saved_cloud_choice or startup_cloud_decision. Whitespace
+        // removed; the needles are built at run time, so this test never
+        // matches itself.
+        let source: String = include_str!("config.rs").split_whitespace().collect();
+        let name = ["cloud", "sync", "from"].join("_");
+        assert!(
+            source.contains(&format!("fn{name}(cfg:&Value)->bool{{")),
+            "config.rs defines {name}"
+        );
+        for visibility in ["pub", "pub(crate)", "pub(super)", "pub(self)"] {
+            assert!(
+                !source.contains(&format!("{visibility}fn{name}(")),
+                "{name} must stay private to config.rs"
+            );
+        }
     }
 
     #[test]

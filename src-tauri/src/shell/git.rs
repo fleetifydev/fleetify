@@ -1317,6 +1317,23 @@ fn trace_line(label: &str, ok: bool, detail: &str) -> String {
     }
 }
 
+/// The reply when `create_pr_via_gh` stops: `code`, and an error with the
+/// handler version, what failed (`label`), its message and the trace so far.
+/// The message is git or gh output, so it goes without the credentials a
+/// URL in it can hold ([`redact_url_credentials`]), as the trace lines do
+/// ([`trace_line`]).
+fn pr_failure(version: &str, code: &str, label: &str, msg: &str, trace: &[String]) -> Value {
+    json!({
+        "ok": false,
+        "code": code,
+        "error": format!(
+            "[{version}] {label}: {}\n\nTrace:\n{}",
+            redact_url_credentials(msg),
+            trace.join("\n")
+        ),
+    })
+}
+
 /// Full faithful port of `createPRViaGh` from main.cjs. Validates and
 /// initialises the repo, carves the feature branch, auto-commits any
 /// pending changes with an AI-generated message, ensures an `origin`
@@ -1358,14 +1375,7 @@ pub async fn create_pr_via_gh(
         trace.push(line);
     };
     let step_fail = |label: &str, msg: &str, trace: &[String]| -> Value {
-        json!({
-            "ok": false,
-            "code": "GH_STEP_FAILED",
-            "error": format!(
-                "[{HANDLER_VERSION}] {label}: {msg}\n\nTrace:\n{}",
-                trace.join("\n")
-            ),
-        })
+        pr_failure(HANDLER_VERSION, "GH_STEP_FAILED", label, msg, trace)
     };
 
     note("folder", true, &folder.display().to_string());
@@ -2029,15 +2039,17 @@ pub async fn create_pr_via_gh(
                 "error": "No changes to open a pull request — this branch has no commits ahead of the base. Make some edits in the session (or commit pending changes), then try again."
             });
         }
-        return json!({
-            "ok": false,
-            "code": "GH_FAILED",
-            "error": format!(
-                "[{HANDLER_VERSION}] gh pr create: {}\n\nTrace:\n{}",
-                if err.trim().is_empty() { "gh pr create failed" } else { err.trim() },
-                trace.join("\n")
-            ),
-        });
+        return pr_failure(
+            HANDLER_VERSION,
+            "GH_FAILED",
+            "gh pr create",
+            if err.trim().is_empty() {
+                "gh pr create failed"
+            } else {
+                err.trim()
+            },
+            &trace,
+        );
     }
     let url = out
         .lines()
@@ -3310,6 +3322,41 @@ mod tests {
         let detail = format!("{} https://user:token@github.com/o/r.git", "x".repeat(185));
         let line = trace_line("push HEAD", false, &detail);
         assert!(!line.contains("user"), "{line}");
+    }
+
+    #[test]
+    fn a_failed_pr_message_carries_no_credentials() {
+        // The message of a failed step, or of `gh pr create`, is git or gh
+        // output, which can quote a remote URL.
+        let trace = vec![trace_line(
+            "probe origin",
+            true,
+            "https://u:t@github.com/o/r.git",
+        )];
+        for (code, label) in [
+            ("GH_STEP_FAILED", "git push"),
+            ("GH_FAILED", "gh pr create"),
+        ] {
+            let reply = pr_failure(
+                "v1",
+                code,
+                label,
+                "fatal: unable to access 'https://u:t@github.com/o/r.git/': denied",
+                &trace,
+            );
+            assert_eq!(
+                reply,
+                json!({
+                    "ok": false,
+                    "code": code,
+                    "error": format!(
+                        "[v1] {label}: fatal: unable to access \
+                         'https://github.com/o/r.git/': denied\n\n\
+                         Trace:\nok · probe origin · https://github.com/o/r.git"
+                    ),
+                })
+            );
+        }
     }
 
     #[tokio::test]

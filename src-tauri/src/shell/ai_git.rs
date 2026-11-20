@@ -560,6 +560,13 @@ async fn remotes_for_prompt(folder: &Path) -> Option<String> {
     ok.then(|| git::redact_url_credentials(&out))
 }
 
+/// The error `diagnose_failure` asks about, as its prompt carries it: without
+/// the credentials a URL quoted in it can hold, as the prompt goes to the
+/// user's AI provider.
+fn error_for_prompt(message: &str) -> String {
+    git::redact_url_credentials(message)
+}
+
 pub async fn diagnose_failure(
     folder: String,
     error_message: String,
@@ -591,6 +598,7 @@ pub async fn diagnose_failure(
     )
     .await;
     let remotes = remotes_for_prompt(&path).await;
+    let raw_error = error_for_prompt(&error_message);
 
     let prompt = format!(
         "You are diagnosing a Git / GitHub failure inside a Fleetify session. Read the error message and the repository state below, then emit STRICT JSON with these keys:\n\n\
@@ -609,7 +617,7 @@ Rules:\n\
 - Be honest about risk. Conservative is better. The user sees the EXACT command before approving — no surprises.\n\n\
 Output ONLY the JSON object, no prose around it, no code fence.\n\n\
 # Context\n{}\n\n\
-# Raw error\n{error_message}\n\n\
+# Raw error\n{raw_error}\n\n\
 # Repo state\n\
 current branch: {}\n\n\
 ## git status -sb\n{}\n\n\
@@ -888,6 +896,20 @@ mod tests {
                 "origin\thttps://github.com/o/r.git (fetch)\n\
                  origin\thttps://github.com/o/r.git (push)\n"
             )
+        );
+    }
+
+    /// The failure diagnosis sends the error it is asked about to the user's
+    /// AI provider too, and git or gh output can quote a remote URL.
+    #[test]
+    fn the_diagnosis_prompt_carries_the_error_without_credentials() {
+        assert_eq!(
+            error_for_prompt(
+                "fatal: unable to access 'https://u:t@github.com/o/r.git/': denied\n\
+                 remote: https://token@github.com/o/r/pull/new/x"
+            ),
+            "fatal: unable to access 'https://github.com/o/r.git/': denied\n\
+             remote: https://github.com/o/r/pull/new/x"
         );
     }
 
