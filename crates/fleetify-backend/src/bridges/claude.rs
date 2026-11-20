@@ -4,6 +4,7 @@
 //! `calculate_cost` fallback are Phase 4/3 (explicit, not silent).
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{json, Map, Value};
@@ -455,6 +456,45 @@ fn stderr_log_preview(t: &str) -> String {
     }
 }
 
+/// The `--mcp-config` file of one turn. It holds the internal secret and
+/// saved auth headers, so on Unix only this user can read it (0600, from
+/// before its first byte); on Windows the per-user temp directory is
+/// private already. Dropping it removes the file: the turn's reader task
+/// drops it once the CLI has exited, and a turn that fails before that
+/// drops it on the way out.
+struct McpConfigFile(PathBuf);
+
+impl McpConfigFile {
+    /// Writes `config` to a new `fleetify-mcp-<uuid>.json` in `dir`.
+    fn create_in(dir: &Path, config: &Value) -> std::io::Result<Self> {
+        let path = dir.join(format!("fleetify-mcp-{}.json", uuid::Uuid::new_v4()));
+        let mut options = std::fs::OpenOptions::new();
+        // A new file only: never one that exists, nor one a link points at.
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(&path)?;
+        // Ours from here, so a failed write removes it too.
+        let created = Self(path);
+        std::io::Write::write_all(&mut file, config.to_string().as_bytes())?;
+        Ok(created)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for McpConfigFile {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_file(&self.0) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(target: "claude-code", "removing the turn's MCP config failed: {e}");
+            }
+        }
+    }
+}
+
 /// Drives the `claude` subprocess. `--mcp-config` injection is Phase 4.
 pub struct ClaudeBridge {
     pub session_id: String,
@@ -792,12 +832,9 @@ impl ClaudeBridge {
         message: &str,
         ctx: super::BridgeContext,
     ) -> anyhow::Result<tokio::sync::mpsc::Receiver<BridgeEvent>> {
-        // Materialize the user's MCP registry to a temp file (when
-        // non-empty) so claude spawns those servers alongside its
-        // built-in tools. Leaks the temp file until the process exits
-        // — claude CLI needs to read it after we return from spawn.
-        // OS cleans up temp files at process exit; the leak is bounded
-        // by per-turn invocations.
+        // The MCP servers (the built-ins and the user's registry) go to
+        // claude in a per-turn temp file (McpConfigFile): readable by this
+        // user alone, and removed once the turn's CLI process has exited.
         // Where this turn actually runs. `Unsupported` fails the turn with
         // the reason rather than falling through to a local spawn — an
         // `ssh://` path is also a valid POSIX path, so falling through is
@@ -827,24 +864,23 @@ impl ClaudeBridge {
         // host `.exe` paths and the HTTP loopbacks point at 127.0.0.1,
         // which inside a container is the container. Writing a temp file
         // the CLI could never read is pure waste.
-        let mcp_cfg_path: Option<String> = if in_container {
+        let mcp_config: Option<McpConfigFile> = if in_container {
             None
         } else {
             match self.build_mcp_config() {
-                Some(value) => {
-                    let mut tmp = std::env::temp_dir();
-                    tmp.push(format!("fleetify-mcp-{}.json", uuid::Uuid::new_v4()));
-                    match std::fs::write(&tmp, value.to_string()) {
-                        Ok(_) => Some(tmp.to_string_lossy().into_owned()),
-                        Err(e) => {
-                            tracing::warn!(target: "claude-code", "mcp_config write failed: {e}; running without MCPs");
-                            None
-                        }
+                Some(value) => match McpConfigFile::create_in(&std::env::temp_dir(), &value) {
+                    Ok(file) => Some(file),
+                    Err(e) => {
+                        tracing::warn!(target: "claude-code", "mcp_config write failed: {e}; running without MCPs");
+                        None
                     }
-                }
+                },
                 None => None,
             }
         };
+        let mcp_cfg_path = mcp_config
+            .as_ref()
+            .map(|file| file.path().to_string_lossy().into_owned());
         let mut cmd = self.build_command(message, mcp_cfg_path.as_deref());
         // Self-heal an orphaned `--resume` target. If the stored Claude
         // conversation no longer exists on disk (cwd changed, `~/.claude`
@@ -1106,6 +1142,8 @@ impl ClaudeBridge {
                     None
                 }
             };
+            // The CLI has exited: its MCP config goes now.
+            drop(mcp_config);
             if code.unwrap_or(0) != 0 {
                 if let Some(mut e) = stderr {
                     let mut buf = String::new();
@@ -1166,6 +1204,125 @@ impl ClaudeBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_turns_mcp_config_is_created_readable_by_this_user_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let config = json!({"mcpServers": {"x": {"headers": {"Authorization": "Bearer s"}}}});
+        let file = McpConfigFile::create_in(dir.path(), &config).unwrap();
+        let mode = std::fs::metadata(file.path()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "mode {mode:o}");
+        assert_eq!(
+            std::fs::read_to_string(file.path()).unwrap(),
+            config.to_string()
+        );
+    }
+
+    #[test]
+    fn a_turns_mcp_config_is_removed_when_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = McpConfigFile::create_in(dir.path(), &json!({"mcpServers": {}})).unwrap();
+        let path = file.path().to_path_buf();
+        assert!(path.is_file());
+        drop(file);
+        assert!(!path.exists(), "the MCP config outlived its turn");
+    }
+
+    /// Puts environment variables back as they were, also when the test
+    /// fails. Use it under `home_lock`.
+    #[cfg(unix)]
+    struct RestoreEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    #[cfg(unix)]
+    impl RestoreEnv {
+        fn saving(names: &[&'static str]) -> Self {
+            Self(
+                names
+                    .iter()
+                    .map(|name| (*name, std::env::var_os(name)))
+                    .collect(),
+            )
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            for (name, value) in &self.0 {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+
+    /// A whole turn against a stand-in `claude` on PATH, which records the
+    /// mode and path of the `--mcp-config` file it was given.
+    #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn the_cli_gets_a_private_mcp_config_that_is_gone_once_the_turn_ends() {
+        use std::os::unix::fs::PermissionsExt;
+        let _env = crate::test_support::home_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _logs = crate::test_support::LogCapture::start();
+        let tmp = tempfile::tempdir().unwrap();
+        let (bin, home) = (tmp.path().join("bin"), tmp.path().join("home"));
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        let seen = tmp.path().join("seen");
+        let script = format!(
+            "#!/bin/sh\n\
+             for arg in \"$@\"; do\n\
+             case \"$arg\" in --mcp-config=*) config=\"${{arg#--mcp-config=}}\" ;; esac\n\
+             done\n\
+             if [ -n \"$config\" ]; then\n\
+             ls -l \"$config\" | cut -c1-10 > '{seen}'\n\
+             printf '%s\\n' \"$config\" >> '{seen}'\n\
+             fi\n\
+             printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ok\"}}'\n",
+            seen = seen.display()
+        );
+        let claude = bin.join("claude");
+        std::fs::write(&claude, script).unwrap();
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let restore = RestoreEnv::saving(&["PATH", "HOME", "USERPROFILE", "FLEETIFY_HOME"]);
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let mut dirs = vec![bin.clone()];
+        dirs.extend(std::env::split_paths(&path));
+        std::env::set_var("PATH", std::env::join_paths(dirs).unwrap());
+        for name in ["HOME", "USERPROFILE", "FLEETIFY_HOME"] {
+            std::env::set_var(name, &home);
+        }
+        let bridge = ClaudeBridge::new("mcp-config-turn", tmp.path().to_string_lossy());
+        let mut events = bridge
+            .send_message("hi", super::super::BridgeContext::default())
+            .await
+            .expect("the turn starts");
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while events.recv().await.is_some() {}
+        })
+        .await
+        .expect("the turn ends");
+        drop(restore);
+
+        let seen = std::fs::read_to_string(&seen).expect("the CLI got an --mcp-config");
+        let mut lines = seen.lines();
+        assert_eq!(lines.next(), Some("-rw-------"), "{seen}");
+        let config = PathBuf::from(lines.next().expect("the config's path"));
+        assert!(
+            config
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("fleetify-mcp-")),
+            "{config:?}"
+        );
+        assert!(!config.exists(), "{config:?} outlived the turn");
+    }
 
     /// Regression: stderr can quote Turkish text (the prompt, a path, an
     /// upstream error). A byte-2048 cut inside a letter panicked the task
