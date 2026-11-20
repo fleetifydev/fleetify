@@ -45,19 +45,48 @@ const FORMS = {
   },
 };
 
-/** Each Dependabot ecosystem, and the update types its one group collects. */
+/**
+ * Each Dependabot ecosystem: its groups (the dependency type each is limited
+ * to, if any, and the update types it collects) and its commit-message
+ * prefixes. `chore:` and `ci:` bumps stay out of the changelog and trigger no
+ * release; `deps:` ones do.
+ */
 const ECOSYSTEMS = {
   // A 0.x minor bump can break a Rust build, so Cargo groups patches only.
-  cargo: ["patch"],
-  npm: ["minor", "patch"],
-  "github-actions": ["minor", "patch"],
+  cargo: {
+    groups: [{ updateTypes: ["patch"] }],
+    commitMessage: { prefix: "deps" },
+  },
+  // Dependabot titles a PR with `prefix` as soon as one production dependency
+  // is in it, so dev dependencies need a group of their own to get `chore:`.
+  npm: {
+    groups: [
+      { dependencyType: "production", updateTypes: ["minor", "patch"] },
+      { dependencyType: "development", updateTypes: ["minor", "patch"] },
+    ],
+    commitMessage: { prefix: "deps", "prefix-development": "chore" },
+  },
+  "github-actions": {
+    groups: [{ updateTypes: ["minor", "patch"] }],
+    commitMessage: { prefix: "ci" },
+  },
 };
+
+/** A group as a comparable string: its dependency type ("*" for all) and its update types. */
+const groupKey = ({ dependencyType, updateTypes }) =>
+  `${dependencyType ?? "*"}: ${[...updateTypes].sort().join(", ")}`;
 
 /**
  * Crates Dependabot must leave alone. The workspace patches tauri-runtime-wry
  * from vendor/, so a Tauri upgrade means reapplying the patches by hand.
  */
 const CARGO_IGNORED = ["tauri", "tauri-*", "wry", "tao"];
+
+/**
+ * npm packages that must stay on the Rust tauri crate's major.minor, because
+ * `tauri build` rejects a mismatch: Dependabot may bring them patches only.
+ */
+const NPM_TAURI = "@tauri-apps/*";
 
 /** The field types GitHub's form schema allows. */
 const FIELD_TYPES = ["markdown", "textarea", "input", "dropdown", "checkboxes", "upload"];
@@ -210,24 +239,28 @@ describe("dependabot.yml", () => {
     return entry;
   }
 
-  for (const [ecosystem, updateTypes] of Object.entries(ECOSYSTEMS)) {
-    const grouped = updateTypes.join(" and ");
-    yamlTest(`updates ${ecosystem} weekly, at most 5 PRs, prefixed deps, ${grouped} grouped`, () => {
+  for (const [ecosystem, { groups: expectedGroups, commitMessage }] of Object.entries(ECOSYSTEMS)) {
+    const { prefix, "prefix-development": devPrefix } = commitMessage;
+    const prefixed = devPrefix ? `${prefix} (${devPrefix} for dev dependencies)` : prefix;
+    const grouped = [...new Set(expectedGroups.map((g) => g.updateTypes.join(" and ")))].join("; ");
+    const types = expectedGroups.map((g) => g.dependencyType).filter(Boolean);
+    const per = types.length > 0 ? ` per ${types.join(" and ")} dependencies` : "";
+    yamlTest(`updates ${ecosystem} weekly, at most 5 PRs, prefixed ${prefixed}, ${grouped} grouped${per}`, () => {
       const entry = entryFor(ecosystem);
       assert.equal(entry.schedule?.interval, "weekly");
       assert.equal(entry["open-pull-requests-limit"], 5);
-      assert.equal(entry["commit-message"]?.prefix, "deps");
+      assert.deepEqual(entry["commit-message"], commitMessage, `${ecosystem} has the wrong commit-message prefixes`);
 
-      const groups = Object.values(entry.groups ?? {});
-      assert.equal(groups.length, 1, `${ecosystem} needs exactly one group`);
-      const [group] = groups;
+      const groups = Object.entries(entry.groups ?? {}).map(([name, group]) => {
+        // Without patterns a group covers every dependency (of its type); with them, "*" must be one.
+        assert.ok((group.patterns ?? ["*"]).includes("*"), `${ecosystem} group ${name} must cover every dependency`);
+        return { dependencyType: group["dependency-type"], updateTypes: group["update-types"] ?? [] };
+      });
       assert.deepEqual(
-        [...(group["update-types"] ?? [])].sort(),
-        [...updateTypes].sort(),
-        `the ${ecosystem} group must collect exactly the ${grouped} updates`,
+        groups.map(groupKey).sort(),
+        expectedGroups.map(groupKey).sort(),
+        `${ecosystem} has the wrong groups`,
       );
-      // Without patterns a group covers every dependency; with them, "*" must be one.
-      assert.ok((group.patterns ?? ["*"]).includes("*"), `the ${ecosystem} group must cover every dependency`);
     });
   }
 
@@ -240,6 +273,17 @@ describe("dependabot.yml", () => {
       assert.equal(rule.versions, undefined, `the ${name} rule must ignore every version`);
       assert.equal(rule["update-types"], undefined, `the ${name} rule must ignore every update type`);
     }
+  });
+
+  yamlTest(`keeps ${NPM_TAURI} on the Rust crate's minor: majors and minors ignored, patches let through`, () => {
+    const rule = (entryFor("npm").ignore ?? []).find((r) => r["dependency-name"] === NPM_TAURI);
+    assert.ok(rule, `npm doesn't ignore ${NPM_TAURI}`);
+    assert.equal(rule.versions, undefined, `the ${NPM_TAURI} rule must not be narrowed to some versions`);
+    assert.deepEqual(
+      [...(rule["update-types"] ?? [])].sort(),
+      ["version-update:semver-major", "version-update:semver-minor"],
+      `the ${NPM_TAURI} rule must ignore exactly the major and minor updates`,
+    );
   });
 });
 

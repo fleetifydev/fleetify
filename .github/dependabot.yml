@@ -1,7 +1,8 @@
 # Dependabot version updates, checked weekly.
 #
-# npm and GitHub Actions: minor and patch updates arrive together in one grouped
-# pull request per ecosystem, and a major update gets a pull request of its own.
+# npm and GitHub Actions group minor and patch updates, and a major update gets
+# a pull request of its own. npm has two groups, runtime and dev dependencies,
+# so that each grouped pull request takes the right commit prefix (see below).
 # Cargo groups patch updates only. A minor update to a 0.x crate can break the
 # build, so Cargo minor updates come one per pull request, like major ones.
 #
@@ -10,11 +11,17 @@
 # drops that patch once tauri asks for another version of the runtime, so a
 # Tauri upgrade means re-vendoring and reapplying the patches by hand. Cargo
 # therefore ignores tauri and every tauri-* crate (the plugins pull a newer
-# tauri in with them), plus wry and tao, which the vendored runtime pins.
+# tauri in with them), plus wry and tao, which the vendored runtime depends on.
+# On the npm side, @tauri-apps/* gets patch updates only, because `tauri build`
+# rejects JS packages on another major.minor than the Rust tauri crate.
 #
-# Commit messages, and so pull request titles, start with `deps:`, one of the
-# conventional types the PR title check in ci.yml accepts. Dependabot's commits
-# carry no sign-off, and the DCO check exempts bot authors.
+# Commit messages, and so pull request titles, use conventional types that the
+# PR title check in ci.yml accepts: `deps:` for Cargo crates and npm runtime
+# dependencies, `chore:` for npm dev dependencies, `ci:` for GitHub Actions.
+# Dependabot titles a pull request `deps:` as soon as one runtime dependency is
+# in it, hence npm's separate groups. `chore:` and `ci:` bumps stay out of the
+# changelog and trigger no release. Dependabot's commits carry no sign-off; the
+# DCO check exempts bots.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -43,10 +50,19 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: deps
+      prefix-development: chore
+    ignore:
+      # Must stay on the Rust tauri crate's major.minor; `tauri build` rejects a mismatch.
+      - dependency-name: "@tauri-apps/*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:
-      npm-minor-patch:
-        patterns:
-          - "*"
+      npm-production:
+        dependency-type: "production"
+        update-types:
+          - minor
+          - patch
+      npm-development:
+        dependency-type: "development"
         update-types:
           - minor
           - patch
@@ -57,7 +73,7 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     commit-message:
-      prefix: deps
+      prefix: ci
     groups:
       github-actions-minor-patch:
         patterns:
