@@ -27,8 +27,11 @@ import {
   logDirFor,
   logProblems,
   parseArgs,
+  parseProcStat,
   posthogSinkProblems,
+  releaseApp,
   smokeEnv,
+  stillListed,
   uiProblems,
   updateRequestPath,
 } from "./launch-smoke.mjs";
@@ -39,11 +42,30 @@ const SCRIPT = fileURLToPath(new URL("./launch-smoke.mjs", import.meta.url));
 const FAKE_APP = fileURLToPath(new URL("./fixtures/fake-app.mjs", import.meta.url));
 const ROOT_DIR = parse(process.cwd()).root;
 
-/** Every fake app's pid. A run that went wrong may leave one behind; the last hook kills it. */
-const FAKE_PIDS = new Set();
+/**
+ * Every fake app: its pid → its start time on Linux, else null. A run that
+ * went wrong may leave one behind; the last hook kills it, and only it: by
+ * then its pid may belong to another process, with another start time.
+ */
+const FAKE_APPS = new Map();
 after(() => {
-  for (const pid of FAKE_PIDS) if (alive(pid)) process.kill(pid, "SIGKILL");
+  for (const [pid, start] of FAKE_APPS) if (alive(pid) && (start === null || startOf(pid) === start)) process.kill(pid, "SIGKILL");
 });
+
+/** Linux: a process's start time, from /proc/<pid>/stat; null when it is gone. */
+function startOf(pid) {
+  try {
+    return parseProcStat(readFileSync(`/proc/${pid}/stat`, "utf8"))?.start ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** The fake app's pid file: its pid, and on Linux its start time, which it writes itself while it runs. */
+function readPidFile(path) {
+  const [pid, start] = readFileSync(path, "utf8").trim().split(" ");
+  return { pid: Number(pid), start: start ?? null };
+}
 
 const ROOT = mkdtempSync(join(tmpdir(), "launch-smoke-"));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
@@ -211,9 +233,9 @@ async function smokeFake({ mode = "ok", args = [], env = {}, logDir = fresh("log
     ],
     { env: { FAKE_MODE: mode, FAKE_LOG_DIR: logDir ?? undefined, FAKE_PID_FILE: pidFile, ...env } },
   );
-  const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8")) : null;
-  if (pid) FAKE_PIDS.add(pid);
-  return { ...result, home, logDir, port, pid };
+  const app = existsSync(pidFile) ? readPidFile(pidFile) : null;
+  if (app) FAKE_APPS.set(app.pid, app.start);
+  return { ...result, home, logDir, port, pid: app?.pid ?? null };
 }
 
 /** A check's row in the table: `PASS  healthz …`. */
@@ -1170,8 +1192,8 @@ describe("run against the fake app", { concurrency: 8, timeout: 120_000 }, () =>
       const child = spawn(process.execPath, [SCRIPT, ...args, "--log-dir", fresh("logs"), "--timeout-s", "60"], { env, stdio: "ignore" });
       const exited = new Promise((done) => child.on("close", (status) => done(status)));
       for (let i = 0; i < 300 && !(existsSync(pidFile) && readFileSync(pidFile, "utf8")); i += 1) await new Promise((done) => setTimeout(done, 20));
-      const pid = Number(readFileSync(pidFile, "utf8"));
-      FAKE_PIDS.add(pid);
+      const { pid, start } = readPidFile(pidFile);
+      FAKE_APPS.set(pid, start);
       assert.ok(alive(pid), "the app is running");
       child.kill("SIGTERM");
       assert.equal(await exited, 1);
@@ -1230,5 +1252,50 @@ describe("serve-release", () => {
     } finally {
       await new Promise((done) => holder.close(done));
     }
+  });
+});
+
+describe("stopping only the app's own processes", () => {
+  test("parseProcStat counts the fields from the last parenthesis, whatever the command name holds", () => {
+    const stat = "4321 (a) b) S 1 4321 4321 0 -1 4194560 120 0 0 0 3 1 0 0 20 0 1 0 987654 12345678 300 18446744073709551615";
+    assert.deepEqual(parseProcStat(stat), { comm: "a) b", state: "S", ppid: 1, pgrp: 4321, start: "987654" });
+    assert.equal(parseProcStat("not a stat line"), null);
+    assert.equal(parseProcStat("12 (x) S 1 12"), null, "a line too short for the start time");
+  });
+
+  test("on Linux, parseProcStat reads this process's own stat", { skip: process.platform !== "linux" && "/proc is Linux's" }, () => {
+    const own = parseProcStat(readFileSync(`/proc/${process.pid}/stat`, "utf8"));
+    assert.equal(own.ppid, process.ppid);
+    assert.match(own.start, /^[0-9]+$/);
+  });
+
+  test("a listed process whose start time changed, or that is gone or a zombie, isn't signalled", () => {
+    const listed = [
+      { pid: 10, start: "100" },
+      { pid: 11, start: "200" },
+      { pid: 12, start: "300" },
+      { pid: 13, start: "400" },
+    ];
+    const now = new Map([
+      [10, { state: "S", start: "100" }],
+      // Pid 11 now belongs to another process, which started later.
+      [11, { state: "S", start: "999" }],
+      [13, { state: "Z", start: "400" }],
+    ]);
+    assert.deepEqual(stillListed(listed, now), [10]);
+  });
+
+  test("after a stop that left the app's root process running, the smoke lets go of it and can exit", () => {
+    const stub = (exit) => {
+      const calls = [];
+      const stream = (name) => ({ destroy: () => calls.push(`${name} destroyed`) });
+      return { calls, app: { exit, child: { stdout: stream("stdout"), stderr: stream("stderr"), unref: () => calls.push("unref") } } };
+    };
+    const survivor = stub(null);
+    assert.equal(releaseApp(survivor.app), true);
+    assert.deepEqual(survivor.calls, ["stdout destroyed", "stderr destroyed", "unref"]);
+    const stopped = stub({ code: 0, signal: null });
+    assert.equal(releaseApp(stopped.app), false);
+    assert.deepEqual(stopped.calls, ["stdout destroyed", "stderr destroyed"]);
   });
 });

@@ -41,10 +41,10 @@
  *                        that folder and waits for it, as an AppImage's runtime
  *                        and AppRun do
  *   FAKE_IGNORE_SIGTERM  "1": the app ignores SIGTERM
- *   FAKE_PID_FILE        where the app writes its pid
+ *   FAKE_PID_FILE        where the app writes its pid, and on Linux its start time
  */
 import { spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -165,6 +165,17 @@ function runtime(dir) {
   });
 }
 
+/**
+ * What the pid file holds: the pid, and on Linux the start time from
+ * /proc/self/stat (field 22, counted from the last ")"), so the tests can
+ * tell this process from a later one that gets its pid.
+ */
+function pidLine() {
+  if (process.platform !== "linux") return String(process.pid);
+  const stat = readFileSync("/proc/self/stat", "utf8");
+  return `${process.pid} ${stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/)[19]}`;
+}
+
 function app() {
   const mode = process.env.FAKE_MODE || "ok";
   const port = Number(process.env.FLEETIFY_BACKEND_PORT);
@@ -174,7 +185,7 @@ function app() {
     process.exitCode = 2;
     return;
   }
-  if (process.env.FAKE_PID_FILE) writeFileSync(process.env.FAKE_PID_FILE, String(process.pid));
+  if (process.env.FAKE_PID_FILE) writeFileSync(process.env.FAKE_PID_FILE, pidLine());
   if (process.env.FAKE_IGNORE_SIGTERM === "1") process.on("SIGTERM", () => {});
 
   log("INFO", "logging", "fleetify session started", { version: VERSION, os: process.platform, arch: process.arch });

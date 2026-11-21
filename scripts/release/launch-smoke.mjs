@@ -52,7 +52,11 @@
  *   stop          the app's processes, and only those, are stopped: on Unix its
  *                 process group (it starts in a group of its own), and on Linux
  *                 also any descendant that left the group, with SIGTERM, then
- *                 SIGKILL after 5 s; on Windows `taskkill /T /F /PID`
+ *                 SIGKILL after 5 s; on Windows `taskkill /T /F /PID`. A
+ *                 descendant is signalled only while it has the start time it
+ *                 was listed with, so a pid reused meanwhile is left alone.
+ *                 If the app's root process survives the stop, the smoke lets
+ *                 go of it, so it still exits with its own code.
  *
  * The log folder is --log-dir, or the folder the app writes to (logDirFor).
  * The table of checks goes to stdout; when a check fails, so do the last lines
@@ -873,7 +877,28 @@ async function waitUntil(condition, ms) {
   }
 }
 
-/** Linux: every process, from /proc: pid → { state, ppid, pgrp }. */
+/**
+ * The fields of a /proc/<pid>/stat line that the stop reads: comm (field 2),
+ * state (3), ppid (4), pgrp (5) and starttime (22), when the process started,
+ * in clock ticks after boot. comm sits in parentheses and may hold spaces
+ * and parentheses itself, so the other fields are counted from the last ")".
+ * null for a line that isn't a stat line.
+ *
+ * @param {string} text
+ * @returns {{ comm: string, state: string, ppid: number, pgrp: number, start: string } | null}
+ */
+export function parseProcStat(text) {
+  if (typeof text !== "string") return null;
+  const open = text.indexOf("(");
+  const close = text.lastIndexOf(")");
+  if (open === -1 || close < open) return null;
+  // fields[0] is field 3, state, so starttime, field 22, is fields[19].
+  const fields = text.slice(close + 1).trim().split(/\s+/);
+  if (fields.length < 20) return null;
+  return { comm: text.slice(open + 1, close), state: fields[0], ppid: Number(fields[1]), pgrp: Number(fields[2]), start: fields[19] };
+}
+
+/** Linux: every process, from /proc: pid → { comm, state, ppid, pgrp, start }. */
 function linuxProcesses() {
   const table = new Map();
   let names;
@@ -890,9 +915,8 @@ function linuxProcesses() {
     } catch {
       continue; // It has exited.
     }
-    // The command name, in parentheses, may hold spaces and parentheses.
-    const [state, ppid, pgrp] = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-    table.set(Number(name), { state, ppid: Number(ppid), pgrp: Number(pgrp) });
+    const entry = parseProcStat(stat);
+    if (entry !== null) table.set(Number(name), entry);
   }
   return table;
 }
@@ -902,8 +926,7 @@ function linuxProcesses() {
  * and every descendant of `pid`, which may have left the group. Zombies count
  * as gone.
  */
-function linuxTree(pid) {
-  const table = linuxProcesses();
+function linuxTree(pid, table = linuxProcesses()) {
   const children = new Map();
   for (const [child, { ppid }] of table) children.set(ppid, [...(children.get(ppid) ?? []), child]);
   const tree = new Set([...table].filter(([, p]) => p.pgrp === pid).map(([member]) => member));
@@ -917,6 +940,42 @@ function linuxTree(pid) {
     queue.push(...(children.get(next) ?? []));
   }
   return [...tree].filter((member) => table.get(member)?.state !== "Z").sort((a, b) => a - b);
+}
+
+/**
+ * Of the processes listed before a stop, the ones to signal now: each still
+ * has the start time it was listed with, and isn't a zombie. A listed
+ * process that exited meanwhile may have left its pid to another process,
+ * which has another start time and is left alone.
+ *
+ * @param {{ pid: number, start: string }[]} listed
+ * @param {Map<number, { state: string, start: string }>} table  linuxProcesses(), read now
+ * @returns {number[]}
+ */
+export function stillListed(listed, table) {
+  return listed
+    .filter(({ pid, start }) => {
+      const now = table.get(pid);
+      return now !== undefined && now.start === start && now.state !== "Z";
+    })
+    .map(({ pid }) => pid);
+}
+
+/**
+ * Let go of the app once the stop is done: close its output pipes, which a
+ * process that left the tree may still hold, and when its root process is
+ * still running, as after a stop that failed, unref the child, which would
+ * otherwise keep the smoke from exiting. Whether it unref'd the child.
+ *
+ * @param {{ exit: object | null, child: import("node:child_process").ChildProcess }} app
+ * @returns {boolean}
+ */
+export function releaseApp(app) {
+  app.child.stdout.destroy();
+  app.child.stderr.destroy();
+  if (app.exit !== null) return false;
+  app.child.unref();
+  return true;
 }
 
 /** Unix: whether process group `pgid` has a process left. */
@@ -1006,20 +1065,22 @@ async function stopApp(app) {
     return check(name, "FAIL", `taskkill /T /F /PID ${app.pid} didn't stop it: ${clip(`${kill.stdout ?? ""}${kill.stderr ?? ""}`)}`);
   }
   // A descendant that left the group would be missed once its parent is gone,
-  // so list them first.
-  const tree = process.platform === "linux" ? linuxTree(app.pid) : [];
+  // so list them first, each with its start time.
+  const listing = process.platform === "linux" ? linuxProcesses() : new Map();
+  const tree = process.platform === "linux" ? linuxTree(app.pid, listing).map((pid) => ({ pid, start: listing.get(pid).start })) : [];
   const alive = () => {
     if (app.exit === null) return true;
     if (process.platform !== "linux") return groupAlive(app.pid);
-    const live = new Set(linuxTree(app.pid));
-    const table = linuxProcesses();
-    return live.size > 0 || tree.some((pid) => table.has(pid) && table.get(pid).state !== "Z");
+    const now = linuxProcesses();
+    return linuxTree(app.pid, now).length > 0 || stillListed(tree, now).length > 0;
   };
   if (!alive()) return check(name, "PASS", `the app had already exited (${describeExit(app.exit)})`);
   const count = tree.length > 0 ? `, ${tree.length} process${tree.length === 1 ? "" : "es"}` : "";
   const send = (sig) => {
     signal(-app.pid, sig);
-    for (const pid of tree) signal(pid, sig);
+    // Only the processes listed, as they were: a pid freed and reused since
+    // the listing belongs to another process now.
+    for (const pid of stillListed(tree, linuxProcesses())) signal(pid, sig);
   };
   send("SIGTERM");
   if (await waitUntil(() => !alive(), STOP_GRACE_MS)) {
@@ -1349,9 +1410,7 @@ async function runSmoke(options, write) {
   } finally {
     checks.push(await stopApp(app));
     running = null;
-    // A process that left the tree may still hold the pipes.
-    app.child.stdout.destroy();
-    app.child.stderr.destroy();
+    releaseApp(app);
     if (updates !== null) await closeServer(updates);
   }
 
