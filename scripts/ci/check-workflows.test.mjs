@@ -2980,7 +2980,9 @@ describe("release.yml", () => {
     const flow = workflow(RELEASE);
     assert.deepEqual(triggersOf(flow), { push: { branches: ["main"] } });
     // A run waits for the one before it to end, so release-please never runs
-    // while a draft is pending, and a release that started is never cut short.
+    // while a release run is still going, and a release that started is never
+    // cut short. A draft that a failed or cancelled run left behind is for the
+    // draft check to find.
     assert.deepEqual(flow.concurrency, { group: "release", "cancel-in-progress": false });
     assert.deepEqual(Object.keys(flow.jobs ?? {}).sort(), ["assemble", "build", "publish", "release-please", "smoke"]);
     // bash -eo pipefail: a pipe whose first command fails, fails.

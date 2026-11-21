@@ -1,8 +1,11 @@
 # Publishes Fleetify's releases, from release-please. It runs on every push to
 # main, one run at a time: a run waits for the one before it to end, and none
-# is cut short, so release-please never runs while a draft is pending. A newer
-# push can take the place of a run still waiting; that run's work isn't lost,
-# as release-please finds every release pull request that has merged.
+# is cut short, so release-please never runs while a release run is still
+# going. A draft that a failed or cancelled run left behind is another matter:
+# release-please's job looks for one, and holds the release pull request back
+# until the draft is published or deleted. A newer push can take the place of
+# a run still waiting; that run's work isn't lost, as release-please finds
+# every release pull request that has merged.
 #
 # - release-please runs twice, with the Release Bot's token. First it makes
 #   the release of a release pull request that has merged, if there is one: a
