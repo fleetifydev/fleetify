@@ -68,11 +68,28 @@ jobs:
         with:
           name: release
           path: release
-      # A virtual display and a session bus for each launch.
+      # A virtual display and a session bus for each launch, and what a
+      # desktop provides: an AppImage leaves the graphics stack and a few
+      # base libraries to the system, and this image is a server's. Mesa's
+      # EGL and GL render in software under Xvfb.
       - name: Packages the smoke needs
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb dbus
+          sudo apt-get install -y xvfb dbus \
+            libegl1 libgl1 libegl-mesa0 libgl1-mesa-dri libgbm1 libdrm2 libx11-6 libx11-xcb1 libxcb1 \
+            libasound2t64 libcom-err2 libexpat1 libfontconfig1 libfreetype6 libfribidi0 libharfbuzz0b \
+            libgmp10 libgpg-error0 zlib1g libstdc++6 libgcc-s1
+      # A library the AppImage leaves to the system and the system lacks
+      # would stop the app at start with exit 127; this lists every one.
+      - name: Check the libraries the AppImage leaves to the system
+        run: |
+          appimages=(release/*.AppImage)
+          if [ "${#appimages[@]}" -ne 1 ] || [ ! -f "${appimages[0]}" ]; then
+            echo "::error::expected one AppImage in release/, found: ${appimages[*]}"
+            exit 1
+          fi
+          chmod +x "${appimages[0]}"
+          node tools/scripts/release/appimage-host-libs.mjs --appimage "${appimages[0]}"
       # Extracted rather than mounted, which takes no FUSE.
       - name: AppImage
         run: |

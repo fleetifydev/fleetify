@@ -1584,6 +1584,36 @@ describe("release-dry-run.yml", () => {
 
 const SMOKE = `${WORKFLOWS}/smoke.yml`;
 
+/**
+ * What a desktop provides and an AppImage leaves to the system, by Ubuntu
+ * 24.04's names: the graphics stack (with Mesa's EGL and GL, which render
+ * under Xvfb) and a few base libraries. The smoke's runner is a server
+ * image, which lacks some of them.
+ */
+const DESKTOP_PACKAGES = [
+  "libegl1",
+  "libgl1",
+  "libegl-mesa0",
+  "libgl1-mesa-dri",
+  "libgbm1",
+  "libdrm2",
+  "libx11-6",
+  "libx11-xcb1",
+  "libxcb1",
+  "libasound2t64",
+  "libcom-err2",
+  "libexpat1",
+  "libfontconfig1",
+  "libfreetype6",
+  "libfribidi0",
+  "libharfbuzz0b",
+  "libgmp10",
+  "libgpg-error0",
+  "zlib1g",
+  "libstdc++6",
+  "libgcc-s1",
+];
+
 /** What `dpkg -L fleetify` lists for an installed .deb, in part. */
 const DPKG_LIST = [
   "/.",
@@ -1724,6 +1754,24 @@ describe("smoke.yml", () => {
       const stray = steps.flatMap((step) => scriptOf(step).split("\n")).filter((line) => /(?<!tools\/)\bscripts\//.test(line));
       assert.deepEqual(stray, [], `job ${id} runs scripts from outside tools/`);
     }
+  });
+
+  yamlTest("the Linux job installs what a desktop provides, then checks the AppImage's libraries, before the AppImage starts", () => {
+    const steps = jobOf(SMOKE, "linux").steps ?? [];
+    const install = steps.findIndex((step) => aptPackages(scriptOf(step)).includes("xvfb"));
+    assert.ok(install !== -1, "the Linux job doesn't install its packages");
+    assert.deepEqual(aptPackages(scriptOf(steps[install])), ["dbus", "xvfb", ...DESKTOP_PACKAGES].sort());
+    const check = steps.findIndex((step) => scriptOf(step).includes("appimage-host-libs.mjs"));
+    assert.ok(check !== -1, "the Linux job doesn't check the AppImage's libraries");
+    assert.ok(scriptOf(steps[check]).split("\n").map((line) => line.trim()).includes('node tools/scripts/release/appimage-host-libs.mjs --appimage "${appimages[0]}"'));
+    assert.equal(steps[check].if, undefined, "the check must run in every smoke");
+    const launch = steps.findIndex((step) => scriptOf(step).includes("--appimage-extract-and-run"));
+    assert.ok(install < check && check < launch, "the packages, the check and the AppImage's launch must come in that order");
+  });
+
+  scriptTest("the library check is given the release's AppImage", () => {
+    const step = (jobOf(SMOKE, "linux").steps ?? []).find((candidate) => scriptOf(candidate).includes("appimage-host-libs.mjs"));
+    assert.deepEqual(runSmokeStep(step.run, {}), [{ args: ["tools/scripts/release/appimage-host-libs.mjs", "--appimage", "release/Fleetify_1.2.3_amd64.AppImage"], wrappers: "" }]);
   });
 
   scriptTest("each launch passes the CSP origin as given, empty or not, and expects the PostHog sink only when the key is set", () => {
