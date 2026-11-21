@@ -8,9 +8,11 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import {
+  INSTALL_SCRIPTS,
   REPO,
   TARGETS,
   UPDATER_KEY_ID,
@@ -139,9 +141,9 @@ describe("bundleFiles", () => {
 });
 
 describe("expectedAssets", () => {
-  test("the 18 assets of a release, sorted", () => {
+  test("the 20 assets of a release, sorted", () => {
     const assets = expectedAssets(V);
-    assert.equal(assets.length, 18);
+    assert.equal(assets.length, 20);
     assert.deepEqual(assets, [
       "Fleetify-0.2.0-1.x86_64.rpm",
       "Fleetify-0.2.0-1.x86_64.rpm.sig",
@@ -160,13 +162,26 @@ describe("expectedAssets", () => {
       "LINUX-APPIMAGE-LIBRARIES.txt",
       "SHA256SUMS",
       "THIRD-PARTY-NOTICES",
+      "install.ps1",
+      "install.sh",
       "latest.json",
     ]);
   });
 
   test("each call returns a new list", () => {
     expectedAssets(V).push("stray");
-    assert.equal(expectedAssets(V).length, 18);
+    assert.equal(expectedAssets(V).length, 20);
+  });
+
+  test("INSTALL_SCRIPTS: install.sh and install.ps1, files of scripts/release, are release assets", () => {
+    // assemble.mjs adds them to a release from scripts/release (--extra), under their own names.
+    assert.deepEqual(INSTALL_SCRIPTS, ["install.sh", "install.ps1"]);
+    assert.ok(Object.isFrozen(INSTALL_SCRIPTS));
+    const assets = new Set(expectedAssets(V));
+    for (const name of INSTALL_SCRIPTS) {
+      assert.ok(assets.has(name), name);
+      assert.ok(existsSync(fileURLToPath(new URL(`./${name}`, import.meta.url))), `scripts/release/${name} is missing`);
+    }
   });
 
   test("every bundle file of every target is a release asset", () => {

@@ -145,10 +145,13 @@ jobs:
           name: third-party-notices
           path: artifacts/third-party-notices
       # Each dry-run build signs with a key made for it, whose public half
-      # its artifact carries.
+      # its artifact carries. No build makes the install scripts, so each
+      # assemble takes them from the checkout.
       - name: Assemble (each build's own key, dry run)
         if: needs.meta.outputs.environment == 'dry-run'
-        run: node scripts/release/assemble.mjs --in artifacts --out release --version "$VERSION" --per-target-pubkeys
+        run: >-
+          node scripts/release/assemble.mjs --in artifacts --out release --version "$VERSION" --per-target-pubkeys
+          --extra scripts/release/install.sh --extra scripts/release/install.ps1
       # A release candidate's signatures must verify against the key every
       # build ships, which must be the release key.
       - name: Assemble (the shipped key, release signing)
@@ -156,6 +159,7 @@ jobs:
         run: >-
           node scripts/release/assemble.mjs --in artifacts --out release --version "$VERSION"
           --pubkey-config src-tauri/tauri.conf.json --expect-key-id 44C694713A20D751
+          --extra scripts/release/install.sh --extra scripts/release/install.ps1
       - name: Upload the release
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

@@ -30,7 +30,9 @@
  * secrets only in release-only steps, and check every artifact they take
  * before using it. A release build gets nothing of a dry run's: no cache,
  * none of the keys a dry run makes, no updater overlay. The dry run assembles with each build's own
- * key, and its smoke runs the bundles without the source tree. Where a step's
+ * key and adds the install scripts, and its smoke runs the bundles without the source tree, then
+ * installs each platform's bundle with its install script, from the release as a local server
+ * serves it. Where a step's
  * script decides something, such as the environment or the arguments the
  * smoke gets, the check runs that script with bash, as the runner does.
  *
@@ -52,7 +54,7 @@ import { isDeepStrictEqual } from "node:util";
 
 import { compiledFiles } from "../release/compiled-tar.mjs";
 import { dryRunConfig } from "../release/dry-run-config.mjs";
-import { TARGETS, UPDATER_KEY_ID, unsignedAssets, updaterAssets } from "../release/release-assets.mjs";
+import { INSTALL_SCRIPTS, TARGETS, UPDATER_KEY_ID, unsignedAssets, updaterAssets } from "../release/release-assets.mjs";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const WORKFLOWS = ".github/workflows";
@@ -2035,6 +2037,18 @@ describe("release-dry-run.yml", () => {
     assert.doesNotMatch(scriptOf(release[0]), /--per-target-pubkeys/);
   });
 
+  yamlTest("assemble adds the install scripts from scripts/release, in both environments", () => {
+    // No build makes them; assemble.mjs refuses a release without them.
+    const runs = (jobOf(DRY_RUN, "assemble").steps ?? []).filter((step) => scriptOf(step).includes("assemble.mjs"));
+    assert.equal(runs.length, 2);
+    for (const step of runs) {
+      const extras = [...scriptOf(step).matchAll(/(?:^|\s)--extra\s+(\S+)/g)].map(([, path]) => path);
+      assert.deepEqual(extras, INSTALL_SCRIPTS.map((name) => `scripts/release/${name}`), step.name);
+    }
+    // The job checks out scripts/release, which holds them.
+    assert.ok(String(jobOf(DRY_RUN, "assemble").steps?.[0]?.with?.["sparse-checkout"]).split("\n").includes("scripts/release"));
+  });
+
   yamlTest("assemble downloads only the bundles and the notices", () => {
     // assemble.mjs refuses any other folder in --in.
     const steps = jobOf(DRY_RUN, "assemble").steps ?? [];
@@ -2158,6 +2172,9 @@ const SMOKE_SETTINGS = [
   { CSP_ORIGIN: "https://eu.i.posthog.com", EXPECT_POSTHOG_SINK: "true", REHEARSE: "true" },
 ];
 
+/** Whether a smoke.yml step launches a bundle (launch-smoke.mjs run), rather than serving the release to an install script. */
+const isLaunch = (step) => scriptOf(step).includes("launch-smoke.mjs") && !scriptOf(step).includes("serve-release");
+
 let smokeLaunches;
 
 /**
@@ -2168,7 +2185,7 @@ let smokeLaunches;
 function launches() {
   smokeLaunches ??= Object.entries(workflow(SMOKE).jobs ?? {}).flatMap(([job, { steps = [] }]) =>
     steps
-      .filter((step) => scriptOf(step).includes("launch-smoke.mjs"))
+      .filter(isLaunch)
       .map((step) => ({
         job,
         step,
@@ -2308,7 +2325,7 @@ describe("smoke.yml", () => {
     const steps = jobOf(SMOKE, "macos").steps ?? [];
     const check = steps.find((step) => scriptOf(step).includes("macos-signature.mjs"));
     assert.ok(check, "the macOS job doesn't check the app's signature");
-    assert.ok(steps.indexOf(check) < steps.findIndex((step) => scriptOf(step).includes("launch-smoke.mjs")), "the signature is checked before the launch");
+    assert.ok(steps.indexOf(check) < steps.findIndex(isLaunch), "the signature is checked before the launch");
     const [shapeOnly] = runSmokeStep(check.run, { EXPECTED_DR: "" });
     assert.deepEqual(shapeOnly.args, ["tools/scripts/release/macos-signature.mjs", "<dir>/runner-temp/dmg/Fleetify.app"]);
     const [pinned] = runSmokeStep(check.run, { EXPECTED_DR: "scripts/release/macos-designated-requirement.txt" });
@@ -2340,6 +2357,206 @@ describe("smoke.yml", () => {
       names.push(String(upload.with.name).replace("${{ matrix.arch }}", "<arch>"));
     }
     assert.equal(new Set(names).size, names.length, "two jobs upload logs under one name");
+  });
+});
+
+/** Where each smoke job serves the release to its install script: 18081, the port kept for it. */
+const RELEASE_SERVER = "http://127.0.0.1:18081";
+/** The release server's command line, for a release of version 1.2.3. */
+const SERVE_RELEASE = "tools/scripts/release/launch-smoke.mjs serve-release --dir release --version 1.2.3 --port 18081";
+
+/** A smoke job's "Install via script" step, the one that serves the release. */
+function installStep(job) {
+  const steps = (jobOf(SMOKE, job).steps ?? []).filter((step) => scriptOf(step).includes("serve-release"));
+  assert.equal(steps.length, 1, `job ${job} must serve the release to an install script once`);
+  return steps[0];
+}
+
+/**
+ * node, as an install step's test fakes it: it logs its arguments. As
+ * launch-smoke.mjs serve-release, it says it is serving and waits, until a
+ * SIGTERM, which it logs as "stopped"; as macos-signature.mjs, it exits
+ * STUB_SIGNATURE_EXIT.
+ */
+const FAKE_NODE = `#!/bin/sh
+trap 'kill "$sleeper" 2> /dev/null; echo stopped >> "$STUB_LOG.node"; exit 0' TERM
+printf '%s\\n' "$*" >> "$STUB_LOG.node"
+case $1 in
+  *launch-smoke.mjs)
+    echo "launch-smoke: serving $4 as release v$6"
+    sleep 30 &
+    sleeper=$!
+    wait "$sleeper"
+    echo "not stopped" >> "$STUB_LOG.node" ;;
+  *macos-signature.mjs) exit "\${STUB_SIGNATURE_EXIT:-0}" ;;
+  *) exit 1 ;;
+esac
+`;
+
+/**
+ * The install script a step pipes into sh, as its test fakes it: it logs its
+ * arguments and the variables it got, then installs, or, with STUB_FAULT,
+ * gets one thing wrong: the AppImage's bytes (file), the menu entry's Exec
+ * line (exec) or the icon (icon).
+ */
+const FAKE_INSTALL_SCRIPT = `#!/bin/sh
+printf 'args %s\\n' "$*" >> "$STUB_LOG.install"
+printf 'base %s\\nhome %s\\ndata %s\\n' "\${FLEETIFY_INSTALL_BASE:-}" "\${HOME:-}" "\${XDG_DATA_HOME:-}" >> "$STUB_LOG.install"
+dir=
+while [ $# -gt 0 ]; do
+  case $1 in --dir) dir=$2; shift 2 ;; *) shift ;; esac
+done
+mkdir -p "$dir"
+if [ "$STUB_PLATFORM" = macos ]; then
+  mkdir -p "$dir/Fleetify.app/Contents/MacOS"
+  echo plist > "$dir/Fleetify.app/Contents/Info.plist"
+  echo app > "$dir/Fleetify.app/Contents/MacOS/fleetify-app"
+  exit 0
+fi
+if [ "\${STUB_FAULT:-}" = file ]; then echo "not the AppImage" > "$dir/fleetify"; else cp release/*.AppImage "$dir/fleetify"; fi
+chmod 755 "$dir/fleetify"
+mkdir -p "$XDG_DATA_HOME/applications" "$XDG_DATA_HOME/icons/hicolor/256x256/apps"
+if [ "\${STUB_FAULT:-}" = exec ]; then line="Exec=fleetify %U"; else line="Exec=$dir/fleetify %U"; fi
+printf '[Desktop Entry]\\n%s\\n' "$line" > "$XDG_DATA_HOME/applications/fleetify.desktop"
+if [ "\${STUB_FAULT:-}" != icon ]; then printf '\\211PNG\\r\\n\\032\\nicon\\n' > "$XDG_DATA_HOME/icons/hicolor/256x256/apps/fleetify.png"; fi
+`;
+
+/**
+ * Run a bash install step's script with stand-ins: node (FAKE_NODE), curl,
+ * which logs its arguments and serves FAKE_INSTALL_SCRIPT, and for macOS
+ * xattr, plutil, lipo and uname, which answer for an Apple silicon Mac with
+ * Fleetify 1.2.3 installed, unless STUB_QUARANTINE (on the app),
+ * STUB_QUARANTINE_INSIDE (on a file in it), STUB_APP_VERSION or STUB_LIPO say
+ * otherwise. The script runs as the runner runs it, with the step's env, in
+ * a folder whose release/ holds an AppImage of version 1.2.3:
+ * { status, output, node, curl, install }, the last three the logged lines.
+ */
+function runInstallStep(step, { platform, env = {} }) {
+  return inTempDir((dir) => {
+    const bin = join(dir, "bin");
+    for (const sub of ["bin", "release", "runner-temp"]) mkdirSync(join(dir, sub));
+    writeFileSync(join(dir, "release", "Fleetify_1.2.3_amd64.AppImage"), "the release's AppImage\n");
+    const stub = (name, body) => writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    writeFileSync(join(bin, "node"), FAKE_NODE, { mode: 0o755 });
+    stub("curl", 'printf \'%s\\n\' "$*" >> "$STUB_LOG.curl"\ncat "$STUB_INSTALL_SCRIPT"');
+    stub("xattr", [
+      'case $1 in',
+      '  -p) if [ -n "${STUB_QUARANTINE:-}" ]; then echo "0081;6740a1b2;curl;"; exit 0; fi; echo "xattr: $3: No such xattr: $2" >&2; exit 1 ;;',
+      '  -lr) if [ -n "${STUB_QUARANTINE_INSIDE:-}" ]; then echo "$2/Contents/MacOS/fleetify-app: com.apple.quarantine: 0081;6740a1b2;curl;"; fi ;;',
+      '  *) exit 2 ;;',
+      'esac',
+    ].join("\n"));
+    stub("plutil", 'case $2 in CFBundleShortVersionString) echo "${STUB_APP_VERSION:-1.2.3}" ;; CFBundleExecutable) echo fleetify-app ;; *) exit 1 ;; esac');
+    stub("lipo", 'echo "${STUB_LIPO:-arm64}"');
+    stub("uname", 'case $1 in -m) echo arm64 ;; *) echo Darwin ;; esac');
+    writeFileSync(join(dir, "install.sh"), FAKE_INSTALL_SCRIPT);
+    const log = join(dir, "stub");
+    const result = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", step.run], {
+      cwd: dir,
+      env: {
+        PATH: `${bin}:${process.env.PATH}`,
+        HOME: process.env.HOME,
+        RUNNER_TEMP: join(dir, "runner-temp"),
+        VERSION: "1.2.3",
+        EXPECTED_DR: "",
+        STUB_LOG: log,
+        STUB_INSTALL_SCRIPT: join(dir, "install.sh"),
+        STUB_PLATFORM: platform,
+        ...step.env,
+        ...env,
+      },
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    const relative = (text) => text.split(dir).join("<dir>");
+    const logged = (name) => (existsSync(`${log}.${name}`) ? relative(readFileSync(`${log}.${name}`, "utf8")).split("\n").filter(Boolean) : []);
+    return { status: result.status, output: relative(`${result.stdout}${result.stderr}`), node: logged("node"), curl: logged("curl"), install: logged("install") };
+  });
+}
+
+describe("smoke.yml's install via script", () => {
+  yamlTest("each job installs once with its install script, after its launches and before its uploads, from the release served on 127.0.0.1:18081", () => {
+    for (const id of ["linux", "macos", "windows"]) {
+      const steps = jobOf(SMOKE, id).steps ?? [];
+      const step = installStep(id);
+      assert.equal(step.name, "Install via script", `job ${id}`);
+      assert.deepEqual(step.env, { FLEETIFY_INSTALL_BASE: RELEASE_SERVER }, `job ${id}'s install step env`);
+      assert.equal(step.if, undefined, `job ${id}: the install via script must run in every smoke`);
+      assert.equal(step["continue-on-error"], undefined, `job ${id}: the install via script must fail the job`);
+      const at = steps.indexOf(step);
+      assert.ok(at > steps.findLastIndex(isLaunch), `job ${id}: the install via script must come after the launches`);
+      assert.ok(at < steps.findIndex((candidate) => usesAction(candidate, "actions/upload-artifact")), `job ${id}: the install via script must come before the logs' upload`);
+    }
+  });
+
+  scriptTest("Linux: the one-liner, from the served release, installs into $RUNNER_TEMP/bin with a home of the step's own, and the server stops after", () => {
+    const run = runInstallStep(installStep("linux"), { platform: "linux" });
+    assert.equal(run.status, 0, run.output);
+    assert.deepEqual(run.node, [SERVE_RELEASE, "stopped"]);
+    assert.deepEqual(run.curl, [`-fsSL --retry 10 --retry-connrefused --retry-delay 1 ${RELEASE_SERVER}/latest/download/install.sh`]);
+    assert.deepEqual(run.install, [
+      "args --dir <dir>/runner-temp/bin",
+      `base ${RELEASE_SERVER}`,
+      "home <dir>/runner-temp/home-install",
+      "data <dir>/runner-temp/home-install/.local/share",
+    ]);
+  });
+
+  scriptTest("Linux: another file than the release's AppImage, a menu entry without its Exec line or no icon fails the step, and the server stops all the same", () => {
+    for (const fault of ["file", "exec", "icon"]) {
+      const run = runInstallStep(installStep("linux"), { platform: "linux", env: { STUB_FAULT: fault } });
+      assert.notEqual(run.status, 0, `${fault}:\n${run.output}`);
+      assert.match(run.output, /::error::/, fault);
+      assert.deepEqual(run.node, [SERVE_RELEASE, "stopped"], fault);
+    }
+  });
+
+  scriptTest("macOS: the one-liner installs Fleetify.app into $RUNNER_TEMP/Applications2, whose signature is checked, against a pinned requirement when given", () => {
+    const signature = "tools/scripts/release/macos-signature.mjs <dir>/runner-temp/Applications2/Fleetify.app";
+    const plain = runInstallStep(installStep("macos"), { platform: "macos" });
+    assert.equal(plain.status, 0, plain.output);
+    assert.deepEqual(plain.node, [SERVE_RELEASE, signature, "stopped"]);
+    assert.deepEqual(plain.curl, [`-fsSL --retry 10 --retry-connrefused --retry-delay 1 ${RELEASE_SERVER}/latest/download/install.sh`]);
+    assert.deepEqual(plain.install.slice(0, 2), ["args --dir <dir>/runner-temp/Applications2", `base ${RELEASE_SERVER}`]);
+    const pinned = runInstallStep(installStep("macos"), { platform: "macos", env: { EXPECTED_DR: "scripts/release/macos-designated-requirement.txt" } });
+    assert.equal(pinned.status, 0, pinned.output);
+    assert.equal(pinned.node[1], `${signature} --expected-dr tools/scripts/release/macos-designated-requirement.txt`);
+  });
+
+  scriptTest("macOS: a quarantine flag on the app or a file in it, a failed signature check, or another version or arch fails the step", () => {
+    for (const [env, says] of [
+      [{ STUB_QUARANTINE: "1" }, /quarantine/],
+      [{ STUB_QUARANTINE_INSIDE: "1" }, /quarantine/],
+      [{ STUB_SIGNATURE_EXIT: "1" }, null],
+      [{ STUB_APP_VERSION: "1.2.2" }, /1\.2\.2/],
+      [{ STUB_LIPO: "x86_64" }, /x86_64/],
+    ]) {
+      const run = runInstallStep(installStep("macos"), { platform: "macos", env });
+      const where = JSON.stringify(env);
+      assert.notEqual(run.status, 0, `${where}:\n${run.output}`);
+      if (says !== null) assert.match(run.output, says, where);
+      assert.equal(run.node.at(-1), "stopped", `${where}: the server wasn't stopped`);
+    }
+  });
+
+  yamlTest("Windows: install.ps1 -Silent from the served release, under Windows PowerShell 5.1, must put the app back, and its download carries no Mark-of-the-Web", () => {
+    const step = installStep("windows");
+    // Windows PowerShell 5.1, which every Windows 10 and 11 has, as users run the script.
+    assert.equal(step.shell, "powershell");
+    const script = scriptOf(step);
+    const order = [
+      "'tools/scripts/release/launch-smoke.mjs', 'serve-release', '--dir', 'release', '--version', $env:VERSION, '--port', '18081'",
+      '"$env:FLEETIFY_INSTALL_BASE/latest/download/install.ps1"',
+      "Remove-Item -LiteralPath $env:APP_EXE",
+      ")) -Silent",
+      "Test-Path -LiteralPath $env:APP_EXE",
+      `Get-Item "$env:TEMP\\fleetify-install\\*-setup.exe" -Stream Zone.Identifier -ErrorAction SilentlyContinue`,
+    ];
+    const at = order.map((text) => script.indexOf(text));
+    assert.deepEqual(order.filter((text, i) => at[i] === -1), [], "the Windows install step is missing these");
+    assert.deepEqual([...at].sort((a, b) => a - b), at, "the Windows install step does these out of order");
+    // The server, and only it, stops however the step ends.
+    assert.match(script, /\}\s*finally\s*\{\s*Stop-Process -Id \$server\.Id\b/);
   });
 });
 

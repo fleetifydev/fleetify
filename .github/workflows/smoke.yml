@@ -9,6 +9,12 @@
 # without the source tree, as they do on a user's machine. The release
 # comes from the run's release artifact.
 #
+# Each job then installs once more with the release's install script, as a
+# user runs it, from the release served on 127.0.0.1:18081 the way GitHub
+# serves it (launch-smoke.mjs serve-release). On macOS and Windows that also
+# checks that a scripted download carries no quarantine flag or
+# Mark-of-the-Web, so Gatekeeper and SmartScreen don't stop it.
+#
 # The variables say what the build compiled in. CSP_ORIGIN, the PostHog host
 # the renderer got, must be allowed by the UI's content security policy;
 # empty, as on a fork's pull request, it isn't checked. With a PostHog
@@ -140,6 +146,38 @@ jobs:
         run: |
           rpms=(release/*.rpm)
           docker run --rm -v "$PWD/release:/release:ro" opensuse/tumbleweed zypper --non-interactive install --allow-unsigned-rpm "/${rpms[0]}"
+      # The install script as a user runs it: piped into sh from the release,
+      # with a home of the step's own. It installs the AppImage, with a menu
+      # entry and the icon it takes out of the AppImage.
+      - name: Install via script
+        env:
+          FLEETIFY_INSTALL_BASE: http://127.0.0.1:18081
+        run: |
+          home="$RUNNER_TEMP/home-install"
+          mkdir -p "$home"
+          node tools/scripts/release/launch-smoke.mjs serve-release --dir release --version "$VERSION" --port 18081 > "$home/release-server.log" 2>&1 &
+          server=$!
+          # Stop the server, and only it, however the step ends; then show what it served.
+          trap 'kill "$server" 2> /dev/null || true; wait "$server" 2> /dev/null || true; cat "$home/release-server.log" || true' EXIT
+          # curl retries until the server listens.
+          curl -fsSL --retry 10 --retry-connrefused --retry-delay 1 "$FLEETIFY_INSTALL_BASE/latest/download/install.sh" |
+            HOME="$home" XDG_DATA_HOME="$home/.local/share" sh -s -- --dir "$RUNNER_TEMP/bin"
+          appimages=(release/*.AppImage)
+          installed="$RUNNER_TEMP/bin/fleetify"
+          if [ ! -x "$installed" ] || ! cmp -s "$installed" "${appimages[0]}"; then
+            echo "::error::install.sh didn't install the release's AppImage as $installed"
+            exit 1
+          fi
+          entry="$home/.local/share/applications/fleetify.desktop"
+          if ! grep -qFx "Exec=$installed %U" "$entry"; then
+            echo "::error::$entry doesn't start $installed"
+            exit 1
+          fi
+          icon="$home/.local/share/icons/hicolor/256x256/apps/fleetify.png"
+          if [ "$(od -An -tx1 -N8 "$icon" | tr -d ' \n')" != 89504e470d0a1a0a ]; then
+            echo "::error::install.sh didn't install the AppImage's icon, a PNG, as $icon"
+            exit 1
+          fi
       - name: Upload the smoke's logs
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -193,6 +231,48 @@ jobs:
           if [ "$EXPECT_POSTHOG_SINK" = true ]; then args+=(--expect-posthog-sink); fi
           if [ "$REHEARSE" = true ]; then args+=(--rehearse release --bundle-type nsis); fi
           node tools/scripts/release/launch-smoke.mjs "${args[@]}"
+      # install.ps1 as a user runs it, in Windows PowerShell 5.1: fetched from
+      # the release and run as a script block, with -Silent. It installs over
+      # the app above, whose executable goes first, so the installer has to
+      # put it back.
+      - name: Install via script
+        shell: powershell
+        env:
+          FLEETIFY_INSTALL_BASE: http://127.0.0.1:18081
+        run: |
+          $logs = Join-Path $env:RUNNER_TEMP 'home-install'
+          New-Item -ItemType Directory -Force -Path $logs | Out-Null
+          $node = (Get-Command node).Source
+          $server = Start-Process -FilePath $node -ArgumentList 'tools/scripts/release/launch-smoke.mjs', 'serve-release', '--dir', 'release', '--version', $env:VERSION, '--port', '18081' -NoNewWindow -PassThru -RedirectStandardOutput (Join-Path $logs 'release-server.log') -RedirectStandardError (Join-Path $logs 'release-server.err')
+          try {
+            # Fetched once the server listens.
+            $installScript = $null
+            foreach ($attempt in 1..30) {
+              try {
+                $installScript = Invoke-RestMethod -Uri "$env:FLEETIFY_INSTALL_BASE/latest/download/install.ps1"
+                break
+              } catch {
+                Start-Sleep -Seconds 1
+              }
+            }
+            if ($null -eq $installScript) { throw 'the release server never answered' }
+            Remove-Item -LiteralPath $env:APP_EXE
+            & ([scriptblock]::Create($installScript)) -Silent
+            if (-not (Test-Path -LiteralPath $env:APP_EXE)) { throw "install.ps1 -Silent didn't install $env:APP_EXE" }
+            $downloaded = @(Get-ChildItem -Path (Join-Path $env:TEMP 'fleetify-install') -Filter '*-setup.exe' -File)
+            $released = @(Get-ChildItem -Path release -Filter '*-setup.exe' -File)
+            if ($downloaded.Count -ne 1 -or (Get-FileHash -LiteralPath $downloaded[0].FullName).Hash -ne (Get-FileHash -LiteralPath $released[0].FullName).Hash) {
+              throw "install.ps1 didn't leave the release's installer in $env:TEMP\fleetify-install"
+            }
+            # A file PowerShell downloads carries no Mark-of-the-Web, so SmartScreen
+            # doesn't stop the installer; if that changes, the install docs must say so.
+            if (Get-Item "$env:TEMP\fleetify-install\*-setup.exe" -Stream Zone.Identifier -ErrorAction SilentlyContinue) {
+              throw 'the installer install.ps1 downloaded carries a Mark-of-the-Web (Zone.Identifier)'
+            }
+          } finally {
+            Stop-Process -Id $server.Id -ErrorAction SilentlyContinue
+            Get-Content -Path (Join-Path $logs 'release-server.log') -ErrorAction SilentlyContinue
+          }
       # The app logs into %LOCALAPPDATA%\Fleetify\logs, outside the smoke's home.
       - name: Collect the app's log
         if: failure()
@@ -271,6 +351,39 @@ jobs:
           if [ "$EXPECT_POSTHOG_SINK" = true ]; then args+=(--expect-posthog-sink); fi
           if [ "$REHEARSE" = true ]; then args+=(--rehearse release --bundle-type app); fi
           node tools/scripts/release/launch-smoke.mjs "${args[@]}"
+      # The install script as a user runs it: piped into sh from the release.
+      # A file curl downloads carries no quarantine flag, so Gatekeeper
+      # doesn't stop the app's first start; if that changes, the install docs
+      # must say so.
+      - name: Install via script
+        env:
+          FLEETIFY_INSTALL_BASE: http://127.0.0.1:18081
+        run: |
+          home="$RUNNER_TEMP/home-install"
+          mkdir -p "$home"
+          node tools/scripts/release/launch-smoke.mjs serve-release --dir release --version "$VERSION" --port 18081 > "$home/release-server.log" 2>&1 &
+          server=$!
+          # Stop the server, and only it, however the step ends; then show what it served.
+          trap 'kill "$server" 2> /dev/null || true; wait "$server" 2> /dev/null || true; cat "$home/release-server.log" || true' EXIT
+          # curl retries until the server listens.
+          curl -fsSL --retry 10 --retry-connrefused --retry-delay 1 "$FLEETIFY_INSTALL_BASE/latest/download/install.sh" | sh -s -- --dir "$RUNNER_TEMP/Applications2"
+          app="$RUNNER_TEMP/Applications2/Fleetify.app"
+          args=("$app")
+          if [ -n "$EXPECTED_DR" ]; then args+=(--expected-dr "tools/$EXPECTED_DR"); fi
+          node tools/scripts/release/macos-signature.mjs "${args[@]}"
+          attrs=$(xattr -lr "$app")
+          if xattr -p com.apple.quarantine "$app" > /dev/null 2>&1 || [[ "$attrs" == *com.apple.quarantine* ]]; then
+            echo "::error::$app, installed by install.sh, carries a quarantine flag"
+            exit 1
+          fi
+          plist="$app/Contents/Info.plist"
+          version=$(plutil -extract CFBundleShortVersionString raw "$plist")
+          exe=$(plutil -extract CFBundleExecutable raw "$plist")
+          arch=$(lipo -archs "$app/Contents/MacOS/$exe")
+          if [ "$version" != "$VERSION" ] || [ "$arch" != "$(uname -m)" ]; then
+            echo "::error::install.sh installed Fleetify $version for $arch, not $VERSION for $(uname -m)"
+            exit 1
+          fi
       - name: Upload the smoke's logs
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

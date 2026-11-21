@@ -24,6 +24,7 @@ import { assemble } from "./assemble.mjs";
 import { makeTestKey, signLikeTauri } from "./fixtures/test-signer.mjs";
 import { parsePublicKey } from "./minisign.mjs";
 import {
+  INSTALL_SCRIPTS,
   TARGETS,
   UPDATER_KEY_ID,
   bundleFiles,
@@ -57,6 +58,16 @@ const fresh = (name) => join(ROOT, `${name}-${(count += 1)}`);
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const hasSig = (triple, name) => bundleFiles(triple, V).some(({ to }) => to === `${name}.sig`);
+
+/** Stand-ins for the install scripts, which no build makes: a release gets them with --extra. */
+const EXTRAS_DIR = fresh("extras");
+mkdirSync(EXTRAS_DIR);
+const EXTRAS = INSTALL_SCRIPTS.map((name) => {
+  const path = join(EXTRAS_DIR, name);
+  writeFileSync(path, `fake ${name}\n`);
+  return path;
+});
+const extraArgs = () => EXTRAS.flatMap((path) => ["--extra", path]);
 
 /**
  * A complete --in tree: each target's bundles, the Linux library list and the
@@ -103,7 +114,7 @@ function run(inDir, options = {}) {
     outDir,
     version: V,
     pubkeys: RELEASE_KEYS,
-    extras: [],
+    extras: EXTRAS,
     now: NOW,
     verify: stubVerify,
     ...options,
@@ -123,7 +134,7 @@ function assertProblem(problems, ...patterns) {
 const literal = (text) => ({ test: (value) => value.includes(text), toString: () => JSON.stringify(text) });
 
 describe("assemble, with a stub for the signature check", () => {
-  test("a complete input: no problems, and the release's 18 assets", () => {
+  test("a complete input and the install scripts: no problems, and the release's 20 assets", () => {
     const { assets, problems, outDir } = run(inputTree());
     assert.deepEqual(problems, []);
     assert.deepEqual(assets, expectedAssets(V));
@@ -141,7 +152,7 @@ describe("assemble, with a stub for the signature check", () => {
   test("SHA256SUMS: every other asset, with the hash of the file as published", () => {
     const { outDir } = run(inputTree());
     const others = expectedAssets(V).filter((name) => name !== "SHA256SUMS");
-    assert.equal(others.length, 17);
+    assert.equal(others.length, 19);
     const expected = sha256sums(others.map((name) => ({ name, sha256: sha256(readFileSync(join(outDir, name))) })));
     assert.equal(readFileSync(join(outDir, "SHA256SUMS"), "utf8"), expected);
   });
@@ -162,6 +173,14 @@ describe("assemble, with a stub for the signature check", () => {
       readFileSync(join(outDir, "THIRD-PARTY-NOTICES")),
       readFileSync(join(inDir, "third-party-notices", "THIRD-PARTY-NOTICES")),
     );
+    for (const [i, name] of INSTALL_SCRIPTS.entries()) assert.deepEqual(readFileSync(join(outDir, name)), readFileSync(EXTRAS[i]), name);
+  });
+
+  test("without the install scripts: a problem for each, and nothing is assembled", () => {
+    const { assets, problems, outDir } = run(inputTree(), { extras: [] });
+    assert.deepEqual(problems, [...INSTALL_SCRIPTS].sort().map((name) => `missing ${name}: give it with --extra`));
+    assert.deepEqual(assets, []);
+    assert.equal(existsSync(outDir), false);
   });
 
   test("each updater artifact's signature is checked once, over its own bytes, against the configured key and version", () => {
@@ -390,7 +409,7 @@ describe("assemble, with a stub for the signature check", () => {
     mkdirSync(dir);
     const extra = join(dir, "THIRD-PARTY-NOTICES");
     writeFileSync(extra, "notices from elsewhere\n");
-    const { problems } = run(inDir, { extras: [extra] });
+    const { problems } = run(inDir, { extras: [...EXTRAS, extra] });
     assert.deepEqual(problems, [
       "missing third-party-notices/THIRD-PARTY-NOTICES",
       `--extra ${extra}: THIRD-PARTY-NOTICES is already provided by the build`,
@@ -414,7 +433,7 @@ describe("assemble, with the real signature check and keys from the test run", (
 
   test("a dry run's per-target keys: every signature verifies", () => {
     const inDir = inputTree({ keys: perTargetKeys(), pubkeyFiles: true });
-    const { assets, problems } = assemble({ inDir, outDir: fresh("out"), version: V, pubkeys: { perTarget: true }, extras: [], now: NOW });
+    const { assets, problems } = assemble({ inDir, outDir: fresh("out"), version: V, pubkeys: { perTarget: true }, extras: EXTRAS, now: NOW });
     assert.deepEqual(problems, []);
     assert.deepEqual(assets, expectedAssets(V));
   });
@@ -423,7 +442,7 @@ describe("assemble, with the real signature check and keys from the test run", (
     const keys = perTargetKeys();
     const inDir = inputTree({ keys, pubkeyFiles: true });
     writeFileSync(join(inDir, `bundles-${WINDOWS}`, "updater-pubkey.txt"), keys[LINUX].tauriPublicKey);
-    const { problems } = assemble({ inDir, outDir: fresh("out"), version: V, pubkeys: { perTarget: true }, extras: [], now: NOW });
+    const { problems } = assemble({ inDir, outDir: fresh("out"), version: V, pubkeys: { perTarget: true }, extras: EXTRAS, now: NOW });
     assertProblem(problems, /Fleetify_0\.2\.0_x64-setup\.exe/, /key id/);
     assert.equal(problems.length, 1);
   });
@@ -431,7 +450,7 @@ describe("assemble, with the real signature check and keys from the test run", (
   test("a version: field in a trusted comment: the release version passes, any other is a problem, none is fine", () => {
     const signed = (comment) => {
       const inDir = inputTree({ keys: perTargetKeys(), pubkeyFiles: true, comment });
-      return assemble({ inDir, outDir: fresh("out"), version: V, pubkeys: { perTarget: true }, extras: [], now: NOW });
+      return assemble({ inDir, outDir: fresh("out"), version: V, pubkeys: { perTarget: true }, extras: EXTRAS, now: NOW });
     };
     const base = (name) => `timestamp:1795238472\tfile:${name}`;
     assert.deepEqual(signed((name) => `${base(name)}\tversion:0.2.0`).problems, []);
@@ -450,13 +469,13 @@ describe("assemble, with the real signature check and keys from the test run", (
     const pubkeys = { config, expectKeyId: key.keyId };
 
     const inDir = inputTree({ keys });
-    assert.deepEqual(assemble({ inDir, outDir: fresh("out"), version: V, pubkeys, extras: [], now: NOW }).problems, []);
+    assert.deepEqual(assemble({ inDir, outDir: fresh("out"), version: V, pubkeys, extras: EXTRAS, now: NOW }).problems, []);
 
     const deb = join(inDir, `bundles-${LINUX}`, DEB);
     const bytes = readFileSync(deb);
     bytes[0] ^= 0x01;
     writeFileSync(deb, bytes);
-    const { problems } = assemble({ inDir, outDir: fresh("out"), version: V, pubkeys, extras: [], now: NOW });
+    const { problems } = assemble({ inDir, outDir: fresh("out"), version: V, pubkeys, extras: EXTRAS, now: NOW });
     assert.deepEqual(problems, [`bad signature for ${DEB}: signature does not match the data`]);
   });
 });
@@ -468,7 +487,7 @@ describe("the CLI", () => {
     const keys = Object.fromEntries(TARGETS.map(({ triple }) => [triple, makeTestKey()]));
     const inDir = inputTree({ keys, pubkeyFiles: true });
     const outDir = fresh("out");
-    const result = cli("--in", inDir, "--out", outDir, "--version", V, "--per-target-pubkeys");
+    const result = cli("--in", inDir, "--out", outDir, "--version", V, "--per-target-pubkeys", ...extraArgs());
     assert.equal(result.status, 0, result.stderr);
     for (const asset of expectedAssets(V)) assert.ok(result.stdout.includes(asset), result.stdout);
     for (const key of Object.values(keys)) assert.ok(result.stdout.includes(key.keyId), result.stdout);
@@ -484,7 +503,7 @@ describe("the CLI", () => {
     const outDir = fresh("out");
     const result = cli(
       "--in", inputTree({ keys }), "--out", outDir, "--version", V,
-      "--pubkey-config", config, "--expect-key-id", UPDATER_KEY_ID,
+      "--pubkey-config", config, "--expect-key-id", UPDATER_KEY_ID, ...extraArgs(),
     );
     assert.equal(result.status, 1);
     assert.match(result.stderr, /key id/);

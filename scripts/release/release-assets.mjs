@@ -1,8 +1,8 @@
 /**
  * release-assets.mjs — what a Fleetify release is made of: the targets CI
  * builds, the files each build produces and the names they are published
- * under, the updater manifest (latest.json), how an update endpoint picks an
- * entry from it, and SHA256SUMS.
+ * under, the install scripts, the updater manifest (latest.json), how an
+ * update endpoint picks an entry from it, and SHA256SUMS.
  *
  * The release scripts and workflows import these, so each name is defined in
  * one place. Workflow steps read two lists through the CLI:
@@ -35,6 +35,14 @@ export const MANIFEST = "latest.json";
 export const CHECKSUMS = "SHA256SUMS";
 export const NOTICES = "THIRD-PARTY-NOTICES";
 export const LIBRARY_LIST = "LINUX-APPIMAGE-LIBRARIES.txt";
+
+/**
+ * The install scripts, scripts/release/install.sh and install.ps1, which a
+ * release carries under their own names: assemble.mjs adds them (--extra).
+ * Each installs the release's file for the machine it runs on, once the file
+ * matches its line in SHA256SUMS.
+ */
+export const INSTALL_SCRIPTS = Object.freeze(["install.sh", "install.ps1"]);
 
 /**
  * The release targets: the Rust target triple, the GitHub runner that builds
@@ -181,7 +189,7 @@ export function updaterAssets(triple, version) {
 
 /**
  * Every asset of a release, sorted: each target's bundle files, the AppImage
- * library list, the notices, latest.json and SHA256SUMS.
+ * library list, the notices, the install scripts, latest.json and SHA256SUMS.
  *
  * @param {string} version
  * @returns {string[]}
@@ -192,6 +200,7 @@ export function expectedAssets(version) {
     ...TARGETS.flatMap(({ triple }) => bundleFiles(triple, version).map(({ to }) => to)),
     LIBRARY_LIST,
     NOTICES,
+    ...INSTALL_SCRIPTS,
     MANIFEST,
     CHECKSUMS,
   ];
