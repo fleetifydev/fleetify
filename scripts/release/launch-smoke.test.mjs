@@ -13,9 +13,10 @@
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { pbkdf2 } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { Agent, request as httpRequest } from "node:http";
-import { createServer as createNetServer } from "node:net";
+import { connect, createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, parse, posix, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -133,6 +134,39 @@ function request(url, { method = "GET", headers = {}, agent = false } = {}) {
     });
     req.on("error", fail);
     req.end();
+  });
+}
+
+/**
+ * GET `path` from `base` over a connection of its own, read the response's
+ * headers and `take(contentLength)` bytes of its body, then destroy the
+ * connection at once, as a client does that hangs up as soon as it has what
+ * it wanted: { status, size, received }.
+ */
+function getThenHangUp(base, path, take) {
+  const { hostname, port } = new URL(base);
+  return new Promise((done, fail) => {
+    const socket = connect(Number(port), hostname);
+    let head = Buffer.alloc(0);
+    let answer = null;
+    socket.on("connect", () => socket.write(`GET ${path} HTTP/1.1\r\nHost: ${hostname}\r\nConnection: close\r\n\r\n`));
+    socket.on("data", (chunk) => {
+      if (answer === null) {
+        head = Buffer.concat([head, chunk]);
+        const end = head.indexOf("\r\n\r\n");
+        if (end === -1) return;
+        const text = head.subarray(0, end).toString("latin1");
+        answer = { status: Number(text.split(" ")[1]), size: Number(/^content-length: *(\d+)$/im.exec(text)?.[1]), received: head.length - end - 4 };
+      } else {
+        answer.received += chunk.length;
+      }
+      if (answer.received >= take(answer.size)) {
+        socket.destroy();
+        done(answer);
+      }
+    });
+    socket.on("error", fail);
+    socket.on("close", () => fail(new Error(`the server closed the connection first: ${JSON.stringify(answer)}`)));
   });
 }
 
@@ -748,11 +782,81 @@ describe("createUpdateServer", () => {
       assert.equal(answer.headers["content-length"], String(ARTIFACT_BYTES.get(asset).length));
       assert.ok(answer.body.equals(ARTIFACT_BYTES.get(asset)));
       await finished;
-      assert.deepEqual(server.downloads, [{ asset, size: ARTIFACT_BYTES.get(asset).length, bytes: ARTIFACT_BYTES.get(asset).length, complete: true }]);
+      const size = ARTIFACT_BYTES.get(asset).length;
+      assert.deepEqual(server.downloads, [{ asset, size, bytes: size, complete: true, finished: true }]);
     } finally {
       clearTimeout(timer);
       agent.destroy();
       await close(server);
+    }
+  });
+
+  /** A promise of the next response's close, which fails after 30 s; `onResponse` gets the response first. */
+  function nextClose(server, onResponse = () => {}) {
+    let timer;
+    const closed = new Promise((done, fail) => {
+      timer = setTimeout(() => fail(new Error("the response didn't close within 30 s")), 30_000);
+      server.once("request", (req, res) => {
+        onResponse(res);
+        res.once("close", done);
+      });
+    });
+    closed.catch(() => {});
+    return { closed, stop: () => clearTimeout(timer) };
+  }
+
+  test("a download is complete once every byte went out, though the client hung up before the response finished", async () => {
+    const server = createUpdateServer({ releaseDir: RELEASE });
+    const base = await listen(server);
+    const asset = "Fleetify_0.2.0_amd64.AppImage";
+    const size = ARTIFACT_BYTES.get(asset).length;
+    // Once the response has the file's last byte, the thread pool is kept
+    // busy, so the read that finds the file's end waits, as on a loaded
+    // machine: the client hangs up before it returns, and the response
+    // never finishes.
+    const { closed, stop } = nextClose(server, (res) => {
+      const write = res.write.bind(res);
+      let written = 0;
+      res.write = (chunk, ...rest) => {
+        written += chunk.length;
+        if (written >= size) for (let i = 0; i < 4; i += 1) pbkdf2("x", "y", 300_000, 32, "sha512", () => {});
+        return write(chunk, ...rest);
+      };
+    });
+    try {
+      const answer = await getThenHangUp(base, `/artifacts/${asset}`, (length) => length);
+      assert.deepEqual([answer.status, answer.size, answer.received], [200, size, size]);
+      await closed;
+      assert.deepEqual(server.downloads, [{ asset, size, bytes: size, complete: true, finished: false }]);
+    } finally {
+      stop();
+      await close(server);
+    }
+  });
+
+  test("a download is incomplete when the client hangs up partway", async () => {
+    // An artifact larger than any connection's buffers, so the server can't
+    // have handed it all over when the client hangs up.
+    const release = folder("release-large");
+    writeFileSync(join(release, "latest.json"), readFileSync(join(RELEASE, "latest.json")));
+    const asset = "Fleetify_0.2.0_amd64.AppImage";
+    const size = 48 * 1024 * 1024;
+    writeFileSync(join(release, asset), Buffer.alloc(size, 7));
+    const server = createUpdateServer({ releaseDir: release });
+    const base = await listen(server);
+    const { closed, stop } = nextClose(server);
+    try {
+      const answer = await getThenHangUp(base, `/artifacts/${asset}`, () => 1024 * 1024);
+      assert.equal(answer.status, 200);
+      assert.ok(answer.received < size, `the client read all ${size} bytes`);
+      await closed;
+      const [record] = server.downloads;
+      assert.deepEqual([record.asset, record.complete, record.finished], [asset, false, false]);
+      assert.ok(record.bytes < size, `all ${size} bytes were handed to the response`);
+    } finally {
+      stop();
+      await close(server);
+      rmSync(join(release, asset));
     }
   });
 

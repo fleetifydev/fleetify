@@ -693,7 +693,14 @@ function sendText(res, status, text) {
   res.end(text);
 }
 
-/** Send a file, counting into `record` ({ bytes, complete }) when given. */
+/**
+ * Send a file, counting into `record` ({ bytes, complete, finished }) when
+ * given: bytes, those handed to the response; complete, whether all of them
+ * were, by the time the response finished or closed; finished, whether it
+ * finished. A client that hangs up as soon as it has every byte, as the
+ * Windows updater does, can close the response before the file's end is
+ * read, so it never finishes although the download is whole.
+ */
 function sendFile(req, res, { path, size }, record) {
   res.writeHead(200, { "content-type": "application/octet-stream", "content-length": size });
   if (req.method === "HEAD") {
@@ -703,11 +710,16 @@ function sendFile(req, res, { path, size }, record) {
   const stream = createReadStream(path);
   if (record) {
     stream.on("data", (chunk) => {
-      record.bytes += chunk.length;
+      if (!res.destroyed) record.bytes += chunk.length;
     });
-    res.on("finish", () => {
+    const settle = () => {
       record.complete = record.bytes === size;
+    };
+    res.on("finish", () => {
+      record.finished = true;
+      settle();
     });
+    res.on("close", settle);
   }
   stream.on("error", () => res.destroy());
   res.on("close", () => stream.destroy());
@@ -724,8 +736,9 @@ function sendFile(req, res, { path, size }, record) {
  * malformed request, never a 2xx that isn't the update.
  *
  * The server records each request's path and query in `requests`, each
- * artifact download in `downloads` ({ asset, size, bytes, complete }), and
- * each refused request in `errors`. `manifest` is the release's latest.json.
+ * artifact download in `downloads` ({ asset, size, bytes, complete, finished },
+ * as sendFile counts them), and each refused request in `errors`. `manifest`
+ * is the release's latest.json.
  *
  * @param {{ releaseDir: string, offerVersion?: string }} options
  * @throws when latest.json can't be read, or `offerVersion` isn't newer than the release
@@ -781,7 +794,7 @@ export function createUpdateServer({ releaseDir, offerVersion = OFFER_VERSION })
       const asset = assetNameOf(segments[2]);
       const file = releaseFile(releaseDir, asset);
       if (file !== null) {
-        const record = { asset, size: file.size, bytes: 0, complete: false };
+        const record = { asset, size: file.size, bytes: 0, complete: false, finished: false };
         if (req.method === "GET") downloads.push(record);
         sendFile(req, res, file, record);
         return;
@@ -1261,7 +1274,7 @@ async function rehearsalCheck({ updates, expected, logs, app, updatePort, deadli
   if (failure !== null) problems.push(`the updater logged: ${clip(failure)}`);
   const full = updates.downloads.find((d) => d.complete && d.asset === expected.asset);
   if (full === undefined) {
-    const seen = updates.downloads.map((d) => `${d.asset} ${d.bytes}/${d.size} bytes`).join(", ");
+    const seen = updates.downloads.map((d) => `${d.asset} ${d.bytes}/${d.size} bytes${d.finished ? "" : ", unfinished"}`).join(", ");
     problems.push(`${expected.asset} was not downloaded in full${seen ? ` (downloads: ${seen})` : ""}`);
   }
   if (ready === null) problems.push(`no "update ready" line in the log within ${REHEARSAL_TIMEOUT_S} s`);
