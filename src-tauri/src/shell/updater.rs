@@ -901,13 +901,29 @@ mod tests {
     #[test]
     fn a_fedora_system_gets_its_pki_certificate_paths() {
         // Fedora and RHEL have no /etc/ssl/certs/ca-certificates.crt, the
-        // file the updater plugin would set.
-        let fedora = ["/etc/pki/tls/certs/ca-bundle.crt", "/etc/pki/tls/certs"];
+        // file the updater plugin would set: their bundle is the pki one.
+        // With only the pki paths there, both variables point into
+        // /etc/pki/tls/certs.
+        let pki_only = ["/etc/pki/tls/certs/ca-bundle.crt", "/etc/pki/tls/certs"];
+        assert_eq!(
+            cert_env_to_set(None, None, |path| pki_only.contains(&path)),
+            [
+                ("SSL_CERT_FILE", "/etc/pki/tls/certs/ca-bundle.crt"),
+                ("SSL_CERT_DIR", "/etc/pki/tls/certs"),
+            ]
+        );
+        // A real Fedora also links /etc/ssl/certs to ../pki/tls/certs, so
+        // SSL_CERT_DIR gets /etc/ssl/certs: the same directory.
+        let fedora = [
+            "/etc/pki/tls/certs/ca-bundle.crt",
+            "/etc/pki/tls/certs",
+            "/etc/ssl/certs",
+        ];
         assert_eq!(
             cert_env_to_set(None, None, |path| fedora.contains(&path)),
             [
                 ("SSL_CERT_FILE", "/etc/pki/tls/certs/ca-bundle.crt"),
-                ("SSL_CERT_DIR", "/etc/pki/tls/certs"),
+                ("SSL_CERT_DIR", "/etc/ssl/certs"),
             ]
         );
         let opensuse = ["/etc/ssl/ca-bundle.pem", "/etc/ssl/certs"];
