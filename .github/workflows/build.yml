@@ -550,6 +550,9 @@ jobs:
       # A dry run keeps codesign's own answers to macos-signature.mjs's four
       # commands, whether its checks pass or not, so the test fixtures in
       # scripts/release/fixtures/codesign can be replaced with real output.
+      # It also keeps the code-signing identities codesign can see and the
+      # keychain search list, even when no app was built: a failed signing
+      # leaves them even if the job's log is lost.
       - name: Keep codesign's output (macOS dry run)
         if: always() && inputs.environment == 'dry-run' && runner.os == 'macOS'
         run: |
@@ -557,6 +560,8 @@ jobs:
           out="$RUNNER_TEMP/codesign-output"
           mkdir -p "$out"
           sw_vers > "$out/sw_vers.txt"
+          security find-identity -v -p codesigning > "$out/find-identity.txt" 2>&1 || true
+          security list-keychains -d user > "$out/list-keychains.txt" 2>&1 || true
           if [ ! -d "$app" ]; then
             echo "no $app: the build didn't make it" > "$out/status.txt"
             exit 0

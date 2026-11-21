@@ -1068,6 +1068,14 @@ describe("build.yml", () => {
     const capture = steps.find((step) => /\bcodesign\b/.test(scriptOf(step)) && ["--verify", "-r-", "-vvv", "--entitlements"].every((arg) => scriptOf(step).includes(arg)) && !scriptOf(step).includes("macos-signature.mjs"));
     assert.ok(capture, "no step keeps the output of the four codesign commands");
     assert.deepEqual(when.filter((clause) => !requires(capture.if, clause)), [], `the capture's condition must hold ${when.join(" && ")}`);
+    // The identities codesign can see, and the search list, kept whether the
+    // app was built or not, so a failed signing leaves them even if the
+    // job's log is lost.
+    const appCheck = scriptOf(capture).search(/if \[ ! -d "\$app" \]/);
+    for (const command of [/security find-identity -v -p codesigning >/, /security list-keychains -d user >/]) {
+      const at = scriptOf(capture).search(command);
+      assert.ok(at !== -1 && at < appCheck, `the capture must save ${command} before it looks for the app`);
+    }
     const upload = steps.find((step) => usesAction(step, "actions/upload-artifact") && String(step.with?.name).startsWith("codesign-output-"));
     assert.ok(upload, "codesign's output isn't uploaded");
     assert.deepEqual([upload.with.name, upload.with["retention-days"]], ["codesign-output-${{ matrix.triple }}", 7]);
