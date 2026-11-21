@@ -206,6 +206,15 @@ jobs:
       # are deterministic and fast.
       - name: Script tests
         run: node --test "scripts/ci/*.test.mjs" "scripts/release/*.test.mjs"
+      # actionlint checks every workflow: its syntax and expressions, the
+      # inputs of the actions and reusable workflows it calls, and its shell
+      # scripts, with the shellcheck the image includes. A workflow that runs
+      # only after it merges, such as the release's, is checked here first.
+      # The image is pinned by digest, so the reference can't move.
+      - name: Lint the workflows (actionlint)
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # v1.7.12
+        with:
+          args: -color
       - name: Audit (advisory)
         continue-on-error: true
         run: npm audit --omit=dev

@@ -1215,3 +1215,31 @@ describe("release-dry-run.yml's smoke", () => {
     assert.deepEqual(smoke.with, { version: "${{ needs.meta.outputs.version }}", rehearse: "${{ needs.meta.outputs.environment == 'dry-run' }}" });
   });
 });
+
+describe("actionlint", () => {
+  yamlTest("CI lints the workflows with actionlint, from an image pinned by digest", () => {
+    const rel = `${WORKFLOWS}/ci.yml`;
+    const lint = (jobOf(rel, "web").steps ?? []).filter((step) => /^docker:\/\/rhysd\/actionlint\b/.test(String(step.uses ?? "")));
+    assert.equal(lint.length, 1, "ci.yml's web job must run actionlint once");
+    const [step] = lint;
+    assert.match(step.uses, /^docker:\/\/rhysd\/actionlint(:[\w.-]+)?@sha256:[0-9a-f]{64}$/, "the actionlint image must be pinned by digest");
+    assert.equal(step["continue-on-error"], undefined, "actionlint must be a hard gate");
+    const line = read(rel)
+      .split(/\r?\n/)
+      .find((text) => text.includes(step.uses));
+    assert.match(line ?? "", /#\s*v\d+\.\d+\.\d+\s*$/, "the digest needs a comment naming its release");
+  });
+
+  test("the documented gates end with actionlint, as ci.yml runs it after the script tests", () => {
+    for (const [file, heading] of [
+      ["CONTRIBUTING.md", "## The gates"],
+      ["CLAUDE.md", "### Unit + integration (gates that run in CI)"],
+    ]) {
+      const commands = codeBlockUnder(file, heading)
+        .split("\n")
+        .map((line) => line.replace(/#.*$/, "").trim())
+        .filter(Boolean);
+      assert.equal(commands.at(-1), "actionlint", `${file}'s gate list must end with actionlint`);
+    }
+  });
+});

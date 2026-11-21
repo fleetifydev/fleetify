@@ -94,6 +94,7 @@ npx tsc -b tsconfig.build.json --noEmit                 # type-check            
 npm test                                                # vitest (renderer)             (advisory)
 python3 -c "import yaml"                                # PyYAML for the script tests   (HARD gate)
 node --test "scripts/ci/*.test.mjs" "scripts/release/*.test.mjs"   # script tests (HARD gate)
+actionlint                                              # workflow lint (+ shellcheck)  (HARD gate)
 ```
 
 Run all of these locally **before pushing**. CI runs the same set on every PR,
