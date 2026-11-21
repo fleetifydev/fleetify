@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Loader2, AlertCircle, ArrowRight } from "lucide-react";
 import { LogoMark } from "@/components/brand/logo-mark";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import type { AuthUser } from "@/lib/api";
+import { openExternalUrl } from "@/lib/links";
 
 interface WelcomeScreenProps {
   onAuth: (user: AuthUser, token: string, isNew: boolean) => void;
@@ -10,12 +11,38 @@ interface WelcomeScreenProps {
 
 const PROVIDERS = ["claude-code", "codex-cli", "cursor-cli", "ollama", "kimi-code"] as const;
 
+/** fleetify.dev's legal pages: signing in accepts the Terms of Service, and
+ *  the Privacy Policy says what the app and fleetify.dev collect. */
+const TERMS_URL = "https://fleetify.dev/legal/terms";
+const PRIVACY_URL = "https://fleetify.dev/legal/privacy";
+
+/** A link to a page on fleetify.dev. It opens in the system browser: the
+ *  main window doesn't stop a page from another site, so a plain `<a href>`
+ *  would load the page in place of the app. */
+function LegalLink({ href, children }: { href: string; children: ReactNode }) {
+  return (
+    <a
+      className="app-no-drag"
+      href={href}
+      rel="noreferrer"
+      onClick={(event) => {
+        event.preventDefault();
+        openExternalUrl(href);
+      }}
+      style={{ color: "var(--m-text-2)", textDecoration: "underline", textUnderlineOffset: 2 }}
+    >
+      {children}
+    </a>
+  );
+}
+
 /**
  * Welcome — chevron + Geist Bold lockup, provider logo strip, single
  * "Sign in with Fleetify" CTA. Click triggers the OAuth 2.1 + PKCE
  * flow via window.fleetify.signIn() (Electron main owns the browser
  * + loopback + token exchange). On success, control passes to App.tsx
- * via onAuth(user, "", isNew).
+ * via onAuth(user, "", isNew). Under the CTA, a line links the Terms of
+ * Service and the Privacy Policy (`LegalLink`).
  */
 export function WelcomeScreen({ onAuth }: WelcomeScreenProps) {
   const [show, setShow] = useState(false);
@@ -222,6 +249,19 @@ export function WelcomeScreen({ onAuth }: WelcomeScreenProps) {
           }}
         >
           We'll open your browser to fleetify.dev — no password needed here.
+        </p>
+
+        {/* Legal line — what signing in accepts */}
+        <p
+          style={{
+            marginTop: 8,
+            fontSize: 11.5,
+            color: "var(--m-text-3)",
+            lineHeight: 1.5,
+          }}
+        >
+          By signing in, you agree to the <LegalLink href={TERMS_URL}>Terms of Service</LegalLink> and
+          acknowledge the <LegalLink href={PRIVACY_URL}>Privacy Policy</LegalLink>.
         </p>
       </div>
     </div>

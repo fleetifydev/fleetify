@@ -15,6 +15,9 @@
  *   release (PRE_RELEASE_LINKS);
  * - the only email addresses are the project's contacts (CONTACTS).
  *
+ * Both READMEs link fleetify.dev's Terms of Service and Privacy Policy
+ * (LEGAL_PAGES), as the app's sign-in screen does.
+ *
  * It also checks that CLAUDE.md, the working notes every contributor's coding
  * agent reads, doesn't tell agents to add an AI co-author trailer: commits
  * need only a DCO sign-off, and CONTRIBUTING.md covers AI-assisted work.
@@ -53,6 +56,9 @@ const DOCS = [
 
 /** The only email addresses the docs may show: security reports, the code of conduct, business. */
 const CONTACTS = ["security@fleetify.dev", "conduct@fleetify.dev", "hello@fleetify.dev"];
+
+/** fleetify.dev's legal pages, which both READMEs link: the Terms of Service and the Privacy Policy. */
+const LEGAL_PAGES = ["https://fleetify.dev/legal/terms", "https://fleetify.dev/legal/privacy"];
 
 /**
  * The pages of github.com/fleetifydev/fleetify the docs may link to, besides
@@ -421,6 +427,18 @@ describe("contact points", () => {
     );
     assert.ok(linksSecurity, "SUPPORT.md doesn't link SECURITY.md for vulnerabilities");
   });
+});
+
+describe("legal pages", () => {
+  for (const file of ["README.md", "README.tr.md"]) {
+    test(`${file} links the Terms of Service and the Privacy Policy`, () => {
+      const targets = new Set(linkTargets(read(file)).map(({ target }) => target));
+      assertNone(
+        LEGAL_PAGES.filter((url) => !targets.has(url)),
+        `${file} doesn't link`,
+      );
+    });
+  }
 });
 
 describe("working notes", () => {

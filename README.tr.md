@@ -64,6 +64,8 @@ npm run dev:tauri:wt   # debug derlemesi: ayrı veri klasörü, giriş adımı y
 
 **Dashboard sync** varsayılan olarak açıktır ve oturumlarınızı fleetify.dev panelinizde gösterir. Ajan, model, durum, token sayıları, maliyet, oturum başlığı ve proje klasörünün adı gibi bilgileri gönderir; kodunuzu, prompt'larınızı, komutlarınızı, tam dosya yollarını ya da API anahtarlarınızı asla göndermez. **Product analytics** (PostHog, AB sunucuları) siz açmadıkça kapalı kalır. Uygulamayı ilk açtığınızda ikisi de size sorulur; **Settings → General → Privacy** bölümünden istediğiniz zaman değiştirebilirsiniz. Gönderilen alanların tamamı [docs/ANALYTICS.md](docs/ANALYTICS.md)'de listeleniyor. Kullandığınız ajanlar ve model sağlayıcıları prompt'larınızı ve kodunuzu doğrudan ve kendi koşulları çerçevesinde alır. Sesle yazdırma varsayılan olarak Fleetify cloud üzerinden çalışır; **Settings → Voice** bölümünden kendi API anahtarınıza ya da **On-device** seçeneğine geçebilirsiniz.
 
+[Kullanım Koşulları](https://fleetify.dev/legal/terms), Fleetify hesabınızı ve uygulamanın kullandığı bulut hizmetini düzenler; [Gizlilik Politikası](https://fleetify.dev/legal/privacy) ise uygulamanın ve fleetify.dev'in neleri topladığını anlatır.
+
 ## Topluluk ve lisans
 
 - Sorular için [Discussions → Q&A](https://github.com/fleetifydev/fleetify/discussions/categories/q-a), öneriler için [Discussions → Ideas](https://github.com/fleetifydev/fleetify/discussions/categories/ideas); hata bildirmek için [bir issue açın](https://github.com/fleetifydev/fleetify/issues/new/choose).

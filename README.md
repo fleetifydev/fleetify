@@ -105,6 +105,8 @@ The first run compiles the whole Rust workspace, so it takes a while. A release 
 
 The agents and model providers you use receive your prompts and code directly, under their own terms. Voice dictation goes through Fleetify cloud by default; **Settings → Voice** switches it to your own key or **On-device**.
 
+The [Terms of Service](https://fleetify.dev/legal/terms) govern your Fleetify account and the cloud service the app uses, and the [Privacy Policy](https://fleetify.dev/legal/privacy) explains what the app and fleetify.dev collect.
+
 ## How it works
 
 Fleetify is a single Tauri v2 process. Its Rust shell embeds an axum backend on 127.0.0.1 that serves the UI, a REST API and a WebSocket. CLI agents run as local subprocesses, driven over stdio protocols such as ACP or through a terminal; API providers are called over HTTPS, and Ollama over HTTP on your machine or network. MCP sidecars, small servers that ship with the app, give the agents extra tools. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) maps the code.
