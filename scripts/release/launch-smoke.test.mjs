@@ -810,16 +810,17 @@ describe("createUpdateServer", () => {
     const base = await listen(server);
     const asset = "Fleetify_0.2.0_amd64.AppImage";
     const size = ARTIFACT_BYTES.get(asset).length;
-    // Once the response has the file's last byte, the thread pool is kept
-    // busy, so the read that finds the file's end waits, as on a loaded
-    // machine: the client hangs up before it returns, and the response
-    // never finishes.
+    // Once the response has the file's last byte, every thread of libuv's
+    // pool (UV_THREADPOOL_SIZE, 4 by default) is kept busy, so the read that
+    // finds the file's end waits, as on a loaded machine: the client hangs
+    // up before it returns, and the response never finishes.
+    const threads = Number.parseInt(process.env.UV_THREADPOOL_SIZE ?? "", 10) || 4;
     const { closed, stop } = nextClose(server, (res) => {
       const write = res.write.bind(res);
       let written = 0;
       res.write = (chunk, ...rest) => {
         written += chunk.length;
-        if (written >= size) for (let i = 0; i < 4; i += 1) pbkdf2("x", "y", 300_000, 32, "sha512", () => {});
+        if (written >= size) for (let i = 0; i < threads; i += 1) pbkdf2("x", "y", 300_000, 32, "sha512", () => {});
         return write(chunk, ...rest);
       };
     });
