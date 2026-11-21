@@ -34,13 +34,24 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "app", "dmg", "deb", "rpm", "appimage"],
+    "targets": [
+      "nsis",
+      "app",
+      "dmg",
+      "deb",
+      "rpm",
+      "appimage"
+    ],
     "externalBin": [
       "binaries/fleet-memory-mcp",
       "binaries/fleet-dispatch-mcp",
       "binaries/fleet-reveng-mcp",
       "binaries/fleet-browser-mcp"
     ],
+    "resources": {
+      "../LICENSE": "legal/LICENSE",
+      "../NOTICE": "legal/NOTICE"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -52,21 +63,28 @@
     "copyright": "Copyright © 2026 The Fleetify Authors",
     "license": "Apache-2.0",
     "category": "DeveloperTool",
-    "shortDescription": "Local agent fleet for Claude, Codex, Gemini.",
-    "longDescription": "Fleetify is a desktop control plane for Claude, Codex, and Gemini agent sessions — Fleet, the in-app orchestrator, dispatches work to many agents on real projects in parallel, watches progress live, and ships PRs through the same workflow you already use on the command line.",
+    "shortDescription": "A command center for AI agents.",
+    "longDescription": "Run Claude Code, Codex, OpenCode and other AI coding agents side by side from one desktop app. Give each session its own git worktree, follow every session's status and spend in the Fleet hub, and open pull requests without leaving Fleetify.",
     "windows": {
-      "wix": { "language": "en-US" },
+      "wix": {
+        "language": "en-US"
+      },
       "nsis": {
         "compression": "lzma",
         "installMode": "currentUser"
       }
     },
     "macOS": {
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "11.0",
+      "hardenedRuntime": true,
+      "entitlements": "Entitlements.plist"
     },
     "linux": {
       "deb": {
-        "section": "devel"
+        "section": "devel",
+        "depends": [
+          "libwebkit2gtk-4.1-0 (>= 2.40)"
+        ]
       }
     }
   }

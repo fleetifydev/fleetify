@@ -4,6 +4,8 @@
 pub mod ai_git;
 pub mod auth;
 pub mod backend_ready;
+#[cfg(test)]
+mod bundle_config;
 pub mod config;
 pub mod feedback;
 pub mod git;
