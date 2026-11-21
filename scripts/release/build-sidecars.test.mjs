@@ -108,8 +108,18 @@ describe("planBuild", () => {
     }
   });
 
+  test("--target=<triple> throws, pointing at the spaced form", () => {
+    for (const argv of [[`--target=${INTEL_MAC}`], ["--release", "--target="]]) {
+      assert.throws(
+        () => plan(argv, { hostTriple: ARM_MAC }),
+        { message: "--target=<triple> isn't supported: use --target <triple>" },
+        JSON.stringify(argv),
+      );
+    }
+  });
+
   test("a triple with anything but letters, digits, '_', '.' and '-' throws", () => {
-    // cargo runs through a shell, so the triple must not carry shell syntax.
+    // The triple names the staged files: no path, no space, no shell syntax.
     for (const triple of [`${LINUX}; true`, `${LINUX} `, "$(true)", "a/b"]) {
       assert.throws(() => plan(["--target", triple]), /not a target triple/, triple);
       assert.throws(() => plan([], { env: { TAURI_ENV_TARGET_TRIPLE: triple } }), /not a target triple/, triple);

@@ -15,7 +15,11 @@
 //! `tauri build` only ever compile the app. When a sidecar is missing,
 //! `builtin_resolves()` returns false and that MCP silently disappears from
 //! the agent (no memory/recall, no dispatch, no reveng). This step is wired
-//! into `tauri.conf.json::build.beforeDevCommand` / `beforeBuildCommand`.
+//! into `tauri.conf.json::build.beforeDevCommand` / `beforeBuildCommand`, so
+//! `tauri dev` and a plain `tauri build` run it. A release build adds
+//! `tauri.release.conf.json`, whose `beforeBuildCommand` builds only the UI:
+//! the release workflow runs this script itself first, with
+//! `--release --target <triple>`.
 //! (The Claude permission gate used to be a sidecar too; it now runs
 //! in-process over HTTP - see routers::internal::mcp_permission_*.)
 //!
@@ -50,9 +54,8 @@ const SIDECARS = [
   { pkg: 'browser-mcp', bin: 'fleet-browser-mcp' },
 ];
 
-// What a target triple may contain. Cargo runs through a shell (see
-// buildAndStage), so a triple must not carry shell syntax, and it ends up
-// in the staged file names.
+// What a target triple may contain. It names the staged files, so it holds
+// no path (a custom target spec) and no space.
 const TRIPLE = /^[A-Za-z0-9_.-]+$/;
 
 /**
@@ -69,8 +72,9 @@ const TRIPLE = /^[A-Za-z0-9_.-]+$/;
  *   the repo root unless CARGO_TARGET_DIR is absolute.
  * - `exe`: ".exe" for a Windows triple.
  *
- * Throws when `--target` has no triple after it, or the triple has anything
- * but letters, digits, '_', '.' and '-' in it.
+ * Throws when `--target` has no triple after it, when the triple comes as
+ * `--target=<triple>`, or when it has anything but letters, digits, '_',
+ * '.' and '-' in it.
  *
  * @param {{ argv: string[], env: Record<string, string | undefined>, hostTriple: string }} input
  * @returns {{ check: boolean, release: boolean, profile: "debug"|"release", triple: string, cargoTarget: string|null, outDir: string, exe: ""|".exe" }}
@@ -89,6 +93,8 @@ export function planBuild({ argv, env, hostTriple }) {
       if (!value || value.startsWith('-')) throw new Error('--target needs a target triple');
       target = value;
       i += 1;
+    } else if (argv[i].startsWith('--target=')) {
+      throw new Error("--target=<triple> isn't supported: use --target <triple>");
     }
   }
   const profile = release ? 'release' : 'debug';
@@ -140,10 +146,12 @@ function buildAndStage(plan) {
   if (plan.cargoTarget) cargoArgs.push('--target', plan.cargoTarget);
   console.log(`[build-sidecars] ${plan.profile} for ${plan.triple}: cargo ${cargoArgs.join(' ')}`);
 
-  // `shell: true` so the OS resolves `cargo` via PATH (+ PATHEXT on Windows),
-  // mirroring scripts/dev-tauri-wt.mjs. From the repo root, so that a
-  // relative CARGO_TARGET_DIR means the same folder to cargo as to outDir.
-  const built = spawnSync('cargo', cargoArgs, { stdio: 'inherit', shell: true, cwd: ROOT });
+  // No shell: rustup's cargo is a real executable on every OS, which Node
+  // finds on PATH itself (on Windows it also tries the name with .com and
+  // .exe appended), so the arguments reach cargo exactly as given. From the
+  // repo root, so that a relative CARGO_TARGET_DIR means the same folder to
+  // cargo as to outDir.
+  const built = spawnSync('cargo', cargoArgs, { stdio: 'inherit', cwd: ROOT });
   if (built.error) {
     console.error(`[build-sidecars] failed to spawn cargo: ${built.error.message}`);
     return 1;
@@ -213,9 +221,9 @@ function checkExternalBinDrift() {
   return 1;
 }
 
-/** Host target triple from `rustc -vV` (the `host:` line), or null. */
+/** Host target triple from `rustc -vV` (the `host:` line), or null. No shell, as for cargo. */
 function rustcHostTriple() {
-  const r = spawnSync('rustc', ['-vV'], { encoding: 'utf8', shell: true, cwd: ROOT });
+  const r = spawnSync('rustc', ['-vV'], { encoding: 'utf8', cwd: ROOT });
   const m = (r.stdout || '').match(/^host:\s*(.+)$/m);
   return m ? m[1].trim() : null;
 }
