@@ -1012,10 +1012,29 @@ const scriptVariables = (args) =>
   args.every((arg) => arg === "-r" || /^[a-z_][a-z0-9_]*(=.*)?$/s.test(arg)) ? null : "sets a variable other than the script's own, lower-case ones";
 
 /**
- * A path with a node_modules, scripts or src-tauri folder in it, whose files
- * the job runs, wherever: ./ and .. don't hide one, as each part is read.
+ * A rule for printf's arguments. -v makes it set a variable, which must be
+ * one of the script's own, lower-case ones, as read's and local's must. bash
+ * reads options before the format alone, until --, and takes -v's name
+ * either as the next argument or joined to it (-vname); printf has no other
+ * option.
  */
-const PROTECTED_PATH = /(^|\/)(node_modules|scripts|src-tauri)(\/|$)/;
+function printfRule(args) {
+  for (let n = 0; n < args.length && args[n].startsWith("-") && args[n] !== "--"; n += 1) {
+    if (!args[n].startsWith("-v")) return `takes ${args[n]}, which isn't an option of printf`;
+    const name = args[n] === "-v" ? args[(n += 1)] : args[n].slice(2);
+    if (!/^[a-z_][a-z0-9_]*$/.test(name ?? "")) return "sets a variable other than the script's own, lower-case ones";
+  }
+  return null;
+}
+
+/**
+ * A path with a node_modules, scripts, src-tauri or release folder in it,
+ * wherever: ./ and .. don't hide one, as each part is read. The first three
+ * hold what the job runs. A release folder holds what ships: release.yml's
+ * assembled release, which assemble attests and then uploads, or a target's
+ * release folder, whose binaries a job with the keys bundles.
+ */
+const PROTECTED_PATH = /(^|\/)(node_modules|scripts|src-tauri|release)(\/|$)/;
 
 /** The copies a job with the keys makes into the checkout: the hand-off's listed files, and the notices. */
 const KEYED_COPIES = [
@@ -1056,7 +1075,7 @@ const KEYED_TOOLS = new Map([
   ["git", (args) => (["ls-files --others --", "diff --exit-code --"].includes(args.slice(0, 3).join(" ")) ? null : "takes only ls-files --others -- <paths> or diff --exit-code -- <paths>")],
   ["local", scriptVariables],
   ["mkdir", anything],
-  ["printf", anything],
+  ["printf", printfRule],
   ["read", scriptVariables],
   ["rm", anything],
   ["rustup", exactly(["toolchain", "install"], ["show", "active-toolchain"])],
@@ -1073,9 +1092,10 @@ const KEYED_TOOLS = new Map([
  * What a simple command's assignments and redirections do that a job with a
  * key may not: set a variable a tool reads (PATH, GIT_*, LD_*, NODE_OPTIONS,
  * …), as only lower-case names and those `allowed` may be set; write under
- * node_modules, scripts or src-tauri, or to $GITHUB_ENV or $GITHUB_PATH,
- * which set later steps' environment, the steps of actions included; or use
- * a here-document, which simpleCommands doesn't read.
+ * node_modules, scripts, src-tauri or release (PROTECTED_PATH), or to
+ * $GITHUB_ENV or $GITHUB_PATH, which set later steps' environment, the steps
+ * of actions included; or use a here-document, which simpleCommands doesn't
+ * read.
  *
  * @param {{ name: string }[]} assignments
  * @param {{ op: string, target: string }[]} redirects
@@ -1450,7 +1470,13 @@ capture() {
       "NODE_OPTIONS=--require=./evil node scripts/release/check-artifact.mjs x y",
       "read -r PATH <<< ./bin",
       "local PATH=./bin",
+      "printf -v PATH '%s' ./bin",
+      "printf -vNODE_OPTIONS '%s' --require=./evil",
+      "printf -v",
+      "printf -x '%s' y",
       "read -r x <<EOF",
+      // Writes into the binaries a job with the keys bundles.
+      'printf x > "target/$TRIPLE/release/fleetify-app"',
     ]) {
       assert.notDeepEqual(refused(script), [], script);
     }
@@ -1476,6 +1502,10 @@ capture() {
       'mkdir -p "$(dirname "$file")"',
       'cp -p "$out/$file" "$file"',
       'capture() {\n  codesign "$@" "$app"\n}\ncapture verify --verify',
+      "printf -v line '%s' x",
+      "printf -vline '%s' x",
+      "printf -- '%s' -v",
+      "printf '%s\\n' -v PATH",
     ]) {
       assert.deepEqual(refused(script), [], script);
     }
@@ -2747,7 +2777,7 @@ const RELEASE_BOT_TOOLS = new Map([
   ["gh", ghRule],
   ["git", exactly(["ls-remote", "--tags", "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY", "refs/tags/$TAG"])],
   ["jq", exactly(["-r", ".version"])],
-  ["printf", anything],
+  ["printf", printfRule],
   ["sha256sum", exactly(["SHA256SUMS"])],
   ["sleep", exactly(["10"])],
   ["sort", exactly([])],
@@ -3038,6 +3068,20 @@ describe("release.yml", () => {
     assert.deepEqual([build.needs].flat(), ["release-please"]);
     assert.equal(String(build.if).replace(/\s+/g, " ").trim(), "needs.release-please.outputs.release_created == 'true'");
     assert.deepEqual(build.with, { ref: fromReleasePlease("sha"), environment: "release", version: fromReleasePlease("version") });
+  });
+
+  yamlTest("no job but build has a condition of its own, so each runs only once every job it needs has passed", () => {
+    // A job's own condition takes the place of the success() GitHub puts in
+    // front of it: with if: ${{ !cancelled() }}, publish would publish after
+    // a failed smoke.
+    const conditions = Object.fromEntries(Object.entries(workflow(RELEASE).jobs ?? {}).map(([id, job]) => [id, job.if === undefined ? undefined : String(job.if).replace(/\s+/g, " ").trim()]));
+    assert.deepEqual(conditions, {
+      "release-please": undefined,
+      build: "needs.release-please.outputs.release_created == 'true'",
+      assemble: undefined,
+      smoke: undefined,
+      publish: undefined,
+    });
   });
 
   yamlTest("assemble checks every signature against the shipped release key, with the release scripts of the draft's commit", () => {
@@ -3437,6 +3481,16 @@ describe("release.yml", () => {
       "cat <<EOF",
       "sleep 3600",
       "sort -o x",
+      // Variables set another way, which later commands of the step read.
+      "printf -v PATH '%s' ./bin",
+      "printf -vGH_TOKEN '%s' x",
+      "printf -v GH_REPO '%s' other/repo",
+      "printf -x '%s' y",
+      // Writes into the assembled release, which was attested before it is uploaded.
+      'echo x > release/latest.json',
+      "printf x >> release/SHA256SUMS",
+      'jq -r .version > "./release/install.sh"',
+      'gh release view "$TAG" --json assets > release/assets.json',
       // gh api calls but the one, and the hashing in another form.
       "gh api repos/fleetifydev/fleetify/releases --jq length",
       'gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/1"',
@@ -3467,6 +3521,7 @@ describe("release.yml", () => {
       "uploaded=$(gh release view \"$TAG\" --json assets --jq '.assets[] | \"\\(.digest // \"none\" | ltrimstr(\"sha256:\"))  \\(.name)\"' | LC_ALL=C sort)",
       "own=$(cd release && sha256sum SHA256SUMS)",
       "assembled=$(printf '%s\\n' \"$(< release/SHA256SUMS)\" \"$own\" | LC_ALL=C sort)",
+      "printf -v line '%s' x",
     ]) {
       assert.deepEqual(refused(script), [], script);
     }
