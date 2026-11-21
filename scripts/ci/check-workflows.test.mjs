@@ -3041,7 +3041,7 @@ describe("release.yml", () => {
     const pending = runReleaseStep(look, { env: RELEASE_ENV, releases: [release("v1.2.3", true), release("v1.2.2", false)] });
     assert.equal(pending.status, 0, pending.output);
     assert.equal(pending.outputs, "pending=true\n");
-    assert.match(pending.output, /::warning::a draft release is pending: publish it by re-running its release run, or delete it\. The release pull request waits until then\./);
+    assert.match(pending.output, /::warning::a draft release is pending: see "If a run fails" in docs\/RELEASE\.md\. The release pull request waits until it is published or deleted\./);
     const unanswered = runReleaseStep(look, { env: RELEASE_ENV });
     assert.notEqual(unanswered.status, 0, unanswered.output);
     assert.equal(unanswered.outputs, "", "the check gave an answer it didn't get");

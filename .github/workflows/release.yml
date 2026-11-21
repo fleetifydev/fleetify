@@ -122,7 +122,7 @@ jobs:
         run: |
           drafts=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq 'map(select(.draft)) | length')
           if [ "$drafts" -gt 0 ]; then
-            echo "::warning::a draft release is pending: publish it by re-running its release run, or delete it. The release pull request waits until then."
+            echo "::warning::a draft release is pending: see \"If a run fails\" in docs/RELEASE.md. The release pull request waits until it is published or deleted."
             echo "pending=true" >> "$GITHUB_OUTPUT"
           else
             echo "pending=false" >> "$GITHUB_OUTPUT"
