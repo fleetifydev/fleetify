@@ -915,6 +915,44 @@ describe("build.yml", () => {
     assert.ok(cleanup && requires(cleanup.if, "always()") && requires(cleanup.if, macOS), "the keychain isn't deleted whatever happened");
   });
 
+  yamlTest("each identity step signs a probe binary the way Tauri will, before Tauri runs", () => {
+    // Tauri runs codesign --force -s <identity> --options runtime
+    // --entitlements <file> <binary>, without --keychain. The probe does the
+    // same, so a refusal shows before the bundling, with what codesign sees.
+    const entitlements = `src-tauri/${JSON.parse(read("src-tauri/tauri.conf.json")).bundle.macOS.entitlements}`;
+    const steps = jobOf(BUILD, "bundle").steps ?? [];
+    const identitySteps = steps.filter((step) => /security create-keychain/.test(scriptOf(step)));
+    assert.equal(identitySteps.length, 2, "two identity steps make a keychain");
+    const firstBundle = steps.findIndex(isTauriBundle);
+    for (const step of identitySteps) {
+      const where = step.name ?? "an identity step";
+      const script = scriptOf(step);
+      const signs = script.split("\n").filter((line) => /(^|\s)codesign --force(\s|$)/.test(line));
+      assert.ok(signs.length > 0, `${where} doesn't sign a probe`);
+      const [first] = signs;
+      assert.doesNotMatch(first, /--keychain/, `${where}'s first probe names a keychain, which Tauri's codesign doesn't`);
+      assert.match(first, /\s-s "\$IDENTITY"\s/, `${where}'s first probe doesn't sign as "$IDENTITY"`);
+      assert.match(first, /\s--options runtime\s/, `${where}'s probe doesn't turn the hardened runtime on`);
+      assert.ok(first.includes(` --entitlements ${entitlements} "$probe"`), `${where}'s probe doesn't sign "$probe" with ${entitlements}`);
+      assert.match(script, /^\s*probe="\$dir\//m, `${where}'s probe isn't in $dir, the step's own folder`);
+      assert.match(script, /codesign --verify --strict "\$probe"/, `${where} doesn't verify the probe's signature`);
+      const probeAt = script.indexOf(first);
+      assert.ok(probeAt > script.search(/sudo security add-trusted-cert /), `${where} probes before it trusts the certificate`);
+      assert.ok(probeAt > script.search(/security find-identity -v -p codesigning "\$keychain"/), `${where} probes before it checks the identity is valid`);
+      // What it prints when the probe fails: every identity codesign can see,
+      // the search list, and a retry with the keychain and one by SHA-1.
+      for (const diagnostic of [
+        /^\s*security find-identity -v -p codesigning( \|\||$)/m,
+        /^\s*security list-keychains -d user( \|\||$)/m,
+        /\s--keychain "\$keychain"/,
+        /openssl x509 -in "\$cert" -noout -fingerprint -sha1/,
+      ]) {
+        assert.match(script, diagnostic, `${where} misses the diagnostic ${diagnostic}`);
+      }
+      assert.ok(steps.indexOf(step) < firstBundle, `${where} runs after tauri bundle`);
+    }
+  });
+
   yamlTest("the macOS identity steps and the keychain cleanup give up after five minutes", () => {
     // A security command waiting on a dialog then fails in minutes, and the
     // job keeps its logs; a cancelled always() step needs a force-cancel,

@@ -377,6 +377,37 @@ jobs:
             echo "::error::codesign can't sign with \"$IDENTITY\": security find-identity -v doesn't list it as valid"
             exit 1
           fi
+          # The probe: a binary like the ones Tauri signs (built here with cc:
+          # thin, of this machine's arch, linker-signed on arm64), signed the
+          # way Tauri signs them, with no --keychain: codesign finds the
+          # identity by name in the search list. A refusal shows here, with
+          # what codesign sees, rather than inside tauri bundle.
+          probe="$dir/probe"
+          printf 'int main(void) { return 0; }\n' | cc -x c -o "$probe" -
+          if codesign --force -s "$IDENTITY" --options runtime --entitlements src-tauri/Entitlements.plist "$probe" \
+            && codesign --verify --strict "$probe"; then
+            echo "codesign signs a probe as \"$IDENTITY\", the way Tauri will"
+          else
+            echo "Code-signing identities in the whole keychain search list:"
+            security find-identity -v -p codesigning || true
+            echo "The user keychain search list:"
+            security list-keychains -d user || true
+            retry() {
+              local how=$1
+              shift
+              if codesign --force "$@" --options runtime --entitlements src-tauri/Entitlements.plist "$probe" \
+                && codesign --verify --strict "$probe"; then
+                echo "Retry $how: signed"
+              else
+                echo "Retry $how: failed"
+              fi
+            }
+            retry "with --keychain $keychain" -s "$IDENTITY" --keychain "$keychain"
+            sha1=$(openssl x509 -in "$cert" -noout -fingerprint -sha1 | sed -e 's/^[^=]*=//' -e 's/://g')
+            retry "by the certificate's SHA-1, $sha1" -s "$sha1"
+            echo "::error::codesign can't sign as \"$IDENTITY\" the way Tauri does; the lines above show what it sees"
+            exit 1
+          fi
           echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
       # The release identity, from the release environment. Its certificate
       # alone is read out of the p12 for the trust setting; the key goes
@@ -414,6 +445,37 @@ jobs:
           if ! grep -qF "\"$IDENTITY\"" <<< "$valid"; then
             security find-identity -p codesigning "$keychain"
             echo "::error::codesign can't sign with \"$IDENTITY\": security find-identity -v doesn't list it as valid"
+            exit 1
+          fi
+          # The probe: a binary like the ones Tauri signs (built here with cc:
+          # thin, of this machine's arch, linker-signed on arm64), signed the
+          # way Tauri signs them, with no --keychain: codesign finds the
+          # identity by name in the search list. A refusal shows here, with
+          # what codesign sees, rather than inside tauri bundle.
+          probe="$dir/probe"
+          printf 'int main(void) { return 0; }\n' | cc -x c -o "$probe" -
+          if codesign --force -s "$IDENTITY" --options runtime --entitlements src-tauri/Entitlements.plist "$probe" \
+            && codesign --verify --strict "$probe"; then
+            echo "codesign signs a probe as \"$IDENTITY\", the way Tauri will"
+          else
+            echo "Code-signing identities in the whole keychain search list:"
+            security find-identity -v -p codesigning || true
+            echo "The user keychain search list:"
+            security list-keychains -d user || true
+            retry() {
+              local how=$1
+              shift
+              if codesign --force "$@" --options runtime --entitlements src-tauri/Entitlements.plist "$probe" \
+                && codesign --verify --strict "$probe"; then
+                echo "Retry $how: signed"
+              else
+                echo "Retry $how: failed"
+              fi
+            }
+            retry "with --keychain $keychain" -s "$IDENTITY" --keychain "$keychain"
+            sha1=$(openssl x509 -in "$cert" -noout -fingerprint -sha1 | sed -e 's/^[^=]*=//' -e 's/://g')
+            retry "by the certificate's SHA-1, $sha1" -s "$sha1"
+            echo "::error::codesign can't sign as \"$IDENTITY\" the way Tauri does; the lines above show what it sees"
             exit 1
           fi
       # The release keys: the updater key signs the updater artifacts, and
