@@ -963,3 +963,255 @@ describe("release-dry-run.yml", () => {
     );
   });
 });
+
+const SMOKE = `${WORKFLOWS}/smoke.yml`;
+
+/** What `dpkg -L fleetify` lists for an installed .deb, in part. */
+const DPKG_LIST = [
+  "/.",
+  "/usr",
+  "/usr/bin",
+  "/usr/bin/fleet-browser-mcp",
+  "/usr/bin/fleet-dispatch-mcp",
+  "/usr/bin/fleet-memory-mcp",
+  "/usr/bin/fleet-reveng-mcp",
+  "/usr/bin/fleetify-app",
+  "/usr/lib",
+  "/usr/lib/Fleetify",
+  "/usr/lib/Fleetify/legal",
+  "/usr/lib/Fleetify/legal/LICENSE",
+  "/usr/lib/Fleetify/legal/NOTICE",
+  "/usr/lib/Fleetify/legal/THIRD-PARTY-NOTICES",
+  "/usr/share/applications/Fleetify.desktop",
+];
+
+/**
+ * Run a smoke step's script with stand-ins for what it calls, and return
+ * each call of node: { args, wrappers }. node records its arguments;
+ * xvfb-run and dbus-run-session record that they wrapped it, with their
+ * flags; sudo does nothing; dpkg and plutil answer as for an installed
+ * Fleetify. The script runs in a folder whose release/ holds a stand-in
+ * AppImage and .deb of version 1.2.3, with RUNNER_TEMP inside it.
+ */
+function runSmokeStep(script, env) {
+  return inTempDir((dir) => {
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    mkdirSync(join(dir, "release"));
+    mkdirSync(join(dir, "runner-temp"));
+    for (const name of ["Fleetify_1.2.3_amd64.AppImage", "Fleetify_1.2.3_amd64.deb"]) writeFileSync(join(dir, "release", name), "");
+    const log = join(dir, "node-calls.jsonl");
+    writeFileSync(
+      join(dir, "record.mjs"),
+      'import { appendFileSync } from "node:fs";\n' +
+        "appendFileSync(process.env.STUB_LOG, `${JSON.stringify({ args: process.argv.slice(2), wrappers: process.env.SMOKE_WRAPPERS ?? \"\" })}\\n`);\n",
+    );
+    const stub = (name, body) => writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    stub("node", `exec "${process.execPath}" "${join(dir, "record.mjs")}" "$@"`);
+    stub("xvfb-run", 'flags=""\nif [ "$1" = -a ]; then flags=" -a"; shift; fi\nSMOKE_WRAPPERS="${SMOKE_WRAPPERS}xvfb-run$flags > " exec "$@"');
+    stub("dbus-run-session", 'flags=""\nif [ "$1" = -- ]; then flags=" --"; shift; fi\nSMOKE_WRAPPERS="${SMOKE_WRAPPERS}dbus-run-session$flags > " exec "$@"');
+    stub("sudo", "exit 0");
+    stub("dpkg", `[ "$1" = -L ] && [ "$2" = fleetify ] || exit 1\ncat <<'LIST'\n${DPKG_LIST.join("\n")}\nLIST`);
+    stub("plutil", "echo fleetify-app");
+    const result = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", script], {
+      cwd: dir,
+      env: { PATH: `${bin}:${process.env.PATH}`, HOME: process.env.HOME, RUNNER_TEMP: join(dir, "runner-temp"), STUB_LOG: log, ...env },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, `the step's script failed:\n${result.stdout}${result.stderr}`);
+    const calls = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
+    // Paths under the temporary folder, made relative so the checks can name them.
+    const relative = (text) => text.split(dir).join("<dir>");
+    return calls.map(({ args, wrappers }) => ({ args: args.map(relative), wrappers }));
+  });
+}
+
+/** The value after `flag` in `args`, or undefined; each flag appears once at most. */
+function argValue(args, flag) {
+  const at = args.indexOf(flag);
+  assert.ok(args.indexOf(flag, at + 1) === -1 || at === -1, `${flag} is given twice: ${args.join(" ")}`);
+  return at === -1 ? undefined : args[at + 1];
+}
+
+/** The two variable settings each launch step runs with: none set, and all set. */
+const SMOKE_SETTINGS = [
+  { CSP_ORIGIN: "", EXPECT_POSTHOG_SINK: "false", REHEARSE: "false" },
+  { CSP_ORIGIN: "https://eu.i.posthog.com", EXPECT_POSTHOG_SINK: "true", REHEARSE: "true" },
+];
+
+let smokeLaunches;
+
+/**
+ * Every launch step of smoke.yml, run under each of SMOKE_SETTINGS:
+ * { job, step, runs: [{ settings, calls }] }. Run once, as each run starts
+ * bash and node.
+ */
+function launches() {
+  smokeLaunches ??= Object.entries(workflow(SMOKE).jobs ?? {}).flatMap(([job, { steps = [] }]) =>
+    steps
+      .filter((step) => scriptOf(step).includes("launch-smoke.mjs"))
+      .map((step) => ({
+        job,
+        step,
+        runs: SMOKE_SETTINGS.map((settings) => ({
+          settings,
+          calls: runSmokeStep(step.run, {
+            VERSION: "1.2.3",
+            APP_EXE: "C:\\Users\\runner\\AppData\\Local\\Fleetify\\fleetify-app.exe",
+            LEGAL_DIR: "C:\\Users\\runner\\AppData\\Local\\Fleetify\\legal",
+            ...settings,
+          }),
+        })),
+      })),
+  );
+  return smokeLaunches;
+}
+
+/** A launch step's bundle type: the one it rehearses with when asked to. */
+const bundleTypeOf = ({ runs }) => argValue(runs[1].calls[0]?.args ?? [], "--bundle-type");
+
+describe("smoke.yml", () => {
+  yamlTest("it takes the version, whether to rehearse an update, and a pinned designated requirement", () => {
+    const inputs = triggersOf(workflow(SMOKE)).workflow_call?.inputs ?? {};
+    assert.deepEqual(Object.keys(inputs).sort(), ["expected-dr", "rehearse", "version"]);
+    const shape = ({ type, required, default: fallback }) => ({ type, required, default: fallback });
+    assert.deepEqual(shape(inputs.version), { type: "string", required: true, default: undefined });
+    assert.deepEqual(shape(inputs.rehearse), { type: "boolean", required: true, default: undefined });
+    assert.deepEqual(shape(inputs["expected-dr"]), { type: "string", required: false, default: "" });
+    assert.deepEqual(
+      Object.fromEntries(["VERSION", "REHEARSE", "EXPECTED_DR", "CSP_ORIGIN", "EXPECT_POSTHOG_SINK"].map((name) => [name, workflow(SMOKE).env?.[name]])),
+      {
+        VERSION: "${{ inputs.version }}",
+        REHEARSE: "${{ inputs.rehearse }}",
+        EXPECTED_DR: "${{ inputs.expected-dr }}",
+        CSP_ORIGIN: "${{ vars.VITE_POSTHOG_HOST }}",
+        EXPECT_POSTHOG_SINK: "${{ vars.POSTHOG_API_KEY != '' }}",
+      },
+    );
+  });
+
+  yamlTest("each job checks out only scripts/release, into tools/, and runs the scripts from there", () => {
+    // Without the source tree at the workspace's root, nothing the bundles
+    // do can lean on it, as nothing a user runs can.
+    const nvmrc = read(".nvmrc").trim();
+    for (const [id, job] of Object.entries(workflow(SMOKE).jobs ?? {})) {
+      const steps = job.steps ?? [];
+      const checkouts = steps.filter((step) => usesAction(step, "actions/checkout"));
+      assert.equal(checkouts.length, 1, `job ${id} must check out once`);
+      assert.deepEqual(checkouts[0].with, { path: "tools", "sparse-checkout": "scripts/release", "sparse-checkout-cone-mode": false, "persist-credentials": false }, `job ${id}'s checkout`);
+      const node = steps.find((step) => usesAction(step, "actions/setup-node"));
+      assert.equal(String(node?.with?.["node-version"]), nvmrc, `job ${id} must set up Node ${nvmrc}, as .nvmrc says (it isn't checked out)`);
+      const download = steps.find((step) => usesAction(step, "actions/download-artifact"));
+      assert.deepEqual(download?.with, { name: "release", path: "release" }, `job ${id} must download the release into release/`);
+      const stray = steps.flatMap((step) => scriptOf(step).split("\n")).filter((line) => /(?<!tools\/)\bscripts\//.test(line));
+      assert.deepEqual(stray, [], `job ${id} runs scripts from outside tools/`);
+    }
+  });
+
+  scriptTest("each launch passes the CSP origin as given, empty or not, and expects the PostHog sink only when the key is set", () => {
+    assert.equal(launches().length, 4, "smoke.yml must launch the AppImage, the .deb, the NSIS install and the macOS app");
+    for (const { job, step, runs } of launches()) {
+      for (const { settings, calls } of runs) {
+        const where = `job ${job}, ${step.name ?? "a launch"}, with ${JSON.stringify(settings)}`;
+        assert.equal(calls.length, 1, `${where}: launch-smoke.mjs must run once`);
+        const [{ args }] = calls;
+        assert.deepEqual(args.slice(0, 2), ["tools/scripts/release/launch-smoke.mjs", "run"], where);
+        assert.equal(argValue(args, "--csp-origin"), settings.CSP_ORIGIN, `${where}: the CSP origin must be passed quoted`);
+        assert.equal(args.includes("--expect-posthog-sink"), settings.EXPECT_POSTHOG_SINK === "true", `${where}: --expect-posthog-sink`);
+      }
+    }
+  });
+
+  scriptTest("each launch rehearses an update of its own bundle type when asked, and only then, in a home of its own", () => {
+    const types = [];
+    const homes = new Set();
+    for (const launch of launches()) {
+      const { job, runs } = launch;
+      const [plain, all] = runs.map(({ calls }) => calls[0]?.args ?? []);
+      assert.deepEqual([argValue(plain, "--rehearse"), argValue(plain, "--bundle-type")], [undefined, undefined], `job ${job} rehearses unasked`);
+      assert.equal(argValue(all, "--rehearse"), "release", `job ${job} doesn't rehearse against release/ when asked`);
+      const type = bundleTypeOf(launch);
+      types.push(type);
+      for (const args of [plain, all]) assert.equal(argValue(args, "--home"), `<dir>/runner-temp/home-${type}`, `job ${job}'s home`);
+      homes.add(argValue(all, "--home"));
+    }
+    assert.deepEqual(types.sort(), ["app", "appimage", "deb", "nsis"]);
+    assert.equal(homes.size, types.length, "two launches share a home");
+  });
+
+  scriptTest("each bundle starts the way a user starts it", () => {
+    const byType = Object.fromEntries(launches().map((launch) => [bundleTypeOf(launch), launch]));
+    const callOf = (type) => byType[type].runs[1].calls[0];
+    const linux = "xvfb-run -a > dbus-run-session -- > ";
+    // The AppImage runs extracted, as on a system without FUSE; the smoke
+    // reads the app's real working directory from /proc on Linux.
+    const appimage = callOf("appimage");
+    assert.equal(appimage.wrappers, linux);
+    assert.equal(argValue(appimage.args, "--app"), "release/Fleetify_1.2.3_amd64.AppImage");
+    assert.equal(argValue(appimage.args, "--app-arg"), "--appimage-extract-and-run");
+    const deb = callOf("deb");
+    assert.equal(deb.wrappers, linux);
+    assert.deepEqual([argValue(deb.args, "--app"), argValue(deb.args, "--legal-dir")], ["/usr/bin/fleetify-app", "/usr/lib/Fleetify/legal"]);
+    const nsis = callOf("nsis");
+    assert.equal(nsis.wrappers, "");
+    assert.deepEqual(
+      [argValue(nsis.args, "--app"), argValue(nsis.args, "--cwd"), argValue(nsis.args, "--legal-dir")],
+      ["C:\\Users\\runner\\AppData\\Local\\Fleetify\\fleetify-app.exe", "C:\\", "C:\\Users\\runner\\AppData\\Local\\Fleetify\\legal"],
+    );
+    const app = callOf("app");
+    assert.equal(app.wrappers, "");
+    assert.deepEqual(
+      [argValue(app.args, "--app"), argValue(app.args, "--legal-dir")],
+      ["<dir>/runner-temp/Applications/Fleetify.app/Contents/MacOS/fleetify-app", "<dir>/runner-temp/Applications/Fleetify.app/Contents/Resources/legal"],
+    );
+  });
+
+  scriptTest("the macOS signature check gets --expected-dr only when one is given", () => {
+    // An empty --expected-dr is a usage error; a pinned one is read from tools/.
+    const steps = jobOf(SMOKE, "macos").steps ?? [];
+    const check = steps.find((step) => scriptOf(step).includes("macos-signature.mjs"));
+    assert.ok(check, "the macOS job doesn't check the app's signature");
+    assert.ok(steps.indexOf(check) < steps.findIndex((step) => scriptOf(step).includes("launch-smoke.mjs")), "the signature is checked before the launch");
+    const [shapeOnly] = runSmokeStep(check.run, { EXPECTED_DR: "" });
+    assert.deepEqual(shapeOnly.args, ["tools/scripts/release/macos-signature.mjs", "<dir>/runner-temp/dmg/Fleetify.app"]);
+    const [pinned] = runSmokeStep(check.run, { EXPECTED_DR: "scripts/release/macos-designated-requirement.txt" });
+    assert.deepEqual(pinned.args, [
+      "tools/scripts/release/macos-signature.mjs",
+      "<dir>/runner-temp/dmg/Fleetify.app",
+      "--expected-dr",
+      "tools/scripts/release/macos-designated-requirement.txt",
+    ]);
+  });
+
+  yamlTest("the .rpm resolves on Fedora, and on openSUSE for information", () => {
+    const steps = jobOf(SMOKE, "linux").steps ?? [];
+    const fedora = steps.filter((step) => /docker run .*\bfedora:\d+ dnf install -y --nogpgcheck /.test(scriptOf(step)));
+    assert.equal(fedora.length, 1, "the Linux job must install the .rpm with dnf in a Fedora container");
+    assert.equal(fedora[0]["continue-on-error"], undefined, "Fedora's resolution must fail the job");
+    const suse = steps.filter((step) => /docker run .*\bopensuse\/tumbleweed zypper --non-interactive install --allow-unsigned-rpm /.test(scriptOf(step)));
+    assert.deepEqual(suse.map((step) => [step.name, step["continue-on-error"]]), [["openSUSE rpm resolution (informational)", true]]);
+  });
+
+  yamlTest("a failed smoke keeps its homes and the app's logs", () => {
+    const names = [];
+    for (const [id, job] of Object.entries(workflow(SMOKE).jobs ?? {})) {
+      const upload = (job.steps ?? []).find((step) => usesAction(step, "actions/upload-artifact") && requires(step.if, "failure()"));
+      assert.ok(upload, `job ${id} uploads nothing when it fails`);
+      // The homes hold .fleetify and .local, which the upload skips unless told otherwise.
+      assert.deepEqual([upload.with?.path, upload.with?.["include-hidden-files"], upload.with?.["retention-days"]], ["${{ runner.temp }}/home-*", true, 7], `job ${id}`);
+      assert.match(String(upload.with?.name), /^smoke-logs-/, `job ${id}`);
+      names.push(String(upload.with.name).replace("${{ matrix.arch }}", "<arch>"));
+    }
+    assert.equal(new Set(names).size, names.length, "two jobs upload logs under one name");
+  });
+});
+
+describe("release-dry-run.yml's smoke", () => {
+  yamlTest("it smoke-tests the assembled release, rehearsing updates only with a dry-run build", () => {
+    // Only a dry-run build's updater asks the smoke's update server.
+    const smoke = jobOf(DRY_RUN, "smoke");
+    assert.equal(smoke.uses, "./.github/workflows/smoke.yml");
+    assert.deepEqual([smoke.needs].flat().sort(), ["assemble", "meta"]);
+    assert.deepEqual(smoke.with, { version: "${{ needs.meta.outputs.version }}", rehearse: "${{ needs.meta.outputs.environment == 'dry-run' }}" });
+  });
+});

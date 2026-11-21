@@ -1,6 +1,7 @@
-# The release dry run: builds the bundles on every platform (build.yml) and
-# assembles them into a release, checking every signature, without
-# publishing anything. It doesn't block a merge.
+# The release dry run: builds the bundles on every platform (build.yml),
+# assembles them into a release, checking every signature, and smoke-tests
+# each bundle (smoke.yml), without publishing anything. A dry-run build also
+# rehearses an update with each bundle type. It doesn't block a merge.
 #
 # It runs on pull requests that change what a release build reads, on
 # pushes to main (a release commit gets its own build from the release
@@ -157,3 +158,11 @@ jobs:
           path: release
           if-no-files-found: error
           retention-days: 14
+
+  smoke:
+    needs: [meta, assemble]
+    uses: ./.github/workflows/smoke.yml
+    with:
+      version: ${{ needs.meta.outputs.version }}
+      # Only a dry-run build's updater asks the smoke's update server.
+      rehearse: ${{ needs.meta.outputs.environment == 'dry-run' }}

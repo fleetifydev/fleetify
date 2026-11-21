@@ -1,0 +1,265 @@
+# Smoke-tests a release's bundles: each is installed, or unpacked, and
+# started the way a user starts it, from the filesystem root with a fresh
+# home, by scripts/release/launch-smoke.mjs, whose header lists the checks.
+# With rehearse, each also rehearses an update: the app must find, download
+# and verify version 99.0.0 of its own bundle type from a local update
+# server, which only a dry-run build asks.
+#
+# Each job checks out only scripts/release, into tools/, so the bundles run
+# without the source tree, as they do on a user's machine. The release
+# comes from the run's release artifact.
+#
+# The variables say what the build compiled in. CSP_ORIGIN, the PostHog host
+# the renderer got, must be allowed by the UI's content security policy;
+# empty, as on a fork's pull request, it isn't checked. With a PostHog
+# project key, the app's log must show the PostHog sink starting.
+name: Smoke-test release bundles
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: The release's version, MAJOR.MINOR.PATCH.
+        required: true
+        type: string
+      rehearse:
+        description: Rehearse an update with each bundle (dry-run builds only).
+        required: true
+        type: boolean
+      expected-dr:
+        description: The pinned macOS designated requirement, as a path in the repository; empty to check its shape only.
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  VERSION: ${{ inputs.version }}
+  REHEARSE: ${{ inputs.rehearse }}
+  EXPECTED_DR: ${{ inputs.expected-dr }}
+  CSP_ORIGIN: ${{ vars.VITE_POSTHOG_HOST }}
+  EXPECT_POSTHOG_SINK: ${{ vars.POSTHOG_API_KEY != '' }}
+
+jobs:
+  linux:
+    name: Linux (AppImage, deb, rpm)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out the release scripts only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tools
+          sparse-checkout: scripts/release
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      # .nvmrc's version, which a script test keeps this one equal to.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Download the release
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: release
+      # A virtual display and a session bus for each launch.
+      - name: Packages the smoke needs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb dbus
+      # Extracted rather than mounted, which takes no FUSE.
+      - name: AppImage
+        run: |
+          appimages=(release/*.AppImage)
+          if [ "${#appimages[@]}" -ne 1 ] || [ ! -f "${appimages[0]}" ]; then
+            echo "::error::expected one AppImage in release/, found: ${appimages[*]}"
+            exit 1
+          fi
+          chmod +x "${appimages[0]}"
+          args=(run --app "${appimages[0]}" --app-arg --appimage-extract-and-run --home "$RUNNER_TEMP/home-appimage" --csp-origin "$CSP_ORIGIN")
+          if [ "$EXPECT_POSTHOG_SINK" = true ]; then args+=(--expect-posthog-sink); fi
+          if [ "$REHEARSE" = true ]; then args+=(--rehearse release --bundle-type appimage); fi
+          xvfb-run -a dbus-run-session -- node tools/scripts/release/launch-smoke.mjs "${args[@]}"
+      - name: Debian package
+        run: |
+          debs=(release/*.deb)
+          if [ "${#debs[@]}" -ne 1 ] || [ ! -f "${debs[0]}" ]; then
+            echo "::error::expected one .deb in release/, found: ${debs[*]}"
+            exit 1
+          fi
+          sudo apt-get install -y "./${debs[0]}"
+          # The app, not one of the MCP sidecars installed beside it.
+          exe=$(dpkg -L fleetify | grep '^/usr/bin/' | grep -v '/fleet-[a-z]*-mcp$' || true)
+          legal=$(dpkg -L fleetify | grep '/legal$' || true)
+          for found in "$exe" "$legal"; do
+            if [ -z "$found" ] || [ "$(printf '%s\n' "$found" | wc -l)" -ne 1 ]; then
+              echo "::error::expected one app executable in /usr/bin and one legal folder in the package, found: ${exe:-none}; ${legal:-none}"
+              exit 1
+            fi
+          done
+          args=(run --app "$exe" --home "$RUNNER_TEMP/home-deb" --legal-dir "$legal" --csp-origin "$CSP_ORIGIN")
+          if [ "$EXPECT_POSTHOG_SINK" = true ]; then args+=(--expect-posthog-sink); fi
+          if [ "$REHEARSE" = true ]; then args+=(--rehearse release --bundle-type deb); fi
+          xvfb-run -a dbus-run-session -- node tools/scripts/release/launch-smoke.mjs "${args[@]}"
+      # The .rpm's dependencies must resolve on a current Fedora. openSUSE
+      # names the same libraries in its own packages; it is checked too, but
+      # only for information.
+      - name: rpm resolution (Fedora)
+        run: |
+          rpms=(release/*.rpm)
+          if [ "${#rpms[@]}" -ne 1 ] || [ ! -f "${rpms[0]}" ]; then
+            echo "::error::expected one .rpm in release/, found: ${rpms[*]}"
+            exit 1
+          fi
+          docker run --rm -v "$PWD/release:/release:ro" fedora:45 dnf install -y --nogpgcheck "/${rpms[0]}"
+      - name: openSUSE rpm resolution (informational)
+        continue-on-error: true
+        run: |
+          rpms=(release/*.rpm)
+          docker run --rm -v "$PWD/release:/release:ro" opensuse/tumbleweed zypper --non-interactive install --allow-unsigned-rpm "/${rpms[0]}"
+      - name: Upload the smoke's logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: smoke-logs-linux
+          path: ${{ runner.temp }}/home-*
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+
+  windows:
+    name: Windows (NSIS)
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Check out the release scripts only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tools
+          sparse-checkout: scripts/release
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      # .nvmrc's version, which a script test keeps this one equal to.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Download the release
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: release
+      # A per-user install, as a user's silent one, into %LOCALAPPDATA%\Fleetify.
+      - name: Install (silent, per user)
+        shell: pwsh
+        run: |
+          $installer = @(Get-ChildItem -Path release -Filter '*-setup.exe' -File)
+          if ($installer.Count -ne 1) { throw "expected one installer in release, found: $($installer.Name -join ', ')" }
+          $process = Start-Process -FilePath $installer[0].FullName -ArgumentList '/S' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "the installer exited $($process.ExitCode)" }
+          $dir = Join-Path $env:LOCALAPPDATA 'Fleetify'
+          # The app, not the uninstaller or one of the MCP sidecars beside it.
+          $exe = @(Get-ChildItem -Path $dir -Filter '*.exe' -File | Where-Object { $_.Name -ne 'uninstall.exe' -and $_.Name -notlike 'fleet-*' })
+          if ($exe.Count -ne 1) { throw "expected one app executable in $dir, found: $($exe.Name -join ', ')" }
+          "APP_EXE=$($exe[0].FullName)" >> $env:GITHUB_ENV
+          "LEGAL_DIR=$(Join-Path $dir 'legal')" >> $env:GITHUB_ENV
+      # From the system drive's root: the smoke starts every app from a
+      # filesystem root, away from the folder it is installed in.
+      - name: NSIS install
+        run: |
+          args=(run --app "$APP_EXE" --cwd "C:\\" --home "$RUNNER_TEMP/home-nsis" --legal-dir "$LEGAL_DIR" --csp-origin "$CSP_ORIGIN")
+          if [ "$EXPECT_POSTHOG_SINK" = true ]; then args+=(--expect-posthog-sink); fi
+          if [ "$REHEARSE" = true ]; then args+=(--rehearse release --bundle-type nsis); fi
+          node tools/scripts/release/launch-smoke.mjs "${args[@]}"
+      # The app logs into %LOCALAPPDATA%\Fleetify\logs, outside the smoke's home.
+      - name: Collect the app's log
+        if: failure()
+        shell: pwsh
+        run: |
+          $logs = Join-Path $env:LOCALAPPDATA 'Fleetify\logs'
+          if (Test-Path $logs) { Copy-Item -Recurse -Path $logs -Destination (Join-Path $env:RUNNER_TEMP 'home-nsis-logs') }
+      - name: Upload the smoke's logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: smoke-logs-windows
+          path: ${{ runner.temp }}/home-*
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+
+  macos:
+    name: macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: aarch64
+          - runner: macos-15-intel
+            arch: x64
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - name: Check out the release scripts only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tools
+          sparse-checkout: scripts/release
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      # .nvmrc's version, which a script test keeps this one equal to.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Download the release
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: release
+      - name: Mount the disk image
+        run: |
+          dmgs=(release/*_"$ARCH".dmg)
+          if [ "${#dmgs[@]}" -ne 1 ] || [ ! -f "${dmgs[0]}" ]; then
+            echo "::error::expected one $ARCH disk image in release/, found: ${dmgs[*]}"
+            exit 1
+          fi
+          hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/dmg" "${dmgs[0]}"
+      # The app as the disk image ships it. A pinned designated requirement is
+      # read from tools/; without one, its shape is checked.
+      - name: Check the signature
+        run: |
+          args=("$RUNNER_TEMP/dmg/Fleetify.app")
+          if [ -n "$EXPECTED_DR" ]; then args+=(--expected-dr "tools/$EXPECTED_DR"); fi
+          node tools/scripts/release/macos-signature.mjs "${args[@]}"
+      # Copied out as a user installs it, into a folder of the job's own:
+      # /tmp is a symlink, which tauri-utils rejects as the app's location.
+      - name: Install into an Applications folder
+        run: |
+          mkdir -p "$RUNNER_TEMP/Applications"
+          ditto "$RUNNER_TEMP/dmg/Fleetify.app" "$RUNNER_TEMP/Applications/Fleetify.app"
+          hdiutil detach "$RUNNER_TEMP/dmg"
+      - name: macOS app
+        run: |
+          app="$RUNNER_TEMP/Applications/Fleetify.app"
+          exe=$(plutil -extract CFBundleExecutable raw "$app/Contents/Info.plist")
+          args=(run --app "$app/Contents/MacOS/$exe" --home "$RUNNER_TEMP/home-app" --legal-dir "$app/Contents/Resources/legal" --csp-origin "$CSP_ORIGIN")
+          if [ "$EXPECT_POSTHOG_SINK" = true ]; then args+=(--expect-posthog-sink); fi
+          if [ "$REHEARSE" = true ]; then args+=(--rehearse release --bundle-type app); fi
+          node tools/scripts/release/launch-smoke.mjs "${args[@]}"
+      - name: Upload the smoke's logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: smoke-logs-macos-${{ matrix.arch }}
+          path: ${{ runner.temp }}/home-*
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7

@@ -102,6 +102,7 @@ The two steps marked advisory don't block a merge, and every other step does. Tr
 - The script tests read YAML with Python 3 and PyYAML: `sudo apt install python3-yaml` on Debian and Ubuntu, `pip install pyyaml` elsewhere. Without PyYAML, those checks skip on your machine; CI checks for it first (the `import yaml` step), so they can't skip there.
 - Pull requests also need a [conventional title](#titles) and a [sign-off on every commit](#sign-off-your-commits-dco), each enforced by its own check. Editing a pull request's title reruns the title check.
 - A change to a Cargo manifest, `Cargo.lock` or `deny.toml` also runs cargo-deny, which checks dependency licences and security advisories and doesn't block a merge. Locally: `cargo deny check licenses advisories bans sources`.
+- A change to what a release build reads (the paths in [`release-dry-run.yml`](.github/workflows/release-dry-run.yml)) also runs the release dry run, which doesn't block a merge: it builds the bundles on every platform with keys made for the run, assembles them and smoke-tests each.
 
 ## Pull requests
 

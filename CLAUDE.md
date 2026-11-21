@@ -102,6 +102,10 @@ on Windows in CI, and clippy runs on Linux and macOS as well, so code behind one
 OS's `cfg`, such as `cfg(windows)`, is compiled and linted even when your machine
 skips it.
 
+A PR that changes what a release build reads (the paths in
+`.github/workflows/release-dry-run.yml`) also runs the release dry run, advisory:
+it builds, assembles and smoke-tests the bundles on every platform.
+
 The script tests read YAML with Python 3 and PyYAML (`python3-yaml` on Debian and
 Ubuntu, `pip install pyyaml` elsewhere). Without PyYAML those checks skip on your
 machine; CI checks for it first, so they can't skip there.
