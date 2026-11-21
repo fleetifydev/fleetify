@@ -1,0 +1,186 @@
+{
+  "overview": [
+    { "count": 6, "name": "MIT License", "id": "MIT", "indices": [1, 2, 3], "text": "Fixture MIT licence text A.\n\nCopyright (c) 2026 The Alpha Fixture Authors\n\nPermission is granted to use this fixture in tests.\n" },
+    { "count": 2, "name": "Apache License 2.0", "id": "Apache-2.0", "indices": [0], "text": "Standard text of the Apache License 2.0 (fixture).\n" },
+    { "count": 1, "name": "ISC License", "id": "ISC", "indices": [4], "text": "Fixture ISC licence text.\n" },
+    { "count": 1, "name": "The Unlicense", "id": "Unlicense", "indices": [5], "text": "Standard text of the Unlicense (fixture).\n" }
+  ],
+  "licenses": [
+    {
+      "name": "Apache License 2.0",
+      "id": "Apache-2.0",
+      "first_of_kind": true,
+      "text": "Standard text of the Apache License 2.0 (fixture).\n",
+      "source_path": null,
+      "used_by": [
+        {
+          "crate": {
+            "name": "fleetify-fixture-app",
+            "version": "0.1.0",
+            "id": "path+file:///fixture/workspace/app#fleetify-fixture-app@0.1.0",
+            "license": "Apache-2.0",
+            "source": null,
+            "manifest_path": "/fixture/workspace/app/Cargo.toml"
+          },
+          "path": null
+        },
+        {
+          "crate": {
+            "name": "sync-thing",
+            "version": "1.0.2",
+            "id": "registry+https://github.com/rust-lang/crates.io-index#sync-thing@1.0.2",
+            "license": "Apache-2.0",
+            "source": "registry+https://github.com/rust-lang/crates.io-index",
+            "manifest_path": "/fixture/registry/sync-thing-1.0.2/Cargo.toml"
+          },
+          "path": null
+        }
+      ]
+    },
+    {
+      "name": "MIT License",
+      "id": "MIT",
+      "first_of_kind": true,
+      "text": "Fixture MIT licence text A.\n\nCopyright (c) 2026 The Alpha Fixture Authors\n\nPermission is granted to use this fixture in tests.\n",
+      "source_path": "/fixture/registry/beta-rs-0.2.0/LICENSE-MIT",
+      "used_by": [
+        {
+          "crate": {
+            "name": "beta-rs",
+            "version": "0.2.0",
+            "id": "registry+https://github.com/rust-lang/crates.io-index#beta-rs@0.2.0",
+            "license": "MIT OR Apache-2.0",
+            "source": "registry+https://github.com/rust-lang/crates.io-index",
+            "manifest_path": "/fixture/registry/beta-rs-0.2.0/Cargo.toml"
+          },
+          "path": null
+        },
+        {
+          "crate": {
+            "name": "alpha-rs",
+            "version": "1.0.0",
+            "id": "registry+https://github.com/rust-lang/crates.io-index#alpha-rs@1.0.0",
+            "license": "MIT",
+            "source": "registry+https://github.com/rust-lang/crates.io-index",
+            "manifest_path": "/fixture/registry/alpha-rs-1.0.0/Cargo.toml"
+          },
+          "path": null
+        }
+      ]
+    },
+    {
+      "name": "MIT License",
+      "id": "MIT",
+      "first_of_kind": false,
+      "text": "Fixture MIT licence text B.\n\nCopyright (c) 2026 The Gamma Fixture Authors\n\nPermission is granted to use this fixture in tests.\n",
+      "source_path": "/fixture/registry/gamma-rs-0.3.0/LICENSE",
+      "used_by": [
+        {
+          "crate": {
+            "name": "gamma-rs",
+            "version": "0.3.0",
+            "id": "registry+https://github.com/rust-lang/crates.io-index#gamma-rs@0.3.0",
+            "license": "MIT",
+            "source": "registry+https://github.com/rust-lang/crates.io-index",
+            "manifest_path": "/fixture/registry/gamma-rs-0.3.0/Cargo.toml"
+          },
+          "path": null
+        }
+      ]
+    },
+    {
+      "name": "MIT License",
+      "id": "MIT",
+      "first_of_kind": false,
+      "text": "Standard text of the MIT License (fixture).\n",
+      "source_path": null,
+      "used_by": [
+        {
+          "crate": {
+            "name": "framework-rs",
+            "version": "2.0.0",
+            "id": "registry+https://github.com/rust-lang/crates.io-index#framework-rs@2.0.0",
+            "license": "Apache-2.0 OR MIT",
+            "source": "registry+https://github.com/rust-lang/crates.io-index",
+            "manifest_path": "/fixture/registry/framework-rs-2.0.0/Cargo.toml"
+          },
+          "path": null
+        },
+        {
+          "crate": {
+            "name": "framework-macros",
+            "version": "2.0.0",
+            "id": "path+file:///fixture/workspace/vendor/framework-macros#2.0.0",
+            "license": "Apache-2.0 OR MIT",
+            "source": null,
+            "manifest_path": "/fixture/workspace/vendor/framework-macros/Cargo.toml"
+          },
+          "path": null
+        },
+        {
+          "crate": {
+            "name": "bare-rs",
+            "version": "0.1.0",
+            "id": "registry+https://github.com/rust-lang/crates.io-index#bare-rs@0.1.0",
+            "license": "MIT",
+            "source": "registry+https://github.com/rust-lang/crates.io-index",
+            "manifest_path": "/fixture/registry/bare-rs-0.1.0/Cargo.toml"
+          },
+          "path": null
+        }
+      ]
+    },
+    {
+      "name": "ISC License",
+      "id": "ISC",
+      "first_of_kind": true,
+      "text": "Fixture ISC licence text.\n",
+      "source_path": "/fixture/workspace/core/LICENSE-ISC",
+      "used_by": [
+        {
+          "crate": {
+            "name": "fleetify-fixture-core",
+            "version": "0.1.0",
+            "id": "path+file:///fixture/workspace/core#fleetify-fixture-core@0.1.0",
+            "license": "ISC",
+            "source": null,
+            "manifest_path": "/fixture/workspace/core/Cargo.toml"
+          },
+          "path": null
+        }
+      ]
+    },
+    {
+      "name": "The Unlicense",
+      "id": "Unlicense",
+      "first_of_kind": true,
+      "text": "Standard text of the Unlicense (fixture).\n",
+      "source_path": null,
+      "used_by": [
+        {
+          "crate": {
+            "name": "binding-sys",
+            "version": "0.15.0",
+            "id": "registry+https://github.com/rust-lang/crates.io-index#binding-sys@0.15.0",
+            "license": "Unlicense",
+            "source": "registry+https://github.com/rust-lang/crates.io-index",
+            "manifest_path": "/fixture/registry/binding-sys-0.15.0/Cargo.toml"
+          },
+          "path": null
+        }
+      ]
+    }
+  ],
+  "crates": [
+    { "package": { "name": "alpha-rs", "version": "1.0.0", "id": "registry+https://github.com/rust-lang/crates.io-index#alpha-rs@1.0.0" }, "license": "MIT" },
+    { "package": { "name": "bare-rs", "version": "0.1.0", "id": "registry+https://github.com/rust-lang/crates.io-index#bare-rs@0.1.0" }, "license": "MIT" },
+    { "package": { "name": "beta-rs", "version": "0.2.0", "id": "registry+https://github.com/rust-lang/crates.io-index#beta-rs@0.2.0" }, "license": "MIT OR Apache-2.0" },
+    { "package": { "name": "binding-sys", "version": "0.15.0", "id": "registry+https://github.com/rust-lang/crates.io-index#binding-sys@0.15.0" }, "license": "Unlicense" },
+    { "package": { "name": "fleetify-fixture-app", "version": "0.1.0", "id": "path+file:///fixture/workspace/app#fleetify-fixture-app@0.1.0" }, "license": "Apache-2.0" },
+    { "package": { "name": "fleetify-fixture-core", "version": "0.1.0", "id": "path+file:///fixture/workspace/core#fleetify-fixture-core@0.1.0" }, "license": "ISC" },
+    { "package": { "name": "framework-macros", "version": "2.0.0", "id": "path+file:///fixture/workspace/vendor/framework-macros#2.0.0" }, "license": "Apache-2.0 OR MIT" },
+    { "package": { "name": "framework-rs", "version": "2.0.0", "id": "registry+https://github.com/rust-lang/crates.io-index#framework-rs@2.0.0" }, "license": "Apache-2.0 OR MIT" },
+    { "package": { "name": "gamma-rs", "version": "0.3.0", "id": "registry+https://github.com/rust-lang/crates.io-index#gamma-rs@0.3.0" }, "license": "MIT" },
+    { "package": { "name": "sync-thing", "version": "1.0.2", "id": "registry+https://github.com/rust-lang/crates.io-index#sync-thing@1.0.2" }, "license": "Apache-2.0" }
+  ]
+}

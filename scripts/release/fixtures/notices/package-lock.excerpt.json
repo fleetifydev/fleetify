@@ -1,0 +1,102 @@
+{
+  "name": "fixture-app",
+  "version": "0.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "fixture-app",
+      "version": "0.0.0",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@scope/beta": "^2.0.0",
+        "aliased": "npm:real-name@^4.0.0",
+        "alpha": "^1.2.0",
+        "gamma": "^3.1.0",
+        "linked-workspace": "file:packages/linked-workspace",
+        "standard-only": "^1.0.0"
+      },
+      "devDependencies": {
+        "dev-tool": "^1.0.0"
+      }
+    },
+    "node_modules/@esbuild/darwin-arm64": {
+      "version": "0.25.0",
+      "dev": true,
+      "optional": true,
+      "os": ["darwin"],
+      "cpu": ["arm64"],
+      "license": "MIT"
+    },
+    "node_modules/@scope/beta": {
+      "version": "2.0.0",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "delta": "1.0.0"
+      },
+      "optionalDependencies": {
+        "@scope/native-linux-x64": "2.0.0",
+        "types-only": "^0.1.0"
+      }
+    },
+    "node_modules/@scope/beta/node_modules/delta": {
+      "version": "1.0.0",
+      "license": "BSD-3-Clause"
+    },
+    "node_modules/@scope/native-linux-x64": {
+      "version": "2.0.0",
+      "optional": true,
+      "os": ["linux"],
+      "cpu": ["x64"],
+      "license": "MIT"
+    },
+    "node_modules/aliased": {
+      "name": "real-name",
+      "version": "4.0.0",
+      "license": "MIT"
+    },
+    "node_modules/alpha": {
+      "version": "1.2.3",
+      "license": "MIT",
+      "dependencies": {
+        "delta": "^1.0.0",
+        "gamma": "^2.0.0"
+      }
+    },
+    "node_modules/alpha/node_modules/gamma": {
+      "version": "2.0.0",
+      "license": "ISC"
+    },
+    "node_modules/delta": {
+      "version": "1.0.0",
+      "license": "BSD-3-Clause"
+    },
+    "node_modules/dev-tool": {
+      "version": "1.0.0",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/gamma": {
+      "version": "3.1.0",
+      "license": "ISC"
+    },
+    "node_modules/linked-workspace": {
+      "resolved": "packages/linked-workspace",
+      "link": true
+    },
+    "node_modules/standard-only": {
+      "version": "1.0.0",
+      "license": "MIT"
+    },
+    "node_modules/types-only": {
+      "version": "0.1.0",
+      "optional": true,
+      "license": "MIT"
+    },
+    "packages/linked-workspace": {
+      "name": "linked-workspace",
+      "version": "0.0.1",
+      "license": "Apache-2.0"
+    }
+  }
+}

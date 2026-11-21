@@ -1,0 +1,13 @@
+libgtk-3-0t64:amd64: /usr/lib/x86_64-linux-gnu/libgtk-3.so.0
+libgtk-3-0t64:amd64: /usr/lib/x86_64-linux-gnu/libgtk-3.so.0.2409.32
+libgtk-3-0t64:amd64: /usr/lib/x86_64-linux-gnu/gtk-3.0/3.0.0/immodules/im-am-et.so
+ibus-gtk3:amd64: /usr/lib/x86_64-linux-gnu/gtk-3.0/3.0.0/immodules/im-ibus.so
+ibus-gtk:amd64: /usr/lib/x86_64-linux-gnu/gtk-2.0/2.10.0/immodules/im-ibus.so
+libpcre2-8-0:i386: /usr/lib/i386-linux-gnu/libpcre2-8.so.0
+libpcre2-8-0:amd64: /usr/lib/x86_64-linux-gnu/libpcre2-8.so.0
+libgudev-1.0-0:amd64: /usr/lib/x86_64-linux-gnu/libgudev-1.0.so.0
+glib-networking:amd64: /usr/lib/x86_64-linux-gnu/gio/modules/libgiognutls.so
+libc-bin: /usr/sbin/ldconfig
+diversion by dash from: /bin/sh
+diversion by dash to: /bin/sh.distrib
+libjpeg-turbo8:amd64, libjpeg-turbo8:i386: /usr/share/doc/libjpeg-turbo8

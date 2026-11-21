@@ -1,0 +1,47 @@
+# cargo-about configuration for the Rust part of THIRD-PARTY-NOTICES, which
+# scripts/release/third-party-notices.mjs generates in the release build. It
+# runs
+#
+#   cargo about generate --format json -c scripts/release/about.toml --workspace --frozen --fail
+#
+# --frozen keeps cargo-about offline and Cargo.lock unchanged, so run
+# `cargo fetch --locked` first; --fail makes a crate with no licence
+# information at all an error. Both are command-line flags: cargo-about has
+# no config keys for them. Offline, when cargo-about finds no file with a
+# licence's text in a crate, it gives the licence's standard text, and
+# third-party-notices.mjs adds the licence files that the crate does ship.
+
+# The licences Fleetify takes, in order of preference: for a crate that offers
+# a choice (MIT OR Apache-2.0, say), cargo-about uses the first one listed
+# here. deny.toml's [licenses] allow list, in its order, then the licences
+# deny.toml allows only for single crates (its exceptions).
+# third-party-notices.test.mjs keeps this list in step with deny.toml.
+accepted = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "BSL-1.0",
+  "MPL-2.0",
+  "CC0-1.0",
+  "0BSD",
+  "CDLA-Permissive-2.0",
+  "Unlicense",
+]
+
+# The four release targets: a crate counts when any of them builds it.
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "x86_64-pc-windows-msvc",
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+]
+
+# Dev and build dependencies never ship in a bundle.
+ignore-dev-dependencies = true
+ignore-build-dependencies = true
