@@ -19,19 +19,19 @@ Releases come from release-please. It keeps a release pull request open, titled 
 
 | Workflow | When it runs | What it does |
 |---|---|---|
-| `.github/workflows/release.yml` | every push to `main` | runs release-please; once a release pull request merges, builds, assembles, smoke-tests and publishes the release |
+| [`release.yml`](../.github/workflows/release.yml) | every push to `main` | runs release-please; once a release pull request merges, builds, assembles, smoke-tests and publishes the release |
 | [`release-dry-run.yml`](../.github/workflows/release-dry-run.yml) | pull requests that change what a release build reads, pushes to `main`, every Monday, and on demand | the same build, assembly and smoke test, publishing nothing; dispatched with `signing: release`, it makes a release candidate |
 | [`build.yml`](../.github/workflows/build.yml) | called by both | builds and signs the bundles |
 | [`smoke.yml`](../.github/workflows/smoke.yml) | called by both | installs and starts every bundle |
 
 ### The release workflow
 
-`release.yml` runs on every push to `main`, one run at a time: its runs share the concurrency group `release` and never cancel one another. Its jobs:
+[`release.yml`](../.github/workflows/release.yml) runs on every push to `main`, one run at a time: its runs share the concurrency group `release`, and none is cancelled once it has started. A newer push can take the place of a run that is still waiting, which loses nothing, as release-please finds every release pull request that has merged. Its jobs:
 
 1. **release-please**, in the `release-bot` environment, gets a token for the Fleetify Release Bot, a GitHub App, and runs release-please with it. After an ordinary push, it opens or updates the release pull request, if anything merged since the last release calls for one. After the push that merges it, it creates the release instead, as a draft, whose `v<version>` tag doesn't exist yet. Events made with the App's token start workflows, unlike those made with the default token, so the release pull request gets its checks like any other.
 2. **build** runs build.yml on the merge commit in the `release` environment, when a release was created.
 3. **assemble**, in the `release-bot` environment, puts the release's 20 files together with `assemble.mjs`, which checks every updater signature against the key in [`src-tauri/tauri.conf.json`](../src-tauri/tauri.conf.json) and requires its key id to be `44C694713A20D751`. It attests the files' build provenance, uploads them to the draft, and checks that the draft holds exactly the assets that `expectedAssets()` in [`release-assets.mjs`](../scripts/release/release-assets.mjs) names.
-4. **smoke** runs smoke.yml on those files. The macOS app's designated requirement must equal the one pinned in `scripts/release/macos-designated-requirement.txt`.
+4. **smoke** runs smoke.yml on those files. The macOS app's designated requirement must equal the one pinned in [`scripts/release/macos-designated-requirement.txt`](../scripts/release/macos-designated-requirement.txt).
 5. **publish**, in the `release-bot` environment, once assemble and smoke have passed, publishes the draft and marks it as the latest release. Publishing creates the tag, as the Release Bot. The job then checks that the release is no longer a draft, that the tag exists, and that GitHub's `latest.json` for the latest release names the new version.
 
 Two rulesets guard the tags: only the organisation's admins and the Release Bot may create a `v*` tag, and no one may move or delete one. A tag created before the checks passed would be permanent, which is why the tag only comes into being at publish. Don't create a `v*` tag by hand.
@@ -100,7 +100,7 @@ Never call build.yml with `secrets: inherit`. It would hand the repository's sec
 
 - The updater key's public half is `plugins.updater.pubkey` in tauri.conf.json. Every build embeds it, and an installed copy installs only an update whose signature it verifies.
 - Of all the jobs, only build.yml's sign and bundle-macos reach the `release` environment's keys, and only bundle-macos the macOS identity.
-- The macOS identity is self-signed, and the app is signed with the hardened runtime and isn't notarized. macOS ties the microphone permission and Fleetify's keychain items to the app's designated requirement, which is pinned in `scripts/release/macos-designated-requirement.txt`, so they carry over an update only while it stays the same.
+- The macOS identity is self-signed, and the app is signed with the hardened runtime and isn't notarized. macOS ties the microphone permission and Fleetify's keychain items to the app's designated requirement, which is pinned in [`scripts/release/macos-designated-requirement.txt`](../scripts/release/macos-designated-requirement.txt), so they carry over an update only while it stays the same.
 - The Release Bot's key is in the `release-bot` environment, which only `main` may deploy to and which asks for no approval, as the release-please job runs on every push to `main`. A workflow on any other branch or pull request can't reach it. Only release.yml's release-please, assemble and publish jobs use it. The token it makes can write contents, pull requests and issues.
 - No workflow gives a build a private API key, such as a model provider's, and `scan-secrets.mjs` checks the built UI and binaries for one before they're bundled.
 
@@ -305,7 +305,7 @@ A copy older than the rotation release trusts only the old key, so it can't inst
    ```
 
    If the certificate's name changed, change the `APPLE_SIGNING_IDENTITY` variable too.
-3. Pin its designated requirement. Cut a candidate: its macOS signature checks fail, because `scripts/release/macos-designated-requirement.txt` still holds the old certificate's, and their log shows the new one as `designated => …`. Check that its `H"…"` value is the new certificate's SHA-1, which `openssl x509 -in identity.pem -outform DER | openssl dgst -sha1` prints. Put the requirement, without `designated => `, in the file through a pull request, and cut another candidate.
+3. Pin its designated requirement. Cut a candidate: its macOS signature checks fail, because [`scripts/release/macos-designated-requirement.txt`](../scripts/release/macos-designated-requirement.txt) still holds the old certificate's, and their log shows the new one as `designated => …`. Check that its `H"…"` value is the new certificate's SHA-1, which `openssl x509 -in identity.pem -outform DER | openssl dgst -sha1` prints. Put the requirement, without `designated => `, in the file through a pull request, and cut another candidate.
 4. After the first update signed with the new identity, macOS asks each user once more for the microphone and for Fleetify's keychain items. Say so in that release's notes.
 
 ### The Release Bot's key

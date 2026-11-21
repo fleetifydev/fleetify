@@ -47,12 +47,21 @@
  * release-please files under its type's changelog section. The sections, and
  * which of them the changelog hides, are those of the prefix tables in
  * CONTRIBUTING.md and CLAUDE.md.
+ *
+ * macOS takes an update for the same app, keeping its microphone permission
+ * and its keychain items, while the app's designated requirement stays the
+ * same. The release identity's is pinned in macos-designated-requirement.txt,
+ * which candidate and release builds compare the app's with: one line, as
+ * codesign writes it for a self-signed certificate (macos-signature.mjs has
+ * the rules), and of the shape the dry runs' identities get, which differ
+ * only in the certificate's hash.
  */
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 
 import { workspaceMembers } from "./check-versions.mjs";
+import { IDENTIFIER, drProblems, parseDesignatedRequirement } from "./macos-signature.mjs";
 
 /** A repo file's text, by its path from the repo root. */
 const read = (path) => readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
@@ -154,6 +163,24 @@ describe("release config", () => {
       .filter((name) => /^tauri.*\.conf\.json5$/i.test(name) || /^tauri.*\.toml$/i.test(name))
       .sort();
     assert.deepEqual(others, [], `src-tauri holds ${others.join(", ")}`);
+  });
+
+  test("the pinned designated requirement is one line, of the shape codesign gives a self-signed identity, the dry runs' shape", () => {
+    // A Windows checkout may turn LF into CRLF; the committed file is LF.
+    const text = read("scripts/release/macos-designated-requirement.txt").replace(/\r\n/g, "\n");
+    assert.match(text, /^[^\n]+\n$/, "macos-designated-requirement.txt must hold one line, ending in a newline");
+    const pinned = text.slice(0, -1);
+    const hash = /H"[0-9a-f]{40}"/;
+    const identifier = IDENTIFIER.replaceAll(".", "\\.");
+    assert.match(pinned, new RegExp(`^identifier "${identifier}" and certificate root = ${hash.source}$`), "without codesign's \"designated => \"");
+    assert.deepEqual(drProblems(pinned), []);
+    // Each Mac's dry run, as codesign printed it: a certificate of the same
+    // shape, made for the run, so the same requirement with another hash.
+    for (const triple of ["aarch64-apple-darwin", "x86_64-apple-darwin"]) {
+      const captured = parseDesignatedRequirement(read(`scripts/release/fixtures/codesign/captured/${triple}/requirements.stdout.txt`));
+      assert.equal(captured.replace(hash, 'H"…"'), pinned.replace(hash, 'H"…"'), `${triple}'s dry run`);
+      assert.notEqual(captured.match(hash)[0], pinned.match(hash)[0], `${triple}'s dry run pins the release certificate`);
+    }
   });
 });
 

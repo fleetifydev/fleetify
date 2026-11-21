@@ -557,7 +557,7 @@ describe("before signing", () => {
     assert.throws(() => updaterAssets(LINUX, "v0.2.0"), /invalid version/);
   });
 
-  test("the CLI prints either list, one name a line", () => {
+  test("the CLI prints each list, one name a line: a target's unsigned files or updater artifacts, or a release's assets", () => {
     const cli = (...args) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: "utf8" });
     const unsigned = cli("unsigned", LINUX, V);
     assert.equal(unsigned.status, 0, unsigned.stderr);
@@ -565,14 +565,34 @@ describe("before signing", () => {
     const updaters = cli("updaters", WINDOWS, V);
     assert.equal(updaters.status, 0, updaters.stderr);
     assert.equal(updaters.stdout, "Fleetify_0.2.0_x64-setup.exe\n");
-    for (const args of [[], ["unsigned"], ["unsigned", LINUX], ["signed", LINUX, V], ["unsigned", LINUX, V, "extra"]]) {
+    // release.yml compares a draft's assets with this list, sorted as `LC_ALL=C sort` sorts.
+    const expected = cli("expected", V);
+    assert.equal(expected.status, 0, expected.stderr);
+    assert.equal(expected.stdout, `${expectedAssets(V).join("\n")}\n`);
+    const lines = expected.stdout.trimEnd().split("\n");
+    assert.deepEqual(lines, [...lines].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))), "the list isn't in byte order");
+    for (const args of [
+      [],
+      ["unsigned"],
+      ["unsigned", LINUX],
+      ["signed", LINUX, V],
+      ["unsigned", LINUX, V, "extra"],
+      ["expected"],
+      ["expected", LINUX, V],
+    ]) {
       const result = cli(...args);
       assert.equal(result.status, 2, `${args.join(" ")}: ${result.stderr}`);
       assert.match(result.stderr, /usage:/);
+      assert.equal(result.stdout, "");
     }
-    const unknown = cli("updaters", "riscv64-unknown-linux-gnu", V);
-    assert.equal(unknown.status, 1);
-    assert.match(unknown.stderr, /unknown target triple/);
-    assert.equal(unknown.stdout, "");
+    for (const [args, says] of [
+      [["updaters", "riscv64-unknown-linux-gnu", V], /unknown target triple/],
+      [["expected", "v0.2.0"], /invalid version/],
+    ]) {
+      const result = cli(...args);
+      assert.equal(result.status, 1, `${args.join(" ")}: ${result.stderr}`);
+      assert.match(result.stderr, says);
+      assert.equal(result.stdout, "");
+    }
   });
 });

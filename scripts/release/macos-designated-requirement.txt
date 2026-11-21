@@ -1,0 +1,1 @@
+identifier "com.fleetify.app" and certificate root = H"a8c351cba5c2b5f44f8d50ebcd33ecc6beebe500"

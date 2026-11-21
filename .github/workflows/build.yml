@@ -652,7 +652,15 @@ jobs:
             security delete-keychain "$CODESIGN_KEYCHAIN" || true
           fi
           rm -rf "$RUNNER_TEMP/codesign"
-      - name: Check the macOS signature
+      # The release identity's designated requirement is pinned: macOS keeps
+      # the app's microphone permission and keychain items across an update
+      # only while it stays the same. A dry run's identity is made for the
+      # run, so only the requirement's shape is checked.
+      - name: Check the macOS signature (release)
+        if: inputs.environment == 'release'
+        run: node scripts/release/macos-signature.mjs "target/$TRIPLE/release/bundle/macos/Fleetify.app" --expected-dr scripts/release/macos-designated-requirement.txt
+      - name: Check the macOS signature (dry run)
+        if: inputs.environment == 'dry-run'
         run: node scripts/release/macos-signature.mjs "target/$TRIPLE/release/bundle/macos/Fleetify.app"
       # A dry run keeps codesign's own answers to macos-signature.mjs's four
       # commands, whether its checks pass or not: the test fixtures in
