@@ -828,6 +828,7 @@ mod tests {
         assert!(!config.dangerous_insecure_transport_protocol);
         assert!(!config.dangerous_accept_invalid_certs);
         assert!(!config.dangerous_accept_invalid_hostnames);
+        assert!(!config.allow_downgrades);
     }
 
     #[test]
