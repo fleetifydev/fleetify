@@ -4,7 +4,8 @@
  *
  * The shell runs the updater (src-tauri/src/shell/updater.rs). `init` reads
  * its status once, then follows the `fleet:updater-status` event the shell
- * sends with every change; AppShell calls it once. `check` (Check now) and
+ * sends with every change; App calls it once, outside its screen gates, so
+ * the status is known before sign-in too. `check` (Check now) and
  * `restart` (Restart to update) call the shell's commands. Without the
  * bridge, in a plain browser, the status stays null and every call does
  * nothing.

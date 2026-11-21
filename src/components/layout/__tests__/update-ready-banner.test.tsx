@@ -1,14 +1,17 @@
 /**
  * The update banner: once the shell has downloaded and verified an update,
- * the top of the main window offers Restart to update, or Later.
+ * the top of the window offers Restart to update, or Later, on every screen
+ * from the welcome screen on, signed in or not.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { UpdateStatus } from "@/lib/api";
+import { usesInAppTitleBar } from "@/lib/utils";
 import { useUpdateStore } from "@/stores/update-store";
 import { UpdateReadyBanner } from "../update-ready-banner";
+import { WINDOWS_TITLEBAR_HEIGHT_PX } from "../window-controls";
 
 type Bridge = NonNullable<Window["fleetify"]>;
 
@@ -125,23 +128,76 @@ describe("UpdateReadyBanner", () => {
   });
 });
 
-describe("AppShell wiring", () => {
-  // Read as text: rendering AppShell would pull in the whole app. Comments go
-  // first, so a line left behind only in a comment doesn't count.
-  const appShell = readFileSync(
-    resolve(process.cwd(), "src/components/layout/app-shell.tsx"),
-    "utf8",
-  )
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/^\s*\/\/.*$/gm, "");
-
-  it("mounts the banner", () => {
-    expect(appShell).toMatch(/<UpdateReadyBanner\s*\/>/);
+describe("UpdateReadyBanner — where it goes", () => {
+  it("without a slot, floats across the top of the window, under any title bar", () => {
+    // The welcome, sign-in and onboarding screens centre their content in
+    // the whole window: a bar laid over the top leaves their layout alone.
+    useUpdateStore.setState({ status: ready("0.2.1") });
+    render(<UpdateReadyBanner />);
+    const bar = screen.getByRole("status").parentElement!;
+    expect(bar.style.position).toBe("fixed");
+    expect(bar.style.top).toBe(`${usesInAppTitleBar() ? WINDOWS_TITLEBAR_HEIGHT_PX : 0}px`);
+    expect(bar.style.left).toBe("0px");
+    expect(bar.style.right).toBe("0px");
+    // Over the page, under every dialog (z-index 100 and up) and menu.
+    expect(Number(bar.style.zIndex)).toBeGreaterThan(60);
+    expect(Number(bar.style.zIndex)).toBeLessThan(100);
   });
 
-  it("follows the updater status once, from an effect that unsubscribes", () => {
-    expect(appShell).toMatch(
-      /useEffect\(\s*\(\)\s*=>\s*useUpdateStore\.getState\(\)\.init\(\)\s*,\s*\[\]\s*\)/,
-    );
+  it("with a slot, renders inside it, in the page's flow", () => {
+    // The main shell gives it a place under its title bar.
+    const slot = document.createElement("div");
+    document.body.appendChild(slot);
+    useUpdateStore.setState({ status: ready("0.2.1") });
+    const { container } = render(<UpdateReadyBanner slot={slot} />);
+    const card = screen.getByRole("status");
+    expect(card.parentElement).toBe(slot);
+    expect(container).toBeEmptyDOMElement();
+    expect(card.style.position).toBe("");
+    slot.remove();
+  });
+});
+
+describe("Wiring", () => {
+  // Read as text: rendering App or AppShell would pull in the whole app.
+  // Comments go first, so a line left behind only in a comment doesn't count.
+  const withoutComments = (source: string) =>
+    source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const read = (path: string) => withoutComments(readFileSync(resolve(process.cwd(), path), "utf8"));
+  const INIT_EFFECT =
+    /useEffect\(\s*\(\)\s*=>\s*useUpdateStore\.getState\(\)\.init\(\)\s*,\s*\[\]\s*\)/;
+
+  /** Every source file under src/, tests left out, as `/`-separated paths. */
+  function sources(dir = "src"): string[] {
+    return readdirSync(resolve(process.cwd(), dir), { withFileTypes: true }).flatMap((entry) => {
+      const path = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) return entry.name === "__tests__" ? [] : sources(path);
+      return /\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name) ? [path] : [];
+    });
+  }
+
+  it("App mounts the banner and follows the updater status, outside the screen gates", () => {
+    // A release that breaks sign-in must still be able to update.
+    const app = read("src/App.tsx");
+    expect(app.match(/<UpdateReadyBanner\b/g)).toHaveLength(1);
+    expect(app).toMatch(INIT_EFFECT);
+  });
+
+  it("AppShell only gives the banner a place", () => {
+    const appShell = read("src/components/layout/app-shell.tsx");
+    expect(appShell).toMatch(/<UpdateBannerSlot\s*\/>/);
+    expect(appShell).not.toMatch(/<UpdateReadyBanner\b/);
+    expect(appShell).not.toMatch(/useUpdateStore/);
+  });
+
+  it("nothing else mounts a second banner or follows the status again", () => {
+    const found = sources().flatMap((path) => {
+      const source = read(path);
+      return [
+        ...(source.match(/<UpdateReadyBanner\b/g) ?? []).map(() => `banner in ${path}`),
+        ...(source.match(/useUpdateStore\.getState\(\)\.init\(\)/g) ?? []).map(() => `init in ${path}`),
+      ];
+    });
+    expect(found.sort()).toEqual(["banner in src/App.tsx", "init in src/App.tsx"]);
   });
 });

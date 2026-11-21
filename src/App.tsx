@@ -5,8 +5,10 @@ import { SplashScreen } from "@/components/onboarding/splash-screen";
 import { WelcomeScreen } from "@/components/onboarding/welcome-screen";
 import { SetupScreen } from "@/components/onboarding/setup-screen";
 import { DashboardSyncNotice } from "@/components/onboarding/dashboard-sync-notice";
+import { UpdateBannerSlotContext, UpdateReadyBanner } from "@/components/layout/update-ready-banner";
 import { useAppStore } from "@/stores/app-store";
 import { usePluginStore } from "@/stores/plugin-store";
+import { useUpdateStore } from "@/stores/update-store";
 import { clearToken, type AuthUser } from "@/lib/api";
 import { handleAuthEvent } from "@/lib/auth-events";
 import { identifyUser, initPostHog, pageview } from "@/lib/posthog";
@@ -117,6 +119,16 @@ export function App() {
   useEffect(() => {
     pageview(`/${screen}`, screen);
   }, [screen]);
+
+  // ── In-app updates ──
+  // Follow the shell's updater status once, here, outside the screen gates:
+  // the shell checks for updates whether anyone is signed in or not, and a
+  // release that breaks sign-in must still be able to update. The one update
+  // banner (rendered below) shows on every screen after the splash. While the
+  // main shell shows, the banner goes in the place the shell gives it under
+  // its title bar (UpdateBannerSlot hands it over through the context).
+  useEffect(() => useUpdateStore.getState().init(), []);
+  const [shellBannerSlot, setShellBannerSlot] = useState<HTMLElement | null>(null);
 
   // Auto-update sweep, once per launch, the first time we reach the
   // authenticated shell (`screen === "main"`). The sweep talks to the
@@ -409,7 +421,9 @@ export function App() {
           dips into one of these surfaces. */}
       {screen === "main" && (
         <div style={{ display: (settingsOpen || libraryOpen) ? "none" : "contents" }}>
-          <AppShell introReveal={introReveal} />
+          <UpdateBannerSlotContext.Provider value={setShellBannerSlot}>
+            <AppShell introReveal={introReveal} />
+          </UpdateBannerSlotContext.Provider>
         </div>
       )}
       {screen === "main" && settingsOpen && (
@@ -430,6 +444,15 @@ export function App() {
         <Suspense fallback={<div style={{ position: "fixed", inset: 0, background: "var(--background)" }} />}>
           <LibraryPage onClose={() => setLibraryOpen(false)} />
         </Suspense>
+      )}
+
+      {/* The one update banner: on every screen after the splash, signed in
+          or not. In the main shell's place for it while the shell shows;
+          otherwise floating across the top of the window. */}
+      {screen !== "splash" && (
+        <UpdateReadyBanner
+          slot={screen === "main" && !settingsOpen && !libraryOpen ? shellBannerSlot : null}
+        />
       )}
 
       {screen === "splash"          && <SplashScreen onDone={handleSplashDone} />}
