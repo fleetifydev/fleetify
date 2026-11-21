@@ -7,12 +7,12 @@
 # The environment input picks the signing keys, and the GitHub environment
 # the bundle jobs run in:
 # - release: the updater key and the macOS identity of the release
-#   environment, whose deployments wait for the owner's approval. The build
-#   starts from a clean target folder, without the Rust cache.
+#   environment, whose deployments wait for the owner's approval.
 # - dry-run: keys made for the run and deleted after it, and an updater
 #   overlay (dry-run-config.mjs) whose only endpoint is the smoke's update
 #   server on 127.0.0.1, over plain http. What it builds stays in the run's
 #   artifacts.
+# Either way the build starts from a clean target folder, without a cache.
 #
 # Every job uses the Tauri CLI directly, so the asset names stay the ones
 # release-assets.mjs gives, and no third-party action handles the keys.
@@ -143,27 +143,12 @@ jobs:
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
+      # No Rust cache, in a dry run either: a release builds from a clean
+      # target folder, with no cache to trust, and the dry run rehearses it.
       - name: Rust toolchain (rust-toolchain.toml)
         run: |
           rustup toolchain install
           rustup show active-toolchain
-      # A dry run keeps a Rust cache per target and runner image, as CI does:
-      # a cache built on one image can carry paths another lacks. Only main
-      # saves it, and pull requests read main's. A release build gets no
-      # cache: its artifacts come from a clean target folder.
-      - name: Runner image version (cache key)
-        if: inputs.environment != 'release'
-        run: |
-          if [ -z "${ImageVersion:-}" ]; then
-            echo "::error::The runner sets no ImageVersion, which the Rust cache key needs."
-            exit 1
-          fi
-          echo "IMAGE_VERSION=${ImageOS:-}-${ImageVersion}" >> "$GITHUB_ENV"
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        if: inputs.environment != 'release'
-        with:
-          key: ${{ matrix.triple }}-${{ env.IMAGE_VERSION }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
       # CONTRIBUTING.md's Linux packages, which a script test keeps in step
       # with this list.
       - name: System packages (Linux)

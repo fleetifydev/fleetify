@@ -696,15 +696,14 @@ describe("build.yml", () => {
     assert.deepEqual(jobOf(BUILD, "bundle").strategy?.matrix, { include: targets });
   });
 
-  yamlTest("a release build uses no cache", () => {
-    // Release artifacts come from a clean target folder, with no cache to trust.
+  yamlTest("no build uses a cache, so a dry run rehearses the release build", () => {
+    // Release artifacts come from a clean target folder, with no cache to
+    // trust, and a dry run builds the same way.
     const problems = [];
     for (const [id, job] of Object.entries(workflow(BUILD).jobs ?? {})) {
       for (const [i, step] of (job.steps ?? []).entries()) {
         const where = `${BUILD}, job ${id}, ${stepLabel(step, i)}`;
-        if (usesAction(step, "Swatinem/rust-cache") && !requires(step.if, "inputs.environment != 'release'")) {
-          problems.push(`${where} restores the Rust cache without "if: inputs.environment != 'release'"`);
-        }
+        if (usesAction(step, "Swatinem/rust-cache")) problems.push(`${where} restores the Rust cache`);
         if (/^actions\/cache(@|\/)/.test(String(step.uses ?? ""))) problems.push(`${where} uses actions/cache`);
         if (usesAction(step, "actions/setup-node") && (step.with?.cache !== undefined || step.with?.["package-manager-cache"] !== false)) {
           problems.push(`${where} lets setup-node cache npm's downloads; give it package-manager-cache: false and no cache`);
