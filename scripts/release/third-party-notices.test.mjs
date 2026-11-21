@@ -20,11 +20,15 @@ import { fileURLToPath } from "node:url";
 
 import {
   NO_LICENCE_FILE,
+  SHIPPED_BUILD_PACKAGES,
   STANDARD_TEXTS,
+  compiledSources,
   crateDirectories,
   crateFiles,
+  npmBuildPackages,
   npmProductionPackages,
   packageFileReader,
+  packageTextReader,
   renderNotices,
   rustLicences,
   sourceNotices,
@@ -71,7 +75,10 @@ const TREE = {
   "node_modules/aliased/LICENSE": TEXT.realName,
   "node_modules/types-only/LICENSE": TEXT.typesOnly,
   "node_modules/standard-only/index.js": "export default 2;\n",
+  "node_modules/with-holder/index.js": "export default 3;\n",
+  "node_modules/with-holder/readme.md": "# with-holder\n\n## License\n\n[MIT][license] \u00a9 [A. Fixture Holder][author]\n",
   "node_modules/dev-tool/LICENSE": "Fixture licence for dev-tool.\n",
+  "node_modules/unlisted-dev/LICENSE": "Fixture licence for unlisted-dev.\n",
   "packages/linked-workspace/LICENSE": "Fixture licence for linked-workspace.\n",
 };
 
@@ -93,10 +100,25 @@ function tree(changes = {}) {
   return dir;
 }
 
-/** The fixture's one package published without a licence file. */
-const LISTED = { "standard-only": "MIT" };
-const npm = (dir = tree(), options = { noLicenceFile: LISTED }) =>
+/** The fixture's packages published without a licence file; with-holder's readme names its holder. */
+const LISTED = {
+  "standard-only": { licence: "MIT" },
+  "with-holder": { licence: "MIT", holder: "A. Fixture Holder", source: "readme.md" },
+};
+const npm = (dir = tree(), options = { noLicenceFile: LISTED, readPackageText: packageTextReader(dir) }) =>
   npmProductionPackages(LOCK, packageFileReader(dir), options);
+/** npmBuildPackages over the fixture lock, for the dev packages in `names`. */
+const build = (names, dir = tree()) =>
+  npmBuildPackages(LOCK, packageFileReader(dir), {
+    names,
+    noLicenceFile: LISTED,
+    readPackageText: packageTextReader(dir),
+  });
+/** The standard MIT text with a holder in its copyright line. */
+const MIT_WITH_HOLDER = STANDARD_TEXTS.MIT.replace(
+  "Copyright (c) <year> <copyright holders>",
+  "Copyright (c) A. Fixture Holder",
+);
 
 // `cargo metadata` for the fixture graph. The cargo-about fixture carries no
 // manifest paths, so every crate folder below has to come from here.
@@ -199,13 +221,14 @@ describe("npmProductionPackages", () => {
         "real-name 4.0.0 MIT",
         "standard-only 1.0.0 MIT",
         "types-only 0.1.0 MIT",
+        "with-holder 2.0.0 MIT",
       ],
     );
 
     const out = notices();
     const part = section(out, "npm packages");
     for (const p of packages) assert.equal(countLines(part, label(p)), 1, label(p));
-    for (const name of ["dev-tool", "@esbuild/darwin-arm64", "@scope/native-linux-x64", "linked-workspace"]) {
+    for (const name of ["dev-tool", "unlisted-dev", "@esbuild/darwin-arm64", "@scope/native-linux-x64", "linked-workspace"]) {
       assert.ok(!out.includes(name), `${name} is in the notices`);
     }
   });
@@ -241,12 +264,26 @@ describe("npmProductionPackages", () => {
   test("a listed package without a licence file gets its licence's standard text", () => {
     const pkg = npm().find((p) => p.name === "standard-only");
     assert.equal(pkg.standard, true);
+    assert.equal(pkg.holder, null);
     assert.deepEqual(pkg.texts, [{ file: null, text: STANDARD_TEXTS.MIT }]);
+  });
+
+  test("a listed holder fills the standard text's copyright line, once the package's own file names it", () => {
+    const pkg = npm().find((p) => p.name === "with-holder");
+    assert.equal(pkg.standard, true);
+    assert.equal(pkg.holder, "A. Fixture Holder");
+    assert.equal(pkg.holderSource, "readme.md");
+    assert.deepEqual(pkg.texts, [{ file: null, text: MIT_WITH_HOLDER }]);
+  });
+
+  test("a holder that the package's own file doesn't name throws", () => {
+    const dir = tree({ "node_modules/with-holder/readme.md": "# with-holder\n\nNo licence section.\n" });
+    assert.throws(() => npm(dir), /with-holder 2\.0\.0: readme\.md doesn't name A\. Fixture Holder/);
   });
 
   test("a listed package that now declares another licence throws", () => {
     assert.throws(
-      () => npm(tree(), { noLicenceFile: { "standard-only": "ISC" } }),
+      () => npm(tree(), { noLicenceFile: { ...LISTED, "standard-only": { licence: "ISC" } } }),
       /standard-only 1\.0\.0 declares MIT/,
     );
   });
@@ -263,15 +300,55 @@ describe("npmProductionPackages", () => {
     };
     const dir = tree();
     assert.deepEqual(
-      npmProductionPackages(reversed, packageFileReader(dir), { noLicenceFile: LISTED }),
+      npmProductionPackages(reversed, packageFileReader(dir), {
+        noLicenceFile: LISTED,
+        readPackageText: packageTextReader(dir),
+      }),
       npm(dir),
     );
   });
 
   test("every package that NO_LICENCE_FILE lists names a licence with a standard text", () => {
-    for (const [name, licence] of Object.entries(NO_LICENCE_FILE)) {
+    for (const [name, { licence, holder, source }] of Object.entries(NO_LICENCE_FILE)) {
       assert.equal(typeof STANDARD_TEXTS[licence], "string", `${name}: ${licence}`);
       assert.ok(STANDARD_TEXTS[licence].length > 0, `${name}: ${licence}`);
+      // A holder always comes with the file of the package that names it.
+      assert.equal(typeof holder === "string", typeof source === "string", name);
+    }
+  });
+});
+
+describe("npmBuildPackages", () => {
+  test("a listed dev package appears, marked as a build-time package whose output ships", () => {
+    const packages = build(["dev-tool"]);
+    assert.deepEqual(
+      packages.map((p) => ({ label: label(p), license: p.license, build: p.build, texts: p.texts })),
+      [{ label: "dev-tool 1.0.0", license: "MIT", build: true, texts: [{ file: "LICENSE", text: "Fixture licence for dev-tool.\n" }] }],
+    );
+    const part = section(notices({ npm: [...npm(), ...packages] }), "npm packages");
+    assert.equal(countLines(part, "dev-tool 1.0.0"), 1);
+    assert.ok(part.includes("dev-tool 1.0.0\nLicence: MIT\nA build-time package: its output ships in Fleetify's user interface.\n"));
+  });
+
+  test("an unlisted dev package doesn't", () => {
+    const out = notices({ npm: [...npm(), ...build(["dev-tool"])] });
+    assert.ok(!out.includes("unlisted-dev"));
+    assert.ok(!out.includes("Fixture licence for unlisted-dev."));
+  });
+
+  test("a listed package missing from the lock throws", () => {
+    assert.throws(() => build(["not-in-the-lock"]), /not-in-the-lock .*package-lock\.json/);
+  });
+
+  test("a listed package that ships as a production dependency isn't listed twice", () => {
+    assert.deepEqual(build(["alpha"]), []);
+  });
+
+  test("every package in SHIPPED_BUILD_PACKAGES is a dev dependency in the repo's package-lock.json", () => {
+    const lock = JSON.parse(repoFile("package-lock.json"));
+    assert.ok(SHIPPED_BUILD_PACKAGES.length > 0);
+    for (const name of SHIPPED_BUILD_PACKAGES) {
+      assert.equal(lock.packages[`node_modules/${name}`]?.dev, true, name);
     }
   });
 });
@@ -371,7 +448,7 @@ describe("whisperCppLicence", () => {
   test("reads whisper.cpp/LICENSE beside whisper-rs-sys's manifest, with the source's other notices", () => {
     assert.deepEqual(whisperCppLicence(METADATA, { readText: readWhisper, findNotices: findWhisperNotices }), {
       name: "whisper.cpp and ggml",
-      from: "whisper-rs-sys 0.15.0",
+      crate: { name: "whisper-rs-sys", version: "0.15.0" },
       licence: "MIT",
       file: "whisper.cpp/LICENSE",
       text: WHISPER_TEXT,
@@ -472,6 +549,148 @@ describe("sourceNotices", () => {
   });
 });
 
+describe("compiledSources", () => {
+  const crate = (name, version) => ({
+    name,
+    version,
+    id: `registry+https://github.com/rust-lang/crates.io-index#${name}@${version}`,
+  });
+  const CSRC = crate("csrc-sys", "1.2.0");
+  const PLAIN = crate("plain-cc", "0.1.0");
+  const SQLITE = crate("libsqlite3-sys", "0.30.1");
+  const WHISPER = crate("whisper-rs-sys", "0.15.0");
+  const HOST = crate("host-only-sys", "0.1.0"); // builds with cc, but no release target has it
+  const OPTIONAL = crate("optional-cc", "0.2.0"); // declares cc for a feature that is off
+  const RUST_ONLY = crate("rust-only", "1.0.0"); // uses cc as a normal dependency, not to build
+  const CC = crate("cc", "1.2.0");
+  const CMAKE = crate("cmake", "0.1.0");
+  const builds = (...deps) => deps.map((dep) => ({ name: dep.name, pkg: dep.id, dep_kinds: [{ kind: "build", target: null }] }));
+  const METADATA_C = {
+    packages: [CSRC, PLAIN, SQLITE, WHISPER, HOST, OPTIONAL, RUST_ONLY, CC, CMAKE].map((c) => ({
+      ...c,
+      manifest_path: `/unused/${c.name}/Cargo.toml`,
+    })),
+    resolve: {
+      nodes: [
+        { id: CSRC.id, deps: builds(CC) },
+        { id: PLAIN.id, deps: builds(CC) },
+        { id: SQLITE.id, deps: builds(CC) },
+        { id: WHISPER.id, deps: builds(CMAKE) },
+        { id: HOST.id, deps: builds(CC) },
+        { id: OPTIONAL.id, deps: [] },
+        { id: RUST_ONLY.id, deps: [{ name: "cc", pkg: CC.id, dep_kinds: [{ kind: null, target: null }] }] },
+      ],
+    },
+  };
+  const CSRC_TEXT =
+    "Fixture ISC licence of csrc-sys.\n\nCopyright (c) 2026 The Csrc Fixture Authors\n\nPermission to use this fixture is granted for tests.\n";
+  // cargo-about's output: the release crates, and csrc-sys's own licence text.
+  const ABOUT_C = {
+    licenses: [
+      { id: "ISC", name: "ISC License", text: CSRC_TEXT, source_path: "/unused/csrc-sys/LICENSE", used_by: [{ crate: CSRC }] },
+      {
+        id: "MIT",
+        name: "MIT License",
+        text: "Fixture MIT licence text.\n",
+        source_path: "/unused/LICENSE",
+        used_by: [PLAIN, SQLITE, WHISPER, OPTIONAL, RUST_ONLY].map((c) => ({ crate: c })),
+      },
+    ],
+  };
+  const OTHER_HEADER = "/* Copyright (c) 2026, Fixture Inc.\n *\n * Permission to use this fixture code is granted for tests. */";
+  const PERL_HEADER =
+    "#! /usr/bin/env perl\n# Copyright 2026 The Fixture Project Authors. All Rights Reserved.\n#\n# Licensed under the Fixture Licence.";
+  const ASM_HEADER = "; Copyright 2026 The Fixture Asm Authors\n; Licensed under the Fixture Licence.";
+  const CREDIT = "// Based on fixture code by A. Person, placed in the public domain.";
+  const root = join(ROOT, "compiled");
+  const FILES = {
+    // Its header repeats csrc-sys's own licence text, so only the credit below is new.
+    "csrc-sys/src/c/thing.c":
+      "/* Copyright (c) 2026 The Csrc Fixture Authors\n *\n * Permission to use this fixture is granted for tests. */\n\n" +
+      `int thing;\n\n${CREDIT}\nint borrowed;\n`,
+    "csrc-sys/src/c/other.c": `${OTHER_HEADER}\nint other;\n`,
+    "csrc-sys/include/other.h": `${OTHER_HEADER}\n#pragma once\n`,
+    "csrc-sys/asm/fixture.pl": `${PERL_HEADER}\n\nuse strict;\n`,
+    "csrc-sys/asm/fixture-nasm.asm": `${ASM_HEADER}\nsection .text\n`,
+    // Not read: Rust sources are cargo-about's, licence files the Rust section's.
+    "csrc-sys/src/lib.rs": "// Copyright 2026 The Rust Fixture Authors\n",
+    "csrc-sys/LICENSE-OTHER": "Copyright 2026 A fixture licence file.\n",
+    "plain-cc/src/shim.c": "int shim(void) { return 0; }\n",
+    "libsqlite3-sys/sqlite3/sqlite3.h": '#define SQLITE_VERSION        "3.46.0"\n',
+    "libsqlite3-sys/sqlite3/sqlite3.c": "/*\n** The author disclaims copyright to this source code.\n*/\nint sqlite;\n",
+  };
+  for (const [rel, text] of Object.entries(FILES)) {
+    mkdirSync(dirname(join(root, rel)), { recursive: true });
+    writeFileSync(join(root, rel), text);
+  }
+  const DIRS_C = new Map([
+    [CSRC.id, join(root, "csrc-sys")],
+    [PLAIN.id, join(root, "plain-cc")],
+    [SQLITE.id, join(root, "libsqlite3-sys")],
+  ]);
+  const compiled = () => compiledSources(ABOUT_C, METADATA_C, { crateDirs: DIRS_C });
+
+  test("scans each release crate that builds with cc or cmake, except whisper-rs-sys", () => {
+    assert.deepEqual(
+      compiled().map((source) => `${source.name} (${label(source.crate)})`),
+      ["csrc-sys (csrc-sys 1.2.0)", "SQLite 3.46.0 (libsqlite3-sys 0.30.1)", "plain-cc (plain-cc 0.1.0)"],
+    );
+  });
+
+  test("keeps each other notice once, verbatim, with its files and lines, but not the crate's own licence", () => {
+    const csrc = compiled().find((source) => source.crate.name === "csrc-sys");
+    assert.deepEqual(csrc.notices, [
+      { text: ASM_HEADER, places: [{ path: "asm/fixture-nasm.asm", line: 1 }] },
+      { text: PERL_HEADER, places: [{ path: "asm/fixture.pl", line: 1 }] },
+      {
+        text: OTHER_HEADER,
+        places: [
+          { path: "include/other.h", line: 1 },
+          { path: "src/c/other.c", line: 1 },
+        ],
+      },
+      { text: CREDIT, places: [{ path: "src/c/thing.c", line: 7 }] },
+    ]);
+    assert.deepEqual(compiled().find((source) => source.crate.name === "plain-cc").notices, []);
+  });
+
+  test("names SQLite in one public-domain entry, with the version it bundles, instead of scanning it", () => {
+    assert.deepEqual(
+      compiled().find((source) => source.crate.name === "libsqlite3-sys"),
+      {
+        name: "SQLite 3.46.0",
+        crate: { name: "libsqlite3-sys", version: "0.30.1" },
+        publicDomain: "https://www.sqlite.org/copyright.html",
+        notices: [],
+      },
+    );
+  });
+
+  test("finds nothing without a resolve graph", () => {
+    assert.deepEqual(compiledSources(ABOUT_C, { packages: METADATA_C.packages }, { crateDirs: DIRS_C }), []);
+  });
+
+  test("the bundled source section lists what it holds, and each notice as crate, version, path and line", () => {
+    const sources = [...bundled(), ...compiled()];
+    const part = section(notices({ bundled: sources }), "Bundled C/C++ source");
+    // The intro lists exactly the entries below it.
+    const all = lines(part);
+    const intro = all.slice(0, all.indexOf("-".repeat(80))).filter((l) => l.startsWith("    ")).map((l) => l.trim());
+    const titles = all.filter((l, i) => all[i - 1] === "-".repeat(80));
+    assert.deepEqual(intro, titles);
+    assert.deepEqual(titles, [
+      "SQLite 3.46.0, from libsqlite3-sys 0.30.1",
+      "csrc-sys 1.2.0",
+      "plain-cc 0.1.0",
+      "whisper.cpp and ggml, from whisper-rs-sys 0.15.0",
+    ]);
+    assert.ok(part.includes(`\n    csrc-sys 1.2.0 include/other.h:1\n    csrc-sys 1.2.0 src/c/other.c:1\n\n${OTHER_HEADER}\n`));
+    assert.ok(part.includes("SQLite 3.46.0, from libsqlite3-sys 0.30.1\nLicence: public domain, https://www.sqlite.org/copyright.html\n"));
+    assert.ok(part.includes('plain-cc 0.1.0\nLicence: under "Rust crates" above\nIts sources carry no other licence notice.\n'));
+    assert.ok(part.includes('csrc-sys 1.2.0\nLicence: under "Rust crates" above\n'));
+  });
+});
+
 describe("renderNotices", () => {
   test("opens with the version, then has the four sections in order", () => {
     const out = notices();
@@ -531,6 +750,24 @@ describe("renderNotices", () => {
     assert.ok(!notices().includes(CRATE_TEXT.appNotice));
   });
 
+  test("says where a standard text's copyright holder comes from, or that there is none", () => {
+    const part = section(notices(), "npm packages");
+    assert.ok(
+      part.includes(
+        "with-holder 2.0.0\nLicence: MIT\n\n" +
+          "Published without a licence file: this is the standard text of the licence its\n" +
+          `package.json declares, with the copyright holder its readme.md names.\n\n${MIT_WITH_HOLDER}`,
+      ),
+    );
+    assert.ok(
+      part.includes(
+        "standard-only 1.0.0\nLicence: MIT\n\n" +
+          "Published without a licence file, and its files name no copyright holder: this\n" +
+          `is the standard text of the licence its package.json declares.\n\n${STANDARD_TEXTS.MIT}`,
+      ),
+    );
+  });
+
   test("names whisper.cpp and ggml under the bundled source, with the crate they come from", () => {
     const part = section(notices(), "Bundled C/C++ source");
     assert.match(part, /whisper\.cpp and ggml/);
@@ -540,7 +777,10 @@ describe("renderNotices", () => {
 
   test("gives the bundled source's other licence notices verbatim, with the files they are in", () => {
     const part = section(notices(), "Bundled C/C++ source");
-    assert.equal(occurrences(part, `\n    whisper.cpp/ggml/src/ggml-cpu/ops.cpp:12\n\n${ROPE_NOTICE}\n`), 1);
+    assert.equal(
+      occurrences(part, `\n    whisper-rs-sys 0.15.0 whisper.cpp/ggml/src/ggml-cpu/ops.cpp:12\n\n${ROPE_NOTICE}\n`),
+      1,
+    );
     assert.ok(part.indexOf(WHISPER_TEXT) < part.indexOf(ROPE_NOTICE));
   });
 

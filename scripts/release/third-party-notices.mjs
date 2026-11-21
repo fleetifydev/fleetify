@@ -17,13 +17,16 @@
  *     Each licence text appears once, with the crates it covers. The NOTICE,
  *     COPYRIGHT and third-party notice files in each crate's folder (found
  *     through `cargo metadata`) follow the crate's first licence.
- *   - npm packages: the production packages in package-lock.json, each with
- *     the LICENSE*, LICENCE*, COPYING* and NOTICE* files it has in
+ *   - npm packages: the production packages in package-lock.json, and the
+ *     build-time packages whose output ships (SHIPPED_BUILD_PACKAGES), each
+ *     with the LICENSE*, LICENCE*, COPYING* and NOTICE* files it has in
  *     node_modules.
- *   - Bundled C/C++ source: whisper.cpp and ggml, which the whisper-rs-sys
- *     crate compiles in, under whisper.cpp's MIT licence from that crate,
- *     then every other licence notice found in that source, with the files
- *     it is in.
+ *   - Bundled C/C++ source: the C, C++ and assembly source that crates
+ *     compile in. whisper.cpp and ggml (from whisper-rs-sys) come under
+ *     whisper.cpp's MIT licence; every release crate that builds with cc or
+ *     cmake is scanned for the licence notices in its sources; SQLite (from
+ *     libsqlite3-sys), which is in the public domain, gets one line. Each
+ *     notice comes with the crate, file and line it is at.
  *   - Linux AppImage: a pointer to LINUX-APPIMAGE-LIBRARIES.txt, which
  *     appimage-libraries.mjs writes for each release.
  *
@@ -33,8 +36,10 @@
  * `cargo install cargo-about --locked --version 0.9.3 --features cli`.
  *
  * It fails closed: a production npm package without a licence file stops the
- * run unless NO_LICENCE_FILE lists it, and so does a missing whisper.cpp
- * licence or a failed cargo command.
+ * run unless NO_LICENCE_FILE lists it, and so does a copyright holder that
+ * the package's own file doesn't name, a SHIPPED_BUILD_PACKAGES entry
+ * missing from the lock, a missing whisper.cpp licence or a failed cargo
+ * command.
  *
  * Exit codes: 0 written; 1 a source is missing or a command failed; 2 usage.
  */
@@ -96,20 +101,40 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 });
 
 /**
- * Production npm packages published without a licence file, each with the
- * licence its package.json declares. The notices give that licence's
- * standard text for them. Any other production package without a licence
- * file stops the run, so that a new one is looked at before it ships.
+ * npm packages published without a licence file, each with the `licence` its
+ * package.json declares. The notices give that licence's standard text for
+ * them. A `holder` goes into the text's copyright line only when the
+ * package's own file `source` names it, which the run checks. Any other
+ * package without a licence file stops the run, so that a new one is looked
+ * at before it ships.
  */
 export const NO_LICENCE_FILE = Object.freeze({
-  // From the posthog-js repository (packages/core). The LICENSE in the
-  // posthog-js package is the Apache License and doesn't cover it.
-  "@posthog/core": "MIT",
+  // From the posthog-js repository (packages/core). Its files name no
+  // copyright holder for its own code, and the LICENSE in the posthog-js
+  // package is the Apache License, which doesn't cover it: the standard text
+  // stays as it is.
+  "@posthog/core": { licence: "MIT" },
   // Both from the remark-math repository, whose licence file isn't published
-  // with them.
-  "rehype-katex": "MIT",
-  "remark-math": "MIT",
+  // with them. Each one's readme.md ends "[MIT][license] © [Junyoung Choi]".
+  "rehype-katex": { licence: "MIT", holder: "Junyoung Choi", source: "readme.md" },
+  "remark-math": { licence: "MIT", holder: "Junyoung Choi", source: "readme.md" },
 });
+
+/** The copyright line of a standard text, which a NO_LICENCE_FILE holder fills in. */
+const HOLDER_PLACEHOLDER = /^Copyright \(c\) <year> <copyright holders>$/m;
+
+/**
+ * Dev dependencies whose output ships in Fleetify's user interface, so their
+ * licences go in the notices like the production packages'. Each is checked
+ * against a built dist/:
+ *   - tailwindcss: the generated CSS carries Tailwind's own CSS, under its
+ *     "tailwindcss v… | MIT License" banner;
+ *   - vite: the entry chunk carries Vite's module-preload polyfill, and the
+ *     chunks that load others its preload helper (__vite__mapDeps).
+ * The shadcn CLI is not here: none of the components it generated reaches the
+ * bundle.
+ */
+export const SHIPPED_BUILD_PACKAGES = Object.freeze(["tailwindcss", "vite"]);
 
 const compare = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 /** Orders crates and packages by name, then version. */
@@ -160,6 +185,17 @@ export function packageFileReader(root) {
 }
 
 /**
+ * A `readPackageText` for npmProductionPackages and npmBuildPackages: the
+ * text of `file` in the package at `path` under `root`.
+ *
+ * @param {string} root
+ * @returns {(path: string, file: string) => string}
+ */
+export function packageTextReader(root) {
+  return (path, file) => readFileSync(join(root, path, file), "utf8");
+}
+
+/**
  * The licence and notice files of the crate in `dir`, as `{ file, text }`
  * with `file` relative to `dir`, sorted: the licence files (LICENCE_FILE)
  * and notice files (CRATE_NOTICE) at its top level, and the licence files
@@ -196,6 +232,12 @@ export function crateDirectories(metadata) {
 const MODULES = "node_modules/";
 
 /**
+ * @typedef {{ name: string, version: string, license: string, build: boolean,
+ *             standard: boolean, holder: string | null, holderSource: string | null,
+ *             texts: Array<{ file: string | null, text: string }> }} NpmPackage
+ */
+
+/**
  * The npm packages that ship: package-lock.json's "packages" without the
  * root, workspace packages and links, dev-only packages, and optional
  * packages tied to an OS or CPU (native builds for other platforms). Each
@@ -204,15 +246,17 @@ const MODULES = "node_modules/";
  *
  * A package without a licence file throws, unless `noLicenceFile` lists it
  * with the licence it declares: it then gets that licence's standard text
- * (`file: null`, first) and `standard: true`.
+ * (`file: null`, first) and `standard: true`. A listed `holder` fills in the
+ * text's copyright line once `readPackageText(path, source)` shows that the
+ * package's own file names it; otherwise that throws too.
  *
  * @param {{ packages?: Record<string, any> }} lock
  * @param {(path: string) => Array<{ file: string, text: string }>} readPackageFiles
- * @param {{ noLicenceFile?: Record<string, string> }} [options]
- * @returns {Array<{ name: string, version: string, license: string, standard: boolean,
- *                   texts: Array<{ file: string | null, text: string }> }>}
+ * @param {{ noLicenceFile?: Record<string, { licence: string, holder?: string, source?: string }>,
+ *           readPackageText?: (path: string, file: string) => string }} [options]
+ * @returns {NpmPackage[]}
  */
-export function npmProductionPackages(lock, readPackageFiles, { noLicenceFile = NO_LICENCE_FILE } = {}) {
+export function npmProductionPackages(lock, readPackageFiles, { noLicenceFile = NO_LICENCE_FILE, readPackageText } = {}) {
   const packages = new Map();
   for (const path of Object.keys(lock.packages ?? {}).sort(compare)) {
     const entry = lock.packages[path];
@@ -220,23 +264,64 @@ export function npmProductionPackages(lock, readPackageFiles, { noLicenceFile = 
     if ((entry.optional || entry.devOptional) && (entry.os || entry.cpu || entry.libc)) continue;
 
     const name = entry.name ?? path.slice(path.lastIndexOf(MODULES) + MODULES.length);
-    const { version } = entry;
-    const key = `${name}@${version}`;
+    const key = `${name}@${entry.version}`;
     if (packages.has(key)) continue;
-
-    const license = typeof entry.license === "string" ? entry.license : "not declared";
-    const texts = [...readPackageFiles(path)];
-    const standard = !texts.some(({ file }) => LICENCE_FILE.test(file));
-    if (standard) {
-      texts.unshift({ file: null, text: standardText({ name, version, path, license }, noLicenceFile) });
-    }
-    packages.set(key, { name, version, license, standard, texts });
+    packages.set(key, describePackage(name, entry, path, { readPackageFiles, noLicenceFile, readPackageText }));
   }
   return [...packages.values()].sort(byNameAndVersion);
 }
 
-/** The standard licence text for a package without a licence file, or why there is none. */
-function standardText({ name, version, path, license }, noLicenceFile) {
+/**
+ * The dev dependencies named in `names` (SHIPPED_BUILD_PACKAGES), whose
+ * output ships in the bundle, as npmProductionPackages describes packages,
+ * with `build: true`. Each must be at node_modules/<name> in the lock, or this
+ * throws. One that is a production dependency there is left out, because
+ * npmProductionPackages lists it already.
+ *
+ * @param {{ packages?: Record<string, any> }} lock
+ * @param {(path: string) => Array<{ file: string, text: string }>} readPackageFiles
+ * @param {{ names?: readonly string[],
+ *           noLicenceFile?: Record<string, { licence: string, holder?: string, source?: string }>,
+ *           readPackageText?: (path: string, file: string) => string }} [options]
+ * @returns {NpmPackage[]}
+ */
+export function npmBuildPackages(
+  lock,
+  readPackageFiles,
+  { names = SHIPPED_BUILD_PACKAGES, noLicenceFile = NO_LICENCE_FILE, readPackageText } = {},
+) {
+  const packages = [];
+  for (const name of names) {
+    const path = `${MODULES}${name}`;
+    const entry = lock.packages?.[path];
+    if (!entry) throw new Error(`${name} is a shipped build package, but package-lock.json has no ${path}`);
+    if (!entry.dev) continue;
+    packages.push({ ...describePackage(name, entry, path, { readPackageFiles, noLicenceFile, readPackageText }), build: true });
+  }
+  return packages.sort(byNameAndVersion);
+}
+
+/** One package for the notices, from its lock entry and its files. */
+function describePackage(name, entry, path, { readPackageFiles, noLicenceFile, readPackageText }) {
+  const { version } = entry;
+  const license = typeof entry.license === "string" ? entry.license : "not declared";
+  const texts = [...readPackageFiles(path)];
+  const standard = !texts.some(({ file }) => LICENCE_FILE.test(file));
+  let holder = null;
+  let holderSource = null;
+  if (standard) {
+    const fallback = standardText({ name, version, path, license }, noLicenceFile, readPackageText);
+    texts.unshift({ file: null, text: fallback.text });
+    ({ holder, source: holderSource } = fallback);
+  }
+  return { name, version, license, build: false, standard, holder, holderSource, texts };
+}
+
+/**
+ * The standard licence text for a package without a licence file, with its
+ * holder when NO_LICENCE_FILE gives one, or why there can be none.
+ */
+function standardText({ name, version, path, license }, noLicenceFile, readPackageText) {
   if (!Object.hasOwn(noLicenceFile, name)) {
     throw new Error(
       `${name} ${version} (${path}) has no licence file (LICENSE*, LICENCE* or COPYING*). ` +
@@ -244,14 +329,32 @@ function standardText({ name, version, path, license }, noLicenceFile) {
         "NO_LICENCE_FILE in scripts/release/third-party-notices.mjs.",
     );
   }
-  const listed = noLicenceFile[name];
-  if (listed !== license) {
-    throw new Error(`${name} ${version} declares ${license}, but NO_LICENCE_FILE lists it as ${listed}`);
+  const { licence, holder = null, source = null } = noLicenceFile[name];
+  if (licence !== license) {
+    throw new Error(`${name} ${version} declares ${license}, but NO_LICENCE_FILE lists it as ${licence}`);
   }
-  if (!Object.hasOwn(STANDARD_TEXTS, listed)) {
-    throw new Error(`${name} ${version}: there is no standard text for ${listed} in STANDARD_TEXTS`);
+  if (!Object.hasOwn(STANDARD_TEXTS, licence)) {
+    throw new Error(`${name} ${version}: there is no standard text for ${licence} in STANDARD_TEXTS`);
   }
-  return STANDARD_TEXTS[listed];
+  const text = STANDARD_TEXTS[licence];
+  if (holder === null) return { text, holder: null, source: null };
+
+  if (!readPackageText || !source) {
+    throw new Error(`${name} ${version}: NO_LICENCE_FILE names a copyright holder, but nothing can check it`);
+  }
+  let named;
+  try {
+    named = readPackageText(path, source);
+  } catch (err) {
+    throw new Error(`${name} ${version}: can't read ${source} to check its copyright holder (${err.code ?? err.message})`);
+  }
+  if (!named.includes(holder)) {
+    throw new Error(`${name} ${version}: ${source} doesn't name ${holder}, the copyright holder NO_LICENCE_FILE gives`);
+  }
+  if (!HOLDER_PLACEHOLDER.test(text)) {
+    throw new Error(`${name} ${version}: the standard text of ${licence} has no copyright line to fill in`);
+  }
+  return { text: text.replace(HOLDER_PLACEHOLDER, `Copyright (c) ${holder}`), holder, source };
 }
 
 /** Crates as `{ name, version }`, each once, sorted. */
@@ -325,12 +428,20 @@ export function rustLicences(about, { exclude = new Set(), crateDirs = new Map()
   });
 }
 
-/** Source files sourceNotices reads, by extension: C-style comments (// and block comments) or # comments. */
-const SLASH_COMMENTS = new Set([
-  ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".cu", ".cuh", ".cl",
-  ".comp", ".glsl", ".wgsl", ".tmpl", ".m", ".mm", ".metal", ".idl",
+/**
+ * The source files sourceNotices reads, by extension, with their comment
+ * style: "slash" for // and block comments (C, C++, Objective-C, GPU kernels,
+ * preprocessed assembly), "semicolon" for nasm assembly, "hash" for build
+ * scripts and perlasm, the Perl that generates ring's assembly.
+ */
+const COMMENT_STYLE = new Map([
+  ...[
+    ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".inl", ".cu", ".cuh", ".cl",
+    ".comp", ".glsl", ".wgsl", ".tmpl", ".m", ".mm", ".metal", ".idl", ".S",
+  ].map((extension) => [extension, "slash"]),
+  [".asm", "semicolon"],
+  ...[".cmake", ".txt", ".in", ".py", ".sh", ".pl"].map((extension) => [extension, "hash"]),
 ]);
-const HASH_COMMENTS = new Set([".cmake", ".txt", ".in", ".py", ".sh"]);
 /** Words that make a comment a licence notice. */
 const NOTICE_MARKER =
   /copyright|spdx-license-identifier|licen[cs]ed under|mit licen[cs]e|apache licen[cs]e|bsd licen[cs]e|permission is hereby granted|redistribution and use|public domain/i;
@@ -341,8 +452,8 @@ const words = (text) => text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 /**
  * The comments in a source file's `text`: each run of consecutive comment
  * lines as `{ line, text }`, `line` counting from 1. In "slash" style a run is
- * // lines, or a whole block comment, blank lines included; in "hash" style
- * it is # lines. A blank line ends a // or # run.
+ * // lines, or a whole block comment, blank lines included; in "hash" and
+ * "semicolon" style it is # or ; lines. A blank line ends a //, # or ; run.
  */
 function commentBlocks(text, style) {
   const lines = text.split("\n");
@@ -358,6 +469,8 @@ function commentBlocks(text, style) {
     let comment;
     if (style === "hash") {
       comment = line.startsWith("#");
+    } else if (style === "semicolon") {
+      comment = line.startsWith(";");
     } else if (inBlock) {
       comment = true;
       inBlock = !line.includes("*/");
@@ -380,37 +493,38 @@ const comparePlaces = (a, b) => compare(a.path, b.path) || a.line - b.line;
 const compareNotices = (a, b) => comparePlaces(a.places[0], b.places[0]) || compare(a.text, b.text);
 
 /**
- * The licence notices in a source tree other than its licence, `licence`
- * (the text of `<root>/LICENSE`). Each is verbatim, once, with every place it
- * is at as `{ path, line }` (path relative to `root`, with "/"), sorted:
- *   - a licence or notice file anywhere below the top (VENDORED_LICENCE), whole;
- *   - in a source file (SLASH_COMMENTS, HASH_COMMENTS), a comment with a
- *     NOTICE_MARKER in it: a file header, or a line or two crediting
- *     borrowed code.
- * A notice whose words all appear, in order, in `licence` only repeats it,
- * and is left out.
+ * The licence notices in a source tree beyond its own licences, `licences`
+ * (one text or several). Each is verbatim, once, with every place it is at as
+ * `{ path, line }` (path relative to `root`, with "/"), sorted:
+ *   - with `licenceFiles`, a licence or notice file (VENDORED_LICENCE) other
+ *     than <root>/LICENSE, whole;
+ *   - in a source file (COMMENT_STYLE), a comment with a NOTICE_MARKER in it:
+ *     a file header, or a line or two crediting borrowed code.
+ * A notice whose words all appear, in order, in one of `licences` only
+ * repeats it, and is left out.
  *
  * @param {string} root
- * @param {string} licence
+ * @param {string | string[]} licences
+ * @param {{ licenceFiles?: boolean }} [options]
  * @returns {Array<{ text: string, places: Array<{ path: string, line: number }> }>}
  */
-export function sourceNotices(root, licence) {
-  const own = words(licence);
+export function sourceNotices(root, licences, { licenceFiles = true } = {}) {
+  const own = [licences].flat().map(words);
   const notices = new Map();
   const add = (text, place) => {
-    if (own.includes(words(text))) return;
+    const notice = words(text);
+    if (own.some((licence) => licence.includes(notice))) return;
     if (!notices.has(text)) notices.set(text, []);
     notices.get(text).push(place);
   };
   for (const path of walk(root)) {
     if (path === "LICENSE") continue;
     const name = posix.basename(path);
-    const extension = posix.extname(name);
     if (VENDORED_LICENCE.test(name)) {
-      add(readFileSync(join(root, path), "utf8"), { path, line: 1 });
+      if (licenceFiles) add(readFileSync(join(root, path), "utf8"), { path, line: 1 });
       continue;
     }
-    const style = SLASH_COMMENTS.has(extension) ? "slash" : HASH_COMMENTS.has(extension) ? "hash" : null;
+    const style = COMMENT_STYLE.get(posix.extname(name));
     if (!style) continue;
     for (const block of commentBlocks(readFileSync(join(root, path), "utf8"), style)) {
       if (NOTICE_MARKER.test(block.text)) add(block.text, { path, line: block.line });
@@ -462,12 +576,77 @@ export function whisperCppLicence(
   }));
   return {
     name: "whisper.cpp and ggml",
-    from: `whisper-rs-sys ${crate.version}`,
+    crate: { name: crate.name, version: crate.version },
     licence: "MIT",
     file: "whisper.cpp/LICENSE",
     text,
     notices,
   };
+}
+
+/** Build tools whose use in a crate's build script means it compiles C, C++ or assembly. */
+const NATIVE_BUILDERS = new Set(["cc", "cmake"]);
+/** Where SQLite's public-domain dedication is explained. */
+const SQLITE_COPYRIGHT = "https://www.sqlite.org/copyright.html";
+
+/**
+ * The C, C++ and assembly source that release crates compile in, beyond
+ * whisper.cpp: one entry per crate that cargo-about lists (minus `exclude`)
+ * and whose resolved build dependencies, in `metadata.resolve`, include cc or
+ * cmake. Each entry's `notices` are the licence notices in the crate's
+ * sources (sourceNotices, without licence files, which the Rust section
+ * covers), leaving out those that only repeat the crate's own licence texts
+ * in cargo-about's output. Sorted by crate.
+ *   - whisper-rs-sys is left out: whisperCppLicence covers its source.
+ *   - libsqlite3-sys bundles SQLite, which is in the public domain: its
+ *     source carries a blessing in place of a licence, so the entry names
+ *     SQLite and its version (from sqlite3/sqlite3.h) and `publicDomain`
+ *     links the dedication, instead of a scan.
+ *
+ * @param {{ licenses?: Array<any> }} about
+ * @param {{ packages?: Array<any>, resolve?: { nodes: Array<any> } | null }} metadata
+ * @param {{ exclude?: Set<string>, crateDirs?: Map<string, string> }} [options]
+ */
+export function compiledSources(about, metadata, { exclude = new Set(), crateDirs = new Map() } = {}) {
+  const packages = new Map((metadata.packages ?? []).map((p) => [p.id, p]));
+  const release = new Map();
+  for (const licence of about.licenses ?? []) {
+    for (const { crate } of licence.used_by) {
+      if (exclude.has(crate.id)) continue;
+      if (!release.has(crate.id)) release.set(crate.id, { crate, texts: [] });
+      release.get(crate.id).texts.push(licence.text);
+    }
+  }
+  const sources = [];
+  for (const node of metadata.resolve?.nodes ?? []) {
+    if (!release.has(node.id)) continue;
+    const native = node.deps.some(
+      (dep) => NATIVE_BUILDERS.has(packages.get(dep.pkg)?.name) && dep.dep_kinds.some((kind) => kind.kind === "build"),
+    );
+    if (!native) continue;
+    const { crate, texts } = release.get(node.id);
+    if (crate.name === "whisper-rs-sys") continue;
+    const dir = crateDirs.get(crate.id);
+    if (!dir) throw new Error(`${label(crate)} (${crate.id}) is not in cargo metadata, so its folder is unknown`);
+    const id = { name: crate.name, version: crate.version };
+    if (crate.name === "libsqlite3-sys") {
+      sources.push({ name: sqliteName(dir), crate: id, publicDomain: SQLITE_COPYRIGHT, notices: [] });
+    } else {
+      sources.push({ name: crate.name, crate: id, publicDomain: null, notices: sourceNotices(dir, texts, { licenceFiles: false }) });
+    }
+  }
+  return sources.sort((a, b) => byNameAndVersion(a.crate, b.crate));
+}
+
+/** "SQLite <version>", the version from the bundled sqlite3.h, or "SQLite" when it can't be read. */
+function sqliteName(dir) {
+  try {
+    const header = readFileSync(join(dir, "sqlite3", "sqlite3.h"), "utf8");
+    const version = header.match(/^#define SQLITE_VERSION\s+"([^"]+)"/m);
+    return version ? `SQLite ${version[1]}` : "SQLite";
+  } catch {
+    return "SQLite";
+  }
 }
 
 const RULE = "=".repeat(80);
@@ -496,18 +675,26 @@ const STANDARD_AND_SHIPPED_NOTE = [
 ];
 const SOURCE_NOTICES_NOTE = [
   "Licence notices inside individual files of this source follow, verbatim, with",
-  "the files and lines they are at. Notices that only repeat the licence above are",
+  "the crate, file and line they are at. Notices that only repeat its licence are",
   "left out.",
 ];
+const NO_SOURCE_NOTICES = "Its sources carry no other licence notice.";
 const NPM_INTRO = [
   "The npm packages built into Fleetify's user interface, each with the licence",
-  "and NOTICE files it is published with.",
+  "and NOTICE files it is published with, and the build-time packages whose",
+  "output ships in it.",
 ];
+const BUILD_NOTE = "A build-time package: its output ships in Fleetify's user interface.";
 const NPM_STANDARD_NOTE = [
-  "Published without a licence file: this is the standard text of the licence",
-  "its package.json declares.",
+  "Published without a licence file, and its files name no copyright holder: this",
+  "is the standard text of the licence its package.json declares.",
 ];
-const BUNDLED_INTRO = ["C and C++ source that a Rust crate carries and compiles into Fleetify."];
+/** The note for a standard text whose copyright holder `source`, a file of the package, names. */
+const npmHolderNote = (source) => [
+  "Published without a licence file: this is the standard text of the licence its",
+  `package.json declares, with the copyright holder its ${source} names.`,
+];
+const BUNDLED_INTRO = ["C, C++ and assembly source that Rust crates compile into Fleetify:"];
 const APPIMAGE = [
   "The Linux AppImage also bundles system libraries, which each release lists,",
   "with their copyright files and source links, in LINUX-APPIMAGE-LIBRARIES.txt.",
@@ -517,15 +704,17 @@ const APPIMAGE = [
 const verbatim = (text) => (text.endsWith("\n") ? text.slice(0, -1) : text);
 const indented = (crates) => crates.map((crate) => `    ${label(crate)}`);
 const heading = (out, title, intro) => out.push("", "", RULE, title, RULE, "", ...intro);
+/** A bundled source's heading: the crate, or what it bundles and the crate it comes from. */
+const sourceTitle = (source) =>
+  source.name === source.crate.name ? label(source.crate) : `${source.name}, from ${label(source.crate)}`;
 
 /**
  * THIRD-PARTY-NOTICES as text. Deterministic: everything is sorted here,
  * whatever order the input comes in, and nothing depends on the time or the
  * machine. Licence texts go in verbatim.
  *
- * @param {{ version: string, rust: ReturnType<typeof rustLicences>,
- *           npm: ReturnType<typeof npmProductionPackages>,
- *           bundled: Array<ReturnType<typeof whisperCppLicence>> }} input
+ * @param {{ version: string, rust: ReturnType<typeof rustLicences>, npm: NpmPackage[],
+ *           bundled: Array<ReturnType<typeof whisperCppLicence> | ReturnType<typeof compiledSources>[number]> }} input
  * @returns {string}
  */
 export function renderNotices({ version, rust, npm, bundled }) {
@@ -555,22 +744,36 @@ export function renderNotices({ version, rust, npm, bundled }) {
 
   heading(out, "npm packages", NPM_INTRO);
   for (const pkg of [...npm].sort(byNameAndVersion)) {
-    out.push("", LINE, label(pkg), `Licence: ${pkg.license}`);
+    out.push("", LINE, label(pkg), `Licence: ${pkg.license}`, ...(pkg.build ? [BUILD_NOTE] : []));
     for (const { file, text } of [...pkg.texts].sort((a, b) => compare(a.file ?? "", b.file ?? ""))) {
-      out.push("", ...(file === null ? NPM_STANDARD_NOTE : [`[${file}]`]), "", verbatim(text));
+      const note = pkg.holder ? npmHolderNote(pkg.holderSource) : NPM_STANDARD_NOTE;
+      out.push("", ...(file === null ? note : [`[${file}]`]), "", verbatim(text));
     }
   }
 
-  heading(out, "Bundled C/C++ source", BUNDLED_INTRO);
-  for (const source of [...bundled].sort((a, b) => compare(a.name, b.name))) {
-    out.push("", LINE, `${source.name}, from ${source.from}`, `Licence: ${source.licence}`);
-    out.push("", `[${source.file}]`, "", verbatim(source.text));
+  const sources = [...bundled].map((source) => ({ ...source, title: sourceTitle(source) }));
+  sources.sort((a, b) => compare(a.title, b.title));
+  heading(out, "Bundled C/C++ source", [...BUNDLED_INTRO, ...sources.map((source) => `    ${source.title}`)]);
+  for (const source of sources) {
+    out.push("", LINE, source.title);
+    if (source.text) {
+      out.push(`Licence: ${source.licence}`, "", `[${source.file}]`, "", verbatim(source.text));
+    } else if (source.publicDomain) {
+      out.push(`Licence: public domain, ${source.publicDomain}`);
+    } else {
+      out.push('Licence: under "Rust crates" above');
+    }
     const notices = (source.notices ?? [])
       .map((notice) => ({ ...notice, places: [...notice.places].sort(comparePlaces) }))
       .sort(compareNotices);
-    if (notices.length > 0) out.push("", ...SOURCE_NOTICES_NOTE);
+    if (notices.length > 0) {
+      out.push("", ...SOURCE_NOTICES_NOTE);
+    } else if (!source.text && !source.publicDomain) {
+      out.push(NO_SOURCE_NOTICES);
+    }
     for (const notice of notices) {
-      out.push("", "Notice in:", ...notice.places.map((p) => `    ${p.path}:${p.line}`), "", verbatim(notice.text));
+      const places = notice.places.map((p) => `    ${label(source.crate)} ${p.path}:${p.line}`);
+      out.push("", "Notice in:", ...places, "", verbatim(notice.text));
     }
   }
 
@@ -631,21 +834,24 @@ function main(argv) {
     );
     const lock = JSON.parse(readFileSync(join(ROOT, "package-lock.json"), "utf8"));
 
-    const rust = rustLicences(about, {
-      exclude: new Set(metadata.workspace_members),
-      crateDirs: crateDirectories(metadata),
-    });
-    const npm = npmProductionPackages(lock, packageFileReader(ROOT));
-    const bundled = [whisperCppLicence(metadata)];
+    const exclude = new Set(metadata.workspace_members);
+    const crateDirs = crateDirectories(metadata);
+    const rust = rustLicences(about, { exclude, crateDirs });
+    const packageOptions = { readPackageText: packageTextReader(ROOT) };
+    const production = npmProductionPackages(lock, packageFileReader(ROOT), packageOptions);
+    const build = npmBuildPackages(lock, packageFileReader(ROOT), packageOptions);
+    const npm = [...production, ...build];
+    const bundled = [whisperCppLicence(metadata), ...compiledSources(about, metadata, { exclude, crateDirs })];
     writeFileSync(args.out, renderNotices({ version, rust, npm, bundled }));
 
     const crates = new Set(rust.flatMap((licence) => licence.crates.map(label))).size;
     const crateFileCount = rust.reduce((n, licence) => n + licence.files.length, 0);
-    const sourceNoticeCount = bundled.reduce((n, source) => n + source.notices.length, 0);
+    const sources = bundled.map((source) => `${label(source.crate)} (${source.notices.length} notices)`);
     process.stderr.write(
       `third-party-notices: wrote ${args.out}: ${crates} Rust crates under ${rust.length} licence texts ` +
-        `with ${crateFileCount} files from their folders, ${npm.length} npm packages, ` +
-        `${bundled.map((source) => source.name).join(", ")} with ${sourceNoticeCount} more notices\n`,
+        `with ${crateFileCount} files from their folders; ${production.length} npm packages and ` +
+        `${build.length} build-time ones (${build.map(label).join(", ")}); ` +
+        `bundled source from ${sources.join(", ")}\n`,
     );
     return 0;
   } catch (err) {

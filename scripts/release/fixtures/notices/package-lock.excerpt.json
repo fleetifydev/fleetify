@@ -14,18 +14,24 @@
         "alpha": "^1.2.0",
         "gamma": "^3.1.0",
         "linked-workspace": "file:packages/linked-workspace",
-        "standard-only": "^1.0.0"
+        "standard-only": "^1.0.0",
+        "with-holder": "^2.0.0"
       },
       "devDependencies": {
-        "dev-tool": "^1.0.0"
+        "dev-tool": "^1.0.0",
+        "unlisted-dev": "^1.0.0"
       }
     },
     "node_modules/@esbuild/darwin-arm64": {
       "version": "0.25.0",
       "dev": true,
       "optional": true,
-      "os": ["darwin"],
-      "cpu": ["arm64"],
+      "os": [
+        "darwin"
+      ],
+      "cpu": [
+        "arm64"
+      ],
       "license": "MIT"
     },
     "node_modules/@scope/beta": {
@@ -46,8 +52,12 @@
     "node_modules/@scope/native-linux-x64": {
       "version": "2.0.0",
       "optional": true,
-      "os": ["linux"],
-      "cpu": ["x64"],
+      "os": [
+        "linux"
+      ],
+      "cpu": [
+        "x64"
+      ],
       "license": "MIT"
     },
     "node_modules/aliased": {
@@ -91,6 +101,15 @@
     "node_modules/types-only": {
       "version": "0.1.0",
       "optional": true,
+      "license": "MIT"
+    },
+    "node_modules/unlisted-dev": {
+      "version": "1.0.0",
+      "dev": true,
+      "license": "ISC"
+    },
+    "node_modules/with-holder": {
+      "version": "2.0.0",
       "license": "MIT"
     },
     "packages/linked-workspace": {
