@@ -46,8 +46,10 @@
  * scripts they need. release-please runs twice, the release alone, then the
  * release pull request alone, which waits while a draft is pending. It
  * builds the commit release-please's draft points at, in the release
- * environment, attests the assembled files in a job of its own, uploads them
- * only to a draft, and publishes once assemble and smoke have passed.
+ * environment, attests the assembled files in a job of its own and uploads
+ * them only to a draft. publish, once assemble and smoke have passed, checks
+ * that the draft's commit is the one built and that its tag doesn't exist
+ * yet before it publishes.
  * Candidate and release builds compare the macOS designated
  * requirement with the pinned one.
  *
@@ -3137,10 +3139,51 @@ describe("release.yml", () => {
     const publish = releaseStep("publish", "gh release edit");
     // Publishing the draft makes its tag, as the Release Bot.
     assert.deepEqual(commandLines(publish), ['gh release edit "$TAG" --draft=false --latest']);
+    // A tag is permanent, so the draft's commit and the tag's absence are
+    // checked before; what publishing did, after.
+    const before = steps.slice(0, steps.indexOf(publish)).map(scriptOf).join("\n");
+    for (const text of ['gh release view "$TAG" --json targetCommitish', 'git ls-remote --tags "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "refs/tags/$TAG"']) {
+      assert.ok(before.includes(text), `publish doesn't check, before it publishes: ${text}`);
+    }
     const after = steps.slice(steps.indexOf(publish) + 1).map(scriptOf).join("\n");
     for (const text of ['gh release view "$TAG" --json isDraft,tagName', "gh release view --json tagName", "git ls-remote --tags", "curl -fsSL"]) {
       assert.ok(after.includes(text), `publish doesn't check, once it has published: ${text}`);
     }
+  });
+
+  jqScriptTest("publish checks, before it publishes, that the draft points at the commit that was built, and that its tag doesn't exist yet", () => {
+    // Publishing makes the tag at the draft's commit, unless the tag exists
+    // already: then the release keeps it, wherever it points, for good.
+    const target = releaseStep("publish", "--json targetCommitish");
+    const draft = (targetCommitish) => ({ tagName: "v1.2.3", isDraft: true, targetCommitish, assets: [] });
+    const good = runReleaseStep(target, { env: RELEASE_ENV, release: draft(DRAFT_COMMIT) });
+    assert.equal(good.status, 0, good.output);
+    assert.deepEqual(good.gh, ["release view v1.2.3 --json targetCommitish --jq .targetCommitish"]);
+    for (const [why, options] of [
+      ["another commit", { release: draft("f".repeat(40)) }],
+      ["a branch", { release: draft("main") }],
+      ["no such draft", { release: draft(DRAFT_COMMIT), tag: "v9.9.9" }],
+    ]) {
+      const result = runReleaseStep(target, { env: RELEASE_ENV, ...options });
+      assert.equal(result.status, 1, `${why}:\n${result.output}`);
+    }
+    assert.match(runReleaseStep(target, { env: RELEASE_ENV, release: draft("main") }).output, /::error::the draft v1\.2\.3 points at main, not at 0123456789abcdef0123456789abcdef01234567/);
+
+    const absent = releaseStep("publish", '[ -n "$tag" ]');
+    const untagged = runReleaseStep(absent, { env: { ...RELEASE_ENV, STUB_LS_REMOTE: "" } });
+    assert.equal(untagged.status, 0, untagged.output);
+    assert.deepEqual(untagged.git, ["ls-remote --tags https://github.com/fleetifydev/fleetify refs/tags/v1.2.3"]);
+    // Even at the right commit: then this release was published before, and
+    // its tag exists for good.
+    for (const commit of [DRAFT_COMMIT, "f".repeat(40)]) {
+      const result = runReleaseStep(absent, { env: { ...RELEASE_ENV, STUB_LS_REMOTE: `${commit}\trefs/tags/v1.2.3` } });
+      assert.equal(result.status, 1, `a tag at ${commit}:\n${result.output}`);
+      assert.match(result.output, /::error::the tag v1\.2\.3 exists already/);
+    }
+
+    const steps = releaseStepsOf("publish");
+    const order = [tokenStepsOf("publish")[0], target, absent, releaseStep("publish", "gh release edit")].map((step) => steps.indexOf(step));
+    assert.ok(order.every((at, n) => at !== -1 && (n === 0 || at > order[n - 1])), `publish must make its token, check the draft's commit, check that the tag doesn't exist, then publish: ${order.join(", ")}`);
   });
 
   yamlTest("publish checks the latest.json that installed copies ask GitHub for: tauri.conf.json's second update endpoint", () => {
@@ -3167,7 +3210,7 @@ describe("release.yml", () => {
       assert.equal(result.status, 1, `${why}:\n${result.output}`);
     }
 
-    const tag = releaseStep("publish", "git ls-remote");
+    const tag = releaseStep("publish", "refs/tags/%s");
     const listed = (commit, ref = "refs/tags/v1.2.3") => `${commit}\t${ref}`;
     const tagged = runReleaseStep(tag, { env: { ...RELEASE_ENV, STUB_LS_REMOTE: listed(DRAFT_COMMIT) } });
     assert.equal(tagged.status, 0, tagged.output);
@@ -3377,6 +3420,7 @@ describe("release.yml", () => {
       'echo "::error::the draft $TAG doesn\'t hold exactly the release\'s assets"',
       'drafts=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq \'map(select(.draft)) | length\')',
       'echo "pending=false" >> "$GITHUB_OUTPUT"',
+      'target=$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)',
     ]) {
       assert.deepEqual(refused(script), [], script);
     }

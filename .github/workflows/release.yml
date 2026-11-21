@@ -20,11 +20,12 @@
 #   checks that the draft holds exactly the release's assets.
 # - smoke runs smoke.yml on those files, against the pinned macOS designated
 #   requirement.
-# - publish, once assemble and smoke have passed, publishes the draft as the
-#   latest release. That creates its tag, as the Release Bot: the tag rulesets
-#   let only it and the organisation's admins create a v* tag, and no one move
-#   or delete one. The job then checks the release, its tag and the
-#   latest.json that installed copies ask GitHub for.
+# - publish, once assemble and smoke have passed, checks that the draft points
+#   at the commit that was built and that its tag doesn't exist yet, then
+#   publishes the draft as the latest release. That creates its tag, as the
+#   Release Bot: the tag rulesets let only it and the organisation's admins
+#   create a v* tag, and no one move or delete one. The job then checks the
+#   release, its tag and the latest.json that installed copies ask GitHub for.
 #
 # The Release Bot's private key is in the release-bot environment, which only
 # main may deploy to. release-please, assemble and publish name it, and each
@@ -274,6 +275,28 @@ jobs:
           client-id: ${{ vars.RELEASE_BOT_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
           permission-contents: write
+      # Publishing makes the tag at the commit the draft points at, unless the
+      # tag exists already, which publishing keeps wherever it points. A tag
+      # is permanent, so both are checked before: the draft must point at the
+      # commit the release was built from, and the tag must not exist yet.
+      - name: Check the draft's commit
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          target=$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)
+          if [ "$target" != "$SHA" ]; then
+            echo "::error::the draft $TAG points at $target, not at $SHA, the commit the release was built from"
+            exit 1
+          fi
+          echo "the draft $TAG points at $SHA"
+      - name: Check that the tag doesn't exist yet
+        run: |
+          tag=$(git ls-remote --tags "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "refs/tags/$TAG")
+          if [ -n "$tag" ]; then
+            echo "::error::the tag $TAG exists already, so publishing would keep it as it is: $tag"
+            exit 1
+          fi
+          echo "the tag $TAG doesn't exist yet"
       # Publishing the draft makes its tag, at the draft's commit, as the
       # Release Bot.
       - name: Publish the draft as the latest release
