@@ -51,6 +51,7 @@ on:
       - Cargo.lock
       - package-lock.json
       - rust-toolchain.toml
+      - .nvmrc
       - vendor/**
 
 # A newer push or pull request update cancels the run it replaces; a

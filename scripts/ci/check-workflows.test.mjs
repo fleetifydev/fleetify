@@ -547,6 +547,7 @@ const DRY_RUN_PATHS = [
   "Cargo.lock",
   "package-lock.json",
   "rust-toolchain.toml",
+  ".nvmrc",
   "vendor/**",
 ];
 
