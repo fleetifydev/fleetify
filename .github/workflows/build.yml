@@ -10,8 +10,8 @@
 # - sign, for Linux and Windows, and bundle-macos, for macOS, run in the
 #   environment the caller names, which holds the signing keys. They run
 #   only GitHub's own actions, pinned to a commit, the Tauri CLI the
-#   lockfile pins (npx --no tauri, so npx downloads nothing), system tools
-#   and the repository's scripts. Each downloads an artifact into a folder
+#   lockfile pins (npx --no -- tauri: npx downloads nothing, and reads none
+#   of the flags after tauri), system tools and the repository's scripts. Each downloads an artifact into a folder
 #   of its own and checks that it holds exactly the files expected before it
 #   uses one; bundle-macos also reads compiled.tar member by member before
 #   it copies the listed files into the checkout. sign signs the updater
@@ -202,7 +202,7 @@ jobs:
         if: inputs.environment == 'dry-run'
         run: |
           mkdir -p "$RUNNER_TEMP/dry-run" "$RUNNER_TEMP/dry-run-config"
-          npx --no tauri signer generate --ci -p "" -w "$RUNNER_TEMP/dry-run/updater.key" > /dev/null
+          npx --no -- tauri signer generate --ci -p "" -w "$RUNNER_TEMP/dry-run/updater.key" > /dev/null
           node scripts/release/dry-run-config.mjs --pubkey-file "$RUNNER_TEMP/dry-run/updater.key.pub" --out "$RUNNER_TEMP/dry-run-config/dry-run.json"
       - name: Stage the MCP sidecars
         run: node scripts/build-sidecars.mjs --release --target "$TRIPLE"
@@ -214,7 +214,7 @@ jobs:
           POSTHOG_HOST: ${{ vars.POSTHOG_HOST }}
           VITE_POSTHOG_KEY: ${{ vars.VITE_POSTHOG_KEY }}
           VITE_POSTHOG_HOST: ${{ vars.VITE_POSTHOG_HOST }}
-        run: npx --no tauri build --ci --target "$TRIPLE" --no-bundle --config src-tauri/tauri.release.conf.json
+        run: npx --no -- tauri build --ci --target "$TRIPLE" --no-bundle --config src-tauri/tauri.release.conf.json
       - name: Compile the app (dry run)
         if: inputs.environment == 'dry-run'
         env:
@@ -223,7 +223,7 @@ jobs:
           VITE_POSTHOG_KEY: ${{ vars.VITE_POSTHOG_KEY }}
           VITE_POSTHOG_HOST: ${{ vars.VITE_POSTHOG_HOST }}
         run: >-
-          npx --no tauri build --ci --target "$TRIPLE" --no-bundle
+          npx --no -- tauri build --ci --target "$TRIPLE" --no-bundle
           --config src-tauri/tauri.release.conf.json --config "$RUNNER_TEMP/dry-run-config/dry-run.json"
       # A private key or token that got into the build would ship in the UI
       # bundle or a binary. The bundles themselves are compressed, which a
@@ -279,11 +279,11 @@ jobs:
       # (linuxdeploy, makensis).
       - name: Bundle without signing (Linux and Windows release)
         if: runner.os != 'macOS' && inputs.environment == 'release'
-        run: npx --no tauri bundle --no-sign --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES" --config src-tauri/tauri.release.conf.json
+        run: npx --no -- tauri bundle --no-sign --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES" --config src-tauri/tauri.release.conf.json
       - name: Bundle without signing (Linux and Windows dry run)
         if: runner.os != 'macOS' && inputs.environment == 'dry-run'
         run: >-
-          npx --no tauri bundle --no-sign --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES"
+          npx --no -- tauri bundle --no-sign --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES"
           --config src-tauri/tauri.release.conf.json --config "$RUNNER_TEMP/dry-run-config/dry-run.json"
       # Into a folder of its own first: collect-bundles.mjs fills only an
       # empty one, so the artifact holds only this build's files.
@@ -409,7 +409,8 @@ jobs:
         run: node scripts/release/check-artifact.mjs "$RUNNER_TEMP/dry-run" updater.key updater.key.pub
       # The Tauri CLI's signer writes each <file>.sig as the bundler would,
       # with the same function and trusted comment. The release key reaches
-      # it through the environment, never as an argument.
+      # it through the environment, never as an argument. Each call gets
+      # /dev/null for input, so nothing reads the loop's list.
       - name: Sign the updater artifacts (release)
         if: inputs.environment == 'release'
         env:
@@ -418,14 +419,14 @@ jobs:
         run: |
           updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")
           while IFS= read -r name; do
-            npx --no tauri signer sign "$RUNNER_TEMP/bundles/$name"
+            npx --no -- tauri signer sign "$RUNNER_TEMP/bundles/$name" < /dev/null
           done <<< "$updaters"
       - name: Sign the updater artifacts (dry run)
         if: inputs.environment == 'dry-run'
         run: |
           updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")
           while IFS= read -r name; do
-            npx --no tauri signer sign -f "$RUNNER_TEMP/dry-run/updater.key" -p "" "$RUNNER_TEMP/bundles/$name"
+            npx --no -- tauri signer sign -f "$RUNNER_TEMP/dry-run/updater.key" -p "" "$RUNNER_TEMP/bundles/$name" < /dev/null
           done <<< "$updaters"
       # Each signature verifies against the key the release's updater trusts,
       # or in a dry run the run's own.
@@ -631,7 +632,7 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npx --no tauri bundle --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES" --config src-tauri/tauri.release.conf.json
+        run: npx --no -- tauri bundle --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES" --config src-tauri/tauri.release.conf.json
       # The run's own keys, and the overlay the app was compiled with.
       - name: Bundle (dry run)
         if: inputs.environment == 'dry-run'
@@ -639,7 +640,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ runner.temp }}/dry-run/updater.key
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: >-
-          npx --no tauri bundle --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES"
+          npx --no -- tauri bundle --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES"
           --config src-tauri/tauri.release.conf.json --config "$RUNNER_TEMP/dry-run-config/dry-run.json"
       # Right after the bundling, whatever happened: nothing after it signs,
       # and codesign's checks don't need the key.

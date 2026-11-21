@@ -738,7 +738,7 @@ const command = (word) => new RegExp(`(^|[\\s;&|(])${word}(?=\\s|$)`);
  * the repository's scripts and system tools.
  */
 const KEYED_RULES = [
-  { what: "runs npx other than as npx --no tauri", pattern: /(^|[\s;&|(])npx(?=\s|$)(?!\s+--no\s+tauri\s)/ },
+  { what: "runs npx other than as npx --no -- tauri", pattern: /(^|[\s;&|(])npx(?=\s|$)(?!\s+--no\s+--\s+tauri\s)/ },
   { what: "runs npm other than as npm ci --ignore-scripts", pattern: /(^|[\s;&|(])npm(?=\s|$)(?!\s+ci\s+--ignore-scripts(\s|$))/ },
   { what: "runs node on something other than a scripts/release/*.mjs file", pattern: /(^|[\s;&|(])node(?=\s|$)(?!\s+scripts\/release\/[\w-]+\.mjs(\s|$))/ },
   { what: "runs bash on something other than scripts/release/macos-keychain.sh", pattern: /(^|[\s;&|(])bash(?=\s|$)(?!\s+scripts\/release\/macos-keychain\.sh\s)/ },
@@ -810,14 +810,15 @@ describe("build.yml", () => {
 
   yamlTest("every npm ci skips the packages' install scripts, and every npx runs the lockfile's Tauri CLI", () => {
     // An install script is dependency code; none of the build needs one.
-    // npx --no runs only what node_modules holds, and never downloads.
+    // npx --no runs only what node_modules holds, and never downloads; with
+    // --, it reads none of the flags after tauri.
     const problems = [];
     for (const [id, job] of Object.entries(workflow(BUILD).jobs ?? {})) {
       for (const [i, step] of (job.steps ?? []).entries()) {
         for (const line of commandLines(step)) {
           const where = `${BUILD}, job ${id}, ${stepLabel(step, i)}: ${line}`;
           if (/(^|[\s;&|(])npm\s+(ci|install|i)(\s|$)/.test(line) && !/\s--ignore-scripts(\s|$)/.test(line)) problems.push(`${where} runs install scripts`);
-          if (/(^|[\s;&|(])npx(?=\s|$)(?!\s+--no\s+tauri\s)/.test(line)) problems.push(`${where} runs npx other than as npx --no tauri`);
+          if (/(^|[\s;&|(])npx(?=\s|$)(?!\s+--no\s+--\s+tauri\s)/.test(line)) problems.push(`${where} runs npx other than as npx --no -- tauri`);
         }
       }
     }
@@ -924,6 +925,7 @@ describe("build.yml", () => {
     const caught = (line) => KEYED_RULES.filter(({ pattern }) => pattern.test(line)).map(({ what }) => what);
     for (const line of [
       "npx tauri bundle",
+      "npx --no tauri bundle",
       "npx --yes tauri signer sign x",
       "npm exec tauri",
       "npm rebuild",
@@ -945,7 +947,7 @@ describe("build.yml", () => {
     }
     for (const line of [
       "npm ci --ignore-scripts",
-      'npx --no tauri bundle --verbose --ci --target "$TRIPLE"',
+      'npx --no -- tauri bundle --verbose --ci --target "$TRIPLE"',
       'node scripts/release/check-artifact.mjs "$RUNNER_TEMP/notices" THIRD-PARTY-NOTICES',
       'expected=$(node scripts/release/release-assets.mjs unsigned "$TRIPLE" "$VERSION")',
       "bash scripts/release/macos-keychain.sh dry-run || status=$?",
@@ -1373,7 +1375,7 @@ describe("build.yml", () => {
 
   yamlTest("sign signs each updater artifact with the Tauri CLI's signer: the release key from the environment, the run's from its file", () => {
     const steps = stepsOf("sign");
-    const signs = steps.filter((step) => /(^|\s)npx --no tauri signer sign /m.test(scriptOf(step)));
+    const signs = steps.filter((step) => /(^|\s)npx --no -- tauri signer sign /m.test(scriptOf(step)));
     const release = signs.filter((step) => requires(step.if, RELEASE_ONLY));
     const dryRun = signs.filter((step) => requires(step.if, DRY_RUN_ONLY));
     assert.deepEqual([signs.length, release.length, dryRun.length], [2, 1, 1], `sign must sign once if "${RELEASE_ONLY}" and once if "${DRY_RUN_ONLY}"`);
@@ -1384,9 +1386,10 @@ describe("build.yml", () => {
       TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}",
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}",
     });
-    assert.ok(commandLines(release[0]).includes('npx --no tauri signer sign "$RUNNER_TEMP/bundles/$name"'));
+    // Each call reads /dev/null, not the loop's list.
+    assert.ok(commandLines(release[0]).includes('npx --no -- tauri signer sign "$RUNNER_TEMP/bundles/$name" < /dev/null'));
     assert.equal(dryRun[0].env, undefined);
-    assert.ok(commandLines(dryRun[0]).includes('npx --no tauri signer sign -f "$RUNNER_TEMP/dry-run/updater.key" -p "" "$RUNNER_TEMP/bundles/$name"'));
+    assert.ok(commandLines(dryRun[0]).includes('npx --no -- tauri signer sign -f "$RUNNER_TEMP/dry-run/updater.key" -p "" "$RUNNER_TEMP/bundles/$name" < /dev/null'));
   });
 
   scriptTest("sign's loop signs every updater artifact of the target, and nothing else", () => {
@@ -1401,7 +1404,7 @@ describe("build.yml", () => {
         assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
         assert.deepEqual(
           readFileSync(join(dir, "npx.log"), "utf8").trim().split("\n"),
-          updaterAssets(triple, "1.2.3").map((name) => `--no tauri signer sign ${join(dir, "bundles", name)}`),
+          updaterAssets(triple, "1.2.3").map((name) => `--no -- tauri signer sign ${join(dir, "bundles", name)}`),
           triple,
         );
       });
