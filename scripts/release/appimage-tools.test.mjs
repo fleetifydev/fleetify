@@ -163,12 +163,15 @@ describe("appimage-tools.mjs", () => {
     try {
       const cache = fresh("cache");
       const manifest = manifestFile([{ file: "one.sh", url: `${server.base}/one.sh`, sha256: sha256(one) }]);
-      const result = await new Promise((done) => {
-        const child = spawn("sh", ["-c", 'umask 077 && exec "$0" "$@"', process.execPath, SCRIPT, "--manifest", manifest, "--cache-dir", cache], { stdio: ["ignore", "pipe", "pipe"] });
-        let stderr = "";
-        child.stderr.on("data", (chunk) => (stderr += chunk));
-        child.on("close", (status) => done({ status, stderr }));
-      });
+      // The child takes the umask it is started with.
+      const umask = process.umask(0o077);
+      let pending;
+      try {
+        pending = run(["--manifest", manifest, "--cache-dir", cache]);
+      } finally {
+        process.umask(umask);
+      }
+      const result = await pending;
       assert.equal(result.status, 0, result.stderr);
       assert.equal(statSync(join(cache, "one.sh")).mode & 0o777, 0o755);
     } finally {

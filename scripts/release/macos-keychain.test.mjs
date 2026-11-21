@@ -14,18 +14,26 @@
 import { after, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SCRIPT = fileURLToPath(new URL("./macos-keychain.sh", import.meta.url));
 const TEXT = readFileSync(SCRIPT, "utf8");
 
-const which = (name) => {
-  const found = spawnSync("sh", ["-c", `command -v ${name}`], { encoding: "utf8" });
-  return found.status === 0 ? found.stdout.trim() : null;
-};
+/** The executable `name` on PATH, or null. */
+function which(name) {
+  for (const dir of (process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
+    try {
+      accessSync(join(dir, name), constants.X_OK);
+      return join(dir, name);
+    } catch {
+      // Not in this folder.
+    }
+  }
+  return null;
+}
 const OPENSSL = process.platform === "win32" ? null : which("openssl");
 const SKIP_SHELL = process.platform === "win32" || which("bash") === null ? "needs bash, on Linux or macOS" : false;
 const SKIP_OPENSSL = SKIP_SHELL || (OPENSSL === null && "needs openssl");

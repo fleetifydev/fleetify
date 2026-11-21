@@ -1395,8 +1395,9 @@ describe("build.yml", () => {
       inTempDir((dir) => {
         const bin = join(dir, "bin");
         mkdirSync(bin);
-        writeFileSync(join(bin, "npx"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${join(dir, "npx.log")}"\n`, { mode: 0o755 });
-        const result = runScript(step.run, { cwd: ROOT, env: { PATH: `${bin}:${process.env.PATH}`, RUNNER_TEMP: dir, TRIPLE: triple, VERSION: "1.2.3" } });
+        writeFileSync(join(bin, "npx"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "$NPX_LOG"\n`, { mode: 0o755 });
+        const env = { PATH: `${bin}:${process.env.PATH}`, NPX_LOG: join(dir, "npx.log"), RUNNER_TEMP: dir, TRIPLE: triple, VERSION: "1.2.3" };
+        const result = runScript(step.run, { cwd: ROOT, env });
         assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
         assert.deepEqual(
           readFileSync(join(dir, "npx.log"), "utf8").trim().split("\n"),
