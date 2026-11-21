@@ -29,7 +29,7 @@ const ARM_MAC = "aarch64-apple-darwin";
 const INTEL_MAC = "x86_64-apple-darwin";
 
 const BASE = "https://github.com/fleetifydev/fleetify/releases/download/v0.2.0";
-const PUB_DATE = "2026-11-21T10:00:00Z";
+const PUB_DATE = "2026-11-21T10:00:00.000Z";
 
 /** A fake signature per updater artifact, as the trimmed text of its .sig file. */
 const SIGNATURES = Object.fromEntries(updaterArtifacts(V).map(({ asset }) => [asset, `sig of ${asset}`]));
@@ -328,13 +328,37 @@ describe("latestJson", () => {
     );
   });
 
-  test("pub_date must be RFC 3339 in UTC, which the plugin parses; anything else throws", () => {
-    for (const bad of ["", "2026-11-21", "2026-11-21 10:00:00Z", "yesterday", "2026-11-21T10:00:00"]) {
+  test("pub_date must be a date that toISOString() writes back exactly; anything else throws", () => {
+    for (const bad of [
+      "",
+      "2026-11-21",
+      "2026-11-21 10:00:00.000Z",
+      "yesterday",
+      "2026-11-21T10:00:00.000",
+      // Dates that don't exist, which the plugin's RFC 3339 parser refuses.
+      "2026-02-30T10:00:00.000Z",
+      "2026-02-29T10:00:00.000Z",
+      "2026-11-21T24:00:00.000Z",
+      "2026-11-21T10:60:00.000Z",
+      "2026-11-21T10:00:60.000Z",
+      // Valid RFC 3339, but not as toISOString() writes it.
+      "2026-11-21T10:00:00Z",
+      "2026-11-21T10:00:00.5Z",
+      "2026-11-21T10:00:00.000+00:00",
+      "+010000-01-01T00:00:00.000Z",
+      undefined,
+    ]) {
       assert.throws(
         () => latestJson({ version: V, pubDate: bad, signatures: SIGNATURES, base: BASE }),
         /pub_date/,
         JSON.stringify(bad),
       );
+    }
+  });
+
+  test("pub_date may be any real date and time that toISOString() writes", () => {
+    for (const good of ["2026-11-21T10:00:00.250Z", "2028-02-29T23:59:59.999Z", new Date(0).toISOString()]) {
+      assert.equal(latestJson({ version: V, pubDate: good, signatures: SIGNATURES, base: BASE }).pub_date, good);
     }
   });
 

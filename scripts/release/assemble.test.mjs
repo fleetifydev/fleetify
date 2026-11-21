@@ -45,7 +45,7 @@ const WINDOWS = "x86_64-pc-windows-msvc";
 const DEB = "Fleetify_0.2.0_amd64.deb";
 const APPIMAGE = "Fleetify_0.2.0_amd64.AppImage";
 const NOW = new Date("2026-11-21T10:00:00.250Z");
-const PUB_DATE = "2026-11-21T10:00:00Z";
+const PUB_DATE = "2026-11-21T10:00:00.250Z";
 /** How a release run checks signatures: the key in tauri.conf.json, which must be the release key. */
 const RELEASE_KEYS = { config: CONFIG, expectKeyId: UPDATER_KEY_ID };
 
@@ -62,11 +62,11 @@ const hasSig = (triple, name) => bundleFiles(triple, V).some(({ to }) => to === 
  * A complete --in tree: each target's bundles, the Linux library list and the
  * notices. A fake bundle holds "fake <name>\n". Its .sig holds "sig:<name>\n",
  * which stubVerify accepts, or, with `keys` ({ [triple]: test key }), a real
- * signature by that target's key. `pubkeyFiles` adds each bundle folder's
- * updater-pubkey.txt, as a dry run has them: the target's key, or else
- * fixture.pub.
+ * signature by that target's key, whose trusted comment is `comment(name)`.
+ * `pubkeyFiles` adds each bundle folder's updater-pubkey.txt, as a dry run has
+ * them: the target's key, or else fixture.pub.
  */
-function inputTree({ keys = null, pubkeyFiles = false } = {}) {
+function inputTree({ keys = null, pubkeyFiles = false, comment = (name) => `timestamp:1795238472\tfile:${name}` } = {}) {
   const dir = fresh("in");
   for (const { triple } of TARGETS) {
     const folder = join(dir, `bundles-${triple}`);
@@ -77,7 +77,7 @@ function inputTree({ keys = null, pubkeyFiles = false } = {}) {
       writeFileSync(join(folder, to), data);
       if (!hasSig(triple, to)) continue;
       const signature = keys
-        ? signLikeTauri(keys[triple], data, { trustedComment: `timestamp:1795238472\tfile:${to}` })
+        ? signLikeTauri(keys[triple], data, { trustedComment: comment(to) })
         : `sig:${to}\n`;
       writeFileSync(join(folder, `${to}.sig`), signature);
     }
@@ -130,7 +130,7 @@ describe("assemble, with a stub for the signature check", () => {
     assert.deepEqual(readdirSync(outDir).sort(), expectedAssets(V));
   });
 
-  test("latest.json: latestJson() over the trimmed .sig texts, with pub_date from `now` in whole seconds", () => {
+  test("latest.json: latestJson() over the trimmed .sig texts, with pub_date `now` as toISOString() writes it", () => {
     const { outDir } = run(inputTree());
     const text = readFileSync(join(outDir, "latest.json"), "utf8");
     const signatures = Object.fromEntries(updaterArtifacts(V).map(({ asset }) => [asset, `sig:${asset}`]));
@@ -164,7 +164,7 @@ describe("assemble, with a stub for the signature check", () => {
     );
   });
 
-  test("each updater artifact's signature is checked once, over its own bytes, against the configured key", () => {
+  test("each updater artifact's signature is checked once, over its own bytes, against the configured key and version", () => {
     const calls = [];
     const { problems } = run(inputTree(), {
       verify: (args) => {
@@ -175,9 +175,10 @@ describe("assemble, with a stub for the signature check", () => {
     assert.deepEqual(problems, []);
     const checked = calls.map(({ data }) => data.toString("utf8").replace(/^fake /, "").trimEnd());
     assert.deepEqual(checked.sort(), updaterArtifacts(V).map(({ asset }) => asset).sort());
-    for (const { data, tauriSignature, publicKey } of calls) {
+    for (const { data, tauriSignature, publicKey, version } of calls) {
       assert.equal(tauriSignature, `sig:${data.toString("utf8").slice(5).trimEnd()}`);
       assert.equal(publicKey.keyId, UPDATER_KEY_ID);
+      assert.equal(version, V);
     }
   });
 
@@ -353,6 +354,22 @@ describe("assemble, with a stub for the signature check", () => {
     assert.equal(existsSync(outDir), false);
   });
 
+  test("a .sig that changes after its check: a problem, so latest.json can't carry a text the published .sig doesn't", () => {
+    const inDir = inputTree();
+    const sig = join(inDir, `bundles-${LINUX}`, `${APPIMAGE}.sig`);
+    const { assets, problems, outDir } = run(inDir, {
+      verify: (args) => {
+        const result = stubVerify(args);
+        // Swap the AppImage's .sig once its text has been checked.
+        if (args.data.toString("utf8").includes(APPIMAGE)) writeFileSync(sig, "sig:another file\n");
+        return result;
+      },
+    });
+    assert.deepEqual(problems, [`bundles-${LINUX}/${APPIMAGE}.sig changed while the release was being assembled`]);
+    assert.deepEqual(assets, []);
+    assert.equal(existsSync(outDir), false);
+  });
+
   test("an --extra that isn't a release asset, or isn't there: a problem", () => {
     const dir = fresh("extras");
     mkdirSync(dir);
@@ -409,6 +426,19 @@ describe("assemble, with the real signature check and keys from the test run", (
     const { problems } = assemble({ inDir, outDir: fresh("out"), version: V, pubkeys: { perTarget: true }, extras: [], now: NOW });
     assertProblem(problems, /Fleetify_0\.2\.0_x64-setup\.exe/, /key id/);
     assert.equal(problems.length, 1);
+  });
+
+  test("a version: field in a trusted comment: the release version passes, any other is a problem, none is fine", () => {
+    const signed = (comment) => {
+      const inDir = inputTree({ keys: perTargetKeys(), pubkeyFiles: true, comment });
+      return assemble({ inDir, outDir: fresh("out"), version: V, pubkeys: { perTarget: true }, extras: [], now: NOW });
+    };
+    const base = (name) => `timestamp:1795238472\tfile:${name}`;
+    assert.deepEqual(signed((name) => `${base(name)}\tversion:0.2.0`).problems, []);
+    assert.deepEqual(signed(base).problems, []);
+    const { assets, problems } = signed((name) => (name === DEB ? `${base(name)}\tversion:0.1.0` : base(name)));
+    assert.deepEqual(problems, [`bad signature for ${DEB}: signed for version "0.1.0", not 0.2.0`]);
+    assert.deepEqual(assets, []);
   });
 
   test("one key from a config: verifies; a changed byte in a bundle: a problem", () => {

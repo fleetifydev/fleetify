@@ -22,7 +22,9 @@
  *   - a missing file, and an unexpected one: --in holds exactly those files,
  *     each a non-empty regular file (symlinks aren't followed);
  *   - a signature that doesn't verify: each updater artifact's .sig is checked
- *     (minisign.mjs) against the updater public key. With --pubkey-config,
+ *     (minisign.mjs) against the updater public key, and a version: field in
+ *     its trusted comment, if there is one, must name the release version, as
+ *     the updater requires. With --pubkey-config,
  *     that is the key in the config, which every build embeds, and its key
  *     id must be --expect-key-id; `tauri build` only warns when it signs with
  *     another key. With --per-target-pubkeys (dry runs, where each build
@@ -31,11 +33,14 @@
  *   - an out folder that isn't empty.
  *
  * With none, it copies the files, writes latest.json (latestJson: download
- * URLs under the version's tag; each signature is the .sig text, trimmed)
- * and SHA256SUMS (every other asset), and checks that the out folder holds
- * exactly expectedAssets(version). A copy must hash the same as the file
- * that was checked, so the hashes and signatures vouch for the bytes in the
- * out folder. After a problem, the out folder is left as it was found.
+ * URLs under the version's tag; each signature is the .sig text, trimmed;
+ * pub_date is now, as toISOString() writes it) and SHA256SUMS (every other
+ * asset), and checks that the out folder holds exactly
+ * expectedAssets(version). Each file is hashed from the same read that was
+ * checked (a .sig's verified text and its hash come from one read), and each
+ * copy must hash the same, so the hashes, the signatures and latest.json all
+ * vouch for the bytes in the out folder. After a problem, the out folder is
+ * left as it was found.
  *
  * Exit codes: 0 assembled; 1 problems, listed on stderr; 2 usage.
  */
@@ -244,7 +249,11 @@ export function assemble({
     const sig = sources.get(`${asset}.sig`);
     const key = keys.get(tripleOf.get(asset));
     if (artifact === undefined || sig === undefined) continue;
-    const signature = readFileSync(sig.path, "utf8").trim();
+    // One read: the text checked here, and later carried by latest.json, and
+    // the hash the copy must match come from the same bytes.
+    const sigBytes = readFileSync(sig.path);
+    hashes.set(`${asset}.sig`, sha256(sigBytes));
+    const signature = sigBytes.toString("utf8").trim();
     if (signature === "") {
       problems.push(`${sig.label} is empty`);
       continue;
@@ -252,7 +261,7 @@ export function assemble({
     if (key === undefined) continue;
     const data = readFileSync(artifact.path);
     hashes.set(asset, sha256(data));
-    const result = verify({ data, tauriSignature: signature, publicKey: key });
+    const result = verify({ data, tauriSignature: signature, publicKey: key, version });
     if (result?.ok !== true) {
       problems.push(`bad signature for ${asset}: ${result?.reason ?? "no reason given"}`);
       continue;
@@ -263,7 +272,7 @@ export function assemble({
   if (problems.length > 0) return failed();
 
   for (const [name, { path }] of sources) if (!hashes.has(name)) hashes.set(name, sha256(readFileSync(path)));
-  const pubDate = new Date(now).toISOString().replace(/\.[0-9]{3}Z$/, "Z");
+  const pubDate = new Date(now).toISOString();
   const manifest = Buffer.from(
     `${JSON.stringify(latestJson({ version, pubDate, signatures, base: downloadBase(version) }), null, 2)}\n`,
   );

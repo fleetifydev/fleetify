@@ -23,12 +23,21 @@
  * bytes followed by the trusted comment's text, so that comment can't be
  * changed without the key. The untrusted comment isn't signed.
  *
- * Base64 must be canonical and padded, as the updater's decoders require: a
- * signature that only this script accepted would fail on every install.
- * Beyond that, a few things the CLI never writes are refused here although
- * the updater would read past them: a carriage return, a line after the
- * global signature, a first line without "untrusted comment: ". Being stricter
- * can hold a release back; it can't publish one the updater would refuse.
+ * What verifySignature checks, in order:
+ *   - the base64 wrapping and the base64 lines inside it are canonical and
+ *     padded, as the updater's decoders require, and the text is UTF-8;
+ *   - the text has the four lines above, and the algorithm is "ED" or "Ed";
+ *   - the key number is the public key's;
+ *   - the signature covers the data, and the global signature covers the
+ *     trusted comment;
+ *   - when given the release version: a version: field in the trusted
+ *     comment, if there is one, names that version, compared the way the
+ *     updater compares them.
+ * The public key must be two lines, 42 bytes of "Ed" key, and not one of the
+ * two degenerate keys minisign-verify refuses. A few things the CLI never
+ * writes are refused although the updater would read past them: a carriage
+ * return, a line after the global signature, a first line without
+ * "untrusted comment: ".
  */
 import { createHash, createPublicKey, verify as verifyEd25519 } from "node:crypto";
 
@@ -90,6 +99,27 @@ function ed25519Verifies(message, key, signature) {
   }
 }
 
+/** MAJOR.MINOR.PATCH, as release versions are written. */
+const RELEASE_VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
+
+/**
+ * The version: field of a trusted comment, as the updater reads it: the
+ * first tab-separated field that starts with "version:". Null when there is
+ * none.
+ */
+function signedVersion(comment) {
+  const field = comment.split("\t").find((f) => f.startsWith("version:"));
+  return field === undefined ? null : field.slice("version:".length);
+}
+
+/**
+ * Whether a signed version names `version`, as the updater compares them: as
+ * semver with leading "v"s dropped, else as text. For a MAJOR.MINOR.PATCH
+ * version, which has one semver spelling and no pre-release or build part,
+ * that is the signed text without its leading "v"s being exactly `version`.
+ */
+const namesVersion = (signed, version) => signed.replace(/^v+/, "") === version;
+
 /** A key number as minisign prints it: the 8 bytes read as a little-endian integer, in hex. */
 const keyIdOf = (keynum) => Buffer.from(keynum).reverse().toString("hex").toUpperCase();
 
@@ -139,15 +169,20 @@ const isParsedKey = (value) =>
  *   key id mismatch …                   signed with another key
  *   signature does not match the data   the data, or the signature, changed
  *   trusted comment …                   the comment, or the global signature, changed
+ *   signed for version …                the trusted comment names another version
  *
- * @param {{ data: Uint8Array, tauriSignature: string, publicKey: string | ReturnType<typeof parsePublicKey> }} options
+ * @param {{ data: Uint8Array, tauriSignature: string, publicKey: string | ReturnType<typeof parsePublicKey>, version?: string }} options
  *   tauriSignature is a .sig file's text, trimmed; publicKey is in Tauri's
- *   form or already parsed.
+ *   form or already parsed; version, when given, is the release version, in
+ *   MAJOR.MINOR.PATCH form.
  * @returns {{ ok: true } | { ok: false, reason: string }}
  */
-export function verifySignature({ data, tauriSignature, publicKey }) {
+export function verifySignature({ data, tauriSignature, publicKey, version }) {
   const fail = (reason) => ({ ok: false, reason });
   if (!(data instanceof Uint8Array)) return fail("the data to check must be bytes");
+  if (version !== undefined && (typeof version !== "string" || !RELEASE_VERSION.test(version))) {
+    return fail(`the version to compare with must be MAJOR.MINOR.PATCH, not ${JSON.stringify(version)}`);
+  }
 
   let key = publicKey;
   if (typeof publicKey === "string") {
@@ -184,9 +219,12 @@ export function verifySignature({ data, tauriSignature, publicKey }) {
   const signature = signatureBytes.subarray(10);
   const message = algorithm === "ED" ? createHash("blake2b512").update(data).digest() : data;
   if (!ed25519Verifies(message, key.key, signature)) return fail("signature does not match the data");
-  const comment = Buffer.from(trusted.slice(TRUSTED.length), "utf8");
-  if (!ed25519Verifies(Buffer.concat([signature, comment]), key.key, globalSignature)) {
+  const comment = trusted.slice(TRUSTED.length);
+  if (!ed25519Verifies(Buffer.concat([signature, Buffer.from(comment, "utf8")]), key.key, globalSignature)) {
     return fail("trusted comment does not match its global signature: one of them was changed");
   }
+  // Only now is the comment's text known to be signed, and so worth reading.
+  const signed = version === undefined ? null : signedVersion(comment);
+  if (signed !== null && !namesVersion(signed, version)) return fail(`signed for version ${JSON.stringify(signed)}, not ${version}`);
   return { ok: true };
 }

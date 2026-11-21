@@ -168,10 +168,26 @@ export function downloadBase(version) {
 }
 
 /**
- * RFC 3339 in UTC, as the updater plugin parses pub_date. A pub_date it can't
- * parse makes the whole manifest unreadable to it.
+ * The shape of a pub_date: RFC 3339 in UTC with milliseconds and a four-digit
+ * year, as Date.prototype.toISOString() writes dates from year 0 to 9999.
  */
-const PUB_DATE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$/;
+const PUB_DATE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/;
+
+/**
+ * Whether `text` is a pub_date: that shape, and a date and time that exist,
+ * which toISOString() writes back unchanged. JavaScript rolls a date like
+ * 2026-02-30 or 24:00 over into the next month or day, which the round trip
+ * catches; the updater plugin's RFC 3339 parser refuses such a date, and a
+ * pub_date it can't parse makes the whole manifest unreadable to it.
+ */
+function isPubDate(text) {
+  if (typeof text !== "string" || !PUB_DATE.test(text)) return false;
+  try {
+    return new Date(text).toISOString() === text;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * latest.json, the updater manifest that GitHub serves for the latest
@@ -179,14 +195,15 @@ const PUB_DATE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]
  * in sorted key order.
  *
  * @param {{ version: string, pubDate: string, signatures: Record<string, string>, base: string }} options
- *   signatures maps each updater artifact to its signature: its .sig file's
- *   text, trimmed. base is where the assets download from (downloadBase).
+ *   pubDate is the release time as toISOString() writes it. signatures maps
+ *   each updater artifact to its signature: its .sig file's text, trimmed.
+ *   base is where the assets download from (downloadBase).
  * @returns {{ version: string, notes: string, pub_date: string, platforms: Record<string, { signature: string, url: string }> }}
  */
 export function latestJson({ version, pubDate, signatures, base }) {
   versionParts(version);
-  if (typeof pubDate !== "string" || !PUB_DATE.test(pubDate) || Number.isNaN(Date.parse(pubDate))) {
-    throw new Error(`invalid pub_date ${JSON.stringify(pubDate)}: expected RFC 3339 in UTC, like 2026-11-21T10:00:00Z`);
+  if (!isPubDate(pubDate)) {
+    throw new Error(`invalid pub_date ${JSON.stringify(pubDate)}: expected a real time as toISOString() writes it, like 2026-11-21T10:00:00.000Z`);
   }
   if (typeof base !== "string" || base === "" || base.endsWith("/")) {
     throw new Error(`invalid download base ${JSON.stringify(base)}`);
@@ -231,8 +248,10 @@ export function latestJson({ version, pubDate, signatures, base }) {
  * install handed the AppImage can't install it.
  *
  * Throws on a version that isn't MAJOR.MINOR.PATCH, and when the chosen
- * entry has no url or signature, so that the endpoint answers with an error
- * (and the updater tries its next endpoint) instead of a wrong package.
+ * entry has no url or signature, rather than offer a wrong package. The
+ * endpoint must then answer with a non-2xx status, never with a 2xx body
+ * that isn't JSON: the updater goes on to its next endpoint only after a
+ * non-2xx answer, and a 2xx body that isn't JSON ends the whole check.
  *
  * @param {{ version: string, notes?: string, pub_date?: string, platforms: Record<string, { url: string, signature: string }> }} manifest
  * @param {{ target: string, arch: string, bundleType: string, currentVersion: string }} query

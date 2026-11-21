@@ -290,6 +290,67 @@ describe("minisign's test vectors: the raw and the prehashed mode", () => {
   });
 });
 
+// The updater compares a version: field in a verified trusted comment with
+// the version the manifest announces, and refuses the update when they
+// differ. verifySignature does the same when it is given the version.
+describe("a version: field in the trusted comment", () => {
+  const key = makeTestKey();
+  const data = Buffer.from("an updater artifact\n");
+  const signedFor = (field) => signLikeTauri(key, data, { trustedComment: `timestamp:1795238472\tfile:a.AppImage${field}` });
+  const check = (signature, version) => verifySignature({ data, tauriSignature: signature, publicKey: key.tauriPublicKey, version });
+
+  test("the given version: verifies", () => {
+    assert.deepEqual(check(signedFor("\tversion:0.2.0"), "0.2.0"), { ok: true });
+  });
+
+  test("another version: refused, naming both", () => {
+    assertFails(check(signedFor("\tversion:0.1.0"), "0.2.0"), /^signed for version "0\.1\.0", not 0\.2\.0$/);
+  });
+
+  test("no version: field, as in the CLI's comments: verifies", () => {
+    assert.deepEqual(check(signedFor(""), "0.2.0"), { ok: true });
+    assert.deepEqual(verifySignature({ data: HELLO, tauriSignature: HELLO_SIG, publicKey: FIXTURE_PUB, version: "0.2.0" }), {
+      ok: true,
+    });
+  });
+
+  test("compared as the updater compares them: leading v's dropped, anything else must be the same version", () => {
+    assert.deepEqual(check(signedFor("\tversion:v0.2.0"), "0.2.0"), { ok: true });
+    assert.deepEqual(check(signedFor("\tversion:vv0.2.0"), "0.2.0"), { ok: true });
+    for (const other of ["0.2.0+build.1", "0.2.0-rc.1", "0.2", "00.2.0", "0.2.0 ", "", "V0.2.0"]) {
+      assertFails(check(signedFor(`\tversion:${other}`), "0.2.0"), /^signed for version /, JSON.stringify(other));
+    }
+  });
+
+  test("the first version: field counts, as in the updater", () => {
+    assert.deepEqual(check(signedFor("\tversion:0.2.0\tversion:9.9.9"), "0.2.0"), { ok: true });
+    assertFails(check(signedFor("\tversion:9.9.9\tversion:0.2.0"), "0.2.0"), /signed for version "9\.9\.9"/);
+  });
+
+  test("a field must start with version: exactly", () => {
+    assert.deepEqual(check(signedFor("\tthe version:9.9.9\tVersion:9.9.9"), "0.2.0"), { ok: true });
+  });
+
+  test("the field counts only once the global signature covers it", () => {
+    const forged = editLine(signedFor("\tversion:0.2.0"), 2, (line) => line.replace("version:0.2.0", "version:0.1.0"));
+    const result = check(forged, "0.2.0");
+    assertFails(result, /trusted comment/);
+    assert.doesNotMatch(result.reason, /signed for version/);
+  });
+
+  test("a version to compare with that isn't MAJOR.MINOR.PATCH: refused", () => {
+    for (const bad of ["v0.2.0", "0.2", "0.2.0-rc.1", "", 2]) {
+      assertFails(check(signedFor(""), bad), /must be MAJOR\.MINOR\.PATCH/, JSON.stringify(bad));
+    }
+  });
+
+  test("without a version to compare with, the field isn't read", () => {
+    assert.deepEqual(verifySignature({ data, tauriSignature: signedFor("\tversion:9.9.9"), publicKey: key.tauriPublicKey }), {
+      ok: true,
+    });
+  });
+});
+
 describe("signatures made with a key from the test run", () => {
   const key = makeTestKey();
   const data = Buffer.from("an updater artifact\n");
