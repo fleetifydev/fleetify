@@ -15,7 +15,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { collect } from "./collect-bundles.mjs";
-import { TARGETS, bundleFiles } from "./release-assets.mjs";
+import { TARGETS, bundleFiles, unsignedBundleFiles } from "./release-assets.mjs";
 
 const SCRIPT = fileURLToPath(new URL("./collect-bundles.mjs", import.meta.url));
 
@@ -72,6 +72,33 @@ function targetTree(triple, { skip = [], targetDir = fresh("target") } = {}) {
 }
 
 const sorted = (names) => [...names].sort();
+
+describe("collect --unsigned", () => {
+  test("Linux: the bundles under their release names, without the signatures, which a keyless build doesn't make", () => {
+    const targetDir = targetTree(LINUX, { skip: bundleFiles(LINUX, V).map(({ from }) => from).filter((from) => from.endsWith(".sig")) });
+    const outDir = fresh("out");
+    const { copied, missing } = collect({ targetDir, triple: LINUX, version: V, outDir, unsigned: true });
+    assert.deepEqual(missing, []);
+    assert.deepEqual(copied, unsignedBundleFiles(LINUX, V).map(({ to }) => to));
+    assert.deepEqual(sorted(readdirSync(outDir)), sorted(NAMES[LINUX].filter((name) => !name.endsWith(".sig"))));
+  });
+
+  test("a missing bundle is still missing", () => {
+    const targetDir = targetTree(WINDOWS, { skip: ["nsis/Fleetify_0.2.0_x64-setup.exe"] });
+    const { copied, missing } = collect({ targetDir, triple: WINDOWS, version: V, outDir: fresh("out"), unsigned: true });
+    assert.deepEqual(copied, []);
+    assert.deepEqual(missing, [join(bundleDir(targetDir, WINDOWS), "nsis/Fleetify_0.2.0_x64-setup.exe")]);
+  });
+
+  test("the CLI's --unsigned copies the bundles alone; exit 0", () => {
+    const targetDir = targetTree(WINDOWS);
+    const outDir = fresh("out");
+    const result = cli(["--target", WINDOWS, "--version", V, "--out", outDir, "--target-dir", targetDir, "--unsigned"]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(readdirSync(outDir), ["Fleetify_0.2.0_x64-setup.exe"]);
+    assert.equal(cli(["--target", WINDOWS, "--version", V, "--out", fresh("out"), "--unsigned", "--unsigned"]).status, 2, "--unsigned twice is a usage error");
+  });
+});
 
 describe("collect", () => {
   for (const { triple } of TARGETS) {

@@ -4,13 +4,17 @@
  * Tauri's bundle folder, under their release names, ready to upload as that
  * target's artifact.
  *
- *   node scripts/release/collect-bundles.mjs --target <triple> --version <v> --out <dir> [--target-dir target]
+ *   node scripts/release/collect-bundles.mjs --target <triple> --version <v> --out <dir> [--target-dir target] [--unsigned]
  *
  * The files and their names are release-assets.mjs's bundleFiles(): each
  * bundle under <target-dir>/<triple>/release/bundle/, and each updater
  * artifact's .sig. Most keep their own names; both macOS builds write
  * macos/Fleetify.app.tar.gz, which is published with the version and arch
  * added. Nothing else in the bundle folder is copied.
+ *
+ * With --unsigned, the bundles alone (unsignedBundleFiles()): a build that
+ * makes no signatures, as `tauri bundle --no-sign` does, is collected for a
+ * job that signs it later.
  *
  * Every file is checked before any is copied: when one is missing, or isn't a
  * regular file, nothing is copied and the CLI lists each missing file. The
@@ -26,10 +30,10 @@ import { constants, copyFileSync, mkdirSync, readdirSync, realpathSync, statSync
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { bundleFiles } from "./release-assets.mjs";
+import { bundleFiles, unsignedBundleFiles } from "./release-assets.mjs";
 
 const USAGE =
-  "usage: node scripts/release/collect-bundles.mjs --target <triple> --version <v> --out <dir> [--target-dir target]";
+  "usage: node scripts/release/collect-bundles.mjs --target <triple> --version <v> --out <dir> [--target-dir target] [--unsigned]";
 
 /** fs.stat, following symlinks, with null for a path that isn't there. */
 function statOrNull(path) {
@@ -48,15 +52,16 @@ const bundleFolder = (targetDir, triple) => join(targetDir, triple, "release", "
  * Copy a target's release files from `<targetDir>/<triple>/release/bundle/`
  * into `outDir`, under their release names.
  *
- * @param {{ targetDir: string, triple: string, version: string, outDir: string }} options
+ * @param {{ targetDir: string, triple: string, version: string, outDir: string, unsigned?: boolean }} options
+ *   unsigned: copy the bundles without their signatures.
  * @returns {{ copied: string[], missing: string[] }} copied: the release names
  *   written, in bundleFiles order; missing: the path of each file that isn't
  *   there, in which case nothing is copied.
  * @throws on an unknown triple, a malformed version, an out path that isn't
  *   an empty folder, or a failed copy.
  */
-export function collect({ targetDir, triple, version, outDir }) {
-  const files = bundleFiles(triple, version);
+export function collect({ targetDir, triple, version, outDir, unsigned = false }) {
+  const files = unsigned ? unsignedBundleFiles(triple, version) : bundleFiles(triple, version);
   const dir = bundleFolder(targetDir, triple);
   const missing = files.map(({ from }) => join(dir, from)).filter((path) => statOrNull(path)?.isFile() !== true);
   if (missing.length > 0) return { copied: [], missing };
@@ -73,8 +78,14 @@ export function collect({ targetDir, triple, version, outDir }) {
 function parseArgs(argv) {
   const values = new Map();
   const takesValue = ["--target", "--version", "--out", "--target-dir"];
+  let unsigned = false;
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
+    if (flag === "--unsigned") {
+      if (unsigned) throw new Error("--unsigned is given twice");
+      unsigned = true;
+      continue;
+    }
     if (!takesValue.includes(flag)) throw new Error(`unexpected argument: ${flag}`);
     const value = argv[i + 1];
     if (value === undefined || value === "" || value.startsWith("-")) throw new Error(`${flag} needs a value`);
@@ -90,6 +101,7 @@ function parseArgs(argv) {
     version: values.get("--version"),
     outDir: values.get("--out"),
     targetDir: values.get("--target-dir") ?? "target",
+    unsigned,
   };
 }
 

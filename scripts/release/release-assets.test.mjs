@@ -7,6 +7,8 @@
  */
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import {
   REPO,
@@ -19,8 +21,13 @@ import {
   latestJson,
   resolveUpdate,
   sha256sums,
+  unsignedAssets,
+  unsignedBundleFiles,
   updaterArtifacts,
+  updaterAssets,
 } from "./release-assets.mjs";
+
+const SCRIPT = fileURLToPath(new URL("./release-assets.mjs", import.meta.url));
 
 const V = "0.2.0";
 const LINUX = "x86_64-unknown-linux-gnu";
@@ -60,12 +67,12 @@ describe("the release's constants", () => {
     assert.equal(UPDATER_KEY_ID, "44C694713A20D751");
   });
 
-  test("TARGETS: the four release targets, each with its runner and bundles", () => {
+  test("TARGETS: the four release targets, each with its runner, its bundles and its label", () => {
     assert.deepEqual(TARGETS, [
-      { triple: LINUX, runner: "ubuntu-22.04", bundles: ["appimage", "deb", "rpm"] },
-      { triple: WINDOWS, runner: "windows-2025", bundles: ["nsis"] },
-      { triple: ARM_MAC, runner: "macos-15", bundles: ["app", "dmg"] },
-      { triple: INTEL_MAC, runner: "macos-15-intel", bundles: ["app", "dmg"] },
+      { triple: LINUX, runner: "ubuntu-22.04", bundles: ["appimage", "deb", "rpm"], label: "Linux x64" },
+      { triple: WINDOWS, runner: "windows-2025", bundles: ["nsis"], label: "Windows x64" },
+      { triple: ARM_MAC, runner: "macos-15", bundles: ["app", "dmg"], label: "macOS Apple Silicon" },
+      { triple: INTEL_MAC, runner: "macos-15-intel", bundles: ["app", "dmg"], label: "macOS Intel" },
     ]);
   });
 
@@ -491,5 +498,66 @@ describe("sha256sums", () => {
     ]) {
       assert.throws(() => sha256sums(bad), Error, JSON.stringify(bad));
     }
+  });
+});
+
+describe("before signing", () => {
+  test("unsignedBundleFiles: each target's bundles under their release names, without signatures", () => {
+    assert.deepEqual(unsignedBundleFiles(LINUX, V), [
+      { from: "appimage/Fleetify_0.2.0_amd64.AppImage", to: "Fleetify_0.2.0_amd64.AppImage" },
+      { from: "deb/Fleetify_0.2.0_amd64.deb", to: "Fleetify_0.2.0_amd64.deb" },
+      { from: "rpm/Fleetify-0.2.0-1.x86_64.rpm", to: "Fleetify-0.2.0-1.x86_64.rpm" },
+    ]);
+    assert.deepEqual(unsignedBundleFiles(ARM_MAC, V), [
+      { from: "macos/Fleetify.app.tar.gz", to: "Fleetify_0.2.0_aarch64.app.tar.gz" },
+      { from: "dmg/Fleetify_0.2.0_aarch64.dmg", to: "Fleetify_0.2.0_aarch64.dmg" },
+    ]);
+    for (const { triple } of TARGETS) {
+      const signed = bundleFiles(triple, V).filter(({ to }) => !to.endsWith(".sig"));
+      assert.deepEqual(unsignedBundleFiles(triple, V), signed, triple);
+    }
+  });
+
+  test("unsignedAssets: the unsigned artifact's files, sorted, with the AppImage's library list on Linux", () => {
+    assert.deepEqual(unsignedAssets(LINUX, V), [
+      "Fleetify-0.2.0-1.x86_64.rpm",
+      "Fleetify_0.2.0_amd64.AppImage",
+      "Fleetify_0.2.0_amd64.deb",
+      "LINUX-APPIMAGE-LIBRARIES.txt",
+    ]);
+    assert.deepEqual(unsignedAssets(WINDOWS, V), ["Fleetify_0.2.0_x64-setup.exe"]);
+    assert.deepEqual(unsignedAssets(INTEL_MAC, V), ["Fleetify_0.2.0_x64.app.tar.gz", "Fleetify_0.2.0_x64.dmg"]);
+  });
+
+  test("updaterAssets: a target's updater artifacts, the files that get a signature", () => {
+    assert.deepEqual(updaterAssets(LINUX, V), ["Fleetify_0.2.0_amd64.AppImage", "Fleetify_0.2.0_amd64.deb", "Fleetify-0.2.0-1.x86_64.rpm"]);
+    assert.deepEqual(updaterAssets(WINDOWS, V), ["Fleetify_0.2.0_x64-setup.exe"]);
+    assert.deepEqual(updaterAssets(ARM_MAC, V), ["Fleetify_0.2.0_aarch64.app.tar.gz"]);
+    const all = TARGETS.flatMap(({ triple }) => updaterAssets(triple, V));
+    assert.deepEqual(all, updaterArtifacts(V).map(({ asset }) => asset));
+  });
+
+  test("an unknown triple or a bad version throws", () => {
+    assert.throws(() => unsignedAssets("riscv64-unknown-linux-gnu", V), /unknown target triple/);
+    assert.throws(() => updaterAssets(LINUX, "v0.2.0"), /invalid version/);
+  });
+
+  test("the CLI prints either list, one name a line", () => {
+    const cli = (...args) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: "utf8" });
+    const unsigned = cli("unsigned", LINUX, V);
+    assert.equal(unsigned.status, 0, unsigned.stderr);
+    assert.equal(unsigned.stdout, `${unsignedAssets(LINUX, V).join("\n")}\n`);
+    const updaters = cli("updaters", WINDOWS, V);
+    assert.equal(updaters.status, 0, updaters.stderr);
+    assert.equal(updaters.stdout, "Fleetify_0.2.0_x64-setup.exe\n");
+    for (const args of [[], ["unsigned"], ["unsigned", LINUX], ["signed", LINUX, V], ["unsigned", LINUX, V, "extra"]]) {
+      const result = cli(...args);
+      assert.equal(result.status, 2, `${args.join(" ")}: ${result.stderr}`);
+      assert.match(result.stderr, /usage:/);
+    }
+    const unknown = cli("updaters", "riscv64-unknown-linux-gnu", V);
+    assert.equal(unknown.status, 1);
+    assert.match(unknown.stderr, /unknown target triple/);
+    assert.equal(unknown.stdout, "");
   });
 });

@@ -5,13 +5,21 @@
  * entry from it, and SHA256SUMS.
  *
  * The release scripts and workflows import these, so each name is defined in
- * one place.
+ * one place. Workflow steps read two lists through the CLI:
+ *
+ *   node scripts/release/release-assets.mjs unsigned <triple> <version>
+ *   node scripts/release/release-assets.mjs updaters <triple> <version>
+ *
+ * which print unsignedAssets() and updaterAssets(), one name a line (exit 0;
+ * 1 for an unknown triple or a bad version; 2 usage).
  *
  * Asset names are the Tauri CLI's own (tauri-cli 2.11.2), with one exception:
  * both macOS builds write macos/Fleetify.app.tar.gz, so the updater archive is
  * published with the version and arch added.
  */
+import { realpathSync } from "node:fs";
 import { posix } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const REPO = "fleetifydev/fleetify";
 
@@ -30,16 +38,20 @@ export const LIBRARY_LIST = "LINUX-APPIMAGE-LIBRARIES.txt";
 
 /**
  * The release targets: the Rust target triple, the GitHub runner that builds
- * it, and the Tauri bundles it ships (`tauri build --bundles`).
+ * it, the Tauri bundles it ships (`tauri build --bundles`), and the label its
+ * jobs are named with.
  */
 export const TARGETS = Object.freeze(
   [
-    { triple: "x86_64-unknown-linux-gnu", runner: "ubuntu-22.04", bundles: ["appimage", "deb", "rpm"] },
-    { triple: "x86_64-pc-windows-msvc", runner: "windows-2025", bundles: ["nsis"] },
-    { triple: "aarch64-apple-darwin", runner: "macos-15", bundles: ["app", "dmg"] },
-    { triple: "x86_64-apple-darwin", runner: "macos-15-intel", bundles: ["app", "dmg"] },
+    { triple: "x86_64-unknown-linux-gnu", runner: "ubuntu-22.04", bundles: ["appimage", "deb", "rpm"], label: "Linux x64" },
+    { triple: "x86_64-pc-windows-msvc", runner: "windows-2025", bundles: ["nsis"], label: "Windows x64" },
+    { triple: "aarch64-apple-darwin", runner: "macos-15", bundles: ["app", "dmg"], label: "macOS Apple Silicon" },
+    { triple: "x86_64-apple-darwin", runner: "macos-15-intel", bundles: ["app", "dmg"], label: "macOS Intel" },
   ].map(({ bundles, ...target }) => Object.freeze({ ...target, bundles: Object.freeze(bundles) })),
 );
+
+/** The target whose build also lists the AppImage's libraries (LINUX-APPIMAGE-LIBRARIES.txt). */
+const LIBRARY_TRIPLE = TARGETS.find(({ bundles }) => bundles.includes("appimage")).triple;
 
 /**
  * What each target's bundles produce, for version `v`:
@@ -124,6 +136,47 @@ export function bundleFiles(triple, version) {
         ]
       : [{ from, to }],
   );
+}
+
+/**
+ * What a target's build makes before anything is signed: bundleFiles()
+ * without the signatures, as `collect-bundles.mjs --unsigned` copies them.
+ *
+ * @param {string} triple
+ * @param {string} version
+ * @returns {{ from: string, to: string }[]}
+ */
+export function unsignedBundleFiles(triple, version) {
+  return targetBundles(triple, version).map(({ from, to }) => ({ from, to }));
+}
+
+/**
+ * The files of a target's unsigned artifact, sorted: its bundles under their
+ * release names, without signatures, and for the target that ships the
+ * AppImage, the AppImage's library list.
+ *
+ * @param {string} triple
+ * @param {string} version
+ * @returns {string[]}
+ */
+export function unsignedAssets(triple, version) {
+  const names = unsignedBundleFiles(triple, version).map(({ to }) => to);
+  if (triple === LIBRARY_TRIPLE) names.push(LIBRARY_LIST);
+  return names.sort(compare);
+}
+
+/**
+ * A target's updater artifacts, by release name, in bundle order: the
+ * files that get a signature.
+ *
+ * @param {string} triple
+ * @param {string} version
+ * @returns {string[]}
+ */
+export function updaterAssets(triple, version) {
+  return targetBundles(triple, version)
+    .filter(({ keys }) => keys.length > 0)
+    .map(({ to }) => to);
 }
 
 /**
@@ -313,3 +366,34 @@ export function sha256sums(entries) {
     .map(({ name, sha256 }) => `${sha256}  ${name}\n`)
     .join("");
 }
+
+const CLI_LISTS = { unsigned: unsignedAssets, updaters: updaterAssets };
+const USAGE = "usage: node scripts/release/release-assets.mjs unsigned|updaters <triple> <version>";
+
+function main(argv) {
+  const [list, triple, version] = argv;
+  if (argv.length !== 3 || !Object.hasOwn(CLI_LISTS, list)) {
+    process.stderr.write(`release-assets: ${argv.length === 0 ? "nothing to list" : `can't list ${argv.join(" ")}`}\n${USAGE}\n`);
+    return 2;
+  }
+  let names;
+  try {
+    names = CLI_LISTS[list](triple, version);
+  } catch (err) {
+    process.stderr.write(`release-assets: ${err.message}\n`);
+    return 1;
+  }
+  process.stdout.write(names.map((name) => `${name}\n`).join(""));
+  return 0;
+}
+
+function invokedDirectly() {
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+// exitCode instead of process.exit(), so buffered output is written first.
+if (invokedDirectly()) process.exitCode = main(process.argv.slice(2));
