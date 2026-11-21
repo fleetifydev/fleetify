@@ -1066,11 +1066,20 @@ function pwsh(args, { ws, env = {} }) {
 /** Run install.ps1 with `args` as a script file. */
 const installPs1 = (args, options) => pwsh(["-File", INSTALL_PS1, ...args], options);
 
-/** Where install.ps1 downloads to. */
-const downloads = (ws) => join(ws.tmp, "fleetify-install");
+/**
+ * The folder a run of install.ps1 downloaded into: on Windows,
+ * $env:TEMP\fleetify-install; elsewhere, the one new fleetify-install-<GUID>
+ * folder in the temporary folder.
+ */
+function downloads(ws) {
+  if (process.platform === "win32") return join(ws.tmp, "fleetify-install");
+  const made = readdirSync(ws.tmp).filter((name) => /^fleetify-install-[0-9a-f]{32}$/.test(name));
+  assert.equal(made.length, 1, `expected one download folder in ${ws.tmp}, found: ${readdirSync(ws.tmp).join(", ")}`);
+  return join(ws.tmp, made[0]);
+}
 
 describe("install.ps1, under pwsh", { skip: PWSH === null && "pwsh isn't installed" }, () => {
-  test("-Version 0.2.0 -DownloadOnly -BaseUrl …: exit 0, with the checked installer in $env:TEMP\\fleetify-install", async () => {
+  test("-Version 0.2.0 -DownloadOnly -BaseUrl …: exit 0, with the checked installer in its download folder", async () => {
     const ws = workspace();
     GOOD.mark();
     const run = await installPs1(["-Version", V, "-DownloadOnly", "-BaseUrl", GOOD.base], { ws });
@@ -1080,6 +1089,32 @@ describe("install.ps1, under pwsh", { skip: PWSH === null && "pwsh isn't install
     assert.deepEqual(GOOD.since().sort(), [`/download/v${V}/${ASSETS.nsis}`, `/download/v${V}/${CHECKSUMS}`].sort());
     assertPrefixed(run.stdout);
   });
+
+  test(
+    "off Windows, each run downloads into a new folder of its own, never into a fleetify-install someone else made in the shared temporary folder",
+    { skip: process.platform === "win32" && "on Windows the folder is the user's own $env:TEMP\\fleetify-install" },
+    async () => {
+      const ws = workspace();
+      // Another user's folder, where they could read or swap the download.
+      const elsewhere = join(ws.root, "elsewhere");
+      mkdirSync(elsewhere);
+      symlinkSync(elsewhere, join(ws.tmp, "fleetify-install"));
+      const folders = [];
+      for (let i = 0; i < 2; i += 1) {
+        const before = new Set(readdirSync(ws.tmp));
+        const run = await installPs1(["-Version", V, "-DownloadOnly", "-BaseUrl", GOOD.base], { ws });
+        assert.equal(run.status, 0, run.output);
+        const made = readdirSync(ws.tmp).filter((name) => !before.has(name));
+        assert.equal(made.length, 1, `run ${i + 1} made ${made.join(", ") || "no folder"}`);
+        assert.match(made[0], /^fleetify-install-[0-9a-f]{32}$/);
+        assert.deepEqual(readFileSync(join(ws.tmp, made[0], ASSETS.nsis)), readFileSync(join(GOOD.dir, ASSETS.nsis)));
+        assert.ok(run.stdout.includes(join(ws.tmp, made[0], ASSETS.nsis)), run.stdout);
+        folders.push(made[0]);
+      }
+      assert.notEqual(folders[0], folders[1]);
+      assert.deepEqual(readdirSync(elsewhere), [], "the download went into the planted folder");
+    },
+  );
 
   test("a tampered SHA256SUMS: a non-zero exit, saying the checksum doesn't match, and the download is deleted", async () => {
     const ws = workspace();

@@ -2545,11 +2545,18 @@ describe("smoke.yml's install via script", () => {
     assert.equal(step.shell, "powershell");
     const script = scriptOf(step);
     const order = [
+      // What an earlier run could have left in the download folder.
+      "$downloads = Join-Path $env:TEMP 'fleetify-install'",
+      "Set-Content -LiteralPath (Join-Path $downloads 'Fleetify_0.0.1_x64-setup.exe')",
+      "Set-Content -LiteralPath (Join-Path $downloads 'notes.txt')",
       "'tools/scripts/release/launch-smoke.mjs', 'serve-release', '--dir', 'release', '--version', $env:VERSION, '--port', '18081'",
       '"$env:FLEETIFY_INSTALL_BASE/latest/download/install.ps1"',
       "Remove-Item -LiteralPath $env:APP_EXE",
       ")) -Silent",
       "Test-Path -LiteralPath $env:APP_EXE",
+      // install.ps1 removed the older installer, and only its own files.
+      "if (Test-Path -LiteralPath (Join-Path $downloads 'Fleetify_0.0.1_x64-setup.exe')) { throw",
+      "if (-not (Test-Path -LiteralPath (Join-Path $downloads 'notes.txt'))) { throw",
       `Get-Item "$env:TEMP\\fleetify-install\\*-setup.exe" -Stream Zone.Identifier -ErrorAction SilentlyContinue`,
     ];
     const at = order.map((text) => script.indexOf(text));

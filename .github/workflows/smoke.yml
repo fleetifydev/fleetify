@@ -234,7 +234,9 @@ jobs:
       # install.ps1 as a user runs it, in Windows PowerShell 5.1: fetched from
       # the release and run as a script block, with -Silent. It installs over
       # the app above, whose executable goes first, so the installer has to
-      # put it back.
+      # put it back. Its download folder holds what an earlier run could have
+      # left: an older installer, which install.ps1 removes, and a file that
+      # isn't its own, which it keeps.
       - name: Install via script
         shell: powershell
         env:
@@ -242,6 +244,10 @@ jobs:
         run: |
           $logs = Join-Path $env:RUNNER_TEMP 'home-install'
           New-Item -ItemType Directory -Force -Path $logs | Out-Null
+          $downloads = Join-Path $env:TEMP 'fleetify-install'
+          New-Item -ItemType Directory -Force -Path $downloads | Out-Null
+          Set-Content -LiteralPath (Join-Path $downloads 'Fleetify_0.0.1_x64-setup.exe') -Value 'an older installer'
+          Set-Content -LiteralPath (Join-Path $downloads 'notes.txt') -Value 'not a file of install.ps1'
           $node = (Get-Command node).Source
           $server = Start-Process -FilePath $node -ArgumentList 'tools/scripts/release/launch-smoke.mjs', 'serve-release', '--dir', 'release', '--version', $env:VERSION, '--port', '18081' -NoNewWindow -PassThru -RedirectStandardOutput (Join-Path $logs 'release-server.log') -RedirectStandardError (Join-Path $logs 'release-server.err')
           try {
@@ -259,7 +265,9 @@ jobs:
             Remove-Item -LiteralPath $env:APP_EXE
             & ([scriptblock]::Create($installScript)) -Silent
             if (-not (Test-Path -LiteralPath $env:APP_EXE)) { throw "install.ps1 -Silent didn't install $env:APP_EXE" }
-            $downloaded = @(Get-ChildItem -Path (Join-Path $env:TEMP 'fleetify-install') -Filter '*-setup.exe' -File)
+            if (Test-Path -LiteralPath (Join-Path $downloads 'Fleetify_0.0.1_x64-setup.exe')) { throw "install.ps1 left an older installer in $downloads" }
+            if (-not (Test-Path -LiteralPath (Join-Path $downloads 'notes.txt'))) { throw "install.ps1 removed a file from $downloads that isn't its own" }
+            $downloaded = @(Get-ChildItem -Path $downloads -Filter '*-setup.exe' -File)
             $released = @(Get-ChildItem -Path release -Filter '*-setup.exe' -File)
             if ($downloaded.Count -ne 1 -or (Get-FileHash -LiteralPath $downloaded[0].FullName).Hash -ne (Get-FileHash -LiteralPath $released[0].FullName).Hash) {
               throw "install.ps1 didn't leave the release's installer in $env:TEMP\fleetify-install"

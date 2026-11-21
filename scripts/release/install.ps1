@@ -9,8 +9,11 @@
 #
 # It downloads SHA256SUMS and the release's installer, Fleetify_<version>_x64-setup.exe,
 # from https://github.com/fleetifydev/fleetify/releases/download/v<version>/,
-# or from <BaseUrl>/download/v<version>/, into $env:TEMP\fleetify-install.
-# Without a version, the version is the latest release's, read from
+# or from <BaseUrl>/download/v<version>/, into $env:TEMP\fleetify-install,
+# after removing what an earlier run left there: its own files, and nothing
+# else. Elsewhere, where only -DownloadOnly runs and the temporary folder is
+# shared, it downloads into a new folder of the run's own instead. Without a
+# version, the version is the latest release's, read from
 # latest/download/latest.json there. The installer's SHA-256 must match its
 # line in SHA256SUMS, in any letter case; if it doesn't, the download is
 # deleted and nothing is installed. Then it runs the installer, which
@@ -84,10 +87,23 @@ function Install-Fleetify {
     # GitHub takes TLS 1.2 or later, which an older .NET doesn't offer by default.
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-    $temp = $env:TEMP
-    if (-not $temp) { $temp = [IO.Path]::GetTempPath() }
-    $dir = Join-Path $temp 'fleetify-install'
-    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    if ($onWindows) {
+        # The user's own TEMP. The installer stays here after it runs, so this
+        # first removes what earlier runs left: this script's own files, and
+        # nothing else. One that can't go yet doesn't stop the install.
+        $temp = $env:TEMP
+        if (-not $temp) { $temp = [IO.Path]::GetTempPath() }
+        $dir = Join-Path $temp 'fleetify-install'
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        Get-ChildItem -LiteralPath $dir -File |
+            Where-Object { $_.Name -ceq 'latest.json' -or $_.Name -ceq 'SHA256SUMS' -or $_.Name -cmatch '^Fleetify_(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)_x64-setup\.exe\z' } |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    } else {
+        # A temporary folder other users share: a new folder, which no one else
+        # can have made or filled first.
+        $dir = Join-Path ([IO.Path]::GetTempPath()) ('fleetify-install-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $dir | Out-Null
+    }
 
     if (-not $Version) {
         $url = "$base/latest/download/latest.json"
