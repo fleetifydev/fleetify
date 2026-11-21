@@ -637,6 +637,20 @@ describe("install.sh refuses a download that doesn't match SHA256SUMS", { skip: 
     assert.deepEqual(readdirSync(ws.tmp), []);
   });
 
+  test("two lines for the file in SHA256SUMS: exit 1, and nothing is installed", async () => {
+    // The same line twice: SHA256SUMS lists each file once, so it isn't the release's.
+    const line = readFileSync(join(GOOD.dir, CHECKSUMS), "utf8").split("\n").find((entry) => entry.endsWith(`  ${ASSETS.appimage}`));
+    const twice = await serve(makeRelease(V, { sums: (text) => `${text}${line}\n` }), V);
+    const ws = workspace();
+    const bin = join(ws.root, "bin");
+    const run = await installSh(["--dir", bin], { ws, release: twice });
+    assert.equal(run.status, 1, run.output);
+    assert.ok(run.stderr.includes(`SHA256SUMS has more than one line for ${ASSETS.appimage}`), run.stderr);
+    assert.equal(existsSync(join(bin, "fleetify")), false);
+    assert.deepEqual(snapshot(ws.home), []);
+    assert.deepEqual(readdirSync(ws.tmp), []);
+  });
+
   test("the same for a package: nothing is saved, and the package manager doesn't run", async () => {
     const saved = workspace();
     const download = await installSh(["--deb", "--download-only"], { ws: saved, release: TAMPERED });
@@ -1004,10 +1018,35 @@ describe("the install scripts' text", () => {
     }
   });
 
-  test("install.sh is sh, and does nothing until its last line calls main, so a pipe cut short can't run half of it", () => {
+  test("install.sh, cut short anywhere, as a pipe that breaks off delivers it, runs nothing: only its last line calls main", { skip: SKIP_SH }, () => {
     const text = readFileSync(INSTALL_SH, "utf8");
     assert.equal(text.split("\n")[0], "#!/bin/sh");
     assert.equal(text.trimEnd().split("\n").at(-1), 'main "$@"');
+    // Every command it could run, as a stand-in that logs its name, and
+    // nothing else on PATH; a home, a TMPDIR and a working folder of their own.
+    const stand = folder("prefix-stubs");
+    const log = fresh("prefix-log");
+    const commands = [...new Set([...TOOLS, "apt-get", "basename", "cat", "date", "dirname", "dnf", "env", "find", "head", "id", "od", "sleep", "sudo", "sysctl", "tail", "tee", "touch", "tr", "uname", "wc", "xargs", "zypper"])];
+    for (const name of commands) writeFileSync(join(stand, name), `#!/bin/sh\necho "${name} $*" >> "${log}"\n`, { mode: 0o755 });
+    const scratch = workspace();
+    const env = { PATH: stand, HOME: scratch.home, TMPDIR: scratch.tmp, XDG_DATA_HOME: join(scratch.home, "data"), LC_ALL: "C", FLEETIFY_INSTALL_BASE: "http://127.0.0.1:9" };
+    const run = (input) => spawnSync(SH, ["-s"], { input, cwd: scratch.work, env, encoding: "utf8" });
+    const all = text.split("\n");
+    const ran = [];
+    // Each prefix that ends at a line's end, short of the whole script.
+    for (let n = 1; n < all.length - 1; n += 1) {
+      run(`${all.slice(0, n).join("\n")}\n`);
+      const calls = lines(log);
+      if (calls.length > 0) {
+        ran.push(`after line ${n} (${all[n - 1]}): ${calls.join("; ")}`);
+        rmSync(log);
+      }
+    }
+    assert.deepEqual(ran, [], "a cut-short install.sh ran commands");
+    assert.deepEqual([snapshot(scratch.home), snapshot(scratch.tmp), snapshot(scratch.work)], [[], [], []], "a cut-short install.sh wrote files");
+    // The whole script does run: the stand-ins would have seen a prefix that did.
+    run(text);
+    assert.ok(lines(log).some((call) => call.startsWith("uname ")), `the whole script didn't reach uname: ${lines(log).join("; ")}`);
   });
 
   test("install.ps1 has none of the syntax PowerShell 6 and 7 added, so Windows PowerShell 5.1 can run it", () => {
@@ -1041,6 +1080,35 @@ describe("the install scripts' text", () => {
 // ── install.ps1 ─────────────────────────────────────────────────────────────
 
 const PWSH = which("pwsh");
+
+/**
+ * A pwsh script that prints install.ps1's top level as JSON: whether it has
+ * a param block, how many other blocks, and each statement of its body with
+ * its type, a function's name, the commands it calls and its method calls.
+ */
+const TOP_LEVEL = `param([string]$Path)
+$tokens = $null
+$errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
+if ($errors.Count -gt 0) { throw ($errors | Out-String) }
+$calls = { param($node) $node -is [System.Management.Automation.Language.CommandAst] }
+$methods = { param($node) $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst] }
+$statements = @(foreach ($statement in $ast.EndBlock.Statements) {
+  $name = ''
+  if ($statement -is [System.Management.Automation.Language.FunctionDefinitionAst]) { $name = $statement.Name }
+  [ordered]@{
+    type = $statement.GetType().Name
+    name = $name
+    commands = @($statement.FindAll($calls, $true) | ForEach-Object { $_.GetCommandName() })
+    methods = @($statement.FindAll($methods, $true)).Count
+  }
+})
+[ordered]@{
+  param = $null -ne $ast.ParamBlock
+  blocks = @(@($ast.BeginBlock, $ast.ProcessBlock, $ast.DynamicParamBlock) | Where-Object { $null -ne $_ }).Count
+  statements = $statements
+} | ConvertTo-Json -Depth 5 -Compress
+`;
 
 /** Run pwsh with `args`, its home and TEMP in `ws`: { status, stdout, stderr, output }. */
 function pwsh(args, { ws, env = {} }) {
@@ -1135,6 +1203,16 @@ describe("install.ps1, under pwsh", { skip: PWSH === null && "pwsh isn't install
     assert.equal(existsSync(join(downloads(ws), ASSETS.nsis)), false);
   });
 
+  test("two lines for the installer in SHA256SUMS: a non-zero exit, and the download is deleted", async () => {
+    const ws = workspace();
+    const line = readFileSync(join(GOOD.dir, CHECKSUMS), "utf8").split("\n").find((entry) => entry.endsWith(`  ${ASSETS.nsis}`));
+    const release = await serve(makeRelease(V, { sums: (text) => `${text}${line}\n` }), V);
+    const run = await installPs1(["-Version", V, "-DownloadOnly", "-BaseUrl", release.base], { ws });
+    assert.notEqual(run.status, 0, run.output);
+    assert.ok(run.output.includes(`SHA256SUMS has more than one line for ${ASSETS.nsis}`), run.output);
+    assert.equal(existsSync(join(downloads(ws), ASSETS.nsis)), false);
+  });
+
   test("without -Version and -BaseUrl: FLEETIFY_INSTALL_BASE, and the version the latest release's latest.json gives", async () => {
     const ws = workspace();
     OTHER.mark();
@@ -1191,6 +1269,26 @@ describe("install.ps1, under pwsh", { skip: PWSH === null && "pwsh isn't install
     assert.notEqual(run.status, 0, run.output);
     assert.match(run.output, /install\.sh/);
     assert.deepEqual(GOOD.since(), []);
+  });
+
+  test("install.ps1 does nothing before its last statement calls Install-Fleetify, so a script cut short runs nothing", async () => {
+    const ws = workspace();
+    const helper = join(ws.root, "top-level.ps1");
+    writeFileSync(helper, TOP_LEVEL);
+    const run = await pwsh(["-File", helper, "-Path", INSTALL_PS1], { ws });
+    assert.equal(run.status, 0, run.output);
+    const top = JSON.parse(run.stdout);
+    assert.deepEqual([top.param, top.blocks], [true, 0], "its parameters, and no begin, process or dynamicparam block");
+    const statements = top.statements;
+    const last = statements.at(-1);
+    assert.equal(last.type, "TryStatementAst", JSON.stringify(last));
+    assert.ok(last.commands.includes("Install-Fleetify"), JSON.stringify(last));
+    assert.ok(statements.some(({ type, name }) => type === "FunctionDefinitionAst" && name === "Install-Fleetify"));
+    // Before it: function definitions, and assignments that call nothing.
+    for (const statement of statements.slice(0, -1)) {
+      const quiet = statement.type === "FunctionDefinitionAst" || (statement.type === "AssignmentStatementAst" && statement.commands.length === 0 && statement.methods === 0);
+      assert.ok(quiet, `install.ps1 does work at its top level: ${JSON.stringify(statement)}`);
+    }
   });
 });
 
