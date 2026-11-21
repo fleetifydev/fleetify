@@ -44,6 +44,37 @@ static DISTINCT_ID: OnceLock<String> = OnceLock::new();
 /// write-only `phc_` key, safe to embed in shipped binaries.
 const COMPILED_KEY: Option<&str> = option_env!("POSTHOG_API_KEY");
 
+// Only a public project key may ship in the binary: any other key in the
+// build environment, such as a personal API key (`phx_…`), fails the build.
+const _: () = assert!(
+    may_compile_in(COMPILED_KEY),
+    "POSTHOG_API_KEY at build time must be a public PostHog project key (phc_...)"
+);
+
+/// Whether `key` may be compiled in: none, an empty one, or a public
+/// project key, which starts with `phc_`.
+const fn may_compile_in(key: Option<&str>) -> bool {
+    match key {
+        None => true,
+        Some(key) => key.is_empty() || starts_with(key.as_bytes(), b"phc_"),
+    }
+}
+
+/// Whether `bytes` starts with `prefix`, in a `const fn`.
+const fn starts_with(bytes: &[u8], prefix: &[u8]) -> bool {
+    if bytes.len() < prefix.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < prefix.len() {
+        if bytes[i] != prefix[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 /// The host compiled in from `POSTHOG_HOST` at build time.
 const COMPILED_HOST: Option<&str> = option_env!("POSTHOG_HOST");
 
@@ -167,6 +198,19 @@ mod tests {
         assert_eq!(first_non_empty(s(""), Some("")), None);
         assert_eq!(first_non_empty(None, Some("")), None);
         assert_eq!(first_non_empty(None, None), None);
+    }
+
+    #[test]
+    fn only_a_public_project_key_may_be_compiled_in() {
+        assert!(may_compile_in(None));
+        assert!(may_compile_in(Some("")));
+        assert!(may_compile_in(Some("phc_abc123")));
+        // A personal API key (phx_), or anything else, fails the build.
+        for key in ["phx_abc123", "phc", "PHC_abc123", " phc_abc123", "abc_phc_"] {
+            assert!(!may_compile_in(Some(key)), "{key:?}");
+        }
+        // The key this build compiled in passed the same check.
+        assert!(may_compile_in(COMPILED_KEY));
     }
 
     #[test]
