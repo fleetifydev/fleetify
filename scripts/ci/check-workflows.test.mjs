@@ -2770,7 +2770,6 @@ function ghRule(args) {
 /** The commands those jobs may run, besides node on the release scripts, each with a rule for its arguments. */
 const RELEASE_BOT_TOOLS = new Map([
   ["[", anything],
-  ["cd", exactly(["release"])],
   ["curl", exactly(["-fsSL", "$url"])],
   ["echo", anything],
   ["exit", anything],
@@ -2778,7 +2777,10 @@ const RELEASE_BOT_TOOLS = new Map([
   ["git", exactly(["ls-remote", "--tags", "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY", "refs/tags/$TAG"])],
   ["jq", exactly(["-r", ".version"])],
   ["printf", printfRule],
-  ["sha256sum", exactly(["SHA256SUMS"])],
+  // Reading its input: a file it names would be one of the folder the step is
+  // in, and these jobs may not change folders, as this check doesn't follow
+  // the folder a command runs in.
+  ["sha256sum", exactly([])],
   ["sleep", exactly(["10"])],
   ["sort", exactly([])],
 ]);
@@ -3495,10 +3497,18 @@ describe("release.yml", () => {
       "gh api repos/fleetifydev/fleetify/releases --jq length",
       'gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/1"',
       'gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq \'map(select(.draft)) | length\' -X PATCH',
-      "cd /",
-      "cd ..",
       "sha256sum -c sums",
       "sha256sum release/SHA256SUMS",
+      "sha256sum SHA256SUMS",
+      // A change of folder, which this check doesn't follow: after it, a
+      // write to latest.json would be a write into the assembled release.
+      "cd release",
+      "cd /",
+      "cd ..",
+      "cd release && echo '{}' > latest.json",
+      "(cd release; printf x > latest.json)",
+      'own=$(cd release && sha256sum SHA256SUMS)',
+      "pushd release",
     ]) {
       assert.notDeepEqual(refused(script), [], script);
     }
@@ -3519,7 +3529,8 @@ describe("release.yml", () => {
       'echo "pending=false" >> "$GITHUB_OUTPUT"',
       'target=$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)',
       "uploaded=$(gh release view \"$TAG\" --json assets --jq '.assets[] | \"\\(.digest // \"none\" | ltrimstr(\"sha256:\"))  \\(.name)\"' | LC_ALL=C sort)",
-      "own=$(cd release && sha256sum SHA256SUMS)",
+      "own=$(sha256sum < release/SHA256SUMS)",
+      'own="${own%-}SHA256SUMS"',
       "assembled=$(printf '%s\\n' \"$(< release/SHA256SUMS)\" \"$own\" | LC_ALL=C sort)",
       "printf -v line '%s' x",
     ]) {

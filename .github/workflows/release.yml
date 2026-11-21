@@ -241,7 +241,9 @@ jobs:
           # Both lists read "<SHA-256>  <name>", as SHA256SUMS does; an asset
           # without a SHA-256 reads "none".
           uploaded=$(gh release view "$TAG" --json assets --jq '.assets[] | "\(.digest // "none" | ltrimstr("sha256:"))  \(.name)"' | LC_ALL=C sort)
-          own=$(cd release && sha256sum SHA256SUMS)
+          # sha256sum names what it reads from its input "-".
+          own=$(sha256sum < release/SHA256SUMS)
+          own="${own%-}SHA256SUMS"
           assembled=$(printf '%s\n' "$(< release/SHA256SUMS)" "$own" | LC_ALL=C sort)
           if [ "$uploaded" != "$assembled" ]; then
             echo "::error::the draft $TAG's assets aren't the bytes that were assembled"
